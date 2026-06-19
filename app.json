@@ -1,0 +1,33 @@
+{
+  "expo": {
+    "name": "Lincoln",
+    "slug": "lincoln",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "lincoln",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0B0F14",
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#0B0F14"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.lincoln.wallet"
+    },
+    "android": {
+      "package": "com.lincoln.wallet",
+      "adaptiveIcon": {
+        "backgroundColor": "#0B0F14"
+      }
+    },
+    "web": {
+      "bundler": "metro"
+    },
+    "plugins": ["expo-router", "expo-secure-store"],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
