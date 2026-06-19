@@ -31,6 +31,43 @@ npm start
 
 Luego escanea el QR con Expo Go, o presiona `i` (iOS) / `a` (Android) / `w` (web).
 
+## Correr en Android Studio y Xcode (proyectos nativos)
+
+El repo ya incluye los proyectos nativos generados con `expo prebuild`:
+`android/` (Android Studio) e `ios/` (Xcode).
+
+### Android (Android Studio)
+
+```bash
+npm install
+# Opción A: desde la terminal
+npx expo run:android
+# Opción B: abrir en Android Studio
+#   File > Open... > selecciona la carpeta  android/
+#   Espera el sync de Gradle y pulsa ▶ Run con un emulador o dispositivo
+```
+
+Requisitos: Android Studio, un SDK de Android y un emulador (o teléfono con
+depuración USB). `package` de la app: `com.lincoln.wallet`.
+
+### iOS (Xcode — solo en macOS)
+
+```bash
+npm install
+cd ios && pod install && cd ..   # genera Lincoln.xcworkspace
+# Opción A: desde la terminal
+npx expo run:ios
+# Opción B: abrir en Xcode
+#   Abre  ios/Lincoln.xcworkspace  (¡el .xcworkspace, no el .xcodeproj!)
+#   Elige un simulador y pulsa ▶ Run
+```
+
+Requisitos: macOS con Xcode y CocoaPods (`sudo gem install cocoapods`).
+`bundleIdentifier`: `com.lincoln.wallet`.
+
+> Si cambias `app.json` (nombre, ícono, plugins), regenera los nativos con
+> `npx expo prebuild --clean`.
+
 ## Página web (landing)
 
 En `web/` está el sitio web de Lincoln: una landing con hero, funciones, cómo

@@ -15,6 +15,24 @@ expo-env.d.ts
 *.key
 *.mobileprovision
 
+# Android build artifacts (the android/ project itself IS committed)
+android/build/
+android/.gradle/
+android/.kotlin/
+android/app/build/
+android/.cxx/
+android/local.properties
+android/captures/
+*.keystore
+!debug.keystore
+
+# iOS build artifacts (the ios/ project itself IS committed)
+ios/build/
+ios/Pods/
+ios/Podfile.lock
+ios/.xcode.env.local
+ios/*.xcworkspace
+
 # Metro
 .metro-health-check*
 
