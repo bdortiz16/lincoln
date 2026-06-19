@@ -31,6 +31,24 @@ npm start
 
 Luego escanea el QR con Expo Go, o presiona `i` (iOS) / `a` (Android) / `w` (web).
 
+## Página web (landing)
+
+En `web/` está el sitio web de Lincoln: una landing con hero, funciones, cómo
+funciona, seguridad, preguntas frecuentes y un **modal para ingresar / crear
+cuenta**. No requiere build — ábrela directamente:
+
+```bash
+# opción 1: abrir el archivo
+open web/index.html        # macOS  (o doble clic en el explorador)
+
+# opción 2: servidor local
+npx serve web              # luego abre la URL que muestre
+```
+
+Archivos: `web/index.html`, `web/styles.css`, `web/app.js`. El registro/login
+es una demo en el navegador (datos simulados); se conecta a un backend real
+cambiando el `fetch` simulado en `web/app.js`.
+
 ## Estructura
 
 ```
