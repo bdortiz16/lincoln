@@ -48,7 +48,7 @@ export default function Profile() {
         </Card>
 
         <Button label="Cerrar sesión" variant="secondary" onPress={onSignOut} />
-        <Text style={styles.version}>Lincoln v1.0.0</Text>
+        <Text style={styles.version}>Cuy Pay v1.0.0</Text>
       </ScrollView>
     </SafeAreaView>
   );

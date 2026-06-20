@@ -1,4 +1,4 @@
-# Lincoln 💵
+# Cuy Pay 🐹
 
 App móvil de billetera de **dólares y cripto** estilo Lemon Cash, Wenia, Dólar App y Monabit.
 Las personas se registran, ven su saldo, **compran/venden** dólares y cripto, y **envían/reciben** fondos.
@@ -33,8 +33,9 @@ Luego escanea el QR con Expo Go, o presiona `i` (iOS) / `a` (Android) / `w` (web
 
 ## Marca y diseño
 
-Identidad **azul marino + blanco** con un símbolo abstracto: dos *chevrons*
-ascendentes que representan crecimiento y valor.
+Identidad **azul marino + blanco** con una **mascota de cuy** (guinea pig):
+cara redonda blanca, orejas con azul, cachetes, bigotes y los dientes
+característicos. Amigable y memorable.
 
 - Paleta: navy `#0B2350`, azul `#3D7BFF`, fondo `#091830`, blanco `#FFFFFF`.
 - Assets en `assets/`: `icon.png`, `adaptive-icon.png`, `splash.png`,
@@ -71,11 +72,11 @@ depuración USB). `package` de la app: `com.lincoln.wallet`.
 
 ```bash
 npm install
-cd ios && pod install && cd ..   # genera Lincoln.xcworkspace
+cd ios && pod install && cd ..   # genera CuyPay.xcworkspace
 # Opción A: desde la terminal
 npx expo run:ios
 # Opción B: abrir en Xcode
-#   Abre  ios/Lincoln.xcworkspace  (¡el .xcworkspace, no el .xcodeproj!)
+#   Abre  ios/CuyPay.xcworkspace  (¡el .xcworkspace, no el .xcodeproj!)
 #   Elige un simulador y pulsa ▶ Run
 ```
 
@@ -87,7 +88,7 @@ Requisitos: macOS con Xcode y CocoaPods (`sudo gem install cocoapods`).
 
 ## Página web (landing)
 
-En `web/` está el sitio web de Lincoln: una landing con hero, funciones, cómo
+En `web/` está el sitio web de Cuy Pay: una landing con hero, funciones, cómo
 funciona, seguridad, preguntas frecuentes y un **modal para ingresar / crear
 cuenta**. No requiere build — ábrela directamente:
 

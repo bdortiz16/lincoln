@@ -44,7 +44,7 @@ if (getRNMinorVersion() >= 75) {
   }
 }
 
-rootProject.name = 'Lincoln'
+rootProject.name = 'Cuy Pay'
 
 dependencyResolutionManagement {
   versionCatalogs {

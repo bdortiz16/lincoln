@@ -1,9 +1,9 @@
 /**
- * Lincoln brand mark (SVG source of truth).
+ * Cuy Pay brand mark (SVG source of truth).
  *
- * Concept: an abstract "ascending" symbol — two stacked chevrons rising upward,
- * suggesting growth, value and momentum. Navy & white palette for a trustworthy,
- * banking feel.
+ * Concept: a friendly guinea-pig ("cuy") mascot — a rounded white face with big
+ * ears, navy eyes/nose and the guinea-pig's signature front teeth. Navy & white
+ * palette for a trustworthy, playful fintech feel.
  *
  * Geometry lives in a 100x100 viewBox so it renders crisp at any size and on
  * any background (full-bleed icon, transparent foreground, splash, wordmark).
@@ -17,19 +17,48 @@ const WHITE = "#FFFFFF";
 const BG_DARK = "#091830";      // app/splash background (deep navy)
 
 /**
- * The Lincoln glyph: two stacked upward chevrons.
- * `top`/`bottom` set the two stroke colors; `scale` shrinks it inside a larger
- * canvas (safe zones / splash).
+ * The Cuy Pay glyph: a front-facing guinea-pig mascot.
+ * `scale` shrinks it inside a larger canvas (safe zones / splash).
  */
-function glyph({ top = WHITE, bottom = ACCENT, scale = 1, cx = 50, cy = 50 } = {}) {
-  const t = 12; // chevron thickness
+function glyph({ scale = 1, cx = 50, cy = 50 } = {}) {
   return `
-  <g transform="translate(${cx} ${cy}) scale(${scale}) translate(-50 -50)"
-     fill="none" stroke-width="${t}" stroke-linecap="round" stroke-linejoin="round">
-    <!-- lower chevron (accent) -->
-    <polyline points="28,70 50,48 72,70" stroke="${bottom}"/>
-    <!-- upper chevron (white) -->
-    <polyline points="28,52 50,30 72,52" stroke="${top}"/>
+  <g transform="translate(${cx} ${cy}) scale(${scale}) translate(-50 -50)">
+    <!-- ears -->
+    <g>
+      <ellipse cx="33" cy="33" rx="11" ry="14" fill="${WHITE}" transform="rotate(-20 33 33)"/>
+      <ellipse cx="67" cy="33" rx="11" ry="14" fill="${WHITE}" transform="rotate(20 67 33)"/>
+      <ellipse cx="33" cy="34" rx="5" ry="7.5" fill="${ACCENT}" transform="rotate(-20 33 34)"/>
+      <ellipse cx="67" cy="34" rx="5" ry="7.5" fill="${ACCENT}" transform="rotate(20 67 34)"/>
+    </g>
+
+    <!-- forehead tuft + head -->
+    <path d="M50 21 L44 36 L56 36 Z" fill="${WHITE}"/>
+    <ellipse cx="50" cy="57" rx="33" ry="30" fill="${WHITE}"/>
+
+    <!-- cheeks -->
+    <circle cx="26" cy="64" r="5" fill="${ACCENT}" opacity="0.30"/>
+    <circle cx="74" cy="64" r="5" fill="${ACCENT}" opacity="0.30"/>
+
+    <!-- whiskers -->
+    <g stroke="${NAVY}" stroke-width="1.6" stroke-linecap="round" opacity="0.55">
+      <line x1="30" y1="61" x2="16" y2="59"/>
+      <line x1="30" y1="65" x2="15" y2="66"/>
+      <line x1="70" y1="61" x2="84" y2="59"/>
+      <line x1="70" y1="65" x2="85" y2="66"/>
+    </g>
+
+    <!-- eyes -->
+    <circle cx="38" cy="55" r="5.5" fill="${NAVY}"/>
+    <circle cx="62" cy="55" r="5.5" fill="${NAVY}"/>
+    <circle cx="39.8" cy="53.2" r="1.9" fill="${WHITE}"/>
+    <circle cx="63.8" cy="53.2" r="1.9" fill="${WHITE}"/>
+
+    <!-- nose -->
+    <path d="M50 68 C46 68 44 65 44 63 C44 61 47 61 50 62.5 C53 61 56 61 56 63 C56 65 54 68 50 68 Z" fill="${NAVY}"/>
+
+    <!-- front teeth -->
+    <rect x="46.5" y="69" width="7" height="8" rx="1.6" fill="${WHITE}" stroke="${NAVY}" stroke-width="1.6"/>
+    <line x1="50" y1="69.5" x2="50" y2="76.5" stroke="${NAVY}" stroke-width="1.4"/>
   </g>`;
 }
 
@@ -98,7 +127,7 @@ function splash({ width = 1242, height = 2688 } = {}) {
     </g>
     <text x="${cx}" y="${cy + iconSize * 0.62}" text-anchor="middle"
       font-family="Helvetica, Arial, sans-serif" font-size="${iconSize * 0.26}"
-      font-weight="800" fill="#ffffff" letter-spacing="-1">Lincoln</text>
+      font-weight="800" fill="#ffffff" letter-spacing="-1">Cuy Pay</text>
   </svg>`;
 }
 
@@ -115,7 +144,7 @@ function wordmark() {
     <rect x="0" y="16" width="64" height="64" rx="16" fill="url(#g)"/>
     <svg x="0" y="16" width="64" height="64" viewBox="0 0 100 100">${glyph({ scale: 0.9 })}</svg>
     <text x="84" y="62" font-family="Helvetica, Arial, sans-serif" font-size="46"
-      font-weight="800" fill="#0B2350" letter-spacing="-1">Lincoln</text>
+      font-weight="800" fill="#0B2350" letter-spacing="-1">Cuy Pay</text>
   </svg>`;
 }
 

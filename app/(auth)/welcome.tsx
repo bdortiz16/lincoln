@@ -1,4 +1,3 @@
-import { Ionicons } from "@expo/vector-icons";
 import { Link } from "expo-router";
 import { StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -10,10 +9,9 @@ export default function Welcome() {
     <SafeAreaView style={styles.container}>
       <View style={styles.hero}>
         <View style={styles.logo}>
-          <Ionicons name="chevron-up" size={52} color={colors.white} style={styles.chevTop} />
-          <Ionicons name="chevron-up" size={52} color={colors.primary} style={styles.chevBottom} />
+          <Text style={styles.logoMark}>🐹</Text>
         </View>
-        <Text style={styles.brand}>Lincoln</Text>
+        <Text style={styles.brand}>Cuy Pay</Text>
         <Text style={styles.tagline}>
           Tus dólares y cripto en un solo lugar.{"\n"}Compra, vende y envía en segundos.
         </Text>
@@ -48,8 +46,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginBottom: spacing.sm,
   },
-  chevTop: { position: "absolute", top: 20 },
-  chevBottom: { position: "absolute", top: 36 },
+  logoMark: { fontSize: 46 },
   brand: { fontSize: font.size.display, fontWeight: font.weight.bold, color: colors.text },
   tagline: {
     fontSize: font.size.md,

@@ -1,4 +1,4 @@
-// Lincoln landing — modal + demo auth (frontend only, datos simulados)
+// Cuy Pay landing — modal + demo auth (frontend only, datos simulados)
 (function () {
   const modal = document.getElementById("authModal");
   const form = document.getElementById("authForm");
@@ -80,7 +80,7 @@
         mode === "register" ? "¡Cuenta creada! 🎉" : `Hola de nuevo, ${displayName}`;
       successText.textContent =
         mode === "register"
-          ? "Tu billetera Lincoln está lista para usarse."
+          ? "Tu billetera Cuy Pay está lista para usarse."
           : "Iniciaste sesión correctamente.";
       form.hidden = true;
       success.hidden = false;
