@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="360" height="96" viewBox="0 0 360 96">
+    <defs>
+      <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#163E7E"/>
+        <stop offset="0.55" stop-color="#0B2350"/>
+        <stop offset="1" stop-color="#06173A"/>
+      </linearGradient>
+    </defs>
+    <rect x="0" y="16" width="64" height="64" rx="16" fill="url(#g)"/>
+    <svg x="0" y="16" width="64" height="64" viewBox="0 0 100 100">
+  <g transform="translate(50 50) scale(0.9) translate(-50 -50)"
+     fill="none" stroke-width="12" stroke-linecap="round" stroke-linejoin="round">
+    <!-- lower chevron (accent) -->
+    <polyline points="28,70 50,48 72,70" stroke="#3D7BFF"/>
+    <!-- upper chevron (white) -->
+    <polyline points="28,52 50,30 72,52" stroke="#FFFFFF"/>
+  </g></svg>
+    <text x="84" y="62" font-family="Helvetica, Arial, sans-serif" font-size="46"
+      font-weight="800" fill="#0B2350" letter-spacing="-1">Lincoln</text>
+  </svg>

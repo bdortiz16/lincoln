@@ -31,6 +31,23 @@ npm start
 
 Luego escanea el QR con Expo Go, o presiona `i` (iOS) / `a` (Android) / `w` (web).
 
+## Marca y diseño
+
+Identidad **azul marino + blanco** con un símbolo abstracto: dos *chevrons*
+ascendentes que representan crecimiento y valor.
+
+- Paleta: navy `#0B2350`, azul `#3D7BFF`, fondo `#091830`, blanco `#FFFFFF`.
+- Assets en `assets/`: `icon.png`, `adaptive-icon.png`, `splash.png`,
+  `favicon.png`, `logo-mark.svg`, `logo-wordmark.svg`.
+- El logo es código (SVG) en `scripts/brand.js`. Para regenerar todos los PNG:
+
+```bash
+npm run assets   # requiere la devDependency `sharp`
+```
+
+Tras cambiar el logo, recuerda regenerar los íconos nativos:
+`npx expo prebuild --clean`.
+
 ## Correr en Android Studio y Xcode (proyectos nativos)
 
 El repo ya incluye los proyectos nativos generados con `expo prebuild`:

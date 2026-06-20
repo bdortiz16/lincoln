@@ -121,7 +121,7 @@ const styles = StyleSheet.create({
   tab: { flex: 1, paddingVertical: spacing.md, alignItems: "center", borderRadius: radius.sm },
   tabActive: { backgroundColor: colors.primary },
   tabText: { color: colors.textMuted, fontWeight: font.weight.semibold },
-  tabTextActive: { color: colors.black },
+  tabTextActive: { color: colors.white },
   sectionLabel: { color: colors.textMuted, fontSize: font.size.sm, marginTop: spacing.sm },
   assetGrid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
   assetChip: {

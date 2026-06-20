@@ -1,16 +1,17 @@
 /* Lincoln — landing web (dark fintech theme, matches the mobile app) */
 :root {
-  --bg: #0b0f14;
-  --surface: #141a22;
-  --surface-2: #1c2530;
-  --border: #26303c;
-  --primary: #27d17f;
-  --primary-dark: #1fa968;
-  --primary-soft: rgba(39, 209, 127, 0.12);
-  --accent: #3b82f6;
+  --bg: #091830;
+  --surface: #0f2143;
+  --surface-2: #17315e;
+  --border: #21407a;
+  --primary: #3d7bff;
+  --primary-dark: #2c63db;
+  --primary-soft: rgba(61, 123, 255, 0.14);
+  --navy: #0b2350;
+  --accent: #6ea0ff;
   --text: #ffffff;
-  --muted: #9aa7b5;
-  --faint: #5e6b79;
+  --muted: #9fb2ce;
+  --faint: #5c7299;
   --danger: #ff5a5f;
   --radius: 16px;
   --maxw: 1120px;
@@ -32,7 +33,7 @@ a { color: inherit; text-decoration: none; }
 .bold { font-weight: 700; }
 .up { color: var(--primary); font-weight: 600; }
 .grad {
-  background: linear-gradient(90deg, var(--primary), #6ef0b0);
+  background: linear-gradient(90deg, var(--primary), #9dc0ff);
   -webkit-background-clip: text; background-clip: text; color: transparent;
 }
 
@@ -44,7 +45,7 @@ a { color: inherit; text-decoration: none; }
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
 }
 .btn:active { transform: translateY(1px); }
-.btn-primary { background: var(--primary); color: #05140c; }
+.btn-primary { background: var(--primary); color: #ffffff; }
 .btn-primary:hover { background: var(--primary-dark); }
 .btn-secondary { background: var(--surface-2); color: var(--text); border: 1px solid var(--border); }
 .btn-secondary:hover { background: var(--surface); }
@@ -63,9 +64,11 @@ a { color: inherit; text-decoration: none; }
 .nav-inner { display: flex; align-items: center; justify-content: space-between; height: 68px; }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 20px; }
 .brand-mark {
-  width: 34px; height: 34px; border-radius: 9px; background: var(--primary);
-  color: #05140c; display: grid; place-items: center; font-weight: 800; font-size: 20px;
+  width: 34px; height: 34px; border-radius: 9px;
+  background: linear-gradient(135deg, #163e7e, var(--navy));
+  display: grid; place-items: center;
 }
+.brand-mark svg { width: 22px; height: 22px; }
 .nav-links { display: flex; gap: 28px; }
 .nav-links a { color: var(--muted); font-size: 15px; }
 .nav-links a:hover { color: var(--text); }
@@ -90,7 +93,7 @@ a { color: inherit; text-decoration: none; }
 .hero-art { position: relative; display: grid; place-items: center; }
 .glow {
   position: absolute; width: 360px; height: 360px; border-radius: 50%;
-  background: radial-gradient(circle, rgba(39,209,127,.35), transparent 65%);
+  background: radial-gradient(circle, rgba(61,123,255,.40), transparent 65%);
   filter: blur(20px); z-index: 0;
 }
 .phone {
@@ -136,7 +139,7 @@ a { color: inherit; text-decoration: none; }
 /* Steps */
 .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
 .step { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 28px; }
-.step-n { width: 44px; height: 44px; border-radius: 12px; background: var(--primary); color: #05140c; display: grid; place-items: center; font-weight: 800; font-size: 20px; margin-bottom: 16px; }
+.step-n { width: 44px; height: 44px; border-radius: 12px; background: var(--primary); color: #ffffff; display: grid; place-items: center; font-weight: 800; font-size: 20px; margin-bottom: 16px; }
 .step h3 { font-size: 19px; margin-bottom: 8px; }
 .step p { color: var(--muted); font-size: 15px; }
 
@@ -161,11 +164,11 @@ details p { color: var(--muted); margin-top: 12px; }
 
 /* CTA */
 .cta { padding: 80px 0; }
-.cta-inner { background: linear-gradient(135deg, var(--primary), var(--primary-dark)); border-radius: 28px; text-align: center; padding: 56px 24px; color: #05140c; }
+.cta-inner { background: linear-gradient(135deg, var(--primary), var(--primary-dark)); border-radius: 28px; text-align: center; padding: 56px 24px; color: #ffffff; }
 .cta-inner h2 { font-size: 36px; font-weight: 800; letter-spacing: -1px; }
 .cta-inner p { font-size: 18px; margin: 12px 0 24px; opacity: .85; }
-.cta .btn-primary { background: #05140c; color: var(--primary); }
-.cta .btn-primary:hover { background: #000; }
+.cta .btn-primary { background: #ffffff; color: var(--navy); }
+.cta .btn-primary:hover { background: #eaf1ff; }
 
 /* Footer */
 .footer { border-top: 1px solid var(--border); padding: 40px 0; }
@@ -184,7 +187,7 @@ details p { color: var(--muted); margin-top: 12px; }
 .modal-brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 20px; justify-content: center; margin-bottom: 20px; }
 .tabs { display: flex; background: var(--bg); border-radius: 12px; padding: 4px; margin-bottom: 22px; }
 .tab { flex: 1; padding: 11px; border: none; background: none; color: var(--muted); font-family: inherit; font-weight: 600; border-radius: 8px; cursor: pointer; }
-.tab.is-active { background: var(--primary); color: #05140c; }
+.tab.is-active { background: var(--primary); color: #ffffff; }
 .auth-form { display: grid; gap: 16px; }
 .field { display: grid; gap: 6px; }
 .field span { color: var(--muted); font-size: 14px; }

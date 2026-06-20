@@ -3,26 +3,27 @@
  * (Lemon Cash, Wenia, Dólar App, Monabit).
  */
 export const colors = {
-  // Backgrounds
-  bg: "#0B0F14",
-  surface: "#141A22",
-  surfaceAlt: "#1C2530",
-  border: "#26303C",
+  // Backgrounds — deep navy
+  bg: "#091830",
+  surface: "#0F2143",
+  surfaceAlt: "#17315E",
+  border: "#21407A",
 
-  // Brand — "Lincoln green" (a nod to the dollar)
-  primary: "#27D17F",
-  primaryDark: "#1FA968",
-  primarySoft: "rgba(39, 209, 127, 0.12)",
+  // Brand — navy & blue
+  primary: "#3D7BFF",
+  primaryDark: "#2C63DB",
+  primarySoft: "rgba(61, 123, 255, 0.14)",
+  navy: "#0B2350",
 
   // Accents
-  accent: "#3B82F6",
+  accent: "#6EA0FF",
   warning: "#F5A623",
   danger: "#FF5A5F",
 
   // Text
   text: "#FFFFFF",
-  textMuted: "#9AA7B5",
-  textFaint: "#5E6B79",
+  textMuted: "#9FB2CE",
+  textFaint: "#5C7299",
 
   white: "#FFFFFF",
   black: "#000000",

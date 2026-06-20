@@ -51,12 +51,12 @@ export function Button({
       ]}
     >
       {loading ? (
-        <ActivityIndicator color={variant === "primary" ? colors.black : colors.text} />
+        <ActivityIndicator color={colors.white} />
       ) : (
         <Text
           style={[
             styles.btnText,
-            variant === "primary" && { color: colors.black },
+            variant === "primary" && { color: colors.white },
             variant === "ghost" && { color: colors.primary },
           ]}
         >
