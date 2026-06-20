@@ -1,0 +1,11 @@
+android
+ios
+app
+src
+scripts
+assets
+node_modules
+.expo
+babel.config.js
+tsconfig.json
+app.json
