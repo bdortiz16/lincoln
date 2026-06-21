@@ -11,3 +11,27 @@
     @apply font-sans bg-black text-white antialiased;
   }
 }
+
+/* Animated "northern lights" fallback for the hero (shown if the video URL
+   is unavailable). Pure CSS — a soft multi-color glow with a slow hue shift. */
+.aurora-fallback {
+  background:
+    radial-gradient(42% 55% at 22% 28%, #38bdf8 0%, transparent 58%),
+    radial-gradient(46% 58% at 78% 22%, #a78bfa 0%, transparent 58%),
+    radial-gradient(55% 55% at 60% 82%, #34d399 0%, transparent 58%),
+    radial-gradient(50% 50% at 38% 70%, #f472b6 0%, transparent 60%),
+    #070b18;
+  animation: aurora-hue 14s linear infinite;
+}
+
+@keyframes aurora-hue {
+  to {
+    filter: hue-rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aurora-fallback {
+    animation: none;
+  }
+}

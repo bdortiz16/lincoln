@@ -22,6 +22,9 @@ export default function App() {
     <main className="flex min-h-screen w-full bg-black selection:bg-white/30 p-2 transition-all duration-500 lg:h-screen lg:overflow-hidden lg:p-4">
       {/* ---------- Left Column · Hero ---------- */}
       <div className="hidden lg:flex w-[52%] relative flex-col items-center justify-end pb-32 px-12 rounded-3xl overflow-hidden shadow-2xl h-full">
+        {/* Animated aurora fallback — sits BEHIND the video so the hero never
+            looks empty if the source fails to load (no overlay over the video). */}
+        <div className="aurora-fallback absolute inset-0" />
         <video
           autoPlay
           muted
