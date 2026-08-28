@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Zap, RefreshCw, Copy, Search, Landmark, Activity, Send, X } from 'lucide-react';
 import { useDatabase } from '../context/DatabaseContext';
+import { RecaudadoraRotativaCard } from './RecaudadoraRotativaCard';
 
 // ─────────────────────────────────────────────
 // AdminGasFreeSection — Panel "GasFree USDT" del admin de Empresas.
@@ -337,6 +338,9 @@ export const AdminGasFreeSection: React.FC = () => {
                     Cada cliente tiene su <b>wallet GasFree</b> (cajita USDT). Los depósitos y envíos <b>no usan TRX</b> — la comisión de red se paga en USDT.
                 </p>
             </div>
+
+            {/* Recaudadora rotativa del admin (corte el 30, 12pm COT). */}
+            <RecaudadoraRotativaCard />
 
             {/* Tesorería (recaudadora): aquí llega el USDT de las conversiones de
                 clientes; desde aquí se pagan los envíos y a los proveedores.

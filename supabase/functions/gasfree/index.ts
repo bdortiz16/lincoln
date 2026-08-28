@@ -274,13 +274,91 @@ async function gfAccount(eoaB58: string) {
 // (reservado: los clientes arrancan en el índice 1, así que 0 nunca
 // choca con nadie). Así "Generar wallet" en Tesorería funciona igual
 // que el botón de cada cliente — sin secrets nuevos que configurar.
+// ── Recaudadora ROTATIVA ──────────────────────────────────
+// La recaudadora cambia de dirección cada PERÍODO. Un período abre el día 30
+// (o el último día del mes si no hay 30) a las 12:00 hora Colombia (UTC-5) y va
+// hasta el siguiente corte. Cada período se deriva del MISMO mnemónico pero en
+// una RAMA SEPARADA (change = 1) para no chocar jamás con los índices de los
+// clientes (que van en change = 0). Así una sola semilla controla la actual y
+// todas las archivadas.
+function daysInMonth(y: number, m0: number): number { return new Date(Date.UTC(y, m0 + 1, 0)).getUTCDate() }
+// Índice de período monótono (year*12 + mesDeCorte). El corte del mes M abre el
+// período M; antes del corte seguimos en el período M-1.
+function recaudadoraPeriod(now: Date = new Date()): number {
+  const cot = new Date(now.getTime() - 5 * 3600 * 1000) // Colombia = UTC-5 (sin DST)
+  const y = cot.getUTCFullYear(), m = cot.getUTCMonth(), day = cot.getUTCDate(), hour = cot.getUTCHours()
+  const cutoverDay = Math.min(30, daysInMonth(y, m))
+  const passed = day > cutoverDay || (day === cutoverDay && hour >= 12)
+  let py = y, pm = m
+  if (!passed) { pm = m - 1; if (pm < 0) { pm = 11; py -= 1 } }
+  return py * 12 + pm
+}
+function periodLabel(period: number): string {
+  const y = Math.floor(period / 12), m = period % 12
+  return `${y}-${String(m + 1).padStart(2, '0')}`
+}
+// Fecha (UTC) del corte que ABRE `period`: día 30 (o último) a las 12:00 COT = 17:00 UTC.
+function periodCutoverDate(period: number): Date {
+  const y = Math.floor(period / 12), m = period % 12
+  const day = Math.min(30, daysInMonth(y, m))
+  return new Date(Date.UTC(y, m, day, 17, 0, 0))
+}
+async function recaudadoraWalletFrom(phrase: string, period: number) {
+  const root = ethers.HDNodeWallet.fromMnemonic(ethers.Mnemonic.fromPhrase(phrase), "m/44'/195'/0'/1")
+  const child = root.deriveChild(period)
+  const eoa = await ethAddressToTron(child.address)
+  return { pkHex: child.privateKey, eoa }
+}
+// Recaudadora ACTUAL (la del período vigente). Si hay LINCOIN_TRON_HOT_KEY
+// seteada, se respeta esa dirección fija (no rota) — modo legacy.
 async function recaudadora() {
   if (HOT_KEY) {
     const pkHex = HOT_KEY.startsWith('0x') ? HOT_KEY : '0x' + HOT_KEY
     const eoa = await ethAddressToTron(new ethers.Wallet(pkHex).address)
-    return { pkHex, eoa }
+    return { pkHex, eoa, period: null as number | null, pinned: true }
   }
-  return userWallet(0)
+  if (!MNEMONIC) throw new Error('Configura GASFREE_TRON_MNEMONIC en Supabase Secrets para derivar la recaudadora')
+  const period = recaudadoraPeriod()
+  return { ...(await recaudadoraWalletFrom(MNEMONIC, period)), period, pinned: false }
+}
+// Info (dirección + saldo + fechas) de la recaudadora de un período dado.
+async function recaudadoraInfo(period: number) {
+  const { token } = await gfConfig()
+  const dec = Number(token.decimal ?? 6)
+  const usePinned = !!HOT_KEY
+  const eoa = usePinned ? (await recaudadora()).eoa : (await recaudadoraWalletFrom(MNEMONIC, period)).eoa
+  const acct = await gfAccount(eoa)
+  const gfAddr = acct.gasFreeAddress ?? eoa
+  const balance = await tokenBalance(gfAddr, token.tokenAddress, dec)
+  return {
+    period, label: periodLabel(period), address: eoa,
+    gasFreeAddress: acct.gasFreeAddress ?? null, balance,
+    opensAt: periodCutoverDate(period).toISOString(),
+    closesAt: periodCutoverDate(period + 1).toISOString(),
+    pinned: usePinned,
+  }
+}
+async function recaudadoraCurrent() {
+  if (HOT_KEY) {
+    const { eoa } = await recaudadora()
+    const { token } = await gfConfig()
+    const acct = await gfAccount(eoa)
+    const balance = await tokenBalance(acct.gasFreeAddress ?? eoa, token.tokenAddress, Number(token.decimal ?? 6))
+    return { current: true, pinned: true, rotates: false, address: eoa, gasFreeAddress: acct.gasFreeAddress ?? null, balance, note: 'Recaudadora fija (LINCOIN_TRON_HOT_KEY). No rota.' }
+  }
+  const period = recaudadoraPeriod()
+  return { ...(await recaudadoraInfo(period)), current: true, rotates: true, nextRotation: periodCutoverDate(period + 1).toISOString() }
+}
+// Lista la actual + las archivadas (períodos anteriores) con su saldo.
+async function recaudadoraList(back = 12) {
+  if (HOT_KEY) return { pinned: true, periods: [await recaudadoraCurrent()] }
+  const cur = recaudadoraPeriod()
+  const periods: any[] = []
+  for (let p = cur; p > cur - Math.max(1, back); p--) {
+    try { periods.push({ ...(await recaudadoraInfo(p)), current: p === cur, archived: p < cur }) }
+    catch (e) { periods.push({ period: p, label: periodLabel(p), error: (e as Error)?.message }) }
+  }
+  return { current: cur, nextRotation: periodCutoverDate(cur + 1).toISOString(), periods }
 }
 async function userWallet(index: number) {
   if (!MNEMONIC) throw new Error('Configura GASFREE_TRON_MNEMONIC en Supabase Secrets para derivar las wallets de los usuarios')
@@ -1403,6 +1481,9 @@ Deno.serve(async (req) => {
     if (action === 'set_treasury_config') return ok(await setTreasuryConfig(body.config ?? {}))
     if (action === 'get_providers') return ok({ providers: await getProviders() })
     if (action === 'set_providers') return ok({ providers: await setProviders(body.providers ?? []) })
+    // Recaudadora rotativa: la actual (período vigente) y el histórico archivado.
+    if (action === 'recaudadora_current') return ok(await recaudadoraCurrent())
+    if (action === 'recaudadora_list') return ok(await recaudadoraList(body.back != null ? Number(body.back) : 12))
 
     return err(`Acción desconocida: ${action}`, 400)
   } catch (e) {
