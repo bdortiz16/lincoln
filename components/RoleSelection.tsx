@@ -48,7 +48,7 @@ export const RoleSelection: React.FC<RoleSelectionProps> = ({ onSelectPersonal, 
         </div>
 
         {/* Contenido */}
-        <div className="px-6 py-10 md:px-14 md:py-14 flex flex-col items-center overflow-y-auto relative z-10">
+        <div className="rs-content px-6 py-10 md:px-14 md:py-14 flex flex-col items-center overflow-y-auto relative z-10">
           <h2 className="text-center" style={{ fontFamily: ARCHIVO, fontWeight: 800, letterSpacing: '-1px', color: '#F4F4F2', fontSize: 'clamp(24px, 4vw, 40px)', marginBottom: 12 }}>
             ¡Hola! ¿A dónde quieres ingresar?
           </h2>
@@ -100,6 +100,16 @@ export const RoleSelection: React.FC<RoleSelectionProps> = ({ onSelectPersonal, 
         .role-card:hover { border-color: rgba(74,222,128,0.55) !important; box-shadow: 0 20px 60px rgba(0,0,0,0.5), 0 0 0 1px rgba(74,222,128,0.25) inset; }
         .role-card:hover .rc-circle { background: #4ADE80 !important; }
         .role-card:hover .rc-circle svg { color: #0A0A0A !important; }
+        @media (max-width: 640px) {
+          .rs-content { padding-top: 24px !important; padding-bottom: 24px !important; }
+          .rs-content h2 { font-size: 22px !important; margin-bottom: 8px !important; }
+          .rs-content > p { font-size: 13.5px !important; margin-bottom: 24px !important; }
+          .role-card { padding: 18px 16px !important; }
+          .rc-circle { width: 56px !important; height: 56px !important; margin-bottom: 12px !important; }
+          .rc-circle svg { width: 26px !important; height: 26px !important; }
+          .role-card h3 { font-size: 18px !important; margin-bottom: 4px !important; }
+          .role-card p { font-size: 12.5px !important; line-height: 1.45 !important; margin-bottom: 14px !important; }
+        }
       `}</style>
     </div>
   );
