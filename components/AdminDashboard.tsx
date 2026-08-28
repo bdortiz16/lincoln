@@ -1308,16 +1308,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                     <button
                       key={u.id}
                       onClick={() => { setCarguesClient(u); setCarguesMsg(null); }}
-                      className={`w-full text-left p-3 rounded-lg border transition-colors flex items-center gap-3 ${active ? 'border-[#0C0E0D] bg-[#0C0E0D]/[0.04]' : 'border-slate-200 hover:bg-slate-50'}`}
+                      className="w-full text-left p-3 rounded-lg transition-colors flex items-center gap-3"
+                      style={{
+                        border: active ? '1.5px solid #4ADE80' : '1px solid rgba(255,255,255,0.10)',
+                        background: active ? 'rgba(74,222,128,0.10)' : 'transparent',
+                      }}
                     >
-                      <div className="w-9 h-9 rounded-full bg-slate-100 flex items-center justify-center text-xs font-bold text-slate-600 flex-shrink-0">
+                      <div className="w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0" style={{ background: 'rgba(255,255,255,0.06)', color: '#F4F4F2' }}>
                         {(u.name ?? 'U').slice(0, 2).toUpperCase()}
                       </div>
                       <div className="min-w-0 flex-1">
-                        <p className="text-sm font-semibold text-slate-800 truncate">{u.name ?? 'Sin nombre'}</p>
-                        <p className="text-xs text-slate-400 truncate">{u.email}</p>
+                        <p className="text-sm font-semibold truncate" style={{ color: '#F4F4F2' }}>{u.name ?? 'Sin nombre'}</p>
+                        <p className="text-xs truncate" style={{ color: '#878E88' }}>{u.email}</p>
                       </div>
-                      {active && <CheckCircle size={16} className="text-[#0C0E0D] flex-shrink-0" />}
+                      {active && <CheckCircle size={16} className="flex-shrink-0" style={{ color: '#4ADE80' }} />}
                     </button>
                   );
                 })}
@@ -1366,11 +1370,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                         <button
                           key={code}
                           onClick={() => setCarguesRail(code)}
-                          className={`p-3 rounded-lg border text-left transition-colors ${active ? 'border-[#0C0E0D] bg-[#0C0E0D]/[0.04]' : 'border-slate-200 hover:bg-slate-50'}`}
+                          className="p-3 rounded-lg text-left transition-colors"
+                          style={{
+                            border: active ? '1.5px solid #4ADE80' : '1px solid rgba(255,255,255,0.14)',
+                            background: active ? 'rgba(74,222,128,0.12)' : 'transparent',
+                          }}
                         >
-                          <M.icon size={16} className={active ? 'text-[#0C0E0D]' : 'text-slate-400'} />
-                          <p className="text-xs font-bold text-slate-800 mt-1.5">{M.label}</p>
-                          <p className="text-[10px] text-slate-400 leading-tight mt-0.5">{M.sub}</p>
+                          <M.icon size={16} style={{ color: active ? '#4ADE80' : '#878E88' }} />
+                          <p className="text-xs font-bold mt-1.5" style={{ color: '#F4F4F2' }}>{M.label}</p>
+                          <p className="text-[10px] leading-tight mt-0.5" style={{ color: '#878E88' }}>{M.sub}</p>
+                          {active && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginTop: 6, fontSize: 10, fontWeight: 700, color: '#4ADE80' }}><CheckCircle size={11} /> Seleccionado</span>}
                         </button>
                       );
                     })}
