@@ -1137,7 +1137,16 @@ async function myVerifyDeposit(userId: string) {
   // una fuente nueva, sin acreditaciones previas que reconstruir.
   const credited: number = typeof raw.gasfreeCredited === 'number' ? raw.gasfreeCredited : 0
   const diff = parseFloat((onchainBal - credited).toFixed(dec))
-  if (diff <= 0.0001) return { synced: false, onchain: onchainBal, credited, diff: 0, reason: 'Sin depósitos nuevos por acreditar' }
+  if (diff <= 0.0001) {
+    // Diagnóstico: leer cada vía por separado para saber por qué da 0.
+    const viaBalanceOf = await tokenBalanceOn(acct.gasFreeAddress, token.tokenAddress, dec, CFG.tronHost)
+    const viaTransfers = await tokenBalanceFromTransfers(acct.gasFreeAddress, token.tokenAddress, dec)
+    const allZero = viaBalanceOf === 0 && viaTransfers === 0
+    const reason = allZero
+      ? `No se leyó saldo on-chain (balanceOf=0, transfers=0) en ${acct.gasFreeAddress} · contrato ${token.tokenAddress} · red ${NET}. Si Tronscan SÍ muestra saldo, TronGrid está limitando al servidor: agrega TRONGRID_API_KEY en Supabase → Edge Functions → Secrets.`
+      : `Sin depósitos nuevos. On-chain=${onchainBal} USDT, ya acreditado=${credited}.`
+    return { synced: false, onchain: onchainBal, credited, diff: 0, reason, debug: { gasFreeAddress: acct.gasFreeAddress, contract: token.tokenAddress, net: NET, viaBalanceOf, viaTransfers } }
+  }
 
   const bals = (u.balances as Record<string, number>) ?? {}
   const newUsd = parseFloat(((Number(bals.USD ?? 0)) + diff).toFixed(2))

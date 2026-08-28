@@ -860,9 +860,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               showToast(`✅ Depósito detectado: +${credited.toLocaleString('en-US')} USDT en tu Dólar digital`);
               setUsdtModalOpen(false);
           } else if (d?.error) {
-              showToast(`Error verificando: ${d.error}`, 5000, 'error');
+              showToast(`Error verificando: ${d.error}`, 6000, 'error');
           } else {
-              showToast('Aún no se detecta el depósito. La red puede tardar unos minutos — vuelve a verificar.');
+              showToast(d?.reason || 'Aún no se detecta el depósito. La red puede tardar unos minutos — vuelve a verificar.', 8000);
           }
       } catch (e: any) {
           showToast(`Error verificando: ${String(e?.message ?? e)}`, 5000, 'error');
