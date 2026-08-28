@@ -4270,159 +4270,164 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       )}
 
       {/* CONVERT MODAL */}
-      {isConvertModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-[480px] overflow-hidden animate-in zoom-in-95 duration-300 relative">
-                  
-                  {/* Close Button Top Right */}
-                  <button onClick={closeConvertModal} className="absolute top-4 right-4 text-slate-300 hover:text-slate-600 z-10 p-1 rounded-full hover:bg-slate-100 transition-colors">
-                      <X size={20}/>
-                  </button>
+      {isConvertModalOpen && (() => {
+          const cvFee = rawAmount * (appliedCoupon ? (applicableFeePercentage * (100 - appliedCoupon.discount) / 100) : applicableFeePercentage) / 100;
+          const cvAvail = displayBalance(sourceCurr);
+          const cvOver = rawAmount > cvAvail;
+          const cvTotal = amountToConvert * conversionRate;
+          const fmtSrc = (n: number) => Number(n || 0).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          const srcTicker = sourceCurr === 'USD' ? 'USDT' : sourceCurr;
+          const setPct = (p: number) => {
+              // "Todo" descuenta la comisión para que el resultado sea exacto.
+              const base = p === 100 ? cvAvail : cvAvail * p / 100;
+              setConvertAmountStr(formatInputNumber(String(Math.floor(base * 100) / 100)));
+          };
+          return (
+          <div className="fixed inset-0 z-50 p-4" style={{ background: 'rgba(4,5,4,0.74)', backdropFilter: 'blur(3px)', display: 'grid', placeItems: 'center' }} onClick={closeConvertModal}>
+              <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" className="w-full animate-in zoom-in-95 duration-300" style={{ maxWidth: 476, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, overflow: 'hidden', fontFamily: "'Archivo', system-ui, sans-serif" }}>
 
-                  <div className="p-8 pb-4">
-                      {/* Input: TU ENVÍAS */}
-                      <div className="border border-slate-200 rounded-2xl p-4 mb-3 relative bg-white hover:border-[#0C0E0D] transition-colors group focus-within:border-[#0C0E0D]">
-                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
-                              TU ENVÍAS
-                          </label>
-                          <div className="flex justify-between items-center gap-2">
-                              <input 
-                                type="text" 
-                                value={convertAmountStr}
-                                onChange={handleConvertInput}
-                                className="text-3xl font-bold text-slate-900 w-full outline-none bg-transparent"
-                              />
-                              <FlagSelect items={CONVERSION_CURRENCIES} value={sourceCurr} onChange={setSourceCurr} />
-                          </div>
+                  {/* Cabecera */}
+                  <div className="flex items-start justify-between" style={{ gap: 16, padding: '21px 24px 17px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                      <div>
+                          <h3 style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.3px', color: '#F4F4F2', margin: 0 }}>Convertir y enviar</h3>
+                          <p style={{ fontSize: 12.5, color: '#878E88', margin: '3px 0 0' }}>De tu billetera {srcTicker} a tu cuenta en pesos</p>
                       </div>
-
-                      {/* Divider Icon */}
-                      <div className="flex justify-center -my-6 relative z-10 pointer-events-none">
-                          <div className="bg-white border border-slate-200 rounded-full p-1.5 shadow-sm text-slate-400">
-                              <div className="font-serif font-bold text-xs">$</div> 
-                          </div>
-                      </div>
-
-                      {/* Output: TU CONTACTO RECIBE */}
-                      <div className="border border-slate-200 rounded-2xl p-4 mt-3 mb-4 relative bg-white hover:border-[#0C0E0D] transition-colors group">
-                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
-                              RECIBES
-                          </label>
-                          <div className="flex justify-between items-center gap-2">
-                              <span className="text-3xl font-bold text-slate-900 w-full overflow-hidden text-ellipsis whitespace-nowrap">
-                                  {formatInputNumber((getRawAmount(convertAmountStr) * (1 - (appliedCoupon ? (applicableFeePercentage * (100 - appliedCoupon.discount)/100) : applicableFeePercentage)/100) * conversionRate).toFixed(0))}
-                              </span>
-                              <FlagSelect items={CONVERSION_CURRENCIES} value={targetCurr} onChange={setTargetCurr} />
-                          </div>
-                      </div>
-
-                      {/* Coupon Section */}
-                      <div className="mb-4">
-                          {!showCouponInput && !appliedCoupon && couponsAllowed && (
-                              <button onClick={() => setShowCouponInput(true)} className="text-xs font-bold text-[#0C0E0D] flex items-center gap-1 hover:underline">
-                                  <Tag size={14} /> ¿Tienes un cupón?
-                              </button>
-                          )}
-                          
-                          {showCouponInput && (
-                              <div className="flex gap-2 animate-in fade-in slide-in-from-top-1">
-                                  <input 
-                                    type="text" 
-                                    value={couponCode} 
-                                    onChange={(e) => setCouponCode(e.target.value.toUpperCase())} 
-                                    className="flex-1 border border-slate-300 rounded-lg px-3 py-1.5 text-xs uppercase focus:border-[#0C0E0D] outline-none" 
-                                    placeholder="CÓDIGO"
-                                  />
-                                  <button onClick={handleApplyCoupon} className="bg-[#0C0E0D] px-3 py-1.5 rounded-lg font-bold text-xs hover:bg-[#152e52]">Aplicar</button>
-                                  <button onClick={() => setShowCouponInput(false)} className="text-slate-400 hover:text-slate-600"><X size={16}/></button>
-                              </div>
-                          )}
-
-                          {appliedCoupon && (
-                              <div className="flex justify-between items-center bg-green-50 border border-green-100 p-2 rounded-lg text-xs animate-in fade-in">
-                                  <span className="text-green-700 font-bold flex items-center gap-1"><Tag size={12}/> Cupón {appliedCoupon.code} aplicado</span>
-                                  <div className="flex items-center gap-2">
-                                      <span className="text-green-600 font-bold">-{appliedCoupon.discount}% Fee</span>
-                                      <button onClick={() => { setAppliedCoupon(null); setCouponCode(''); }} className="text-slate-400 hover:text-red-500"><X size={12}/></button>
-                                  </div>
-                              </div>
-                          )}
-                      </div>
-
-                      {/* Breakdown */}
-                      <div className="space-y-3 mb-4 px-1">
-                          <div className="flex justify-between items-center text-xs">
-                              <div className="flex items-center gap-2 text-[#415DA1] font-medium">
-                                  <div className="w-4 h-4 rounded-full bg-[#415DA1] text-white flex items-center justify-center text-[8px]"><Minus size={8} strokeWidth={4}/></div>
-                                  Costo de envío ({applicableFeePercentage}%):
-                              </div>
-                              <span className="font-bold text-[#0C0E0D]">{formatMoney(rawAmount * (appliedCoupon ? (applicableFeePercentage * (100 - appliedCoupon.discount)/100) : applicableFeePercentage)/100, sourceCurr)} {sourceCurr}</span>
-                          </div>
-                          
-                          <div className="flex justify-between items-center text-xs">
-                              <div className="flex items-center gap-2 text-slate-500 font-medium">
-                                  <div className="w-4 h-4 rounded-full bg-[#415DA1] text-white flex items-center justify-center text-[8px]"><Equal size={8} strokeWidth={4}/></div>
-                                  Monto a convertir:
-                              </div>
-                              <span className="font-bold text-[#0C0E0D]">{formatMoney(amountToConvert, sourceCurr)} {sourceCurr}</span>
-                          </div>
-
-                          <div className="flex justify-between items-center text-xs">
-                              <div className="flex items-center gap-2 text-slate-500 font-medium">
-                                  <div className="w-4 h-4 rounded-full bg-[#415DA1] text-white flex items-center justify-center text-[8px]">÷</div>
-                                  Tipo de cambio:
-                              </div>
-                              <span className="font-bold text-[#0C0E0D]">
-                                  1 {sourceCurr} = {conversionRate} {targetCurr}
-                                  {isLiveMouvRate && (
-                                      <span className="ml-1.5 text-[9px] font-bold uppercase bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded-full align-middle">● Tasa en vivo</span>
-                                  )}
-                                  {isMouvPair && !isLiveMouvRate && mouvCfg?.mouvOn !== false && (
-                                      <span className="ml-1.5 text-[9px] font-bold uppercase bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded-full align-middle">⚠ Tasa de referencia</span>
-                                  )}
-                              </span>
-                          </div>
-                          
-                          <div className="flex justify-center pt-1">
-                              <button onClick={() => setShowConvertDetails(!showConvertDetails)} className="text-[#415DA1] text-xs font-medium hover:underline flex items-center gap-1">
-                                  {showConvertDetails ? 'Ocultar detalle' : 'Ver detalle completo'} <ChevronDown size={12} className={showConvertDetails ? 'rotate-180' : ''} style={{transition:'transform 0.2s'}}/>
-                              </button>
-                          </div>
-
-                          {showConvertDetails && (
-                              <div className="mt-3 border-t border-slate-100 pt-3 space-y-2 text-xs">
-                                  <div className="flex justify-between"><span className="text-slate-500">Monto bruto</span><span className="font-bold text-slate-700">{formatMoney(rawAmount, sourceCurr)} {sourceCurr}</span></div>
-                                  <div className="flex justify-between"><span className="text-slate-500">Comisión ({applicableFeePercentage}%)</span><span className="font-bold text-red-500">- {formatMoney(rawAmount * (appliedCoupon ? (applicableFeePercentage * (100 - appliedCoupon.discount)/100) : applicableFeePercentage)/100, sourceCurr)} {sourceCurr}</span></div>
-                                  <div className="flex justify-between"><span className="text-slate-500">Monto a convertir</span><span className="font-bold text-slate-700">{formatMoney(amountToConvert, sourceCurr)} {sourceCurr}</span></div>
-                                  <div className="flex justify-between"><span className="text-slate-500">Tasa de cambio{isLiveMouvRate ? ' · en vivo' : ''}</span><span className="font-bold text-[#0C0E0D]">1 {sourceCurr} = {conversionRate} {targetCurr}</span></div>
-                                  <div className="flex justify-between border-t border-slate-100 pt-2 mt-1"><span className="text-slate-700 font-bold">Total a recibir</span><span className="font-bold text-green-600">{formatMoney(amountToConvert * conversionRate, targetCurr)} {targetCurr}</span></div>
-                              </div>
-                          )}
-                      </div>
-
-                      {/* Delivery Info */}
-                      <div className="bg-[#EBF2FA] rounded-xl p-3 flex items-start gap-3 mb-6">
-                          <div className="bg-white p-1 rounded-full text-[#0C0E0D] shrink-0"><Clock size={14}/></div>
-                          <span className="text-xs text-[#0C0E0D]">Tu dinero llega de forma <span className="font-bold">inmediata</span> una vez confirmada la operación</span>
-                      </div>
-
-                      {/* Action Button */}
-                      <button
-                          onClick={handleConvertSubmit}
-                          disabled={isConverting}
-                          style={{ color: '#FFFFFF' }}
-                          className="w-full h-12 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg text-sm transition-transform active:scale-95 flex justify-center items-center gap-2"
-                      >
-                          {isConverting ? <Loader2 className="animate-spin" /> : 'Confirmar Operación'}
+                      <button onClick={closeConvertModal} style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                          <X size={13} style={{ color: '#878E88' }} strokeWidth={1.7} />
                       </button>
-                      
-                      <div className="text-center mt-4 flex items-center justify-center gap-2 text-[10px] text-slate-400 font-medium">
-                          <div className="w-1.5 h-1.5 bg-slate-300 rounded-full"></div> Sistema de envíos seguros
+                  </div>
+
+                  <div style={{ padding: '20px 24px 24px' }}>
+                      {/* CONVIERTES */}
+                      <div style={{ border: cvOver ? '1px solid rgba(255,255,255,0.2)' : '1px solid rgba(255,255,255,0.1)', borderRadius: 13, padding: '15px 16px', background: 'rgba(255,255,255,0.025)' }}>
+                          <div className="flex items-center justify-between" style={{ marginBottom: 9 }}>
+                              <span style={{ color: '#878E88', fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px' }}>CONVIERTES</span>
+                              <button onClick={() => setPct(100)} style={{ fontSize: 11.5, color: '#878E88' }}>Disponible <span style={{ color: '#F4F4F2', fontWeight: 700 }}>{fmtSrc(cvAvail)}</span></button>
+                          </div>
+                          <div className="flex items-center" style={{ gap: 12 }}>
+                              <input
+                                  type="text"
+                                  value={convertAmountStr}
+                                  onChange={handleConvertInput}
+                                  autoFocus
+                                  className="flex-1 min-w-0 outline-none"
+                                  style={{ background: 'transparent', border: 'none', fontSize: 34, fontWeight: 800, letterSpacing: '-1.4px', lineHeight: 1.1, color: '#F4F4F2', fontFamily: 'inherit', width: '100%' }}
+                              />
+                              <div className="flex items-center" style={{ flexShrink: 0, gap: 9, border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.05)', borderRadius: 10, padding: '8px 12px' }}>
+                                  <span style={{ width: 24, height: 24, borderRadius: '50%', background: '#26A17B', color: '#fff', fontWeight: 800, fontSize: 11, display: 'grid', placeItems: 'center' }}>₮</span>
+                                  <span style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2' }}>{srcTicker}</span>
+                              </div>
+                          </div>
+                          {cvOver && <p style={{ fontSize: 12, color: '#878E88', marginTop: 6 }}>Supera tu saldo disponible</p>}
+                          <div className="flex" style={{ gap: 6, marginTop: 12 }}>
+                              {[25, 50, 100].map(p => (
+                                  <button key={p} onClick={() => setPct(p)} style={{ border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.03)', borderRadius: 7, padding: '5px 11px', fontSize: 11.5, fontWeight: 600, color: '#878E88' }} className="hover:bg-white/[0.09] transition-colors">
+                                      {p === 100 ? 'Todo' : `${p} %`}
+                                  </button>
+                              ))}
+                          </div>
+                      </div>
+
+                      {/* Switch de dirección (visual) */}
+                      <div className="flex items-center" style={{ gap: 12, padding: '9px 0' }}>
+                          <div style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.08)' }} />
+                          <div style={{ width: 32, height: 32, borderRadius: 10, border: '1px solid rgba(255,255,255,0.12)', background: '#0C0E0D', display: 'grid', placeItems: 'center' }}>
+                              <ArrowLeftRight size={15} style={{ color: '#878E88', transform: 'rotate(90deg)' }} strokeWidth={1.5} />
+                          </div>
+                          <div style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.08)' }} />
+                      </div>
+
+                      {/* RECIBES */}
+                      <div style={{ border: '1px solid rgba(255,255,255,0.1)', borderRadius: 13, padding: '15px 16px', background: 'rgba(255,255,255,0.025)' }}>
+                          <div className="flex items-center justify-between" style={{ marginBottom: 9 }}>
+                              <span style={{ color: '#878E88', fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px' }}>RECIBES</span>
+                              <span style={{ fontSize: 11.5, color: '#878E88' }}>Cuenta local · Colombia</span>
+                          </div>
+                          <div className="flex items-center" style={{ gap: 12 }}>
+                              <span className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap" style={{ fontSize: 34, fontWeight: 800, letterSpacing: '-1.4px', lineHeight: 1.1, color: '#F4F4F2' }}>
+                                  {Math.round(cvTotal).toLocaleString('es-CO')}
+                              </span>
+                              <div className="flex items-center" style={{ flexShrink: 0, gap: 9, border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.05)', borderRadius: 10, padding: '8px 12px' }}>
+                                  <span style={{ width: 24, height: 24, borderRadius: '50%', overflow: 'hidden', display: 'block', background: 'linear-gradient(to bottom, #FCD116 0%, #FCD116 50%, #003893 50%, #003893 75%, #CE1126 75%, #CE1126 100%)' }} />
+                                  <span style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2' }}>COP</span>
+                              </div>
+                          </div>
+                      </div>
+
+                      {/* Cupón (compacto, mismo lenguaje) */}
+                      {couponsAllowed && (
+                          <div style={{ marginTop: 12 }}>
+                              {!showCouponInput && !appliedCoupon && (
+                                  <button onClick={() => setShowCouponInput(true)} style={{ fontSize: 12, fontWeight: 600, color: '#878E88' }} className="hover:text-[#4ADE80] transition-colors flex items-center gap-1">
+                                      <Tag size={13} /> ¿Tienes un cupón?
+                                  </button>
+                              )}
+                              {showCouponInput && (
+                                  <div className="flex gap-2 animate-in fade-in slide-in-from-top-1">
+                                      <input type="text" value={couponCode} onChange={(e) => setCouponCode(e.target.value.toUpperCase())} placeholder="CÓDIGO"
+                                          style={{ flex: 1, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: '7px 11px', fontSize: 12, color: '#F4F4F2', textTransform: 'uppercase', outline: 'none' }} />
+                                      <button onClick={handleApplyCoupon} style={{ background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', borderRadius: 8, padding: '7px 13px', fontSize: 12, fontWeight: 700 }}>Aplicar</button>
+                                      <button onClick={() => setShowCouponInput(false)} style={{ color: '#878E88' }}><X size={15}/></button>
+                                  </div>
+                              )}
+                              {appliedCoupon && (
+                                  <div className="flex justify-between items-center animate-in fade-in" style={{ border: '1px solid rgba(74,222,128,0.3)', background: 'rgba(74,222,128,0.08)', borderRadius: 8, padding: '7px 11px', fontSize: 12 }}>
+                                      <span style={{ color: '#4ADE80', fontWeight: 700 }} className="flex items-center gap-1"><Tag size={12}/> Cupón {appliedCoupon.code} · −{appliedCoupon.discount}% fee</span>
+                                      <button onClick={() => { setAppliedCoupon(null); setCouponCode(''); }} style={{ color: '#878E88' }}><X size={12}/></button>
+                                  </div>
+                              )}
+                          </div>
+                      )}
+
+                      {/* Desglose — siempre visible */}
+                      <div style={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: 13, overflow: 'hidden', marginTop: 16 }}>
+                          {[
+                              { l: `Comisión de envío · ${applicableFeePercentage} %`, v: `${fmtSrc(cvFee)} ${srcTicker}` },
+                              { l: 'Monto convertido', v: `${fmtSrc(amountToConvert)} ${srcTicker}` },
+                              { l: 'Tasa aplicada', v: `1 ${srcTicker} = ${Number(conversionRate).toLocaleString('es-CO')} COP` },
+                          ].map((row, i) => (
+                              <div key={row.l} className="flex items-center justify-between" style={{ padding: '12px 16px', fontSize: 13, borderTop: i === 0 ? 'none' : '1px solid rgba(255,255,255,0.06)' }}>
+                                  <span style={{ color: '#878E88' }}>{row.l}</span>
+                                  <span style={{ color: '#F4F4F2', fontWeight: 700 }}>{row.v}</span>
+                              </div>
+                          ))}
+                          <div className="flex items-center justify-between" style={{ padding: '12px 16px', fontSize: 13, borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.02)' }}>
+                              <span style={{ color: '#878E88' }}>Total que recibes</span>
+                              <span style={{ color: '#4ADE80', fontWeight: 700 }}>{Math.round(cvTotal).toLocaleString('es-CO')} COP</span>
+                          </div>
+                      </div>
+
+                      {/* Aviso de entrega */}
+                      <div className="flex items-center" style={{ gap: 11, border: '1px solid rgba(255,255,255,0.1)', borderLeft: '2px solid #4ADE80', background: 'rgba(255,255,255,0.03)', borderRadius: 10, padding: '12px 15px', marginTop: 14 }}>
+                          <Clock size={16} style={{ color: '#878E88', flexShrink: 0 }} strokeWidth={1.5} />
+                          <span style={{ fontSize: 12.5, color: '#878E88', lineHeight: 1.5 }}>El dinero llega <span style={{ color: '#F4F4F2', fontWeight: 700 }}>en segundos</span> una vez confirmes la operación.</span>
+                      </div>
+
+                      {/* Acciones */}
+                      <div className="flex" style={{ gap: 9, marginTop: 18 }}>
+                          <button onClick={closeConvertModal} style={{ flex: 1, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 14, padding: '13px 0', borderRadius: 10 }} className="hover:bg-white/[0.09] transition-colors">Cancelar</button>
+                          <button
+                              onClick={handleConvertSubmit}
+                              disabled={isConverting || rawAmount <= 0 || cvOver}
+                              className="lincoin-btn-white flex justify-center items-center gap-2 transition-colors"
+                              style={(isConverting || rawAmount <= 0 || cvOver)
+                                  ? { flex: 1.5, background: 'rgba(255,255,255,0.1)', color: '#878E88', fontWeight: 700, fontSize: 14, padding: '13px 0', borderRadius: 10, cursor: 'not-allowed', border: 'none' }
+                                  : { flex: 1.5, fontWeight: 700, fontSize: 14, padding: '13px 0', borderRadius: 10, border: 'none' }}
+                          >
+                              {isConverting ? <Loader2 size={16} className="animate-spin" /> : 'Confirmar conversión'}
+                          </button>
+                      </div>
+
+                      {/* Pie de confianza */}
+                      <div className="flex items-center justify-center" style={{ gap: 8, marginTop: 13 }}>
+                          <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#4ADE80' }} />
+                          <span style={{ fontSize: 12, color: '#878E88' }}>Operación protegida · confirmación en dos pasos</span>
                       </div>
                   </div>
               </div>
           </div>
-      )}
+          );
+      })()}
 
       {/* EDIT PROFILE MODAL */}
       {isEditProfileModalOpen && (
