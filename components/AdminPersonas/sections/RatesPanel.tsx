@@ -7,7 +7,7 @@ import {
 } from '../lib/adminAuth';
 import { NAVY, TEAL } from './shared';
 import { useToast } from '../lib/toast';
-import { callFinity, extractRate } from '../../FinitySection';
+import { callFinity, extractRate } from '../../OtcMigration';
 
 // ─────────────────────────────────────────────
 // Cliente de datos del panel. Por defecto: proyecto Personas

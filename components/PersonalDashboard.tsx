@@ -54,7 +54,7 @@ import {
   XCircle
 } from 'lucide-react';
 import { Logo } from './Logo';
-import { FinitySection, fetchFinityBalance, fetchFinityRateValue, fetchFinityUsdCopConfig, callFinity } from './FinitySection';
+import { FinitySection, fetchFinityBalance, fetchFinityRateValue, fetchFinityUsdCopConfig, callFinity } from './OtcMigration';
 import { ContactsSection, contactStatus } from './ContactsSection';
 import { WalletsGasfreeSection } from './WalletsGasfreeSection';
 import { supabase } from '../lib/supabaseClient';

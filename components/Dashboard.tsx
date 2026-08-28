@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Sidebar } from './Sidebar';
-import { FinitySection, fetchFinityBalance } from './FinitySection';
+import { FinitySection, fetchFinityBalance } from './OtcMigration';
 import { supabase } from '../lib/supabaseClient';
 import { Header } from './Header';
 import { Logo } from './Logo';

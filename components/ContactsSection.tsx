@@ -1,11 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import { BookUser, Plus, X, Trash2, CheckCircle, AlertTriangle, Landmark, Wallet, Search, SlidersHorizontal } from 'lucide-react';
 import { useDatabase } from '../context/DatabaseContext';
-import { callFinity } from './FinitySection';
 import { supabase } from '../lib/supabaseClient';
 import { FlagImg } from './FlagImg';
 
 declare const __BUILD_TS__: string;
+
+// Finity fue retirado (migración a Mouv). La inscripción/sincronización de
+// cuentas destino con el proveedor queda deshabilitada: los contactos se
+// guardan localmente y las llamadas al proveedor devuelven "no disponible"
+// para que el flujo degrade con gracia en lugar de romperse.
+const callFinity = async (_action: string, _userId: string, _extra?: any): Promise<any> =>
+    ({ ok: false, status: 0, path: '', data: { error: 'Proveedor de dispersión en migración a Mouv' } });
 
 // ─────────────────────────────────────────────
 // ContactsSection — Contactos (cuentas bancarias destino) de EMPRESAS.
@@ -203,22 +209,10 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
     // Actualiza el estado local con lo que la base confirma que quedó.
     const persistKey = async (key: 'finityContacts' | 'walletContacts', list: FinityContact[]): Promise<boolean> => {
         if (!currentUser?.id) return false;
-        const SURL = (import.meta as any).env?.VITE_SUPABASE_URL as string || '';
-        const SKEY = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY as string || '';
+        // Guarda la lista bajo su llave a través del flujo normal de perfil
+        // (updateUserProfile persiste raw_data en la base).
         try {
-            const r = await Promise.race([
-                fetch(`${SURL}/functions/v1/tatum-wallet`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${SKEY}` },
-                    body: JSON.stringify({ action: 'save_contacts', userId: currentUser.id, key, list }),
-                }).then(res => res.json()),
-                new Promise<any>((_, rej) => setTimeout(() => rej(new Error('timeout')), 15000)),
-            ]);
-            if (!r?.ok || !Array.isArray(r.saved)) return false;
-            // El servidor YA guardó y confirmó. Reflejar en memoria es
-            // secundario y NO debe cambiar el resultado: si esto fallara, el
-            // contacto igual está en la base y aparece al recargar.
-            try { updateUserProfile(currentUser.id, { raw_data: { [key]: r.saved }, [key]: r.saved } as any); } catch { /* no-op */ }
+            updateUserProfile(currentUser.id, { raw_data: { [key]: list }, [key]: list } as any);
             return true;
         } catch { return false; }
     };

@@ -55,7 +55,7 @@ jobs:
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
         run: |
           FAILED=0
-          for fn in tatum-wallet tatum-webhook notify-transaction admin-data admin-login user-login get-system-config delete-self gasfree finity-webhook finity-proxy; do
+          for fn in notify-transaction admin-data admin-login user-login get-system-config delete-self gasfree mouv-proxy; do
             echo "▶ Deploying $fn → Empresas..."
             if supabase functions deploy "$fn" \
                 --project-ref "$SUPABASE_PROJECT_REF" \
