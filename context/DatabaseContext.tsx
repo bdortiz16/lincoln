@@ -84,7 +84,7 @@ interface DatabaseContextType {
   deleteNotification: (id: string | number) => void;
   clearNotifications: () => void;
   requestDeposit: (amount: number, curr: string, method: string, proof?: string) => Promise<void>;
-  requestWithdrawal: (amount: number, curr: string, bank: string, acc: string, ben: string, reason: string, docType?: string, docNumber?: string) => Promise<void>;
+  requestWithdrawal: (amount: number, curr: string, bank: string, acc: string, ben: string, reason: string, docType?: string, docNumber?: string, debitKey?: string) => Promise<void>;
   performConversion: (src: string, tgt: string, amtS: number, amtT: number, fee: number, coup?: string) => Promise<{ error?: string }>;
   approveDeposit: (id: number) => Promise<void>;
   rejectDeposit: (id: number) => Promise<void>;
@@ -1391,9 +1391,13 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     }).catch(() => {});
   };
 
-  const requestWithdrawal = async (amount: number, currency: string, bank: string, account: string, beneficiary: string, reason: string, docType?: string, docNumber?: string) => {
-    if (!currentUser || getBalance(currency) < amount) return;
-    const newBal = { ...currentUser.balances, [currency]: getBalance(currency) - amount };
+  const requestWithdrawal = async (amount: number, currency: string, bank: string, account: string, beneficiary: string, reason: string, docType?: string, docNumber?: string, debitKey?: string) => {
+    // El saldo puede salir de un riel distinto al de la moneda mostrada:
+    // COP tiene 3 billeteras separadas (COP / COP_BREB / COP_ACH). `debitKey`
+    // dice de cuál se debita; el registro guarda `currency` para el display.
+    const key = debitKey || currency;
+    if (!currentUser || getBalance(key) < amount) return;
+    const newBal = { ...currentUser.balances, [key]: getBalance(key) - amount };
     pendingWriteUntilRef.current = Date.now() + 10000;
     setCurrentUser(prev => prev ? { ...prev, balances: newBal } : prev);
     setUsers(prev => prev.map(u => u.id === currentUser.id ? { ...u, balances: newBal } : u));

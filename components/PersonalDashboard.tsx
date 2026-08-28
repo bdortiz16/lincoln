@@ -335,6 +335,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       accountNumber: '',
       reason: 'Envío de dinero',
   });
+  // Billetera de ORIGEN para envíos COP: los 3 rieles son saldos SEPARADOS
+  // (Saldo Lincoin / Bre-B / ACH). El cliente elige de cuál sale el dinero;
+  // el disponible, la validación y el débito salen de ese riel.
+  const [sendSourceRail, setSendSourceRail] = useState<'COP' | 'COP_BREB' | 'COP_ACH'>('COP');
   const [isSending, setIsSending] = useState(false);
   // Candado síncrono anti doble-clic (el estado de React tarda un render en
   // reflejarse; el ref bloquea desde el primer instante).
@@ -1056,9 +1060,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               showToast("Por favor ingresa un monto válido.", 3000, 'error');
               return;
           }
-          const currentBalance = displayBalance(sendForm.destinationCurrency);
+          const currentBalance = sendForm.destinationCurrency === 'COP' ? getBalance(sendSourceRail) : displayBalance(sendForm.destinationCurrency);
           if (currentBalance < rawAmount) {
-              showToast(`Saldo insuficiente en ${sendForm.destinationCurrency === 'USD' ? 'USDT' : sendForm.destinationCurrency}.`, 3000, 'error');
+              const railName = sendSourceRail === 'COP' ? 'Saldo Lincoin' : sendSourceRail === 'COP_BREB' ? 'Bre-B' : 'ACH';
+              showToast(sendForm.destinationCurrency === 'COP' ? `Saldo insuficiente en ${railName}.` : `Saldo insuficiente en ${sendForm.destinationCurrency === 'USD' ? 'USDT' : sendForm.destinationCurrency}.`, 3000, 'error');
               return;
           }
           setSendStep(2); // → method selection
@@ -1193,15 +1198,17 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   return;
               }
               // Orden aceptada por Mouv → registrar el envío con su referencia
+              const railName = sendSourceRail === 'COP' ? 'Saldo Lincoin' : sendSourceRail === 'COP_BREB' ? 'Bre-B' : 'ACH';
               await requestWithdrawal(
                   amount,
                   'COP',
                   sendForm.bankName,
                   sendForm.accountNumber,
                   sendForm.beneficiaryName,
-                  `${sendForm.reason} · Orden ${od.id} · ${od.state ?? 'CONFIRMED'}`,
+                  `${sendForm.reason} · desde ${railName} · Orden ${od.id} · ${od.state ?? 'CONFIRMED'}`,
                   sendForm.documentType,
-                  sendForm.documentNumber
+                  sendForm.documentNumber,
+                  sendSourceRail
               );
               sendingRef.current = false;
               setIsSending(false);
@@ -1265,7 +1272,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               sendForm.beneficiaryName,
               sendForm.reason,
               sendForm.documentType,
-              sendForm.documentNumber
+              sendForm.documentNumber,
+              sendForm.destinationCurrency === 'COP' ? sendSourceRail : undefined
           ),
           sendTimeout,
       ]).then(() => { sendingRef.current = false; setIsSending(false); setSendStep(5); })
@@ -1311,6 +1319,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       setMouvUnknown(false);
       sendingRef.current = false;
       setContactSearch('');
+      setSendSourceRail('COP');
   };
 
   const handleEditProfileClick = () => {
@@ -3715,13 +3724,39 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       })}
                                   </div>
                               </div>
+                              {/* Billetera de ORIGEN — solo COP: 3 rieles con saldos separados */}
+                              {sendForm.destinationCurrency === 'COP' && (
+                                  <div>
+                                      <label className="block text-sm font-bold text-slate-700 mb-2">Billetera de origen</label>
+                                      <div className="grid grid-cols-3 gap-2">
+                                          {([
+                                              { key: 'COP', label: 'Saldo Lincoin', Icon: Wallet },
+                                              { key: 'COP_BREB', label: 'Bre-B', Icon: Zap },
+                                              { key: 'COP_ACH', label: 'ACH', Icon: Landmark },
+                                          ] as const).map(r => {
+                                              const sel = sendSourceRail === r.key;
+                                              const railBal = getBalance(r.key);
+                                              return (
+                                                  <button key={r.key} type="button" onClick={() => setSendSourceRail(r.key)}
+                                                      className="p-2.5 rounded-xl text-left transition-all"
+                                                      style={{ border: sel ? '1.5px solid #4ADE80' : '1px solid rgba(255,255,255,0.14)', background: sel ? 'rgba(74,222,128,0.12)' : 'transparent' }}
+                                                  >
+                                                      <r.Icon size={15} style={{ color: sel ? '#4ADE80' : '#878E88' }} />
+                                                      <p className="text-[11px] font-bold mt-1" style={{ color: sel ? '#4ADE80' : '#F4F4F2' }}>{r.label}</p>
+                                                      <p className="text-[10px] font-semibold mt-0.5" style={{ color: '#878E88' }}>{Math.round(railBal).toLocaleString('es-CO')}</p>
+                                                  </button>
+                                              );
+                                          })}
+                                      </div>
+                                  </div>
+                              )}
                               <div>
                                   <label className="block text-sm font-bold text-slate-700 mb-2">Monto a enviar</label>
                                   <div className="relative">
                                       <input type="text" value={sendForm.amount} onChange={(e) => setSendForm({...sendForm, amount: formatInputNumber(e.target.value)})} className="w-full h-16 pl-4 pr-16 text-3xl font-bold text-slate-900 border border-slate-300 rounded-xl focus:border-[#0C0E0D] focus:ring-1 focus:ring-[#0C0E0D] outline-none" placeholder="0" autoFocus />
                                       <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-lg">{sendForm.destinationCurrency}</span>
                                   </div>
-                                  <p className="text-xs text-slate-400 mt-1">Disponible: <span className="font-bold">{formatMoney(displayBalance(sendForm.destinationCurrency), sendForm.destinationCurrency)} {sendForm.destinationCurrency === 'USD' ? 'USDT' : sendForm.destinationCurrency}</span></p>
+                                  <p className="text-xs text-slate-400 mt-1">Disponible: <span className="font-bold">{sendForm.destinationCurrency === 'COP' ? `${formatMoney(getBalance(sendSourceRail), 'COP')} COP` : `${formatMoney(displayBalance(sendForm.destinationCurrency), sendForm.destinationCurrency)} ${sendForm.destinationCurrency === 'USD' ? 'USDT' : sendForm.destinationCurrency}`}</span></p>
                                   {sendForm.destinationCurrency === 'COP' && (
                                       <p className="text-[10px] text-amber-600 font-bold mt-0.5">Mínimo de transferencia bancaria: 5.000 COP</p>
                                   )}
