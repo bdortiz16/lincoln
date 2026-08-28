@@ -28,7 +28,9 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
   const { config } = useSystemConfig();
   const { loginUser, loginWithGoogle, logoutUser, mfaPending, completeMFALogin, cancelMFALogin, sendPasswordReset } = useDatabase();
 
-  const RECAPTCHA_SITE_KEY: string = config.recaptchaSiteKey || '6Lf5AMIsAAAAAHTdgN4bySEWMGg5CF1JWmYJv4Dq';
+  // Sin llave por defecto: reCAPTCHA queda opcional (el flujo resuelve token ''
+  // y continúa). Se activa cargando una site key válida vía admin → recaptchaSiteKey.
+  const RECAPTCHA_SITE_KEY: string = config.recaptchaSiteKey || '';
   const recaptchaRef = useRef<HTMLDivElement>(null);
   const recaptchaWidgetId = useRef<number | null>(null);
 
