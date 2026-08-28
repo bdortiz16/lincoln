@@ -333,6 +333,38 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const [carguesBusy, setCarguesBusy] = useState(false);
   const [carguesMsg, setCarguesMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [carguesConfirm, setCarguesConfirm] = useState<{ raw: number } | null>(null);
+  // Saldo REAL de la wallet compartida de Mouv (lo que hay disponible para
+  // cargar a los clientes). Se lee del endpoint confirmado /wallets/balance.
+  const [mouvPool, setMouvPool] = useState<{ loading: boolean; total?: number | null; breb?: number | null; ach?: number | null; error?: string } | null>(null);
+  const loadMouvPool = async () => {
+    setMouvPool({ loading: true });
+    try {
+      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+      const ADMIN_PASS = (import.meta.env.VITE_ADMIN_PASSWORD as string) || '';
+      let jwt: string | null = null;
+      try {
+        const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
+        if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; }
+      } catch { /* sin sesión */ }
+      const authHeader = jwt ? `Bearer ${jwt}` : (ADMIN_PASS ? `AdminBypass ${ADMIN_PASS}` : `Bearer ${SKEY}`);
+      const r = await fetch(`${SURL}/functions/v1/mouv-proxy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: authHeader },
+        body: JSON.stringify({ action: 'treasury_balances' }),
+      });
+      const d = await r.json();
+      if (d?.error) setMouvPool({ loading: false, error: d.error });
+      else setMouvPool({ loading: false, total: d.total ?? d.cop ?? null, breb: d.breb ?? null, ach: d.ach ?? null });
+    } catch (e: any) {
+      setMouvPool({ loading: false, error: e?.message ?? 'Error de red' });
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'cargues' && !mouvPool) loadMouvPool();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
 
   const railLabelOf = (r: string) => (r === 'COP' ? 'Saldo Lincoin' : r === 'COP_BREB' ? 'Bre-B' : 'ACH');
 
@@ -1293,6 +1325,43 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                 en el riel correspondiente. Elige el cliente, el riel (Saldo Lincoin, Bre-B o ACH) y el monto.
                 Cada cargue queda registrado en el historial del cliente.
               </p>
+            </div>
+          </div>
+
+          {/* Saldo REAL disponible en Mouv (la bolsa desde donde se carga) */}
+          <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 16, padding: '18px 22px' }}>
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div className="flex items-center gap-3">
+                <div style={{ width: 40, height: 40, borderRadius: 11, background: 'rgba(74,222,128,0.12)', border: '1px solid rgba(74,222,128,0.30)', display: 'grid', placeItems: 'center' }}>
+                  <Wallet size={19} style={{ color: '#4ADE80' }} />
+                </div>
+                <div>
+                  <p style={{ fontSize: 12.5, color: '#878E88', fontWeight: 600 }}>Saldo disponible en Mouv</p>
+                  {mouvPool?.loading ? (
+                    <p style={{ fontSize: 22, fontWeight: 800, color: '#878E88', letterSpacing: '-0.6px' }}>Cargando…</p>
+                  ) : mouvPool?.error ? (
+                    <p style={{ fontSize: 13, color: '#F87171', fontWeight: 600, maxWidth: 520 }}>{mouvPool.error}</p>
+                  ) : (
+                    <p style={{ fontSize: 26, fontWeight: 800, color: '#F4F4F2', letterSpacing: '-1px' }}>
+                      {Math.round(Number(mouvPool?.total ?? 0)).toLocaleString('es-CO')} <span style={{ fontSize: 13, color: '#878E88', fontWeight: 600 }}>COP</span>
+                    </p>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-3 flex-wrap">
+                <div style={{ background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 11, padding: '9px 14px', minWidth: 130 }}>
+                  <div className="flex items-center gap-1.5" style={{ color: '#878E88', marginBottom: 2 }}><Zap size={12} /><span style={{ fontSize: 11, fontWeight: 600 }}>Wallet BreB</span></div>
+                  <p style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>{mouvPool?.breb != null ? Math.round(mouvPool.breb).toLocaleString('es-CO') : '—'}</p>
+                </div>
+                <div style={{ background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 11, padding: '9px 14px', minWidth: 130 }}>
+                  <div className="flex items-center gap-1.5" style={{ color: '#878E88', marginBottom: 2 }}><Landmark size={12} /><span style={{ fontSize: 11, fontWeight: 600 }}>Cuenta ACH</span></div>
+                  <p style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>{mouvPool?.ach != null ? Math.round(mouvPool.ach).toLocaleString('es-CO') : '—'}</p>
+                </div>
+                <button onClick={loadMouvPool} disabled={mouvPool?.loading} title="Actualizar saldo Mouv"
+                  style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', borderRadius: 10, padding: '9px 11px', cursor: 'pointer' }}>
+                  <RefreshCw size={15} className={mouvPool?.loading ? 'animate-spin' : ''} />
+                </button>
+              </div>
             </div>
           </div>
 

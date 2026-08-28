@@ -195,22 +195,36 @@ serve(async (req: Request) => {
     if (!caller.admin) return json(403, { error: 'forbidden', message: 'Solo admin.' })
     const r = await mouvFetch('/wallets/balance')
     if (!r.ok) return json(200, { error: `Mouv respondió ${r.status}.`, status: r.status, raw: r.data })
-    // Parseo defensivo: busca COP y USDT en varias formas comunes.
     const d: any = r.data ?? {}
-    const pick = (...keys: string[]): number | null => {
-      for (const k of keys) {
-        const v = d?.[k] ?? d?.balance?.[k] ?? d?.balances?.[k] ?? d?.data?.[k]
-        if (typeof v === 'number') return v
-        if (typeof v === 'string' && v.trim() !== '' && !isNaN(Number(v))) return Number(v)
-      }
+
+    const toNum = (v: any): number | null => {
+      if (typeof v === 'number') return v
+      if (typeof v === 'string' && v.trim() !== '' && !isNaN(Number(v))) return Number(v)
       return null
     }
-    return json(200, {
-      ok: true, status: r.status, source: 'mouv',
-      cop: pick('cop', 'COP', 'cop_balance', 'ach', 'available_cop', 'balance_cop'),
-      usdt: pick('usdt', 'USDT', 'usdt_balance', 'balance_usdt'),
-      raw: d,
-    })
+    const pick = (obj: any, ...keys: string[]): number | null => {
+      for (const k of keys) { const n = toNum(obj?.[k]); if (n !== null) return n }
+      return null
+    }
+    // El saldo Mouv se separa en dos rieles (como en la consola): Wallet BreB
+    // y Cuenta ACH. Se intenta extraer cada uno + el total, de varias formas
+    // comunes (objeto plano, {balances:{...}}, o arreglo de cuentas). Se
+    // devuelve `raw` para ajustar los nombres exactos al ver la respuesta real.
+    const src = d?.balance ?? d?.balances ?? d?.data ?? d
+    let breb = pick(src, 'breb', 'BREB', 'breb_balance', 'wallet_breb', 'brebBalance')
+    let ach  = pick(src, 'ach', 'ACH', 'ach_balance', 'cuenta_ach', 'achBalance')
+    // Forma de arreglo de cuentas: [{ type/rail/name, balance/amount }]
+    const arr: any[] = Array.isArray(d) ? d : Array.isArray(d?.accounts) ? d.accounts : Array.isArray(d?.wallets) ? d.wallets : []
+    for (const a of arr) {
+      const label = String(a?.type ?? a?.rail ?? a?.name ?? '').toLowerCase()
+      const amt = toNum(a?.balance ?? a?.amount ?? a?.available ?? a?.cop)
+      if (amt === null) continue
+      if (/breb|bre-b/.test(label)) breb = amt
+      else if (/ach/.test(label)) ach = amt
+    }
+    const total = pick(src, 'total', 'cop', 'COP', 'available_cop', 'balance_cop')
+      ?? ((breb ?? 0) + (ach ?? 0) || null)
+    return json(200, { ok: true, status: r.status, source: 'mouv', total, breb, ach, cop: total, raw: d })
   }
 
   // ── dispersión BREB / ACH ──
