@@ -28,25 +28,25 @@ const countries = [
   { name: 'Brasil', code: '+55', countryCode: 'BR' },
 ];
 
-// Data for the rotating widget simulation
+// Simulación: recibes dólares digitales (USDT) y retiras en pesos por BreB/ACH.
 const simulationData = [
   {
     id: 1,
-    available: '$ 200.000 CLP',
-    send: { amount: '50.000', currency: 'CLP' },
-    receive: { amount: '205.507', currency: 'COP' }
+    available: 'US$ 5.000 en tu wallet',
+    send: { amount: '1.000', currency: 'USD' },
+    receive: { amount: '3.950.000', currency: 'COP' }
   },
   {
     id: 2,
-    available: 'S/ 3.500 PEN',
-    send: { amount: '1.000', currency: 'PEN' },
-    receive: { amount: '1.540', currency: 'BRL' }
+    available: 'US$ 5.000 en tu wallet',
+    send: { amount: '2.500', currency: 'USD' },
+    receive: { amount: '9.875.000', currency: 'COP' }
   },
   {
     id: 3,
-    available: '$ 15.000 MXN',
-    send: { amount: '2.500', currency: 'MXN' },
-    receive: { amount: '135.200', currency: 'CLP' }
+    available: 'US$ 5.000 en tu wallet',
+    send: { amount: '500', currency: 'USD' },
+    receive: { amount: '1.975.000', currency: 'COP' }
   },
 ];
 
@@ -456,47 +456,47 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
         )}
       </div>
 
-      {/* RIGHT SIDE: Graphics (Hidden on mobile) */}
-      <div className="hidden lg:flex w-1/2 bg-[#0C0E0D] relative overflow-hidden items-center justify-center p-12">
-        {/* Same graphics as before, omitted for brevity but preserved in existing file */}
-        <div className="absolute top-0 right-0 w-full h-full opacity-10">
-            <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="w-full h-full">
-                <path d="M0 0 L100 0 L100 100 L0 100 Z" fill="url(#grad1)" />
-            </svg>
-        </div>
+      {/* LADO DERECHO: gráfico de marca Lincoin (oculto en móvil) */}
+      <div className="hidden lg:flex w-1/2 relative overflow-hidden items-center justify-center p-12"
+           style={{ background: 'linear-gradient(160deg, #161A17 0%, #0C0E0D 55%, #070808 100%)' }}>
+        {/* Glow verde puntual */}
+        <div className="absolute -top-24 -right-16 w-80 h-80 rounded-full pointer-events-none"
+             style={{ background: 'radial-gradient(circle, rgba(74,222,128,0.14), transparent 65%)' }} />
         <div className="relative z-10 max-w-lg w-full">
             <div className="relative mb-12 min-h-[220px]">
-                <div className="absolute -right-10 -top-20 w-64 h-64 bg-slate-300 rounded-full opacity-20 blur-3xl transition-colors duration-1000"></div>
-                <div className={`bg-[#2d4a9e] rounded-2xl p-6 border border-green-400/30 shadow-2xl backdrop-blur-sm relative transition-opacity duration-300 ease-in-out transform ${isAnimating ? 'opacity-50 scale-[0.98]' : 'opacity-100 scale-100'}`}>
-                    <div className="flex justify-between items-center text-green-100 text-xs font-semibold mb-4">
-                        <span>Tienes disponible {currentSim.available}</span>
+                <div className={`rounded-2xl p-6 relative transition-all duration-300 ease-in-out transform ${isAnimating ? 'opacity-60 scale-[0.98]' : 'opacity-100 scale-100'}`}
+                     style={{ background: '#121413', border: '1px solid rgba(255,255,255,0.08)', boxShadow: '0 30px 80px rgba(0,0,0,0.55)' }}>
+                    <div className="flex items-center gap-2 text-xs font-semibold mb-4" style={{ color: '#878E88' }}>
+                        <span style={{ width: 7, height: 7, borderRadius: 999, background: '#4ADE80', display: 'inline-block' }} />
+                        <span>{currentSim.available}</span>
                     </div>
-                    <div className="bg-[#1a337a] rounded-xl p-4 mb-2 flex justify-between items-center">
+                    <div className="rounded-xl p-4 mb-2 flex justify-between items-center" style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.06)' }}>
                         <div>
-                            <p className="text-xs text-green-300 mb-1">Tu envías</p>
-                            <p className="text-2xl font-bold text-white transition-all duration-300">$ {currentSim.send.amount}</p>
+                            <p className="text-xs mb-1" style={{ color: '#4ADE80' }}>Recibes en dólares digitales</p>
+                            <p className="text-2xl font-bold transition-all duration-300" style={{ color: '#F4F4F2' }}>US$ {currentSim.send.amount}</p>
                         </div>
-                        <div className="flex items-center gap-2 bg-[#2d4a9e] px-3 py-1.5 rounded-lg border border-green-400/30 transition-all duration-300">
-                            <FlagImg code={currentSim.send.currency} className="w-5 h-3.5 object-cover rounded-sm" />
-                            <span className="text-white font-bold">{currentSim.send.currency}</span>
+                        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg transition-all duration-300" style={{ background: 'rgba(39,117,202,0.15)', border: '1px solid rgba(39,117,202,0.35)' }}>
+                            <span className="font-bold" style={{ color: '#2775CA', fontSize: 12 }}>USDT</span>
                         </div>
                     </div>
-                    <div className="bg-[#4d66b0] rounded-xl p-4 flex justify-between items-center border border-green-300/30">
+                    <div className="rounded-xl p-4 flex justify-between items-center" style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.06)' }}>
                          <div>
-                            <p className="text-xs text-green-100 mb-1">Recibes</p>
-                            <p className="text-2xl font-bold text-white transition-all duration-300">$ {currentSim.receive.amount}</p>
+                            <p className="text-xs mb-1" style={{ color: '#878E88' }}>Retiras a Colombia · BreB</p>
+                            <p className="text-2xl font-bold transition-all duration-300" style={{ color: '#F4F4F2' }}>$ {currentSim.receive.amount}</p>
                         </div>
                         <div className="flex items-center gap-2 transition-all duration-300">
                             <FlagImg code={currentSim.receive.currency} className="w-5 h-3.5 object-cover rounded-sm" />
-                            <span className="text-white font-bold">{currentSim.receive.currency}</span>
+                            <span className="font-bold" style={{ color: '#F4F4F2' }}>{currentSim.receive.currency}</span>
                         </div>
                     </div>
                 </div>
             </div>
-            <div className="text-center text-white">
-                <h2 className="text-3xl font-bold mb-4">Transferencias nacionales e internacionales</h2>
-                <p className="text-green-100 leading-relaxed text-sm max-w-md mx-auto">
-                    Paga en moneda local a proveedores, servicios freelance y plataformas digitales a más de 70 destinos sin comisiones de envío.
+            <div className="text-center">
+                <h2 className="text-3xl font-bold mb-4" style={{ color: '#F4F4F2', letterSpacing: '-0.5px' }}>
+                    Dólares digitales, <span style={{ color: '#4ADE80' }}>sin fronteras</span>
+                </h2>
+                <p className="leading-relaxed text-sm max-w-md mx-auto" style={{ color: '#878E88' }}>
+                    Recibe y guarda USDT en tu wallet, cambia a pesos y retira en Colombia por BreB y ACH — más OTC para volúmenes grandes. Todo desde una sola cuenta empresarial.
                 </p>
             </div>
         </div>
