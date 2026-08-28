@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
+  CheckCircle2,
   Info,
   Home,
   Send,
@@ -212,6 +213,31 @@ function playNotifSound() {
     } catch { /* audio no disponible */ }
 }
 
+// Sonido de DEPÓSITO recibido — acorde ascendente tipo "cha-ching" (más
+// celebratorio que el ding normal). Mismo AudioContext.
+function playDepositSound() {
+    try {
+        const AC = (window as any).AudioContext || (window as any).webkitAudioContext;
+        if (!AC) return;
+        _notifAudioCtx = _notifAudioCtx || new AC();
+        const ctx = _notifAudioCtx;
+        if (ctx.state === 'suspended') ctx.resume();
+        const now = ctx.currentTime;
+        ([[523.25, 0], [659.25, 0.1], [783.99, 0.2], [1046.5, 0.32]] as Array<[number, number]>).forEach(([freq, t]) => {
+            const o = ctx.createOscillator();
+            const g = ctx.createGain();
+            o.type = 'triangle';
+            o.frequency.value = freq;
+            g.gain.setValueAtTime(0.0001, now + t);
+            g.gain.exponentialRampToValueAtTime(0.25, now + t + 0.02);
+            g.gain.exponentialRampToValueAtTime(0.0001, now + t + 0.42);
+            o.connect(g); g.connect(ctx.destination);
+            o.start(now + t);
+            o.stop(now + t + 0.46);
+        });
+    } catch { /* audio no disponible */ }
+}
+
 export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }) => {
   const [activeView, setActiveView] = useState<'dashboard' | 'movements' | 'wallet-detail' | 'profile' | 'notifications' | 'referrals' | 'affiliates' | 'settings' | 'servicios' | 'mouv' | 'contactos' | 'walletsGasfree'>('dashboard');
   // 'mouv' se usa para dos entradas distintas: "Dispersar" (Bre-B, flujo
@@ -400,6 +426,15 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   //    porque su id sigue marcado como "ya avisado" aunque ya no esté en la
   //    lista visible. ──────────────────────────────────────────────────
   const [bellAnim, setBellAnim] = useState(false);
+  // Celebración visible cuando llega un depósito (animación + sonido cha-ching).
+  const [depositFx, setDepositFx] = useState<{ amount: number } | null>(null);
+  const celebrateDeposit = (amount: number) => {
+      setDepositFx({ amount });
+      if ((currentUser as any)?.notifSound !== false) playDepositSound();
+      setBellAnim(true);
+      setTimeout(() => setBellAnim(false), 1200);
+      setTimeout(() => setDepositFx(null), 4200);
+  };
   useEffect(() => {
       if (!currentUser?.id) return;
       const cuAny: any = currentUser;
@@ -813,6 +848,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               const credited = Number(d?.credited ?? 0);
               if (d?.synced && credited > 0) {
                   refreshData?.();
+                  refreshGasfreeBal(uid);
+                  celebrateDeposit(credited);
                   showToast(`✅ Depósito detectado: +${credited.toLocaleString('en-US')} USDT`);
               }
           } catch { /* silencioso — es un poll en segundo plano, no una acción del usuario */ }
@@ -825,7 +862,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
   // Saldo a MOSTRAR para una billetera: para USD es el real de GasFree
   // (blockchain); para las demás, el saldo interno de siempre.
-  const displayBalance = (code: string): number => (code === 'USD' ? (gasfreeBal ?? getBalance('USD')) : getBalance(code));
+  // USD (Dólar digital): el saldo REAL es el on-chain de GasFree una vez leído
+  // (gasfreeBal). Mientras carga, se usa el de la BD. No se usa Math.max para no
+  // "congelar" un valor sobre-acreditado por pruebas — la verdad es la cadena.
+  const displayBalance = (code: string): number =>
+    code === 'USD' ? (gasfreeBalChecked ? Number(gasfreeBal ?? 0) : Number(getBalance('USD') ?? 0)) : getBalance(code);
 
   const openUsdtDeposit = async () => {
       if (!currentUser?.id) return;
@@ -856,8 +897,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           const d = await callGasfree({ action: 'my_verify_deposit', userId: currentUser.id });
           const credited = Number(d?.credited ?? 0);
           if (d?.synced && credited > 0) {
-              // El servidor ya acreditó balances.USD — solo refrescamos la vista
+              // El servidor ya acreditó balances.USD — refrescamos la vista + saldo on-chain
               refreshData?.();
+              if (currentUser?.id) refreshGasfreeBal(currentUser.id);
+              celebrateDeposit(credited);
               showToast(`✅ Depósito detectado: +${credited.toLocaleString('en-US')} USDT en tu Dólar digital`);
               setUsdtModalOpen(false);
           } else if (d?.error) {
@@ -3367,6 +3410,22 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       )}
 
       {/* LOAD MODAL */}
+      {/* Celebración cuando llega un depósito — animación + (sonido ya sonó) */}
+      {depositFx && (
+          <div className="fixed inset-0 z-[70] flex items-center justify-center pointer-events-none p-4" style={{ fontFamily: "'Archivo', system-ui, sans-serif" }}>
+              <div className="lincoin-deposit-fx" style={{ background: '#0C0E0D', border: '1px solid rgba(74,222,128,0.4)', borderRadius: 20, padding: '30px 40px', textAlign: 'center', boxShadow: '0 30px 90px rgba(0,0,0,0.65)' }}>
+                  <div style={{ position: 'relative', width: 72, height: 72, margin: '0 auto 16px' }}>
+                      <span className="lincoin-fx-ring" style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '2px solid rgba(74,222,128,0.5)' }} />
+                      <div className="lincoin-fx-check" style={{ width: 72, height: 72, borderRadius: '50%', background: 'rgba(74,222,128,0.14)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <CheckCircle2 size={40} style={{ color: '#4ADE80' }} />
+                      </div>
+                  </div>
+                  <p style={{ color: '#F4F4F2', fontWeight: 800, fontSize: 26, letterSpacing: '-0.6px', lineHeight: 1 }}>+{depositFx.amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span style={{ fontSize: 16, color: '#878E88' }}>USDT</span></p>
+                  <p style={{ color: '#878E88', fontSize: 13, marginTop: 6 }}>Depósito acreditado a tu Dólar digital</p>
+              </div>
+          </div>
+      )}
+
       {/* Cargar USDT — depósito on-chain a la wallet GasFree del cliente */}
       {usdtModalOpen && (
           <div className="fixed inset-0 z-50 grid place-items-center p-4" style={{ background: 'rgba(4,5,4,0.72)', backdropFilter: 'blur(3px)', fontFamily: "'Archivo', system-ui, sans-serif" }} onClick={() => setUsdtModalOpen(false)}>
