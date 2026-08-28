@@ -1374,38 +1374,39 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   {/* Identidad de la sesión SIEMPRE visible — los magic links de los
                       correos de verificación inician sesión sin contraseña y esto
                       hace obvio con qué cuenta quedaste. */}
-                  <span className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-300 rounded-full text-xs shadow-sm max-w-[220px]">
-                      <span className="w-1.5 h-1.5 rounded-full bg-[#4ADE80] shrink-0"></span>
-                      <span className="truncate font-bold" style={{ color: '#0C0E0D' }}>{currentUser?.email}</span>
+                  <span className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs max-w-[220px]" style={{ background: '#121413', border: '1px solid rgba(255,255,255,0.09)' }}>
+                      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: '#4ADE80' }}></span>
+                      <span className="truncate font-bold" style={{ color: '#F4F4F2' }}>{currentUser?.email}</span>
                   </span>
-                  <button onClick={handleNotificationsClick} style={{ color: '#0C0E0D' }} className={`w-10 h-10 rounded-full bg-white border border-slate-300 flex items-center justify-center hover:border-[#0C0E0D] transition-all relative shadow-sm ${bellAnim ? 'animate-bounce' : ''}`}>
-                      <Bell size={20} className={bellAnim ? 'text-[#16A34A]' : ''} />
-                      {unreadNotifications > 0 && <span className={`absolute top-0 right-0 w-3 h-3 bg-[#4ADE80] rounded-full border-2 border-white ${bellAnim ? 'animate-ping' : ''}`}></span>}
+                  <button onClick={handleNotificationsClick} className={`w-10 h-10 rounded-[9px] flex items-center justify-center transition-all relative ${bellAnim ? 'animate-bounce' : ''}`} style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.11)', color: bellAnim ? '#4ADE80' : '#F4F4F2' }}>
+                      <Bell size={19} />
+                      {unreadNotifications > 0 && <span className={`absolute w-2.5 h-2.5 rounded-full ${bellAnim ? 'animate-ping' : ''}`} style={{ top: 8, right: 9, background: '#4ADE80', border: '1.5px solid #0A0C0B' }}></span>}
                   </button>
                   {showNotifications && (
-                      <div className="absolute top-full right-0 mt-3 w-80 bg-white rounded-xl shadow-2xl border border-slate-100 z-50 overflow-hidden animate-in fade-in zoom-in-95 origin-top-right">
-                          <div className="p-4 border-b border-slate-50 flex justify-between items-center bg-slate-50/50">
-                              <span className="font-bold text-slate-800 text-sm">Notificaciones</span>
+                      <div className="absolute top-full right-0 mt-3 w-80 rounded-xl z-50 overflow-hidden animate-in fade-in zoom-in-95 origin-top-right" style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', boxShadow: '0 24px 60px rgba(0,0,0,0.6)' }}>
+                          <div className="p-4 flex justify-between items-center" style={{ borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+                              <span className="font-bold text-sm" style={{ color: '#F4F4F2' }}>Notificaciones</span>
                               <div className="flex items-center gap-3">
                                   {unreadNotifications > 0 && (
-                                      <button onClick={() => markNotificationsRead()} className="text-[11px] font-bold text-[#16A34A] hover:underline transition-colors">Marcar como leído</button>
+                                      <button onClick={() => markNotificationsRead()} className="text-[11px] font-bold hover:underline transition-colors" style={{ color: '#4ADE80' }}>Marcar como leído</button>
                                   )}
-                                  <button onClick={() => setShowNotifications(false)}><X size={16} className="text-slate-400"/></button>
+                                  <button onClick={() => setShowNotifications(false)}><X size={16} style={{ color: '#878E88' }}/></button>
                               </div>
                           </div>
                           <div className="max-h-64 overflow-y-auto p-2">
                               {notifications.length > 0 ? notifications.map(n => (
-                                  <div key={n.id} className={`group p-3 rounded-lg hover:bg-slate-50 transition-colors mb-1 animate-in fade-in slide-in-from-top-1 duration-300 ${n.read ? 'opacity-60' : ''}`}>
+                                  <div key={n.id} className={`group p-3 rounded-lg transition-colors mb-1 hover:bg-white/[0.03] animate-in fade-in slide-in-from-top-1 duration-300 ${n.read ? 'opacity-60' : ''}`}>
                                       <div className="flex gap-3">
-                                          <div className={`mt-1 w-2 h-2 rounded-full shrink-0 ${n.read ? 'bg-slate-300' : n.type === 'success' ? 'bg-[#4ADE80]' : 'bg-red-500'}`}></div>
+                                          <div className="mt-1 w-2 h-2 rounded-full shrink-0" style={{ background: n.read ? '#878E88' : n.type === 'success' ? '#4ADE80' : '#EF4444' }}></div>
                                           <div className="flex-1 min-w-0">
-                                              <p className={`text-xs text-slate-800 ${n.read ? 'font-semibold' : 'font-bold'}`}>{n.title}</p>
-                                              <p className="text-xs text-slate-500 mt-0.5">{n.message}</p>
-                                              <p className="text-[10px] text-slate-400 mt-1">{n.date}</p>
+                                              <p className={`text-xs ${n.read ? 'font-semibold' : 'font-bold'}`} style={{ color: '#F4F4F2' }}>{n.title}</p>
+                                              <p className="text-xs mt-0.5" style={{ color: '#878E88' }}>{n.message}</p>
+                                              <p className="text-[10px] mt-1" style={{ color: '#878E88' }}>{n.date}</p>
                                           </div>
                                           <button
                                               onClick={(e) => { e.stopPropagation(); deleteNotification(n.id); }}
-                                              className="shrink-0 text-slate-300 hover:text-red-500 active:text-red-600 transition-colors self-start p-1"
+                                              className="shrink-0 hover:text-red-500 active:text-red-600 transition-colors self-start p-1"
+                                              style={{ color: '#878E88' }}
                                               title="Eliminar notificación"
                                           >
                                               <Trash2 size={14} />
@@ -1413,31 +1414,31 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       </div>
                                   </div>
                               )) : (
-                                  <div className="p-6 text-center text-xs text-slate-400">Sin notificaciones</div>
+                                  <div className="p-6 text-center text-xs" style={{ color: '#878E88' }}>Sin notificaciones</div>
                               )}
                           </div>
                       </div>
                   )}
                   
                   <div className="relative group">
-                      <button onClick={() => setIsProfileMenuOpen(!isProfileMenuOpen)} className="flex items-center gap-3 pl-1 pr-3 py-1 bg-white border border-slate-200 rounded-full hover:shadow-md transition-all">
-                          <div className="w-8 h-8 rounded-full bg-[#0C0E0D] text-white flex items-center justify-center font-bold text-sm overflow-hidden">
-                              {currentUser?.avatarUrl ? <img src={currentUser.avatarUrl} className="w-full h-full object-cover"/> : currentUser?.name?.charAt(0) ?? '?'}
+                      <button onClick={() => setIsProfileMenuOpen(!isProfileMenuOpen)} className="flex items-center gap-2.5 pl-1 pr-2.5 py-1 rounded-full transition-all" style={{ background: '#121413', border: '1px solid rgba(255,255,255,0.09)' }}>
+                          <div className="w-7 h-7 rounded-[7px] flex items-center justify-center font-extrabold text-xs overflow-hidden" style={{ background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', border: '1px solid rgba(255,255,255,0.1)', color: '#F4F4F2' }}>
+                              {currentUser?.avatarUrl ? <img src={currentUser.avatarUrl} className="w-full h-full object-cover"/> : (currentUser?.name?.charAt(0) ?? '?').toUpperCase()}
                           </div>
-                          <ChevronDown size={14} className="text-slate-400"/>
+                          <ChevronDown size={13} style={{ color: '#878E88' }}/>
                       </button>
-                      
+
                       {isProfileMenuOpen && (
-                          <div className="absolute top-full right-0 mt-3 w-56 bg-white rounded-xl shadow-2xl border border-slate-100 z-50 overflow-hidden animate-in fade-in zoom-in-95 origin-top-right">
-                              <div className="p-4 border-b border-slate-50 bg-slate-50/50">
-                                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Cuenta</p>
-                                  <p className="text-sm font-bold text-slate-800 truncate">{currentUser?.email}</p>
+                          <div className="absolute top-full right-0 mt-3 w-56 rounded-xl z-50 overflow-hidden animate-in fade-in zoom-in-95 origin-top-right" style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', boxShadow: '0 24px 60px rgba(0,0,0,0.6)' }}>
+                              <div className="p-4" style={{ borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+                                  <p className="text-[10px] font-bold uppercase tracking-wider mb-1" style={{ color: '#878E88' }}>Cuenta</p>
+                                  <p className="text-sm font-bold truncate" style={{ color: '#F4F4F2' }}>{currentUser?.email}</p>
                               </div>
                               <div className="p-2 space-y-1">
-                                  <button onClick={() => { setActiveView('profile'); setIsProfileMenuOpen(false); }} className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-slate-50 rounded-lg text-slate-600 text-sm font-medium transition-colors"><User size={16} /> Mi Perfil</button>
-                                  <button onClick={() => { setActiveView('settings'); setIsProfileMenuOpen(false); }} className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-slate-50 rounded-lg text-slate-600 text-sm font-medium transition-colors"><Settings size={16} /> Configuración</button>
-                                  <div className="h-px bg-slate-100 my-1"></div>
-                                  <button onClick={onLogout} className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-red-50 text-red-600 rounded-lg text-sm font-medium transition-colors"><LogOut size={16} /> Salir</button>
+                                  <button onClick={() => { setActiveView('profile'); setIsProfileMenuOpen(false); }} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors hover:bg-white/[0.04]" style={{ color: '#878E88' }}><User size={16} /> Mi Perfil</button>
+                                  <button onClick={() => { setActiveView('settings'); setIsProfileMenuOpen(false); }} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors hover:bg-white/[0.04]" style={{ color: '#878E88' }}><Settings size={16} /> Configuración</button>
+                                  <div className="h-px my-1" style={{ background: 'rgba(255,255,255,0.07)' }}></div>
+                                  <button onClick={onLogout} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors hover:bg-red-500/10" style={{ color: '#F87171' }}><LogOut size={16} /> Salir</button>
                               </div>
                           </div>
                       )}
@@ -1449,13 +1450,14 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           {currentUser?.ownReferralCode && (
               <div className="flex items-center gap-2">
                   <div
-                      className="inline-flex items-center gap-2 bg-white border border-slate-200 px-3 py-1.5 rounded-lg cursor-pointer hover:border-green-400 hover:bg-green-50 transition-all shadow-sm"
+                      className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg cursor-pointer transition-all hover:border-[rgba(74,222,128,0.4)]"
+                      style={{ background: '#121413', border: '1px solid rgba(255,255,255,0.09)' }}
                       onClick={() => { navigator.clipboard.writeText(currentUser.ownReferralCode || ''); showToast('ID Lincoin copiado'); }}
                   >
-                      <Zap size={13} className="text-[#16A34A]" />
-                      <span className="text-[10px] font-bold text-slate-600 uppercase tracking-wider">Mi ID Lincoin:</span>
-                      <span className="font-mono font-extrabold text-[#0C0E0D] tracking-widest text-sm">{currentUser.ownReferralCode}</span>
-                      <Copy size={11} className="text-slate-400" />
+                      <Zap size={13} style={{ color: '#4ADE80' }} />
+                      <span className="text-[10px] font-bold uppercase tracking-wider" style={{ color: '#878E88' }}>Mi ID Lincoin:</span>
+                      <span className="font-mono font-extrabold tracking-widest text-sm" style={{ color: '#F4F4F2' }}>{currentUser.ownReferralCode}</span>
+                      <Copy size={11} style={{ color: '#878E88' }} />
                   </div>
               </div>
           )}
