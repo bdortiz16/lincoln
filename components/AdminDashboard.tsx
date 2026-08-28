@@ -81,7 +81,7 @@ import { Logo } from './Logo';
 import { RatesPanel } from './AdminPersonas/sections/RatesPanel';
 import { AdminGasFreeSection } from './AdminGasFreeSection';
 import { AdminOtcSection } from './AdminOtcSection';
-import { Zap, ArrowLeftRight } from 'lucide-react';
+import { Zap, ArrowLeftRight, Info } from 'lucide-react';
 import { CollectionWalletCard } from './CollectionWalletCard';
 import type { AdminProfile } from './AdminPersonas/lib/adminAuth';
 import { FlagImg, flagUrl } from './FlagImg';
@@ -264,7 +264,7 @@ const DiditAdminPanel: React.FC<{ client: any; showToast: (m: string) => void }>
 };
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig'>('overview');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [ratesSaved, setRatesSaved] = useState(false);
   const [showPaletteChooser, setShowPaletteChooser] = useState(false);
@@ -321,6 +321,56 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deletingUser, setDeletingUser] = useState(false);
   
+  // Cargues Logic — acreditar saldo COP manualmente (temporal, mientras
+  // Mouv apifica el conversor: el pago llega por el grupo cerrado y aquí se
+  // refleja en el riel que corresponda: Saldo Lincoin / Bre-B / ACH).
+  const [carguesSearch, setCarguesSearch] = useState('');
+  const [carguesClient, setCarguesClient] = useState<User | null>(null);
+  const [carguesRail, setCarguesRail] = useState<'COP' | 'COP_BREB' | 'COP_ACH'>('COP');
+  const [carguesAmount, setCarguesAmount] = useState('');
+  const [carguesNote, setCarguesNote] = useState('');
+  const [carguesDir, setCarguesDir] = useState<'credit' | 'debit'>('credit');
+  const [carguesBusy, setCarguesBusy] = useState(false);
+  const [carguesMsg, setCarguesMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const submitCargue = async () => {
+    if (!carguesClient) return;
+    const raw = parseFloat(carguesAmount.replace(/[^\d.]/g, ''));
+    if (!isFinite(raw) || raw <= 0) { setCarguesMsg({ ok: false, text: 'Ingresa un monto válido.' }); return; }
+    const delta = carguesDir === 'credit' ? raw : -raw;
+    const railLabel = carguesRail === 'COP' ? 'Saldo Lincoin' : carguesRail === 'COP_BREB' ? 'Bre-B' : 'ACH';
+    if (!window.confirm(`¿${carguesDir === 'credit' ? 'Acreditar' : 'Descontar'} ${formatMoney(raw, '')} COP en el riel ${railLabel} de ${carguesClient.name}?`)) return;
+    setCarguesBusy(true); setCarguesMsg(null);
+    try {
+      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+      const ADMIN_PASS = (import.meta.env.VITE_ADMIN_PASSWORD as string) || '';
+      let jwt: string | null = null;
+      try {
+        const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
+        if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; }
+      } catch { /* sin sesión supabase */ }
+      const authHeader = jwt ? `Bearer ${jwt}` : (ADMIN_PASS ? `AdminBypass ${ADMIN_PASS}` : `Bearer ${SKEY}`);
+      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: authHeader },
+        body: JSON.stringify({ action: 'admin_credit_balance', userId: carguesClient.id, currency: carguesRail, amount: delta, note: carguesNote.trim() || undefined }),
+      });
+      const d = await r.json();
+      if (d?.success) {
+        setCarguesMsg({ ok: true, text: `✅ ${railLabel} actualizado. Nuevo saldo: ${formatMoney(d.newBalance ?? 0, '')} COP` });
+        setCarguesAmount(''); setCarguesNote('');
+        showToast(`Cargue aplicado a ${carguesClient.name}`);
+        refreshData();
+      } else {
+        setCarguesMsg({ ok: false, text: `❌ ${d?.error || 'No se pudo aplicar el cargue.'}` });
+      }
+    } catch (e: any) {
+      setCarguesMsg({ ok: false, text: `❌ ${e?.message ?? 'Error de red'}` });
+    }
+    setCarguesBusy(false);
+  };
+
   // Treasury Logic
   const [treasuryTab, setTreasuryTab] = useState<'deposits' | 'withdrawals' | 'history' | 'crypto'>('deposits');
   const [treasurySegment, setTreasurySegment] = useState<'all' | 'personal' | 'business'>('all');
@@ -1206,6 +1256,170 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
           </div>
       </div>
   );
+
+  const renderCargues = () => {
+      const q = carguesSearch.trim().toLowerCase();
+      const list = allUsers
+        .filter(u => !q || (u.name ?? '').toLowerCase().includes(q) || (u.email ?? '').toLowerCase().includes(q))
+        .slice(0, 40);
+      const bal = (u: User | null, code: string) => Number((u?.balances as any)?.[code] ?? 0);
+      const railMeta: Record<string, { label: string; sub: string; icon: React.ElementType }> = {
+        COP:      { label: 'Saldo Lincoin', sub: 'Cuenta principal · COP', icon: Wallet },
+        COP_BREB: { label: 'Bre-B',         sub: 'Pagos inmediatos 24/7',  icon: Zap },
+        COP_ACH:  { label: 'ACH',           sub: 'Interbancario L–V',       icon: Landmark },
+      };
+
+      return (
+        <div className="space-y-6 animate-in fade-in duration-300">
+          {/* Aviso: proceso temporal */}
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start gap-3">
+            <Info size={18} className="text-amber-600 mt-0.5 flex-shrink-0" />
+            <div>
+              <p className="text-sm font-bold text-amber-800">Cargue manual de saldo (temporal)</p>
+              <p className="text-xs text-amber-700 mt-0.5 leading-relaxed">
+                Mientras Mouv apifica el conversor, el pago llega por el grupo cerrado y aquí reflejas el saldo del cliente
+                en el riel correspondiente. Elige el cliente, el riel (Saldo Lincoin, Bre-B o ACH) y el monto.
+                Cada cargue queda registrado en el historial del cliente.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+            {/* Columna izquierda — buscar y elegir cliente */}
+            <div className="lg:col-span-2 bg-white rounded-xl border border-slate-200 shadow-sm p-4">
+              <p className="text-sm font-bold text-slate-800 mb-3">1 · Elegir cliente</p>
+              <div className="relative mb-3">
+                <Search className="absolute left-3 top-2.5 text-slate-400" size={16} />
+                <input
+                  type="text"
+                  placeholder="Buscar por nombre o correo..."
+                  value={carguesSearch}
+                  onChange={(e) => setCarguesSearch(e.target.value)}
+                  className="w-full pl-9 pr-4 py-2 border border-slate-200 rounded-lg text-sm focus:border-[#0C0E0D] outline-none"
+                />
+              </div>
+              <div className="space-y-1.5 max-h-[420px] overflow-y-auto">
+                {list.length === 0 && (
+                  <p className="text-xs text-slate-400 text-center py-6">Sin clientes que coincidan.</p>
+                )}
+                {list.map(u => {
+                  const active = carguesClient?.id === u.id;
+                  return (
+                    <button
+                      key={u.id}
+                      onClick={() => { setCarguesClient(u); setCarguesMsg(null); }}
+                      className={`w-full text-left p-3 rounded-lg border transition-colors flex items-center gap-3 ${active ? 'border-[#0C0E0D] bg-[#0C0E0D]/[0.04]' : 'border-slate-200 hover:bg-slate-50'}`}
+                    >
+                      <div className="w-9 h-9 rounded-full bg-slate-100 flex items-center justify-center text-xs font-bold text-slate-600 flex-shrink-0">
+                        {(u.name ?? 'U').slice(0, 2).toUpperCase()}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-semibold text-slate-800 truncate">{u.name ?? 'Sin nombre'}</p>
+                        <p className="text-xs text-slate-400 truncate">{u.email}</p>
+                      </div>
+                      {active && <CheckCircle size={16} className="text-[#0C0E0D] flex-shrink-0" />}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Columna derecha — form del cargue */}
+            <div className="lg:col-span-3 bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+              {!carguesClient ? (
+                <div className="h-full flex flex-col items-center justify-center text-center py-16 text-slate-400">
+                  <Wallet size={30} className="mb-3 opacity-40" />
+                  <p className="text-sm font-medium">Selecciona un cliente a la izquierda</p>
+                  <p className="text-xs mt-1">para aplicarle un cargue de saldo.</p>
+                </div>
+              ) : (
+                <>
+                  {/* Cabecera cliente + saldos actuales */}
+                  <div className="flex items-center gap-3 pb-4 border-b border-slate-100">
+                    <div className="w-11 h-11 rounded-full bg-[#0C0E0D] flex items-center justify-center text-sm font-bold text-white flex-shrink-0">
+                      {(carguesClient.name ?? 'U').slice(0, 2).toUpperCase()}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-base font-bold text-slate-800 truncate">{carguesClient.name}</p>
+                      <p className="text-xs text-slate-400 truncate">{carguesClient.email}</p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 py-4">
+                    {(['COP', 'COP_BREB', 'COP_ACH'] as const).map(code => {
+                      const M = railMeta[code];
+                      return (
+                        <div key={code} className="bg-slate-50 rounded-lg p-3 border border-slate-100">
+                          <div className="flex items-center gap-1.5 text-slate-500 mb-1"><M.icon size={13} /><span className="text-[11px] font-semibold">{M.label}</span></div>
+                          <p className="text-sm font-bold text-slate-800">{formatMoney(bal(carguesClient, code), '')}</p>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* 2 · Riel */}
+                  <p className="text-sm font-bold text-slate-800 mb-2 mt-1">2 · Riel destino</p>
+                  <div className="grid grid-cols-3 gap-2 mb-4">
+                    {(['COP', 'COP_BREB', 'COP_ACH'] as const).map(code => {
+                      const M = railMeta[code];
+                      const active = carguesRail === code;
+                      return (
+                        <button
+                          key={code}
+                          onClick={() => setCarguesRail(code)}
+                          className={`p-3 rounded-lg border text-left transition-colors ${active ? 'border-[#0C0E0D] bg-[#0C0E0D]/[0.04]' : 'border-slate-200 hover:bg-slate-50'}`}
+                        >
+                          <M.icon size={16} className={active ? 'text-[#0C0E0D]' : 'text-slate-400'} />
+                          <p className="text-xs font-bold text-slate-800 mt-1.5">{M.label}</p>
+                          <p className="text-[10px] text-slate-400 leading-tight mt-0.5">{M.sub}</p>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* 3 · Dirección + monto */}
+                  <p className="text-sm font-bold text-slate-800 mb-2">3 · Movimiento</p>
+                  <div className="flex gap-2 p-1 bg-slate-100 rounded-lg mb-3">
+                    <button onClick={() => setCarguesDir('credit')} className={`flex-1 py-1.5 text-sm font-bold rounded transition-colors ${carguesDir === 'credit' ? 'bg-green-600 text-white' : 'text-slate-500'}`}>Acreditar (+)</button>
+                    <button onClick={() => setCarguesDir('debit')} className={`flex-1 py-1.5 text-sm font-bold rounded transition-colors ${carguesDir === 'debit' ? 'bg-red-500 text-white' : 'text-slate-500'}`}>Descontar (−)</button>
+                  </div>
+                  <label className="block text-xs font-semibold text-slate-500 mb-1">Monto (COP)</label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    placeholder="0"
+                    value={carguesAmount}
+                    onChange={(e) => setCarguesAmount(e.target.value)}
+                    className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-lg font-bold text-slate-800 focus:border-[#0C0E0D] outline-none mb-3"
+                  />
+                  <label className="block text-xs font-semibold text-slate-500 mb-1">Nota (opcional)</label>
+                  <input
+                    type="text"
+                    placeholder="Ref. Mouv, motivo del ajuste..."
+                    value={carguesNote}
+                    onChange={(e) => setCarguesNote(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm text-slate-800 focus:border-[#0C0E0D] outline-none mb-4"
+                  />
+
+                  {carguesMsg && (
+                    <div className={`text-xs font-medium rounded-lg p-3 mb-3 ${carguesMsg.ok ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
+                      {carguesMsg.text}
+                    </div>
+                  )}
+
+                  <button
+                    onClick={submitCargue}
+                    disabled={carguesBusy || !carguesAmount}
+                    className="w-full py-3 rounded-lg text-sm font-bold text-white bg-[#0C0E0D] hover:bg-[#152e52] disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+                  >
+                    {carguesBusy ? <><RefreshCw size={15} className="animate-spin" /> Aplicando…</> : <>{carguesDir === 'credit' ? 'Acreditar' : 'Descontar'} saldo</>}
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+  };
 
   const renderTreasury = () => {
       const CRYPTO_TYPES = ['otc_withdraw', 'otc_withdraw_request', 'otc_deposit', 'admin_hot_withdrawal', 'otc_convert_request'];
@@ -2605,6 +2819,7 @@ const renderDesign = () => (
                 <AdminSidebarItem icon={BarChart3} label="Dashboard" active={activeTab === 'overview'} onClick={() => navTo('overview')} />
                 <AdminSidebarItem icon={Users} label="Clientes" active={activeTab === 'clients'} badge={pendingClientsCount > 0 ? pendingClientsCount : undefined} onClick={() => navTo('clients')} />
                 <AdminSidebarItem icon={Landmark} label="Tesorería" active={activeTab === 'treasury'} badge={pendingDeposits.length + pendingWithdrawals.length > 0 ? pendingDeposits.length + pendingWithdrawals.length : undefined} onClick={() => navTo('treasury')} />
+                <AdminSidebarItem icon={Wallet} label="Cargues" active={activeTab === 'cargues'} onClick={() => navTo('cargues')} />
                 <AdminSidebarItem icon={FileText} label="Reportes" active={activeTab === 'reports'} onClick={() => navTo('reports')} />
                 <AdminSidebarItem icon={Settings} label="Configuración" active={activeTab === 'config'} onClick={() => navTo('config')} />
                 <AdminSidebarItem icon={Palette} label="Diseño" active={activeTab === 'design'} onClick={() => navTo('design')} />
@@ -2642,6 +2857,7 @@ const renderDesign = () => (
                 {activeTab === 'clients' && renderClients()}
                 {activeTab === 'marketing' && renderMarketing()}
                 {activeTab === 'treasury' && renderTreasury()}
+                {activeTab === 'cargues' && renderCargues()}
                 {activeTab === 'reports' && renderReports()}
                 {activeTab === 'config' && renderConfig()}
                 {activeTab === 'design' && renderDesign()}
