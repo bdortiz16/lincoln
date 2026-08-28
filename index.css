@@ -154,3 +154,7 @@ button[class~="bg-[#4ADE80]"] {
 @keyframes lincoinOpDot { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
 .lincoin-op-dot { animation: lincoinOpDot 2s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) { .lincoin-op-dot { animation: none; } }
+
+/* Botón primario BLANCO (diseño Lincoin) — gana al catch-all del tema oscuro */
+.lincoin-btn-white { background: #F4F4F2 !important; color: #0A0A0A !important; }
+.lincoin-btn-white:hover { background: #E4E4E0 !important; }

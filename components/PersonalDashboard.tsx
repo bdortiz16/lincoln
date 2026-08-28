@@ -3431,7 +3431,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       {/* Acciones — primario BLANCO, sin verde ni glow */}
                       <div style={{ display: 'flex', gap: 9, marginTop: 20 }}>
                           <button onClick={() => setUsdtModalOpen(false)} style={{ flex: 1, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 14, padding: '13px 0', borderRadius: 10 }} className="hover:bg-white/[0.09] transition-colors">Cerrar</button>
-                          <button onClick={verifyUsdtDeposit} disabled={usdtVerifying || !usdtAddr} style={{ flex: 1.4, background: '#F4F4F2', color: '#0A0A0A', fontWeight: 700, fontSize: 14, padding: '13px 0', borderRadius: 10, opacity: (usdtVerifying || !usdtAddr) ? 0.6 : 1 }} className="hover:bg-[#E4E4E0] transition-colors">{usdtVerifying ? 'Buscando tu depósito…' : 'Ya envié el depósito'}</button>
+                          <button onClick={verifyUsdtDeposit} disabled={usdtVerifying || !usdtAddr} style={{ flex: 1.4, fontWeight: 700, fontSize: 14, padding: '13px 0', borderRadius: 10, opacity: (usdtVerifying || !usdtAddr) ? 0.6 : 1 }} className="lincoin-btn-white transition-colors">{usdtVerifying ? 'Buscando tu depósito…' : 'Ya envié el depósito'}</button>
                       </div>
 
                       {/* Estado de monitoreo */}
