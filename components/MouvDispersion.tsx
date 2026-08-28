@@ -61,7 +61,7 @@ export const MouvDispersion: React.FC<Props> = ({ userId, rail, balance, authHea
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ kind: 'ok' | 'pending' | 'error'; text: string } | null>(null);
 
-  const amt = useMemo(() => parseFloat((amount || '').replace(/[^\d.]/g, '')) || 0, [amount]);
+  const amt = useMemo(() => Number((amount || '').replace(/\D/g, '')) || 0, [amount]);
   const overBalance = amt > balance;
   const recipientReady = isBreb
     ? keyValue.trim().length > 2
@@ -199,7 +199,7 @@ export const MouvDispersion: React.FC<Props> = ({ userId, rail, balance, authHea
             <label style={{ ...labelStyle, marginBottom: 0 }}>Monto a dispersar (COP)</label>
             <button onClick={() => setAmount(String(Math.floor(balance)))} style={{ fontSize: 11.5, fontWeight: 600, color: '#4ADE80' }}>Usar todo</button>
           </div>
-          <input value={amount} onChange={e => setAmount(e.target.value)} inputMode="decimal" placeholder="0"
+          <input value={amount ? Number(amount.replace(/\D/g, '')).toLocaleString('es-CO') : ''} onChange={e => setAmount(e.target.value.replace(/\D/g, ''))} inputMode="numeric" placeholder="0"
             style={{ ...inputStyle, fontSize: 22, fontWeight: 800, letterSpacing: '-0.5px', borderColor: overBalance ? 'rgba(248,113,113,0.6)' : 'rgba(255,255,255,0.11)' }} />
           {overBalance && <p style={{ color: '#F87171', fontSize: 12, marginTop: 6 }}>Supera tu saldo disponible ({fmt(balance)} COP).</p>}
         </div>

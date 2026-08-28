@@ -332,14 +332,25 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const [carguesDir, setCarguesDir] = useState<'credit' | 'debit'>('credit');
   const [carguesBusy, setCarguesBusy] = useState(false);
   const [carguesMsg, setCarguesMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [carguesConfirm, setCarguesConfirm] = useState<{ raw: number } | null>(null);
 
-  const submitCargue = async () => {
+  const railLabelOf = (r: string) => (r === 'COP' ? 'Saldo Lincoin' : r === 'COP_BREB' ? 'Bre-B' : 'ACH');
+
+  // Paso 1: validar y abrir la ventana de confirmación propia.
+  const requestCargue = () => {
     if (!carguesClient) return;
-    const raw = parseFloat(carguesAmount.replace(/[^\d.]/g, ''));
+    const raw = parseFloat((carguesAmount || '').replace(/[^\d.]/g, ''));
     if (!isFinite(raw) || raw <= 0) { setCarguesMsg({ ok: false, text: 'Ingresa un monto válido.' }); return; }
+    setCarguesMsg(null);
+    setCarguesConfirm({ raw });
+  };
+
+  // Paso 2: aplicar el cargue (lo llama el botón del modal).
+  const submitCargue = async () => {
+    if (!carguesClient || !carguesConfirm) return;
+    const raw = carguesConfirm.raw;
     const delta = carguesDir === 'credit' ? raw : -raw;
-    const railLabel = carguesRail === 'COP' ? 'Saldo Lincoin' : carguesRail === 'COP_BREB' ? 'Bre-B' : 'ACH';
-    if (!window.confirm(`¿${carguesDir === 'credit' ? 'Acreditar' : 'Descontar'} ${formatMoney(raw, '')} COP en el riel ${railLabel} de ${carguesClient.name}?`)) return;
+    const railLabel = railLabelOf(carguesRail);
     setCarguesBusy(true); setCarguesMsg(null);
     try {
       const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
@@ -369,6 +380,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       setCarguesMsg({ ok: false, text: `❌ ${e?.message ?? 'Error de red'}` });
     }
     setCarguesBusy(false);
+    setCarguesConfirm(null);
   };
 
   // Treasury Logic
@@ -1394,10 +1406,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                   <label className="block text-xs font-semibold text-slate-500 mb-1">Monto (COP)</label>
                   <input
                     type="text"
-                    inputMode="decimal"
+                    inputMode="numeric"
                     placeholder="0"
-                    value={carguesAmount}
-                    onChange={(e) => setCarguesAmount(e.target.value)}
+                    value={carguesAmount ? Number(carguesAmount).toLocaleString('es-CO') : ''}
+                    onChange={(e) => setCarguesAmount(e.target.value.replace(/\D/g, ''))}
                     className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-lg font-bold text-slate-800 focus:border-[#0C0E0D] outline-none mb-3"
                   />
                   <label className="block text-xs font-semibold text-slate-500 mb-1">Nota (opcional)</label>
@@ -1416,7 +1428,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                   )}
 
                   <button
-                    onClick={submitCargue}
+                    onClick={requestCargue}
                     disabled={carguesBusy || !carguesAmount}
                     className="w-full py-3 rounded-lg text-sm font-bold text-white bg-[#0C0E0D] hover:bg-[#152e52] disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
                   >
@@ -1426,6 +1438,57 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
               )}
             </div>
           </div>
+
+          {/* Ventana de confirmación del cargue (tema Lincoin) */}
+          {carguesConfirm && carguesClient && (
+            <div className="fixed inset-0 z-[80] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.62)', backdropFilter: 'blur(3px)' }} onClick={() => !carguesBusy && setCarguesConfirm(null)}>
+              <div onClick={(e) => e.stopPropagation()} style={{ width: '100%', maxWidth: 420, background: '#121413', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, overflow: 'hidden', fontFamily: "'Archivo', system-ui, sans-serif", boxShadow: '0 24px 60px rgba(0,0,0,0.55)' }}>
+                <div style={{ padding: '22px 24px 4px' }}>
+                  <div style={{ width: 46, height: 46, borderRadius: 13, display: 'grid', placeItems: 'center', marginBottom: 14,
+                    background: carguesDir === 'credit' ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.12)',
+                    border: `1px solid ${carguesDir === 'credit' ? 'rgba(74,222,128,0.32)' : 'rgba(248,113,113,0.32)'}` }}>
+                    <Wallet size={21} style={{ color: carguesDir === 'credit' ? '#4ADE80' : '#F87171' }} />
+                  </div>
+                  <h3 style={{ fontSize: 18, fontWeight: 800, color: '#F4F4F2', letterSpacing: '-0.4px' }}>
+                    Confirmar {carguesDir === 'credit' ? 'cargue' : 'descuento'}
+                  </h3>
+                  <p style={{ fontSize: 13.5, color: '#878E88', marginTop: 4, lineHeight: 1.5 }}>
+                    Vas a {carguesDir === 'credit' ? 'acreditar' : 'descontar'} saldo en el riel <b style={{ color: '#F4F4F2' }}>{railLabelOf(carguesRail)}</b> de <b style={{ color: '#F4F4F2' }}>{carguesClient.name}</b>.
+                  </p>
+                </div>
+                <div style={{ margin: '16px 24px', padding: '16px 18px', background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 13 }}>
+                  <div className="flex items-center justify-between" style={{ marginBottom: 10 }}>
+                    <span style={{ fontSize: 12.5, color: '#878E88' }}>Monto</span>
+                    <span style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.6px', color: carguesDir === 'credit' ? '#4ADE80' : '#F87171' }}>
+                      {carguesDir === 'credit' ? '+' : '−'} {carguesConfirm.raw.toLocaleString('es-CO')} <span style={{ fontSize: 12, color: '#878E88', fontWeight: 600 }}>COP</span>
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between" style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 10 }}>
+                    <span style={{ fontSize: 12.5, color: '#878E88' }}>Saldo {railLabelOf(carguesRail)} actual</span>
+                    <span style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>{Number((carguesClient.balances as any)?.[carguesRail] ?? 0).toLocaleString('es-CO')} COP</span>
+                  </div>
+                  <div className="flex items-center justify-between" style={{ marginTop: 8 }}>
+                    <span style={{ fontSize: 12.5, color: '#878E88' }}>Quedará en</span>
+                    <span style={{ fontSize: 13.5, fontWeight: 800, color: '#4ADE80' }}>
+                      {Math.max(0, Number((carguesClient.balances as any)?.[carguesRail] ?? 0) + (carguesDir === 'credit' ? carguesConfirm.raw : -carguesConfirm.raw)).toLocaleString('es-CO')} COP
+                    </span>
+                  </div>
+                  {carguesNote.trim() && <p style={{ fontSize: 12, color: '#878E88', marginTop: 12, fontStyle: 'italic' }}>“{carguesNote.trim()}”</p>}
+                </div>
+                <div style={{ display: 'flex', gap: 10, padding: '4px 24px 22px' }}>
+                  <button onClick={() => setCarguesConfirm(null)} disabled={carguesBusy}
+                    style={{ flex: 1, padding: '12px', borderRadius: 11, fontSize: 14, fontWeight: 700, color: '#F4F4F2', background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', cursor: carguesBusy ? 'default' : 'pointer' }}>
+                    Cancelar
+                  </button>
+                  <button onClick={submitCargue} disabled={carguesBusy}
+                    style={{ flex: 1.4, padding: '12px', borderRadius: 11, fontSize: 14, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                      color: '#0A0C0B', background: carguesBusy ? 'rgba(74,222,128,0.5)' : '#4ADE80', border: 'none', cursor: carguesBusy ? 'default' : 'pointer' }}>
+                    {carguesBusy ? <><RefreshCw size={15} className="animate-spin" /> Aplicando…</> : <>Confirmar {carguesDir === 'credit' ? 'cargue' : 'descuento'}</>}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       );
   };
