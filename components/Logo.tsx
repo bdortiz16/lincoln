@@ -1,24 +1,23 @@
 import React from 'react';
 import { useSystemConfig } from '../context/SystemConfigContext';
-import { useTheme } from '../context/ThemeContext';
 
-// Logo oficial de Lincoin: mark cuadrado verde con "L" + wordmark "Lincoin."
-// El punto final va en el verde de marca (config.accentColor, #4ade80).
+// Logo oficial de Lincoin: cuadro oscuro con "L" blanca + punto verde ("L.").
 const LincoinMark: React.FC<{ size?: number; green: string }> = ({ size = 34, green }) => {
   return (
-    <div
-      style={{
-        width: size,
-        height: size,
-        borderRadius: Math.round(size * 0.28),
-        background: green,
-        display: 'grid',
-        placeItems: 'center',
-        flexShrink: 0,
-      }}
-    >
-      <span style={{ fontWeight: 900, fontSize: Math.round(size * 0.56), color: '#0a0a0a', lineHeight: 1 }}>L</span>
-    </div>
+    <svg width={size} height={size} viewBox="0 0 100 100" style={{ flexShrink: 0 }} xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <radialGradient id="lincoinMarkBg" cx="0.8" cy="0.15" r="0.9">
+          <stop offset="0" stopColor="#123524" />
+          <stop offset="0.55" stopColor="#0a0a0a" />
+          <stop offset="1" stopColor="#0a0a0a" />
+        </radialGradient>
+      </defs>
+      <rect x="1" y="1" width="98" height="98" rx="26" fill="url(#lincoinMarkBg)" />
+      {/* L blanca (blocky) */}
+      <path d="M34 30 H47 V58 H58 V71 H34 Z" fill="#F4F4F2" />
+      {/* punto verde */}
+      <circle cx="68" cy="67" r="12" fill={green} />
+    </svg>
   );
 };
 
@@ -28,17 +27,11 @@ export const Logo: React.FC<{ collapsed?: boolean; variant?: 'default' | 'white'
   business = false,
 }) => {
   const { config } = useSystemConfig();
-  const { isDarkMode } = useTheme();
   const green = config.accentColor || '#4ade80';
 
-  let textColor: string;
-  if (variant === 'white') {
-    textColor = '#FFFFFF';
-  } else if (isDarkMode) {
-    textColor = '#FFFFFF';
-  } else {
-    textColor = '#0a0a0a';
-  }
+  // El wordmark por defecto va en oscuro (se usa sobre superficies claras:
+  // modales, sidebar claro). variant="white" para fondos oscuros.
+  const textColor = variant === 'white' ? '#FFFFFF' : '#0a0a0a';
 
   return (
     <div className={`flex items-center ${collapsed ? 'justify-center' : 'gap-2.5'}`}>
