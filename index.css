@@ -118,3 +118,34 @@ button[class~="bg-[#0C0E0D]"]:hover, a[class~="bg-[#0C0E0D]"]:hover { background
   .lincoin-landing-root .wrap { padding-left: 16px !important; padding-right: 16px !important; }
   .lincoin-landing-root h1 { font-size: 34px !important; }
 }
+
+/* ===== Indicadores "operativo" — línea superior + pulso del botón verde ===== */
+/* Línea verde fija arriba de todos los diseños, con leve shimmer. */
+body::before {
+  content: "";
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  z-index: 99999;
+  pointer-events: none;
+  background: linear-gradient(90deg, rgba(74,222,128,0) 0%, #4ADE80 45%, #6EE7A0 55%, rgba(74,222,128,0) 100%);
+  background-size: 220% 100%;
+  animation: lincoinTopline 5s ease-in-out infinite;
+}
+@keyframes lincoinTopline {
+  0%, 100% { opacity: 0.55; background-position: 0% 0; }
+  50%      { opacity: 1;    background-position: 100% 0; }
+}
+
+/* Botón verde: pulso/latido suave indicando que todo está operativo. */
+.lincoin-landing-root .btn-green,
+button[class~="bg-[#4ADE80]"] {
+  animation: lincoinPulse 2.6s ease-in-out infinite;
+}
+@keyframes lincoinPulse {
+  0%, 100% { filter: drop-shadow(0 0 0px rgba(74,222,128,0.0)); }
+  50%      { filter: drop-shadow(0 0 10px rgba(74,222,128,0.55)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  body::before, .lincoin-landing-root .btn-green, button[class~="bg-[#4ADE80]"] { animation: none; }
+}
