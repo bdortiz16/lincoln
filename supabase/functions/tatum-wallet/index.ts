@@ -9,9 +9,9 @@ const TATUM_API_KEY = Deno.env.get('TATUM_API_KEY') ?? ''
 const ETH_MNEMONIC    = Deno.env.get('TATUM_ETH_MNEMONIC') ?? ''
 const TRON_MNEMONIC   = Deno.env.get('TATUM_TRON_MNEMONIC') ?? ''
 // Hot wallet private keys — BSC key also serves BASE (same EVM address)
-const BSC_HOT_KEY     = Deno.env.get('CUYPAY_BSC_HOT_KEY') ?? ''
-const TRON_HOT_KEY    = Deno.env.get('CUYPAY_TRON_HOT_KEY') ?? ''
-const BASE_HOT_KEY    = Deno.env.get('CUYPAY_BASE_HOT_KEY') || Deno.env.get('CUYPAY_BSC_HOT_KEY') || ''
+const BSC_HOT_KEY     = Deno.env.get('LINCOIN_BSC_HOT_KEY') ?? ''
+const TRON_HOT_KEY    = Deno.env.get('LINCOIN_TRON_HOT_KEY') ?? ''
+const BASE_HOT_KEY    = Deno.env.get('LINCOIN_BASE_HOT_KEY') || Deno.env.get('LINCOIN_BSC_HOT_KEY') || ''
 
 // ── GasFree (envíos USDT sin TRX; la comisión se paga en USDT) ──
 const GASFREE_API_KEY    = (Deno.env.get('GASFREE_API_KEY') ?? '').trim()
@@ -429,7 +429,7 @@ const TRX_GAS_SUN = 30_000_000 // 30 TRX
 async function ensureTronGas(userAddrB58: string) {
   const bal = await tronTrxBalanceSun(userAddrB58)
   if (bal >= TRX_GAS_SUN) return
-  if (!TRON_HOT_KEY) throw new Error(`La dirección ${userAddrB58} no tiene TRX para la comisión de red y no hay CUYPAY_TRON_HOT_KEY para patrocinarla`)
+  if (!TRON_HOT_KEY) throw new Error(`La dirección ${userAddrB58} no tiene TRX para la comisión de red y no hay LINCOIN_TRON_HOT_KEY para patrocinarla`)
   const hotEvm = new ethers.Wallet(TRON_HOT_KEY.startsWith('0x') ? TRON_HOT_KEY : '0x' + TRON_HOT_KEY)
   const hotB58 = await ethAddressToTron(hotEvm.address)
   console.log(`[ensureTronGas] patrocinando ${(TRX_GAS_SUN - bal) / 1e6} TRX a ${userAddrB58}`)
@@ -578,7 +578,7 @@ async function userWalletWithdrawal(userId: string, toAddress: string, amount: n
     // 2) Enviar on-chain desde la recaudadora
     let txHash: string
     if (net.includes('TRC')) {
-      if (!TRON_HOT_KEY) throw new Error('Configura CUYPAY_TRON_HOT_KEY (wallet recaudadora TRON) en Supabase Secrets')
+      if (!TRON_HOT_KEY) throw new Error('Configura LINCOIN_TRON_HOT_KEY (wallet recaudadora TRON) en Supabase Secrets')
       const pk = TRON_HOT_KEY.replace(/^0x/, '')
       const hotB58 = await ethAddressToTron(new ethers.Wallet('0x' + pk).address)
       const cfg = TOKEN_CFG.USDT_TRON
@@ -586,7 +586,7 @@ async function userWalletWithdrawal(userId: string, toAddress: string, amount: n
       if (hotBal < amount) throw new Error(`La recaudadora ${hotB58} solo tiene ${hotBal.toFixed(2)} USDT — fondéala para procesar este retiro de ${amount}`)
       txHash = await tronSendTrc20(pk, hotB58, toAddress, cfg.contract, amount, cfg.decimals)
     } else {
-      if (!BSC_HOT_KEY) throw new Error('Configura CUYPAY_BSC_HOT_KEY (hot wallet BNB Chain) en Supabase Secrets')
+      if (!BSC_HOT_KEY) throw new Error('Configura LINCOIN_BSC_HOT_KEY (hot wallet BNB Chain) en Supabase Secrets')
       const cfg = TOKEN_CFG.USDT_BSC
       const provider = new ethers.JsonRpcProvider(cfg.rpc!)
       const hot = new ethers.Wallet(BSC_HOT_KEY, provider)
@@ -688,9 +688,9 @@ async function gasfreeAccount(eoaB58: string) {
     code: acct?.code, message: acct?.message,
   }
 }
-// EOA (dirección TRON + llave) de la recaudadora, desde CUYPAY_TRON_HOT_KEY.
+// EOA (dirección TRON + llave) de la recaudadora, desde LINCOIN_TRON_HOT_KEY.
 async function recaudadoraWallet() {
-  if (!TRON_HOT_KEY) throw new Error('Configura CUYPAY_TRON_HOT_KEY (recaudadora) en Supabase Secrets')
+  if (!TRON_HOT_KEY) throw new Error('Configura LINCOIN_TRON_HOT_KEY (recaudadora) en Supabase Secrets')
   const pkHex = TRON_HOT_KEY.startsWith('0x') ? TRON_HOT_KEY : '0x' + TRON_HOT_KEY
   const eoa = await ethAddressToTron(new ethers.Wallet(pkHex).address)
   return { pkHex, eoa }
@@ -813,7 +813,7 @@ async function gasfreeSweepUser(userId: string) {
 // no gastar gas en polvo.
 const SWEEP_MIN_USDT = 1 // no barrer saldos menores a 1 USDT (no vale el gas)
 async function sweepAllToRecaudadora(): Promise<{ swept: any[]; skipped: number; recaudadora: string }> {
-  if (!TRON_HOT_KEY) throw new Error('Configura CUYPAY_TRON_HOT_KEY (recaudadora) en Supabase Secrets')
+  if (!TRON_HOT_KEY) throw new Error('Configura LINCOIN_TRON_HOT_KEY (recaudadora) en Supabase Secrets')
   const hotEvm = new ethers.Wallet(TRON_HOT_KEY.startsWith('0x') ? TRON_HOT_KEY : '0x' + TRON_HOT_KEY)
   const hotB58 = await ethAddressToTron(hotEvm.address)
   const cfg = TOKEN_CFG.USDT_TRON
@@ -960,13 +960,13 @@ async function sendWithdrawal(userId: string, walletKey: string, amount: number,
       tx = await contract.transfer(toAddress, ethers.parseUnits(netAmount.toString(), cfg.decimals))
     } else {
       // No mnemonic path has the USDT — fall back to treasury hot wallet
-      if (!hotKey) throw new Error('Fondos insuficientes y no hay billetera treasury configurada (CUYPAY_BSC_HOT_KEY)')
+      if (!hotKey) throw new Error('Fondos insuficientes y no hay billetera treasury configurada (LINCOIN_BSC_HOT_KEY)')
       const hotWallet   = new ethers.Wallet(hotKey, provider)
       const hotContract = new ethers.Contract(cfg.contract, ERC20_ABI, hotWallet)
       const rawHotBal   = await hotContract.balanceOf(hotWallet.address)
       const hotBal      = parseFloat(ethers.formatUnits(rawHotBal, cfg.decimals))
       console.log(`[sendWithdrawal] treasury balance: ${hotBal} ${walletKey}`)
-      if (hotBal < netAmount) throw new Error(`Fondos insuficientes en treasury (${hotBal.toFixed(2)} USDT). Recarga CUYPAY_BSC_HOT_KEY.`)
+      if (hotBal < netAmount) throw new Error(`Fondos insuficientes en treasury (${hotBal.toFixed(2)} USDT). Recarga LINCOIN_BSC_HOT_KEY.`)
       tx = await hotContract.transfer(toAddress, ethers.parseUnits(netAmount.toString(), cfg.decimals))
     }
 
@@ -1061,7 +1061,7 @@ async function sweepConvertToHotWallet(userId: string, walletKey: string, amount
   if (cfg.tron) {
     if (!TRON_MNEMONIC) throw new Error('TATUM_TRON_MNEMONIC no configurado en Supabase Secrets')
     if (!TATUM_API_KEY) throw new Error('TATUM_API_KEY no configurado')
-    if (!TRON_HOT_KEY) throw new Error('CUYPAY_TRON_HOT_KEY no configurado en Supabase Secrets')
+    if (!TRON_HOT_KEY) throw new Error('LINCOIN_TRON_HOT_KEY no configurado en Supabase Secrets')
     const hotEvm = new ethers.Wallet(TRON_HOT_KEY.startsWith('0x') ? TRON_HOT_KEY : '0x' + TRON_HOT_KEY)
     const hotAddr = await ethAddressToTron(hotEvm.address)
     const sweepStoredAddr: string | undefined = (userData?.raw_data?.tatumAddresses ?? {})[walletKey]
@@ -1074,7 +1074,7 @@ async function sweepConvertToHotWallet(userId: string, walletKey: string, amount
     // BSC / BASE
     if (!ETH_MNEMONIC) throw new Error('TATUM_ETH_MNEMONIC no configurado en Supabase Secrets')
     const hotKeyRaw = cfg.base ? (BASE_HOT_KEY || BSC_HOT_KEY) : BSC_HOT_KEY
-    if (!hotKeyRaw) throw new Error('CUYPAY_BSC_HOT_KEY no configurado en Supabase Secrets')
+    if (!hotKeyRaw) throw new Error('LINCOIN_BSC_HOT_KEY no configurado en Supabase Secrets')
     const provider = new ethers.JsonRpcProvider(cfg.rpc!)
     const root = ethers.HDNodeWallet.fromMnemonic(ethers.Mnemonic.fromPhrase(ETH_MNEMONIC), "m/44'/60'/0'/0")
     const userWallet = new ethers.Wallet(root.deriveChild(index).privateKey, provider)
@@ -1124,7 +1124,7 @@ async function getHotWallets() {
     result.polygon_hot_address = root.deriveChild(0).address
     result.note_bsc = 'Usando índice 0 del mnemonic ETH. Envía USDT/USDC y BNB (gas) a esta dirección.'
   } else {
-    result.bsc_error = 'CUYPAY_BSC_HOT_KEY o TATUM_ETH_MNEMONIC no configurados'
+    result.bsc_error = 'LINCOIN_BSC_HOT_KEY o TATUM_ETH_MNEMONIC no configurados'
   }
   if (TRON_HOT_KEY) {
     const tronWallet = new ethers.Wallet(TRON_HOT_KEY.startsWith('0x') ? TRON_HOT_KEY : '0x' + TRON_HOT_KEY)
@@ -1135,7 +1135,7 @@ async function getHotWallets() {
     result.tron_hot_address = await ethAddressToTron(child.address)
     result.note_tron = 'Usando índice 0 del mnemonic TRON. Envía USDT TRC-20 y TRX (gas) a esta dirección.'
   } else {
-    result.tron_error = 'CUYPAY_TRON_HOT_KEY o TATUM_TRON_MNEMONIC no configurados'
+    result.tron_error = 'LINCOIN_TRON_HOT_KEY o TATUM_TRON_MNEMONIC no configurados'
   }
   return result
 }
@@ -1236,7 +1236,7 @@ async function adminHotWalletWithdrawal(walletKey: string, amount: number, toAdd
 
   if (walletKey === 'USDT_TRON') {
     const cfg = TOKEN_CFG.USDT_TRON
-    if (!TRON_HOT_KEY && !TRON_MNEMONIC) throw new Error('Configura CUYPAY_TRON_HOT_KEY o TATUM_TRON_MNEMONIC en Supabase Secrets')
+    if (!TRON_HOT_KEY && !TRON_MNEMONIC) throw new Error('Configura LINCOIN_TRON_HOT_KEY o TATUM_TRON_MNEMONIC en Supabase Secrets')
     let pk: string
     if (TRON_HOT_KEY) {
       pk = TRON_HOT_KEY.replace(/^0x/, '')
@@ -1248,7 +1248,7 @@ async function adminHotWalletWithdrawal(walletKey: string, amount: number, toAdd
     txHash = await tronSendTrc20(pk, fromB58, toAddress, cfg.contract, amount, cfg.decimals)
 
   } else if (walletKey === 'TRX') {
-    if (!TRON_HOT_KEY && !TRON_MNEMONIC) throw new Error('Configura CUYPAY_TRON_HOT_KEY o TATUM_TRON_MNEMONIC en Supabase Secrets')
+    if (!TRON_HOT_KEY && !TRON_MNEMONIC) throw new Error('Configura LINCOIN_TRON_HOT_KEY o TATUM_TRON_MNEMONIC en Supabase Secrets')
     let pk: string
     if (TRON_HOT_KEY) {
       pk = TRON_HOT_KEY.replace(/^0x/, '')
@@ -1263,7 +1263,7 @@ async function adminHotWalletWithdrawal(walletKey: string, amount: number, toAdd
     // EVM (BSC, Base, Polygon): native tokens (BNB, ETH_BASE) and ERC-20s
     const hotKey = BASE_HOT_KEY || BSC_HOT_KEY ||
       (ETH_MNEMONIC ? ethers.HDNodeWallet.fromMnemonic(ethers.Mnemonic.fromPhrase(ETH_MNEMONIC), "m/44'/60'/0'/0").deriveChild(0).privateKey : null)
-    if (!hotKey) throw new Error('Configura CUYPAY_BSC_HOT_KEY o TATUM_ETH_MNEMONIC en Supabase Secrets')
+    if (!hotKey) throw new Error('Configura LINCOIN_BSC_HOT_KEY o TATUM_ETH_MNEMONIC en Supabase Secrets')
     const cfg = TOKEN_CFG[walletKey]
     const isBase = walletKey === 'ETH_BASE' || (cfg as any)?.base
     const rpc = isBase ? 'https://mainnet.base.org/' : (cfg?.rpc ?? 'https://bsc-dataseed.binance.org/')
@@ -1303,16 +1303,16 @@ async function setupWallets() {
     // ── Secrets to add in Supabase → Edge Functions → Secrets ──
     TATUM_ETH_XPUB:      ethRoot.neuter().extendedKey,
     TATUM_ETH_MNEMONIC:  ethMnemonic,
-    CUYPAY_BSC_HOT_KEY:  bscHotChild.privateKey,
+    LINCOIN_BSC_HOT_KEY:  bscHotChild.privateKey,
     bsc_hot_address:     bscHotChild.address,
 
     // BASE uses the SAME ETH key — same address, different network
-    CUYPAY_BASE_HOT_KEY: bscHotChild.privateKey,
+    LINCOIN_BASE_HOT_KEY: bscHotChild.privateKey,
     base_hot_address:    bscHotChild.address,
 
     TATUM_TRON_XPUB:     tronRoot.neuter().extendedKey,
     TATUM_TRON_MNEMONIC: tronMnemonic,
-    CUYPAY_TRON_HOT_KEY: tronHotChild.privateKey,
+    LINCOIN_TRON_HOT_KEY: tronHotChild.privateKey,
     tron_hot_address:    tronHotTronAddr,
   }
 }
@@ -1585,7 +1585,7 @@ Deno.serve(async (req) => {
     }
     // Barrer TODOS los buzones de clientes a la recaudadora. Seguro por
     // diseño: el destino SIEMPRE es la recaudadora (derivada del secret
-    // CUYPAY_TRON_HOT_KEY), nunca una dirección que el llamante controle —
+    // LINCOIN_TRON_HOT_KEY), nunca una dirección que el llamante controle —
     // así que ni el botón admin ni el cron pueden desviar fondos. Lo llaman
     // el botón del panel admin y el cron cada N minutos.
     if (action === 'sweep_all') {

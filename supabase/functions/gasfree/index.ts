@@ -15,7 +15,7 @@
 //                                          recaudadora (índice 0, reservado)
 //                                          como las wallets de los usuarios
 //                                          (índice 1, 2, 3...)
-//   CUYPAY_TRON_HOT_KEY                    OPCIONAL — solo si la recaudadora
+//   LINCOIN_TRON_HOT_KEY                    OPCIONAL — solo si la recaudadora
 //                                          ya es una dirección financiada
 //                                          antes de este cambio; si no está
 //                                          seteada, la recaudadora se genera
@@ -32,7 +32,7 @@ const db = createClient(SUPABASE_URL, SERVICE_KEY)
 const API_KEY    = (Deno.env.get('GASFREE_API_KEY') ?? '').trim()
 const API_SECRET = (Deno.env.get('GASFREE_API_SECRET') ?? '').trim()
 const NET = (Deno.env.get('GASFREE_NET') ?? 'nile').trim().toLowerCase() === 'tron' ? 'tron' : 'nile'
-const HOT_KEY  = (Deno.env.get('CUYPAY_TRON_HOT_KEY') ?? '').trim()
+const HOT_KEY  = (Deno.env.get('LINCOIN_TRON_HOT_KEY') ?? '').trim()
 const MNEMO_GASFREE = (Deno.env.get('GASFREE_TRON_MNEMONIC') || '').trim()
 const MNEMO_TATUM   = (Deno.env.get('TATUM_TRON_MNEMONIC') || '').trim()
 const MNEMONIC = (MNEMO_GASFREE || MNEMO_TATUM).trim()
@@ -271,7 +271,7 @@ async function gfAccount(eoaB58: string) {
 
 // ── Wallets (recaudadora + usuarios) ──────────────────────
 // La recaudadora ya NO exige pegar una llave privada a mano en Secrets
-// (CUYPAY_TRON_HOT_KEY sigue soportado, por si ya se financió esa
+// (LINCOIN_TRON_HOT_KEY sigue soportado, por si ya se financió esa
 // dirección) — si no está configurada, se GENERA sola derivándola del
 // mismo mnemónico que usan las wallets de los clientes, en el índice 0
 // (reservado: los clientes arrancan en el índice 1, así que 0 nunca
