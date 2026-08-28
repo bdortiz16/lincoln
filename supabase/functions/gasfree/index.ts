@@ -134,13 +134,24 @@ async function gfAuth(method: string, path: string): Promise<Record<string, stri
 async function gfGet(apiPath: string): Promise<any> {
   const path = `${CFG.prefix}${apiPath}`
   const r = await fetch(`${CFG.host}${path}`, { headers: await gfAuth('GET', path) })
-  return await r.json()
+  const txt = await r.text()
+  try { return JSON.parse(txt) }
+  catch {
+    // GasFree devuelve texto plano en errores de auth (ej. "Apikey not found.").
+    const hint = /apikey/i.test(txt) ? ' — revisa GASFREE_API_KEY/SECRET en Supabase Secrets y que sean del entorno correcto (mainnet/tron vs nile) y estén verificadas.' : ''
+    throw new Error(`GasFree respondió (HTTP ${r.status}): ${txt.slice(0, 180)}${hint}`)
+  }
 }
 async function gfPost(apiPath: string, body: any): Promise<any> {
   const path = `${CFG.prefix}${apiPath}`
   const headers = { ...(await gfAuth('POST', path)), 'Content-Type': 'application/json' }
   const r = await fetch(`${CFG.host}${path}`, { method: 'POST', headers, body: JSON.stringify(body) })
-  return await r.json()
+  const txt = await r.text()
+  try { return JSON.parse(txt) }
+  catch {
+    const hint = /apikey/i.test(txt) ? ' — revisa GASFREE_API_KEY/SECRET en Supabase Secrets y que sean del entorno correcto (mainnet/tron vs nile) y estén verificadas.' : ''
+    throw new Error(`GasFree respondió (HTTP ${r.status}): ${txt.slice(0, 180)}${hint}`)
+  }
 }
 
 // ── Saldo de un token TRC-20 (balanceOf) en un host TronGrid dado ──
