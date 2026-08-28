@@ -154,7 +154,7 @@ export const BlockUserModal: React.FC<Props> = ({ userLabel, initialType, onCanc
                         <select
                             value={reason}
                             onChange={e => setReason(e.target.value)}
-                            className="w-full px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm focus:border-teal-500 outline-none"
+                            className="w-full px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm focus:border-green-500 outline-none"
                         >
                             {REASONS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
                         </select>
@@ -170,7 +170,7 @@ export const BlockUserModal: React.FC<Props> = ({ userLabel, initialType, onCanc
                             onChange={e => setNotes(e.target.value)}
                             rows={3}
                             placeholder="Contexto que verá el usuario en la app y quedará en el audit log…"
-                            className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm focus:border-teal-500 outline-none resize-none"
+                            className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm focus:border-green-500 outline-none resize-none"
                         />
                     </div>
 
@@ -189,7 +189,7 @@ export const BlockUserModal: React.FC<Props> = ({ userLabel, initialType, onCanc
                                             key={d.value}
                                             className={`flex items-start gap-2 p-2.5 rounded-lg border cursor-pointer transition-colors ${
                                                 checked
-                                                    ? 'border-teal-500 bg-teal-50'
+                                                    ? 'border-green-500 bg-green-50'
                                                     : 'border-slate-200 bg-white hover:bg-slate-50'
                                             }`}
                                         >
@@ -197,7 +197,7 @@ export const BlockUserModal: React.FC<Props> = ({ userLabel, initialType, onCanc
                                                 type="checkbox"
                                                 checked={checked}
                                                 onChange={() => toggleDoc(d.value)}
-                                                className="mt-0.5 accent-teal-600 shrink-0"
+                                                className="mt-0.5 accent-green-600 shrink-0"
                                             />
                                             <div className="min-w-0">
                                                 <p className="text-xs font-semibold" style={{ color: NAVY }}>{d.label}</p>

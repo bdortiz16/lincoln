@@ -450,7 +450,7 @@ export const TransactionsSection: React.FC<Props> = ({ profile, embedded = false
                                         <tr
                                             key={t.id}
                                             onClick={() => setDetailTxId(t.id)}
-                                            className="border-t border-slate-100 hover:bg-teal-50/50 cursor-pointer transition-colors"
+                                            className="border-t border-slate-100 hover:bg-green-50/50 cursor-pointer transition-colors"
                                         >
                                             <td className="px-4 py-3 font-medium text-slate-900 capitalize align-top">{t.type}</td>
                                             <td className="px-4 py-3 align-top">

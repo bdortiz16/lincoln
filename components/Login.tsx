@@ -157,7 +157,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
           <button
             onClick={handleVerify2FA}
             disabled={mfaCode.length !== 6 || mfaLoading}
-            className="w-full h-12 bg-[#0F172A] hover:bg-[#152e52] font-bold rounded-lg disabled:opacity-50 transition-colors mb-4 shadow-lg shadow-teal-900/20"
+            className="w-full h-12 bg-[#0F172A] hover:bg-[#152e52] font-bold rounded-lg disabled:opacity-50 transition-colors mb-4 shadow-lg shadow-green-900/20"
           >
             {mfaLoading ? 'Verificando...' : 'Verificar'}
           </button>
@@ -248,7 +248,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
         <button
           onClick={handleLogin}
           disabled={isLoading}
-          className="btn-shine w-full h-12 bg-[#0F172A] hover:bg-[#152e52] font-bold rounded-lg transition-all duration-200 shadow-lg shadow-teal-900/20 disabled:opacity-70 hover:shadow-xl hover:shadow-teal-500/30 hover:-translate-y-0.5 active:scale-[0.98] active:translate-y-0"
+          className="btn-shine w-full h-12 bg-[#0F172A] hover:bg-[#152e52] font-bold rounded-lg transition-all duration-200 shadow-lg shadow-green-900/20 disabled:opacity-70 hover:shadow-xl hover:shadow-green-500/30 hover:-translate-y-0.5 active:scale-[0.98] active:translate-y-0"
         >
           {isLoading ? 'Iniciando sesión...' : 'Iniciar sesión'}
         </button>

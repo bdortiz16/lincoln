@@ -438,7 +438,7 @@ export const DocRequestsTab: React.FC<Props> = ({ profile }) => {
                     placeholder="Buscar por usuario, título, TX ID..."
                     value={search}
                     onChange={e => setSearch(e.target.value)}
-                    className="w-full pl-9 pr-4 py-2 rounded-lg border border-slate-200 focus:border-teal-500 outline-none text-sm"
+                    className="w-full pl-9 pr-4 py-2 rounded-lg border border-slate-200 focus:border-green-500 outline-none text-sm"
                 />
             </div>
 
@@ -489,7 +489,7 @@ export const DocRequestsTab: React.FC<Props> = ({ profile }) => {
                                                     </span>
                                                 )}
                                                 {isMobileDoc && (
-                                                    <span className="text-[10px] uppercase tracking-wider text-teal-700 bg-teal-50 px-1.5 py-0.5 rounded">
+                                                    <span className="text-[10px] uppercase tracking-wider text-green-700 bg-green-50 px-1.5 py-0.5 rounded">
                                                         subido desde app
                                                     </span>
                                                 )}
@@ -676,7 +676,7 @@ const SetupBanner: React.FC<{ sql: string; onRetry: () => void }> = ({ sql, onRe
                     <div className="flex gap-2">
                         <button
                             onClick={copy}
-                            className="text-[11px] text-teal-300 hover:text-teal-200 font-semibold"
+                            className="text-[11px] text-green-300 hover:text-green-200 font-semibold"
                         >
                             {copied ? '✓ Copiado' : 'Copiar'}
                         </button>
@@ -901,7 +901,7 @@ const CreateRequestModal: React.FC<{
                 <div>
                     <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Usuario *</label>
                     {picked ? (
-                        <div className="mt-1 flex items-center justify-between p-2 bg-teal-50 rounded-lg">
+                        <div className="mt-1 flex items-center justify-between p-2 bg-green-50 rounded-lg">
                             <div>
                                 <p className="text-sm font-semibold" style={{ color: NAVY }}>{picked.full_name ?? picked.email}</p>
                                 <p className="text-xs text-slate-500">{picked.email}</p>
@@ -918,7 +918,7 @@ const CreateRequestModal: React.FC<{
                                     value={userQuery}
                                     onChange={e => setUserQuery(e.target.value)}
                                     placeholder="Buscar por email, nombre o Lincoin ID…"
-                                    className="w-full pl-9 pr-3 py-2 rounded-lg border border-slate-200 text-sm focus:border-teal-500 outline-none"
+                                    className="w-full pl-9 pr-3 py-2 rounded-lg border border-slate-200 text-sm focus:border-green-500 outline-none"
                                 />
                             </div>
                             <div className="mt-2 border border-slate-200 rounded-lg overflow-hidden bg-white">
@@ -944,7 +944,7 @@ const CreateRequestModal: React.FC<{
                                                     <li key={u.id} className="border-b border-slate-100 last:border-b-0">
                                                         <button
                                                             onClick={() => setPicked(u)}
-                                                            className="w-full text-left px-3 py-2 hover:bg-teal-50 text-sm flex items-center gap-2.5 transition-colors"
+                                                            className="w-full text-left px-3 py-2 hover:bg-green-50 text-sm flex items-center gap-2.5 transition-colors"
                                                         >
                                                             <div
                                                                 className="w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs shrink-0"
@@ -1010,7 +1010,7 @@ const CreateRequestModal: React.FC<{
                         if (selected) {
                             const f = fmtTx(selected);
                             return (
-                                <div className="mt-1 flex items-center justify-between gap-2 px-3 py-2 bg-teal-50 border border-teal-200 rounded-lg">
+                                <div className="mt-1 flex items-center justify-between gap-2 px-3 py-2 bg-green-50 border border-green-200 rounded-lg">
                                     <div className="min-w-0 text-xs">
                                         <span className="font-bold" style={{ color: NAVY }}>{f.kindLbl}</span>
                                         <span className="text-slate-600"> · {f.monto} · {f.fecha} · {selected.status ?? ''}</span>
@@ -1019,7 +1019,7 @@ const CreateRequestModal: React.FC<{
                                     <button
                                         type="button"
                                         onClick={() => { setTxId(''); setTxQuery(''); }}
-                                        className="p-1 rounded hover:bg-teal-100 text-slate-500 shrink-0"
+                                        className="p-1 rounded hover:bg-green-100 text-slate-500 shrink-0"
                                         title="Quitar transacción"
                                     >
                                         <X size={13} />
@@ -1061,7 +1061,7 @@ const CreateRequestModal: React.FC<{
                                             : userTxs.length === 0
                                                 ? 'Este usuario no tiene movimientos — pegá un UUID si hace falta'
                                                 : `Buscar en ${userTxs.length} movimientos: fecha, tipo, monto o UUID…`}
-                                        className="w-full pl-9 pr-3 py-2 rounded-lg border border-slate-200 text-xs focus:border-teal-500 outline-none"
+                                        className="w-full pl-9 pr-3 py-2 rounded-lg border border-slate-200 text-xs focus:border-green-500 outline-none"
                                     />
                                 </div>
                                 {txOpen && (filtered.length > 0 || pastedUuid) && (
@@ -1070,7 +1070,7 @@ const CreateRequestModal: React.FC<{
                                             <button
                                                 type="button"
                                                 onMouseDown={() => { setTxId(txQuery.trim()); setTxOpen(false); }}
-                                                className="w-full text-left px-3 py-2.5 hover:bg-teal-50 border-b border-slate-100"
+                                                className="w-full text-left px-3 py-2.5 hover:bg-green-50 border-b border-slate-100"
                                             >
                                                 <span className="text-xs font-semibold" style={{ color: NAVY }}>Usar este UUID</span>
                                                 <span className="block font-mono text-[10px] text-slate-500 truncate">{txQuery.trim()}</span>
@@ -1530,7 +1530,7 @@ const ReviewModal: React.FC<{
                             <span>
                                 {request.responded_at ? `Subido ${formatDate(request.responded_at)}` : 'Fecha desconocida'}
                             </span>
-                            <a href={request.file_url} target="_blank" rel="noreferrer" className="text-teal-400 hover:text-teal-300 font-semibold">
+                            <a href={request.file_url} target="_blank" rel="noreferrer" className="text-green-400 hover:text-green-300 font-semibold">
                                 Abrir original ↗
                             </a>
                         </div>
@@ -1538,8 +1538,8 @@ const ReviewModal: React.FC<{
                 )}
 
                 {request.user_response ? (
-                    <div className="bg-teal-50 border border-teal-200 rounded-lg p-3">
-                        <p className="text-[10px] font-bold uppercase tracking-wider text-teal-700 mb-1">
+                    <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-green-700 mb-1">
                             Respuesta del usuario · {formatDate(request.responded_at)}
                         </p>
                         <p className="text-sm whitespace-pre-wrap" style={{ color: NAVY }}>{request.user_response}</p>
@@ -1683,7 +1683,7 @@ const ReviewModal: React.FC<{
                         <button
                             onClick={reopen}
                             disabled={saving !== null}
-                            className="flex items-center gap-1 px-3 py-2 text-sm font-semibold text-white rounded-lg bg-teal-600 hover:bg-teal-700 disabled:opacity-50"
+                            className="flex items-center gap-1 px-3 py-2 text-sm font-semibold text-white rounded-lg bg-green-600 hover:bg-green-700 disabled:opacity-50"
                             title="Vuelve la solicitud a estado pendiente. Limpia la respuesta anterior y el user tendrá que subir los documentos otra vez."
                         >
                             <RefreshCw size={14} /> {saving === 'pending' ? '…' : 'Reabrir — el user vuelve a subir docs'}
@@ -1794,7 +1794,7 @@ const AttachmentGallery: React.FC<{ attachments: any[] }> = ({ attachments }) =>
                                         href={url}
                                         target="_blank"
                                         rel="noreferrer"
-                                        className="text-[10px] font-bold text-teal-700 hover:underline shrink-0"
+                                        className="text-[10px] font-bold text-green-700 hover:underline shrink-0"
                                         title="Abrir original en pestaña nueva"
                                     >
                                         Abrir ↗

@@ -164,7 +164,7 @@ const SimpleBarChart: React.FC<{ data: { label: string; value: number; percentag
         <div className="w-full bg-slate-50 rounded-t-lg relative h-full flex items-end overflow-hidden hover:bg-slate-100 transition-colors">
            <div 
              style={{ height: `${item.percentage}%` }} 
-             className="w-full bg-[#0F172A] opacity-90 group-hover:opacity-100 group-hover:bg-[#2DD4BF] transition-all duration-500 rounded-t-sm relative"
+             className="w-full bg-[#0F172A] opacity-90 group-hover:opacity-100 group-hover:bg-[#4ADE80] transition-all duration-500 rounded-t-sm relative"
            >
              <div className="opacity-0 group-hover:opacity-100 absolute -top-8 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-[10px] px-2 py-1 rounded pointer-events-none whitespace-nowrap shadow-lg transition-opacity z-10 font-bold">
                ${item.value.toLocaleString()}
@@ -180,10 +180,10 @@ const SimpleBarChart: React.FC<{ data: { label: string; value: number; percentag
 const AdminSidebarItem: React.FC<{ icon: React.ElementType; label: string; active?: boolean; badge?: number; onClick: () => void }> = ({ icon: Icon, label, active, badge, onClick }) => (
   <button onClick={onClick} className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg transition-all duration-200 group ${active ? 'bg-white/10 text-white' : 'text-slate-400 hover:bg-white/5 hover:text-white'}`}>
       <div className="flex items-center gap-3">
-          <Icon size={20} className={active ? 'text-[#2DD4BF]' : 'text-slate-500 group-hover:text-slate-300'} />
+          <Icon size={20} className={active ? 'text-[#4ADE80]' : 'text-slate-500 group-hover:text-slate-300'} />
           <span className="text-sm font-medium">{label}</span>
       </div>
-      {badge ? (<span className="bg-[#2DD4BF] text-[#0F172A] text-[10px] font-bold px-2 py-0.5 rounded-full">{badge}</span>) : null}
+      {badge ? (<span className="bg-[#4ADE80] text-[#0F172A] text-[10px] font-bold px-2 py-0.5 rounded-full">{badge}</span>) : null}
   </button>
 );
 
@@ -808,7 +808,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       <div className="space-y-8 animate-in fade-in duration-300">
           <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
               <StatCard title="Clientes Pendientes" value={stats.pendingClients} icon={UserCheck} color="bg-orange-500" onClick={() => setActiveTab('clients')} subValue="Requieren acción" loading={!dataReady} />
-              <StatCard title="Solicitudes Carga" value={stats.pendingDeposits} icon={ArrowRight} color="bg-[#2DD4BF]" onClick={() => setActiveTab('treasury')} subValue="Pendientes" loading={!dataReady} />
+              <StatCard title="Solicitudes Carga" value={stats.pendingDeposits} icon={ArrowRight} color="bg-[#4ADE80]" onClick={() => setActiveTab('treasury')} subValue="Pendientes" loading={!dataReady} />
               <StatCard title="Solicitudes Retiro" value={stats.pendingWithdrawals} icon={LogOut} color="bg-red-500" onClick={() => setActiveTab('treasury')} subValue="Pendientes" loading={!dataReady} />
               <StatCard title="Volumen Total" value={stats.totalVolume} icon={BarChart3} color="bg-green-600" subValue="Transado Histórico" loading={!dataReady} />
           </div>
@@ -998,7 +998,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                                       <button onClick={() => { setShowDeleteConfirm(true); setShowBlockInput(false); }} className="bg-red-600 text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-red-700 transition-colors flex items-center gap-1">
                                           <Trash2 size={14}/> Eliminar
                                       </button>
-                                      <button onClick={() => handleSyncCrypto(selectedClient.id, selectedClient.name)} className="bg-[#2DD4BF] text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-[#14B8A6] transition-colors flex items-center gap-1">
+                                      <button onClick={() => handleSyncCrypto(selectedClient.id, selectedClient.name)} className="bg-[#4ADE80] text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-[#22C55E] transition-colors flex items-center gap-1">
                                           <RefreshCw size={14}/> Sincronizar Cripto
                                       </button>
                                       {selectedClient.role === 'business' && (
@@ -1085,7 +1085,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                                                   { label: 'PEP', val: selectedClient.isPep ? 'Sí' : 'No' },
                                               ].map(({ label, val }) => (
                                                   <div key={label} className="bg-white rounded-lg p-2 border border-slate-200">
-                                                      <p className="text-[10px] font-bold text-[#2DD4BF] uppercase">{label}</p>
+                                                      <p className="text-[10px] font-bold text-[#4ADE80] uppercase">{label}</p>
                                                       <p className="text-sm text-slate-700 font-medium">{val || 'N/A'}</p>
                                                   </div>
                                               ))}
@@ -1104,7 +1104,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                                                       {typeof val === 'string' && val.startsWith('data:image') ? (
                                                           <img src={val} alt={key} className="w-full h-32 object-cover rounded bg-slate-100 cursor-pointer hover:opacity-90" onClick={() => {const w = window.open(""); w?.document.write(`<img src="${val}"/>`)}}/>
                                                       ) : (
-                                                          <a href={val as string} download className="text-[#2DD4BF] text-xs underline truncate block">{val ? 'Descargar Archivo' : 'Sin archivo'}</a>
+                                                          <a href={val as string} download className="text-[#4ADE80] text-xs underline truncate block">{val ? 'Descargar Archivo' : 'Sin archivo'}</a>
                                                       )}
                                                   </div>
                                               ))}
@@ -1297,7 +1297,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
           <div className="space-y-4">
               <div className="flex gap-6 border-b border-slate-200">
                   <button onClick={() => setTreasuryTab('deposits')} className={`pb-3 text-sm font-bold transition-colors border-b-2 ${treasuryTab === 'deposits' ? 'text-[#0F172A] border-[#0F172A]' : 'text-slate-400 border-transparent hover:text-slate-600'}`}>
-                      Solicitudes Carga <span className="ml-1 bg-slate-100 text-[#2DD4BF] px-1.5 py-0.5 rounded-full text-[10px]">{pendingDeposits.length}</span>
+                      Solicitudes Carga <span className="ml-1 bg-slate-100 text-[#4ADE80] px-1.5 py-0.5 rounded-full text-[10px]">{pendingDeposits.length}</span>
                   </button>
                   <button onClick={() => setTreasuryTab('withdrawals')} className={`pb-3 text-sm font-bold transition-colors border-b-2 ${treasuryTab === 'withdrawals' ? 'text-[#0F172A] border-[#0F172A]' : 'text-slate-400 border-transparent hover:text-slate-600'}`}>
                       Solicitudes Retiro <span className="ml-1 bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded-full text-[10px]">{pendingWithdrawals.length}</span>
@@ -1306,7 +1306,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                       Historial Fiat
                   </button>
                   <button onClick={() => setTreasuryTab('crypto')} className={`pb-3 text-sm font-bold transition-colors border-b-2 ${treasuryTab === 'crypto' ? 'text-[#0F172A] border-[#0F172A]' : 'text-slate-400 border-transparent hover:text-slate-600'}`}>
-                      Operaciones Cripto <span className="ml-1 bg-slate-100 text-[#2DD4BF] px-1.5 py-0.5 rounded-full text-[10px]">{cryptoTxs.length}</span>
+                      Operaciones Cripto <span className="ml-1 bg-slate-100 text-[#4ADE80] px-1.5 py-0.5 rounded-full text-[10px]">{cryptoTxs.length}</span>
                   </button>
               </div>
 
@@ -1428,9 +1428,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                     <p className="text-xs text-orange-600 mt-0.5">{userWDs.length} operaciones</p>
                   </div>
                   <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
-                    <p className="text-[10px] font-bold text-teal-700 uppercase mb-1 flex items-center gap-1"><DollarSign size={12}/> Comisiones cobradas</p>
-                    <p className="text-2xl font-black text-teal-800">{totalFees.toFixed(2)}</p>
-                    <p className="text-xs text-teal-600 mt-0.5">de retiros procesados</p>
+                    <p className="text-[10px] font-bold text-green-700 uppercase mb-1 flex items-center gap-1"><DollarSign size={12}/> Comisiones cobradas</p>
+                    <p className="text-2xl font-black text-green-800">{totalFees.toFixed(2)}</p>
+                    <p className="text-xs text-green-600 mt-0.5">de retiros procesados</p>
                   </div>
                   <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
                     <p className="text-[10px] font-bold text-slate-700 uppercase mb-1 flex items-center gap-1"><Vault size={12}/> Retiros admin</p>
@@ -1472,7 +1472,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                         otc_withdraw:          { label: '↑ Retiro usuario',  color: 'bg-orange-100 text-orange-700' },
                         otc_withdraw_request:  { label: '⏳ Retiro pendiente',color: 'bg-yellow-100 text-yellow-700' },
                         admin_hot_withdrawal:  { label: '🏦 Retiro admin',   color: 'bg-slate-100 text-slate-700' },
-                        otc_convert_request:   { label: '⇄ Conversión',      color: 'bg-slate-100 text-[#2DD4BF]' },
+                        otc_convert_request:   { label: '⇄ Conversión',      color: 'bg-slate-100 text-[#4ADE80]' },
                       };
                       const tInfo = typeLabel[tx.type] ?? { label: tx.type, color: 'bg-slate-100 text-slate-600' };
                       const shortHash = (h: string) => h ? `${h.slice(0,6)}…${h.slice(-4)}` : '—';
@@ -1489,7 +1489,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                           </td>
                           <td className="px-4 py-3">
                             {isAdmin ? (
-                              <span className="text-xs font-bold text-slate-700 flex items-center gap-1"><Shield size={12} className="text-[#2DD4BF]"/> Admin</span>
+                              <span className="text-xs font-bold text-slate-700 flex items-center gap-1"><Shield size={12} className="text-[#4ADE80]"/> Admin</span>
                             ) : (
                               <div>
                                 <p className="text-xs font-bold text-slate-800">{tx.userName || '—'}</p>
@@ -1509,7 +1509,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                           </td>
                           <td className="px-4 py-3 text-right">
                             {raw.fee > 0 ? (
-                              <span className="text-xs font-bold text-teal-700">{Number(raw.fee).toFixed(2)} {token}</span>
+                              <span className="text-xs font-bold text-green-700">{Number(raw.fee).toFixed(2)} {token}</span>
                             ) : <span className="text-slate-300">—</span>}
                           </td>
                           <td className="px-4 py-3">
@@ -1521,7 +1521,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                           </td>
                           <td className="px-4 py-3">
                             {raw.txHash ? (
-                              <span className="text-[11px] font-mono text-[#2DD4BF] cursor-pointer hover:underline" title={raw.txHash}
+                              <span className="text-[11px] font-mono text-[#4ADE80] cursor-pointer hover:underline" title={raw.txHash}
                                 onClick={() => navigator.clipboard.writeText(raw.txHash).then(() => showToast('TxHash copiado'))}>
                                 {shortHash(raw.txHash)}
                               </span>
@@ -1600,9 +1600,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                               </div>
                               <div className="p-4 bg-[#0F172A] rounded-xl border border-slate-900 text-white relative overflow-hidden">
                                   <div className="absolute top-0 right-0 w-16 h-16 bg-white/10 rounded-full blur-xl -translate-y-1/2 translate-x-1/2"></div>
-                                  <p className="text-xs text-teal-200 font-bold uppercase mb-1 relative z-10">Utilidad Neta</p>
+                                  <p className="text-xs text-green-200 font-bold uppercase mb-1 relative z-10">Utilidad Neta</p>
                                   <p className="text-2xl font-bold text-white tracking-tight relative z-10">${Math.round(financials.netProfit).toLocaleString()}</p>
-                                  <span className="text-[10px] text-teal-300 relative z-10">Profit final operativo</span>
+                                  <span className="text-[10px] text-green-300 relative z-10">Profit final operativo</span>
                               </div>
                           </div>
                       </div>
@@ -1614,7 +1614,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                           </div>
                           <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-center items-center text-center">
                               <h4 className="text-sm font-bold text-slate-600 mb-6 self-start">Salud del Negocio</h4>
-                              <div className="w-40 h-40 rounded-full border-[12px] border-slate-100 border-t-[#2DD4BF] border-r-[#2DD4BF] flex flex-col items-center justify-center mb-4 transform -rotate-45">
+                              <div className="w-40 h-40 rounded-full border-[12px] border-slate-100 border-t-[#4ADE80] border-r-[#4ADE80] flex flex-col items-center justify-center mb-4 transform -rotate-45">
                                   <div className="transform rotate-45 text-center">
                                       <span className="text-3xl font-bold text-slate-800">{financials.activeUsers}</span>
                                       <span className="block text-[10px] text-slate-400 font-bold uppercase">Usuarios Activos</span>
@@ -1751,7 +1751,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                                           {historyTransactions.filter(tx => tx.userId === selectedReportUser.id).map(tx => (
                                               <div key={tx.id} className="flex justify-between items-center p-3 bg-slate-50 rounded-lg border border-slate-100">
                                                   <div className="flex items-center gap-3">
-                                                      <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs ${tx.type === 'load' ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-[#2DD4BF]'}`}>
+                                                      <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs ${tx.type === 'load' ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-[#4ADE80]'}`}>
                                                           {tx.initials}
                                                       </div>
                                                       <div>
@@ -1794,7 +1794,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
 
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                           <div className="bg-white p-8 rounded-xl border border-slate-200 shadow-sm flex flex-col items-center text-center hover:shadow-md transition-shadow">
-                              <div className="w-20 h-20 bg-slate-50 rounded-full flex items-center justify-center text-[#2DD4BF] mb-6">
+                              <div className="w-20 h-20 bg-slate-50 rounded-full flex items-center justify-center text-[#4ADE80] mb-6">
                                   <Database size={40} strokeWidth={1.5} />
                               </div>
                               <h3 className="text-xl font-bold text-slate-800 mb-2">Copia de Seguridad (Backup)</h3>
@@ -1970,7 +1970,7 @@ const renderBanks = () => (
                         </div>
                         <div>
                             <h4 className="font-bold text-slate-800 text-lg">{bank.name}</h4>
-                            <span className="bg-slate-50 text-[#2DD4BF] text-[10px] font-bold px-2 py-0.5 rounded uppercase">{bank.type === 'qr' ? 'CÓDIGO QR' : 'CUENTA BANCARIA'}</span>
+                            <span className="bg-slate-50 text-[#4ADE80] text-[10px] font-bold px-2 py-0.5 rounded uppercase">{bank.type === 'qr' ? 'CÓDIGO QR' : 'CUENTA BANCARIA'}</span>
                         </div>
                     </div>
 
@@ -2180,7 +2180,7 @@ const renderTeam = () => (
                             <td className="px-6 py-4 text-xs text-slate-500">{admin.lastAccess}</td>
                             <td className="px-6 py-4 text-right">
                                 <div className="flex justify-end gap-2">
-                                    <button onClick={() => { setEditingUserId(admin.id); setNewUserForm(admin); setShowAddUserModal(true); }} className="text-[#2DD4BF] hover:bg-slate-50 p-1.5 rounded"><Edit2 size={16}/></button>
+                                    <button onClick={() => { setEditingUserId(admin.id); setNewUserForm(admin); setShowAddUserModal(true); }} className="text-[#4ADE80] hover:bg-slate-50 p-1.5 rounded"><Edit2 size={16}/></button>
                                     <button onClick={() => { if(confirm('Eliminar usuario?')) deleteAdminUser(admin.id); }} className="text-red-600 hover:bg-red-50 p-1.5 rounded"><Trash2 size={16}/></button>
                                 </div>
                             </td>
@@ -2225,13 +2225,13 @@ const renderDesign = () => (
           {/* Blue Palette Chooser */}
           <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
               <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
-                  <Palette size={20} className="text-[#2DD4BF]"/> Paletas de Azules
+                  <Palette size={20} className="text-[#4ADE80]"/> Paletas de Azules
               </h3>
               <p className="text-slate-500 text-sm mb-4">Elige entre 10 variaciones de azul para la identidad visual de Lincoin.</p>
               <button
                   onClick={() => setShowPaletteChooser(true)}
                   className="w-full py-3 rounded-xl font-bold text-white transition-all hover:opacity-90 flex items-center justify-center gap-2"
-                  style={{ background: 'linear-gradient(135deg, #050A14, #2DD4BF)' }}
+                  style={{ background: 'linear-gradient(135deg, #050A14, #4ADE80)' }}
               >
                   <Palette size={18}/> Ver las 10 paletas de azules
               </button>
@@ -2259,9 +2259,9 @@ const renderDesign = () => (
                       <div className="text-2xl">🍂</div>
                       <span className="font-bold text-xs text-yellow-700">Otoño</span>
                   </button>
-                  <button onClick={() => { setThemePreset('summer'); showToast('Tema Verano aplicado'); }} className="p-4 rounded-xl border border-slate-200 hover:border-teal-400 transition-all flex flex-col items-center gap-2 group bg-slate-50">
+                  <button onClick={() => { setThemePreset('summer'); showToast('Tema Verano aplicado'); }} className="p-4 rounded-xl border border-slate-200 hover:border-green-400 transition-all flex flex-col items-center gap-2 group bg-slate-50">
                       <div className="text-2xl">☀️</div>
-                      <span className="font-bold text-xs text-[#2DD4BF]">Verano</span>
+                      <span className="font-bold text-xs text-[#4ADE80]">Verano</span>
                   </button>
                   <button onClick={() => { setThemePreset('patrias'); showToast('Tema Fiestas Patrias aplicado'); }} className="p-4 rounded-xl border border-slate-200 hover:border-red-800 transition-all flex flex-col items-center gap-2 group bg-slate-100">
                       <FlagImg code="CL" className="w-8 h-6 object-cover rounded shadow-sm" />
@@ -2657,7 +2657,7 @@ const renderDesign = () => (
         {/* Global Toasts */}
         {toastMessage && (
             <div className="fixed top-6 right-6 z-[70] bg-[#0F172A] text-white px-6 py-3 rounded-lg shadow-xl flex items-center gap-3 animate-in slide-in-from-top-4 fade-in max-w-md">
-                <CheckCircle size={20} className="text-[#2DD4BF]" />
+                <CheckCircle size={20} className="text-[#4ADE80]" />
                 <span className="font-medium text-sm">{toastMessage}</span>
             </div>
         )}
@@ -2717,7 +2717,7 @@ const renderDesign = () => (
                         <div className="grid grid-cols-2 gap-4 bg-slate-50 p-4 rounded-lg">
                             <div>
                                 <span className="block text-xs text-slate-500 uppercase font-bold">Tipo</span>
-                                <span className={`font-bold ${selectedTreasuryTx.type === 'load' ? 'text-green-600' : 'text-[#2DD4BF]'}`}>{selectedTreasuryTx.type === 'load' ? 'Depósito Entrante' : 'Solicitud Retiro'}</span>
+                                <span className={`font-bold ${selectedTreasuryTx.type === 'load' ? 'text-green-600' : 'text-[#4ADE80]'}`}>{selectedTreasuryTx.type === 'load' ? 'Depósito Entrante' : 'Solicitud Retiro'}</span>
                             </div>
                             <div>
                                 <span className="block text-xs text-slate-500 uppercase font-bold">Monto</span>
@@ -2744,7 +2744,7 @@ const renderDesign = () => (
                                             <span className="text-xs font-bold text-slate-500 uppercase block mb-1">Comprobante</span>
                                             {proof ? (
                                                 <>
-                                                    <a href={proof} download="comprobante.png" className="text-[#2DD4BF] underline text-xs flex items-center gap-1"><Download size={12}/> Descargar Evidencia</a>
+                                                    <a href={proof} download="comprobante.png" className="text-[#4ADE80] underline text-xs flex items-center gap-1"><Download size={12}/> Descargar Evidencia</a>
                                                     {proof.startsWith('data:image') && (
                                                         <img src={proof} alt="Comprobante" className="mt-2 rounded border max-h-40 object-contain" />
                                                     )}

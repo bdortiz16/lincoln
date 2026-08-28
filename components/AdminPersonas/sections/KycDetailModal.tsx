@@ -780,7 +780,7 @@ export const KycDetailModal: React.FC<Props> = ({ kind, entity, profile, canAppr
                                 onClick={() => setTab(t.id)}
                                 className={`flex items-center gap-1.5 px-3 py-2.5 text-xs font-semibold border-b-2 whitespace-nowrap transition-colors ${
                                     active
-                                        ? 'border-[#2DD4BF] text-slate-900'
+                                        ? 'border-[#4ADE80] text-slate-900'
                                         : 'border-transparent text-slate-500 hover:text-slate-800'
                                 }`}
                             >
@@ -974,7 +974,7 @@ export const KycDetailModal: React.FC<Props> = ({ kind, entity, profile, canAppr
                                     onChange={(e) => setStatusComment(e.target.value)}
                                     rows={3}
                                     placeholder={pendingStatus === 'rejected' ? 'Motivo del rechazo (ej: documento ilegible, datos no coinciden, etc.)' : pendingStatus === 'in_progress' ? 'Qué debe reenviar el usuario...' : 'Opcional'}
-                                    className="w-full px-3 py-2 rounded-lg border border-slate-200 focus:border-teal-500 outline-none text-xs"
+                                    className="w-full px-3 py-2 rounded-lg border border-slate-200 focus:border-green-500 outline-none text-xs"
                                 />
                                 <div className="flex items-center gap-2 mt-4">
                                     <button
@@ -1539,7 +1539,7 @@ const EmailTab: React.FC<{ data: any; raw: any; email?: string | null }> = ({ da
                             return (
                                 <div key={i} className="flex items-center gap-3 text-xs">
                                     <span className="font-mono text-slate-400 w-16 shrink-0">{tsStr || '—'}</span>
-                                    <span className="w-2 h-2 rounded-full bg-teal-500 shrink-0" />
+                                    <span className="w-2 h-2 rounded-full bg-green-500 shrink-0" />
                                     <span className="font-semibold" style={{ color: NAVY }}>{fmt(name)}</span>
                                     {st && <span className="text-slate-500">{fmt(st)}</span>}
                                 </div>

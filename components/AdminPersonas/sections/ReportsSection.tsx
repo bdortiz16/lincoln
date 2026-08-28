@@ -197,7 +197,7 @@ const ExportTab: React.FC<{ profile: AdminProfile }> = ({ profile }) => {
 };
 
 const ExportCard: React.FC<{ title: string; desc: string; onClick: () => void; busy: boolean }> = ({ title, desc, onClick, busy }) => (
-    <button onClick={onClick} disabled={busy} className="bg-white rounded-2xl border border-slate-200 p-5 text-left hover:border-teal-500 transition-colors disabled:opacity-50">
+    <button onClick={onClick} disabled={busy} className="bg-white rounded-2xl border border-slate-200 p-5 text-left hover:border-green-500 transition-colors disabled:opacity-50">
         <div className="flex items-center justify-between mb-2">
             <Download size={18} color={NAVY} />
             {busy && <RefreshCw size={14} className="animate-spin text-slate-400" />}

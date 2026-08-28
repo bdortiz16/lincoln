@@ -118,7 +118,7 @@ export const Header: React.FC<HeaderProps> = ({ onMenuClick, onLogout, onNavigat
                 onClick={() => setIsProfileOpen(!isProfileOpen)}
                 className={`flex items-center gap-3 cursor-pointer p-1.5 pr-3 rounded-full border border-transparent transition-all ${isProfileOpen ? 'bg-slate-50 border-slate-200' : 'hover:bg-slate-50 hover:border-slate-200'}`}
             >
-                <div className="w-9 h-9 rounded-full bg-[#0F172A] text-white flex items-center justify-center font-bold text-xs border-2 border-[#2DD4BF] overflow-hidden">
+                <div className="w-9 h-9 rounded-full bg-[#0F172A] text-white flex items-center justify-center font-bold text-xs border-2 border-[#4ADE80] overflow-hidden">
                     {currentUser?.avatarUrl ? (
                         <img src={currentUser.avatarUrl} alt="Logo" className="w-full h-full object-cover" />
                     ) : (

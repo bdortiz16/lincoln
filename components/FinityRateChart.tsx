@@ -148,7 +148,7 @@ export const FinityRateChart: React.FC<{ from?: string; to?: string }> = ({ from
     const delta = first && last ? Number(last.rate) - Number(first.rate) : 0;
     const deltaPct = first && Number(first.rate) > 0 ? (delta / Number(first.rate)) * 100 : 0;
     const deltaUp = delta >= 0;
-    const upColor = '#2DD4BF', downColor = '#f87171';
+    const upColor = '#4ADE80', downColor = '#f87171';
 
     return (
         <div className="rounded-2xl overflow-hidden border border-slate-800" style={{ backgroundColor: '#0B1220' }}>
@@ -158,7 +158,7 @@ export const FinityRateChart: React.FC<{ from?: string; to?: string }> = ({ from
                     {hasData ? (
                         <div className="flex items-center gap-3 mt-0.5">
                             <span className="text-lg font-bold font-mono text-white">{fmtRate(last.rate)}</span>
-                            <span className={`inline-flex items-center gap-1 text-xs font-bold ${deltaUp ? 'text-[#2DD4BF]' : 'text-red-400'}`}>
+                            <span className={`inline-flex items-center gap-1 text-xs font-bold ${deltaUp ? 'text-[#4ADE80]' : 'text-red-400'}`}>
                                 {deltaUp ? '▲' : '▼'} {Math.abs(deltaPct).toFixed(2)}%
                             </span>
                         </div>
@@ -171,7 +171,7 @@ export const FinityRateChart: React.FC<{ from?: string; to?: string }> = ({ from
                         <button
                             key={r.key}
                             onClick={() => { setRange(r.key); setHoverIdx(null); }}
-                            className={`px-2.5 py-1 text-[11px] font-bold rounded-lg transition-colors ${range === r.key ? 'bg-[#2DD4BF] text-[#0F172A]' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}
+                            className={`px-2.5 py-1 text-[11px] font-bold rounded-lg transition-colors ${range === r.key ? 'bg-[#4ADE80] text-[#0F172A]' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}
                         >
                             {r.label}
                         </button>

@@ -61,7 +61,7 @@ export const EmailConfirmation: React.FC<EmailConfirmationProps> = ({ onValidate
       <button
         onClick={handleManualCheck}
         disabled={checking}
-        className="w-full max-w-xs h-12 bg-[#0F172A] hover:bg-[#152e52] disabled:opacity-60 font-bold rounded-lg transition-colors shadow-lg shadow-teal-900/20 mb-6 flex items-center justify-center gap-2"
+        className="w-full max-w-xs h-12 bg-[#0F172A] hover:bg-[#152e52] disabled:opacity-60 font-bold rounded-lg transition-colors shadow-lg shadow-green-900/20 mb-6 flex items-center justify-center gap-2"
       >
         {checking ? (
           <><Loader2 size={18} className="animate-spin" /> Verificando...</>

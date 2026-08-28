@@ -54,18 +54,18 @@ button[class*="bg-[#152e52]"] svg,
 button[class*="bg-slate-900"] svg {
   stroke: #FFFFFF !important;
 }
-button[class*="bg-[#2DD4BF]"],
-button[class*="bg-[#2DD4BF]"] *,
-button[class*="bg-[#5EEAD4]"],
-button[class*="bg-[#5EEAD4]"] *,
-button[class*="bg-teal-400"],
-button[class*="bg-teal-400"] * {
+button[class*="bg-[#4ADE80]"],
+button[class*="bg-[#4ADE80]"] *,
+button[class*="bg-[#6EE7A0]"],
+button[class*="bg-[#6EE7A0]"] *,
+button[class*="bg-green-400"],
+button[class*="bg-green-400"] * {
   color: #0F172A !important;
   -webkit-text-fill-color: #0F172A !important;
 }
-button[class*="bg-[#2DD4BF]"] svg,
-button[class*="bg-[#5EEAD4]"] svg,
-button[class*="bg-teal-400"] svg {
+button[class*="bg-[#4ADE80]"] svg,
+button[class*="bg-[#6EE7A0]"] svg,
+button[class*="bg-green-400"] svg {
   stroke: #0F172A !important;
 }
 

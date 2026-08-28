@@ -77,7 +77,7 @@ const AdminEmpresasInner: React.FC = () => {
                 </div>
                 <div className="bg-white rounded-2xl shadow-2xl p-6">
                     <div className="flex items-center gap-2 mb-1">
-                        <ShieldCheck size={18} className="text-[#0D9488]" />
+                        <ShieldCheck size={18} className="text-[#16A34A]" />
                         <h1 className="font-bold text-lg text-[#0F172A]">Admin Empresas</h1>
                     </div>
                     <p className="text-xs text-slate-500 mb-5">Acceso exclusivo para administradores.</p>
@@ -98,7 +98,7 @@ const AdminEmpresasInner: React.FC = () => {
                                 onChange={e => setEmail(e.target.value)}
                                 autoComplete="username"
                                 required
-                                className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#2DD4BF] outline-none"
+                                className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#4ADE80] outline-none"
                                 placeholder="admin@cuypay.com"
                             />
                         </div>
@@ -110,7 +110,7 @@ const AdminEmpresasInner: React.FC = () => {
                                 onChange={e => setPassword(e.target.value)}
                                 autoComplete="current-password"
                                 required
-                                className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#2DD4BF] outline-none"
+                                className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#4ADE80] outline-none"
                                 placeholder="••••••••"
                             />
                         </div>

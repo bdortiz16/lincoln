@@ -787,7 +787,7 @@ const KycCuentaList: React.FC<{ profile: AdminProfile; canApprove: boolean }> = 
                         value={search}
                         onChange={e => setSearch(e.target.value)}
                         placeholder="Buscar por nombre, correo, Lincoin ID, UUID o país..."
-                        className="w-full pl-9 pr-4 py-2 rounded-lg border border-slate-300 focus:border-teal-500 outline-none text-sm"
+                        className="w-full pl-9 pr-4 py-2 rounded-lg border border-slate-300 focus:border-green-500 outline-none text-sm"
                     />
                 </div>
                 {(statusFilter !== 'all' || search) && (
@@ -1316,7 +1316,7 @@ const KycTercerosList: React.FC<{ profile: AdminProfile; canApprove: boolean }> 
                         value={search}
                         onChange={e => setSearch(e.target.value)}
                         placeholder="Buscar por nombre, email, documento, ID o dueño..."
-                        className="w-full pl-9 pr-4 py-2 rounded-lg border border-slate-300 focus:border-teal-500 outline-none text-sm"
+                        className="w-full pl-9 pr-4 py-2 rounded-lg border border-slate-300 focus:border-green-500 outline-none text-sm"
                     />
                 </div>
                 {(statusFilter !== 'all' || search) && (
@@ -1628,7 +1628,7 @@ const RulesTab: React.FC<{ profile: AdminProfile }> = ({ profile }) => {
                                     </span>
                                     {/* Alcance: general con/sin exención de topes justificados */}
                                     {(r as any).exempt_custom_limits !== false ? (
-                                        <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-teal-50 text-teal-800" title="Los usuarios con topes aumentados o justificación aprobada no disparan esta regla">
+                                        <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-green-50 text-green-800" title="Los usuarios con topes aumentados o justificación aprobada no disparan esta regla">
                                             General · exime topes justificados
                                         </span>
                                     ) : (
@@ -1946,10 +1946,10 @@ const CreateRuleModal: React.FC<{ onClose: () => void; onCreated: () => void; pr
                         <label
                             key={a.value}
                             className={`flex items-start gap-2 p-2.5 rounded-lg border cursor-pointer transition-colors ${
-                                action === a.value ? 'border-teal-500 bg-teal-50' : 'border-slate-200 bg-white hover:bg-slate-50'
+                                action === a.value ? 'border-green-500 bg-green-50' : 'border-slate-200 bg-white hover:bg-slate-50'
                             }`}
                         >
-                            <input type="radio" name="rule-action" checked={action === a.value} onChange={() => setAction(a.value)} className="mt-0.5 accent-teal-600" />
+                            <input type="radio" name="rule-action" checked={action === a.value} onChange={() => setAction(a.value)} className="mt-0.5 accent-green-600" />
                             <span className="text-xs">
                                 <b style={{ color: NAVY }}>{a.label}</b>
                                 <span className="block text-[11px] text-slate-500">{a.desc}</span>
@@ -1988,7 +1988,7 @@ const CreateRuleModal: React.FC<{ onClose: () => void; onCreated: () => void; pr
                             type="checkbox"
                             checked={exemptCustomLimits}
                             onChange={e => setExemptCustomLimits(e.target.checked)}
-                            className="mt-0.5 accent-teal-600"
+                            className="mt-0.5 accent-green-600"
                         />
                         <span className="text-xs text-slate-700">
                             <b>Eximir usuarios con topes aumentados o justificación aprobada</b>

@@ -39,7 +39,7 @@ const MiniBarChart: React.FC<{ data: { label: string; value: number }[] }> = ({ 
                         {fmtCop(d.value)} COP
                     </div>
                     <div
-                        className="w-full rounded-t-md bg-gradient-to-t from-[#0D9488] to-[#2DD4BF] transition-all group-hover:opacity-80"
+                        className="w-full rounded-t-md bg-gradient-to-t from-[#16A34A] to-[#4ADE80] transition-all group-hover:opacity-80"
                         style={{ height: `${d.value > 0 ? Math.max(4, (d.value / max) * 100) : 1}%` }}
                     />
                     <span className="text-[9px] text-slate-400 whitespace-nowrap shrink-0">{d.label}</span>
@@ -160,7 +160,7 @@ export const AdminOtcSection: React.FC = () => {
             <div className="space-y-6">
                 <div>
                     <h3 className="font-bold text-slate-800 text-lg flex items-center gap-2">
-                        <ArrowLeftRight size={20} className="text-[#0D9488]" /> OTC · Convertidor Finity por cliente
+                        <ArrowLeftRight size={20} className="text-[#16A34A]" /> OTC · Convertidor Finity por cliente
                     </h3>
                     <p className="text-xs text-slate-500 mt-0.5">
                         Activa el servicio y define la comisión de cada empresa. El convertidor general (Servicios → Convertir Divisas) usa tasa FastForex y comisión por tramos igual para todos — este OTC usa la tasa Finity con la comisión negociada por cliente.
@@ -169,7 +169,7 @@ export const AdminOtcSection: React.FC = () => {
 
                 <div className="relative max-w-md">
                     <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                    <input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar por empresa, correo o ID…" className="w-full h-10 pl-9 pr-3 border border-slate-200 rounded-lg text-sm outline-none focus:border-[#2DD4BF]" />
+                    <input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar por empresa, correo o ID…" className="w-full h-10 pl-9 pr-3 border border-slate-200 rounded-lg text-sm outline-none focus:border-[#4ADE80]" />
                 </div>
 
                 <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
@@ -196,21 +196,21 @@ export const AdminOtcSection: React.FC = () => {
                                             <button
                                                 onClick={() => toggleEnabled(u)}
                                                 disabled={savingId === u.id}
-                                                className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold transition-colors disabled:opacity-50 ${enabled ? 'bg-teal-50 text-[#0D9488] border border-teal-200' : 'bg-slate-100 text-slate-500 border border-slate-200'}`}
+                                                className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold transition-colors disabled:opacity-50 ${enabled ? 'bg-green-50 text-[#16A34A] border border-green-200' : 'bg-slate-100 text-slate-500 border border-slate-200'}`}
                                             >
                                                 <Power size={13} /> {enabled ? 'Activo' : 'Inactivo'}
                                             </button>
                                         </td>
                                         <td className="px-4 py-3 text-right">
                                             {feeEdit?.userId === u.id ? (
-                                                <div className="inline-flex items-center gap-2 bg-white border-2 border-[#2DD4BF] rounded-xl pl-3 pr-1.5 py-1 shadow-sm shadow-teal-100">
+                                                <div className="inline-flex items-center gap-2 bg-white border-2 border-[#4ADE80] rounded-xl pl-3 pr-1.5 py-1 shadow-sm shadow-green-100">
                                                     <input autoFocus type="number" step="0.01" value={feeEdit.value}
                                                         onChange={e => setFeeEdit({ userId: u.id, value: e.target.value })}
                                                         onKeyDown={e => { if (e.key === 'Enter') saveFee(u); if (e.key === 'Escape') setFeeEdit(null); }}
                                                         className="w-14 bg-transparent text-right text-base font-bold text-slate-800 outline-none tabular-nums" />
                                                     <span className="text-sm text-slate-400 font-medium">%</span>
                                                     <div className="flex items-center gap-1 pl-2 ml-1 border-l border-slate-200">
-                                                        <button onClick={() => saveFee(u)} disabled={savingId === u.id} className="w-7 h-7 flex items-center justify-center rounded-full bg-[#0D9488] text-white hover:bg-[#0F766E] transition-colors disabled:opacity-50" title="Guardar">
+                                                        <button onClick={() => saveFee(u)} disabled={savingId === u.id} className="w-7 h-7 flex items-center justify-center rounded-full bg-[#16A34A] text-white hover:bg-[#0F766E] transition-colors disabled:opacity-50" title="Guardar">
                                                             <Check size={14} />
                                                         </button>
                                                         <button onClick={() => setFeeEdit(null)} className="w-7 h-7 flex items-center justify-center rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 hover:text-slate-700 transition-colors" title="Cancelar">
@@ -224,8 +224,8 @@ export const AdminOtcSection: React.FC = () => {
                                                     className="inline-flex items-center gap-2 group"
                                                     title="Click para editar la comisión de esta empresa"
                                                 >
-                                                    <span className="text-base font-bold text-slate-800 tabular-nums group-hover:text-[#0D9488] transition-colors">{feePct}%</span>
-                                                    <span className="w-7 h-7 flex items-center justify-center rounded-full text-slate-400 bg-slate-50 group-hover:bg-[#0D9488] group-hover:text-white transition-colors">
+                                                    <span className="text-base font-bold text-slate-800 tabular-nums group-hover:text-[#16A34A] transition-colors">{feePct}%</span>
+                                                    <span className="w-7 h-7 flex items-center justify-center rounded-full text-slate-400 bg-slate-50 group-hover:bg-[#16A34A] group-hover:text-white transition-colors">
                                                         <Pencil size={13} />
                                                     </span>
                                                 </button>
@@ -250,7 +250,7 @@ export const AdminOtcSection: React.FC = () => {
             <div className="space-y-6 pt-6 border-t border-slate-200">
                 <div>
                     <h3 className="font-bold text-slate-800 text-lg flex items-center gap-2">
-                        <Landmark size={20} className="text-[#0D9488]" /> Contabilidad OTC · Canal Finity
+                        <Landmark size={20} className="text-[#16A34A]" /> Contabilidad OTC · Canal Finity
                     </h3>
                     <p className="text-xs text-slate-500 mt-0.5">
                         USDT recibido y COP acreditado por conversiones OTC, saldo COP de cada cliente, y el historial de movimientos.

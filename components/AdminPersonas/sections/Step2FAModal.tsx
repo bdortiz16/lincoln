@@ -116,7 +116,7 @@ export const Step2FAModal: React.FC<{
                                     placeholder="123 456"
                                     autoFocus
                                     inputMode="numeric"
-                                    className="w-full pl-10 pr-3 py-3 rounded-lg border border-slate-200 focus:border-teal-500 outline-none font-mono text-lg tracking-widest text-center"
+                                    className="w-full pl-10 pr-3 py-3 rounded-lg border border-slate-200 focus:border-green-500 outline-none font-mono text-lg tracking-widest text-center"
                                     onKeyDown={e => { if (e.key === 'Enter') submit(); }}
                                 />
                             </div>

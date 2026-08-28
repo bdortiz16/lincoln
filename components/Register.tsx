@@ -320,7 +320,7 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
                 <button
                     onClick={handleSubmit}
                     disabled={cooldown > 0 || loading}
-                    className="w-full h-12 bg-[#2DD4BF] hover:bg-[#2DD4BF] text-white font-bold rounded-lg transition-colors shadow-lg shadow-slate-200 mt-6 disabled:opacity-60 disabled:cursor-not-allowed"
+                    className="w-full h-12 bg-[#4ADE80] hover:bg-[#4ADE80] text-white font-bold rounded-lg transition-colors shadow-lg shadow-slate-200 mt-6 disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                     {loading ? 'Registrando...' : cooldown > 0 ? `Espera ${cooldown}s...` : 'Registrarme'}
                 </button>
@@ -444,7 +444,7 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
                 <button
                     onClick={handleSubmit}
                     disabled={cooldown > 0 || loading}
-                    className="w-full h-12 bg-[#0F172A] hover:bg-[#152e52] font-bold rounded-lg transition-colors shadow-lg shadow-teal-900/20 mt-4 disabled:opacity-60 disabled:cursor-not-allowed"
+                    className="w-full h-12 bg-[#0F172A] hover:bg-[#152e52] font-bold rounded-lg transition-colors shadow-lg shadow-green-900/20 mt-4 disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                     {loading ? 'Registrando...' : cooldown > 0 ? `Espera ${cooldown}s...` : 'Registrarse'}
                 </button>
@@ -467,23 +467,23 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
         <div className="relative z-10 max-w-lg w-full">
             <div className="relative mb-12 min-h-[220px]">
                 <div className="absolute -right-10 -top-20 w-64 h-64 bg-slate-300 rounded-full opacity-20 blur-3xl transition-colors duration-1000"></div>
-                <div className={`bg-[#2d4a9e] rounded-2xl p-6 border border-teal-400/30 shadow-2xl backdrop-blur-sm relative transition-opacity duration-300 ease-in-out transform ${isAnimating ? 'opacity-50 scale-[0.98]' : 'opacity-100 scale-100'}`}>
-                    <div className="flex justify-between items-center text-teal-100 text-xs font-semibold mb-4">
+                <div className={`bg-[#2d4a9e] rounded-2xl p-6 border border-green-400/30 shadow-2xl backdrop-blur-sm relative transition-opacity duration-300 ease-in-out transform ${isAnimating ? 'opacity-50 scale-[0.98]' : 'opacity-100 scale-100'}`}>
+                    <div className="flex justify-between items-center text-green-100 text-xs font-semibold mb-4">
                         <span>Tienes disponible {currentSim.available}</span>
                     </div>
                     <div className="bg-[#1a337a] rounded-xl p-4 mb-2 flex justify-between items-center">
                         <div>
-                            <p className="text-xs text-teal-300 mb-1">Tu envías</p>
+                            <p className="text-xs text-green-300 mb-1">Tu envías</p>
                             <p className="text-2xl font-bold text-white transition-all duration-300">$ {currentSim.send.amount}</p>
                         </div>
-                        <div className="flex items-center gap-2 bg-[#2d4a9e] px-3 py-1.5 rounded-lg border border-teal-400/30 transition-all duration-300">
+                        <div className="flex items-center gap-2 bg-[#2d4a9e] px-3 py-1.5 rounded-lg border border-green-400/30 transition-all duration-300">
                             <FlagImg code={currentSim.send.currency} className="w-5 h-3.5 object-cover rounded-sm" />
                             <span className="text-white font-bold">{currentSim.send.currency}</span>
                         </div>
                     </div>
-                    <div className="bg-[#4d66b0] rounded-xl p-4 flex justify-between items-center border border-teal-300/30">
+                    <div className="bg-[#4d66b0] rounded-xl p-4 flex justify-between items-center border border-green-300/30">
                          <div>
-                            <p className="text-xs text-teal-100 mb-1">Recibes</p>
+                            <p className="text-xs text-green-100 mb-1">Recibes</p>
                             <p className="text-2xl font-bold text-white transition-all duration-300">$ {currentSim.receive.amount}</p>
                         </div>
                         <div className="flex items-center gap-2 transition-all duration-300">
@@ -495,7 +495,7 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
             </div>
             <div className="text-center text-white">
                 <h2 className="text-3xl font-bold mb-4">Transferencias nacionales e internacionales</h2>
-                <p className="text-teal-100 leading-relaxed text-sm max-w-md mx-auto">
+                <p className="text-green-100 leading-relaxed text-sm max-w-md mx-auto">
                     Paga en moneda local a proveedores, servicios freelance y plataformas digitales a más de 70 destinos sin comisiones de envío.
                 </p>
             </div>

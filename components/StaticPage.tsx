@@ -159,7 +159,7 @@ export const StaticPage: React.FC<StaticPageProps> = ({ pageKey, onBack }) => {
           content: (
             <div className="space-y-6 text-slate-600">
               <div className="bg-slate-50 p-4 rounded-lg border border-slate-200 mb-6">
-                <p className="text-sm font-bold text-[#2DD4BF]">Sistema de Autocontrol y Gestión del Riesgo Integral de Lavado de Activos y Financiación del Terrorismo.</p>
+                <p className="text-sm font-bold text-[#4ADE80]">Sistema de Autocontrol y Gestión del Riesgo Integral de Lavado de Activos y Financiación del Terrorismo.</p>
               </div>
               <p>LINCOIN está comprometido con la lucha contra el lavado de activos y la financiación del terrorismo. Hemos implementado estrictos controles y procedimientos internos.</p>
               <h3 className="text-lg font-bold text-[#0F172A]">1. Debida Diligencia</h3>
@@ -266,7 +266,7 @@ export const StaticPage: React.FC<StaticPageProps> = ({ pageKey, onBack }) => {
         <div className="scale-90 origin-left cursor-pointer" onClick={onBack}>
           <Logo variant="white" />
         </div>
-        <button onClick={onBack} className="text-white flex items-center gap-2 hover:text-[#2DD4BF] transition-colors font-medium text-sm">
+        <button onClick={onBack} className="text-white flex items-center gap-2 hover:text-[#4ADE80] transition-colors font-medium text-sm">
           <ArrowLeft size={18} /> Volver al inicio
         </button>
       </nav>

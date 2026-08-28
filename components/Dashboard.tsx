@@ -1210,7 +1210,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   <button 
                     onClick={() => { if(!handleActionRestricted()) { setLoadStep(1); setIsLoadModalOpen(true); } }} 
                     disabled={isBlocked || !isKycVerified} 
-                    className={`px-5 py-2.5 rounded-xl font-bold text-sm flex items-center gap-2 transition-colors shadow-lg ${isBlocked || !isKycVerified ? 'bg-slate-400 cursor-not-allowed opacity-70' : 'bg-[#0F172A] hover:bg-[#152e52] shadow-teal-900/20'}`}
+                    className={`px-5 py-2.5 rounded-xl font-bold text-sm flex items-center gap-2 transition-colors shadow-lg ${isBlocked || !isKycVerified ? 'bg-slate-400 cursor-not-allowed opacity-70' : 'bg-[#0F172A] hover:bg-[#152e52] shadow-green-900/20'}`}
                   >
                       <Plus size={18} /> Fondear Cuenta
                   </button>
@@ -1258,7 +1258,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   <div className="w-10 h-10 bg-slate-100 rounded-full flex items-center justify-center shrink-0"><ShieldCheck className="text-[#0F172A]" size={20} /></div>
                   <div className="flex-1">
                     <h3 className="text-[#0F172A] font-bold text-sm">Verificación KYB en progreso</h3>
-                    <p className="text-[#2DD4BF] text-xs mt-1">Abriste Lincoin pero aún no terminaste. Completa el proceso para activar tu cuenta empresarial.</p>
+                    <p className="text-[#4ADE80] text-xs mt-1">Abriste Lincoin pero aún no terminaste. Completa el proceso para activar tu cuenta empresarial.</p>
                   </div>
                   <DiditKycButton userId={currentUser?.id} kycStatus={ks} showToast={showToast} />
                 </div>
@@ -1268,7 +1268,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   <div className="w-10 h-10 bg-white/10 rounded-full flex items-center justify-center shrink-0"><ShieldCheck className="text-white" size={20} /></div>
                   <div className="flex-1">
                     <h3 className="text-white font-bold text-sm">Activa tu cuenta — Verificación Empresarial (KYB)</h3>
-                    <p className="text-teal-200 text-xs mt-1">Verifica tu empresa con Lincoin para acceder a todos los servicios. El proceso toma menos de 5 minutos.</p>
+                    <p className="text-green-200 text-xs mt-1">Verifica tu empresa con Lincoin para acceder a todos los servicios. El proceso toma menos de 5 minutos.</p>
                   </div>
                   <DiditKycButton userId={currentUser?.id} kycStatus={ks} showToast={showToast} />
                 </div>
@@ -1278,7 +1278,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
           <section>
               <div className="flex items-center justify-between mb-4">
                   <h3 className="font-bold text-slate-700 text-xs flex items-center gap-2 uppercase tracking-wider">
-                      <Wallet size={16} className="text-[#2DD4BF]"/> Balances Disponibles
+                      <Wallet size={16} className="text-[#4ADE80]"/> Balances Disponibles
                   </h3>
                   <div className="flex items-center gap-3">
                       <button onClick={openWalletOrderModal} title="Ordenar billeteras" className="text-slate-400 hover:text-[#0F172A] transition-colors">
@@ -1310,7 +1310,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                           <p className="text-[11px] text-slate-400 font-medium uppercase">{wallet.type}</p>
                                       </div>
                                   </div>
-                                  <div className="w-7 h-7 rounded-full bg-slate-50 flex items-center justify-center text-slate-400 group-hover:bg-[#2DD4BF] group-hover:text-[#0F172A] transition-colors shrink-0">
+                                  <div className="w-7 h-7 rounded-full bg-slate-50 flex items-center justify-center text-slate-400 group-hover:bg-[#4ADE80] group-hover:text-[#0F172A] transition-colors shrink-0">
                                       <ArrowRight size={13} />
                                   </div>
                               </div>
@@ -1343,7 +1343,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                                   <p className="text-[10px] text-slate-400 font-medium uppercase">{wallet.type}</p>
                                               </div>
                                           </div>
-                                          <div className="w-6 h-6 rounded-full bg-slate-50 flex items-center justify-center text-slate-400 group-hover:bg-[#2DD4BF] group-hover:text-[#0F172A] transition-colors shrink-0">
+                                          <div className="w-6 h-6 rounded-full bg-slate-50 flex items-center justify-center text-slate-400 group-hover:bg-[#4ADE80] group-hover:text-[#0F172A] transition-colors shrink-0">
                                               <ArrowRight size={12} />
                                           </div>
                                       </div>
@@ -1364,15 +1364,15 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
           <section>
               <h3 className="font-bold text-slate-700 text-xs mb-4 uppercase tracking-wider">Acciones Rápidas</h3>
               <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
-                  <button onClick={() => { if(!handleActionRestricted()) { setLoadStep(1); setIsLoadModalOpen(true); } }} className={`bg-white p-6 rounded-2xl border border-slate-200 transition-all flex flex-col items-center gap-3 group ${isBlocked || !isKycVerified ? 'opacity-50 cursor-not-allowed' : 'hover:border-[#2DD4BF] hover:shadow-md'}`}>
-                      <div className="w-12 h-12 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center group-hover:bg-[#2DD4BF] group-hover:text-[#0F172A] transition-colors">
+                  <button onClick={() => { if(!handleActionRestricted()) { setLoadStep(1); setIsLoadModalOpen(true); } }} className={`bg-white p-6 rounded-2xl border border-slate-200 transition-all flex flex-col items-center gap-3 group ${isBlocked || !isKycVerified ? 'opacity-50 cursor-not-allowed' : 'hover:border-[#4ADE80] hover:shadow-md'}`}>
+                      <div className="w-12 h-12 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center group-hover:bg-[#4ADE80] group-hover:text-[#0F172A] transition-colors">
                           <Plus size={24} />
                       </div>
                       <span className="font-bold text-slate-700 text-xs text-center uppercase tracking-wide">Fondear</span>
                   </button>
 
-                  <button onClick={() => { if(!handleActionRestricted(true)) setIsSendModalOpen(true); }} className={`bg-white p-6 rounded-2xl border border-slate-200 transition-all flex flex-col items-center gap-3 group ${isBlocked || !isKycVerified ? 'opacity-50 cursor-not-allowed' : 'hover:border-[#2DD4BF] hover:shadow-md'}`}>
-                      <div className="w-12 h-12 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center group-hover:bg-[#2DD4BF] group-hover:text-[#0F172A] transition-colors">
+                  <button onClick={() => { if(!handleActionRestricted(true)) setIsSendModalOpen(true); }} className={`bg-white p-6 rounded-2xl border border-slate-200 transition-all flex flex-col items-center gap-3 group ${isBlocked || !isKycVerified ? 'opacity-50 cursor-not-allowed' : 'hover:border-[#4ADE80] hover:shadow-md'}`}>
+                      <div className="w-12 h-12 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center group-hover:bg-[#4ADE80] group-hover:text-[#0F172A] transition-colors">
                           <Send size={24} />
                       </div>
                       <span className="font-bold text-slate-700 text-xs text-center uppercase tracking-wide">Pagar</span>
@@ -1380,16 +1380,16 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
 
                   <button 
                       onClick={() => setIsReceiveModalOpen(true)}
-                      className="bg-white p-6 rounded-2xl border border-slate-200 hover:border-[#2DD4BF] hover:shadow-md transition-all flex flex-col items-center gap-3 group"
+                      className="bg-white p-6 rounded-2xl border border-slate-200 hover:border-[#4ADE80] hover:shadow-md transition-all flex flex-col items-center gap-3 group"
                   >
-                      <div className="w-12 h-12 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center group-hover:bg-[#2DD4BF] group-hover:text-[#0F172A] transition-colors">
+                      <div className="w-12 h-12 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center group-hover:bg-[#4ADE80] group-hover:text-[#0F172A] transition-colors">
                           <ArrowDownLeft size={24} />
                       </div>
                       <span className="font-bold text-slate-700 text-xs text-center uppercase tracking-wide">Cobrar</span>
                   </button>
 
-                  <button onClick={() => { if(!handleActionRestricted()) setIsConvertModalOpen(true); }} className={`bg-white p-6 rounded-2xl border border-slate-200 transition-all flex flex-col items-center gap-3 group ${isBlocked || !isKycVerified ? 'opacity-50 cursor-not-allowed' : 'hover:border-[#2DD4BF] hover:shadow-md'}`}>
-                      <div className="w-12 h-12 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center group-hover:bg-[#2DD4BF] group-hover:text-[#0F172A] transition-colors">
+                  <button onClick={() => { if(!handleActionRestricted()) setIsConvertModalOpen(true); }} className={`bg-white p-6 rounded-2xl border border-slate-200 transition-all flex flex-col items-center gap-3 group ${isBlocked || !isKycVerified ? 'opacity-50 cursor-not-allowed' : 'hover:border-[#4ADE80] hover:shadow-md'}`}>
+                      <div className="w-12 h-12 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center group-hover:bg-[#4ADE80] group-hover:text-[#0F172A] transition-colors">
                           <RefreshCw size={24} />
                       </div>
                       <span className="font-bold text-slate-700 text-xs text-center uppercase tracking-wide">Convertir</span>
@@ -1397,9 +1397,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
 
                   <button
                       onClick={() => setActiveView('servicios')}
-                      className="bg-white p-6 rounded-2xl border border-slate-200 hover:border-[#2DD4BF] hover:shadow-md transition-all flex flex-col items-center gap-3 group"
+                      className="bg-white p-6 rounded-2xl border border-slate-200 hover:border-[#4ADE80] hover:shadow-md transition-all flex flex-col items-center gap-3 group"
                   >
-                      <div className="w-12 h-12 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center group-hover:bg-[#2DD4BF] group-hover:text-[#0F172A] transition-colors">
+                      <div className="w-12 h-12 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center group-hover:bg-[#4ADE80] group-hover:text-[#0F172A] transition-colors">
                           <LayoutGrid size={24} />
                       </div>
                       <span className="font-bold text-slate-700 text-xs text-center uppercase tracking-wide">Servicios</span>
@@ -1407,9 +1407,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
 
                   <button
                       onClick={() => setActiveView('otc')}
-                      className="bg-white p-6 rounded-2xl border border-slate-200 hover:border-[#2DD4BF] hover:shadow-md transition-all flex flex-col items-center gap-3 group"
+                      className="bg-white p-6 rounded-2xl border border-slate-200 hover:border-[#4ADE80] hover:shadow-md transition-all flex flex-col items-center gap-3 group"
                   >
-                      <div className="w-12 h-12 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center group-hover:bg-[#2DD4BF] group-hover:text-[#0F172A] transition-colors">
+                      <div className="w-12 h-12 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center group-hover:bg-[#4ADE80] group-hover:text-[#0F172A] transition-colors">
                           <TrendingUp size={24} />
                       </div>
                       <span className="font-bold text-slate-700 text-xs text-center uppercase tracking-wide">OTC</span>
@@ -1417,9 +1417,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
 
                   <button
                       onClick={() => { if(!handleActionRestricted()) setIsPayLinkOpen(true); }}
-                      className={`bg-white p-6 rounded-2xl border border-slate-200 transition-all flex flex-col items-center gap-3 group ${isBlocked || !isKycVerified ? 'opacity-50 cursor-not-allowed' : 'hover:border-[#2DD4BF] hover:shadow-md'}`}
+                      className={`bg-white p-6 rounded-2xl border border-slate-200 transition-all flex flex-col items-center gap-3 group ${isBlocked || !isKycVerified ? 'opacity-50 cursor-not-allowed' : 'hover:border-[#4ADE80] hover:shadow-md'}`}
                   >
-                      <div className="w-12 h-12 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center group-hover:bg-[#2DD4BF] group-hover:text-[#0F172A] transition-colors">
+                      <div className="w-12 h-12 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center group-hover:bg-[#4ADE80] group-hover:text-[#0F172A] transition-colors">
                           <Link2 size={24} />
                       </div>
                       <span className="font-bold text-slate-700 text-xs text-center uppercase tracking-wide">Cobrar Link</span>
@@ -1509,13 +1509,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                       <div className="flex justify-between items-start mb-8">
                           <div className="flex items-center gap-4">
                               <FlagImg code={wallet?.code ?? ''} className="w-14 h-10 object-cover rounded-lg shadow-md ring-2 ring-white/30" />
-                              <div><h2 className="text-2xl font-bold">{wallet?.name}</h2><p className="text-teal-200">{wallet?.type}</p></div>
+                              <div><h2 className="text-2xl font-bold">{wallet?.name}</h2><p className="text-green-200">{wallet?.type}</p></div>
                           </div>
                           <span className="bg-white/10 px-3 py-1 rounded-lg text-sm font-bold border border-white/20">{wallet?.code}</span>
                       </div>
                       <p className="text-5xl font-bold mb-8 tracking-tight">{formatMoney(balance, selectedWalletCode)}</p>
                       <div className="flex gap-4">
-                          <button onClick={() => { if(!handleActionRestricted()) handleLoadClick(selectedWalletCode); }} disabled={isBlocked || !isKycVerified} className={`flex-1 text-[#0F172A] py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 transition-colors ${isBlocked || !isKycVerified ? 'bg-slate-400 cursor-not-allowed opacity-70' : 'bg-[#2DD4BF] hover:bg-[#00b092]'}`}><Plus size={18} /> Cargar</button>
+                          <button onClick={() => { if(!handleActionRestricted()) handleLoadClick(selectedWalletCode); }} disabled={isBlocked || !isKycVerified} className={`flex-1 text-[#0F172A] py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 transition-colors ${isBlocked || !isKycVerified ? 'bg-slate-400 cursor-not-allowed opacity-70' : 'bg-[#4ADE80] hover:bg-[#22C55E]'}`}><Plus size={18} /> Cargar</button>
                           <button onClick={() => { if(!handleActionRestricted(true)) setIsSendModalOpen(true); }} disabled={isBlocked || !isKycVerified} className={`flex-1 text-white border py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 transition-colors ${isBlocked || !isKycVerified ? 'bg-white/10 border-white/10 cursor-not-allowed opacity-70' : 'bg-white/10 border-white/20 hover:bg-white/20'}`}><Send size={18} /> Enviar</button>
                       </div>
                   </div>
@@ -1532,7 +1532,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                           <div className="flex items-center justify-between mb-2">
                               <div className="flex items-center gap-2">
                                   <div className="w-9 h-9 rounded-xl bg-[#0F172A] flex items-center justify-center">
-                                      <Wallet size={16} className="text-[#2DD4BF]" />
+                                      <Wallet size={16} className="text-[#4ADE80]" />
                                   </div>
                                   <div>
                                       <p className="font-bold text-slate-800 text-sm">Peso Lincoin</p>
@@ -1557,11 +1557,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                           </p>
                       </div>
 
-                      <div className="bg-white rounded-2xl border-2 border-[#2DD4BF]/40 p-5 relative overflow-hidden">
-                          <div className="absolute -right-8 -top-8 w-28 h-28 bg-[#2DD4BF]/10 rounded-full blur-2xl"></div>
+                      <div className="bg-white rounded-2xl border-2 border-[#4ADE80]/40 p-5 relative overflow-hidden">
+                          <div className="absolute -right-8 -top-8 w-28 h-28 bg-[#4ADE80]/10 rounded-full blur-2xl"></div>
                           <div className="flex items-center justify-between mb-2 relative z-10">
                               <div className="flex items-center gap-2">
-                                  <div className="w-9 h-9 rounded-xl bg-[#2DD4BF] flex items-center justify-center">
+                                  <div className="w-9 h-9 rounded-xl bg-[#4ADE80] flex items-center justify-center">
                                       <Zap size={16} className="text-[#0F172A]" />
                                   </div>
                                   <div>
@@ -1569,7 +1569,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                       <p className="text-[10px] uppercase tracking-wider text-slate-500">Pagos instantáneos Bre-B · Solo Colombia</p>
                                   </div>
                               </div>
-                              <span className="text-[9px] font-bold uppercase bg-[#2DD4BF]/15 text-[#0D9488] px-2 py-0.5 rounded-full">Bre-B</span>
+                              <span className="text-[9px] font-bold uppercase bg-[#4ADE80]/15 text-[#16A34A] px-2 py-0.5 rounded-full">Bre-B</span>
                           </div>
                           <p className="text-2xl font-bold text-[#0F172A] font-mono relative z-10">{formatMoney(brebBal, 'COP')}</p>
                           <p className="text-[11px] text-slate-600 mt-1 relative z-10">
@@ -1585,7 +1585,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                               <button
                                   onClick={() => setActiveView('finity')}
                                   disabled={brebBal <= 0}
-                                  className="flex-1 py-2.5 rounded-xl bg-[#2DD4BF] hover:bg-[#5EEAD4] text-[#0F172A] text-sm font-bold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
+                                  className="flex-1 py-2.5 rounded-xl bg-[#4ADE80] hover:bg-[#6EE7A0] text-[#0F172A] text-sm font-bold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
                               >
                                   <Send size={14} /> Dispersar
                               </button>
@@ -1624,13 +1624,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                       placeholder="0"
                                       value={brebAmountStr}
                                       onChange={e => setBrebAmountStr(e.target.value.replace(/[^\d]/g, ''))}
-                                      className="mt-1 w-full px-3 py-2 rounded-xl border border-slate-200 text-sm font-mono focus:border-[#2DD4BF] outline-none"
+                                      className="mt-1 w-full px-3 py-2 rounded-xl border border-slate-200 text-sm font-mono focus:border-[#4ADE80] outline-none"
                                   />
                               </div>
                               <button
                                   onClick={handleBrebMove}
                                   disabled={brebMoving || !brebAmountStr}
-                                  className="py-2.5 px-6 rounded-xl bg-[#2DD4BF] hover:bg-[#5EEAD4] text-[#0F172A] text-sm font-bold disabled:opacity-50 transition-colors"
+                                  className="py-2.5 px-6 rounded-xl bg-[#4ADE80] hover:bg-[#6EE7A0] text-[#0F172A] text-sm font-bold disabled:opacity-50 transition-colors"
                               >
                                   {brebMoving ? 'Moviendo…' : 'Mover'}
                               </button>
@@ -1682,7 +1682,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   <span className={`px-3 py-1 rounded-full text-xs font-bold border ${
                     isKycVerified ? 'bg-green-50 text-green-700 border-green-100' :
                     currentUser?.kycStatus === 'rejected' ? 'bg-red-50 text-red-700 border-red-100' :
-                    currentUser?.kycStatus === 'in_review' ? 'bg-slate-50 text-[#2DD4BF] border-slate-200' :
+                    currentUser?.kycStatus === 'in_review' ? 'bg-slate-50 text-[#4ADE80] border-slate-200' :
                     currentUser?.kycStatus === 'in_progress' ? 'bg-yellow-50 text-yellow-700 border-yellow-100' :
                     'bg-orange-50 text-orange-700 border-orange-100'
                   }`}>
@@ -1840,17 +1840,17 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
           <div className="bg-[#0F172A] rounded-3xl p-8 md:p-12 text-white text-center mb-8 relative overflow-hidden">
                <div className="relative z-10">
                    <h2 className="text-3xl font-bold mb-4">Invita y Gana $20 USD</h2>
-                   <p className="text-teal-100 max-w-lg mx-auto mb-8">
+                   <p className="text-green-100 max-w-lg mx-auto mb-8">
                        Comparte tu código con socios o empresas amigas. 
-                       <br/>Gana <span className="text-[#2DD4BF] font-bold">$20 USD</span> cuando operen sus primeros $1,000 USD.
-                       <br/>Además, recibe <span className="text-[#2DD4BF] font-bold">{config.referralCommission}%</span> de cada operación de por vida.
+                       <br/>Gana <span className="text-[#4ADE80] font-bold">$20 USD</span> cuando operen sus primeros $1,000 USD.
+                       <br/>Además, recibe <span className="text-[#4ADE80] font-bold">{config.referralCommission}%</span> de cada operación de por vida.
                    </p>
                    <div className="bg-white/10 p-4 rounded-xl max-w-md mx-auto flex items-center gap-4 backdrop-blur-sm border border-white/20">
                        <code className="flex-1 font-mono text-xl font-bold text-white tracking-widest">{currentUser?.ownReferralCode || currentUser?.id?.slice(-6).toUpperCase() || '—'}</code>
                        <button onClick={() => {navigator.clipboard.writeText(currentUser?.ownReferralCode || ''); showToast("Código copiado")}} className="bg-white text-[#0F172A] px-4 py-2 rounded-lg font-bold text-sm hover:bg-slate-50">Copiar</button>
                    </div>
                </div>
-               <div className="absolute top-0 right-0 w-64 h-64 bg-[#2DD4BF]/20 rounded-full blur-3xl translate-x-1/2 -translate-y-1/2"></div>
+               <div className="absolute top-0 right-0 w-64 h-64 bg-[#4ADE80]/20 rounded-full blur-3xl translate-x-1/2 -translate-y-1/2"></div>
                <div className="absolute bottom-0 left-0 w-64 h-64 bg-purple-500/20 rounded-full blur-3xl -translate-x-1/2 translate-y-1/2"></div>
           </div>
           {/* ... stats grid ... */}
@@ -1896,9 +1896,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                                   <span>$1,000</span>
                                               </div>
                                               <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
-                                                  <div className={`h-full rounded-full transition-all duration-500 ${progress >= 100 ? 'bg-[#2DD4BF]' : 'bg-teal-400'}`} style={{ width: `${progress}%` }}></div>
+                                                  <div className={`h-full rounded-full transition-all duration-500 ${progress >= 100 ? 'bg-[#4ADE80]' : 'bg-green-400'}`} style={{ width: `${progress}%` }}></div>
                                               </div>
-                                              {progress >= 100 && <span className="text-[10px] text-[#2DD4BF] font-bold mt-1 block">¡Bono Completado!</span>}
+                                              {progress >= 100 && <span className="text-[10px] text-[#4ADE80] font-bold mt-1 block">¡Bono Completado!</span>}
                                           </div>
                                       </td>
                                       <td className="px-6 py-4 text-center font-bold text-slate-700">
@@ -1910,7 +1910,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                           </span>
                                       </td>
                                       <td className="px-6 py-4 text-right">
-                                          <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${ref.hasTriggeredBonus ? 'bg-purple-100 text-purple-700' : 'bg-slate-50 text-[#2DD4BF]'}`}>
+                                          <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${ref.hasTriggeredBonus ? 'bg-purple-100 text-purple-700' : 'bg-slate-50 text-[#4ADE80]'}`}>
                                               {ref.hasTriggeredBonus ? 'Ganando Comisiones' : 'En camino a Bono'}
                                           </span>
                                       </td>
@@ -2103,10 +2103,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
 
         {/* Hero */}
         <div className="relative bg-gradient-to-br from-[#0F172A] to-[#0F172A] rounded-3xl p-6 text-white overflow-hidden">
-          <div className="absolute right-0 top-0 w-40 h-40 bg-[#2DD4BF]/20 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2"/>
-          <p className="text-[#2DD4BF] font-bold text-xs uppercase tracking-widest mb-1">Corporativo</p>
+          <div className="absolute right-0 top-0 w-40 h-40 bg-[#4ADE80]/20 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2"/>
+          <p className="text-[#4ADE80] font-bold text-xs uppercase tracking-widest mb-1">Corporativo</p>
           <h3 className="text-2xl font-bold mb-1">Viaja más, gasta menos</h3>
-          <p className="text-teal-200 text-sm">Vuelos, hoteles y autos para tu empresa con tarifas preferenciales.</p>
+          <p className="text-green-200 text-sm">Vuelos, hoteles y autos para tu empresa con tarifas preferenciales.</p>
         </div>
 
         {/* Tabs */}
@@ -2114,7 +2114,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
           <div className="flex border-b border-slate-100">
             {tabs.map(({ id, label, icon: Icon }) => (
               <button key={id} onClick={() => { setTravelTab(id); setTravelSearched(false); }}
-                className={`flex-1 flex items-center justify-center gap-2 py-3.5 font-bold text-sm transition-colors ${travelTab === id ? 'text-[#0F172A] border-b-2 border-[#2DD4BF] bg-slate-50' : 'text-slate-400 hover:text-slate-600'}`}>
+                className={`flex-1 flex items-center justify-center gap-2 py-3.5 font-bold text-sm transition-colors ${travelTab === id ? 'text-[#0F172A] border-b-2 border-[#4ADE80] bg-slate-50' : 'text-slate-400 hover:text-slate-600'}`}>
                 <Icon size={16}/>{label}
               </button>
             ))}
@@ -2126,7 +2126,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                 <div className="flex gap-2">
                   {(['idavuelta', 'ida'] as const).map(t => (
                     <button key={t} onClick={() => setTravelType(t)}
-                      className={`px-4 py-1.5 rounded-full text-xs font-bold border-2 transition-colors ${travelType === t ? 'border-[#2DD4BF] bg-[#2DD4BF]/10 text-[#0F172A]' : 'border-slate-200 text-slate-500'}`}>
+                      className={`px-4 py-1.5 rounded-full text-xs font-bold border-2 transition-colors ${travelType === t ? 'border-[#4ADE80] bg-[#4ADE80]/10 text-[#0F172A]' : 'border-slate-200 text-slate-500'}`}>
                       {t === 'idavuelta' ? 'Ida y vuelta' : 'Solo ida'}
                     </button>
                   ))}
@@ -2134,25 +2134,25 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                 <div className="grid grid-cols-2 gap-3">
                   <div className="relative">
                     <MapPin size={16} className="absolute left-3 top-3.5 text-slate-400"/>
-                    <input value={travelOrigin} onChange={e => setTravelOrigin(e.target.value)} placeholder="Origen" className="w-full pl-9 pr-3 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-[#2DD4BF]"/>
+                    <input value={travelOrigin} onChange={e => setTravelOrigin(e.target.value)} placeholder="Origen" className="w-full pl-9 pr-3 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-[#4ADE80]"/>
                   </div>
                   <div className="relative">
                     <MapPin size={16} className="absolute left-3 top-3.5 text-slate-400"/>
-                    <input value={travelDest} onChange={e => setTravelDest(e.target.value)} placeholder="Destino" className="w-full pl-9 pr-3 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-[#2DD4BF]"/>
+                    <input value={travelDest} onChange={e => setTravelDest(e.target.value)} placeholder="Destino" className="w-full pl-9 pr-3 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-[#4ADE80]"/>
                   </div>
                   <div className="relative">
                     <Calendar size={16} className="absolute left-3 top-3.5 text-slate-400"/>
-                    <input type="date" value={travelDateOut} onChange={e => setTravelDateOut(e.target.value)} className="w-full pl-9 pr-3 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-[#2DD4BF] text-slate-600"/>
+                    <input type="date" value={travelDateOut} onChange={e => setTravelDateOut(e.target.value)} className="w-full pl-9 pr-3 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-[#4ADE80] text-slate-600"/>
                   </div>
                   {travelType === 'idavuelta' && (
                     <div className="relative">
                       <Calendar size={16} className="absolute left-3 top-3.5 text-slate-400"/>
-                      <input type="date" value={travelDateIn} onChange={e => setTravelDateIn(e.target.value)} className="w-full pl-9 pr-3 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-[#2DD4BF] text-slate-600"/>
+                      <input type="date" value={travelDateIn} onChange={e => setTravelDateIn(e.target.value)} className="w-full pl-9 pr-3 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-[#4ADE80] text-slate-600"/>
                     </div>
                   )}
                   <div className="relative col-span-2">
                     <Users2 size={16} className="absolute left-3 top-3.5 text-slate-400"/>
-                    <select value={travelPax} onChange={e => setTravelPax(Number(e.target.value))} className="w-full pl-9 pr-3 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-[#2DD4BF] text-slate-600 appearance-none bg-white">
+                    <select value={travelPax} onChange={e => setTravelPax(Number(e.target.value))} className="w-full pl-9 pr-3 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-[#4ADE80] text-slate-600 appearance-none bg-white">
                       {[1,2,3,4,5,6,7,8,9,10].map(n => <option key={n} value={n}>{n} pasajero{n > 1 ? 's' : ''}</option>)}
                     </select>
                   </div>
@@ -2164,19 +2164,19 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
               <div className="grid grid-cols-2 gap-3">
                 <div className="relative col-span-2">
                   <MapPin size={16} className="absolute left-3 top-3.5 text-slate-400"/>
-                  <input value={travelHotelDest} onChange={e => setTravelHotelDest(e.target.value)} placeholder="Ciudad o hotel" className="w-full pl-9 pr-3 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-[#2DD4BF]"/>
+                  <input value={travelHotelDest} onChange={e => setTravelHotelDest(e.target.value)} placeholder="Ciudad o hotel" className="w-full pl-9 pr-3 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-[#4ADE80]"/>
                 </div>
                 <div className="relative">
                   <Calendar size={16} className="absolute left-3 top-3.5 text-slate-400"/>
-                  <input type="date" value={travelHotelIn} onChange={e => setTravelHotelIn(e.target.value)} className="w-full pl-9 pr-3 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-[#2DD4BF] text-slate-600"/>
+                  <input type="date" value={travelHotelIn} onChange={e => setTravelHotelIn(e.target.value)} className="w-full pl-9 pr-3 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-[#4ADE80] text-slate-600"/>
                 </div>
                 <div className="relative">
                   <Calendar size={16} className="absolute left-3 top-3.5 text-slate-400"/>
-                  <input type="date" value={travelHotelOut} onChange={e => setTravelHotelOut(e.target.value)} className="w-full pl-9 pr-3 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-[#2DD4BF] text-slate-600"/>
+                  <input type="date" value={travelHotelOut} onChange={e => setTravelHotelOut(e.target.value)} className="w-full pl-9 pr-3 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-[#4ADE80] text-slate-600"/>
                 </div>
                 <div className="relative col-span-2">
                   <Hotel size={16} className="absolute left-3 top-3.5 text-slate-400"/>
-                  <select value={travelRooms} onChange={e => setTravelRooms(Number(e.target.value))} className="w-full pl-9 pr-3 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-[#2DD4BF] text-slate-600 appearance-none bg-white">
+                  <select value={travelRooms} onChange={e => setTravelRooms(Number(e.target.value))} className="w-full pl-9 pr-3 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-[#4ADE80] text-slate-600 appearance-none bg-white">
                     {[1,2,3,4,5].map(n => <option key={n} value={n}>{n} habitación{n > 1 ? 'es' : ''}</option>)}
                   </select>
                 </div>
@@ -2187,21 +2187,21 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
               <div className="grid grid-cols-2 gap-3">
                 <div className="relative col-span-2">
                   <MapPin size={16} className="absolute left-3 top-3.5 text-slate-400"/>
-                  <input placeholder="Ciudad de recogida" className="w-full pl-9 pr-3 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-[#2DD4BF]"/>
+                  <input placeholder="Ciudad de recogida" className="w-full pl-9 pr-3 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-[#4ADE80]"/>
                 </div>
                 <div className="relative">
                   <Calendar size={16} className="absolute left-3 top-3.5 text-slate-400"/>
-                  <input type="date" className="w-full pl-9 pr-3 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-[#2DD4BF] text-slate-600"/>
+                  <input type="date" className="w-full pl-9 pr-3 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-[#4ADE80] text-slate-600"/>
                 </div>
                 <div className="relative">
                   <Calendar size={16} className="absolute left-3 top-3.5 text-slate-400"/>
-                  <input type="date" className="w-full pl-9 pr-3 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-[#2DD4BF] text-slate-600"/>
+                  <input type="date" className="w-full pl-9 pr-3 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-[#4ADE80] text-slate-600"/>
                 </div>
               </div>
             )}
 
             <button onClick={() => setTravelSearched(true)}
-              className="w-full bg-[#2DD4BF] text-[#0F172A] py-3.5 rounded-xl font-bold text-base hover:bg-[#00b396] transition-colors flex items-center justify-center gap-2">
+              className="w-full bg-[#4ADE80] text-[#0F172A] py-3.5 rounded-xl font-bold text-base hover:bg-[#00b396] transition-colors flex items-center justify-center gap-2">
               <Search size={18}/> Buscar
             </button>
           </div>
@@ -2210,7 +2210,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
         {travelSearched && (
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-8 text-center space-y-3 animate-in fade-in duration-300">
             <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto">
-              <Plane size={28} className="text-teal-600"/>
+              <Plane size={28} className="text-green-600"/>
             </div>
             <h3 className="font-bold text-slate-800">¡Casi listo!</h3>
             <p className="text-slate-500 text-sm">Nuestro equipo de travel corporativo revisará tu solicitud y te enviará las mejores opciones en menos de 2 horas hábiles.</p>
@@ -2226,8 +2226,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
 
   const renderServicios = () => {
     const SERVICES = [
-      { icon: Users,        label: 'Nómina',              desc: 'Paga sueldos locales e internacionales en un clic.',            color: 'bg-slate-50 text-[#2DD4BF]', action: undefined },
-      { icon: Plane,        label: 'Travel Corporativo',  desc: 'Vuelos, hoteles y autos para tu equipo al mejor precio.',      color: 'bg-slate-50 text-teal-700', action: () => setActiveView('travel') },
+      { icon: Users,        label: 'Nómina',              desc: 'Paga sueldos locales e internacionales en un clic.',            color: 'bg-slate-50 text-[#4ADE80]', action: undefined },
+      { icon: Plane,        label: 'Travel Corporativo',  desc: 'Vuelos, hoteles y autos para tu equipo al mejor precio.',      color: 'bg-slate-50 text-green-700', action: () => setActiveView('travel') },
       { icon: CreditCard,   label: 'Tarjeta Virtual',     desc: 'Tarjeta corporativa virtual para pagos en línea.',             color: 'bg-violet-50 text-violet-700', action: undefined },
       { icon: BarChart3,    label: 'API Empresarial',     desc: 'Integra Lincoin directamente en tu plataforma o ERP.',         color: 'bg-orange-50 text-orange-700', action: undefined },
       { icon: ShieldCheck,  label: 'Seguros',             desc: 'SOAT, Todo Riesgo y seguros corporativos para tu flota.',     color: 'bg-rose-50 text-rose-700', action: () => setActiveView('seguros') },
@@ -2243,7 +2243,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
         <p className="text-slate-500 text-sm">Servicios premium disponibles para cuentas empresariales verificadas. Solicita activación al equipo de soporte.</p>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {SERVICES.map(({ icon: Icon, label, desc, color, action }) => (
-            <div key={label} onClick={action} className={`bg-white rounded-2xl border border-slate-200 shadow-sm p-5 flex items-start gap-4 hover:border-[#2DD4BF] hover:shadow-md transition-all group ${action ? 'cursor-pointer' : ''}`}>
+            <div key={label} onClick={action} className={`bg-white rounded-2xl border border-slate-200 shadow-sm p-5 flex items-start gap-4 hover:border-[#4ADE80] hover:shadow-md transition-all group ${action ? 'cursor-pointer' : ''}`}>
               <div className={`w-12 h-12 rounded-xl ${color} flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform`}>
                 <Icon size={22}/>
               </div>
@@ -2251,7 +2251,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                 <div className="flex items-center justify-between mb-1">
                   <h3 className="font-bold text-slate-800 text-sm">{label}</h3>
                   {action
-                    ? <span className="text-[10px] font-bold bg-slate-100 text-teal-700 px-2 py-0.5 rounded-full shrink-0 ml-2 flex items-center gap-1"><ArrowRight size={10}/> Abrir</span>
+                    ? <span className="text-[10px] font-bold bg-slate-100 text-green-700 px-2 py-0.5 rounded-full shrink-0 ml-2 flex items-center gap-1"><ArrowRight size={10}/> Abrir</span>
                     : <span className="text-[10px] font-bold bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full shrink-0 ml-2">Solicitar</span>
                   }
                 </div>
@@ -2261,10 +2261,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
           ))}
         </div>
         <div className="bg-[#0F172A] rounded-2xl p-6 text-white text-center">
-          <Handshake size={32} className="mx-auto mb-3 text-[#2DD4BF]"/>
+          <Handshake size={32} className="mx-auto mb-3 text-[#4ADE80]"/>
           <h3 className="font-bold text-lg mb-1">¿Necesitas un servicio personalizado?</h3>
-          <p className="text-teal-200 text-sm mb-4">Nuestro equipo diseña soluciones a medida para tu empresa.</p>
-          <a href="mailto:soporte@cuypay.com" className="inline-flex items-center gap-2 bg-[#2DD4BF] text-[#0F172A] font-bold px-6 py-2.5 rounded-xl hover:bg-[#00b396] transition-colors text-sm">
+          <p className="text-green-200 text-sm mb-4">Nuestro equipo diseña soluciones a medida para tu empresa.</p>
+          <a href="mailto:soporte@cuypay.com" className="inline-flex items-center gap-2 bg-[#4ADE80] text-[#0F172A] font-bold px-6 py-2.5 rounded-xl hover:bg-[#00b396] transition-colors text-sm">
             Contactar a soporte
           </a>
         </div>
@@ -2299,7 +2299,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   </button>
                   <div className="bg-white rounded-3xl border border-slate-200 shadow-sm p-10 flex flex-col items-center gap-5">
                       <div className="w-20 h-20 rounded-full bg-[#0F172A] flex items-center justify-center">
-                          <TrendingUp size={36} className="text-[#2DD4BF]"/>
+                          <TrendingUp size={36} className="text-[#4ADE80]"/>
                       </div>
                       <div>
                           <h2 className="text-2xl font-bold text-[#0F172A] mb-2">Mesa OTC</h2>
@@ -2334,7 +2334,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   <button
                       onClick={handleOtcRefresh}
                       disabled={otcRefreshing}
-                      className="ml-auto flex items-center gap-1.5 text-xs font-bold text-slate-500 hover:text-[#2DD4BF] transition-colors disabled:opacity-40"
+                      className="ml-auto flex items-center gap-1.5 text-xs font-bold text-slate-500 hover:text-[#4ADE80] transition-colors disabled:opacity-40"
                       title="Actualizar saldos"
                   >
                       <RefreshCw size={13} className={otcRefreshing ? 'animate-spin' : ''}/>
@@ -2354,7 +2354,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                           <button
                               key={coin}
                               onClick={() => setOtcCoin(coin)}
-                              className={`flex-1 p-4 rounded-2xl border-2 text-left transition-all ${otcCoin === coin ? 'border-[#2DD4BF] bg-[#2DD4BF]/5' : 'border-slate-200 bg-white'}`}
+                              className={`flex-1 p-4 rounded-2xl border-2 text-left transition-all ${otcCoin === coin ? 'border-[#4ADE80] bg-[#4ADE80]/5' : 'border-slate-200 bg-white'}`}
                           >
                               <div className="flex items-center gap-2 mb-2">
                                   {coin === 'USDT' ? (
@@ -2508,7 +2508,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                   <span className="text-xs text-slate-400">Disponible: <span className="font-bold text-slate-700">{walletBal.toLocaleString('es', {minimumFractionDigits:2, maximumFractionDigits:8})} {otcCoin}</span></span>
                                   <button
                                       onClick={() => pct(100)}
-                                      className="text-xs font-bold text-[#2DD4BF] bg-slate-50 px-2.5 py-1 rounded-lg hover:bg-slate-100 active:scale-95 transition-all duration-150"
+                                      className="text-xs font-bold text-[#4ADE80] bg-slate-50 px-2.5 py-1 rounded-lg hover:bg-slate-100 active:scale-95 transition-all duration-150"
                                   >Máx</button>
                               </div>
                           </div>
@@ -2519,7 +2519,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                   value={otcAmount}
                                   onChange={e => setOtcAmount(e.target.value)}
                                   placeholder="0.00"
-                                  className="w-full border-2 border-slate-200 rounded-xl px-4 py-3.5 text-2xl font-bold focus:outline-none focus:border-[#2DD4BF] transition-colors pr-20"
+                                  className="w-full border-2 border-slate-200 rounded-xl px-4 py-3.5 text-2xl font-bold focus:outline-none focus:border-[#4ADE80] transition-colors pr-20"
                               />
                               <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400">{otcCoin}</span>
                           </div>
@@ -2547,7 +2547,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                   value={otcWithdrawAddress}
                                   onChange={e => setOtcWithdrawAddress(e.target.value)}
                                   placeholder={currentNetInfo?.placeholder ?? '0x...'}
-                                  className="flex-1 border-2 border-slate-200 rounded-xl px-4 py-3 text-sm font-mono focus:outline-none focus:border-[#2DD4BF] transition-colors"
+                                  className="flex-1 border-2 border-slate-200 rounded-xl px-4 py-3 text-sm font-mono focus:outline-none focus:border-[#4ADE80] transition-colors"
                               />
                               <button
                                   type="button"
@@ -2588,7 +2588,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                       otc_deposit: 'text-green-600',
                       otc_withdraw: 'text-red-500',
                       otc_withdraw_request: 'text-orange-500',
-                      otc_convert_request: 'text-[#2DD4BF]',
+                      otc_convert_request: 'text-[#4ADE80]',
                   };
                   return (
                       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
@@ -2660,11 +2660,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                       value={otcAmount}
                                       onChange={e => { setOtcAmount(e.target.value); setOtcConvertError(''); }}
                                       placeholder="0.00"
-                                      className={`w-full border rounded-xl px-4 py-3 text-lg font-bold focus:outline-none pr-20 ${exceedsBalance ? 'border-red-400 focus:border-red-400' : 'border-slate-200 focus:border-[#2DD4BF]'}`}
+                                      className={`w-full border rounded-xl px-4 py-3 text-lg font-bold focus:outline-none pr-20 ${exceedsBalance ? 'border-red-400 focus:border-red-400' : 'border-slate-200 focus:border-[#4ADE80]'}`}
                                   />
                                   <button
                                       onClick={() => { setOtcAmount(availBal2.toFixed(6).replace(/\.?0+$/, '')); setOtcConvertError(''); }}
-                                      className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-[#2DD4BF] bg-slate-50 px-2.5 py-1 rounded-lg hover:bg-slate-100 transition-colors"
+                                      className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-[#4ADE80] bg-slate-50 px-2.5 py-1 rounded-lg hover:bg-slate-100 transition-colors"
                                   >Máx</button>
                               </div>
                               <div className="flex items-center justify-between mt-1">
@@ -2686,7 +2686,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                           <button
                                               key={p.pair}
                                               onClick={() => setOtcConvertTarget(fiat)}
-                                              className={`py-2.5 rounded-xl text-sm font-bold border-2 transition-all ${otcConvertTarget === fiat ? 'border-[#2DD4BF] bg-[#2DD4BF]/10 text-[#0F172A]' : 'border-slate-200 text-slate-600'}`}
+                                              className={`py-2.5 rounded-xl text-sm font-bold border-2 transition-all ${otcConvertTarget === fiat ? 'border-[#4ADE80] bg-[#4ADE80]/10 text-[#0F172A]' : 'border-slate-200 text-slate-600'}`}
                                           >
                                               {fiat}
                                           </button>
@@ -2698,12 +2698,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                           {selectedPair && parsedAmt2 > 0 && (
                               <div className="bg-[#0F172A] rounded-xl p-4 flex justify-between items-center">
                                   <div>
-                                      <p className="text-teal-300 text-xs">Recibes</p>
+                                      <p className="text-green-300 text-xs">Recibes</p>
                                       <p className="text-white font-bold text-2xl">{convertResult.toLocaleString('es', {minimumFractionDigits:2, maximumFractionDigits:2})} {otcConvertTarget}</p>
                                   </div>
                                   <div className="text-right">
-                                      <p className="text-teal-300 text-xs">Tasa OTC</p>
-                                      <p className="text-[#2DD4BF] font-bold">1 {otcCoin} = {selectedPair.rate.toLocaleString('es')} {otcConvertTarget}</p>
+                                      <p className="text-green-300 text-xs">Tasa OTC</p>
+                                      <p className="text-[#4ADE80] font-bold">1 {otcCoin} = {selectedPair.rate.toLocaleString('es')} {otcConvertTarget}</p>
                                   </div>
                               </div>
                           )}
@@ -2711,7 +2711,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                           <button
                               disabled={parsedAmt2 <= 0 || exceedsBalance || !otcConvertTarget || otcConvertSending}
                               onClick={handleOtcConvert}
-                              className="w-full bg-[#2DD4BF] text-[#0F172A] py-4 rounded-2xl font-bold text-base disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#00b396] transition-colors flex items-center justify-center gap-2"
+                              className="w-full bg-[#4ADE80] text-[#0F172A] py-4 rounded-2xl font-bold text-base disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#00b396] transition-colors flex items-center justify-center gap-2"
                           >
                               {otcConvertSending ? <Loader2 size={18} className="animate-spin"/> : <ArrowLeftRight size={18}/>}
                               {otcConvertSending ? 'Procesando...' : `Convertir ${otcCoin} → ${otcConvertTarget || '?'}`}
@@ -2787,7 +2787,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
           <div className="flex flex-col items-center pt-6 pb-4 px-6">
             <div className="flex items-center gap-0.5 mb-2">
               <span className="text-2xl font-black text-[#0F172A] tracking-tight">CUY</span>
-              <span className="text-2xl font-black text-[#2DD4BF] tracking-tight">PAY</span>
+              <span className="text-2xl font-black text-[#4ADE80] tracking-tight">PAY</span>
             </div>
             <p className="text-base font-bold text-slate-800">Resumen de movimiento</p>
           </div>
@@ -2826,7 +2826,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
       
       {toastMessage && (
           <div className="fixed top-6 right-6 z-[70] bg-[#0F172A] text-white px-6 py-3 rounded-lg shadow-xl flex items-center gap-3 animate-in slide-in-from-top-4 fade-in max-w-md">
-              <CheckCircle size={20} className="text-[#2DD4BF]" />
+              <CheckCircle size={20} className="text-[#4ADE80]" />
               <span className="font-medium text-sm">{toastMessage}</span>
           </div>
       )}
@@ -2992,7 +2992,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                   </div>
                               </div>
                           )}
-                          <div className="bg-slate-50 p-3 rounded-lg text-xs text-[#2DD4BF] flex gap-2 items-start mt-4">
+                          <div className="bg-slate-50 p-3 rounded-lg text-xs text-[#4ADE80] flex gap-2 items-start mt-4">
                               <Share2 size={16} className="shrink-0 mt-0.5" />
                               <p>Al recibir transferencias, recuerda que debes notificar el ingreso en la sección "Fondear" para acreditar tu saldo.</p>
                           </div>
@@ -3161,7 +3161,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                       <button onClick={() => { if (!getRawAmount(sendForm.amount)) { showToast('Ingresa un monto'); return; } setSendMode('bank'); setSendStep(2); }} className="flex flex-col items-center gap-2 p-3 py-4 border-2 border-slate-200 bg-slate-50 rounded-xl hover:border-[#0F172A] hover:bg-slate-100 transition-all">
                                           <Building2 size={20} className="text-[#0F172A]"/>
                                           <span className="font-bold text-xs text-[#0F172A]">Banco / Cuenta</span>
-                                          <span className="text-[10px] text-[#2DD4BF] text-center leading-tight">Transferencia bancaria</span>
+                                          <span className="text-[10px] text-[#4ADE80] text-center leading-tight">Transferencia bancaria</span>
                                       </button>
                                       <button onClick={() => { if (!getRawAmount(sendForm.amount)) { showToast('Ingresa un monto'); return; } setSendMode('cash'); setSendStep(2); }} className="flex flex-col items-center gap-2 p-3 py-4 border-2 border-orange-200 bg-orange-50 rounded-xl hover:border-orange-400 hover:bg-orange-100 transition-all">
                                           <MapPin size={20} className="text-orange-600"/>
@@ -3224,7 +3224,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                           <div className="space-y-6">
                               <h4 className="text-center text-slate-500 text-sm mb-2">Confirma los datos de pago</h4>
                               <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 flex flex-col items-center">
-                                  <span className="text-xs font-bold text-[#2DD4BF] uppercase tracking-widest mb-1">TOTAL A PAGAR</span>
+                                  <span className="text-xs font-bold text-[#4ADE80] uppercase tracking-widest mb-1">TOTAL A PAGAR</span>
                                   <span className="text-3xl font-extrabold text-[#0F172A]">{formatMoney(getRawAmount(sendForm.amount), sendForm.destinationCurrency)}</span>
                               </div>
                               <div className="bg-slate-50 rounded-xl p-4 space-y-3 text-sm border border-slate-200">
@@ -3588,7 +3588,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                   </div>
                               </div>
                               <button onClick={handleGeneratePayLink} disabled={!payLinkPayerName.trim() || !payLinkDocNumber.trim()}
-                                  className="w-full py-3.5 bg-[#2DD4BF] text-[#0F172A] font-bold rounded-xl hover:bg-[#00b092] transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                                  className="w-full py-3.5 bg-[#4ADE80] text-[#0F172A] font-bold rounded-xl hover:bg-[#22C55E] transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2">
                                   <Link2 size={18}/> Generar Link de Pago
                               </button>
                           </div>
@@ -3657,7 +3657,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
               />
               {/* aiming frame overlay */}
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <div className="w-48 h-48 border-4 border-[#2DD4BF] rounded-2xl opacity-80" />
+                <div className="w-48 h-48 border-4 border-[#4ADE80] rounded-2xl opacity-80" />
               </div>
             </div>
             <p className="text-xs text-slate-500 text-center py-3 px-4">Apunta la cámara al código QR de la dirección destino</p>

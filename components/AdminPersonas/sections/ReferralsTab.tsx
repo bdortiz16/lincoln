@@ -162,7 +162,7 @@ export const ReferralsTab: React.FC<{ profile: AdminProfile }> = ({ profile }) =
                                 onChange={e => setRateInput(e.target.value)}
                                 onBlur={() => rate !== null && !rateInput && setRateInput(String(rate))}
                                 disabled={!isSuperAdmin}
-                                className="w-full px-4 py-3 pr-24 rounded-xl border border-slate-500 font-mono text-lg outline-none focus:border-teal-500 disabled:bg-slate-50 disabled:text-slate-900"
+                                className="w-full px-4 py-3 pr-24 rounded-xl border border-slate-500 font-mono text-lg outline-none focus:border-green-500 disabled:bg-slate-50 disabled:text-slate-900"
                                 placeholder="0.01"
                             />
                             <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm text-slate-800 font-mono pointer-events-none">

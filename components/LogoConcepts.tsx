@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 
 const NAVY  = '#0F172A';
-const TEAL  = '#2DD4BF';
+const TEAL  = '#4ADE80';
 const WHITE = '#FFFFFF';
 
 /* Subtle professional animations — single global style block */

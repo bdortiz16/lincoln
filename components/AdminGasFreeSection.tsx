@@ -331,7 +331,7 @@ export const AdminGasFreeSection: React.FC = () => {
         <div className="space-y-6 animate-in fade-in duration-300">
             <div>
                 <h3 className="font-bold text-slate-800 text-lg flex items-center gap-2">
-                    <Zap size={20} className="text-[#0D9488]" /> GasFree · Custodia USDT (TRON)
+                    <Zap size={20} className="text-[#16A34A]" /> GasFree · Custodia USDT (TRON)
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
                     Cada cliente tiene su <b>wallet GasFree</b> (cajita USDT). Los depósitos y envíos <b>no usan TRX</b> — la comisión de red se paga en USDT.
@@ -349,8 +349,8 @@ export const AdminGasFreeSection: React.FC = () => {
                         <div className="flex items-center gap-3">
                             <div className="w-11 h-11 rounded-xl bg-white/10 ring-1 ring-white/20 flex items-center justify-center font-bold text-lg shrink-0">₮</div>
                             <div>
-                                <p className="font-bold text-sm flex items-center gap-2"><Landmark size={14} className="text-[#2DD4BF]" /> Tesorería GasFree (recaudadora)</p>
-                                <p className="text-[11px] text-teal-100/70">Aquí llega el USDT de conversiones · desde aquí salen envíos y pagos a proveedores</p>
+                                <p className="font-bold text-sm flex items-center gap-2"><Landmark size={14} className="text-[#4ADE80]" /> Tesorería GasFree (recaudadora)</p>
+                                <p className="text-[11px] text-green-100/70">Aquí llega el USDT de conversiones · desde aquí salen envíos y pagos a proveedores</p>
                             </div>
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
@@ -364,7 +364,7 @@ export const AdminGasFreeSection: React.FC = () => {
                     </div>
 
                     {!rec && !recLoading && (
-                        <p className="text-xs text-teal-100/70">
+                        <p className="text-xs text-green-100/70">
                             Todavía no se ha generado la wallet de la recaudadora — dale a "Generar wallet". No necesitas configurar ninguna llave a mano: se deriva sola, igual que la wallet de cada cliente.
                         </p>
                     )}
@@ -377,12 +377,12 @@ export const AdminGasFreeSection: React.FC = () => {
                         <>
                             <div>
                                 <p className="text-4xl font-bold tracking-tight">
-                                    {fmt(rec.balance)} <span className="text-base font-normal text-teal-200">USDT</span>
+                                    {fmt(rec.balance)} <span className="text-base font-normal text-green-200">USDT</span>
                                 </p>
-                                <button onClick={() => rec.gasFreeAddress && copy(rec.gasFreeAddress)} className="mt-1.5 inline-flex items-center gap-1.5 text-xs text-teal-100/80 hover:text-white font-mono">
+                                <button onClick={() => rec.gasFreeAddress && copy(rec.gasFreeAddress)} className="mt-1.5 inline-flex items-center gap-1.5 text-xs text-green-100/80 hover:text-white font-mono">
                                     {rec.gasFreeAddress}
                                     <Copy size={12} />
-                                    {copied === rec.gasFreeAddress && <span className="text-teal-300 font-sans">copiado</span>}
+                                    {copied === rec.gasFreeAddress && <span className="text-green-300 font-sans">copiado</span>}
                                 </button>
                             </div>
                             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
@@ -394,7 +394,7 @@ export const AdminGasFreeSection: React.FC = () => {
                         </>
                     ))}
                     {rec && !rec.error && treasuryCfg && (
-                        <div className={`text-xs font-bold rounded-lg px-3 py-2 flex items-center justify-between gap-2 flex-wrap ${rec.balance >= treasuryCfg.alertThresholdUsdt ? 'bg-amber-400/15 text-amber-200' : 'bg-white/5 text-teal-100/70'}`}>
+                        <div className={`text-xs font-bold rounded-lg px-3 py-2 flex items-center justify-between gap-2 flex-wrap ${rec.balance >= treasuryCfg.alertThresholdUsdt ? 'bg-amber-400/15 text-amber-200' : 'bg-white/5 text-green-100/70'}`}>
                             <span>
                                 {rec.balance >= treasuryCfg.alertThresholdUsdt
                                     ? `⚠️ El saldo de Tesorería (${fmt(rec.balance)} USDT) superó el umbral configurado (${fmt(treasuryCfg.alertThresholdUsdt)} USDT).`
@@ -416,7 +416,7 @@ export const AdminGasFreeSection: React.FC = () => {
                 <div className="flex items-center justify-between gap-3 flex-wrap mb-4">
                     <div>
                         <p className="font-bold text-slate-800 text-sm flex items-center gap-2">
-                            <Landmark size={15} className="text-[#0D9488]" /> Saldos en Finity
+                            <Landmark size={15} className="text-[#16A34A]" /> Saldos en Finity
                         </p>
                         <p className="text-[11px] text-slate-400 mt-0.5">Saldo real de la cuenta Finity de Lincoin (partner de dispersión COP). · Se actualiza solo cada minuto.</p>
                     </div>
@@ -463,13 +463,13 @@ export const AdminGasFreeSection: React.FC = () => {
                         value={recAddr}
                         onChange={(e) => setRecAddr(e.target.value)}
                         placeholder="Dirección USDT (TRC-20) · ej. TJQ5z9xMnZkt2KN24iUJCjM8itCAPP4v9H"
-                        className="flex-1 min-w-[240px] px-3 py-2 text-xs font-mono border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#2DD4BF]"
+                        className="flex-1 min-w-[240px] px-3 py-2 text-xs font-mono border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#4ADE80]"
                     />
                     <input
                         value={recRange}
                         onChange={(e) => setRecRange(e.target.value.replace(/[^0-9]/g, ''))}
                         title="Rango extra de índices a escanear"
-                        className="w-20 px-2 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#2DD4BF]"
+                        className="w-20 px-2 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#4ADE80]"
                         placeholder="rango"
                     />
                     <button onClick={locateAddr} disabled={recBusy || !recAddr.trim()} className="px-3 py-2 text-xs font-bold rounded-lg bg-[#0F172A] text-white hover:bg-[#152e52] disabled:opacity-60">
@@ -486,7 +486,7 @@ export const AdminGasFreeSection: React.FC = () => {
                                 <p className="text-slate-700">✅ Encontrada en el <b>índice {recResult.index}</b>{recResult.mnemonic ? ` (${recResult.mnemonic})` : ''} · saldo <b>{Number(recResult.balanceUsdt ?? 0).toFixed(2)} USDT</b></p>
                                 <p className="text-[11px] font-mono text-slate-400 break-all">{recResult.gasFreeAddress}</p>
                                 {typeof recResult.index === 'number' && Number(recResult.balanceUsdt ?? 0) > 0 && (
-                                    <button onClick={() => sweepIdx(recResult.index!, recResult.mnemonic)} disabled={recBusy} className="px-3 py-1.5 text-xs font-bold rounded-lg bg-[#2DD4BF] text-[#0F172A] hover:bg-[#26bda9] disabled:opacity-60">
+                                    <button onClick={() => sweepIdx(recResult.index!, recResult.mnemonic)} disabled={recBusy} className="px-3 py-1.5 text-xs font-bold rounded-lg bg-[#4ADE80] text-[#0F172A] hover:bg-[#26bda9] disabled:opacity-60">
                                         {recBusy ? 'Barriendo…' : `Barrer ${Number(recResult.balanceUsdt ?? 0).toFixed(2)} USDT a Tesorería`}
                                     </button>
                                 )}
@@ -542,7 +542,7 @@ export const AdminGasFreeSection: React.FC = () => {
                             value={fixEmail}
                             onChange={(e) => setFixEmail(e.target.value)}
                             placeholder="correo del usuario · ej. xatechgerencia@gmail.com"
-                            className="flex-1 min-w-[240px] px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#2DD4BF]"
+                            className="flex-1 min-w-[240px] px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#4ADE80]"
                         />
                         <button onClick={reassignWallet} disabled={fixBusy || !fixEmail.trim()} className="px-3 py-2 text-xs font-bold rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-60">
                             {fixBusy ? 'Reasignando…' : 'Reasignar wallet'}
@@ -572,12 +572,12 @@ export const AdminGasFreeSection: React.FC = () => {
                     <div>
                         <label className="text-[10px] font-bold uppercase text-slate-500">Alertar cuando el saldo supere (USDT)</label>
                         <input value={treasuryEdit.alertThresholdUsdt} onChange={e => setTreasuryEdit(p => ({ ...p, alertThresholdUsdt: e.target.value.replace(/[^\d.]/g, '') }))}
-                            className="mt-1 w-40 px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#2DD4BF]" placeholder="10000" />
+                            className="mt-1 w-40 px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#4ADE80]" placeholder="10000" />
                     </div>
                     <div>
                         <label className="text-[10px] font-bold uppercase text-slate-500">Proveedor destino</label>
                         <select value={treasuryEdit.alertProviderId} onChange={e => setTreasuryEdit(p => ({ ...p, alertProviderId: e.target.value }))}
-                            className="mt-1 w-48 px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#2DD4BF] bg-white">
+                            className="mt-1 w-48 px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#4ADE80] bg-white">
                             <option value="">— Sin asignar —</option>
                             {providers.map((p: any) => <option key={p.id} value={p.id}>{p.name}</option>)}
                         </select>
@@ -585,7 +585,7 @@ export const AdminGasFreeSection: React.FC = () => {
                     <div className="flex-1 min-w-[220px]">
                         <label className="text-[10px] font-bold uppercase text-slate-500">Notas (opcional)</label>
                         <input value={treasuryEdit.notes} onChange={e => setTreasuryEdit(p => ({ ...p, notes: e.target.value }))}
-                            className="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#2DD4BF]" placeholder="Notas adicionales" />
+                            className="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#4ADE80]" placeholder="Notas adicionales" />
                     </div>
                     <button onClick={saveTreasuryCfg} disabled={treasurySaving} style={{ color: '#FFFFFF' }} className="px-4 py-2 text-sm font-bold bg-[#0F172A] rounded-lg hover:bg-[#152e52] disabled:opacity-60">
                         {treasurySaving ? 'Guardando…' : 'Guardar'}
@@ -602,7 +602,7 @@ export const AdminGasFreeSection: React.FC = () => {
                         <div key={p.id} className="flex items-center justify-between gap-2 bg-slate-50 rounded-lg px-3 py-2 text-sm">
                             <div><span className="font-bold text-slate-800">{p.name}</span>{p.detail && <span className="text-slate-400"> · {mask(p.detail)}</span>}</div>
                             <div className="flex items-center gap-3 shrink-0">
-                                <button onClick={() => { setPayTarget(p); setPayAmount(''); setPayMsg(null); }} className="inline-flex items-center gap-1 text-xs font-bold text-[#0D9488] hover:underline" title="Pagar a este proveedor desde Tesorería — manual, sin mínimo acumulado">
+                                <button onClick={() => { setPayTarget(p); setPayAmount(''); setPayMsg(null); }} className="inline-flex items-center gap-1 text-xs font-bold text-[#16A34A] hover:underline" title="Pagar a este proveedor desde Tesorería — manual, sin mínimo acumulado">
                                     <Send size={12} /> Pagar
                                 </button>
                                 <button onClick={() => removeProvider(p.id)} className="text-red-500 hover:underline text-xs font-bold">Eliminar</button>
@@ -614,13 +614,13 @@ export const AdminGasFreeSection: React.FC = () => {
                 <div className="flex items-end gap-2 flex-wrap">
                     <div>
                         <label className="text-[10px] font-bold uppercase text-slate-500">Nombre</label>
-                        <input value={newProvider.name} onChange={e => setNewProvider(p => ({ ...p, name: e.target.value }))} className="mt-1 w-44 px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#2DD4BF]" placeholder="Proveedor X" />
+                        <input value={newProvider.name} onChange={e => setNewProvider(p => ({ ...p, name: e.target.value }))} className="mt-1 w-44 px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#4ADE80]" placeholder="Proveedor X" />
                     </div>
                     <div className="flex-1 min-w-[200px]">
                         <label className="text-[10px] font-bold uppercase text-slate-500">Detalle (wallet, banco, nota)</label>
-                        <input value={newProvider.detail} onChange={e => setNewProvider(p => ({ ...p, detail: e.target.value }))} className="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#2DD4BF]" placeholder="T... o datos bancarios" />
+                        <input value={newProvider.detail} onChange={e => setNewProvider(p => ({ ...p, detail: e.target.value }))} className="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#4ADE80]" placeholder="T... o datos bancarios" />
                     </div>
-                    <button onClick={addProvider} style={{ color: '#FFFFFF' }} className="px-4 py-2 text-sm font-bold bg-[#0D9488] rounded-lg hover:bg-[#0f766e]">+ Agregar</button>
+                    <button onClick={addProvider} style={{ color: '#FFFFFF' }} className="px-4 py-2 text-sm font-bold bg-[#16A34A] rounded-lg hover:bg-[#0f766e]">+ Agregar</button>
                 </div>
             </div>
 
@@ -628,7 +628,7 @@ export const AdminGasFreeSection: React.FC = () => {
             <div className="flex items-center gap-2 flex-wrap">
                 <div className="relative flex-1 min-w-[220px]">
                     <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                    <input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar por empresa, correo o ID…" className="w-full h-10 pl-9 pr-3 border border-slate-200 rounded-lg text-sm outline-none focus:border-[#2DD4BF]" />
+                    <input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar por empresa, correo o ID…" className="w-full h-10 pl-9 pr-3 border border-slate-200 rounded-lg text-sm outline-none focus:border-[#4ADE80]" />
                 </div>
                 <button onClick={loadAll} disabled={loadingAll || filtered.length === 0} className="flex items-center gap-2 px-3 py-2 text-sm font-semibold border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-60">
                     <RefreshCw size={14} className={loadingAll ? 'animate-spin' : ''} /> {loadingAll ? 'Cargando…' : 'Cargar wallets (todos)'}
@@ -663,7 +663,7 @@ export const AdminGasFreeSection: React.FC = () => {
                                 <tr key={u.id} className="border-t border-slate-100">
                                     <td className="px-4 py-3">
                                         <div className="flex items-center gap-2.5">
-                                            <div className="w-8 h-8 rounded-full bg-teal-50 text-[#0D9488] flex items-center justify-center font-bold text-xs shrink-0">₮</div>
+                                            <div className="w-8 h-8 rounded-full bg-green-50 text-[#16A34A] flex items-center justify-center font-bold text-xs shrink-0">₮</div>
                                             <div>
                                                 <p className="font-bold text-slate-800">{u.name || '—'}</p>
                                                 <p className="text-xs text-slate-400">{u.email}</p>
@@ -675,8 +675,8 @@ export const AdminGasFreeSection: React.FC = () => {
                                             : row.gasFreeAddress ? (
                                                 <div>
                                                     <span className="inline-flex items-center gap-1">{mask(row.gasFreeAddress)}
-                                                        <button onClick={() => copy(row.gasFreeAddress!)} className="text-slate-400 hover:text-[#0D9488]"><Copy size={12} /></button>
-                                                        {copied === row.gasFreeAddress && <span className="text-[10px] text-teal-600">copiado</span>}
+                                                        <button onClick={() => copy(row.gasFreeAddress!)} className="text-slate-400 hover:text-[#16A34A]"><Copy size={12} /></button>
+                                                        {copied === row.gasFreeAddress && <span className="text-[10px] text-green-600">copiado</span>}
                                                     </span>
                                                     {live.debug && (
                                                         <p className="text-[10px] text-slate-400 mt-1 normal-case">
@@ -703,7 +703,7 @@ export const AdminGasFreeSection: React.FC = () => {
                                                     <input autoFocus type="number" step="0.01" min="0" value={usdEdit.value}
                                                         onChange={e => setUsdEdit({ userId: u.id, value: e.target.value })}
                                                         onKeyDown={e => { if (e.key === 'Enter') saveUsd(u); if (e.key === 'Escape') { setUsdEdit(null); setUsdErr(null); } }}
-                                                        className="w-20 px-2 py-1 border border-slate-300 rounded-lg text-right text-xs outline-none focus:border-[#2DD4BF]" />
+                                                        className="w-20 px-2 py-1 border border-slate-300 rounded-lg text-right text-xs outline-none focus:border-[#4ADE80]" />
                                                     <button onClick={() => saveUsd(u)} disabled={usdSaving} style={{ color: '#FFFFFF' }} className="px-2 py-1 bg-[#0F172A] rounded-lg text-[10px] font-bold disabled:opacity-50">{usdSaving ? '…' : 'OK'}</button>
                                                     <button onClick={() => { setUsdEdit(null); setUsdErr(null); }} className="text-slate-400 text-xs">✕</button>
                                                 </div>
@@ -717,7 +717,7 @@ export const AdminGasFreeSection: React.FC = () => {
                                     </td>
                                     <td className="px-4 py-3 text-right">
                                         <div className="inline-flex items-center gap-3">
-                                            <button onClick={() => loadUser(u.id)} disabled={row.loading} className="inline-flex items-center gap-1 text-xs font-bold text-[#0D9488] hover:underline disabled:opacity-50">
+                                            <button onClick={() => loadUser(u.id)} disabled={row.loading} className="inline-flex items-center gap-1 text-xs font-bold text-[#16A34A] hover:underline disabled:opacity-50">
                                                 <RefreshCw size={13} className={row.loading ? 'animate-spin' : ''} /> {row.loading ? 'Cargando…' : (row.gasFreeAddress ? 'Actualizar saldo' : 'Generar wallet')}
                                             </button>
                                             {row.gasFreeAddress && (
@@ -759,7 +759,7 @@ export const AdminGasFreeSection: React.FC = () => {
                             <div>
                                 <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Monto a pagar (USDT)</label>
                                 <input autoFocus type="number" step="0.01" value={payAmount} onChange={e => setPayAmount(e.target.value)}
-                                    placeholder="0.00" className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-lg font-mono outline-none focus:border-[#2DD4BF]" />
+                                    placeholder="0.00" className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-lg font-mono outline-none focus:border-[#4ADE80]" />
                             </div>
                             <div className="bg-slate-50 rounded-lg p-3 text-xs text-slate-500">
                                 Manual, sin esperar ningún mínimo acumulado en Tesorería.{' '}
@@ -788,7 +788,7 @@ export const AdminGasFreeSection: React.FC = () => {
                     <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl overflow-hidden max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
                         <div className="flex justify-between items-center p-5 border-b border-slate-100 shrink-0">
                             <div>
-                                <h3 className="font-bold text-slate-800 flex items-center gap-2"><Activity size={16} className="text-[#0D9488]" /> Movimientos de Tesorería</h3>
+                                <h3 className="font-bold text-slate-800 flex items-center gap-2"><Activity size={16} className="text-[#16A34A]" /> Movimientos de Tesorería</h3>
                                 <p className="text-xs text-slate-400 mt-0.5">Entradas (barridos de clientes) y salidas (pagos a proveedores), con la comisión real de cada una.</p>
                             </div>
                             <button onClick={() => setShowMovements(false)} className="text-slate-400 hover:text-slate-600"><X size={20}/></button>
@@ -834,7 +834,7 @@ export const AdminGasFreeSection: React.FC = () => {
 // Chip de estadística para la tarjeta oscura tipo billetera (Tesorería).
 const WalletStat: React.FC<{ label: string; value: string }> = ({ label, value }) => (
     <div className="bg-white/5 rounded-lg p-2.5">
-        <p className="text-[9px] uppercase tracking-wider text-teal-100/60">{label}</p>
+        <p className="text-[9px] uppercase tracking-wider text-green-100/60">{label}</p>
         <p className="text-xs font-bold text-white truncate" title={value}>{value}</p>
     </div>
 );
@@ -844,8 +844,8 @@ const Info: React.FC<{ label: string; value?: string; onCopy?: () => void; copie
         <p className="text-[9px] uppercase tracking-wider text-slate-400">{label}</p>
         <p className="text-sm font-bold font-mono text-slate-800 break-all flex items-center gap-1">
             {value ?? '—'}
-            {onCopy && value && <button onClick={onCopy} className="text-slate-400 hover:text-[#0D9488] shrink-0"><Copy size={12} /></button>}
-            {copied && <span className="text-[10px] text-teal-600">copiado</span>}
+            {onCopy && value && <button onClick={onCopy} className="text-slate-400 hover:text-[#16A34A] shrink-0"><Copy size={12} /></button>}
+            {copied && <span className="text-[10px] text-green-600">copiado</span>}
         </p>
     </div>
 );

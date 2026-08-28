@@ -409,7 +409,7 @@ const LatamMap: React.FC<LatamMapProps> = ({ data, onSelectCountry }) => {
         const c = byCode.get(code);
         if (!c || c.verified === 0) return '#E2E8F0';   // slate-200
         const t = c.verified / maxVerified;             // 0..1
-        // Interpolamos entre teal-100 (#CCFBF1) y teal-700 (#0F766E)
+        // Interpolamos entre green-100 (#CCFBF1) y green-700 (#0F766E)
         const start = [204, 251, 241];
         const end   = [15, 118, 110];
         const mix   = start.map((s, i) => Math.round(s + (end[i] - s) * t));
@@ -475,7 +475,7 @@ const LatamMap: React.FC<LatamMapProps> = ({ data, onSelectCountry }) => {
                     <div
                         className="flex-1 h-2 rounded-full"
                         style={{
-                            backgroundImage: 'linear-gradient(to right, #E2E8F0 0%, #CCFBF1 12%, #14B8A6 60%, #0F766E 100%)',
+                            backgroundImage: 'linear-gradient(to right, #E2E8F0 0%, #CCFBF1 12%, #22C55E 60%, #0F766E 100%)',
                         }}
                     />
                     <span>{maxVerified}+ verificados</span>

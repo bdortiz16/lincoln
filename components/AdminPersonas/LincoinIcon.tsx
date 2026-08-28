@@ -8,7 +8,7 @@ import React from 'react';
  *
  * Composición:
  *  - Fondo: rounded-square navy (#0F172A)
- *  - Símbolo: rounded-square outline teal (#2DD4BF) con dot teal
+ *  - Símbolo: rounded-square outline teal (#4ADE80) con dot teal
  *    a la derecha — la marca de Lincoin
  *
  * Props:
@@ -28,7 +28,7 @@ export const LincoinIcon: React.FC<{
     size = 32,
     withBackground = true,
     bgColor = '#0F172A',
-    markColor = '#2DD4BF',
+    markColor = '#4ADE80',
     className,
     title = 'Lincoin',
 }) => (
@@ -62,9 +62,9 @@ export const LincoinIcon: React.FC<{
         />
 
         {/* Dot DENTRO del rounded-square — derecha-abajo.
-            La clase cuypay-dot lo hace caer desde arriba con rebote al cargar
+            La clase lincoin-dot lo hace caer desde arriba con rebote al cargar
             y luego pulsa lento para mantenerse "vivo". */}
-        <circle cx="58" cy="56" r="8" fill={markColor} className="cuypay-dot" />
+        <circle cx="58" cy="56" r="8" fill={markColor} className="lincoin-dot" />
     </svg>
 );
 
@@ -74,6 +74,6 @@ export const LincoinMark: React.FC<{
     size?: number;
     color?: string;
     className?: string;
-}> = ({ size = 24, color = '#2DD4BF', className }) => (
+}> = ({ size = 24, color = '#4ADE80', className }) => (
     <LincoinIcon size={size} withBackground={false} markColor={color} className={className} />
 );

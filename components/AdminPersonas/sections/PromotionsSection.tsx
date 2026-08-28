@@ -190,12 +190,12 @@ const MailComposer: React.FC<{ profile: AdminProfile }> = ({ profile }) => {
             {/* Audiencia */}
             <div className="bg-white rounded-2xl border border-slate-200 p-4 flex items-center justify-between flex-wrap gap-3">
                 <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-teal-50 flex items-center justify-center" style={{ color: NAVY }}>
+                    <div className="w-10 h-10 rounded-xl bg-green-50 flex items-center justify-center" style={{ color: NAVY }}>
                         <UsersIcon size={18} />
                     </div>
                     <div>
                         <p className="text-sm font-bold" style={{ color: NAVY }}>
-                            Llegaríamos a <span className="text-teal-700">{audience.eligible.toLocaleString('es-CO')}</span> usuarios de cuenta
+                            Llegaríamos a <span className="text-green-700">{audience.eligible.toLocaleString('es-CO')}</span> usuarios de cuenta
                         </p>
                         <p className="text-xs text-slate-500">
                             de {audience.total.toLocaleString('es-CO')} totales · {audience.blocked} bloqueados quedan fuera · los terceros nunca reciben
@@ -216,7 +216,7 @@ const MailComposer: React.FC<{ profile: AdminProfile }> = ({ profile }) => {
                     onChange={e => setBrief(e.target.value)}
                     rows={3}
                     placeholder="Ej: anunciar nueva ruta PEN→COP sin fees por 48 h, llamado a la acción para enviar dinero ahora."
-                    className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-teal-500 resize-none"
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-green-500 resize-none"
                 />
                 <div className="mt-3 flex items-center justify-end gap-2">
                     <button
@@ -241,14 +241,14 @@ const MailComposer: React.FC<{ profile: AdminProfile }> = ({ profile }) => {
                         value={subject}
                         onChange={e => setSubject(e.target.value)}
                         placeholder="Asunto del correo"
-                        className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm font-semibold outline-none focus:border-teal-500 mb-2"
+                        className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm font-semibold outline-none focus:border-green-500 mb-2"
                     />
                     <textarea
                         value={body}
                         onChange={e => setBody(e.target.value)}
                         rows={12}
                         placeholder="Cuerpo del correo (texto plano — el preview de la derecha lo envuelve con el branding Lincoin)."
-                        className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-teal-500 resize-y"
+                        className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-green-500 resize-y"
                     />
                 </div>
 
@@ -312,14 +312,14 @@ function renderHtml(subject: string, body: string): string {
     <tr><td align="center">
       <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 1px 2px rgba(15,23,42,.04)">
         <tr><td style="background:#0F172A;padding:20px 28px;text-align:left">
-          <span style="display:inline-block;width:36px;height:36px;border-radius:10px;background:#2DD4BF;line-height:36px;text-align:center;color:#0F172A;font-weight:800;font-family:-apple-system,sans-serif">C</span>
+          <span style="display:inline-block;width:36px;height:36px;border-radius:10px;background:#4ADE80;line-height:36px;text-align:center;color:#0F172A;font-weight:800;font-family:-apple-system,sans-serif">C</span>
           <span style="display:inline-block;margin-left:10px;color:#ffffff;font-weight:800;letter-spacing:1px;font-size:14px;vertical-align:6px">LINCOIN</span>
         </td></tr>
         <tr><td style="padding:28px">
           <h1 style="margin:0 0 16px;font-size:20px;color:#0F172A">${safeSubject}</h1>
           <div style="font-size:14px;color:#334155">${safeBody}</div>
           <div style="margin:28px 0 0">
-            <a href="https://cuypay.com" style="display:inline-block;background:#2DD4BF;color:#0F172A;text-decoration:none;font-weight:700;font-size:14px;padding:10px 18px;border-radius:10px">Abrir Lincoin</a>
+            <a href="https://cuypay.com" style="display:inline-block;background:#4ADE80;color:#0F172A;text-decoration:none;font-weight:700;font-size:14px;padding:10px 18px;border-radius:10px">Abrir Lincoin</a>
           </div>
         </td></tr>
         <tr><td style="padding:20px 28px;background:#F8FAFC;border-top:1px solid #E2E8F0;font-size:11px;color:#64748B">

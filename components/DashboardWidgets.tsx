@@ -6,7 +6,7 @@ const FEATURES = [
     icon: Wallet,
     title: 'Diez cuentas en diferentes divisas',
     desc: 'Puedes tener cuentas en USD, EUR, MXN, COP (entre otras) sin costo alguno.',
-    color: 'bg-slate-50 text-[#2DD4BF]',
+    color: 'bg-slate-50 text-[#4ADE80]',
   },
   {
     icon: Repeat,
@@ -103,7 +103,7 @@ export const FeatureCarousel: React.FC = () => {
           <button
             key={i}
             onClick={() => handleDot(i)}
-            className={`rounded-full transition-all duration-300 ${i === current ? 'w-4 h-2.5 bg-[#0F172A]' : 'w-2.5 h-2.5 bg-slate-200 hover:bg-teal-300'}`}
+            className={`rounded-full transition-all duration-300 ${i === current ? 'w-4 h-2.5 bg-[#0F172A]' : 'w-2.5 h-2.5 bg-slate-200 hover:bg-green-300'}`}
           />
         ))}
       </div>

@@ -154,7 +154,7 @@ export const SecurityRecoveryTab: React.FC<{
                 </div>
             </div>
 
-            <div className="bg-teal-50 border border-teal-100 rounded-xl p-3 flex items-start gap-2 text-sm text-slate-700">
+            <div className="bg-green-50 border border-green-100 rounded-xl p-3 flex items-start gap-2 text-sm text-slate-700">
                 <LifeBuoy size={16} className="mt-0.5 shrink-0" style={{ color: TEAL }} />
                 <p>
                     <strong>Recuperación de acceso:</strong> si el usuario perdió el acceso a su correo y por eso

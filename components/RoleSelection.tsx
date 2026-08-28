@@ -50,14 +50,14 @@ export const RoleSelection: React.FC<RoleSelectionProps> = ({ onSelectPersonal, 
                   {/* PERSONAS OPTION - Calls handler that opens download modal in App.tsx */}
                   <button
                       onClick={onSelectPersonal}
-                      className="role-card group relative bg-white border-2 border-slate-100 rounded-2xl md:rounded-3xl p-4 md:p-8 hover:border-[#2DD4BF] hover:shadow-2xl transition-all duration-300 flex flex-col items-center text-center text-left"
+                      className="role-card group relative bg-white border-2 border-slate-100 rounded-2xl md:rounded-3xl p-4 md:p-8 hover:border-[#4ADE80] hover:shadow-2xl transition-all duration-300 flex flex-col items-center text-center text-left"
                   >
                       {/* "App móvil" badge */}
-                      <div className="absolute top-3 right-3 md:top-4 md:right-4 bg-[#2DD4BF]/10 text-[#0F172A] text-[9px] md:text-[10px] font-bold px-2 py-1 rounded-full border border-[#2DD4BF]/30">
+                      <div className="absolute top-3 right-3 md:top-4 md:right-4 bg-[#4ADE80]/10 text-[#0F172A] text-[9px] md:text-[10px] font-bold px-2 py-1 rounded-full border border-[#4ADE80]/30">
                           📱 APP MÓVIL
                       </div>
 
-                      <div className="role-circle-teal w-12 h-12 md:w-24 md:h-24 rounded-full bg-slate-50 flex items-center justify-center mb-3 md:mb-6 group-hover:bg-[#2DD4BF] transition-all duration-300 shadow-sm group-hover:scale-110 shrink-0">
+                      <div className="role-circle-teal w-12 h-12 md:w-24 md:h-24 rounded-full bg-slate-50 flex items-center justify-center mb-3 md:mb-6 group-hover:bg-[#4ADE80] transition-all duration-300 shadow-sm group-hover:scale-110 shrink-0">
                           <User className="w-6 h-6 md:w-10 md:h-10 text-slate-900 group-hover:text-[#0F172A] transition-colors duration-300" strokeWidth={2} />
                       </div>
 

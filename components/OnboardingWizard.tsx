@@ -285,7 +285,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
                                     <div className={`w-3 h-3 rounded-full z-10 flex items-center justify-center ${isCurrent ? 'bg-cuypay-accent scale-125' : isCompleted ? 'bg-cuypay-accent/50' : 'bg-white/20'}`}></div>
                                     {idx !== steps.length - 1 && (<div className={`w-0.5 flex-1 my-1 ${isCompleted ? 'bg-cuypay-accent/30' : 'bg-white/10'}`}></div>)}
                                 </div>
-                                <div className={`pb-6 text-sm font-medium ${isCurrent ? 'text-white' : 'text-teal-200/50'}`}>{s.label}</div>
+                                <div className={`pb-6 text-sm font-medium ${isCurrent ? 'text-white' : 'text-green-200/50'}`}>{s.label}</div>
                             </div>
                         );
                     })}
@@ -299,7 +299,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
                  </div>
                  <h2 className="text-2xl font-bold text-[#0F172A] mb-2">{steps.find(s => s.id === currentStep)?.label}</h2>
                  <p className="text-slate-500 mb-8 leading-relaxed">Complete la información requerida para habilitar su cuenta empresa.</p>
-                 <button onClick={handleStartStep} className="w-fit px-8 py-3 bg-[#0F172A] hover:bg-[#152e52] font-bold rounded-lg shadow-lg shadow-teal-900/20 transition-all">
+                 <button onClick={handleStartStep} className="w-fit px-8 py-3 bg-[#0F172A] hover:bg-[#152e52] font-bold rounded-lg shadow-lg shadow-green-900/20 transition-all">
                     {currentStep === 1 ? "Comenzar registro" : "Continuar"}
                  </button>
             </div>
@@ -325,7 +325,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
                 <p className="text-slate-500 max-w-lg mb-12 leading-relaxed">
                     Validaremos la documentación enviada y dentro de las próximas 24 horas hábiles te notificaremos para que puedas operar en LINCOIN.
                 </p>
-                <button onClick={onFinish} className="w-full max-w-xs h-12 bg-[#0F172A] hover:bg-[#152e52] font-bold rounded-lg shadow-lg shadow-teal-900/20 transition-all">Ir al inicio</button>
+                <button onClick={onFinish} className="w-full max-w-xs h-12 bg-[#0F172A] hover:bg-[#152e52] font-bold rounded-lg shadow-lg shadow-green-900/20 transition-all">Ir al inicio</button>
             </div>
         </div>
       );

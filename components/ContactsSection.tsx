@@ -153,7 +153,7 @@ const FilterChip: React.FC<{ active: boolean; onClick: () => void; children: Rea
     <button
         type="button"
         onClick={onClick}
-        className={`px-3 py-1.5 rounded-full text-xs font-bold border transition-colors ${active ? 'bg-[#2DD4BF] text-[#0F172A] border-[#2DD4BF]' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+        className={`px-3 py-1.5 rounded-full text-xs font-bold border transition-colors ${active ? 'bg-[#4ADE80] text-[#0F172A] border-[#4ADE80]' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
     >
         {children}
     </button>
@@ -521,7 +521,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
             <div className="flex items-center justify-between flex-wrap gap-3">
                 <div>
                     <h1 className="text-2xl font-extrabold text-[#0F172A] flex items-center gap-2">
-                        <BookUser size={22} className="text-[#2DD4BF]" /> Contactos
+                        <BookUser size={22} className="text-[#4ADE80]" /> Contactos
                     </h1>
                     <p className="text-sm" style={{ color: '#334155' }}>
                         Inscribe las cuentas bancarias destino. Las transferencias en COP van
@@ -542,7 +542,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                     <button
                         onClick={() => { setFormOpen(true); setFormStep('country'); setForm({ ...emptyForm }); setNotice(null); }}
                         style={{ color: '#0F172A' }}
-                        className="py-2.5 px-5 rounded-xl bg-[#2DD4BF] hover:bg-[#5EEAD4] text-sm font-bold flex items-center gap-2 transition-colors"
+                        className="py-2.5 px-5 rounded-xl bg-[#4ADE80] hover:bg-[#6EE7A0] text-sm font-bold flex items-center gap-2 transition-colors"
                     >
                         <Plus size={16} strokeWidth={3} /> Inscribir contacto
                     </button>
@@ -550,7 +550,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
             </div>
 
             {notice && (
-                <div className={`rounded-xl border p-3 text-sm font-medium ${notice.ok ? 'bg-teal-50 border-teal-200 text-teal-800' : 'bg-amber-50 border-amber-200 text-amber-800'}`}>
+                <div className={`rounded-xl border p-3 text-sm font-medium ${notice.ok ? 'bg-green-50 border-green-200 text-green-800' : 'bg-amber-50 border-amber-200 text-amber-800'}`}>
                     {notice.text}
                 </div>
             )}
@@ -568,7 +568,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
 
             {/* Formulario de inscripción */}
             {formOpen && (
-                <div className="bg-white rounded-2xl border-2 border-[#2DD4BF]/40 p-5 space-y-4">
+                <div className="bg-white rounded-2xl border-2 border-[#4ADE80]/40 p-5 space-y-4">
                     <div className="flex items-center justify-between">
                         <h3 className="font-bold text-slate-800">Nuevo contacto</h3>
                         <button onClick={() => setFormOpen(false)} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
@@ -577,7 +577,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                     {/* PASO EE. UU. — ¿Banco o Wallet? (solo Estados Unidos / USD) */}
                     {formStep === 'type' && (
                         <div className="space-y-3">
-                            <button onClick={() => setFormStep('country')} className="text-xs font-bold text-[#0D9488] hover:underline">← Cambiar país</button>
+                            <button onClick={() => setFormStep('country')} className="text-xs font-bold text-[#16A34A] hover:underline">← Cambiar país</button>
                             <p className="text-sm text-slate-600 font-medium">Estados Unidos (USD) — ¿qué tipo de destino vas a inscribir?</p>
                             <div className="grid grid-cols-2 gap-3">
                                 <button
@@ -592,9 +592,9 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                                 <button
                                     type="button"
                                     onClick={() => { setForm(fm => ({ ...fm, accountKind: 'wallet', bank: '' })); setFormStep('wallet'); }}
-                                    className="flex flex-col items-center gap-2 p-5 rounded-2xl border-2 border-slate-200 hover:border-[#2DD4BF] hover:bg-teal-50/40 transition-all"
+                                    className="flex flex-col items-center gap-2 p-5 rounded-2xl border-2 border-slate-200 hover:border-[#4ADE80] hover:bg-green-50/40 transition-all"
                                 >
-                                    <div className="w-12 h-12 bg-teal-50 rounded-xl flex items-center justify-center"><Wallet size={24} className="text-[#0D9488]" /></div>
+                                    <div className="w-12 h-12 bg-green-50 rounded-xl flex items-center justify-center"><Wallet size={24} className="text-[#16A34A]" /></div>
                                     <span className="text-sm font-bold text-slate-800">Wallet</span>
                                     <span className="text-[10px] text-slate-500 leading-tight text-center">Dirección cripto (USDT/USDC)</span>
                                 </button>
@@ -604,18 +604,18 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
 
                     {/* PASO WALLET — datos de la wallet (solo USD, aprobación automática) */}
                     {formStep === 'wallet' && (<>
-                        <button onClick={() => setFormStep('type')} className="text-xs font-bold text-[#0D9488] hover:underline">← Cambiar tipo</button>
+                        <button onClick={() => setFormStep('type')} className="text-xs font-bold text-[#16A34A] hover:underline">← Cambiar tipo</button>
                         <div className="grid md:grid-cols-2 gap-3">
                             <div className="md:col-span-2">
                                 <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Nombre / Alias del destinatario</label>
                                 <input value={form.name} onChange={e => setForm(fm => ({ ...fm, name: e.target.value }))}
                                     placeholder="Ej: Proveedor XYZ"
-                                    className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#2DD4BF] outline-none" />
+                                    className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#4ADE80] outline-none" />
                             </div>
                             <div>
                                 <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Moneda</label>
                                 <select value={form.walletCoin} onChange={e => setForm(fm => ({ ...fm, walletCoin: e.target.value as 'USDT' | 'USDC' }))}
-                                    className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm bg-white focus:border-[#2DD4BF] outline-none">
+                                    className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm bg-white focus:border-[#4ADE80] outline-none">
                                     <option value="USDT">USDT (Tether)</option>
                                     <option value="USDC">USDC</option>
                                 </select>
@@ -623,7 +623,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                             <div>
                                 <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Red</label>
                                 <select value={form.walletNetwork} onChange={e => setForm(fm => ({ ...fm, walletNetwork: e.target.value as 'TRC-20' | 'BEP-20' }))}
-                                    className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm bg-white focus:border-[#2DD4BF] outline-none">
+                                    className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm bg-white focus:border-[#4ADE80] outline-none">
                                     <option value="TRC-20">TRON (TRC-20)</option>
                                     <option value="BEP-20">BNB Chain (BEP-20)</option>
                                 </select>
@@ -632,7 +632,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                                 <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Dirección de la wallet</label>
                                 <input value={form.accountNumber} onChange={e => setForm(fm => ({ ...fm, accountNumber: e.target.value.trim() }))}
                                     placeholder={form.walletNetwork === 'TRC-20' ? 'T…' : '0x…'}
-                                    className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm font-mono focus:border-[#2DD4BF] outline-none" />
+                                    className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm font-mono focus:border-[#4ADE80] outline-none" />
                                 <p className="text-[10px] text-slate-400 mt-1">⚠️ Verifica la dirección y la red: un envío a una dirección equivocada no se puede recuperar.</p>
                             </div>
                         </div>
@@ -665,7 +665,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                                     >
                                         <FlagImg code={c.code} className="w-10 h-7 object-cover rounded shadow-sm" />
                                         <span className="text-xs font-bold text-slate-700 leading-tight text-center">{c.name}</span>
-                                        <span className={`text-[9px] font-bold leading-tight text-center ${c.name === 'Colombia' ? 'text-amber-600' : 'text-teal-600'}`}>
+                                        <span className={`text-[9px] font-bold leading-tight text-center ${c.name === 'Colombia' ? 'text-amber-600' : 'text-green-600'}`}>
                                             {c.name === 'Colombia' ? 'Revisión bancaria' : 'Aprobación automática'}
                                         </span>
                                     </button>
@@ -679,7 +679,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                         <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2">
                             <FlagImg code={CONTACT_COUNTRIES.find(c => c.name === form.country)?.code ?? 'CO'} className="w-6 h-4 object-cover rounded shadow-sm" />
                             <span className="text-sm font-bold text-slate-700">{form.country}</span>
-                            <button onClick={() => setFormStep('country')} className="text-xs font-bold text-[#0D9488] hover:underline ml-1">Cambiar país</button>
+                            <button onClick={() => setFormStep('country')} className="text-xs font-bold text-[#16A34A] hover:underline ml-1">Cambiar país</button>
                         </div>
                         <div className="grid grid-cols-2 gap-2 w-56">
                             {(['persona', 'empresa'] as const).map(k => (
@@ -698,12 +698,12 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                         <div className="md:col-span-2">
                             <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Nombre completo / Razón social</label>
                             <input value={form.name} onChange={e => setForm(fm => ({ ...fm, name: e.target.value }))}
-                                className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#2DD4BF] outline-none" />
+                                className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#4ADE80] outline-none" />
                         </div>
                         <div>
                             <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Tipo de documento</label>
                             <select value={form.docType} onChange={e => setForm(fm => ({ ...fm, docType: e.target.value }))}
-                                className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm bg-white focus:border-[#2DD4BF] outline-none">
+                                className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm bg-white focus:border-[#4ADE80] outline-none">
                                 {DOC_TYPES.map(d => <option key={d.v} value={d.v}>{d.l}</option>)}
                             </select>
                         </div>
@@ -711,26 +711,26 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                             <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Número de documento</label>
                             <input value={form.docNumber} onChange={e => setForm(fm => ({ ...fm, docNumber: e.target.value }))}
                                 inputMode="numeric"
-                                className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#2DD4BF] outline-none" />
+                                className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#4ADE80] outline-none" />
                         </div>
                         <div>
                             <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Banco destino</label>
                             {form.country === 'Colombia' ? (
                                 <select value={form.bank} onChange={e => setForm(fm => ({ ...fm, bank: e.target.value }))}
-                                    className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm bg-white focus:border-[#2DD4BF] outline-none">
+                                    className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm bg-white focus:border-[#4ADE80] outline-none">
                                     <option value="">Selecciona…</option>
                                     {BANKS_CO.map(b => <option key={b} value={b}>{b}</option>)}
                                 </select>
                             ) : (
                                 <input value={form.bank} onChange={e => setForm(fm => ({ ...fm, bank: e.target.value }))}
                                     placeholder="Nombre del banco"
-                                    className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#2DD4BF] outline-none" />
+                                    className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#4ADE80] outline-none" />
                             )}
                         </div>
                         <div>
                             <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Tipo de cuenta</label>
                             <select value={form.accountType} onChange={e => setForm(fm => ({ ...fm, accountType: e.target.value as 'savings' | 'checking' }))}
-                                className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm bg-white focus:border-[#2DD4BF] outline-none">
+                                className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm bg-white focus:border-[#4ADE80] outline-none">
                                 <option value="savings">Ahorros</option>
                                 <option value="checking">Corriente</option>
                             </select>
@@ -739,7 +739,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                             <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Número de cuenta</label>
                             <input value={form.accountNumber} onChange={e => setForm(fm => ({ ...fm, accountNumber: e.target.value.replace(/[^\d-]/g, '') }))}
                                 inputMode="numeric"
-                                className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#2DD4BF] outline-none" />
+                                className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#4ADE80] outline-none" />
                         </div>
                     </div>
                     <button
@@ -766,7 +766,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                                 value={search}
                                 onChange={e => setSearch(e.target.value)}
                                 placeholder="Buscar por nombre, banco, cuenta o documento…"
-                                className="w-full h-11 pl-9 pr-3 rounded-xl border border-slate-200 text-sm outline-none focus:border-[#2DD4BF]"
+                                className="w-full h-11 pl-9 pr-3 rounded-xl border border-slate-200 text-sm outline-none focus:border-[#4ADE80]"
                             />
                         </div>
                         <button
@@ -778,7 +778,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                             <SlidersHorizontal size={16} />
                             <span className="hidden sm:inline">Filtros</span>
                             {activeFilters > 0 && (
-                                <span className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-[#2DD4BF] text-[#0F172A] text-[10px] font-black flex items-center justify-center">{activeFilters}</span>
+                                <span className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-[#4ADE80] text-[#0F172A] text-[10px] font-black flex items-center justify-center">{activeFilters}</span>
                             )}
                         </button>
                     </div>
@@ -812,7 +812,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                                 </div>
                             </div>
                             {activeFilters > 0 && (
-                                <button onClick={clearFilters} className="text-xs font-bold text-[#0D9488] hover:underline">Limpiar filtros</button>
+                                <button onClick={clearFilters} className="text-xs font-bold text-[#16A34A] hover:underline">Limpiar filtros</button>
                             )}
                         </div>
                     )}
@@ -838,8 +838,8 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                         <button onClick={() => setDetail(c)} className="flex items-center gap-3 min-w-0 text-left flex-1 cursor-pointer" title="Ver datos de la inscripción">
                             <div className="w-10 h-10 rounded-xl bg-[#0F172A] flex items-center justify-center shrink-0">
                                 {c.accountKind === 'wallet'
-                                    ? <Wallet size={16} className="text-[#2DD4BF]" />
-                                    : <Landmark size={16} className="text-[#2DD4BF]" />}
+                                    ? <Wallet size={16} className="text-[#4ADE80]" />
+                                    : <Landmark size={16} className="text-[#4ADE80]" />}
                             </div>
                             <div className="min-w-0">
                                 <p className="font-bold text-slate-800 text-sm truncate">{c.name} <span className="font-normal text-slate-400 text-xs">· {c.accountKind === 'wallet' ? 'Wallet' : (c.kind === 'empresa' ? 'Empresa' : 'Persona')}</span></p>
@@ -854,7 +854,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                             {(() => {
                                 const st = contactStatus(c);
                                 if (st === 'aprobada') return (
-                                    <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase bg-teal-50 text-teal-700 border border-teal-200 px-2 py-1 rounded-full">
+                                    <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase bg-green-50 text-green-700 border border-green-200 px-2 py-1 rounded-full">
                                         <CheckCircle size={11} /> Aprobada
                                     </span>
                                 );
@@ -889,13 +889,13 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                             <div className="flex items-center justify-between">
                                 <div className="flex items-center gap-2">
                                     {detail.accountKind === 'wallet'
-                                        ? <><Wallet size={18} className="text-[#0D9488]" /><span className="font-bold text-slate-800">Wallet · {detail.walletCoin ?? 'USDT'} · {detail.walletNetwork ?? 'TRC-20'}</span></>
+                                        ? <><Wallet size={18} className="text-[#16A34A]" /><span className="font-bold text-slate-800">Wallet · {detail.walletCoin ?? 'USDT'} · {detail.walletNetwork ?? 'TRC-20'}</span></>
                                         : <><FlagImg code={CONTACT_COUNTRIES.find(cc => cc.name === (detail.country ?? 'Colombia'))?.code ?? 'CO'} className="w-7 h-5 object-cover rounded shadow-sm" />
                                           <span className="font-bold text-slate-800">{detail.country ?? 'Colombia'}</span></>}
                                 </div>
                                 {(() => {
                                     const st = contactStatus(detail);
-                                    if (st === 'aprobada') return <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase bg-teal-50 text-teal-700 border border-teal-200 px-2.5 py-1 rounded-full"><CheckCircle size={11} /> Aprobada</span>;
+                                    if (st === 'aprobada') return <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase bg-green-50 text-green-700 border border-green-200 px-2.5 py-1 rounded-full"><CheckCircle size={11} /> Aprobada</span>;
                                     if (st === 'rechazada') return <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase bg-red-50 text-red-700 border border-red-200 px-2.5 py-1 rounded-full"><X size={11} /> Rechazada</span>;
                                     return <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase bg-amber-50 text-amber-700 border border-amber-200 px-2.5 py-1 rounded-full"><AlertTriangle size={11} /> En proceso</span>;
                                 })()}

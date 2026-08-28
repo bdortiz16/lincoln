@@ -9,7 +9,7 @@ interface PersonasAdminLoginProps {
 const BG = '#0B1120';      // navy más oscuro que la web de Empresas
 const BG_CARD = '#111827';
 const BORDER = '#1F2937';
-const TEAL = '#2DD4BF';
+const TEAL = '#4ADE80';
 const TEXT_MUTED = '#64748B';
 
 /**

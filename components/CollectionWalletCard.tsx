@@ -38,9 +38,9 @@ export const CollectionWalletCard: React.FC = () => {
     };
 
     return (
-        <div className="bg-white rounded-xl border-2 border-[#2DD4BF]/40 shadow-sm p-5">
+        <div className="bg-white rounded-xl border-2 border-[#4ADE80]/40 shadow-sm p-5">
             <h3 className="font-bold text-slate-800 mb-1 flex items-center gap-2">
-                <Vault size={16} className="text-[#0D9488]" /> Wallet recaudadora (admin)
+                <Vault size={16} className="text-[#16A34A]" /> Wallet recaudadora (admin)
             </h3>
             <p className="text-xs text-slate-500 mb-4">
                 Dirección <b>USDT · TRC-20</b> donde se concentra el recaudo: al convertir un cliente su Dólar
@@ -52,7 +52,7 @@ export const CollectionWalletCard: React.FC = () => {
                     onChange={e => { setAddr(e.target.value); if (state !== 'idle') setState('idle'); }}
                     placeholder="TXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
                     spellCheck={false}
-                    className="flex-1 min-w-[280px] px-3 py-2.5 rounded-xl border border-slate-200 text-sm font-mono focus:border-[#2DD4BF] outline-none"
+                    className="flex-1 min-w-[280px] px-3 py-2.5 rounded-xl border border-slate-200 text-sm font-mono focus:border-[#4ADE80] outline-none"
                 />
                 <button
                     onClick={save}
@@ -64,7 +64,7 @@ export const CollectionWalletCard: React.FC = () => {
                 </button>
             </div>
             {state === 'ok' && (
-                <p className="mt-2 text-xs font-bold text-teal-700 flex items-center gap-1">
+                <p className="mt-2 text-xs font-bold text-green-700 flex items-center gap-1">
                     <CheckCircle size={13} /> Wallet recaudadora guardada. Los barridos de las próximas conversiones irán a esta dirección.
                 </p>
             )}

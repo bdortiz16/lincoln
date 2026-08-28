@@ -463,7 +463,7 @@ export const BankAccountFormModal: React.FC<{
                             value={bankName}
                             onChange={e => setBankName(e.target.value)}
                             placeholder={co?.code === 'CO' ? 'Ej: Bancolombia' : co?.code === 'BR' ? 'Ej: Itaú' : 'Ej: Banco …'}
-                            className="w-full px-3 py-2 rounded-lg border border-slate-200 focus:border-teal-500 outline-none"
+                            className="w-full px-3 py-2 rounded-lg border border-slate-200 focus:border-green-500 outline-none"
                         />
                     </FormRow>
 
@@ -472,7 +472,7 @@ export const BankAccountFormModal: React.FC<{
                             <select
                                 value={accountType ?? ''}
                                 onChange={e => setAccountType(e.target.value)}
-                                className="w-full px-3 py-2 rounded-lg border border-slate-200 focus:border-teal-500 outline-none bg-white"
+                                className="w-full px-3 py-2 rounded-lg border border-slate-200 focus:border-green-500 outline-none bg-white"
                             >
                                 <option value="">—</option>
                                 {(co?.accountTypes ?? []).map(t => (
@@ -485,7 +485,7 @@ export const BankAccountFormModal: React.FC<{
                                 value={accountNumber}
                                 onChange={e => setAccountNumber(e.target.value.replace(/[^0-9-]/g, ''))}
                                 placeholder="1234567890"
-                                className="w-full px-3 py-2 rounded-lg border border-slate-200 font-mono focus:border-teal-500 outline-none"
+                                className="w-full px-3 py-2 rounded-lg border border-slate-200 font-mono focus:border-green-500 outline-none"
                             />
                         </FormRow>
                     </div>
@@ -495,7 +495,7 @@ export const BankAccountFormModal: React.FC<{
                             value={holder}
                             onChange={e => setHolder(e.target.value)}
                             placeholder="Lincoin S.A.S"
-                            className="w-full px-3 py-2 rounded-lg border border-slate-200 focus:border-teal-500 outline-none"
+                            className="w-full px-3 py-2 rounded-lg border border-slate-200 focus:border-green-500 outline-none"
                         />
                     </FormRow>
 
@@ -504,7 +504,7 @@ export const BankAccountFormModal: React.FC<{
                             value={taxId}
                             onChange={e => setTaxId(e.target.value)}
                             placeholder={co?.taxLabel ?? ''}
-                            className="w-full px-3 py-2 rounded-lg border border-slate-200 font-mono focus:border-teal-500 outline-none"
+                            className="w-full px-3 py-2 rounded-lg border border-slate-200 font-mono focus:border-green-500 outline-none"
                         />
                     </FormRow>
 
@@ -787,7 +787,7 @@ export const BankMovementsDrawer: React.FC<{
                         onClick={() => setPeriod(p.id)}
                         className="px-3 py-1 rounded-lg text-xs font-semibold"
                         style={{
-                            backgroundColor: period === p.id ? '#0D9488' : 'white',
+                            backgroundColor: period === p.id ? '#16A34A' : 'white',
                             color: period === p.id ? 'white' : '#475569',
                             border: '1px solid #E2E8F0',
                         }}
@@ -857,7 +857,7 @@ export const BankMovementsDrawer: React.FC<{
                                     </div>
                                     <div className="mt-1 flex items-center gap-2">
                                         <div className="flex-1 h-1.5 rounded-full bg-slate-100 overflow-hidden">
-                                            <div className="h-full rounded-full" style={{ width: `${Math.min(pct, 100)}%`, backgroundColor: '#2DD4BF' }} />
+                                            <div className="h-full rounded-full" style={{ width: `${Math.min(pct, 100)}%`, backgroundColor: '#4ADE80' }} />
                                         </div>
                                         <span className="text-[10px] text-slate-500 w-10 text-right">{pct.toFixed(1)}%</span>
                                     </div>

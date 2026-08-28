@@ -213,7 +213,7 @@ const CrispInbox: React.FC<{ profile: AdminProfile }> = ({ profile }) => {
                         <button
                             key={c.session_id}
                             onClick={() => openConv(c)}
-                            className={`w-full text-left px-3 py-2.5 border-b border-slate-50 hover:bg-slate-50 transition-colors ${active?.session_id === c.session_id ? 'bg-teal-50' : ''}`}
+                            className={`w-full text-left px-3 py-2.5 border-b border-slate-50 hover:bg-slate-50 transition-colors ${active?.session_id === c.session_id ? 'bg-green-50' : ''}`}
                         >
                             <div className="flex items-center gap-2">
                                 {c.avatar
@@ -289,7 +289,7 @@ const CrispInbox: React.FC<{ profile: AdminProfile }> = ({ profile }) => {
                                     onChange={e => setDraft(e.target.value)}
                                     onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
                                     placeholder="Escribí tu respuesta…"
-                                    className="flex-1 px-3 py-2.5 rounded-xl border border-slate-300 text-sm focus:border-teal-500 outline-none"
+                                    className="flex-1 px-3 py-2.5 rounded-xl border border-slate-300 text-sm focus:border-green-500 outline-none"
                                 />
                                 <button
                                     onClick={send}
@@ -399,7 +399,7 @@ const WhatsAppSettingCard: React.FC<{ profile: AdminProfile }> = ({ profile }) =
                         onChange={e => setValue(e.target.value)}
                         disabled={loading || !canManage}
                         placeholder={loading ? 'Cargando…' : '+573001234567'}
-                        className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-slate-300 text-sm font-mono focus:border-teal-500 outline-none disabled:bg-slate-50 disabled:text-slate-400"
+                        className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-slate-300 text-sm font-mono focus:border-green-500 outline-none disabled:bg-slate-50 disabled:text-slate-400"
                     />
                 </div>
                 <button
@@ -506,7 +506,7 @@ const YouTubeSettingCard: React.FC<{ profile: AdminProfile }> = ({ profile }) =>
                     onChange={e => setValue(e.target.value)}
                     disabled={loading || !canManage}
                     placeholder={loading ? 'Cargando…' : 'https://www.youtube.com/watch?v=…'}
-                    className="flex-1 min-w-[260px] px-3 py-2.5 rounded-xl border border-slate-300 text-sm focus:border-teal-500 outline-none disabled:bg-slate-50 disabled:text-slate-400"
+                    className="flex-1 min-w-[260px] px-3 py-2.5 rounded-xl border border-slate-300 text-sm focus:border-green-500 outline-none disabled:bg-slate-50 disabled:text-slate-400"
                 />
                 <button
                     onClick={save}
@@ -601,7 +601,7 @@ const CalendlySettingCard: React.FC<{ profile: AdminProfile }> = ({ profile }) =
                     onChange={e => setValue(e.target.value)}
                     disabled={loading || !canManage}
                     placeholder={loading ? 'Cargando…' : 'https://calendly.com/tu-usuario/reunion'}
-                    className="flex-1 min-w-[260px] px-3 py-2.5 rounded-xl border border-slate-300 text-sm focus:border-teal-500 outline-none disabled:bg-slate-50 disabled:text-slate-400"
+                    className="flex-1 min-w-[260px] px-3 py-2.5 rounded-xl border border-slate-300 text-sm focus:border-green-500 outline-none disabled:bg-slate-50 disabled:text-slate-400"
                 />
                 <button
                     onClick={save}
@@ -686,7 +686,7 @@ export const PageDocsCard: React.FC<{ profile: AdminProfile }> = ({ profile }) =
                         key={p.key}
                         onClick={() => openEditor(p)}
                         disabled={!canManage}
-                        className="px-3 py-3 rounded-xl border border-slate-200 bg-white hover:border-teal-300 hover:shadow-sm transition-all text-left disabled:opacity-60"
+                        className="px-3 py-3 rounded-xl border border-slate-200 bg-white hover:border-green-300 hover:shadow-sm transition-all text-left disabled:opacity-60"
                     >
                         <FileText size={14} className="text-slate-400 mb-1" />
                         <p className="text-xs font-bold leading-tight" style={{ color: NAVY }}>{p.label}</p>
@@ -713,7 +713,7 @@ export const PageDocsCard: React.FC<{ profile: AdminProfile }> = ({ profile }) =
                                         onChange={e => setContent(e.target.value)}
                                         rows={16}
                                         placeholder={`Escribí acá el contenido de "${editing.label}"…`}
-                                        className="w-full px-3 py-3 rounded-xl border border-slate-300 text-sm leading-relaxed focus:border-teal-500 outline-none resize-y"
+                                        className="w-full px-3 py-3 rounded-xl border border-slate-300 text-sm leading-relaxed focus:border-green-500 outline-none resize-y"
                                     />
                                     <p className="text-[11px] text-slate-400 mt-1 text-right">{content.length.toLocaleString('es-CO')} caracteres</p>
                                 </>
@@ -756,7 +756,7 @@ const EMAIL_SAMPLES: Array<{ id: string; label: string; hero: string; accent: st
         cta: 'Abrir Lincoin →',
     },
     {
-        id: 'tx', label: 'Envío realizado', accent: '#2DD4BF', hero: 'Envío realizado',
+        id: 'tx', label: 'Envío realizado', accent: '#4ADE80', hero: 'Envío realizado',
         title: 'COP 200.000,00',
         body: 'Hola <strong>Bryan David</strong>, tu envío a <strong>Kevin Andrés López</strong> fue procesado con éxito. Hemos debitado COP 200.000,00 de tu saldo.',
         cta: 'Ver transacción →',
@@ -774,7 +774,7 @@ const EMAIL_SAMPLES: Array<{ id: string; label: string; hero: string; accent: st
         cta: 'Contactar soporte',
     },
     {
-        id: 'otp', label: 'Código de verificación', accent: '#2DD4BF', hero: 'Verificación',
+        id: 'otp', label: 'Código de verificación', accent: '#4ADE80', hero: 'Verificación',
         title: 'Tu código de verificación',
         body: 'Usa este código para verificar tu correo en Lincoin. Expira en 10 minutos.<div style="margin:18px 0;padding:18px;background:#F1F5F9;border-radius:12px;text-align:center;font-size:34px;font-weight:800;letter-spacing:10px;color:#0F172A;font-family:monospace">511551</div>Si no solicitaste este código, ignora este correo.',
         cta: 'Abrir Lincoin →',
@@ -784,8 +784,8 @@ const EMAIL_SAMPLES: Array<{ id: string; label: string; hero: string; accent: st
 const EMAIL_LOGO_URI = `data:image/svg+xml;base64,${btoa(`
 <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
   <rect x="2" y="2" width="96" height="96" rx="22" fill="#0F172A"/>
-  <rect x="22" y="22" width="56" height="56" rx="16" fill="none" stroke="#2DD4BF" stroke-width="7" stroke-linejoin="round"/>
-  <circle cx="58" cy="56" r="8" fill="#2DD4BF"/>
+  <rect x="22" y="22" width="56" height="56" rx="16" fill="none" stroke="#4ADE80" stroke-width="7" stroke-linejoin="round"/>
+  <circle cx="58" cy="56" r="8" fill="#4ADE80"/>
 </svg>`.trim())}`;
 
 function buildSampleEmail(s: typeof EMAIL_SAMPLES[number], footerNote = ''): string {
@@ -803,7 +803,7 @@ function buildSampleEmail(s: typeof EMAIL_SAMPLES[number], footerNote = ''): str
   <table cellpadding="0" cellspacing="0"><tr>
     <td style="width:42px;height:42px;vertical-align:middle"><img src="${EMAIL_LOGO_URI}" width="42" height="42" style="display:block;border-radius:10px"/></td>
     <td style="padding-left:12px;vertical-align:middle">
-      <span style="font-size:20px;font-weight:800;color:#fff;letter-spacing:-0.5px">CUY<span style="color:#2DD4BF">PAY</span></span>
+      <span style="font-size:20px;font-weight:800;color:#fff;letter-spacing:-0.5px">CUY<span style="color:#4ADE80">PAY</span></span>
       <div style="margin-top:2px;font-size:10px;color:rgba(255,255,255,0.5);letter-spacing:1px;text-transform:uppercase">Notificaciones</div>
     </td>
   </tr></table>
@@ -823,7 +823,7 @@ function buildSampleEmail(s: typeof EMAIL_SAMPLES[number], footerNote = ''): str
 <tr><td style="background:#0F172A;padding:16px 28px">
   <table width="100%"><tr>
     <td><p style="margin:0;font-size:10px;color:rgba(255,255,255,0.45)">&copy; 2026 Lincoin &middot; Todos los derechos reservados</p></td>
-    <td align="right"><span style="font-size:10px;color:#2DD4BF;font-weight:600">cuypay.com</span></td>
+    <td align="right"><span style="font-size:10px;color:#4ADE80;font-weight:600">cuypay.com</span></td>
   </tr></table>
 </td></tr>
 </table></td></tr></table></body></html>`;
@@ -1038,7 +1038,7 @@ const EmailFormatCard: React.FC<{ profile: AdminProfile }> = ({ profile }) => {
                             rows={4}
                             disabled={!canManage}
                             placeholder="Ej: Lincoin S.A.S. · NIT 901.XXX.XXX-X · Los servicios se rigen por los Términos y Condiciones publicados en cuypay.com/terminos…"
-                            className="w-full px-3 py-2 rounded-lg border border-slate-200 text-xs leading-relaxed focus:border-teal-500 outline-none resize-y disabled:opacity-60"
+                            className="w-full px-3 py-2 rounded-lg border border-slate-200 text-xs leading-relaxed focus:border-green-500 outline-none resize-y disabled:opacity-60"
                         />
                         <div className="flex justify-end mt-2">
                             <button
@@ -1060,7 +1060,7 @@ const EmailFormatCard: React.FC<{ profile: AdminProfile }> = ({ profile }) => {
                         <div key={e.group} className="border border-slate-200 rounded-xl px-3 py-2.5">
                             <div className="flex items-center justify-between gap-2">
                                 <p className="text-xs font-bold" style={{ color: NAVY }}>{e.group}</p>
-                                <code className="text-[10px] text-teal-700 bg-teal-50 px-1.5 py-0.5 rounded">{e.edge}</code>
+                                <code className="text-[10px] text-green-700 bg-green-50 px-1.5 py-0.5 rounded">{e.edge}</code>
                             </div>
                             <p className="text-[11px] text-slate-600 mt-0.5">{e.events}</p>
                             <p className="text-[10px] text-slate-400 mt-0.5">Webhook: {e.webhook}</p>
@@ -1293,7 +1293,7 @@ const QuickLinksCard: React.FC<{ profile: AdminProfile }> = ({ profile }) => {
                             onChange={e => setValues(prev => ({ ...prev, [l.key]: e.target.value }))}
                             disabled={loading || !canManage}
                             placeholder={loading ? 'Cargando…' : placeholder}
-                            className="flex-1 px-3 py-2 rounded-lg border border-slate-300 text-sm focus:border-teal-500 outline-none disabled:bg-slate-50 disabled:text-slate-400"
+                            className="flex-1 px-3 py-2 rounded-lg border border-slate-300 text-sm focus:border-green-500 outline-none disabled:bg-slate-50 disabled:text-slate-400"
                         />
                     </div>
                 ))}
@@ -1563,7 +1563,7 @@ export const SupportSection: React.FC<{ profile: AdminProfile }> = ({ profile })
                                     href={s.url}
                                     target="_blank"
                                     rel="noreferrer"
-                                    className="inline-flex items-center gap-1.5 px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold hover:border-teal-300 hover:shadow-sm transition-all"
+                                    className="inline-flex items-center gap-1.5 px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold hover:border-green-300 hover:shadow-sm transition-all"
                                     style={{ color: NAVY }}
                                 >
                                     <s.icon size={13} className="text-slate-400" />

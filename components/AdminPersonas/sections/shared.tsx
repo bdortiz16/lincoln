@@ -1,7 +1,7 @@
 import React from 'react';
 
 export const NAVY = '#0F172A';
-export const TEAL = '#2DD4BF';
+export const TEAL = '#4ADE80';
 
 export const formatDate = (iso: string | null | undefined) => {
     if (!iso) return '—';

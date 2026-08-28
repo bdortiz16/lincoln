@@ -396,7 +396,7 @@ export const AccountingSection: React.FC<Props> = ({ profile }) => {
             {/* Card grande: utilidad de la empresa POR MONEDA (sin convertir a USD) */}
             <div className="rounded-2xl p-6" style={{ backgroundColor: NAVY }}>
                 <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
-                    <p className="text-[10px] font-bold uppercase tracking-wider text-teal-300">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-green-300">
                         Utilidad neta por moneda · la comisión queda donde se cobró
                     </p>
                     <div className="flex items-center gap-1.5 text-xs text-slate-300">
@@ -449,7 +449,7 @@ export const AccountingSection: React.FC<Props> = ({ profile }) => {
                                 key={cur}
                                 onClick={() => setDrill(cur)}
                                 disabled={empty}
-                                className={`text-left bg-white rounded-2xl border p-4 transition-shadow ${empty ? 'border-slate-100 opacity-60' : 'border-slate-200 hover:shadow-md hover:border-teal-300'}`}
+                                className={`text-left bg-white rounded-2xl border p-4 transition-shadow ${empty ? 'border-slate-100 opacity-60' : 'border-slate-200 hover:shadow-md hover:border-green-300'}`}
                             >
                                 <div className="flex items-center justify-between mb-2">
                                     <div className="flex items-center gap-2">
@@ -460,7 +460,7 @@ export const AccountingSection: React.FC<Props> = ({ profile }) => {
                                         </div>
                                     </div>
                                     {!empty && (
-                                        <span className="text-[10px] text-teal-700 font-semibold">
+                                        <span className="text-[10px] text-green-700 font-semibold">
                                             ver detalle →
                                         </span>
                                     )}
@@ -617,7 +617,7 @@ const CostsEditor: React.FC<{
                 {canEdit && !addingPair && (
                     <button
                         onClick={() => setAddingPair(true)}
-                        className="text-[11px] font-semibold text-teal-700 hover:underline"
+                        className="text-[11px] font-semibold text-green-700 hover:underline"
                     >
                         + Agregar par
                     </button>
@@ -625,7 +625,7 @@ const CostsEditor: React.FC<{
             </div>
 
             {addingPair && (
-                <div className="flex items-center gap-2 p-2 bg-teal-50 rounded-lg flex-wrap">
+                <div className="flex items-center gap-2 p-2 bg-green-50 rounded-lg flex-wrap">
                     <span className="text-xs font-semibold text-slate-700">Nuevo par:</span>
                     <select value={newFrom} onChange={e => setNewFrom(e.target.value as AssignedCurrency)} className="px-2 py-1 text-xs rounded border border-slate-200 bg-white">
                         {(Object.keys(IVA_RATES) as AssignedCurrency[]).map(c => <option key={c} value={c}>{COUNTRY_BY_CURRENCY[c].flag} {c}</option>)}
@@ -634,7 +634,7 @@ const CostsEditor: React.FC<{
                     <select value={newTo} onChange={e => setNewTo(e.target.value as AssignedCurrency)} className="px-2 py-1 text-xs rounded border border-slate-200 bg-white">
                         {(Object.keys(IVA_RATES) as AssignedCurrency[]).map(c => <option key={c} value={c}>{COUNTRY_BY_CURRENCY[c].flag} {c}</option>)}
                     </select>
-                    <button onClick={addPair} className="px-2 py-1 text-xs font-semibold rounded bg-teal-600 text-white hover:bg-teal-700">Agregar</button>
+                    <button onClick={addPair} className="px-2 py-1 text-xs font-semibold rounded bg-green-600 text-white hover:bg-green-700">Agregar</button>
                     <button onClick={() => setAddingPair(false)} className="px-2 py-1 text-xs text-slate-600 hover:bg-slate-100 rounded">Cancelar</button>
                 </div>
             )}
@@ -711,7 +711,7 @@ const CostsEditor: React.FC<{
                                             <button
                                                 onClick={() => saveOne(key)}
                                                 disabled={!isDirty || saving === key}
-                                                className={`inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-semibold ${isDirty ? 'bg-teal-600 text-white hover:bg-teal-700' : 'bg-slate-100 text-slate-400'} disabled:opacity-50`}
+                                                className={`inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-semibold ${isDirty ? 'bg-green-600 text-white hover:bg-green-700' : 'bg-slate-100 text-slate-400'} disabled:opacity-50`}
                                             >
                                                 <Save size={10} /> {saving === key ? '…' : 'Guardar'}
                                             </button>
@@ -964,7 +964,7 @@ const CountryDrillDown: React.FC<{
                                     <p className="text-[9px] font-mono text-slate-500">{(m.net + m.iva).toLocaleString('es-CO', { maximumFractionDigits: 0 })}</p>
                                     <div className="w-8 flex flex-col justify-end rounded-t-md overflow-hidden" style={{ height: `${Math.max(((m.net + m.iva) / max) * 100, 3)}%`, minHeight: 4 }}>
                                         <div style={{ height: `${(m.iva / Math.max(m.net + m.iva, 0.01)) * 100}%`, backgroundColor: '#F59E0B' }} />
-                                        <div className="flex-1" style={{ backgroundColor: '#2DD4BF' }} />
+                                        <div className="flex-1" style={{ backgroundColor: '#4ADE80' }} />
                                     </div>
                                     <p className="text-[9px] text-slate-500 capitalize whitespace-nowrap">{m.short}</p>
                                 </div>
@@ -972,7 +972,7 @@ const CountryDrillDown: React.FC<{
                         })()}
                     </div>
                     <div className="flex items-center gap-4 mt-2 text-[10px] text-slate-500">
-                        <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ backgroundColor: '#2DD4BF' }} /> Comisión neta</span>
+                        <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ backgroundColor: '#4ADE80' }} /> Comisión neta</span>
                         <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ backgroundColor: '#F59E0B' }} /> IVA a pagar</span>
                     </div>
                 </div>
@@ -1098,7 +1098,7 @@ const CountryDrillDown: React.FC<{
                         placeholder="Buscar por TX ID o par..."
                         value={search}
                         onChange={e => setSearch(e.target.value)}
-                        className="w-full pl-9 pr-4 py-2 rounded-lg border border-slate-200 focus:border-teal-500 outline-none text-sm"
+                        className="w-full pl-9 pr-4 py-2 rounded-lg border border-slate-200 focus:border-green-500 outline-none text-sm"
                     />
                 </div>
                 <CalendarDays size={14} className="text-slate-400" />
@@ -1113,7 +1113,7 @@ const CountryDrillDown: React.FC<{
                         onClick={() => setPeriod(id)}
                         className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-200"
                         style={{
-                            backgroundColor: period === id ? '#0D9488' : 'white',
+                            backgroundColor: period === id ? '#16A34A' : 'white',
                             color: period === id ? 'white' : '#475569',
                         }}
                     >

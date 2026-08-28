@@ -75,7 +75,7 @@ export const OnboardingIntro: React.FC<OnboardingIntroProps> = ({ onContinue }) 
         <div className="mt-12 flex flex-col items-center gap-4 w-full">
             <button 
                 onClick={onContinue}
-                className="w-full max-w-md h-12 bg-[#0F172A] hover:bg-[#152e52] font-bold rounded-lg transition-colors shadow-lg shadow-teal-900/20"
+                className="w-full max-w-md h-12 bg-[#0F172A] hover:bg-[#152e52] font-bold rounded-lg transition-colors shadow-lg shadow-green-900/20"
             >
                 Siguiente
             </button>

@@ -282,7 +282,7 @@ export const AdminsSection: React.FC<AdminsSectionProps> = ({ profile }) => {
                             value={searchEmail}
                             onChange={(e) => setSearchEmail(e.target.value)}
                             placeholder="usuario@cuypay.com"
-                            className="w-full px-3 py-2 rounded-lg border border-slate-200 outline-none focus:border-teal-500 mb-4"
+                            className="w-full px-3 py-2 rounded-lg border border-slate-200 outline-none focus:border-green-500 mb-4"
                             autoFocus
                         />
 

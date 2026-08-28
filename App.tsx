@@ -31,7 +31,7 @@ const ThemeInjector: React.FC = () => {
     const { isDarkMode } = useTheme();
 
     const rawAccent = (config.accentColor || '').toLowerCase();
-    const accentColor = LEGACY_BLUES.includes(rawAccent) ? '#2DD4BF' : (config.accentColor || '#2DD4BF');
+    const accentColor = LEGACY_BLUES.includes(rawAccent) ? '#4ADE80' : (config.accentColor || '#4ADE80');
     const bgColor = isDarkMode ? config.themeColor : '#FFFFFF';
 
     return (
@@ -74,20 +74,20 @@ const ThemeInjector: React.FC = () => {
             .bg-\\[\\#2563EB\\],
             .bg-blue-400, .bg-blue-500, .bg-blue-600,
             .bg-sky-400, .bg-sky-500,
-            .bg-cyan-400, .bg-cyan-500 { background-color: var(--accent-color) !important; }
+            .bg-green-400, .bg-green-500 { background-color: var(--accent-color) !important; }
 
             .text-\\[\\#2563EB\\],
             .text-blue-400, .text-blue-500, .text-blue-600,
             .text-sky-400, .text-sky-500,
-            .text-cyan-400, .text-cyan-500 { color: var(--accent-color) !important; }
+            .text-green-400, .text-green-500 { color: var(--accent-color) !important; }
 
             .border-\\[\\#2563EB\\],
             .border-blue-400, .border-blue-500,
             .border-sky-400, .border-sky-500 { border-color: var(--accent-color) !important; }
 
-            .bg-\\[\\#2DD4BF\\] { background-color: var(--accent-color) !important; }
-            .text-\\[\\#2DD4BF\\] { color: var(--accent-color) !important; }
-            .border-\\[\\#2DD4BF\\] { border-color: var(--accent-color) !important; }
+            .bg-\\[\\#4ADE80\\] { background-color: var(--accent-color) !important; }
+            .text-\\[\\#4ADE80\\] { color: var(--accent-color) !important; }
+            .border-\\[\\#4ADE80\\] { border-color: var(--accent-color) !important; }
 
             /* Fill and stroke for SVG icons */
             [fill="#2563EB"], [fill="#60a5fa"], [fill="#3b82f6"], [fill="#0ea5e9"] { fill: var(--accent-color) !important; }
@@ -97,7 +97,7 @@ const ThemeInjector: React.FC = () => {
             .text-sky-500 svg, .text-blue-500 svg { color: var(--accent-color) !important; }
             .text-sky-500, .text-blue-500 { color: var(--accent-color) !important; }
 
-            /* Replace light blue backgrounds with teal-tinted light background */
+            /* Replace light blue backgrounds with green-tinted light background */
             .bg-\\[\\#EBF2FA\\],
             [style*="background:#EBF2FA"],
             [style*="backgroundColor:#EBF2FA"],
@@ -156,19 +156,19 @@ const SplashScreen: React.FC = () => (
     <svg className="splash-logo" width="96" height="96" viewBox="0 0 100 100" fill="none" style={{ filter: 'drop-shadow(0 8px 32px rgba(45,212,191,0.25))' }}>
       <rect x="2" y="2" width="96" height="96" rx="22" fill="#0B1120"/>
       <rect x="2" y="2" width="96" height="96" rx="22" fill="white" fillOpacity="0.03"/>
-      <rect className="splash-frame" x="22" y="22" width="56" height="56" rx="16" fill="none" stroke="#2DD4BF" strokeWidth="7" strokeLinejoin="round" pathLength={100}/>
-      <circle className="splash-dot" cx="58" cy="56" r="8" fill="#2DD4BF"/>
+      <rect className="splash-frame" x="22" y="22" width="56" height="56" rx="16" fill="none" stroke="#4ADE80" strokeWidth="7" strokeLinejoin="round" pathLength={100}/>
+      <circle className="splash-dot" cx="58" cy="56" r="8" fill="#4ADE80"/>
     </svg>
     <div className="text-center">
       <p className="text-white font-black text-3xl tracking-tight" style={{ letterSpacing: '-0.5px' }}>
-        CUY<span style={{ color: '#2DD4BF' }}>PAY</span>
+        Lincoin<span style={{ color: '#4ADE80' }}>.</span>
       </p>
       <p className="text-white/30 text-xs font-medium mt-1 tracking-widest uppercase">Verificando sesión</p>
     </div>
     <div className="splash-dots flex gap-1.5">
-      <span className="w-1.5 h-1.5 rounded-full bg-[#2DD4BF] inline-block"/>
-      <span className="w-1.5 h-1.5 rounded-full bg-[#2DD4BF] inline-block"/>
-      <span className="w-1.5 h-1.5 rounded-full bg-[#2DD4BF] inline-block"/>
+      <span className="w-1.5 h-1.5 rounded-full bg-[#4ADE80] inline-block"/>
+      <span className="w-1.5 h-1.5 rounded-full bg-[#4ADE80] inline-block"/>
+      <span className="w-1.5 h-1.5 rounded-full bg-[#4ADE80] inline-block"/>
     </div>
   </div>
 );

@@ -471,7 +471,7 @@ const CryptoAccordion: React.FC<{
     onToggle: () => void;
 }> = ({ title, subtitle, total, currency, accent, wallets, isOpen, onToggle }) => {
     const accentMap = {
-        teal:  { bg: 'bg-teal-100',  text: 'text-teal-700',  border: 'border-teal-200' },
+        teal:  { bg: 'bg-green-100',  text: 'text-green-700',  border: 'border-green-200' },
         slate: { bg: 'bg-slate-200', text: 'text-slate-800', border: 'border-slate-300' },
         amber: { bg: 'bg-amber-100', text: 'text-amber-700', border: 'border-amber-200' },
     } as const;

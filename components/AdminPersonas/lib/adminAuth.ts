@@ -137,7 +137,7 @@ export const ROLE_LABELS: Record<AdminRole, string> = {
 };
 
 export const ROLE_COLORS: Record<AdminRole, string> = {
-    super_admin: '#2DD4BF',
+    super_admin: '#4ADE80',
     compliance:  '#A78BFA',
     treasury:    '#FBBF24',
     audit:       '#60A5FA',

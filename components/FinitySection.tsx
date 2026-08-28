@@ -634,10 +634,10 @@ export const FinitySection: React.FC<{
                                 <div className="flex items-center gap-2 mb-3">
                                     <svg width="34" height="34" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
                                         <rect x="2" y="2" width="96" height="96" rx="22" fill="#0F172A" />
-                                        <rect x="22" y="22" width="56" height="56" rx="16" fill="none" stroke="#2DD4BF" strokeWidth="7" strokeLinejoin="round" />
-                                        <circle cx="58" cy="56" r="8" fill="#2DD4BF" />
+                                        <rect x="22" y="22" width="56" height="56" rx="16" fill="none" stroke="#4ADE80" strokeWidth="7" strokeLinejoin="round" />
+                                        <circle cx="58" cy="56" r="8" fill="#4ADE80" />
                                     </svg>
-                                    <span className="font-black text-2xl tracking-tight text-[#0F172A]">CUY<span className="text-[#2DD4BF]">PAY</span></span>
+                                    <span className="font-black text-2xl tracking-tight text-[#0F172A]">CUY<span className="text-[#4ADE80]">PAY</span></span>
                                 </div>
                                 <h3 className="text-lg font-extrabold text-[#0F172A]">
                                     {isError ? 'No se pudo completar' : convertStep === 'completado' ? '¡Conversión completada!' : 'Procesando conversión'}
@@ -651,7 +651,7 @@ export const FinitySection: React.FC<{
                                     <XCircle size={44} className="text-red-500" />
                                     <p className="text-xs font-semibold text-slate-700 text-center px-1 leading-snug">{convertResult?.text ?? 'Ocurrió un error en el proceso.'}</p>
                                     {pendingConvert && (
-                                        <button onClick={() => finishConvert(pendingConvert)} disabled={converting} className="px-5 py-2.5 rounded-xl bg-[#2DD4BF] text-[#0F172A] text-sm font-extrabold hover:bg-[#5EEAD4] disabled:opacity-60 flex items-center gap-2">
+                                        <button onClick={() => finishConvert(pendingConvert)} disabled={converting} className="px-5 py-2.5 rounded-xl bg-[#4ADE80] text-[#0F172A] text-sm font-extrabold hover:bg-[#6EE7A0] disabled:opacity-60 flex items-center gap-2">
                                             <RefreshCw size={15} className={converting ? 'animate-spin' : ''} /> Reintentar conversión
                                         </button>
                                     )}
@@ -666,13 +666,13 @@ export const FinitySection: React.FC<{
                                         return (
                                             <div key={s.key} className="flex items-center gap-3">
                                                 <div className="flex flex-col items-center">
-                                                    <div className={`w-11 h-11 rounded-full flex items-center justify-center transition-all duration-300 ${done ? 'bg-[#2DD4BF]' : active ? 'bg-[#0F172A]' : 'bg-slate-100'}`}>
+                                                    <div className={`w-11 h-11 rounded-full flex items-center justify-center transition-all duration-300 ${done ? 'bg-[#4ADE80]' : active ? 'bg-[#0F172A]' : 'bg-slate-100'}`}>
                                                         {done
                                                             ? <CheckCircle size={22} className="text-[#0F172A]" />
-                                                            : <StepIcon size={20} className={active ? 'text-[#2DD4BF] animate-pulse' : 'text-slate-300'} />}
+                                                            : <StepIcon size={20} className={active ? 'text-[#4ADE80] animate-pulse' : 'text-slate-300'} />}
                                                     </div>
                                                     {i < STEPS.length - 1 && (
-                                                        <div className={`w-0.5 h-6 my-0.5 rounded-full transition-colors duration-300 ${i < curIdx || convertStep === 'completado' ? 'bg-[#2DD4BF]' : 'bg-slate-100'}`} />
+                                                        <div className={`w-0.5 h-6 my-0.5 rounded-full transition-colors duration-300 ${i < curIdx || convertStep === 'completado' ? 'bg-[#4ADE80]' : 'bg-slate-100'}`} />
                                                     )}
                                                 </div>
                                                 <div className={`flex-1 transition-opacity duration-300 ${active || done ? 'opacity-100' : 'opacity-50'}`}>
@@ -680,7 +680,7 @@ export const FinitySection: React.FC<{
                                                     <p className="text-[11px] text-slate-400 leading-tight">{s.sub}</p>
                                                 </div>
                                                 {active && (
-                                                    <div className="w-4 h-4 rounded-full border-2 border-slate-200 border-t-[#2DD4BF] animate-spin" />
+                                                    <div className="w-4 h-4 rounded-full border-2 border-slate-200 border-t-[#4ADE80] animate-spin" />
                                                 )}
                                             </div>
                                         );
@@ -699,12 +699,12 @@ export const FinitySection: React.FC<{
             <div className="flex items-center justify-between flex-wrap gap-3">
                 <div>
                     <h1 className="text-2xl font-extrabold text-[#0F172A] flex items-center gap-2">
-                        <Landmark size={22} className="text-[#2DD4BF]" /> {isConverterOnly ? 'OTC · Conversión USD → COP' : 'Dispersiones bancarias'}
+                        <Landmark size={22} className="text-[#4ADE80]" /> {isConverterOnly ? 'OTC · Conversión USD → COP' : 'Dispersiones bancarias'}
                     </h1>
                     <p className="text-slate-700 text-sm font-medium">
                         {isConverterOnly ? 'Convierte tu saldo USD (digital) a COP a la tasa Lincoin' : 'Paga a cuentas bancarias en Colombia'}
                         {!isConverterOnly && brebBalance != null && (
-                            <span className="ml-2 font-bold text-[#0D9488]">· Saldo BreB: {brebBalance.toLocaleString('es-CO')} COP</span>
+                            <span className="ml-2 font-bold text-[#16A34A]">· Saldo BreB: {brebBalance.toLocaleString('es-CO')} COP</span>
                         )}
                     </p>
                 </div>
@@ -723,16 +723,16 @@ export const FinitySection: React.FC<{
                 <div className="flex flex-col items-center justify-center py-24 gap-5 animate-in fade-in duration-300">
                     <div className="relative w-14 h-14">
                         <div className="absolute inset-0 rounded-full border-4 border-slate-100" />
-                        <div className="absolute inset-0 rounded-full border-4 border-transparent border-t-[#2DD4BF] animate-spin" />
+                        <div className="absolute inset-0 rounded-full border-4 border-transparent border-t-[#4ADE80] animate-spin" />
                     </div>
                     <div className="text-center">
                         <p className="text-base font-extrabold text-[#0F172A]">Cargando convertidor…</p>
                         <p className="text-sm text-slate-700 mt-1 font-semibold">Conectando con el riel de pagos y la tasa en vivo</p>
                     </div>
                     <div className="flex gap-1.5">
-                        <span className="w-2 h-2 rounded-full bg-[#2DD4BF] animate-bounce" style={{ animationDelay: '0ms' }} />
-                        <span className="w-2 h-2 rounded-full bg-[#2DD4BF] animate-bounce" style={{ animationDelay: '150ms' }} />
-                        <span className="w-2 h-2 rounded-full bg-[#2DD4BF] animate-bounce" style={{ animationDelay: '300ms' }} />
+                        <span className="w-2 h-2 rounded-full bg-[#4ADE80] animate-bounce" style={{ animationDelay: '0ms' }} />
+                        <span className="w-2 h-2 rounded-full bg-[#4ADE80] animate-bounce" style={{ animationDelay: '150ms' }} />
+                        <span className="w-2 h-2 rounded-full bg-[#4ADE80] animate-bounce" style={{ animationDelay: '300ms' }} />
                     </div>
                 </div>
             )}
@@ -752,7 +752,7 @@ export const FinitySection: React.FC<{
             {isConverterOnly && ping === 'ok' && (
                 <div className="grid grid-cols-2 gap-3">
                     <div className="rounded-2xl p-4 border border-slate-200 bg-white flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-xl bg-teal-50 text-[#0D9488] flex items-center justify-center shrink-0">
+                        <div className="w-10 h-10 rounded-xl bg-green-50 text-[#16A34A] flex items-center justify-center shrink-0">
                             <DollarSign size={18} />
                         </div>
                         <div className="min-w-0">
@@ -815,20 +815,20 @@ export const FinitySection: React.FC<{
                                             <div className="bg-slate-50 rounded-xl p-3">
                                                 <p className="text-[10px] uppercase tracking-wider text-slate-400 flex items-center justify-between">
                                                     <span>Tasa en vivo</span>
-                                                    {rateExpiresAt != null && <span className={`normal-case font-bold ${rateLeft <= 8 ? 'text-red-500' : 'text-[#0D9488]'}`}>· se refresca en {rateLeft}s</span>}
+                                                    {rateExpiresAt != null && <span className={`normal-case font-bold ${rateLeft <= 8 ? 'text-red-500' : 'text-[#16A34A]'}`}>· se refresca en {rateLeft}s</span>}
                                                 </p>
                                                 <p className="text-lg font-bold font-mono text-[#0F172A]">1 USD = {rate.toLocaleString('es-CO', { maximumFractionDigits: 2 })} COP</p>
                                             </div>
-                                            <div className="bg-teal-50 border border-teal-100 rounded-xl p-3">
-                                                <p className="text-[10px] uppercase tracking-wider text-teal-700">Tasa cliente (incluye comisión {feePct}%)</p>
-                                                <p className="text-lg font-bold font-mono text-[#0D9488]">1 USD = {clientRate!.toLocaleString('es-CO', { maximumFractionDigits: 2 })} COP</p>
+                                            <div className="bg-green-50 border border-green-100 rounded-xl p-3">
+                                                <p className="text-[10px] uppercase tracking-wider text-green-700">Tasa cliente (incluye comisión {feePct}%)</p>
+                                                <p className="text-lg font-bold font-mono text-[#16A34A]">1 USD = {clientRate!.toLocaleString('es-CO', { maximumFractionDigits: 2 })} COP</p>
                                             </div>
                                         </div>
                                     ) : rateResp?.status === 404 ? (
                                         <PathWarning status={404} />
                                     ) : loading ? (
                                         <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 flex items-center justify-center gap-2">
-                                            <div className="w-4 h-4 rounded-full border-2 border-slate-200 border-t-[#2DD4BF] animate-spin" />
+                                            <div className="w-4 h-4 rounded-full border-2 border-slate-200 border-t-[#4ADE80] animate-spin" />
                                             <p className="text-xs font-bold text-slate-700">Obteniendo la tasa en vivo…</p>
                                         </div>
                                     ) : (
@@ -846,7 +846,7 @@ export const FinitySection: React.FC<{
                                                         {!isConverterOnly && (
                                                             <>Saldo disponible: <b className="font-mono text-[#0F172A]">{usdBalance.toLocaleString('en-US', { maximumFractionDigits: 2 })} USDT</b>{' '}</>
                                                         )}
-                                                        <button type="button" onClick={() => setUsdAmount(String(usdBalance))} className="font-bold text-[#0D9488] hover:underline">
+                                                        <button type="button" onClick={() => setUsdAmount(String(usdBalance))} className="font-bold text-[#16A34A] hover:underline">
                                                             Usar todo
                                                         </button>
                                                     </span>
@@ -857,7 +857,7 @@ export const FinitySection: React.FC<{
                                                 placeholder="0.00"
                                                 value={usdAmount}
                                                 onChange={e => setUsdAmount(e.target.value.replace(/[^\d.]/g, ''))}
-                                                className="mt-1 w-full px-3 py-2 rounded-xl border border-slate-200 text-sm font-mono focus:border-[#2DD4BF] outline-none"
+                                                className="mt-1 w-full px-3 py-2 rounded-xl border border-slate-200 text-sm font-mono focus:border-[#4ADE80] outline-none"
                                             />
                                             {usd > 0 && (
                                                 <div className="mt-2 bg-slate-50 rounded-lg p-2.5 space-y-1 text-[11px]">
@@ -881,7 +881,7 @@ export const FinitySection: React.FC<{
                                                     {clientRate != null && (
                                                         <div className="flex justify-between border-t border-slate-200 pt-1">
                                                             <span className="text-slate-500 font-bold">Recibirás</span>
-                                                            <span className="font-mono font-bold text-[#0D9488]">≈ {(netUsd * clientRate).toLocaleString('es-CO', { maximumFractionDigits: 0 })} COP</span>
+                                                            <span className="font-mono font-bold text-[#16A34A]">≈ {(netUsd * clientRate).toLocaleString('es-CO', { maximumFractionDigits: 0 })} COP</span>
                                                         </div>
                                                     )}
                                                 </div>
@@ -891,7 +891,7 @@ export const FinitySection: React.FC<{
                                             onClick={doConvert}
                                             disabled={converting || !usdAmount || netUsd <= 0 || rate == null}
                                             style={{ color: '#0F172A' }}
-                                            className="py-2.5 px-5 rounded-xl bg-[#2DD4BF] hover:bg-[#5EEAD4] text-sm font-bold disabled:opacity-50 transition-colors"
+                                            className="py-2.5 px-5 rounded-xl bg-[#4ADE80] hover:bg-[#6EE7A0] text-sm font-bold disabled:opacity-50 transition-colors"
                                         >
                                             {converting ? 'Convirtiendo…' : rate == null ? 'Obteniendo tasa…' : 'Convertir ahora'}
                                         </button>
@@ -955,7 +955,7 @@ export const FinitySection: React.FC<{
                                     <input placeholder="ID de cuenta destino (de la lista)" value={pay.external_account_id} onChange={e => setPay({ ...pay, external_account_id: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm font-mono" />
                                     <input placeholder="Monto (COP)" inputMode="numeric" value={pay.amount} onChange={e => setPay({ ...pay, amount: e.target.value.replace(/[^\d.]/g, '') })} className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm font-mono" />
                                     <input placeholder="Referencia / concepto" value={pay.reference} onChange={e => setPay({ ...pay, reference: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm" />
-                                    <button onClick={createWithdrawal} disabled={submitting} className="w-full py-2 rounded-lg bg-[#2DD4BF] text-[#0F172A] text-sm font-bold disabled:opacity-50">
+                                    <button onClick={createWithdrawal} disabled={submitting} className="w-full py-2 rounded-lg bg-[#4ADE80] text-[#0F172A] text-sm font-bold disabled:opacity-50">
                                         {submitting ? 'Enviando…' : 'Crear orden de dispersión'}
                                     </button>
                                 </div>
@@ -1016,7 +1016,7 @@ export const FinitySection: React.FC<{
                         </div>
                     )}
                     {showRaw && (
-                        <pre className="bg-[#0F172A] text-teal-200 text-[10px] rounded-2xl p-4 overflow-auto max-h-80">
+                        <pre className="bg-[#0F172A] text-green-200 text-[10px] rounded-2xl p-4 overflow-auto max-h-80">
                             {JSON.stringify(raw, null, 2)}
                         </pre>
                     )}
@@ -1040,7 +1040,7 @@ export const FinitySection: React.FC<{
                             <button
                                 onClick={() => { const cb = confirmDialog.onConfirm; setConfirmDialog(null); cb(); }}
                                 style={{ color: '#0F172A' }}
-                                className="flex-1 h-11 bg-[#2DD4BF] hover:bg-[#5EEAD4] rounded-xl text-sm font-bold transition-colors"
+                                className="flex-1 h-11 bg-[#4ADE80] hover:bg-[#6EE7A0] rounded-xl text-sm font-bold transition-colors"
                             >
                                 Aceptar
                             </button>
@@ -1060,15 +1060,15 @@ export const FinitySection: React.FC<{
                             <div className="flex items-center gap-2 px-6 pt-6">
                                 <svg width="26" height="26" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
                                     <rect x="2" y="2" width="96" height="96" rx="22" fill="#0F172A" />
-                                    <rect x="22" y="22" width="56" height="56" rx="16" fill="none" stroke="#2DD4BF" strokeWidth="7" strokeLinejoin="round" />
-                                    <circle cx="58" cy="56" r="8" fill="#2DD4BF" />
+                                    <rect x="22" y="22" width="56" height="56" rx="16" fill="none" stroke="#4ADE80" strokeWidth="7" strokeLinejoin="round" />
+                                    <circle cx="58" cy="56" r="8" fill="#4ADE80" />
                                 </svg>
                                 <h3 className="font-extrabold text-[#0F172A] text-lg">Confirmar conversión</h3>
                             </div>
                             {/* Monto grande */}
                             <div className="px-6 pt-4 text-center">
                                 <p className="text-2xl font-black text-[#0F172A]">{convertConfirm.amount.toLocaleString('en-US')} USD</p>
-                                <p className="text-[#0D9488] font-extrabold text-xl mt-1">≈ {convertConfirm.cop.toLocaleString('es-CO')} COP</p>
+                                <p className="text-[#16A34A] font-extrabold text-xl mt-1">≈ {convertConfirm.cop.toLocaleString('es-CO')} COP</p>
                                 <p className="text-[11px] text-slate-400 mt-0.5">en tu Peso Lincoin</p>
                             </div>
                             {/* Desglose */}
@@ -1081,10 +1081,10 @@ export const FinitySection: React.FC<{
                             <div className="px-6 pt-4">
                                 <div className="flex items-center justify-between text-[11px] font-bold mb-1">
                                     <span className={urgent ? 'text-red-600' : 'text-slate-500'}>{urgent ? '⏱️ La tasa está por expirar' : 'Tasa válida por'}</span>
-                                    <span className={urgent ? 'text-red-600' : 'text-[#0D9488]'}>{rateLeft}s</span>
+                                    <span className={urgent ? 'text-red-600' : 'text-[#16A34A]'}>{rateLeft}s</span>
                                 </div>
                                 <div className="h-1.5 w-full rounded-full bg-slate-100 overflow-hidden">
-                                    <div className={`h-full rounded-full transition-all duration-1000 ease-linear ${urgent ? 'bg-red-500' : 'bg-[#2DD4BF]'}`} style={{ width: `${pct}%` }} />
+                                    <div className={`h-full rounded-full transition-all duration-1000 ease-linear ${urgent ? 'bg-red-500' : 'bg-[#4ADE80]'}`} style={{ width: `${pct}%` }} />
                                 </div>
                             </div>
                             {/* Botones */}
@@ -1095,7 +1095,7 @@ export const FinitySection: React.FC<{
                                 <button
                                     onClick={() => { const c = convertConfirm; setConvertConfirm(null); runConvert(c.amount, c.netAmount, c.gasfreeCost, c.previewRate); }}
                                     style={{ color: '#0F172A' }}
-                                    className="flex-1 h-11 bg-[#2DD4BF] hover:bg-[#5EEAD4] rounded-xl text-sm font-extrabold transition-colors"
+                                    className="flex-1 h-11 bg-[#4ADE80] hover:bg-[#6EE7A0] rounded-xl text-sm font-extrabold transition-colors"
                                 >
                                     Confirmar
                                 </button>

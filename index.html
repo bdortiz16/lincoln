@@ -35,7 +35,7 @@
     <meta name="twitter:image" content="https://www.cuypay.com/og-image.svg" />
 
     <!-- Favicon -->
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Crect x='2' y='2' width='96' height='96' rx='22' fill='%230F172A'/%3E%3Crect x='22' y='22' width='56' height='56' rx='16' fill='none' stroke='%232DD4BF' stroke-width='7' stroke-linejoin='round'/%3E%3Ccircle cx='58' cy='56' r='8' fill='%232DD4BF'/%3E%3C/svg%3E" />
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Crect x='2' y='2' width='96' height='96' rx='22' fill='%230F172A'/%3E%3Crect x='22' y='22' width='56' height='56' rx='16' fill='none' stroke='%234ADE80' stroke-width='7' stroke-linejoin='round'/%3E%3Ccircle cx='58' cy='56' r='8' fill='%234ADE80'/%3E%3C/svg%3E" />
     <!-- Tailwind ahora se COMPILA en el build de Vite (tailwind.config.js
          + index.css). Nada de cdn.tailwindcss.com: los estilos viajan en
          el bundle y funcionan igual en redes corporativas filtradas. -->
@@ -52,7 +52,7 @@
          marca quedan igual legibles. El selector por atributo le gana a
          las utilities y no toca hijos con clase de color propia. */
       button[class*="bg-[#0F172A]"] { color: #ffffff; }
-      button[class*="bg-[#2DD4BF]"] { color: #0F172A; }
+      button[class*="bg-[#4ADE80]"] { color: #0F172A; }
 
       /* Custom scrollbar for sidebar */
       .sidebar-scroll::-webkit-scrollbar { width: 6px; }
@@ -112,7 +112,7 @@
         0%, 100% { transform: scale(1); }
         50%      { transform: scale(1.18); }
       }
-      .cuypay-dot {
+      .lincoin-dot {
         transform-box: fill-box;
         transform-origin: center;
         animation: cuypayDotDrop 1.4s cubic-bezier(.5,1.6,.5,1) both,
@@ -128,12 +128,12 @@
       .anim-float-slow{ animation: floatY 6s ease-in-out infinite; }
       .anim-pulse-ring::before {
         content:''; position:absolute; inset:0; border-radius:inherit;
-        border:2px solid #2DD4BF; animation: pulse-ring 2s ease-out infinite;
+        border:2px solid #4ADE80; animation: pulse-ring 2s ease-out infinite;
       }
 
       /* Gradient text animation */
       .gradient-text {
-        background: linear-gradient(90deg, #2DD4BF, #5EEAD4, #2DD4BF);
+        background: linear-gradient(90deg, #4ADE80, #6EE7A0, #4ADE80);
         background-size: 200% auto;
         -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
         animation: gradientX 3s linear infinite;

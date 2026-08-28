@@ -108,8 +108,8 @@ export const PersonalOnboardingWizard: React.FC<PersonalOnboardingProps> = ({ on
                             </div>
 
                             <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 mb-6 space-y-2">
-                                <p className="text-sm font-bold text-[#2DD4BF]">¿Qué pasa después?</p>
-                                <p className="text-xs text-[#2DD4BF]">Cuando Lincoin termine de verificarte, tu cuenta se activará automáticamente y recibirás una notificación. No necesitas volver a esta pantalla.</p>
+                                <p className="text-sm font-bold text-[#4ADE80]">¿Qué pasa después?</p>
+                                <p className="text-xs text-[#4ADE80]">Cuando Lincoin termine de verificarte, tu cuenta se activará automáticamente y recibirás una notificación. No necesitas volver a esta pantalla.</p>
                             </div>
 
                             <div className="space-y-3">

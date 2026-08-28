@@ -94,7 +94,7 @@ export const LegalDocsSection: React.FC<{ profile: AdminProfile }> = ({ profile 
                         <button
                             key={d.id}
                             onClick={() => openEditor(d)}
-                            className="px-3 py-3 rounded-xl border border-slate-200 bg-white hover:border-teal-300 hover:shadow-sm transition-all text-left"
+                            className="px-3 py-3 rounded-xl border border-slate-200 bg-white hover:border-green-300 hover:shadow-sm transition-all text-left"
                         >
                             <FileText size={14} className="text-slate-400 mb-1" />
                             <p className="text-xs font-bold leading-tight" style={{ color: NAVY }}>{d.label}</p>
@@ -139,7 +139,7 @@ export const LegalDocsSection: React.FC<{ profile: AdminProfile }> = ({ profile 
                                         onChange={e => setContent(e.target.value)}
                                         rows={18}
                                         placeholder={`Escribí el HTML de "${editing.label}"…`}
-                                        className="w-full px-3 py-3 rounded-xl border border-slate-300 text-sm leading-relaxed font-mono focus:border-teal-500 outline-none resize-y"
+                                        className="w-full px-3 py-3 rounded-xl border border-slate-300 text-sm leading-relaxed font-mono focus:border-green-500 outline-none resize-y"
                                     />
                                     <p className="text-[11px] text-slate-400 mt-1 text-right">{content.length.toLocaleString('es-CO')} caracteres</p>
                                 </>

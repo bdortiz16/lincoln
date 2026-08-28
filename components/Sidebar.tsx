@@ -45,7 +45,7 @@ const MenuItem: React.FC<{
       className={`
         w-full flex items-center justify-between px-3 py-3 rounded-xl transition-all duration-200 group relative overflow-hidden
         ${isActive 
-          ? 'bg-[#2DD4BF] text-[#0F172A] font-bold shadow-lg shadow-teal-900/10' 
+          ? 'bg-[#4ADE80] text-[#0F172A] font-bold shadow-lg shadow-green-900/10' 
           : 'text-slate-400 hover:bg-white/5 hover:text-white font-medium'}
       `}
     >

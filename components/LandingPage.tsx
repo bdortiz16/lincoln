@@ -109,7 +109,7 @@ const LOCALIZATION: Record<CountryCode, CountryConfig> = {
   },
   US: {
     code: 'US', name: 'USA', currency: 'USD', lang: 'en',
-    sticker: <Landmark strokeWidth={1} />, stickerColor: 'text-[#2DD4BF]',
+    sticker: <Landmark strokeWidth={1} />, stickerColor: 'text-[#4ADE80]',
     texts: {
       heroTitle: <>BORDERLESS <br/> OPERATIONS</>,
       heroSubtitle: 'Send, receive, and exchange currencies in over 90 countries with transparent rates.',
@@ -182,7 +182,7 @@ const CurrencySelect: React.FC<{ value: string; onChange: (v: string) => void }>
 };
 
 const FlagBubble: React.FC<{ children: React.ReactNode; highlight?: boolean }> = ({ children, highlight }) => (
-  <div className={`w-14 h-14 rounded-full flex items-center justify-center shadow-xl transform transition-all duration-300 hover:scale-110 cursor-default ${highlight ? 'bg-white border-4 border-[#2DD4BF] -translate-y-4 z-10' : 'bg-white border-2 border-slate-50 text-slate-600'}`}>
+  <div className={`w-14 h-14 rounded-full flex items-center justify-center shadow-xl transform transition-all duration-300 hover:scale-110 cursor-default ${highlight ? 'bg-white border-4 border-[#4ADE80] -translate-y-4 z-10' : 'bg-white border-2 border-slate-50 text-slate-600'}`}>
     {children}
   </div>
 );
@@ -192,17 +192,17 @@ const IndustryItem: React.FC<{ icon: any; label: string; color: string; logo: st
         {/* La animación vive solo en la caja redondeada del icono: se eleva,
             crece un poco y proyecta un glow suave con la forma del rounded
             (spread negativo) — así el hover ya no se ve cuadrado. */}
-        <div className={`w-16 h-16 rounded-2xl bg-white/10 border border-white/10 flex items-center justify-center mb-4 transition-all duration-300 group-hover:-translate-y-1.5 group-hover:scale-105 group-hover:bg-[#2DD4BF]/10 group-hover:border-[#2DD4BF]/60 group-hover:shadow-[0_16px_32px_-10px_rgba(45,212,191,0.5)] ${color}`}>
+        <div className={`w-16 h-16 rounded-2xl bg-white/10 border border-white/10 flex items-center justify-center mb-4 transition-all duration-300 group-hover:-translate-y-1.5 group-hover:scale-105 group-hover:bg-[#4ADE80]/10 group-hover:border-[#4ADE80]/60 group-hover:shadow-[0_16px_32px_-10px_rgba(45,212,191,0.5)] ${color}`}>
             <Icon size={32} />
         </div>
-        <h3 className="font-bold text-white mb-1 transition-colors group-hover:text-[#2DD4BF]">{label}</h3>
+        <h3 className="font-bold text-white mb-1 transition-colors group-hover:text-[#4ADE80]">{label}</h3>
         <span className="text-xs text-slate-400 font-bold uppercase tracking-wider">{logo}</span>
     </div>
 );
 
 // FeatureCard premium con icono más grande, gradient sutil y glow
 // behind the icon. La paleta unificada se basa en el cyan oficial
-// Lincoin (#2DD4BF) — los `color` legacy del callsite siguen
+// Lincoin (#4ADE80) — los `color` legacy del callsite siguen
 // aceptados pero el container del icono ahora siempre arma su
 // estilo desde el tono del icono que recibe (iconTint).
 const FeatureCard: React.FC<{
@@ -212,11 +212,11 @@ const FeatureCard: React.FC<{
     color?: string;          // legacy, ignorado para el container nuevo
     iconTint?: 'cyan' | 'emerald' | 'violet';
 }> = ({ icon: Icon, title, desc, iconTint = 'cyan' }) => {
-    // Paleta consistente con la marca: 3 tonos derivados del cyan #2DD4BF
+    // Paleta consistente con la marca: 3 tonos derivados del cyan #4ADE80
     // que mantienen la armonía sin desentonar.
     const tones: Record<string, { from: string; to: string; ring: string; icon: string; glow: string }> = {
         cyan: {
-            from: '#2DD4BF',
+            from: '#4ADE80',
             to:   '#06B6D4',
             ring: 'rgba(45, 212, 191, 0.35)',
             icon: '#0F172A',
@@ -239,7 +239,7 @@ const FeatureCard: React.FC<{
     };
     const t = tones[iconTint];
     return (
-        <div className="relative bg-white/5 p-8 rounded-3xl border border-white/10 hover:border-[#2DD4BF]/60 transition-all duration-300 group flex flex-col items-center text-center hover-lift overflow-hidden">
+        <div className="relative bg-white/5 p-8 rounded-3xl border border-white/10 hover:border-[#4ADE80]/60 transition-all duration-300 group flex flex-col items-center text-center hover-lift overflow-hidden">
             {/* Glow detrás del icono en hover */}
             <div
                 className="absolute -top-10 left-1/2 -translate-x-1/2 w-40 h-40 rounded-full blur-3xl opacity-0 group-hover:opacity-60 transition-opacity duration-500 pointer-events-none"
@@ -265,11 +265,11 @@ const BenefitItem: React.FC<{ icon: any; title: string; desc: string }> = ({ ico
     // Sección oscura: NO se voltea a fondo blanco en hover (eso dejaba el
     // icono blanco-sobre-blanco y el texto gris claro ilegibles). Todo se
     // mantiene claro-sobre-oscuro; el hover es solo un tinte sutil + lift.
-    <div className="flex flex-col items-center text-center p-6 rounded-2xl hover:bg-white/5 transition-all duration-300 group cursor-pointer border border-transparent hover:border-[#2DD4BF]/30 hover-lift">
+    <div className="flex flex-col items-center text-center p-6 rounded-2xl hover:bg-white/5 transition-all duration-300 group cursor-pointer border border-transparent hover:border-[#4ADE80]/30 hover-lift">
         <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center mb-6 text-[#0F172A] shadow-sm group-hover:scale-110 transition-transform duration-300 border border-slate-100">
             <Icon size={28} strokeWidth={1.5} />
         </div>
-        <h3 className="text-lg font-bold text-white mb-3 group-hover:text-[#2DD4BF] transition-colors">{title}</h3>
+        <h3 className="text-lg font-bold text-white mb-3 group-hover:text-[#4ADE80] transition-colors">{title}</h3>
         <p className="text-slate-300 text-sm leading-relaxed">
             {desc}
         </p>
@@ -509,13 +509,13 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
                   <div className="hidden md:flex items-center text-[10px] lg:text-xs font-bold h-20 tracking-wide">
                      <button
                         onClick={() => setSegment('personal')}
-                        className={`px-3 lg:px-4 h-full flex items-center transition-all duration-300 border-b-[3px] ${segment === 'personal' ? 'text-[#2DD4BF] border-[#2DD4BF]' : 'text-slate-400 border-transparent hover:text-white'}`}
+                        className={`px-3 lg:px-4 h-full flex items-center transition-all duration-300 border-b-[3px] ${segment === 'personal' ? 'text-[#4ADE80] border-[#4ADE80]' : 'text-slate-400 border-transparent hover:text-white'}`}
                      >
                         {content.texts.personal} {seasonEmoji}
                      </button>
                      <button
                         onClick={() => setSegment('business')}
-                        className={`px-3 lg:px-4 h-full flex items-center transition-all duration-300 border-b-[3px] ${segment === 'business' ? 'text-[#2DD4BF] border-[#2DD4BF]' : 'text-slate-400 border-transparent hover:text-white'}`}
+                        className={`px-3 lg:px-4 h-full flex items-center transition-all duration-300 border-b-[3px] ${segment === 'business' ? 'text-[#4ADE80] border-[#4ADE80]' : 'text-slate-400 border-transparent hover:text-white'}`}
                      >
                         {content.texts.business}
                      </button>
@@ -528,14 +528,14 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
                      >
                         {/* Icono CreditCard al lado con pulse infinito */}
                         <span className="relative inline-flex items-center justify-center pointer-events-none">
-                           <span className="absolute inline-flex h-6 w-6 rounded-full opacity-60 animate-ping" style={{ backgroundColor: '#2DD4BF' }} />
-                           <CreditCard size={14} className="relative text-[#2DD4BF] drop-shadow-[0_0_6px_rgba(45,212,191,0.7)]" />
+                           <span className="absolute inline-flex h-6 w-6 rounded-full opacity-60 animate-ping" style={{ backgroundColor: '#4ADE80' }} />
+                           <CreditCard size={14} className="relative text-[#4ADE80] drop-shadow-[0_0_6px_rgba(45,212,191,0.7)]" />
                         </span>
                         {/* Texto con gradient animado (smartcard-text en index.html) */}
                         <span
                            className="smartcard-text font-extrabold tracking-wide bg-clip-text text-transparent transition-all duration-300 group-hover:scale-105"
                            style={{
-                              backgroundImage: 'linear-gradient(90deg, #2DD4BF 0%, #06B6D4 50%, #A78BFA 100%, #06B6D4 150%, #2DD4BF 200%)',
+                              backgroundImage: 'linear-gradient(90deg, #4ADE80 0%, #06B6D4 50%, #A78BFA 100%, #06B6D4 150%, #4ADE80 200%)',
                            }}
                         >
                            SMART CARD
@@ -555,7 +555,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
            <div className="hidden lg:flex items-center gap-6 text-sm font-medium text-white/90">
               <button 
                 onClick={() => { setLandingView('home'); }}
-                className={`flex items-center gap-1 cursor-pointer transition-colors ${landingView === 'home' ? 'text-white font-bold' : 'hover:text-[#2DD4BF]'}`}
+                className={`flex items-center gap-1 cursor-pointer transition-colors ${landingView === 'home' ? 'text-white font-bold' : 'hover:text-[#4ADE80]'}`}
               >
                   {currentCountry === 'BR' ? 'Produtos' : currentCountry === 'US' ? 'Products' : 'Productos'}
               </button>
@@ -564,7 +564,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
               <div className="relative" ref={benefitsMenuRef}>
                   <button 
                     onClick={() => setBenefitsMenuOpen(!benefitsMenuOpen)}
-                    className={`flex items-center gap-1 cursor-pointer transition-colors ${landingView !== 'home' ? 'text-[#2DD4BF] font-bold' : 'hover:text-[#2DD4BF]'}`}
+                    className={`flex items-center gap-1 cursor-pointer transition-colors ${landingView !== 'home' ? 'text-[#4ADE80] font-bold' : 'hover:text-[#4ADE80]'}`}
                   >
                       {currentCountry === 'BR' ? 'Benefícios' : currentCountry === 'US' ? 'Benefits' : 'Beneficios'} <ChevronDown size={14}/>
                   </button>
@@ -581,7 +581,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
                             onClick={() => { setLandingView('affiliates'); setBenefitsMenuOpen(false); }}
                             className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors"
                           >
-                              <div className="bg-[#F0FFFE] p-1.5 rounded-lg text-[#2DD4BF]"><Megaphone size={16}/></div>
+                              <div className="bg-[#F0FFFE] p-1.5 rounded-lg text-[#4ADE80]"><Megaphone size={16}/></div>
                               <span className="text-sm font-bold">Aliados LINCOIN</span>
                           </button>
                       </div>
@@ -616,7 +616,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
                   )}
               </div>
               
-              <button onClick={onLoginClick} className="font-bold hover:text-[#2DD4BF] transition-colors">
+              <button onClick={onLoginClick} className="font-bold hover:text-[#4ADE80] transition-colors">
                   {content.texts.login}
               </button>
               
@@ -627,7 +627,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
                     disabled={!config.allowNewRegistrations}
                     className={`
                         bg-white text-[#0F172A] px-5 py-2.5 rounded-full font-bold transition-all flex items-center gap-2
-                        ${!config.allowNewRegistrations ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#2DD4BF] hover:text-white'}
+                        ${!config.allowNewRegistrations ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#4ADE80] hover:text-white'}
                     `}
                   >
                     {content.texts.createAccount}
@@ -694,12 +694,12 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
                    {segment === 'business' ? (
                        <>
                            <h1 className="text-3xl md:text-5xl lg:text-6xl font-extrabold leading-[1.1] tracking-tight uppercase">
-                             <span className="text-[#2DD4BF] text-xs md:text-base font-bold tracking-widest uppercase block mb-2 md:mb-4">
+                             <span className="text-[#4ADE80] text-xs md:text-base font-bold tracking-widest uppercase block mb-2 md:mb-4">
                                  {currentCountry === 'BR' ? 'Para empresas que pensam grande' : currentCountry === 'US' ? 'For ambitious companies' : 'Si tu empresa piensa en grande'} {secondaryEmoji}
                              </span>
                              {content.texts.heroTitle} {seasonEmoji}
                            </h1>
-                           <p className="text-teal-100/80 text-base md:text-lg leading-relaxed max-w-xl mx-auto lg:mx-0">
+                           <p className="text-green-100/80 text-base md:text-lg leading-relaxed max-w-xl mx-auto lg:mx-0">
                              {content.texts.heroSubtitle}
                            </p>
                            <div className="flex flex-col sm:flex-row gap-4 justify-center lg:justify-start">
@@ -716,7 +716,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
                        <>
                            <h1 className="text-3xl md:text-5xl lg:text-[3.5rem] font-bold leading-tight tracking-tight">
                              {currentCountry === 'BR' ? <>Transferências <br/> internacionais ao <br/></> : currentCountry === 'US' ? <>International <br/> transfers at the <br/></> : <>Transferencias <br/> internacionales al <br/></>}
-                             <span className="text-teal-200">
+                             <span className="text-green-200">
                                  {currentCountry === 'BR' ? 'melhor preço' : currentCountry === 'US' ? 'best price' : 'mejor precio'}
                              </span> {seasonEmoji}
                            </h1>
@@ -757,7 +757,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
                                 <div className="bg-[#F4F6F9] rounded-t-2xl overflow-hidden aspect-[16/10] relative text-slate-900 flex text-[10px] md:text-xs leading-none select-none cursor-default">
                                     {/* Sidebar */}
                                     <div className="w-16 md:w-20 bg-[#0F172A] flex flex-col items-center py-6 gap-6 shrink-0" style={{ backgroundColor: config.themeColor }}>
-                                        <div className="w-8 h-8 rounded-lg bg-[#2DD4BF] flex items-center justify-center text-[#0F172A] font-bold">C</div>
+                                        <div className="w-8 h-8 rounded-lg bg-[#4ADE80] flex items-center justify-center text-[#0F172A] font-bold">C</div>
                                         <div className="space-y-4 w-full flex flex-col items-center">
                                             <div className="w-8 h-8 rounded-lg bg-white/10 flex items-center justify-center text-white"><Home size={14} /></div>
                                             <div className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400"><Send size={14} /></div>
@@ -776,7 +776,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
                                             </div>
                                             <div className="flex gap-2">
                                                 <div className="w-8 h-8 rounded-full bg-white border border-slate-200 flex items-center justify-center"><Bell size={14} className="text-slate-400"/></div>
-                                                <div className="w-8 h-8 rounded-full bg-[#2DD4BF] flex items-center justify-center text-[#0F172A] font-bold">E</div>
+                                                <div className="w-8 h-8 rounded-full bg-[#4ADE80] flex items-center justify-center text-[#0F172A] font-bold">E</div>
                                             </div>
                                         </div>
 
@@ -961,7 +961,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
                             </div>
 
                             {/* Input: You Send */}
-                            <div className="border border-slate-200 rounded-2xl p-4 mb-3 relative bg-white hover:border-[#2DD4BF] transition-colors group focus-within:border-[#2DD4BF]">
+                            <div className="border border-slate-200 rounded-2xl p-4 mb-3 relative bg-white hover:border-[#4ADE80] transition-colors group focus-within:border-[#4ADE80]">
                                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
                                    {currentCountry === 'BR' ? 'Você envia' : currentCountry === 'US' ? 'You send' : 'Tu envías'}
                                </label>
@@ -988,7 +988,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
                             </div>
 
                             {/* Input: They Receive (Read Only) */}
-                            <div className="border border-slate-200 rounded-2xl p-4 mb-3 relative bg-white hover:border-[#2DD4BF] transition-colors group">
+                            <div className="border border-slate-200 rounded-2xl p-4 mb-3 relative bg-white hover:border-[#4ADE80] transition-colors group">
                                {/* Connector Icon */}
                                <div className="absolute left-1/2 -top-5 -translate-x-1/2 bg-white border border-slate-200 rounded-full p-1.5 text-slate-400 shadow-sm z-10">
                                   <span className="font-serif font-bold text-sm text-slate-400">$</span>
@@ -1011,10 +1011,10 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
                                 {/* Row 1: Costo de envío */}
                                 <div className="flex justify-between items-center text-sm">
                                     <div className="flex items-center gap-3">
-                                         <div className="w-5 h-5 rounded-full bg-[#2DD4BF] text-white flex items-center justify-center shadow-sm">
+                                         <div className="w-5 h-5 rounded-full bg-[#4ADE80] text-white flex items-center justify-center shadow-sm">
                                             <Minus size={12} strokeWidth={3} />
                                          </div>
-                                         <span className="text-[#2DD4BF] font-medium">
+                                         <span className="text-[#4ADE80] font-medium">
                                              {currentCountry === 'BR' ? 'Custo de envio' : currentCountry === 'US' ? 'Fee' : 'Costo de envío'}:
                                          </span>
                                     </div>
@@ -1026,7 +1026,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
                                 {/* Row 2: Monto a convertir */}
                                 <div className="flex justify-between items-center text-sm">
                                     <div className="flex items-center gap-3">
-                                         <div className="w-5 h-5 rounded-full bg-[#2DD4BF] text-white flex items-center justify-center shadow-sm">
+                                         <div className="w-5 h-5 rounded-full bg-[#4ADE80] text-white flex items-center justify-center shadow-sm">
                                             <Equal size={12} strokeWidth={3} />
                                          </div>
                                          <span className="text-slate-500 font-medium">
@@ -1041,7 +1041,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
                                 {/* Row 3: Tipo de cambio */}
                                 <div className="flex justify-between items-center text-sm">
                                     <div className="flex items-center gap-3">
-                                         <div className="w-5 h-5 rounded-full bg-[#2DD4BF] text-white flex items-center justify-center shadow-sm">
+                                         <div className="w-5 h-5 rounded-full bg-[#4ADE80] text-white flex items-center justify-center shadow-sm">
                                             <div className="font-serif font-bold text-xs">÷</div>
                                          </div>
                                          <span className="text-slate-500 font-medium">
@@ -1057,7 +1057,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
                                 {rateProviderLabel && (
                                     <div className="flex items-center justify-between text-[10px] text-slate-500 pl-8 -mt-2">
                                         <span className="inline-flex items-center gap-1.5">
-                                            <span className={`w-1.5 h-1.5 rounded-full ${rateProvider === 'MANUAL' ? 'bg-slate-400' : 'bg-[#2DD4BF] animate-pulse'}`} />
+                                            <span className={`w-1.5 h-1.5 rounded-full ${rateProvider === 'MANUAL' ? 'bg-slate-400' : 'bg-[#4ADE80] animate-pulse'}`} />
                                             {rateProviderLabel}
                                         </span>
                                         <span className="opacity-70">{rateRefreshHint}</span>
@@ -1067,7 +1067,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
                                 <div className="flex justify-center pt-2">
                                   <button 
                                     onClick={() => setShowDetails(true)}
-                                    className="text-[#2DD4BF] text-sm font-medium hover:underline flex items-center gap-1"
+                                    className="text-[#4ADE80] text-sm font-medium hover:underline flex items-center gap-1"
                                   >
                                     {currentCountry === 'BR' ? 'Ver detalhes' : currentCountry === 'US' ? 'View details' : 'Ver detalle completo'} <ChevronDown size={16} />
                                   </button>
@@ -1090,7 +1090,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
                             </div>
 
                             {/* Main CTA */}
-                            <button onClick={onLoginClick} className="w-full bg-[#2DD4BF] text-white font-bold py-4 rounded-xl hover:bg-[#14B8A6] transition-colors shadow-lg shadow-teal-500/30 text-lg btn-shine">
+                            <button onClick={onLoginClick} className="w-full bg-[#4ADE80] text-white font-bold py-4 rounded-xl hover:bg-[#22C55E] transition-colors shadow-lg shadow-green-500/30 text-lg btn-shine">
                                 {currentCountry === 'BR' ? 'Enviar dinheiro agora' : currentCountry === 'US' ? 'Send money now' : 'Enviar dinero ahora'}
                             </button>
                             
@@ -1135,7 +1135,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
                       <>
                         <h2 className="text-3xl md:text-4xl font-bold mb-6 text-white reveal">
                             {currentCountry === 'BR' ? 'Pertence a alguma' : currentCountry === 'US' ? 'Do you belong to' : '¿Perteneces a alguna de'} <br/>
-                            <span className="text-[#2DD4BF]">{currentCountry === 'BR' ? 'dessas indústrias?' : currentCountry === 'US' ? 'these industries?' : 'estas industrias?'}</span>
+                            <span className="text-[#4ADE80]">{currentCountry === 'BR' ? 'dessas indústrias?' : currentCountry === 'US' ? 'these industries?' : 'estas industrias?'}</span>
                         </h2>
                         <p className="text-white/50 max-w-2xl mx-auto mb-16 text-lg">
                             {content.texts.featuresSubtitle}
@@ -1144,7 +1144,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
                         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-8 mb-20 relative animate-in fade-in slide-in-from-bottom-4 duration-700">
                             <IndustryItem icon={BookOpen} label={currentCountry === 'US' ? 'Education' : "Educación"} color="text-red-500" logo="exxema" />
                             <IndustryItem icon={Cpu} label={currentCountry === 'US' ? 'Tech' : "Tecnología"} color="text-red-400" logo="ROCKETBOT" />
-                            <IndustryItem icon={Briefcase} label={currentCountry === 'US' ? 'Consulting' : "Consultoría"} color="text-[#2DD4BF]" logo="Phylolegal" />
+                            <IndustryItem icon={Briefcase} label={currentCountry === 'US' ? 'Consulting' : "Consultoría"} color="text-[#4ADE80]" logo="Phylolegal" />
                             <IndustryItem icon={Megaphone} label="Marketing" color="text-green-500" logo="greenti" />
                             <IndustryItem icon={Monitor} label="Fintech" color="text-purple-500" logo="latamfintech" />
                             <IndustryItem icon={Ticket} label={currentCountry === 'US' ? 'Entertainment' : "Entretenimiento"} color="text-orange-500" logo="ticketplus" />
@@ -1202,9 +1202,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
                               Envía y recibe pagos de manera rápida, segura y confiable entre países como Colombia, Chile, Perú, México y Brasil.
                           </p>
                           <div className="flex gap-4">
-                              <a href={siteLinks.link_facebook || '#'} target={siteLinks.link_facebook ? '_blank' : undefined} rel="noreferrer" className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center hover:bg-[#2DD4BF] hover:text-[#0F172A] transition-colors"><Facebook size={16} /></a>
-                              <a href={siteLinks.link_linkedin || '#'} target={siteLinks.link_linkedin ? '_blank' : undefined} rel="noreferrer" className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center hover:bg-[#2DD4BF] hover:text-[#0F172A] transition-colors"><Linkedin size={16} /></a>
-                              <a href={siteLinks.link_instagram || '#'} target={siteLinks.link_instagram ? '_blank' : undefined} rel="noreferrer" className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center hover:bg-[#2DD4BF] hover:text-[#0F172A] transition-colors"><Instagram size={16} /></a>
+                              <a href={siteLinks.link_facebook || '#'} target={siteLinks.link_facebook ? '_blank' : undefined} rel="noreferrer" className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center hover:bg-[#4ADE80] hover:text-[#0F172A] transition-colors"><Facebook size={16} /></a>
+                              <a href={siteLinks.link_linkedin || '#'} target={siteLinks.link_linkedin ? '_blank' : undefined} rel="noreferrer" className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center hover:bg-[#4ADE80] hover:text-[#0F172A] transition-colors"><Linkedin size={16} /></a>
+                              <a href={siteLinks.link_instagram || '#'} target={siteLinks.link_instagram ? '_blank' : undefined} rel="noreferrer" className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center hover:bg-[#4ADE80] hover:text-[#0F172A] transition-colors"><Instagram size={16} /></a>
                           </div>
                       </div>
 
@@ -1212,9 +1212,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
                       <div>
                           <h4 className="font-bold text-lg mb-6">Enlaces rápidos:</h4>
                           <ul className="space-y-3 text-sm text-slate-300">
-                              <li><button onClick={() => openQuickLink('link_blog', 'blog')} className="hover:text-[#2DD4BF] transition-colors text-left">Blog</button></li>
-                              <li><button onClick={() => openQuickLink('link_support', 'support')} className="hover:text-[#2DD4BF] transition-colors text-left">Soporte</button></li>
-                              <li><button onClick={() => openQuickLink('link_about', 'about')} className="hover:text-[#2DD4BF] transition-colors text-left">Acerca de Nosotros</button></li>
+                              <li><button onClick={() => openQuickLink('link_blog', 'blog')} className="hover:text-[#4ADE80] transition-colors text-left">Blog</button></li>
+                              <li><button onClick={() => openQuickLink('link_support', 'support')} className="hover:text-[#4ADE80] transition-colors text-left">Soporte</button></li>
+                              <li><button onClick={() => openQuickLink('link_about', 'about')} className="hover:text-[#4ADE80] transition-colors text-left">Acerca de Nosotros</button></li>
                           </ul>
                       </div>
 
@@ -1225,12 +1225,12 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
                               “LINCOIN opera bajo estrictos estándares regulatorios.”
                           </p>
                           <ul className="space-y-3 text-sm text-slate-300">
-                              <li><button onClick={() => onNavigateTo('privacy')} className="hover:text-[#2DD4BF] transition-colors text-left">Tratamiento de datos</button></li>
-                              <li><button onClick={() => onNavigateTo('terms')} className="hover:text-[#2DD4BF] transition-colors text-left">Términos y Condiciones</button></li>
-                              <li><button onClick={() => onNavigateTo('contact')} className="hover:text-[#2DD4BF] transition-colors text-left">Contacta con Nosotros</button></li>
-                              <li><button onClick={() => onNavigateTo('shipping')} className="hover:text-[#2DD4BF] transition-colors text-left">Solicitud de Envíos</button></li>
-                              <li><button onClick={() => onNavigateTo('collection')} className="hover:text-[#2DD4BF] transition-colors text-left">Solicitud de Cobro</button></li>
-                              <li><button onClick={() => onNavigateTo('sagrilaft')} className="hover:text-[#2DD4BF] transition-colors text-left">Política Sagrilaft</button></li>
+                              <li><button onClick={() => onNavigateTo('privacy')} className="hover:text-[#4ADE80] transition-colors text-left">Tratamiento de datos</button></li>
+                              <li><button onClick={() => onNavigateTo('terms')} className="hover:text-[#4ADE80] transition-colors text-left">Términos y Condiciones</button></li>
+                              <li><button onClick={() => onNavigateTo('contact')} className="hover:text-[#4ADE80] transition-colors text-left">Contacta con Nosotros</button></li>
+                              <li><button onClick={() => onNavigateTo('shipping')} className="hover:text-[#4ADE80] transition-colors text-left">Solicitud de Envíos</button></li>
+                              <li><button onClick={() => onNavigateTo('collection')} className="hover:text-[#4ADE80] transition-colors text-left">Solicitud de Cobro</button></li>
+                              <li><button onClick={() => onNavigateTo('sagrilaft')} className="hover:text-[#4ADE80] transition-colors text-left">Política Sagrilaft</button></li>
                           </ul>
                       </div>
 
@@ -1241,8 +1241,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
                               “Tu Socio Financiero en América Latina y el Mundo”
                           </p>
                           <ul className="space-y-3 text-sm text-slate-300">
-                              <li><button onClick={openCalendly} className="hover:text-[#2DD4BF] transition-colors text-left">Habla con un Especialista</button></li>
-                              <li><button onClick={openCalendly} className="hover:text-[#2DD4BF] transition-colors text-left">Solicita una Demo</button></li>
+                              <li><button onClick={openCalendly} className="hover:text-[#4ADE80] transition-colors text-left">Habla con un Especialista</button></li>
+                              <li><button onClick={openCalendly} className="hover:text-[#4ADE80] transition-colors text-left">Solicita una Demo</button></li>
                           </ul>
                       </div>
                   </div>
@@ -1253,7 +1253,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
                   {/* Bottom CTA — abre el modal de contacto (correo + reunión) */}
                   <div className="text-center mb-16">
                       <p className="text-white mb-4">¿Te gustaría aliarse con nosotros, invitarnos a ferias o eventos, o incluso colaborar en la creación de un artículo?</p>
-                      <button onClick={() => setContactOpen(true)} className="inline-flex items-center gap-2 font-bold hover:text-[#2DD4BF] transition-colors">
+                      <button onClick={() => setContactOpen(true)} className="inline-flex items-center gap-2 font-bold hover:text-[#4ADE80] transition-colors">
                           Contáctanos aquí <ArrowRight size={16} />
                       </button>
                   </div>
@@ -1275,7 +1275,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
                                   <XIcon size={18} />
                               </button>
                               <div className="w-14 h-14 mx-auto rounded-2xl flex items-center justify-center mb-4" style={{ backgroundColor: 'rgba(45,212,191,0.15)' }}>
-                                  <Handshake size={26} className="text-[#2DD4BF]" />
+                                  <Handshake size={26} className="text-[#4ADE80]" />
                               </div>
                               <h3 className="text-white text-xl font-bold mb-2">Hablemos</h3>
                               <p className="text-slate-400 text-sm mb-6">
@@ -1284,14 +1284,14 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
                               <div className="space-y-3">
                                   <a
                                       href={`mailto:${supportEmail}`}
-                                      className="flex items-center justify-center gap-2 w-full py-3.5 rounded-xl bg-white/5 border border-white/10 text-white text-sm font-semibold hover:border-[#2DD4BF] transition-colors"
+                                      className="flex items-center justify-center gap-2 w-full py-3.5 rounded-xl bg-white/5 border border-white/10 text-white text-sm font-semibold hover:border-[#4ADE80] transition-colors"
                                   >
-                                      <Send size={15} className="text-[#2DD4BF]" /> {supportEmail}
+                                      <Send size={15} className="text-[#4ADE80]" /> {supportEmail}
                                   </a>
                                   <button
                                       onClick={() => { setContactOpen(false); openCalendly(); }}
                                       className="flex items-center justify-center gap-2 w-full py-3.5 rounded-xl text-sm font-bold transition-colors"
-                                      style={{ backgroundColor: '#2DD4BF', color: '#0F172A' }}
+                                      style={{ backgroundColor: '#4ADE80', color: '#0F172A' }}
                                   >
                                       <Clock size={15} /> Agendar una reunión
                                   </button>
@@ -1325,7 +1325,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
       {landingView === 'affiliates' && (
           <div className="pt-20 min-h-screen bg-slate-50 text-slate-900">
               <div className="max-w-4xl mx-auto px-4 py-16 text-center">
-                  <div className="w-20 h-20 bg-[#F0FFFE] rounded-full flex items-center justify-center mx-auto mb-6 text-[#2DD4BF]">
+                  <div className="w-20 h-20 bg-[#F0FFFE] rounded-full flex items-center justify-center mx-auto mb-6 text-[#4ADE80]">
                       <Megaphone size={40} />
                   </div>
                   <h1 className="text-4xl font-bold text-[#0F172A] mb-4">Programa de Aliados</h1>

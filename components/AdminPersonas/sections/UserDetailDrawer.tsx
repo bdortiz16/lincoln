@@ -302,12 +302,12 @@ export const UserDetailDrawer: React.FC<Props> = ({ userId, onClose, profile }) 
                                                 const containerCls = !positive
                                                     ? 'bg-slate-50 border-transparent'
                                                     : crypto
-                                                        ? 'bg-teal-50 border-teal-100'
+                                                        ? 'bg-green-50 border-green-100'
                                                         : 'bg-emerald-50 border-emerald-100';
                                                 const balanceCls = !positive
                                                     ? 'text-slate-400'
                                                     : crypto
-                                                        ? 'text-teal-700'
+                                                        ? 'text-green-700'
                                                         : 'text-emerald-700';
                                                 return (
                                                     <div

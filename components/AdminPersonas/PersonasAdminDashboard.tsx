@@ -337,7 +337,7 @@ const UsersSection: React.FC<{ profile: AdminProfile }> = ({ profile }) => {
                         placeholder="Buscar por nombre, correo, Lincoin ID, teléfono o UUID..."
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
-                        className="w-full pl-9 pr-4 py-2 rounded-lg border border-slate-200 focus:border-teal-500 outline-none text-sm"
+                        className="w-full pl-9 pr-4 py-2 rounded-lg border border-slate-200 focus:border-green-500 outline-none text-sm"
                     />
                 </div>
                 {(statusFilter !== 'all' || search) && (
@@ -379,7 +379,7 @@ const UsersSection: React.FC<{ profile: AdminProfile }> = ({ profile }) => {
                                 <tr
                                     key={u.id}
                                     onClick={() => setDetailUserId(u.id)}
-                                    className={`border-t border-slate-100 hover:bg-teal-50/50 cursor-pointer transition-colors ${blocked ? 'bg-red-50/40' : ''}`}
+                                    className={`border-t border-slate-100 hover:bg-green-50/50 cursor-pointer transition-colors ${blocked ? 'bg-red-50/40' : ''}`}
                                 >
                                     <td className="px-4 py-3">
                                         <div className="flex items-center gap-2">

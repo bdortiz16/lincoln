@@ -242,8 +242,8 @@ const FinityRatesCard: React.FC<{
             <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between flex-wrap gap-3">
                 <div className="flex items-center gap-2 flex-wrap">
                     <h3 className="font-semibold text-slate-900">Panel de tasas Finity</h3>
-                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${enabled ? 'bg-teal-50 text-teal-700 border-teal-200' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
-                        <span className={`w-1.5 h-1.5 rounded-full ${enabled ? 'bg-teal-500 animate-pulse' : 'bg-slate-400'}`} />
+                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${enabled ? 'bg-green-50 text-green-700 border-green-200' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${enabled ? 'bg-green-500 animate-pulse' : 'bg-slate-400'}`} />
                         {enabled ? 'Activo — la app usa la tasa Finity para USD/COP' : 'Apagado — prende el toggle para operar USD/COP con la tasa Finity'}
                     </span>
                     {/sandbox/i.test(srvBase) && (
@@ -285,7 +285,7 @@ const FinityRatesCard: React.FC<{
             </div>
 
             {pingResult && (
-                <div className={`px-5 py-2 border-b text-[11px] font-semibold ${pingResult.ok ? 'bg-teal-50 border-teal-100 text-teal-800' : 'bg-red-50 border-red-100 text-red-700'}`}>
+                <div className={`px-5 py-2 border-b text-[11px] font-semibold ${pingResult.ok ? 'bg-green-50 border-green-100 text-green-800' : 'bg-red-50 border-red-100 text-red-700'}`}>
                     {pingResult.ok ? '✅' : '⛔'} Credenciales: {pingResult.text}
                 </div>
             )}
@@ -316,7 +316,7 @@ const FinityRatesCard: React.FC<{
                                     <button
                                         onClick={() => onToggle(!enabled)}
                                         disabled={busy}
-                                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors disabled:opacity-50 ${enabled ? 'bg-teal-500' : 'bg-slate-300'}`}
+                                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors disabled:opacity-50 ${enabled ? 'bg-green-500' : 'bg-slate-300'}`}
                                         title={enabled ? 'Desactivar Finity (USD/COP vuelve a FastForex)' : 'Activar Finity (apaga el par USD/COP en FastForex)'}
                                     >
                                         <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${enabled ? 'translate-x-6' : 'translate-x-1'}`} />
@@ -328,7 +328,7 @@ const FinityRatesCard: React.FC<{
                             <td className="px-5 py-3 text-right font-mono font-semibold" style={{ color: NAVY }}>
                                 {fetching && rate == null ? 'Consultando…' : rate != null ? fmtRate(rate) : '— sin respuesta —'}
                             </td>
-                            <td className="px-5 py-3 text-right font-mono font-semibold text-teal-700">
+                            <td className="px-5 py-3 text-right font-mono font-semibold text-green-700">
                                 {clientRate != null ? fmtRate(clientRate) : '—'}
                             </td>
                             <td className="px-5 py-3 text-xs text-slate-500">{updatedAt ? formatTime(updatedAt) : '—'}</td>
@@ -377,8 +377,8 @@ const FinityRatesCard: React.FC<{
                                         const postOnly = status === 405;
                                         return (
                                             <div key={path} className="flex items-center justify-between text-[11px] font-mono py-0.5">
-                                                <span className={exists ? 'font-bold text-teal-700' : 'text-slate-400'}>{path}</span>
-                                                <span className={`ml-2 px-1.5 rounded ${exists ? 'bg-teal-50 text-teal-700 font-bold' : 'bg-slate-100 text-slate-400'}`}>
+                                                <span className={exists ? 'font-bold text-green-700' : 'text-slate-400'}>{path}</span>
+                                                <span className={`ml-2 px-1.5 rounded ${exists ? 'bg-green-50 text-green-700 font-bold' : 'bg-slate-100 text-slate-400'}`}>
                                                     {status === -1 ? 'error' : status}{postOnly ? ' ✓ existe (solo POST)' : exists ? ' ✓ existe' : ''}
                                                 </span>
                                             </div>
@@ -1310,7 +1310,7 @@ export const RatesPanel: React.FC<{ profile: AdminProfile }> = ({ profile }) => 
                                             <button
                                                 onClick={() => setChartPair(p)}
                                                 title={`Ver gráfica histórica ${p.from_currency}/${p.to_currency}`}
-                                                className="flex items-center gap-2 font-semibold cursor-pointer rounded-md px-1 -mx-1 py-0.5 hover:bg-slate-100 hover:underline focus:outline-none focus:ring-2 focus:ring-[#2DD4BF] focus:ring-opacity-50"
+                                                className="flex items-center gap-2 font-semibold cursor-pointer rounded-md px-1 -mx-1 py-0.5 hover:bg-slate-100 hover:underline focus:outline-none focus:ring-2 focus:ring-[#4ADE80] focus:ring-opacity-50"
                                                 style={{ color: NAVY }}
                                             >
                                                 <span className="text-base">{FLAGS[p.from_currency] ?? '🏳️'}</span>
@@ -2335,7 +2335,7 @@ const SOURCE_LABEL: Record<string, string> = {
 };
 
 const SOURCE_BADGE: Record<string, { bg: string; text: string; border: string }> = {
-    FASTFOREX: { bg: 'bg-teal-50',   text: 'text-teal-800',  border: 'border-teal-300' },
+    FASTFOREX: { bg: 'bg-green-50',   text: 'text-green-800',  border: 'border-green-300' },
     MANUAL:    { bg: 'bg-slate-100', text: 'text-slate-700', border: 'border-slate-300' },
 };
 
@@ -2408,7 +2408,7 @@ const FxHealthCard: React.FC<{
                     <span className="text-slate-600">Última sync: <b className="text-slate-900">{fmtAge(health.last_sync_at)}</b></span>
                     <span className="text-slate-600">
                         Últimas 24 h →
-                        <b className="ml-1.5 text-teal-700">FF: {health.ff_snapshots_24h ?? 0}</b>
+                        <b className="ml-1.5 text-green-700">FF: {health.ff_snapshots_24h ?? 0}</b>
                         {typeof health.manual_snapshots_24h === 'number' && (
                             <>
                                 <span className="text-slate-400 mx-1">·</span>
@@ -2454,7 +2454,7 @@ const FxHealthCard: React.FC<{
                                         finally { setSavingSrc(false); }
                                     }}
                                     disabled={savingSrc}
-                                    className="px-3 py-1 rounded-lg bg-[#2DD4BF] text-[#0F172A] text-xs font-bold hover:bg-[#14B8A6] disabled:opacity-60"
+                                    className="px-3 py-1 rounded-lg bg-[#4ADE80] text-[#0F172A] text-xs font-bold hover:bg-[#22C55E] disabled:opacity-60"
                                 >
                                     {savingSrc ? 'Guardando…' : 'Guardar'}
                                 </button>

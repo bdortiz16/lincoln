@@ -59,7 +59,7 @@ export const OnboardingStepper: React.FC = () => {
                 </div>
                 
                 {/* Text */}
-                <div className={`pb-6 text-sm font-medium transition-colors duration-300 ${status === 'current' ? 'text-white' : status === 'completed' ? 'text-cuypay-accent/80' : 'text-teal-200/40'}`}>
+                <div className={`pb-6 text-sm font-medium transition-colors duration-300 ${status === 'current' ? 'text-white' : status === 'completed' ? 'text-cuypay-accent/80' : 'text-green-200/40'}`}>
                   {step.label}
                 </div>
               </div>
@@ -87,7 +87,7 @@ export const OnboardingStepper: React.FC = () => {
 
         <button 
           onClick={handleContinue}
-          className="bg-[#0F172A] hover:bg-[#152e52] px-8 py-3 rounded-lg font-bold shadow-lg shadow-teal-900/10 transition-all transform active:scale-95 flex items-center gap-2 border-b-2 border-cuypay-accent"
+          className="bg-[#0F172A] hover:bg-[#152e52] px-8 py-3 rounded-lg font-bold shadow-lg shadow-green-900/10 transition-all transform active:scale-95 flex items-center gap-2 border-b-2 border-cuypay-accent"
         >
           {currentStep === stepsData.length ? 'Finalizar' : 'Continuar registro'}
           {currentStep !== stepsData.length && <ChevronRight size={18} />}

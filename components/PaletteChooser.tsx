@@ -2,16 +2,16 @@ import React from 'react';
 import { useSystemConfig } from '../context/SystemConfigContext';
 
 const PALETTES = [
-  { id: 1,  name: 'Estonia ★',   theme: '#0F172A', accent: '#2DD4BF', mid: '#0F172A', end: '#0F172A' },
-  { id: 2,  name: 'Midnight',    theme: '#050A14', accent: '#2DD4BF', mid: '#081428', end: '#0A1C3E' },
-  { id: 3,  name: 'Ocean',       theme: '#011627', accent: '#2DD4BF', mid: '#021E35', end: '#042540' },
-  { id: 4,  name: 'Navy Classic',theme: '#0D1B2A', accent: '#2DD4BF', mid: '#0F2038', end: '#122440' },
-  { id: 5,  name: 'Cobalt',      theme: '#020617', accent: '#2DD4BF', mid: '#040C28', end: '#060F35' },
-  { id: 6,  name: 'Sapphire',    theme: '#0A0E27', accent: '#2DD4BF', mid: '#0C1130', end: '#0F1438' },
-  { id: 7,  name: 'Steel',       theme: '#0D1B2A', accent: '#2DD4BF', mid: '#0F2236', end: '#102840' },
-  { id: 8,  name: 'Glacier',     theme: '#0C1A26', accent: '#2DD4BF', mid: '#0E2030', end: '#102638' },
-  { id: 9,  name: 'Cyan Tech',   theme: '#040D1A', accent: '#2DD4BF', mid: '#061222', end: '#081628' },
-  { id: 10, name: 'Dusk',        theme: '#0F1923', accent: '#2DD4BF', mid: '#111E2E', end: '#132238' },
+  { id: 1,  name: 'Estonia ★',   theme: '#0F172A', accent: '#4ADE80', mid: '#0F172A', end: '#0F172A' },
+  { id: 2,  name: 'Midnight',    theme: '#050A14', accent: '#4ADE80', mid: '#081428', end: '#0A1C3E' },
+  { id: 3,  name: 'Ocean',       theme: '#011627', accent: '#4ADE80', mid: '#021E35', end: '#042540' },
+  { id: 4,  name: 'Navy Classic',theme: '#0D1B2A', accent: '#4ADE80', mid: '#0F2038', end: '#122440' },
+  { id: 5,  name: 'Cobalt',      theme: '#020617', accent: '#4ADE80', mid: '#040C28', end: '#060F35' },
+  { id: 6,  name: 'Sapphire',    theme: '#0A0E27', accent: '#4ADE80', mid: '#0C1130', end: '#0F1438' },
+  { id: 7,  name: 'Steel',       theme: '#0D1B2A', accent: '#4ADE80', mid: '#0F2236', end: '#102840' },
+  { id: 8,  name: 'Glacier',     theme: '#0C1A26', accent: '#4ADE80', mid: '#0E2030', end: '#102638' },
+  { id: 9,  name: 'Cyan Tech',   theme: '#040D1A', accent: '#4ADE80', mid: '#061222', end: '#081628' },
+  { id: 10, name: 'Dusk',        theme: '#0F1923', accent: '#4ADE80', mid: '#111E2E', end: '#132238' },
 ];
 
 const MiniPreview: React.FC<{ palette: typeof PALETTES[0]; onApply: () => void }> = ({ palette, onApply }) => (
