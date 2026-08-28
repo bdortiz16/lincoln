@@ -45,19 +45,19 @@ const MenuItem: React.FC<{
       className={`
         w-full flex items-center justify-between px-3 py-3 rounded-xl transition-all duration-200 group relative overflow-hidden
         ${isActive 
-          ? 'bg-[#4ADE80] text-[#0F172A] font-bold shadow-lg shadow-green-900/10' 
+          ? 'bg-[#4ADE80] text-[#0C0E0D] font-bold shadow-lg shadow-green-900/10' 
           : 'text-slate-400 hover:bg-white/5 hover:text-white font-medium'}
       `}
     >
       <div className="flex items-center gap-3 z-10">
-        <Icon size={20} className={isActive ? 'text-[#0F172A]' : 'text-slate-400 group-hover:text-white'} />
+        <Icon size={20} className={isActive ? 'text-[#0C0E0D]' : 'text-slate-400 group-hover:text-white'} />
         <span className="text-sm">{label}</span>
       </div>
       
       {badge && (
         <span className={`
           px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded-full z-10
-          ${isActive ? 'bg-[#0F172A]/10 text-[#0F172A]' : 'bg-red-500 text-white'}
+          ${isActive ? 'bg-[#0C0E0D]/10 text-[#0C0E0D]' : 'bg-red-500 text-white'}
         `}>
           {badge}
         </span>
@@ -73,7 +73,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, activeView, onNavigate
   return (
     <aside 
       className={`
-        fixed top-0 left-0 z-40 h-screen bg-[#0F172A] border-r border-white/5 transition-transform duration-300
+        fixed top-0 left-0 z-40 h-screen bg-[#0C0E0D] border-r border-white/5 transition-transform duration-300
         ${isOpen ? 'translate-x-0' : '-translate-x-full'}
         lg:translate-x-0 lg:w-64 flex flex-col shadow-2xl
       `}

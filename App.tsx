@@ -59,16 +59,16 @@ const ThemeInjector: React.FC = () => {
                 /* BUT inside white cards, restore dark text */
                 .bg-white .text-slate-400, .bg-white .text-slate-500, .bg-white .text-slate-600,
                 .bg-white .text-gray-400, .bg-white .text-gray-500, .bg-white .text-gray-600 { color: #475569 !important; }
-                .bg-white .text-slate-700, .bg-white .text-slate-800, .bg-white .text-slate-900 { color: #0F172A !important; }
-                .bg-white .text-white { color: #0F172A !important; }
+                .bg-white .text-slate-700, .bg-white .text-slate-800, .bg-white .text-slate-900 { color: #0C0E0D !important; }
+                .bg-white .text-white { color: #0C0E0D !important; }
 
                 [class*="bg-white"] p, [class*="bg-white"] span, [class*="bg-white"] div { color: inherit; }
             ` : ''}
 
             /* Override hardcoded Tailwind classes for dynamic theming */
-            .bg-\\[\\#0F172A\\] { background-color: var(--primary-color) !important; }
-            .text-\\[\\#0F172A\\] { color: var(--primary-color) !important; }
-            .border-\\[\\#0F172A\\] { border-color: var(--primary-color) !important; }
+            .bg-\\[\\#0C0E0D\\] { background-color: var(--primary-color) !important; }
+            .text-\\[\\#0C0E0D\\] { color: var(--primary-color) !important; }
+            .border-\\[\\#0C0E0D\\] { border-color: var(--primary-color) !important; }
 
             /* Mapping Accent Color - replace all blues with teal */
             .bg-\\[\\#2563EB\\],
@@ -108,7 +108,7 @@ const ThemeInjector: React.FC = () => {
 
             /* Light mode: elements that were white-on-dark need to flip */
             ${!isDarkMode ? `
-                .text-white { color: #0F172A !important; }
+                .text-white { color: #0C0E0D !important; }
                 .text-white\\/50 { color: #64748B !important; }
                 .text-white\\/70, .text-white\\/90 { color: #334155 !important; }
                 .border-white\\/10, .border-white\\/20 { border-color: #E2E8F0 !important; }
@@ -151,7 +151,7 @@ const SPLASH_CSS = `
 `;
 
 const SplashScreen: React.FC = () => (
-  <div style={{ background: '#0F172A' }} className="fixed inset-0 flex flex-col items-center justify-center gap-7">
+  <div style={{ background: '#0C0E0D' }} className="fixed inset-0 flex flex-col items-center justify-center gap-7">
     <style>{SPLASH_CSS}</style>
     <svg className="splash-logo" width="96" height="96" viewBox="0 0 100 100" fill="none" style={{ filter: 'drop-shadow(0 8px 32px rgba(74,222,128,0.25))' }}>
       <rect x="2" y="2" width="96" height="96" rx="24" fill="#0a0a0a"/>
@@ -459,7 +459,7 @@ const App: React.FC = () => {
 
         {/* LOGOUT OVERLAY */}
         {loggingOut && (
-          <div className="fixed inset-0 z-[9999] bg-[#0F172A]/90 backdrop-blur-sm flex flex-col items-center justify-center gap-4">
+          <div className="fixed inset-0 z-[9999] bg-[#0C0E0D]/90 backdrop-blur-sm flex flex-col items-center justify-center gap-4">
             <div className="w-10 h-10 border-4 border-white/20 border-t-white rounded-full animate-spin"/>
             <p className="text-white font-semibold text-lg tracking-tight">Cerrando sesión...</p>
           </div>

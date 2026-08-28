@@ -153,7 +153,7 @@ const FilterChip: React.FC<{ active: boolean; onClick: () => void; children: Rea
     <button
         type="button"
         onClick={onClick}
-        className={`px-3 py-1.5 rounded-full text-xs font-bold border transition-colors ${active ? 'bg-[#4ADE80] text-[#0F172A] border-[#4ADE80]' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+        className={`px-3 py-1.5 rounded-full text-xs font-bold border transition-colors ${active ? 'bg-[#4ADE80] text-[#0C0E0D] border-[#4ADE80]' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
     >
         {children}
     </button>
@@ -514,18 +514,18 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
     return (
         <div className="space-y-6 animate-in fade-in duration-500 pt-6">
             {onBack && (
-                <button onClick={onBack} style={{ color: '#1E293B' }} className="flex items-center gap-2 font-bold text-sm hover:underline">
+                <button onClick={onBack} style={{ color: '#121413' }} className="flex items-center gap-2 font-bold text-sm hover:underline">
                     ← Volver al inicio
                 </button>
             )}
             <div className="flex items-center justify-between flex-wrap gap-3">
                 <div>
-                    <h1 className="text-2xl font-extrabold text-[#0F172A] flex items-center gap-2">
+                    <h1 className="text-2xl font-extrabold text-[#0C0E0D] flex items-center gap-2">
                         <BookUser size={22} className="text-[#4ADE80]" /> Contactos
                     </h1>
                     <p className="text-sm" style={{ color: '#334155' }}>
                         Inscribe las cuentas bancarias destino. Las transferencias en COP van
-                        <b style={{ color: '#0F172A' }}> solo a contactos inscritos</b>.
+                        <b style={{ color: '#0C0E0D' }}> solo a contactos inscritos</b>.
                         <span className="ml-2 text-[10px] font-mono" style={{ color: '#94A3B8' }}>v{typeof __BUILD_TS__ !== 'undefined' ? __BUILD_TS__ : '¿?'}</span>
                     </p>
                 </div>
@@ -533,7 +533,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                     <button
                         onClick={() => syncStatuses(false)}
                         disabled={syncing}
-                        style={{ color: '#0F172A', borderColor: '#94A3B8' }}
+                        style={{ color: '#0C0E0D', borderColor: '#94A3B8' }}
                         className="py-2.5 px-4 rounded-xl border hover:bg-slate-50 text-sm font-bold disabled:opacity-60 transition-colors"
                         title="Consulta el estado de las cuentas de Colombia"
                     >
@@ -541,7 +541,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                     </button>
                     <button
                         onClick={() => { setFormOpen(true); setFormStep('country'); setForm({ ...emptyForm }); setNotice(null); }}
-                        style={{ color: '#0F172A' }}
+                        style={{ color: '#0C0E0D' }}
                         className="py-2.5 px-5 rounded-xl bg-[#4ADE80] hover:bg-[#6EE7A0] text-sm font-bold flex items-center gap-2 transition-colors"
                     >
                         <Plus size={16} strokeWidth={3} /> Inscribir contacto
@@ -583,9 +583,9 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                                 <button
                                     type="button"
                                     onClick={() => { setForm(fm => ({ ...fm, accountKind: 'bank' })); setFormStep('data'); }}
-                                    className="flex flex-col items-center gap-2 p-5 rounded-2xl border-2 border-slate-200 hover:border-[#0F172A] hover:bg-slate-50 transition-all"
+                                    className="flex flex-col items-center gap-2 p-5 rounded-2xl border-2 border-slate-200 hover:border-[#0C0E0D] hover:bg-slate-50 transition-all"
                                 >
-                                    <div className="w-12 h-12 bg-slate-100 rounded-xl flex items-center justify-center"><Landmark size={24} className="text-[#0F172A]" /></div>
+                                    <div className="w-12 h-12 bg-slate-100 rounded-xl flex items-center justify-center"><Landmark size={24} className="text-[#0C0E0D]" /></div>
                                     <span className="text-sm font-bold text-slate-800">Cuenta bancaria</span>
                                     <span className="text-[10px] text-slate-500 leading-tight text-center">Transferencia bancaria en EE. UU.</span>
                                 </button>
@@ -640,7 +640,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                             onClick={saveContact}
                             disabled={saving}
                             style={{ color: '#FFFFFF' }}
-                            className="w-full py-3 rounded-xl bg-[#0F172A] hover:bg-[#152e52] font-bold text-sm disabled:opacity-60 transition-colors"
+                            className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#152e52] font-bold text-sm disabled:opacity-60 transition-colors"
                         >
                             {saving ? 'Guardando…' : 'Inscribir wallet'}
                         </button>
@@ -661,7 +661,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                                             // Demás países: directo a los datos bancarios.
                                             setFormStep(c.name === 'Estados Unidos' ? 'type' : 'data');
                                         }}
-                                        className="flex flex-col items-center gap-2 p-4 rounded-2xl border-2 border-slate-200 hover:border-[#0F172A] hover:bg-slate-50 transition-all"
+                                        className="flex flex-col items-center gap-2 p-4 rounded-2xl border-2 border-slate-200 hover:border-[#0C0E0D] hover:bg-slate-50 transition-all"
                                     >
                                         <FlagImg code={c.code} className="w-10 h-7 object-cover rounded shadow-sm" />
                                         <span className="text-xs font-bold text-slate-700 leading-tight text-center">{c.name}</span>
@@ -686,7 +686,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                                 <button
                                     key={k}
                                     onClick={() => setForm(fm => ({ ...fm, kind: k, docType: k === 'empresa' ? 'NIT' : 'CC' }))}
-                                    className={`py-2 rounded-xl text-sm font-bold border transition-colors ${form.kind === k ? 'bg-[#0F172A] border-[#0F172A]' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                                    className={`py-2 rounded-xl text-sm font-bold border transition-colors ${form.kind === k ? 'bg-[#0C0E0D] border-[#0C0E0D]' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
                                     style={form.kind === k ? { color: '#FFFFFF' } : undefined}
                                 >
                                     {k === 'persona' ? 'Persona' : 'Empresa'}
@@ -746,7 +746,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                         onClick={saveContact}
                         disabled={saving}
                         style={{ color: '#FFFFFF' }}
-                        className="w-full py-3 rounded-xl bg-[#0F172A] hover:bg-[#152e52] font-bold text-sm disabled:opacity-60 transition-colors"
+                        className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#152e52] font-bold text-sm disabled:opacity-60 transition-colors"
                     >
                         {saving
                             ? (form.country === 'Colombia' ? 'Inscribiendo…' : 'Guardando…')
@@ -773,12 +773,12 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                             type="button"
                             onClick={() => setShowFilters(v => !v)}
                             title="Filtros"
-                            className={`relative h-11 px-3.5 rounded-xl border text-sm font-bold flex items-center gap-2 transition-colors ${showFilters || activeFilters ? 'bg-[#0F172A] text-white border-[#0F172A]' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+                            className={`relative h-11 px-3.5 rounded-xl border text-sm font-bold flex items-center gap-2 transition-colors ${showFilters || activeFilters ? 'bg-[#0C0E0D] text-white border-[#0C0E0D]' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
                         >
                             <SlidersHorizontal size={16} />
                             <span className="hidden sm:inline">Filtros</span>
                             {activeFilters > 0 && (
-                                <span className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-[#4ADE80] text-[#0F172A] text-[10px] font-black flex items-center justify-center">{activeFilters}</span>
+                                <span className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-[#4ADE80] text-[#0C0E0D] text-[10px] font-black flex items-center justify-center">{activeFilters}</span>
                             )}
                         </button>
                     </div>
@@ -836,7 +836,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                 {filteredContacts.map(c => (
                     <div key={c.id} className="p-4 border-b border-slate-50 flex items-center justify-between gap-3 flex-wrap hover:bg-slate-50/60">
                         <button onClick={() => setDetail(c)} className="flex items-center gap-3 min-w-0 text-left flex-1 cursor-pointer" title="Ver datos de la inscripción">
-                            <div className="w-10 h-10 rounded-xl bg-[#0F172A] flex items-center justify-center shrink-0">
+                            <div className="w-10 h-10 rounded-xl bg-[#0C0E0D] flex items-center justify-center shrink-0">
                                 {c.accountKind === 'wallet'
                                     ? <Wallet size={16} className="text-[#4ADE80]" />
                                     : <Landmark size={16} className="text-[#4ADE80]" />}

@@ -171,7 +171,7 @@ export const FinityRateChart: React.FC<{ from?: string; to?: string }> = ({ from
                         <button
                             key={r.key}
                             onClick={() => { setRange(r.key); setHoverIdx(null); }}
-                            className={`px-2.5 py-1 text-[11px] font-bold rounded-lg transition-colors ${range === r.key ? 'bg-[#4ADE80] text-[#0F172A]' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}
+                            className={`px-2.5 py-1 text-[11px] font-bold rounded-lg transition-colors ${range === r.key ? 'bg-[#4ADE80] text-[#0C0E0D]' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}
                         >
                             {r.label}
                         </button>
@@ -229,7 +229,7 @@ export const FinityRateChart: React.FC<{ from?: string; to?: string }> = ({ from
                                 const y = PADT + (i * innerH) / 3;
                                 return (
                                     <g key={i}>
-                                        <line x1={PADL} y1={y} x2={W - PADR} y2={y} stroke="#1e293b" strokeDasharray="2,3" />
+                                        <line x1={PADL} y1={y} x2={W - PADR} y2={y} stroke="#121413" strokeDasharray="2,3" />
                                         <text x={PADL - 6} y={y + 3} textAnchor="end" fontSize="9" fill="#64748b" fontFamily="monospace">{fmtRate(v)}</text>
                                     </g>
                                 );

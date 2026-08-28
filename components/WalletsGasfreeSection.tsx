@@ -108,7 +108,7 @@ export const WalletsGasfreeSection: React.FC<Props> = ({ userId, callGasfree, sh
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           {/* Icono GasFree */}
-          <div className="w-9 h-9 rounded-xl bg-[#0F172A] flex items-center justify-center shrink-0">
+          <div className="w-9 h-9 rounded-xl bg-[#0C0E0D] flex items-center justify-center shrink-0">
             <span className="text-[#4ADE80] font-black text-base leading-none">₮</span>
           </div>
           <div className="min-w-0">
@@ -120,14 +120,14 @@ export const WalletsGasfreeSection: React.FC<Props> = ({ userId, callGasfree, sh
           {shortAddr(w.address)} {copied === w.address ? <Check size={11} className="text-[#4ADE80]" /> : <Copy size={11} />}
         </button>
       </div>
-      <p className="text-xl font-black mt-3 text-[#0F172A]">
+      <p className="text-xl font-black mt-3 text-[#0C0E0D]">
         {w.balance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span className="text-xs font-bold text-[#4ADE80]">USDT</span>
       </p>
       <div className="flex items-center gap-2 mt-3 flex-wrap">
-        <button onClick={() => setDepositWallet(w)} className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold bg-[#4ADE80] text-[#0F172A] hover:bg-[#6EE7A0]">
+        <button onClick={() => setDepositWallet(w)} className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold bg-[#4ADE80] text-[#0C0E0D] hover:bg-[#6EE7A0]">
           <Plus size={13} /> Cargar
         </button>
-        <button onClick={() => { setSendFrom(w); setSendDest('principal'); }} className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold bg-[#0F172A] text-white hover:bg-[#152e52]">
+        <button onClick={() => { setSendFrom(w); setSendDest('principal'); }} className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold bg-[#0C0E0D] text-white hover:bg-[#152e52]">
           <Send size={12} /> Enviar
         </button>
         <button onClick={() => { setRenaming(w); setRenameVal(w.name); }} title="Renombrar" className="p-1.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50"><Pencil size={13} /></button>
@@ -141,9 +141,9 @@ export const WalletsGasfreeSection: React.FC<Props> = ({ userId, callGasfree, sh
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <button onClick={onBack} className="flex items-center gap-2 text-slate-700 hover:text-slate-900 font-bold text-sm"><ArrowLeft size={18} /> Volver</button>
-          <h2 className="text-xl font-bold text-[#0F172A] flex items-center gap-2"><Wallet size={20} className="text-[#4ADE80]" /> Wallets GasFree</h2>
+          <h2 className="text-xl font-bold text-[#0C0E0D] flex items-center gap-2"><Wallet size={20} className="text-[#4ADE80]" /> Wallets GasFree</h2>
         </div>
-        <button onClick={load} className="p-2 rounded-lg border border-slate-200 hover:bg-slate-50" title="Refrescar"><RefreshCw size={14} className={loading ? 'animate-spin text-[#0F172A]' : 'text-[#0F172A]'} /></button>
+        <button onClick={load} className="p-2 rounded-lg border border-slate-200 hover:bg-slate-50" title="Refrescar"><RefreshCw size={14} className={loading ? 'animate-spin text-[#0C0E0D]' : 'text-[#0C0E0D]'} /></button>
       </div>
       <p className="text-xs text-slate-700 font-semibold -mt-2">Crea y organiza varias wallets USDT (TRON) en un solo lugar — ideal para estudios y negocios. Para convertir en OTC, mueve los fondos a tu <b>wallet principal</b>.</p>
 
@@ -183,7 +183,7 @@ export const WalletsGasfreeSection: React.FC<Props> = ({ userId, callGasfree, sh
                         <p className="font-bold text-sm text-slate-800 truncate">{w.name}</p>
                       </div>
                       <p className="text-[11px] font-mono text-slate-700 mt-1">{shortAddr(w.address)}</p>
-                      <p className="text-lg font-black mt-2 text-[#0F172A]">{w.balance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span className="text-xs text-[#4ADE80]">USDT</span></p>
+                      <p className="text-lg font-black mt-2 text-[#0C0E0D]">{w.balance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span className="text-xs text-[#4ADE80]">USDT</span></p>
                       <button onClick={() => updateWallet(w.id, { archived: false }, 'Wallet restaurada')} disabled={busy} className="mt-3 flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold border border-slate-300 text-slate-700 hover:bg-white">
                         <ArchiveRestore size={12} /> Desarchivar
                       </button>
@@ -202,9 +202,9 @@ export const WalletsGasfreeSection: React.FC<Props> = ({ userId, callGasfree, sh
       {createOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4" onClick={() => setCreateOpen(false)}>
           <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl p-6 space-y-4" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between"><h3 className="font-extrabold text-[#0F172A] text-lg">Crear wallet</h3><button onClick={() => setCreateOpen(false)}><X size={20} className="text-slate-400" /></button></div>
+            <div className="flex items-center justify-between"><h3 className="font-extrabold text-[#0C0E0D] text-lg">Crear wallet</h3><button onClick={() => setCreateOpen(false)}><X size={20} className="text-slate-400" /></button></div>
             <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Nombre (ej. Modelo Ana, Caja 2…)" maxLength={40} className="w-full px-3 py-2.5 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#4ADE80]" />
-            <button onClick={createWallet} disabled={busy || !newName.trim()} className="w-full h-11 bg-[#4ADE80] hover:bg-[#6EE7A0] rounded-xl text-sm font-extrabold text-[#0F172A] disabled:opacity-60">{busy ? 'Creando…' : 'Crear wallet'}</button>
+            <button onClick={createWallet} disabled={busy || !newName.trim()} className="w-full h-11 bg-[#4ADE80] hover:bg-[#6EE7A0] rounded-xl text-sm font-extrabold text-[#0C0E0D] disabled:opacity-60">{busy ? 'Creando…' : 'Crear wallet'}</button>
           </div>
         </div>
       )}
@@ -213,9 +213,9 @@ export const WalletsGasfreeSection: React.FC<Props> = ({ userId, callGasfree, sh
       {renaming && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4" onClick={() => setRenaming(null)}>
           <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl p-6 space-y-4" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between"><h3 className="font-extrabold text-[#0F172A] text-lg">Renombrar wallet</h3><button onClick={() => setRenaming(null)}><X size={20} className="text-slate-400" /></button></div>
+            <div className="flex items-center justify-between"><h3 className="font-extrabold text-[#0C0E0D] text-lg">Renombrar wallet</h3><button onClick={() => setRenaming(null)}><X size={20} className="text-slate-400" /></button></div>
             <input value={renameVal} onChange={(e) => setRenameVal(e.target.value)} maxLength={40} className="w-full px-3 py-2.5 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#4ADE80]" />
-            <button onClick={doRename} disabled={busy || !renameVal.trim()} className="w-full h-11 bg-[#0F172A] hover:bg-[#152e52] rounded-xl text-sm font-extrabold text-white disabled:opacity-60">{busy ? 'Guardando…' : 'Guardar'}</button>
+            <button onClick={doRename} disabled={busy || !renameVal.trim()} className="w-full h-11 bg-[#0C0E0D] hover:bg-[#152e52] rounded-xl text-sm font-extrabold text-white disabled:opacity-60">{busy ? 'Guardando…' : 'Guardar'}</button>
           </div>
         </div>
       )}
@@ -225,7 +225,7 @@ export const WalletsGasfreeSection: React.FC<Props> = ({ userId, callGasfree, sh
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4" onClick={() => setDepositWallet(null)}>
           <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl p-6 space-y-4" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between">
-              <h3 className="font-extrabold text-[#0F172A] text-lg">Cargar · {depositWallet.name}</h3>
+              <h3 className="font-extrabold text-[#0C0E0D] text-lg">Cargar · {depositWallet.name}</h3>
               <button onClick={() => setDepositWallet(null)}><X size={20} className="text-slate-400" /></button>
             </div>
             <p className="text-sm text-slate-600">Envía <b>USDT por la red TRON (TRC-20)</b> a esta dirección. El saldo se refleja al confirmarse en la red.</p>
@@ -234,7 +234,7 @@ export const WalletsGasfreeSection: React.FC<Props> = ({ userId, callGasfree, sh
                 <img src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(depositWallet.address)}&color=0B1B32&margin=8`} alt="QR" className="w-44 h-44 rounded-lg bg-white p-1" />
               )}
               <p className="text-[10px] uppercase tracking-wider text-slate-400 font-bold">Dirección USDT (TRC-20)</p>
-              <p className="font-mono text-xs break-all text-[#0F172A] text-center">{depositWallet.address}</p>
+              <p className="font-mono text-xs break-all text-[#0C0E0D] text-center">{depositWallet.address}</p>
               <button onClick={() => { copy(depositWallet.address); showToast('Dirección copiada'); }} className="text-[#16A34A] font-bold text-sm flex items-center gap-1">
                 {copied === depositWallet.address ? <Check size={14} /> : <Copy size={14} />} Copiar dirección
               </button>
@@ -248,7 +248,7 @@ export const WalletsGasfreeSection: React.FC<Props> = ({ userId, callGasfree, sh
       {sendFrom && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4" onClick={() => setSendFrom(null)}>
           <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl p-6 space-y-4 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between"><h3 className="font-extrabold text-[#0F172A] text-lg">Enviar USDT</h3><button onClick={() => setSendFrom(null)}><X size={20} className="text-slate-400" /></button></div>
+            <div className="flex items-center justify-between"><h3 className="font-extrabold text-[#0C0E0D] text-lg">Enviar USDT</h3><button onClick={() => setSendFrom(null)}><X size={20} className="text-slate-400" /></button></div>
             <div className="rounded-xl bg-slate-50 border border-slate-100 p-3">
               <p className="text-[10px] uppercase font-bold text-slate-400">Desde</p>
               <p className="text-sm font-bold text-slate-800">{sendFrom.name}</p>
@@ -278,7 +278,7 @@ export const WalletsGasfreeSection: React.FC<Props> = ({ userId, callGasfree, sh
               <input value={sendAmount} onChange={(e) => setSendAmount(e.target.value.replace(/[^0-9.]/g, ''))} inputMode="decimal" placeholder="0.00" className="w-full px-3 py-2.5 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#4ADE80]" />
               <p className="text-[10px] text-slate-400 mt-1">La comisión de red GasFree se cobra aparte (en USDT).</p>
             </div>
-            <button onClick={runSend} disabled={sending} className="w-full h-11 bg-[#4ADE80] hover:bg-[#6EE7A0] rounded-xl text-sm font-extrabold text-[#0F172A] disabled:opacity-60 flex items-center justify-center gap-2">
+            <button onClick={runSend} disabled={sending} className="w-full h-11 bg-[#4ADE80] hover:bg-[#6EE7A0] rounded-xl text-sm font-extrabold text-[#0C0E0D] disabled:opacity-60 flex items-center justify-center gap-2">
               {sending ? 'Enviando…' : <><Send size={15} /> Enviar</>}
             </button>
           </div>

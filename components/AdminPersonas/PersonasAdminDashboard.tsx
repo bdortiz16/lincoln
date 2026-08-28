@@ -282,7 +282,7 @@ const UsersSection: React.FC<{ profile: AdminProfile }> = ({ profile }) => {
     });
 
     const stats: Array<{ key: 'all' | Bucket; label: string; color: string; bg: string }> = [
-        { key: 'all',      label: 'Total',       color: '#0F172A', bg: '#F8FAFC' },
+        { key: 'all',      label: 'Total',       color: '#0C0E0D', bg: '#F8FAFC' },
         { key: 'verified', label: 'Verificados', color: '#065F46', bg: '#D1FAE5' },
         { key: 'pending',  label: 'Pendientes',  color: '#92400E', bg: '#FEF3C7' },
         { key: 'rejected', label: 'Cancelados',  color: '#991B1B', bg: '#FEE2E2' },

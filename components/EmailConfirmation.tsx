@@ -32,14 +32,14 @@ export const EmailConfirmation: React.FC<EmailConfirmationProps> = ({ onValidate
 
       <div className="mb-8">
         <div className="relative">
-          <div className="w-24 h-24 bg-slate-100 rounded-full flex items-center justify-center text-[#0F172A] relative z-10">
+          <div className="w-24 h-24 bg-slate-100 rounded-full flex items-center justify-center text-[#0C0E0D] relative z-10">
             <MailOpen size={48} strokeWidth={1.5} />
           </div>
           <div className="absolute top-0 left-0 w-full h-full bg-slate-50 rounded-full scale-125 opacity-50"></div>
         </div>
       </div>
 
-      <h1 className="text-2xl font-bold text-[#0F172A] text-center mb-4">
+      <h1 className="text-2xl font-bold text-[#0C0E0D] text-center mb-4">
         Confirma tu email
       </h1>
 
@@ -47,7 +47,7 @@ export const EmailConfirmation: React.FC<EmailConfirmationProps> = ({ onValidate
         <p className="text-slate-500">
           Te enviamos un correo para confirmar tu email y completar el registro de cuenta LINCOIN
         </p>
-        <p className="font-bold text-[#0F172A] text-lg">{email}</p>
+        <p className="font-bold text-[#0C0E0D] text-lg">{email}</p>
         <p className="text-slate-400 text-sm">
           Haz clic en el enlace del correo — esta página avanzará automáticamente.
         </p>
@@ -55,13 +55,13 @@ export const EmailConfirmation: React.FC<EmailConfirmationProps> = ({ onValidate
 
       <div className="text-sm text-slate-500 mb-8">
         ¿No has recibido el correo?{' '}
-        <button className="text-[#0F172A] font-bold hover:underline">Reenviar correo</button>
+        <button className="text-[#0C0E0D] font-bold hover:underline">Reenviar correo</button>
       </div>
 
       <button
         onClick={handleManualCheck}
         disabled={checking}
-        className="w-full max-w-xs h-12 bg-[#0F172A] hover:bg-[#152e52] disabled:opacity-60 font-bold rounded-lg transition-colors shadow-lg shadow-green-900/20 mb-6 flex items-center justify-center gap-2"
+        className="w-full max-w-xs h-12 bg-[#0C0E0D] hover:bg-[#152e52] disabled:opacity-60 font-bold rounded-lg transition-colors shadow-lg shadow-green-900/20 mb-6 flex items-center justify-center gap-2"
       >
         {checking ? (
           <><Loader2 size={18} className="animate-spin" /> Verificando...</>
@@ -72,7 +72,7 @@ export const EmailConfirmation: React.FC<EmailConfirmationProps> = ({ onValidate
 
       <button
         onClick={onBack}
-        className="flex items-center gap-2 text-[#0F172A] font-bold hover:underline"
+        className="flex items-center gap-2 text-[#0C0E0D] font-bold hover:underline"
       >
         <ArrowLeft size={18} />
         Volver

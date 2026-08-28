@@ -52,9 +52,9 @@ export const PersonalOnboardingWizard: React.FC<PersonalOnboardingProps> = ({ on
                             {/* Intro */}
                             <div className="text-center mb-8">
                                 <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4">
-                                    <ShieldCheck size={32} className="text-[#0F172A]" />
+                                    <ShieldCheck size={32} className="text-[#0C0E0D]" />
                                 </div>
-                                <h2 className="text-2xl font-bold text-[#0F172A] mb-2">Verificación de Identidad</h2>
+                                <h2 className="text-2xl font-bold text-[#0C0E0D] mb-2">Verificación de Identidad</h2>
                                 <p className="text-slate-500 text-sm">Para activar tu cuenta necesitamos verificar tu identidad. El proceso toma menos de 2 minutos.</p>
                             </div>
 
@@ -84,7 +84,7 @@ export const PersonalOnboardingWizard: React.FC<PersonalOnboardingProps> = ({ on
                             <button
                                 onClick={startDidit}
                                 disabled={loading}
-                                className="w-full py-4 bg-[#0F172A] font-bold rounded-xl hover:bg-[#152e52] disabled:opacity-50 transition-colors flex items-center justify-center gap-3 text-base"
+                                className="w-full py-4 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] disabled:opacity-50 transition-colors flex items-center justify-center gap-3 text-base"
                             >
                                 {loading
                                     ? <><RefreshCw size={20} className="animate-spin"/> Iniciando verificación...</>
@@ -103,7 +103,7 @@ export const PersonalOnboardingWizard: React.FC<PersonalOnboardingProps> = ({ on
                                 <div className="w-16 h-16 bg-green-50 rounded-full flex items-center justify-center mx-auto mb-4">
                                     <CheckCircle size={32} className="text-green-600" />
                                 </div>
-                                <h2 className="text-2xl font-bold text-[#0F172A] mb-2">¡Verificación iniciada!</h2>
+                                <h2 className="text-2xl font-bold text-[#0C0E0D] mb-2">¡Verificación iniciada!</h2>
                                 <p className="text-slate-500 text-sm">Se abrió Lincoin en una nueva pestaña. Completa el proceso allí — foto de documento y selfie.</p>
                             </div>
 
@@ -115,7 +115,7 @@ export const PersonalOnboardingWizard: React.FC<PersonalOnboardingProps> = ({ on
                             <div className="space-y-3">
                                 <button
                                     onClick={onFinish}
-                                    className="w-full py-3 bg-[#0F172A] font-bold rounded-xl hover:bg-[#152e52] transition-colors"
+                                    className="w-full py-3 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] transition-colors"
                                 >
                                     Entrar a mi cuenta
                                 </button>

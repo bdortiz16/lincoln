@@ -510,7 +510,7 @@ const SegmentBadge: React.FC<{ segment: Segment }> = ({ segment }) => {
 function segmentDisplay(seg: Segment): { icon: React.ReactNode; label: string; bg: string; text: string } {
     switch (seg.target) {
         case 'all':
-            return { icon: <UsersIcon size={10} />, label: 'Todos', bg: '#F1F5F9', text: '#0F172A' };
+            return { icon: <UsersIcon size={10} />, label: 'Todos', bg: '#F1F5F9', text: '#0C0E0D' };
         case 'country': {
             const c = COUNTRY_OPTIONS.find(x => x.code === seg.value);
             return { icon: <Globe size={10} />, label: c ? `${c.flag} ${c.name}` : (seg.value ?? 'País'), bg: '#DBEAFE', text: '#1E40AF' };
@@ -981,7 +981,7 @@ const IosPhoneMockup: React.FC<{ children: React.ReactNode }> = ({ children }) =
     <div className="mx-auto" style={{ maxWidth: 320 }}>
         <div
             className="rounded-[2rem] p-3 shadow-xl"
-            style={{ backgroundImage: 'linear-gradient(160deg, #1e293b 0%, #0f172a 60%, #020617 100%)' }}
+            style={{ backgroundImage: 'linear-gradient(160deg, #121413 0%, #0C0E0D 60%, #020617 100%)' }}
         >
             <div className="flex items-center justify-center mb-2">
                 <div className="w-20 h-1 bg-slate-700 rounded-full" />

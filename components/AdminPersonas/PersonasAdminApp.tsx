@@ -64,7 +64,7 @@ export const PersonasAdminApp: React.FC = () => {
 
     if (state === 'verifying') {
         return (
-            <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: '#0B1120' }}>
+            <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: '#070808' }}>
                 <div className="flex flex-col items-center gap-3">
                     <div className="w-8 h-8 border-2 border-white/20 border-t-[#4ADE80] rounded-full animate-spin" />
                     <p className="text-white/40 text-xs tracking-widest uppercase">Verificando admin</p>

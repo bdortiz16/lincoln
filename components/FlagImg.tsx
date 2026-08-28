@@ -78,7 +78,7 @@ export const FlagSelect: React.FC<FlagSelectProps> = ({ items, value, onChange, 
               key={item.code}
               type="button"
               onClick={() => { onChange(item.code); setOpen(false); }}
-              className={`w-full flex items-center gap-2 px-3 py-2 hover:bg-slate-50 transition-colors text-left ${value === item.code ? 'bg-slate-50 text-[#0F172A] font-bold' : 'text-slate-800'}`}
+              className={`w-full flex items-center gap-2 px-3 py-2 hover:bg-slate-50 transition-colors text-left ${value === item.code ? 'bg-slate-50 text-[#0C0E0D] font-bold' : 'text-slate-800'}`}
             >
               <FlagImg code={item.code} size="sm" />
               <span className="text-sm font-bold">{item.code}</span>

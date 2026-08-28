@@ -35,7 +35,7 @@ const MiniBarChart: React.FC<{ data: { label: string; value: number }[] }> = ({ 
         <div className="flex items-end gap-1.5 h-28">
             {data.map((d, i) => (
                 <div key={i} className="flex-1 min-w-0 flex flex-col items-center gap-1.5 group relative h-full justify-end">
-                    <div className="absolute -top-6 left-1/2 -translate-x-1/2 bg-[#0F172A] text-white text-[10px] px-2 py-1 rounded-md opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
+                    <div className="absolute -top-6 left-1/2 -translate-x-1/2 bg-[#0C0E0D] text-white text-[10px] px-2 py-1 rounded-md opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
                         {fmtCop(d.value)} COP
                     </div>
                     <div

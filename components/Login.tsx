@@ -128,9 +128,9 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
         <div className="w-full max-w-md bg-white rounded-2xl shadow-xl p-8">
           <div className="text-center mb-8">
             <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4 border border-slate-200">
-              <ShieldCheck className="text-[#0F172A]" size={28} />
+              <ShieldCheck className="text-[#0C0E0D]" size={28} />
             </div>
-            <h2 className="text-2xl font-bold text-[#0F172A]">Verificación en 2 pasos</h2>
+            <h2 className="text-2xl font-bold text-[#0C0E0D]">Verificación en 2 pasos</h2>
             <p className="text-slate-900 text-sm mt-2 leading-relaxed">
               Abre tu app autenticadora (Google Authenticator, Authy, etc.) e ingresa el código de 6 dígitos.
             </p>
@@ -148,7 +148,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
             maxLength={6}
             value={mfaCode}
             onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, ''))}
-            className="w-full h-16 text-center text-3xl font-bold tracking-[0.5em] border-2 border-slate-200 rounded-xl focus:border-[#0F172A] outline-none mb-6 bg-slate-50"
+            className="w-full h-16 text-center text-3xl font-bold tracking-[0.5em] border-2 border-slate-200 rounded-xl focus:border-[#0C0E0D] outline-none mb-6 bg-slate-50"
             placeholder="000000"
             autoFocus
             onKeyDown={(e) => e.key === 'Enter' && handleVerify2FA()}
@@ -157,7 +157,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
           <button
             onClick={handleVerify2FA}
             disabled={mfaCode.length !== 6 || mfaLoading}
-            className="w-full h-12 bg-[#0F172A] hover:bg-[#152e52] font-bold rounded-lg disabled:opacity-50 transition-colors mb-4 shadow-lg shadow-green-900/20"
+            className="w-full h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg disabled:opacity-50 transition-colors mb-4 shadow-lg shadow-green-900/20"
           >
             {mfaLoading ? 'Verificando...' : 'Verificar'}
           </button>
@@ -179,7 +179,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
 
       <button
         onClick={onBack}
-        className="absolute top-6 left-6 flex items-center gap-2 text-slate-800 hover:text-[#0F172A] transition-colors font-medium text-sm"
+        className="absolute top-6 left-6 flex items-center gap-2 text-slate-800 hover:text-[#0C0E0D] transition-colors font-medium text-sm"
       >
         <ArrowLeft size={18} />
         Volver al inicio
@@ -189,7 +189,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
         <Logo collapsed />
       </div>
 
-      <h1 className="text-2xl font-bold text-[#0F172A] text-center mb-10 anim-fade-up">
+      <h1 className="text-2xl font-bold text-[#0C0E0D] text-center mb-10 anim-fade-up">
         ¡Te damos la bienvenida a LINCOIN{userRole === 'business' ? <><br />empresas!</> : '!'}
       </h1>
 
@@ -215,11 +215,11 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            className="peer w-full h-12 px-4 border border-slate-500 rounded-lg text-slate-900 focus:outline-none focus:border-[#0F172A] focus:ring-1 focus:ring-[#0F172A] bg-[#EBF2FA]/50 pt-3"
+            className="peer w-full h-12 px-4 border border-slate-500 rounded-lg text-slate-900 focus:outline-none focus:border-[#0C0E0D] focus:ring-1 focus:ring-[#0C0E0D] bg-[#EBF2FA]/50 pt-3"
             placeholder=" "
             onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
           />
-          <label className="absolute left-4 top-0.5 text-[10px] text-slate-900 font-semibold transition-all peer-placeholder-shown:top-3.5 peer-placeholder-shown:text-sm peer-placeholder-shown:text-slate-800 peer-focus:top-0.5 peer-focus:text-[10px] peer-focus:text-[#0F172A]">
+          <label className="absolute left-4 top-0.5 text-[10px] text-slate-900 font-semibold transition-all peer-placeholder-shown:top-3.5 peer-placeholder-shown:text-sm peer-placeholder-shown:text-slate-800 peer-focus:top-0.5 peer-focus:text-[10px] peer-focus:text-[#0C0E0D]">
             E-mail
           </label>
         </div>
@@ -229,11 +229,11 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
             type={showPassword ? "text" : "password"}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            className="peer w-full h-12 px-4 border border-slate-500 rounded-lg text-slate-900 focus:outline-none focus:border-[#0F172A] focus:ring-1 focus:ring-[#0F172A] bg-[#EBF2FA]/50 pt-3 pr-10"
+            className="peer w-full h-12 px-4 border border-slate-500 rounded-lg text-slate-900 focus:outline-none focus:border-[#0C0E0D] focus:ring-1 focus:ring-[#0C0E0D] bg-[#EBF2FA]/50 pt-3 pr-10"
             placeholder=" "
             onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
           />
-          <label className="absolute left-4 top-0.5 text-[10px] text-slate-900 font-semibold transition-all peer-placeholder-shown:top-3.5 peer-placeholder-shown:text-sm peer-placeholder-shown:text-slate-800 peer-focus:top-0.5 peer-focus:text-[10px] peer-focus:text-[#0F172A]">
+          <label className="absolute left-4 top-0.5 text-[10px] text-slate-900 font-semibold transition-all peer-placeholder-shown:top-3.5 peer-placeholder-shown:text-sm peer-placeholder-shown:text-slate-800 peer-focus:top-0.5 peer-focus:text-[10px] peer-focus:text-[#0C0E0D]">
             Contraseña
           </label>
           <button
@@ -248,7 +248,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
         <button
           onClick={handleLogin}
           disabled={isLoading}
-          className="btn-shine w-full h-12 bg-[#0F172A] hover:bg-[#152e52] font-bold rounded-lg transition-all duration-200 shadow-lg shadow-green-900/20 disabled:opacity-70 hover:shadow-xl hover:shadow-green-500/30 hover:-translate-y-0.5 active:scale-[0.98] active:translate-y-0"
+          className="btn-shine w-full h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg transition-all duration-200 shadow-lg shadow-green-900/20 disabled:opacity-70 hover:shadow-xl hover:shadow-green-500/30 hover:-translate-y-0.5 active:scale-[0.98] active:translate-y-0"
         >
           {isLoading ? 'Iniciando sesión...' : 'Iniciar sesión'}
         </button>
@@ -275,9 +275,9 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
 
         <div className="flex justify-between items-center text-sm pt-2">
           <div className="text-slate-900">
-            ¿Eres nuevo? <button onClick={onRegisterClick} className="text-[#0F172A] font-bold hover:underline">Regístrate</button>
+            ¿Eres nuevo? <button onClick={onRegisterClick} className="text-[#0C0E0D] font-bold hover:underline">Regístrate</button>
           </div>
-          <button onClick={() => setIsForgotModalOpen(true)} className="text-slate-800 hover:text-[#0F172A] transition-colors">
+          <button onClick={() => setIsForgotModalOpen(true)} className="text-slate-800 hover:text-[#0C0E0D] transition-colors">
             Recuperar contraseña
           </button>
         </div>
@@ -285,7 +285,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
 
       {RECAPTCHA_SITE_KEY && (
         <div className="fixed bottom-6 text-[10px] text-slate-800 text-center max-w-lg">
-          This site is protected by reCAPTCHA and the Google <a href="https://policies.google.com/privacy" target="_blank" rel="noopener noreferrer" className="text-[#0F172A]">Privacy Policy</a> and <a href="https://policies.google.com/terms" target="_blank" rel="noopener noreferrer" className="text-[#0F172A]">Terms of Service</a> apply.
+          This site is protected by reCAPTCHA and the Google <a href="https://policies.google.com/privacy" target="_blank" rel="noopener noreferrer" className="text-[#0C0E0D]">Privacy Policy</a> and <a href="https://policies.google.com/terms" target="_blank" rel="noopener noreferrer" className="text-[#0C0E0D]">Terms of Service</a> apply.
         </div>
       )}
 
@@ -298,18 +298,18 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
             </button>
             {!forgotSent ? (
               <>
-                <h3 className="text-xl font-bold text-[#0F172A] mb-2 text-center">Recuperar Contraseña</h3>
+                <h3 className="text-xl font-bold text-[#0C0E0D] mb-2 text-center">Recuperar Contraseña</h3>
                 <p className="text-slate-900 text-sm text-center mb-6">Ingresa tu correo electrónico y te enviaremos las instrucciones.</p>
                 <div className="relative mb-6">
                   <input
                     type="email"
                     value={forgotEmail}
                     onChange={(e) => setForgotEmail(e.target.value)}
-                    className="peer w-full h-12 px-4 border border-slate-500 rounded-lg text-slate-900 focus:border-[#0F172A] outline-none"
+                    className="peer w-full h-12 px-4 border border-slate-500 rounded-lg text-slate-900 focus:border-[#0C0E0D] outline-none"
                     placeholder="tu@email.com"
                   />
                 </div>
-                <button onClick={handleForgotPassword} className="w-full h-12 bg-[#0F172A] font-bold rounded-lg hover:bg-[#152e52] transition-colors">
+                <button onClick={handleForgotPassword} className="w-full h-12 bg-[#0C0E0D] font-bold rounded-lg hover:bg-[#152e52] transition-colors">
                   Enviar Instrucciones
                 </button>
               </>

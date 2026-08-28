@@ -44,8 +44,8 @@ const applyVars = (s: string, vars: Record<string, string>) =>
 const tplKeyOf = (type: string) => type === 'tx_created' ? 'tx_convert' : `tx_${type}`
 
 // Brand colors — palette CuyPay (matches landing + favicon + admin web).
-const BRAND_NAVY  = '#0F172A'
-const BRAND_TEAL  = '#2DD4BF'
+const BRAND_NAVY  = '#0C0E0D'
+const BRAND_TEAL  = '#4ADE80'
 const BRAND_TEAL2 = '#5EEAD4'
 const BRAND_LIGHT = '#F8FAFC'
 

@@ -18,10 +18,10 @@ export interface MarketingModalConfig {
 const PALETTE_VERSION = 'v8-green-2026-04';
 
 const PALETTE_DEFAULTS = {
-  themeColor: '#0F172A',
+  themeColor: '#0C0E0D',
   accentColor: '#4ADE80',
-  heroGradientMid: '#0F172A',
-  heroGradientEnd: '#0F172A',
+  heroGradientMid: '#0C0E0D',
+  heroGradientEnd: '#0C0E0D',
   paletteVersion: PALETTE_VERSION,
 };
 
@@ -149,8 +149,8 @@ export const SystemConfigProvider: React.FC<{ children: ReactNode }> = ({ childr
         merged.accentColor = '#4ADE80';
       }
       if (LEGACY_BLUES.includes(themeLower)) {
-        console.warn('[SystemConfig] Blocking legacy blue themeColor:', merged.themeColor, '→ #0F172A');
-        merged.themeColor = '#0F172A';
+        console.warn('[SystemConfig] Blocking legacy blue themeColor:', merged.themeColor, '→ #0C0E0D');
+        merged.themeColor = '#0C0E0D';
       }
       // Force palette reset when Supabase has an outdated version
       if (merged.paletteVersion !== PALETTE_VERSION) {
@@ -281,7 +281,7 @@ export const SystemConfigProvider: React.FC<{ children: ReactNode }> = ({ childr
     switch (preset) {
       case 'christmas': updates = { themeColor: '#165B33', accentColor: '#BB2528', seasonEmojis: ['🎄', '🎅'] }; break;
       case 'halloween': updates = { themeColor: '#252525', accentColor: '#FF6B00', seasonEmojis: ['🎃', '👻'] }; break;
-      default: updates = { themeColor: '#0F172A', accentColor: '#4ADE80', heroGradientMid: '#0F172A', heroGradientEnd: '#0F172A', seasonEmojis: [] }; break;
+      default: updates = { themeColor: '#0C0E0D', accentColor: '#4ADE80', heroGradientMid: '#0C0E0D', heroGradientEnd: '#0C0E0D', seasonEmojis: [] }; break;
     }
     updateConfig(updates);
   };

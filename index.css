@@ -40,8 +40,8 @@
    botones navy quedaban con texto oscuro invisible ("Confirmar Operación",
    "Revisar Datos", etc.). Regla por atributo con !important: cualquier
    botón con fondo navy fuerza texto blanco, y los teal fuerzan navy. */
-button[class*="bg-[#0F172A]"],
-button[class*="bg-[#0F172A]"] *,
+button[class*="bg-[#0C0E0D]"],
+button[class*="bg-[#0C0E0D]"] *,
 button[class*="bg-[#152e52]"],
 button[class*="bg-[#152e52]"] *,
 button[class*="bg-slate-900"],
@@ -49,7 +49,7 @@ button[class*="bg-slate-900"] * {
   color: #FFFFFF !important;
   -webkit-text-fill-color: #FFFFFF !important;
 }
-button[class*="bg-[#0F172A]"] svg,
+button[class*="bg-[#0C0E0D]"] svg,
 button[class*="bg-[#152e52]"] svg,
 button[class*="bg-slate-900"] svg {
   stroke: #FFFFFF !important;
@@ -60,13 +60,13 @@ button[class*="bg-[#6EE7A0]"],
 button[class*="bg-[#6EE7A0]"] *,
 button[class*="bg-green-400"],
 button[class*="bg-green-400"] * {
-  color: #0F172A !important;
-  -webkit-text-fill-color: #0F172A !important;
+  color: #0C0E0D !important;
+  -webkit-text-fill-color: #0C0E0D !important;
 }
 button[class*="bg-[#4ADE80]"] svg,
 button[class*="bg-[#6EE7A0]"] svg,
 button[class*="bg-green-400"] svg {
-  stroke: #0F172A !important;
+  stroke: #0C0E0D !important;
 }
 
 /* Iconos del selector de rol (Personas/Empresas): en hover el círculo se
@@ -77,5 +77,5 @@ button[class*="bg-green-400"] svg {
   stroke: #FFFFFF !important;
 }
 .role-card:hover .role-circle-teal svg {
-  stroke: #0F172A !important;
+  stroke: #0C0E0D !important;
 }

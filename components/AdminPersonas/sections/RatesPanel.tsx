@@ -2040,7 +2040,7 @@ const RateChartModal: React.FC<{
                                 <button
                                     key={r.key}
                                     onClick={() => { setRange(r.key); setHoverIdx(null); }}
-                                    className={`px-3 py-1.5 text-xs font-semibold rounded-lg ${range === r.key ? 'bg-[#0F172A]' : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-100'}`}
+                                    className={`px-3 py-1.5 text-xs font-semibold rounded-lg ${range === r.key ? 'bg-[#0C0E0D]' : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-100'}`}
                                 >
                                     {r.label}
                                 </button>
@@ -2048,14 +2048,14 @@ const RateChartModal: React.FC<{
                             <span className="w-px h-5 bg-slate-300 mx-1" />
                             <button
                                 onClick={() => setChartType('candles')}
-                                className={`px-3 py-1.5 text-xs font-semibold rounded-lg ${chartType === 'candles' ? 'bg-[#0F172A]' : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-100'}`}
+                                className={`px-3 py-1.5 text-xs font-semibold rounded-lg ${chartType === 'candles' ? 'bg-[#0C0E0D]' : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-100'}`}
                                 title="Velas OHLC"
                             >
                                 Velas
                             </button>
                             <button
                                 onClick={() => setChartType('line')}
-                                className={`px-3 py-1.5 text-xs font-semibold rounded-lg ${chartType === 'line' ? 'bg-[#0F172A]' : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-100'}`}
+                                className={`px-3 py-1.5 text-xs font-semibold rounded-lg ${chartType === 'line' ? 'bg-[#0C0E0D]' : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-100'}`}
                                 title="Línea (cierre)"
                             >
                                 Línea
@@ -2247,7 +2247,7 @@ const RateChartModal: React.FC<{
                                         y1={PADT}
                                         x2={xOf(bucketed[hoverIdx].bucketStart)}
                                         y2={H - PADB}
-                                        stroke="#0F172A"
+                                        stroke="#0C0E0D"
                                         strokeOpacity="0.35"
                                         strokeDasharray="3,3"
                                     />
@@ -2256,19 +2256,19 @@ const RateChartModal: React.FC<{
                                             <line
                                                 x1={PADL} x2={W - PADR}
                                                 y1={hoverY} y2={hoverY}
-                                                stroke="#0F172A"
+                                                stroke="#0C0E0D"
                                                 strokeOpacity="0.35"
                                                 strokeDasharray="3,3"
                                             />
                                             {/* Etiqueta de precio en eje Y a la altura del cursor */}
-                                            <rect x={PADL - PRICE_LABEL_W - 4} y={hoverY - 8} width={PRICE_LABEL_W} height={16} rx={3} fill="#0F172A" />
+                                            <rect x={PADL - PRICE_LABEL_W - 4} y={hoverY - 8} width={PRICE_LABEL_W} height={16} rx={3} fill="#0C0E0D" />
                                             <text x={PADL - 6} y={hoverY + 3} textAnchor="end" fontSize="10" fill="white" fontFamily="monospace">
                                                 {fmtRate(minV + (1 - (hoverY - PADT) / innerH) * spanV)}
                                             </text>
                                         </>
                                     )}
                                     {/* Etiqueta de fecha en eje X al centro de la vela hover */}
-                                    <rect x={xOf(bucketed[hoverIdx].bucketStart) - 38} y={H - PADB + 2} width={76} height={16} fill="#0F172A" />
+                                    <rect x={xOf(bucketed[hoverIdx].bucketStart) - 38} y={H - PADB + 2} width={76} height={16} fill="#0C0E0D" />
                                     <text x={xOf(bucketed[hoverIdx].bucketStart)} y={H - PADB + 13} textAnchor="middle" fontSize="10" fill="white">
                                         {formatXLabel(bucketed[hoverIdx].bucketStart)}
                                     </text>
@@ -2454,7 +2454,7 @@ const FxHealthCard: React.FC<{
                                         finally { setSavingSrc(false); }
                                     }}
                                     disabled={savingSrc}
-                                    className="px-3 py-1 rounded-lg bg-[#4ADE80] text-[#0F172A] text-xs font-bold hover:bg-[#22C55E] disabled:opacity-60"
+                                    className="px-3 py-1 rounded-lg bg-[#4ADE80] text-[#0C0E0D] text-xs font-bold hover:bg-[#22C55E] disabled:opacity-60"
                                 >
                                     {savingSrc ? 'Guardando…' : 'Guardar'}
                                 </button>

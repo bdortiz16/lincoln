@@ -943,7 +943,7 @@ const CountryDrillDown: React.FC<{
             />
 
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                <StatCard label="Comisiones cobradas" value={fmtLocal(sum.asOrigin, currency)} color="#0F172A" bg="#F1F5F9" />
+                <StatCard label="Comisiones cobradas" value={fmtLocal(sum.asOrigin, currency)} color="#0C0E0D" bg="#F1F5F9" />
                 <StatCard label="Costo op."           value={`−${fmtLocal(sum.opCost, currency)}`} color="#9F1239" bg="#FFE4E6" />
                 <StatCard label={`IVA ${(ivaPct*100).toFixed(0)}% incluido`} value={`−${fmtLocal(sum.iva, currency)}`} color="#92400E" bg="#FEF3C7" />
                 <StatCard label="Utilidad neta"       value={fmtLocal(sum.net, currency)} color="#065F46" bg="#D1FAE5" />

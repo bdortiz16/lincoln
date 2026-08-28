@@ -32,7 +32,7 @@ export const OnboardingStepper: React.FC = () => {
     <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden flex flex-col md:flex-row min-h-[400px]">
       
       {/* Left Side - Stepper Navigation (Navy Gradient) */}
-      <div className="md:w-5/12 lg:w-4/12 bg-gradient-to-b from-[#0F172A] to-[#0F172A] p-8 text-white relative overflow-hidden transition-all duration-500">
+      <div className="md:w-5/12 lg:w-4/12 bg-gradient-to-b from-[#0C0E0D] to-[#0C0E0D] p-8 text-white relative overflow-hidden transition-all duration-500">
         {/* Decorative circle overlay */}
         <div className="absolute -bottom-24 -right-24 w-64 h-64 bg-cuypay-accent/10 rounded-full blur-3xl pointer-events-none"></div>
         
@@ -71,7 +71,7 @@ export const OnboardingStepper: React.FC = () => {
       {/* Right Side - Action Area (White) */}
       <div className="md:w-7/12 lg:w-8/12 p-8 md:p-12 flex flex-col justify-center items-start bg-white animate-in fade-in slide-in-from-right-4 duration-500" key={currentStep}>
         <div className="mb-6">
-          <div className="w-14 h-14 bg-slate-50/50 rounded-xl flex items-center justify-center text-[#0F172A] mb-6 border border-slate-200">
+          <div className="w-14 h-14 bg-slate-50/50 rounded-xl flex items-center justify-center text-[#0C0E0D] mb-6 border border-slate-200">
             <Search size={28} strokeWidth={1.5} />
           </div>
           
@@ -87,7 +87,7 @@ export const OnboardingStepper: React.FC = () => {
 
         <button 
           onClick={handleContinue}
-          className="bg-[#0F172A] hover:bg-[#152e52] px-8 py-3 rounded-lg font-bold shadow-lg shadow-green-900/10 transition-all transform active:scale-95 flex items-center gap-2 border-b-2 border-cuypay-accent"
+          className="bg-[#0C0E0D] hover:bg-[#152e52] px-8 py-3 rounded-lg font-bold shadow-lg shadow-green-900/10 transition-all transform active:scale-95 flex items-center gap-2 border-b-2 border-cuypay-accent"
         >
           {currentStep === stepsData.length ? 'Finalizar' : 'Continuar registro'}
           {currentStep !== stepsData.length && <ChevronRight size={18} />}

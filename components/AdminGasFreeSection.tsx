@@ -342,7 +342,7 @@ export const AdminGasFreeSection: React.FC = () => {
                 clientes; desde aquí se pagan los envíos y a los proveedores.
                 Estilo billetera (igual al del cliente) — se carga sola al
                 entrar, sin tener que darle a "Actualizar" primero. */}
-            <div className="rounded-2xl overflow-hidden bg-gradient-to-br from-[#0F172A] to-[#0F172A] text-white shadow-xl relative">
+            <div className="rounded-2xl overflow-hidden bg-gradient-to-br from-[#0C0E0D] to-[#0C0E0D] text-white shadow-xl relative">
                 <div className="absolute -right-10 -top-10 w-40 h-40 bg-white/5 rounded-full blur-3xl" />
                 <div className="relative z-10 p-5 space-y-4">
                     <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -472,7 +472,7 @@ export const AdminGasFreeSection: React.FC = () => {
                         className="w-20 px-2 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#4ADE80]"
                         placeholder="rango"
                     />
-                    <button onClick={locateAddr} disabled={recBusy || !recAddr.trim()} className="px-3 py-2 text-xs font-bold rounded-lg bg-[#0F172A] text-white hover:bg-[#152e52] disabled:opacity-60">
+                    <button onClick={locateAddr} disabled={recBusy || !recAddr.trim()} className="px-3 py-2 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#152e52] disabled:opacity-60">
                         {recBusy ? 'Buscando…' : 'Localizar'}
                     </button>
                 </div>
@@ -486,7 +486,7 @@ export const AdminGasFreeSection: React.FC = () => {
                                 <p className="text-slate-700">✅ Encontrada en el <b>índice {recResult.index}</b>{recResult.mnemonic ? ` (${recResult.mnemonic})` : ''} · saldo <b>{Number(recResult.balanceUsdt ?? 0).toFixed(2)} USDT</b></p>
                                 <p className="text-[11px] font-mono text-slate-400 break-all">{recResult.gasFreeAddress}</p>
                                 {typeof recResult.index === 'number' && Number(recResult.balanceUsdt ?? 0) > 0 && (
-                                    <button onClick={() => sweepIdx(recResult.index!, recResult.mnemonic)} disabled={recBusy} className="px-3 py-1.5 text-xs font-bold rounded-lg bg-[#4ADE80] text-[#0F172A] hover:bg-[#26bda9] disabled:opacity-60">
+                                    <button onClick={() => sweepIdx(recResult.index!, recResult.mnemonic)} disabled={recBusy} className="px-3 py-1.5 text-xs font-bold rounded-lg bg-[#4ADE80] text-[#0C0E0D] hover:bg-[#26bda9] disabled:opacity-60">
                                         {recBusy ? 'Barriendo…' : `Barrer ${Number(recResult.balanceUsdt ?? 0).toFixed(2)} USDT a Tesorería`}
                                     </button>
                                 )}
@@ -587,7 +587,7 @@ export const AdminGasFreeSection: React.FC = () => {
                         <input value={treasuryEdit.notes} onChange={e => setTreasuryEdit(p => ({ ...p, notes: e.target.value }))}
                             className="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#4ADE80]" placeholder="Notas adicionales" />
                     </div>
-                    <button onClick={saveTreasuryCfg} disabled={treasurySaving} style={{ color: '#FFFFFF' }} className="px-4 py-2 text-sm font-bold bg-[#0F172A] rounded-lg hover:bg-[#152e52] disabled:opacity-60">
+                    <button onClick={saveTreasuryCfg} disabled={treasurySaving} style={{ color: '#FFFFFF' }} className="px-4 py-2 text-sm font-bold bg-[#0C0E0D] rounded-lg hover:bg-[#152e52] disabled:opacity-60">
                         {treasurySaving ? 'Guardando…' : 'Guardar'}
                     </button>
                 </div>
@@ -633,7 +633,7 @@ export const AdminGasFreeSection: React.FC = () => {
                 <button onClick={loadAll} disabled={loadingAll || filtered.length === 0} className="flex items-center gap-2 px-3 py-2 text-sm font-semibold border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-60">
                     <RefreshCw size={14} className={loadingAll ? 'animate-spin' : ''} /> {loadingAll ? 'Cargando…' : 'Cargar wallets (todos)'}
                 </button>
-                <button onClick={sweepAll} disabled={sweepingAll} style={{ color: '#FFFFFF' }} className="flex items-center gap-2 px-3 py-2 text-sm font-bold bg-[#0F172A] rounded-lg hover:bg-[#152e52] disabled:opacity-60">
+                <button onClick={sweepAll} disabled={sweepingAll} style={{ color: '#FFFFFF' }} className="flex items-center gap-2 px-3 py-2 text-sm font-bold bg-[#0C0E0D] rounded-lg hover:bg-[#152e52] disabled:opacity-60">
                     <Landmark size={14} className={sweepingAll ? 'animate-pulse' : ''} /> {sweepingAll ? 'Barriendo…' : 'Barrer todo a recaudadora'}
                 </button>
             </div>
@@ -704,7 +704,7 @@ export const AdminGasFreeSection: React.FC = () => {
                                                         onChange={e => setUsdEdit({ userId: u.id, value: e.target.value })}
                                                         onKeyDown={e => { if (e.key === 'Enter') saveUsd(u); if (e.key === 'Escape') { setUsdEdit(null); setUsdErr(null); } }}
                                                         className="w-20 px-2 py-1 border border-slate-300 rounded-lg text-right text-xs outline-none focus:border-[#4ADE80]" />
-                                                    <button onClick={() => saveUsd(u)} disabled={usdSaving} style={{ color: '#FFFFFF' }} className="px-2 py-1 bg-[#0F172A] rounded-lg text-[10px] font-bold disabled:opacity-50">{usdSaving ? '…' : 'OK'}</button>
+                                                    <button onClick={() => saveUsd(u)} disabled={usdSaving} style={{ color: '#FFFFFF' }} className="px-2 py-1 bg-[#0C0E0D] rounded-lg text-[10px] font-bold disabled:opacity-50">{usdSaving ? '…' : 'OK'}</button>
                                                     <button onClick={() => { setUsdEdit(null); setUsdErr(null); }} className="text-slate-400 text-xs">✕</button>
                                                 </div>
                                                 {usdErr && <p className="text-[10px] font-bold text-red-600 max-w-[160px] text-right">{usdErr}</p>}
@@ -721,7 +721,7 @@ export const AdminGasFreeSection: React.FC = () => {
                                                 <RefreshCw size={13} className={row.loading ? 'animate-spin' : ''} /> {row.loading ? 'Cargando…' : (row.gasFreeAddress ? 'Actualizar saldo' : 'Generar wallet')}
                                             </button>
                                             {row.gasFreeAddress && (
-                                                <button onClick={() => sweepOne(u.id)} disabled={sweepingOne === u.id} className="inline-flex items-center gap-1 text-xs font-bold text-[#0F172A] hover:underline disabled:opacity-50" title="Barrer el USDT de este cliente a la recaudadora">
+                                                <button onClick={() => sweepOne(u.id)} disabled={sweepingOne === u.id} className="inline-flex items-center gap-1 text-xs font-bold text-[#0C0E0D] hover:underline disabled:opacity-50" title="Barrer el USDT de este cliente a la recaudadora">
                                                     <Landmark size={13} /> {sweepingOne === u.id ? 'Barriendo…' : 'Barrer'}
                                                 </button>
                                             )}
@@ -774,7 +774,7 @@ export const AdminGasFreeSection: React.FC = () => {
                             )}
                         </div>
                         <div className="px-5 pb-5">
-                            <button onClick={doPayProvider} disabled={paying || !payAmount} style={{ color: '#FFFFFF' }} className="w-full h-11 bg-[#0F172A] hover:bg-[#152e52] rounded-xl font-bold text-sm disabled:opacity-50 flex items-center justify-center gap-2">
+                            <button onClick={doPayProvider} disabled={paying || !payAmount} style={{ color: '#FFFFFF' }} className="w-full h-11 bg-[#0C0E0D] hover:bg-[#152e52] rounded-xl font-bold text-sm disabled:opacity-50 flex items-center justify-center gap-2">
                                 <Send size={15} /> {paying ? 'Pagando…' : 'Confirmar pago'}
                             </button>
                         </div>

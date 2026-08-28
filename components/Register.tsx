@@ -198,7 +198,7 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
         
         <button 
             onClick={onBack}
-            className="absolute top-6 left-6 md:top-8 md:left-8 flex items-center gap-2 text-slate-800 hover:text-[#0F172A] transition-colors font-medium text-sm z-10"
+            className="absolute top-6 left-6 md:top-8 md:left-8 flex items-center gap-2 text-slate-800 hover:text-[#0C0E0D] transition-colors font-medium text-sm z-10"
         >
             <ArrowLeft size={18} />
             Volver al inicio
@@ -219,7 +219,7 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
         {userRole === 'personal' ? (
             /* PERSONAL FORM */
             <div className="space-y-6 max-w-lg mx-auto lg:mx-0 w-full animate-in fade-in duration-500">
-                <h1 className="text-2xl font-bold text-[#0F172A] text-center lg:text-left mb-4">
+                <h1 className="text-2xl font-bold text-[#0C0E0D] text-center lg:text-left mb-4">
                   Regístrate a LINCOIN Personas
                 </h1>
 
@@ -313,7 +313,7 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
                         className="mt-1 w-4 h-4 rounded border-slate-500 text-[#5d87ff] focus:ring-[#5d87ff] cursor-pointer" 
                     />
                     <label htmlFor="privacy" className="text-sm text-slate-900 cursor-pointer">
-                        Al registrarme acepto las <a href="#" className="text-[#5d87ff] underline hover:text-[#0F172A]">políticas de privacidad</a>.
+                        Al registrarme acepto las <a href="#" className="text-[#5d87ff] underline hover:text-[#0C0E0D]">políticas de privacidad</a>.
                     </label>
                 </div>
 
@@ -326,13 +326,13 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
                 </button>
 
                 <div className="text-center text-sm text-slate-900 mt-8">
-                    ¿Ya tienes una cuenta persona? <button onClick={onLoginClick} className="text-[#5d87ff] font-bold underline hover:text-[#0F172A]">Iniciar sesión</button>
+                    ¿Ya tienes una cuenta persona? <button onClick={onLoginClick} className="text-[#5d87ff] font-bold underline hover:text-[#0C0E0D]">Iniciar sesión</button>
                 </div>
             </div>
         ) : (
             /* BUSINESS FORM */
             <div className="space-y-5 max-w-lg mx-auto lg:mx-0 w-full animate-in fade-in duration-500">
-                <h1 className="text-2xl font-bold text-[#0F172A] text-center lg:text-left mb-4">
+                <h1 className="text-2xl font-bold text-[#0C0E0D] text-center lg:text-left mb-4">
                   Registra tu cuenta LINCOIN Empresas
                 </h1>
 
@@ -346,7 +346,7 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
                     Registrarse con Google
                 </button>
 
-                <div className="text-xs font-bold text-[#0F172A] uppercase tracking-wide flex items-center gap-2">
+                <div className="text-xs font-bold text-[#0C0E0D] uppercase tracking-wide flex items-center gap-2">
                    O CON TU EMAIL EMPRESA
                    <div className="h-px bg-slate-200 flex-1 ml-2"></div>
                 </div>
@@ -356,10 +356,10 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
                         type="email" 
                         value={email}
                         onChange={(e) => setEmail(e.target.value)}
-                        className="peer w-full h-12 px-4 border border-slate-500 rounded-lg text-slate-900 focus:outline-none focus:border-[#0F172A] focus:ring-1 focus:ring-[#0F172A] bg-[#F8FAFC] pt-3"
+                        className="peer w-full h-12 px-4 border border-slate-500 rounded-lg text-slate-900 focus:outline-none focus:border-[#0C0E0D] focus:ring-1 focus:ring-[#0C0E0D] bg-[#F8FAFC] pt-3"
                         placeholder=" "
                     />
-                    <label className="absolute left-4 top-0.5 text-[10px] text-slate-900 font-semibold transition-all peer-placeholder-shown:top-3.5 peer-placeholder-shown:text-sm peer-placeholder-shown:text-slate-800 peer-focus:top-0.5 peer-focus:text-[10px] peer-focus:text-[#0F172A]">
+                    <label className="absolute left-4 top-0.5 text-[10px] text-slate-900 font-semibold transition-all peer-placeholder-shown:top-3.5 peer-placeholder-shown:text-sm peer-placeholder-shown:text-slate-800 peer-focus:top-0.5 peer-focus:text-[10px] peer-focus:text-[#0C0E0D]">
                         Correo de la empresa
                     </label>
                     <HelpCircle className="absolute right-3 top-3.5 text-slate-800" size={18} />
@@ -371,10 +371,10 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
                             type={showPassword ? "text" : "password"}
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
-                            className="peer w-full h-12 px-4 border border-slate-500 rounded-lg text-slate-900 focus:outline-none focus:border-[#0F172A] focus:ring-1 focus:ring-[#0F172A] bg-[#F8FAFC] pt-3 pr-10"
+                            className="peer w-full h-12 px-4 border border-slate-500 rounded-lg text-slate-900 focus:outline-none focus:border-[#0C0E0D] focus:ring-1 focus:ring-[#0C0E0D] bg-[#F8FAFC] pt-3 pr-10"
                             placeholder=" "
                         />
-                        <label className="absolute left-4 top-0.5 text-[10px] text-slate-900 font-semibold transition-all peer-placeholder-shown:top-3.5 peer-placeholder-shown:text-sm peer-placeholder-shown:text-slate-800 peer-focus:top-0.5 peer-focus:text-[10px] peer-focus:text-[#0F172A]">
+                        <label className="absolute left-4 top-0.5 text-[10px] text-slate-900 font-semibold transition-all peer-placeholder-shown:top-3.5 peer-placeholder-shown:text-sm peer-placeholder-shown:text-slate-800 peer-focus:top-0.5 peer-focus:text-[10px] peer-focus:text-[#0C0E0D]">
                             Contraseña
                         </label>
                         <button 
@@ -404,10 +404,10 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
                         type="text"
                         value={companyName}
                         onChange={(e) => setCompanyName(e.target.value)}
-                        className="peer w-full h-12 px-4 border border-slate-500 rounded-lg text-slate-900 focus:outline-none focus:border-[#0F172A] focus:ring-1 focus:ring-[#0F172A] bg-white pt-3"
+                        className="peer w-full h-12 px-4 border border-slate-500 rounded-lg text-slate-900 focus:outline-none focus:border-[#0C0E0D] focus:ring-1 focus:ring-[#0C0E0D] bg-white pt-3"
                         placeholder=" "
                     />
-                    <label className="absolute left-4 top-0.5 text-[10px] text-slate-900 font-semibold transition-all peer-placeholder-shown:top-3.5 peer-placeholder-shown:text-sm peer-placeholder-shown:text-slate-800 peer-focus:top-0.5 peer-focus:text-[10px] peer-focus:text-[#0F172A]">
+                    <label className="absolute left-4 top-0.5 text-[10px] text-slate-900 font-semibold transition-all peer-placeholder-shown:top-3.5 peer-placeholder-shown:text-sm peer-placeholder-shown:text-slate-800 peer-focus:top-0.5 peer-focus:text-[10px] peer-focus:text-[#0C0E0D]">
                         Nombre legal de la empresa
                     </label>
                 </div>
@@ -416,7 +416,7 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
                     <select
                         value={companyCountry}
                         onChange={(e) => setCompanyCountry(e.target.value)}
-                        className="w-full h-12 px-4 border border-slate-500 rounded-lg text-slate-900 focus:outline-none focus:border-[#0F172A] bg-white appearance-none cursor-pointer"
+                        className="w-full h-12 px-4 border border-slate-500 rounded-lg text-slate-900 focus:outline-none focus:border-[#0C0E0D] bg-white appearance-none cursor-pointer"
                     >
                         <option value="" disabled>País de constitución de la empresa</option>
                         {countries.map(country => (
@@ -434,30 +434,30 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
                         id="businessPrivacy"
                         checked={privacyAccepted}
                         onChange={(e) => setPrivacyAccepted(e.target.checked)}
-                        className="mt-1 w-4 h-4 rounded border-slate-500 text-[#0F172A] focus:ring-[#0F172A] cursor-pointer" 
+                        className="mt-1 w-4 h-4 rounded border-slate-500 text-[#0C0E0D] focus:ring-[#0C0E0D] cursor-pointer" 
                     />
                     <label htmlFor="businessPrivacy" className="text-xs text-slate-900 cursor-pointer leading-relaxed">
-                        Acepto las <a href="#" className="text-[#0F172A] font-semibold">políticas de privacidad</a> y los <a href="#" className="text-[#0F172A] font-semibold">términos y condiciones</a> de uso del servicio.
+                        Acepto las <a href="#" className="text-[#0C0E0D] font-semibold">políticas de privacidad</a> y los <a href="#" className="text-[#0C0E0D] font-semibold">términos y condiciones</a> de uso del servicio.
                     </label>
                 </div>
 
                 <button
                     onClick={handleSubmit}
                     disabled={cooldown > 0 || loading}
-                    className="w-full h-12 bg-[#0F172A] hover:bg-[#152e52] font-bold rounded-lg transition-colors shadow-lg shadow-green-900/20 mt-4 disabled:opacity-60 disabled:cursor-not-allowed"
+                    className="w-full h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg transition-colors shadow-lg shadow-green-900/20 mt-4 disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                     {loading ? 'Registrando...' : cooldown > 0 ? `Espera ${cooldown}s...` : 'Registrarse'}
                 </button>
 
                 <div className="text-center text-sm text-slate-900 mt-6">
-                    ¿Ya tienes una cuenta? <button onClick={onLoginClick} className="text-[#0F172A] font-bold">Inicia sesión</button>
+                    ¿Ya tienes una cuenta? <button onClick={onLoginClick} className="text-[#0C0E0D] font-bold">Inicia sesión</button>
                 </div>
             </div>
         )}
       </div>
 
       {/* RIGHT SIDE: Graphics (Hidden on mobile) */}
-      <div className="hidden lg:flex w-1/2 bg-[#0F172A] relative overflow-hidden items-center justify-center p-12">
+      <div className="hidden lg:flex w-1/2 bg-[#0C0E0D] relative overflow-hidden items-center justify-center p-12">
         {/* Same graphics as before, omitted for brevity but preserved in existing file */}
         <div className="absolute top-0 right-0 w-full h-full opacity-10">
             <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="w-full h-full">

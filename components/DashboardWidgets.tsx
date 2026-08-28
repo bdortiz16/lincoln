@@ -86,13 +86,13 @@ export const FeatureCarousel: React.FC = () => {
       {/* Prev / Next */}
       <button
         onClick={handlePrev}
-        className="absolute left-[-12px] top-1/2 -translate-y-1/2 w-8 h-8 bg-[#0F172A] rounded-full flex items-center justify-center shadow-lg hover:bg-[#152e52] transition-colors"
+        className="absolute left-[-12px] top-1/2 -translate-y-1/2 w-8 h-8 bg-[#0C0E0D] rounded-full flex items-center justify-center shadow-lg hover:bg-[#152e52] transition-colors"
       >
         <ChevronLeft size={16} />
       </button>
       <button
         onClick={handleNext}
-        className="absolute right-[-12px] top-1/2 -translate-y-1/2 w-8 h-8 bg-[#0F172A] rounded-full flex items-center justify-center shadow-lg hover:bg-[#152e52] transition-colors"
+        className="absolute right-[-12px] top-1/2 -translate-y-1/2 w-8 h-8 bg-[#0C0E0D] rounded-full flex items-center justify-center shadow-lg hover:bg-[#152e52] transition-colors"
       >
         <ChevronRight size={16} />
       </button>
@@ -103,7 +103,7 @@ export const FeatureCarousel: React.FC = () => {
           <button
             key={i}
             onClick={() => handleDot(i)}
-            className={`rounded-full transition-all duration-300 ${i === current ? 'w-4 h-2.5 bg-[#0F172A]' : 'w-2.5 h-2.5 bg-slate-200 hover:bg-green-300'}`}
+            className={`rounded-full transition-all duration-300 ${i === current ? 'w-4 h-2.5 bg-[#0C0E0D]' : 'w-2.5 h-2.5 bg-slate-200 hover:bg-green-300'}`}
           />
         ))}
       </div>

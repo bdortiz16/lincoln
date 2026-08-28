@@ -29,7 +29,7 @@ export const DownloadAppModal: React.FC<DownloadAppModalProps> = ({ onClose }) =
         <div className="flex justify-center mb-6">
           <div className="relative">
             <div
-              style={{ background: 'linear-gradient(135deg, #0F172A, #1E293B)' }}
+              style={{ background: 'linear-gradient(135deg, #0C0E0D, #121413)' }}
               className="w-20 h-20 rounded-2xl flex items-center justify-center shadow-xl"
             >
               <Smartphone size={40} style={{ color: '#4ADE80' }} strokeWidth={1.5} />
@@ -38,13 +38,13 @@ export const DownloadAppModal: React.FC<DownloadAppModalProps> = ({ onClose }) =
               style={{ backgroundColor: '#4ADE80' }}
               className="absolute -top-2 -right-2 w-8 h-8 rounded-full flex items-center justify-center shadow-lg"
             >
-              <Download size={16} style={{ color: '#0F172A' }} strokeWidth={3} />
+              <Download size={16} style={{ color: '#0C0E0D' }} strokeWidth={3} />
             </div>
           </div>
         </div>
 
         {/* Title */}
-        <h2 style={{ color: '#0F172A' }} className="text-2xl md:text-3xl font-bold text-center mb-2">
+        <h2 style={{ color: '#0C0E0D' }} className="text-2xl md:text-3xl font-bold text-center mb-2">
           Descarga LINCOIN
         </h2>
         <p style={{ color: '#64748B' }} className="text-center text-sm mb-8 leading-relaxed">
@@ -57,7 +57,7 @@ export const DownloadAppModal: React.FC<DownloadAppModalProps> = ({ onClose }) =
 
           {/* Google Play */}
           <button
-            style={{ backgroundColor: '#0F172A' }}
+            style={{ backgroundColor: '#0C0E0D' }}
             className="w-full hover:opacity-90 transition-all duration-300 rounded-2xl p-4 flex items-center gap-3"
           >
             <div className="w-10 h-10 flex items-center justify-center shrink-0">
@@ -72,14 +72,14 @@ export const DownloadAppModal: React.FC<DownloadAppModalProps> = ({ onClose }) =
               <div style={{ color: '#CBD5E1', fontSize: '10px', lineHeight: '1.2' }}>Descarga en</div>
               <div style={{ color: '#FFFFFF', fontSize: '16px', fontWeight: 700, lineHeight: '1.2' }}>Google Play</div>
             </div>
-            <span style={{ backgroundColor: '#FBBF24', color: '#0F172A', fontSize: '9px', fontWeight: 700 }} className="px-2 py-1 rounded-full">
+            <span style={{ backgroundColor: '#FBBF24', color: '#0C0E0D', fontSize: '9px', fontWeight: 700 }} className="px-2 py-1 rounded-full">
               PRÓXIMAMENTE
             </span>
           </button>
 
           {/* App Store */}
           <button
-            style={{ backgroundColor: '#0F172A' }}
+            style={{ backgroundColor: '#0C0E0D' }}
             className="w-full hover:opacity-90 transition-all duration-300 rounded-2xl p-4 flex items-center gap-3"
           >
             <div className="w-10 h-10 flex items-center justify-center shrink-0">
@@ -91,7 +91,7 @@ export const DownloadAppModal: React.FC<DownloadAppModalProps> = ({ onClose }) =
               <div style={{ color: '#CBD5E1', fontSize: '10px', lineHeight: '1.2' }}>Descarga en</div>
               <div style={{ color: '#FFFFFF', fontSize: '16px', fontWeight: 700, lineHeight: '1.2' }}>App Store</div>
             </div>
-            <span style={{ backgroundColor: '#FBBF24', color: '#0F172A', fontSize: '9px', fontWeight: 700 }} className="px-2 py-1 rounded-full">
+            <span style={{ backgroundColor: '#FBBF24', color: '#0C0E0D', fontSize: '9px', fontWeight: 700 }} className="px-2 py-1 rounded-full">
               PRÓXIMAMENTE
             </span>
           </button>
@@ -103,10 +103,10 @@ export const DownloadAppModal: React.FC<DownloadAppModalProps> = ({ onClose }) =
           style={{ backgroundColor: 'rgba(45, 212, 191, 0.1)', borderColor: 'rgba(45, 212, 191, 0.2)' }}
           className="border rounded-2xl p-4 text-center"
         >
-          <p style={{ color: '#0F172A' }} className="text-xs mb-2 font-medium">
+          <p style={{ color: '#0C0E0D' }} className="text-xs mb-2 font-medium">
             🔔 ¿Quieres ser de los primeros en saber cuándo esté lista?
           </p>
-          <button style={{ color: '#0F172A' }} className="text-xs font-bold underline hover:opacity-70 transition-opacity">
+          <button style={{ color: '#0C0E0D' }} className="text-xs font-bold underline hover:opacity-70 transition-opacity">
             Notifícame por correo
           </button>
         </div>

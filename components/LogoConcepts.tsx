@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 
-const NAVY  = '#0F172A';
+const NAVY  = '#0C0E0D';
 const TEAL  = '#4ADE80';
 const WHITE = '#FFFFFF';
 
@@ -162,7 +162,7 @@ export const LogoConcepts: React.FC = () => {
   const selItem = corporate.find(c => c.id === sel);
 
   return (
-    <div style={{ minHeight:'100vh', background:'#0f172a', padding:'48px 16px 80px', fontFamily:'-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif' }}>
+    <div style={{ minHeight:'100vh', background:'#0C0E0D', padding:'48px 16px 80px', fontFamily:'-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif' }}>
       <div style={{ maxWidth:960, margin:'0 auto' }}>
 
         <div style={{ marginBottom:48 }}>
@@ -180,7 +180,7 @@ export const LogoConcepts: React.FC = () => {
         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:16 }}>
           {corporate.map(({ id, M, name, ref }) => (
             <button key={id} onClick={() => setSel(id === sel ? null : id)} style={{
-              background: sel === id ? '#0f2d25' : '#1e293b',
+              background: sel === id ? '#0f2d25' : '#121413',
               border: `2px solid ${sel === id ? TEAL : 'transparent'}`,
               borderRadius:16, padding:'24px 20px', cursor:'pointer', textAlign:'left',
               transition:'all 0.15s', outline:'none',
@@ -225,13 +225,13 @@ export const LogoConcepts: React.FC = () => {
         </div>
 
         {sel && selItem && (
-          <div style={{ marginTop:40, background:'#1e293b', border:`1px solid ${TEAL}40`, borderRadius:16, padding:28 }}>
+          <div style={{ marginTop:40, background:'#121413', border:`1px solid ${TEAL}40`, borderRadius:16, padding:28 }}>
             <p style={{ color:WHITE, fontWeight:700, fontSize:16, margin:'0 0 16px' }}>
               Vista previa — <span style={{ color:TEAL }}>{selItem.name}</span>
             </p>
             <div style={{ display:'flex', flexWrap:'wrap', gap:20 }}>
               {/* Solo isotipo */}
-              <div style={{ background:'#0f172a', borderRadius:12, padding:20, display:'flex', alignItems:'center', gap:8 }}>
+              <div style={{ background:'#0C0E0D', borderRadius:12, padding:20, display:'flex', alignItems:'center', gap:8 }}>
                 <selItem.M size={40}/>
                 <span style={{ color:'#475569', fontSize:11 }}>Solo isotipo</span>
               </div>
@@ -246,7 +246,7 @@ export const LogoConcepts: React.FC = () => {
                 <span style={{ color:NAVY, fontWeight:900, fontSize:18, letterSpacing:-0.4 }}>CUY<span style={{color:TEAL}}>PAY</span></span>
               </div>
               {/* Favicon */}
-              <div style={{ background:'#0f172a', borderRadius:12, padding:20, display:'flex', flexDirection:'column', alignItems:'center', gap:8 }}>
+              <div style={{ background:'#0C0E0D', borderRadius:12, padding:20, display:'flex', flexDirection:'column', alignItems:'center', gap:8 }}>
                 <selItem.M size={24}/>
                 <span style={{ color:'#475569', fontSize:11 }}>Favicon 24px</span>
               </div>

@@ -56,7 +56,7 @@ export const Header: React.FC<HeaderProps> = ({ onMenuClick, onLogout, onNavigat
         
         {/* Breadcrumb or Brand Context */}
         <div className="hidden md:flex items-center gap-2 text-slate-400 text-sm">
-          <span className="font-bold text-[#0F172A] tracking-wide">LINCOIN</span>
+          <span className="font-bold text-[#0C0E0D] tracking-wide">LINCOIN</span>
           <span className="text-slate-300">/</span>
           <span className="font-medium text-slate-600">Empresas</span>
         </div>
@@ -68,7 +68,7 @@ export const Header: React.FC<HeaderProps> = ({ onMenuClick, onLogout, onNavigat
         <div className="relative" ref={notifRef}>
             <button 
                 onClick={handleNotifClick} 
-                className={`relative p-2 rounded-full transition-colors ${isNotifOpen ? 'bg-slate-50 text-[#0F172A]' : 'text-slate-400 hover:text-slate-600 hover:bg-slate-50'}`}
+                className={`relative p-2 rounded-full transition-colors ${isNotifOpen ? 'bg-slate-50 text-[#0C0E0D]' : 'text-slate-400 hover:text-slate-600 hover:bg-slate-50'}`}
             >
                 <Bell size={20} />
                 {unreadCount > 0 && (
@@ -104,7 +104,7 @@ export const Header: React.FC<HeaderProps> = ({ onMenuClick, onLogout, onNavigat
                         )}
                     </div>
                     <div className="p-2 border-t border-slate-100 text-center">
-                        <button className="text-[10px] font-bold text-[#0F172A] hover:underline">Ver todas</button>
+                        <button className="text-[10px] font-bold text-[#0C0E0D] hover:underline">Ver todas</button>
                     </div>
                 </div>
             )}
@@ -118,7 +118,7 @@ export const Header: React.FC<HeaderProps> = ({ onMenuClick, onLogout, onNavigat
                 onClick={() => setIsProfileOpen(!isProfileOpen)}
                 className={`flex items-center gap-3 cursor-pointer p-1.5 pr-3 rounded-full border border-transparent transition-all ${isProfileOpen ? 'bg-slate-50 border-slate-200' : 'hover:bg-slate-50 hover:border-slate-200'}`}
             >
-                <div className="w-9 h-9 rounded-full bg-[#0F172A] text-white flex items-center justify-center font-bold text-xs border-2 border-[#4ADE80] overflow-hidden">
+                <div className="w-9 h-9 rounded-full bg-[#0C0E0D] text-white flex items-center justify-center font-bold text-xs border-2 border-[#4ADE80] overflow-hidden">
                     {currentUser?.avatarUrl ? (
                         <img src={currentUser.avatarUrl} alt="Logo" className="w-full h-full object-cover" />
                     ) : (
@@ -133,7 +133,7 @@ export const Header: React.FC<HeaderProps> = ({ onMenuClick, onLogout, onNavigat
                         {currentUser?.taxId || '@EMPRESA001'}
                     </p>
                 </div>
-                <ChevronDown size={16} className={`text-slate-400 transition-transform duration-200 ${isProfileOpen ? 'rotate-180 text-[#0F172A]' : ''}`} />
+                <ChevronDown size={16} className={`text-slate-400 transition-transform duration-200 ${isProfileOpen ? 'rotate-180 text-[#0C0E0D]' : ''}`} />
             </div>
 
             {/* Profile Dropdown */}
@@ -141,7 +141,7 @@ export const Header: React.FC<HeaderProps> = ({ onMenuClick, onLogout, onNavigat
                 <div className="absolute top-full right-0 mt-3 w-64 bg-white rounded-xl shadow-xl border border-slate-100 overflow-hidden animate-in fade-in zoom-in-95 origin-top-right z-50">
                     <div className="p-4 border-b border-slate-50 bg-[#F8FAFC]">
                         <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Cuenta Empresa</p>
-                        <p className="text-sm font-bold text-[#0F172A] truncate">{currentUser?.companyName}</p>
+                        <p className="text-sm font-bold text-[#0C0E0D] truncate">{currentUser?.companyName}</p>
                         <p className="text-xs text-slate-500 truncate">{currentUser?.email}</p>
                     </div>
                     
@@ -150,13 +150,13 @@ export const Header: React.FC<HeaderProps> = ({ onMenuClick, onLogout, onNavigat
                             onClick={() => handleProfileNavigation('profile')}
                             className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-slate-50 rounded-lg text-slate-600 text-sm font-medium transition-colors group"
                         >
-                            <User size={18} className="text-slate-400 group-hover:text-[#0F172A]"/> Mi Perfil
+                            <User size={18} className="text-slate-400 group-hover:text-[#0C0E0D]"/> Mi Perfil
                         </button>
                         <button 
                             onClick={() => handleProfileNavigation('profile')}
                             className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-slate-50 rounded-lg text-slate-600 text-sm font-medium transition-colors group"
                         >
-                            <Settings size={18} className="text-slate-400 group-hover:text-[#0F172A]"/> Configuración
+                            <Settings size={18} className="text-slate-400 group-hover:text-[#0C0E0D]"/> Configuración
                         </button>
                     </div>
 

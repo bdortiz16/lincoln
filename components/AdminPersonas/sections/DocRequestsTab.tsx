@@ -424,7 +424,7 @@ export const DocRequestsTab: React.FC<Props> = ({ profile }) => {
 
             {/* Counters */}
             <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-                <CounterChip label="Abiertas" value={counts.open} active={filter === 'open'} onClick={() => setFilter('open')} color="#0F172A" bg="#F1F5F9" />
+                <CounterChip label="Abiertas" value={counts.open} active={filter === 'open'} onClick={() => setFilter('open')} color="#0C0E0D" bg="#F1F5F9" />
                 <CounterChip label="Pendientes" value={counts.pending} active={filter === 'pending'} onClick={() => setFilter('pending')} color="#92400E" bg="#FEF3C7" />
                 <CounterChip label="Respondidas" value={counts.submitted} active={filter === 'submitted'} onClick={() => setFilter('submitted')} color="#1E40AF" bg="#DBEAFE" />
                 <CounterChip label="Aprobadas" value={counts.approved} active={filter === 'approved'} onClick={() => setFilter('approved')} color="#065F46" bg="#D1FAE5" />

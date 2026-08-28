@@ -2,7 +2,7 @@ import React from 'react';
 import { useSystemConfig } from '../context/SystemConfigContext';
 
 const PALETTES = [
-  { id: 1,  name: 'Estonia ★',   theme: '#0F172A', accent: '#4ADE80', mid: '#0F172A', end: '#0F172A' },
+  { id: 1,  name: 'Estonia ★',   theme: '#0C0E0D', accent: '#4ADE80', mid: '#0C0E0D', end: '#0C0E0D' },
   { id: 2,  name: 'Midnight',    theme: '#050A14', accent: '#4ADE80', mid: '#081428', end: '#0A1C3E' },
   { id: 3,  name: 'Ocean',       theme: '#011627', accent: '#4ADE80', mid: '#021E35', end: '#042540' },
   { id: 4,  name: 'Navy Classic',theme: '#0D1B2A', accent: '#4ADE80', mid: '#0F2038', end: '#122440' },
@@ -86,7 +86,7 @@ export const PaletteChooser: React.FC<{ onClose: () => void }> = ({ onClose }) =
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.85)' }}>
-      <div className="bg-[#0F172A] rounded-3xl shadow-2xl w-full max-w-5xl max-h-[90vh] overflow-y-auto p-6 border border-white/10">
+      <div className="bg-[#0C0E0D] rounded-3xl shadow-2xl w-full max-w-5xl max-h-[90vh] overflow-y-auto p-6 border border-white/10">
         <div className="flex items-center justify-between mb-6">
           <div>
             <h2 className="text-white font-black text-2xl">Elige tu paleta de azules</h2>

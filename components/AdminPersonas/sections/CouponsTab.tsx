@@ -166,7 +166,7 @@ export const CouponsTab: React.FC<Props> = ({ profile }) => {
             {/* Stats */}
             <div className="grid grid-cols-3 gap-2">
                 <StatCard label="Activos"     value={activeCount.toString()} color="#0F766E" bg="#CCFBF1" icon={<Ticket size={14} />} />
-                <StatCard label="Total"       value={coupons.length.toString()} color="#0F172A" bg="#F1F5F9" icon={<Tag size={14} />} />
+                <StatCard label="Total"       value={coupons.length.toString()} color="#0C0E0D" bg="#F1F5F9" icon={<Tag size={14} />} />
                 <StatCard label="Usos totales" value={totalUses.toString()} color="#1E40AF" bg="#DBEAFE" icon={<Check size={14} />} />
             </div>
 

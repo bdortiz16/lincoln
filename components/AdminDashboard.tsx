@@ -164,7 +164,7 @@ const SimpleBarChart: React.FC<{ data: { label: string; value: number; percentag
         <div className="w-full bg-slate-50 rounded-t-lg relative h-full flex items-end overflow-hidden hover:bg-slate-100 transition-colors">
            <div 
              style={{ height: `${item.percentage}%` }} 
-             className="w-full bg-[#0F172A] opacity-90 group-hover:opacity-100 group-hover:bg-[#4ADE80] transition-all duration-500 rounded-t-sm relative"
+             className="w-full bg-[#0C0E0D] opacity-90 group-hover:opacity-100 group-hover:bg-[#4ADE80] transition-all duration-500 rounded-t-sm relative"
            >
              <div className="opacity-0 group-hover:opacity-100 absolute -top-8 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-[10px] px-2 py-1 rounded pointer-events-none whitespace-nowrap shadow-lg transition-opacity z-10 font-bold">
                ${item.value.toLocaleString()}
@@ -183,7 +183,7 @@ const AdminSidebarItem: React.FC<{ icon: React.ElementType; label: string; activ
           <Icon size={20} className={active ? 'text-[#4ADE80]' : 'text-slate-500 group-hover:text-slate-300'} />
           <span className="text-sm font-medium">{label}</span>
       </div>
-      {badge ? (<span className="bg-[#4ADE80] text-[#0F172A] text-[10px] font-bold px-2 py-0.5 rounded-full">{badge}</span>) : null}
+      {badge ? (<span className="bg-[#4ADE80] text-[#0C0E0D] text-[10px] font-bold px-2 py-0.5 rounded-full">{badge}</span>) : null}
   </button>
 );
 
@@ -890,7 +890,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                   <div className="flex gap-2">
                       {/* Solo empresas en este admin — personas van en /admin-personas */}
                       <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
-                          <span style={{ color: '#FFFFFF' }} className="px-4 py-2 rounded-lg text-sm font-bold bg-[#0F172A] shadow-md">Empresas</span>
+                          <span style={{ color: '#FFFFFF' }} className="px-4 py-2 rounded-lg text-sm font-bold bg-[#0C0E0D] shadow-md">Empresas</span>
                       </div>
                       <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
                           <button onClick={() => setClientKycFilter('all')} className={`px-3 py-2 rounded-lg text-sm font-bold transition-all ${clientKycFilter === 'all' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>Todos</button>
@@ -907,10 +907,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                               placeholder="Buscar cliente..."
                               value={clientSearch}
                               onChange={(e) => setClientSearch(e.target.value)}
-                              className="w-full pl-9 pr-4 py-2 border border-slate-200 rounded-lg text-sm focus:border-[#0F172A] outline-none"
+                              className="w-full pl-9 pr-4 py-2 border border-slate-200 rounded-lg text-sm focus:border-[#0C0E0D] outline-none"
                           />
                       </div>
-                      <button onClick={handleRefreshClients} disabled={clientRefreshing} className="flex items-center gap-1 px-3 py-2 bg-[#0F172A] rounded-lg text-sm font-bold hover:bg-[#152e52] disabled:opacity-60 transition-colors">
+                      <button onClick={handleRefreshClients} disabled={clientRefreshing} className="flex items-center gap-1 px-3 py-2 bg-[#0C0E0D] rounded-lg text-sm font-bold hover:bg-[#152e52] disabled:opacity-60 transition-colors">
                           <RefreshCw size={14} className={clientRefreshing ? 'animate-spin' : ''} /> Actualizar
                       </button>
                       <button onClick={() => setShowOrphanTool(v => !v)} className="flex items-center gap-1 px-3 py-2 border border-slate-200 rounded-lg text-sm font-bold text-slate-600 hover:bg-slate-50 transition-colors">
@@ -954,7 +954,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                               <div 
                                   key={client.id} 
                                   onClick={() => { setSelectedClient(client); setShowDeleteConfirm(false); setShowBlockInput(false); }}
-                                  className={`p-4 cursor-pointer hover:bg-slate-50 transition-colors ${selectedClient?.id === client.id ? 'bg-slate-50 border-l-4 border-[#0F172A]' : ''}`}
+                                  className={`p-4 cursor-pointer hover:bg-slate-50 transition-colors ${selectedClient?.id === client.id ? 'bg-slate-50 border-l-4 border-[#0C0E0D]' : ''}`}
                               >
                                   <div className="flex items-center gap-3">
                                       <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-white text-sm ${client.kycStatus === 'verified' ? 'bg-green-500' : client.kycStatus === 'rejected' ? 'bg-red-500' : 'bg-orange-400'}`}>
@@ -1070,7 +1070,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                                   {/* Business KYC Data */}
                                   {selectedClient.role === 'business' && (
                                       <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
-                                          <h3 className="font-bold text-[#0F172A] text-sm flex items-center gap-2">
+                                          <h3 className="font-bold text-[#0C0E0D] text-sm flex items-center gap-2">
                                               <Building2 size={16}/> Datos KYC Empresa
                                           </h3>
                                           <div className="grid grid-cols-2 gap-3">
@@ -1143,7 +1143,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const renderMarketing = () => (
       <div className="space-y-6 animate-in fade-in duration-300">
           <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-              <h3 className="font-bold text-slate-800 mb-6 flex items-center gap-2"><Tag size={20} className="text-[#0F172A]"/> Gestión de Cupones</h3>
+              <h3 className="font-bold text-slate-800 mb-6 flex items-center gap-2"><Tag size={20} className="text-[#0C0E0D]"/> Gestión de Cupones</h3>
               
               <div className="flex gap-4 mb-6 items-end">
                   <div className="flex-1">
@@ -1152,7 +1152,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                           type="text" 
                           value={newCouponCode}
                           onChange={(e) => setNewCouponCode(e.target.value.toUpperCase())}
-                          className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm uppercase focus:border-[#0F172A] outline-none"
+                          className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm uppercase focus:border-[#0C0E0D] outline-none"
                           placeholder="EJ: VERANO2025"
                       />
                   </div>
@@ -1162,11 +1162,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                           type="number" 
                           value={newCouponDiscount}
                           onChange={(e) => setNewCouponDiscount(e.target.value)}
-                          className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-[#0F172A] outline-none"
+                          className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-[#0C0E0D] outline-none"
                           placeholder="20"
                       />
                   </div>
-                  <button onClick={handleAddCoupon} className="bg-[#0F172A] px-6 py-2 rounded-lg font-bold text-sm hover:bg-[#152e52] h-[38px] flex items-center gap-2">
+                  <button onClick={handleAddCoupon} className="bg-[#0C0E0D] px-6 py-2 rounded-lg font-bold text-sm hover:bg-[#152e52] h-[38px] flex items-center gap-2">
                       <Plus size={16}/> Crear
                   </button>
               </div>
@@ -1192,7 +1192,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                                       </span>
                                   </td>
                                   <td className="px-6 py-3 text-right flex justify-end gap-2">
-                                      <button onClick={() => toggleCoupon(coupon.code)} className="text-slate-400 hover:text-[#0F172A] p-1"><RefreshCw size={14}/></button>
+                                      <button onClick={() => toggleCoupon(coupon.code)} className="text-slate-400 hover:text-[#0C0E0D] p-1"><RefreshCw size={14}/></button>
                                       <button onClick={() => removeCoupon(coupon.code)} className="text-slate-400 hover:text-red-500 p-1"><Trash2 size={14}/></button>
                                   </td>
                               </tr>
@@ -1261,7 +1261,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
           
           <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
               <div>
-                  <h2 className="text-2xl font-bold text-[#0F172A]">Tesoreria y Finanzas</h2>
+                  <h2 className="text-2xl font-bold text-[#0C0E0D]">Tesoreria y Finanzas</h2>
                   <div className="flex items-center gap-2 mt-1">
                       <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
                       <span className="text-xs font-bold text-green-700 bg-green-50 px-2 py-0.5 rounded-full">Sistema Operativo</span>
@@ -1270,7 +1270,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
               </div>
               <button 
                   onClick={() => setShowInternalMovementModal(true)}
-                  className="bg-[#0F172A] hover:bg-[#152e52] px-5 py-2.5 rounded-xl font-bold text-sm shadow-lg flex items-center gap-2 transition-all"
+                  className="bg-[#0C0E0D] hover:bg-[#152e52] px-5 py-2.5 rounded-xl font-bold text-sm shadow-lg flex items-center gap-2 transition-all"
               >
                   <RefreshCw size={16} /> Registrar Movimiento
               </button>
@@ -1296,16 +1296,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
 
           <div className="space-y-4">
               <div className="flex gap-6 border-b border-slate-200">
-                  <button onClick={() => setTreasuryTab('deposits')} className={`pb-3 text-sm font-bold transition-colors border-b-2 ${treasuryTab === 'deposits' ? 'text-[#0F172A] border-[#0F172A]' : 'text-slate-400 border-transparent hover:text-slate-600'}`}>
+                  <button onClick={() => setTreasuryTab('deposits')} className={`pb-3 text-sm font-bold transition-colors border-b-2 ${treasuryTab === 'deposits' ? 'text-[#0C0E0D] border-[#0C0E0D]' : 'text-slate-400 border-transparent hover:text-slate-600'}`}>
                       Solicitudes Carga <span className="ml-1 bg-slate-100 text-[#4ADE80] px-1.5 py-0.5 rounded-full text-[10px]">{pendingDeposits.length}</span>
                   </button>
-                  <button onClick={() => setTreasuryTab('withdrawals')} className={`pb-3 text-sm font-bold transition-colors border-b-2 ${treasuryTab === 'withdrawals' ? 'text-[#0F172A] border-[#0F172A]' : 'text-slate-400 border-transparent hover:text-slate-600'}`}>
+                  <button onClick={() => setTreasuryTab('withdrawals')} className={`pb-3 text-sm font-bold transition-colors border-b-2 ${treasuryTab === 'withdrawals' ? 'text-[#0C0E0D] border-[#0C0E0D]' : 'text-slate-400 border-transparent hover:text-slate-600'}`}>
                       Solicitudes Retiro <span className="ml-1 bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded-full text-[10px]">{pendingWithdrawals.length}</span>
                   </button>
-                  <button onClick={() => setTreasuryTab('history')} className={`pb-3 text-sm font-bold transition-colors border-b-2 ${treasuryTab === 'history' ? 'text-[#0F172A] border-[#0F172A]' : 'text-slate-400 border-transparent hover:text-slate-600'}`}>
+                  <button onClick={() => setTreasuryTab('history')} className={`pb-3 text-sm font-bold transition-colors border-b-2 ${treasuryTab === 'history' ? 'text-[#0C0E0D] border-[#0C0E0D]' : 'text-slate-400 border-transparent hover:text-slate-600'}`}>
                       Historial Fiat
                   </button>
-                  <button onClick={() => setTreasuryTab('crypto')} className={`pb-3 text-sm font-bold transition-colors border-b-2 ${treasuryTab === 'crypto' ? 'text-[#0F172A] border-[#0F172A]' : 'text-slate-400 border-transparent hover:text-slate-600'}`}>
+                  <button onClick={() => setTreasuryTab('crypto')} className={`pb-3 text-sm font-bold transition-colors border-b-2 ${treasuryTab === 'crypto' ? 'text-[#0C0E0D] border-[#0C0E0D]' : 'text-slate-400 border-transparent hover:text-slate-600'}`}>
                       Operaciones Cripto <span className="ml-1 bg-slate-100 text-[#4ADE80] px-1.5 py-0.5 rounded-full text-[10px]">{cryptoTxs.length}</span>
                   </button>
               </div>
@@ -1313,7 +1313,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
               <div className="flex flex-col md:flex-row gap-4 justify-between items-center bg-white p-2 rounded-xl border border-slate-200">
                   {/* Solo empresas — la fuente ya viene filtrada (isBusinessTx) */}
                   <div className="flex bg-slate-100 p-1 rounded-lg">
-                      <span style={{ color: '#FFFFFF' }} className="px-4 py-1.5 rounded-md text-xs font-bold bg-[#0F172A] shadow-sm">Empresas</span>
+                      <span style={{ color: '#FFFFFF' }} className="px-4 py-1.5 rounded-md text-xs font-bold bg-[#0C0E0D] shadow-sm">Empresas</span>
                   </div>
                   
                   <div className="relative w-full md:w-64">
@@ -1323,7 +1323,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                           placeholder="Buscar usuario o ID..." 
                           value={treasurySearch}
                           onChange={(e) => setTreasurySearch(e.target.value)}
-                          className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:border-[#0F172A] outline-none transition-colors"
+                          className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:border-[#0C0E0D] outline-none transition-colors"
                       />
                   </div>
               </div>
@@ -1381,7 +1381,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                                   <td className="px-6 py-4 text-right">
                                       <button
                                           onClick={() => setSelectedTreasuryTx(tx)}
-                                          className="text-[#0F172A] font-bold text-xs border border-slate-200 bg-slate-50 px-3 py-1.5 rounded-lg hover:bg-slate-100 transition-colors"
+                                          className="text-[#0C0E0D] font-bold text-xs border border-slate-200 bg-slate-50 px-3 py-1.5 rounded-lg hover:bg-slate-100 transition-colors"
                                       >
                                           Ver / Gestionar
                                       </button>
@@ -1561,16 +1561,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
               
               {/* Tab Navigation */}
               <div className="flex flex-wrap gap-2 border-b border-slate-200 pb-4 mb-4">
-                  <button onClick={() => setReportSubTab('financial')} className={`px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 transition-all ${reportSubTab === 'financial' ? 'bg-[#0F172A] shadow-lg' : 'text-slate-500 hover:bg-slate-100'}`}>
+                  <button onClick={() => setReportSubTab('financial')} className={`px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 transition-all ${reportSubTab === 'financial' ? 'bg-[#0C0E0D] shadow-lg' : 'text-slate-500 hover:bg-slate-100'}`}>
                       <TrendingUp size={16}/> Resumen Financiero
                   </button>
-                  <button onClick={() => setReportSubTab('audit')} className={`px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 transition-all ${reportSubTab === 'audit' ? 'bg-[#0F172A] shadow-lg' : 'text-slate-500 hover:bg-slate-100'}`}>
+                  <button onClick={() => setReportSubTab('audit')} className={`px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 transition-all ${reportSubTab === 'audit' ? 'bg-[#0C0E0D] shadow-lg' : 'text-slate-500 hover:bg-slate-100'}`}>
                       <FileSearch size={16}/> Auditoría
                   </button>
-                  <button onClick={() => setReportSubTab('users')} className={`px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 transition-all ${reportSubTab === 'users' ? 'bg-[#0F172A] shadow-lg' : 'text-slate-500 hover:bg-slate-100'}`}>
+                  <button onClick={() => setReportSubTab('users')} className={`px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 transition-all ${reportSubTab === 'users' ? 'bg-[#0C0E0D] shadow-lg' : 'text-slate-500 hover:bg-slate-100'}`}>
                       <Users size={16}/> Reporte Usuarios
                   </button>
-                  <button onClick={() => setReportSubTab('backup')} className={`px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 transition-all ${reportSubTab === 'backup' ? 'bg-[#0F172A] shadow-lg' : 'text-slate-500 hover:bg-slate-100'}`}>
+                  <button onClick={() => setReportSubTab('backup')} className={`px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 transition-all ${reportSubTab === 'backup' ? 'bg-[#0C0E0D] shadow-lg' : 'text-slate-500 hover:bg-slate-100'}`}>
                       <HardDrive size={16}/> Sistema & Backup
                   </button>
               </div>
@@ -1580,7 +1580,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                   <div className="space-y-6 animate-in fade-in slide-in-from-right-4">
                       <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
                           <h3 className="font-bold text-slate-800 mb-6 flex items-center gap-2">
-                              <DollarSign size={20} className="text-[#0F172A]"/> Métricas de Rentabilidad
+                              <DollarSign size={20} className="text-[#0C0E0D]"/> Métricas de Rentabilidad
                           </h3>
                           <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
                               <div className="p-4 bg-slate-50 rounded-xl border border-slate-100">
@@ -1598,7 +1598,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                                   <p className="text-2xl font-bold text-red-700 tracking-tight">-${Math.round(financials.referralCostUSD).toLocaleString()}</p>
                                   <span className="text-[10px] text-red-600">Comisiones + Bonos</span>
                               </div>
-                              <div className="p-4 bg-[#0F172A] rounded-xl border border-slate-900 text-white relative overflow-hidden">
+                              <div className="p-4 bg-[#0C0E0D] rounded-xl border border-slate-900 text-white relative overflow-hidden">
                                   <div className="absolute top-0 right-0 w-16 h-16 bg-white/10 rounded-full blur-xl -translate-y-1/2 translate-x-1/2"></div>
                                   <p className="text-xs text-green-200 font-bold uppercase mb-1 relative z-10">Utilidad Neta</p>
                                   <p className="text-2xl font-bold text-white tracking-tight relative z-10">${Math.round(financials.netProfit).toLocaleString()}</p>
@@ -1702,7 +1702,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                                       placeholder="Buscar usuario..." 
                                       value={reportUserSearch}
                                       onChange={(e) => setReportUserSearch(e.target.value)}
-                                      className="w-full pl-9 pr-4 py-2 border border-slate-300 rounded-lg text-sm focus:border-[#0F172A] outline-none"
+                                      className="w-full pl-9 pr-4 py-2 border border-slate-300 rounded-lg text-sm focus:border-[#0C0E0D] outline-none"
                                   />
                               </div>
                           </div>
@@ -1711,7 +1711,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                                   <div 
                                       key={user.id} 
                                       onClick={() => setSelectedReportUser(user)}
-                                      className={`p-4 cursor-pointer hover:bg-slate-50 transition-colors flex items-center justify-between ${selectedReportUser?.id === user.id ? 'bg-slate-50 border-l-4 border-[#0F172A]' : ''}`}
+                                      className={`p-4 cursor-pointer hover:bg-slate-50 transition-colors flex items-center justify-between ${selectedReportUser?.id === user.id ? 'bg-slate-50 border-l-4 border-[#0C0E0D]' : ''}`}
                                   >
                                       <div className="flex items-center gap-3">
                                           <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs ${user.isBlocked ? 'bg-red-100 text-red-600' : 'bg-slate-200 text-slate-600'}`}>
@@ -1742,7 +1742,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                                       </div>
                                       <div className="text-right">
                                           <p className="text-xs text-slate-500 uppercase font-bold">Volumen Histórico</p>
-                                          <p className="text-xl font-bold text-[#0F172A]">${formatMoney(getUserVolume(selectedReportUser.id).totalUSD, 'USD')}</p>
+                                          <p className="text-xl font-bold text-[#0C0E0D]">${formatMoney(getUserVolume(selectedReportUser.id).totalUSD, 'USD')}</p>
                                       </div>
                                   </div>
                                   <div className="flex-1 overflow-y-auto p-6">
@@ -1801,7 +1801,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                               <p className="text-slate-500 text-sm mb-8 px-4">
                                   Descarga un archivo JSON encriptado con toda la información de usuarios, historial, configuración y tesorería.
                               </p>
-                              <button onClick={downloadDatabase} className="w-full bg-[#0F172A] py-3 rounded-xl font-bold hover:bg-[#152e52] transition-colors flex items-center justify-center gap-2">
+                              <button onClick={downloadDatabase} className="w-full bg-[#0C0E0D] py-3 rounded-xl font-bold hover:bg-[#152e52] transition-colors flex items-center justify-center gap-2">
                                   <Download size={18}/> Descargar Base de Datos
                               </button>
                           </div>
@@ -1837,17 +1837,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     return (
       <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
         <h3 className="font-bold text-slate-800 mb-1 flex items-center gap-2"><ShieldAlert size={18}/> reCAPTCHA v3</h3>
-        <p className="text-xs text-slate-500 mb-4">Site Key de Google reCAPTCHA v3 (invisible, sin checkbox). Déjala vacía para desactivar. Obtén la clave en <span className="font-mono text-[#0F172A]">google.com/recaptcha/admin</span>.</p>
+        <p className="text-xs text-slate-500 mb-4">Site Key de Google reCAPTCHA v3 (invisible, sin checkbox). Déjala vacía para desactivar. Obtén la clave en <span className="font-mono text-[#0C0E0D]">google.com/recaptcha/admin</span>.</p>
         <div className="flex gap-2">
           <input
             type="text"
             value={key}
             onChange={e => setKey(e.target.value)}
             placeholder="6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI"
-            className="flex-1 border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-[#0F172A]/20"
+            className="flex-1 border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-[#0C0E0D]/20"
           />
           <button onClick={handleSave}
-            className={`px-5 py-2.5 rounded-xl font-bold text-sm transition-all flex items-center gap-2 ${saved ? 'bg-green-600' : 'bg-[#0F172A] hover:bg-[#152e52]'}`}>
+            className={`px-5 py-2.5 rounded-xl font-bold text-sm transition-all flex items-center gap-2 ${saved ? 'bg-green-600' : 'bg-[#0C0E0D] hover:bg-[#152e52]'}`}>
             {saved ? <><CheckCircle size={15}/> Guardado</> : <><Save size={15}/> Guardar</>}
           </button>
         </div>
@@ -1938,7 +1938,7 @@ const renderBanks = () => (
                             <button 
                                 key={country}
                                 onClick={() => setSelectedBankCountry(country)}
-                                className={`px-4 py-2 rounded-lg text-sm font-bold transition-all border ${selectedBankCountry === country ? 'bg-[#0F172A] border-[#0F172A]' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'}`}
+                                className={`px-4 py-2 rounded-lg text-sm font-bold transition-all border ${selectedBankCountry === country ? 'bg-[#0C0E0D] border-[#0C0E0D]' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'}`}
                             >
                                 {country}
                             </button>
@@ -1946,7 +1946,7 @@ const renderBanks = () => (
                     </div>
                 </div>
                 <div className="flex items-end">
-                    <button onClick={() => { setEditingBank(null); setBankForm({ id: '', name: '', type: 'bank', accountNumber: '', accountType: '', beneficiary: '', taxId: '', taxIdType: '', logoColor: 'bg-slate-100 text-slate-500', logoText: '', qrImageUrl: '' }); setShowBankModal(true); }} className="bg-[#0F172A] px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 h-10 shadow-lg hover:bg-[#152e52] transition-colors">
+                    <button onClick={() => { setEditingBank(null); setBankForm({ id: '', name: '', type: 'bank', accountNumber: '', accountType: '', beneficiary: '', taxId: '', taxIdType: '', logoColor: 'bg-slate-100 text-slate-500', logoText: '', qrImageUrl: '' }); setShowBankModal(true); }} className="bg-[#0C0E0D] px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 h-10 shadow-lg hover:bg-[#152e52] transition-colors">
                         <Plus size={16}/> Agregar Cuenta
                     </button>
                 </div>
@@ -1957,7 +1957,7 @@ const renderBanks = () => (
             {(bankingOptions[selectedBankCountry] || []).map(bank => (
                 <div key={bank.id} className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm relative group">
                     <div className="absolute top-4 right-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button onClick={() => { setEditingBank(bank); setBankForm(bank); setShowBankModal(true); }} className="text-slate-400 hover:text-[#0F172A] p-1"><Edit2 size={16}/></button>
+                        <button onClick={() => { setEditingBank(bank); setBankForm(bank); setShowBankModal(true); }} className="text-slate-400 hover:text-[#0C0E0D] p-1"><Edit2 size={16}/></button>
                         <button onClick={() => { 
                             const newList = bankingOptions[selectedBankCountry].filter(b => b.id !== bank.id);
                             updateBankList(selectedBankCountry, newList);
@@ -2018,11 +2018,11 @@ const renderBanks = () => (
                         <div className="grid grid-cols-2 gap-4">
                             <div>
                                 <label className="block text-xs font-bold text-slate-500 uppercase mb-1">NOMBRE BANCO/RED</label>
-                                <input type="text" value={bankForm.name} onChange={(e) => setBankForm({...bankForm, name: e.target.value})} className="w-full h-11 px-3 border border-slate-300 rounded-lg focus:border-[#0F172A] outline-none" />
+                                <input type="text" value={bankForm.name} onChange={(e) => setBankForm({...bankForm, name: e.target.value})} className="w-full h-11 px-3 border border-slate-300 rounded-lg focus:border-[#0C0E0D] outline-none" />
                             </div>
                             <div>
                                 <label className="block text-xs font-bold text-slate-500 uppercase mb-1">TIPO</label>
-                                <select value={bankForm.type} onChange={(e) => setBankForm({...bankForm, type: e.target.value as any})} className="w-full h-11 px-3 border border-slate-300 rounded-lg bg-white focus:border-[#0F172A] outline-none">
+                                <select value={bankForm.type} onChange={(e) => setBankForm({...bankForm, type: e.target.value as any})} className="w-full h-11 px-3 border border-slate-300 rounded-lg bg-white focus:border-[#0C0E0D] outline-none">
                                     <option value="bank">Cuenta Bancaria</option>
                                     <option value="qr">Código QR</option>
                                     <option value="crypto">Crypto Wallet</option>
@@ -2043,7 +2043,7 @@ const renderBanks = () => (
                                         )}
                                     </div>
                                     <div className="flex-1">
-                                        <label className="cursor-pointer bg-white border border-slate-300 hover:border-[#0F172A] text-slate-700 font-bold text-sm py-2 px-4 rounded-lg w-full flex items-center justify-center gap-2 transition-colors">
+                                        <label className="cursor-pointer bg-white border border-slate-300 hover:border-[#0C0E0D] text-slate-700 font-bold text-sm py-2 px-4 rounded-lg w-full flex items-center justify-center gap-2 transition-colors">
                                             <UploadCloud size={16}/> Subir Imagen
                                             <input type="file" className="hidden" accept="image/*" onChange={handleQrUpload}/>
                                         </label>
@@ -2059,7 +2059,7 @@ const renderBanks = () => (
                                 type="text" 
                                 value={bankForm.accountNumber} 
                                 onChange={(e) => setBankForm({...bankForm, accountNumber: e.target.value})} 
-                                className="w-full h-11 px-3 border border-slate-300 rounded-lg focus:border-[#0F172A] outline-none" 
+                                className="w-full h-11 px-3 border border-slate-300 rounded-lg focus:border-[#0C0E0D] outline-none" 
                                 placeholder={bankForm.type === 'qr' ? "Opcional si subes imagen" : "000-000000-00"}
                             />
                         </div>
@@ -2067,37 +2067,37 @@ const renderBanks = () => (
                         <div className="grid grid-cols-2 gap-4">
                             <div>
                                 <label className="block text-xs font-bold text-slate-500 uppercase mb-1">{bankForm.type === 'crypto' ? 'RED (NETWORK)' : 'TIPO CUENTA'}</label>
-                                <input type="text" value={bankForm.accountType} onChange={(e) => setBankForm({...bankForm, accountType: e.target.value})} className="w-full h-11 px-3 border border-slate-300 rounded-lg focus:border-[#0F172A] outline-none" placeholder="Ej: Ahorros / TRC20"/>
+                                <input type="text" value={bankForm.accountType} onChange={(e) => setBankForm({...bankForm, accountType: e.target.value})} className="w-full h-11 px-3 border border-slate-300 rounded-lg focus:border-[#0C0E0D] outline-none" placeholder="Ej: Ahorros / TRC20"/>
                             </div>
                             <div>
                                 <label className="block text-xs font-bold text-slate-500 uppercase mb-1">BENEFICIARIO</label>
-                                <input type="text" value={bankForm.beneficiary} onChange={(e) => setBankForm({...bankForm, beneficiary: e.target.value})} className="w-full h-11 px-3 border border-slate-300 rounded-lg focus:border-[#0F172A] outline-none" />
+                                <input type="text" value={bankForm.beneficiary} onChange={(e) => setBankForm({...bankForm, beneficiary: e.target.value})} className="w-full h-11 px-3 border border-slate-300 rounded-lg focus:border-[#0C0E0D] outline-none" />
                             </div>
                         </div>
 
                         <div className="grid grid-cols-2 gap-4">
                             <div>
                                 <label className="block text-xs font-bold text-slate-500 uppercase mb-1">TIPO ID</label>
-                                <input type="text" value={bankForm.taxIdType} onChange={(e) => setBankForm({...bankForm, taxIdType: e.target.value})} className="w-full h-11 px-3 border border-slate-300 rounded-lg focus:border-[#0F172A] outline-none" placeholder="NIT/RUT"/>
+                                <input type="text" value={bankForm.taxIdType} onChange={(e) => setBankForm({...bankForm, taxIdType: e.target.value})} className="w-full h-11 px-3 border border-slate-300 rounded-lg focus:border-[#0C0E0D] outline-none" placeholder="NIT/RUT"/>
                             </div>
                             <div>
                                 <label className="block text-xs font-bold text-slate-500 uppercase mb-1">NÚMERO ID</label>
-                                <input type="text" value={bankForm.taxId} onChange={(e) => setBankForm({...bankForm, taxId: e.target.value})} className="w-full h-11 px-3 border border-slate-300 rounded-lg focus:border-[#0F172A] outline-none" />
+                                <input type="text" value={bankForm.taxId} onChange={(e) => setBankForm({...bankForm, taxId: e.target.value})} className="w-full h-11 px-3 border border-slate-300 rounded-lg focus:border-[#0C0E0D] outline-none" />
                             </div>
                         </div>
 
                         <div className="grid grid-cols-2 gap-4">
                             <div>
                                 <label className="block text-xs font-bold text-slate-500 uppercase mb-1">COLOR LOGO (TAILWIND)</label>
-                                <input type="text" value={bankForm.logoColor} onChange={(e) => setBankForm({...bankForm, logoColor: e.target.value})} className="w-full h-11 px-3 border border-slate-300 rounded-lg focus:border-[#0F172A] outline-none text-xs" placeholder="bg-yellow-400 text-black"/>
+                                <input type="text" value={bankForm.logoColor} onChange={(e) => setBankForm({...bankForm, logoColor: e.target.value})} className="w-full h-11 px-3 border border-slate-300 rounded-lg focus:border-[#0C0E0D] outline-none text-xs" placeholder="bg-yellow-400 text-black"/>
                             </div>
                             <div>
                                 <label className="block text-xs font-bold text-slate-500 uppercase mb-1">TEXTO LOGO (2 LETRAS)</label>
-                                <input type="text" value={bankForm.logoText} onChange={(e) => setBankForm({...bankForm, logoText: e.target.value})} className="w-full h-11 px-3 border border-slate-300 rounded-lg focus:border-[#0F172A] outline-none" />
+                                <input type="text" value={bankForm.logoText} onChange={(e) => setBankForm({...bankForm, logoText: e.target.value})} className="w-full h-11 px-3 border border-slate-300 rounded-lg focus:border-[#0C0E0D] outline-none" />
                             </div>
                         </div>
 
-                        <button onClick={handleBankSave} className="w-full h-12 bg-[#0F172A] font-bold rounded-lg hover:bg-[#152e52] shadow-lg mt-4">
+                        <button onClick={handleBankSave} className="w-full h-12 bg-[#0C0E0D] font-bold rounded-lg hover:bg-[#152e52] shadow-lg mt-4">
                             Guardar Cuenta
                         </button>
                     </div>
@@ -2141,7 +2141,7 @@ const renderTeam = () => (
     <div className="space-y-6 animate-in fade-in duration-300">
         <div className="flex justify-between items-center">
             <h3 className="font-bold text-slate-800">Gestión de Equipo</h3>
-            <button onClick={() => { setEditingUserId(null); setNewUserForm({name:'', email:'', role:'Soporte L1', status:'Activo'}); setShowAddUserModal(true); }} className="bg-[#0F172A] px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2">
+            <button onClick={() => { setEditingUserId(null); setNewUserForm({name:'', email:'', role:'Soporte L1', status:'Activo'}); setShowAddUserModal(true); }} className="bg-[#0C0E0D] px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2">
                 <UserPlus size={16}/> Nuevo Usuario
             </button>
         </div>
@@ -2162,7 +2162,7 @@ const renderTeam = () => (
                         <tr key={admin.id} className="hover:bg-slate-50">
                             <td className="px-6 py-4">
                                 <div className="flex items-center gap-3">
-                                    <div className="w-8 h-8 rounded-full bg-[#0F172A] text-white flex items-center justify-center font-bold text-xs">{admin?.name?.charAt(0) ?? "?"}</div>
+                                    <div className="w-8 h-8 rounded-full bg-[#0C0E0D] text-white flex items-center justify-center font-bold text-xs">{admin?.name?.charAt(0) ?? "?"}</div>
                                     <div>
                                         <p className="font-bold text-slate-800">{admin.name}</p>
                                         <p className="text-xs text-slate-400">{admin.email}</p>
@@ -2210,7 +2210,7 @@ const renderTeam = () => (
                         </select>
                         <div className="flex justify-end gap-2 mt-2">
                             <button onClick={() => setShowAddUserModal(false)} className="px-4 py-2 text-slate-500">Cancelar</button>
-                            <button onClick={handleTeamSave} className="px-4 py-2 bg-[#0F172A] rounded font-bold">Guardar</button>
+                            <button onClick={handleTeamSave} className="px-4 py-2 bg-[#0C0E0D] rounded font-bold">Guardar</button>
                         </div>
                     </div>
                 </div>
@@ -2240,10 +2240,10 @@ const renderDesign = () => (
           {/* Quick Themes */}
           <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
               <h3 className="font-bold text-slate-800 mb-6 flex items-center gap-2">
-                  <Palette size={20} className="text-[#0F172A]"/> Temas Predefinidos (Temporadas)
+                  <Palette size={20} className="text-[#0C0E0D]"/> Temas Predefinidos (Temporadas)
               </h3>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <button onClick={() => { setThemePreset('default'); showToast('Tema Default aplicado'); }} className="p-4 rounded-xl border border-slate-200 hover:border-[#0F172A] transition-all flex flex-col items-center gap-2 group bg-slate-50">
+                  <button onClick={() => { setThemePreset('default'); showToast('Tema Default aplicado'); }} className="p-4 rounded-xl border border-slate-200 hover:border-[#0C0E0D] transition-all flex flex-col items-center gap-2 group bg-slate-50">
                       <div className="text-2xl">🔵</div>
                       <span className="font-bold text-xs text-slate-700">Default</span>
                   </button>
@@ -2281,7 +2281,7 @@ const renderDesign = () => (
           {/* Branding */}
           <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
               <h3 className="font-bold text-slate-800 mb-6 flex items-center gap-2">
-                  <Layout size={20} className="text-[#0F172A]"/> Personalización Manual
+                  <Layout size={20} className="text-[#0C0E0D]"/> Personalización Manual
               </h3>
               
               <div className="space-y-6">
@@ -2328,7 +2328,7 @@ const renderDesign = () => (
                           <input type="file" onChange={handleLogoUpload} accept="image/*" className="absolute inset-0 opacity-0 cursor-pointer" />
                           <div className="flex flex-col items-center">
                               <Cloud size={24} className="text-slate-400 mb-2"/>
-                              <span className="text-sm font-bold text-[#0F172A]">Click para subir imagen</span>
+                              <span className="text-sm font-bold text-[#0C0E0D]">Click para subir imagen</span>
                               <span className="text-xs text-slate-400 mt-1">PNG, SVG o JPG (Max 2MB)</span>
                           </div>
                       </div>
@@ -2345,7 +2345,7 @@ const renderDesign = () => (
           <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
               <div className="flex justify-between items-center mb-6">
                   <h3 className="font-bold text-slate-800 flex items-center gap-2">
-                      <Gift size={20} className="text-[#0F172A]"/> Pop-up Promocional (Modal)
+                      <Gift size={20} className="text-[#0C0E0D]"/> Pop-up Promocional (Modal)
                   </h3>
                   <div className="flex items-center gap-2">
                       <span className="text-xs font-bold text-slate-500 uppercase">{systemConfig.marketingModal?.isActive ? 'Activo' : 'Inactivo'}</span>
@@ -2367,7 +2367,7 @@ const renderDesign = () => (
                           <input type="file" onChange={handlePromoUpload} accept="image/*" className="absolute inset-0 opacity-0 cursor-pointer" />
                           <div className="flex flex-col items-center">
                               <ImageIcon size={24} className="text-slate-400 mb-2"/>
-                              <span className="text-sm font-bold text-[#0F172A]">Subir Banner</span>
+                              <span className="text-sm font-bold text-[#0C0E0D]">Subir Banner</span>
                           </div>
                       </div>
                   </div>
@@ -2418,7 +2418,7 @@ const renderDesign = () => (
                               placeholder="Buscar usuario..." 
                               value={securitySearch}
                               onChange={(e) => setSecuritySearch(e.target.value)}
-                              className="w-full pl-9 pr-4 py-2 border border-slate-300 rounded-lg text-sm focus:border-[#0F172A] outline-none"
+                              className="w-full pl-9 pr-4 py-2 border border-slate-300 rounded-lg text-sm focus:border-[#0C0E0D] outline-none"
                           />
                       </div>
                   </div>
@@ -2427,7 +2427,7 @@ const renderDesign = () => (
                           <div 
                               key={user.id} 
                               onClick={() => { setSelectedSecurityUser(user); setRevealPassword(false); }}
-                              className={`p-4 cursor-pointer hover:bg-slate-50 transition-colors flex items-center justify-between ${selectedSecurityUser?.id === user.id ? 'bg-slate-50 border-l-4 border-[#0F172A]' : ''}`}
+                              className={`p-4 cursor-pointer hover:bg-slate-50 transition-colors flex items-center justify-between ${selectedSecurityUser?.id === user.id ? 'bg-slate-50 border-l-4 border-[#0C0E0D]' : ''}`}
                           >
                               <div className="flex items-center gap-3">
                                   <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm ${user.isBlocked ? 'bg-red-100 text-red-600' : 'bg-slate-200 text-slate-600'}`}>
@@ -2451,7 +2451,7 @@ const renderDesign = () => (
                           {/* Header */}
                           <div className="p-6 border-b border-slate-100 flex justify-between items-start bg-slate-50">
                               <div className="flex items-center gap-4">
-                                  <div className="w-16 h-16 bg-[#0F172A] text-white rounded-full flex items-center justify-center text-2xl font-bold">
+                                  <div className="w-16 h-16 bg-[#0C0E0D] text-white rounded-full flex items-center justify-center text-2xl font-bold">
                                       {selectedSecurityUser?.name?.charAt(0) ?? "?"}
                                   </div>
                                   <div>
@@ -2475,14 +2475,14 @@ const renderDesign = () => (
                               {/* Credentials Section */}
                               <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
                                   <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
-                                      <Shield size={18} className="text-[#0F172A]"/> Credenciales de Acceso
+                                      <Shield size={18} className="text-[#0C0E0D]"/> Credenciales de Acceso
                                   </h3>
                                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                       <div>
                                           <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Correo Electrónico (Login)</label>
                                           <div className="w-full p-3 bg-slate-100 rounded-lg text-slate-700 font-medium text-sm flex justify-between items-center">
                                               {selectedSecurityUser.email}
-                                              <Copy size={14} className="text-slate-400 cursor-pointer hover:text-[#0F172A]" onClick={() => navigator.clipboard.writeText(selectedSecurityUser.email)}/>
+                                              <Copy size={14} className="text-slate-400 cursor-pointer hover:text-[#0C0E0D]" onClick={() => navigator.clipboard.writeText(selectedSecurityUser.email)}/>
                                           </div>
                                       </div>
                                       <div>
@@ -2492,7 +2492,7 @@ const renderDesign = () => (
                                                   <span className={revealPassword ? '' : 'font-mono tracking-widest'}>
                                                       {revealPassword ? (selectedSecurityUser.password || 'Sin clave') : '••••••••••••'}
                                                   </span>
-                                                  <button onClick={() => setRevealPassword(!revealPassword)} className="text-slate-400 hover:text-[#0F172A]">
+                                                  <button onClick={() => setRevealPassword(!revealPassword)} className="text-slate-400 hover:text-[#0C0E0D]">
                                                       {revealPassword ? <EyeOff size={16}/> : <Eye size={16}/>}
                                                   </button>
                                               </div>
@@ -2594,7 +2594,7 @@ const renderDesign = () => (
           <div className="fixed inset-0 z-20 bg-black/50 lg:hidden" onClick={closeSidebar}/>
         )}
         {/* Sidebar */}
-        <aside className={`fixed inset-y-0 left-0 z-30 w-64 bg-[#0F172A] text-white transition-transform duration-300 lg:translate-x-0 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'} lg:static flex flex-col`}>
+        <aside className={`fixed inset-y-0 left-0 z-30 w-64 bg-[#0C0E0D] text-white transition-transform duration-300 lg:translate-x-0 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'} lg:static flex flex-col`}>
             <div className="h-20 flex items-center px-6 border-b border-white/10 justify-between">
                 <Logo variant="white" />
                 <button onClick={closeSidebar} className="lg:hidden text-white/40 hover:text-white p-1 rounded-lg">
@@ -2656,7 +2656,7 @@ const renderDesign = () => (
 
         {/* Global Toasts */}
         {toastMessage && (
-            <div className="fixed top-6 right-6 z-[70] bg-[#0F172A] text-white px-6 py-3 rounded-lg shadow-xl flex items-center gap-3 animate-in slide-in-from-top-4 fade-in max-w-md">
+            <div className="fixed top-6 right-6 z-[70] bg-[#0C0E0D] text-white px-6 py-3 rounded-lg shadow-xl flex items-center gap-3 animate-in slide-in-from-top-4 fade-in max-w-md">
                 <CheckCircle size={20} className="text-[#4ADE80]" />
                 <span className="font-medium text-sm">{toastMessage}</span>
             </div>
@@ -2697,7 +2697,7 @@ const renderDesign = () => (
 
                         <div className="flex justify-end gap-2 mt-4">
                             <button onClick={() => setShowInternalMovementModal(false)} className="px-4 py-2 text-slate-500">Cancelar</button>
-                            <button onClick={handleRegisterInternalMovement} className="px-4 py-2 bg-[#0F172A] rounded font-bold">Registrar</button>
+                            <button onClick={handleRegisterInternalMovement} className="px-4 py-2 bg-[#0C0E0D] rounded font-bold">Registrar</button>
                         </div>
                     </div>
                 </div>

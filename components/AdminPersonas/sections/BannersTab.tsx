@@ -28,7 +28,7 @@ import { SectionHeader, NAVY, TEAL, formatDate, EmptyState } from './shared';
 //
 // El previsualizador a la derecha del form dibuja cómo se ve el cartel
 // en la app: cartel negro con borde doble cian (#00E0C3) sobre el fondo
-// oscuro premium de la app (#0D1117 / #1E293B).
+// oscuro premium de la app (#0D1117 / #121413).
 // ─────────────────────────────────────────────
 
 interface Banner {
@@ -45,7 +45,7 @@ interface Banner {
 
 const BRAND_CYAN = '#00E0C3';
 const BRAND_DARK = '#0D1117';
-const BRAND_PANEL = '#1E293B';
+const BRAND_PANEL = '#121413';
 
 interface Props {
     profile: AdminProfile;
@@ -425,7 +425,7 @@ const BannerModal: React.FC<{
 
 // ─────────────────────────────────────────────
 // Preview del cartel: paleta oscura premium con doble borde cian.
-// Reusa la dark palette oficial #0D1117 / #1E293B + acento #00E0C3.
+// Reusa la dark palette oficial #0D1117 / #121413 + acento #00E0C3.
 // ─────────────────────────────────────────────
 const BannerPreview: React.FC<{
     title: string; description: string; couponCode?: string; imageUrl?: string;
@@ -444,7 +444,7 @@ const BannerPreview: React.FC<{
             <div className="grid grid-cols-3 gap-1.5 mt-2">
                 {['Enviar', 'Cargar', 'Convertir'].map(b => (
                     <div key={b} className="rounded-lg py-1.5 text-center text-[9px] text-white font-semibold"
-                         style={{ backgroundColor: '#0F172A' }}>
+                         style={{ backgroundColor: '#0C0E0D' }}>
                         {b}
                     </div>
                 ))}

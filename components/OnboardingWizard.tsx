@@ -62,7 +62,7 @@ const FileUploadField: React.FC<{
     return (
         <div 
             onClick={() => inputRef.current?.click()}
-            className={`border border-slate-300 rounded-lg h-16 flex items-center justify-between px-4 bg-white cursor-pointer transition-colors group relative ${value ? 'border-green-500 bg-green-50' : 'hover:border-[#0F172A]'}`}
+            className={`border border-slate-300 rounded-lg h-16 flex items-center justify-between px-4 bg-white cursor-pointer transition-colors group relative ${value ? 'border-green-500 bg-green-50' : 'hover:border-[#0C0E0D]'}`}
         >
             <input 
                 type="file" 
@@ -72,7 +72,7 @@ const FileUploadField: React.FC<{
                 onChange={handleFileChange}
             />
             <div className="flex flex-col justify-center">
-                <span className={`text-sm font-medium ${value ? 'text-green-700' : 'text-slate-600 group-hover:text-[#0F172A]'}`}>
+                <span className={`text-sm font-medium ${value ? 'text-green-700' : 'text-slate-600 group-hover:text-[#0C0E0D]'}`}>
                     {value ? "Archivo cargado" : label}
                 </span>
                 {subLabel && !value && <span className="text-[10px] text-slate-400">{subLabel}</span>}
@@ -89,7 +89,7 @@ const FileUploadField: React.FC<{
                     </button>
                 </div>
             ) : (
-                <Upload className="text-[#0F172A]" size={20} />
+                <Upload className="text-[#0C0E0D]" size={20} />
             )}
         </div>
     );
@@ -274,7 +274,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
         </header>
 
         <div className="w-full max-w-5xl bg-white rounded-2xl shadow-xl overflow-hidden flex flex-col md:flex-row min-h-[500px] mt-8">
-            <div className="md:w-5/12 bg-[#0F172A] p-8 text-white relative">
+            <div className="md:w-5/12 bg-[#0C0E0D] p-8 text-white relative">
                  <div className="space-y-0 relative z-10">
                     {steps.map((s, idx) => {
                         const isCurrent = s.id === currentStep;
@@ -294,12 +294,12 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
             </div>
 
             <div className="md:w-7/12 p-12 flex flex-col justify-center">
-                 <div className="w-16 h-16 bg-slate-50 rounded-2xl flex items-center justify-center text-[#0F172A] mb-6 border border-slate-200">
+                 <div className="w-16 h-16 bg-slate-50 rounded-2xl flex items-center justify-center text-[#0C0E0D] mb-6 border border-slate-200">
                     {steps.find(s => s.id === currentStep)?.icon ? React.createElement(steps.find(s => s.id === currentStep)!.icon, { size: 32 }) : <UserCheck size={32} />}
                  </div>
-                 <h2 className="text-2xl font-bold text-[#0F172A] mb-2">{steps.find(s => s.id === currentStep)?.label}</h2>
+                 <h2 className="text-2xl font-bold text-[#0C0E0D] mb-2">{steps.find(s => s.id === currentStep)?.label}</h2>
                  <p className="text-slate-500 mb-8 leading-relaxed">Complete la información requerida para habilitar su cuenta empresa.</p>
-                 <button onClick={handleStartStep} className="w-fit px-8 py-3 bg-[#0F172A] hover:bg-[#152e52] font-bold rounded-lg shadow-lg shadow-green-900/20 transition-all">
+                 <button onClick={handleStartStep} className="w-fit px-8 py-3 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg shadow-lg shadow-green-900/20 transition-all">
                     {currentStep === 1 ? "Comenzar registro" : "Continuar"}
                  </button>
             </div>
@@ -321,11 +321,11 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
                     </div>
                 </div>
                 <h2 className="text-xl text-slate-800 font-bold mb-1">¡Felicidades!</h2>
-                <h1 className="text-2xl text-[#0F172A] font-bold mb-4">La empresa {formData.companyName} fue registrada con éxito</h1>
+                <h1 className="text-2xl text-[#0C0E0D] font-bold mb-4">La empresa {formData.companyName} fue registrada con éxito</h1>
                 <p className="text-slate-500 max-w-lg mb-12 leading-relaxed">
                     Validaremos la documentación enviada y dentro de las próximas 24 horas hábiles te notificaremos para que puedas operar en LINCOIN.
                 </p>
-                <button onClick={onFinish} className="w-full max-w-xs h-12 bg-[#0F172A] hover:bg-[#152e52] font-bold rounded-lg shadow-lg shadow-green-900/20 transition-all">Ir al inicio</button>
+                <button onClick={onFinish} className="w-full max-w-xs h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg shadow-lg shadow-green-900/20 transition-all">Ir al inicio</button>
             </div>
         </div>
       );
@@ -337,14 +337,14 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
             <div className="flex items-center gap-4">
                 <div className="hidden md:block scale-90 origin-left"><Logo /></div>
                 <div className="md:hidden scale-75 origin-left"><Logo collapsed /></div>
-                <button onClick={handleBackInForm} className="flex items-center text-slate-400 hover:text-[#0F172A] transition-colors ml-2">
+                <button onClick={handleBackInForm} className="flex items-center text-slate-400 hover:text-[#0C0E0D] transition-colors ml-2">
                     <ArrowLeft size={20} />
                 </button>
             </div>
             <div className="hidden md:block w-1/3 h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                <div className="h-full bg-[#0F172A] transition-all duration-500" style={{ width: `${(currentStep / 5) * 100}%` }}></div>
+                <div className="h-full bg-[#0C0E0D] transition-all duration-500" style={{ width: `${(currentStep / 5) * 100}%` }}></div>
             </div>
-            <button onClick={() => setViewMode('hub')} className="px-4 py-2 text-sm font-medium text-[#0F172A] border border-[#0F172A] rounded-lg hover:bg-slate-50 transition-colors">Guardar y Salir</button>
+            <button onClick={() => setViewMode('hub')} className="px-4 py-2 text-sm font-medium text-[#0C0E0D] border border-[#0C0E0D] rounded-lg hover:bg-slate-50 transition-colors">Guardar y Salir</button>
         </header>
 
         <div className="flex-1 overflow-y-auto bg-white">
@@ -359,26 +359,26 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
                 {/* STEP 1: LEGAL REP FORM */}
                 {currentStep === 1 && step1SubState === 0 && (
                     <>
-                        <h2 className="text-2xl font-bold text-[#0F172A] text-center mb-2">Datos del Representante Legal</h2>
+                        <h2 className="text-2xl font-bold text-[#0C0E0D] text-center mb-2">Datos del Representante Legal</h2>
                         <p className="text-center text-slate-500 mb-10">Completa los datos de la persona que administrará la cuenta.</p>
                         
                         <div className="space-y-6">
                             <div>
-                                <h3 className="text-sm font-bold text-[#0F172A] mb-4 flex items-center gap-2">Datos personales</h3>
+                                <h3 className="text-sm font-bold text-[#0C0E0D] mb-4 flex items-center gap-2">Datos personales</h3>
                                 <div className="flex gap-4 mb-4">
-                                    <button onClick={() => handleChange('repGender', 'male')} className={`flex-1 h-12 border font-semibold rounded-lg flex items-center justify-center gap-2 transition-colors ${formData.repGender === 'male' ? 'border-[#0F172A] bg-slate-50 text-[#0F172A]' : 'border-slate-200 text-slate-500 hover:bg-slate-50'}`}><span>♂</span> Masculino</button>
-                                    <button onClick={() => handleChange('repGender', 'female')} className={`flex-1 h-12 border font-semibold rounded-lg flex items-center justify-center gap-2 transition-colors ${formData.repGender === 'female' ? 'border-[#0F172A] bg-slate-50 text-[#0F172A]' : 'border-slate-200 text-slate-500 hover:bg-slate-50'}`}><span>♀</span> Femenino</button>
+                                    <button onClick={() => handleChange('repGender', 'male')} className={`flex-1 h-12 border font-semibold rounded-lg flex items-center justify-center gap-2 transition-colors ${formData.repGender === 'male' ? 'border-[#0C0E0D] bg-slate-50 text-[#0C0E0D]' : 'border-slate-200 text-slate-500 hover:bg-slate-50'}`}><span>♂</span> Masculino</button>
+                                    <button onClick={() => handleChange('repGender', 'female')} className={`flex-1 h-12 border font-semibold rounded-lg flex items-center justify-center gap-2 transition-colors ${formData.repGender === 'female' ? 'border-[#0C0E0D] bg-slate-50 text-[#0C0E0D]' : 'border-slate-200 text-slate-500 hover:bg-slate-50'}`}><span>♀</span> Femenino</button>
                                 </div>
                                 <div className="relative mb-4">
-                                    <input type="date" value={formData.repDob} onChange={(e) => handleChange('repDob', e.target.value)} className="w-full h-12 px-4 border border-slate-300 rounded-lg text-slate-900 focus:border-[#0F172A] outline-none" />
-                                    <label className="absolute left-4 -top-2.5 bg-white px-1 text-xs text-[#0F172A] font-bold">Fecha de nacimiento</label>
+                                    <input type="date" value={formData.repDob} onChange={(e) => handleChange('repDob', e.target.value)} className="w-full h-12 px-4 border border-slate-300 rounded-lg text-slate-900 focus:border-[#0C0E0D] outline-none" />
+                                    <label className="absolute left-4 -top-2.5 bg-white px-1 text-xs text-[#0C0E0D] font-bold">Fecha de nacimiento</label>
                                 </div>
                                 <div className="grid grid-cols-2 gap-4">
-                                    <input type="text" placeholder="Nombres" value={formData.repFirstName} onChange={(e) => handleChange('repFirstName', e.target.value)} className="w-full h-12 px-4 border border-slate-300 rounded-lg focus:border-[#0F172A] outline-none" />
-                                    <input type="text" placeholder="Apellidos" value={formData.repLastName} onChange={(e) => handleChange('repLastName', e.target.value)} className="w-full h-12 px-4 border border-slate-300 rounded-lg focus:border-[#0F172A] outline-none" />
+                                    <input type="text" placeholder="Nombres" value={formData.repFirstName} onChange={(e) => handleChange('repFirstName', e.target.value)} className="w-full h-12 px-4 border border-slate-300 rounded-lg focus:border-[#0C0E0D] outline-none" />
+                                    <input type="text" placeholder="Apellidos" value={formData.repLastName} onChange={(e) => handleChange('repLastName', e.target.value)} className="w-full h-12 px-4 border border-slate-300 rounded-lg focus:border-[#0C0E0D] outline-none" />
                                 </div>
                                 <div className="relative mt-4">
-                                    <select value={formData.repNationality} onChange={(e) => handleChange('repNationality', e.target.value)} className="w-full h-12 px-4 border border-slate-300 rounded-lg bg-white appearance-none focus:border-[#0F172A] outline-none">
+                                    <select value={formData.repNationality} onChange={(e) => handleChange('repNationality', e.target.value)} className="w-full h-12 px-4 border border-slate-300 rounded-lg bg-white appearance-none focus:border-[#0C0E0D] outline-none">
                                         <option value="">Selecciona Nacionalidad</option>
                                         {allCountriesList.map(c => <option key={c} value={c}>{c}</option>)}
                                     </select>
@@ -387,9 +387,9 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
                             </div>
 
                             <div>
-                                <h3 className="text-sm font-bold text-[#0F172A] mb-4">Datos de identificación</h3>
+                                <h3 className="text-sm font-bold text-[#0C0E0D] mb-4">Datos de identificación</h3>
                                 <div className="relative mb-4">
-                                    <select value={formData.repDocCountry} onChange={(e) => handleChange('repDocCountry', e.target.value)} className="w-full h-12 px-4 border border-slate-300 rounded-lg bg-white appearance-none focus:border-[#0F172A] outline-none">
+                                    <select value={formData.repDocCountry} onChange={(e) => handleChange('repDocCountry', e.target.value)} className="w-full h-12 px-4 border border-slate-300 rounded-lg bg-white appearance-none focus:border-[#0C0E0D] outline-none">
                                         <option value="">País emisión del documento</option>
                                         {allCountriesList.map(c => <option key={c} value={c}>{c}</option>)}
                                     </select>
@@ -397,7 +397,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
                                 </div>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                     <div className="relative">
-                                        <select value={formData.repDocType} onChange={(e) => handleChange('repDocType', e.target.value)} className="w-full h-12 px-4 border border-slate-300 rounded-lg bg-white appearance-none focus:border-[#0F172A] outline-none">
+                                        <select value={formData.repDocType} onChange={(e) => handleChange('repDocType', e.target.value)} className="w-full h-12 px-4 border border-slate-300 rounded-lg bg-white appearance-none focus:border-[#0C0E0D] outline-none">
                                             <option value="">Tipo Documento</option>
                                             <option value="DNI">DNI / Cédula</option>
                                             <option value="PASSPORT">Pasaporte</option>
@@ -405,24 +405,24 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
                                         </select>
                                         <ChevronDown className="absolute right-4 top-4 text-slate-400 pointer-events-none" size={16} />
                                     </div>
-                                    <input type="text" placeholder="N° de Identificación" value={formData.repDocNumber} onChange={(e) => handleChange('repDocNumber', e.target.value)} className="w-full h-12 px-4 border border-slate-300 rounded-lg focus:border-[#0F172A] outline-none" />
+                                    <input type="text" placeholder="N° de Identificación" value={formData.repDocNumber} onChange={(e) => handleChange('repDocNumber', e.target.value)} className="w-full h-12 px-4 border border-slate-300 rounded-lg focus:border-[#0C0E0D] outline-none" />
                                 </div>
                             </div>
                             
                              <div>
-                                <h3 className="text-sm font-bold text-[#0F172A] mb-2">¿Eres una persona políticamente expuesta?</h3>
+                                <h3 className="text-sm font-bold text-[#0C0E0D] mb-2">¿Eres una persona políticamente expuesta?</h3>
                                 <div className="flex gap-6 mb-4">
                                      <label className="flex items-center gap-2 cursor-pointer">
-                                        <input type="radio" name="pep" checked={formData.isPep === true} onChange={() => handleChange('isPep', true)} className="w-4 h-4 text-[#0F172A]" /> Si
+                                        <input type="radio" name="pep" checked={formData.isPep === true} onChange={() => handleChange('isPep', true)} className="w-4 h-4 text-[#0C0E0D]" /> Si
                                      </label>
                                      <label className="flex items-center gap-2 cursor-pointer">
-                                        <input type="radio" name="pep" checked={formData.isPep === false} onChange={() => handleChange('isPep', false)} className="w-4 h-4 text-[#0F172A]" /> No
+                                        <input type="radio" name="pep" checked={formData.isPep === false} onChange={() => handleChange('isPep', false)} className="w-4 h-4 text-[#0C0E0D]" /> No
                                      </label>
                                 </div>
                             </div>
 
                             <div className="pt-4 flex justify-center pb-8">
-                                <button onClick={handleNextInForm} className="w-full max-w-sm h-12 bg-[#0F172A] hover:bg-[#152e52] font-bold rounded-lg shadow-lg transition-all">Continuar</button>
+                                <button onClick={handleNextInForm} className="w-full max-w-sm h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg shadow-lg transition-all">Continuar</button>
                             </div>
                         </div>
                     </>
@@ -434,31 +434,31 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
                         <div className="relative w-48 h-48 mb-8">
                             <div className="absolute inset-0 bg-slate-100 rounded-full animate-pulse opacity-50"></div>
                             <div className="relative z-10 flex flex-col items-center justify-center h-full">
-                                <Smartphone size={100} className="text-[#0F172A]" strokeWidth={1} />
+                                <Smartphone size={100} className="text-[#0C0E0D]" strokeWidth={1} />
                                 <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white/80 p-2 rounded-lg border border-cuypay-accent shadow-sm">
                                     <ScanFace size={40} className="text-cuypay-accent" />
                                 </div>
                             </div>
                         </div>
-                        <h2 className="text-2xl font-bold text-[#0F172A] mb-4">Validación Biométrica</h2>
+                        <h2 className="text-2xl font-bold text-[#0C0E0D] mb-4">Validación Biométrica</h2>
                         <p className="text-slate-500 mb-8">Para tu seguridad, necesitamos verificar que eres quien dices ser.</p>
-                        <button onClick={handleNextInForm} className="w-full max-w-xs h-12 bg-[#0F172A] hover:bg-[#152e52] font-bold rounded-lg shadow-lg transition-all">Iniciar Verificación</button>
+                        <button onClick={handleNextInForm} className="w-full max-w-xs h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg shadow-lg transition-all">Iniciar Verificación</button>
                     </div>
                 )}
 
                 {/* STEP 2: COMPANY DATA */}
                 {currentStep === 2 && (
                     <>
-                        <h2 className="text-2xl font-bold text-[#0F172A] text-center mb-2">Datos de la empresa</h2>
+                        <h2 className="text-2xl font-bold text-[#0C0E0D] text-center mb-2">Datos de la empresa</h2>
                         <p className="text-center text-slate-500 mb-10">Completa los siguientes datos para identificar la empresa.</p>
 
                         <div className="space-y-6">
                             <div>
-                                <h3 className="text-sm font-bold text-[#0F172A] mb-4">Identificación</h3>
+                                <h3 className="text-sm font-bold text-[#0C0E0D] mb-4">Identificación</h3>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                                    <input type="text" placeholder="Razón Social" value={formData.companyName} onChange={(e) => handleChange('companyName', e.target.value)} className="w-full h-12 px-4 border border-slate-300 rounded-lg focus:border-[#0F172A] outline-none" />
+                                    <input type="text" placeholder="Razón Social" value={formData.companyName} onChange={(e) => handleChange('companyName', e.target.value)} className="w-full h-12 px-4 border border-slate-300 rounded-lg focus:border-[#0C0E0D] outline-none" />
                                     <div className="relative">
-                                         <select value={formData.companyCountry} onChange={(e) => handleChange('companyCountry', e.target.value)} className="w-full h-12 px-4 border border-slate-300 rounded-lg bg-white appearance-none focus:border-[#0F172A] outline-none">
+                                         <select value={formData.companyCountry} onChange={(e) => handleChange('companyCountry', e.target.value)} className="w-full h-12 px-4 border border-slate-300 rounded-lg bg-white appearance-none focus:border-[#0C0E0D] outline-none">
                                             <option value="">País de la Empresa</option>
                                             {allCountriesList.map(c => <option key={c} value={c}>{c}</option>)}
                                          </select>
@@ -467,7 +467,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
                                 </div>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                      <div className="relative">
-                                        <select value={formData.companyTaxIdType} onChange={(e) => handleChange('companyTaxIdType', e.target.value)} className="w-full h-12 px-4 border border-slate-300 rounded-lg bg-white appearance-none focus:border-[#0F172A] outline-none">
+                                        <select value={formData.companyTaxIdType} onChange={(e) => handleChange('companyTaxIdType', e.target.value)} className="w-full h-12 px-4 border border-slate-300 rounded-lg bg-white appearance-none focus:border-[#0C0E0D] outline-none">
                                             <option value="">Tipo ID Tributario</option>
                                             <option value="RUC">RUC</option>
                                             <option value="NIT">NIT</option>
@@ -477,20 +477,20 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
                                         </select>
                                         <ChevronDown className="absolute right-4 top-4 text-slate-400 pointer-events-none" size={16} />
                                     </div>
-                                    <input type="text" placeholder="N° Identificación (RUC/NIT)" value={formData.companyTaxId} onChange={(e) => handleChange('companyTaxId', e.target.value)} className="w-full h-12 px-4 border border-slate-300 rounded-lg focus:border-[#0F172A] outline-none" />
+                                    <input type="text" placeholder="N° Identificación (RUC/NIT)" value={formData.companyTaxId} onChange={(e) => handleChange('companyTaxId', e.target.value)} className="w-full h-12 px-4 border border-slate-300 rounded-lg focus:border-[#0C0E0D] outline-none" />
                                 </div>
                             </div>
 
                             <div>
-                                <h3 className="text-sm font-bold text-[#0F172A] mb-4">Dirección legal</h3>
+                                <h3 className="text-sm font-bold text-[#0C0E0D] mb-4">Dirección legal</h3>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                                    <input type="text" placeholder="Ciudad" value={formData.companyCity} onChange={(e) => handleChange('companyCity', e.target.value)} className="w-full h-12 px-4 border border-slate-300 rounded-lg focus:border-[#0F172A] outline-none" />
-                                    <input type="text" placeholder="Dirección Exacta" value={formData.companyAddress} onChange={(e) => handleChange('companyAddress', e.target.value)} className="w-full h-12 px-4 border border-slate-300 rounded-lg focus:border-[#0F172A] outline-none" />
+                                    <input type="text" placeholder="Ciudad" value={formData.companyCity} onChange={(e) => handleChange('companyCity', e.target.value)} className="w-full h-12 px-4 border border-slate-300 rounded-lg focus:border-[#0C0E0D] outline-none" />
+                                    <input type="text" placeholder="Dirección Exacta" value={formData.companyAddress} onChange={(e) => handleChange('companyAddress', e.target.value)} className="w-full h-12 px-4 border border-slate-300 rounded-lg focus:border-[#0C0E0D] outline-none" />
                                 </div>
                             </div>
 
                             <div className="pt-8 flex justify-center pb-8">
-                                <button onClick={handleNextInForm} className="w-full max-w-sm h-12 bg-[#0F172A] hover:bg-[#152e52] font-bold rounded-lg shadow-lg transition-all">Continuar</button>
+                                <button onClick={handleNextInForm} className="w-full max-w-sm h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg shadow-lg transition-all">Continuar</button>
                             </div>
                         </div>
                     </>
@@ -499,18 +499,18 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
                 {/* STEP 3: BENEFICIARIES */}
                 {currentStep === 3 && (
                     <>
-                        <h2 className="text-2xl font-bold text-[#0F172A] text-center mb-10">Declaración jurada</h2>
+                        <h2 className="text-2xl font-bold text-[#0C0E0D] text-center mb-10">Declaración jurada</h2>
                         <div className="space-y-4">
                             <div className="bg-[#EBF2FA] rounded-lg p-6 border border-slate-200">
-                                <h4 className="font-bold text-[#0F172A] mb-4">Beneficiarios Finales</h4>
+                                <h4 className="font-bold text-[#0C0E0D] mb-4">Beneficiarios Finales</h4>
                                 <p className="text-sm text-slate-600 mb-4">Declaro que la información proporcionada es fidedigna y que los beneficiarios finales de la empresa han sido identificados correctamente.</p>
                                 <div className="flex items-start gap-3 mt-4">
-                                    <input type="checkbox" id="dj" checked={formData.affidavitAccepted} onChange={(e) => handleChange('affidavitAccepted', e.target.checked)} className="mt-1 w-5 h-5 rounded border-slate-300 text-[#0F172A] focus:ring-[#0F172A]" />
+                                    <input type="checkbox" id="dj" checked={formData.affidavitAccepted} onChange={(e) => handleChange('affidavitAccepted', e.target.checked)} className="mt-1 w-5 h-5 rounded border-slate-300 text-[#0C0E0D] focus:ring-[#0C0E0D]" />
                                     <label htmlFor="dj" className="text-sm text-slate-700 font-medium">Acepto la declaración jurada de veracidad de la información.</label>
                                 </div>
                             </div>
                             <div className="pt-8 flex justify-center pb-8">
-                                <button onClick={handleNextInForm} className="w-full max-w-sm h-12 bg-[#0F172A] hover:bg-[#152e52] font-bold rounded-lg shadow-lg transition-all">Continuar</button>
+                                <button onClick={handleNextInForm} className="w-full max-w-sm h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg shadow-lg transition-all">Continuar</button>
                             </div>
                         </div>
                     </>
@@ -519,12 +519,12 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
                 {/* STEP 4: DOCUMENTS */}
                 {currentStep === 4 && (
                     <>
-                        <h2 className="text-2xl font-bold text-[#0F172A] text-center mb-2">Documentos de la empresa</h2>
+                        <h2 className="text-2xl font-bold text-[#0C0E0D] text-center mb-2">Documentos de la empresa</h2>
                         <p className="text-center text-slate-500 mb-8">Sube los documentos legales para validar tu empresa.</p>
                         
                         <div className="space-y-6">
                             <div>
-                                <h3 className="text-[#0F172A] font-bold text-sm mb-2">Documento ID Representante Legal</h3>
+                                <h3 className="text-[#0C0E0D] font-bold text-sm mb-2">Documento ID Representante Legal</h3>
                                 <FileUploadField 
                                     label="Cargar Cédula / Pasaporte" 
                                     value={formData.docRepId} 
@@ -533,7 +533,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
                             </div>
                             
                             <div>
-                                <h3 className="text-[#0F172A] font-bold text-sm mb-2">Constitución de la Empresa</h3>
+                                <h3 className="text-[#0C0E0D] font-bold text-sm mb-2">Constitución de la Empresa</h3>
                                 <FileUploadField 
                                     label="Cargar Escritura / Cámara de Comercio" 
                                     value={formData.docConstitution} 
@@ -542,7 +542,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
                             </div>
 
                             <div>
-                                <h3 className="text-[#0F172A] font-bold text-sm mb-2">RUT / Tax ID (Opcional)</h3>
+                                <h3 className="text-[#0C0E0D] font-bold text-sm mb-2">RUT / Tax ID (Opcional)</h3>
                                 <FileUploadField 
                                     label="Cargar Documento Tributario" 
                                     value={formData.docTaxId} 
@@ -551,7 +551,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
                             </div>
 
                             <div className="pt-8 flex justify-center pb-8">
-                                <button onClick={handleNextInForm} className="w-full max-w-sm h-12 bg-[#0F172A] hover:bg-[#152e52] font-bold rounded-lg shadow-lg transition-all">Finalizar Registro</button>
+                                <button onClick={handleNextInForm} className="w-full max-w-sm h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg shadow-lg transition-all">Finalizar Registro</button>
                             </div>
                         </div>
                     </>
@@ -560,7 +560,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
                 {/* STEP 5: REVIEW */}
                 {currentStep === 5 && (
                     <>
-                        <h2 className="text-2xl font-bold text-[#0F172A] text-center mb-6">Revisar Datos</h2>
+                        <h2 className="text-2xl font-bold text-[#0C0E0D] text-center mb-6">Revisar Datos</h2>
                         <div className="space-y-6 bg-slate-50 p-6 rounded-xl border border-slate-200">
                             <div>
                                 <h4 className="text-xs font-bold text-slate-400 uppercase mb-1">Empresa</h4>
@@ -581,7 +581,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
                             </div>
                         </div>
                         <div className="pt-8 flex justify-center pb-8">
-                            <button onClick={handleNextInForm} className="w-full max-w-sm h-12 bg-[#0F172A] hover:bg-[#152e52] font-bold rounded-lg shadow-lg transition-all">Confirmar y Enviar</button>
+                            <button onClick={handleNextInForm} className="w-full max-w-sm h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg shadow-lg transition-all">Confirmar y Enviar</button>
                         </div>
                     </>
                 )}
@@ -600,10 +600,10 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
                     <div className="flex-1 flex flex-col items-center justify-center p-8 text-center">
                         {modalStage === 0 ? (
                             <>
-                                <ScanFace size={64} className="text-[#0F172A] mb-4"/>
+                                <ScanFace size={64} className="text-[#0C0E0D] mb-4"/>
                                 <h2 className="text-2xl font-bold text-slate-800 mb-2">Escaneo Facial</h2>
                                 <p className="text-slate-500 mb-8 text-sm">Por favor, mantén tu rostro dentro del marco y sigue las instrucciones.</p>
-                                <button onClick={handleModalStart} className="w-full max-w-xs h-12 bg-[#0F172A] hover:bg-[#152e52] font-bold rounded-lg transition-colors">Escanear Ahora</button>
+                                <button onClick={handleModalStart} className="w-full max-w-xs h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg transition-colors">Escanear Ahora</button>
                             </>
                         ) : (
                             <div className="flex flex-col items-center">

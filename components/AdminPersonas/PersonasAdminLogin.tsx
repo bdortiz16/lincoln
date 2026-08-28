@@ -6,7 +6,7 @@ interface PersonasAdminLoginProps {
     onLoginSuccess: () => void;
 }
 
-const BG = '#0B1120';      // navy más oscuro que la web de Empresas
+const BG = '#070808';      // navy más oscuro que la web de Empresas
 const BG_CARD = '#111827';
 const BORDER = '#1F2937';
 const TEAL = '#4ADE80';
@@ -106,7 +106,7 @@ export const PersonasAdminLogin: React.FC<PersonasAdminLoginProps> = ({ onLoginS
                     {/* Barra superior tipo IDE/terminal */}
                     <div
                         className="flex items-center gap-2 px-4 py-2.5"
-                        style={{ borderBottom: `1px solid ${BORDER}`, backgroundColor: '#0F172A' }}
+                        style={{ borderBottom: `1px solid ${BORDER}`, backgroundColor: '#0C0E0D' }}
                     >
                         <div className="flex gap-1.5">
                             <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: '#EF4444' }} />
@@ -216,7 +216,7 @@ export const PersonasAdminLogin: React.FC<PersonasAdminLoginProps> = ({ onLoginS
                     {/* Footer del card */}
                     <div
                         className="px-6 py-3 flex items-center justify-between"
-                        style={{ borderTop: `1px solid ${BORDER}`, backgroundColor: '#0F172A' }}
+                        style={{ borderTop: `1px solid ${BORDER}`, backgroundColor: '#0C0E0D' }}
                     >
                         <span style={{ color: TEXT_MUTED, fontSize: '10px', letterSpacing: '0.1em' }}>
                             DB: cuypay-personas

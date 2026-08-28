@@ -64,8 +64,8 @@ const applyVars = (s: string, vars: Record<string, string>) =>
   s.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? '')
 
 // Brand palette CuyPay — misma que usa notify-transaction y el favicon.
-const BRAND_NAVY  = '#0F172A'
-const BRAND_TEAL  = '#2DD4BF'
+const BRAND_NAVY  = '#0C0E0D'
+const BRAND_TEAL  = '#4ADE80'
 const BRAND_TEAL2 = '#5EEAD4'
 const BRAND_LIGHT = '#F8FAFC'
 
@@ -209,9 +209,9 @@ function escapeHtml(s: string): string {
 // ─────────────────────────────────────────────
 const LOGO_SVG_DATAURI = `data:image/svg+xml;base64,${btoa(`
 <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
-  <rect x="2" y="2" width="96" height="96" rx="22" fill="${BRAND_NAVY}"/>
-  <rect x="22" y="22" width="56" height="56" rx="16" fill="none" stroke="${BRAND_TEAL}" stroke-width="7" stroke-linejoin="round"/>
-  <circle cx="58" cy="56" r="8" fill="${BRAND_TEAL}"/>
+  <rect x="2" y="2" width="96" height="96" rx="24" fill="${BRAND_NAVY}"/>
+  <path d="M34 30 H47 V58 H58 V71 H34 Z" fill="#F4F4F2"/>
+  <circle cx="68" cy="67" r="12" fill="${BRAND_TEAL}"/>
 </svg>`.trim())}`
 
 // ─────────────────────────────────────────────

@@ -1,6 +1,6 @@
 import React from 'react';
 
-export const NAVY = '#0F172A';
+export const NAVY = '#0C0E0D';
 export const TEAL = '#4ADE80';
 
 export const formatDate = (iso: string | null | undefined) => {

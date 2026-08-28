@@ -40,13 +40,13 @@ class ErrorBoundary extends React.Component<
       return (
         <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#F8FAFC', padding: '2rem', fontFamily: 'sans-serif' }}>
           <div style={{ background: 'white', border: '1px solid #e2e8f0', borderRadius: '1rem', padding: '2rem', maxWidth: '480px', width: '100%', boxShadow: '0 4px 24px rgba(0,0,0,0.08)' }}>
-            <div style={{ color: '#0F172A', fontWeight: 800, fontSize: '1.25rem', marginBottom: '0.5rem' }}>Algo salió mal</div>
+            <div style={{ color: '#0C0E0D', fontWeight: 800, fontSize: '1.25rem', marginBottom: '0.5rem' }}>Algo salió mal</div>
             <div style={{ color: '#64748b', fontSize: '0.875rem', marginBottom: '1rem' }}>Ocurrió un error inesperado. Por favor recarga la página.</div>
             <details style={{ color: '#94a3b8', fontSize: '0.75rem', marginBottom: '1rem' }}>
               <summary style={{ cursor: 'pointer' }}>Detalles del error</summary>
               <pre style={{ marginTop: '0.5rem', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{this.state.error.message}</pre>
             </details>
-            <button onClick={() => window.location.reload()} style={{ background: '#0F172A', color: 'white', border: 'none', borderRadius: '0.75rem', padding: '0.75rem 1.5rem', fontWeight: 700, fontSize: '0.875rem', cursor: 'pointer', width: '100%' }}>
+            <button onClick={() => window.location.reload()} style={{ background: '#0C0E0D', color: 'white', border: 'none', borderRadius: '0.75rem', padding: '0.75rem 1.5rem', fontWeight: 700, fontSize: '0.875rem', cursor: 'pointer', width: '100%' }}>
               Recargar página
             </button>
           </div>

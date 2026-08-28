@@ -17,7 +17,7 @@ export const OnboardingIntro: React.FC<OnboardingIntroProps> = ({ onContinue }) 
       {/* Main Content */}
       <main className="flex-1 max-w-4xl mx-auto w-full px-4 py-12 flex flex-col items-center">
         
-        <h1 className="text-2xl md:text-3xl font-bold text-[#0F172A] text-center mb-4">
+        <h1 className="text-2xl md:text-3xl font-bold text-[#0C0E0D] text-center mb-4">
           Estás a punto de crear tu cuenta empresa
         </h1>
         
@@ -29,7 +29,7 @@ export const OnboardingIntro: React.FC<OnboardingIntroProps> = ({ onContinue }) 
           
           {/* Card 1 */}
           <div className="bg-[#F8FAFC] p-6 rounded-xl flex gap-5 items-start">
-            <div className="bg-[#0F172A] w-12 h-12 rounded-lg flex items-center justify-center shrink-0">
+            <div className="bg-[#0C0E0D] w-12 h-12 rounded-lg flex items-center justify-center shrink-0">
                <FileText className="text-white" size={24} />
             </div>
             <div>
@@ -44,7 +44,7 @@ export const OnboardingIntro: React.FC<OnboardingIntroProps> = ({ onContinue }) 
 
           {/* Card 2 */}
           <div className="bg-[#F8FAFC] p-6 rounded-xl flex gap-5 items-center">
-            <div className="bg-[#0F172A] w-12 h-12 rounded-lg flex items-center justify-center shrink-0">
+            <div className="bg-[#0C0E0D] w-12 h-12 rounded-lg flex items-center justify-center shrink-0">
                <FileText className="text-white" size={24} />
             </div>
             <p className="text-slate-800 font-medium">
@@ -55,7 +55,7 @@ export const OnboardingIntro: React.FC<OnboardingIntroProps> = ({ onContinue }) 
           {/* Card 3 */}
           <div className="bg-[#F8FAFC] p-6 rounded-xl flex gap-5 items-start">
             <div className="bg-[#EBF2FA] w-12 h-12 rounded-lg flex items-center justify-center shrink-0">
-               <CreditCard className="text-[#0F172A]" size={24} />
+               <CreditCard className="text-[#0C0E0D]" size={24} />
             </div>
             <p className="text-slate-800 font-medium leading-relaxed">
                Si eres el representante legal, asegúrate de tener a mano tu documento, y completa el proceso de validación de identidad.
@@ -64,7 +64,7 @@ export const OnboardingIntro: React.FC<OnboardingIntroProps> = ({ onContinue }) 
 
           {/* Info Box */}
           <div className="border border-slate-200 bg-slate-50/50 p-6 rounded-xl flex gap-4 items-start">
-            <Info className="text-[#0F172A] shrink-0 mt-1" size={20} />
+            <Info className="text-[#0C0E0D] shrink-0 mt-1" size={20} />
             <p className="text-slate-600 text-sm leading-relaxed">
                Si NO eres el representante legal, por favor completa el proceso y te contactaremos para validar la identidad del representante legal.
             </p>
@@ -75,7 +75,7 @@ export const OnboardingIntro: React.FC<OnboardingIntroProps> = ({ onContinue }) 
         <div className="mt-12 flex flex-col items-center gap-4 w-full">
             <button 
                 onClick={onContinue}
-                className="w-full max-w-md h-12 bg-[#0F172A] hover:bg-[#152e52] font-bold rounded-lg transition-colors shadow-lg shadow-green-900/20"
+                className="w-full max-w-md h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg transition-colors shadow-lg shadow-green-900/20"
             >
                 Siguiente
             </button>

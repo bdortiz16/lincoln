@@ -58,7 +58,7 @@ export const CollectionWalletCard: React.FC = () => {
                     onClick={save}
                     disabled={state === 'saving' || addr.trim() === saved}
                     style={{ color: '#FFFFFF' }}
-                    className="px-5 py-2.5 rounded-xl bg-[#0F172A] hover:bg-[#152e52] font-bold text-sm flex items-center gap-2 disabled:opacity-50 transition-colors"
+                    className="px-5 py-2.5 rounded-xl bg-[#0C0E0D] hover:bg-[#152e52] font-bold text-sm flex items-center gap-2 disabled:opacity-50 transition-colors"
                 >
                     <Save size={14} /> {state === 'saving' ? 'Guardando…' : 'Guardar'}
                 </button>

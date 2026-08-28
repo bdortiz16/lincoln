@@ -59,7 +59,7 @@ const AdminEmpresasInner: React.FC = () => {
 
     if (isAuthLoading) {
         return (
-            <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: '#0F172A' }}>
+            <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: '#0C0E0D' }}>
                 <p className="text-white/60 text-sm font-medium tracking-widest uppercase">Verificando sesión…</p>
             </div>
         );
@@ -70,7 +70,7 @@ const AdminEmpresasInner: React.FC = () => {
     }
 
     return (
-        <div className="min-h-screen flex items-center justify-center p-4" style={{ backgroundColor: '#0F172A' }}>
+        <div className="min-h-screen flex items-center justify-center p-4" style={{ backgroundColor: '#0C0E0D' }}>
             <div className="w-full max-w-sm">
                 <div className="flex justify-center mb-6">
                     <Logo variant="white" business />
@@ -78,7 +78,7 @@ const AdminEmpresasInner: React.FC = () => {
                 <div className="bg-white rounded-2xl shadow-2xl p-6">
                     <div className="flex items-center gap-2 mb-1">
                         <ShieldCheck size={18} className="text-[#16A34A]" />
-                        <h1 className="font-bold text-lg text-[#0F172A]">Admin Empresas</h1>
+                        <h1 className="font-bold text-lg text-[#0C0E0D]">Admin Empresas</h1>
                     </div>
                     <p className="text-xs text-slate-500 mb-5">Acceso exclusivo para administradores.</p>
 
@@ -121,7 +121,7 @@ const AdminEmpresasInner: React.FC = () => {
                             type="submit"
                             disabled={submitting}
                             style={{ color: '#FFFFFF' }}
-                            className="w-full py-3 rounded-xl bg-[#0F172A] hover:bg-[#152e52] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60 transition-colors"
+                            className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#152e52] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60 transition-colors"
                         >
                             <Lock size={14} /> {submitting ? 'Ingresando…' : 'Ingresar'}
                         </button>

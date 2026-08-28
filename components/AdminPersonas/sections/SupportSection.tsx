@@ -776,16 +776,16 @@ const EMAIL_SAMPLES: Array<{ id: string; label: string; hero: string; accent: st
     {
         id: 'otp', label: 'Código de verificación', accent: '#4ADE80', hero: 'Verificación',
         title: 'Tu código de verificación',
-        body: 'Usa este código para verificar tu correo en Lincoin. Expira en 10 minutos.<div style="margin:18px 0;padding:18px;background:#F1F5F9;border-radius:12px;text-align:center;font-size:34px;font-weight:800;letter-spacing:10px;color:#0F172A;font-family:monospace">511551</div>Si no solicitaste este código, ignora este correo.',
+        body: 'Usa este código para verificar tu correo en Lincoin. Expira en 10 minutos.<div style="margin:18px 0;padding:18px;background:#F1F5F9;border-radius:12px;text-align:center;font-size:34px;font-weight:800;letter-spacing:10px;color:#0C0E0D;font-family:monospace">511551</div>Si no solicitaste este código, ignora este correo.',
         cta: 'Abrir Lincoin →',
     },
 ];
 
 const EMAIL_LOGO_URI = `data:image/svg+xml;base64,${btoa(`
 <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
-  <rect x="2" y="2" width="96" height="96" rx="22" fill="#0F172A"/>
-  <rect x="22" y="22" width="56" height="56" rx="16" fill="none" stroke="#4ADE80" stroke-width="7" stroke-linejoin="round"/>
-  <circle cx="58" cy="56" r="8" fill="#4ADE80"/>
+  <rect x="2" y="2" width="96" height="96" rx="24" fill="#0a0a0a"/>
+  <path d="M34 30 H47 V58 H58 V71 H34 Z" fill="#F4F4F2"/>
+  <circle cx="68" cy="67" r="12" fill="#4ADE80"/>
 </svg>`.trim())}`;
 
 function buildSampleEmail(s: typeof EMAIL_SAMPLES[number], footerNote = ''): string {
@@ -799,7 +799,7 @@ function buildSampleEmail(s: typeof EMAIL_SAMPLES[number], footerNote = ''): str
 <body style="margin:0;padding:0;background:#F8FAFC;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
 <table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 12px">
 <table width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(15,23,42,0.08)">
-<tr><td style="background:#0F172A;padding:22px 28px">
+<tr><td style="background:#0C0E0D;padding:22px 28px">
   <table cellpadding="0" cellspacing="0"><tr>
     <td style="width:42px;height:42px;vertical-align:middle"><img src="${EMAIL_LOGO_URI}" width="42" height="42" style="display:block;border-radius:10px"/></td>
     <td style="padding-left:12px;vertical-align:middle">
@@ -811,16 +811,16 @@ function buildSampleEmail(s: typeof EMAIL_SAMPLES[number], footerNote = ''): str
 <tr><td style="background:${s.accent};height:4px;font-size:1px">&zwnj;</td></tr>
 <tr><td style="background:#fff;padding:30px 28px 24px">
   <p style="margin:0 0 6px 0;font-size:10px;font-weight:700;color:${s.accent};text-transform:uppercase;letter-spacing:1.5px">${s.hero}</p>
-  <p style="margin:0 0 8px 0;font-size:24px;font-weight:800;color:#0F172A;letter-spacing:-0.5px;line-height:1.2">${s.title}</p>
+  <p style="margin:0 0 8px 0;font-size:24px;font-weight:800;color:#0C0E0D;letter-spacing:-0.5px;line-height:1.2">${s.title}</p>
   <div style="border-top:1px solid #f1f5f9;margin:18px 0"></div>
   <p style="margin:0 0 20px 0;font-size:14px;color:#475569;line-height:1.7">${s.body}</p>
-  <table cellpadding="0" cellspacing="0"><tr><td style="border-radius:10px;background:#0F172A">
+  <table cellpadding="0" cellspacing="0"><tr><td style="border-radius:10px;background:#0C0E0D">
     <a href="#" style="display:inline-block;padding:12px 26px;font-size:13px;font-weight:700;color:#fff;text-decoration:none">${s.cta}</a>
   </td></tr></table>
   <p style="margin:22px 0 0 0;font-size:11px;color:#94a3b8;line-height:1.6">Si no reconocés esta actividad, contactanos respondiendo a este correo o desde el chat de soporte.</p>
   ${noteHtml}
 </td></tr>
-<tr><td style="background:#0F172A;padding:16px 28px">
+<tr><td style="background:#0C0E0D;padding:16px 28px">
   <table width="100%"><tr>
     <td><p style="margin:0;font-size:10px;color:rgba(255,255,255,0.45)">&copy; 2026 Lincoin &middot; Todos los derechos reservados</p></td>
     <td align="right"><span style="font-size:10px;color:#4ADE80;font-weight:600">cuypay.com</span></td>

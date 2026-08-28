@@ -278,7 +278,7 @@ const DiditKycButton: React.FC<{ userId?: string; kycStatus?: string; showToast:
       <button
         onClick={startVerification}
         disabled={loading}
-        className="w-full py-3 px-6 bg-[#0F172A] font-bold rounded-xl hover:bg-[#152e52] disabled:opacity-50 transition-colors flex items-center justify-center gap-2 text-sm"
+        className="w-full py-3 px-6 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] disabled:opacity-50 transition-colors flex items-center justify-center gap-2 text-sm"
       >
         {loading ? (
           <><span className="animate-spin">⏳</span> Iniciando verificación...</>
@@ -293,7 +293,7 @@ const DiditKycButton: React.FC<{ userId?: string; kycStatus?: string; showToast:
       {isInProgress && (
         <div className="flex flex-col items-center gap-2">
           <button onClick={checkStatusManually} disabled={checkingStatus}
-            className="text-xs text-[#0F172A] font-bold underline underline-offset-2 hover:text-[#0F172A] disabled:opacity-50">
+            className="text-xs text-[#0C0E0D] font-bold underline underline-offset-2 hover:text-[#0C0E0D] disabled:opacity-50">
             {checkingStatus ? '⏳ Consultando...' : '¿Ya terminaste? → Verificar estado ahora'}
           </button>
           <p className="text-xs text-slate-400 text-center">El estado se actualiza automáticamente cada 15 seg.</p>
@@ -1190,7 +1190,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
           {/* Header Area */}
           <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pt-4">
               <div>
-                  <h1 className="text-2xl font-bold text-[#0F172A]">
+                  <h1 className="text-2xl font-bold text-[#0C0E0D]">
                       Hola, {currentUser?.companyName || currentUser?.name || 'Empresa'} {seasonEmojis.length > 0 && <span className="ml-2">{seasonEmojis[0]}</span>}
                   </h1>
                   <p className="text-slate-500 text-sm">Resumen de liquidez</p>
@@ -1201,7 +1201,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                       >
                           <Zap size={13} className="text-green-600" />
                           <span className="text-[10px] font-bold text-slate-400 uppercase">Mi ID Lincoin:</span>
-                          <span className="font-mono font-extrabold text-[#0F172A] tracking-widest text-sm">{currentUser.ownReferralCode}</span>
+                          <span className="font-mono font-extrabold text-[#0C0E0D] tracking-widest text-sm">{currentUser.ownReferralCode}</span>
                           <Copy size={12} className="text-slate-400" />
                       </button>
                   )}
@@ -1210,7 +1210,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   <button 
                     onClick={() => { if(!handleActionRestricted()) { setLoadStep(1); setIsLoadModalOpen(true); } }} 
                     disabled={isBlocked || !isKycVerified} 
-                    className={`px-5 py-2.5 rounded-xl font-bold text-sm flex items-center gap-2 transition-colors shadow-lg ${isBlocked || !isKycVerified ? 'bg-slate-400 cursor-not-allowed opacity-70' : 'bg-[#0F172A] hover:bg-[#152e52] shadow-green-900/20'}`}
+                    className={`px-5 py-2.5 rounded-xl font-bold text-sm flex items-center gap-2 transition-colors shadow-lg ${isBlocked || !isKycVerified ? 'bg-slate-400 cursor-not-allowed opacity-70' : 'bg-[#0C0E0D] hover:bg-[#152e52] shadow-green-900/20'}`}
                   >
                       <Plus size={18} /> Fondear Cuenta
                   </button>
@@ -1255,16 +1255,16 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
               );
               if (ks === 'in_progress') return (
                 <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 flex flex-col sm:flex-row items-start sm:items-center gap-4 shadow-sm animate-in slide-in-from-top-4">
-                  <div className="w-10 h-10 bg-slate-100 rounded-full flex items-center justify-center shrink-0"><ShieldCheck className="text-[#0F172A]" size={20} /></div>
+                  <div className="w-10 h-10 bg-slate-100 rounded-full flex items-center justify-center shrink-0"><ShieldCheck className="text-[#0C0E0D]" size={20} /></div>
                   <div className="flex-1">
-                    <h3 className="text-[#0F172A] font-bold text-sm">Verificación KYB en progreso</h3>
+                    <h3 className="text-[#0C0E0D] font-bold text-sm">Verificación KYB en progreso</h3>
                     <p className="text-[#4ADE80] text-xs mt-1">Abriste Lincoin pero aún no terminaste. Completa el proceso para activar tu cuenta empresarial.</p>
                   </div>
                   <DiditKycButton userId={currentUser?.id} kycStatus={ks} showToast={showToast} />
                 </div>
               );
               return (
-                <div className="bg-gradient-to-r from-[#0F172A] to-[#0F172A] rounded-2xl p-5 flex flex-col sm:flex-row items-start sm:items-center gap-4 shadow-lg animate-in slide-in-from-top-4">
+                <div className="bg-gradient-to-r from-[#0C0E0D] to-[#0C0E0D] rounded-2xl p-5 flex flex-col sm:flex-row items-start sm:items-center gap-4 shadow-lg animate-in slide-in-from-top-4">
                   <div className="w-10 h-10 bg-white/10 rounded-full flex items-center justify-center shrink-0"><ShieldCheck className="text-white" size={20} /></div>
                   <div className="flex-1">
                     <h3 className="text-white font-bold text-sm">Activa tu cuenta — Verificación Empresarial (KYB)</h3>
@@ -1281,10 +1281,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                       <Wallet size={16} className="text-[#4ADE80]"/> Balances Disponibles
                   </h3>
                   <div className="flex items-center gap-3">
-                      <button onClick={openWalletOrderModal} title="Ordenar billeteras" className="text-slate-400 hover:text-[#0F172A] transition-colors">
+                      <button onClick={openWalletOrderModal} title="Ordenar billeteras" className="text-slate-400 hover:text-[#0C0E0D] transition-colors">
                           <Settings size={15} />
                       </button>
-                      <button onClick={() => setShowAllWallets(!showAllWallets)} className="text-[#0F172A] text-xs font-bold hover:underline">
+                      <button onClick={() => setShowAllWallets(!showAllWallets)} className="text-[#0C0E0D] text-xs font-bold hover:underline">
                           {showAllWallets ? 'Ver menos' : 'Ver más'}
                       </button>
                   </div>
@@ -1297,7 +1297,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                           <div
                               key={wallet.code}
                               onClick={() => handleWalletClick(wallet.code)}
-                              className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:border-[#0F172A] hover:shadow-md transition-all cursor-pointer group relative overflow-hidden flex flex-col justify-between"
+                              className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:border-[#0C0E0D] hover:shadow-md transition-all cursor-pointer group relative overflow-hidden flex flex-col justify-between"
                               style={{ minHeight: '9rem' }}
                           >
                               <div className="flex justify-between items-start">
@@ -1310,7 +1310,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                           <p className="text-[11px] text-slate-400 font-medium uppercase">{wallet.type}</p>
                                       </div>
                                   </div>
-                                  <div className="w-7 h-7 rounded-full bg-slate-50 flex items-center justify-center text-slate-400 group-hover:bg-[#4ADE80] group-hover:text-[#0F172A] transition-colors shrink-0">
+                                  <div className="w-7 h-7 rounded-full bg-slate-50 flex items-center justify-center text-slate-400 group-hover:bg-[#4ADE80] group-hover:text-[#0C0E0D] transition-colors shrink-0">
                                       <ArrowRight size={13} />
                                   </div>
                               </div>
@@ -1331,7 +1331,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                   <div
                                       key={wallet.code}
                                       onClick={() => handleWalletClick(wallet.code)}
-                                      className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm hover:border-[#0F172A] hover:shadow-md transition-all cursor-pointer group relative overflow-hidden h-36 flex flex-col justify-between"
+                                      className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm hover:border-[#0C0E0D] hover:shadow-md transition-all cursor-pointer group relative overflow-hidden h-36 flex flex-col justify-between"
                                   >
                                       <div className="flex justify-between items-start">
                                           <div className="flex items-center gap-2">
@@ -1343,7 +1343,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                                   <p className="text-[10px] text-slate-400 font-medium uppercase">{wallet.type}</p>
                                               </div>
                                           </div>
-                                          <div className="w-6 h-6 rounded-full bg-slate-50 flex items-center justify-center text-slate-400 group-hover:bg-[#4ADE80] group-hover:text-[#0F172A] transition-colors shrink-0">
+                                          <div className="w-6 h-6 rounded-full bg-slate-50 flex items-center justify-center text-slate-400 group-hover:bg-[#4ADE80] group-hover:text-[#0C0E0D] transition-colors shrink-0">
                                               <ArrowRight size={12} />
                                           </div>
                                       </div>
@@ -1365,14 +1365,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
               <h3 className="font-bold text-slate-700 text-xs mb-4 uppercase tracking-wider">Acciones Rápidas</h3>
               <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
                   <button onClick={() => { if(!handleActionRestricted()) { setLoadStep(1); setIsLoadModalOpen(true); } }} className={`bg-white p-6 rounded-2xl border border-slate-200 transition-all flex flex-col items-center gap-3 group ${isBlocked || !isKycVerified ? 'opacity-50 cursor-not-allowed' : 'hover:border-[#4ADE80] hover:shadow-md'}`}>
-                      <div className="w-12 h-12 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center group-hover:bg-[#4ADE80] group-hover:text-[#0F172A] transition-colors">
+                      <div className="w-12 h-12 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center group-hover:bg-[#4ADE80] group-hover:text-[#0C0E0D] transition-colors">
                           <Plus size={24} />
                       </div>
                       <span className="font-bold text-slate-700 text-xs text-center uppercase tracking-wide">Fondear</span>
                   </button>
 
                   <button onClick={() => { if(!handleActionRestricted(true)) setIsSendModalOpen(true); }} className={`bg-white p-6 rounded-2xl border border-slate-200 transition-all flex flex-col items-center gap-3 group ${isBlocked || !isKycVerified ? 'opacity-50 cursor-not-allowed' : 'hover:border-[#4ADE80] hover:shadow-md'}`}>
-                      <div className="w-12 h-12 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center group-hover:bg-[#4ADE80] group-hover:text-[#0F172A] transition-colors">
+                      <div className="w-12 h-12 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center group-hover:bg-[#4ADE80] group-hover:text-[#0C0E0D] transition-colors">
                           <Send size={24} />
                       </div>
                       <span className="font-bold text-slate-700 text-xs text-center uppercase tracking-wide">Pagar</span>
@@ -1382,14 +1382,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                       onClick={() => setIsReceiveModalOpen(true)}
                       className="bg-white p-6 rounded-2xl border border-slate-200 hover:border-[#4ADE80] hover:shadow-md transition-all flex flex-col items-center gap-3 group"
                   >
-                      <div className="w-12 h-12 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center group-hover:bg-[#4ADE80] group-hover:text-[#0F172A] transition-colors">
+                      <div className="w-12 h-12 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center group-hover:bg-[#4ADE80] group-hover:text-[#0C0E0D] transition-colors">
                           <ArrowDownLeft size={24} />
                       </div>
                       <span className="font-bold text-slate-700 text-xs text-center uppercase tracking-wide">Cobrar</span>
                   </button>
 
                   <button onClick={() => { if(!handleActionRestricted()) setIsConvertModalOpen(true); }} className={`bg-white p-6 rounded-2xl border border-slate-200 transition-all flex flex-col items-center gap-3 group ${isBlocked || !isKycVerified ? 'opacity-50 cursor-not-allowed' : 'hover:border-[#4ADE80] hover:shadow-md'}`}>
-                      <div className="w-12 h-12 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center group-hover:bg-[#4ADE80] group-hover:text-[#0F172A] transition-colors">
+                      <div className="w-12 h-12 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center group-hover:bg-[#4ADE80] group-hover:text-[#0C0E0D] transition-colors">
                           <RefreshCw size={24} />
                       </div>
                       <span className="font-bold text-slate-700 text-xs text-center uppercase tracking-wide">Convertir</span>
@@ -1399,7 +1399,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                       onClick={() => setActiveView('servicios')}
                       className="bg-white p-6 rounded-2xl border border-slate-200 hover:border-[#4ADE80] hover:shadow-md transition-all flex flex-col items-center gap-3 group"
                   >
-                      <div className="w-12 h-12 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center group-hover:bg-[#4ADE80] group-hover:text-[#0F172A] transition-colors">
+                      <div className="w-12 h-12 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center group-hover:bg-[#4ADE80] group-hover:text-[#0C0E0D] transition-colors">
                           <LayoutGrid size={24} />
                       </div>
                       <span className="font-bold text-slate-700 text-xs text-center uppercase tracking-wide">Servicios</span>
@@ -1409,7 +1409,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                       onClick={() => setActiveView('otc')}
                       className="bg-white p-6 rounded-2xl border border-slate-200 hover:border-[#4ADE80] hover:shadow-md transition-all flex flex-col items-center gap-3 group"
                   >
-                      <div className="w-12 h-12 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center group-hover:bg-[#4ADE80] group-hover:text-[#0F172A] transition-colors">
+                      <div className="w-12 h-12 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center group-hover:bg-[#4ADE80] group-hover:text-[#0C0E0D] transition-colors">
                           <TrendingUp size={24} />
                       </div>
                       <span className="font-bold text-slate-700 text-xs text-center uppercase tracking-wide">OTC</span>
@@ -1419,7 +1419,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                       onClick={() => { if(!handleActionRestricted()) setIsPayLinkOpen(true); }}
                       className={`bg-white p-6 rounded-2xl border border-slate-200 transition-all flex flex-col items-center gap-3 group ${isBlocked || !isKycVerified ? 'opacity-50 cursor-not-allowed' : 'hover:border-[#4ADE80] hover:shadow-md'}`}
                   >
-                      <div className="w-12 h-12 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center group-hover:bg-[#4ADE80] group-hover:text-[#0F172A] transition-colors">
+                      <div className="w-12 h-12 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center group-hover:bg-[#4ADE80] group-hover:text-[#0C0E0D] transition-colors">
                           <Link2 size={24} />
                       </div>
                       <span className="font-bold text-slate-700 text-xs text-center uppercase tracking-wide">Cobrar Link</span>
@@ -1433,7 +1433,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   <h3 className="font-bold text-slate-800 flex items-center gap-2 text-sm uppercase tracking-wider">
                       <History size={18} className="text-slate-400"/> Movimientos Recientes
                   </h3>
-                  <button onClick={() => { setMovementsTab('all'); setActiveView('movements'); }} className="text-[#0F172A] text-sm font-bold hover:underline">Ver reporte completo</button>
+                  <button onClick={() => { setMovementsTab('all'); setActiveView('movements'); }} className="text-[#0C0E0D] text-sm font-bold hover:underline">Ver reporte completo</button>
               </div>
               <div className="divide-y divide-slate-50">
                   {movements.length > 0 ? movements.slice(0, 5).map(tx => (
@@ -1500,10 +1500,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
       const balance = getBalance(selectedWalletCode);
       return (
           <div className="space-y-6 animate-in fade-in duration-300 pt-6">
-              <button onClick={() => setActiveView('dashboard')} className="flex items-center gap-2 text-slate-500 font-bold text-sm hover:text-[#0F172A]">
+              <button onClick={() => setActiveView('dashboard')} className="flex items-center gap-2 text-slate-500 font-bold text-sm hover:text-[#0C0E0D]">
                   <ArrowLeft size={16} /> Volver al inicio
               </button>
-              <div className="bg-gradient-to-br from-[#0F172A] to-[#0F172A] p-8 rounded-3xl text-white shadow-xl relative overflow-hidden">
+              <div className="bg-gradient-to-br from-[#0C0E0D] to-[#0C0E0D] p-8 rounded-3xl text-white shadow-xl relative overflow-hidden">
                   <div className="absolute top-0 right-0 w-64 h-64 bg-white/5 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2"></div>
                   <div className="relative z-10">
                       <div className="flex justify-between items-start mb-8">
@@ -1515,7 +1515,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                       </div>
                       <p className="text-5xl font-bold mb-8 tracking-tight">{formatMoney(balance, selectedWalletCode)}</p>
                       <div className="flex gap-4">
-                          <button onClick={() => { if(!handleActionRestricted()) handleLoadClick(selectedWalletCode); }} disabled={isBlocked || !isKycVerified} className={`flex-1 text-[#0F172A] py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 transition-colors ${isBlocked || !isKycVerified ? 'bg-slate-400 cursor-not-allowed opacity-70' : 'bg-[#4ADE80] hover:bg-[#22C55E]'}`}><Plus size={18} /> Cargar</button>
+                          <button onClick={() => { if(!handleActionRestricted()) handleLoadClick(selectedWalletCode); }} disabled={isBlocked || !isKycVerified} className={`flex-1 text-[#0C0E0D] py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 transition-colors ${isBlocked || !isKycVerified ? 'bg-slate-400 cursor-not-allowed opacity-70' : 'bg-[#4ADE80] hover:bg-[#22C55E]'}`}><Plus size={18} /> Cargar</button>
                           <button onClick={() => { if(!handleActionRestricted(true)) setIsSendModalOpen(true); }} disabled={isBlocked || !isKycVerified} className={`flex-1 text-white border py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 transition-colors ${isBlocked || !isKycVerified ? 'bg-white/10 border-white/10 cursor-not-allowed opacity-70' : 'bg-white/10 border-white/20 hover:bg-white/20'}`}><Send size={18} /> Enviar</button>
                       </div>
                   </div>
@@ -1531,7 +1531,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                       <div className="bg-white rounded-2xl border border-slate-200 p-5">
                           <div className="flex items-center justify-between mb-2">
                               <div className="flex items-center gap-2">
-                                  <div className="w-9 h-9 rounded-xl bg-[#0F172A] flex items-center justify-center">
+                                  <div className="w-9 h-9 rounded-xl bg-[#0C0E0D] flex items-center justify-center">
                                       <Wallet size={16} className="text-[#4ADE80]" />
                                   </div>
                                   <div>
@@ -1545,7 +1545,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                   </span>
                               )}
                           </div>
-                          <p className="text-2xl font-bold text-[#0F172A] font-mono">
+                          <p className="text-2xl font-bold text-[#0C0E0D] font-mono">
                               {formatMoney(finityBal ?? balance, 'COP')}
                           </p>
                           <p className="text-[11px] text-slate-500 mt-1">
@@ -1562,7 +1562,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                           <div className="flex items-center justify-between mb-2 relative z-10">
                               <div className="flex items-center gap-2">
                                   <div className="w-9 h-9 rounded-xl bg-[#4ADE80] flex items-center justify-center">
-                                      <Zap size={16} className="text-[#0F172A]" />
+                                      <Zap size={16} className="text-[#0C0E0D]" />
                                   </div>
                                   <div>
                                       <p className="font-bold text-slate-800 text-sm">BreB Lincoin</p>
@@ -1571,21 +1571,21 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                               </div>
                               <span className="text-[9px] font-bold uppercase bg-[#4ADE80]/15 text-[#16A34A] px-2 py-0.5 rounded-full">Bre-B</span>
                           </div>
-                          <p className="text-2xl font-bold text-[#0F172A] font-mono relative z-10">{formatMoney(brebBal, 'COP')}</p>
+                          <p className="text-2xl font-bold text-[#0C0E0D] font-mono relative z-10">{formatMoney(brebBal, 'COP')}</p>
                           <p className="text-[11px] text-slate-600 mt-1 relative z-10">
                               Saldo para dispersar a cuentas bancarias en Colombia en segundos, por el riel Bre-B.
                           </p>
                           <div className="flex gap-2 mt-3 relative z-10">
                               <button
                                   onClick={() => { setBrebMoveOpen(!brebMoveOpen); setBrebDir('to_breb'); }}
-                                  className="flex-1 py-2.5 rounded-xl bg-white border border-slate-300 text-[#0F172A] text-sm font-bold flex items-center justify-center gap-1.5 hover:bg-slate-50 transition-colors"
+                                  className="flex-1 py-2.5 rounded-xl bg-white border border-slate-300 text-[#0C0E0D] text-sm font-bold flex items-center justify-center gap-1.5 hover:bg-slate-50 transition-colors"
                               >
                                   <RefreshCw size={14} /> Mover saldo
                               </button>
                               <button
                                   onClick={() => setActiveView('finity')}
                                   disabled={brebBal <= 0}
-                                  className="flex-1 py-2.5 rounded-xl bg-[#4ADE80] hover:bg-[#6EE7A0] text-[#0F172A] text-sm font-bold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
+                                  className="flex-1 py-2.5 rounded-xl bg-[#4ADE80] hover:bg-[#6EE7A0] text-[#0C0E0D] text-sm font-bold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
                               >
                                   <Send size={14} /> Dispersar
                               </button>
@@ -1603,13 +1603,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                   <div className="flex gap-2 mt-1">
                                       <button
                                           onClick={() => setBrebDir('to_breb')}
-                                          className={`flex-1 py-2 rounded-xl text-xs font-bold border transition-colors ${brebDir === 'to_breb' ? 'bg-[#0F172A] border-transparent' : 'bg-white text-slate-600 border-slate-200'}`}
+                                          className={`flex-1 py-2 rounded-xl text-xs font-bold border transition-colors ${brebDir === 'to_breb' ? 'bg-[#0C0E0D] border-transparent' : 'bg-white text-slate-600 border-slate-200'}`}
                                       >
                                           Peso → BreB ⚡
                                       </button>
                                       <button
                                           onClick={() => setBrebDir('to_peso')}
-                                          className={`flex-1 py-2 rounded-xl text-xs font-bold border transition-colors ${brebDir === 'to_peso' ? 'bg-[#0F172A] border-transparent' : 'bg-white text-slate-600 border-slate-200'}`}
+                                          className={`flex-1 py-2 rounded-xl text-xs font-bold border transition-colors ${brebDir === 'to_peso' ? 'bg-[#0C0E0D] border-transparent' : 'bg-white text-slate-600 border-slate-200'}`}
                                       >
                                           BreB → Peso 🏦
                                       </button>
@@ -1630,7 +1630,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                               <button
                                   onClick={handleBrebMove}
                                   disabled={brebMoving || !brebAmountStr}
-                                  className="py-2.5 px-6 rounded-xl bg-[#4ADE80] hover:bg-[#6EE7A0] text-[#0F172A] text-sm font-bold disabled:opacity-50 transition-colors"
+                                  className="py-2.5 px-6 rounded-xl bg-[#4ADE80] hover:bg-[#6EE7A0] text-[#0C0E0D] text-sm font-bold disabled:opacity-50 transition-colors"
                               >
                                   {brebMoving ? 'Moviendo…' : 'Mover'}
                               </button>
@@ -1673,12 +1673,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
               
               <div className="mt-4 inline-flex items-center gap-2 bg-slate-50 border border-slate-200 px-4 py-2 rounded-lg cursor-pointer hover:bg-slate-100 transition-colors" onClick={() => {navigator.clipboard.writeText(currentUser?.ownReferralCode || currentUser?.id?.slice(-6).toUpperCase() || ''); showToast("Código copiado")}}>
                   <span className="text-xs text-slate-500 font-bold uppercase">ID de Usuario / Código:</span>
-                  <span className="font-mono font-bold text-[#0F172A] text-lg">{currentUser?.ownReferralCode || currentUser?.id?.slice(-6).toUpperCase() || '—'}</span>
-                  <Copy size={14} className="text-[#0F172A]" />
+                  <span className="font-mono font-bold text-[#0C0E0D] text-lg">{currentUser?.ownReferralCode || currentUser?.id?.slice(-6).toUpperCase() || '—'}</span>
+                  <Copy size={14} className="text-[#0C0E0D]" />
               </div>
 
               <div className="mt-6 flex justify-center gap-2 flex-wrap">
-                  <span className="px-3 py-1 bg-slate-50 text-[#0F172A] rounded-full text-xs font-bold border border-slate-200">Cuenta Empresa</span>
+                  <span className="px-3 py-1 bg-slate-50 text-[#0C0E0D] rounded-full text-xs font-bold border border-slate-200">Cuenta Empresa</span>
                   <span className={`px-3 py-1 rounded-full text-xs font-bold border ${
                     isKycVerified ? 'bg-green-50 text-green-700 border-green-100' :
                     currentUser?.kycStatus === 'rejected' ? 'bg-red-50 text-red-700 border-red-100' :
@@ -1719,7 +1719,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
 
           {/* 2FA Section */}
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-              <div className="p-4 border-b border-slate-100 font-bold text-slate-800 flex items-center gap-2"><ShieldCheck size={18} className="text-[#0F172A]"/> Seguridad</div>
+              <div className="p-4 border-b border-slate-100 font-bold text-slate-800 flex items-center gap-2"><ShieldCheck size={18} className="text-[#0C0E0D]"/> Seguridad</div>
               <div className="p-6">
                   <div className="flex justify-between items-center">
                       <div>
@@ -1733,7 +1733,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                               <button onClick={() => setMfaDisableModalOpen(true)} className="px-3 py-1.5 text-xs font-bold border border-red-200 text-red-600 rounded-lg hover:bg-red-50 transition-colors">Desactivar</button>
                           </div>
                       ) : (
-                          <button onClick={handleOpenMFAEnroll} className="px-4 py-2 text-sm font-bold bg-[#0F172A] rounded-lg hover:bg-[#152e52] transition-colors">Activar</button>
+                          <button onClick={handleOpenMFAEnroll} className="px-4 py-2 text-sm font-bold bg-[#0C0E0D] rounded-lg hover:bg-[#152e52] transition-colors">Activar</button>
                       )}
                   </div>
               </div>
@@ -1792,11 +1792,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-8 animate-in zoom-in-95 relative overflow-y-auto max-h-[90vh]">
                   <button onClick={() => { setMfaModalOpen(false); setMfaEnrollData(null); }} className="absolute top-4 right-4 text-slate-400 hover:text-slate-600"><X size={20}/></button>
                   <div className="text-center mb-6">
-                      <div className="w-12 h-12 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-3"><ShieldCheck size={24} className="text-[#0F172A]"/></div>
-                      <h3 className="text-xl font-bold text-[#0F172A]">Activar verificación en 2 pasos</h3>
+                      <div className="w-12 h-12 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-3"><ShieldCheck size={24} className="text-[#0C0E0D]"/></div>
+                      <h3 className="text-xl font-bold text-[#0C0E0D]">Activar verificación en 2 pasos</h3>
                   </div>
                   <div className="flex items-start gap-3 mb-4 p-3 bg-slate-50 rounded-xl">
-                      <span className="w-6 h-6 bg-[#0F172A] text-white rounded-full text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">1</span>
+                      <span className="w-6 h-6 bg-[#0C0E0D] text-white rounded-full text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">1</span>
                       <div>
                           <p className="text-sm font-bold text-slate-700">Abre Google Authenticator o Authy</p>
                           <p className="text-xs text-slate-500">Toca "+" → "Escanear código QR" y apunta la cámara al código de abajo</p>
@@ -1812,8 +1812,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                       <p className="text-sm font-bold text-slate-700">Ingresa el código de 6 dígitos que aparece en la app</p>
                   </div>
                   {mfaVerifyError && <p className="text-red-500 text-sm text-center mb-3">{mfaVerifyError}</p>}
-                  <input type="text" inputMode="numeric" maxLength={6} value={mfaVerifyCode} onChange={(e) => setMfaVerifyCode(e.target.value.replace(/\D/g, ''))} className="w-full h-14 text-center text-2xl font-bold tracking-[0.4em] border-2 border-slate-200 rounded-xl focus:border-[#0F172A] outline-none mb-4 bg-slate-50" placeholder="000000" autoFocus onKeyDown={(e) => e.key === 'Enter' && handleVerifyMFAEnrollment()} />
-                  <button onClick={handleVerifyMFAEnrollment} disabled={mfaVerifyCode.length !== 6 || mfaVerifyLoading} className="w-full h-12 bg-[#0F172A] font-bold rounded-xl disabled:opacity-50 hover:bg-[#152e52] transition-colors">
+                  <input type="text" inputMode="numeric" maxLength={6} value={mfaVerifyCode} onChange={(e) => setMfaVerifyCode(e.target.value.replace(/\D/g, ''))} className="w-full h-14 text-center text-2xl font-bold tracking-[0.4em] border-2 border-slate-200 rounded-xl focus:border-[#0C0E0D] outline-none mb-4 bg-slate-50" placeholder="000000" autoFocus onKeyDown={(e) => e.key === 'Enter' && handleVerifyMFAEnrollment()} />
+                  <button onClick={handleVerifyMFAEnrollment} disabled={mfaVerifyCode.length !== 6 || mfaVerifyLoading} className="w-full h-12 bg-[#0C0E0D] font-bold rounded-xl disabled:opacity-50 hover:bg-[#152e52] transition-colors">
                       {mfaVerifyLoading ? 'Verificando...' : 'Confirmar activación'}
                   </button>
               </div>
@@ -1837,7 +1837,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
 
   const renderReferrals = () => (
       <div className="animate-in fade-in duration-300">
-          <div className="bg-[#0F172A] rounded-3xl p-8 md:p-12 text-white text-center mb-8 relative overflow-hidden">
+          <div className="bg-[#0C0E0D] rounded-3xl p-8 md:p-12 text-white text-center mb-8 relative overflow-hidden">
                <div className="relative z-10">
                    <h2 className="text-3xl font-bold mb-4">Invita y Gana $20 USD</h2>
                    <p className="text-green-100 max-w-lg mx-auto mb-8">
@@ -1847,7 +1847,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                    </p>
                    <div className="bg-white/10 p-4 rounded-xl max-w-md mx-auto flex items-center gap-4 backdrop-blur-sm border border-white/20">
                        <code className="flex-1 font-mono text-xl font-bold text-white tracking-widest">{currentUser?.ownReferralCode || currentUser?.id?.slice(-6).toUpperCase() || '—'}</code>
-                       <button onClick={() => {navigator.clipboard.writeText(currentUser?.ownReferralCode || ''); showToast("Código copiado")}} className="bg-white text-[#0F172A] px-4 py-2 rounded-lg font-bold text-sm hover:bg-slate-50">Copiar</button>
+                       <button onClick={() => {navigator.clipboard.writeText(currentUser?.ownReferralCode || ''); showToast("Código copiado")}} className="bg-white text-[#0C0E0D] px-4 py-2 rounded-lg font-bold text-sm hover:bg-slate-50">Copiar</button>
                    </div>
                </div>
                <div className="absolute top-0 right-0 w-64 h-64 bg-[#4ADE80]/20 rounded-full blur-3xl translate-x-1/2 -translate-y-1/2"></div>
@@ -1858,7 +1858,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
               <div className="p-6 border-b border-slate-100 flex justify-between items-center">
                   <h3 className="font-bold text-slate-800 text-sm uppercase tracking-wider flex items-center gap-2">
-                      <Users size={18} className="text-[#0F172A]"/> Tu Equipo de Referidos
+                      <Users size={18} className="text-[#0C0E0D]"/> Tu Equipo de Referidos
                   </h3>
               </div>
               <div className="overflow-x-auto">
@@ -1934,14 +1934,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
   const renderAffiliates = () => (
       <div className="animate-in fade-in duration-300 text-center py-12">
           {/* ... same implementation ... */}
-          <div className="w-20 h-20 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-6 text-[#0F172A]">
+          <div className="w-20 h-20 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-6 text-[#0C0E0D]">
               <Megaphone size={32} />
           </div>
           <h2 className="text-2xl font-bold text-slate-800 mb-4">Programa de Aliados</h2>
           <p className="text-slate-500 max-w-lg mx-auto mb-8">
               Si eres contador, abogado o asesor financiero, únete a nuestro programa de partners y gestiona las finanzas de tus clientes con beneficios exclusivos.
           </p>
-          <button className="bg-[#0F172A] px-8 py-3 rounded-xl font-bold hover:bg-[#152e52] transition-colors">
+          <button className="bg-[#0C0E0D] px-8 py-3 rounded-xl font-bold hover:bg-[#152e52] transition-colors">
               Contactar para Alianza
           </button>
       </div>
@@ -1970,7 +1970,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
           <button onClick={() => { setActiveView('servicios'); setSegSolicitado(false); }} className="flex items-center gap-2 text-slate-500 hover:text-slate-800 font-bold text-sm">
             <ArrowLeft size={18}/> Servicios
           </button>
-          <h2 className="text-xl font-bold text-[#0F172A]">Seguros Lincoin</h2>
+          <h2 className="text-xl font-bold text-[#0C0E0D]">Seguros Lincoin</h2>
         </div>
 
         {/* Hero */}
@@ -2077,7 +2077,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
             </div>
             <h3 className="font-bold text-slate-800">¡Solicitud recibida!</h3>
             <p className="text-slate-500 text-sm">Nuestro equipo de seguros te enviará la cotización en menos de 2 horas. El pago se realiza desde tu saldo Lincoin.</p>
-            <button onClick={() => setSegSolicitado(false)} className="mt-2 px-6 py-2.5 bg-[#0F172A] rounded-xl font-bold text-sm hover:bg-[#152e52] transition-colors">
+            <button onClick={() => setSegSolicitado(false)} className="mt-2 px-6 py-2.5 bg-[#0C0E0D] rounded-xl font-bold text-sm hover:bg-[#152e52] transition-colors">
               Nueva cotización
             </button>
           </div>
@@ -2098,11 +2098,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
           <button onClick={() => { setActiveView('servicios'); setTravelSearched(false); }} className="flex items-center gap-2 text-slate-500 hover:text-slate-800 font-bold text-sm">
             <ArrowLeft size={18}/> Servicios
           </button>
-          <h2 className="text-xl font-bold text-[#0F172A]">Lincoin Travel</h2>
+          <h2 className="text-xl font-bold text-[#0C0E0D]">Lincoin Travel</h2>
         </div>
 
         {/* Hero */}
-        <div className="relative bg-gradient-to-br from-[#0F172A] to-[#0F172A] rounded-3xl p-6 text-white overflow-hidden">
+        <div className="relative bg-gradient-to-br from-[#0C0E0D] to-[#0C0E0D] rounded-3xl p-6 text-white overflow-hidden">
           <div className="absolute right-0 top-0 w-40 h-40 bg-[#4ADE80]/20 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2"/>
           <p className="text-[#4ADE80] font-bold text-xs uppercase tracking-widest mb-1">Corporativo</p>
           <h3 className="text-2xl font-bold mb-1">Viaja más, gasta menos</h3>
@@ -2114,7 +2114,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
           <div className="flex border-b border-slate-100">
             {tabs.map(({ id, label, icon: Icon }) => (
               <button key={id} onClick={() => { setTravelTab(id); setTravelSearched(false); }}
-                className={`flex-1 flex items-center justify-center gap-2 py-3.5 font-bold text-sm transition-colors ${travelTab === id ? 'text-[#0F172A] border-b-2 border-[#4ADE80] bg-slate-50' : 'text-slate-400 hover:text-slate-600'}`}>
+                className={`flex-1 flex items-center justify-center gap-2 py-3.5 font-bold text-sm transition-colors ${travelTab === id ? 'text-[#0C0E0D] border-b-2 border-[#4ADE80] bg-slate-50' : 'text-slate-400 hover:text-slate-600'}`}>
                 <Icon size={16}/>{label}
               </button>
             ))}
@@ -2126,7 +2126,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                 <div className="flex gap-2">
                   {(['idavuelta', 'ida'] as const).map(t => (
                     <button key={t} onClick={() => setTravelType(t)}
-                      className={`px-4 py-1.5 rounded-full text-xs font-bold border-2 transition-colors ${travelType === t ? 'border-[#4ADE80] bg-[#4ADE80]/10 text-[#0F172A]' : 'border-slate-200 text-slate-500'}`}>
+                      className={`px-4 py-1.5 rounded-full text-xs font-bold border-2 transition-colors ${travelType === t ? 'border-[#4ADE80] bg-[#4ADE80]/10 text-[#0C0E0D]' : 'border-slate-200 text-slate-500'}`}>
                       {t === 'idavuelta' ? 'Ida y vuelta' : 'Solo ida'}
                     </button>
                   ))}
@@ -2201,7 +2201,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
             )}
 
             <button onClick={() => setTravelSearched(true)}
-              className="w-full bg-[#4ADE80] text-[#0F172A] py-3.5 rounded-xl font-bold text-base hover:bg-[#00b396] transition-colors flex items-center justify-center gap-2">
+              className="w-full bg-[#4ADE80] text-[#0C0E0D] py-3.5 rounded-xl font-bold text-base hover:bg-[#00b396] transition-colors flex items-center justify-center gap-2">
               <Search size={18}/> Buscar
             </button>
           </div>
@@ -2215,7 +2215,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
             <h3 className="font-bold text-slate-800">¡Casi listo!</h3>
             <p className="text-slate-500 text-sm">Nuestro equipo de travel corporativo revisará tu solicitud y te enviará las mejores opciones en menos de 2 horas hábiles.</p>
             <p className="text-xs text-slate-400">El pago se realizará directamente desde tu saldo Lincoin.</p>
-            <button onClick={() => setTravelSearched(false)} className="mt-2 px-6 py-2.5 bg-[#0F172A] rounded-xl font-bold text-sm hover:bg-[#152e52] transition-colors">
+            <button onClick={() => setTravelSearched(false)} className="mt-2 px-6 py-2.5 bg-[#0C0E0D] rounded-xl font-bold text-sm hover:bg-[#152e52] transition-colors">
               Nueva búsqueda
             </button>
           </div>
@@ -2238,7 +2238,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
           <button onClick={() => setActiveView('dashboard')} className="flex items-center gap-2 text-slate-500 hover:text-slate-800 font-bold text-sm">
             <ArrowLeft size={18}/> Volver
           </button>
-          <h2 className="text-xl font-bold text-[#0F172A]">Servicios Empresariales</h2>
+          <h2 className="text-xl font-bold text-[#0C0E0D]">Servicios Empresariales</h2>
         </div>
         <p className="text-slate-500 text-sm">Servicios premium disponibles para cuentas empresariales verificadas. Solicita activación al equipo de soporte.</p>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -2260,11 +2260,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
             </div>
           ))}
         </div>
-        <div className="bg-[#0F172A] rounded-2xl p-6 text-white text-center">
+        <div className="bg-[#0C0E0D] rounded-2xl p-6 text-white text-center">
           <Handshake size={32} className="mx-auto mb-3 text-[#4ADE80]"/>
           <h3 className="font-bold text-lg mb-1">¿Necesitas un servicio personalizado?</h3>
           <p className="text-green-200 text-sm mb-4">Nuestro equipo diseña soluciones a medida para tu empresa.</p>
-          <a href="mailto:soporte@cuypay.com" className="inline-flex items-center gap-2 bg-[#4ADE80] text-[#0F172A] font-bold px-6 py-2.5 rounded-xl hover:bg-[#00b396] transition-colors text-sm">
+          <a href="mailto:soporte@cuypay.com" className="inline-flex items-center gap-2 bg-[#4ADE80] text-[#0C0E0D] font-bold px-6 py-2.5 rounded-xl hover:bg-[#00b396] transition-colors text-sm">
             Contactar a soporte
           </a>
         </div>
@@ -2298,13 +2298,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                       <ArrowLeft size={18}/> Volver al inicio
                   </button>
                   <div className="bg-white rounded-3xl border border-slate-200 shadow-sm p-10 flex flex-col items-center gap-5">
-                      <div className="w-20 h-20 rounded-full bg-[#0F172A] flex items-center justify-center">
+                      <div className="w-20 h-20 rounded-full bg-[#0C0E0D] flex items-center justify-center">
                           <TrendingUp size={36} className="text-[#4ADE80]"/>
                       </div>
                       <div>
-                          <h2 className="text-2xl font-bold text-[#0F172A] mb-2">Mesa OTC</h2>
+                          <h2 className="text-2xl font-bold text-[#0C0E0D] mb-2">Mesa OTC</h2>
                           <p className="text-slate-500 text-sm leading-relaxed">
-                              Opera con <span className="font-bold text-[#0F172A]">USDT y USDC</span> a tasas preferenciales exclusivas para empresas. Conversiones rápidas, liquidez inmediata.
+                              Opera con <span className="font-bold text-[#0C0E0D]">USDT y USDC</span> a tasas preferenciales exclusivas para empresas. Conversiones rápidas, liquidez inmediata.
                           </p>
                       </div>
                       <div className="w-full bg-amber-50 border border-amber-200 rounded-xl p-4 text-left">
@@ -2313,7 +2313,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                       </div>
                       <a
                           href="mailto:soporte@cuypay.com"
-                          className="w-full bg-[#0F172A] text-white py-4 rounded-2xl font-bold text-base hover:bg-[#152e52] transition-colors flex items-center justify-center gap-2"
+                          className="w-full bg-[#0C0E0D] text-white py-4 rounded-2xl font-bold text-base hover:bg-[#152e52] transition-colors flex items-center justify-center gap-2"
                       >
                           <Handshake size={20}/> Solicitar Acceso OTC
                       </a>
@@ -2329,7 +2329,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   <button onClick={() => setActiveView('dashboard')} className="flex items-center gap-2 text-slate-500 hover:text-slate-800 font-bold text-sm">
                       <ArrowLeft size={18}/> Volver
                   </button>
-                  <h2 className="text-xl font-bold text-[#0F172A]">Mesa OTC</h2>
+                  <h2 className="text-xl font-bold text-[#0C0E0D]">Mesa OTC</h2>
                   <span className="px-2 py-0.5 bg-green-100 text-green-700 text-xs font-bold rounded-full">Activo</span>
                   <button
                       onClick={handleOtcRefresh}
@@ -2374,7 +2374,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                               {loading ? (
                                   <Loader2 size={16} className="animate-spin text-slate-400"/>
                               ) : (
-                                  <p className="text-lg font-bold text-[#0F172A]">{bal.toLocaleString('es', {minimumFractionDigits:2, maximumFractionDigits:2})}</p>
+                                  <p className="text-lg font-bold text-[#0C0E0D]">{bal.toLocaleString('es', {minimumFractionDigits:2, maximumFractionDigits:2})}</p>
                               )}
                               <p className="text-xs text-slate-400">1 {coin} = {rate} USD</p>
                           </button>
@@ -2403,7 +2403,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                       loadOtcWallet(net.key);
                                       setOtcWithdrawAddress('');
                                   }}
-                                  className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-bold border-2 transition-all flex items-center justify-center gap-1.5 ${isSelected ? 'border-[#0F172A] bg-[#0F172A]' : 'border-slate-200 text-slate-600 bg-white hover:border-slate-300'}`}
+                                  className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-bold border-2 transition-all flex items-center justify-center gap-1.5 ${isSelected ? 'border-[#0C0E0D] bg-[#0C0E0D]' : 'border-slate-200 text-slate-600 bg-white hover:border-slate-300'}`}
                               >
                                   <span className={`w-2 h-2 rounded-full ${isSelected ? 'bg-white' : netColors[net.key] ?? 'bg-slate-400'}`}/>
                                   {net.label}
@@ -2422,7 +2422,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                       <button
                           key={tab}
                           onClick={() => setOtcTab(tab)}
-                          className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${otcTab === tab ? 'bg-white text-[#0F172A] shadow-sm' : 'text-slate-500'}`}
+                          className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${otcTab === tab ? 'bg-white text-[#0C0E0D] shadow-sm' : 'text-slate-500'}`}
                       >
                           {tab === 'deposit' ? 'Depositar' : tab === 'withdraw' ? 'Retirar' : tab === 'convert' ? 'Convertir' : 'Historial'}
                       </button>
@@ -2460,7 +2460,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                       <code className="text-sm font-mono text-slate-700 break-all block mb-3">{walletAddr}</code>
                                       <button
                                           onClick={() => { navigator.clipboard.writeText(walletAddr); showToast('Dirección copiada'); }}
-                                          className="flex items-center gap-1.5 text-xs font-bold text-[#0F172A] hover:underline"
+                                          className="flex items-center gap-1.5 text-xs font-bold text-[#0C0E0D] hover:underline"
                                       >
                                           <Copy size={12}/> Copiar dirección
                                       </button>
@@ -2532,7 +2532,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                           {parsedAmt > 0 && (
                               <div className="mt-1 flex items-center justify-between text-xs px-1 animate-in fade-in duration-200">
                                   <span className="text-slate-500">Recibirás</span>
-                                  <span className="font-bold text-[#0F172A]">{Math.max(0, parsedAmt - (PLATFORM_WITHDRAW_FEES[withdrawNetKey] ?? 0)).toFixed(6).replace(/\.?0+$/, '')} {otcCoin}</span>
+                                  <span className="font-bold text-[#0C0E0D]">{Math.max(0, parsedAmt - (PLATFORM_WITHDRAW_FEES[withdrawNetKey] ?? 0)).toFixed(6).replace(/\.?0+$/, '')} {otcCoin}</span>
                               </div>
                           )}
                       </div>
@@ -2562,7 +2562,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                       <button
                           disabled={parsedAmt <= 0 || parsedAmt > walletBal || !otcWithdrawAddress.trim() || otcWithdrawSending}
                           onClick={handleOtcWithdraw}
-                          className="w-full bg-[#0F172A] py-4 rounded-2xl font-bold text-base disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#152e52] active:scale-[0.98] transition-all duration-150 flex items-center justify-center gap-2 shadow-lg shadow-slate-900/10"
+                          className="w-full bg-[#0C0E0D] py-4 rounded-2xl font-bold text-base disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#152e52] active:scale-[0.98] transition-all duration-150 flex items-center justify-center gap-2 shadow-lg shadow-slate-900/10"
                       >
                           {otcWithdrawSending ? <Loader2 size={18} className="animate-spin"/> : <Send size={18}/>}
                           {otcWithdrawSending ? 'Procesando en blockchain...' : `Retirar ${otcCoin}`}
@@ -2622,7 +2622,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                                   <p className="text-xs text-slate-400">{net} · {dateStr}</p>
                                                   {explorerUrl && (
                                                       <a href={explorerUrl} target="_blank" rel="noopener noreferrer"
-                                                          className="text-[10px] text-[#0F172A] font-mono hover:underline truncate block max-w-[200px]">
+                                                          className="text-[10px] text-[#0C0E0D] font-mono hover:underline truncate block max-w-[200px]">
                                                           {txHash.slice(0,20)}...
                                                       </a>
                                                   )}
@@ -2686,7 +2686,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                           <button
                                               key={p.pair}
                                               onClick={() => setOtcConvertTarget(fiat)}
-                                              className={`py-2.5 rounded-xl text-sm font-bold border-2 transition-all ${otcConvertTarget === fiat ? 'border-[#4ADE80] bg-[#4ADE80]/10 text-[#0F172A]' : 'border-slate-200 text-slate-600'}`}
+                                              className={`py-2.5 rounded-xl text-sm font-bold border-2 transition-all ${otcConvertTarget === fiat ? 'border-[#4ADE80] bg-[#4ADE80]/10 text-[#0C0E0D]' : 'border-slate-200 text-slate-600'}`}
                                           >
                                               {fiat}
                                           </button>
@@ -2696,7 +2696,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                           </div>
 
                           {selectedPair && parsedAmt2 > 0 && (
-                              <div className="bg-[#0F172A] rounded-xl p-4 flex justify-between items-center">
+                              <div className="bg-[#0C0E0D] rounded-xl p-4 flex justify-between items-center">
                                   <div>
                                       <p className="text-green-300 text-xs">Recibes</p>
                                       <p className="text-white font-bold text-2xl">{convertResult.toLocaleString('es', {minimumFractionDigits:2, maximumFractionDigits:2})} {otcConvertTarget}</p>
@@ -2711,7 +2711,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                           <button
                               disabled={parsedAmt2 <= 0 || exceedsBalance || !otcConvertTarget || otcConvertSending}
                               onClick={handleOtcConvert}
-                              className="w-full bg-[#4ADE80] text-[#0F172A] py-4 rounded-2xl font-bold text-base disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#00b396] transition-colors flex items-center justify-center gap-2"
+                              className="w-full bg-[#4ADE80] text-[#0C0E0D] py-4 rounded-2xl font-bold text-base disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#00b396] transition-colors flex items-center justify-center gap-2"
                           >
                               {otcConvertSending ? <Loader2 size={18} className="animate-spin"/> : <ArrowLeftRight size={18}/>}
                               {otcConvertSending ? 'Procesando...' : `Convertir ${otcCoin} → ${otcConvertTarget || '?'}`}
@@ -2786,7 +2786,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
           {/* Logo + title */}
           <div className="flex flex-col items-center pt-6 pb-4 px-6">
             <div className="flex items-center gap-0.5 mb-2">
-              <span className="text-2xl font-black text-[#0F172A] tracking-tight">CUY</span>
+              <span className="text-2xl font-black text-[#0C0E0D] tracking-tight">CUY</span>
               <span className="text-2xl font-black text-[#4ADE80] tracking-tight">PAY</span>
             </div>
             <p className="text-base font-bold text-slate-800">Resumen de movimiento</p>
@@ -2796,7 +2796,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
             <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-1">
               {isCredit ? 'Monto recibido' : 'Monto debitado'}
             </p>
-            <p className={`text-4xl font-black ${isCredit ? 'text-green-600' : 'text-[#0F172A]'}`}>
+            <p className={`text-4xl font-black ${isCredit ? 'text-green-600' : 'text-[#0C0E0D]'}`}>
               {isCredit ? '+' : '-'}{formatMoney(tx.amount, tx.currency)}
             </p>
             <p className="text-sm text-slate-400 font-bold mt-0.5">{tx.currency}</p>
@@ -2805,14 +2805,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
           <div className="px-6 pb-4 space-y-0">
             {fields.map((f, i) => (
               <div key={f.label} className={`py-3 ${i < fields.length - 1 ? 'border-b border-slate-100' : ''}`}>
-                <p className="text-xs font-bold text-[#0F172A] mb-0.5">{f.label}</p>
+                <p className="text-xs font-bold text-[#0C0E0D] mb-0.5">{f.label}</p>
                 <p className={`font-bold text-sm ${f.label === 'Estado' ? statusColor : 'text-slate-800'}`}>{f.value}</p>
               </div>
             ))}
           </div>
           {/* Footer */}
           <div className="px-6 pt-2 pb-8">
-            <button type="button" onClick={() => setSelectedTx(null)} className="w-full h-12 bg-[#0F172A] hover:bg-[#152e52] font-bold rounded-xl transition-colors text-sm">
+            <button type="button" onClick={() => setSelectedTx(null)} className="w-full h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-xl transition-colors text-sm">
               Listo
             </button>
           </div>
@@ -2825,7 +2825,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
     <div className="min-h-screen bg-[#F8FAFC] text-slate-900 font-sans">
       
       {toastMessage && (
-          <div className="fixed top-6 right-6 z-[70] bg-[#0F172A] text-white px-6 py-3 rounded-lg shadow-xl flex items-center gap-3 animate-in slide-in-from-top-4 fade-in max-w-md">
+          <div className="fixed top-6 right-6 z-[70] bg-[#0C0E0D] text-white px-6 py-3 rounded-lg shadow-xl flex items-center gap-3 animate-in slide-in-from-top-4 fade-in max-w-md">
               <CheckCircle size={20} className="text-[#4ADE80]" />
               <span className="font-medium text-sm">{toastMessage}</span>
           </div>
@@ -2907,19 +2907,19 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                           if (!wallet) return null;
                           const isVisible = index < 3;
                           return (
-                              <div key={code} className={`flex items-center gap-3 p-3 rounded-xl border ${isVisible ? 'border-[#0F172A]/20 bg-slate-50/40' : 'border-slate-200 bg-slate-50/40'}`}>
-                                  <span className={`text-[10px] font-bold w-6 text-center ${isVisible ? 'text-[#0F172A]' : 'text-slate-400'}`}>#{index + 1}</span>
+                              <div key={code} className={`flex items-center gap-3 p-3 rounded-xl border ${isVisible ? 'border-[#0C0E0D]/20 bg-slate-50/40' : 'border-slate-200 bg-slate-50/40'}`}>
+                                  <span className={`text-[10px] font-bold w-6 text-center ${isVisible ? 'text-[#0C0E0D]' : 'text-slate-400'}`}>#{index + 1}</span>
                                   <FlagImg code={code} className="w-7 h-5 object-cover rounded shadow-sm shrink-0" />
                                   <div className="flex-1 min-w-0">
                                       <p className="font-bold text-slate-800 text-sm leading-tight truncate">{wallet.name}</p>
                                       <p className="text-[10px] text-slate-400">{wallet.code}</p>
                                   </div>
-                                  {isVisible && <span className="text-[9px] font-bold text-[#0F172A] bg-slate-100 px-1.5 py-0.5 rounded shrink-0">Visible</span>}
+                                  {isVisible && <span className="text-[9px] font-bold text-[#0C0E0D] bg-slate-100 px-1.5 py-0.5 rounded shrink-0">Visible</span>}
                                   <div className="flex flex-col gap-0.5 shrink-0">
-                                      <button onClick={() => moveWalletInDraft(index, -1)} disabled={index === 0} className="p-1 text-slate-400 hover:text-[#0F172A] disabled:opacity-25 disabled:cursor-not-allowed transition-colors">
+                                      <button onClick={() => moveWalletInDraft(index, -1)} disabled={index === 0} className="p-1 text-slate-400 hover:text-[#0C0E0D] disabled:opacity-25 disabled:cursor-not-allowed transition-colors">
                                           <ChevronUp size={14}/>
                                       </button>
-                                      <button onClick={() => moveWalletInDraft(index, 1)} disabled={index === walletDraftOrder.length - 1} className="p-1 text-slate-400 hover:text-[#0F172A] disabled:opacity-25 disabled:cursor-not-allowed transition-colors">
+                                      <button onClick={() => moveWalletInDraft(index, 1)} disabled={index === walletDraftOrder.length - 1} className="p-1 text-slate-400 hover:text-[#0C0E0D] disabled:opacity-25 disabled:cursor-not-allowed transition-colors">
                                           <ChevronDown size={14}/>
                                       </button>
                                   </div>
@@ -2929,7 +2929,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   </div>
                   <div className="p-4 border-t border-slate-100 flex gap-3">
                       <button onClick={() => setIsWalletOrderModalOpen(false)} className="flex-1 h-11 border border-slate-200 rounded-xl text-slate-600 text-sm font-bold hover:bg-slate-50 transition-colors">Cancelar</button>
-                      <button onClick={saveWalletOrder} className="flex-1 h-11 bg-[#0F172A] hover:bg-[#152e52] text-sm font-bold rounded-xl transition-colors">Guardar</button>
+                      <button onClick={saveWalletOrder} className="flex-1 h-11 bg-[#0C0E0D] hover:bg-[#152e52] text-sm font-bold rounded-xl transition-colors">Guardar</button>
                   </div>
               </div>
           </div>
@@ -2956,7 +2956,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                           <select 
                               value={receiveCurrency}
                               onChange={(e) => setReceiveCurrency(e.target.value)}
-                              className="w-full h-12 border border-slate-300 rounded-lg px-4 bg-white font-bold text-slate-800 focus:border-[#0F172A] outline-none"
+                              className="w-full h-12 border border-slate-300 rounded-lg px-4 bg-white font-bold text-slate-800 focus:border-[#0C0E0D] outline-none"
                           >
                               <option value="USD">USD - Dólar (Internacional)</option>
                               <option value="CLP">CLP - Peso Chileno</option>
@@ -2980,7 +2980,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                               <span className="text-slate-500 text-xs font-bold uppercase">Número de Cuenta</span>
                               <div className="flex items-center gap-2">
                                   <span className="font-bold text-slate-800 text-sm text-right">{receiveCurrency === 'USD' ? '1234567890' : '9876543210'}</span>
-                                  <button onClick={() => showToast("Número de cuenta copiado")} className="text-[#0F172A] hover:bg-slate-50 p-1 rounded"><Copy size={14}/></button>
+                                  <button onClick={() => showToast("Número de cuenta copiado")} className="text-[#0C0E0D] hover:bg-slate-50 p-1 rounded"><Copy size={14}/></button>
                               </div>
                           </div>
                           {receiveCurrency === 'USD' && (
@@ -2988,7 +2988,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                   <span className="text-slate-500 text-xs font-bold uppercase">Routing / ACH</span>
                                   <div className="flex items-center gap-2">
                                       <span className="font-bold text-slate-800 text-sm text-right">026073150</span>
-                                      <button onClick={() => showToast("Routing copiado")} className="text-[#0F172A] hover:bg-slate-50 p-1 rounded"><Copy size={14}/></button>
+                                      <button onClick={() => showToast("Routing copiado")} className="text-[#0C0E0D] hover:bg-slate-50 p-1 rounded"><Copy size={14}/></button>
                                   </div>
                               </div>
                           )}
@@ -2998,7 +2998,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                           </div>
                       </div>
 
-                      <button onClick={() => { showToast("Datos copiados al portapapeles"); setIsReceiveModalOpen(false); }} className="w-full py-4 bg-[#0F172A] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-transform active:scale-95 flex items-center justify-center gap-2">
+                      <button onClick={() => { showToast("Datos copiados al portapapeles"); setIsReceiveModalOpen(false); }} className="w-full py-4 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-transform active:scale-95 flex items-center justify-center gap-2">
                           <Copy size={18}/> Copiar Datos Completos
                       </button>
                   </div>
@@ -3022,9 +3022,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                           <div className="space-y-4">
                               <p className="text-sm text-slate-500 mb-2">Selecciona el país desde donde transfieres:</p>
                               {Object.keys(bankingOptions).map(country => (
-                                  <button key={country} onClick={() => { setSelectedCountry(country); setLoadStep(2); }} className="w-full flex items-center justify-between p-4 rounded-xl border border-slate-200 hover:border-[#0F172A] hover:bg-slate-50 transition-all group">
-                                      <span className="font-bold text-slate-700 group-hover:text-[#0F172A]">{country}</span>
-                                      <ChevronDown className="text-slate-300 group-hover:text-[#0F172A]"/>
+                                  <button key={country} onClick={() => { setSelectedCountry(country); setLoadStep(2); }} className="w-full flex items-center justify-between p-4 rounded-xl border border-slate-200 hover:border-[#0C0E0D] hover:bg-slate-50 transition-all group">
+                                      <span className="font-bold text-slate-700 group-hover:text-[#0C0E0D]">{country}</span>
+                                      <ChevronDown className="text-slate-300 group-hover:text-[#0C0E0D]"/>
                                   </button>
                               ))}
                           </div>
@@ -3035,10 +3035,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                               <button onClick={() => setLoadStep(1)} className="text-xs text-slate-400 flex items-center gap-1 hover:text-slate-600 mb-2"><ArrowLeft size={12}/> Cambiar país</button>
                               <p className="text-sm text-slate-500">Selecciona el método de carga en {selectedCountry}:</p>
                               {(bankingOptions[selectedCountry] || []).map(bank => (
-                                  <button key={bank.id} onClick={() => handleBankSelect(bank.name)} className="w-full flex items-center gap-4 p-4 rounded-xl border border-slate-200 hover:border-[#0F172A] hover:bg-slate-50 transition-all group text-left">
+                                  <button key={bank.id} onClick={() => handleBankSelect(bank.name)} className="w-full flex items-center gap-4 p-4 rounded-xl border border-slate-200 hover:border-[#0C0E0D] hover:bg-slate-50 transition-all group text-left">
                                       <div className={`w-10 h-10 rounded-lg flex items-center justify-center font-bold text-xs ${bank.logoColor || 'bg-slate-100 text-slate-600'}`}>{bank.logoText || bank.name.substring(0, 2)}</div>
                                       <div>
-                                          <p className="font-bold text-slate-700 group-hover:text-[#0F172A]">{bank.name}</p>
+                                          <p className="font-bold text-slate-700 group-hover:text-[#0C0E0D]">{bank.name}</p>
                                           <p className="text-xs text-slate-400">{bank.type === 'qr' ? 'Escanea y paga al instante' : bank.type === 'crypto' ? 'Depósito vía Cripto' : 'Transferencia bancaria local'}</p>
                                       </div>
                                   </button>
@@ -3056,7 +3056,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                           type="text" 
                                           value={loadAmount} 
                                           onChange={(e) => setLoadAmount(formatInputNumber(e.target.value))} 
-                                          className="w-full h-14 pl-8 pr-4 text-2xl font-bold text-slate-900 border border-slate-200 rounded-xl focus:border-[#0F172A] focus:ring-1 focus:ring-[#0F172A] outline-none transition-all" 
+                                          className="w-full h-14 pl-8 pr-4 text-2xl font-bold text-slate-900 border border-slate-200 rounded-xl focus:border-[#0C0E0D] focus:ring-1 focus:ring-[#0C0E0D] outline-none transition-all" 
                                           placeholder="0" 
                                           autoFocus
                                       />
@@ -3065,7 +3065,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                       </span>
                                   </div>
                               </div>
-                              <button onClick={handleAmountConfirm} className="w-full py-4 bg-[#0F172A] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-transform active:scale-95">Continuar</button>
+                              <button onClick={handleAmountConfirm} className="w-full py-4 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-transform active:scale-95">Continuar</button>
                           </div>
                       )}
                       {loadStep === 4 && (
@@ -3080,7 +3080,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                               <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-3">
                                   <div className="flex justify-between items-center py-2 border-b border-slate-200">
                                       <span className="text-slate-500 text-sm">Monto a Transferir</span>
-                                      <span className="font-extrabold text-[#0F172A] text-lg text-right">
+                                      <span className="font-extrabold text-[#0C0E0D] text-lg text-right">
                                           {formatMoney(getRawAmount(loadAmount), selectedCountry === 'Colombia' ? 'COP' : selectedCountry === 'Perú' ? 'PEN' : selectedCountry === 'México' ? 'MXN' : selectedCountry === 'Brasil' ? 'BRL' : selectedCountry === 'Venezuela' ? 'VES' : 'USD')}
                                       </span>
                                   </div>
@@ -3111,7 +3111,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                       )}
                                   </div>
                               </div>
-                              <button onClick={handleLoadSubmit} className="w-full py-4 bg-[#0F172A] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-transform active:scale-95">
+                              <button onClick={handleLoadSubmit} className="w-full py-4 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-transform active:scale-95">
                                   Notificar Transferencia
                               </button>
                           </div>
@@ -3144,7 +3144,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                               <div>
                                   <label className="block text-sm font-bold text-slate-700 mb-2">Monto a enviar</label>
                                   <div className="relative">
-                                      <input type="text" value={sendForm.amount} onChange={(e) => setSendForm({...sendForm, amount: formatInputNumber(e.target.value)})} className="w-full h-16 pl-4 pr-20 text-3xl font-bold text-slate-900 border border-slate-300 rounded-xl focus:border-[#0F172A] focus:ring-1 focus:ring-[#0F172A] outline-none" placeholder="0" autoFocus />
+                                      <input type="text" value={sendForm.amount} onChange={(e) => setSendForm({...sendForm, amount: formatInputNumber(e.target.value)})} className="w-full h-16 pl-4 pr-20 text-3xl font-bold text-slate-900 border border-slate-300 rounded-xl focus:border-[#0C0E0D] focus:ring-1 focus:ring-[#0C0E0D] outline-none" placeholder="0" autoFocus />
                                       <select value={sendForm.destinationCurrency} onChange={(e) => setSendForm({...sendForm, destinationCurrency: e.target.value})} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-600 font-bold text-sm bg-slate-100 border-0 rounded-lg px-2 py-1 outline-none cursor-pointer">
                                           {CONVERSION_CURRENCIES.map(c => <option key={c.code} value={c.code}>{c.code}</option>)}
                                       </select>
@@ -3158,9 +3158,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                           <span className="font-bold text-xs text-green-800">ID Lincoin</span>
                                           <span className="text-[10px] text-green-600 text-center leading-tight">Instantáneo entre usuarios</span>
                                       </button>
-                                      <button onClick={() => { if (!getRawAmount(sendForm.amount)) { showToast('Ingresa un monto'); return; } setSendMode('bank'); setSendStep(2); }} className="flex flex-col items-center gap-2 p-3 py-4 border-2 border-slate-200 bg-slate-50 rounded-xl hover:border-[#0F172A] hover:bg-slate-100 transition-all">
-                                          <Building2 size={20} className="text-[#0F172A]"/>
-                                          <span className="font-bold text-xs text-[#0F172A]">Banco / Cuenta</span>
+                                      <button onClick={() => { if (!getRawAmount(sendForm.amount)) { showToast('Ingresa un monto'); return; } setSendMode('bank'); setSendStep(2); }} className="flex flex-col items-center gap-2 p-3 py-4 border-2 border-slate-200 bg-slate-50 rounded-xl hover:border-[#0C0E0D] hover:bg-slate-100 transition-all">
+                                          <Building2 size={20} className="text-[#0C0E0D]"/>
+                                          <span className="font-bold text-xs text-[#0C0E0D]">Banco / Cuenta</span>
                                           <span className="text-[10px] text-[#4ADE80] text-center leading-tight">Transferencia bancaria</span>
                                       </button>
                                       <button onClick={() => { if (!getRawAmount(sendForm.amount)) { showToast('Ingresa un monto'); return; } setSendMode('cash'); setSendStep(2); }} className="flex flex-col items-center gap-2 p-3 py-4 border-2 border-orange-200 bg-orange-50 rounded-xl hover:border-orange-400 hover:bg-orange-100 transition-all">
@@ -3204,19 +3204,19 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                           <div className="space-y-4">
                               <button onClick={() => { setSendStep(1); setSendMode(null); }} className="text-xs text-slate-400 flex items-center gap-1 hover:text-slate-600 mb-2 font-bold"><ArrowLeft size={12}/> Volver</button>
                               <div className="flex gap-2 p-1 bg-slate-100 rounded-lg mb-2">
-                                  <button onClick={() => setSendForm({...sendForm, beneficiaryType: 'business'})} className={`flex-1 py-2 text-sm font-bold rounded-md transition-all ${sendForm.beneficiaryType === 'business' ? 'bg-white text-[#0F172A] shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Empresa</button>
-                                  <button onClick={() => setSendForm({...sendForm, beneficiaryType: 'personal'})} className={`flex-1 py-2 text-sm font-bold rounded-md transition-all ${sendForm.beneficiaryType === 'personal' ? 'bg-white text-[#0F172A] shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Persona</button>
+                                  <button onClick={() => setSendForm({...sendForm, beneficiaryType: 'business'})} className={`flex-1 py-2 text-sm font-bold rounded-md transition-all ${sendForm.beneficiaryType === 'business' ? 'bg-white text-[#0C0E0D] shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Empresa</button>
+                                  <button onClick={() => setSendForm({...sendForm, beneficiaryType: 'personal'})} className={`flex-1 py-2 text-sm font-bold rounded-md transition-all ${sendForm.beneficiaryType === 'personal' ? 'bg-white text-[#0C0E0D] shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Persona</button>
                               </div>
                               <div>
                                   <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Nombre / Razón Social</label>
-                                  <input type="text" value={sendForm.beneficiaryName} onChange={(e) => setSendForm({...sendForm, beneficiaryName: e.target.value})} className="w-full h-11 px-3 border border-slate-300 rounded-lg focus:border-[#0F172A] outline-none text-sm"/>
+                                  <input type="text" value={sendForm.beneficiaryName} onChange={(e) => setSendForm({...sendForm, beneficiaryName: e.target.value})} className="w-full h-11 px-3 border border-slate-300 rounded-lg focus:border-[#0C0E0D] outline-none text-sm"/>
                               </div>
                               <div className="grid grid-cols-2 gap-4">
                                   <div><label className="block text-xs font-bold text-slate-500 uppercase mb-1">Tipo Doc.</label><select className="w-full h-11 px-3 border border-slate-300 rounded-lg bg-white"><option>Selecc.</option></select></div>
                                   <div><label className="block text-xs font-bold text-slate-500 uppercase mb-1">Número ID</label><input type="text" className="w-full h-11 px-3 border border-slate-300 rounded-lg"/></div>
                               </div>
                               <div><label className="block text-xs font-bold text-slate-500 uppercase mb-1">Cuenta</label><input type="text" value={sendForm.accountNumber} onChange={(e)=>setSendForm({...sendForm, accountNumber: e.target.value})} className="w-full h-11 px-3 border border-slate-300 rounded-lg"/></div>
-                              <button onClick={() => setSendStep(3)} className="w-full h-12 bg-[#0F172A] font-bold rounded-lg hover:bg-[#152e52] mt-4 flex items-center justify-center gap-2 shadow-lg">Revisar Datos</button>
+                              <button onClick={() => setSendStep(3)} className="w-full h-12 bg-[#0C0E0D] font-bold rounded-lg hover:bg-[#152e52] mt-4 flex items-center justify-center gap-2 shadow-lg">Revisar Datos</button>
                           </div>
                       )}
                       {/* STEP 3 BANK: Confirm */}
@@ -3225,7 +3225,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                               <h4 className="text-center text-slate-500 text-sm mb-2">Confirma los datos de pago</h4>
                               <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 flex flex-col items-center">
                                   <span className="text-xs font-bold text-[#4ADE80] uppercase tracking-widest mb-1">TOTAL A PAGAR</span>
-                                  <span className="text-3xl font-extrabold text-[#0F172A]">{formatMoney(getRawAmount(sendForm.amount), sendForm.destinationCurrency)}</span>
+                                  <span className="text-3xl font-extrabold text-[#0C0E0D]">{formatMoney(getRawAmount(sendForm.amount), sendForm.destinationCurrency)}</span>
                               </div>
                               <div className="bg-slate-50 rounded-xl p-4 space-y-3 text-sm border border-slate-200">
                                   <div className="flex justify-between"><span className="text-slate-500">Beneficiario:</span><span className="font-bold text-slate-800">{sendForm.beneficiaryName}</span></div>
@@ -3233,7 +3233,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                               </div>
                               <div className="flex gap-3">
                                   <button onClick={() => setSendStep(2)} className="flex-1 py-3 border border-slate-300 text-slate-600 font-bold rounded-xl hover:bg-slate-50 transition-colors">Corregir</button>
-                                  <button onClick={handleSendSubmit} className="flex-1 py-3 bg-[#0F172A] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-colors flex items-center justify-center gap-2">{isSending ? <Loader2 className="animate-spin" /> : <><Send size={18}/> Confirmar</>}</button>
+                                  <button onClick={handleSendSubmit} className="flex-1 py-3 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-colors flex items-center justify-center gap-2">{isSending ? <Loader2 className="animate-spin" /> : <><Send size={18}/> Confirmar</>}</button>
                               </div>
                           </div>
                       )}
@@ -3311,7 +3311,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                               <div className={`w-20 h-20 ${sendMode === 'cash' ? 'bg-orange-100' : 'bg-green-100'} rounded-full flex items-center justify-center mb-6`}>
                                   {sendMode === 'cash' ? <MapPin size={40} className="text-orange-500"/> : <CheckCircle size={40} className="text-green-600"/>}
                               </div>
-                              <h2 className="text-2xl font-bold text-[#0F172A] mb-2">
+                              <h2 className="text-2xl font-bold text-[#0C0E0D] mb-2">
                                   {sendMode === 'pay' ? '¡Pago Enviado!' : sendMode === 'cash' ? '¡Retiro Solicitado!' : '¡Pago Iniciado!'}
                               </h2>
                               {sendMode === 'cash' && cashReference && (
@@ -3326,7 +3326,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                               {sendMode === 'cash' && (
                                   <p className="text-sm text-slate-500 mb-4">Un agente se comunicará al <strong>{cashForm.phone || 'número registrado'}</strong> para coordinar el punto de entrega.</p>
                               )}
-                              <button onClick={closeSendModal} className="w-full bg-[#0F172A] font-bold py-3 rounded-xl hover:bg-[#152e52] transition-colors">Finalizar</button>
+                              <button onClick={closeSendModal} className="w-full bg-[#0C0E0D] font-bold py-3 rounded-xl hover:bg-[#152e52] transition-colors">Finalizar</button>
                           </div>
                       )}
                   </div>
@@ -3346,7 +3346,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
 
                   <div className="p-8 pb-4">
                       {/* Input: TU ENVÍAS */}
-                      <div className="border border-slate-200 rounded-2xl p-4 mb-3 relative bg-white hover:border-[#0F172A] transition-colors group focus-within:border-[#0F172A]">
+                      <div className="border border-slate-200 rounded-2xl p-4 mb-3 relative bg-white hover:border-[#0C0E0D] transition-colors group focus-within:border-[#0C0E0D]">
                           <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
                               TU ENVÍAS
                           </label>
@@ -3369,7 +3369,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                       </div>
 
                       {/* Output: TU CONTACTO RECIBE */}
-                      <div className="border border-slate-200 rounded-2xl p-4 mt-3 mb-4 relative bg-white hover:border-[#0F172A] transition-colors group">
+                      <div className="border border-slate-200 rounded-2xl p-4 mt-3 mb-4 relative bg-white hover:border-[#0C0E0D] transition-colors group">
                           <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
                               TU CONTACTO RECIBE
                           </label>
@@ -3384,7 +3384,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                       {/* Coupon Section */}
                       <div className="mb-4">
                           {!showCouponInput && !appliedCoupon && (
-                              <button onClick={() => setShowCouponInput(true)} className="text-xs font-bold text-[#0F172A] flex items-center gap-1 hover:underline">
+                              <button onClick={() => setShowCouponInput(true)} className="text-xs font-bold text-[#0C0E0D] flex items-center gap-1 hover:underline">
                                   <Tag size={14} /> ¿Tienes un cupón?
                               </button>
                           )}
@@ -3395,10 +3395,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                     type="text" 
                                     value={couponCode} 
                                     onChange={(e) => setCouponCode(e.target.value.toUpperCase())} 
-                                    className="flex-1 border border-slate-300 rounded-lg px-3 py-1.5 text-xs uppercase focus:border-[#0F172A] outline-none" 
+                                    className="flex-1 border border-slate-300 rounded-lg px-3 py-1.5 text-xs uppercase focus:border-[#0C0E0D] outline-none" 
                                     placeholder="CÓDIGO"
                                   />
-                                  <button onClick={handleApplyCoupon} className="bg-[#0F172A] px-3 py-1.5 rounded-lg font-bold text-xs hover:bg-[#152e52]">Aplicar</button>
+                                  <button onClick={handleApplyCoupon} className="bg-[#0C0E0D] px-3 py-1.5 rounded-lg font-bold text-xs hover:bg-[#152e52]">Aplicar</button>
                                   <button onClick={() => setShowCouponInput(false)} className="text-slate-400 hover:text-slate-600"><X size={16}/></button>
                               </div>
                           )}
@@ -3421,7 +3421,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                   <div className="w-4 h-4 rounded-full bg-[#415DA1] text-white flex items-center justify-center text-[8px]"><Minus size={8} strokeWidth={4}/></div>
                                   Costo de envío ({applicableFeePercentage}%):
                               </div>
-                              <span className="font-bold text-[#0F172A]">{formatMoney(rawAmount * (appliedCoupon ? (applicableFeePercentage * (100 - appliedCoupon.discount)/100) : applicableFeePercentage)/100, sourceCurr)} {sourceCurr}</span>
+                              <span className="font-bold text-[#0C0E0D]">{formatMoney(rawAmount * (appliedCoupon ? (applicableFeePercentage * (100 - appliedCoupon.discount)/100) : applicableFeePercentage)/100, sourceCurr)} {sourceCurr}</span>
                           </div>
                           
                           <div className="flex justify-between items-center text-xs">
@@ -3429,7 +3429,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                   <div className="w-4 h-4 rounded-full bg-[#415DA1] text-white flex items-center justify-center text-[8px]"><Equal size={8} strokeWidth={4}/></div>
                                   Monto a convertir:
                               </div>
-                              <span className="font-bold text-[#0F172A]">{formatMoney(amountToConvert, sourceCurr)} {sourceCurr}</span>
+                              <span className="font-bold text-[#0C0E0D]">{formatMoney(amountToConvert, sourceCurr)} {sourceCurr}</span>
                           </div>
 
                           <div className="flex justify-between items-center text-xs">
@@ -3437,7 +3437,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                   <div className="w-4 h-4 rounded-full bg-[#415DA1] text-white flex items-center justify-center text-[8px]">÷</div>
                                   Tipo de cambio:
                               </div>
-                              <span className="font-bold text-[#0F172A]">1 {sourceCurr} = {conversionRate} {targetCurr}</span>
+                              <span className="font-bold text-[#0C0E0D]">1 {sourceCurr} = {conversionRate} {targetCurr}</span>
                           </div>
                           
                           <div className="flex justify-center pt-1">
@@ -3449,15 +3449,15 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
 
                       {/* Delivery Info */}
                       <div className="bg-[#EBF2FA] rounded-xl p-3 flex items-start gap-3 mb-6">
-                          <div className="bg-white p-1 rounded-full text-[#0F172A] shrink-0"><Clock size={14}/></div>
-                          <span className="text-xs text-[#0F172A]">Tu dinero llega de forma <span className="font-bold">inmediata</span> una vez confirmada la operación</span>
+                          <div className="bg-white p-1 rounded-full text-[#0C0E0D] shrink-0"><Clock size={14}/></div>
+                          <span className="text-xs text-[#0C0E0D]">Tu dinero llega de forma <span className="font-bold">inmediata</span> una vez confirmada la operación</span>
                       </div>
 
                       {/* Action Button */}
                       <button
                           onClick={handleConvertSubmit}
                           disabled={isConverting}
-                          className="w-full h-12 bg-[#0F172A] font-bold rounded-xl hover:bg-[#152e52] shadow-lg text-sm transition-transform active:scale-95 flex justify-center items-center gap-2"
+                          className="w-full h-12 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg text-sm transition-transform active:scale-95 flex justify-center items-center gap-2"
                       >
                           {isConverting ? <Loader2 className="animate-spin" /> : 'Confirmar Operación'}
                       </button>
@@ -3484,14 +3484,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                       value={payVerifyCode}
                       onChange={e => setPayVerifyCode(e.target.value.replace(/\D/g, ''))}
                       onKeyDown={e => e.key === 'Enter' && handlePayVerifyAndSend()}
-                      className="w-full h-14 text-center text-2xl font-bold tracking-[0.4em] border-2 border-slate-200 rounded-xl focus:border-[#0F172A] outline-none mb-4 bg-slate-50"
+                      className="w-full h-14 text-center text-2xl font-bold tracking-[0.4em] border-2 border-slate-200 rounded-xl focus:border-[#0C0E0D] outline-none mb-4 bg-slate-50"
                       placeholder="000000"
                       autoFocus
                   />
                   <button
                       onClick={handlePayVerifyAndSend}
                       disabled={payVerifyCode.length !== 6 || payVerifyLoading}
-                      className="w-full h-12 bg-[#0F172A] font-bold rounded-xl disabled:opacity-50 hover:bg-[#152e52] transition-colors flex items-center justify-center gap-2"
+                      className="w-full h-12 bg-[#0C0E0D] font-bold rounded-xl disabled:opacity-50 hover:bg-[#152e52] transition-colors flex items-center justify-center gap-2"
                   >
                       {payVerifyLoading ? <><Loader2 size={18} className="animate-spin"/> Verificando...</> : 'Confirmar pago'}
                   </button>
@@ -3527,16 +3527,16 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                   <div className="grid grid-cols-4 gap-2">
                                       {PAY_LINK_COUNTRIES.map(c => (
                                           <button key={c.code} onClick={() => handleSelectPayLinkCountry(c.code)}
-                                              className={`flex flex-col items-center gap-1 p-2.5 rounded-xl border transition-all ${payLinkCountry === c.code ? 'border-[#0F172A] bg-slate-50 shadow-sm' : 'border-slate-200 hover:border-slate-300'}`}>
+                                              className={`flex flex-col items-center gap-1 p-2.5 rounded-xl border transition-all ${payLinkCountry === c.code ? 'border-[#0C0E0D] bg-slate-50 shadow-sm' : 'border-slate-200 hover:border-slate-300'}`}>
                                               <FlagImg code={c.code} className="w-8 h-6 object-cover rounded shadow-sm" />
-                                              <span className={`text-[10px] font-bold ${payLinkCountry === c.code ? 'text-[#0F172A]' : 'text-slate-500'}`}>{c.code}</span>
+                                              <span className={`text-[10px] font-bold ${payLinkCountry === c.code ? 'text-[#0C0E0D]' : 'text-slate-500'}`}>{c.code}</span>
                                           </button>
                                       ))}
                                   </div>
                               </div>
                               <div>
                                   <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Monto a cobrar</label>
-                                  <div className="flex items-center border border-slate-300 rounded-xl overflow-hidden focus-within:border-[#0F172A] transition-colors">
+                                  <div className="flex items-center border border-slate-300 rounded-xl overflow-hidden focus-within:border-[#0C0E0D] transition-colors">
                                       <input type="text" inputMode="numeric" placeholder="0"
                                           value={payLinkAmount ? payLinkAmount.replace(/\B(?=(\d{3})+(?!\d))/g, '.') : ''}
                                           onChange={e => setPayLinkAmount(e.target.value.replace(/\./g, '').replace(/\D/g, ''))}
@@ -3548,7 +3548,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                   </div>
                               </div>
                               <button onClick={() => setPayLinkStep(2)} disabled={!payLinkAmount || Number(payLinkAmount) <= 0}
-                                  className="w-full py-3.5 bg-[#0F172A] font-bold rounded-xl hover:bg-[#152e52] transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                                  className="w-full py-3.5 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
                                   Continuar
                               </button>
                           </div>
@@ -3560,12 +3560,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                   <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Nombre completo del pagador</label>
                                   <input type="text" placeholder="Ej. Juan García López" value={payLinkPayerName}
                                       onChange={e => setPayLinkPayerName(e.target.value)}
-                                      className="w-full px-4 py-3 border border-slate-300 rounded-xl outline-none focus:border-[#0F172A] transition-colors text-slate-800" />
+                                      className="w-full px-4 py-3 border border-slate-300 rounded-xl outline-none focus:border-[#0C0E0D] transition-colors text-slate-800" />
                               </div>
                               <div>
                                   <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Tipo de documento</label>
                                   <select value={payLinkDocType} onChange={e => setPayLinkDocType(e.target.value)}
-                                      className="w-full px-4 py-3 border border-slate-300 rounded-xl outline-none focus:border-[#0F172A] transition-colors text-slate-800 bg-white">
+                                      className="w-full px-4 py-3 border border-slate-300 rounded-xl outline-none focus:border-[#0C0E0D] transition-colors text-slate-800 bg-white">
                                       {(DOC_TYPES[payLinkCountry] ?? []).map(d => (
                                           <option key={d.value} value={d.value}>{d.label}</option>
                                       ))}
@@ -3575,7 +3575,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                   <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Número de documento</label>
                                   <input type="text" placeholder="Ej. 1234567890" value={payLinkDocNumber}
                                       onChange={e => setPayLinkDocNumber(e.target.value)}
-                                      className="w-full px-4 py-3 border border-slate-300 rounded-xl outline-none focus:border-[#0F172A] transition-colors text-slate-800" />
+                                      className="w-full px-4 py-3 border border-slate-300 rounded-xl outline-none focus:border-[#0C0E0D] transition-colors text-slate-800" />
                               </div>
                               <div className="bg-slate-50 rounded-xl p-4 border border-slate-200 text-sm space-y-1">
                                   <div className="flex justify-between">
@@ -3584,11 +3584,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                   </div>
                                   <div className="flex justify-between">
                                       <span className="text-slate-500">Monto</span>
-                                      <span className="font-bold text-[#0F172A]">{Number(payLinkAmount).toLocaleString()} {PAY_LINK_COUNTRIES.find(c => c.code === payLinkCountry)?.currency}</span>
+                                      <span className="font-bold text-[#0C0E0D]">{Number(payLinkAmount).toLocaleString()} {PAY_LINK_COUNTRIES.find(c => c.code === payLinkCountry)?.currency}</span>
                                   </div>
                               </div>
                               <button onClick={handleGeneratePayLink} disabled={!payLinkPayerName.trim() || !payLinkDocNumber.trim()}
-                                  className="w-full py-3.5 bg-[#4ADE80] text-[#0F172A] font-bold rounded-xl hover:bg-[#22C55E] transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                                  className="w-full py-3.5 bg-[#4ADE80] text-[#0C0E0D] font-bold rounded-xl hover:bg-[#22C55E] transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2">
                                   <Link2 size={18}/> Generar Link de Pago
                               </button>
                           </div>
@@ -3608,7 +3608,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                               <div>
                                   <p className="text-xs text-slate-400 mb-2 font-bold uppercase">Link de pago único</p>
                                   <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl px-4 py-3">
-                                      <span className="text-sm text-[#0F172A] font-mono flex-1 text-left break-all">{payLinkUrl}</span>
+                                      <span className="text-sm text-[#0C0E0D] font-mono flex-1 text-left break-all">{payLinkUrl}</span>
                                       <button onClick={() => { navigator.clipboard?.writeText(payLinkUrl); showToast('Link copiado'); }}
                                           className="shrink-0 p-1.5 rounded-lg hover:bg-slate-200 text-slate-500 transition-colors">
                                           <Copy size={16}/>
@@ -3619,11 +3619,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                   <p className="font-bold text-slate-700 mb-2">Resumen del cobro</p>
                                   <div className="flex justify-between"><span className="text-slate-500">Pagador</span><span className="font-bold">{payLinkPayerName}</span></div>
                                   <div className="flex justify-between"><span className="text-slate-500">Documento</span><span className="font-bold">{payLinkDocType} {payLinkDocNumber}</span></div>
-                                  <div className="flex justify-between"><span className="text-slate-500">Monto</span><span className="font-bold text-[#0F172A]">{Number(payLinkAmount).toLocaleString()} {PAY_LINK_COUNTRIES.find(c => c.code === payLinkCountry)?.currency}</span></div>
+                                  <div className="flex justify-between"><span className="text-slate-500">Monto</span><span className="font-bold text-[#0C0E0D]">{Number(payLinkAmount).toLocaleString()} {PAY_LINK_COUNTRIES.find(c => c.code === payLinkCountry)?.currency}</span></div>
                               </div>
                               <div className="flex gap-3">
                                   <button onClick={() => { if (navigator.share) { navigator.share({ title: 'Link de pago LINCOIN', url: payLinkUrl }); } else { navigator.clipboard?.writeText(payLinkUrl); showToast('Link copiado'); } }}
-                                      className="flex-1 py-3 bg-[#0F172A] font-bold rounded-xl hover:bg-[#152e52] transition-colors flex items-center justify-center gap-2">
+                                      className="flex-1 py-3 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] transition-colors flex items-center justify-center gap-2">
                                       <Share2 size={16}/> Compartir
                                   </button>
                                   <button onClick={closePayLink} className="flex-1 py-3 bg-slate-100 text-slate-700 font-bold rounded-xl hover:bg-slate-200 transition-colors">

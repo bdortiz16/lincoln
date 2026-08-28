@@ -163,15 +163,15 @@ const SidebarItem: React.FC<{
     className={`
       w-full flex items-center justify-between px-4 py-3.5 mb-1 rounded-xl transition-all duration-200 group
       ${active
-        ? 'bg-[#0F172A] font-bold shadow-lg shadow-green-900/10'
+        ? 'bg-[#0C0E0D] font-bold shadow-lg shadow-green-900/10'
         : small
           ? 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
-          : 'text-slate-700 hover:bg-slate-50 hover:text-[#0F172A] hover:shadow-sm font-medium'}
+          : 'text-slate-700 hover:bg-slate-50 hover:text-[#0C0E0D] hover:shadow-sm font-medium'}
       ${small ? 'text-xs' : 'text-sm'}
     `}
   >
     <div className="flex items-center gap-3">
-      <Icon size={small ? 16 : 20} className={active ? 'text-[#4ADE80]' : 'text-slate-500 group-hover:text-[#0F172A]'} />
+      <Icon size={small ? 16 : 20} className={active ? 'text-[#4ADE80]' : 'text-slate-500 group-hover:text-[#0C0E0D]'} />
       {/* color explícito: el label del item activo se perdía (navy sobre navy
           según el orden de clases) — blanco fijo cuando está activo */}
       <span style={active ? { color: '#FFFFFF' } : undefined}>{label}</span>
@@ -1364,7 +1364,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       <div className="space-y-10 animate-in fade-in duration-500 pt-6">
           <div className="flex justify-between items-center mb-8">
               <div>
-                  <h1 className="text-3xl font-extrabold text-[#0F172A] flex items-center gap-3 flex-wrap">
+                  <h1 className="text-3xl font-extrabold text-[#0C0E0D] flex items-center gap-3 flex-wrap">
                       Hola, {(currentUser?.role === 'business' ? (currentUser?.companyName || currentUser?.name) : currentUser?.name?.split(' ')[0]) || 'León'}
                       {seasonEmojis.length > 0 && <span>{seasonEmojis[0]}</span>}
                   </h1>
@@ -1378,9 +1378,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       hace obvio con qué cuenta quedaste. */}
                   <span className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-300 rounded-full text-xs shadow-sm max-w-[220px]">
                       <span className="w-1.5 h-1.5 rounded-full bg-[#4ADE80] shrink-0"></span>
-                      <span className="truncate font-bold" style={{ color: '#0F172A' }}>{currentUser?.email}</span>
+                      <span className="truncate font-bold" style={{ color: '#0C0E0D' }}>{currentUser?.email}</span>
                   </span>
-                  <button onClick={handleNotificationsClick} style={{ color: '#0F172A' }} className={`w-10 h-10 rounded-full bg-white border border-slate-300 flex items-center justify-center hover:border-[#0F172A] transition-all relative shadow-sm ${bellAnim ? 'animate-bounce' : ''}`}>
+                  <button onClick={handleNotificationsClick} style={{ color: '#0C0E0D' }} className={`w-10 h-10 rounded-full bg-white border border-slate-300 flex items-center justify-center hover:border-[#0C0E0D] transition-all relative shadow-sm ${bellAnim ? 'animate-bounce' : ''}`}>
                       <Bell size={20} className={bellAnim ? 'text-[#16A34A]' : ''} />
                       {unreadNotifications > 0 && <span className={`absolute top-0 right-0 w-3 h-3 bg-[#4ADE80] rounded-full border-2 border-white ${bellAnim ? 'animate-ping' : ''}`}></span>}
                   </button>
@@ -1423,7 +1423,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   
                   <div className="relative group">
                       <button onClick={() => setIsProfileMenuOpen(!isProfileMenuOpen)} className="flex items-center gap-3 pl-1 pr-3 py-1 bg-white border border-slate-200 rounded-full hover:shadow-md transition-all">
-                          <div className="w-8 h-8 rounded-full bg-[#0F172A] text-white flex items-center justify-center font-bold text-sm overflow-hidden">
+                          <div className="w-8 h-8 rounded-full bg-[#0C0E0D] text-white flex items-center justify-center font-bold text-sm overflow-hidden">
                               {currentUser?.avatarUrl ? <img src={currentUser.avatarUrl} className="w-full h-full object-cover"/> : currentUser?.name?.charAt(0) ?? '?'}
                           </div>
                           <ChevronDown size={14} className="text-slate-400"/>
@@ -1456,7 +1456,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   >
                       <Zap size={13} className="text-[#16A34A]" />
                       <span className="text-[10px] font-bold text-slate-600 uppercase tracking-wider">Mi ID Lincoin:</span>
-                      <span className="font-mono font-extrabold text-[#0F172A] tracking-widest text-sm">{currentUser.ownReferralCode}</span>
+                      <span className="font-mono font-extrabold text-[#0C0E0D] tracking-widest text-sm">{currentUser.ownReferralCode}</span>
                       <Copy size={11} className="text-slate-400" />
                   </div>
               </div>
@@ -1506,13 +1506,13 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               if (ks === 'in_progress') return (
                 <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 flex flex-col sm:flex-row items-start sm:items-center gap-4 shadow-sm animate-in slide-in-from-top-4">
                   <div className="w-10 h-10 bg-slate-100 rounded-full flex items-center justify-center shrink-0">
-                    <ShieldCheck className="text-[#0F172A]" size={20} />
+                    <ShieldCheck className="text-[#0C0E0D]" size={20} />
                   </div>
                   <div className="flex-1">
-                    <h3 className="text-[#0F172A] font-bold text-sm">Verificación en progreso</h3>
+                    <h3 className="text-[#0C0E0D] font-bold text-sm">Verificación en progreso</h3>
                     <p className="text-[#4ADE80] text-xs mt-1">Abriste Lincoin pero aún no terminaste. Completa el proceso para activar tu cuenta.</p>
                   </div>
-                  <button onClick={startDiditKyc} disabled={kycLoading} className="shrink-0 px-4 py-2 bg-[#0F172A] hover:bg-[#152e52] text-xs font-bold rounded-lg disabled:opacity-50 flex items-center gap-2 transition-colors">
+                  <button onClick={startDiditKyc} disabled={kycLoading} className="shrink-0 px-4 py-2 bg-[#0C0E0D] hover:bg-[#152e52] text-xs font-bold rounded-lg disabled:opacity-50 flex items-center gap-2 transition-colors">
                     {kycLoading ? <><RefreshCw size={14} className="animate-spin"/> Cargando...</> : <><ShieldCheck size={14}/> Continuar verificación</>}
                   </button>
                 </div>
@@ -1536,12 +1536,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
           <div className="space-y-4">
               <div className="flex justify-between items-center">
-                  <h3 className="font-bold text-[#0F172A] text-sm tracking-wide flex items-center gap-2">TUS CUENTAS <span className="bg-[#0F172A] text-white text-[10px] font-bold px-2 py-0.5 rounded-full min-w-[20px] text-center">{myWallets.length}</span></h3>
+                  <h3 className="font-bold text-[#0C0E0D] text-sm tracking-wide flex items-center gap-2">TUS CUENTAS <span className="bg-[#0C0E0D] text-white text-[10px] font-bold px-2 py-0.5 rounded-full min-w-[20px] text-center">{myWallets.length}</span></h3>
                   <div className="flex items-center gap-3">
-                      <button onClick={openWalletOrderModal} title="Ordenar billeteras" style={{ color: '#334155' }} className="hover:text-[#0F172A] transition-colors">
+                      <button onClick={openWalletOrderModal} title="Ordenar billeteras" style={{ color: '#334155' }} className="hover:text-[#0C0E0D] transition-colors">
                           <Settings size={15} />
                       </button>
-                      <button onClick={() => setShowAllWallets(!showAllWallets)} className="text-[#0F172A] text-xs font-bold hover:underline">
+                      <button onClick={() => setShowAllWallets(!showAllWallets)} className="text-[#0C0E0D] text-xs font-bold hover:underline">
                           {showAllWallets ? 'Ver menos' : 'Ver más'}
                       </button>
                   </div>
@@ -1558,7 +1558,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               className={`
                                   relative overflow-hidden rounded-2xl p-4 transition-all cursor-pointer border flex flex-col
                                   ${isPrimary
-                                      ? 'col-span-2 lg:col-span-1 bg-gradient-to-br from-[#0F172A] to-[#0F172A] text-white border-transparent shadow-xl shadow-green-900/20'
+                                      ? 'col-span-2 lg:col-span-1 bg-gradient-to-br from-[#0C0E0D] to-[#0C0E0D] text-white border-transparent shadow-xl shadow-green-900/20'
                                       : 'bg-white text-slate-800 border-slate-200 hover:border-slate-300 hover:shadow-lg'}
                               `}
                           >
@@ -1583,11 +1583,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               </div>
                               <div className={`flex gap-2 relative z-10 ${isPrimary ? '' : 'border-t border-slate-100 pt-2'}`}>
                                   <button onClick={(e) => { e.stopPropagation(); handleLoadClick(wallet.code); }} disabled={isBlocked}
-                                      className={`flex-1 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-colors ${isBlocked ? (isPrimary ? 'bg-slate-600 text-slate-300' : 'bg-slate-200 text-slate-400') : 'bg-[#4ADE80] text-[#0F172A] hover:bg-[#6EE7A0]'}`}>
+                                      className={`flex-1 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-colors ${isBlocked ? (isPrimary ? 'bg-slate-600 text-slate-300' : 'bg-slate-200 text-slate-400') : 'bg-[#4ADE80] text-[#0C0E0D] hover:bg-[#6EE7A0]'}`}>
                                       <Plus size={12} strokeWidth={3} /> Cargar
                                   </button>
                                   <button onClick={(e) => { e.stopPropagation(); if(!handleActionRestricted()) setIsSendModalOpen(true); }} disabled={isBlocked || !isKycVerified}
-                                      className={`flex-1 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-colors ${isPrimary ? 'bg-white/10 text-white hover:bg-white/20' : 'bg-white border border-slate-300 text-[#0F172A] hover:bg-slate-50'}`}>
+                                      className={`flex-1 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-colors ${isPrimary ? 'bg-white/10 text-white hover:bg-white/20' : 'bg-white border border-slate-300 text-[#0C0E0D] hover:bg-slate-50'}`}>
                                       <Send size={12} /> Enviar
                                   </button>
                               </div>
@@ -1606,8 +1606,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   <p className="text-[11px] text-slate-500">Vía transferencia o tarjeta</p>
               </button>
 
-              <button onClick={() => { if(!handleActionRestricted()) setIsSendModalOpen(true); }} className={`bg-white p-5 rounded-xl border border-slate-200 transition-all group text-left ${isBlocked || !isKycVerified ? 'opacity-50 cursor-not-allowed' : 'hover:border-[#0F172A] hover:shadow-md'}`}>
-                  <div className="w-10 h-10 bg-slate-50 rounded-lg flex items-center justify-center text-[#0F172A] mb-3 group-hover:scale-110 transition-transform">
+              <button onClick={() => { if(!handleActionRestricted()) setIsSendModalOpen(true); }} className={`bg-white p-5 rounded-xl border border-slate-200 transition-all group text-left ${isBlocked || !isKycVerified ? 'opacity-50 cursor-not-allowed' : 'hover:border-[#0C0E0D] hover:shadow-md'}`}>
+                  <div className="w-10 h-10 bg-slate-50 rounded-lg flex items-center justify-center text-[#0C0E0D] mb-3 group-hover:scale-110 transition-transform">
                       <Send size={20} />
                   </div>
                   <p className="font-bold text-slate-800 text-sm">Enviar a Contacto</p>
@@ -1674,15 +1674,15 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const renderMovements = () => (
       <div className="space-y-6 animate-in fade-in duration-300 pt-6">
           <div className="flex flex-col gap-3">
-              <button onClick={() => setActiveView('dashboard')} style={{ color: '#0F172A' }} className="flex items-center gap-2 font-bold text-sm self-start">
+              <button onClick={() => setActiveView('dashboard')} style={{ color: '#0C0E0D' }} className="flex items-center gap-2 font-bold text-sm self-start">
                   <ArrowLeft size={16} /> Volver
               </button>
               <div className="flex justify-between items-center">
                  <h2 className="text-xl font-bold text-slate-800">Historial de Movimientos</h2>
                  <div className="flex gap-2 bg-white p-1 rounded-lg border border-slate-200">
-                     <button onClick={() => setMovementsTab('all')} className={`px-4 py-2 rounded-lg text-sm font-bold ${movementsTab === 'all' ? 'bg-[#0F172A]' : 'text-slate-500 hover:bg-slate-50'}`}>Todos</button>
-                     <button onClick={() => setMovementsTab('income')} className={`px-4 py-2 rounded-lg text-sm font-bold ${movementsTab === 'income' ? 'bg-[#0F172A]' : 'text-slate-500 hover:bg-slate-50'}`}>Ingresos</button>
-                     <button onClick={() => setMovementsTab('expense')} className={`px-4 py-2 rounded-lg text-sm font-bold ${movementsTab === 'expense' ? 'bg-[#0F172A]' : 'text-slate-500 hover:bg-slate-50'}`}>Egresos</button>
+                     <button onClick={() => setMovementsTab('all')} className={`px-4 py-2 rounded-lg text-sm font-bold ${movementsTab === 'all' ? 'bg-[#0C0E0D]' : 'text-slate-500 hover:bg-slate-50'}`}>Todos</button>
+                     <button onClick={() => setMovementsTab('income')} className={`px-4 py-2 rounded-lg text-sm font-bold ${movementsTab === 'income' ? 'bg-[#0C0E0D]' : 'text-slate-500 hover:bg-slate-50'}`}>Ingresos</button>
+                     <button onClick={() => setMovementsTab('expense')} className={`px-4 py-2 rounded-lg text-sm font-bold ${movementsTab === 'expense' ? 'bg-[#0C0E0D]' : 'text-slate-500 hover:bg-slate-50'}`}>Egresos</button>
                  </div>
               </div>
           </div>
@@ -1696,10 +1696,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           className="w-full h-11 pl-9 pr-3 rounded-xl border border-slate-200 text-sm outline-none focus:border-[#4ADE80]" />
                   </div>
                   <button type="button" onClick={() => setMovShowFilters(v => !v)} title="Filtros"
-                      className={`relative h-11 px-3.5 rounded-xl border text-sm font-bold flex items-center gap-2 transition-colors ${movShowFilters || movActiveFilters ? 'bg-[#0F172A] text-white border-[#0F172A]' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>
+                      className={`relative h-11 px-3.5 rounded-xl border text-sm font-bold flex items-center gap-2 transition-colors ${movShowFilters || movActiveFilters ? 'bg-[#0C0E0D] text-white border-[#0C0E0D]' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>
                       <SlidersHorizontal size={16} />
                       <span className="hidden sm:inline">Filtros</span>
-                      {movActiveFilters > 0 && <span className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-[#4ADE80] text-[#0F172A] text-[10px] font-black flex items-center justify-center">{movActiveFilters}</span>}
+                      {movActiveFilters > 0 && <span className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-[#4ADE80] text-[#0C0E0D] text-[10px] font-black flex items-center justify-center">{movActiveFilters}</span>}
                   </button>
               </div>
               {movShowFilters && (
@@ -1710,7 +1710,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           <div className="flex flex-wrap gap-2">
                               {(['all', 'Pendiente', 'Completado', 'Rechazado'] as const).map(s => (
                                   <button key={s} type="button" onClick={() => setMovStatus(s)}
-                                      className={`px-3 py-1.5 rounded-full text-xs font-bold border transition-colors ${movStatus === s ? 'bg-[#4ADE80] text-[#0F172A] border-[#4ADE80]' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>
+                                      className={`px-3 py-1.5 rounded-full text-xs font-bold border transition-colors ${movStatus === s ? 'bg-[#4ADE80] text-[#0C0E0D] border-[#4ADE80]' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>
                                       {s === 'all' ? 'Todos' : s}
                                   </button>
                               ))}
@@ -1722,7 +1722,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           <div className="flex flex-wrap gap-2">
                               {([['all', 'Todas'], ['send', 'Envíos'], ['load', 'Depósitos'], ['convert', 'Conversiones']] as const).map(([k, lbl]) => (
                                   <button key={k} type="button" onClick={() => setMovType(k)}
-                                      className={`px-3 py-1.5 rounded-full text-xs font-bold border transition-colors ${movType === k ? 'bg-[#4ADE80] text-[#0F172A] border-[#4ADE80]' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>
+                                      className={`px-3 py-1.5 rounded-full text-xs font-bold border transition-colors ${movType === k ? 'bg-[#4ADE80] text-[#0C0E0D] border-[#4ADE80]' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>
                                       {lbl}
                                   </button>
                               ))}
@@ -1734,7 +1734,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           <div className="flex flex-wrap gap-2">
                               {['all', ...Array.from(new Set(movements.map(m => baseCurrency(m.currency)).filter(Boolean)))].map(c => (
                                   <button key={c} type="button" onClick={() => setMovCurrency(c)}
-                                      className={`px-3 py-1.5 rounded-full text-xs font-bold border transition-colors ${movCurrency === c ? 'bg-[#4ADE80] text-[#0F172A] border-[#4ADE80]' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>
+                                      className={`px-3 py-1.5 rounded-full text-xs font-bold border transition-colors ${movCurrency === c ? 'bg-[#4ADE80] text-[#0C0E0D] border-[#4ADE80]' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>
                                       {c === 'all' ? 'Todas' : c}
                                   </button>
                               ))}
@@ -1827,10 +1827,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       const balance = displayBalance(selectedWalletCode);
       return (
           <div className="space-y-6 animate-in fade-in duration-300 pt-6">
-              <button onClick={() => setActiveView('dashboard')} style={{ color: '#1E293B' }} className="flex items-center gap-2 font-bold text-sm hover:text-[#0F172A] hover:underline">
+              <button onClick={() => setActiveView('dashboard')} style={{ color: '#121413' }} className="flex items-center gap-2 font-bold text-sm hover:text-[#0C0E0D] hover:underline">
                   <ArrowLeft size={16} /> Volver al inicio
               </button>
-              <div className="bg-gradient-to-br from-[#0F172A] to-[#0F172A] p-8 rounded-3xl text-white shadow-xl relative overflow-hidden">
+              <div className="bg-gradient-to-br from-[#0C0E0D] to-[#0C0E0D] p-8 rounded-3xl text-white shadow-xl relative overflow-hidden">
                   <div className="absolute top-0 right-0 w-64 h-64 bg-white/5 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2"></div>
                   <div className="relative z-10">
                       <div className="flex justify-between items-start mb-8">
@@ -1853,7 +1853,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           )}
                       </p>
                       <div className="flex gap-4">
-                          <button onClick={() => { handleLoadClick(selectedWalletCode); }} disabled={isBlocked} className={`flex-1 text-[#0F172A] py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 transition-colors ${isBlocked ? 'bg-slate-400 cursor-not-allowed opacity-70' : 'bg-[#4ADE80] hover:bg-[#22C55E]'}`}><Plus size={18} /> Cargar</button>
+                          <button onClick={() => { handleLoadClick(selectedWalletCode); }} disabled={isBlocked} className={`flex-1 text-[#0C0E0D] py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 transition-colors ${isBlocked ? 'bg-slate-400 cursor-not-allowed opacity-70' : 'bg-[#4ADE80] hover:bg-[#22C55E]'}`}><Plus size={18} /> Cargar</button>
                           <button onClick={() => { if(!handleActionRestricted()) setIsSendModalOpen(true); }} disabled={isBlocked || !isKycVerified} className={`flex-1 text-white border py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 transition-colors ${isBlocked || !isKycVerified ? 'bg-white/10 border-white/10 cursor-not-allowed opacity-70' : 'bg-white/10 border-white/20 hover:bg-white/20'}`}><Send size={18} /> Enviar</button>
                       </div>
                   </div>
@@ -1871,7 +1871,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       <div className="bg-white rounded-2xl border border-slate-200 p-5">
                           <div className="flex items-center justify-between mb-2">
                               <div className="flex items-center gap-2">
-                                  <div className="w-9 h-9 rounded-xl bg-[#0F172A] flex items-center justify-center">
+                                  <div className="w-9 h-9 rounded-xl bg-[#0C0E0D] flex items-center justify-center">
                                       <Wallet size={16} className="text-[#4ADE80]" />
                                   </div>
                                   <div>
@@ -1885,7 +1885,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   </span>
                               )}
                           </div>
-                          <p className="text-2xl font-bold text-[#0F172A] font-mono">
+                          <p className="text-2xl font-bold text-[#0C0E0D] font-mono">
                               {formatMoney(finityBal ?? balance, 'COP')}
                           </p>
                           <p className="text-[11px] text-slate-500 mt-1">
@@ -1902,7 +1902,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           <div className="flex items-center justify-between mb-2 relative z-10">
                               <div className="flex items-center gap-2">
                                   <div className="w-9 h-9 rounded-xl bg-[#4ADE80] flex items-center justify-center">
-                                      <Zap size={16} className="text-[#0F172A]" />
+                                      <Zap size={16} className="text-[#0C0E0D]" />
                                   </div>
                                   <div>
                                       <p className="font-bold text-slate-800 text-sm">BreB Lincoin</p>
@@ -1911,21 +1911,21 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               </div>
                               <span className="text-[9px] font-bold uppercase bg-[#4ADE80]/15 text-[#16A34A] px-2 py-0.5 rounded-full">Bre-B</span>
                           </div>
-                          <p className="text-2xl font-bold text-[#0F172A] font-mono relative z-10">{formatMoney(brebBal, 'COP')}</p>
+                          <p className="text-2xl font-bold text-[#0C0E0D] font-mono relative z-10">{formatMoney(brebBal, 'COP')}</p>
                           <p className="text-[11px] text-slate-600 mt-1 relative z-10">
                               Saldo para dispersar a cuentas bancarias en Colombia en segundos, por el riel Bre-B.
                           </p>
                           <div className="flex gap-2 mt-3 relative z-10">
                               <button
                                   onClick={() => { setBrebMoveOpen(!brebMoveOpen); setBrebDir('to_breb'); }}
-                                  className="flex-1 py-2.5 rounded-xl bg-white border border-slate-300 text-[#0F172A] text-sm font-bold flex items-center justify-center gap-1.5 hover:bg-slate-50 transition-colors"
+                                  className="flex-1 py-2.5 rounded-xl bg-white border border-slate-300 text-[#0C0E0D] text-sm font-bold flex items-center justify-center gap-1.5 hover:bg-slate-50 transition-colors"
                               >
                                   <RefreshCw size={14} /> Mover saldo
                               </button>
                               <button
                                   onClick={() => { setFinityMode('full'); setActiveView('finity'); }}
                                   disabled={brebBal <= 0}
-                                  className="flex-1 py-2.5 rounded-xl bg-[#4ADE80] hover:bg-[#6EE7A0] text-[#0F172A] text-sm font-bold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
+                                  className="flex-1 py-2.5 rounded-xl bg-[#4ADE80] hover:bg-[#6EE7A0] text-[#0C0E0D] text-sm font-bold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
                               >
                                   <Send size={14} /> Dispersar
                               </button>
@@ -1937,7 +1937,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           <div className="absolute -right-8 -top-8 w-28 h-28 bg-slate-200/50 rounded-full blur-2xl"></div>
                           <div className="flex items-center justify-between mb-2 relative z-10">
                               <div className="flex items-center gap-2">
-                                  <div className="w-9 h-9 rounded-xl bg-[#0F172A] flex items-center justify-center text-base">🏦</div>
+                                  <div className="w-9 h-9 rounded-xl bg-[#0C0E0D] flex items-center justify-center text-base">🏦</div>
                                   <div>
                                       <p className="font-bold text-slate-800 text-sm">ACH Lincoin</p>
                                       <p className="text-[10px] uppercase tracking-wider text-slate-500">Transferencias ACH · L-V 7am–6pm</p>
@@ -1945,7 +1945,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               </div>
                               <span className="text-[9px] font-bold uppercase bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">ACH</span>
                           </div>
-                          <p className="text-2xl font-bold text-[#0F172A] font-mono relative z-10">{formatMoney(achBal, 'COP')}</p>
+                          <p className="text-2xl font-bold text-[#0C0E0D] font-mono relative z-10">{formatMoney(achBal, 'COP')}</p>
                           <p className="text-[11px] text-slate-600 mt-1 relative z-10">
                               Saldo para dispersar a cuentas bancarias en Colombia por el riel ACH, en horario hábil.
                           </p>
@@ -1953,7 +1953,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               <button
                                   onClick={() => { setFinityMode('full'); setActiveView('finity'); }}
                                   disabled={achBal <= 0}
-                                  className="flex-1 py-2.5 rounded-xl bg-[#0F172A] hover:bg-[#1e293b] text-white text-sm font-bold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
+                                  className="flex-1 py-2.5 rounded-xl bg-[#0C0E0D] hover:bg-[#121413] text-white text-sm font-bold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
                               >
                                   <Send size={14} /> Dispersar
                               </button>
@@ -1970,13 +1970,13 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   <div className="flex gap-2 mt-1">
                                       <button
                                           onClick={() => setBrebDir('to_breb')}
-                                          className={`flex-1 py-2 rounded-xl text-xs font-bold border transition-colors ${brebDir === 'to_breb' ? 'bg-[#0F172A] border-transparent' : 'bg-white text-slate-600 border-slate-200'}`}
+                                          className={`flex-1 py-2 rounded-xl text-xs font-bold border transition-colors ${brebDir === 'to_breb' ? 'bg-[#0C0E0D] border-transparent' : 'bg-white text-slate-600 border-slate-200'}`}
                                       >
                                           Peso → BreB ⚡
                                       </button>
                                       <button
                                           onClick={() => setBrebDir('to_peso')}
-                                          className={`flex-1 py-2 rounded-xl text-xs font-bold border transition-colors ${brebDir === 'to_peso' ? 'bg-[#0F172A] border-transparent' : 'bg-white text-slate-600 border-slate-200'}`}
+                                          className={`flex-1 py-2 rounded-xl text-xs font-bold border transition-colors ${brebDir === 'to_peso' ? 'bg-[#0C0E0D] border-transparent' : 'bg-white text-slate-600 border-slate-200'}`}
                                       >
                                           BreB → Peso 🏦
                                       </button>
@@ -1997,7 +1997,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               <button
                                   onClick={handleBrebMove}
                                   disabled={brebMoving || !brebAmountStr}
-                                  className="py-2.5 px-6 rounded-xl bg-[#4ADE80] hover:bg-[#6EE7A0] text-[#0F172A] text-sm font-bold disabled:opacity-50 transition-colors"
+                                  className="py-2.5 px-6 rounded-xl bg-[#4ADE80] hover:bg-[#6EE7A0] text-[#0C0E0D] text-sm font-bold disabled:opacity-50 transition-colors"
                               >
                                   {brebMoving ? 'Moviendo…' : 'Mover'}
                               </button>
@@ -2034,7 +2034,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               </div>
 
               {/* Volver también al final, para no tener que subir la página */}
-              <button onClick={() => setActiveView('dashboard')} style={{ color: '#1E293B' }} className="flex items-center gap-2 font-bold text-sm hover:text-[#0F172A] hover:underline mx-auto">
+              <button onClick={() => setActiveView('dashboard')} style={{ color: '#121413' }} className="flex items-center gap-2 font-bold text-sm hover:text-[#0C0E0D] hover:underline mx-auto">
                   <ArrowLeft size={16} /> Volver al inicio
               </button>
           </div>
@@ -2043,12 +2043,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
   const renderProfile = () => (
       <div className="max-w-2xl mx-auto space-y-6 animate-in fade-in duration-300 pt-6">
-          <button onClick={() => setActiveView('dashboard')} className="flex items-center gap-2 text-slate-700 font-bold text-sm mb-2 hover:text-[#0F172A]">
+          <button onClick={() => setActiveView('dashboard')} className="flex items-center gap-2 text-slate-700 font-bold text-sm mb-2 hover:text-[#0C0E0D]">
               <ArrowLeft size={16} /> Volver
           </button>
           <h2 className="text-2xl font-bold text-slate-800 mb-6">Mi Perfil</h2>
           <div className="bg-white p-8 rounded-2xl border border-slate-200 shadow-sm text-center relative group">
-              <div onClick={handleEditProfileClick} className="absolute top-4 right-4 p-2 text-slate-400 hover:text-[#0F172A] cursor-pointer hover:bg-slate-50 rounded-full transition-colors">
+              <div onClick={handleEditProfileClick} className="absolute top-4 right-4 p-2 text-slate-400 hover:text-[#0C0E0D] cursor-pointer hover:bg-slate-50 rounded-full transition-colors">
                   <Edit2 size={18}/>
               </div>
               <div className="w-24 h-24 bg-slate-100 rounded-full mx-auto mb-4 flex items-center justify-center text-2xl font-bold text-slate-400 overflow-hidden border-2 border-white shadow-sm">
@@ -2059,12 +2059,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               
               <div className="mt-4 inline-flex items-center gap-2 bg-slate-50 border border-slate-200 px-4 py-2 rounded-lg cursor-pointer hover:bg-slate-100 transition-colors" onClick={() => {navigator.clipboard.writeText(currentUser?.ownReferralCode || ''); showToast("Código copiado")}}>
                   <span className="text-xs text-slate-500 font-bold uppercase">ID Usuario:</span>
-                  <span className="font-mono font-bold text-[#0F172A] text-lg">{currentUser?.ownReferralCode || 'GENERANDO...'}</span>
-                  <Copy size={14} className="text-[#0F172A]" />
+                  <span className="font-mono font-bold text-[#0C0E0D] text-lg">{currentUser?.ownReferralCode || 'GENERANDO...'}</span>
+                  <Copy size={14} className="text-[#0C0E0D]" />
               </div>
 
               <div className="mt-6 flex justify-center gap-2">
-                  <span className="px-3 py-1 bg-slate-50 text-[#0F172A] rounded-full text-xs font-bold border border-slate-200">{isBusinessProduct ? 'Cuenta Empresa' : 'Cuenta Personal'}</span>
+                  <span className="px-3 py-1 bg-slate-50 text-[#0C0E0D] rounded-full text-xs font-bold border border-slate-200">{isBusinessProduct ? 'Cuenta Empresa' : 'Cuenta Personal'}</span>
                   <span className={`px-3 py-1 rounded-full text-xs font-bold border ${isKycVerified ? 'bg-green-50 text-green-700 border-green-100' : 'bg-orange-50 text-orange-700 border-orange-100'}`}>
                       {isKycVerified ? 'Verificado' : (isBusinessProduct ? 'KYB Pendiente' : 'KYC Pendiente')}
                   </span>
@@ -2190,7 +2190,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
   const renderSettings = () => (
       <div className="max-w-2xl mx-auto space-y-6 animate-in fade-in duration-300 pt-6">
-          <button onClick={() => setActiveView('dashboard')} className="flex items-center gap-2 text-slate-700 font-bold text-sm mb-4 hover:text-[#0F172A]">
+          <button onClick={() => setActiveView('dashboard')} className="flex items-center gap-2 text-slate-700 font-bold text-sm mb-4 hover:text-[#0C0E0D]">
               <ArrowLeft size={16}/> Volver
           </button>
           <h2 className="text-2xl font-bold text-slate-800">Configuración</h2>
@@ -2198,7 +2198,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           {/* Security */}
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
               <div className="p-4 border-b border-slate-100 font-bold text-slate-800 flex items-center gap-2">
-                  <Lock size={18} className="text-[#0F172A]"/> Seguridad
+                  <Lock size={18} className="text-[#0C0E0D]"/> Seguridad
               </div>
               <div className="p-6 space-y-4">
                   <div className="flex justify-between items-center py-2 border-b border-slate-50">
@@ -2225,7 +2225,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               </button>
                           </div>
                       ) : (
-                          <button onClick={handleOpenMFAEnroll} className="px-4 py-2 text-sm font-bold bg-[#0F172A] rounded-lg hover:bg-[#152e52] transition-colors">
+                          <button onClick={handleOpenMFAEnroll} className="px-4 py-2 text-sm font-bold bg-[#0C0E0D] rounded-lg hover:bg-[#152e52] transition-colors">
                               Activar
                           </button>
                       )}
@@ -2236,7 +2236,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           {/* Notifications */}
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
               <div className="p-4 border-b border-slate-100 font-bold text-slate-800 flex items-center gap-2">
-                  <Bell size={18} className="text-[#0F172A]"/> Notificaciones
+                  <Bell size={18} className="text-[#0C0E0D]"/> Notificaciones
               </div>
               <div className="p-6 space-y-1">
                   {[
@@ -2255,7 +2255,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               </div>
                               <button
                                   onClick={() => toggleNotifPref(key)}
-                                  className={`w-11 h-6 rounded-full transition-colors relative flex-shrink-0 ${enabled ? 'bg-[#0F172A]' : 'bg-slate-200'}`}
+                                  className={`w-11 h-6 rounded-full transition-colors relative flex-shrink-0 ${enabled ? 'bg-[#0C0E0D]' : 'bg-slate-200'}`}
                               >
                                   <span className={`absolute top-1 w-4 h-4 rounded-full bg-white shadow transition-all ${enabled ? 'left-6' : 'left-1'}`}/>
                               </button>
@@ -2268,7 +2268,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           {/* Account info */}
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
               <div className="p-4 border-b border-slate-100 font-bold text-slate-800 flex items-center gap-2">
-                  <User size={18} className="text-[#0F172A]"/> Información de Cuenta
+                  <User size={18} className="text-[#0C0E0D]"/> Información de Cuenta
               </div>
               <div className="p-6 space-y-3">
                   <div className="flex justify-between border-b border-slate-50 pb-3">
@@ -2277,7 +2277,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   </div>
                   <div className="flex justify-between border-b border-slate-50 pb-3">
                       <span className="text-slate-500 text-sm">ID de cuenta</span>
-                      <span className="font-mono font-bold text-[#0F172A] text-sm">{currentUser?.ownReferralCode}</span>
+                      <span className="font-mono font-bold text-[#0C0E0D] text-sm">{currentUser?.ownReferralCode}</span>
                   </div>
                   <div className="flex justify-between">
                       <span className="text-slate-500 text-sm">Tipo de cuenta</span>
@@ -2329,10 +2329,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
   const renderReferrals = () => (
       <div className="animate-in fade-in duration-300">
-          <button onClick={() => setActiveView('dashboard')} className="flex items-center gap-2 text-slate-700 font-bold text-sm mb-6 hover:text-[#0F172A]">
+          <button onClick={() => setActiveView('dashboard')} className="flex items-center gap-2 text-slate-700 font-bold text-sm mb-6 hover:text-[#0C0E0D]">
               <ArrowLeft size={16} /> Volver
           </button>
-          <div className="bg-[#0F172A] rounded-3xl p-8 md:p-12 text-white text-center mb-8 relative overflow-hidden">
+          <div className="bg-[#0C0E0D] rounded-3xl p-8 md:p-12 text-white text-center mb-8 relative overflow-hidden">
                <div className="relative z-10">
                    <h2 className="text-3xl font-bold mb-4">Invita y Gana $20 USD</h2>
                    <p className="text-green-100 max-w-lg mx-auto mb-8">
@@ -2342,7 +2342,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                    </p>
                    <div className="bg-white/10 p-4 rounded-xl max-w-md mx-auto flex items-center gap-4 backdrop-blur-sm border border-white/20">
                        <code className="flex-1 font-mono text-xl font-bold text-white tracking-widest">{currentUser?.ownReferralCode || 'GENERANDO...'}</code>
-                       <button onClick={() => {navigator.clipboard.writeText(currentUser?.ownReferralCode || ''); showToast("Código copiado")}} className="bg-white text-[#0F172A] px-4 py-2 rounded-lg font-bold text-sm hover:bg-slate-50">Copiar</button>
+                       <button onClick={() => {navigator.clipboard.writeText(currentUser?.ownReferralCode || ''); showToast("Código copiado")}} className="bg-white text-[#0C0E0D] px-4 py-2 rounded-lg font-bold text-sm hover:bg-slate-50">Copiar</button>
                    </div>
                </div>
                <div className="absolute top-0 right-0 w-64 h-64 bg-[#4ADE80]/20 rounded-full blur-3xl translate-x-1/2 -translate-y-1/2"></div>
@@ -2351,7 +2351,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
               <div className="p-6 border-b border-slate-100 flex justify-between items-center">
                   <h3 className="font-bold text-slate-800 text-sm uppercase tracking-wider flex items-center gap-2">
-                      <Users size={18} className="text-[#0F172A]"/> Tus Referidos
+                      <Users size={18} className="text-[#0C0E0D]"/> Tus Referidos
                   </h3>
               </div>
               <div className="overflow-x-auto">
@@ -2424,18 +2424,18 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
   const renderAffiliates = () => (
       <div className="animate-in fade-in duration-300">
-      <button onClick={() => setActiveView('dashboard')} className="flex items-center gap-2 text-slate-700 font-bold text-sm mb-6 hover:text-[#0F172A]">
+      <button onClick={() => setActiveView('dashboard')} className="flex items-center gap-2 text-slate-700 font-bold text-sm mb-6 hover:text-[#0C0E0D]">
           <ArrowLeft size={16} /> Volver
       </button>
       <div className="text-center py-12">
-          <div className="w-20 h-20 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-6 text-[#0F172A]">
+          <div className="w-20 h-20 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-6 text-[#0C0E0D]">
               <Megaphone size={32} />
           </div>
           <h2 className="text-2xl font-bold text-slate-800 mb-4">Programa de Aliados</h2>
           <p className="text-slate-500 max-w-lg mx-auto mb-8">
               ¿Eres influencer, creador de contenido o tienes una comunidad? Únete a nuestro programa de afiliados y obtén beneficios exclusivos.
           </p>
-          <button className="bg-[#0F172A] px-8 py-3 rounded-xl font-bold hover:bg-[#152e52] transition-colors">
+          <button className="bg-[#0C0E0D] px-8 py-3 rounded-xl font-bold hover:bg-[#152e52] transition-colors">
               Aplicar al Programa
           </button>
       </div>
@@ -2457,7 +2457,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           <button onClick={() => setActiveView('dashboard')} className="flex items-center gap-2 text-slate-700 hover:text-slate-900 font-bold text-sm">
             <ArrowLeft size={18}/> Volver
           </button>
-          <h2 className="text-xl font-bold text-[#0F172A]">Servicios</h2>
+          <h2 className="text-xl font-bold text-[#0C0E0D]">Servicios</h2>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {SERVICES.map(({ icon: Icon, label, desc, color, onClick }: any) => (
@@ -2479,10 +2479,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
             </div>
           ))}
         </div>
-        <div className="bg-[#0F172A] rounded-2xl p-6 text-white text-center">
+        <div className="bg-[#0C0E0D] rounded-2xl p-6 text-white text-center">
           <h3 className="font-bold text-lg mb-1">¿Necesitas ayuda?</h3>
           <p className="text-green-200 text-sm mb-4">Nuestro equipo está disponible para asistirte.</p>
-          <a href="mailto:soporte@cuypay.com" className="inline-flex items-center gap-2 bg-[#4ADE80] text-[#0F172A] font-bold px-6 py-2.5 rounded-xl hover:bg-[#00b396] transition-colors text-sm">
+          <a href="mailto:soporte@cuypay.com" className="inline-flex items-center gap-2 bg-[#4ADE80] text-[#0C0E0D] font-bold px-6 py-2.5 rounded-xl hover:bg-[#00b396] transition-colors text-sm">
             Contactar soporte
           </a>
         </div>
@@ -2681,12 +2681,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       const iy = y - iconS + 3; // alinear con la línea base del texto
       // símbolo: cuadro navy + marco teal + punto teal (mismo del app)
       const s = iconS;
-      roundRect(ctx, gx, iy, s, s, s * 0.22); ctx.fillStyle = '#0F172A'; ctx.fill();
+      roundRect(ctx, gx, iy, s, s, s * 0.22); ctx.fillStyle = '#0C0E0D'; ctx.fill();
       ctx.strokeStyle = '#4ADE80'; ctx.lineWidth = s * 0.075; ctx.lineJoin = 'round';
       roundRect(ctx, gx + s * 0.22, iy + s * 0.22, s * 0.56, s * 0.56, s * 0.16); ctx.stroke();
       ctx.beginPath(); ctx.arc(gx + s * 0.58, iy + s * 0.56, s * 0.08, 0, Math.PI * 2); ctx.fillStyle = '#4ADE80'; ctx.fill();
       const sx = gx + iconS + gap;
-      ctx.fillStyle = '#0F172A'; ctx.fillText('CUY', sx, y);
+      ctx.fillStyle = '#0C0E0D'; ctx.fillText('CUY', sx, y);
       ctx.fillStyle = '#4ADE80'; ctx.fillText('PAY', sx + wCuy, y);
       // Subtítulo
       y += 22;
@@ -2696,7 +2696,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       y += 16;
       const boxY = y, boxH = 72;
       roundRect(ctx, PAD, boxY, maxW, boxH, 14); ctx.fillStyle = '#F4F6F9'; ctx.fill();
-      ctx.font = `800 25px ${FONT}`; ctx.fillStyle = isCredit ? '#16a34a' : '#0F172A';
+      ctx.font = `800 25px ${FONT}`; ctx.fillStyle = isCredit ? '#16a34a' : '#0C0E0D';
       ctx.fillText(`${isCredit ? '+' : '-'}${formatMoney(tx.amount, tx.currency)} ${tx.currency}`, W / 2, boxY + 34);
       const stCol = tx.status === 'Completado' ? ['#16A34A', '#FFFFFF'] : tx.status === 'Pendiente' ? ['#F97316', '#FFFFFF'] : ['#DC2626', '#FFFFFF'];
       ctx.font = `700 11px ${FONT}`;
@@ -2710,7 +2710,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
         ctx.font = F_LABEL; ctx.fillStyle = '#94a3b8';
         ctx.fillText(r.f.label.toUpperCase(), PAD, y + 10);
         y += 16;
-        ctx.font = F_VALUE; ctx.fillStyle = '#1e293b';
+        ctx.font = F_VALUE; ctx.fillStyle = '#121413';
         for (const ln of r.lines) { ctx.fillText(ln, PAD, y + 13); y += 18; }
         y += 6;
         ctx.strokeStyle = '#f1f5f9'; ctx.lineWidth = 1;
@@ -2762,14 +2762,14 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-slate-900/60 backdrop-blur-sm" onClick={() => setSelectedTx(null)}>
         <div className="relative bg-white w-full sm:max-w-2xl rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden max-h-[92vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
           {/* Descargar / compartir comprobante — navy con icono blanco (visible;
-              antes el hover:bg-[#0F172A] activaba la regla global que forzaba el
+              antes el hover:bg-[#0C0E0D] activaba la regla global que forzaba el
               icono a blanco SIEMPRE y quedaba invisible sobre el fondo claro). */}
           <div className="absolute top-4 right-4 z-10 flex items-center gap-2">
             <button
               type="button"
               onClick={downloadReceipt}
               title="Descargar comprobante"
-              className="w-9 h-9 rounded-full bg-[#0F172A] text-white hover:bg-[#152e52] flex items-center justify-center transition-colors shadow-md"
+              className="w-9 h-9 rounded-full bg-[#0C0E0D] text-white hover:bg-[#152e52] flex items-center justify-center transition-colors shadow-md"
             >
               <Download size={16} />
             </button>
@@ -2777,7 +2777,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               type="button"
               onClick={shareReceipt}
               title="Compartir comprobante"
-              className="w-9 h-9 rounded-full bg-[#0F172A] text-white hover:bg-[#152e52] flex items-center justify-center transition-colors shadow-md"
+              className="w-9 h-9 rounded-full bg-[#0C0E0D] text-white hover:bg-[#152e52] flex items-center justify-center transition-colors shadow-md"
             >
               <Share2 size={16} />
             </button>
@@ -2792,7 +2792,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           </div>
           {/* Amount */}
           <div className="mx-6 mb-5 rounded-2xl bg-[#F4F6F9] p-4 text-center">
-            <p className={`text-4xl font-black ${isCredit ? 'text-green-600' : 'text-[#0F172A]'}`}>
+            <p className={`text-4xl font-black ${isCredit ? 'text-green-600' : 'text-[#0C0E0D]'}`}>
               {isCredit ? '+' : '-'}{formatMoney(tx.amount, tx.currency)} <span className="text-xl">{tx.currency}</span>
             </p>
             <div className={`inline-flex items-center gap-1.5 mt-2 px-3 py-1 rounded-full text-xs font-bold border ${tx.status === 'Completado' ? 'bg-white text-green-700 border-green-500' : tx.status === 'Pendiente' ? 'bg-white text-orange-600 border-orange-400' : 'bg-white text-red-700 border-red-400'}`}>
@@ -2830,7 +2830,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           </div>
           {/* Footer */}
           <div className="px-6 pt-2 pb-8">
-            <button type="button" onClick={() => setSelectedTx(null)} className="w-full h-12 bg-[#0F172A] hover:bg-[#152e52] font-bold rounded-xl transition-colors text-sm">
+            <button type="button" onClick={() => setSelectedTx(null)} className="w-full h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-xl transition-colors text-sm">
               Listo
             </button>
           </div>
@@ -2843,7 +2843,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     <div className="min-h-screen bg-[#F8FAFC] font-sans text-slate-900 flex">
       {/* Toast */}
       {toastMessage && (
-          <div className={`fixed top-6 right-6 z-[70] px-6 py-3 rounded-lg shadow-xl flex items-center gap-3 animate-in slide-in-from-top-4 fade-in max-w-md ${toastType === 'error' ? 'bg-red-600 text-white' : 'bg-[#0F172A] text-white'}`}>
+          <div className={`fixed top-6 right-6 z-[70] px-6 py-3 rounded-lg shadow-xl flex items-center gap-3 animate-in slide-in-from-top-4 fade-in max-w-md ${toastType === 'error' ? 'bg-red-600 text-white' : 'bg-[#0C0E0D] text-white'}`}>
               {toastType === 'error' ? <XCircle size={20} className="text-white shrink-0" /> : <CheckCircle size={20} className="text-[#4ADE80] shrink-0" />}
               <span className="font-medium text-sm">{toastMessage}</span>
           </div>
@@ -2921,7 +2921,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       )}
       {activeView === 'finity' && currentUser?.id && (
           <div className="pt-6">
-              <button onClick={() => setActiveView('dashboard')} className="flex items-center gap-2 text-slate-700 font-bold text-sm hover:text-[#0F172A] mb-2">
+              <button onClick={() => setActiveView('dashboard')} className="flex items-center gap-2 text-slate-700 font-bold text-sm hover:text-[#0C0E0D] mb-2">
                   <ArrowLeft size={16} /> Volver
               </button>
               {finityMode === 'converter' && (currentUser as any)?.otcConfig?.enabled !== true ? (
@@ -3006,19 +3006,19 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           if (!wallet) return null;
                           const isVisible = index < 3;
                           return (
-                              <div key={code} className={`flex items-center gap-3 p-3 rounded-xl border ${isVisible ? 'border-[#0F172A]/20 bg-slate-50/40' : 'border-slate-200 bg-slate-50/40'}`}>
-                                  <span className={`text-[10px] font-bold w-6 text-center ${isVisible ? 'text-[#0F172A]' : 'text-slate-400'}`}>#{index + 1}</span>
+                              <div key={code} className={`flex items-center gap-3 p-3 rounded-xl border ${isVisible ? 'border-[#0C0E0D]/20 bg-slate-50/40' : 'border-slate-200 bg-slate-50/40'}`}>
+                                  <span className={`text-[10px] font-bold w-6 text-center ${isVisible ? 'text-[#0C0E0D]' : 'text-slate-400'}`}>#{index + 1}</span>
                                   <FlagImg code={code} className="w-7 h-5 object-cover rounded shadow-sm shrink-0" />
                                   <div className="flex-1 min-w-0">
                                       <p className="font-bold text-slate-800 text-sm leading-tight truncate">{wallet.name}</p>
                                       <p className="text-[10px] text-slate-400">{wallet.code}</p>
                                   </div>
-                                  {isVisible && <span className="text-[9px] font-bold text-[#0F172A] bg-slate-100 px-1.5 py-0.5 rounded shrink-0">Visible</span>}
+                                  {isVisible && <span className="text-[9px] font-bold text-[#0C0E0D] bg-slate-100 px-1.5 py-0.5 rounded shrink-0">Visible</span>}
                                   <div className="flex flex-col gap-0.5 shrink-0">
-                                      <button onClick={() => moveWalletInDraft(index, -1)} disabled={index === 0} className="p-1 text-slate-400 hover:text-[#0F172A] disabled:opacity-25 disabled:cursor-not-allowed transition-colors">
+                                      <button onClick={() => moveWalletInDraft(index, -1)} disabled={index === 0} className="p-1 text-slate-400 hover:text-[#0C0E0D] disabled:opacity-25 disabled:cursor-not-allowed transition-colors">
                                           <ChevronUp size={14}/>
                                       </button>
-                                      <button onClick={() => moveWalletInDraft(index, 1)} disabled={index === walletDraftOrder.length - 1} className="p-1 text-slate-400 hover:text-[#0F172A] disabled:opacity-25 disabled:cursor-not-allowed transition-colors">
+                                      <button onClick={() => moveWalletInDraft(index, 1)} disabled={index === walletDraftOrder.length - 1} className="p-1 text-slate-400 hover:text-[#0C0E0D] disabled:opacity-25 disabled:cursor-not-allowed transition-colors">
                                           <ChevronDown size={14}/>
                                       </button>
                                   </div>
@@ -3028,7 +3028,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   </div>
                   <div className="p-4 border-t border-slate-100 flex gap-3">
                       <button onClick={() => setIsWalletOrderModalOpen(false)} className="flex-1 h-11 border border-slate-200 rounded-xl text-slate-600 text-sm font-bold hover:bg-slate-50 transition-colors">Cancelar</button>
-                      <button onClick={saveWalletOrder} className="flex-1 h-11 bg-[#0F172A] hover:bg-[#152e52] text-sm font-bold rounded-xl transition-colors">Guardar</button>
+                      <button onClick={saveWalletOrder} className="flex-1 h-11 bg-[#0C0E0D] hover:bg-[#152e52] text-sm font-bold rounded-xl transition-colors">Guardar</button>
                   </div>
               </div>
           </div>
@@ -3041,9 +3041,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   <button onClick={() => { unenrollMFA(mfaEnrollData.factorId); setMfaModalOpen(false); setMfaEnrollData(null); }} className="absolute top-4 right-4 text-slate-400 hover:text-slate-600"><X size={20}/></button>
                   <div className="text-center mb-6">
                       <div className="w-12 h-12 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-3">
-                          <ShieldCheck size={24} className="text-[#0F172A]"/>
+                          <ShieldCheck size={24} className="text-[#0C0E0D]"/>
                       </div>
-                      <h3 className="text-xl font-bold text-[#0F172A]">Activar verificación en 2 pasos</h3>
+                      <h3 className="text-xl font-bold text-[#0C0E0D]">Activar verificación en 2 pasos</h3>
                       <p className="text-slate-500 text-sm mt-1">Escanea el código QR con tu app autenticadora</p>
                   </div>
                   <div className="flex flex-col items-center mb-6">
@@ -3061,7 +3061,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       type="text" inputMode="numeric" maxLength={6}
                       value={mfaVerifyCode}
                       onChange={(e) => setMfaVerifyCode(e.target.value.replace(/\D/g, ''))}
-                      className="w-full h-14 text-center text-2xl font-bold tracking-[0.4em] border-2 border-slate-200 rounded-xl focus:border-[#0F172A] outline-none mb-4 bg-slate-50"
+                      className="w-full h-14 text-center text-2xl font-bold tracking-[0.4em] border-2 border-slate-200 rounded-xl focus:border-[#0C0E0D] outline-none mb-4 bg-slate-50"
                       placeholder="000000"
                       autoFocus
                       onKeyDown={(e) => e.key === 'Enter' && handleVerifyMFAEnrollment()}
@@ -3069,7 +3069,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   <button
                       onClick={handleVerifyMFAEnrollment}
                       disabled={mfaVerifyCode.length !== 6 || mfaVerifyLoading}
-                      className="w-full h-12 bg-[#0F172A] font-bold rounded-xl disabled:opacity-50 hover:bg-[#152e52] transition-colors"
+                      className="w-full h-12 bg-[#0C0E0D] font-bold rounded-xl disabled:opacity-50 hover:bg-[#152e52] transition-colors"
                   >
                       {mfaVerifyLoading ? 'Verificando...' : 'Confirmar activación'}
                   </button>
@@ -3112,7 +3112,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       value={payVerifyCode}
                       onChange={e => setPayVerifyCode(e.target.value.replace(/\D/g, ''))}
                       onKeyDown={e => e.key === 'Enter' && handlePayVerifyAndSend()}
-                      className="w-full h-14 text-center text-2xl font-bold tracking-[0.4em] border-2 border-slate-200 rounded-xl focus:border-[#0F172A] outline-none mb-4 bg-slate-50"
+                      className="w-full h-14 text-center text-2xl font-bold tracking-[0.4em] border-2 border-slate-200 rounded-xl focus:border-[#0C0E0D] outline-none mb-4 bg-slate-50"
                       placeholder="000000"
                       autoFocus
                   />
@@ -3166,10 +3166,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                           <button
                                               key={c.code}
                                               onClick={() => handleSelectPayLinkCountry(c.code)}
-                                              className={`flex flex-col items-center gap-1 p-2.5 rounded-xl border transition-all ${payLinkCountry === c.code ? 'border-[#0F172A] bg-slate-50 shadow-sm' : 'border-slate-200 hover:border-slate-300'}`}
+                                              className={`flex flex-col items-center gap-1 p-2.5 rounded-xl border transition-all ${payLinkCountry === c.code ? 'border-[#0C0E0D] bg-slate-50 shadow-sm' : 'border-slate-200 hover:border-slate-300'}`}
                                           >
                                               <FlagImg code={c.code} className="w-8 h-6 object-cover rounded shadow-sm" />
-                                              <span className={`text-[10px] font-bold ${payLinkCountry === c.code ? 'text-[#0F172A]' : 'text-slate-500'}`}>{c.code}</span>
+                                              <span className={`text-[10px] font-bold ${payLinkCountry === c.code ? 'text-[#0C0E0D]' : 'text-slate-500'}`}>{c.code}</span>
                                           </button>
                                       ))}
                                   </div>
@@ -3178,7 +3178,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               {/* Amount */}
                               <div>
                                   <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Monto a cobrar</label>
-                                  <div className="flex items-center border border-slate-300 rounded-xl overflow-hidden focus-within:border-[#0F172A] transition-colors">
+                                  <div className="flex items-center border border-slate-300 rounded-xl overflow-hidden focus-within:border-[#0C0E0D] transition-colors">
                                       <input
                                           type="text"
                                           inputMode="numeric"
@@ -3197,7 +3197,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   onClick={() => setPayLinkStep(2)}
                                   disabled={!payLinkAmount || Number(payLinkAmount) <= 0}
                                   style={{ color: '#FFFFFF' }}
-                                  className="w-full py-3.5 bg-[#0F172A] font-bold rounded-xl hover:bg-[#152e52] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                  className="w-full py-3.5 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                               >
                                   Continuar
                               </button>
@@ -3216,7 +3216,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       placeholder="Ej. Juan García López"
                                       value={payLinkPayerName}
                                       onChange={e => setPayLinkPayerName(e.target.value)}
-                                      className="w-full px-4 py-3 border border-slate-300 rounded-xl outline-none focus:border-[#0F172A] transition-colors text-slate-800"
+                                      className="w-full px-4 py-3 border border-slate-300 rounded-xl outline-none focus:border-[#0C0E0D] transition-colors text-slate-800"
                                   />
                               </div>
 
@@ -3225,7 +3225,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   <select
                                       value={payLinkDocType}
                                       onChange={e => setPayLinkDocType(e.target.value)}
-                                      className="w-full px-4 py-3 border border-slate-300 rounded-xl outline-none focus:border-[#0F172A] transition-colors text-slate-800 bg-white"
+                                      className="w-full px-4 py-3 border border-slate-300 rounded-xl outline-none focus:border-[#0C0E0D] transition-colors text-slate-800 bg-white"
                                   >
                                       {(DOC_TYPES[payLinkCountry] ?? []).map(d => (
                                           <option key={d.value} value={d.value}>{d.label}</option>
@@ -3240,7 +3240,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       placeholder="Ej. 1234567890"
                                       value={payLinkDocNumber}
                                       onChange={e => setPayLinkDocNumber(e.target.value)}
-                                      className="w-full px-4 py-3 border border-slate-300 rounded-xl outline-none focus:border-[#0F172A] transition-colors text-slate-800"
+                                      className="w-full px-4 py-3 border border-slate-300 rounded-xl outline-none focus:border-[#0C0E0D] transition-colors text-slate-800"
                                   />
                               </div>
 
@@ -3252,14 +3252,14 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   </div>
                                   <div className="flex justify-between">
                                       <span className="text-slate-500">Monto</span>
-                                      <span className="font-bold text-[#0F172A]">{Number(payLinkAmount).toLocaleString()} {PAY_LINK_COUNTRIES.find(c => c.code === payLinkCountry)?.currency}</span>
+                                      <span className="font-bold text-[#0C0E0D]">{Number(payLinkAmount).toLocaleString()} {PAY_LINK_COUNTRIES.find(c => c.code === payLinkCountry)?.currency}</span>
                                   </div>
                               </div>
 
                               <button
                                   onClick={handleGeneratePayLink}
                                   disabled={!payLinkPayerName.trim() || !payLinkDocNumber.trim()}
-                                  className="w-full py-3.5 bg-[#4ADE80] text-[#0F172A] font-bold rounded-xl hover:bg-[#22C55E] transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                                  className="w-full py-3.5 bg-[#4ADE80] text-[#0C0E0D] font-bold rounded-xl hover:bg-[#22C55E] transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                               >
                                   <Link2 size={18}/> Generar Link de Pago
                               </button>
@@ -3291,7 +3291,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               <div>
                                   <p className="text-xs text-slate-400 mb-2 font-bold uppercase">Link de pago único</p>
                                   <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl px-4 py-3">
-                                      <span className="text-sm text-[#0F172A] font-mono flex-1 text-left break-all">{payLinkUrl}</span>
+                                      <span className="text-sm text-[#0C0E0D] font-mono flex-1 text-left break-all">{payLinkUrl}</span>
                                       <button
                                           onClick={() => { navigator.clipboard?.writeText(payLinkUrl); showToast('Link copiado'); }}
                                           className="shrink-0 p-1.5 rounded-lg hover:bg-slate-200 text-slate-500 transition-colors"
@@ -3306,13 +3306,13 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   <p className="font-bold text-slate-700 mb-2">Resumen del cobro</p>
                                   <div className="flex justify-between"><span className="text-slate-500">Pagador</span><span className="font-bold">{payLinkPayerName}</span></div>
                                   <div className="flex justify-between"><span className="text-slate-500">Documento</span><span className="font-bold">{payLinkDocType} {payLinkDocNumber}</span></div>
-                                  <div className="flex justify-between"><span className="text-slate-500">Monto</span><span className="font-bold text-[#0F172A]">{Number(payLinkAmount).toLocaleString()} {PAY_LINK_COUNTRIES.find(c => c.code === payLinkCountry)?.currency}</span></div>
+                                  <div className="flex justify-between"><span className="text-slate-500">Monto</span><span className="font-bold text-[#0C0E0D]">{Number(payLinkAmount).toLocaleString()} {PAY_LINK_COUNTRIES.find(c => c.code === payLinkCountry)?.currency}</span></div>
                               </div>
 
                               <div className="flex gap-3">
                                   <button
                                       onClick={() => { if (navigator.share) { navigator.share({ title: 'Link de pago LINCOIN', url: payLinkUrl }); } else { navigator.clipboard?.writeText(payLinkUrl); showToast('Link copiado'); } }}
-                                      className="flex-1 py-3 bg-[#0F172A] font-bold rounded-xl hover:bg-[#152e52] transition-colors flex items-center justify-center gap-2"
+                                      className="flex-1 py-3 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] transition-colors flex items-center justify-center gap-2"
                                   >
                                       <Share2 size={16}/> Compartir
                                   </button>
@@ -3358,7 +3358,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   </div>
                               </div>
                               <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-1 text-center">Tu dirección USDT (TRC-20)</p>
-                              <p className="font-mono text-sm break-all text-[#0F172A] text-center">{usdtAddr}</p>
+                              <p className="font-mono text-sm break-all text-[#0C0E0D] text-center">{usdtAddr}</p>
                               <div className="flex justify-center">
                                   <button
                                       onClick={() => { navigator.clipboard?.writeText(usdtAddr); showToast('Dirección copiada'); }}
@@ -3375,7 +3375,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       <button
                           onClick={verifyUsdtDeposit}
                           disabled={usdtVerifying || !usdtAddr}
-                          style={{ color: '#0F172A' }}
+                          style={{ color: '#0C0E0D' }}
                           className="w-full py-3 rounded-xl bg-[#4ADE80] hover:bg-[#6EE7A0] font-bold text-sm disabled:opacity-50 transition-colors"
                       >
                           {usdtVerifying ? 'Verificando en la red…' : 'Ya envié — Verificar depósito'}
@@ -3403,9 +3403,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       <p className="text-sm mt-1">Contáctanos para coordinar tu depósito.</p>
                                   </div>
                               ) : Object.keys(bankingOptions).map(country => (
-                                  <button key={country} onClick={() => { setSelectedCountry(country); setLoadStep(2); }} className="w-full flex items-center justify-between p-4 rounded-xl border border-slate-200 hover:border-[#0F172A] hover:bg-slate-50 transition-all group">
-                                      <span className="font-bold text-slate-700 group-hover:text-[#0F172A]">{country}</span>
-                                      <ChevronDown className="text-slate-300 group-hover:text-[#0F172A]"/>
+                                  <button key={country} onClick={() => { setSelectedCountry(country); setLoadStep(2); }} className="w-full flex items-center justify-between p-4 rounded-xl border border-slate-200 hover:border-[#0C0E0D] hover:bg-slate-50 transition-all group">
+                                      <span className="font-bold text-slate-700 group-hover:text-[#0C0E0D]">{country}</span>
+                                      <ChevronDown className="text-slate-300 group-hover:text-[#0C0E0D]"/>
                                   </button>
                               ))}
                           </div>
@@ -3416,10 +3416,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               <button onClick={() => setLoadStep(1)} className="text-xs text-slate-400 flex items-center gap-1 hover:text-slate-600 mb-2"><ArrowLeft size={12}/> Cambiar país</button>
                               <p className="text-sm text-slate-500">Selecciona el método de carga en {selectedCountry}:</p>
                               {(bankingOptions[selectedCountry] || []).map(bank => (
-                                  <button key={bank.id} onClick={() => handleBankSelect(bank.name)} className="w-full flex items-center gap-4 p-4 rounded-xl border border-slate-200 hover:border-[#0F172A] hover:bg-slate-50 transition-all group text-left">
+                                  <button key={bank.id} onClick={() => handleBankSelect(bank.name)} className="w-full flex items-center gap-4 p-4 rounded-xl border border-slate-200 hover:border-[#0C0E0D] hover:bg-slate-50 transition-all group text-left">
                                       <div className={`w-10 h-10 rounded-lg flex items-center justify-center font-bold text-xs ${bank.logoColor || 'bg-slate-100 text-slate-600'}`}>{bank.logoText || bank.name.substring(0, 2)}</div>
                                       <div>
-                                          <p className="font-bold text-slate-700 group-hover:text-[#0F172A]">{bank.name}</p>
+                                          <p className="font-bold text-slate-700 group-hover:text-[#0C0E0D]">{bank.name}</p>
                                           <p className="text-xs text-slate-400">{bank.type === 'qr' ? 'Escanea y paga al instante' : bank.type === 'crypto' ? 'Depósito vía Cripto' : 'Transferencia bancaria local'}</p>
                                       </div>
                                   </button>
@@ -3437,7 +3437,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                           type="text" 
                                           value={loadAmount} 
                                           onChange={(e) => setLoadAmount(formatInputNumber(e.target.value))} 
-                                          className="w-full h-14 pl-8 pr-4 text-2xl font-bold text-slate-900 border border-slate-200 rounded-xl focus:border-[#0F172A] focus:ring-1 focus:ring-[#0F172A] outline-none transition-all" 
+                                          className="w-full h-14 pl-8 pr-4 text-2xl font-bold text-slate-900 border border-slate-200 rounded-xl focus:border-[#0C0E0D] focus:ring-1 focus:ring-[#0C0E0D] outline-none transition-all" 
                                           placeholder="0" 
                                           autoFocus
                                       />
@@ -3446,7 +3446,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       </span>
                                   </div>
                               </div>
-                              <button onClick={handleAmountConfirm} style={{ color: '#FFFFFF' }} className="w-full py-4 bg-[#0F172A] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-transform active:scale-95">Continuar</button>
+                              <button onClick={handleAmountConfirm} style={{ color: '#FFFFFF' }} className="w-full py-4 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-transform active:scale-95">Continuar</button>
                           </div>
                       )}
                       {loadStep === 4 && (
@@ -3461,7 +3461,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-3">
                                   <div className="flex justify-between items-center py-2 border-b border-slate-200">
                                       <span className="text-slate-500 text-sm">Monto a Transferir</span>
-                                      <span className="font-extrabold text-[#0F172A] text-lg text-right">
+                                      <span className="font-extrabold text-[#0C0E0D] text-lg text-right">
                                           {formatMoney(getRawAmount(loadAmount), selectedCountry === 'Colombia' ? 'COP' : selectedCountry === 'Perú' ? 'PEN' : selectedCountry === 'México' ? 'MXN' : selectedCountry === 'Brasil' ? 'BRL' : selectedCountry === 'Venezuela' ? 'VES' : 'USD')}
                                       </span>
                                   </div>
@@ -3492,7 +3492,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       )}
                                   </div>
                               </div>
-                              <button onClick={handleLoadSubmit} style={{ color: '#FFFFFF' }} className="w-full py-4 bg-[#0F172A] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-transform active:scale-95">
+                              <button onClick={handleLoadSubmit} style={{ color: '#FFFFFF' }} className="w-full py-4 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-transform active:scale-95">
                                   Notificar Transferencia
                               </button>
                           </div>
@@ -3534,10 +3534,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       {SEND_COUNTRIES.map(c => (
                                           <button key={c.code} type="button"
                                               onClick={() => setSendForm({...sendForm, destinationCountry: c.name, destinationCurrency: c.currency})}
-                                              className={`flex flex-col items-center gap-1 p-2.5 rounded-xl border transition-all ${sendForm.destinationCountry === c.name ? 'border-[#0F172A] bg-slate-50' : 'border-slate-200 hover:border-slate-300'}`}
+                                              className={`flex flex-col items-center gap-1 p-2.5 rounded-xl border transition-all ${sendForm.destinationCountry === c.name ? 'border-[#0C0E0D] bg-slate-50' : 'border-slate-200 hover:border-slate-300'}`}
                                           >
                                               <FlagImg code={c.code} className="w-7 h-5 object-cover rounded shadow-sm" />
-                                              <span className={`text-[10px] font-bold leading-tight text-center ${sendForm.destinationCountry === c.name ? 'text-[#0F172A]' : 'text-slate-500'}`}>{c.name}</span>
+                                              <span className={`text-[10px] font-bold leading-tight text-center ${sendForm.destinationCountry === c.name ? 'text-[#0C0E0D]' : 'text-slate-500'}`}>{c.name}</span>
                                           </button>
                                       ))}
                                   </div>
@@ -3545,7 +3545,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               <div>
                                   <label className="block text-sm font-bold text-slate-700 mb-2">Monto a enviar</label>
                                   <div className="relative">
-                                      <input type="text" value={sendForm.amount} onChange={(e) => setSendForm({...sendForm, amount: formatInputNumber(e.target.value)})} className="w-full h-16 pl-4 pr-16 text-3xl font-bold text-slate-900 border border-slate-300 rounded-xl focus:border-[#0F172A] focus:ring-1 focus:ring-[#0F172A] outline-none" placeholder="0" autoFocus />
+                                      <input type="text" value={sendForm.amount} onChange={(e) => setSendForm({...sendForm, amount: formatInputNumber(e.target.value)})} className="w-full h-16 pl-4 pr-16 text-3xl font-bold text-slate-900 border border-slate-300 rounded-xl focus:border-[#0C0E0D] focus:ring-1 focus:ring-[#0C0E0D] outline-none" placeholder="0" autoFocus />
                                       <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-lg">{sendForm.destinationCurrency}</span>
                                   </div>
                                   <p className="text-xs text-slate-400 mt-1">Disponible: <span className="font-bold">{formatMoney(displayBalance(sendForm.destinationCurrency), sendForm.destinationCurrency)} {sendForm.destinationCurrency === 'USD' ? 'USDT' : sendForm.destinationCurrency}</span></p>
@@ -3553,7 +3553,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       <p className="text-[10px] text-amber-600 font-bold mt-0.5">Mínimo de transferencia bancaria: 5.000 COP</p>
                                   )}
                               </div>
-                              <button onClick={handleSendNext} style={{ color: '#FFFFFF' }} className="w-full h-14 bg-[#0F172A] font-bold rounded-xl hover:bg-[#152e52] mt-2 flex items-center justify-center gap-2 text-lg shadow-lg">Continuar</button>
+                              <button onClick={handleSendNext} style={{ color: '#FFFFFF' }} className="w-full h-14 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] mt-2 flex items-center justify-center gap-2 text-lg shadow-lg">Continuar</button>
                           </div>
                       )}
 
@@ -3562,7 +3562,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           <div className="space-y-5">
                               <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-center">
                                   <p className="text-xs text-slate-400 font-bold uppercase mb-0.5">Enviando</p>
-                                  <p className="text-2xl font-extrabold text-[#0F172A]">{formatMoney(getRawAmount(sendForm.amount), sendForm.destinationCurrency)} <span className="text-lg">{sendForm.destinationCurrency}</span></p>
+                                  <p className="text-2xl font-extrabold text-[#0C0E0D]">{formatMoney(getRawAmount(sendForm.amount), sendForm.destinationCurrency)} <span className="text-lg">{sendForm.destinationCurrency}</span></p>
                               </div>
                               {/* "Mover entre mis cuentas" SOLO Colombia: mueve Peso ⇄ BreB */}
                               {sendForm.destinationCurrency === 'COP' && (
@@ -3578,7 +3578,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       }}
                                       className="w-full flex items-center gap-3 p-4 border-2 border-slate-200 rounded-2xl hover:border-[#4ADE80] hover:bg-green-50/40 transition-all group text-left"
                                   >
-                                      <div className="w-12 h-12 bg-[#0F172A] rounded-xl flex items-center justify-center shrink-0">
+                                      <div className="w-12 h-12 bg-[#0C0E0D] rounded-xl flex items-center justify-center shrink-0">
                                           <RefreshCw size={22} className="text-[#4ADE80]" />
                                       </div>
                                       <div>
@@ -3593,10 +3593,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               <div className="grid grid-cols-3 gap-3">
                                   <button
                                       onClick={() => { setSendMode('bank'); setSendStep(3); }}
-                                      className="flex flex-col items-center gap-2 p-4 border-2 border-slate-200 rounded-2xl hover:border-[#0F172A] hover:bg-slate-50 transition-all group"
+                                      className="flex flex-col items-center gap-2 p-4 border-2 border-slate-200 rounded-2xl hover:border-[#0C0E0D] hover:bg-slate-50 transition-all group"
                                   >
                                       <div className="w-12 h-12 bg-slate-100 group-hover:bg-slate-100 rounded-xl flex items-center justify-center transition-colors">
-                                          <Building2 size={24} className="text-slate-500 group-hover:text-[#0F172A]" />
+                                          <Building2 size={24} className="text-slate-500 group-hover:text-[#0C0E0D]" />
                                       </div>
                                       <div className="text-center">
                                           <p className="font-bold text-sm text-slate-800">Banco</p>
@@ -3677,13 +3677,13 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                               value={contactSearch}
                                               onChange={e => setContactSearch(e.target.value)}
                                               placeholder="Buscar por nombre, banco, documento o cuenta…"
-                                              className="w-full h-11 pl-9 pr-3 border border-slate-300 rounded-lg focus:border-[#0F172A] outline-none text-sm"
+                                              className="w-full h-11 pl-9 pr-3 border border-slate-300 rounded-lg focus:border-[#0C0E0D] outline-none text-sm"
                                           />
                                       </div>
                                       {myContacts.length === 0 ? (
                                           <div className="text-center py-8 space-y-3">
                                               <p className="text-sm text-slate-400">Aún no tienes contactos inscritos.</p>
-                                              <button onClick={goContacts} style={{ color: '#0F172A' }} className="py-2.5 px-5 rounded-xl bg-[#4ADE80] hover:bg-[#6EE7A0] text-sm font-bold">
+                                              <button onClick={goContacts} style={{ color: '#0C0E0D' }} className="py-2.5 px-5 rounded-xl bg-[#4ADE80] hover:bg-[#6EE7A0] text-sm font-bold">
                                                   + Inscribir mi primer contacto
                                               </button>
                                           </div>
@@ -3714,7 +3714,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                                           setFinityDestId(isCopDest ? (c.finityId ?? null) : null);
                                                           setSendStep(4);
                                                       }}
-                                                      className={`w-full flex items-center justify-between gap-3 p-3.5 rounded-xl border transition-all text-left ${selectable ? 'border-slate-200 hover:border-[#0F172A] hover:bg-slate-50' : 'border-slate-100 bg-slate-50/60 opacity-60 cursor-not-allowed'}`}
+                                                      className={`w-full flex items-center justify-between gap-3 p-3.5 rounded-xl border transition-all text-left ${selectable ? 'border-slate-200 hover:border-[#0C0E0D] hover:bg-slate-50' : 'border-slate-100 bg-slate-50/60 opacity-60 cursor-not-allowed'}`}
                                                   >
                                                       <div className="min-w-0">
                                                           <p className="font-bold text-slate-800 text-sm truncate">{c.name}</p>
@@ -3764,7 +3764,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   {myWalletsList.length === 0 ? (
                                       <div className="text-center py-8 space-y-3">
                                           <p className="text-sm text-slate-400">Aún no tienes wallets inscritas.</p>
-                                          <button onClick={goContacts} style={{ color: '#0F172A' }} className="py-2.5 px-5 rounded-xl bg-[#4ADE80] hover:bg-[#6EE7A0] text-sm font-bold">
+                                          <button onClick={goContacts} style={{ color: '#0C0E0D' }} className="py-2.5 px-5 rounded-xl bg-[#4ADE80] hover:bg-[#6EE7A0] text-sm font-bold">
                                               + Inscribir mi primera wallet
                                           </button>
                                       </div>
@@ -3776,7 +3776,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                               value={contactSearch}
                                               onChange={e => setContactSearch(e.target.value)}
                                               placeholder="Buscar por nombre, red o dirección…"
-                                              className="w-full h-11 pl-9 pr-3 border border-slate-300 rounded-lg focus:border-[#0F172A] outline-none text-sm"
+                                              className="w-full h-11 pl-9 pr-3 border border-slate-300 rounded-lg focus:border-[#0C0E0D] outline-none text-sm"
                                           />
                                       </div>
                                       <div className="space-y-2 max-h-72 overflow-y-auto">
@@ -3796,7 +3796,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                                       setFinityDestId(null);
                                                       setSendStep(4);
                                                   }}
-                                                  className="w-full flex items-center justify-between gap-3 p-3.5 rounded-xl border border-slate-200 hover:border-[#0F172A] hover:bg-slate-50 transition-all text-left"
+                                                  className="w-full flex items-center justify-between gap-3 p-3.5 rounded-xl border border-slate-200 hover:border-[#0C0E0D] hover:bg-slate-50 transition-all text-left"
                                               >
                                                   <div className="min-w-0 flex items-center gap-3">
                                                       <div className="w-9 h-9 rounded-lg bg-green-50 flex items-center justify-center shrink-0"><Wallet size={16} className="text-[#16A34A]" /></div>
@@ -3872,7 +3872,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               <h4 className="text-center text-slate-500 text-sm mb-2">Confirma los datos de envío</h4>
                               <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 flex flex-col items-center">
                                   <span className="text-xs font-bold text-[#4ADE80] uppercase tracking-widest mb-1">MONTO TOTAL</span>
-                                  <span className="text-3xl font-extrabold text-[#0F172A]">{formatMoney(getRawAmount(sendForm.amount), sendForm.destinationCurrency)}</span>
+                                  <span className="text-3xl font-extrabold text-[#0C0E0D]">{formatMoney(getRawAmount(sendForm.amount), sendForm.destinationCurrency)}</span>
                               </div>
                               <div className="bg-slate-50 rounded-xl p-4 space-y-3 text-sm border border-slate-200">
                                   <div className="flex justify-between"><span className="text-slate-500">{sendMode === 'wallet' ? 'Destinatario:' : 'Beneficiario:'}</span><span className="font-bold text-slate-800">{sendForm.beneficiaryName}</span></div>
@@ -3937,7 +3937,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               ) : (
                                   <div className="flex gap-3">
                                       <button onClick={() => setSendStep(3)} disabled={isSending} className="flex-1 py-3 border border-slate-300 text-slate-600 font-bold rounded-xl hover:bg-slate-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">Corregir</button>
-                                      <button onClick={handleSendSubmit} disabled={isSending} style={{ color: '#FFFFFF' }} className="flex-1 py-3 bg-[#0F172A] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed">{isSending ? <><Loader2 className="animate-spin" size={18} /> Procesando… no cierres</> : <><Send size={18}/> Confirmar</>}</button>
+                                      <button onClick={handleSendSubmit} disabled={isSending} style={{ color: '#FFFFFF' }} className="flex-1 py-3 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed">{isSending ? <><Loader2 className="animate-spin" size={18} /> Procesando… no cierres</> : <><Send size={18}/> Confirmar</>}</button>
                                   </div>
                               )}
                               {isSending && sendForm.destinationCurrency === 'COP' && (
@@ -4036,9 +4036,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       {sendStep === 5 && sendMode !== 'cash' && (
                           <div className="flex flex-col items-center text-center py-8 animate-in zoom-in duration-300">
                               <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mb-6"><CheckCircle size={40} className="text-green-600" /></div>
-                              <h2 className="text-2xl font-bold text-[#0F172A] mb-2">¡Envío Exitoso!</h2>
+                              <h2 className="text-2xl font-bold text-[#0C0E0D] mb-2">¡Envío Exitoso!</h2>
                               <p className="text-slate-500 text-sm mb-6">Tu dinero está en camino a {sendForm.destinationCountry}.</p>
-                              <button onClick={closeSendModal} style={{ color: '#FFFFFF' }} className="w-full bg-[#0F172A] font-bold py-3 rounded-xl hover:bg-[#152e52] transition-colors">Finalizar</button>
+                              <button onClick={closeSendModal} style={{ color: '#FFFFFF' }} className="w-full bg-[#0C0E0D] font-bold py-3 rounded-xl hover:bg-[#152e52] transition-colors">Finalizar</button>
                           </div>
                       )}
 
@@ -4048,7 +4048,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               <div className="w-20 h-20 bg-orange-100 rounded-full flex items-center justify-center mb-6">
                                   <MapPin size={40} className="text-orange-500"/>
                               </div>
-                              <h2 className="text-2xl font-bold text-[#0F172A] mb-4">¡Retiro Solicitado!</h2>
+                              <h2 className="text-2xl font-bold text-[#0C0E0D] mb-4">¡Retiro Solicitado!</h2>
                               {cashReference && (
                                   <div className="w-full bg-orange-50 border-2 border-orange-200 rounded-2xl p-5 mb-4">
                                       <p className="text-xs text-orange-500 font-bold uppercase tracking-widest mb-2">Código de retiro</p>
@@ -4059,7 +4059,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   </div>
                               )}
                               <p className="text-sm text-slate-500 mb-6">Un agente se comunicará al <strong>{cashForm.phone || 'número registrado'}</strong> para coordinar el punto de entrega.</p>
-                              <button onClick={closeSendModal} style={{ color: '#FFFFFF' }} className="w-full bg-[#0F172A] font-bold py-3 rounded-xl hover:bg-[#152e52] transition-colors">Finalizar</button>
+                              <button onClick={closeSendModal} style={{ color: '#FFFFFF' }} className="w-full bg-[#0C0E0D] font-bold py-3 rounded-xl hover:bg-[#152e52] transition-colors">Finalizar</button>
                           </div>
                       )}
                   </div>
@@ -4079,7 +4079,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
                   <div className="p-8 pb-4">
                       {/* Input: TU ENVÍAS */}
-                      <div className="border border-slate-200 rounded-2xl p-4 mb-3 relative bg-white hover:border-[#0F172A] transition-colors group focus-within:border-[#0F172A]">
+                      <div className="border border-slate-200 rounded-2xl p-4 mb-3 relative bg-white hover:border-[#0C0E0D] transition-colors group focus-within:border-[#0C0E0D]">
                           <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
                               TU ENVÍAS
                           </label>
@@ -4102,7 +4102,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       </div>
 
                       {/* Output: TU CONTACTO RECIBE */}
-                      <div className="border border-slate-200 rounded-2xl p-4 mt-3 mb-4 relative bg-white hover:border-[#0F172A] transition-colors group">
+                      <div className="border border-slate-200 rounded-2xl p-4 mt-3 mb-4 relative bg-white hover:border-[#0C0E0D] transition-colors group">
                           <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
                               RECIBES
                           </label>
@@ -4117,7 +4117,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       {/* Coupon Section */}
                       <div className="mb-4">
                           {!showCouponInput && !appliedCoupon && couponsAllowed && (
-                              <button onClick={() => setShowCouponInput(true)} className="text-xs font-bold text-[#0F172A] flex items-center gap-1 hover:underline">
+                              <button onClick={() => setShowCouponInput(true)} className="text-xs font-bold text-[#0C0E0D] flex items-center gap-1 hover:underline">
                                   <Tag size={14} /> ¿Tienes un cupón?
                               </button>
                           )}
@@ -4128,10 +4128,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                     type="text" 
                                     value={couponCode} 
                                     onChange={(e) => setCouponCode(e.target.value.toUpperCase())} 
-                                    className="flex-1 border border-slate-300 rounded-lg px-3 py-1.5 text-xs uppercase focus:border-[#0F172A] outline-none" 
+                                    className="flex-1 border border-slate-300 rounded-lg px-3 py-1.5 text-xs uppercase focus:border-[#0C0E0D] outline-none" 
                                     placeholder="CÓDIGO"
                                   />
-                                  <button onClick={handleApplyCoupon} className="bg-[#0F172A] px-3 py-1.5 rounded-lg font-bold text-xs hover:bg-[#152e52]">Aplicar</button>
+                                  <button onClick={handleApplyCoupon} className="bg-[#0C0E0D] px-3 py-1.5 rounded-lg font-bold text-xs hover:bg-[#152e52]">Aplicar</button>
                                   <button onClick={() => setShowCouponInput(false)} className="text-slate-400 hover:text-slate-600"><X size={16}/></button>
                               </div>
                           )}
@@ -4154,7 +4154,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   <div className="w-4 h-4 rounded-full bg-[#415DA1] text-white flex items-center justify-center text-[8px]"><Minus size={8} strokeWidth={4}/></div>
                                   Costo de envío ({applicableFeePercentage}%):
                               </div>
-                              <span className="font-bold text-[#0F172A]">{formatMoney(rawAmount * (appliedCoupon ? (applicableFeePercentage * (100 - appliedCoupon.discount)/100) : applicableFeePercentage)/100, sourceCurr)} {sourceCurr}</span>
+                              <span className="font-bold text-[#0C0E0D]">{formatMoney(rawAmount * (appliedCoupon ? (applicableFeePercentage * (100 - appliedCoupon.discount)/100) : applicableFeePercentage)/100, sourceCurr)} {sourceCurr}</span>
                           </div>
                           
                           <div className="flex justify-between items-center text-xs">
@@ -4162,7 +4162,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   <div className="w-4 h-4 rounded-full bg-[#415DA1] text-white flex items-center justify-center text-[8px]"><Equal size={8} strokeWidth={4}/></div>
                                   Monto a convertir:
                               </div>
-                              <span className="font-bold text-[#0F172A]">{formatMoney(amountToConvert, sourceCurr)} {sourceCurr}</span>
+                              <span className="font-bold text-[#0C0E0D]">{formatMoney(amountToConvert, sourceCurr)} {sourceCurr}</span>
                           </div>
 
                           <div className="flex justify-between items-center text-xs">
@@ -4170,7 +4170,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   <div className="w-4 h-4 rounded-full bg-[#415DA1] text-white flex items-center justify-center text-[8px]">÷</div>
                                   Tipo de cambio:
                               </div>
-                              <span className="font-bold text-[#0F172A]">
+                              <span className="font-bold text-[#0C0E0D]">
                                   1 {sourceCurr} = {conversionRate} {targetCurr}
                                   {isLiveFinityRate && (
                                       <span className="ml-1.5 text-[9px] font-bold uppercase bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded-full align-middle">● Tasa en vivo</span>
@@ -4192,7 +4192,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   <div className="flex justify-between"><span className="text-slate-500">Monto bruto</span><span className="font-bold text-slate-700">{formatMoney(rawAmount, sourceCurr)} {sourceCurr}</span></div>
                                   <div className="flex justify-between"><span className="text-slate-500">Comisión ({applicableFeePercentage}%)</span><span className="font-bold text-red-500">- {formatMoney(rawAmount * (appliedCoupon ? (applicableFeePercentage * (100 - appliedCoupon.discount)/100) : applicableFeePercentage)/100, sourceCurr)} {sourceCurr}</span></div>
                                   <div className="flex justify-between"><span className="text-slate-500">Monto a convertir</span><span className="font-bold text-slate-700">{formatMoney(amountToConvert, sourceCurr)} {sourceCurr}</span></div>
-                                  <div className="flex justify-between"><span className="text-slate-500">Tasa de cambio{isLiveFinityRate ? ' · en vivo' : ''}</span><span className="font-bold text-[#0F172A]">1 {sourceCurr} = {conversionRate} {targetCurr}</span></div>
+                                  <div className="flex justify-between"><span className="text-slate-500">Tasa de cambio{isLiveFinityRate ? ' · en vivo' : ''}</span><span className="font-bold text-[#0C0E0D]">1 {sourceCurr} = {conversionRate} {targetCurr}</span></div>
                                   <div className="flex justify-between border-t border-slate-100 pt-2 mt-1"><span className="text-slate-700 font-bold">Total a recibir</span><span className="font-bold text-green-600">{formatMoney(amountToConvert * conversionRate, targetCurr)} {targetCurr}</span></div>
                               </div>
                           )}
@@ -4200,8 +4200,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
                       {/* Delivery Info */}
                       <div className="bg-[#EBF2FA] rounded-xl p-3 flex items-start gap-3 mb-6">
-                          <div className="bg-white p-1 rounded-full text-[#0F172A] shrink-0"><Clock size={14}/></div>
-                          <span className="text-xs text-[#0F172A]">Tu dinero llega de forma <span className="font-bold">inmediata</span> una vez confirmada la operación</span>
+                          <div className="bg-white p-1 rounded-full text-[#0C0E0D] shrink-0"><Clock size={14}/></div>
+                          <span className="text-xs text-[#0C0E0D]">Tu dinero llega de forma <span className="font-bold">inmediata</span> una vez confirmada la operación</span>
                       </div>
 
                       {/* Action Button */}
@@ -4209,7 +4209,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           onClick={handleConvertSubmit}
                           disabled={isConverting}
                           style={{ color: '#FFFFFF' }}
-                          className="w-full h-12 bg-[#0F172A] font-bold rounded-xl hover:bg-[#152e52] shadow-lg text-sm transition-transform active:scale-95 flex justify-center items-center gap-2"
+                          className="w-full h-12 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg text-sm transition-transform active:scale-95 flex justify-center items-center gap-2"
                       >
                           {isConverting ? <Loader2 className="animate-spin" /> : 'Confirmar Operación'}
                       </button>
@@ -4229,7 +4229,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   <h3 className="font-bold text-lg text-slate-800 mb-4">Editar Perfil</h3>
                   <div className="space-y-4">
                       <div className="flex justify-center mb-4">
-                          <label className="relative w-24 h-24 rounded-full overflow-hidden bg-slate-100 group cursor-pointer border-2 border-dashed border-slate-300 hover:border-[#0F172A] block">
+                          <label className="relative w-24 h-24 rounded-full overflow-hidden bg-slate-100 group cursor-pointer border-2 border-dashed border-slate-300 hover:border-[#0C0E0D] block">
                               {editAvatar ? <img src={editAvatar} className="w-full h-full object-cover pointer-events-none"/> : <div className="w-full h-full flex items-center justify-center text-slate-400 pointer-events-none"><User size={32}/></div>}
                               <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity text-white text-xs font-bold pointer-events-none">Cambiar</div>
                               <input type="file" className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleAvatarChange} accept="image/*"/>
@@ -4239,7 +4239,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       <input type="text" placeholder="Apodo (Opcional)" value={editNickname} onChange={(e) => setEditNickname(e.target.value)} className="w-full border p-2 rounded-lg text-sm"/>
                       <div className="flex justify-end gap-2 mt-2">
                           <button onClick={() => setIsEditProfileModalOpen(false)} className="px-4 py-2 text-slate-500 text-sm">Cancelar</button>
-                          <button onClick={handleSaveProfile} className="px-4 py-2 bg-[#0F172A] rounded-lg text-sm font-bold">Guardar</button>
+                          <button onClick={handleSaveProfile} className="px-4 py-2 bg-[#0C0E0D] rounded-lg text-sm font-bold">Guardar</button>
                       </div>
                   </div>
               </div>
