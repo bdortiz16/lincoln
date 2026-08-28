@@ -157,16 +157,11 @@ const SPLASH_CSS = `
 const SplashScreen: React.FC = () => (
   <div style={{ background: '#0C0E0D' }} className="fixed inset-0 flex flex-col items-center justify-center gap-7">
     <style>{SPLASH_CSS}</style>
-    <svg className="splash-logo" width="96" height="96" viewBox="0 0 100 100" fill="none" style={{ filter: 'drop-shadow(0 8px 32px rgba(74,222,128,0.25))' }}>
-      <rect x="2" y="2" width="96" height="96" rx="24" fill="#0a0a0a"/>
-      <path d="M34 30 H47 V58 H58 V71 H34 Z" fill="#F4F4F2"/>
-      <circle className="splash-dot" cx="68" cy="67" r="10" fill="#4ADE80"/>
-    </svg>
     <div className="text-center">
-      <p className="text-white font-black text-3xl tracking-tight" style={{ letterSpacing: '-0.5px' }}>
-        Lincoin<span style={{ color: '#4ADE80' }}>.</span>
+      <p className="splash-logo" style={{ fontFamily: "'Archivo', system-ui, sans-serif", fontWeight: 800, fontSize: 'clamp(44px, 12vw, 64px)', letterSpacing: '-1px', color: '#F4F4F2', lineHeight: 1 }}>
+        Lincoin<span className="splash-dot" style={{ color: '#4ADE80', display: 'inline-block' }}>.</span>
       </p>
-      <p className="text-white/30 text-xs font-medium mt-1 tracking-widest uppercase">Verificando sesión</p>
+      <p className="text-white/30 text-xs font-medium mt-3 tracking-widest uppercase">Verificando sesión</p>
     </div>
     <div className="splash-dots flex gap-1.5">
       <span className="w-1.5 h-1.5 rounded-full bg-[#4ADE80] inline-block"/>

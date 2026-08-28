@@ -1,61 +1,52 @@
 import React from 'react';
 
+const ARCHIVO = "'Archivo', system-ui, sans-serif";
+
 /**
- * Ícono oficial de Lincoin ("L.").
+ * Ícono oficial de Lincoin: la marca tipográfica corta "L." — la letra L en
+ * Archivo 800 + un PUNTO verde (tamaño de punto normal) a su derecha.
  *
- * SVG inline (crisp a cualquier tamaño, sin request HTTP extra).
- * Composición:
- *  - Fondo: rounded-square oscuro (#0a0a0a) estilo iOS
- *  - "L" blanca + punto verde (#4ADE80) a la derecha — la marca de Lincoin
- *
- * Props:
- *  - size: tamaño en px (default 32)
- *  - withBackground: si false, dibuja solo la "L." (sin el cuadro). Default true.
- *  - bgColor / markColor: override de colores (markColor = color del punto)
+ * Según la guía de marca: sin cuadro, sin círculo grande, sin "app icon".
+ * `size` controla el tamaño de fuente en px.
  */
 export const LincoinIcon: React.FC<{
     size?: number;
-    withBackground?: boolean;
+    withBackground?: boolean; // conservado por compatibilidad; ya no dibuja cuadro
     bgColor?: string;
     markColor?: string;
     className?: string;
     title?: string;
+    textColor?: string;
 }> = ({
     size = 32,
-    withBackground = true,
-    bgColor = '#0a0a0a',
     markColor = '#4ADE80',
     className,
     title = 'Lincoin',
+    textColor = '#F4F4F2',
 }) => (
-    <svg
-        xmlns="http://www.w3.org/2000/svg"
-        viewBox="0 0 100 100"
-        width={size}
-        height={size}
-        className={className}
+    <span
         role="img"
         aria-label={title}
+        className={className}
+        style={{
+            fontFamily: ARCHIVO,
+            fontWeight: 800,
+            fontSize: size,
+            letterSpacing: '-0.5px',
+            color: textColor,
+            lineHeight: 1,
+            display: 'inline-block',
+        }}
     >
-        <title>{title}</title>
-
-        {withBackground && (
-            <rect x="2" y="2" width="96" height="96" rx="24" fill={bgColor} />
-        )}
-
-        {/* "L" blanca (blocky) */}
-        <path d="M34 30 H47 V58 H58 V71 H34 Z" fill={withBackground ? '#F4F4F2' : markColor} />
-
-        {/* Punto verde — la clase lincoin-dot lo hace caer con rebote al cargar. */}
-        <circle cx="68" cy="67" r="12" fill={markColor} className="lincoin-dot" />
-    </svg>
+        L<span style={{ color: markColor }}>.</span>
+    </span>
 );
 
-// Variante compacta sin fondo — solo la "L." sobre un container ya oscuro.
+// Alias compacto — misma marca "L." tipográfica.
 export const LincoinMark: React.FC<{
     size?: number;
     color?: string;
     className?: string;
 }> = ({ size = 24, color = '#4ADE80', className }) => (
-    <LincoinIcon size={size} withBackground={false} markColor={color} className={className} />
+    <LincoinIcon size={size} markColor={color} className={className} />
 );

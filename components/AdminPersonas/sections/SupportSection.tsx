@@ -782,10 +782,9 @@ const EMAIL_SAMPLES: Array<{ id: string; label: string; hero: string; accent: st
 ];
 
 const EMAIL_LOGO_URI = `data:image/svg+xml;base64,${btoa(`
-<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
-  <rect x="2" y="2" width="96" height="96" rx="24" fill="#0a0a0a"/>
-  <path d="M34 30 H47 V58 H58 V71 H34 Z" fill="#F4F4F2"/>
-  <circle cx="68" cy="67" r="12" fill="#4ADE80"/>
+<svg viewBox="0 0 220 100" xmlns="http://www.w3.org/2000/svg">
+  <text x="6" y="76" font-family="Archivo,Arial,sans-serif" font-weight="800" font-size="72" letter-spacing="-3" fill="#15181A">Lincoin</text>
+  <circle cx="204" cy="72" r="9" fill="#22A35C"/>
 </svg>`.trim())}`;
 
 function buildSampleEmail(s: typeof EMAIL_SAMPLES[number], footerNote = ''): string {
