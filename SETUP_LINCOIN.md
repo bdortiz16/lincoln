@@ -11,6 +11,18 @@
 `supabase/_lincoln_full_schema.sql` en *SQL Editor → New query → Run*.
 (Si es muy grande y da timeout, córrelo por bloques o usa la Opción B.)
 
+> El SQL está **validado contra Postgres 16 y es idempotente** (se puede
+> volver a correr sin errores): reconstruye las tablas base + 81 migraciones,
+> con `id uuid` consistente en `users`/`transactions`/beneficiarios, y siembra
+> el admin `admin@lincoin.com`. Los crones legacy de Finity/Tatum fueron
+> eliminados. Las extensiones `pg_cron`/`pg_net` se intentan crear pero **no
+> abortan** si no están habilitadas (actívalas en *Database → Extensions* solo
+> si vas a usar jobs programados).
+>
+> **Pendiente de reemplazar** (solo si activas el trigger de notificaciones
+> `cuypay_notify_tx`): `<TU_PROJECT_REF>` por el ref de tu proyecto y
+> `<ANON_KEY>` por tu anon key.
+
 **Opción B — CLI (recomendado):**
 ```bash
 npx supabase link --project-ref TU_REF

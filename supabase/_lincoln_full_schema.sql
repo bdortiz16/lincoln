@@ -1,13 +1,426 @@
--- =====================================================================
--- LINCOIN — Esquema completo (81 migraciones consolidadas, en orden)
--- Pega TODO esto en Supabase → SQL Editor → New query → Run.
--- Generado automáticamente desde supabase/migrations/*.sql
--- =====================================================================
+-- ============================================================
+-- LINCOIN — Esquema completo (tablas base + 81 migraciones)
+-- Pega TODO en Supabase → SQL Editor → Run.
+-- ============================================================
+
+-- ===================== TABLAS BASE (reconstruidas best-effort) =====================
+-- ===================== TABLAS BASE (hoisted, dedup) =====================
+CREATE TABLE IF NOT EXISTS public.users (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  cuypay_id text,
+  flag text,
+  admin_role text,
+  assigned_currency text,
+  balances jsonb,
+  block_reason text,
+  block_type text,
+  company_name text,
+  compliance_hold boolean,
+  country text,
+  created_at timestamptz,
+  crypto_balances jsonb,
+  custom_daily_limit numeric,
+  custom_monthly_limit numeric,
+  email text,
+  full_name text,
+  is_active boolean default false,
+  is_blocked boolean,
+  is_custom_daily boolean,
+  is_custom_monthly boolean,
+  kyc_status text,
+  limits_currency text,
+  name text,
+  password_hash text,
+  phone text,
+  pin_hash text,
+  raw_data jsonb default '{}'::jsonb,
+  role text,
+  status text,
+  two_factor_secret text,
+  updated_at timestamptz
+);
+
+CREATE TABLE IF NOT EXISTS public.beneficiaries (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  kyc_status text,
+  account_number text,
+  alias text,
+  bank text,
+  bank_name text,
+  block_type text,
+  country text,
+  created_at timestamptz,
+  currency text,
+  custom_daily_limit numeric,
+  custom_monthly_limit numeric,
+  doc_number text,
+  full_name text,
+  is_custom_daily boolean,
+  is_custom_monthly boolean,
+  limits_currency text,
+  name text,
+  raw_data jsonb default '{}'::jsonb,
+  type text,
+  user_id uuid
+);
+
+CREATE TABLE IF NOT EXISTS public.notifications (
+  id text PRIMARY KEY,
+  body text,
+  created_at timestamptz,
+  data jsonb default '{}'::jsonb,
+  is_read boolean default false,
+  message text,
+  read text,
+  title text,
+  type text,
+  user_id uuid
+);
+
+CREATE TABLE IF NOT EXISTS public.user_limits (
+  id text PRIMARY KEY,
+  created_at timestamptz,
+  currency text,
+  daily_limit numeric,
+  monthly_limit numeric,
+  updated_at timestamptz,
+  used_daily text,
+  used_monthly text,
+  user_id uuid
+);
+
+CREATE TABLE IF NOT EXISTS public.kyc_submissions (
+  id text PRIMARY KEY,
+  created_at timestamptz,
+  doc_number text,
+  doc_type text,
+  provider text,
+  raw_data jsonb default '{}'::jsonb,
+  session_id text,
+  status text,
+  updated_at timestamptz,
+  user_id uuid
+);
+
+CREATE TABLE IF NOT EXISTS public.transactions (
+  id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id       uuid        REFERENCES public.users(id) ON DELETE SET NULL,
+  owner_user_id uuid,
+  type          text        NOT NULL DEFAULT 'transfer',
+  kind          text,
+  amount        numeric     NOT NULL DEFAULT 0,
+  from_amount   numeric,
+  to_amount     numeric,
+  currency      text        NOT NULL DEFAULT 'USD',
+  from_currency text,
+  to_currency   text,
+  status        text        NOT NULL DEFAULT 'Pendiente',
+  raw_data      jsonb       NOT NULL DEFAULT '{}'::jsonb,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  updated_at    timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS public.cuypay_bank_accounts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    country_code TEXT NOT NULL,
+    bank_name TEXT NOT NULL,
+    account_type TEXT,
+    account_number TEXT NOT NULL,
+    holder TEXT,
+    tax_id TEXT,
+    tax_id_label TEXT,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.fx_global_config (
+    id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    night_enabled BOOLEAN DEFAULT false,
+    night_start_hour INT DEFAULT 3, night_end_hour INT DEFAULT 8,
+    night_extra_pct NUMERIC(6,3) DEFAULT 1.0,
+    timezone TEXT DEFAULT 'America/Bogota',
+    updated_by UUID REFERENCES public.users(id), updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.fx_pair_config (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    from_currency TEXT NOT NULL, to_currency TEXT NOT NULL,
+    base_fee_pct NUMERIC(6,3) NOT NULL DEFAULT 0.5,
+    tiers JSONB NOT NULL DEFAULT '[{"from_usd":0,"to_usd":1000,"pct":2.5},{"from_usd":1000,"to_usd":10000,"pct":2.0},{"from_usd":10000,"to_usd":100000,"pct":1.5},{"from_usd":100000,"to_usd":null,"pct":1.0}]',
+    is_active BOOLEAN DEFAULT true,
+    updated_by UUID REFERENCES public.users(id), updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(from_currency, to_currency)
+);
+
+CREATE TABLE IF NOT EXISTS public.fx_rate_snapshots (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    from_currency TEXT NOT NULL, to_currency TEXT NOT NULL,
+    rate NUMERIC(18,8) NOT NULL, source TEXT DEFAULT 'fawaz', captured_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.app_settings (
+    key TEXT PRIMARY KEY, value JSONB NOT NULL, description TEXT,
+    updated_at TIMESTAMPTZ DEFAULT NOW(), updated_by UUID REFERENCES public.users(id)
+);
+
+CREATE TABLE IF NOT EXISTS public.treasury_accounts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT NOT NULL, type TEXT NOT NULL CHECK (type IN ('bank','crypto')),
+    currency TEXT NOT NULL, country_code TEXT, exchange TEXT,
+    bank_account_id UUID REFERENCES public.cuypay_bank_accounts(id) ON DELETE SET NULL,
+    balance NUMERIC(20,2) NOT NULL DEFAULT 0, is_active BOOLEAN DEFAULT true,
+    is_treasury BOOLEAN DEFAULT false, is_profit BOOLEAN DEFAULT false,
+    created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.treasury_movements (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    kind TEXT NOT NULL CHECK (kind IN ('internal_transfer','fx_buy_usdt','fx_sell_usdt','client_load','client_payout','adjustment')),
+    from_account_id UUID REFERENCES public.treasury_accounts(id),
+    to_account_id UUID REFERENCES public.treasury_accounts(id),
+    from_amount NUMERIC(20,2) NOT NULL DEFAULT 0, to_amount NUMERIC(20,2) NOT NULL DEFAULT 0,
+    from_currency TEXT, to_currency TEXT, exchange_rate NUMERIC(20,8),
+    fee_amount NUMERIC(20,2) DEFAULT 0, fee_currency TEXT,
+    tax_amount NUMERIC(20,2) DEFAULT 0, tax_currency TEXT,
+    notes TEXT, created_by UUID REFERENCES public.users(id), created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.tx_admin_receipts (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    transaction_id  TEXT NOT NULL,
+    file_path       TEXT NOT NULL,           -- path dentro del bucket admin-receipts
+    note            TEXT,
+    uploaded_by     UUID REFERENCES public.users(id),
+    uploaded_email  TEXT,
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.app_banners (
+    id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    title        text NOT NULL,
+    description  text NOT NULL,
+    coupon_code  text,
+    image_url    text,
+    action_url   text,
+    is_active    boolean NOT NULL DEFAULT true,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    updated_at   timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS public.finity_webhook_events (
+    id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    event_type  text NOT NULL DEFAULT 'unknown',
+    verified    boolean NOT NULL DEFAULT false,
+    payload     jsonb NOT NULL DEFAULT '{}',
+    headers     jsonb NOT NULL DEFAULT '{}',
+    received_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS public.fx_pair_costs (
+  from_currency TEXT NOT NULL,
+  to_currency   TEXT NOT NULL,
+  cost_usd      NUMERIC(12,4) NOT NULL DEFAULT 0,
+  cost_pct      NUMERIC(8,4)  NOT NULL DEFAULT 0,
+  notes         TEXT,
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_by    UUID,
+  PRIMARY KEY (from_currency, to_currency),
+  CHECK (cost_usd >= 0 AND cost_pct >= 0 AND cost_pct <= 100)
+);
+
+CREATE TABLE IF NOT EXISTS public.xe_config (
+    id                   int PRIMARY KEY,
+    preferred_source     text NOT NULL DEFAULT 'FASTFOREX',
+    fallback_enabled     boolean NOT NULL DEFAULT true,
+    last_sync_at         timestamptz,
+    last_error           text,
+    last_error_at        timestamptz,
+    consecutive_failures int NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS public.aml_rules (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT NOT NULL,
+    description TEXT,
+    rule_type TEXT NOT NULL CHECK (rule_type IN (
+        'high_amount',        -- monto único alto
+        'frequent_low',       -- muchas TX pequeñas seguidas
+        'cross_border',       -- envío internacional
+        'velocity'            -- alta velocidad de TX en periodo
+    )),
+    transaction_type TEXT,  -- 'load', 'send', 'convert', null = todas
+    currency TEXT,           -- null = todas
+    country_code TEXT,       -- null = todas
+    amount_threshold NUMERIC(18,2),
+    time_window_hours INT,
+    severity TEXT NOT NULL DEFAULT 'medium' CHECK (severity IN ('low','medium','high','critical')),
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.compliance_alerts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    rule_id UUID REFERENCES public.aml_rules(id),
+    rule_name TEXT,
+    severity TEXT NOT NULL,
+    user_id UUID REFERENCES public.users(id),
+    transaction_id UUID REFERENCES public.transactions(id),
+    description TEXT,
+    metadata JSONB,
+    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','reviewing','closed','escalated')),
+    reviewed_by UUID REFERENCES public.users(id),
+    reviewed_at TIMESTAMPTZ,
+    resolution TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.sanctions_list (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    list_type TEXT NOT NULL CHECK (list_type IN ('OFAC','UN','EU','PEP','INTERNAL')),
+    full_name TEXT NOT NULL,
+    aliases TEXT[],
+    country_code TEXT,
+    date_of_birth DATE,
+    notes TEXT,
+    source TEXT,
+    added_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.fx_rates (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    from_currency TEXT NOT NULL,
+    to_currency TEXT NOT NULL,
+    rate NUMERIC(18,6) NOT NULL,
+    spread_pct NUMERIC(6,3) DEFAULT 0,        -- % de markup sobre la tasa
+    effective_from TIMESTAMPTZ DEFAULT NOW(),
+    is_active BOOLEAN DEFAULT true,
+    created_by UUID REFERENCES public.users(id),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(from_currency, to_currency, effective_from)
+);
+
+CREATE TABLE IF NOT EXISTS public.partners (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT NOT NULL,
+    type TEXT CHECK (type IN ('bank','liquidity','kyc','payment','custodian','other')),
+    country_code TEXT,
+    contact_email TEXT,
+    contact_phone TEXT,
+    api_endpoint TEXT,
+    is_active BOOLEAN DEFAULT true,
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.bank_statements (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    bank_account_id UUID REFERENCES public.cuypay_bank_accounts(id),
+    statement_date DATE NOT NULL,
+    opening_balance NUMERIC(18,2),
+    closing_balance NUMERIC(18,2),
+    uploaded_by UUID REFERENCES public.users(id),
+    uploaded_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.bank_statement_lines (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    statement_id UUID REFERENCES public.bank_statements(id) ON DELETE CASCADE,
+    posted_at TIMESTAMPTZ,
+    description TEXT,
+    amount NUMERIC(18,2) NOT NULL,
+    is_credit BOOLEAN NOT NULL,   -- true = entrada, false = salida
+    matched_transaction_id UUID REFERENCES public.transactions(id),
+    match_status TEXT DEFAULT 'unmatched' CHECK (match_status IN ('unmatched','matched','manual_match','ignored')),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.dual_approval_thresholds (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    currency TEXT NOT NULL UNIQUE,
+    amount_threshold NUMERIC(18,2) NOT NULL,
+    is_active BOOLEAN DEFAULT true,
+    updated_by UUID REFERENCES public.users(id),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.tx_approvals (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    transaction_id UUID NOT NULL REFERENCES public.transactions(id) ON DELETE CASCADE,
+    approver_id UUID NOT NULL REFERENCES public.users(id),
+    approver_email TEXT,
+    approver_role TEXT,
+    decision TEXT NOT NULL CHECK (decision IN ('approve', 'reject')),
+    comment TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(transaction_id, approver_id)
+);
+
+CREATE TABLE IF NOT EXISTS public.site_events (
+    id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    page             text NOT NULL,
+    referrer         text,
+    duration_seconds integer,
+    created_at       timestamptz NOT NULL DEFAULT now()
+);
+
+-- Tablas creadas manualmente en la app móvil (reconstruidas best-effort)
+CREATE TABLE IF NOT EXISTS public.limit_increase_requests (
+    id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id          uuid REFERENCES public.users(id) ON DELETE CASCADE,
+    beneficiary_id   uuid REFERENCES public.beneficiaries(id) ON DELETE SET NULL,
+    requested_amount text,
+    user_response    text,
+    attachments      jsonb NOT NULL DEFAULT '[]'::jsonb,
+    status           text  NOT NULL DEFAULT 'pending',
+    created_at       timestamptz NOT NULL DEFAULT now(),
+    updated_at       timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS public.document_requests (
+    id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id           uuid REFERENCES public.users(id) ON DELETE CASCADE,
+    category          text,
+    title             text,
+    description       text,
+    status            text NOT NULL DEFAULT 'pending',
+    user_response_url text,
+    requested_at      timestamptz NOT NULL DEFAULT now(),
+    created_at        timestamptz NOT NULL DEFAULT now(),
+    updated_at        timestamptz NOT NULL DEFAULT now()
+);
+-- ===================== FIN TABLAS BASE =====================
+
+ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS users_all ON public.users;
+DROP POLICY IF EXISTS users_all ON public.users;
+CREATE POLICY users_all ON public.users FOR ALL USING (true) WITH CHECK (true);
+
+ALTER TABLE public.beneficiaries ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS beneficiaries_all ON public.beneficiaries;
+DROP POLICY IF EXISTS beneficiaries_all ON public.beneficiaries;
+CREATE POLICY beneficiaries_all ON public.beneficiaries FOR ALL USING (true) WITH CHECK (true);
+
+ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS notifications_all ON public.notifications;
+DROP POLICY IF EXISTS notifications_all ON public.notifications;
+CREATE POLICY notifications_all ON public.notifications FOR ALL USING (true) WITH CHECK (true);
+
+ALTER TABLE public.user_limits ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS user_limits_all ON public.user_limits;
+DROP POLICY IF EXISTS user_limits_all ON public.user_limits;
+CREATE POLICY user_limits_all ON public.user_limits FOR ALL USING (true) WITH CHECK (true);
+
+ALTER TABLE public.kyc_submissions ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS kyc_submissions_all ON public.kyc_submissions;
+DROP POLICY IF EXISTS kyc_submissions_all ON public.kyc_submissions;
+CREATE POLICY kyc_submissions_all ON public.kyc_submissions FOR ALL USING (true) WITH CHECK (true);
 
 
--- ─────────────────────────────────────────────────────────────────
+
 -- 20260423004959_atomic_hd_counter.sql
--- ─────────────────────────────────────────────────────────────────
 -- Atomic HD wallet counter increment to prevent race conditions
 -- when two users request their wallet address simultaneously.
 CREATE OR REPLACE FUNCTION increment_hd_counter()
@@ -34,9 +447,7 @@ BEGIN
 END;
 $$;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_2fa_and_recovery.sql
--- ─────────────────────────────────────────────────────────────────
 -- ───────────────────────────────────────────────────────
 -- 2026_2fa_and_recovery.sql
 --
@@ -252,9 +663,7 @@ GRANT EXECUTE ON FUNCTION public.admin_recover_user_access(uuid, text, text, boo
 
 NOTIFY pgrst, 'reload schema';
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_2fa_hardening.sql
--- ─────────────────────────────────────────────────────────────────
 -- ───────────────────────────────────────────────────────
 -- 2026_2fa_hardening.sql  (v3 — reemplaza y refuerza el 2FA completo)
 --
@@ -479,9 +888,7 @@ NOTIFY pgrst, 'reload schema';
 -- WHERE n.nspname='public'
 --   AND p.proname IN ('set_2fa_secret_by_id','get_my_2fa','admin_recover_user_access');
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_ALL_PENDING.sql
--- ─────────────────────────────────────────────────────────────────
 -- ════════════════════════════════════════════════════════════════════
 -- CUYPAY · MIGRACIÓN TODO-EN-UNO (pendientes mayo 2026)
 --
@@ -500,30 +907,20 @@ NOTIFY pgrst, 'reload schema';
 -- ─────────────────────────────────────────────
 -- 1. CUENTAS BANCARIAS
 -- ─────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS public.cuypay_bank_accounts (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    country_code TEXT NOT NULL,
-    bank_name TEXT NOT NULL,
-    account_type TEXT,
-    account_number TEXT NOT NULL,
-    holder TEXT,
-    tax_id TEXT,
-    tax_id_label TEXT,
-    is_active BOOLEAN DEFAULT true,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
 ALTER TABLE public.cuypay_bank_accounts ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "anyone_select_active_bank_accounts" ON public.cuypay_bank_accounts;
 DROP POLICY IF EXISTS "anyone_select_active_bank_accounts" ON public.cuypay_bank_accounts;
 CREATE POLICY "anyone_select_active_bank_accounts" ON public.cuypay_bank_accounts
   FOR SELECT TO authenticated USING (is_active = true);
 
 DROP POLICY IF EXISTS "admin_select_all_bank_accounts" ON public.cuypay_bank_accounts;
+DROP POLICY IF EXISTS "admin_select_all_bank_accounts" ON public.cuypay_bank_accounts;
 CREATE POLICY "admin_select_all_bank_accounts" ON public.cuypay_bank_accounts
   FOR SELECT TO authenticated
   USING (EXISTS (SELECT 1 FROM public.users WHERE id = auth.uid() AND admin_role IS NOT NULL));
 
+DROP POLICY IF EXISTS "treasury_manage_bank_accounts" ON public.cuypay_bank_accounts;
 DROP POLICY IF EXISTS "treasury_manage_bank_accounts" ON public.cuypay_bank_accounts;
 CREATE POLICY "treasury_manage_bank_accounts" ON public.cuypay_bank_accounts
   FOR ALL TO authenticated
@@ -551,10 +948,12 @@ CREATE INDEX IF NOT EXISTS idx_transactions_bank_account
 
 ALTER TABLE public.transactions ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "admin_select_all_transactions" ON public.transactions;
+DROP POLICY IF EXISTS "admin_select_all_transactions" ON public.transactions;
 CREATE POLICY "admin_select_all_transactions" ON public.transactions
   FOR SELECT TO authenticated
   USING (EXISTS (SELECT 1 FROM public.users WHERE id = auth.uid() AND admin_role IS NOT NULL));
 
+DROP POLICY IF EXISTS "admin_update_transactions" ON public.transactions;
 DROP POLICY IF EXISTS "admin_update_transactions" ON public.transactions;
 CREATE POLICY "admin_update_transactions" ON public.transactions
   FOR UPDATE TO authenticated
@@ -574,50 +973,33 @@ $$;
 -- ─────────────────────────────────────────────
 -- 5. FX: config global, por par, snapshots + RLS legible por app
 -- ─────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS public.fx_global_config (
-    id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-    night_enabled BOOLEAN DEFAULT false,
-    night_start_hour INT DEFAULT 3, night_end_hour INT DEFAULT 8,
-    night_extra_pct NUMERIC(6,3) DEFAULT 1.0,
-    timezone TEXT DEFAULT 'America/Bogota',
-    updated_by UUID REFERENCES public.users(id), updated_at TIMESTAMPTZ DEFAULT NOW()
-);
 INSERT INTO public.fx_global_config (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 ALTER TABLE public.fx_global_config ENABLE ROW LEVEL SECURITY;
 
-CREATE TABLE IF NOT EXISTS public.fx_pair_config (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    from_currency TEXT NOT NULL, to_currency TEXT NOT NULL,
-    base_fee_pct NUMERIC(6,3) NOT NULL DEFAULT 0.5,
-    tiers JSONB NOT NULL DEFAULT '[{"from_usd":0,"to_usd":1000,"pct":2.5},{"from_usd":1000,"to_usd":10000,"pct":2.0},{"from_usd":10000,"to_usd":100000,"pct":1.5},{"from_usd":100000,"to_usd":null,"pct":1.0}]',
-    is_active BOOLEAN DEFAULT true,
-    updated_by UUID REFERENCES public.users(id), updated_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(from_currency, to_currency)
-);
 ALTER TABLE public.fx_pair_config ADD COLUMN IF NOT EXISTS base_fee_pct NUMERIC(6,3) NOT NULL DEFAULT 0.5;
 ALTER TABLE public.fx_pair_config ENABLE ROW LEVEL SECURITY;
 
-CREATE TABLE IF NOT EXISTS public.fx_rate_snapshots (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    from_currency TEXT NOT NULL, to_currency TEXT NOT NULL,
-    rate NUMERIC(18,8) NOT NULL, source TEXT DEFAULT 'fawaz', captured_at TIMESTAMPTZ DEFAULT NOW()
-);
 ALTER TABLE public.fx_rate_snapshots ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "fx_global_read_authenticated" ON public.fx_global_config;
+DROP POLICY IF EXISTS "fx_global_read_authenticated" ON public.fx_global_config;
 CREATE POLICY "fx_global_read_authenticated" ON public.fx_global_config FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "fx_global_write_treasury" ON public.fx_global_config;
 DROP POLICY IF EXISTS "fx_global_write_treasury" ON public.fx_global_config;
 CREATE POLICY "fx_global_write_treasury" ON public.fx_global_config FOR ALL TO authenticated
   USING (EXISTS (SELECT 1 FROM public.users WHERE id = auth.uid() AND admin_role IN ('super_admin','treasury')))
   WITH CHECK (EXISTS (SELECT 1 FROM public.users WHERE id = auth.uid() AND admin_role IN ('super_admin','treasury')));
 
 DROP POLICY IF EXISTS "fx_pair_read_authenticated" ON public.fx_pair_config;
+DROP POLICY IF EXISTS "fx_pair_read_authenticated" ON public.fx_pair_config;
 CREATE POLICY "fx_pair_read_authenticated" ON public.fx_pair_config FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "fx_pair_write_treasury" ON public.fx_pair_config;
 DROP POLICY IF EXISTS "fx_pair_write_treasury" ON public.fx_pair_config;
 CREATE POLICY "fx_pair_write_treasury" ON public.fx_pair_config FOR ALL TO authenticated
   USING (EXISTS (SELECT 1 FROM public.users WHERE id = auth.uid() AND admin_role IN ('super_admin','treasury')))
   WITH CHECK (EXISTS (SELECT 1 FROM public.users WHERE id = auth.uid() AND admin_role IN ('super_admin','treasury')));
 
+DROP POLICY IF EXISTS "fx_snapshots_read_authenticated" ON public.fx_rate_snapshots;
 DROP POLICY IF EXISTS "fx_snapshots_read_authenticated" ON public.fx_rate_snapshots;
 CREATE POLICY "fx_snapshots_read_authenticated" ON public.fx_rate_snapshots FOR SELECT TO authenticated USING (true);
 
@@ -671,10 +1053,6 @@ GRANT SELECT ON public.bank_account_balances TO authenticated;
 -- ─────────────────────────────────────────────
 -- 7. APP_SETTINGS (referidos)
 -- ─────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS public.app_settings (
-    key TEXT PRIMARY KEY, value JSONB NOT NULL, description TEXT,
-    updated_at TIMESTAMPTZ DEFAULT NOW(), updated_by UUID REFERENCES public.users(id)
-);
 -- Si la tabla ya existía (la creó el Android para referidos) puede no tener
 -- estas columnas. Las agregamos de forma idempotente.
 ALTER TABLE public.app_settings ADD COLUMN IF NOT EXISTS description TEXT;
@@ -682,7 +1060,9 @@ ALTER TABLE public.app_settings ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ 
 ALTER TABLE public.app_settings ADD COLUMN IF NOT EXISTS updated_by UUID;
 ALTER TABLE public.app_settings ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "app_settings_read_authenticated" ON public.app_settings;
+DROP POLICY IF EXISTS "app_settings_read_authenticated" ON public.app_settings;
 CREATE POLICY "app_settings_read_authenticated" ON public.app_settings FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "app_settings_write_super_admin" ON public.app_settings;
 DROP POLICY IF EXISTS "app_settings_write_super_admin" ON public.app_settings;
 CREATE POLICY "app_settings_write_super_admin" ON public.app_settings FOR ALL TO authenticated
   USING (EXISTS (SELECT 1 FROM public.users WHERE id = auth.uid() AND admin_role = 'super_admin'))
@@ -697,30 +1077,12 @@ ON CONFLICT (key) DO NOTHING;
 -- Si ya existe una versión previa de estas tablas (creada por otra query
 -- con id bigint), la recreamos con el esquema correcto (id uuid). Estas
 -- tablas no tienen movimientos reales todavía, así que es seguro.
-DROP TABLE IF EXISTS public.treasury_movements CASCADE;
-DROP TABLE IF EXISTS public.treasury_accounts CASCADE;
+-- [lincoin] DROP neutralizado: las tablas se crean ya en la sección base (id uuid).
+-- DROP TABLE IF EXISTS public.treasury_movements CASCADE;
+-- DROP TABLE IF EXISTS public.treasury_accounts CASCADE;
 
-CREATE TABLE public.treasury_accounts (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name TEXT NOT NULL, type TEXT NOT NULL CHECK (type IN ('bank','crypto')),
-    currency TEXT NOT NULL, country_code TEXT, exchange TEXT,
-    bank_account_id UUID REFERENCES public.cuypay_bank_accounts(id) ON DELETE SET NULL,
-    balance NUMERIC(20,2) NOT NULL DEFAULT 0, is_active BOOLEAN DEFAULT true,
-    created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW()
-);
 ALTER TABLE public.treasury_accounts ENABLE ROW LEVEL SECURITY;
 
-CREATE TABLE public.treasury_movements (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    kind TEXT NOT NULL CHECK (kind IN ('internal_transfer','fx_buy_usdt','fx_sell_usdt','client_load','client_payout','adjustment')),
-    from_account_id UUID REFERENCES public.treasury_accounts(id),
-    to_account_id UUID REFERENCES public.treasury_accounts(id),
-    from_amount NUMERIC(20,2) NOT NULL DEFAULT 0, to_amount NUMERIC(20,2) NOT NULL DEFAULT 0,
-    from_currency TEXT, to_currency TEXT, exchange_rate NUMERIC(20,8),
-    fee_amount NUMERIC(20,2) DEFAULT 0, fee_currency TEXT,
-    tax_amount NUMERIC(20,2) DEFAULT 0, tax_currency TEXT,
-    notes TEXT, created_by UUID REFERENCES public.users(id), created_at TIMESTAMPTZ DEFAULT NOW()
-);
 ALTER TABLE public.treasury_movements ENABLE ROW LEVEL SECURITY;
 
 CREATE OR REPLACE FUNCTION public.treasury_apply_movement(
@@ -744,12 +1106,15 @@ END; $$;
 GRANT EXECUTE ON FUNCTION public.treasury_apply_movement TO authenticated;
 
 DROP POLICY IF EXISTS "treasury_accounts_read" ON public.treasury_accounts;
+DROP POLICY IF EXISTS "treasury_accounts_read" ON public.treasury_accounts;
 CREATE POLICY "treasury_accounts_read" ON public.treasury_accounts FOR SELECT TO authenticated
   USING (EXISTS (SELECT 1 FROM public.users WHERE id = auth.uid() AND admin_role IS NOT NULL));
+DROP POLICY IF EXISTS "treasury_accounts_write" ON public.treasury_accounts;
 DROP POLICY IF EXISTS "treasury_accounts_write" ON public.treasury_accounts;
 CREATE POLICY "treasury_accounts_write" ON public.treasury_accounts FOR ALL TO authenticated
   USING (EXISTS (SELECT 1 FROM public.users WHERE id = auth.uid() AND admin_role IN ('super_admin','treasury')))
   WITH CHECK (EXISTS (SELECT 1 FROM public.users WHERE id = auth.uid() AND admin_role IN ('super_admin','treasury')));
+DROP POLICY IF EXISTS "treasury_movements_read" ON public.treasury_movements;
 DROP POLICY IF EXISTS "treasury_movements_read" ON public.treasury_movements;
 CREATE POLICY "treasury_movements_read" ON public.treasury_movements FOR SELECT TO authenticated
   USING (EXISTS (SELECT 1 FROM public.users WHERE id = auth.uid() AND admin_role IS NOT NULL));
@@ -776,9 +1141,7 @@ UNION ALL SELECT 'treasury_accounts', COUNT(*) FROM public.treasury_accounts
 UNION ALL SELECT 'fx_pair_config', COUNT(*) FROM public.fx_pair_config
 UNION ALL SELECT 'app_settings', COUNT(*) FROM public.app_settings;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_admin_list_user_transactions.sql
--- ─────────────────────────────────────────────────────────────────
 -- ───────────────────────────────────────────────────────
 -- 2026_admin_list_user_transactions.sql
 --
@@ -826,9 +1189,7 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.admin_list_user_transactions(uuid, int) TO authenticated;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_admin_receipts.sql
--- ─────────────────────────────────────────────────────────────────
 -- ════════════════════════════════════════════════════════
 -- Comprobante de respaldo del pago al cliente (interno)
 --
@@ -844,6 +1205,7 @@ ON CONFLICT (id) DO NOTHING;
 
 -- Policies de storage: solo admins suben y leen
 DROP POLICY IF EXISTS "admin_upload_admin_receipts" ON storage.objects;
+DROP POLICY IF EXISTS "admin_upload_admin_receipts" ON storage.objects;
 CREATE POLICY "admin_upload_admin_receipts" ON storage.objects
   FOR INSERT TO authenticated
   WITH CHECK (
@@ -851,6 +1213,7 @@ CREATE POLICY "admin_upload_admin_receipts" ON storage.objects
     AND EXISTS (SELECT 1 FROM public.users WHERE id = auth.uid() AND admin_role IS NOT NULL)
   );
 
+DROP POLICY IF EXISTS "admin_read_admin_receipts" ON storage.objects;
 DROP POLICY IF EXISTS "admin_read_admin_receipts" ON storage.objects;
 CREATE POLICY "admin_read_admin_receipts" ON storage.objects
   FOR SELECT TO authenticated
@@ -860,6 +1223,7 @@ CREATE POLICY "admin_read_admin_receipts" ON storage.objects
   );
 
 DROP POLICY IF EXISTS "admin_delete_admin_receipts" ON storage.objects;
+DROP POLICY IF EXISTS "admin_delete_admin_receipts" ON storage.objects;
 CREATE POLICY "admin_delete_admin_receipts" ON storage.objects
   FOR DELETE TO authenticated
   USING (
@@ -868,23 +1232,16 @@ CREATE POLICY "admin_delete_admin_receipts" ON storage.objects
   );
 
 -- ───── 2. Tabla que registra los comprobantes internos por TX ─────
-CREATE TABLE IF NOT EXISTS public.tx_admin_receipts (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    transaction_id  TEXT NOT NULL,
-    file_path       TEXT NOT NULL,           -- path dentro del bucket admin-receipts
-    note            TEXT,
-    uploaded_by     UUID REFERENCES public.users(id),
-    uploaded_email  TEXT,
-    created_at      TIMESTAMPTZ DEFAULT NOW()
-);
 CREATE INDEX IF NOT EXISTS idx_tx_admin_receipts_tx ON public.tx_admin_receipts(transaction_id, created_at DESC);
 ALTER TABLE public.tx_admin_receipts ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "admin_read_tx_receipts" ON public.tx_admin_receipts;
 DROP POLICY IF EXISTS "admin_read_tx_receipts" ON public.tx_admin_receipts;
 CREATE POLICY "admin_read_tx_receipts" ON public.tx_admin_receipts
   FOR SELECT TO authenticated
   USING (EXISTS (SELECT 1 FROM public.users WHERE id = auth.uid() AND admin_role IS NOT NULL));
 
+DROP POLICY IF EXISTS "admin_write_tx_receipts" ON public.tx_admin_receipts;
 DROP POLICY IF EXISTS "admin_write_tx_receipts" ON public.tx_admin_receipts;
 CREATE POLICY "admin_write_tx_receipts" ON public.tx_admin_receipts
   FOR ALL TO authenticated
@@ -893,9 +1250,7 @@ CREATE POLICY "admin_write_tx_receipts" ON public.tx_admin_receipts
 
 NOTIFY pgrst, 'reload schema';
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_admin_transactions_rls.sql
--- ─────────────────────────────────────────────────────────────────
 -- ════════════════════════════════════════════════════════
 -- RLS: permitir al admin de Personas leer/aprobar transacciones
 --
@@ -968,9 +1323,7 @@ FROM public.transactions
 ORDER BY created_at DESC
 LIMIT 10;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_admin_treasury_rpcs.sql
--- ─────────────────────────────────────────────────────────────────
 -- ───────────────────────────────────────────────────────
 -- 2026_admin_treasury_rpcs.sql
 --
@@ -1112,9 +1465,7 @@ GRANT EXECUTE ON FUNCTION public.admin_reject_withdrawal(bigint, text) TO authen
 
 NOTIFY pgrst, 'reload schema';
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_aml_rules_scope.sql
--- ─────────────────────────────────────────────────────────────────
 -- ───────────────────────────────────────────────────────
 -- 2026_aml_rules_scope.sql
 --
@@ -1144,9 +1495,7 @@ ALTER TABLE public.aml_rules
     ADD COLUMN IF NOT EXISTS exempt_custom_limits boolean NOT NULL DEFAULT true,
     ADD COLUMN IF NOT EXISTS tx_count             integer;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_aml_rules_v2.sql
--- ─────────────────────────────────────────────────────────────────
 -- ───────────────────────────────────────────────────────
 -- 2026_aml_rules_v2.sql
 --
@@ -1205,9 +1554,7 @@ ALTER TABLE public.aml_rules
     ADD COLUMN IF NOT EXISTS exempt_custom_limits boolean NOT NULL DEFAULT true,
     ADD COLUMN IF NOT EXISTS tx_count             integer;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_app_banners.sql
--- ─────────────────────────────────────────────────────────────────
 -- ───────────────────────────────────────────────────────
 -- 2026_app_banners.sql
 --
@@ -1219,17 +1566,6 @@ ALTER TABLE public.aml_rules
 -- SELECT * FROM app_banners WHERE is_active = true — sin RPCs.
 -- ───────────────────────────────────────────────────────
 
-CREATE TABLE IF NOT EXISTS public.app_banners (
-    id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    title        text NOT NULL,
-    description  text NOT NULL,
-    coupon_code  text,
-    image_url    text,
-    action_url   text,
-    is_active    boolean NOT NULL DEFAULT true,
-    created_at   timestamptz NOT NULL DEFAULT now(),
-    updated_at   timestamptz NOT NULL DEFAULT now()
-);
 
 CREATE INDEX IF NOT EXISTS app_banners_active_idx
     ON public.app_banners(is_active, created_at DESC)
@@ -1257,6 +1593,7 @@ CREATE TRIGGER app_banners_touch
 ALTER TABLE public.app_banners ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS app_banners_admin_all ON public.app_banners;
+DROP POLICY IF EXISTS app_banners_admin_all ON public.app_banners;
 CREATE POLICY app_banners_admin_all ON public.app_banners
     FOR ALL TO authenticated
     USING (
@@ -1271,13 +1608,12 @@ CREATE POLICY app_banners_admin_all ON public.app_banners
     );
 
 DROP POLICY IF EXISTS app_banners_user_read_active ON public.app_banners;
+DROP POLICY IF EXISTS app_banners_user_read_active ON public.app_banners;
 CREATE POLICY app_banners_user_read_active ON public.app_banners
     FOR SELECT TO authenticated
     USING (is_active = true);
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_app_settings_admin_rls.sql
--- ─────────────────────────────────────────────────────────────────
 -- ════════════════════════════════════════════════════════
 -- app_settings: tabla de configuración global de la app
 --
@@ -1289,13 +1625,6 @@ CREATE POLICY app_banners_user_read_active ON public.app_banners
 --      - solo `super_admin` puede ESCRIBIR (desde el admin web)
 -- ════════════════════════════════════════════════════════
 
-CREATE TABLE IF NOT EXISTS public.app_settings (
-    key         TEXT PRIMARY KEY,
-    value       JSONB NOT NULL,
-    description TEXT,
-    updated_at  TIMESTAMPTZ DEFAULT NOW(),
-    updated_by  UUID REFERENCES public.users(id)
-);
 
 ALTER TABLE public.app_settings ENABLE ROW LEVEL SECURITY;
 
@@ -1337,9 +1666,7 @@ NOTIFY pgrst, 'reload schema';
 -- ───── Verificación ─────
 SELECT key, value, description, updated_at FROM public.app_settings;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_balance_per_bank_account.sql
--- ─────────────────────────────────────────────────────────────────
 -- ════════════════════════════════════════════════════════
 -- Balance por cuenta bancaria
 --
@@ -1463,9 +1790,7 @@ ORDER BY country_code, bank_name;
 
 NOTIFY pgrst, 'reload schema';
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_bank_accounts_admin_rls.sql
--- ─────────────────────────────────────────────────────────────────
 -- ════════════════════════════════════════════════════════
 -- RLS: permitir al admin de Personas crear / editar / eliminar
 -- cuentas bancarias desde el panel.
@@ -1477,19 +1802,6 @@ NOTIFY pgrst, 'reload schema';
 
 -- Si la tabla aún no existe (algunos proyectos solo tienen "bank_accounts"),
 -- la creamos con el esquema completo.
-CREATE TABLE IF NOT EXISTS public.cuypay_bank_accounts (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    country_code    TEXT NOT NULL,
-    bank_name       TEXT NOT NULL,
-    account_type    TEXT,
-    account_number  TEXT NOT NULL,
-    holder          TEXT,
-    tax_id          TEXT,
-    tax_id_label    TEXT,
-    is_active       BOOLEAN DEFAULT true,
-    created_at      TIMESTAMPTZ DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ DEFAULT NOW()
-);
 
 ALTER TABLE public.cuypay_bank_accounts ENABLE ROW LEVEL SECURITY;
 
@@ -1554,9 +1866,7 @@ SELECT id, country_code, bank_name, account_number, is_active
 FROM public.cuypay_bank_accounts
 ORDER BY country_code;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_beneficiary_block_fields.sql
--- ─────────────────────────────────────────────────────────────────
 -- ───────────────────────────────────────────────────────
 -- 2026_beneficiary_block_fields.sql
 --
@@ -1590,9 +1900,7 @@ ALTER TABLE public.beneficiaries
         'in_review','verified','expired','declined','blocked'
     ));
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_beneficiary_limits.sql
--- ─────────────────────────────────────────────────────────────────
 -- ───────────────────────────────────────────────────────
 -- 2026_beneficiary_limits.sql
 --
@@ -1754,9 +2062,7 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.admin_set_beneficiary_limits(uuid, numeric, numeric, text) TO authenticated;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_beneficiary_limits_summary_v2.sql
--- ─────────────────────────────────────────────────────────────────
 -- ───────────────────────────────────────────────────────
 -- 2026_beneficiary_limits_summary_v2.sql
 --
@@ -1881,9 +2187,7 @@ GRANT EXECUTE ON FUNCTION public.get_beneficiary_limits_summary(uuid) TO authent
 
 NOTIFY pgrst, 'reload schema';
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_compliance_hold.sql
--- ─────────────────────────────────────────────────────────────────
 -- ───────────────────────────────────────────────────────
 -- 2026_compliance_hold.sql
 --
@@ -2061,6 +2365,7 @@ GRANT EXECUTE ON FUNCTION public.is_user_on_compliance_hold() TO authenticated;
 --    NO reemplaza la lógica de permisos normal, solo agrega el bloqueo.
 
 DROP POLICY IF EXISTS tx_block_send_load_on_compliance_hold ON public.transactions;
+DROP POLICY IF EXISTS tx_block_send_load_on_compliance_hold ON public.transactions;
 CREATE POLICY tx_block_send_load_on_compliance_hold ON public.transactions
     AS RESTRICTIVE
     FOR INSERT TO authenticated
@@ -2089,9 +2394,7 @@ SELECT
     COUNT(*)                                       AS users_totales
 FROM public.users;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_cron_finity_snapshot.sql
--- ─────────────────────────────────────────────────────────────────
 -- ════════════════════════════════════════════════════════
 -- SNAPSHOT AUTOMÁTICO de la tasa USD→COP cada 5 minutos.
 --
@@ -2106,36 +2409,17 @@ FROM public.users;
 -- Para APAGARLO: SELECT cron.unschedule('cuypay_finity_snapshot');
 -- ════════════════════════════════════════════════════════
 
-CREATE EXTENSION IF NOT EXISTS pg_cron;
-CREATE EXTENSION IF NOT EXISTS pg_net;
+DO $ext$ BEGIN CREATE EXTENSION IF NOT EXISTS pg_cron; EXCEPTION WHEN OTHERS THEN RAISE NOTICE 'pg_cron no disponible (habilítala en Supabase → Database → Extensions)'; END $ext$;
+DO $ext$ BEGIN CREATE EXTENSION IF NOT EXISTS pg_net; EXCEPTION WHEN OTHERS THEN RAISE NOTICE 'pg_net no disponible (habilítala en Supabase → Database → Extensions)'; END $ext$;
 
 DO $$ BEGIN
   PERFORM cron.unschedule('cuypay_finity_snapshot');
 EXCEPTION WHEN OTHERS THEN NULL;
 END $$;
 
-SELECT cron.schedule(
-  'cuypay_finity_snapshot',
-  '*/5 * * * *',
-  $$
-  SELECT net.http_post(
-    url     := 'https://afaysiaontmhgrjnoene.supabase.co/functions/v1/finity-proxy',
-    headers := jsonb_build_object(
-      'Content-Type', 'application/json',
-      'apikey', '<ANON_KEY>',
-      'Authorization', 'Bearer <ANON_KEY>'
-    ),
-    body    := jsonb_build_object('action', 'snapshot_finity')
-  );
-  $$
-);
+-- [lincoin] Cron de Finity ELIMINADO — Lincoin no usa Finity (rails vía Mouv).
 
--- Ver el job programado
-SELECT jobid, schedule, jobname, active FROM cron.job WHERE jobname = 'cuypay_finity_snapshot';
-
--- ─────────────────────────────────────────────────────────────────
 -- 2026_cron_sweep.sql
--- ─────────────────────────────────────────────────────────────────
 -- ════════════════════════════════════════════════════════
 -- BARRIDO AUTOMÁTICO cada 1 minuto: llama a la edge tatum-wallet
 -- (action=sweep_all) que mueve el USDT de todos los buzones de clientes
@@ -2151,8 +2435,8 @@ SELECT jobid, schedule, jobname, active FROM cron.job WHERE jobname = 'cuypay_fi
 -- Para APAGARLO: SELECT cron.unschedule('cuypay_sweep_all');
 -- ════════════════════════════════════════════════════════
 
-CREATE EXTENSION IF NOT EXISTS pg_cron;
-CREATE EXTENSION IF NOT EXISTS pg_net;
+DO $ext$ BEGIN CREATE EXTENSION IF NOT EXISTS pg_cron; EXCEPTION WHEN OTHERS THEN RAISE NOTICE 'pg_cron no disponible (habilítala en Supabase → Database → Extensions)'; END $ext$;
+DO $ext$ BEGIN CREATE EXTENSION IF NOT EXISTS pg_net; EXCEPTION WHEN OTHERS THEN RAISE NOTICE 'pg_net no disponible (habilítala en Supabase → Database → Extensions)'; END $ext$;
 
 -- Quita el job previo si existe (idempotente)
 DO $$ BEGIN
@@ -2160,29 +2444,10 @@ DO $$ BEGIN
 EXCEPTION WHEN OTHERS THEN NULL;
 END $$;
 
--- Programa el barrido cada minuto
-SELECT cron.schedule(
-  'cuypay_sweep_all',
-  '* * * * *',
-  $$
-  SELECT net.http_post(
-    url     := 'https://afaysiaontmhgrjnoene.supabase.co/functions/v1/tatum-wallet',
-    headers := jsonb_build_object(
-      'Content-Type', 'application/json',
-      'apikey', '<ANON_KEY>',
-      'Authorization', 'Bearer <ANON_KEY>'
-    ),
-    body    := jsonb_build_object('action', 'sweep_all')
-  );
-  $$
-);
+-- [lincoin] Cron de barrido Tatum ELIMINADO — Lincoin usa GasFree (USDT-TRON), no Tatum.
+-- El barrido de buzones GasFree se programa aparte cuando aplique.
 
--- Ver los jobs programados
-SELECT jobid, schedule, jobname, active FROM cron.job WHERE jobname = 'cuypay_sweep_all';
-
--- ─────────────────────────────────────────────────────────────────
 -- 2026_document_requests_block_unlock.sql
--- ─────────────────────────────────────────────────────────────────
 -- ───────────────────────────────────────────────────────
 -- 2026_document_requests_block_unlock.sql
 --
@@ -2213,9 +2478,7 @@ ALTER TABLE public.document_requests
         'other'
     ));
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_document_requests_limit_increase.sql
--- ─────────────────────────────────────────────────────────────────
 -- ───────────────────────────────────────────────────────
 -- 2026_document_requests_limit_increase.sql
 --
@@ -2343,6 +2606,7 @@ ON CONFLICT (id) DO NOTHING;
 -- 4) Policy para que el user solo pueda subir/leer SUS archivos
 --    en doc_requests/<user_id>/...
 DROP POLICY IF EXISTS doc_requests_user_upload ON storage.objects;
+DROP POLICY IF EXISTS doc_requests_user_upload ON storage.objects;
 CREATE POLICY doc_requests_user_upload ON storage.objects
     FOR INSERT TO authenticated
     WITH CHECK (
@@ -2350,6 +2614,7 @@ CREATE POLICY doc_requests_user_upload ON storage.objects
         AND (storage.foldername(name))[1] = auth.uid()::text
     );
 
+DROP POLICY IF EXISTS doc_requests_user_read_own ON storage.objects;
 DROP POLICY IF EXISTS doc_requests_user_read_own ON storage.objects;
 CREATE POLICY doc_requests_user_read_own ON storage.objects
     FOR SELECT TO authenticated
@@ -2359,6 +2624,7 @@ CREATE POLICY doc_requests_user_read_own ON storage.objects
     );
 
 -- Admins de compliance/super_admin leen TODOS los archivos del bucket
+DROP POLICY IF EXISTS doc_requests_admin_read_all ON storage.objects;
 DROP POLICY IF EXISTS doc_requests_admin_read_all ON storage.objects;
 CREATE POLICY doc_requests_admin_read_all ON storage.objects
     FOR SELECT TO authenticated
@@ -2371,9 +2637,7 @@ CREATE POLICY doc_requests_admin_read_all ON storage.objects
         )
     );
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_document_requests_mobile_uploads.sql
--- ─────────────────────────────────────────────────────────────────
 -- ───────────────────────────────────────────────────────
 -- 2026_document_requests_mobile_uploads.sql
 --
@@ -2430,22 +2694,12 @@ CREATE INDEX IF NOT EXISTS document_requests_status_submitted_idx
     ON public.document_requests(user_id, requested_at DESC)
     WHERE status = 'submitted';
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_finity_webhook_events.sql
--- ─────────────────────────────────────────────────────────────────
 -- ───────────────────────────────────────────────────────
 -- 2026_finity_webhook_events.sql — Auditoría de webhooks de Finity.
 -- Pegar en el SQL Editor del proyecto de EMPRESAS.
 -- ───────────────────────────────────────────────────────
 
-CREATE TABLE IF NOT EXISTS public.finity_webhook_events (
-    id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    event_type  text NOT NULL DEFAULT 'unknown',
-    verified    boolean NOT NULL DEFAULT false,
-    payload     jsonb NOT NULL DEFAULT '{}',
-    headers     jsonb NOT NULL DEFAULT '{}',
-    received_at timestamptz NOT NULL DEFAULT now()
-);
 
 CREATE INDEX IF NOT EXISTS finity_webhook_events_time_idx
     ON public.finity_webhook_events (received_at DESC);
@@ -2453,6 +2707,7 @@ CREATE INDEX IF NOT EXISTS finity_webhook_events_time_idx
 ALTER TABLE public.finity_webhook_events ENABLE ROW LEVEL SECURITY;
 
 -- Lectura para el panel admin (la app usa anon key con auth propia).
+DROP POLICY IF EXISTS finity_webhook_events_read ON public.finity_webhook_events;
 DROP POLICY IF EXISTS finity_webhook_events_read ON public.finity_webhook_events;
 CREATE POLICY finity_webhook_events_read ON public.finity_webhook_events
     FOR SELECT TO anon, authenticated USING (true);
@@ -2462,9 +2717,7 @@ CREATE POLICY finity_webhook_events_read ON public.finity_webhook_events
 
 NOTIFY pgrst, 'reload schema';
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_fix_todo_en_uno.sql
--- ─────────────────────────────────────────────────────────────────
 -- ════════════════════════════════════════════════════════
 -- ARREGLO TODO-EN-UNO (reemplaza FIX-contactos y FIX-movimientos).
 -- El proyecto no tenía public.is_any_admin() — la base de los candados.
@@ -2559,9 +2812,7 @@ FROM pg_policies
 WHERE schemaname = 'public' AND tablename = 'transactions'
 ORDER BY policyname;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_fx_admin_publish_rates.sql
--- ─────────────────────────────────────────────────────────────────
 -- ════════════════════════════════════════════════════════
 -- Permitir que el admin PUBLIQUE tasas en fx_rate_snapshots
 --
@@ -2587,9 +2838,7 @@ CREATE POLICY "fx_snapshots_insert_treasury"
 
 NOTIFY pgrst, 'reload schema';
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_fx_manual_mode.sql
--- ─────────────────────────────────────────────────────────────────
 -- ════════════════════════════════════════════════════════
 -- FX: persistir el modo Manual / API por par
 --
@@ -2606,9 +2855,7 @@ NOTIFY pgrst, 'reload schema';
 SELECT from_currency, to_currency, manual_mode FROM public.fx_pair_config
 WHERE manual_mode = true ORDER BY from_currency, to_currency;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_fx_pair_costs.sql
--- ─────────────────────────────────────────────────────────────────
 -- ============================================================
 -- fx_pair_costs — costo operativo POR PAR de monedas FX
 --
@@ -2635,17 +2882,6 @@ WHERE manual_mode = true ORDER BY from_currency, to_currency;
 -- Aplicar en AMBOS proyectos Supabase (Empresas + Personas).
 -- ============================================================
 
-CREATE TABLE IF NOT EXISTS public.fx_pair_costs (
-  from_currency TEXT NOT NULL,
-  to_currency   TEXT NOT NULL,
-  cost_usd      NUMERIC(12,4) NOT NULL DEFAULT 0,
-  cost_pct      NUMERIC(8,4)  NOT NULL DEFAULT 0,
-  notes         TEXT,
-  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_by    UUID,
-  PRIMARY KEY (from_currency, to_currency),
-  CHECK (cost_usd >= 0 AND cost_pct >= 0 AND cost_pct <= 100)
-);
 
 -- Auto-update del updated_at en cada UPDATE.
 CREATE OR REPLACE FUNCTION public.tg_fx_pair_costs_updated_at()
@@ -2712,16 +2948,20 @@ DO $$ BEGIN
   END IF;
 END $$;
 
+DROP POLICY IF EXISTS fx_pair_costs_select ON public.fx_pair_costs;
 CREATE POLICY fx_pair_costs_select ON public.fx_pair_costs FOR SELECT TO authenticated
   USING (public.is_any_admin());
 
+DROP POLICY IF EXISTS fx_pair_costs_insert ON public.fx_pair_costs;
 CREATE POLICY fx_pair_costs_insert ON public.fx_pair_costs FOR INSERT TO authenticated
   WITH CHECK (public.is_admin_with_role('super_admin', 'treasury'));
 
+DROP POLICY IF EXISTS fx_pair_costs_update ON public.fx_pair_costs;
 CREATE POLICY fx_pair_costs_update ON public.fx_pair_costs FOR UPDATE TO authenticated
   USING (public.is_admin_with_role('super_admin', 'treasury'))
   WITH CHECK (public.is_admin_with_role('super_admin', 'treasury'));
 
+DROP POLICY IF EXISTS fx_pair_costs_delete ON public.fx_pair_costs;
 CREATE POLICY fx_pair_costs_delete ON public.fx_pair_costs FOR DELETE TO authenticated
   USING (public.is_admin_with_role('super_admin', 'treasury'));
 
@@ -2736,9 +2976,7 @@ BEGIN
   RAISE NOTICE 'fx_pair_costs: policies=%, rls enabled', n;
 END $$;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_fx_public_read.sql
--- ─────────────────────────────────────────────────────────────────
 -- ════════════════════════════════════════════════════════
 -- FX commissions: tablas + RLS para que la app Android/iOS lea
 -- las tasas, fees y configuración nocturna que setea el admin.
@@ -2749,49 +2987,15 @@ END $$;
 -- ───── 1. Tablas (idempotente) ─────
 
 -- Configuración global (una sola fila id=1)
-CREATE TABLE IF NOT EXISTS public.fx_global_config (
-    id                INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-    night_enabled     BOOLEAN DEFAULT false,
-    night_start_hour  INT DEFAULT 3 CHECK (night_start_hour BETWEEN 0 AND 23),
-    night_end_hour    INT DEFAULT 8 CHECK (night_end_hour BETWEEN 0 AND 23),
-    night_extra_pct   NUMERIC(6,3) DEFAULT 1.0,
-    timezone          TEXT DEFAULT 'America/Bogota',
-    updated_by        UUID REFERENCES public.users(id),
-    updated_at        TIMESTAMPTZ DEFAULT NOW()
-);
 INSERT INTO public.fx_global_config (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 ALTER TABLE public.fx_global_config ENABLE ROW LEVEL SECURITY;
 
 -- Configuración por par
-CREATE TABLE IF NOT EXISTS public.fx_pair_config (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    from_currency   TEXT NOT NULL,
-    to_currency     TEXT NOT NULL,
-    base_fee_pct    NUMERIC(6,3) NOT NULL DEFAULT 0.5,
-    tiers           JSONB NOT NULL DEFAULT '[
-        {"from_usd": 0,      "to_usd": 1000,    "pct": 2.5},
-        {"from_usd": 1000,   "to_usd": 10000,   "pct": 2.0},
-        {"from_usd": 10000,  "to_usd": 100000,  "pct": 1.5},
-        {"from_usd": 100000, "to_usd": null,    "pct": 1.0}
-    ]',
-    is_active       BOOLEAN DEFAULT true,
-    updated_by      UUID REFERENCES public.users(id),
-    updated_at      TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(from_currency, to_currency)
-);
 -- Si la tabla ya existía sin la columna, agregarla
 ALTER TABLE public.fx_pair_config ADD COLUMN IF NOT EXISTS base_fee_pct NUMERIC(6,3) NOT NULL DEFAULT 0.5;
 ALTER TABLE public.fx_pair_config ENABLE ROW LEVEL SECURITY;
 
 -- Snapshots de tasas (llenado por Edge Function o frontend)
-CREATE TABLE IF NOT EXISTS public.fx_rate_snapshots (
-    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    from_currency TEXT NOT NULL,
-    to_currency   TEXT NOT NULL,
-    rate          NUMERIC(18,8) NOT NULL,
-    source        TEXT DEFAULT 'fawaz',
-    captured_at   TIMESTAMPTZ DEFAULT NOW()
-);
 CREATE INDEX IF NOT EXISTS idx_fx_snapshots_pair_time
     ON public.fx_rate_snapshots(from_currency, to_currency, captured_at DESC);
 ALTER TABLE public.fx_rate_snapshots ENABLE ROW LEVEL SECURITY;
@@ -2804,11 +3008,13 @@ ALTER TABLE public.fx_rate_snapshots ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "fx_global_read"   ON public.fx_global_config;
 DROP POLICY IF EXISTS "fx_global_manage" ON public.fx_global_config;
 
+DROP POLICY IF EXISTS "fx_global_read_authenticated" ON public.fx_global_config;
 CREATE POLICY "fx_global_read_authenticated"
   ON public.fx_global_config FOR SELECT
   TO authenticated
   USING (true);
 
+DROP POLICY IF EXISTS "fx_global_write_treasury" ON public.fx_global_config;
 CREATE POLICY "fx_global_write_treasury"
   ON public.fx_global_config FOR ALL
   TO authenticated
@@ -2831,11 +3037,13 @@ CREATE POLICY "fx_global_write_treasury"
 DROP POLICY IF EXISTS "fx_pair_read"   ON public.fx_pair_config;
 DROP POLICY IF EXISTS "fx_pair_manage" ON public.fx_pair_config;
 
+DROP POLICY IF EXISTS "fx_pair_read_authenticated" ON public.fx_pair_config;
 CREATE POLICY "fx_pair_read_authenticated"
   ON public.fx_pair_config FOR SELECT
   TO authenticated
   USING (true);
 
+DROP POLICY IF EXISTS "fx_pair_write_treasury" ON public.fx_pair_config;
 CREATE POLICY "fx_pair_write_treasury"
   ON public.fx_pair_config FOR ALL
   TO authenticated
@@ -2857,6 +3065,7 @@ CREATE POLICY "fx_pair_write_treasury"
 -- fx_rate_snapshots — lectura abierta a la app móvil
 DROP POLICY IF EXISTS "fx_snapshots_read" ON public.fx_rate_snapshots;
 
+DROP POLICY IF EXISTS "fx_snapshots_read_authenticated" ON public.fx_rate_snapshots;
 CREATE POLICY "fx_snapshots_read_authenticated"
   ON public.fx_rate_snapshots FOR SELECT
   TO authenticated
@@ -2942,9 +3151,7 @@ SELECT 'Authenticated puede leer fx_pair_config: ' || (
     EXISTS(SELECT 1 FROM pg_policies WHERE tablename='fx_pair_config' AND cmd='SELECT' AND roles::text LIKE '%authenticated%')
 )::text AS rls_check;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_fx_snapshots_empresas.sql
--- ─────────────────────────────────────────────────────────────────
 -- ───────────────────────────────────────────────────────
 -- 2026_fx_snapshots_empresas.sql
 --
@@ -2959,14 +3166,6 @@ SELECT 'Authenticated puede leer fx_pair_config: ' || (
 -- Pegar en el SQL Editor del proyecto de EMPRESAS.
 -- ───────────────────────────────────────────────────────
 
-CREATE TABLE IF NOT EXISTS public.fx_rate_snapshots (
-    id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    from_currency text        NOT NULL,
-    to_currency   text        NOT NULL,
-    rate          numeric     NOT NULL,
-    source        text        NOT NULL DEFAULT 'FASTFOREX',
-    captured_at   timestamptz NOT NULL DEFAULT now()
-);
 
 CREATE INDEX IF NOT EXISTS fx_snapshots_pair_time_idx
     ON public.fx_rate_snapshots (from_currency, to_currency, captured_at DESC);
@@ -2974,77 +3173,54 @@ CREATE INDEX IF NOT EXISTS fx_snapshots_pair_time_idx
 ALTER TABLE public.fx_rate_snapshots ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS fx_snapshots_read ON public.fx_rate_snapshots;
+DROP POLICY IF EXISTS fx_snapshots_read ON public.fx_rate_snapshots;
 CREATE POLICY fx_snapshots_read ON public.fx_rate_snapshots
     FOR SELECT TO anon, authenticated USING (true);
 
 -- "Publicar todas" del panel inserta tasas manuales desde la app (anon).
 DROP POLICY IF EXISTS fx_snapshots_insert ON public.fx_rate_snapshots;
+DROP POLICY IF EXISTS fx_snapshots_insert ON public.fx_rate_snapshots;
 CREATE POLICY fx_snapshots_insert ON public.fx_rate_snapshots
     FOR INSERT TO anon, authenticated WITH CHECK (true);
 
 -- ═══ Configuración por par (toggles, modo Manual, tiers de comisión) ═══
-CREATE TABLE IF NOT EXISTS public.fx_pair_config (
-    id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    from_currency text    NOT NULL,
-    to_currency   text    NOT NULL,
-    is_active     boolean NOT NULL DEFAULT true,
-    manual_mode   boolean NOT NULL DEFAULT false,
-    tiers         jsonb,
-    base_fee_pct  numeric,   -- comisión editable (Finity USD/COP la usa; incluye IVA)
-    updated_by    text,
-    updated_at    timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (from_currency, to_currency)
-);
 -- Idempotente para proyectos donde la tabla ya existía sin la columna:
 ALTER TABLE public.fx_pair_config ADD COLUMN IF NOT EXISTS base_fee_pct numeric;
 
 ALTER TABLE public.fx_pair_config ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS fx_pair_config_read ON public.fx_pair_config;
 DROP POLICY IF EXISTS fx_pair_config_read ON public.fx_pair_config;
 CREATE POLICY fx_pair_config_read ON public.fx_pair_config
     FOR SELECT TO anon, authenticated USING (true);
 -- Escritura también para anon: la app de empresas usa auth PROPIA y llama
 -- con la anon key (mismo modelo que el resto de tablas de la app).
 DROP POLICY IF EXISTS fx_pair_config_write ON public.fx_pair_config;
+DROP POLICY IF EXISTS fx_pair_config_write ON public.fx_pair_config;
 CREATE POLICY fx_pair_config_write ON public.fx_pair_config
     FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
 
 -- ═══ Configuración global (ventana nocturna) ═══
-CREATE TABLE IF NOT EXISTS public.fx_global_config (
-    id               int PRIMARY KEY,
-    night_enabled    boolean NOT NULL DEFAULT false,
-    night_start_hour int     NOT NULL DEFAULT 22,
-    night_end_hour   int     NOT NULL DEFAULT 6,
-    night_extra_pct  numeric NOT NULL DEFAULT 0,
-    timezone         text    NOT NULL DEFAULT 'America/Bogota',
-    updated_by       text,
-    updated_at       timestamptz NOT NULL DEFAULT now()
-);
 INSERT INTO public.fx_global_config (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 
 ALTER TABLE public.fx_global_config ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS fx_global_read ON public.fx_global_config;
+DROP POLICY IF EXISTS fx_global_read ON public.fx_global_config;
 CREATE POLICY fx_global_read ON public.fx_global_config
     FOR SELECT TO anon, authenticated USING (true);
+DROP POLICY IF EXISTS fx_global_write ON public.fx_global_config;
 DROP POLICY IF EXISTS fx_global_write ON public.fx_global_config;
 CREATE POLICY fx_global_write ON public.fx_global_config
     FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
 
 -- ═══ Estado del sync (fuente preferida, salud) ═══
-CREATE TABLE IF NOT EXISTS public.xe_config (
-    id                   int PRIMARY KEY,
-    preferred_source     text NOT NULL DEFAULT 'FASTFOREX',
-    fallback_enabled     boolean NOT NULL DEFAULT true,
-    last_sync_at         timestamptz,
-    last_error           text,
-    last_error_at        timestamptz,
-    consecutive_failures int NOT NULL DEFAULT 0
-);
 INSERT INTO public.xe_config (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 
 ALTER TABLE public.xe_config ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS xe_config_read ON public.xe_config;
+DROP POLICY IF EXISTS xe_config_read ON public.xe_config;
 CREATE POLICY xe_config_read ON public.xe_config
     FOR SELECT TO anon, authenticated USING (true);
+DROP POLICY IF EXISTS xe_config_write ON public.xe_config;
 DROP POLICY IF EXISTS xe_config_write ON public.xe_config;
 CREATE POLICY xe_config_write ON public.xe_config
     FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
@@ -3096,9 +3272,7 @@ GRANT EXECUTE ON FUNCTION public.sync_xe_rates_now() TO anon, authenticated;
 
 NOTIFY pgrst, 'reload schema';
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_legal_documents.sql
--- ─────────────────────────────────────────────────────────────────
 -- ───────────────────────────────────────────────────────
 -- 2026_legal_documents.sql
 --
@@ -3140,9 +3314,11 @@ ON CONFLICT (key) DO NOTHING;
 ALTER TABLE public.app_settings ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS app_settings_auth_read ON public.app_settings;
+DROP POLICY IF EXISTS app_settings_auth_read ON public.app_settings;
 CREATE POLICY app_settings_auth_read ON public.app_settings
     FOR SELECT TO authenticated USING (true);
 
+DROP POLICY IF EXISTS app_settings_anon_public_read ON public.app_settings;
 DROP POLICY IF EXISTS app_settings_anon_public_read ON public.app_settings;
 CREATE POLICY app_settings_anon_public_read ON public.app_settings
     FOR SELECT TO anon
@@ -3155,9 +3331,7 @@ CREATE POLICY app_settings_anon_public_read ON public.app_settings
 
 NOTIFY pgrst, 'reload schema';
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_limit_increase_apply_trigger.sql
--- ─────────────────────────────────────────────────────────────────
 -- ───────────────────────────────────────────────────────
 -- 2026_limit_increase_apply_trigger.sql
 --
@@ -3227,9 +3401,7 @@ CREATE TRIGGER trg_apply_limit_increase
     FOR EACH ROW
     EXECUTE FUNCTION public.apply_limit_increase();
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_limit_increase_beneficiary.sql
--- ─────────────────────────────────────────────────────────────────
 -- ───────────────────────────────────────────────────────
 -- 2026_limit_increase_beneficiary.sql
 --
@@ -3423,9 +3595,7 @@ GRANT EXECUTE ON FUNCTION public.request_limit_increase(text, jsonb, text, uuid,
 
 NOTIFY pgrst, 'reload schema';
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_limits_currency_conversion.sql
--- ─────────────────────────────────────────────────────────────────
 -- ───────────────────────────────────────────────────────
 -- 2026_limits_currency_conversion.sql
 --
@@ -3688,9 +3858,7 @@ BEGIN
 END;
 $$;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_limits_custom_flags.sql
--- ─────────────────────────────────────────────────────────────────
 -- ───────────────────────────────────────────────────────
 -- 2026_limits_custom_flags.sql  (CONSOLIDADO — un solo paste)
 --
@@ -3902,9 +4070,7 @@ NOTIFY pgrst, 'reload schema';
 -- SELECT public.get_user_limits_summary(id) FROM public.users
 --   WHERE email = 'bryandavidortiz51@gmail.com';
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_limits_fx_consolidated.sql
--- ─────────────────────────────────────────────────────────────────
 -- ───────────────────────────────────────────────────────
 -- 2026_limits_fx_consolidated.sql
 --
@@ -4132,9 +4298,7 @@ $$;
 -- SELECT public.get_user_limits_summary(id)
 --   FROM public.users WHERE email = 'bryandavidortiz51@gmail.com';
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_limits_only_loads.sql
--- ─────────────────────────────────────────────────────────────────
 -- ───────────────────────────────────────────────────────
 -- 2026_limits_only_loads.sql
 --
@@ -4309,9 +4473,7 @@ BEGIN
 END;
 $$;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_next_gasfree_index.sql
--- ─────────────────────────────────────────────────────────────────
 -- Asignación ATÓMICA del índice HD de wallets GasFree.
 -- Reemplaza el patrón read-then-write (no atómico) del edge function, que
 -- permitía que dos usuarios tomaran el MISMO índice → la MISMA wallet GasFree
@@ -4341,9 +4503,7 @@ grant execute on function next_gasfree_index() to anon, authenticated, service_r
 -- Refrescar el caché de PostgREST para exponer la RPC de inmediato.
 notify pgrst, 'reload schema';
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_notify_tx_trigger.sql
--- ─────────────────────────────────────────────────────────────────
 -- ════════════════════════════════════════════════════════
 -- CORREOS AUTOMÁTICOS AL CLIENTE por cada movimiento.
 --
@@ -4368,7 +4528,7 @@ notify pgrst, 'reload schema';
 -- Para APAGARLO: DROP TRIGGER IF EXISTS trg_cuypay_notify_tx ON public.transactions;
 -- ════════════════════════════════════════════════════════
 
-CREATE EXTENSION IF NOT EXISTS pg_net;
+DO $ext$ BEGIN CREATE EXTENSION IF NOT EXISTS pg_net; EXCEPTION WHEN OTHERS THEN RAISE NOTICE 'pg_net no disponible (habilítala en Supabase → Database → Extensions)'; END $ext$;
 
 CREATE OR REPLACE FUNCTION public.cuypay_notify_tx()
 RETURNS trigger
@@ -4385,7 +4545,7 @@ BEGIN
          AND NEW.status IS DISTINCT FROM OLD.status
          AND NEW.status = 'Completado') THEN
     PERFORM net.http_post(
-      url     := 'https://afaysiaontmhgrjnoene.supabase.co/functions/v1/notify-transaction',
+      url     := 'https://<TU_PROJECT_REF>.supabase.co/functions/v1/notify-transaction',
       headers := jsonb_build_object(
         'Content-Type', 'application/json',
         'apikey', '<ANON_KEY>',
@@ -4407,9 +4567,7 @@ CREATE TRIGGER trg_cuypay_notify_tx
   FOR EACH ROW
   EXECUTE FUNCTION public.cuypay_notify_tx();
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_phase_2_compliance.sql
--- ─────────────────────────────────────────────────────────────────
 -- ════════════════════════════════════════════════════════
 -- F2: COMPLIANCE AVANZADO
 -- - AML rules configurables
@@ -4419,44 +4577,9 @@ CREATE TRIGGER trg_cuypay_notify_tx
 
 -- ───── 1. AML RULES ─────
 -- Reglas configurables que disparan alertas en TX
-CREATE TABLE IF NOT EXISTS public.aml_rules (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name TEXT NOT NULL,
-    description TEXT,
-    rule_type TEXT NOT NULL CHECK (rule_type IN (
-        'high_amount',        -- monto único alto
-        'frequent_low',       -- muchas TX pequeñas seguidas
-        'cross_border',       -- envío internacional
-        'velocity'            -- alta velocidad de TX en periodo
-    )),
-    transaction_type TEXT,  -- 'load', 'send', 'convert', null = todas
-    currency TEXT,           -- null = todas
-    country_code TEXT,       -- null = todas
-    amount_threshold NUMERIC(18,2),
-    time_window_hours INT,
-    severity TEXT NOT NULL DEFAULT 'medium' CHECK (severity IN ('low','medium','high','critical')),
-    is_active BOOLEAN DEFAULT true,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
 ALTER TABLE public.aml_rules ENABLE ROW LEVEL SECURITY;
 
 -- ───── 2. COMPLIANCE ALERTS ─────
-CREATE TABLE IF NOT EXISTS public.compliance_alerts (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    rule_id UUID REFERENCES public.aml_rules(id),
-    rule_name TEXT,
-    severity TEXT NOT NULL,
-    user_id UUID REFERENCES public.users(id),
-    transaction_id UUID REFERENCES public.transactions(id),
-    description TEXT,
-    metadata JSONB,
-    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','reviewing','closed','escalated')),
-    reviewed_by UUID REFERENCES public.users(id),
-    reviewed_at TIMESTAMPTZ,
-    resolution TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
 CREATE INDEX IF NOT EXISTS idx_compliance_alerts_status ON public.compliance_alerts(status);
 CREATE INDEX IF NOT EXISTS idx_compliance_alerts_severity ON public.compliance_alerts(severity);
 CREATE INDEX IF NOT EXISTS idx_compliance_alerts_created ON public.compliance_alerts(created_at DESC);
@@ -4464,36 +4587,32 @@ CREATE INDEX IF NOT EXISTS idx_compliance_alerts_user ON public.compliance_alert
 ALTER TABLE public.compliance_alerts ENABLE ROW LEVEL SECURITY;
 
 -- ───── 3. SANCTIONS LIST (simplificada) ─────
-CREATE TABLE IF NOT EXISTS public.sanctions_list (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    list_type TEXT NOT NULL CHECK (list_type IN ('OFAC','UN','EU','PEP','INTERNAL')),
-    full_name TEXT NOT NULL,
-    aliases TEXT[],
-    country_code TEXT,
-    date_of_birth DATE,
-    notes TEXT,
-    source TEXT,
-    added_at TIMESTAMPTZ DEFAULT NOW()
-);
 CREATE INDEX IF NOT EXISTS idx_sanctions_name ON public.sanctions_list USING GIN (to_tsvector('simple', full_name));
 CREATE INDEX IF NOT EXISTS idx_sanctions_list_type ON public.sanctions_list(list_type);
 ALTER TABLE public.sanctions_list ENABLE ROW LEVEL SECURITY;
 
 -- ───── 4. RLS para las nuevas tablas ─────
+DROP POLICY IF EXISTS "compliance_read_aml_rules" ON public.aml_rules;
 CREATE POLICY "compliance_read_aml_rules" ON public.aml_rules
   FOR SELECT USING (public.is_admin_with_role('super_admin','compliance','audit'));
+DROP POLICY IF EXISTS "compliance_manage_aml_rules" ON public.aml_rules;
 CREATE POLICY "compliance_manage_aml_rules" ON public.aml_rules
   FOR ALL USING (public.is_admin_with_role('super_admin','compliance'));
 
+DROP POLICY IF EXISTS "compliance_read_alerts" ON public.compliance_alerts;
 CREATE POLICY "compliance_read_alerts" ON public.compliance_alerts
   FOR SELECT USING (public.is_admin_with_role('super_admin','compliance','audit'));
+DROP POLICY IF EXISTS "compliance_update_alerts" ON public.compliance_alerts;
 CREATE POLICY "compliance_update_alerts" ON public.compliance_alerts
   FOR UPDATE USING (public.is_admin_with_role('super_admin','compliance'));
+DROP POLICY IF EXISTS "compliance_insert_alerts" ON public.compliance_alerts;
 CREATE POLICY "compliance_insert_alerts" ON public.compliance_alerts
   FOR INSERT WITH CHECK (true);  -- triggers internos pueden insertar
 
+DROP POLICY IF EXISTS "compliance_read_sanctions" ON public.sanctions_list;
 CREATE POLICY "compliance_read_sanctions" ON public.sanctions_list
   FOR SELECT USING (public.is_admin_with_role('super_admin','compliance','audit'));
+DROP POLICY IF EXISTS "compliance_manage_sanctions" ON public.sanctions_list;
 CREATE POLICY "compliance_manage_sanctions" ON public.sanctions_list
   FOR ALL USING (public.is_admin_with_role('super_admin','compliance'));
 
@@ -4567,9 +4686,7 @@ ON CONFLICT DO NOTHING;
 
 UPDATE public.aml_rules SET time_window_hours = 1 WHERE rule_type = 'velocity' AND time_window_hours IS NULL;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_phase_3_treasury.sql
--- ─────────────────────────────────────────────────────────────────
 -- ════════════════════════════════════════════════════════
 -- F3: TREASURY AVANZADO
 -- - FX rates (tasas de cambio)
@@ -4578,59 +4695,14 @@ UPDATE public.aml_rules SET time_window_hours = 1 WHERE rule_type = 'velocity' A
 -- ════════════════════════════════════════════════════════
 
 -- ───── 1. FX RATES ─────
-CREATE TABLE IF NOT EXISTS public.fx_rates (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    from_currency TEXT NOT NULL,
-    to_currency TEXT NOT NULL,
-    rate NUMERIC(18,6) NOT NULL,
-    spread_pct NUMERIC(6,3) DEFAULT 0,        -- % de markup sobre la tasa
-    effective_from TIMESTAMPTZ DEFAULT NOW(),
-    is_active BOOLEAN DEFAULT true,
-    created_by UUID REFERENCES public.users(id),
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(from_currency, to_currency, effective_from)
-);
 CREATE INDEX IF NOT EXISTS idx_fx_rates_pair ON public.fx_rates(from_currency, to_currency) WHERE is_active = true;
 ALTER TABLE public.fx_rates ENABLE ROW LEVEL SECURITY;
 
 -- ───── 2. PARTNERS ─────
-CREATE TABLE IF NOT EXISTS public.partners (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name TEXT NOT NULL,
-    type TEXT CHECK (type IN ('bank','liquidity','kyc','payment','custodian','other')),
-    country_code TEXT,
-    contact_email TEXT,
-    contact_phone TEXT,
-    api_endpoint TEXT,
-    is_active BOOLEAN DEFAULT true,
-    notes TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
 ALTER TABLE public.partners ENABLE ROW LEVEL SECURITY;
 
 -- ───── 3. BANK RECONCILIATION ─────
-CREATE TABLE IF NOT EXISTS public.bank_statements (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    bank_account_id UUID REFERENCES public.cuypay_bank_accounts(id),
-    statement_date DATE NOT NULL,
-    opening_balance NUMERIC(18,2),
-    closing_balance NUMERIC(18,2),
-    uploaded_by UUID REFERENCES public.users(id),
-    uploaded_at TIMESTAMPTZ DEFAULT NOW()
-);
 
-CREATE TABLE IF NOT EXISTS public.bank_statement_lines (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    statement_id UUID REFERENCES public.bank_statements(id) ON DELETE CASCADE,
-    posted_at TIMESTAMPTZ,
-    description TEXT,
-    amount NUMERIC(18,2) NOT NULL,
-    is_credit BOOLEAN NOT NULL,   -- true = entrada, false = salida
-    matched_transaction_id UUID REFERENCES public.transactions(id),
-    match_status TEXT DEFAULT 'unmatched' CHECK (match_status IN ('unmatched','matched','manual_match','ignored')),
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
 CREATE INDEX IF NOT EXISTS idx_statement_lines_statement ON public.bank_statement_lines(statement_id);
 CREATE INDEX IF NOT EXISTS idx_statement_lines_match ON public.bank_statement_lines(match_status);
 
@@ -4638,23 +4710,31 @@ ALTER TABLE public.bank_statements ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.bank_statement_lines ENABLE ROW LEVEL SECURITY;
 
 -- ───── 4. RLS ─────
+DROP POLICY IF EXISTS "treasury_read_fx" ON public.fx_rates;
 CREATE POLICY "treasury_read_fx" ON public.fx_rates
   FOR SELECT USING (public.is_admin_with_role('super_admin','treasury','audit'));
+DROP POLICY IF EXISTS "treasury_manage_fx" ON public.fx_rates;
 CREATE POLICY "treasury_manage_fx" ON public.fx_rates
   FOR ALL USING (public.is_admin_with_role('super_admin','treasury'));
 
+DROP POLICY IF EXISTS "treasury_read_partners" ON public.partners;
 CREATE POLICY "treasury_read_partners" ON public.partners
   FOR SELECT USING (public.is_admin_with_role('super_admin','treasury','audit'));
+DROP POLICY IF EXISTS "treasury_manage_partners" ON public.partners;
 CREATE POLICY "treasury_manage_partners" ON public.partners
   FOR ALL USING (public.is_admin_with_role('super_admin','treasury'));
 
+DROP POLICY IF EXISTS "treasury_read_statements" ON public.bank_statements;
 CREATE POLICY "treasury_read_statements" ON public.bank_statements
   FOR SELECT USING (public.is_admin_with_role('super_admin','treasury','audit'));
+DROP POLICY IF EXISTS "treasury_manage_statements" ON public.bank_statements;
 CREATE POLICY "treasury_manage_statements" ON public.bank_statements
   FOR ALL USING (public.is_admin_with_role('super_admin','treasury'));
 
+DROP POLICY IF EXISTS "treasury_read_lines" ON public.bank_statement_lines;
 CREATE POLICY "treasury_read_lines" ON public.bank_statement_lines
   FOR SELECT USING (public.is_admin_with_role('super_admin','treasury','audit'));
+DROP POLICY IF EXISTS "treasury_manage_lines" ON public.bank_statement_lines;
 CREATE POLICY "treasury_manage_lines" ON public.bank_statement_lines
   FOR ALL USING (public.is_admin_with_role('super_admin','treasury'));
 
@@ -4668,9 +4748,7 @@ INSERT INTO public.fx_rates (from_currency, to_currency, rate, spread_pct, is_ac
     ('PEN','USD', 0.266,   0.5, true)
 ON CONFLICT DO NOTHING;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_phase_5_dual_approval.sql
--- ─────────────────────────────────────────────────────────────────
 -- ════════════════════════════════════════════════════════
 -- F5: 2FA + DOBLE APROBACIÓN
 -- - Workflow de aprobación con segundo aprobador para TX altas
@@ -4678,39 +4756,24 @@ ON CONFLICT DO NOTHING;
 -- ════════════════════════════════════════════════════════
 
 -- ───── 1. Umbrales de doble aprobación ─────
-CREATE TABLE IF NOT EXISTS public.dual_approval_thresholds (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    currency TEXT NOT NULL UNIQUE,
-    amount_threshold NUMERIC(18,2) NOT NULL,
-    is_active BOOLEAN DEFAULT true,
-    updated_by UUID REFERENCES public.users(id),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
 ALTER TABLE public.dual_approval_thresholds ENABLE ROW LEVEL SECURITY;
 
 -- ───── 2. Workflow de aprobaciones ─────
-CREATE TABLE IF NOT EXISTS public.tx_approvals (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    transaction_id UUID NOT NULL REFERENCES public.transactions(id) ON DELETE CASCADE,
-    approver_id UUID NOT NULL REFERENCES public.users(id),
-    approver_email TEXT,
-    approver_role TEXT,
-    decision TEXT NOT NULL CHECK (decision IN ('approve', 'reject')),
-    comment TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(transaction_id, approver_id)
-);
 CREATE INDEX IF NOT EXISTS idx_tx_approvals_tx ON public.tx_approvals(transaction_id);
 ALTER TABLE public.tx_approvals ENABLE ROW LEVEL SECURITY;
 
 -- ───── 3. RLS ─────
+DROP POLICY IF EXISTS "thresholds_read" ON public.dual_approval_thresholds;
 CREATE POLICY "thresholds_read" ON public.dual_approval_thresholds
   FOR SELECT USING (public.is_any_admin());
+DROP POLICY IF EXISTS "thresholds_manage" ON public.dual_approval_thresholds;
 CREATE POLICY "thresholds_manage" ON public.dual_approval_thresholds
   FOR ALL USING (public.is_admin_with_role('super_admin', 'treasury'));
 
+DROP POLICY IF EXISTS "approvals_read" ON public.tx_approvals;
 CREATE POLICY "approvals_read" ON public.tx_approvals
   FOR SELECT USING (public.is_any_admin());
+DROP POLICY IF EXISTS "approvals_write" ON public.tx_approvals;
 CREATE POLICY "approvals_write" ON public.tx_approvals
   FOR INSERT WITH CHECK (
     public.is_admin_with_role('super_admin', 'treasury') AND approver_id = auth.uid()
@@ -4752,9 +4815,7 @@ INSERT INTO public.dual_approval_thresholds (currency, amount_threshold, is_acti
     ('MXN', 50000,     true)     -- 50,000 MXN
 ON CONFLICT (currency) DO NOTHING;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_phase_6_scale.sql
--- ─────────────────────────────────────────────────────────────────
 -- ════════════════════════════════════════════════════════
 -- F6: ESCALA
 -- - Vista materializada para stats del Overview
@@ -4852,77 +4913,41 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.search_users_paginated TO authenticated;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_phase_7_fx_commissions.sql
--- ─────────────────────────────────────────────────────────────────
 -- ════════════════════════════════════════════════════════
 -- F7: FX COMMISSIONS — tiers + ventana nocturna por par
 -- ════════════════════════════════════════════════════════
 
 -- ───── 1. Configuración global de FX ─────
 -- Una sola fila — toggles globales de comportamiento
-CREATE TABLE IF NOT EXISTS public.fx_global_config (
-    id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-    night_enabled BOOLEAN DEFAULT false,
-    night_start_hour INT DEFAULT 3 CHECK (night_start_hour BETWEEN 0 AND 23),
-    night_end_hour INT DEFAULT 8 CHECK (night_end_hour BETWEEN 0 AND 23),
-    night_extra_pct NUMERIC(6,3) DEFAULT 1.0,
-    timezone TEXT DEFAULT 'America/Bogota',
-    updated_by UUID REFERENCES public.users(id),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
 INSERT INTO public.fx_global_config (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 ALTER TABLE public.fx_global_config ENABLE ROW LEVEL SECURITY;
 
 -- ───── 2. Configuración por par ─────
-CREATE TABLE IF NOT EXISTS public.fx_pair_config (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    from_currency TEXT NOT NULL,
-    to_currency TEXT NOT NULL,
-    -- Fee plano por par (en %). Se aplica si el monto no entra en ningún tier
-    -- o si el rol opera con fee simple. Editable desde el panel "Rates".
-    base_fee_pct NUMERIC(6,3) NOT NULL DEFAULT 0.5,
-    -- tiers por volumen USD equivalente.
-    -- formato: [{ "from_usd": 0, "to_usd": 1000, "pct": 2.5 }, ...]
-    -- el último tier tiene to_usd = null (sin límite superior)
-    tiers JSONB NOT NULL DEFAULT '[
-        {"from_usd": 0,      "to_usd": 1000,    "pct": 2.5},
-        {"from_usd": 1000,   "to_usd": 10000,   "pct": 2.0},
-        {"from_usd": 10000,  "to_usd": 100000,  "pct": 1.5},
-        {"from_usd": 100000, "to_usd": null,    "pct": 1.0}
-    ]',
-    is_active BOOLEAN DEFAULT true,
-    updated_by UUID REFERENCES public.users(id),
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(from_currency, to_currency)
-);
 -- Si la tabla ya existía sin la columna, agregarla
 ALTER TABLE public.fx_pair_config ADD COLUMN IF NOT EXISTS base_fee_pct NUMERIC(6,3) NOT NULL DEFAULT 0.5;
 ALTER TABLE public.fx_pair_config ENABLE ROW LEVEL SECURITY;
 
 -- ───── 3. Cache de tasas xe.com (servidor llena, cliente consulta) ─────
-CREATE TABLE IF NOT EXISTS public.fx_rate_snapshots (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    from_currency TEXT NOT NULL,
-    to_currency TEXT NOT NULL,
-    rate NUMERIC(18,8) NOT NULL,
-    source TEXT DEFAULT 'xe.com',
-    captured_at TIMESTAMPTZ DEFAULT NOW()
-);
 CREATE INDEX IF NOT EXISTS idx_fx_snapshots_pair_time ON public.fx_rate_snapshots(from_currency, to_currency, captured_at DESC);
 ALTER TABLE public.fx_rate_snapshots ENABLE ROW LEVEL SECURITY;
 
 -- ───── 4. RLS ─────
+DROP POLICY IF EXISTS "fx_global_read" ON public.fx_global_config;
 CREATE POLICY "fx_global_read" ON public.fx_global_config
   FOR SELECT USING (public.is_any_admin());
+DROP POLICY IF EXISTS "fx_global_manage" ON public.fx_global_config;
 CREATE POLICY "fx_global_manage" ON public.fx_global_config
   FOR ALL USING (public.is_admin_with_role('super_admin', 'treasury'));
 
+DROP POLICY IF EXISTS "fx_pair_read" ON public.fx_pair_config;
 CREATE POLICY "fx_pair_read" ON public.fx_pair_config
   FOR SELECT USING (public.is_any_admin());
+DROP POLICY IF EXISTS "fx_pair_manage" ON public.fx_pair_config;
 CREATE POLICY "fx_pair_manage" ON public.fx_pair_config
   FOR ALL USING (public.is_admin_with_role('super_admin', 'treasury'));
 
+DROP POLICY IF EXISTS "fx_snapshots_read" ON public.fx_rate_snapshots;
 CREATE POLICY "fx_snapshots_read" ON public.fx_rate_snapshots
   FOR SELECT USING (public.is_any_admin());
 -- inserts vienen del Edge Function con service_role → bypass RLS
@@ -4998,9 +5023,7 @@ GRANT EXECUTE ON FUNCTION public.fx_calc_commission_pct TO authenticated;
 SELECT COUNT(*) AS pairs_seeded FROM public.fx_pair_config;
 SELECT * FROM public.fx_global_config;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_relax_raw_data_guard.sql
--- ─────────────────────────────────────────────────────────────────
 -- ════════════════════════════════════════════════════════
 -- Los contactos inscritos (raw_data.finityContacts) desaparecían al
 -- recargar: el candado users_sensitive_cols_guard bloqueaba TODA
@@ -5067,9 +5090,7 @@ CREATE TRIGGER users_sensitive_cols_guard
   FOR EACH ROW
   EXECUTE FUNCTION public.guard_users_sensitive_cols();
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_security_hardening_rls.sql
--- ─────────────────────────────────────────────────────────────────
 -- ============================================================
 -- SECURITY HARDENING — apply en AMBOS proyectos (Empresas y Personas).
 --
@@ -5163,31 +5184,37 @@ BEGIN
 END $$;
 
 -- SELECT: el user ve su propia fila; admins ven todas.
+DROP POLICY IF EXISTS users_select_self_or_admin ON public.users;
 CREATE POLICY users_select_self_or_admin ON public.users FOR SELECT
   TO authenticated
   USING (auth.uid() = id OR public.is_any_admin());
 
 -- INSERT: signup propio o admin.
+DROP POLICY IF EXISTS users_insert_self ON public.users;
 CREATE POLICY users_insert_self ON public.users FOR INSERT
   TO authenticated
   WITH CHECK (auth.uid() = id);
 
+DROP POLICY IF EXISTS users_insert_admin ON public.users;
 CREATE POLICY users_insert_admin ON public.users FOR INSERT
   TO authenticated
   WITH CHECK (public.is_any_admin());
 
 -- UPDATE: self (trigger filtra cols sensibles) o admin.
+DROP POLICY IF EXISTS users_update_self ON public.users;
 CREATE POLICY users_update_self ON public.users FOR UPDATE
   TO authenticated
   USING (auth.uid() = id)
   WITH CHECK (auth.uid() = id);
 
+DROP POLICY IF EXISTS users_update_admin ON public.users;
 CREATE POLICY users_update_admin ON public.users FOR UPDATE
   TO authenticated
   USING (public.is_any_admin())
   WITH CHECK (public.is_any_admin());
 
 -- DELETE: solo admin (self-delete via edge function delete-self).
+DROP POLICY IF EXISTS users_delete_admin ON public.users;
 CREATE POLICY users_delete_admin ON public.users FOR DELETE
   TO authenticated
   USING (public.is_any_admin());
@@ -5342,9 +5369,7 @@ BEGIN
     policies_users, policies_tx, trigger_exists;
 END $$;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_site_events.sql
--- ─────────────────────────────────────────────────────────────────
 -- ───────────────────────────────────────────────────────
 -- 2026_site_events.sql
 --
@@ -5354,13 +5379,6 @@ END $$;
 -- ve en Soporte → Analíticas del sitio.
 -- ───────────────────────────────────────────────────────
 
-CREATE TABLE IF NOT EXISTS public.site_events (
-    id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    page             text NOT NULL,
-    referrer         text,
-    duration_seconds integer,
-    created_at       timestamptz NOT NULL DEFAULT now()
-);
 
 CREATE INDEX IF NOT EXISTS site_events_created_idx ON public.site_events (created_at DESC);
 CREATE INDEX IF NOT EXISTS site_events_page_idx    ON public.site_events (page, created_at DESC);
@@ -5369,23 +5387,24 @@ ALTER TABLE public.site_events ENABLE ROW LEVEL SECURITY;
 
 -- Visitantes (anónimos) pueden registrar su vista y actualizar la duración
 DROP POLICY IF EXISTS site_events_insert ON public.site_events;
+DROP POLICY IF EXISTS site_events_insert ON public.site_events;
 CREATE POLICY site_events_insert ON public.site_events
     FOR INSERT TO anon, authenticated WITH CHECK (true);
 
+DROP POLICY IF EXISTS site_events_update ON public.site_events;
 DROP POLICY IF EXISTS site_events_update ON public.site_events;
 CREATE POLICY site_events_update ON public.site_events
     FOR UPDATE TO anon, authenticated USING (true) WITH CHECK (true);
 
 -- Solo usuarios autenticados (el admin) pueden LEER las métricas
 DROP POLICY IF EXISTS site_events_read ON public.site_events;
+DROP POLICY IF EXISTS site_events_read ON public.site_events;
 CREATE POLICY site_events_read ON public.site_events
     FOR SELECT TO authenticated USING (true);
 
 NOTIFY pgrst, 'reload schema';
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_to_currency_use_snapshots.sql
--- ─────────────────────────────────────────────────────────────────
 -- ───────────────────────────────────────────────────────
 -- 2026_to_currency_use_snapshots.sql
 --
@@ -5504,9 +5523,7 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.to_currency(numeric, text, text) TO anon, authenticated;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_transactions_coupon_code.sql
--- ─────────────────────────────────────────────────────────────────
 -- ───────────────────────────────────────────────────────
 -- 2026_transactions_coupon_code.sql
 --
@@ -5624,9 +5641,7 @@ WHERE table_schema = 'public'
   AND table_name   = 'transactions'
   AND column_name IN ('coupon_code', 'coupon_discount_pct');
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_treasury_auto_client_load.sql
--- ─────────────────────────────────────────────────────────────────
 -- ════════════════════════════════════════════════════════
 -- Cargue de cliente → tesorería (auto-crédito al aprobar)
 --
@@ -5727,9 +5742,7 @@ NOTIFY pgrst, 'reload schema';
 -- ───── 4. Verificación ─────
 SELECT tgname, tgenabled FROM pg_trigger WHERE tgname = 'trg_treasury_on_load_approved';
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_treasury_by_currency.sql
--- ─────────────────────────────────────────────────────────────────
 -- ════════════════════════════════════════════════════════
 -- Tesorería delegada por moneda
 --
@@ -5839,9 +5852,7 @@ SELECT * FROM public.currency_balances ORDER BY currency;
 -- Recargar schema cache de PostgREST
 NOTIFY pgrst, 'reload schema';
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_treasury_capital_in.sql
--- ─────────────────────────────────────────────────────────────────
 -- ════════════════════════════════════════════════════════
 -- Tesorería: tipo de movimiento "capital_in" (aporte propio)
 --
@@ -5860,9 +5871,7 @@ ALTER TABLE public.treasury_movements ADD CONSTRAINT treasury_movements_kind_che
 
 NOTIFY pgrst, 'reload schema';
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_treasury_expense.sql
--- ─────────────────────────────────────────────────────────────────
 -- ════════════════════════════════════════════════════════
 -- Tesorería: agregar tipo de movimiento "expense" (gastos)
 --
@@ -5879,9 +5888,7 @@ ALTER TABLE public.treasury_movements ADD CONSTRAINT treasury_movements_kind_che
 
 NOTIFY pgrst, 'reload schema';
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_treasury_ledger.sql
--- ─────────────────────────────────────────────────────────────────
 -- ════════════════════════════════════════════════════════
 -- TESORERÍA CONTABLE — cuentas internas + libro de movimientos
 --
@@ -5900,47 +5907,9 @@ NOTIFY pgrst, 'reload schema';
 -- ════════════════════════════════════════════════════════
 
 -- ───── 1. Cuentas de tesorería ─────
-CREATE TABLE IF NOT EXISTS public.treasury_accounts (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name            TEXT NOT NULL,                 -- "Bancolombia COP", "USDT Binance"
-    type            TEXT NOT NULL CHECK (type IN ('bank','crypto')),
-    currency        TEXT NOT NULL,                 -- COP, BRL, CLP, PEN, MXN, USDT
-    country_code    TEXT,                          -- CO, BR... (null para crypto)
-    exchange        TEXT,                          -- Binance, Bitso... (para crypto)
-    bank_account_id UUID REFERENCES public.cuypay_bank_accounts(id) ON DELETE SET NULL,
-    balance         NUMERIC(20,2) NOT NULL DEFAULT 0,
-    is_active       BOOLEAN DEFAULT true,
-    created_at      TIMESTAMPTZ DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ DEFAULT NOW()
-);
 ALTER TABLE public.treasury_accounts ENABLE ROW LEVEL SECURITY;
 
 -- ───── 2. Libro de movimientos ─────
-CREATE TABLE IF NOT EXISTS public.treasury_movements (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    kind            TEXT NOT NULL CHECK (kind IN (
-                        'internal_transfer',  -- mismo país/moneda (Bancolombia → Davivienda)
-                        'fx_buy_usdt',        -- moneda local → USDT
-                        'fx_sell_usdt',       -- USDT → moneda local
-                        'client_load',        -- ingreso por cargue de cliente
-                        'client_payout',      -- egreso por pago a cliente
-                        'adjustment'          -- ajuste manual / corrección
-                    )),
-    from_account_id UUID REFERENCES public.treasury_accounts(id),
-    to_account_id   UUID REFERENCES public.treasury_accounts(id),
-    from_amount     NUMERIC(20,2) NOT NULL DEFAULT 0,  -- lo que SALE de from (incluye fee/tax si se descuentan al origen)
-    to_amount       NUMERIC(20,2) NOT NULL DEFAULT 0,  -- lo que ENTRA a to (neto)
-    from_currency   TEXT,
-    to_currency     TEXT,
-    exchange_rate   NUMERIC(20,8),                     -- to_amount / from_amount (para FX)
-    fee_amount      NUMERIC(20,2) DEFAULT 0,
-    fee_currency    TEXT,
-    tax_amount      NUMERIC(20,2) DEFAULT 0,
-    tax_currency    TEXT,
-    notes           TEXT,
-    created_by      UUID REFERENCES public.users(id),
-    created_at      TIMESTAMPTZ DEFAULT NOW()
-);
 CREATE INDEX IF NOT EXISTS idx_treasury_mov_from ON public.treasury_movements(from_account_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_treasury_mov_to   ON public.treasury_movements(to_account_id, created_at DESC);
 ALTER TABLE public.treasury_movements ENABLE ROW LEVEL SECURITY;
@@ -6015,16 +5984,19 @@ GRANT EXECUTE ON FUNCTION public.treasury_apply_movement TO authenticated;
 
 -- ───── 4. RLS ─────
 DROP POLICY IF EXISTS "treasury_accounts_read" ON public.treasury_accounts;
+DROP POLICY IF EXISTS "treasury_accounts_read" ON public.treasury_accounts;
 CREATE POLICY "treasury_accounts_read" ON public.treasury_accounts
   FOR SELECT TO authenticated
   USING (EXISTS (SELECT 1 FROM public.users WHERE id = auth.uid() AND admin_role IS NOT NULL));
 
+DROP POLICY IF EXISTS "treasury_accounts_write" ON public.treasury_accounts;
 DROP POLICY IF EXISTS "treasury_accounts_write" ON public.treasury_accounts;
 CREATE POLICY "treasury_accounts_write" ON public.treasury_accounts
   FOR ALL TO authenticated
   USING (EXISTS (SELECT 1 FROM public.users WHERE id = auth.uid() AND admin_role IN ('super_admin','treasury')))
   WITH CHECK (EXISTS (SELECT 1 FROM public.users WHERE id = auth.uid() AND admin_role IN ('super_admin','treasury')));
 
+DROP POLICY IF EXISTS "treasury_movements_read" ON public.treasury_movements;
 DROP POLICY IF EXISTS "treasury_movements_read" ON public.treasury_movements;
 CREATE POLICY "treasury_movements_read" ON public.treasury_movements
   FOR SELECT TO authenticated
@@ -6055,9 +6027,7 @@ NOTIFY pgrst, 'reload schema';
 -- ───── 6. Verificar ─────
 SELECT name, type, currency, country_code, exchange, balance FROM public.treasury_accounts ORDER BY type, currency;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_treasury_main_wallet.sql
--- ─────────────────────────────────────────────────────────────────
 -- ════════════════════════════════════════════════════════
 -- Tesorería: billetera principal en USDT (reserva)
 --
@@ -6078,9 +6048,7 @@ SELECT name, type, currency, exchange, is_treasury, is_profit, balance
 FROM public.treasury_accounts
 ORDER BY is_treasury DESC, is_profit DESC, type, currency;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_treasury_profit.sql
--- ─────────────────────────────────────────────────────────────────
 -- ════════════════════════════════════════════════════════
 -- Tesorería: billetera de utilidades + movimiento "profit"
 --
@@ -6110,9 +6078,7 @@ NOTIFY pgrst, 'reload schema';
 
 SELECT name, type, currency, is_profit, balance FROM public.treasury_accounts ORDER BY is_profit DESC, type, currency;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_tx_insert_own.sql
--- ─────────────────────────────────────────────────────────────────
 -- ════════════════════════════════════════════════════════
 -- "No hay movimientos": la migración de seguridad dejó transactions con
 -- INSERT solo-admin (tx_insert_admin), así que los movimientos de los
@@ -6136,9 +6102,7 @@ DO $$ BEGIN
   END IF;
 END $$;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_user_block.sql
--- ─────────────────────────────────────────────────────────────────
 -- ════════════════════════════════════════════════════════
 -- Bloqueo de usuarios por compliance
 --
@@ -6168,9 +6132,7 @@ FROM information_schema.columns
 WHERE table_schema = 'public' AND table_name = 'users'
   AND column_name IN ('is_blocked', 'blocked_reason', 'blocked_at');
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_user_block_reason.sql
--- ─────────────────────────────────────────────────────────────────
 -- ───────────────────────────────────────────────────────
 -- 2026_user_block_reason.sql
 --
@@ -6196,9 +6158,7 @@ ALTER TABLE public.users
 CREATE INDEX IF NOT EXISTS idx_users_is_active_false
     ON public.users(id) WHERE is_active = false;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_user_block_type.sql
--- ─────────────────────────────────────────────────────────────────
 -- ───────────────────────────────────────────────────────
 -- 2026_user_block_type.sql
 --
@@ -6223,9 +6183,7 @@ ALTER TABLE public.users
     ADD COLUMN IF NOT EXISTS block_type text
         CHECK (block_type IN ('temporary', 'permanent'));
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_user_limits.sql
--- ─────────────────────────────────────────────────────────────────
 -- ───────────────────────────────────────────────────────
 -- 2026_user_limits.sql
 --
@@ -6389,9 +6347,7 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.admin_set_user_limits(uuid, numeric, numeric, text) TO authenticated;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_user_limits_fix.sql
--- ─────────────────────────────────────────────────────────────────
 -- ───────────────────────────────────────────────────────
 -- 2026_user_limits_fix.sql
 --
@@ -6479,9 +6435,7 @@ BEGIN
 END;
 $$;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_users_update_own.sql
--- ─────────────────────────────────────────────────────────────────
 -- ════════════════════════════════════════════════════════
 -- Los contactos se borraban al recargar: a public.users le faltaba la
 -- política RLS de UPDATE de la propia fila. El guardado del cliente
@@ -6532,9 +6486,7 @@ FROM pg_policies
 WHERE schemaname = 'public' AND tablename = 'users'
 ORDER BY policyname;
 
--- ─────────────────────────────────────────────────────────────────
 -- 2026_xe_config_admin_rls.sql
--- ─────────────────────────────────────────────────────────────────
 -- ════════════════════════════════════════════════════════
 -- xe_config: dar permiso de escritura a super_admin / treasury
 -- y crear el RPC fx_set_preferred_source como fallback.
@@ -6623,9 +6575,7 @@ NOTIFY pgrst, 'reload schema';
 -- ───── Verificación ─────
 SELECT id, preferred_source FROM public.xe_config WHERE id = 1;
 
--- ─────────────────────────────────────────────────────────────────
 -- add_crypto_balances_column.sql
--- ─────────────────────────────────────────────────────────────────
 -- ============================================================
 -- Add crypto_balances column to separate USDT/USDC from fiat.
 -- Run this in Supabase SQL Editor.
@@ -6670,9 +6620,7 @@ $$;
 GRANT EXECUTE ON FUNCTION public.cuypay_get_all_users        TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.cuypay_get_all_transactions TO anon, authenticated;
 
--- ─────────────────────────────────────────────────────────────────
 -- add_kyc_columns.sql
--- ─────────────────────────────────────────────────────────────────
 -- Migration: Add dedicated KYC columns to users table
 -- Run this in the Supabase SQL Editor
 
@@ -6710,9 +6658,7 @@ ALTER TABLE public.users
   -- Documents (base64 or storage URLs)
   ADD COLUMN IF NOT EXISTS documents         jsonb DEFAULT '{}';
 
--- ─────────────────────────────────────────────────────────────────
 -- add_p2p_transfer_function.sql
--- ─────────────────────────────────────────────────────────────────
 -- ============================================================
 -- CuyPay P2P Transfer: SECURITY DEFINER function so an
 -- authenticated user can atomically deduct from their own
@@ -6802,9 +6748,7 @@ $$;
 REVOKE EXECUTE ON FUNCTION public.cuypay_transfer FROM anon;
 GRANT  EXECUTE ON FUNCTION public.cuypay_transfer TO authenticated;
 
--- ─────────────────────────────────────────────────────────────────
 -- add_save_profile_function.sql
--- ─────────────────────────────────────────────────────────────────
 -- SECURITY DEFINER function so any authenticated or anon user can save
 -- their own profile data without RLS blocking them.
 -- Run this in the Supabase SQL Editor.
@@ -6831,9 +6775,7 @@ $$;
 GRANT EXECUTE ON FUNCTION public.cuypay_save_profile TO authenticated;
 GRANT EXECUTE ON FUNCTION public.cuypay_save_profile TO anon;
 
--- ─────────────────────────────────────────────────────────────────
 -- admin_read_functions.sql
--- ─────────────────────────────────────────────────────────────────
 -- ============================================================
 -- Admin read functions — bypass RLS so the admin can always
 -- see all users and transactions regardless of policy state.
@@ -6862,25 +6804,13 @@ $$;
 GRANT EXECUTE ON FUNCTION public.cuypay_get_all_users        TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.cuypay_get_all_transactions TO anon, authenticated;
 
--- ─────────────────────────────────────────────────────────────────
 -- create_transactions_table.sql
--- ─────────────────────────────────────────────────────────────────
 -- ============================================================
 -- CUYPAY: transactions table + RLS policies
 -- Run this in the Supabase SQL Editor
 -- ============================================================
 
 -- 1. Create table
-CREATE TABLE IF NOT EXISTS public.transactions (
-  id          BIGSERIAL PRIMARY KEY,
-  user_id     TEXT        NOT NULL,
-  type        TEXT        NOT NULL,
-  amount      NUMERIC     NOT NULL DEFAULT 0,
-  currency    TEXT        NOT NULL DEFAULT 'USD',
-  status      TEXT        NOT NULL DEFAULT 'Pendiente',
-  raw_data    JSONB       NOT NULL DEFAULT '{}',
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
 
 -- 2. Enable RLS
 ALTER TABLE public.transactions ENABLE ROW LEVEL SECURITY;
@@ -6892,6 +6822,7 @@ DROP POLICY IF EXISTS "allow_update_all_transactions"  ON public.transactions;
 
 -- 4. SELECT: any authenticated user can read all transactions
 --    (admin needs to see every request; frontend filters by userId for regular users)
+DROP POLICY IF EXISTS "allow_select_all_transactions" ON public.transactions;
 CREATE POLICY "allow_select_all_transactions"
   ON public.transactions FOR SELECT
   TO authenticated
@@ -6899,16 +6830,18 @@ CREATE POLICY "allow_select_all_transactions"
 
 -- 5. INSERT: authenticated users can insert (user_id matches their auth.uid,
 --    OR it's an internal admin/treasury movement)
+DROP POLICY IF EXISTS "allow_insert_own_transactions" ON public.transactions;
 CREATE POLICY "allow_insert_own_transactions"
   ON public.transactions FOR INSERT
   TO authenticated
   WITH CHECK (
-    auth.uid()::text = user_id
-    OR user_id = 'admin'
+    auth.uid() = user_id
+    OR user_id::text = 'admin'
   );
 
 -- 6. UPDATE: any authenticated user can update status
 --    (admin approves/rejects deposits and withdrawals)
+DROP POLICY IF EXISTS "allow_update_all_transactions" ON public.transactions;
 CREATE POLICY "allow_update_all_transactions"
   ON public.transactions FOR UPDATE
   TO authenticated
@@ -6916,7 +6849,7 @@ CREATE POLICY "allow_update_all_transactions"
   WITH CHECK (true);
 
 -- 7. Enable Realtime so the admin panel gets live updates
-ALTER PUBLICATION supabase_realtime ADD TABLE public.transactions;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname='supabase_realtime' AND schemaname='public' AND tablename='transactions') THEN ALTER PUBLICATION supabase_realtime ADD TABLE public.transactions; END IF; END $$;
 
 -- ============================================================
 -- Also ensure the users table has correct RLS (if not already set)
@@ -6949,14 +6882,12 @@ BEGIN
     CREATE POLICY "allow_upsert_own_user"
       ON public.users FOR ALL
       TO authenticated
-      USING (auth.uid()::text = id)
-      WITH CHECK (auth.uid()::text = id);
+      USING (auth.uid() = id)
+      WITH CHECK (auth.uid() = id);
   END IF;
 END $$;
 
--- ─────────────────────────────────────────────────────────────────
 -- disable_rls_fix_admin.sql
--- ─────────────────────────────────────────────────────────────────
 -- ============================================================
 -- DEFINITIVE FIX: Disable RLS on users and transactions
 -- so the admin panel can always read all rows.
@@ -6987,9 +6918,7 @@ GRANT EXECUTE ON FUNCTION public.cuypay_get_all_transactions TO anon, authentica
 ALTER TABLE public.users
   ADD COLUMN IF NOT EXISTS crypto_balances JSONB NOT NULL DEFAULT '{}'::jsonb;
 
--- ─────────────────────────────────────────────────────────────────
 -- fix_authenticated_update_policy.sql
--- ─────────────────────────────────────────────────────────────────
 -- ============================================================
 -- Fix: Allow authenticated users to update their own profile.
 -- This is required for KYC submission and profile updates.
@@ -7006,22 +6935,22 @@ DROP POLICY IF EXISTS "allow_auth_select_own_user" ON public.users;
 CREATE POLICY "allow_auth_select_own_user"
   ON public.users FOR SELECT
   TO authenticated
-  USING (auth.uid()::text = id);
+  USING (auth.uid() = id);
 
 -- 2. Authenticated users can UPDATE their own row (KYC, profile, etc.)
 DROP POLICY IF EXISTS "allow_auth_update_own_user" ON public.users;
 CREATE POLICY "allow_auth_update_own_user"
   ON public.users FOR UPDATE
   TO authenticated
-  USING (auth.uid()::text = id)
-  WITH CHECK (auth.uid()::text = id);
+  USING (auth.uid() = id)
+  WITH CHECK (auth.uid() = id);
 
 -- 3. Authenticated users can INSERT their own row (needed on first profile creation)
 DROP POLICY IF EXISTS "allow_auth_insert_own_user" ON public.users;
 CREATE POLICY "allow_auth_insert_own_user"
   ON public.users FOR INSERT
   TO authenticated
-  WITH CHECK (auth.uid()::text = id);
+  WITH CHECK (auth.uid() = id);
 
 -- 4. anon (admin-bypass) can SELECT all users
 DROP POLICY IF EXISTS "allow_anon_select_users" ON public.users;
@@ -7052,13 +6981,13 @@ DROP POLICY IF EXISTS "allow_auth_select_own_transactions" ON public.transaction
 CREATE POLICY "allow_auth_select_own_transactions"
   ON public.transactions FOR SELECT
   TO authenticated
-  USING (user_id = auth.uid()::text);
+  USING (user_id = auth.uid());
 
 DROP POLICY IF EXISTS "allow_auth_insert_own_transactions" ON public.transactions;
 CREATE POLICY "allow_auth_insert_own_transactions"
   ON public.transactions FOR INSERT
   TO authenticated
-  WITH CHECK (user_id = auth.uid()::text);
+  WITH CHECK (user_id = auth.uid());
 
 DROP POLICY IF EXISTS "allow_anon_select_transactions" ON public.transactions;
 CREATE POLICY "allow_anon_select_transactions"
@@ -7079,9 +7008,7 @@ CREATE POLICY "allow_anon_update_transactions"
   USING (true)
   WITH CHECK (true);
 
--- ─────────────────────────────────────────────────────────────────
 -- fix_complete_admin.sql
--- ─────────────────────────────────────────────────────────────────
 -- ============================================================
 -- COMPLETE FIX — Run this SINGLE script in Supabase SQL Editor.
 -- It fixes RLS, creates read functions, auto-profile trigger,
@@ -7105,7 +7032,9 @@ BEGIN FOR r IN SELECT policyname FROM pg_policies WHERE tablename='transactions'
 END $$;
 
 -- 4. Open policies: allow everything for everyone
+DROP POLICY IF EXISTS "users_all" ON public.users;
 CREATE POLICY "users_all"  ON public.users        FOR ALL USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "tx_all" ON public.transactions;
 CREATE POLICY "tx_all"     ON public.transactions  FOR ALL USING (true) WITH CHECK (true);
 
 -- 5. Grant table access
@@ -7163,9 +7092,7 @@ SELECT
 FROM auth.users au
 WHERE NOT EXISTS (SELECT 1 FROM public.users pu WHERE pu.id = au.id);
 
--- ─────────────────────────────────────────────────────────────────
 -- fix_everything.sql
--- ─────────────────────────────────────────────────────────────────
 -- ============================================================
 -- CUYPAY — SCRIPT COMPLETO DE CONFIGURACIÓN
 -- Ejecuta este script UNA VEZ en el Editor SQL de Supabase.
@@ -7188,26 +7115,37 @@ ALTER TABLE public.transactions ENABLE ROW LEVEL SECURITY;
 -- ---- 3. POLÍTICAS PARA users ------------------------------
 -- Usuarios autenticados: solo su propia fila
 -- Note: id is UUID, auth.uid() is UUID — compare directly, no ::text cast
+DROP POLICY IF EXISTS "auth_select_own" ON public.users;
 CREATE POLICY "auth_select_own" ON public.users FOR SELECT
   TO authenticated USING (auth.uid() = id);
+DROP POLICY IF EXISTS "auth_insert_own" ON public.users;
 CREATE POLICY "auth_insert_own" ON public.users FOR INSERT
   TO authenticated WITH CHECK (auth.uid() = id);
+DROP POLICY IF EXISTS "auth_update_own" ON public.users;
 CREATE POLICY "auth_update_own" ON public.users FOR UPDATE
   TO authenticated USING (auth.uid() = id) WITH CHECK (auth.uid() = id);
 
 -- Rol anon (admin-bypass): acceso total para operaciones administrativas
+DROP POLICY IF EXISTS "anon_select_users" ON public.users;
 CREATE POLICY "anon_select_users"  ON public.users FOR SELECT  TO anon USING (true);
+DROP POLICY IF EXISTS "anon_insert_users" ON public.users;
 CREATE POLICY "anon_insert_users"  ON public.users FOR INSERT  TO anon WITH CHECK (true);
+DROP POLICY IF EXISTS "anon_update_users" ON public.users;
 CREATE POLICY "anon_update_users"  ON public.users FOR UPDATE  TO anon USING (true) WITH CHECK (true);
 
 -- ---- 4. POLÍTICAS PARA transactions -----------------------
+DROP POLICY IF EXISTS "auth_select_own_tx" ON public.transactions;
 CREATE POLICY "auth_select_own_tx" ON public.transactions FOR SELECT
-  TO authenticated USING (user_id = auth.uid()::text);
+  TO authenticated USING (user_id = auth.uid());
+DROP POLICY IF EXISTS "auth_insert_own_tx" ON public.transactions;
 CREATE POLICY "auth_insert_own_tx" ON public.transactions FOR INSERT
-  TO authenticated WITH CHECK (user_id = auth.uid()::text);
+  TO authenticated WITH CHECK (user_id = auth.uid());
 
+DROP POLICY IF EXISTS "anon_select_tx" ON public.transactions;
 CREATE POLICY "anon_select_tx"  ON public.transactions FOR SELECT  TO anon USING (true);
+DROP POLICY IF EXISTS "anon_insert_tx" ON public.transactions;
 CREATE POLICY "anon_insert_tx"  ON public.transactions FOR INSERT  TO anon WITH CHECK (true);
+DROP POLICY IF EXISTS "anon_update_tx" ON public.transactions;
 CREATE POLICY "anon_update_tx"  ON public.transactions FOR UPDATE  TO anon USING (true) WITH CHECK (true);
 
 -- ---- 5. GRANTS MÍNIMOS ------------------------------------
@@ -7268,7 +7206,7 @@ AS $func$
     sender_tx AS (
       INSERT INTO public.transactions (user_id, type, amount, currency, status, raw_data)
       SELECT
-        p_sender_id,
+        p_sender_id::uuid,
         'pay_sent',
         p_amount,
         p_currency,
@@ -7287,7 +7225,7 @@ AS $func$
     recipient_tx AS (
       INSERT INTO public.transactions (user_id, type, amount, currency, status, raw_data)
       SELECT
-        (SELECT id::text FROM recipient_row),
+        (SELECT id FROM recipient_row),
         'pay_received',
         p_amount,
         p_currency,
@@ -7348,18 +7286,23 @@ $$;
 GRANT EXECUTE ON FUNCTION public.cuypay_get_all_users        TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.cuypay_get_all_transactions TO anon, authenticated;
 
--- ─────────────────────────────────────────────────────────────────
 -- fix_everything_v2.sql
--- ─────────────────────────────────────────────────────────────────
 DO $$ DECLARE r RECORD; BEGIN FOR r IN SELECT policyname FROM pg_policies WHERE tablename='users' AND schemaname='public' LOOP EXECUTE format('DROP POLICY IF EXISTS %I ON public.users', r.policyname); END LOOP; FOR r IN SELECT policyname FROM pg_policies WHERE tablename='transactions' AND schemaname='public' LOOP EXECUTE format('DROP POLICY IF EXISTS %I ON public.transactions', r.policyname); END LOOP; END $$;
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.transactions ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "auth_users_select" ON public.users;
 CREATE POLICY "auth_users_select" ON public.users FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "auth_users_insert" ON public.users;
 CREATE POLICY "auth_users_insert" ON public.users FOR INSERT TO authenticated WITH CHECK (auth.uid() = id);
+DROP POLICY IF EXISTS "auth_users_update" ON public.users;
 CREATE POLICY "auth_users_update" ON public.users FOR UPDATE TO authenticated USING (auth.uid() = id) WITH CHECK (auth.uid() = id);
+DROP POLICY IF EXISTS "anon_users_all" ON public.users;
 CREATE POLICY "anon_users_all" ON public.users FOR ALL TO anon USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "auth_tx_select" ON public.transactions;
 CREATE POLICY "auth_tx_select" ON public.transactions FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "auth_tx_insert" ON public.transactions;
 CREATE POLICY "auth_tx_insert" ON public.transactions FOR INSERT TO authenticated WITH CHECK (user_id = auth.uid());
+DROP POLICY IF EXISTS "anon_tx_all" ON public.transactions;
 CREATE POLICY "anon_tx_all" ON public.transactions FOR ALL TO anon USING (true) WITH CHECK (true);
 GRANT SELECT, INSERT, UPDATE ON public.users TO authenticated, anon;
 GRANT SELECT, INSERT, UPDATE ON public.transactions TO authenticated, anon;
@@ -7368,9 +7311,7 @@ CREATE OR REPLACE FUNCTION public.cuypay_transfer(p_sender_id text, p_recipient_
 REVOKE EXECUTE ON FUNCTION public.cuypay_transfer FROM anon;
 GRANT EXECUTE ON FUNCTION public.cuypay_transfer TO authenticated;
 
--- ─────────────────────────────────────────────────────────────────
 -- fix_p2p_security.sql
--- ─────────────────────────────────────────────────────────────────
 -- ============================================================
 -- Security hardening for cuypay_transfer:
 --   1. Validate amount is positive and non-zero (server-side)
@@ -7467,9 +7408,7 @@ $$;
 REVOKE EXECUTE ON FUNCTION public.cuypay_transfer FROM anon;
 GRANT  EXECUTE ON FUNCTION public.cuypay_transfer TO authenticated;
 
--- ─────────────────────────────────────────────────────────────────
 -- fix_p2p_transfer_function.sql
--- ─────────────────────────────────────────────────────────────────
 -- ============================================================
 -- CuyPay P2P Transfer: simple atomic balance swap.
 -- Run this ONE script in Supabase SQL Editor.
@@ -7493,9 +7432,7 @@ $$;
 GRANT EXECUTE ON FUNCTION public.cuypay_p2p_transfer TO authenticated;
 GRANT EXECUTE ON FUNCTION public.cuypay_p2p_transfer TO anon;
 
--- ─────────────────────────────────────────────────────────────────
 -- fix_rls_admin_bypass.sql
--- ─────────────────────────────────────────────────────────────────
 -- ============================================================
 -- Fix RLS so admin-bypass (anon role) can read/update data.
 -- The admin bypass login skips Supabase Auth, so requests arrive
@@ -7545,9 +7482,7 @@ CREATE POLICY "allow_anon_update_transactions"
   USING (true)
   WITH CHECK (true);
 
--- ─────────────────────────────────────────────────────────────────
 -- fix_rls_full_reset.sql
--- ─────────────────────────────────────────────────────────────────
 -- ============================================================
 -- FULL RLS RESET — run this in Supabase SQL Editor.
 -- Drops ALL policies on users/transactions and recreates
@@ -7579,24 +7514,30 @@ BEGIN
 END $$;
 
 -- 4. Users — allow everything for authenticated and anon
+DROP POLICY IF EXISTS "users_select_all" ON public.users;
 CREATE POLICY "users_select_all" ON public.users FOR SELECT USING (true);
+DROP POLICY IF EXISTS "users_insert_all" ON public.users;
 CREATE POLICY "users_insert_all" ON public.users FOR INSERT WITH CHECK (true);
+DROP POLICY IF EXISTS "users_update_all" ON public.users;
 CREATE POLICY "users_update_all" ON public.users FOR UPDATE USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "users_delete_all" ON public.users;
 CREATE POLICY "users_delete_all" ON public.users FOR DELETE USING (true);
 
 -- 5. Transactions — allow everything for authenticated and anon
+DROP POLICY IF EXISTS "tx_select_all" ON public.transactions;
 CREATE POLICY "tx_select_all"  ON public.transactions FOR SELECT USING (true);
+DROP POLICY IF EXISTS "tx_insert_all" ON public.transactions;
 CREATE POLICY "tx_insert_all"  ON public.transactions FOR INSERT WITH CHECK (true);
+DROP POLICY IF EXISTS "tx_update_all" ON public.transactions;
 CREATE POLICY "tx_update_all"  ON public.transactions FOR UPDATE USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "tx_delete_all" ON public.transactions;
 CREATE POLICY "tx_delete_all"  ON public.transactions FOR DELETE USING (true);
 
 -- 6. Re-grant table access to roles (in case grants were dropped)
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.users        TO authenticated, anon;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.transactions TO authenticated, anon;
 
--- ─────────────────────────────────────────────────────────────────
 -- fix_transfer_function.sql
--- ─────────────────────────────────────────────────────────────────
 CREATE OR REPLACE FUNCTION public.cuypay_transfer(p_sender_id text, p_recipient_code text, p_amount numeric, p_currency text) RETURNS jsonb LANGUAGE sql SECURITY DEFINER SET search_path = public AS $$
 WITH r AS (SELECT id, full_name FROM public.users WHERE raw_data->>'ownReferralCode' = upper(p_recipient_code) AND id::text <> p_sender_id LIMIT 1), d AS (UPDATE public.users SET balances = jsonb_set(balances, ARRAY[p_currency], to_jsonb(COALESCE((balances->>p_currency)::numeric, 0) - p_amount)) WHERE id::text = p_sender_id AND (SELECT id FROM r) IS NOT NULL AND COALESCE((balances->>p_currency)::numeric, 0) >= p_amount RETURNING id), c AS (UPDATE public.users SET balances = jsonb_set(balances, ARRAY[p_currency], to_jsonb(COALESCE((balances->>p_currency)::numeric, 0) + p_amount)) WHERE id = (SELECT id FROM r) AND (SELECT id FROM d) IS NOT NULL RETURNING id) SELECT CASE WHEN (SELECT id FROM r) IS NULL THEN jsonb_build_object('error','no_recipient') WHEN (SELECT id FROM d) IS NULL THEN jsonb_build_object('error','no_funds') ELSE jsonb_build_object('success',true,'recipient_id',(SELECT id::text FROM r),'recipient_name',(SELECT full_name FROM r)) END
 $$;
@@ -7607,9 +7548,7 @@ INSERT INTO public.transactions (user_id, type, amount, currency, status, raw_da
 $$;
 GRANT EXECUTE ON FUNCTION public.cuypay_insert_rx TO authenticated;
 
--- ─────────────────────────────────────────────────────────────────
 -- seed_admin_user.sql
--- ─────────────────────────────────────────────────────────────────
 -- Insert admin user into users table so DB-fallback login works
 -- even without VITE_ADMIN_PASSWORD env var set in the hosting platform.
 -- On first login the password hash gets stored automatically.
@@ -7618,8 +7557,8 @@ INSERT INTO public.users (
   kyc_status, is_blocked, raw_data
 )
 VALUES (
-  'admin-cuypay-001',
-  'admin@cuypay.com',
+  '00000000-0000-0000-0000-000000000001',
+  'admin@lincoin.com',
   'Administrador',
   'admin',
   '{"USD":0,"COP":0,"CLP":0,"MXN":0,"PEN":0}'::jsonb,
