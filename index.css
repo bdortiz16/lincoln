@@ -90,6 +90,15 @@ body { background-color: #070808 !important; color: #F4F4F2; }
 .bg-slate-100, .bg-gray-100, .bg-neutral-100 { background-color: #121413 !important; }
 .bg-slate-200, .bg-gray-200 { background-color: #161A17 !important; }
 [class*="bg-[#F"], [class*="bg-[#f"], [class*="bg-[#E"], [class*="bg-[#e"] { background-color: #0C0E0D !important; }
+/* HOVER claros sobre tema oscuro: Tailwind pinta hover:bg-white / slate-50 /
+   gray-50 en claro, pero el texto está forzado a claro (!important) → texto
+   claro sobre fondo claro = invisible (sidebar, menús, tabs, filas...).
+   Se reemplazan por un overlay sutil oscuro-friendly en toda la app. */
+[class*="hover:bg-white"]:hover,
+[class*="hover:bg-slate-50"]:hover, [class*="hover:bg-slate-100"]:hover,
+[class*="hover:bg-gray-50"]:hover, [class*="hover:bg-gray-100"]:hover,
+[class*="hover:bg-neutral-50"]:hover, [class*="hover:bg-neutral-100"]:hover,
+[class*="hover:bg-zinc-50"]:hover { background-color: rgba(255,255,255,0.06) !important; }
 [class*="from-white"], [class*="via-white"], [class*="to-white"],
 [class*="from-slate-50"], [class*="to-slate-50"], [class*="from-gray-50"], [class*="to-gray-50"],
 [class*="from-slate-100"], [class*="to-slate-100"],
