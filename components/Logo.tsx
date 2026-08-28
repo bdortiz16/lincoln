@@ -29,9 +29,8 @@ export const Logo: React.FC<{ collapsed?: boolean; variant?: 'default' | 'white'
   const { config } = useSystemConfig();
   const green = config.accentColor || '#4ade80';
 
-  // El wordmark por defecto va en oscuro (se usa sobre superficies claras:
-  // modales, sidebar claro). variant="white" para fondos oscuros.
-  const textColor = variant === 'white' ? '#FFFFFF' : '#0a0a0a';
+  // El app es tema oscuro Lincoin: el wordmark va en blanco hueso.
+  const textColor = variant === 'white' ? '#FFFFFF' : '#F4F4F2';
 
   return (
     <div className={`flex items-center ${collapsed ? 'justify-center' : 'gap-2.5'}`}>

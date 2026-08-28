@@ -32,43 +32,49 @@ const ThemeInjector: React.FC = () => {
 
     const rawAccent = (config.accentColor || '').toLowerCase();
     const accentColor = LEGACY_BLUES.includes(rawAccent) ? '#4ADE80' : (config.accentColor || '#4ADE80');
-    const bgColor = isDarkMode ? config.themeColor : '#FFFFFF';
-
     return (
         <style>{`
             :root {
-                --primary-color: ${config.themeColor};
+                --primary-color: #0C0E0D;
                 --accent-color: ${accentColor};
             }
 
-            /* Only change page background based on light/dark mode */
-            body {
-                background-color: ${bgColor} !important;
-            }
+            /* ===== Tema oscuro Lincoin (negro + blanco hueso, verde puntual) ===== */
+            body { background-color: #070808 !important; color: #F4F4F2; }
+
+            /* Superficies claras heredadas de CuyPay → negros Lincoin */
+            .bg-white, .bg-slate-50, .bg-gray-50, .bg-neutral-50, .bg-zinc-50 { background-color: #0C0E0D !important; }
+            .bg-slate-100, .bg-gray-100, .bg-neutral-100 { background-color: #121413 !important; }
+            .bg-slate-200, .bg-gray-200 { background-color: #161A17 !important; }
+            /* Gradientes y hex claros que se escapan del remapeo por clase */
+            [class*="from-white"], [class*="via-white"], [class*="to-white"],
+            [class*="from-slate-50"], [class*="to-slate-50"], [class*="from-gray-50"], [class*="to-gray-50"],
+            [class*="from-slate-100"], [class*="to-slate-100"] { background-image: none !important; background-color: #0C0E0D !important; }
+            /* Catch-all: cualquier fondo/gradiente claro arbitrario (#E.. / #F..) → oscuro */
+            [class*="bg-[#F"], [class*="bg-[#f"], [class*="bg-[#E"], [class*="bg-[#e"] { background-color: #0C0E0D !important; }
+            [class*="from-[#F"], [class*="to-[#F"], [class*="from-[#E"], [class*="to-[#E"] { background-image: none !important; background-color: #0C0E0D !important; }
+            /* Botones/enlaces oscuros heredados → superficie elevada visible sobre el negro */
+            button[class~="bg-[#0C0E0D]"], a[class~="bg-[#0C0E0D]"] { background-color: #191C1A !important; border: 1px solid rgba(255,255,255,0.12) !important; color: #F4F4F2 !important; }
+            button[class~="bg-[#0C0E0D]"]:hover, a[class~="bg-[#0C0E0D]"]:hover { background-color: #22261F !important; }
+            /* Texto */
+            .text-slate-900, .text-slate-800, .text-slate-700, .text-gray-900, .text-gray-800, .text-gray-700, .text-neutral-900, .text-neutral-800, .text-black { color: #F4F4F2 !important; }
+            .text-slate-600, .text-slate-500, .text-gray-600, .text-gray-500 { color: #8F8F8A !important; }
+            .text-slate-400, .text-gray-400 { color: #6B726C !important; }
+            /* Bordes / divisores */
+            .border-slate-100, .border-slate-200, .border-slate-300, .border-gray-100, .border-gray-200, .border-gray-300 { border-color: rgba(255,255,255,0.10) !important; }
+            .divide-slate-100 > * + *, .divide-slate-200 > * + *, .divide-gray-100 > * + *, .divide-gray-200 > * + * { border-color: rgba(255,255,255,0.10) !important; }
+            /* Inputs */
+            input:not([type=checkbox]):not([type=radio]):not([type=range]), select, textarea { background-color: #121413 !important; color: #F4F4F2 !important; border-color: rgba(255,255,255,0.12) !important; }
+            ::placeholder { color: rgba(244,244,242,0.35) !important; }
 
             /* Smooth transition so Supabase color updates don't flash (but not for animated elements) */
             *:not([class*="anim-"]):not([class*="reveal"]):not(.hover-lift) { transition: background-color 0.4s ease, color 0.4s ease, border-color 0.4s ease; }
             input:not([class*="anim-"]):not([class*="reveal"]), button:not([class*="anim-"]):not([class*="reveal"]), a:not([class*="anim-"]):not([class*="reveal"]) { transition: background-color 0.2s ease, color 0.2s ease, opacity 0.2s ease; }
 
-            /* In dark mode: only text directly on dark backgrounds → white.
-               Text inside white/light cards (bg-white, rounded cards) stays dark automatically. */
-            ${isDarkMode ? `
-                .text-slate-400, .text-slate-500, .text-slate-600 { color: #E2E8F0 !important; }
-                .text-gray-400, .text-gray-500, .text-gray-600 { color: #E2E8F0 !important; }
-
-                /* BUT inside white cards, restore dark text */
-                .bg-white .text-slate-400, .bg-white .text-slate-500, .bg-white .text-slate-600,
-                .bg-white .text-gray-400, .bg-white .text-gray-500, .bg-white .text-gray-600 { color: #475569 !important; }
-                .bg-white .text-slate-700, .bg-white .text-slate-800, .bg-white .text-slate-900 { color: #0C0E0D !important; }
-                .bg-white .text-white { color: #0C0E0D !important; }
-
-                [class*="bg-white"] p, [class*="bg-white"] span, [class*="bg-white"] div { color: inherit; }
-            ` : ''}
-
-            /* Override hardcoded Tailwind classes for dynamic theming */
-            .bg-\\[\\#0C0E0D\\] { background-color: var(--primary-color) !important; }
-            .text-\\[\\#0C0E0D\\] { color: var(--primary-color) !important; }
-            .border-\\[\\#0C0E0D\\] { border-color: var(--primary-color) !important; }
+            /* Elementos ya oscuros y texto oscuro heredado (#0C0E0D era el navy CuyPay) */
+            .bg-\\[\\#0C0E0D\\], .from-\\[\\#0C0E0D\\], .to-\\[\\#0C0E0D\\] { background-color: var(--primary-color) !important; }
+            .text-\\[\\#0C0E0D\\] { color: #F4F4F2 !important; }
+            .border-\\[\\#0C0E0D\\] { border-color: rgba(255,255,255,0.10) !important; }
 
             /* Mapping Accent Color - replace all blues with teal */
             .bg-\\[\\#2563EB\\],
@@ -97,23 +103,21 @@ const ThemeInjector: React.FC = () => {
             .text-sky-500 svg, .text-blue-500 svg { color: var(--accent-color) !important; }
             .text-sky-500, .text-blue-500 { color: var(--accent-color) !important; }
 
-            /* Replace light blue backgrounds with green-tinted light background */
+            /* Fondos celestes heredados → superficie oscura */
             .bg-\\[\\#EBF2FA\\],
             [style*="background:#EBF2FA"],
             [style*="backgroundColor:#EBF2FA"],
             [style*="background: #EBF2FA"],
             [style*="backgroundColor: #EBF2FA"] {
-                background-color: ${isDarkMode ? '#EBF2FA' : '#E0F2FE'} !important;
+                background-color: #121413 !important;
             }
 
-            /* Light mode: elements that were white-on-dark need to flip */
-            ${!isDarkMode ? `
-                .text-white { color: #0C0E0D !important; }
-                .text-white\\/50 { color: #64748B !important; }
-                .text-white\\/70, .text-white\\/90 { color: #334155 !important; }
-                .border-white\\/10, .border-white\\/20 { border-color: #E2E8F0 !important; }
-                .bg-white\\/10, .bg-white\\/20 { background-color: #F1F5F9 !important; }
-            ` : ''}
+            /* Botones/superficies verdes sólidas: texto SIEMPRE oscuro (al final, gana el empate) */
+            .bg-\\[\\#4ADE80\\], .bg-green-400, .bg-green-500 { color: #0A0A0A !important; }
+            .bg-\\[\\#4ADE80\\] *, .bg-green-400 *, .bg-green-500 * { color: #0A0A0A !important; }
+
+            /* Sombras suaves sobre negro */
+            .shadow, .shadow-sm, .shadow-md, .shadow-lg, .shadow-xl, .shadow-2xl { box-shadow: 0 10px 40px rgba(0,0,0,0.5) !important; }
         `}</style>
     );
 };
