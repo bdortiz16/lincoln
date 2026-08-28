@@ -107,3 +107,15 @@ input:not([type=checkbox]):not([type=radio]):not([type=range]), select, textarea
 .bg-\[\#4ADE80\] *, .bg-green-400 *, .bg-green-500 * { color: #0A0A0A !important; }
 button[class~="bg-[#0C0E0D]"], a[class~="bg-[#0C0E0D]"] { background-color: #191C1A !important; border: 1px solid rgba(255,255,255,0.12) !important; color: #F4F4F2 !important; }
 button[class~="bg-[#0C0E0D]"]:hover, a[class~="bg-[#0C0E0D]"]:hover { background-color: #22261F !important; }
+
+/* ===== Landing Lincoin — responsive móvil ===== */
+@media (max-width: 820px) {
+  .lincoin-landing-root .wrap { padding-left: 20px !important; padding-right: 20px !important; }
+  .lincoin-landing-root header nav { display: none !important; }        /* ocultar Producto/Seguridad/Monedas/Preguntas */
+  .lincoin-landing-root header .btn-ghost { display: none !important; } /* ocultar "Ingresar", queda "Crear cuenta" */
+  .lincoin-landing-root h1 { font-size: 40px !important; line-height: 1.06 !important; letter-spacing: -1.5px !important; }
+}
+@media (max-width: 460px) {
+  .lincoin-landing-root .wrap { padding-left: 16px !important; padding-right: 16px !important; }
+  .lincoin-landing-root h1 { font-size: 34px !important; }
+}
