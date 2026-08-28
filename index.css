@@ -149,3 +149,8 @@ button[class~="bg-[#4ADE80]"] {
 @media (prefers-reduced-motion: reduce) {
   body::before, .lincoin-landing-root .btn-green, button[class~="bg-[#4ADE80]"] { animation: none; }
 }
+
+/* Punto "monitoreando la red" — pulso suave (modal Cargar) */
+@keyframes lincoinOpDot { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+.lincoin-op-dot { animation: lincoinOpDot 2s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .lincoin-op-dot { animation: none; } }

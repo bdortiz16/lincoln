@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
+  Info,
   Home,
   Send,
   RefreshCw,
@@ -3368,55 +3369,76 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       {/* LOAD MODAL */}
       {/* Cargar USDT — depósito on-chain a la wallet GasFree del cliente */}
       {usdtModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-300">
-                  <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-                      <h3 className="font-bold text-lg text-slate-800">Cargar USDT · Dólar digital</h3>
-                      <button onClick={() => setUsdtModalOpen(false)} className="text-slate-400 hover:text-slate-600 p-1 rounded-full hover:bg-slate-100 transition-colors"><X size={20}/></button>
+          <div className="fixed inset-0 z-50 grid place-items-center p-4" style={{ background: 'rgba(4,5,4,0.72)', backdropFilter: 'blur(3px)', fontFamily: "'Archivo', system-ui, sans-serif" }} onClick={() => setUsdtModalOpen(false)}>
+              <div onClick={(e) => e.stopPropagation()} className="w-full animate-in fade-in zoom-in-95 duration-200" style={{ maxWidth: 468, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, overflow: 'hidden' }} role="dialog" aria-modal="true">
+                  {/* Cabecera — mismo fondo, sin banda gris */}
+                  <div className="flex items-start justify-between" style={{ gap: 16, padding: '22px 24px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                      <div className="flex items-center gap-3">
+                          <div style={{ width: 38, height: 38, borderRadius: '50%', background: '#26A17B', color: '#fff', fontWeight: 800, fontSize: 17, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>₮</div>
+                          <div>
+                              <h3 style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.3px', color: '#F4F4F2' }}>Cargar dólar digital</h3>
+                              <p style={{ fontSize: 12.5, color: '#878E88', marginTop: 3 }}>Recibe USDT en tu dirección personal</p>
+                          </div>
+                      </div>
+                      <button onClick={() => setUsdtModalOpen(false)} style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', color: '#878E88', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }} className="hover:bg-white/[0.05] transition-colors"><X size={14}/></button>
                   </div>
-                  <div className="p-6 space-y-4">
-                      <p className="text-sm text-slate-600">
-                          Envía <b>USDT por la red TRON (TRC-20)</b> a tu dirección personal. Al confirmarse
-                          en la red, el saldo se acredita <b>1:1</b> en tu cuenta Dólar digital (1 USDT = 1 USD).
-                      </p>
-                      {usdtLoadingAddr && <p className="text-sm text-slate-400">Generando tu dirección…</p>}
-                      {usdtLoadErr && (
-                          <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-xl p-3">{usdtLoadErr}</p>
-                      )}
-                      {usdtAddr && (
-                          <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
-                              <div className="flex justify-center mb-3">
-                                  <div className="bg-white border-2 border-slate-200 rounded-xl p-2">
-                                      <img
-                                          src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(usdtAddr)}&color=0B1B32&margin=8`}
-                                          alt="QR dirección USDT TRC-20"
-                                          className="w-44 h-44"
-                                      />
-                                  </div>
+
+                  <div style={{ padding: '20px 24px 24px' }}>
+                      {/* Red de depósito — Lincoin solo usa TRON */}
+                      <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88', marginBottom: 9 }}>RED DE DEPÓSITO</p>
+                      <div style={{ display: 'flex', gap: 7 }}>
+                          <div style={{ flex: 1, textAlign: 'center', padding: '10px 0', borderRadius: 9, fontSize: 13, fontWeight: 700, color: '#F4F4F2', border: '1px solid rgba(74,222,128,0.35)', background: 'rgba(74,222,128,0.07)' }}>TRON · TRC-20</div>
+                      </div>
+                      <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '9px 0 0' }}>El USDT circula por la red TRON (TRC-20). Sin gas para ti: la comisión de red se paga en USDT vía GasFree.</p>
+
+                      {/* QR + dirección */}
+                      {usdtLoadingAddr ? (
+                          <div style={{ marginTop: 16, height: 156, borderRadius: 14, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }} className="animate-pulse" />
+                      ) : usdtLoadErr ? (
+                          <div style={{ marginTop: 16, padding: 16, borderRadius: 14, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.1)', color: '#878E88', fontSize: 12.5 }}>{usdtLoadErr}</div>
+                      ) : usdtAddr && (
+                          <div style={{ marginTop: 16, padding: 20, borderRadius: 14, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', display: 'flex', gap: 18, alignItems: 'center' }}>
+                              <div style={{ width: 116, height: 116, background: '#F4F4F2', borderRadius: 10, padding: 8, flexShrink: 0 }}>
+                                  <img src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(usdtAddr)}&color=0A0A0A&bgcolor=F4F4F2&margin=0`} alt="QR dirección USDT" style={{ width: '100%', height: '100%' }} />
                               </div>
-                              <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-1 text-center">Tu dirección USDT (TRC-20)</p>
-                              <p className="font-mono text-sm break-all text-[#0C0E0D] text-center">{usdtAddr}</p>
-                              <div className="flex justify-center">
-                                  <button
-                                      onClick={() => { navigator.clipboard?.writeText(usdtAddr); showToast('Dirección copiada'); }}
-                                      className="mt-3 text-xs font-bold text-[#16A34A] hover:underline"
-                                  >
-                                      Copiar dirección
-                                  </button>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                  <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: '#878E88' }}>TU DIRECCIÓN USDT · TRON</p>
+                                  <p style={{ fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 13, lineHeight: 1.5, wordBreak: 'break-all', color: '#F4F4F2', marginTop: 7 }}>{usdtAddr}</p>
+                                  <div style={{ display: 'flex', gap: 7, marginTop: 12 }}>
+                                      <button onClick={() => { navigator.clipboard?.writeText(usdtAddr); showToast('Dirección copiada'); }} style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', borderRadius: 8, padding: '7px 12px', fontSize: 12.5, fontWeight: 600, color: '#F4F4F2' }} className="hover:bg-white/[0.09] transition-colors"><Copy size={13}/> Copiar</button>
+                                      <button onClick={() => { const t = `Mi dirección USDT (TRON): ${usdtAddr}`; if ((navigator as any).share) { (navigator as any).share({ text: t }).catch(() => {}); } else { navigator.clipboard?.writeText(usdtAddr); showToast('Dirección copiada'); } }} style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', borderRadius: 8, padding: '7px 12px', fontSize: 12.5, fontWeight: 600, color: '#F4F4F2' }} className="hover:bg-white/[0.09] transition-colors"><Send size={13}/> Compartir</button>
+                                  </div>
                               </div>
                           </div>
                       )}
-                      <div className="bg-amber-50 border border-amber-100 rounded-xl p-3 text-[11px] text-amber-800">
-                          ⚠️ Envía únicamente <b>USDT</b> por la red <b>TRON (TRC-20)</b>. Otra moneda u otra red puede perder los fondos.
+
+                      {/* Detalles del depósito */}
+                      <div style={{ marginTop: 16, border: '1px solid rgba(255,255,255,0.08)', borderRadius: 14, overflow: 'hidden' }}>
+                          {[['Moneda aceptada', 'USDT únicamente', false], ['Depósito mínimo', '1,00 USDT', false], ['Se acredita tras', 'confirmación en TRON · ~1 min', false], ['Comisión de Lincoin', 'Sin comisión', true]].map(([k, v, green], i) => (
+                              <div key={k as string} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', fontSize: 13, borderTop: i === 0 ? 'none' : '1px solid rgba(255,255,255,0.06)' }}>
+                                  <span style={{ color: '#878E88' }}>{k}</span>
+                                  <span style={{ color: green ? '#4ADE80' : '#F4F4F2', fontWeight: 700 }}>{v}</span>
+                              </div>
+                          ))}
                       </div>
-                      <button
-                          onClick={verifyUsdtDeposit}
-                          disabled={usdtVerifying || !usdtAddr}
-                          style={{ color: '#0C0E0D' }}
-                          className="w-full py-3 rounded-xl bg-[#4ADE80] hover:bg-[#6EE7A0] font-bold text-sm disabled:opacity-50 transition-colors"
-                      >
-                          {usdtVerifying ? 'Verificando en la red…' : 'Ya envié — Verificar depósito'}
-                      </button>
+
+                      {/* Advertencia — gris con filo verde, sin amarillo */}
+                      <div style={{ display: 'flex', gap: 11, marginTop: 16, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.1)', borderLeft: '2px solid #4ADE80', borderRadius: 10, padding: '13px 15px' }}>
+                          <Info size={16} style={{ color: '#878E88', flexShrink: 0, marginTop: 1 }} />
+                          <p style={{ fontSize: 12.5, color: '#878E88', lineHeight: 1.55 }}>Envía <b style={{ color: '#F4F4F2', fontWeight: 700 }}>solo USDT por la red TRON (TRC-20)</b> a esta dirección. Otra moneda u otra red no se puede recuperar.</p>
+                      </div>
+
+                      {/* Acciones — primario BLANCO, sin verde ni glow */}
+                      <div style={{ display: 'flex', gap: 9, marginTop: 20 }}>
+                          <button onClick={() => setUsdtModalOpen(false)} style={{ flex: 1, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 14, padding: '13px 0', borderRadius: 10 }} className="hover:bg-white/[0.09] transition-colors">Cerrar</button>
+                          <button onClick={verifyUsdtDeposit} disabled={usdtVerifying || !usdtAddr} style={{ flex: 1.4, background: '#F4F4F2', color: '#0A0A0A', fontWeight: 700, fontSize: 14, padding: '13px 0', borderRadius: 10, opacity: (usdtVerifying || !usdtAddr) ? 0.6 : 1 }} className="hover:bg-[#E4E4E0] transition-colors">{usdtVerifying ? 'Buscando tu depósito…' : 'Ya envié el depósito'}</button>
+                      </div>
+
+                      {/* Estado de monitoreo */}
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 14 }}>
+                          <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#4ADE80' }} className="lincoin-op-dot" />
+                          <span style={{ fontSize: 12, color: '#878E88' }}>Estamos monitoreando la red. El saldo aparecerá solo.</span>
+                      </div>
                   </div>
               </div>
           </div>
