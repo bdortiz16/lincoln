@@ -220,7 +220,7 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
             /* PERSONAL FORM */
             <div className="space-y-6 max-w-lg mx-auto lg:mx-0 w-full animate-in fade-in duration-500">
                 <h1 className="text-2xl font-bold text-[#0F172A] text-center lg:text-left mb-4">
-                  Regístrate a CUYPAY Personas
+                  Regístrate a LINCOIN Personas
                 </h1>
 
                 {/* Google OAuth */}
@@ -333,7 +333,7 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
             /* BUSINESS FORM */
             <div className="space-y-5 max-w-lg mx-auto lg:mx-0 w-full animate-in fade-in duration-500">
                 <h1 className="text-2xl font-bold text-[#0F172A] text-center lg:text-left mb-4">
-                  Registra tu cuenta CUYPAY Empresas
+                  Registra tu cuenta LINCOIN Empresas
                 </h1>
 
                 {/* Google OAuth */}

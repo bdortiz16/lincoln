@@ -190,7 +190,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
       </div>
 
       <h1 className="text-2xl font-bold text-[#0F172A] text-center mb-10 anim-fade-up">
-        ¡Te damos la bienvenida a CUYPAY{userRole === 'business' ? <><br />empresas!</> : '!'}
+        ¡Te damos la bienvenida a LINCOIN{userRole === 'business' ? <><br />empresas!</> : '!'}
       </h1>
 
       {config.maintenanceMode && (

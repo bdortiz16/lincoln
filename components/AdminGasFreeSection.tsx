@@ -7,7 +7,7 @@ import { useDatabase } from '../context/DatabaseContext';
 //
 // Modelo NUEVO (reemplaza Tatum): cada cliente tiene una wallet GasFree
 // (su cajita de depósito USDT en TRON). GasFree genera esas direcciones
-// a partir del EOA que deriva CuyPay. Los depósitos y envíos NO usan TRX
+// a partir del EOA que deriva Lincoin. Los depósitos y envíos NO usan TRX
 // — la comisión de red se paga en USDT. Todo pasa por aquí.
 // ─────────────────────────────────────────────
 
@@ -418,7 +418,7 @@ export const AdminGasFreeSection: React.FC = () => {
                         <p className="font-bold text-slate-800 text-sm flex items-center gap-2">
                             <Landmark size={15} className="text-[#0D9488]" /> Saldos en Finity
                         </p>
-                        <p className="text-[11px] text-slate-400 mt-0.5">Saldo real de la cuenta Finity de CuyPay (partner de dispersión COP). · Se actualiza solo cada minuto.</p>
+                        <p className="text-[11px] text-slate-400 mt-0.5">Saldo real de la cuenta Finity de Lincoin (partner de dispersión COP). · Se actualiza solo cada minuto.</p>
                     </div>
                     <button onClick={loadFinityBalances} disabled={finityBalLoading} className="flex items-center gap-2 px-3 py-1.5 text-xs font-bold border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-60 transition-colors text-slate-700">
                         <RefreshCw size={13} className={finityBalLoading ? 'animate-spin' : ''} /> {finityBalLoading ? 'Consultando…' : 'Actualizar'}

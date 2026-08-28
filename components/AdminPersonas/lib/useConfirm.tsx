@@ -4,7 +4,7 @@ import { NAVY } from '../sections/shared';
 
 // ─────────────────────────────────────────────
 // useConfirm — reemplaza window.confirm()/alert() con un modal
-// estilizado CuyPay. Devuelve `dialog` JSX y `confirm(opts)` que
+// estilizado Lincoin. Devuelve `dialog` JSX y `confirm(opts)` que
 // retorna Promise<boolean>.
 //
 // Uso:

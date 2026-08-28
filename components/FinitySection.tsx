@@ -70,7 +70,7 @@ async function callGasfree(body: Record<string, unknown>): Promise<any> {
 
 // Saldo de la cuenta Finity como número, o null si no se pudo obtener
 // (proxy sin desplegar, credenciales faltantes o endpoint por confirmar).
-// Lo usan las tarjetas "Peso CuyPay" de los dashboards para mostrar el
+// Lo usan las tarjetas "Peso Lincoin" de los dashboards para mostrar el
 // saldo REAL en Finity en vivo.
 export async function fetchFinityBalance(userId: string): Promise<number | null> {
     try {
@@ -88,7 +88,7 @@ export async function fetchFinityBalance(userId: string): Promise<number | null>
     }
 }
 
-// Comisión de CuyPay sobre la conversión (incluye IVA — misma regla que
+// Comisión de Lincoin sobre la conversión (incluye IVA — misma regla que
 // Contabilidad). Se lee de fx_pair_config.base_fee_pct del par USD→COP
 // (editable desde Admin → Tasas → Panel Finity); 4% si no hay valor.
 const DEFAULT_CONVERT_FEE_PCT = 4;
@@ -102,7 +102,7 @@ export async function fetchFinityFeePct(): Promise<number> {
 }
 
 // Config completa del par USD→COP para el convertidor de la app:
-//   feePct   = comisión CuyPay (editable en Admin → Tasas → Panel Finity)
+//   feePct   = comisión Lincoin (editable en Admin → Tasas → Panel Finity)
 //   finityOn = el admin activó Finity para USD/COP (exclusión mutua: la
 //              fila de FastForex queda is_active=false cuando Finity manda)
 // LANZA error si la consulta falla — el caller decide reintentar. Devolver
@@ -219,16 +219,16 @@ export const FinitySection: React.FC<{
     // Servicios) — nada de dispersión bancaria ni debug técnico.
     mode?: 'full' | 'converter';
     userId: string;
-    // Saldo BreB CuyPay disponible para dispersar (viene del dashboard).
+    // Saldo BreB Lincoin disponible para dispersar (viene del dashboard).
     // Si se pasa, las órdenes se validan contra él y al crear una orden
     // exitosa se notifica para debitar el saldo.
     brebBalance?: number;
     onDispersed?: (amount: number, reference: string) => void | Promise<void>;
-    // Saldo USD (USDT) del cliente en CuyPay. Si se pasa, la conversión se
+    // Saldo USD (USDT) del cliente en Lincoin. Si se pasa, la conversión se
     // valida contra él y al confirmar SUCCESS se notifica para debitar USD
     // y acreditar el COP del cliente (tasa Finity con la comisión incluida).
     usdBalance?: number;
-    // Saldo COP (Peso CuyPay) — solo se muestra como referencia arriba del
+    // Saldo COP (Peso Lincoin) — solo se muestra como referencia arriba del
     // convertidor; para mover ese saldo el cliente tiene que salir y usar
     // "Enviar" en su billetera COP (esto no es una pantalla de transferencia).
     copBalance?: number;
@@ -411,7 +411,7 @@ export const FinitySection: React.FC<{
     //      → conversión UNCONFIRMED
     //   3. POST /v0/convert/confirm { id } ANTES de 60 s → SUCCESS
     // Al confirmar: el cliente recibe COP con la tasa Finity menos la comisión
-    // CuyPay (feePct, incluye IVA); la diferencia es utilidad CuyPay.
+    // Lincoin (feePct, incluye IVA); la diferencia es utilidad Lincoin.
     const doConvert = () => {
         const amount = Number(usdAmount);
         if (!amount || amount <= 0) { setConvertResult({ ok: false, text: 'Monto inválido.' }); return; }
@@ -423,7 +423,7 @@ export const FinitySection: React.FC<{
         // El costo de mover el USDT convertido a la recaudadora (barrido) lo
         // asume el cliente — se descuenta del monto ANTES de convertir, no se
         // cobra aparte. Se cotiza en vivo (gasfreeFee), nunca se asume fijo.
-        const gasfreeCost = gasfreeFee?.totalFeeUsdt ?? 0; // solo hop1: la 2ª comisión (tesorería→Finity) la absorbe CuyPay
+        const gasfreeCost = gasfreeFee?.totalFeeUsdt ?? 0; // solo hop1: la 2ª comisión (tesorería→Finity) la absorbe Lincoin
         const netAmount = parseFloat((amount - gasfreeCost).toFixed(2));
         if (netAmount <= 0) {
             setConvertResult({ ok: false, text: `El monto debe ser mayor al costo de conversión (${gasfreeCost.toFixed(2)} USDT de comisión GasFree).` });
@@ -452,7 +452,7 @@ export const FinitySection: React.FC<{
     // Conversión interna en Finity + acreditación del COP. Se separó para poder
     // REINTENTARLA sin reenviar USDT (cuando Finity está lento y la recarga ya
     // se hizo). `finityAmount` = lo que hay en Finity; `creditAmount` = neto por
-    // el que se acredita al cliente (CuyPay absorbe la 2ª comisión).
+    // el que se acredita al cliente (Lincoin absorbe la 2ª comisión).
     const finishConvert = async (p: { txId: string; finityAmount: number; creditAmount: number; amount: number; previewRate: number | null; gasfreeFeeUsdt: number }) => {
         setConverting(true); setConvertStep('convirtiendo');
         try {
@@ -496,7 +496,7 @@ export const FinitySection: React.FC<{
             await onConverted?.(p.amount, clientCop, finityRate, utilityCop);
             setConvertResult({
                 ok: true,
-                text: `✅ Conversión completada: ${p.amount.toLocaleString('en-US')} USD → ${clientCop.toLocaleString('es-CO')} COP en Peso CuyPay (tasa ${finityRate.toLocaleString('es-CO')}, comisión ${feePct}%). Comisión GasFree ${Number(p.gasfreeFeeUsdt ?? 0).toFixed(2)} USDT.`,
+                text: `✅ Conversión completada: ${p.amount.toLocaleString('en-US')} USD → ${clientCop.toLocaleString('es-CO')} COP en Peso Lincoin (tasa ${finityRate.toLocaleString('es-CO')}, comisión ${feePct}%). Comisión GasFree ${Number(p.gasfreeFeeUsdt ?? 0).toFixed(2)} USDT.`,
             });
             setUsdAmount(''); load(); onSwept?.();
             await sleep(1400); setConvertStep(null);
@@ -553,7 +553,7 @@ export const FinitySection: React.FC<{
             //    finishConvert (reutilizable/reintentable sin reenviar USDT).
             //    Convierte EXACTAMENTE lo que llegó a Finity (usdtToProvider);
             //    al cliente se le acredita por netAmount (la 2ª comisión la
-            //    absorbe CuyPay).
+            //    absorbe Lincoin).
             await finishConvert({
                 txId: String(settle.txId),
                 finityAmount: Number(settle.usdtToProvider ?? netAmount),
@@ -591,7 +591,7 @@ export const FinitySection: React.FC<{
         const amount = Number(pay.amount);
         if (!amount || amount <= 0) { setResult({ ok: false, text: 'Monto inválido.' }); return; }
         if (brebBalance != null && amount > brebBalance) {
-            setResult({ ok: false, text: `Saldo BreB insuficiente: tienes ${brebBalance.toLocaleString('es-CO')} COP. Mueve saldo desde Peso CuyPay en tu billetera COP.` });
+            setResult({ ok: false, text: `Saldo BreB insuficiente: tienes ${brebBalance.toLocaleString('es-CO')} COP. Mueve saldo desde Peso Lincoin en tu billetera COP.` });
             return;
         }
         setConfirmDialog({
@@ -621,8 +621,8 @@ export const FinitySection: React.FC<{
                 const STEPS = [
                     { key: 'enviando', label: 'Enviando', sub: 'Procesando tu USDT', Icon: Send },
                     { key: 'recibido', label: 'Recibido', sub: 'Confirmando la recarga…', Icon: Wallet },
-                    { key: 'convirtiendo', label: 'Convirtiendo', sub: 'Convirtiendo a Peso CuyPay', Icon: RefreshCw },
-                    { key: 'completado', label: 'Completado', sub: 'COP acreditado en tu Peso CuyPay', Icon: CheckCircle },
+                    { key: 'convirtiendo', label: 'Convirtiendo', sub: 'Convirtiendo a Peso Lincoin', Icon: RefreshCw },
+                    { key: 'completado', label: 'Completado', sub: 'COP acreditado en tu Peso Lincoin', Icon: CheckCircle },
                 ];
                 const isError = convertStep === 'error';
                 const curIdx = isError ? -1 : order.indexOf(convertStep);
@@ -643,7 +643,7 @@ export const FinitySection: React.FC<{
                                     {isError ? 'No se pudo completar' : convertStep === 'completado' ? '¡Conversión completada!' : 'Procesando conversión'}
                                 </h3>
                                 <p className="text-xs text-slate-400 mt-0.5">
-                                    {isError ? 'Revisa el detalle abajo' : 'USDT → Peso CuyPay (COP)'}
+                                    {isError ? 'Revisa el detalle abajo' : 'USDT → Peso Lincoin (COP)'}
                                 </p>
                             </div>
                             {isError ? (
@@ -702,7 +702,7 @@ export const FinitySection: React.FC<{
                         <Landmark size={22} className="text-[#2DD4BF]" /> {isConverterOnly ? 'OTC · Conversión USD → COP' : 'Dispersiones bancarias'}
                     </h1>
                     <p className="text-slate-700 text-sm font-medium">
-                        {isConverterOnly ? 'Convierte tu saldo USD (digital) a COP a la tasa CuyPay' : 'Paga a cuentas bancarias en Colombia'}
+                        {isConverterOnly ? 'Convierte tu saldo USD (digital) a COP a la tasa Lincoin' : 'Paga a cuentas bancarias en Colombia'}
                         {!isConverterOnly && brebBalance != null && (
                             <span className="ml-2 font-bold text-[#0D9488]">· Saldo BreB: {brebBalance.toLocaleString('es-CO')} COP</span>
                         )}
@@ -765,7 +765,7 @@ export const FinitySection: React.FC<{
                             <Wallet size={18} />
                         </div>
                         <div className="min-w-0">
-                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Peso CuyPay (COP)</p>
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Peso Lincoin (COP)</p>
                             <p className="text-lg font-bold font-mono text-[#0F172A] truncate">{(copBalance ?? 0).toLocaleString('es-CO', { maximumFractionDigits: 0 })} COP</p>
                         </div>
                     </div>
@@ -806,7 +806,7 @@ export const FinitySection: React.FC<{
                             // El costo de mover el USDT convertido de la wallet GasFree del
                             // cliente a la recaudadora lo asume el cliente — se descuenta del
                             // monto ANTES de aplicar la tasa (no se cobra aparte).
-                            const gasfreeCost = gasfreeFee?.totalFeeUsdt ?? 0; // solo hop1: la 2ª comisión (tesorería→Finity) la absorbe CuyPay
+                            const gasfreeCost = gasfreeFee?.totalFeeUsdt ?? 0; // solo hop1: la 2ª comisión (tesorería→Finity) la absorbe Lincoin
                             const netUsd = Math.max(0, usd - gasfreeCost);
                             return (
                                 <div className="space-y-3">
@@ -1069,11 +1069,11 @@ export const FinitySection: React.FC<{
                             <div className="px-6 pt-4 text-center">
                                 <p className="text-2xl font-black text-[#0F172A]">{convertConfirm.amount.toLocaleString('en-US')} USD</p>
                                 <p className="text-[#0D9488] font-extrabold text-xl mt-1">≈ {convertConfirm.cop.toLocaleString('es-CO')} COP</p>
-                                <p className="text-[11px] text-slate-400 mt-0.5">en tu Peso CuyPay</p>
+                                <p className="text-[11px] text-slate-400 mt-0.5">en tu Peso Lincoin</p>
                             </div>
                             {/* Desglose */}
                             <div className="mx-6 mt-4 rounded-xl bg-slate-50 border border-slate-100 p-3 space-y-1.5 text-xs">
-                                <div className="flex justify-between"><span className="text-slate-500">Tasa CuyPay</span><span className="font-mono font-bold text-slate-700">1 USD = {convertConfirm.clientRate != null ? convertConfirm.clientRate.toLocaleString('es-CO', { maximumFractionDigits: 2 }) : '—'} COP</span></div>
+                                <div className="flex justify-between"><span className="text-slate-500">Tasa Lincoin</span><span className="font-mono font-bold text-slate-700">1 USD = {convertConfirm.clientRate != null ? convertConfirm.clientRate.toLocaleString('es-CO', { maximumFractionDigits: 2 }) : '—'} COP</span></div>
                                 <div className="flex justify-between"><span className="text-slate-500">Comisión GasFree</span><span className="font-mono font-bold text-amber-600">− {convertConfirm.gasfreeCost.toFixed(2)} USDT</span></div>
                                 <div className="flex justify-between border-t border-slate-200 pt-1.5"><span className="text-slate-500">Neto convertido</span><span className="font-mono font-bold text-slate-700">{convertConfirm.netAmount.toLocaleString('en-US', { maximumFractionDigits: 2 })} USDT</span></div>
                             </div>

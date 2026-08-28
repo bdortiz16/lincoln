@@ -100,9 +100,9 @@ export const normalizeTx = (row: any): TxRow => {
     const rd = row?.raw_data ?? {};
     return {
         id: String(row.id),
-        // CuyPayANDROID usa `owner_user_id`; legacy usa `user_id`
+        // LincoinANDROID usa `owner_user_id`; legacy usa `user_id`
         user_id: pick<string>(row.owner_user_id, row.user_id, rd.owner_user_id, rd.user_id),
-        // CuyPayANDROID usa `kind` (load/send/swap/etc); legacy usa `type`
+        // LincoinANDROID usa `kind` (load/send/swap/etc); legacy usa `type`
         type: pick<string>(row.kind, row.type, rd.kind, rd.type) ?? 'transferencia',
         statusKey: normalizeStatus(row.status),
         statusRaw: row.status ?? null,
@@ -143,7 +143,7 @@ export const TransactionsSection: React.FC<Props> = ({ profile, embedded = false
     const [dateFrom, setDateFrom] = useState('');
     const [dateTo, setDateTo] = useState('');
     const [minAmount, setMinAmount] = useState('');
-    // Map id → datos básicos del usuario, para resolver t.user_id → nombre/email/CuyPay ID
+    // Map id → datos básicos del usuario, para resolver t.user_id → nombre/email/Lincoin ID
     // en la tabla de Cargues/Envíos sin hacer un JOIN por fila.
     const [userMap, setUserMap] = useState<Map<string, { full_name: string | null; email: string | null; cuypay_id: string | null }>>(new Map());
 
@@ -352,7 +352,7 @@ export const TransactionsSection: React.FC<Props> = ({ profile, embedded = false
                                 <input
                                     value={search}
                                     onChange={e => setSearch(e.target.value)}
-                                    placeholder="Nombre, email, CuyPayID, banco, número de cuenta…"
+                                    placeholder="Nombre, email, LincoinID, banco, número de cuenta…"
                                     className="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 text-xs"
                                 />
                             </div>

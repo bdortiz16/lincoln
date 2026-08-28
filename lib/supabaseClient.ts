@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 
 // Candado de sesión DESACTIVADO (no-op). supabase-js usa navigator.locks
 // para coordinar el refresh del token entre pestañas; con varias pestañas
-// de CuyPay abiertas el candado se "roba" entre ellas y aborta o cuelga
+// de Lincoin abiertas el candado se "roba" entre ellas y aborta o cuelga
 // peticiones en curso ("AbortError: Lock broken by another request with
 // the 'steal' option") — el panel quedaba en "Cargando" eterno. Sin
 // candado cada pestaña refresca por su cuenta; Supabase tolera refresh

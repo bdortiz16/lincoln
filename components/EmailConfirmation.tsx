@@ -45,7 +45,7 @@ export const EmailConfirmation: React.FC<EmailConfirmationProps> = ({ onValidate
 
       <div className="text-center max-w-md space-y-4 mb-8">
         <p className="text-slate-500">
-          Te enviamos un correo para confirmar tu email y completar el registro de cuenta CUYPAY
+          Te enviamos un correo para confirmar tu email y completar el registro de cuenta LINCOIN
         </p>
         <p className="font-bold text-[#0F172A] text-lg">{email}</p>
         <p className="text-slate-400 text-sm">

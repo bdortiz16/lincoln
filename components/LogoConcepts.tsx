@@ -149,11 +149,11 @@ const corporate = [
   { id:'C2',  M:C2,  name:'C arco bold',         ref:'Monzo / Mercury',     bg:true  },
   { id:'C3',  M:C3,  name:'Cuadros superpuestos',ref:'Revolut / N26',       bg:true  },
   { id:'C4',  M:C4,  name:'Barra diagonal',       ref:'Cash App / Stripe',   bg:true  },
-  { id:'C5',  M:C5,  name:'Picos Andes',          ref:'Exclusivo CuyPay',    bg:true  },
+  { id:'C5',  M:C5,  name:'Picos Andes',          ref:'Exclusivo Lincoin',    bg:true  },
   { id:'C6',  M:C6,  name:'P lettermark',         ref:'Nubank style',        bg:true  },
   { id:'C7',  M:C7,  name:'Barras paralelas',     ref:'Brex / Linear',       bg:true  },
   { id:'C8',  M:C8,  name:'Círculo + flecha',     ref:'Clean / Universal',   bg:false },
-  { id:'C9',  M:C9,  name:'CP monograma',         ref:'Exclusivo CuyPay',    bg:true  },
+  { id:'C9',  M:C9,  name:'CP monograma',         ref:'Exclusivo Lincoin',    bg:true  },
   { id:'C10', M:C10, name:'Rombo doble',          ref:'Precision fintech',   bg:true  },
 ];
 
@@ -170,7 +170,7 @@ export const LogoConcepts: React.FC = () => {
             Identidad de Marca
           </p>
           <h1 style={{ fontSize:36, fontWeight:900, color:WHITE, margin:0, lineHeight:1.1 }}>
-            CUYPAY — Isotipo
+            LINCOIN — Isotipo
           </h1>
           <p style={{ color:'#64748b', fontSize:14, marginTop:8 }}>
             10 propuestas corporativas · Haz clic en la que te guste

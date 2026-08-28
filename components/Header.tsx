@@ -56,7 +56,7 @@ export const Header: React.FC<HeaderProps> = ({ onMenuClick, onLogout, onNavigat
         
         {/* Breadcrumb or Brand Context */}
         <div className="hidden md:flex items-center gap-2 text-slate-400 text-sm">
-          <span className="font-bold text-[#0F172A] tracking-wide">CUYPAY</span>
+          <span className="font-bold text-[#0F172A] tracking-wide">LINCOIN</span>
           <span className="text-slate-300">/</span>
           <span className="font-medium text-slate-600">Empresas</span>
         </div>

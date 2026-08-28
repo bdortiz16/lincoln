@@ -9,7 +9,7 @@ export function generateTOTPSecret(): string {
 
 export function getTOTPUri(secret: string, email: string): string {
   const totp = new OTPAuth.TOTP({
-    issuer: 'CuyPay',
+    issuer: 'Lincoin',
     label: email.replace(/[^a-zA-Z0-9@._-]/g, '_'), // sanitize label
     algorithm: 'SHA1',
     digits: 6,
@@ -27,7 +27,7 @@ export async function getTOTPQRCode(secret: string, email: string): Promise<stri
 export function verifyTOTP(secret: string, token: string): boolean {
   try {
     const totp = new OTPAuth.TOTP({
-      issuer: 'CuyPay',
+      issuer: 'Lincoin',
       algorithm: 'SHA1',
       digits: 6,
       period: 30,

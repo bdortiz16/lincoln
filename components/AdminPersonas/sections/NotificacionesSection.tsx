@@ -8,7 +8,7 @@ import { supabasePersonas } from '../../../lib/supabaseClient';
 import { logAdminAction, type AdminProfile } from '../lib/adminAuth';
 import { useConfirm } from '../lib/useConfirm';
 import { SectionHeader, NAVY, TEAL, formatDate, EmptyState } from './shared';
-import { CuyPayIcon } from '../CuyPayIcon';
+import { LincoinIcon } from '../LincoinIcon';
 
 // ─────────────────────────────────────────────
 // NotificacionesSection — gestiona campañas push promocionales contra
@@ -277,7 +277,7 @@ export const NotificacionesSection: React.FC<Props> = ({ profile }) => {
         <div className="p-4 md:p-8 space-y-4">
             <SectionHeader
                 title="Notificaciones Push"
-                subtitle="Campañas push promocionales para las apps de CuyPay (iOS / Android)"
+                subtitle="Campañas push promocionales para las apps de Lincoin (iOS / Android)"
                 right={
                     <div className="flex items-center gap-2">
                         <button
@@ -758,7 +758,7 @@ const NotificationModal: React.FC<{
                             <textarea
                                 value={body}
                                 onChange={e => setBody(e.target.value)}
-                                placeholder="ej: Abrí CuyPay y mirá qué pares te conviene cambiar hoy."
+                                placeholder="ej: Abrí Lincoin y mirá qué pares te conviene cambiar hoy."
                                 rows={3}
                                 maxLength={178}
                                 disabled={isReadOnly}
@@ -1002,8 +1002,8 @@ const IosNotificationCard: React.FC<{
         className="rounded-2xl px-3 py-2.5 flex items-start gap-2.5"
         style={{ backgroundColor: 'rgba(255,255,255,0.82)', backdropFilter: 'blur(20px)' }}
     >
-        {/* App icon CuyPay: SVG con fondo navy + símbolo teal. */}
-        <CuyPayIcon size={36} className="rounded-xl shrink-0 shadow" />
+        {/* App icon Lincoin: SVG con fondo navy + símbolo teal. */}
+        <LincoinIcon size={36} className="rounded-xl shrink-0 shadow" />
         <div className="flex-1 min-w-0">
             <div className="flex items-start justify-between gap-2">
                 <p className="text-[13px] font-bold leading-tight text-black truncate">{title}</p>
@@ -1054,8 +1054,8 @@ const AndroidNotificationCard: React.FC<{
         <div className="px-3 pt-3 pb-2">
             {/* Header con app icon, nombre y hora */}
             <div className="flex items-center gap-1.5 text-[10px] text-slate-600">
-                <CuyPayIcon size={16} className="rounded shrink-0" />
-                <span className="font-semibold">CuyPay</span>
+                <LincoinIcon size={16} className="rounded shrink-0" />
+                <span className="font-semibold">Lincoin</span>
                 <span className="opacity-60">·</span>
                 <span className="opacity-60">{timeAgo}</span>
             </div>

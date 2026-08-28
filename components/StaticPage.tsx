@@ -120,7 +120,7 @@ export const StaticPage: React.FC<StaticPageProps> = ({ pageKey, onBack }) => {
           icon: Lock,
           content: (
             <div className="space-y-6 text-slate-600">
-              <p>En CUYPAY, nos tomamos muy en serio la privacidad de sus datos. Esta política describe cómo recopilamos, usamos y protegemos su información personal.</p>
+              <p>En LINCOIN, nos tomamos muy en serio la privacidad de sus datos. Esta política describe cómo recopilamos, usamos y protegemos su información personal.</p>
               <h3 className="text-lg font-bold text-[#0F172A]">1. Recolección de Información</h3>
               <p>Recopilamos información cuando usted se registra en nuestro sitio, realiza una transacción o completa un formulario. La información recopilada incluye su nombre, dirección de correo electrónico, número de teléfono y documentos de identificación para procesos KYC.</p>
               <h3 className="text-lg font-bold text-[#0F172A]">2. Uso de la Información</h3>
@@ -142,11 +142,11 @@ export const StaticPage: React.FC<StaticPageProps> = ({ pageKey, onBack }) => {
           icon: FileText,
           content: (
             <div className="space-y-6 text-slate-600">
-              <p>Bienvenido a CUYPAY. Al acceder a nuestro sitio web y utilizar nuestros servicios, usted acepta cumplir con los siguientes términos y condiciones.</p>
+              <p>Bienvenido a LINCOIN. Al acceder a nuestro sitio web y utilizar nuestros servicios, usted acepta cumplir con los siguientes términos y condiciones.</p>
               <h3 className="text-lg font-bold text-[#0F172A]">1. Aceptación de los Términos</h3>
-              <p>Al registrarse y utilizar los servicios de CUYPAY, usted confirma que tiene la mayoría de edad legal en su jurisdicción y que tiene la capacidad legal para celebrar contratos vinculantes.</p>
+              <p>Al registrarse y utilizar los servicios de LINCOIN, usted confirma que tiene la mayoría de edad legal en su jurisdicción y que tiene la capacidad legal para celebrar contratos vinculantes.</p>
               <h3 className="text-lg font-bold text-[#0F172A]">2. Servicios de Pago</h3>
-              <p>CUYPAY proporciona servicios de procesamiento de pagos y transferencia de dinero. Nos reservamos el derecho de rechazar cualquier transacción que consideremos sospechosa o que viole nuestras políticas de cumplimiento.</p>
+              <p>LINCOIN proporciona servicios de procesamiento de pagos y transferencia de dinero. Nos reservamos el derecho de rechazar cualquier transacción que consideremos sospechosa o que viole nuestras políticas de cumplimiento.</p>
               <h3 className="text-lg font-bold text-[#0F172A]">3. Tarifas y Comisiones</h3>
               <p>Las tarifas por nuestros servicios se muestran claramente antes de confirmar cualquier transacción. Al proceder, usted acepta pagar dichas tarifas.</p>
             </div>
@@ -161,7 +161,7 @@ export const StaticPage: React.FC<StaticPageProps> = ({ pageKey, onBack }) => {
               <div className="bg-slate-50 p-4 rounded-lg border border-slate-200 mb-6">
                 <p className="text-sm font-bold text-[#2DD4BF]">Sistema de Autocontrol y Gestión del Riesgo Integral de Lavado de Activos y Financiación del Terrorismo.</p>
               </div>
-              <p>CUYPAY está comprometido con la lucha contra el lavado de activos y la financiación del terrorismo. Hemos implementado estrictos controles y procedimientos internos.</p>
+              <p>LINCOIN está comprometido con la lucha contra el lavado de activos y la financiación del terrorismo. Hemos implementado estrictos controles y procedimientos internos.</p>
               <h3 className="text-lg font-bold text-[#0F172A]">1. Debida Diligencia</h3>
               <p>Realizamos procesos de conocimiento del cliente (KYC) para todos nuestros usuarios, verificando su identidad y el origen de sus fondos.</p>
               <h3 className="text-lg font-bold text-[#0F172A]">2. Monitoreo Transaccional</h3>
@@ -177,7 +177,7 @@ export const StaticPage: React.FC<StaticPageProps> = ({ pageKey, onBack }) => {
           icon: Users,
           content: (
             <div className="space-y-6 text-slate-600">
-              <p className="text-lg leading-relaxed">Somos <span className="font-bold text-[#0F172A]">CUYPAY</span>, tu socio financiero en América Latina.</p>
+              <p className="text-lg leading-relaxed">Somos <span className="font-bold text-[#0F172A]">LINCOIN</span>, tu socio financiero en América Latina.</p>
               <p>Nacimos con la misión de eliminar las fronteras financieras para empresas y personas en LATAM. Creemos que mover dinero internacionalmente debería ser tan fácil, rápido y económico como enviar un mensaje de texto.</p>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6 my-8">
                 <div className="p-4 bg-slate-50 rounded-xl text-center">
@@ -291,7 +291,7 @@ export const StaticPage: React.FC<StaticPageProps> = ({ pageKey, onBack }) => {
 
       {/* Simple Footer */}
       <footer className="bg-[#0F172A] text-white py-8 text-center text-sm text-slate-400" style={{ backgroundColor: config.themeColor }}>
-        © Copyright CUYPAY, All rights reserved.
+        © Copyright LINCOIN, All rights reserved.
       </footer>
     </div>
   );

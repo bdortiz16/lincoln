@@ -5,7 +5,7 @@ import {
     TrendingUp, FileSearch, Banknote, Shield, ArrowRightLeft, Gift, BookOpen,
     Menu, X, Headphones, Scale
 } from 'lucide-react';
-import { CuyPayIcon } from './CuyPayIcon';
+import { LincoinIcon } from './LincoinIcon';
 import { AccountingSection } from './sections/AccountingSection';
 import { supabasePersonas } from '../../lib/supabaseClient';
 import {
@@ -83,9 +83,9 @@ export const PersonasAdminDashboard: React.FC<PersonasAdminDashboardProps> = ({ 
                 >
                     <Menu size={22} color={NAVY} />
                 </button>
-                <CuyPayIcon size={32} className="rounded-lg shrink-0" />
+                <LincoinIcon size={32} className="rounded-lg shrink-0" />
                 <div className="flex-1 min-w-0">
-                    <p className="font-bold text-xs leading-tight" style={{ color: NAVY }}>CUYPAY · Admin</p>
+                    <p className="font-bold text-xs leading-tight" style={{ color: NAVY }}>LINCOIN · Admin</p>
                     <p className="text-xs text-slate-500 truncate">{currentLabel}</p>
                 </div>
                 <span
@@ -115,9 +115,9 @@ export const PersonasAdminDashboard: React.FC<PersonasAdminDashboardProps> = ({ 
             >
                 <div className="p-5 md:p-6 border-b border-slate-200 flex items-center justify-between">
                     <div className="flex items-center gap-3 min-w-0">
-                        <CuyPayIcon size={40} className="rounded-xl shrink-0" />
+                        <LincoinIcon size={40} className="rounded-xl shrink-0" />
                         <div className="min-w-0">
-                            <p className="font-bold text-sm" style={{ color: NAVY }}>CUYPAY</p>
+                            <p className="font-bold text-sm" style={{ color: NAVY }}>LINCOIN</p>
                             <p className="text-xs text-slate-500 uppercase tracking-wider truncate">Admin Personas</p>
                         </div>
                     </div>
@@ -334,7 +334,7 @@ const UsersSection: React.FC<{ profile: AdminProfile }> = ({ profile }) => {
                 <div className="relative flex-1 min-w-[220px]">
                     <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
                     <input
-                        placeholder="Buscar por nombre, correo, CuyPay ID, teléfono o UUID..."
+                        placeholder="Buscar por nombre, correo, Lincoin ID, teléfono o UUID..."
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
                         className="w-full pl-9 pr-4 py-2 rounded-lg border border-slate-200 focus:border-teal-500 outline-none text-sm"
@@ -359,7 +359,7 @@ const UsersSection: React.FC<{ profile: AdminProfile }> = ({ profile }) => {
                         <thead className="bg-slate-50 text-slate-600 text-xs uppercase tracking-wider">
                             <tr>
                                 <th className="text-left px-4 py-3">Usuario</th>
-                                <th className="text-left px-4 py-3">CuyPay ID</th>
+                                <th className="text-left px-4 py-3">Lincoin ID</th>
                                 <th className="text-left px-4 py-3">Correo</th>
                                 <th className="text-left px-4 py-3">País</th>
                                 <th className="text-left px-4 py-3">KYC</th>

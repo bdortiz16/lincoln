@@ -323,7 +323,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
                 <h2 className="text-xl text-slate-800 font-bold mb-1">¡Felicidades!</h2>
                 <h1 className="text-2xl text-[#0F172A] font-bold mb-4">La empresa {formData.companyName} fue registrada con éxito</h1>
                 <p className="text-slate-500 max-w-lg mb-12 leading-relaxed">
-                    Validaremos la documentación enviada y dentro de las próximas 24 horas hábiles te notificaremos para que puedas operar en CUYPAY.
+                    Validaremos la documentación enviada y dentro de las próximas 24 horas hábiles te notificaremos para que puedas operar en LINCOIN.
                 </p>
                 <button onClick={onFinish} className="w-full max-w-xs h-12 bg-[#0F172A] hover:bg-[#152e52] font-bold rounded-lg shadow-lg shadow-teal-900/20 transition-all">Ir al inicio</button>
             </div>

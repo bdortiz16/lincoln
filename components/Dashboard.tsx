@@ -259,7 +259,7 @@ const DiditKycButton: React.FC<{ userId?: string; kycStatus?: string; showToast:
         return;
       }
       if (data.no_url) {
-        showToast('Tu sesión de verificación está activa en CuyPay. Si ya completaste los pasos, espera unos segundos y la página se actualizará sola.');
+        showToast('Tu sesión de verificación está activa en Lincoin. Si ya completaste los pasos, espera unos segundos y la página se actualizará sola.');
         return;
       }
       if (data.url) {
@@ -287,7 +287,7 @@ const DiditKycButton: React.FC<{ userId?: string; kycStatus?: string; showToast:
         ) : isInProgress ? (
           <><ShieldCheck size={16}/> Continuar verificación de identidad</>
         ) : (
-          <><ShieldCheck size={16}/> Verificar identidad con CuyPay</>
+          <><ShieldCheck size={16}/> Verificar identidad con Lincoin</>
         )}
       </button>
       {isInProgress && (
@@ -424,13 +424,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
 
   // UI States
   const [selectedWalletCode, setSelectedWalletCode] = useState<string | null>(null);
-  // BreB CuyPay: saldo COP separado (key 'COP_BREB' en balances) que se
-  // fondea moviendo desde Peso CuyPay y se usa para dispersar vía Finity.
+  // BreB Lincoin: saldo COP separado (key 'COP_BREB' en balances) que se
+  // fondea moviendo desde Peso Lincoin y se usa para dispersar vía Finity.
   const [brebMoveOpen, setBrebMoveOpen] = useState(false);
   const [brebDir, setBrebDir] = useState<'to_breb' | 'to_peso'>('to_breb');
   const [brebAmountStr, setBrebAmountStr] = useState('');
   const [brebMoving, setBrebMoving] = useState(false);
-  // Saldo REAL en Finity (Peso CuyPay conectado a la cuenta Finity).
+  // Saldo REAL en Finity (Peso Lincoin conectado a la cuenta Finity).
   // finityChecked distingue "cargando" de "ya respondió sin saldo".
   const [finityBal, setFinityBal] = useState<number | null>(null);
   const [finityChecked, setFinityChecked] = useState(false);
@@ -467,7 +467,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
         type: 'breb_move', amount, currency: 'COP', status: 'Completado',
         raw_data: {
           initials: 'BB',
-          title: brebDir === 'to_breb' ? 'Peso CuyPay → BreB CuyPay' : 'BreB CuyPay → Peso CuyPay',
+          title: brebDir === 'to_breb' ? 'Peso Lincoin → BreB Lincoin' : 'BreB Lincoin → Peso Lincoin',
           date: new Date().toLocaleDateString('es-CO'), createdAt: new Date().toISOString(),
           userName: currentUser.companyName || currentUser.name,
         },
@@ -476,7 +476,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
     setBrebMoving(false);
     setBrebMoveOpen(false);
     setBrebAmountStr('');
-    showToast(brebDir === 'to_breb' ? 'Saldo movido a BreB CuyPay ⚡' : 'Saldo devuelto a Peso CuyPay');
+    showToast(brebDir === 'to_breb' ? 'Saldo movido a BreB Lincoin ⚡' : 'Saldo devuelto a Peso Lincoin');
   };
   const [showAllWallets, setShowAllWallets] = useState(false);
   const [movementsTab, setMovementsTab] = useState<'all' | 'income' | 'expense'>('all');
@@ -1200,7 +1200,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                           onClick={() => { navigator.clipboard.writeText(currentUser.ownReferralCode || ''); }}
                       >
                           <Zap size={13} className="text-green-600" />
-                          <span className="text-[10px] font-bold text-slate-400 uppercase">Mi ID CuyPay:</span>
+                          <span className="text-[10px] font-bold text-slate-400 uppercase">Mi ID Lincoin:</span>
                           <span className="font-mono font-extrabold text-[#0F172A] tracking-widest text-sm">{currentUser.ownReferralCode}</span>
                           <Copy size={12} className="text-slate-400" />
                       </button>
@@ -1258,7 +1258,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   <div className="w-10 h-10 bg-slate-100 rounded-full flex items-center justify-center shrink-0"><ShieldCheck className="text-[#0F172A]" size={20} /></div>
                   <div className="flex-1">
                     <h3 className="text-[#0F172A] font-bold text-sm">Verificación KYB en progreso</h3>
-                    <p className="text-[#2DD4BF] text-xs mt-1">Abriste CuyPay pero aún no terminaste. Completa el proceso para activar tu cuenta empresarial.</p>
+                    <p className="text-[#2DD4BF] text-xs mt-1">Abriste Lincoin pero aún no terminaste. Completa el proceso para activar tu cuenta empresarial.</p>
                   </div>
                   <DiditKycButton userId={currentUser?.id} kycStatus={ks} showToast={showToast} />
                 </div>
@@ -1268,7 +1268,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   <div className="w-10 h-10 bg-white/10 rounded-full flex items-center justify-center shrink-0"><ShieldCheck className="text-white" size={20} /></div>
                   <div className="flex-1">
                     <h3 className="text-white font-bold text-sm">Activa tu cuenta — Verificación Empresarial (KYB)</h3>
-                    <p className="text-teal-200 text-xs mt-1">Verifica tu empresa con CuyPay para acceder a todos los servicios. El proceso toma menos de 5 minutos.</p>
+                    <p className="text-teal-200 text-xs mt-1">Verifica tu empresa con Lincoin para acceder a todos los servicios. El proceso toma menos de 5 minutos.</p>
                   </div>
                   <DiditKycButton userId={currentUser?.id} kycStatus={ks} showToast={showToast} />
                 </div>
@@ -1520,8 +1520,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                       </div>
                   </div>
               </div>
-              {/* COP se divide en DOS SALDOS separados: Peso CuyPay (interno) y
-                  BreB CuyPay (dispersión Bre-B vía Finity — solo Colombia).
+              {/* COP se divide en DOS SALDOS separados: Peso Lincoin (interno) y
+                  BreB Lincoin (dispersión Bre-B vía Finity — solo Colombia).
                   Se mueven entre sí con el formulario "Mover saldo". */}
               {selectedWalletCode === 'COP' && (() => {
                   const brebBal = getBalance('COP_BREB');
@@ -1535,7 +1535,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                       <Wallet size={16} className="text-[#2DD4BF]" />
                                   </div>
                                   <div>
-                                      <p className="font-bold text-slate-800 text-sm">Peso CuyPay</p>
+                                      <p className="font-bold text-slate-800 text-sm">Peso Lincoin</p>
                                       <p className="text-[10px] uppercase tracking-wider text-slate-500">Cuenta principal · COP</p>
                                   </div>
                               </div>
@@ -1552,8 +1552,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                               {finityBal != null
                                   ? 'Saldo real de tu cuenta Finity — es el que se usa para dispersar.'
                                   : finityChecked
-                                      ? 'Tu saldo interno CuyPay: cargas, envíos entre usuarios y conversiones.'
-                                      : 'Saldo interno CuyPay · consultando Finity…'}
+                                      ? 'Tu saldo interno Lincoin: cargas, envíos entre usuarios y conversiones.'
+                                      : 'Saldo interno Lincoin · consultando Finity…'}
                           </p>
                       </div>
 
@@ -1565,7 +1565,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                       <Zap size={16} className="text-[#0F172A]" />
                                   </div>
                                   <div>
-                                      <p className="font-bold text-slate-800 text-sm">BreB CuyPay</p>
+                                      <p className="font-bold text-slate-800 text-sm">BreB Lincoin</p>
                                       <p className="text-[10px] uppercase tracking-wider text-slate-500">Pagos instantáneos Bre-B · Solo Colombia</p>
                                   </div>
                               </div>
@@ -1970,14 +1970,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
           <button onClick={() => { setActiveView('servicios'); setSegSolicitado(false); }} className="flex items-center gap-2 text-slate-500 hover:text-slate-800 font-bold text-sm">
             <ArrowLeft size={18}/> Servicios
           </button>
-          <h2 className="text-xl font-bold text-[#0F172A]">Seguros CuyPay</h2>
+          <h2 className="text-xl font-bold text-[#0F172A]">Seguros Lincoin</h2>
         </div>
 
         {/* Hero */}
         <div className="relative bg-gradient-to-br from-rose-600 to-rose-900 rounded-3xl p-6 text-white overflow-hidden">
           <div className="absolute right-0 top-0 w-40 h-40 bg-white/10 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2"/>
           <p className="text-rose-200 font-bold text-xs uppercase tracking-widest mb-1">Protección vehicular y empresarial</p>
-          <h3 className="text-2xl font-bold mb-1">Asegúrate con CuyPay</h3>
+          <h3 className="text-2xl font-bold mb-1">Asegúrate con Lincoin</h3>
           <p className="text-rose-200 text-sm">Paga tu seguro directamente desde tu saldo. Disponible en 5 países.</p>
         </div>
 
@@ -2076,7 +2076,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
               <ShieldCheck size={28} className="text-rose-600"/>
             </div>
             <h3 className="font-bold text-slate-800">¡Solicitud recibida!</h3>
-            <p className="text-slate-500 text-sm">Nuestro equipo de seguros te enviará la cotización en menos de 2 horas. El pago se realiza desde tu saldo CuyPay.</p>
+            <p className="text-slate-500 text-sm">Nuestro equipo de seguros te enviará la cotización en menos de 2 horas. El pago se realiza desde tu saldo Lincoin.</p>
             <button onClick={() => setSegSolicitado(false)} className="mt-2 px-6 py-2.5 bg-[#0F172A] rounded-xl font-bold text-sm hover:bg-[#152e52] transition-colors">
               Nueva cotización
             </button>
@@ -2098,7 +2098,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
           <button onClick={() => { setActiveView('servicios'); setTravelSearched(false); }} className="flex items-center gap-2 text-slate-500 hover:text-slate-800 font-bold text-sm">
             <ArrowLeft size={18}/> Servicios
           </button>
-          <h2 className="text-xl font-bold text-[#0F172A]">CuyPay Travel</h2>
+          <h2 className="text-xl font-bold text-[#0F172A]">Lincoin Travel</h2>
         </div>
 
         {/* Hero */}
@@ -2214,7 +2214,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
             </div>
             <h3 className="font-bold text-slate-800">¡Casi listo!</h3>
             <p className="text-slate-500 text-sm">Nuestro equipo de travel corporativo revisará tu solicitud y te enviará las mejores opciones en menos de 2 horas hábiles.</p>
-            <p className="text-xs text-slate-400">El pago se realizará directamente desde tu saldo CuyPay.</p>
+            <p className="text-xs text-slate-400">El pago se realizará directamente desde tu saldo Lincoin.</p>
             <button onClick={() => setTravelSearched(false)} className="mt-2 px-6 py-2.5 bg-[#0F172A] rounded-xl font-bold text-sm hover:bg-[#152e52] transition-colors">
               Nueva búsqueda
             </button>
@@ -2229,7 +2229,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
       { icon: Users,        label: 'Nómina',              desc: 'Paga sueldos locales e internacionales en un clic.',            color: 'bg-slate-50 text-[#2DD4BF]', action: undefined },
       { icon: Plane,        label: 'Travel Corporativo',  desc: 'Vuelos, hoteles y autos para tu equipo al mejor precio.',      color: 'bg-slate-50 text-teal-700', action: () => setActiveView('travel') },
       { icon: CreditCard,   label: 'Tarjeta Virtual',     desc: 'Tarjeta corporativa virtual para pagos en línea.',             color: 'bg-violet-50 text-violet-700', action: undefined },
-      { icon: BarChart3,    label: 'API Empresarial',     desc: 'Integra CuyPay directamente en tu plataforma o ERP.',         color: 'bg-orange-50 text-orange-700', action: undefined },
+      { icon: BarChart3,    label: 'API Empresarial',     desc: 'Integra Lincoin directamente en tu plataforma o ERP.',         color: 'bg-orange-50 text-orange-700', action: undefined },
       { icon: ShieldCheck,  label: 'Seguros',             desc: 'SOAT, Todo Riesgo y seguros corporativos para tu flota.',     color: 'bg-rose-50 text-rose-700', action: () => setActiveView('seguros') },
     ];
     return (
@@ -2728,8 +2728,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
     convert: 'Conversión de divisas',
     load: 'Carga de saldo',
     send: 'Envío / Retiro',
-    pay_sent: 'Pago CuyPay enviado',
-    pay_received: 'Pago CuyPay recibido',
+    pay_sent: 'Pago Lincoin enviado',
+    pay_received: 'Pago Lincoin recibido',
     referral_payout: 'Bono de referido',
     referral_commission: 'Comisión de referido',
     internal: 'Movimiento interno',
@@ -2866,7 +2866,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   userId={currentUser.id}
                   brebBalance={getBalance('COP_BREB')}
                   onDispersed={async (amount, reference) => {
-                      // La dispersión sale del saldo BreB CuyPay
+                      // La dispersión sale del saldo BreB Lincoin
                       await updateUserProfile(currentUser.id, {
                           balances: { COP_BREB: getBalance('COP_BREB') - amount },
                       });
@@ -2970,7 +2970,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                       <div className="space-y-3">
                           <div className="flex justify-between items-center py-2 border-b border-slate-100">
                               <span className="text-slate-500 text-xs font-bold uppercase">Beneficiario</span>
-                              <span className="font-bold text-slate-800 text-sm text-right">CUYPAY {receiveCurrency === 'USD' ? 'LLC' : 'SAS'}</span>
+                              <span className="font-bold text-slate-800 text-sm text-right">LINCOIN {receiveCurrency === 'USD' ? 'LLC' : 'SAS'}</span>
                           </div>
                           <div className="flex justify-between items-center py-2 border-b border-slate-100">
                               <span className="text-slate-500 text-xs font-bold uppercase">Banco</span>
@@ -3091,7 +3091,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                           {bankingOptions[selectedCountry]?.find(b => b.name === selectedBankName)?.accountNumber || '123-456-7890'}
                                       </p>
                                       <p className="text-xs text-slate-500 mt-1">
-                                          {bankingOptions[selectedCountry]?.find(b => b.name === selectedBankName)?.beneficiary || 'CUYPAY CORP'}
+                                          {bankingOptions[selectedCountry]?.find(b => b.name === selectedBankName)?.beneficiary || 'LINCOIN CORP'}
                                       </p>
                                   </div>
                               </div>
@@ -3128,7 +3128,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
                       <h3 className="font-bold text-xl text-slate-800">
                           {sendStep === 1 && "Enviar Pago"}
-                          {sendStep === 2 && sendMode === 'pay' && "ID CuyPay del destinatario"}
+                          {sendStep === 2 && sendMode === 'pay' && "ID Lincoin del destinatario"}
                           {sendStep === 2 && sendMode === 'bank' && "Datos del Beneficiario"}
                           {sendStep === 3 && sendMode === 'bank' && "Confirmar Pago"}
                           {sendStep === 2 && sendMode === 'cash' && "Datos del Receptor"}
@@ -3155,7 +3155,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                   <div className="grid grid-cols-3 gap-2">
                                       <button onClick={() => { if (!getRawAmount(sendForm.amount)) { showToast('Ingresa un monto'); return; } setSendMode('pay'); setSendStep(2); }} className="flex flex-col items-center gap-2 p-3 py-4 border-2 border-green-200 bg-green-50 rounded-xl hover:border-green-400 hover:bg-green-100 transition-all">
                                           <Send size={20} className="text-green-600"/>
-                                          <span className="font-bold text-xs text-green-800">ID CuyPay</span>
+                                          <span className="font-bold text-xs text-green-800">ID Lincoin</span>
                                           <span className="text-[10px] text-green-600 text-center leading-tight">Instantáneo entre usuarios</span>
                                       </button>
                                       <button onClick={() => { if (!getRawAmount(sendForm.amount)) { showToast('Ingresa un monto'); return; } setSendMode('bank'); setSendStep(2); }} className="flex flex-col items-center gap-2 p-3 py-4 border-2 border-slate-200 bg-slate-50 rounded-xl hover:border-[#0F172A] hover:bg-slate-100 transition-all">
@@ -3172,7 +3172,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                               </div>
                           </div>
                       )}
-                      {/* STEP 2 PAY: CuyPay ID lookup */}
+                      {/* STEP 2 PAY: Lincoin ID lookup */}
                       {sendStep === 2 && sendMode === 'pay' && (
                           <div className="space-y-5">
                               <button onClick={() => { setSendStep(1); setSendMode(null); setPayRecipientCode(''); setPayRecipientUser(null); setPayLookupStatus('idle'); }} className="text-xs text-slate-400 flex items-center gap-1 hover:text-slate-600 font-bold"><ArrowLeft size={12}/> Volver</button>
@@ -3180,7 +3180,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                   <p className="text-sm font-bold text-green-800">Enviando <span className="text-green-600">{formatMoney(getRawAmount(sendForm.amount), sendForm.destinationCurrency)}</span> instantáneamente</p>
                               </div>
                               <div>
-                                  <label className="block text-sm font-bold text-slate-700 mb-2">ID CuyPay del destinatario</label>
+                                  <label className="block text-sm font-bold text-slate-700 mb-2">ID Lincoin del destinatario</label>
                                   <input type="text" value={payRecipientCode} onChange={(e) => handlePayLookup(e.target.value)} placeholder="Ej: ABC123" maxLength={8} autoFocus className="w-full h-14 px-4 border-2 border-slate-300 rounded-xl focus:border-green-500 outline-none text-xl font-mono font-bold tracking-widest text-center uppercase" />
                                   <p className="text-xs text-slate-400 mt-1 text-center">El ID de 6 caracteres que el destinatario puede compartir contigo</p>
                               </div>
@@ -3622,7 +3622,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                   <div className="flex justify-between"><span className="text-slate-500">Monto</span><span className="font-bold text-[#0F172A]">{Number(payLinkAmount).toLocaleString()} {PAY_LINK_COUNTRIES.find(c => c.code === payLinkCountry)?.currency}</span></div>
                               </div>
                               <div className="flex gap-3">
-                                  <button onClick={() => { if (navigator.share) { navigator.share({ title: 'Link de pago CUYPAY', url: payLinkUrl }); } else { navigator.clipboard?.writeText(payLinkUrl); showToast('Link copiado'); } }}
+                                  <button onClick={() => { if (navigator.share) { navigator.share({ title: 'Link de pago LINCOIN', url: payLinkUrl }); } else { navigator.clipboard?.writeText(payLinkUrl); showToast('Link copiado'); } }}
                                       className="flex-1 py-3 bg-[#0F172A] font-bold rounded-xl hover:bg-[#152e52] transition-colors flex items-center justify-center gap-2">
                                       <Share2 size={16}/> Compartir
                                   </button>

@@ -119,7 +119,7 @@ const CrispInbox: React.FC<{ profile: AdminProfile }> = ({ profile }) => {
         if (!active || !draft.trim() || sending) return;
         setSending(true);
         const content = draft.trim();
-        const r = await callCrisp('send', { method: 'POST', body: { session_id: active.session_id, content, nickname: profile.full_name ?? 'CuyPay Soporte' } });
+        const r = await callCrisp('send', { method: 'POST', body: { session_id: active.session_id, content, nickname: profile.full_name ?? 'Lincoin Soporte' } });
         setSending(false);
         if (r?.error) { toast.error(`No se envió: ${r.detail?.reason ?? r.error}`); return; }
         setDraft('');
@@ -154,7 +154,7 @@ const CrispInbox: React.FC<{ profile: AdminProfile }> = ({ profile }) => {
                 <ol className="list-decimal ml-4 mt-2 space-y-1">
                     <li>Entrá a <a className="underline font-semibold" href="https://marketplace.crisp.chat" target="_blank" rel="noreferrer">marketplace.crisp.chat</a> → New Plugin (privado)</li>
                     <li>En el plugin → <b>API tokens</b> → generá identifier + key con scopes de conversaciones (sessions read, messages read/write, states write)</li>
-                    <li>Activá el plugin en el website de CuyPay</li>
+                    <li>Activá el plugin en el website de Lincoin</li>
                     <li>Supabase → Edge Functions → Secrets → agregá <code>CRISP_IDENTIFIER</code> y <code>CRISP_KEY</code></li>
                 </ol>
             </SetupCard>
@@ -752,8 +752,8 @@ const EMAIL_SAMPLES: Array<{ id: string; label: string; hero: string; accent: st
     {
         id: 'kyc', label: 'Cuenta aprobada', accent: '#10B981', hero: 'Cuenta aprobada',
         title: 'Verificación completada',
-        body: 'Hola <strong>Bryan David</strong>, ¡bienvenido! Tu identidad fue verificada con éxito y tu cuenta CuyPay quedó completamente activa. Ya puedes cargar dinero, enviar a tus contactos y convertir divisas.',
-        cta: 'Abrir CuyPay →',
+        body: 'Hola <strong>Bryan David</strong>, ¡bienvenido! Tu identidad fue verificada con éxito y tu cuenta Lincoin quedó completamente activa. Ya puedes cargar dinero, enviar a tus contactos y convertir divisas.',
+        cta: 'Abrir Lincoin →',
     },
     {
         id: 'tx', label: 'Envío realizado', accent: '#2DD4BF', hero: 'Envío realizado',
@@ -776,8 +776,8 @@ const EMAIL_SAMPLES: Array<{ id: string; label: string; hero: string; accent: st
     {
         id: 'otp', label: 'Código de verificación', accent: '#2DD4BF', hero: 'Verificación',
         title: 'Tu código de verificación',
-        body: 'Usa este código para verificar tu correo en CuyPay. Expira en 10 minutos.<div style="margin:18px 0;padding:18px;background:#F1F5F9;border-radius:12px;text-align:center;font-size:34px;font-weight:800;letter-spacing:10px;color:#0F172A;font-family:monospace">511551</div>Si no solicitaste este código, ignora este correo.',
-        cta: 'Abrir CuyPay →',
+        body: 'Usa este código para verificar tu correo en Lincoin. Expira en 10 minutos.<div style="margin:18px 0;padding:18px;background:#F1F5F9;border-radius:12px;text-align:center;font-size:34px;font-weight:800;letter-spacing:10px;color:#0F172A;font-family:monospace">511551</div>Si no solicitaste este código, ignora este correo.',
+        cta: 'Abrir Lincoin →',
     },
 ];
 
@@ -822,7 +822,7 @@ function buildSampleEmail(s: typeof EMAIL_SAMPLES[number], footerNote = ''): str
 </td></tr>
 <tr><td style="background:#0F172A;padding:16px 28px">
   <table width="100%"><tr>
-    <td><p style="margin:0;font-size:10px;color:rgba(255,255,255,0.45)">&copy; 2026 CuyPay &middot; Todos los derechos reservados</p></td>
+    <td><p style="margin:0;font-size:10px;color:rgba(255,255,255,0.45)">&copy; 2026 Lincoin &middot; Todos los derechos reservados</p></td>
     <td align="right"><span style="font-size:10px;color:#2DD4BF;font-weight:600">cuypay.com</span></td>
   </tr></table>
 </td></tr>
@@ -1037,7 +1037,7 @@ const EmailFormatCard: React.FC<{ profile: AdminProfile }> = ({ profile }) => {
                             onChange={e => setFooterNote(e.target.value)}
                             rows={4}
                             disabled={!canManage}
-                            placeholder="Ej: CuyPay S.A.S. · NIT 901.XXX.XXX-X · Los servicios se rigen por los Términos y Condiciones publicados en cuypay.com/terminos…"
+                            placeholder="Ej: Lincoin S.A.S. · NIT 901.XXX.XXX-X · Los servicios se rigen por los Términos y Condiciones publicados en cuypay.com/terminos…"
                             className="w-full px-3 py-2 rounded-lg border border-slate-200 text-xs leading-relaxed focus:border-teal-500 outline-none resize-y disabled:opacity-60"
                         />
                         <div className="flex justify-end mt-2">

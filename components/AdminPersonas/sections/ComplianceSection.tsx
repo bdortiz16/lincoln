@@ -390,7 +390,7 @@ const KycTab: React.FC<{ profile: AdminProfile; canApprove: boolean }> = ({ prof
             <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 flex items-start gap-2 text-sm text-blue-900">
                 <ShieldCheck size={16} className="mt-0.5 shrink-0" />
                 <p>
-                    El estado KYC lo determina <strong>Didit</strong> automáticamente y se sincroniza con CuyPay.
+                    El estado KYC lo determina <strong>Didit</strong> automáticamente y se sincroniza con Lincoin.
                     Si necesitás cambiarlo manualmente, abrí el detalle del usuario y usá el botón de estado —
                     el cambio se pushea a Didit y queda en el audit log.
                     Compliance puede <strong>bloquear</strong> un usuario o tercero si infringe una norma AML.
@@ -700,11 +700,11 @@ const KycCuentaList: React.FC<{ profile: AdminProfile; canApprove: boolean }> = 
 
     const kycBadge = (status: string | null) => {
         const map: Record<string, { bg: string; text: string; label: string }> = {
-            verified:   { bg: '#D1FAE5', text: '#065F46', label: 'Verificado · CuyPay' },
-            approved:   { bg: '#D1FAE5', text: '#065F46', label: 'Verificado · CuyPay' },
-            pending:    { bg: '#FEF3C7', text: '#92400E', label: 'En proceso · CuyPay' },
-            in_review:  { bg: '#FEF3C7', text: '#92400E', label: 'En revisión · CuyPay' },
-            rejected:   { bg: '#FEE2E2', text: '#991B1B', label: 'Rechazado · CuyPay' },
+            verified:   { bg: '#D1FAE5', text: '#065F46', label: 'Verificado · Lincoin' },
+            approved:   { bg: '#D1FAE5', text: '#065F46', label: 'Verificado · Lincoin' },
+            pending:    { bg: '#FEF3C7', text: '#92400E', label: 'En proceso · Lincoin' },
+            in_review:  { bg: '#FEF3C7', text: '#92400E', label: 'En revisión · Lincoin' },
+            rejected:   { bg: '#FEE2E2', text: '#991B1B', label: 'Rechazado · Lincoin' },
         };
         const s = map[status ?? ''] ?? { bg: '#F1F5F9', text: '#475569', label: status ?? 'Sin KYC' };
         return <span className="inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold" style={{ backgroundColor: s.bg, color: s.text }}>{s.label}</span>;
@@ -786,7 +786,7 @@ const KycCuentaList: React.FC<{ profile: AdminProfile; canApprove: boolean }> = 
                     <input
                         value={search}
                         onChange={e => setSearch(e.target.value)}
-                        placeholder="Buscar por nombre, correo, CuyPay ID, UUID o país..."
+                        placeholder="Buscar por nombre, correo, Lincoin ID, UUID o país..."
                         className="w-full pl-9 pr-4 py-2 rounded-lg border border-slate-300 focus:border-teal-500 outline-none text-sm"
                     />
                 </div>
@@ -872,9 +872,9 @@ const KycCuentaList: React.FC<{ profile: AdminProfile; canApprove: boolean }> = 
                                 </div>
                             </div>
                             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs text-slate-500 mt-3 pt-3 border-t border-slate-100">
-                                <div><span className="block text-slate-400">CuyPay ID</span><span className="text-slate-700 font-mono">{u.cuypay_id ?? '—'}</span></div>
+                                <div><span className="block text-slate-400">Lincoin ID</span><span className="text-slate-700 font-mono">{u.cuypay_id ?? '—'}</span></div>
                                 <div><span className="block text-slate-400">País</span><span className="text-slate-700">{u.flag ?? ''} {u.country ?? '—'}</span></div>
-                                <div><span className="block text-slate-400">Proveedor KYC</span><span className="text-slate-700">{u.kyc_provider && u.kyc_provider !== 'Didit' ? u.kyc_provider : 'CuyPay'}</span></div>
+                                <div><span className="block text-slate-400">Proveedor KYC</span><span className="text-slate-700">{u.kyc_provider && u.kyc_provider !== 'Didit' ? u.kyc_provider : 'Lincoin'}</span></div>
                                 <div><span className="block text-slate-400">Registrado</span><span className="text-slate-700">{formatDate(u.created_at)}</span></div>
                             </div>
                             <div className="mt-3 pt-3 border-t border-slate-100">
@@ -1219,12 +1219,12 @@ const KycTercerosList: React.FC<{ profile: AdminProfile; canApprove: boolean }> 
 
     const kycBadge = (status: string | null) => {
         const map: Record<string, { bg: string; text: string; label: string }> = {
-            verified:    { bg: '#D1FAE5', text: '#065F46', label: 'Verificado · CuyPay' },
-            approved:    { bg: '#D1FAE5', text: '#065F46', label: 'Verificado · CuyPay' },
-            in_progress: { bg: '#FEF3C7', text: '#92400E', label: 'En proceso · CuyPay' },
-            pending:     { bg: '#FEF3C7', text: '#92400E', label: 'Pendiente · CuyPay' },
-            rejected:    { bg: '#FEE2E2', text: '#991B1B', label: 'Rechazado · CuyPay' },
-            blocked:     { bg: '#7F1D1D', text: '#FFFFFF', label: 'Bloqueado · CuyPay' },
+            verified:    { bg: '#D1FAE5', text: '#065F46', label: 'Verificado · Lincoin' },
+            approved:    { bg: '#D1FAE5', text: '#065F46', label: 'Verificado · Lincoin' },
+            in_progress: { bg: '#FEF3C7', text: '#92400E', label: 'En proceso · Lincoin' },
+            pending:     { bg: '#FEF3C7', text: '#92400E', label: 'Pendiente · Lincoin' },
+            rejected:    { bg: '#FEE2E2', text: '#991B1B', label: 'Rechazado · Lincoin' },
+            blocked:     { bg: '#7F1D1D', text: '#FFFFFF', label: 'Bloqueado · Lincoin' },
         };
         const s = map[status ?? ''] ?? { bg: '#F1F5F9', text: '#475569', label: status ?? 'Sin KYC' };
         return <span className="inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold" style={{ backgroundColor: s.bg, color: s.text }}>{s.label}</span>;
@@ -1448,7 +1448,7 @@ const KycTercerosList: React.FC<{ profile: AdminProfile; canApprove: boolean }> 
                                         {b.owner?.email ?? '—'}
                                     </span>
                                     <span className="block text-slate-400 font-mono text-[10px] truncate">
-                                        CuyPay ID: {b.owner?.cuypay_id ?? (b.owner_user_id ?? '—')}
+                                        Lincoin ID: {b.owner?.cuypay_id ?? (b.owner_user_id ?? '—')}
                                     </span>
                                 </div>
                                 <div>
@@ -2135,7 +2135,7 @@ const AddSanctionModal: React.FC<{ onClose: () => void; onAdded: () => void; pro
 
                 <label className="block text-xs font-bold text-slate-600 uppercase mb-1.5">Lista</label>
                 <select value={listType} onChange={e => setListType(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-slate-200 mb-3 bg-white">
-                    <option value="INTERNAL">Interna (CuyPay)</option>
+                    <option value="INTERNAL">Interna (Lincoin)</option>
                     <option value="OFAC">OFAC</option>
                     <option value="UN">ONU</option>
                     <option value="EU">UE</option>

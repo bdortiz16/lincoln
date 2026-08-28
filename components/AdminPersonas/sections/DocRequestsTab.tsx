@@ -828,7 +828,7 @@ const CreateRequestModal: React.FC<{
     }, []);
 
     // Búsqueda debounceada cuando el admin escribe.
-    // Filtramos server-side por email / nombre / CuyPay ID,
+    // Filtramos server-side por email / nombre / Lincoin ID,
     // siempre limitado a usuarios verificados.
     useEffect(() => {
         if (picked) return;
@@ -917,7 +917,7 @@ const CreateRequestModal: React.FC<{
                                 <input
                                     value={userQuery}
                                     onChange={e => setUserQuery(e.target.value)}
-                                    placeholder="Buscar por email, nombre o CuyPay ID…"
+                                    placeholder="Buscar por email, nombre o Lincoin ID…"
                                     className="w-full pl-9 pr-3 py-2 rounded-lg border border-slate-200 text-sm focus:border-teal-500 outline-none"
                                 />
                             </div>
@@ -1161,7 +1161,7 @@ const CreateRequestModal: React.FC<{
                 {/* Aviso de compliance_hold: la app móvil bloquea send/load
                     mientras haya una solicitud activa. El usuario sigue
                     pudiendo convertir saldos entre wallets (mover dentro
-                    de CuyPay), solo no aumentar exposición externa. */}
+                    de Lincoin), solo no aumentar exposición externa. */}
                 <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-900 flex items-start gap-2">
                     <AlertTriangle size={14} className="text-amber-600 mt-0.5 shrink-0" />
                     <div>

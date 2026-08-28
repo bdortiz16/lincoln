@@ -18,7 +18,7 @@ const TEXT_MUTED = '#64748B';
  * Diseño intencionalmente distinto a la web pública de Empresas:
  *  - Fondo muy oscuro (no gradiente bonito)
  *  - Tipografía monoespaciada (look "consola/backend")
- *  - Sin logo CUYPAY grande (para no confundirse con la web pública)
+ *  - Sin logo LINCOIN grande (para no confundirse con la web pública)
  *  - Etiquetas claras: BACKEND · PERSONAS · ADMIN
  */
 export const PersonasAdminLogin: React.FC<PersonasAdminLoginProps> = ({ onLoginSuccess }) => {
@@ -84,7 +84,7 @@ export const PersonasAdminLogin: React.FC<PersonasAdminLoginProps> = ({ onLoginS
                     <div className="flex items-center gap-2 mb-3">
                         <Terminal size={14} color={TEAL} />
                         <span style={{ color: TEAL, fontSize: '11px', letterSpacing: '0.2em' }}>
-                            CUYPAY · INTERNAL
+                            LINCOIN · INTERNAL
                         </span>
                     </div>
                     <h1 className="text-white font-bold" style={{ fontSize: '20px', letterSpacing: '-0.01em' }}>

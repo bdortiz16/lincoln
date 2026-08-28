@@ -217,13 +217,13 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // (solo el convertidor USD->COP, sin nada de dispersion bancaria).
   const [finityMode, setFinityMode] = useState<'full' | 'converter'>('full');
   const [selectedWalletCode, setSelectedWalletCode] = useState<string | null>(null);
-  // BreB CuyPay: saldo COP separado (key 'COP_BREB') que se fondea desde
-  // Peso CuyPay y se usa para dispersar vía Finity (solo Colombia).
+  // BreB Lincoin: saldo COP separado (key 'COP_BREB') que se fondea desde
+  // Peso Lincoin y se usa para dispersar vía Finity (solo Colombia).
   const [brebMoveOpen, setBrebMoveOpen] = useState(false);
   const [brebDir, setBrebDir] = useState<'to_breb' | 'to_peso'>('to_breb');
   const [brebAmountStr, setBrebAmountStr] = useState('');
   const [brebMoving, setBrebMoving] = useState(false);
-  // Saldo REAL en Finity (Peso CuyPay está conectado a la cuenta Finity).
+  // Saldo REAL en Finity (Peso Lincoin está conectado a la cuenta Finity).
   // null = no disponible → se muestra el saldo interno como respaldo.
   // finityChecked distingue "cargando" de "ya respondió y no hay saldo".
   // ⚠️ El useEffect que lo carga vive DESPUÉS del useDatabase() — usa
@@ -380,7 +380,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
   const isKycVerified = currentUser?.kycStatus === 'verified';
   const isInReview = currentUser?.kycStatus === 'in_review';
-  // CuyPay web = producto EMPRESAS: aquí TODA cuenta es empresa y su
+  // Lincoin web = producto EMPRESAS: aquí TODA cuenta es empresa y su
   // verificación es KYB (los clientes personales solo existen en la app
   // móvil). Por eso el copy de verificación se muestra siempre como KYB,
   // sin depender del rol guardado — que en cuentas viejas o creadas por
@@ -770,7 +770,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // Saldo REAL de la wallet GasFree (blockchain) — la billetera "USDT" ya
   // NO muestra el "Dólar digital" (el contable interno que se podía
   // desincronizar del saldo real y llevó al cliente a intentar enviar más
-  // de lo que en verdad tenía). Mismo patrón que finityBal para Peso CuyPay.
+  // de lo que en verdad tenía). Mismo patrón que finityBal para Peso Lincoin.
   const [gasfreeBal, setGasfreeBal] = useState<number | null>(null);
   const [gasfreeBalChecked, setGasfreeBalChecked] = useState(false);
   const refreshGasfreeBal = async (uid: string) => {
@@ -1446,15 +1446,15 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               </div>
           </div>
 
-          {/* CuyPay ID chip — share to receive PAY transfers */}
+          {/* Lincoin ID chip — share to receive PAY transfers */}
           {currentUser?.ownReferralCode && (
               <div className="flex items-center gap-2">
                   <div
                       className="inline-flex items-center gap-2 bg-white border border-slate-200 px-3 py-1.5 rounded-lg cursor-pointer hover:border-green-400 hover:bg-green-50 transition-all shadow-sm"
-                      onClick={() => { navigator.clipboard.writeText(currentUser.ownReferralCode || ''); showToast('ID CuyPay copiado'); }}
+                      onClick={() => { navigator.clipboard.writeText(currentUser.ownReferralCode || ''); showToast('ID Lincoin copiado'); }}
                   >
                       <Zap size={13} className="text-[#0D9488]" />
-                      <span className="text-[10px] font-bold text-slate-600 uppercase tracking-wider">Mi ID CuyPay:</span>
+                      <span className="text-[10px] font-bold text-slate-600 uppercase tracking-wider">Mi ID Lincoin:</span>
                       <span className="font-mono font-extrabold text-[#0F172A] tracking-widest text-sm">{currentUser.ownReferralCode}</span>
                       <Copy size={11} className="text-slate-400" />
                   </div>
@@ -1509,7 +1509,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   </div>
                   <div className="flex-1">
                     <h3 className="text-[#0F172A] font-bold text-sm">Verificación en progreso</h3>
-                    <p className="text-[#2DD4BF] text-xs mt-1">Abriste CuyPay pero aún no terminaste. Completa el proceso para activar tu cuenta.</p>
+                    <p className="text-[#2DD4BF] text-xs mt-1">Abriste Lincoin pero aún no terminaste. Completa el proceso para activar tu cuenta.</p>
                   </div>
                   <button onClick={startDiditKyc} disabled={kycLoading} className="shrink-0 px-4 py-2 bg-[#0F172A] hover:bg-[#152e52] text-xs font-bold rounded-lg disabled:opacity-50 flex items-center gap-2 transition-colors">
                     {kycLoading ? <><RefreshCw size={14} className="animate-spin"/> Cargando...</> : <><ShieldCheck size={14}/> Continuar verificación</>}
@@ -1808,7 +1808,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
         type: 'breb_move', amount, currency: 'COP', status: 'Completado',
         raw_data: {
           initials: 'BB',
-          title: brebDir === 'to_breb' ? 'Peso CuyPay → BreB CuyPay' : 'BreB CuyPay → Peso CuyPay',
+          title: brebDir === 'to_breb' ? 'Peso Lincoin → BreB Lincoin' : 'BreB Lincoin → Peso Lincoin',
           date: new Date().toLocaleDateString('es-CO'), createdAt: new Date().toISOString(),
           userName: currentUser.name,
         },
@@ -1817,7 +1817,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     setBrebMoving(false);
     setBrebMoveOpen(false);
     setBrebAmountStr('');
-    showToast(brebDir === 'to_breb' ? 'Saldo movido a BreB CuyPay ⚡' : 'Saldo devuelto a Peso CuyPay');
+    showToast(brebDir === 'to_breb' ? 'Saldo movido a BreB Lincoin ⚡' : 'Saldo devuelto a Peso Lincoin');
   };
 
   const renderWalletDetail = () => {
@@ -1858,7 +1858,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   </div>
               </div>
 
-              {/* COP se divide en DOS SALDOS: Peso CuyPay (interno) y BreB CuyPay
+              {/* COP se divide en DOS SALDOS: Peso Lincoin (interno) y BreB Lincoin
                   (dispersión Bre-B vía Finity — solo Colombia). Mover saldo entre sí. */}
               {selectedWalletCode === 'COP' && (() => {
                   const brebBal = getBalance('COP_BREB');
@@ -1872,7 +1872,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       <Wallet size={16} className="text-[#2DD4BF]" />
                                   </div>
                                   <div>
-                                      <p className="font-bold text-slate-800 text-sm">Peso CuyPay</p>
+                                      <p className="font-bold text-slate-800 text-sm">Peso Lincoin</p>
                                       <p className="text-[10px] uppercase tracking-wider text-slate-500">Cuenta principal · COP</p>
                                   </div>
                               </div>
@@ -1889,8 +1889,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               {finityBal != null
                                   ? 'Saldo real de tu cuenta de dispersión — es el que se usa para transferir.'
                                   : finityChecked
-                                      ? 'Tu saldo interno CuyPay: cargas, envíos entre usuarios y conversiones.'
-                                      : 'Saldo interno CuyPay · consultando…'}
+                                      ? 'Tu saldo interno Lincoin: cargas, envíos entre usuarios y conversiones.'
+                                      : 'Saldo interno Lincoin · consultando…'}
                           </p>
                       </div>
 
@@ -1902,7 +1902,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       <Zap size={16} className="text-[#0F172A]" />
                                   </div>
                                   <div>
-                                      <p className="font-bold text-slate-800 text-sm">BreB CuyPay</p>
+                                      <p className="font-bold text-slate-800 text-sm">BreB Lincoin</p>
                                       <p className="text-[10px] uppercase tracking-wider text-slate-500">Pagos instantáneos Bre-B · Solo Colombia</p>
                                   </div>
                               </div>
@@ -2212,7 +2212,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       { key: 'notifTransfers', label: 'Transferencias', desc: 'Envíos y recepciones de dinero' },
                       { key: 'notifDeposits', label: 'Depósitos', desc: 'Cargas de saldo aprobadas' },
                       { key: 'notifSecurity', label: 'Seguridad', desc: 'Accesos y cambios en la cuenta' },
-                      { key: 'notifPromotions', label: 'Promociones', desc: 'Ofertas y novedades de CUYPAY' },
+                      { key: 'notifPromotions', label: 'Promociones', desc: 'Ofertas y novedades de LINCOIN' },
                       { key: 'notifSound', label: 'Sonido de notificaciones', desc: 'Reproduce un sonido al llegar una alerta nueva' },
                   ].map(({ key, label, desc }) => {
                       const enabled = (currentUser as any)?.[key] !== false;
@@ -2413,7 +2413,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
   const renderServicios = () => {
     const SERVICES = [
-      // ── USDT/OTC removidos: CuyPay es solo fiat (cripto y OTC viven en Lincoln). ──
+      // ── USDT/OTC removidos: Lincoin es solo fiat (cripto y OTC viven en Lincoln). ──
       { icon: Plane,       label: 'Travel',          desc: 'Vuelos, hoteles y experiencias al mejor precio.',         color: 'bg-slate-50 text-teal-700' },
       { icon: ShieldCheck, label: 'Seguros',          desc: 'SOAT, Todo Riesgo y seguros personales.',                color: 'bg-rose-50 text-rose-700' },
       { icon: CreditCard,  label: 'Tarjeta Virtual',  desc: 'Tarjeta virtual para tus compras en línea.',             color: 'bg-violet-50 text-violet-700' },
@@ -2461,7 +2461,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
   const TX_LABELS: Record<string, string> = {
     convert: 'Conversión de divisas', load: 'Carga de saldo', send: 'Envío / Retiro',
-    pay_sent: 'Pago CuyPay enviado', pay_received: 'Pago CuyPay recibido',
+    pay_sent: 'Pago Lincoin enviado', pay_received: 'Pago Lincoin recibido',
     otc_withdraw_request: 'Retiro OTC', otc_convert_request: 'Conversión OTC',
     otc_deposit: 'Depósito cripto', otc_withdraw: 'Retiro cripto',
   };
@@ -2575,7 +2575,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       // entró, tasa, COP recibido, USDT que salió a la recaudadora, comisión.
       ...(isFinityConvert ? [{ label: 'Par de conversión', value: 'USDT → COP' }] : []),
       ...(isFinityConvert && finityFromAmount != null ? [{ label: 'USDT convertido', value: `${Number(finityFromAmount).toFixed(2)} USDT` }] : []),
-      ...(isFinityConvert && finityRate != null ? [{ label: 'Tasa CuyPay', value: `1 USD = ${Number(finityRate).toLocaleString('es-CO', { maximumFractionDigits: 2 })} COP${finityFeePct != null ? ` (comisión ${finityFeePct}%)` : ''}` }] : []),
+      ...(isFinityConvert && finityRate != null ? [{ label: 'Tasa Lincoin', value: `1 USD = ${Number(finityRate).toLocaleString('es-CO', { maximumFractionDigits: 2 })} COP${finityFeePct != null ? ` (comisión ${finityFeePct}%)` : ''}` }] : []),
       ...(isFinityConvert ? [{ label: 'COP recibido', value: `${formatMoney(tx.amount, 'COP')} COP` }] : []),
       ...(isFinityConvert && gasfreeUsdtOut != null ? [{ label: 'USDT enviado a recaudadora', value: `${Number(gasfreeUsdtOut).toFixed(2)} USDT` }] : []),
       ...(isGasfree && gasfreeActivateFee ? [{ label: 'Activación de wallet (1ª vez)', value: `${Number(gasfreeActivateFee).toFixed(2)} USDT` }] : []),
@@ -2599,7 +2599,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
     // ── Compartir / descargar el comprobante como imagen (PNG) ──
     // Se dibuja el comprobante en un canvas (sin librerías externas) con la
-    // marca CuyPay, el monto, el estado y todos los campos, y se comparte
+    // marca Lincoin, el monto, el estado y todos los campos, y se comparte
     // (share nativo en móvil) o se descarga.
     const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
     const roundRect = (c: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) => {
@@ -2641,7 +2641,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, W, H);
 
       let y = PAD + 24;
-      // Logo (ícono cubo CuyPay) + título CUYPAY, centrados como grupo
+      // Logo (ícono cubo Lincoin) + título LINCOIN, centrados como grupo
       ctx.font = `800 24px ${FONT}`;
       const wCuy = ctx.measureText('CUY').width, wPay = ctx.measureText('PAY').width;
       const iconS = 26, gap = 8;
@@ -2689,7 +2689,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       // Pie
       y += 20;
       ctx.textAlign = 'center'; ctx.font = `600 11px ${FONT}`; ctx.fillStyle = '#94a3b8';
-      ctx.fillText('cuypay.com · Comprobante CuyPay', W / 2, y);
+      ctx.fillText('cuypay.com · Comprobante Lincoin', W / 2, y);
       return canvas;
     };
     const shareReceipt = async () => {
@@ -2697,11 +2697,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
         const canvas = buildReceiptCanvas();
         const blob: Blob | null = await new Promise(res => canvas.toBlob(res, 'image/png'));
         if (!blob) { showToast('No se pudo generar el comprobante', 4000, 'error'); return; }
-        const fileName = `CuyPay-comprobante-${tx.id}.png`;
+        const fileName = `Lincoin-comprobante-${tx.id}.png`;
         const file = new File([blob], fileName, { type: 'image/png' });
         const nav = navigator as any;
         if (nav.canShare && nav.canShare({ files: [file] })) {
-          try { await nav.share({ files: [file], title: 'Comprobante CuyPay' }); return; }
+          try { await nav.share({ files: [file], title: 'Comprobante Lincoin' }); return; }
           catch { /* usuario canceló el share → cae a descarga */ }
         }
         const url = URL.createObjectURL(blob);
@@ -2720,7 +2720,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
         if (!blob) { showToast('No se pudo generar el comprobante', 4000, 'error'); return; }
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
-        a.href = url; a.download = `CuyPay-comprobante-${tx.id}.png`;
+        a.href = url; a.download = `Lincoin-comprobante-${tx.id}.png`;
         document.body.appendChild(a); a.click(); a.remove();
         setTimeout(() => URL.revokeObjectURL(url), 2000);
         showToast('Comprobante descargado');
@@ -2847,7 +2847,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               />
               <SidebarItem 
                   icon={Megaphone} 
-                  label="Aliados CUYPAY" 
+                  label="Aliados LINCOIN" 
                   active={activeView === 'affiliates'} 
                   onClick={() => {setActiveView('affiliates'); setIsMobileMenuOpen(false);}} 
               />
@@ -2919,8 +2919,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       // el movimiento) ya lo hizo el edge (my_convert_settle),
                       // autoritativo. Aquí SOLO se refresca la vista: el COP se
                       // relee de la DB y el saldo USDT del on-chain real.
-                      showToast(`Convertiste ${usdAmount.toLocaleString('en-US')} USDT → ${copClientAmount.toLocaleString('es-CO')} COP (Peso CuyPay) ⚡`);
-                      // Actualización OPTIMISTA e inmediata del Peso CuyPay (el
+                      showToast(`Convertiste ${usdAmount.toLocaleString('en-US')} USDT → ${copClientAmount.toLocaleString('es-CO')} COP (Peso Lincoin) ⚡`);
+                      // Actualización OPTIMISTA e inmediata del Peso Lincoin (el
                       // crédito ya lo hizo el edge) — así no hay que recargar.
                       bumpLocalBalance?.('COP', copClientAmount);
                       // Refrescos ESCALONADOS: la fila de la conversión pasa de
@@ -2933,7 +2933,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       if (currentUser?.id) refreshGasfreeBal(currentUser.id);
                   }}
                   onDispersed={async (amount, reference) => {
-                      // La dispersión sale del saldo BreB CuyPay
+                      // La dispersión sale del saldo BreB Lincoin
                       await updateUserProfile(currentUser.id, {
                           balances: { COP_BREB: getBalance('COP_BREB') - amount },
                       });
@@ -3280,7 +3280,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
                               <div className="flex gap-3">
                                   <button
-                                      onClick={() => { if (navigator.share) { navigator.share({ title: 'Link de pago CUYPAY', url: payLinkUrl }); } else { navigator.clipboard?.writeText(payLinkUrl); showToast('Link copiado'); } }}
+                                      onClick={() => { if (navigator.share) { navigator.share({ title: 'Link de pago LINCOIN', url: payLinkUrl }); } else { navigator.clipboard?.writeText(payLinkUrl); showToast('Link copiado'); } }}
                                       className="flex-1 py-3 bg-[#0F172A] font-bold rounded-xl hover:bg-[#152e52] transition-colors flex items-center justify-center gap-2"
                                   >
                                       <Share2 size={16}/> Compartir
@@ -3441,7 +3441,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                           {bankingOptions[selectedCountry]?.find(b => b.name === selectedBankName)?.accountNumber || '123-456-7890'}
                                       </p>
                                       <p className="text-xs text-slate-500 mt-1">
-                                          {bankingOptions[selectedCountry]?.find(b => b.name === selectedBankName)?.beneficiary || 'CUYPAY CORP'}
+                                          {bankingOptions[selectedCountry]?.find(b => b.name === selectedBankName)?.beneficiary || 'LINCOIN CORP'}
                                       </p>
                                   </div>
                               </div>
@@ -3480,7 +3480,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           {sendStep === 2 && "Elige el Método"}
                           {sendStep === 3 && sendMode === 'bank' && "Datos del Beneficiario"}
                           {sendStep === 3 && sendMode === 'wallet' && "Enviar a Wallet"}
-                          {sendStep === 3 && sendMode === 'pay' && "Pago CuyPay"}
+                          {sendStep === 3 && sendMode === 'pay' && "Pago Lincoin"}
                           {sendStep === 3 && sendMode === 'cash' && "Datos del Receptor"}
                           {sendStep === 4 && (sendMode === 'bank' || sendMode === 'wallet') && "Confirmar Envío"}
                           {sendStep === 4 && sendMode === 'pay' && "¡Pago Enviado!"}
@@ -3552,7 +3552,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       </div>
                                       <div>
                                           <p className="font-bold text-sm text-slate-800">Mover entre mis cuentas</p>
-                                          <p className="text-[10px] text-slate-500 leading-tight">Peso CuyPay ⇄ BreB CuyPay, al instante</p>
+                                          <p className="text-[10px] text-slate-500 leading-tight">Peso Lincoin ⇄ BreB Lincoin, al instante</p>
                                       </div>
                                   </button>
                               </div>
@@ -3580,7 +3580,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                           <Zap size={24} className="text-green-600" />
                                       </div>
                                       <div className="text-center">
-                                          <p className="font-bold text-sm text-slate-800">CuyPay</p>
+                                          <p className="font-bold text-sm text-slate-800">Lincoin</p>
                                           <p className="text-[10px] text-slate-400 leading-tight">Instantáneo · Sin comisión</p>
                                       </div>
                                   </button>
@@ -3787,7 +3787,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           );
                       })()}
 
-                      {/* STEP 3 PAY: CuyPay ID lookup */}
+                      {/* STEP 3 PAY: Lincoin ID lookup */}
                       {sendStep === 3 && sendMode === 'pay' && (
                           <div className="space-y-5">
                               <button onClick={() => { setSendStep(2); setPayRecipientCode(''); setPayRecipientUser(null); setPayLookupStatus('idle'); }} className="text-xs text-slate-400 flex items-center gap-1 hover:text-slate-600 font-bold"><ArrowLeft size={12}/> Volver</button>
@@ -3796,7 +3796,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   <p className="text-2xl font-extrabold text-green-700">{formatMoney(getRawAmount(sendForm.amount), sendForm.destinationCurrency)} <span className="text-lg">{sendForm.destinationCurrency}</span></p>
                               </div>
                               <div>
-                                  <label className="block text-sm font-bold text-slate-700 mb-2">ID CuyPay del destinatario</label>
+                                  <label className="block text-sm font-bold text-slate-700 mb-2">ID Lincoin del destinatario</label>
                                   <input
                                       type="text"
                                       value={payRecipientCode}
@@ -3895,8 +3895,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   <div className="bg-amber-50 border-2 border-amber-400 rounded-xl p-4 space-y-3">
                                       <p className="text-sm font-bold text-amber-800">⚠️ La conexión se demoró y NO se sabe si el envío se procesó.</p>
                                       <p className="text-xs text-amber-700">{sendMode === 'wallet'
-                                          ? 'Para evitar envíos duplicados, revisa primero tu Historial en CuyPay (o la wallet destino en Tronscan). Si el envío NO aparece, reintenta.'
-                                          : 'Para evitar transferencias duplicadas, revisa primero tu Historial en CuyPay. Si la orden NO aparece, reintenta.'}</p>
+                                          ? 'Para evitar envíos duplicados, revisa primero tu Historial en Lincoin (o la wallet destino en Tronscan). Si el envío NO aparece, reintenta.'
+                                          : 'Para evitar transferencias duplicadas, revisa primero tu Historial en Lincoin. Si la orden NO aparece, reintenta.'}</p>
                                       <button
                                           onClick={() => setFinityUnknown(false)}
                                           style={{ color: '#FFFFFF' }}

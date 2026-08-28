@@ -218,7 +218,7 @@ const DiditAdminPanel: React.FC<{ client: any; showToast: (m: string) => void }>
       setResult(d);
       if (d.status === 'verified') showToast(`✅ Usuario verificado (${client.name})`);
       else if (d.error) showToast(`Error: ${d.error}`);
-      else showToast(`CuyPay: ${d.status ?? 'sin estado'}${d.raw ? ` (raw: "${d.raw}")` : ''}`);
+      else showToast(`Lincoin: ${d.status ?? 'sin estado'}${d.raw ? ` (raw: "${d.raw}")` : ''}`);
     } catch (e: any) {
       showToast('Error al sincronizar: ' + e.message);
     }
@@ -227,10 +227,10 @@ const DiditAdminPanel: React.FC<{ client: any; showToast: (m: string) => void }>
 
   return (
     <div className={`border rounded-xl p-4 space-y-3 ${client.kycStatus === 'verified' ? 'bg-green-50 border-green-200' : client.kycStatus === 'rejected' ? 'bg-red-50 border-red-200' : 'bg-yellow-50 border-yellow-200'}`}>
-      <h3 className="font-bold text-sm flex items-center gap-2">🔐 Verificación CuyPay</h3>
+      <h3 className="font-bold text-sm flex items-center gap-2">🔐 Verificación Lincoin</h3>
       <div className="grid grid-cols-2 gap-2 text-xs">
         {[
-          { label: 'Estado CuyPay', val: client.kycStatus },
+          { label: 'Estado Lincoin', val: client.kycStatus },
           { label: 'Session ID guardado', val: client.raw_data?.diditSessionId ? client.raw_data.diditSessionId.slice(0, 16) + '...' : null },
           { label: 'Vendor Data (userId)', val: client.id?.slice(0, 16) + '...' },
           { label: 'Verificado el', val: client.raw_data?.verifiedAt ? new Date(client.raw_data.verifiedAt).toLocaleDateString('es-CO') : null },
@@ -243,11 +243,11 @@ const DiditAdminPanel: React.FC<{ client: any; showToast: (m: string) => void }>
       </div>
       {client.kycStatus !== 'verified' && (
         <div className="space-y-2 pt-2 border-t border-yellow-200">
-          <p className="text-[11px] text-slate-600 font-medium">Sincronizar estado desde CuyPay automáticamente:</p>
-          <p className="text-[10px] text-slate-400">Busca todas las sesiones de este usuario en CuyPay y actualiza el estado si hay una aprobada.</p>
+          <p className="text-[11px] text-slate-600 font-medium">Sincronizar estado desde Lincoin automáticamente:</p>
+          <p className="text-[10px] text-slate-400">Busca todas las sesiones de este usuario en Lincoin y actualiza el estado si hay una aprobada.</p>
           <button onClick={handleSync} disabled={syncing}
             className="w-full px-4 py-2 bg-yellow-500 text-white text-xs font-bold rounded-lg hover:bg-yellow-600 disabled:opacity-50">
-            {syncing ? 'Consultando CuyPay...' : '🔄 Sincronizar estado desde CuyPay'}
+            {syncing ? 'Consultando Lincoin...' : '🔄 Sincronizar estado desde Lincoin'}
           </button>
           {result && (
             <div className={`text-xs p-2 rounded-lg font-mono ${result.status === 'verified' ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600'}`}>
@@ -560,7 +560,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const handleApproveKYC = async () => {
     if (!selectedClient) return;
     const existing: any[] = selectedClient.notifications ?? [];
-    const notif = { id: Date.now(), type: 'kyc', title: 'KYC Aprobado', message: 'Tu cuenta ha sido verificada exitosamente. Ya puedes operar con todos los servicios CuyPay.', read: false, date: new Date().toLocaleDateString() };
+    const notif = { id: Date.now(), type: 'kyc', title: 'KYC Aprobado', message: 'Tu cuenta ha sido verificada exitosamente. Ya puedes operar con todos los servicios Lincoin.', read: false, date: new Date().toLocaleDateString() };
     // Use edge function (service role) so RLS doesn't block the update
     await setKycViaEdgeFn(selectedClient.id, 'verified');
     updateUserProfile(selectedClient.id, { kycStatus: 'verified', notifications: [...existing, notif] });
@@ -742,7 +742,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `CUYPAY_BACKUP_${new Date().toISOString().split('T')[0]}.json`;
+      a.download = `LINCOIN_BACKUP_${new Date().toISOString().split('T')[0]}.json`;
       a.click();
       URL.revokeObjectURL(url);
       showToast("Backup completo descargado correctamente");
@@ -2227,7 +2227,7 @@ const renderDesign = () => (
               <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
                   <Palette size={20} className="text-[#2DD4BF]"/> Paletas de Azules
               </h3>
-              <p className="text-slate-500 text-sm mb-4">Elige entre 10 variaciones de azul para la identidad visual de CuyPay.</p>
+              <p className="text-slate-500 text-sm mb-4">Elige entre 10 variaciones de azul para la identidad visual de Lincoin.</p>
               <button
                   onClick={() => setShowPaletteChooser(true)}
                   className="w-full py-3 rounded-xl font-bold text-white transition-all hover:opacity-90 flex items-center justify-center gap-2"

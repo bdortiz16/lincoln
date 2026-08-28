@@ -83,7 +83,7 @@ export const PromotionsSection: React.FC<Props> = ({ profile }) => {
 
 // ─────────────────────────────────────────────
 // Composer de correo masivo a usuarios de cuenta.
-// Flujo: brief → IA genera subject+body → preview con logo CuyPay →
+// Flujo: brief → IA genera subject+body → preview con logo Lincoin →
 //         enviar a todos los users (NO terceros, NO usuarios bloqueados).
 // La llamada de generación llama edge function 'admin-ai-email' (action=generate)
 // y el envío llama edge function 'admin-broadcast-email' (action=send).
@@ -247,7 +247,7 @@ const MailComposer: React.FC<{ profile: AdminProfile }> = ({ profile }) => {
                         value={body}
                         onChange={e => setBody(e.target.value)}
                         rows={12}
-                        placeholder="Cuerpo del correo (texto plano — el preview de la derecha lo envuelve con el branding CuyPay)."
+                        placeholder="Cuerpo del correo (texto plano — el preview de la derecha lo envuelve con el branding Lincoin)."
                         className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-teal-500 resize-y"
                     />
                 </div>
@@ -298,7 +298,7 @@ const MailComposer: React.FC<{ profile: AdminProfile }> = ({ profile }) => {
     );
 };
 
-// Plantilla HTML branded con los colores y logo de CuyPay.
+// Plantilla HTML branded con los colores y logo de Lincoin.
 // Acepta subject + cuerpo en texto plano y devuelve HTML listo para enviar.
 function renderHtml(subject: string, body: string): string {
     const safeBody = String(body)
@@ -313,17 +313,17 @@ function renderHtml(subject: string, body: string): string {
       <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 1px 2px rgba(15,23,42,.04)">
         <tr><td style="background:#0F172A;padding:20px 28px;text-align:left">
           <span style="display:inline-block;width:36px;height:36px;border-radius:10px;background:#2DD4BF;line-height:36px;text-align:center;color:#0F172A;font-weight:800;font-family:-apple-system,sans-serif">C</span>
-          <span style="display:inline-block;margin-left:10px;color:#ffffff;font-weight:800;letter-spacing:1px;font-size:14px;vertical-align:6px">CUYPAY</span>
+          <span style="display:inline-block;margin-left:10px;color:#ffffff;font-weight:800;letter-spacing:1px;font-size:14px;vertical-align:6px">LINCOIN</span>
         </td></tr>
         <tr><td style="padding:28px">
           <h1 style="margin:0 0 16px;font-size:20px;color:#0F172A">${safeSubject}</h1>
           <div style="font-size:14px;color:#334155">${safeBody}</div>
           <div style="margin:28px 0 0">
-            <a href="https://cuypay.com" style="display:inline-block;background:#2DD4BF;color:#0F172A;text-decoration:none;font-weight:700;font-size:14px;padding:10px 18px;border-radius:10px">Abrir CuyPay</a>
+            <a href="https://cuypay.com" style="display:inline-block;background:#2DD4BF;color:#0F172A;text-decoration:none;font-weight:700;font-size:14px;padding:10px 18px;border-radius:10px">Abrir Lincoin</a>
           </div>
         </td></tr>
         <tr><td style="padding:20px 28px;background:#F8FAFC;border-top:1px solid #E2E8F0;font-size:11px;color:#64748B">
-          Recibís este correo porque sos usuario verificado de CuyPay.<br/>
+          Recibís este correo porque sos usuario verificado de Lincoin.<br/>
           Si no querés recibir más campañas, respondé a este mail con la palabra <b>BAJA</b>.
         </td></tr>
       </table>

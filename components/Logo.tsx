@@ -2,7 +2,7 @@ import React from 'react';
 import { useSystemConfig } from '../context/SystemConfigContext';
 import { useTheme } from '../context/ThemeContext';
 
-// Símbolo oficial de CuyPay: rounded-square outline + dot a la derecha.
+// Símbolo oficial de Lincoin: rounded-square outline + dot a la derecha.
 // (Reemplaza al cube rotado anterior — branding oficial mayo 2026)
 const CubeMark: React.FC<{ size?: number; teal: string; navy: string }> = ({ size = 40, teal, navy }) => {
   return (
@@ -46,7 +46,7 @@ export const Logo: React.FC<{ collapsed?: boolean; variant?: 'default' | 'white'
       {!collapsed && (
         <div className="flex flex-col justify-center leading-none">
           <span className="font-black tracking-tight" style={{ fontSize: 20, letterSpacing: '-0.5px', color: textColor }}>
-            CUY<span style={{ color: teal }}>PAY</span>
+            LINCO<span style={{ color: teal }}>IN</span>
           </span>
           {business && (
             <span className="font-semibold uppercase tracking-widest" style={{

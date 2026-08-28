@@ -154,7 +154,7 @@ export const FinityRateChart: React.FC<{ from?: string; to?: string }> = ({ from
         <div className="rounded-2xl overflow-hidden border border-slate-800" style={{ backgroundColor: '#0B1220' }}>
             <div className="px-4 pt-4 pb-2 flex items-center justify-between flex-wrap gap-2">
                 <div>
-                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{from} → {to} · CuyPay</p>
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{from} → {to} · Lincoin</p>
                     {hasData ? (
                         <div className="flex items-center gap-3 mt-0.5">
                             <span className="text-lg font-bold font-mono text-white">{fmtRate(last.rate)}</span>

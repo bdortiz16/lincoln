@@ -45,7 +45,7 @@ export const DownloadAppModal: React.FC<DownloadAppModalProps> = ({ onClose }) =
 
         {/* Title */}
         <h2 style={{ color: '#0F172A' }} className="text-2xl md:text-3xl font-bold text-center mb-2">
-          Descarga CUYPAY
+          Descarga LINCOIN
         </h2>
         <p style={{ color: '#64748B' }} className="text-center text-sm mb-8 leading-relaxed">
           Tu cuenta personal vive en la app móvil.<br />

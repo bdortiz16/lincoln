@@ -88,12 +88,12 @@ export const PersonalOnboardingWizard: React.FC<PersonalOnboardingProps> = ({ on
                             >
                                 {loading
                                     ? <><RefreshCw size={20} className="animate-spin"/> Iniciando verificación...</>
-                                    : <><ShieldCheck size={20}/> Comenzar verificación con CuyPay</>
+                                    : <><ShieldCheck size={20}/> Comenzar verificación con Lincoin</>
                                 }
                             </button>
 
                             <p className="text-[11px] text-slate-400 text-center mt-4">
-                                Verificación CuyPay · Tus datos están protegidos y encriptados
+                                Verificación Lincoin · Tus datos están protegidos y encriptados
                             </p>
                         </>
                     ) : (
@@ -104,12 +104,12 @@ export const PersonalOnboardingWizard: React.FC<PersonalOnboardingProps> = ({ on
                                     <CheckCircle size={32} className="text-green-600" />
                                 </div>
                                 <h2 className="text-2xl font-bold text-[#0F172A] mb-2">¡Verificación iniciada!</h2>
-                                <p className="text-slate-500 text-sm">Se abrió CuyPay en una nueva pestaña. Completa el proceso allí — foto de documento y selfie.</p>
+                                <p className="text-slate-500 text-sm">Se abrió Lincoin en una nueva pestaña. Completa el proceso allí — foto de documento y selfie.</p>
                             </div>
 
                             <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 mb-6 space-y-2">
                                 <p className="text-sm font-bold text-[#2DD4BF]">¿Qué pasa después?</p>
-                                <p className="text-xs text-[#2DD4BF]">Cuando CuyPay termine de verificarte, tu cuenta se activará automáticamente y recibirás una notificación. No necesitas volver a esta pantalla.</p>
+                                <p className="text-xs text-[#2DD4BF]">Cuando Lincoin termine de verificarte, tu cuenta se activará automáticamente y recibirás una notificación. No necesitas volver a esta pantalla.</p>
                             </div>
 
                             <div className="space-y-3">

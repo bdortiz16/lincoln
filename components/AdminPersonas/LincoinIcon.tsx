@@ -1,7 +1,7 @@
 import React from 'react';
 
 /**
- * Ícono oficial de CuyPay.
+ * Ícono oficial de Lincoin.
  *
  * Hecho como SVG inline para que sea crisp a cualquier tamaño y no
  * necesite request HTTP extra.
@@ -9,7 +9,7 @@ import React from 'react';
  * Composición:
  *  - Fondo: rounded-square navy (#0F172A)
  *  - Símbolo: rounded-square outline teal (#2DD4BF) con dot teal
- *    a la derecha — la marca de CuyPay
+ *    a la derecha — la marca de Lincoin
  *
  * Props:
  *  - size: tamaño en px (default 32)
@@ -17,7 +17,7 @@ import React from 'react';
  *    cuando va sobre un fondo navy ya existente). Default true.
  *  - bgColor / markColor: override de colores
  */
-export const CuyPayIcon: React.FC<{
+export const LincoinIcon: React.FC<{
     size?: number;
     withBackground?: boolean;
     bgColor?: string;
@@ -30,7 +30,7 @@ export const CuyPayIcon: React.FC<{
     bgColor = '#0F172A',
     markColor = '#2DD4BF',
     className,
-    title = 'CuyPay',
+    title = 'Lincoin',
 }) => (
     <svg
         xmlns="http://www.w3.org/2000/svg"
@@ -70,10 +70,10 @@ export const CuyPayIcon: React.FC<{
 
 // Variante compacta sin fondo — útil cuando ya hay un container con
 // el color navy y solo queremos el símbolo teal encima.
-export const CuyPayMark: React.FC<{
+export const LincoinMark: React.FC<{
     size?: number;
     color?: string;
     className?: string;
 }> = ({ size = 24, color = '#2DD4BF', className }) => (
-    <CuyPayIcon size={size} withBackground={false} markColor={color} className={className} />
+    <LincoinIcon size={size} withBackground={false} markColor={color} className={className} />
 );

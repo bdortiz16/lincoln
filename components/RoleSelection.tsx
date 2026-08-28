@@ -42,7 +42,7 @@ export const RoleSelection: React.FC<RoleSelectionProps> = ({ onSelectPersonal, 
                   ¡Hola! ¿A dónde quieres ingresar?
               </h2>
               <p className="text-slate-500 text-center text-xs md:text-lg mb-6 md:mb-12 max-w-2xl">
-                  Selecciona el perfil correspondiente para acceder a tu Banca por Internet CUYPAY.
+                  Selecciona el perfil correspondiente para acceder a tu Banca por Internet LINCOIN.
               </p>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-8 w-full max-w-3xl">

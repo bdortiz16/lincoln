@@ -772,7 +772,7 @@ const ReceiptViewer: React.FC<{ url: string }> = ({ url }) => {
             const rawPath = url.replace(/^\/+/, '');
 
             // Lista de buckets a probar: los reales del proyecto + candidatos.
-            // 'receipts' primero porque es el bucket confirmado de CuyPay.
+            // 'receipts' primero porque es el bucket confirmado de Lincoin.
             let buckets: string[] = ['receipts'];
             try {
                 const { data: realBuckets } = await supabasePersonas.storage.listBuckets();

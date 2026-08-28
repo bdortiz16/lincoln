@@ -267,7 +267,7 @@ export const UserDetailDrawer: React.FC<Props> = ({ userId, onClose, profile }) 
                                 { label: 'Teléfono', value: user?.phone ?? '—', icon: Phone },
                                 { label: 'País', value: `${user?.flag ?? ''} ${user?.country ?? '—'}`, icon: Globe },
                                 { label: 'Registrado', value: formatDate(user?.created_at), icon: Calendar },
-                                { label: 'CuyPay ID', value: user?.cuypay_id ?? '—', icon: Hash },
+                                { label: 'Lincoin ID', value: user?.cuypay_id ?? '—', icon: Hash },
                                 { label: 'KYC verificado', value: user?.kyc_verified_at ? formatDate(user.kyc_verified_at) : '—', icon: Shield },
                                 { label: 'Proveedor KYC', value: user?.kyc_provider ?? '—', icon: Shield },
                                 { label: 'PIN configurado', value: user?.pin_hash ? 'Sí' : 'No', icon: KeyRound },

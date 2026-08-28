@@ -22,7 +22,7 @@ import { Lock, LogOut, ShieldCheck } from 'lucide-react';
 
 // El panel de Tasas del admin de Empresas lee/escribe en el PROPIO
 // proyecto de empresas (feed fastforex-sync + tablas de
-// 2026_fx_snapshots_empresas.sql), no en CuyPayANDROID.
+// 2026_fx_snapshots_empresas.sql), no en LincoinANDROID.
 // Guard por ruta: este módulo vive en el mismo bundle que /admin-personas
 // y el override solo debe aplicar cuando la página ES admin-empresas.
 if (typeof window !== 'undefined' &&
@@ -128,7 +128,7 @@ const AdminEmpresasInner: React.FC = () => {
                     </form>
                 </div>
                 <p className="text-center text-[10px] text-white/30 mt-4">
-                    CuyPay · Panel de administración de empresas
+                    Lincoin · Panel de administración de empresas
                 </p>
             </div>
         </div>

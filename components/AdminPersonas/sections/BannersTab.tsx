@@ -330,7 +330,7 @@ const BannerModal: React.FC<{
                             imageUrl={imageUrl}
                         />
                         <p className="text-[10px] text-slate-400 text-center">
-                            Cartel oscuro con borde doble cian — paleta oficial CuyPay.
+                            Cartel oscuro con borde doble cian — paleta oficial Lincoin.
                         </p>
                     </div>
 

@@ -11,7 +11,7 @@ import { callFinity, extractRate } from '../../FinitySection';
 
 // ─────────────────────────────────────────────
 // Cliente de datos del panel. Por defecto: proyecto Personas
-// (CuyPayANDROID, donde vive el feed original). setRatesDbClient()
+// (LincoinANDROID, donde vive el feed original). setRatesDbClient()
 // permite apuntar el panel a OTRO proyecto (el admin de Empresas lo
 // apunta a su propio Supabase, que tiene su feed fastforex-sync).
 // Las rutas /admin-personas y /admin-empresas son page-loads separados,
@@ -71,7 +71,7 @@ const FLAGS: Record<string, string> = {
     COP: '🇨🇴', CLP: '🇨🇱', PEN: '🇵🇪',
     MXN: '🇲🇽', BRL: '🇧🇷', VES: '🇻🇪', USD: '🇺🇸',
 };
-// USD se quitó del listado tradeable a pedido del user. CuyPay opera
+// USD se quitó del listado tradeable a pedido del user. Lincoin opera
 // solo en LATAM. VES queda incluido por la integración Venezuela.
 const ORDER = ['COP', 'CLP', 'PEN', 'MXN', 'BRL', 'VES'];
 

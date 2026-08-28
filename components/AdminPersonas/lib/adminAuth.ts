@@ -2,7 +2,7 @@ import { supabasePersonas } from '../../../lib/supabaseClient';
 
 export type AdminRole = 'super_admin' | 'compliance' | 'treasury' | 'audit' | 'support';
 
-// Las 5 monedas LATAM en las que CuyPay opera. Una persona de tesorería
+// Las 5 monedas LATAM en las que Lincoin opera. Una persona de tesorería
 // se puede asignar a UNA de estas para que solo vea ese mercado.
 export type AssignedCurrency = 'COP' | 'CLP' | 'PEN' | 'MXN' | 'BRL';
 export const TREASURY_CURRENCIES: AssignedCurrency[] = ['COP', 'CLP', 'PEN', 'MXN', 'BRL'];

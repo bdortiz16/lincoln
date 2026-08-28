@@ -26,7 +26,7 @@ interface Props {
     embedded?: boolean;
 }
 
-// 5 países LATAM en los que CuyPay opera + label de documento típico por país
+// 5 países LATAM en los que Lincoin opera + label de documento típico por país
 export const COUNTRIES: Array<{
     code: string;        // ISO-2
     name: string;
@@ -341,7 +341,7 @@ export const BankAccountsSection: React.FC<Props> = ({ profile, embedded = false
     return (
         <div className="p-4 md:p-8">
             <div className="mb-4">
-                <h1 className="text-xl md:text-2xl font-bold leading-tight" style={{ color: NAVY }}>Cuentas bancarias CuyPay</h1>
+                <h1 className="text-xl md:text-2xl font-bold leading-tight" style={{ color: NAVY }}>Cuentas bancarias Lincoin</h1>
                 <p className="text-slate-500 text-xs md:text-sm mt-1">Cuentas donde los usuarios depositan (una o más por país)</p>
             </div>
             {content}
@@ -494,7 +494,7 @@ export const BankAccountFormModal: React.FC<{
                         <input
                             value={holder}
                             onChange={e => setHolder(e.target.value)}
-                            placeholder="CuyPay S.A.S"
+                            placeholder="Lincoin S.A.S"
                             className="w-full px-3 py-2 rounded-lg border border-slate-200 focus:border-teal-500 outline-none"
                         />
                     </FormRow>
@@ -824,14 +824,14 @@ export const BankMovementsDrawer: React.FC<{
                     </div>
                     <p className="text-xs text-slate-500">
                         Desglose del saldo en {ccy}: cuánto pertenece a los usuarios (sus billeteras)
-                        y cuánto es de CuyPay (comisiones / capital propio).
+                        y cuánto es de Lincoin (comisiones / capital propio).
                     </p>
 
                     <div className="bg-white rounded-xl border border-slate-200 p-3 space-y-1">
                         <Row label={`Saldo por transacciones`} value={formatAmount(acctBalance, ccy)} bold navy />
                         <Row label={`En billeteras de usuarios (${custody.filter(c => c.balance > 0).length})`} value={formatAmount(custodyTotal, ccy)} />
                         <Row
-                            label={houseBalance >= 0 ? 'CuyPay · comisiones / capital' : 'Descalce (billeteras > banco)'}
+                            label={houseBalance >= 0 ? 'Lincoin · comisiones / capital' : 'Descalce (billeteras > banco)'}
                             value={formatAmount(houseBalance, ccy)}
                             tone={houseBalance >= 0 ? 'emerald' : 'red'}
                         />
@@ -873,7 +873,7 @@ export const BankMovementsDrawer: React.FC<{
                     </div>
                     <p className="text-[10px] text-slate-400 pt-1">
                         * Billeteras {ccy} de todos los usuarios vs. el saldo por transacciones de esta cuenta.
-                        Si CuyPay opera con varias cuentas en {ccy}, el desglose es global de la moneda.
+                        Si Lincoin opera con varias cuentas en {ccy}, el desglose es global de la moneda.
                     </p>
                 </div>
 

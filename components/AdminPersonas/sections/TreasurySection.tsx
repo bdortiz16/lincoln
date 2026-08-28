@@ -208,7 +208,7 @@ const ReservesTab: React.FC = () => {
     const load = useCallback(async () => {
         setLoading(true);
         const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-        // Esquema real (CuyPayANDROID): kind (load/send), amount, currency.
+        // Esquema real (LincoinANDROID): kind (load/send), amount, currency.
         const { data } = await supabasePersonas
             .from('transactions')
             .select('kind, status, amount, currency, created_at')

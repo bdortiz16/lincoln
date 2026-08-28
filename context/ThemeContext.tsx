@@ -1,7 +1,7 @@
 import React, { createContext, useContext, ReactNode, useEffect } from 'react';
 
 /**
- * CuyPay opera SOLO en modo oscuro.
+ * Lincoin opera SOLO en modo oscuro.
  *
  * Eliminamos el toggle por decisión de producto: el modo claro generaba
  * inconsistencias visuales y bugs en varias secciones. El Provider sigue

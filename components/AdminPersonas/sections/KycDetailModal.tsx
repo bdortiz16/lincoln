@@ -237,7 +237,7 @@ export const KycDetailModal: React.FC<Props> = ({ kind, entity, profile, canAppr
     };
 
     // changeStatus ahora llama POST ?action=update_status del backend de
-    // Antigravity, que sincroniza Didit + CuyPay + cache + kyc_events audit
+    // Antigravity, que sincroniza Didit + Lincoin + cache + kyc_events audit
     // en una sola llamada. Acepta comment opcional (obligatorio para reject/
     // resubmit por buena práctica de compliance, pero el backend decide).
     const changeStatus = async (newStatus: NewStatus, comment: string) => {
@@ -284,7 +284,7 @@ export const KycDetailModal: React.FC<Props> = ({ kind, entity, profile, canAppr
             //   2. admin_set_status       → UPDATE users.kyc_status
             if (actionUnsupported) {
                 const canonical = newStatus === 'approved' ? 'verified' : newStatus;
-                // 1) push a Didit (no abortamos si falla — CuyPay manda)
+                // 1) push a Didit (no abortamos si falla — Lincoin manda)
                 try {
                     await fetch(`${supabaseUrl}/functions/v1/didit-kyc`, {
                         method: 'POST',
@@ -328,7 +328,7 @@ export const KycDetailModal: React.FC<Props> = ({ kind, entity, profile, canAppr
                     source: 'kyc_detail_modal',
                 },
             });
-            setRefreshMsg(`✓ ${apiStatus.toUpperCase()} sincronizado con Didit y CuyPay`);
+            setRefreshMsg(`✓ ${apiStatus.toUpperCase()} sincronizado con Didit y Lincoin`);
             setStatusOpen(false);
             setStatusComment('');
             onSaved?.();
@@ -377,7 +377,7 @@ export const KycDetailModal: React.FC<Props> = ({ kind, entity, profile, canAppr
                 if (sessionId) params.set('session_id', sessionId);
             }
             // Auth + URL: la edge function vive en el proyecto PERSONAS
-            // (jnbmqzalkeheqoukjmhy = CuyPayANDROID) — confirmado por
+            // (jnbmqzalkeheqoukjmhy = LincoinANDROID) — confirmado por
             // Antigravity: GET https://jnbmqzalkeheqoukjmhy.supabase.co/
             // functions/v1/didit-kyc?action=ping responde OK con todos los
             // env vars en true.
@@ -830,8 +830,8 @@ export const KycDetailModal: React.FC<Props> = ({ kind, entity, profile, canAppr
                                 />
                                 <KV label="Creado el" value={entity.created_at ? formatDate(entity.created_at) : '—'} />
                                 <KV label="KYC verificado" value={entity.kyc_verified_at ? formatDate(entity.kyc_verified_at) : '—'} />
-                                <KV label="Proveedor KYC" value={entity.kyc_provider && entity.kyc_provider !== 'Didit' ? entity.kyc_provider : 'CuyPay'} />
-                                <KV label="CuyPay ID" value={entity.cuypay_id ?? '—'} mono />
+                                <KV label="Proveedor KYC" value={entity.kyc_provider && entity.kyc_provider !== 'Didit' ? entity.kyc_provider : 'Lincoin'} />
+                                <KV label="Lincoin ID" value={entity.cuypay_id ?? '—'} mono />
                                 <KV label="UUID" value={entity.id} mono onCopy={() => copy(entity.id)} />
                             </Card>
 
@@ -916,7 +916,7 @@ export const KycDetailModal: React.FC<Props> = ({ kind, entity, profile, canAppr
 
             {/* Sub-modal: cambiar estado (2 pasos: elegir acción → confirmar
                 con comentario opcional → POST al backend que sincroniza
-                Didit + CuyPay + cache + audit en una sola llamada). */}
+                Didit + Lincoin + cache + audit en una sola llamada). */}
             {statusOpen && (
                 <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4" onClick={(e) => { e.stopPropagation(); setStatusOpen(false); setPendingStatus(null); setStatusComment(''); }}>
                     <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6" onClick={e => e.stopPropagation()}>
@@ -932,7 +932,7 @@ export const KycDetailModal: React.FC<Props> = ({ kind, entity, profile, canAppr
                         {!pendingStatus && (
                             <>
                                 <p className="text-xs text-slate-500 mb-4">
-                                    El backend va a sincronizar Didit y CuyPay simultáneamente. El cambio queda en el audit log.
+                                    El backend va a sincronizar Didit y Lincoin simultáneamente. El cambio queda en el audit log.
                                 </p>
                                 <div className="space-y-2">
                                     {STATUS_OPTIONS.map(o => (

@@ -439,7 +439,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                     // persistencia evita reenviarlo en cada sincronización).
                     for (const c of newlyApproved) {
                         callFinity('email_event', currentUser!.id, {
-                            subject: 'CuyPay · Contacto aprobado',
+                            subject: 'Lincoin · Contacto aprobado',
                             title: 'Contacto aprobado',
                             message: `La cuenta de <strong>${c.name}</strong> quedó aprobada. Ya puedes transferirle.`,
                         }).catch(() => {});

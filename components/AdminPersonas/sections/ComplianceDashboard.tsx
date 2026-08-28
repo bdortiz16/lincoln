@@ -345,7 +345,7 @@ const CountryHeatmap: React.FC<{ data: CountryStat[] }> = ({ data }) => {
 };
 
 // ─────────────────────────────────────────────
-// LatamMap — choropleth de los 6 países donde CuyPay opera.
+// LatamMap — choropleth de los 6 países donde Lincoin opera.
 //
 // Los paths son outlines simplificados (Natural Earth 110m, generalizados)
 // de Colombia, Perú, Chile, México, Brasil y Venezuela. Cada país se pinta

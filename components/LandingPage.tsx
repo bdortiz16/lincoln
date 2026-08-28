@@ -53,7 +53,7 @@ const LOCALIZATION: Record<CountryCode, CountryConfig> = {
     texts: {
       heroTitle: <>OPERA SIN <br/> FRONTERAS</>,
       heroSubtitle: 'Envía, recibe, compra y vende divisas sin costo Swift y con la mejor tasa del mercado colombiano.',
-      ctaMain: 'Crea Tu Cuenta CUYPAY', ctaSecondary: 'Agenda una reunión',
+      ctaMain: 'Crea Tu Cuenta LINCOIN', ctaSecondary: 'Agenda una reunión',
       featuresTitle: <>Todo lo que necesitas <br/> <span className="text-[#0F172A]">en una sola app</span></>,
       featuresSubtitle: 'Únete a las empresas líderes en Colombia que ya operan con nosotros.',
       login: 'Iniciar sesión', createAccount: 'Crear cuenta', personal: 'PERSONAS', business: 'EMPRESAS'
@@ -202,7 +202,7 @@ const IndustryItem: React.FC<{ icon: any; label: string; color: string; logo: st
 
 // FeatureCard premium con icono más grande, gradient sutil y glow
 // behind the icon. La paleta unificada se basa en el cyan oficial
-// CuyPay (#2DD4BF) — los `color` legacy del callsite siguen
+// Lincoin (#2DD4BF) — los `color` legacy del callsite siguen
 // aceptados pero el container del icono ahora siempre arma su
 // estilo desde el tono del icono que recibe (iconTint).
 const FeatureCard: React.FC<{
@@ -582,7 +582,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
                             className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors"
                           >
                               <div className="bg-[#F0FFFE] p-1.5 rounded-lg text-[#2DD4BF]"><Megaphone size={16}/></div>
-                              <span className="text-sm font-bold">Aliados CUYPAY</span>
+                              <span className="text-sm font-bold">Aliados LINCOIN</span>
                           </button>
                       </div>
                   )}
@@ -933,7 +933,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
                                         <span className="font-bold text-slate-700 text-sm">Costo de envío:</span>
                                         <span className="font-bold text-[#0F172A] text-lg">{formatCurrency(fee, sourceCurr)} {sourceCurr}</span>
                                     </div>
-                                    {/* Los costos operacionales son información INTERNA de CuyPay
+                                    {/* Los costos operacionales son información INTERNA de Lincoin
                                         (Contabilidad → costos por par) — el cliente solo ve el costo
                                         de envío total. */}
                                     <div className="border-t border-dashed border-slate-200"></div>
@@ -1222,7 +1222,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
                       <div>
                           <h4 className="font-bold text-lg mb-6">Disclaimer legal:</h4>
                           <p className="text-xs text-slate-400 italic mb-6">
-                              “CUYPAY opera bajo estrictos estándares regulatorios.”
+                              “LINCOIN opera bajo estrictos estándares regulatorios.”
                           </p>
                           <ul className="space-y-3 text-sm text-slate-300">
                               <li><button onClick={() => onNavigateTo('privacy')} className="hover:text-[#2DD4BF] transition-colors text-left">Tratamiento de datos</button></li>
@@ -1279,7 +1279,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
                               </div>
                               <h3 className="text-white text-xl font-bold mb-2">Hablemos</h3>
                               <p className="text-slate-400 text-sm mb-6">
-                                  Escribinos o agendá una reunión con el equipo de CuyPay.
+                                  Escribinos o agendá una reunión con el equipo de Lincoin.
                               </p>
                               <div className="space-y-3">
                                   <a
@@ -1302,7 +1302,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onRegist
 
                   {/* Copyright */}
                   <div className="text-center text-xs text-slate-500">
-                      © Copyright CUYPAY, All right reserved.
+                      © Copyright LINCOIN, All right reserved.
                   </div>
               </div>
           </footer>

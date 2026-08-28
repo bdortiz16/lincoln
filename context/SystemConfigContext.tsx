@@ -35,7 +35,7 @@ const DEFAULT_CONFIG = {
   referralCommission: 0.4,
   coupons: [
       { code: 'WELCOME20', discount: 20, active: true },
-      { code: 'CUYPAY50', discount: 50, active: true }
+      { code: 'LINCOIN50', discount: 50, active: true }
   ],
   ...PALETTE_DEFAULTS,
   marketingModal: {
@@ -47,17 +47,17 @@ const DEFAULT_CONFIG = {
   treasuryAccounts: [],
   bankingOptions: {
     'Colombia': [
-      { id: 'col_1', name: 'Bancolombia', type: 'bank', accountNumber: '69812345678', accountType: 'Ahorros', beneficiary: 'CUYPAY SAS', taxId: '900123456-1', taxIdType: 'NIT', logoColor: 'bg-yellow-400 text-yellow-900', logoText: 'BC' },
-      { id: 'col_2', name: 'Nequi', type: 'bank', accountNumber: '3001234567', accountType: 'Nequi', beneficiary: 'CUYPAY SAS', taxId: '900123456-1', taxIdType: 'NIT', logoColor: 'bg-purple-600 text-white', logoText: 'NQ' },
+      { id: 'col_1', name: 'Bancolombia', type: 'bank', accountNumber: '69812345678', accountType: 'Ahorros', beneficiary: 'LINCOIN SAS', taxId: '900123456-1', taxIdType: 'NIT', logoColor: 'bg-yellow-400 text-yellow-900', logoText: 'BC' },
+      { id: 'col_2', name: 'Nequi', type: 'bank', accountNumber: '3001234567', accountType: 'Nequi', beneficiary: 'LINCOIN SAS', taxId: '900123456-1', taxIdType: 'NIT', logoColor: 'bg-purple-600 text-white', logoText: 'NQ' },
     ],
     'Perú': [
-      { id: 'per_1', name: 'BCP', type: 'bank', accountNumber: '19412345678901', accountType: 'Ahorros', beneficiary: 'CUYPAY SAC', taxId: '20123456789', taxIdType: 'RUC', logoColor: 'bg-blue-700 text-white', logoText: 'BCP' },
+      { id: 'per_1', name: 'BCP', type: 'bank', accountNumber: '19412345678901', accountType: 'Ahorros', beneficiary: 'LINCOIN SAC', taxId: '20123456789', taxIdType: 'RUC', logoColor: 'bg-blue-700 text-white', logoText: 'BCP' },
     ],
     'Chile': [
-      { id: 'chl_1', name: 'Banco Estado', type: 'bank', accountNumber: '123456789', accountType: 'Vista', beneficiary: 'CUYPAY SpA', taxId: '76.123.456-7', taxIdType: 'RUT', logoColor: 'bg-red-600 text-white', logoText: 'BE' },
+      { id: 'chl_1', name: 'Banco Estado', type: 'bank', accountNumber: '123456789', accountType: 'Vista', beneficiary: 'LINCOIN SpA', taxId: '76.123.456-7', taxIdType: 'RUT', logoColor: 'bg-red-600 text-white', logoText: 'BE' },
     ],
     'México': [
-      { id: 'mex_1', name: 'BBVA México', type: 'bank', accountNumber: '012345678901234567', accountType: 'CLABE', beneficiary: 'CUYPAY SA de CV', taxId: 'CUY123456ABC', taxIdType: 'RFC', logoColor: 'bg-blue-500 text-white', logoText: 'BB' },
+      { id: 'mex_1', name: 'BBVA México', type: 'bank', accountNumber: '012345678901234567', accountType: 'CLABE', beneficiary: 'LINCOIN SA de CV', taxId: 'CUY123456ABC', taxIdType: 'RFC', logoColor: 'bg-blue-500 text-white', logoText: 'BB' },
     ],
   },
   adminTeam: [],
