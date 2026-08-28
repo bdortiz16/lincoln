@@ -163,11 +163,18 @@ async function gfPost(apiPath: string, body: any): Promise<any> {
 // el bug: una dirección no verificada hacía fallar la consulta en
 // silencio y el catch devolvía 0 sin decir por qué).
 const CALL_OWNER = 'T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb' // dirección cero de TRON
+// TronGrid limita (rate-limit) las llamadas SIN API key → las lecturas de saldo
+// devolvían 0 aunque el USDT SÍ estuviera on-chain. Si se setea TRONGRID_API_KEY
+// en Supabase Secrets, se manda en el header y las lecturas son confiables.
+const TRONGRID_KEY = (Deno.env.get('TRONGRID_API_KEY') ?? '').trim()
+function tgHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  return TRONGRID_KEY ? { 'TRON-PRO-API-KEY': TRONGRID_KEY, ...extra } : extra
+}
 async function tokenBalanceOnDebug(address: string, contract: string, decimals: number, host: string): Promise<{ balance: number; raw: any; error?: string }> {
   try {
     const param = '0'.repeat(24) + tronAddrToEvmHex(address)
     const r = await fetch(`${host}/wallet/triggerconstantcontract`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: tgHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ owner_address: CALL_OWNER, contract_address: contract, function_selector: 'balanceOf(address)', parameter: param, visible: true }),
     })
     const d = await r.json()
@@ -184,12 +191,24 @@ async function tokenBalanceOnDebug(address: string, contract: string, decimals: 
 async function tokenBalanceOn(address: string, contract: string, decimals: number, host: string): Promise<number> {
   return (await tokenBalanceOnDebug(address, contract, decimals, host)).balance
 }
-async function tokenBalance(address: string, contract: string, decimals: number) { return tokenBalanceOn(address, contract, decimals, CFG.tronHost) }
+// Saldo TRC-20 robusto: primero triggerconstantcontract; si da 0 (rate-limit o
+// dirección inactiva), cae al endpoint /v1/accounts (el mismo dato que muestra
+// Tronscan) buscando el contrato. Así el depósito se detecta aunque una vía falle.
+async function tokenBalance(address: string, contract: string, decimals: number): Promise<number> {
+  const direct = await tokenBalanceOn(address, contract, decimals, CFG.tronHost)
+  if (direct > 0) return direct
+  try {
+    const list = await scanTrc20On(address, CFG.tronHost)
+    const hit = list.find(t => t.contract === contract)
+    if (hit) { const b = Number(BigInt(hit.amount)) / Math.pow(10, decimals); if (isFinite(b) && b > 0) return b }
+  } catch { /* fallback best-effort */ }
+  return direct
+}
 
 // Lista TODOS los TRC-20 que hay en una dirección en un host TronGrid dado.
 async function scanTrc20On(address: string, host: string): Promise<{ contract: string; amount: string }[]> {
   try {
-    const r = await fetch(`${host}/v1/accounts/${address}`)
+    const r = await fetch(`${host}/v1/accounts/${address}`, { headers: tgHeaders() })
     const d = await r.json()
     const list: Record<string, string>[] = d?.data?.[0]?.trc20 ?? []
     return list.map(o => { const [contract, amount] = Object.entries(o)[0]; return { contract, amount: String(amount) } })
@@ -206,7 +225,7 @@ async function scanTrc20(address: string) { return scanTrc20On(address, CFG.tron
 async function latestIncomingTrc20(address: string, contract: string, decimals: number, wantAmount?: number): Promise<{ from: string; txId: string; amount: number; ts: number } | null> {
   try {
     const url = `${CFG.tronHost}/v1/accounts/${address}/transactions/trc20?only_to=true&limit=20&order_by=block_timestamp,desc&contract_address=${contract}`
-    const r = await fetch(url)
+    const r = await fetch(url, { headers: tgHeaders() })
     const d = await r.json()
     const list: any[] = Array.isArray(d?.data) ? d.data : []
     const parsed = list
