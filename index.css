@@ -79,3 +79,31 @@ button[class*="bg-green-400"] svg {
 .role-card:hover .role-circle-teal svg {
   stroke: #0C0E0D !important;
 }
+
+/* ==================================================================
+   Tema oscuro Lincoin — UNIVERSAL (cliente + admin), va después de
+   @tailwind utilities para ganar con !important. Convierte las
+   superficies claras heredadas de CuyPay a la paleta Lincoin.
+   ================================================================== */
+body { background-color: #070808 !important; color: #F4F4F2; }
+.bg-white, .bg-slate-50, .bg-gray-50, .bg-neutral-50, .bg-zinc-50 { background-color: #0C0E0D !important; }
+.bg-slate-100, .bg-gray-100, .bg-neutral-100 { background-color: #121413 !important; }
+.bg-slate-200, .bg-gray-200 { background-color: #161A17 !important; }
+[class*="bg-[#F"], [class*="bg-[#f"], [class*="bg-[#E"], [class*="bg-[#e"] { background-color: #0C0E0D !important; }
+[class*="from-white"], [class*="via-white"], [class*="to-white"],
+[class*="from-slate-50"], [class*="to-slate-50"], [class*="from-gray-50"], [class*="to-gray-50"],
+[class*="from-slate-100"], [class*="to-slate-100"],
+[class*="from-[#F"], [class*="to-[#F"], [class*="from-[#E"], [class*="to-[#E"] { background-image: none !important; background-color: #0C0E0D !important; }
+.text-slate-900, .text-slate-800, .text-slate-700, .text-gray-900, .text-gray-800, .text-gray-700, .text-neutral-900, .text-neutral-800, .text-black, .text-\[\#0C0E0D\] { color: #F4F4F2 !important; }
+.text-slate-600, .text-slate-500, .text-gray-600, .text-gray-500 { color: #8F8F8A !important; }
+.text-slate-400, .text-gray-400 { color: #6B726C !important; }
+.border-slate-100, .border-slate-200, .border-slate-300, .border-gray-100, .border-gray-200, .border-gray-300, .border-\[\#0C0E0D\] { border-color: rgba(255,255,255,0.10) !important; }
+.divide-slate-100 > * + *, .divide-slate-200 > * + *, .divide-gray-100 > * + *, .divide-gray-200 > * + * { border-color: rgba(255,255,255,0.10) !important; }
+input:not([type=checkbox]):not([type=radio]):not([type=range]), select, textarea { background-color: #121413 !important; color: #F4F4F2 !important; border-color: rgba(255,255,255,0.12) !important; }
+::placeholder { color: rgba(244,244,242,0.35) !important; }
+.bg-\[\#0C0E0D\], .from-\[\#0C0E0D\], .to-\[\#0C0E0D\] { background-color: #0C0E0D !important; }
+.bg-\[\#EBF2FA\], [style*="background:#EBF2FA"], [style*="backgroundColor:#EBF2FA"] { background-color: #121413 !important; }
+.bg-\[\#4ADE80\], .bg-green-400, .bg-green-500 { color: #0A0A0A !important; }
+.bg-\[\#4ADE80\] *, .bg-green-400 *, .bg-green-500 * { color: #0A0A0A !important; }
+button[class~="bg-[#0C0E0D]"], a[class~="bg-[#0C0E0D]"] { background-color: #191C1A !important; border: 1px solid rgba(255,255,255,0.12) !important; color: #F4F4F2 !important; }
+button[class~="bg-[#0C0E0D]"]:hover, a[class~="bg-[#0C0E0D]"]:hover { background-color: #22261F !important; }
