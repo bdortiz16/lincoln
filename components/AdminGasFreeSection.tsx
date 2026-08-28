@@ -43,9 +43,11 @@ async function callGasfree(body: Record<string, unknown>): Promise<any> {
     try { return JSON.parse(txt); } catch { return { error: `Respuesta no válida (HTTP ${r.status}): ${txt.slice(0, 200)}` }; }
 }
 async function callMouvProxy(body: Record<string, unknown>): Promise<any> {
+    // Saldo/ping de la wallet compartida son solo-admin → hay que ir con el
+    // header de admin (AdminBypass o JWT admin), no con la anon key.
     const r = await fetch(`${SURL}/functions/v1/mouv-proxy`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${SKEY}` },
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: adminAuthHeader() },
         body: JSON.stringify(body),
     });
     return r.json();

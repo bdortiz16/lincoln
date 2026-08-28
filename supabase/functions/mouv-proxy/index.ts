@@ -187,6 +187,32 @@ serve(async (req: Request) => {
     return json(200, { ok: r.ok, status: r.status, path: r.path, data: r.data })
   }
 
+  // ── treasury_balances: saldo de la wallet COMPARTIDA para el panel admin ──
+  // Usa el endpoint confirmado GET /api/wallets/balance. Devuelve el crudo +
+  // un parseo best-effort (los nombres exactos de los campos se ajustan al
+  // ver la respuesta real). SOLO ADMIN.
+  if (action === 'treasury_balances') {
+    if (!caller.admin) return json(403, { error: 'forbidden', message: 'Solo admin.' })
+    const r = await mouvFetch('/wallets/balance')
+    if (!r.ok) return json(200, { error: `Mouv respondió ${r.status}.`, status: r.status, raw: r.data })
+    // Parseo defensivo: busca COP y USDT en varias formas comunes.
+    const d: any = r.data ?? {}
+    const pick = (...keys: string[]): number | null => {
+      for (const k of keys) {
+        const v = d?.[k] ?? d?.balance?.[k] ?? d?.balances?.[k] ?? d?.data?.[k]
+        if (typeof v === 'number') return v
+        if (typeof v === 'string' && v.trim() !== '' && !isNaN(Number(v))) return Number(v)
+      }
+      return null
+    }
+    return json(200, {
+      ok: true, status: r.status, source: 'mouv',
+      cop: pick('cop', 'COP', 'cop_balance', 'ach', 'available_cop', 'balance_cop'),
+      usdt: pick('usdt', 'USDT', 'usdt_balance', 'balance_usdt'),
+      raw: d,
+    })
+  }
+
   // ── dispersión BREB / ACH ──
   // El cliente dispersa contra su SALDO INTERNO del riel (COP_BREB / COP_ACH),
   // el que el admin le cargó — nunca contra el total de la wallet compartida.
