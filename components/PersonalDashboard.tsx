@@ -1908,30 +1908,58 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       const balance = displayBalance(selectedWalletCode);
       return (
           <div className="space-y-6 animate-in fade-in duration-300 pt-6">
-              <button onClick={() => setActiveView('dashboard')} style={{ color: '#121413' }} className="flex items-center gap-2 font-bold text-sm hover:text-[#0C0E0D] hover:underline">
-                  <ArrowLeft size={16} /> Volver al inicio
-              </button>
+              {/* Breadcrumb */}
+              <div className="flex items-center gap-2" style={{ fontSize: 13, color: '#878E88' }}>
+                  <button onClick={() => setActiveView('dashboard')} className="flex items-center gap-2 hover:text-[#F4F4F2] transition-colors"><ArrowLeft size={14} /> Billeteras</button>
+                  <span style={{ color: 'rgba(244,244,242,0.3)' }}>/</span>
+                  <span style={{ color: '#F4F4F2', fontWeight: 600 }}>{wallet?.name}</span>
+              </div>
+
+              {selectedWalletCode === 'COP' ? (() => {
+                  const _cop = getBalance('COP'), _breb = getBalance('COP_BREB'), _ach = getBalance('COP_ACH');
+                  const _total = _cop + _breb + _ach; const _rate = getRate('USD', 'COP');
+                  return (
+                  <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 16, padding: '26px 28px' }} className="flex flex-col lg:flex-row lg:items-start justify-between gap-8">
+                      <div>
+                          <div className="flex items-center gap-3">
+                              <div style={{ width: 38, height: 38, borderRadius: '50%', overflow: 'hidden', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+                                  <span style={{ height: '50%', background: '#FCD116' }} /><span style={{ height: '25%', background: '#003893' }} /><span style={{ height: '25%', background: '#CE1126' }} />
+                              </div>
+                              <div className="flex items-baseline gap-2.5">
+                                  <h2 style={{ fontSize: 21, fontWeight: 800, letterSpacing: '-0.6px', color: '#F4F4F2' }}>Peso colombiano</h2>
+                                  <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 10.5, fontWeight: 700, letterSpacing: '1px', padding: '3px 8px', borderRadius: 999 }}>COP</span>
+                              </div>
+                          </div>
+                          <p style={{ fontSize: 13, color: '#878E88', marginTop: 3 }}>Cuenta local · Colombia · 3 rieles</p>
+                          <div style={{ marginTop: 22, display: 'flex', alignItems: 'baseline', gap: 10 }}>
+                              <span style={{ fontSize: 42, fontWeight: 800, letterSpacing: '-1.8px', lineHeight: 1, color: '#F4F4F2' }}>{Math.round(_total).toLocaleString('es-CO')}</span>
+                              <span style={{ fontSize: 16, fontWeight: 600, color: '#878E88' }}>COP</span>
+                          </div>
+                          <p style={{ marginTop: 9, fontSize: 13.5, color: '#878E88' }}>{_rate ? `≈ ${(_total / _rate).toLocaleString('es-CO', { maximumFractionDigits: 2 })} USDT · tasa ${Math.round(_rate).toLocaleString('es-CO')}` : 'Saldo Lincoin · Bre-B · ACH'}</p>
+                      </div>
+                      <div className="flex gap-2.5 flex-wrap">
+                          <button onClick={() => { setSelectedWalletCode('USD'); setActiveView('mouv'); }} style={{ background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 13.5, padding: '11px 18px', borderRadius: 9 }} className="hover:bg-white/[0.09] transition-colors flex items-center gap-2"><RefreshCw size={15} /> Convertir</button>
+                          <button onClick={() => handleLoadClick('COP')} style={{ background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 13.5, padding: '11px 18px', borderRadius: 9 }} className="hover:bg-white/[0.09] transition-colors flex items-center gap-2"><Plus size={15} /> Cargar</button>
+                          <button onClick={() => { if (!handleActionRestricted()) setIsSendModalOpen(true); }} disabled={isBlocked || !isKycVerified} style={{ fontWeight: 700, fontSize: 13.5, padding: '11px 20px', borderRadius: 9, opacity: (isBlocked || !isKycVerified) ? 0.6 : 1 }} className="lincoin-btn-white transition-colors flex items-center gap-2"><Send size={15} /> Enviar dinero</button>
+                      </div>
+                  </div>
+                  );
+              })() : (
               <div className="bg-gradient-to-br from-[#0C0E0D] to-[#0C0E0D] p-8 rounded-3xl text-white shadow-xl relative overflow-hidden">
                   <div className="absolute top-0 right-0 w-64 h-64 bg-white/5 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2"></div>
                   <div className="relative z-10">
                       <div className="flex justify-between items-start mb-8">
                           <div className="flex items-center gap-4">
-                              {wallet?.code === 'USD' ? (
-                                  <div className="w-14 h-10 rounded-lg shadow-md ring-2 ring-white/30 bg-white/15 flex items-center justify-center font-bold text-lg">₮</div>
-                              ) : (
-                                  <FlagImg code={wallet?.code ?? ''} className="w-14 h-10 object-cover rounded-lg shadow-md ring-2 ring-white/30" />
-                              )}
+                              <div className="w-14 h-10 rounded-lg shadow-md ring-2 ring-white/30 bg-white/15 flex items-center justify-center font-bold text-lg">₮</div>
                               <div><h2 className="text-2xl font-bold">{wallet?.name}</h2><p className="text-green-200">{wallet?.type}</p></div>
                           </div>
-                          <span className="bg-white/10 px-3 py-1 rounded-lg text-sm font-bold border border-white/20">{wallet?.code === 'USD' ? 'USDT' : wallet?.code}</span>
+                          <span className="bg-white/10 px-3 py-1 rounded-lg text-sm font-bold border border-white/20">USDT</span>
                       </div>
                       <p className="text-5xl font-bold mb-8 tracking-tight">
                           {formatMoney(balance, selectedWalletCode)}
-                          {selectedWalletCode === 'USD' && (
-                              <span className="text-base font-normal text-green-200 ml-2">
-                                  {gasfreeBalChecked ? (gasfreeBal != null ? 'saldo real en tu wallet GasFree' : 'sin conexión — mostrando último saldo conocido') : 'consultando saldo real…'}
-                              </span>
-                          )}
+                          <span className="text-base font-normal text-green-200 ml-2">
+                              {gasfreeBalChecked ? (gasfreeBal != null ? 'saldo real en tu wallet GasFree' : 'sin conexión — mostrando último saldo conocido') : 'consultando saldo real…'}
+                          </span>
                       </p>
                       <div className="flex gap-4">
                           <button onClick={() => { handleLoadClick(selectedWalletCode); }} disabled={isBlocked} className={`flex-1 text-[#0C0E0D] py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 transition-colors ${isBlocked ? 'bg-slate-400 cursor-not-allowed opacity-70' : 'bg-[#4ADE80] hover:bg-[#22C55E]'}`}><Plus size={18} /> Cargar</button>
@@ -1939,108 +1967,109 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       </div>
                   </div>
               </div>
+              )}
 
               {/* La billetera Colombia (COP) contiene el saldo interno (Peso Lincoin)
                   y DOS rieles de dispersión vía Mouv: BreB (inmediato 24/7) y
                   ACH (L-V). Saldos separados con claves COP_BREB y COP_ACH. */}
               {selectedWalletCode === 'COP' && (() => {
+                  const cop = getBalance('COP');
                   const brebBal = getBalance('COP_BREB');
                   const achBal = getBalance('COP_ACH');
+                  // Estado del riel ACH: L–V 7:00–18:00 hora Colombia (UTC-5).
+                  const _cot = new Date(Date.now() - 5 * 3600 * 1000);
+                  const _dow = _cot.getUTCDay(); const _hr = _cot.getUTCHours();
+                  const achOpen = _dow >= 1 && _dow <= 5 && _hr >= 7 && _hr < 18;
                   return (
                   <>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                      <div className="bg-white rounded-2xl border border-slate-200 p-5">
-                          <div className="flex items-center justify-between mb-2">
-                              <div className="flex items-center gap-2">
-                                  <div className="w-9 h-9 rounded-xl bg-[#0C0E0D] flex items-center justify-center">
-                                      <Wallet size={16} className="text-[#4ADE80]" />
+                  <div>
+                    <div className="flex items-baseline justify-between" style={{ marginBottom: 13 }}>
+                        <div className="flex items-baseline gap-2.5 flex-wrap">
+                            <span style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>Rieles de esta cuenta</span>
+                            <span style={{ fontSize: 12.5, color: '#878E88' }}>Cómo entra y sale el dinero en Colombia</span>
+                        </div>
+                    </div>
+                    <div className="grid gap-3.5" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
+                      {/* Riel 1 — Saldo Lincoin (principal) */}
+                      <div style={{ background: '#0C0E0D', border: '1px solid rgba(74,222,128,0.28)', borderRadius: 14, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                          <div style={{ padding: '18px 20px 16px', flex: 1 }}>
+                              <div className="flex items-start justify-between" style={{ gap: 10 }}>
+                                  <div className="flex items-center gap-2.5">
+                                      <div style={{ width: 34, height: 34, borderRadius: 10, background: 'rgba(255,255,255,0.055)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><Wallet size={17} style={{ color: '#F4F4F2' }} /></div>
+                                      <div>
+                                          <p style={{ fontSize: 14.5, fontWeight: 700, color: '#F4F4F2' }}>Saldo Lincoin</p>
+                                          <p style={{ fontSize: 11, color: '#878E88' }}>Cuenta principal · COP</p>
+                                      </div>
                                   </div>
-                                  <div>
-                                      <p className="font-bold text-slate-800 text-sm">Peso Lincoin</p>
-                                      <p className="text-[10px] uppercase tracking-wider text-slate-500">Cuenta principal · COP</p>
-                                  </div>
+                                  <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 9, fontWeight: 700, letterSpacing: '0.7px', padding: '3px 7px', borderRadius: 999, whiteSpace: 'nowrap' }}>PRINCIPAL</span>
                               </div>
-                              {mouvBal != null && (
-                                  <span className="text-[9px] font-bold uppercase bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full">
-                                      ● Conectado a la red bancaria
-                                  </span>
-                              )}
-                          </div>
-                          <p className="text-2xl font-bold text-[#0C0E0D] font-mono">
-                              {formatMoney(mouvBal ?? balance, 'COP')}
-                          </p>
-                          <p className="text-[11px] text-slate-500 mt-1">
-                              {mouvBal != null
-                                  ? 'Saldo real de tu cuenta de dispersión — es el que se usa para transferir.'
-                                  : mouvChecked
-                                      ? 'Tu saldo interno Lincoin: cargas, envíos entre usuarios y conversiones.'
-                                      : 'Saldo interno Lincoin · consultando…'}
-                          </p>
-                      </div>
-
-                      <div className="bg-white rounded-2xl border-2 border-[#4ADE80]/40 p-5 relative overflow-hidden">
-                          <div className="absolute -right-8 -top-8 w-28 h-28 bg-[#4ADE80]/10 rounded-full blur-2xl"></div>
-                          <div className="flex items-center justify-between mb-2 relative z-10">
-                              <div className="flex items-center gap-2">
-                                  <div className="w-9 h-9 rounded-xl bg-[#4ADE80] flex items-center justify-center">
-                                      <Zap size={16} className="text-[#0C0E0D]" />
-                                  </div>
-                                  <div>
-                                      <p className="font-bold text-slate-800 text-sm">BreB Lincoin</p>
-                                      <p className="text-[10px] uppercase tracking-wider text-slate-500">Pagos instantáneos Bre-B · Solo Colombia</p>
-                                  </div>
+                              <p style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-1px', color: '#F4F4F2', marginTop: 16 }}>{Math.round(cop).toLocaleString('es-CO')}</p>
+                              <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '8px 0 0' }}>Cargas, envíos entre usuarios de Lincoin y conversiones a USDT.</p>
+                              <div className="flex items-center" style={{ gap: 7, marginTop: 12 }}>
+                                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#4ADE80' }} />
+                                  <span style={{ fontSize: 11.5, color: '#878E88' }}>Disponible 24/7 · sin comisión interna</span>
                               </div>
-                              <span className="text-[9px] font-bold uppercase bg-[#4ADE80]/15 text-[#16A34A] px-2 py-0.5 rounded-full">Bre-B</span>
                           </div>
-                          <p className="text-2xl font-bold text-[#0C0E0D] font-mono relative z-10">{formatMoney(brebBal, 'COP')}</p>
-                          <p className="text-[11px] text-slate-600 mt-1 relative z-10">
-                              Saldo para dispersar a cuentas bancarias en Colombia en segundos, por el riel Bre-B.
-                          </p>
-                          <div className="flex gap-2 mt-3 relative z-10">
-                              <button
-                                  onClick={() => { setBrebMoveOpen(!brebMoveOpen); setBrebDir('to_breb'); }}
-                                  className="flex-1 py-2.5 rounded-xl bg-white border border-slate-300 text-[#0C0E0D] text-sm font-bold flex items-center justify-center gap-1.5 hover:bg-slate-50 transition-colors"
-                              >
-                                  <RefreshCw size={14} /> Mover saldo
-                              </button>
-                              <button
-                                  onClick={() => { setMouvMode('full'); setActiveView('mouv'); }}
-                                  disabled={brebBal <= 0}
-                                  className="flex-1 py-2.5 rounded-xl bg-[#4ADE80] hover:bg-[#6EE7A0] text-[#0C0E0D] text-sm font-bold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
-                              >
-                                  <Send size={14} /> Dispersar
-                              </button>
+                          <div style={{ padding: '11px 20px', borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.015)', display: 'flex', gap: 13 }}>
+                              <button onClick={() => handleLoadClick('COP')} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Cargar</button>
+                              <button onClick={() => { setBrebMoveOpen(true); setBrebDir('to_breb'); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Mover a otro riel</button>
                           </div>
                       </div>
 
-                      {/* Sub-wallet ACH (riel Mouv, horario hábil) */}
-                      <div className="bg-white rounded-2xl border-2 border-slate-300 p-5 relative overflow-hidden">
-                          <div className="absolute -right-8 -top-8 w-28 h-28 bg-slate-200/50 rounded-full blur-2xl"></div>
-                          <div className="flex items-center justify-between mb-2 relative z-10">
-                              <div className="flex items-center gap-2">
-                                  <div className="w-9 h-9 rounded-xl bg-[#0C0E0D] flex items-center justify-center text-base">🏦</div>
-                                  <div>
-                                      <p className="font-bold text-slate-800 text-sm">ACH Lincoin</p>
-                                      <p className="text-[10px] uppercase tracking-wider text-slate-500">Transferencias ACH · L-V 7am–6pm</p>
+                      {/* Riel 2 — Bre-B */}
+                      <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                          <div style={{ padding: '18px 20px 16px', flex: 1 }}>
+                              <div className="flex items-start justify-between" style={{ gap: 10 }}>
+                                  <div className="flex items-center gap-2.5">
+                                      <div style={{ width: 34, height: 34, borderRadius: 10, background: 'rgba(255,255,255,0.055)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><Zap size={17} style={{ color: '#F4F4F2' }} /></div>
+                                      <div>
+                                          <p style={{ fontSize: 14.5, fontWeight: 700, color: '#F4F4F2' }}>Bre-B</p>
+                                          <p style={{ fontSize: 11, color: '#878E88' }}>Pagos inmediatos · Colombia</p>
+                                      </div>
                                   </div>
+                                  <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9, fontWeight: 700, letterSpacing: '0.7px', padding: '3px 7px', borderRadius: 999, whiteSpace: 'nowrap' }}>SEGUNDOS</span>
                               </div>
-                              <span className="text-[9px] font-bold uppercase bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">ACH</span>
+                              <p style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-1px', color: '#F4F4F2', marginTop: 16 }}>{Math.round(brebBal).toLocaleString('es-CO')}</p>
+                              <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '8px 0 0' }}>Dispersa a cuentas bancarias colombianas por llave Bre-B en segundos.</p>
+                              <div className="flex items-center" style={{ gap: 7, marginTop: 12 }}>
+                                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#4ADE80' }} />
+                                  <span style={{ fontSize: 11.5, color: '#878E88' }}>Operativo 24/7 · hasta 50 M por envío</span>
+                              </div>
                           </div>
-                          <p className="text-2xl font-bold text-[#0C0E0D] font-mono relative z-10">{formatMoney(achBal, 'COP')}</p>
-                          <p className="text-[11px] text-slate-600 mt-1 relative z-10">
-                              Saldo para dispersar a cuentas bancarias en Colombia por el riel ACH, en horario hábil.
-                          </p>
-                          <div className="flex gap-2 mt-3 relative z-10">
-                              <button
-                                  onClick={() => { setMouvMode('full'); setActiveView('mouv'); }}
-                                  disabled={achBal <= 0}
-                                  className="flex-1 py-2.5 rounded-xl bg-[#0C0E0D] hover:bg-[#121413] text-white text-sm font-bold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
-                              >
-                                  <Send size={14} /> Dispersar
-                              </button>
+                          <div style={{ padding: '11px 20px', borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.015)', display: 'flex', gap: 13 }}>
+                              <button onClick={() => { setMouvMode('full'); setActiveView('mouv'); }} disabled={brebBal <= 0} style={{ fontSize: 12, fontWeight: 600, color: brebBal <= 0 ? '#878E88' : '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors disabled:cursor-not-allowed">Dispersar</button>
+                              <button onClick={() => { setBrebMoveOpen(true); setBrebDir('to_peso'); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Mover saldo</button>
                           </div>
                       </div>
+
+                      {/* Riel 3 — ACH (horario) */}
+                      <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                          <div style={{ padding: '18px 20px 16px', flex: 1 }}>
+                              <div className="flex items-start justify-between" style={{ gap: 10 }}>
+                                  <div className="flex items-center gap-2.5">
+                                      <div style={{ width: 34, height: 34, borderRadius: 10, background: 'rgba(255,255,255,0.055)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><Landmark size={17} style={{ color: '#F4F4F2' }} /></div>
+                                      <div>
+                                          <p style={{ fontSize: 14.5, fontWeight: 700, color: '#F4F4F2' }}>ACH</p>
+                                          <p style={{ fontSize: 11, color: '#878E88' }}>Transferencias interbancarias</p>
+                                      </div>
+                                  </div>
+                                  <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9, fontWeight: 700, letterSpacing: '0.7px', padding: '3px 7px', borderRadius: 999, whiteSpace: 'nowrap' }}>HORARIO</span>
+                              </div>
+                              <p style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-1px', color: '#F4F4F2', marginTop: 16 }}>{Math.round(achBal).toLocaleString('es-CO')}</p>
+                              <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '8px 0 0' }}>Dispersa a cualquier cuenta en Colombia por el riel ACH tradicional.</p>
+                              <div className="flex items-center" style={{ gap: 7, marginTop: 12 }}>
+                                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: achOpen ? '#4ADE80' : '#878E88' }} />
+                                  <span style={{ fontSize: 11.5, color: '#878E88' }}>L–V 7:00–18:00 · {achOpen ? 'operativo ahora' : 'fuera de horario'}</span>
+                              </div>
+                          </div>
+                          <div style={{ padding: '11px 20px', borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.015)', display: 'flex', gap: 13 }}>
+                              <button onClick={() => { if (achOpen) { setMouvMode('full'); setActiveView('mouv'); } }} disabled={!achOpen || achBal <= 0} title={achOpen ? '' : 'Disponible L–V 7:00–18:00 hora Colombia'} style={{ fontSize: 12, fontWeight: 600, color: (!achOpen || achBal <= 0) ? '#878E88' : '#F4F4F2', cursor: achOpen ? 'pointer' : 'not-allowed' }} className="transition-colors">Dispersar</button>
+                              <button onClick={() => { setBrebMoveOpen(true); setBrebDir('to_peso'); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Mover saldo</button>
+                          </div>
+                      </div>
+                    </div>
                   </div>
+
 
                   {brebMoveOpen && (
                       <div className="bg-white rounded-2xl border border-slate-200 p-5">
