@@ -14,10 +14,10 @@
 //          PSE (recaudo entrante → link).
 //   Sin prefijo de versión (/api/...).
 //
-// ⏳ PENDIENTE (esperando los cURL de la doc): los endpoints y bodies de
-//    los retiros BREB y ACH, y del recaudo PSE. Ver acciones payout_breb /
-//    payout_ach más abajo — hoy devuelven 'not_implemented' a propósito
-//    para NO inventar un contrato de un endpoint que mueve plata.
+// Dispersión REAL cableada (quickstart de la doc):
+//   POST /api/transfers/resolve-key  → titular oficial de la llave (SARLAFT)
+//   POST /api/transfers/send         → retiro BREB (destino inline) / ACH
+//   Valores en CENTAVOS. Ver mouvPayout. ACH aún con destino best-guess.
 // ─────────────────────────────────────────────
 import { serve } from 'https://deno.land/std@0.192.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
@@ -78,8 +78,9 @@ async function mouvFetch(path: string, init: RequestInit = {}): Promise<{ ok: bo
 //    ACH  → { bankCode, accountType:'ahorros'|'corriente'|'deposito',
 //             accountNumber, documentType, documentNumber, holderName, reference? }
 //
-//  UNIDAD: `amount` va en PESOS (entero), igual que el ejemplo de la doc
-//  (amount:100000 = $100.000, fixedFee 1100 = $1.100). NO son centavos.
+//  UNIDAD: Mouv trabaja en CENTAVOS (confirmado contra el saldo real:
+//  availableCents 3.173.093.200 = $31.730.932). El `amount` que llega a
+//  mouvPayout viene en PESOS y se multiplica ×100 antes de enviarlo.
 // ══════════════════════════════════════════════════════════════════
 
 // Mapea el tipo de llave interno → el enum de Mouv (fallback; lo ideal es
@@ -99,6 +100,9 @@ async function mouvPayout(
   recipient: Record<string, any>,
   amountCop: number,
 ): Promise<{ ok: boolean; status: number; data: any; providerRef?: string; notImplemented?: boolean }> {
+  // Mouv trabaja en CENTAVOS (confirmado contra el saldo real). El monto que
+  // llega es en PESOS → se convierte a centavos para /transfers/send.
+  const amountCents = Math.round(amountCop * 100)
   if (rail === 'BREB') {
     // 1) Resolver la llave para obtener el titular oficial (SARLAFT).
     let targetName: string | undefined = recipient.holderName
@@ -125,7 +129,7 @@ async function mouvPayout(
     const r = await mouvFetch('/transfers/send', {
       method: 'POST',
       body: JSON.stringify({
-        amount: amountCop,
+        amount: amountCents,
         destination: { brebKey: { type: keyType, value: recipient.key } },
         targetName,
         targetDocument,
@@ -142,7 +146,7 @@ async function mouvPayout(
   const r = await mouvFetch('/transfers/send', {
     method: 'POST',
     body: JSON.stringify({
-      amount: amountCop,
+      amount: amountCents,
       destination: {
         bankAccount: {
           bankCode: recipient.bankCode,
@@ -244,14 +248,16 @@ serve(async (req: Request) => {
       if (typeof v === 'string' && v.trim() !== '' && !isNaN(Number(v))) return Number(v)
       return null
     }
+    // Los *Cents vienen en CENTAVOS (confirmado: 3.173.093.200 = $31.730.932).
+    const centsToPesos = (v: any): number | null => { const n = toNum(v); return n === null ? null : n / 100 }
     const wallets: any[] = Array.isArray(d?.wallets) ? d.wallets : []
     const railAmt = (rail: string): number | null => {
       const w = wallets.find(x => String(x?.rail ?? '').toUpperCase() === rail)
-      return w ? toNum(w.availableCents) : null
+      return w ? centsToPesos(w.availableCents) : null
     }
     const breb = railAmt('BREB')
     const ach = railAmt('ACH')
-    const total = toNum(d?.consolidated?.availableCents) ?? ((breb ?? 0) + (ach ?? 0) || null)
+    const total = centsToPesos(d?.consolidated?.availableCents) ?? ((breb ?? 0) + (ach ?? 0) || null)
     return json(200, { ok: true, status: r.status, source: 'mouv', total, breb, ach, cop: total, raw: d })
   }
 
