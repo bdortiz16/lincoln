@@ -75,8 +75,11 @@ const brebKeyLabel = (v?: string) => BREB_KEY_TYPES.find(k => k.v === v)?.l ?? '
 // Estado efectivo (contactos viejos sin campo status → en proceso si son
 // de Colombia; aprobados si son de otro país).
 export const contactStatus = (c: Partial<MouvContact>): ContactStatus => {
-    if (c.status) return c.status;
-    return (c.country && c.country !== 'Colombia') ? 'aprobada' : 'en_proceso';
+    // Mientras Mouv no esté APIficado no hay "en proceso": todo destinatario
+    // inscrito queda aprobado y usable. Los contactos viejos sin estado (o que
+    // quedaron 'en_proceso') se muestran como aprobados.
+    if (c.status && c.status !== 'en_proceso') return c.status;
+    return 'aprobada';
 };
 
 // Cuerpo EXACTO del contrato oficial (doc: Create External Account):
@@ -319,34 +322,23 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
             const dupK = bankContacts.find(c => c.destKind === 'breb' && (c.brebKey ?? '').trim().toLowerCase() === keyNorm);
             if (dupK) { setNotice({ ok: false, text: `Ya tienes esta llave inscrita como “${dupK.name}”.` }); return; }
             setSaving(true); setNotice(null);
-            let mouvId: string | null = null;
-            let status: ContactStatus = 'en_proceso';
-            let lastError: string | null = null;
-            try {
-                const r = await callMouv('create_external_account', currentUser.id, {
-                    data: buildMouvBrebBody({ name: f.name.trim(), brebKeyType: f.brebKeyType, brebKey: f.brebKey.trim(), docType: f.docType, docNumber: f.docNumber.trim() || undefined }),
-                });
-                const d = (r?.data ?? {}) as any;
-                mouvId = d.id ?? d.external_account_id ?? d.account_id ?? null;
-                status = normalizeStatus(d.verification_status ?? d.status ?? d.estado ?? d.state) ?? 'en_proceso';
-                if (!r?.ok || !mouvId) lastError = `[${new Date().toLocaleTimeString('es-CO')}] HTTP ${r?.status ?? '—'} en ${r?.path ?? '¿?'}: ${JSON.stringify(r?.data ?? r).slice(0, 260)}`;
-            } catch (e: any) { lastError = String(e?.message ?? e); }
+            // Mientras Mouv no esté APIficado, el destinatario queda APROBADO y
+            // usable de una (sin "en proceso"). Cuando se cablee Mouv, aquí se
+            // intentará el registro real y su verificación.
             const brebContact: MouvContact = {
                 id: `ct_${Math.random().toString(36).slice(2, 10)}`,
-                mouvId, kind: f.kind, name: f.name.trim(),
+                mouvId: null, kind: f.kind, name: f.name.trim(),
                 docType: f.docType, docNumber: f.docNumber.trim() || '—',
                 country: 'Colombia', bank: `Bre-B · ${brebKeyLabel(f.brebKeyType)}`,
                 accountType: 'savings', accountNumber: f.brebKey.trim(),
-                status, createdAt: new Date().toISOString(), lastError,
+                status: 'aprobada', createdAt: new Date().toISOString(), lastError: null,
                 destKind: 'breb', brebKeyType: f.brebKeyType, brebKey: f.brebKey.trim(),
                 notifyEmail: f.notifyEmail.trim() || undefined, notifyPhone: f.notifyPhone.trim() || undefined,
             };
             const okK = await persistBanks([brebContact, ...bankContacts]);
             setSaving(false); setFormOpen(false); setForm({ ...emptyForm });
             if (!okK) { setNotice({ ok: false, text: '⚠ El destinatario NO quedó guardado en el servidor (sesión vencida o permisos). Vuelve a entrar e inscríbelo otra vez.' }); return; }
-            setNotice(status === 'aprobada'
-                ? { ok: true, text: `✅ Destinatario Bre-B aprobado (${brebContact.name}). Ya puedes dispersarle.` }
-                : { ok: true, text: `📋 Llave Bre-B inscrita — quedó EN PROCESO. El estado se actualiza solo.` });
+            setNotice({ ok: true, text: `✅ Destinatario Bre-B inscrito (${brebContact.name}). Ya puedes dispersarle.` });
             return;
         }
 
@@ -361,37 +353,12 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
         setSaving(true);
         setNotice(null);
 
-        const isColombia = f.country === 'Colombia';
-        let mouvId: string | null = null;
-        let status: ContactStatus = isColombia ? 'en_proceso' : 'aprobada';
-        let lastError: string | null = null;
-
-        // Solo Colombia pasa por Mouv: la inscripción queda EN PROCESO y la
-        // API de Mouv decide aprobada/rechazada (se sincroniza al entrar
-        // aquí o con "Actualizar estados"). Otros países: aprobación automática.
-        if (isColombia) {
-            try {
-                const r = await callMouv('create_external_account', currentUser.id, {
-                    data: buildMouvAccountBody({
-                        name: f.name.trim(),
-                        docType: f.docType,
-                        docNumber: f.docNumber.trim(),
-                        bank: f.bank,
-                        accountType: f.accountType,
-                        accountNumber: f.accountNumber.trim(),
-                        kind: f.kind,
-                    }),
-                });
-                const d = (r?.data ?? {}) as any;
-                mouvId = d.id ?? d.external_account_id ?? d.account_id ?? null;
-                status = normalizeStatus(d.verification_status ?? d.status ?? d.estado ?? d.state) ?? 'en_proceso';
-                if (!r?.ok || !mouvId) {
-                    lastError = `[${new Date().toLocaleTimeString('es-CO')}] HTTP ${r?.status ?? '—'} en ${r?.path ?? '¿?'}: ${JSON.stringify(r?.data ?? r).slice(0, 260)}`;
-                }
-            } catch (e: any) {
-                lastError = String(e?.message ?? e);
-            }
-        }
+        // Mientras Mouv no esté APIficado, la cuenta queda APROBADA y usable de
+        // una (sin "en proceso"). Cuando se cablee Mouv, aquí volverá el
+        // registro real (create_external_account) y su verificación.
+        const mouvId: string | null = null;
+        const status: ContactStatus = 'aprobada';
+        const lastError: string | null = null;
 
         const contact: MouvContact = {
             id: `ct_${Math.random().toString(36).slice(2, 10)}`,
@@ -414,9 +381,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
         setFormOpen(false);
         setForm({ ...emptyForm });
         if (!okB) { setNotice({ ok: false, text: '⚠ El contacto NO quedó guardado en el servidor (sesión vencida o permisos de la base). Cierra sesión, vuelve a entrar e inscríbelo otra vez. Si persiste, avísale al administrador.' }); return; }
-        setNotice(status === 'aprobada'
-            ? { ok: true, text: `✅ Contacto aprobado (${contact.name}). Ya puedes transferirle.` }
-            : { ok: true, text: `📋 Cuenta inscrita — quedó EN PROCESO. Será aprobada o rechazada en la revisión bancaria; el estado se actualiza solo.` });
+        setNotice({ ok: true, text: `✅ Contacto inscrito (${contact.name}). Ya puedes transferirle.` });
     };
 
     // ── Sincronizar estados con Mouv (solo contactos de Colombia) ──
@@ -534,8 +499,10 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
         setSyncing(false);
     };
 
-    // Al entrar a la sección, sincronizar en silencio.
-    useEffect(() => { syncStatuses(true); /* eslint-disable-next-line */ }, [currentUser?.id]);
+    // Sincronización con Mouv DESACTIVADA mientras el proveedor no esté
+    // APIficado: los contactos quedan aprobados y usables de una. (Antes esto
+    // corría contra un stub y dejaba los contactos "en proceso" o los perdía.)
+    // useEffect(() => { syncStatuses(true); }, [currentUser?.id]);
 
     const removeContact = async (id: string) => {
         if (!window.confirm('¿Eliminar este contacto?')) return;
@@ -608,15 +575,6 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                     </p>
                 </div>
                 <div className="flex items-center gap-2">
-                    <button
-                        onClick={() => syncStatuses(false)}
-                        disabled={syncing}
-                        style={{ color: '#0C0E0D', borderColor: '#94A3B8' }}
-                        className="py-2.5 px-4 rounded-xl border hover:bg-slate-50 text-sm font-bold disabled:opacity-60 transition-colors"
-                        title="Consulta el estado de las cuentas de Colombia"
-                    >
-                        {syncing ? 'Sincronizando…' : '↻ Actualizar estados'}
-                    </button>
                     <button
                         onClick={() => { setFormOpen(true); setFormStep('country'); setForm({ ...emptyForm }); setNotice(null); }}
                         style={{ color: '#0C0E0D' }}
@@ -936,15 +894,6 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                                     <FilterChip active={fType === 'wallet'} onClick={() => setFType('wallet')}>Wallet</FilterChip>
                                 </div>
                             </div>
-                            <div>
-                                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2">Estado</p>
-                                <div className="flex flex-wrap gap-2">
-                                    <FilterChip active={fStatus === 'all'} onClick={() => setFStatus('all')}>Todos</FilterChip>
-                                    <FilterChip active={fStatus === 'aprobada'} onClick={() => setFStatus('aprobada')}>Aprobada</FilterChip>
-                                    <FilterChip active={fStatus === 'en_proceso'} onClick={() => setFStatus('en_proceso')}>En proceso</FilterChip>
-                                    <FilterChip active={fStatus === 'rechazada'} onClick={() => setFStatus('rechazada')}>Rechazada</FilterChip>
-                                </div>
-                            </div>
                             {activeFilters > 0 && (
                                 <button onClick={clearFilters} className="text-xs font-bold text-[#16A34A] hover:underline">Limpiar filtros</button>
                             )}
@@ -1070,15 +1019,6 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                                 >
                                     Copiar cuenta
                                 </button>
-                                {(detail.country ?? 'Colombia') === 'Colombia' && (
-                                    <button
-                                        onClick={() => { setDetail(null); syncStatuses(false); }}
-                                        disabled={syncing}
-                                        className="flex-1 py-2.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-sm font-bold text-slate-600 disabled:opacity-60 transition-colors"
-                                    >
-                                        ↻ Actualizar estado
-                                    </button>
-                                )}
                                 <button
                                     onClick={() => { const id = detail.id; setDetail(null); removeContact(id); }}
                                     className="py-2.5 px-4 rounded-xl border border-red-200 text-red-600 hover:bg-red-50 text-sm font-bold transition-colors"
