@@ -68,8 +68,9 @@ interface PersonalDashboardProps {
 }
 
 const INITIAL_WALLET_CARDS = [
-  { code: 'CLP', name: 'Peso Chileno', type: 'Cuenta Local' },
+  { code: 'USD', name: 'Dólar Digital', type: 'USDT · GasFree' },
   { code: 'COP', name: 'Peso Colombiano', type: 'Cuenta Local' },
+  { code: 'CLP', name: 'Peso Chileno', type: 'Cuenta Local' },
   { code: 'PEN', name: 'Sol Peruano', type: 'Cuenta Local' },
   { code: 'MXN', name: 'Peso Mexicano', type: 'Cuenta Local' },
   { code: 'BRL', name: 'Real Brasileño', type: 'Cuenta Local' },
@@ -1858,13 +1859,15 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   </div>
               </div>
 
-              {/* COP se divide en DOS SALDOS: Peso Lincoin (interno) y BreB Lincoin
-                  (dispersión Bre-B vía Finity — solo Colombia). Mover saldo entre sí. */}
+              {/* La billetera Colombia (COP) contiene el saldo interno (Peso Lincoin)
+                  y DOS rieles de dispersión vía Mouv: BreB (inmediato 24/7) y
+                  ACH (L-V). Saldos separados con claves COP_BREB y COP_ACH. */}
               {selectedWalletCode === 'COP' && (() => {
                   const brebBal = getBalance('COP_BREB');
+                  const achBal = getBalance('COP_ACH');
                   return (
                   <>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                       <div className="bg-white rounded-2xl border border-slate-200 p-5">
                           <div className="flex items-center justify-between mb-2">
                               <div className="flex items-center gap-2">
@@ -1923,6 +1926,34 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   onClick={() => { setFinityMode('full'); setActiveView('finity'); }}
                                   disabled={brebBal <= 0}
                                   className="flex-1 py-2.5 rounded-xl bg-[#2DD4BF] hover:bg-[#5EEAD4] text-[#0F172A] text-sm font-bold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
+                              >
+                                  <Send size={14} /> Dispersar
+                              </button>
+                          </div>
+                      </div>
+
+                      {/* Sub-wallet ACH (riel Mouv, horario hábil) */}
+                      <div className="bg-white rounded-2xl border-2 border-slate-300 p-5 relative overflow-hidden">
+                          <div className="absolute -right-8 -top-8 w-28 h-28 bg-slate-200/50 rounded-full blur-2xl"></div>
+                          <div className="flex items-center justify-between mb-2 relative z-10">
+                              <div className="flex items-center gap-2">
+                                  <div className="w-9 h-9 rounded-xl bg-[#0F172A] flex items-center justify-center text-base">🏦</div>
+                                  <div>
+                                      <p className="font-bold text-slate-800 text-sm">ACH Lincoin</p>
+                                      <p className="text-[10px] uppercase tracking-wider text-slate-500">Transferencias ACH · L-V 7am–6pm</p>
+                                  </div>
+                              </div>
+                              <span className="text-[9px] font-bold uppercase bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">ACH</span>
+                          </div>
+                          <p className="text-2xl font-bold text-[#0F172A] font-mono relative z-10">{formatMoney(achBal, 'COP')}</p>
+                          <p className="text-[11px] text-slate-600 mt-1 relative z-10">
+                              Saldo para dispersar a cuentas bancarias en Colombia por el riel ACH, en horario hábil.
+                          </p>
+                          <div className="flex gap-2 mt-3 relative z-10">
+                              <button
+                                  onClick={() => { setFinityMode('full'); setActiveView('finity'); }}
+                                  disabled={achBal <= 0}
+                                  className="flex-1 py-2.5 rounded-xl bg-[#0F172A] hover:bg-[#1e293b] text-white text-sm font-bold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
                               >
                                   <Send size={14} /> Dispersar
                               </button>
