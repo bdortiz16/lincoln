@@ -3284,16 +3284,23 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               <div>
                                   <label className="block text-xs font-bold text-slate-400 uppercase mb-3">País del pagador</label>
                                   <div className="grid grid-cols-4 gap-2">
-                                      {PAY_LINK_COUNTRIES.map(c => (
+                                      {PAY_LINK_COUNTRIES.map(c => {
+                                          const sel = payLinkCountry === c.code;
+                                          return (
                                           <button
                                               key={c.code}
                                               onClick={() => handleSelectPayLinkCountry(c.code)}
-                                              className={`flex flex-col items-center gap-1 p-2.5 rounded-xl border transition-all ${payLinkCountry === c.code ? 'border-[#0C0E0D] bg-slate-50 shadow-sm' : 'border-slate-200 hover:border-slate-300'}`}
+                                              className="flex flex-col items-center gap-1 p-2.5 rounded-xl transition-all"
+                                              style={{
+                                                  border: sel ? '1.5px solid #4ADE80' : '1px solid rgba(255,255,255,0.14)',
+                                                  background: sel ? 'rgba(74,222,128,0.12)' : 'transparent',
+                                              }}
                                           >
                                               <FlagImg code={c.code} className="w-8 h-6 object-cover rounded shadow-sm" />
-                                              <span className={`text-[10px] font-bold ${payLinkCountry === c.code ? 'text-[#0C0E0D]' : 'text-slate-500'}`}>{c.code}</span>
+                                              <span className="text-[10px] font-bold" style={{ color: sel ? '#4ADE80' : '#878E88' }}>{c.code}</span>
                                           </button>
-                                      ))}
+                                          );
+                                      })}
                                   </div>
                               </div>
 
@@ -3690,15 +3697,22 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               <div>
                                   <label className="block text-sm font-bold text-slate-700 mb-2">Moneda a enviar</label>
                                   <div className="grid grid-cols-4 gap-2">
-                                      {SEND_COUNTRIES.map(c => (
+                                      {SEND_COUNTRIES.map(c => {
+                                          const sel = sendForm.destinationCountry === c.name;
+                                          return (
                                           <button key={c.code} type="button"
                                               onClick={() => setSendForm({...sendForm, destinationCountry: c.name, destinationCurrency: c.currency})}
-                                              className={`flex flex-col items-center gap-1 p-2.5 rounded-xl border transition-all ${sendForm.destinationCountry === c.name ? 'border-[#0C0E0D] bg-slate-50' : 'border-slate-200 hover:border-slate-300'}`}
+                                              className="flex flex-col items-center gap-1 p-2.5 rounded-xl transition-all"
+                                              style={{
+                                                  border: sel ? '1.5px solid #4ADE80' : '1px solid rgba(255,255,255,0.14)',
+                                                  background: sel ? 'rgba(74,222,128,0.12)' : 'transparent',
+                                              }}
                                           >
                                               <FlagImg code={c.code} className="w-7 h-5 object-cover rounded shadow-sm" />
-                                              <span className={`text-[10px] font-bold leading-tight text-center ${sendForm.destinationCountry === c.name ? 'text-[#0C0E0D]' : 'text-slate-500'}`}>{c.name}</span>
+                                              <span className="text-[10px] font-bold leading-tight text-center" style={{ color: sel ? '#4ADE80' : '#878E88' }}>{c.name}</span>
                                           </button>
-                                      ))}
+                                          );
+                                      })}
                                   </div>
                               </div>
                               <div>
