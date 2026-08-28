@@ -194,14 +194,40 @@ async function tokenBalanceOn(address: string, contract: string, decimals: numbe
 // Saldo TRC-20 robusto: primero triggerconstantcontract; si da 0 (rate-limit o
 // dirección inactiva), cae al endpoint /v1/accounts (el mismo dato que muestra
 // Tronscan) buscando el contrato. Así el depósito se detecta aunque una vía falle.
+// Saldo neto calculado desde el HISTORIAL de transfers TRC-20 (entrantes −
+// salientes). Es el método más robusto: funciona incluso para direcciones
+// "inactivas" (0 TRX), donde balanceOf y /v1/accounts a veces no responden.
+// Es el mismo dato que usa Tronscan para mostrar los movimientos.
+async function tokenBalanceFromTransfers(address: string, contract: string, decimals: number): Promise<number> {
+  try {
+    const url = `${CFG.tronHost}/v1/accounts/${address}/transactions/trc20?limit=200&contract_address=${contract}`
+    const r = await fetch(url, { headers: tgHeaders() })
+    const d = await r.json()
+    const list: any[] = Array.isArray(d?.data) ? d.data : []
+    let net = 0n
+    for (const t of list) {
+      if ((t?.type ?? 'Transfer') !== 'Transfer') continue
+      const v = BigInt(String(t?.value ?? '0'))
+      if (t?.to === address) net += v
+      else if (t?.from === address) net -= v
+    }
+    const bal = Number(net) / Math.pow(10, decimals)
+    return isFinite(bal) && bal > 0 ? bal : 0
+  } catch { return 0 }
+}
 async function tokenBalance(address: string, contract: string, decimals: number): Promise<number> {
+  // 1) balanceOf on-chain (rápido si TronGrid no limita)
   const direct = await tokenBalanceOn(address, contract, decimals, CFG.tronHost)
   if (direct > 0) return direct
+  // 2) /v1/accounts (mapa trc20 — no sirve para direcciones inactivas)
   try {
     const list = await scanTrc20On(address, CFG.tronHost)
     const hit = list.find(t => t.contract === contract)
     if (hit) { const b = Number(BigInt(hit.amount)) / Math.pow(10, decimals); if (isFinite(b) && b > 0) return b }
-  } catch { /* fallback best-effort */ }
+  } catch { /* best-effort */ }
+  // 3) historial de transfers (entrantes − salientes) — funciona hasta inactivas
+  const fromTx = await tokenBalanceFromTransfers(address, contract, decimals)
+  if (fromTx > 0) return fromTx
   return direct
 }
 
