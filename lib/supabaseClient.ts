@@ -35,15 +35,18 @@ export const supabase = createClient(validUrl, validKey, {
         lock: noLock,
     },
     global: {
-        headers: { 'x-my-custom-header': 'cuypay-empresas' },
+        headers: { 'x-my-custom-header': 'lincoin-empresas' },
     },
 });
 
 // =====================================================
 // PERSONAS — Proyecto separado (para app móvil + admin de personas)
 // =====================================================
-const SUPABASE_PERSONAS_URL = import.meta.env.VITE_SUPABASE_PERSONAS_URL as string;
-const SUPABASE_PERSONAS_ANON_KEY = import.meta.env.VITE_SUPABASE_PERSONAS_ANON_KEY as string;
+// Si no hay proyecto Personas dedicado, se usa el mismo proyecto que Empresas
+// (setup de un solo Supabase). Los componentes de /admin-personas ya hacen este
+// mismo fallback, así que el cliente lo replica para ser consistente.
+const SUPABASE_PERSONAS_URL = (import.meta.env.VITE_SUPABASE_PERSONAS_URL || import.meta.env.VITE_SUPABASE_URL) as string;
+const SUPABASE_PERSONAS_ANON_KEY = (import.meta.env.VITE_SUPABASE_PERSONAS_ANON_KEY || import.meta.env.VITE_SUPABASE_ANON_KEY) as string;
 
 const isPersonasUrlConfigured = !!SUPABASE_PERSONAS_URL && SUPABASE_PERSONAS_URL.startsWith('https://');
 const isPersonasKeyConfigured = !!SUPABASE_PERSONAS_ANON_KEY;
@@ -64,10 +67,10 @@ export const supabasePersonas = createClient(validPersonasUrl, validPersonasKey,
     auth: {
         persistSession: true,
         autoRefreshToken: true,
-        storageKey: 'cuypay-personas-auth', // separa la sesión del cliente principal
+        storageKey: 'lincoin-personas-auth', // separa la sesión del cliente principal
         lock: noLock,
     },
     global: {
-        headers: { 'x-my-custom-header': 'cuypay-personas' },
+        headers: { 'x-my-custom-header': 'lincoin-personas' },
     },
 });
