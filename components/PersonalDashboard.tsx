@@ -339,6 +339,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // (Saldo Lincoin / Bre-B / ACH). El cliente elige de cuál sale el dinero;
   // el disponible, la validación y el débito salen de ese riel.
   const [sendSourceRail, setSendSourceRail] = useState<'COP' | 'COP_BREB' | 'COP_ACH'>('COP');
+  // Contacto elegido para el envío COP (trae destKind/brebKey/banco para la
+  // dispersión REAL inline de Mouv).
+  const [sendContact, setSendContact] = useState<any>(null);
   const [isSending, setIsSending] = useState(false);
   // Candado síncrono anti doble-clic (el estado de React tarda un render en
   // reflejarse; el ref bloquea desde el primer instante).
@@ -796,6 +799,16 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       });
       return r.json();
   };
+  const callMouvProxy = async (payload: Record<string, unknown>) => {
+      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+      const r = await fetch(`${SURL}/functions/v1/mouv-proxy`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: myAuthHeader() },
+          body: JSON.stringify(payload),
+      });
+      return r.json();
+  };
 
   // Cotización EN VIVO de la comisión de GasFree para el envío a wallet —
   // se pide justo al llegar a confirmar (varía: $1, $1.2, $1.5... según la
@@ -1162,66 +1175,43 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       setIsSending(true);
       const amount = getRawAmount(sendForm.amount);
 
-      // ── Dispersión REAL vía Mouv (envíos COP a contacto aprobado) ──
-      // Contrato oficial: POST /v0/withdrawal-orders
-      //   { amount, currency: 'COP', destination_id: <mouvId del contacto> }
-      //   → 201 { id: 'po_...', state, costs: { commission, iva, total } }
-      // La orden se crea PRIMERO; el saldo interno solo se registra/debita
-      // si Mouv la acepta. Si Mouv falla o rechaza, NO se toca nada.
-      if (sendMode === 'bank' && sendForm.destinationCurrency === 'COP' && mouvDestId && currentUser?.id) {
-          // Regla de Mouv (validada por su API): mínimo 5.000 COP por dispersión
-          if (amount < 5000) {
-              sendingRef.current = false;
-              setIsSending(false);
-              showToast('El mínimo por transferencia bancaria en Colombia es 5.000 COP. Ajusta el monto.', 8000);
+      // ── Dispersión REAL vía Mouv (envíos COP a banco/llave) ──
+      // El riel lo determina el TIPO de destino: contacto Bre-B → payout_breb
+      // (debita COP_BREB) · contacto ACH/cuenta → payout_ach (debita COP_ACH).
+      // Todo el asentamiento (validar saldo interno → debitar → llamar a Mouv
+      // /transfers/send → REINTEGRAR si falla) lo hace el edge mouv-proxy, así
+      // que NUNCA queda saldo descontado sin transferencia.
+      if (sendMode === 'bank' && sendForm.destinationCurrency === 'COP' && currentUser?.id) {
+          const isBreb = (sendContact?.destKind ?? 'ach') === 'breb';
+          const rail = isBreb ? 'COP_BREB' : 'COP_ACH';
+          if (getBalance(rail) < amount) {
+              sendingRef.current = false; setIsSending(false);
+              showToast(`Saldo insuficiente en ${isBreb ? 'Bre-B' : 'ACH'} para esta dispersión.`, 6000, 'error');
               return;
           }
+          const recipient = isBreb
+              ? { keyType: sendContact?.brebKeyType ?? 'celular', key: sendContact?.brebKey ?? sendContact?.accountNumber ?? sendForm.accountNumber, holderName: sendForm.beneficiaryName, documentNumber: sendForm.documentNumber, reference: sendForm.reason }
+              : { bankCode: sendContact?.bank ?? sendForm.bankName, accountType: (sendContact?.accountType === 'checking' ? 'corriente' : 'ahorros'), accountNumber: sendForm.accountNumber, documentType: sendForm.documentType, documentNumber: sendForm.documentNumber, holderName: sendForm.beneficiaryName, reference: sendForm.reason };
           try {
-              // Sin carrera de abandono: si se corta la espera aquí, la petición
-              // sigue viva y la orden PUEDE crearse en Mouv igual (así se
-              // triplicó una dispersión). Se espera hasta 60 s con el botón
-              // bloqueado; si aun así no hay respuesta, el resultado es
-              // DESCONOCIDO y se bloquea el reintento hasta verificar.
               const r = await Promise.race([
-                  callMouv('create_withdrawal', currentUser.id, {
-                      data: { amount, currency: 'COP', destination_id: mouvDestId },
-                  }),
+                  callMouvProxy({ action: isBreb ? 'payout_breb' : 'payout_ach', userId: currentUser.id, amount, recipient }),
                   new Promise<any>((_, rej) => setTimeout(() => rej(new Error('timeout')), 60000)),
               ]);
-              const od = (r?.data ?? {}) as any;
-              if (!r?.ok || !od.id) {
-                  // Rechazo EXPLÍCITO de Mouv (respuesta llegó): no se creó
-                  // orden, es seguro dejar reintentar.
-                  sendingRef.current = false;
-                  setIsSending(false);
-                  showToast(`La transferencia fue rechazada — no se debitó tu saldo. ${JSON.stringify(r?.data ?? r).slice(0, 180)}`, 10000, 'error');
+              if (r?.ok) {
+                  sendingRef.current = false; setIsSending(false); setSendStep(5);
+                  refreshData?.();
                   return;
               }
-              // Orden aceptada por Mouv → registrar el envío con su referencia
-              const railName = sendSourceRail === 'COP' ? 'Saldo Lincoin' : sendSourceRail === 'COP_BREB' ? 'Bre-B' : 'ACH';
-              await requestWithdrawal(
-                  amount,
-                  'COP',
-                  sendForm.bankName,
-                  sendForm.accountNumber,
-                  sendForm.beneficiaryName,
-                  `${sendForm.reason} · desde ${railName} · Orden ${od.id} · ${od.state ?? 'CONFIRMED'}`,
-                  sendForm.documentType,
-                  sendForm.documentNumber,
-                  sendSourceRail
-              );
-              sendingRef.current = false;
-              setIsSending(false);
-              setSendStep(5);
+              // Falló o aún sin cablear → el edge YA reintegró el saldo (refunded).
+              sendingRef.current = false; setIsSending(false);
+              const msg = r?.message || r?.error || 'La dispersión no se pudo completar.';
+              showToast(msg, 11000, 'error');
+              if (r?.refunded) refreshData?.();
               return;
-          } catch (e: any) {
-              // Timeout o error de red: NO sabemos si la orden se creó en
-              // Mouv. Prohibido reintentar a ciegas — se bloquea el botón
-              // hasta que el usuario verifique en su historial/portal.
-              sendingRef.current = false;
-              setIsSending(false);
-              setMouvUnknown(true);
-              showToast('La conexión tardó demasiado y NO se sabe si la orden se creó. Verifica en tu Historial antes de reintentar — NO vuelvas a enviar todavía.', 12000);
+          } catch {
+              // Timeout: NO sabemos si Mouv la creó → bloquear reintento.
+              sendingRef.current = false; setIsSending(false); setMouvUnknown(true);
+              showToast('La conexión tardó demasiado y NO se sabe si la dispersión salió. Revisa tu Historial antes de reintentar — NO vuelvas a enviar todavía.', 12000);
               return;
           }
       }
@@ -1320,6 +1310,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       sendingRef.current = false;
       setContactSearch('');
       setSendSourceRail('COP');
+      setSendContact(null);
   };
 
   const handleEditProfileClick = () => {
@@ -3917,8 +3908,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                                               accountType: c.accountType ?? sendForm.accountType,
                                                               beneficiaryType: c.kind === 'empresa' ? 'business' : 'personal',
                                                           });
-                                                          // COP: con este ID la confirmación crea la orden REAL en
-                                                          // Mouv. Otros países: flujo interno, sin Mouv.
+                                                          // Guarda el contacto completo (destKind/brebKey/banco) para
+                                                          // la dispersión REAL inline de Mouv, y fija el riel de origen
+                                                          // según el tipo de destino (Bre-B → COP_BREB, ACH → COP_ACH).
+                                                          setSendContact(c);
+                                                          if (isCopDest) setSendSourceRail((c as any).destKind === 'breb' ? 'COP_BREB' : 'COP_ACH');
                                                           setMouvDestId(isCopDest ? (c.mouvId ?? null) : null);
                                                           setSendStep(4);
                                                       }}
