@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { BookUser, Plus, X, Trash2, CheckCircle, AlertTriangle, Landmark, Wallet, Search, SlidersHorizontal } from 'lucide-react';
+import { BookUser, Plus, X, Trash2, CheckCircle, AlertTriangle, Landmark, Wallet, Search, SlidersHorizontal, Zap } from 'lucide-react';
 import { useDatabase } from '../context/DatabaseContext';
 import { supabase } from '../lib/supabaseClient';
 import { FlagImg } from './FlagImg';
@@ -51,7 +51,26 @@ export interface MouvContact {
     // Última respuesta de Mouv al intentar inscribir (null = ok). Visible
     // en el detalle para diagnosticar rechazos de campos/validación.
     lastError?: string | null;
+    // Tipo de destino Colombia (modelo Mouv): 'ach' = cuenta bancaria
+    // (default, retrocompatible con contactos viejos) · 'breb' = llave Bre-B.
+    destKind?: 'ach' | 'breb';
+    // Solo Bre-B: tipo de llave y valor.
+    brebKeyType?: 'celular' | 'cedula' | 'correo' | 'alfanumerico';
+    brebKey?: string;
+    // Contacto opcional del destinatario — SOLO notificaciones, no mueve dinero.
+    notifyEmail?: string;
+    notifyPhone?: string;
 }
+
+// Tipos de llave Bre-B (igual que la consola de Mouv).
+const BREB_KEY_TYPES = [
+    { v: 'celular', l: 'Celular' },
+    { v: 'cedula', l: 'Cédula' },
+    { v: 'correo', l: 'Correo' },
+    { v: 'alfanumerico', l: 'Llave alfanumérica' },
+] as const;
+
+const brebKeyLabel = (v?: string) => BREB_KEY_TYPES.find(k => k.v === v)?.l ?? 'Llave';
 
 // Estado efectivo (contactos viejos sin campo status → en proceso si son
 // de Colombia; aprobados si son de otro país).
@@ -76,6 +95,23 @@ const buildMouvAccountBody = (c: { name: string; docType: string; docNumber: str
         // Enum de Mouv: CC | CE | NIT (PAS no existe → se envía como CE)
         account_holder_id_type: c.docType === 'PAS' ? 'CE' : c.docType,
         account_holder_id_number: c.docNumber,
+    },
+});
+
+// Cuerpo para inscribir una llave BRE-B como destino en Mouv.
+// ⚠️ El contrato EXACTO del endpoint Bre-B aún no está confirmado en la doc
+// (developer.mouvlatam.com está bloqueada desde aquí). Este body sigue la
+// forma del create-external-account con la variante de llave; cuando llegue
+// el cURL real, ajusta los nombres de campo en un solo lugar (aquí).
+const buildMouvBrebBody = (c: { name: string; brebKeyType: string; brebKey: string; docType?: string; docNumber?: string }) => ({
+    account: {
+        geo: 'CO',
+        rail: 'BREB',
+        breb_key_type: c.brebKeyType,   // celular | cedula | correo | alfanumerico
+        breb_key: c.brebKey,
+        account_holder_fullname: c.name,
+        ...(c.docType ? { account_holder_id_type: c.docType === 'PAS' ? 'CE' : c.docType } : {}),
+        ...(c.docNumber ? { account_holder_id_number: c.docNumber } : {}),
     },
 });
 
@@ -147,6 +183,12 @@ const emptyForm = {
     accountKind: 'bank' as 'bank' | 'wallet',
     walletCoin: 'USDT' as 'USDT' | 'USDC',
     walletNetwork: 'TRC-20' as 'TRC-20' | 'BEP-20',
+    // Destino Colombia: Bre-B (llave) o ACH (cuenta bancaria).
+    destKind: 'ach' as 'ach' | 'breb',
+    brebKeyType: 'celular' as 'celular' | 'cedula' | 'correo' | 'alfanumerico',
+    brebKey: '',
+    notifyEmail: '',
+    notifyPhone: '',
 };
 
 const WALLET_ADDR_RX: Record<string, RegExp> = {
@@ -269,6 +311,45 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
             return;
         }
 
+        // ── BRE-B (solo Colombia): inscribir por llave ──
+        if (f.country === 'Colombia' && f.destKind === 'breb') {
+            if (!f.name.trim()) { setNotice({ ok: false, text: 'Ponle un alias al destinatario.' }); return; }
+            if (!f.brebKey.trim()) { setNotice({ ok: false, text: 'Escribe la llave Bre-B.' }); return; }
+            const keyNorm = f.brebKey.trim().toLowerCase();
+            const dupK = bankContacts.find(c => c.destKind === 'breb' && (c.brebKey ?? '').trim().toLowerCase() === keyNorm);
+            if (dupK) { setNotice({ ok: false, text: `Ya tienes esta llave inscrita como “${dupK.name}”.` }); return; }
+            setSaving(true); setNotice(null);
+            let mouvId: string | null = null;
+            let status: ContactStatus = 'en_proceso';
+            let lastError: string | null = null;
+            try {
+                const r = await callMouv('create_external_account', currentUser.id, {
+                    data: buildMouvBrebBody({ name: f.name.trim(), brebKeyType: f.brebKeyType, brebKey: f.brebKey.trim(), docType: f.docType, docNumber: f.docNumber.trim() || undefined }),
+                });
+                const d = (r?.data ?? {}) as any;
+                mouvId = d.id ?? d.external_account_id ?? d.account_id ?? null;
+                status = normalizeStatus(d.verification_status ?? d.status ?? d.estado ?? d.state) ?? 'en_proceso';
+                if (!r?.ok || !mouvId) lastError = `[${new Date().toLocaleTimeString('es-CO')}] HTTP ${r?.status ?? '—'} en ${r?.path ?? '¿?'}: ${JSON.stringify(r?.data ?? r).slice(0, 260)}`;
+            } catch (e: any) { lastError = String(e?.message ?? e); }
+            const brebContact: MouvContact = {
+                id: `ct_${Math.random().toString(36).slice(2, 10)}`,
+                mouvId, kind: f.kind, name: f.name.trim(),
+                docType: f.docType, docNumber: f.docNumber.trim() || '—',
+                country: 'Colombia', bank: `Bre-B · ${brebKeyLabel(f.brebKeyType)}`,
+                accountType: 'savings', accountNumber: f.brebKey.trim(),
+                status, createdAt: new Date().toISOString(), lastError,
+                destKind: 'breb', brebKeyType: f.brebKeyType, brebKey: f.brebKey.trim(),
+                notifyEmail: f.notifyEmail.trim() || undefined, notifyPhone: f.notifyPhone.trim() || undefined,
+            };
+            const okK = await persistBanks([brebContact, ...bankContacts]);
+            setSaving(false); setFormOpen(false); setForm({ ...emptyForm });
+            if (!okK) { setNotice({ ok: false, text: '⚠ El destinatario NO quedó guardado en el servidor (sesión vencida o permisos). Vuelve a entrar e inscríbelo otra vez.' }); return; }
+            setNotice(status === 'aprobada'
+                ? { ok: true, text: `✅ Destinatario Bre-B aprobado (${brebContact.name}). Ya puedes dispersarle.` }
+                : { ok: true, text: `📋 Llave Bre-B inscrita — quedó EN PROCESO. El estado se actualiza solo.` });
+            return;
+        }
+
         if (!f.name.trim() || !f.docNumber.trim() || !f.bank.trim() || !f.accountNumber.trim()) {
             setNotice({ ok: false, text: 'Completa nombre, documento, banco y número de cuenta.' });
             return;
@@ -326,6 +407,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
             status,
             createdAt: new Date().toISOString(),
             lastError,
+            destKind: 'ach',
         };
         const okB = await persistBanks([contact, ...bankContacts]);
         setSaving(false);
@@ -356,7 +438,9 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
             for (const c of pendingReg) {
                 try {
                     const rr = await callMouv('create_external_account', currentUser.id, {
-                        data: buildMouvAccountBody(c),
+                        data: c.destKind === 'breb'
+                            ? buildMouvBrebBody({ name: c.name, brebKeyType: c.brebKeyType ?? 'celular', brebKey: c.brebKey ?? c.accountNumber, docType: c.docType, docNumber: c.docNumber })
+                            : buildMouvAccountBody(c),
                     });
                     const dd = (rr?.data ?? {}) as any;
                     const fid = dd.id ?? dd.external_account_id ?? dd.account_id ?? null;
@@ -688,12 +772,66 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                             ))}
                         </div>
                     </div>
+                    {/* Tipo de destino (solo Colombia): Bre-B o ACH — como en Mouv */}
+                    {form.country === 'Colombia' && (
+                        <div className="grid grid-cols-2 gap-2 mb-1">
+                            {([{ v: 'breb', l: 'Bre-B', s: 'Por llave · segundos' }, { v: 'ach', l: 'ACH', s: 'Cuenta bancaria' }] as const).map(t => {
+                                const sel = form.destKind === t.v;
+                                return (
+                                    <button key={t.v} type="button" onClick={() => setForm(fm => ({ ...fm, destKind: t.v }))}
+                                        className="p-2.5 rounded-xl text-left transition-colors"
+                                        style={{ border: sel ? '1.5px solid #16A34A' : '1px solid #e2e8f0', background: sel ? 'rgba(22,163,74,0.08)' : '#fff' }}>
+                                        <p className="text-sm font-bold" style={{ color: sel ? '#16A34A' : '#334155' }}>{t.l}</p>
+                                        <p className="text-[11px] text-slate-400">{t.s}</p>
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    )}
+
                     <div className="grid md:grid-cols-2 gap-3">
                         <div className="md:col-span-2">
-                            <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Nombre completo / Razón social</label>
+                            <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">{form.country === 'Colombia' && form.destKind === 'breb' ? 'Alias del destinatario' : 'Nombre completo / Razón social'}</label>
                             <input value={form.name} onChange={e => setForm(fm => ({ ...fm, name: e.target.value }))}
+                                placeholder={form.country === 'Colombia' && form.destKind === 'breb' ? 'Ej: Juan Proveedor, Nómina Marzo' : ''}
                                 className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#4ADE80] outline-none" />
                         </div>
+
+                        {/* ── Rama BRE-B: tipo de llave + llave + contacto opcional ── */}
+                        {form.country === 'Colombia' && form.destKind === 'breb' ? (
+                            <>
+                                <div>
+                                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Tipo de llave Bre-B</label>
+                                    <select value={form.brebKeyType} onChange={e => setForm(fm => ({ ...fm, brebKeyType: e.target.value as any }))}
+                                        className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm bg-white focus:border-[#4ADE80] outline-none">
+                                        {BREB_KEY_TYPES.map(k => <option key={k.v} value={k.v}>{k.l}</option>)}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Llave</label>
+                                    <input value={form.brebKey} onChange={e => setForm(fm => ({ ...fm, brebKey: e.target.value }))}
+                                        placeholder={form.brebKeyType === 'celular' ? '+57 300 1234567' : form.brebKeyType === 'correo' ? 'correo@empresa.com' : form.brebKeyType === 'cedula' ? 'Número de cédula' : 'Llave alfanumérica'}
+                                        className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#4ADE80] outline-none" />
+                                </div>
+                                <div className="md:col-span-2 bg-slate-50 border border-slate-200 rounded-xl p-2.5">
+                                    <p className="text-[11px] text-slate-500 font-semibold">Contacto opcional (solo para notificaciones — no se usa para mover dinero)</p>
+                                </div>
+                                <div>
+                                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Email</label>
+                                    <input value={form.notifyEmail} onChange={e => setForm(fm => ({ ...fm, notifyEmail: e.target.value }))}
+                                        placeholder="opcional@empresa.com"
+                                        className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#4ADE80] outline-none" />
+                                </div>
+                                <div>
+                                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Celular</label>
+                                    <input value={form.notifyPhone} onChange={e => setForm(fm => ({ ...fm, notifyPhone: e.target.value }))}
+                                        placeholder="3001234567"
+                                        className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#4ADE80] outline-none" />
+                                </div>
+                            </>
+                        ) : (
+                        /* ── Rama ACH / otros países: cuenta bancaria ── */
+                        <>
                         <div>
                             <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Tipo de documento</label>
                             <select value={form.docType} onChange={e => setForm(fm => ({ ...fm, docType: e.target.value }))}
@@ -735,6 +873,8 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                                 inputMode="numeric"
                                 className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#4ADE80] outline-none" />
                         </div>
+                        </>
+                        )}
                     </div>
                     <button
                         onClick={saveContact}
@@ -833,14 +973,18 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                             <div className="w-10 h-10 rounded-xl bg-[#0C0E0D] flex items-center justify-center shrink-0">
                                 {c.accountKind === 'wallet'
                                     ? <Wallet size={16} className="text-[#4ADE80]" />
-                                    : <Landmark size={16} className="text-[#4ADE80]" />}
+                                    : c.destKind === 'breb'
+                                        ? <Zap size={16} className="text-[#4ADE80]" />
+                                        : <Landmark size={16} className="text-[#4ADE80]" />}
                             </div>
                             <div className="min-w-0">
                                 <p className="font-bold text-slate-800 text-sm truncate">{c.name} <span className="font-normal text-slate-400 text-xs">· {c.accountKind === 'wallet' ? 'Wallet' : (c.kind === 'empresa' ? 'Empresa' : 'Persona')}</span></p>
                                 <p className="text-xs text-slate-500 truncate">
                                     {c.accountKind === 'wallet'
                                         ? `${c.walletCoin ?? 'USDT'} · ${c.walletNetwork ?? 'TRC-20'} · ${mask(c.accountNumber)} · solo envíos USD`
-                                        : `${(c.country && c.country !== 'Colombia') ? `${c.country} · ` : ''}${c.bank} · ${c.accountType === 'savings' ? 'Ahorros' : 'Corriente'} ${mask(c.accountNumber)} · ${c.docType} ${c.docNumber}`}
+                                        : c.destKind === 'breb'
+                                            ? `Bre-B · ${brebKeyLabel(c.brebKeyType)} · ${mask(c.brebKey ?? c.accountNumber)}`
+                                            : `${(c.country && c.country !== 'Colombia') ? `${c.country} · ` : ''}${c.bank} · ${c.accountType === 'savings' ? 'Ahorros' : 'Corriente'} ${mask(c.accountNumber)} · ${c.docType} ${c.docNumber}`}
                                 </p>
                             </div>
                         </button>
