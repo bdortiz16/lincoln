@@ -1364,12 +1364,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       <div className="space-y-10 animate-in fade-in duration-500 pt-6">
           <div className="flex justify-between items-center mb-8">
               <div>
-                  <h1 className="text-3xl font-extrabold text-[#0C0E0D] flex items-center gap-3 flex-wrap">
-                      Hola, {(currentUser?.role === 'business' ? (currentUser?.companyName || currentUser?.name) : currentUser?.name?.split(' ')[0]) || 'León'}
-                      {seasonEmojis.length > 0 && <span>{seasonEmojis[0]}</span>}
-                  </h1>
-                  <p className="font-medium" style={{ color: '#475569' }}>
-                      {currentUser?.role === 'business' ? 'Gestiona el dinero de tu empresa globalmente.' : 'Gestiona tu dinero globalmente.'}
+                  <h1 style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-0.8px', color: '#F4F4F2' }}>Tus cuentas</h1>
+                  <p className="font-medium" style={{ color: '#878E88', fontSize: 14, marginTop: 5, textTransform: 'capitalize' }}>
+                      {new Date().toLocaleDateString('es-CO', { weekday: 'long', day: 'numeric', month: 'long' })}
+                      {(currentUser?.companyName || currentUser?.name) ? ` · ${currentUser?.role === 'business' ? (currentUser?.companyName || currentUser?.name) : currentUser?.name}` : ''}
                   </p>
               </div>
               <div className="flex items-center gap-4 relative">
@@ -1534,139 +1532,176 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               );
           })()}
 
-          <div className="space-y-4">
-              <div className="flex justify-between items-center">
-                  <h3 className="font-bold text-[#0C0E0D] text-sm tracking-wide flex items-center gap-2">TUS CUENTAS <span className="bg-[#0C0E0D] text-white text-[10px] font-bold px-2 py-0.5 rounded-full min-w-[20px] text-center">{myWallets.length}</span></h3>
-                  <div className="flex items-center gap-3">
-                      <button onClick={openWalletOrderModal} title="Ordenar billeteras" style={{ color: '#334155' }} className="hover:text-[#0C0E0D] transition-colors">
-                          <Settings size={15} />
-                      </button>
-                      <button onClick={() => setShowAllWallets(!showAllWallets)} className="text-[#0C0E0D] text-xs font-bold hover:underline">
-                          {showAllWallets ? 'Ver menos' : 'Ver más'}
-                      </button>
-                  </div>
+
+          <style>{`
+            .lincoin-panel { background:#0C0E0D; border:1px solid rgba(255,255,255,0.09); border-radius:14px; padding:20px; }
+            @media (max-width: 1000px) { .lincoin-dash-bottom { grid-template-columns: 1fr !important; } }
+          `}</style>
+
+          {/* ═══════════ BILLETERAS ═══════════ */}
+          <div>
+            <div className="flex items-baseline justify-between" style={{ marginBottom: 13 }}>
+              <div className="flex items-baseline gap-2">
+                <span style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>Billeteras</span>
+                <span style={{ fontSize: 12.5, color: '#878E88' }}>2 activas</span>
               </div>
-
-              <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 items-stretch">
-                  {displayedWallets.map((wallet, index) => {
-                      const bal = displayBalance(wallet.code);
-                      const isPrimary = index === 0;
-                      return (
-                          <div
-                              key={wallet.code}
-                              onClick={() => handleWalletClick(wallet.code)}
-                              className={`
-                                  relative overflow-hidden rounded-2xl p-4 transition-all cursor-pointer border flex flex-col
-                                  ${isPrimary
-                                      ? 'col-span-2 lg:col-span-1 bg-gradient-to-br from-[#0C0E0D] to-[#0C0E0D] text-white border-transparent shadow-xl shadow-green-900/20'
-                                      : 'bg-white text-slate-800 border-slate-200 hover:border-slate-300 hover:shadow-lg'}
-                              `}
-                          >
-                              {isPrimary && <div className="absolute -right-10 -top-10 w-40 h-40 bg-white/5 rounded-full blur-3xl"></div>}
-                              <div className="flex justify-between items-start mb-3 relative z-10">
-                                  <div className="flex items-center gap-2">
-                                      {wallet.code === 'USD' ? (
-                                          <div className={`w-7 h-5 rounded shadow-sm flex items-center justify-center font-bold text-[10px] ${isPrimary ? 'bg-white/15 text-white ring-2 ring-white/30' : 'bg-green-50 text-[#16A34A] ring-1 ring-slate-200'}`}>₮</div>
-                                      ) : (
-                                          <FlagImg code={wallet.code} size="lg" className={`w-7 h-5 object-cover rounded shadow-sm ${isPrimary ? 'ring-2 ring-white/30' : 'ring-1 ring-slate-200'}`} />
-                                      )}
-                                      <div>
-                                          <p className={`font-bold text-sm leading-tight ${isPrimary ? 'text-white' : 'text-slate-700'}`}>{wallet.name}</p>
-                                          <p className={`text-[10px] font-medium uppercase tracking-wider ${isPrimary ? 'text-green-200' : 'text-slate-400'}`}>{wallet.type}</p>
-                                      </div>
-                                  </div>
-                              </div>
-                              <div className="relative z-10 mb-3 flex-1">
-                                  <p className={`text-2xl font-bold tracking-tight ${isPrimary ? 'text-white' : 'text-slate-800'}`}>
-                                      {formatMoney(bal, wallet.code)} <span className={`text-sm font-normal ${isPrimary ? 'text-green-200' : 'text-slate-400'}`}>{wallet.code === 'USD' ? 'USDT' : wallet.code}</span>
-                                  </p>
-                              </div>
-                              <div className={`flex gap-2 relative z-10 ${isPrimary ? '' : 'border-t border-slate-100 pt-2'}`}>
-                                  <button onClick={(e) => { e.stopPropagation(); handleLoadClick(wallet.code); }} disabled={isBlocked}
-                                      className={`flex-1 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-colors ${isBlocked ? (isPrimary ? 'bg-slate-600 text-slate-300' : 'bg-slate-200 text-slate-400') : 'bg-[#4ADE80] text-[#0C0E0D] hover:bg-[#6EE7A0]'}`}>
-                                      <Plus size={12} strokeWidth={3} /> Cargar
-                                  </button>
-                                  <button onClick={(e) => { e.stopPropagation(); if(!handleActionRestricted()) setIsSendModalOpen(true); }} disabled={isBlocked || !isKycVerified}
-                                      className={`flex-1 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-colors ${isPrimary ? 'bg-white/10 text-white hover:bg-white/20' : 'bg-white border border-slate-300 text-[#0C0E0D] hover:bg-slate-50'}`}>
-                                      <Send size={12} /> Enviar
-                                  </button>
-                              </div>
+            </div>
+            <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))' }}>
+              {/* USDT — principal */}
+              {(() => {
+                const usdt = displayBalance('USD');
+                const parts = usdt.toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).split(',');
+                return (
+                  <div style={{ background: '#0C0E0D', border: '1px solid rgba(74,222,128,0.28)', borderRadius: 14, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                    <div style={{ padding: '18px 18px 16px', flex: 1 }}>
+                      <div className="flex items-start justify-between" style={{ marginBottom: 14 }}>
+                        <div className="flex items-center gap-2.5">
+                          <div style={{ width: 32, height: 32, borderRadius: '50%', background: '#26A17B', color: '#fff', fontWeight: 800, fontSize: 16, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>₮</div>
+                          <div>
+                            <p style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>Dólar digital</p>
+                            <p style={{ fontSize: 11, color: '#878E88' }}>USDT · GasFree · TRON</p>
                           </div>
-                      );
-                  })}
-              </div>
-          </div>
-
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <button onClick={() => { if(!handleActionRestricted(false)) { setLoadStep(1); setIsLoadModalOpen(true); } }} className={`bg-white p-5 rounded-xl border border-slate-200 transition-all group text-left ${isBlocked ? 'opacity-50 cursor-not-allowed' : 'hover:border-[#4ADE80] hover:shadow-md'}`}>
-                  <div className="w-10 h-10 bg-green-50 rounded-lg flex items-center justify-center text-[#4ADE80] mb-3 group-hover:scale-110 transition-transform">
-                      <Plus size={20} strokeWidth={2.5} />
-                  </div>
-                  <p className="font-bold text-slate-800 text-sm">Cargar Dinero</p>
-                  <p className="text-[11px] text-slate-500">Vía transferencia o tarjeta</p>
-              </button>
-
-              <button onClick={() => { if(!handleActionRestricted()) setIsSendModalOpen(true); }} className={`bg-white p-5 rounded-xl border border-slate-200 transition-all group text-left ${isBlocked || !isKycVerified ? 'opacity-50 cursor-not-allowed' : 'hover:border-[#0C0E0D] hover:shadow-md'}`}>
-                  <div className="w-10 h-10 bg-slate-50 rounded-lg flex items-center justify-center text-[#0C0E0D] mb-3 group-hover:scale-110 transition-transform">
-                      <Send size={20} />
-                  </div>
-                  <p className="font-bold text-slate-800 text-sm">Enviar a Contacto</p>
-                  <p className="text-[11px] text-slate-500">Local o internacional</p>
-              </button>
-
-              <button onClick={() => { if(!handleActionRestricted()) setIsConvertModalOpen(true); }} className={`bg-white p-5 rounded-xl border border-slate-200 transition-all group text-left ${isBlocked || !isKycVerified ? 'opacity-50 cursor-not-allowed' : 'hover:border-purple-500 hover:shadow-md'}`}>
-                  <div className="w-10 h-10 bg-purple-50 rounded-lg flex items-center justify-center text-purple-600 mb-3 group-hover:scale-110 transition-transform">
-                      <RefreshCw size={20} />
-                  </div>
-                  <p className="font-bold text-slate-800 text-sm">Convertir Divisas</p>
-                  <p className="text-[11px] text-slate-500">Cambio inmediato</p>
-              </button>
-
-              <button onClick={() => setActiveView('servicios')} className="bg-white p-5 rounded-xl border border-slate-200 hover:border-[#4ADE80] hover:shadow-md transition-all group text-left">
-                  <div className="w-10 h-10 bg-slate-50 rounded-lg flex items-center justify-center text-green-600 mb-3 group-hover:scale-110 transition-transform">
-                      <LayoutGrid size={20} />
-                  </div>
-                  <p className="font-bold text-slate-800 text-sm">Servicios</p>
-                  <p className="text-[11px] text-slate-500">Travel, seguros y más</p>
-              </button>
-
-          </div>
-
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-              <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-white">
-                  <h3 className="font-bold text-slate-800 text-sm flex items-center gap-2">
-                      <Activity size={16} className="text-[#4ADE80]" /> Movimientos Recientes
-                  </h3>
-                  <button onClick={() => { setMovementsTab('all'); setActiveView('movements'); }} className="text-[#16A34A] text-xs font-bold hover:underline">Ver historial completo →</button>
-              </div>
-              <div className="divide-y divide-slate-50">
-                  {movements.length > 0 ? movements.slice(0, 5).map(tx => (
-                      <button key={tx.id} type="button" className="w-full p-4 flex items-center justify-between hover:bg-slate-50 transition-colors text-left" onClick={() => setSelectedTx(tx)}>
-                          <div className="flex items-center gap-4">
-                              <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-xs shadow-sm ${isTxCredit(tx) ? 'bg-green-100 text-green-700' : tx.type === 'send' || tx.type === 'pay_sent' ? 'bg-slate-100 text-slate-600' : 'bg-slate-100 text-[#4ADE80]'}`}>
-                                  {tx.initials}
-                              </div>
-                              <div>
-                                  <p className="font-bold text-slate-800 text-sm mb-0.5">{tx.title}</p>
-                                  <p className="text-[10px] text-slate-400 font-medium">{tx.date} • {tx.userName}</p>
-                              </div>
-                          </div>
-                          <div className="text-right">
-                              <p className={`font-bold text-sm mb-0.5 ${isTxCredit(tx) ? 'text-green-600' : 'text-slate-800'}`}>{isTxCredit(tx) ? '+' : '-'} {formatMoney(tx.amount, tx.currency)} <span className="text-[10px] text-slate-400">{tx.currency}</span></p>
-                              <span className={`inline-block text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${tx.status === 'Completado' ? 'bg-green-100 text-green-700' : tx.status === 'Pendiente' ? 'bg-orange-100 text-orange-700' : 'bg-red-100 text-red-700'}`}>{tx.status}</span>
-                          </div>
-                      </button>
-                  )) : (
-                      <div className="p-12 text-center flex flex-col items-center justify-center">
-                          <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mb-4">
-                              <Activity size={24} className="text-slate-300" />
-                          </div>
-                          <p className="text-slate-700 font-semibold text-sm">Aún no tienes movimientos</p>
-                          <p className="text-slate-500 text-xs mt-1">Cuando cargues, envíes o conviertas, tus operaciones aparecerán aquí.</p>
+                        </div>
+                        <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 9, fontWeight: 700, letterSpacing: '0.7px', padding: '3px 7px', borderRadius: 999, whiteSpace: 'nowrap' }}>PRINCIPAL</span>
                       </div>
-                  )}
-              </div>
+                      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 6 }}>
+                        <span style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-1px', lineHeight: 1, color: '#F4F4F2' }}>{parts[0]}<span style={{ fontSize: 16, color: '#878E88' }}>,{parts[1]}</span></span>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: '#878E88', marginBottom: 1 }}>USDT</span>
+                      </div>
+                      <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 5 }}>Disponible · 1 USDT = 1 USD</p>
+                    </div>
+                    <div style={{ padding: '11px 18px', borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.015)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: 10.5, color: '#878E88', fontFamily: 'ui-monospace, Menlo, monospace' }}>{usdtAddr ? `${usdtAddr.slice(0, 6)}…${usdtAddr.slice(-4)}` : 'Red TRON · TRC-20'}</span>
+                      <div className="flex items-center" style={{ gap: 13 }}>
+                        <button onClick={() => handleLoadClick('USD')} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Cargar</button>
+                        <button onClick={() => { setSelectedWalletCode('USD'); setActiveView('mouv'); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Convertir</button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+              {/* COP — cuenta local (BreB + ACH vía Mouv) */}
+              {(() => {
+                const cop = getBalance('COP') + getBalance('COP_BREB') + getBalance('COP_ACH');
+                const usdt = displayBalance('USD');
+                const rate = getRate('USD', 'COP');
+                return (
+                  <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                    <div style={{ padding: '18px 18px 16px', flex: 1 }}>
+                      <div className="flex items-start justify-between" style={{ marginBottom: 14 }}>
+                        <div className="flex items-center gap-2.5">
+                          <div style={{ width: 32, height: 32, borderRadius: '50%', overflow: 'hidden', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+                            <span style={{ height: '50%', background: '#FCD116' }} />
+                            <span style={{ height: '25%', background: '#003893' }} />
+                            <span style={{ height: '25%', background: '#CE1126' }} />
+                          </div>
+                          <div>
+                            <p style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>Peso colombiano</p>
+                            <p style={{ fontSize: 11, color: '#878E88' }}>Cuenta local · COP</p>
+                          </div>
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 6 }}>
+                        <span style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-1px', lineHeight: 1, color: '#F4F4F2' }}>{Math.round(cop).toLocaleString('es-CO')}</span>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: '#878E88', marginBottom: 1 }}>COP</span>
+                      </div>
+                      <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 5 }}>{rate ? `≈ ${(cop / rate).toLocaleString('es-CO', { maximumFractionDigits: 2 })} USDT · ${Math.round(rate).toLocaleString('es-CO')}` : 'BreB · ACH'}</p>
+                    </div>
+                    <div style={{ padding: '11px 18px', borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.015)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: 10.5, color: '#878E88', fontFamily: 'ui-monospace, Menlo, monospace' }}>BreB · ACH</span>
+                      <div className="flex items-center" style={{ gap: 13 }}>
+                        <button onClick={() => { setSelectedWalletCode('COP'); setActiveView('wallet-detail'); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Ver</button>
+                        <button onClick={() => { setSelectedWalletCode('USD'); setActiveView('mouv'); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Retirar</button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
           </div>
+
+          {/* ═══════════ ZONA INFERIOR ═══════════ */}
+          <div className="lincoin-dash-bottom" style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: 18, alignItems: 'start' }}>
+            {/* Movimientos recientes */}
+            <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, overflow: 'hidden', minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 22px', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+                <span style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>Movimientos recientes</span>
+                <button onClick={() => { setMovementsTab('all'); setActiveView('movements'); }} style={{ fontSize: 12.5, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Ver todo →</button>
+              </div>
+              {movements.length > 0 ? movements.slice(0, 8).map(tx => {
+                const credit = isTxCredit(tx);
+                return (
+                  <button key={tx.id} type="button" onClick={() => setSelectedTx(tx)} style={{ width: '100%', display: 'grid', gridTemplateColumns: '1fr auto', alignItems: 'center', gap: 12, padding: '13px 22px', borderTop: '1px solid rgba(255,255,255,0.05)', textAlign: 'left' }} className="hover:bg-white/[0.02] transition-colors">
+                    <div className="flex items-center gap-3" style={{ minWidth: 0 }}>
+                      <div style={{ width: 32, height: 32, borderRadius: 9, background: credit ? 'rgba(74,222,128,0.1)' : 'rgba(255,255,255,0.055)', color: credit ? '#4ADE80' : '#F4F4F2', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700, flexShrink: 0 }}>{tx.initials}</div>
+                      <div style={{ minWidth: 0 }}>
+                        <p style={{ fontSize: 13.5, fontWeight: 600, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{tx.title}</p>
+                        <p style={{ fontSize: 11.5, color: '#878E88' }}>{tx.date}</p>
+                      </div>
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      <p style={{ fontSize: 13.5, fontWeight: 700, color: credit ? '#4ADE80' : '#F4F4F2', whiteSpace: 'nowrap' }}>{credit ? '+' : '−'} {formatMoney(tx.amount, tx.currency)}</p>
+                      <span style={{ display: 'inline-block', marginTop: 3, fontSize: 10.5, fontWeight: 700, padding: '2px 8px', borderRadius: 999, border: tx.status === 'Completado' ? '1px solid rgba(74,222,128,0.3)' : '1px solid rgba(255,255,255,0.14)', color: tx.status === 'Completado' ? '#4ADE80' : '#878E88' }}>{tx.status}</span>
+                    </div>
+                  </button>
+                );
+              }) : (
+                <div style={{ padding: 40, textAlign: 'center' }}>
+                  <p style={{ color: '#F4F4F2', fontWeight: 600, fontSize: 13.5 }}>Aún no tienes movimientos</p>
+                  <p style={{ color: '#878E88', fontSize: 12, marginTop: 4 }}>Cuando cargues, conviertas o retires, tus operaciones aparecerán aquí.</p>
+                </div>
+              )}
+            </div>
+
+            {/* Columna derecha */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+              {/* Tasa de hoy */}
+              {(() => {
+                const rate = getRate('USD', 'COP');
+                return (
+                  <div className="lincoin-panel">
+                    <div className="flex items-center justify-between" style={{ marginBottom: 12 }}>
+                      <span style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2' }}>Tasa de hoy</span>
+                      <span style={{ fontSize: 11, color: '#878E88' }}>vía Mouv</span>
+                    </div>
+                    <div className="flex items-center justify-between" style={{ fontSize: 13 }}>
+                      <span style={{ color: '#878E88' }}>USD → COP</span>
+                      <span style={{ color: '#F4F4F2', fontWeight: 700 }}>{rate ? Math.round(rate).toLocaleString('es-CO') : '—'}</span>
+                    </div>
+                    <button onClick={() => { setSelectedWalletCode('USD'); setActiveView('mouv'); }} style={{ marginTop: 14, width: '100%', padding: '10px', borderRadius: 9, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontSize: 13, fontWeight: 600 }} className="hover:bg-white/[0.09] transition-colors">Convertir a COP</button>
+                  </div>
+                );
+              })()}
+              {/* Servicios */}
+              <div className="lincoin-panel">
+                <div className="flex items-center justify-between" style={{ marginBottom: 4 }}>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2' }}>Servicios</span>
+                  <button onClick={() => setActiveView('servicios')} style={{ fontSize: 12, color: '#878E88' }} className="hover:text-[#F4F4F2] transition-colors">Ver más ›</button>
+                </div>
+                {[['Mesa OTC', 'Operaciones de alto volumen con tasa negociada'], ['Pagos masivos', 'Nómina y proveedores por lote o CSV'], ['Retiros COP', 'A cuentas en Colombia por BreB y ACH'], ['Extractos', 'Descarga mensual en PDF o CSV']].map(([t, d], i) => (
+                  <div key={t} className="flex items-center gap-3" style={{ padding: '12px 0', borderTop: i === 0 ? 'none' : '1px solid rgba(255,255,255,0.06)' }}>
+                    <div style={{ width: 32, height: 32, borderRadius: 9, background: 'rgba(255,255,255,0.055)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><Zap size={15} style={{ color: '#F4F4F2' }} /></div>
+                    <div style={{ minWidth: 0 }}>
+                      <p style={{ fontSize: 13.5, fontWeight: 600, color: '#F4F4F2' }}>{t}</p>
+                      <p style={{ fontSize: 11.5, color: '#878E88' }}>{d}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {/* TU DINERO — confianza (aliados reales de Lincoin) */}
+              <div className="lincoin-panel">
+                <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.8px', color: '#878E88', marginBottom: 14 }}>TU DINERO</p>
+                {[['Respaldo en USDT', 'Dólar digital de Tether (USDT), 1:1 con el dólar.'], ['Rieles locales', 'Retiros en Colombia por BreB y ACH vía Mouv.'], ['Identidad verificada', 'KYC/KYB y monitoreo SARLAFT con Didit.']].map(([t, d]) => (
+                  <div key={t} className="flex items-start gap-3" style={{ marginBottom: 13, fontSize: 12.5 }}>
+                    <ShieldCheck size={16} style={{ color: '#878E88', flexShrink: 0, marginTop: 1 }} />
+                    <div><span style={{ fontWeight: 700, color: '#F4F4F2' }}>{t}</span> <span style={{ color: '#878E88' }}>— {d}</span></div>
+                  </div>
+                ))}
+                <p style={{ borderTop: '1px solid rgba(255,255,255,0.07)', paddingTop: 12, marginTop: 2, fontSize: 11.5, color: '#878E88', lineHeight: 1.5 }}>Lincoin no es un banco. Los criptoactivos no están cubiertos por fondos de garantía de depósitos.</p>
+              </div>
+            </div>
+          </div>
+
       </div>
   );
   };
