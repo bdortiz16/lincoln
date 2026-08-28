@@ -58,6 +58,7 @@ import {
 } from 'lucide-react';
 import { Logo } from './Logo';
 import { MouvSection, fetchMouvBalance, fetchMouvRateValue, fetchMouvUsdCopConfig, callMouv } from './OtcMigration';
+import { MouvDispersion } from './MouvDispersion';
 import { ContactsSection, contactStatus } from './ContactsSection';
 import { WalletsGasfreeSection } from './WalletsGasfreeSection';
 import { supabase } from '../lib/supabaseClient';
@@ -245,6 +246,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // completo con cuentas destino/movimientos) y el boton "OTC" en Servicios
   // (solo el convertidor USD->COP, sin nada de dispersion bancaria).
   const [mouvMode, setMouvMode] = useState<'full' | 'converter'>('full');
+  // Riel elegido para dispersar (lo fija el botón "Dispersar" de cada tarjeta).
+  const [dispersRail, setDispersRail] = useState<'COP_BREB' | 'COP_ACH'>('COP_BREB');
   const [selectedWalletCode, setSelectedWalletCode] = useState<string | null>(null);
   // BreB Lincoin: saldo COP separado (key 'COP_BREB') que se fondea desde
   // Peso Lincoin y se usa para dispersar vía Mouv (solo Colombia).
@@ -2038,7 +2041,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               </div>
                           </div>
                           <div style={{ padding: '11px 20px', borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.015)', display: 'flex', gap: 13 }}>
-                              <button onClick={() => { setMouvMode('full'); setActiveView('mouv'); }} disabled={brebBal <= 0} style={{ fontSize: 12, fontWeight: 600, color: brebBal <= 0 ? '#878E88' : '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors disabled:cursor-not-allowed">Dispersar</button>
+                              <button onClick={() => { setDispersRail('COP_BREB'); setMouvMode('full'); setActiveView('mouv'); }} disabled={brebBal <= 0} style={{ fontSize: 12, fontWeight: 600, color: brebBal <= 0 ? '#878E88' : '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors disabled:cursor-not-allowed">Dispersar</button>
                               <button onClick={() => { setBrebMoveOpen(true); setBrebDir('to_peso'); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Mover saldo</button>
                           </div>
                       </div>
@@ -2064,7 +2067,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               </div>
                           </div>
                           <div style={{ padding: '11px 20px', borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.015)', display: 'flex', gap: 13 }}>
-                              <button onClick={() => { if (achOpen) { setMouvMode('full'); setActiveView('mouv'); } }} disabled={!achOpen || achBal <= 0} title={achOpen ? '' : 'Disponible L–V 7:00–18:00 hora Colombia'} style={{ fontSize: 12, fontWeight: 600, color: (!achOpen || achBal <= 0) ? '#878E88' : '#F4F4F2', cursor: achOpen ? 'pointer' : 'not-allowed' }} className="transition-colors">Dispersar</button>
+                              <button onClick={() => { if (achOpen) { setDispersRail('COP_ACH'); setMouvMode('full'); setActiveView('mouv'); } }} disabled={!achOpen || achBal <= 0} title={achOpen ? '' : 'Disponible L–V 7:00–18:00 hora Colombia'} style={{ fontSize: 12, fontWeight: 600, color: (!achOpen || achBal <= 0) ? '#878E88' : '#F4F4F2', cursor: achOpen ? 'pointer' : 'not-allowed' }} className="transition-colors">Dispersar</button>
                               <button onClick={() => { setBrebMoveOpen(true); setBrebDir('to_peso'); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Mover saldo</button>
                           </div>
                       </div>
@@ -3035,7 +3038,15 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               <button onClick={() => setActiveView('dashboard')} className="flex items-center gap-2 text-slate-700 font-bold text-sm hover:text-[#0C0E0D] mb-2">
                   <ArrowLeft size={16} /> Volver
               </button>
-              {mouvMode === 'converter' && (currentUser as any)?.otcConfig?.enabled !== true ? (
+              {mouvMode === 'full' ? (
+                  <MouvDispersion
+                      userId={currentUser.id}
+                      rail={dispersRail}
+                      balance={getBalance(dispersRail)}
+                      authHeader={myAuthHeader}
+                      onDone={() => refreshData?.()}
+                  />
+              ) : mouvMode === 'converter' && (currentUser as any)?.otcConfig?.enabled !== true ? (
                   <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center">
                       <p className="text-slate-500 text-sm">El servicio OTC no está habilitado para tu cuenta todavía.</p>
                       <p className="text-slate-400 text-xs mt-1">Escríbenos a soporte para activarlo.</p>
