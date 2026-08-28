@@ -65,57 +65,97 @@ async function mouvFetch(path: string, init: RequestInit = {}): Promise<{ ok: bo
 }
 
 // ══════════════════════════════════════════════════════════════════
-//  PUNTO ÚNICO DE INTEGRACIÓN CON MOUV — dispersión BREB / ACH
+//  DISPERSIÓN REAL CON MOUV — POST /api/transfers/send (destino inline)
 //  ------------------------------------------------------------------
-//  Cuando tengas el cURL exacto de la doc de Mouv, DESCOMENTA el bloque
-//  del riel correspondiente y ajusta el `path` y el `body` a lo que pida
-//  la doc. Debe devolver ok:true SOLO si Mouv aceptó el payout.
-//  Mientras esté sin cablear devuelve notImplemented y el edge reintegra
-//  el saldo del cliente automáticamente (no se mueve plata).
+//  Contrato (quickstart de la doc):
+//   BREB → { amount, destination:{ brebKey:{ type, value } }, targetName,
+//            targetDocument, reference }  → 201 { id, status:'PENDING', rail }
+//   `targetName` + `targetDocument` son OBLIGATORIOS SARLAFT: se sacan de
+//   POST /api/transfers/resolve-key { keyValue } → recipient.fullName / idValue.
 //
 //  `recipient` que llega del front:
-//    BREB → { keyType: 'cedula'|'celular'|'correo'|'alfanumerico', key, holderName?, reference? }
-//    ACH  → { bankCode, accountType: 'ahorros'|'corriente'|'deposito',
+//    BREB → { keyType:'celular'|'cedula'|'correo'|'alfanumerico', key, holderName?, reference? }
+//    ACH  → { bankCode, accountType:'ahorros'|'corriente'|'deposito',
 //             accountNumber, documentType, documentNumber, holderName, reference? }
+//
+//  UNIDAD: `amount` va en PESOS (entero), igual que el ejemplo de la doc
+//  (amount:100000 = $100.000, fixedFee 1100 = $1.100). NO son centavos.
 // ══════════════════════════════════════════════════════════════════
+
+// Mapea el tipo de llave interno → el enum de Mouv (fallback; lo ideal es
+// usar el keyType que devuelve resolve-key, que es autoritativo).
+function brebTypeToMouv(t: string): string {
+  switch ((t || '').toLowerCase()) {
+    case 'celular': return 'PHONE'
+    case 'correo': return 'EMAIL'
+    case 'cedula': return 'DOCUMENT'
+    case 'alfanumerico': return 'ALPHANUMERIC'
+    default: return 'PHONE'
+  }
+}
+
 async function mouvPayout(
   rail: 'BREB' | 'ACH',
   recipient: Record<string, any>,
   amountCop: number,
 ): Promise<{ ok: boolean; status: number; data: any; providerRef?: string; notImplemented?: boolean }> {
   if (rail === 'BREB') {
-    // ── PEGA AQUÍ EL cURL DE BRE-B ──────────────────────────────────
-    // const r = await mouvFetch('/PATH_DE_LA_DOC', {
-    //   method: 'POST',
-    //   body: JSON.stringify({
-    //     key_type: recipient.keyType,       // ajusta el nombre real del campo
-    //     key: recipient.key,
-    //     amount: amountCop,
-    //     currency: 'COP',
-    //     reference: recipient.reference ?? undefined,
-    //   }),
-    // })
-    // return { ok: r.ok, status: r.status, data: r.data, providerRef: r.data?.id ?? r.data?.transaction_id }
-  } else {
-    // ── PEGA AQUÍ EL cURL DE ACH ────────────────────────────────────
-    // const r = await mouvFetch('/PATH_DE_LA_DOC', {
-    //   method: 'POST',
-    //   body: JSON.stringify({
-    //     bank_code: recipient.bankCode,
-    //     account_type: recipient.accountType,
-    //     account_number: recipient.accountNumber,
-    //     document_type: recipient.documentType,
-    //     document_number: recipient.documentNumber,
-    //     holder_name: recipient.holderName,
-    //     amount: amountCop,
-    //     currency: 'COP',
-    //     reference: recipient.reference ?? undefined,
-    //   }),
-    // })
-    // return { ok: r.ok, status: r.status, data: r.data, providerRef: r.data?.id ?? r.data?.transaction_id }
+    // 1) Resolver la llave para obtener el titular oficial (SARLAFT).
+    let targetName: string | undefined = recipient.holderName
+    let targetDocument: string | undefined = recipient.documentNumber ?? recipient.docNumber
+    let keyType = brebTypeToMouv(recipient.keyType)
+    try {
+      const rk = await mouvFetch('/transfers/resolve-key', {
+        method: 'POST', body: JSON.stringify({ keyValue: recipient.key }),
+      })
+      const rd: any = rk.data ?? {}
+      if (rk.ok && rd.found) {
+        targetName = rd.recipient?.fullName ?? targetName
+        targetDocument = rd.recipient?.idValue ?? targetDocument
+        keyType = rd.keyType ?? keyType   // autoritativo
+      } else if (rk.ok && rd.found === false) {
+        return { ok: false, status: rk.status, data: { error: 'breb_key_not_found', message: 'La llave Bre-B no existe o no está activa.' } }
+      }
+    } catch { /* si resolve falla seguimos con los datos del contacto */ }
+
+    if (!targetName || !targetDocument) {
+      return { ok: false, status: 0, data: { error: 'missing_sarlaft', message: 'No se pudo obtener el titular de la llave (nombre/documento requeridos por SARLAFT).' } }
+    }
+
+    const r = await mouvFetch('/transfers/send', {
+      method: 'POST',
+      body: JSON.stringify({
+        amount: amountCop,
+        destination: { brebKey: { type: keyType, value: recipient.key } },
+        targetName,
+        targetDocument,
+        reference: recipient.reference ?? 'Pago Lincoin',
+      }),
+    })
+    return { ok: r.ok, status: r.status, data: r.data, providerRef: r.data?.id }
   }
-  // Sin cablear todavía → el edge reintegra el saldo.
-  return { ok: false, status: 0, data: { error: 'not_implemented' }, notImplemented: true }
+
+  // ── ACH — mismo endpoint /transfers/send con destino de cuenta bancaria.
+  // ⚠️ La forma EXACTA del destino ACH no está en el quickstart (la página
+  // "Retiros ACH" → /api-reference/transfers/send la tiene). Este body es la
+  // forma más probable; ajústalo aquí cuando veas esa página.
+  const r = await mouvFetch('/transfers/send', {
+    method: 'POST',
+    body: JSON.stringify({
+      amount: amountCop,
+      destination: {
+        bankAccount: {
+          bankCode: recipient.bankCode,
+          accountType: (recipient.accountType || '').toUpperCase(),  // AHORROS | CORRIENTE | DEPOSITO
+          accountNumber: recipient.accountNumber,
+        },
+      },
+      targetName: recipient.holderName,
+      targetDocument: recipient.documentNumber,
+      reference: recipient.reference ?? 'Pago Lincoin',
+    }),
+  })
+  return { ok: r.ok, status: r.status, data: r.data, providerRef: r.data?.id }
 }
 
 // Registro de auditoría best-effort (no bloquea la operación).
@@ -196,34 +236,22 @@ serve(async (req: Request) => {
     const r = await mouvFetch('/wallets/balance')
     if (!r.ok) return json(200, { error: `Mouv respondió ${r.status}.`, status: r.status, raw: r.data })
     const d: any = r.data ?? {}
-
+    // Estructura real (doc): { currency, wallets:[{rail:'BREB'|'ACH',
+    //   availableCents, totalCents, maxTransferAmount,...}], consolidated:{availableCents} }
+    // El valor va en PESOS (mismo criterio que /transfers: amount en pesos).
     const toNum = (v: any): number | null => {
       if (typeof v === 'number') return v
       if (typeof v === 'string' && v.trim() !== '' && !isNaN(Number(v))) return Number(v)
       return null
     }
-    const pick = (obj: any, ...keys: string[]): number | null => {
-      for (const k of keys) { const n = toNum(obj?.[k]); if (n !== null) return n }
-      return null
+    const wallets: any[] = Array.isArray(d?.wallets) ? d.wallets : []
+    const railAmt = (rail: string): number | null => {
+      const w = wallets.find(x => String(x?.rail ?? '').toUpperCase() === rail)
+      return w ? toNum(w.availableCents) : null
     }
-    // El saldo Mouv se separa en dos rieles (como en la consola): Wallet BreB
-    // y Cuenta ACH. Se intenta extraer cada uno + el total, de varias formas
-    // comunes (objeto plano, {balances:{...}}, o arreglo de cuentas). Se
-    // devuelve `raw` para ajustar los nombres exactos al ver la respuesta real.
-    const src = d?.balance ?? d?.balances ?? d?.data ?? d
-    let breb = pick(src, 'breb', 'BREB', 'breb_balance', 'wallet_breb', 'brebBalance')
-    let ach  = pick(src, 'ach', 'ACH', 'ach_balance', 'cuenta_ach', 'achBalance')
-    // Forma de arreglo de cuentas: [{ type/rail/name, balance/amount }]
-    const arr: any[] = Array.isArray(d) ? d : Array.isArray(d?.accounts) ? d.accounts : Array.isArray(d?.wallets) ? d.wallets : []
-    for (const a of arr) {
-      const label = String(a?.type ?? a?.rail ?? a?.name ?? '').toLowerCase()
-      const amt = toNum(a?.balance ?? a?.amount ?? a?.available ?? a?.cop)
-      if (amt === null) continue
-      if (/breb|bre-b/.test(label)) breb = amt
-      else if (/ach/.test(label)) ach = amt
-    }
-    const total = pick(src, 'total', 'cop', 'COP', 'available_cop', 'balance_cop')
-      ?? ((breb ?? 0) + (ach ?? 0) || null)
+    const breb = railAmt('BREB')
+    const ach = railAmt('ACH')
+    const total = toNum(d?.consolidated?.availableCents) ?? ((breb ?? 0) + (ach ?? 0) || null)
     return json(200, { ok: true, status: r.status, source: 'mouv', total, breb, ach, cop: total, raw: d })
   }
 
