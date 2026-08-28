@@ -1,0 +1,81 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Las animaciones tipo animate-in / fade-in / zoom-in / slide-in que el
+   Play CDN resolvía se replican acá (subset que usa la app). */
+@layer utilities {
+  .animate-in {
+    animation-duration: 0.3s;
+    animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+    animation-fill-mode: both;
+  }
+  .fade-in { animation-name: cuy-fade-in; }
+  .zoom-in-95 { animation-name: cuy-zoom-in-95; }
+  .slide-in-from-top-4 { animation-name: cuy-slide-top-4; }
+  .slide-in-from-bottom-4 { animation-name: cuy-slide-bottom-4; }
+  .duration-300 { animation-duration: 0.3s; }
+  .duration-500 { animation-duration: 0.5s; }
+}
+
+@keyframes cuy-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes cuy-zoom-in-95 {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes cuy-slide-top-4 {
+  from { opacity: 0; transform: translateY(-1rem); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes cuy-slide-bottom-4 {
+  from { opacity: 0; transform: translateY(1rem); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ─── Blindaje GLOBAL de contraste de botones ───
+   En algunas máquinas (extensiones/filtros de red que tocan estilos) los
+   botones navy quedaban con texto oscuro invisible ("Confirmar Operación",
+   "Revisar Datos", etc.). Regla por atributo con !important: cualquier
+   botón con fondo navy fuerza texto blanco, y los teal fuerzan navy. */
+button[class*="bg-[#0F172A]"],
+button[class*="bg-[#0F172A]"] *,
+button[class*="bg-[#152e52]"],
+button[class*="bg-[#152e52]"] *,
+button[class*="bg-slate-900"],
+button[class*="bg-slate-900"] * {
+  color: #FFFFFF !important;
+  -webkit-text-fill-color: #FFFFFF !important;
+}
+button[class*="bg-[#0F172A]"] svg,
+button[class*="bg-[#152e52]"] svg,
+button[class*="bg-slate-900"] svg {
+  stroke: #FFFFFF !important;
+}
+button[class*="bg-[#2DD4BF]"],
+button[class*="bg-[#2DD4BF]"] *,
+button[class*="bg-[#5EEAD4]"],
+button[class*="bg-[#5EEAD4]"] *,
+button[class*="bg-teal-400"],
+button[class*="bg-teal-400"] * {
+  color: #0F172A !important;
+  -webkit-text-fill-color: #0F172A !important;
+}
+button[class*="bg-[#2DD4BF]"] svg,
+button[class*="bg-[#5EEAD4]"] svg,
+button[class*="bg-teal-400"] svg {
+  stroke: #0F172A !important;
+}
+
+/* Iconos del selector de rol (Personas/Empresas): en hover el círculo se
+   pone oscuro/teal, pero en algunas máquinas el group-hover de Tailwind que
+   cambia el color del icono no se aplica y el icono quedaba invisible. Se
+   fuerza el contraste con !important. */
+.role-card:hover .role-circle-dark svg {
+  stroke: #FFFFFF !important;
+}
+.role-card:hover .role-circle-teal svg {
+  stroke: #0F172A !important;
+}

@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 60" fill="none">
+  <defs>
+    <style>
+      .coin { animation: spin3d 3s linear infinite; transform-origin: 30px 30px; }
+      .shine { animation: shine 2.5s ease-in-out infinite; }
+      .bar1 { animation: grow 1.4s ease-in-out infinite; transform-origin: bottom; }
+      .bar2 { animation: grow 1.4s ease-in-out infinite 0.2s; transform-origin: bottom; }
+      .bar3 { animation: grow 1.4s ease-in-out infinite 0.4s; transform-origin: bottom; }
+      @keyframes spin3d {
+        0%   { rx: 20; ry: 20; }
+        25%  { rx: 4;  ry: 20; }
+        50%  { rx: 20; ry: 20; }
+        75%  { rx: 4;  ry: 20; }
+        100% { rx: 20; ry: 20; }
+      }
+      @keyframes shine {
+        0%,100% { opacity:0; }
+        40%,60% { opacity:0.6; }
+      }
+      @keyframes grow {
+        0%,100% { transform: scaleY(0.6); opacity:0.5; }
+        50%      { transform: scaleY(1);   opacity:1; }
+      }
+    </style>
+    <linearGradient id="coin-g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#00C9A7"/>
+      <stop offset="100%" stop-color="#008f77"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Coin -->
+  <ellipse class="coin" cx="30" cy="30" rx="20" ry="20" fill="url(#coin-g)"/>
+  <ellipse class="coin" cx="30" cy="28" rx="20" ry="20" fill="url(#coin-g)" opacity="0.3"/>
+  <!-- $ sign -->
+  <text x="23" y="35" font-family="Arial,sans-serif" font-weight="900" font-size="18" fill="white">$</text>
+  <!-- shine -->
+  <ellipse class="shine" cx="22" cy="22" rx="5" ry="3" fill="white" opacity="0" transform="rotate(-30,22,22)"/>
+
+  <!-- Chart bars -->
+  <rect class="bar1" x="56" y="38" width="6" height="14" rx="2" fill="#00C9A7" transform-origin="59px 52px"/>
+  <rect class="bar2" x="65" y="30" width="6" height="22" rx="2" fill="#0072CE" transform-origin="68px 52px"/>
+  <rect class="bar3" x="74" y="34" width="6" height="18" rx="2" fill="#00C9A7" transform-origin="77px 52px"/>
+
+  <!-- Text -->
+  <text x="90" y="37" font-family="'Arial Black',Arial,sans-serif" font-weight="900" font-size="22" fill="#0B1B32" letter-spacing="-0.5">CUY</text>
+  <text x="136" y="37" font-family="'Arial Black',Arial,sans-serif" font-weight="900" font-size="22" fill="#00C9A7" letter-spacing="-0.5">PAY</text>
+</svg>

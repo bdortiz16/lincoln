@@ -1,0 +1,34 @@
+project_id = "placeholder"
+
+[functions.tatum-wallet]
+verify_jwt = false
+
+[functions.tatum-webhook]
+verify_jwt = false
+
+[functions.notify-transaction]
+verify_jwt = false
+
+[functions.didit-kyc]
+verify_jwt = false
+
+[functions.admin-data]
+verify_jwt = false
+
+[functions.admin-login]
+verify_jwt = false
+
+[functions.user-login]
+verify_jwt = false
+
+[functions.get-system-config]
+verify_jwt = false
+
+[functions.delete-self]
+verify_jwt = false
+
+[functions.gasfree]
+verify_jwt = false
+
+[functions.finity-webhook]
+verify_jwt = false

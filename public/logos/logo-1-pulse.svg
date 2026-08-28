@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 60" fill="none">
+  <defs>
+    <style>
+      .ring1 { animation: pulse 2s ease-in-out infinite; }
+      .ring2 { animation: pulse 2s ease-in-out infinite 0.3s; }
+      .ring3 { animation: pulse 2s ease-in-out infinite 0.6s; }
+      .arrow-up { animation: slideUp 1.8s ease-in-out infinite; }
+      .arrow-dn { animation: slideDown 1.8s ease-in-out infinite 0.4s; }
+      @keyframes pulse {
+        0%,100% { opacity: 1; r: 6; }
+        50%      { opacity: 0.4; r: 8; }
+      }
+      @keyframes slideUp {
+        0%,100% { transform: translateY(0); opacity:1; }
+        50%      { transform: translateY(-3px); opacity:0.7; }
+      }
+      @keyframes slideDown {
+        0%,100% { transform: translateY(0); opacity:1; }
+        50%      { transform: translateY(3px); opacity:0.7; }
+      }
+    </style>
+    <linearGradient id="g1" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00C9A7"/>
+      <stop offset="100%" stop-color="#0072CE"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Icon: concentric rings -->
+  <circle cx="30" cy="30" r="22" stroke="url(#g1)" stroke-width="2" fill="none" opacity="0.2"/>
+  <circle cx="30" cy="30" r="15" stroke="url(#g1)" stroke-width="2.5" fill="none" opacity="0.5"/>
+  <circle cx="30" cy="30" r="8"  stroke="url(#g1)" stroke-width="3" fill="none"/>
+
+  <!-- Up arrow -->
+  <g class="arrow-up" style="transform-origin:30px 26px">
+    <line x1="30" y1="22" x2="30" y2="30" stroke="#00C9A7" stroke-width="2.5" stroke-linecap="round"/>
+    <polyline points="26,26 30,22 34,26" fill="none" stroke="#00C9A7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <!-- Down arrow -->
+  <g class="arrow-dn" style="transform-origin:30px 34px">
+    <line x1="30" y1="30" x2="30" y2="38" stroke="#0072CE" stroke-width="2.5" stroke-linecap="round"/>
+    <polyline points="26,34 30,38 34,34" fill="none" stroke="#0072CE" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <!-- Text -->
+  <text x="62" y="36" font-family="'Arial Black',Arial,sans-serif" font-weight="900" font-size="22" fill="#0B1B32" letter-spacing="-0.5">CUY</text>
+  <text x="108" y="36" font-family="'Arial Black',Arial,sans-serif" font-weight="900" font-size="22" fill="#00C9A7" letter-spacing="-0.5">PAY</text>
+</svg>

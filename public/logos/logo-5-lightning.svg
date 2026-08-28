@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 60" fill="none">
+  <defs>
+    <style>
+      .bolt { animation: flash 2s ease-in-out infinite; }
+      .trail1 { animation: trail 2s ease-in-out infinite 0.1s; }
+      .trail2 { animation: trail 2s ease-in-out infinite 0.25s; }
+      .ring { animation: expandRing 2s ease-out infinite; }
+      @keyframes flash {
+        0%,100% { opacity:1; filter: drop-shadow(0 0 0px #00C9A7); }
+        40%      { opacity:1; filter: drop-shadow(0 0 10px #00C9A7); }
+        60%      { opacity:0.6; }
+      }
+      @keyframes trail {
+        0%,100% { opacity:0; transform:translateX(0); }
+        30%      { opacity:0.5; transform:translateX(-4px); }
+        60%      { opacity:0; }
+      }
+      @keyframes expandRing {
+        0%   { r:12; opacity:0.5; stroke-width:3; }
+        100% { r:26; opacity:0;   stroke-width:0.5; }
+      }
+    </style>
+    <linearGradient id="lg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFD700"/>
+      <stop offset="100%" stop-color="#00C9A7"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Expanding ring -->
+  <circle class="ring" cx="30" cy="30" r="12" stroke="#00C9A7" fill="none"/>
+
+  <!-- Trail lines -->
+  <line class="trail1" x1="12" y1="27" x2="22" y2="27" stroke="#00C9A7" stroke-width="2" stroke-linecap="round"/>
+  <line class="trail2" x1="14" y1="33" x2="21" y2="33" stroke="#0072CE" stroke-width="2" stroke-linecap="round"/>
+
+  <!-- Lightning bolt -->
+  <path class="bolt" d="M34 10 L22 32 L29 32 L26 50 L38 28 L31 28 Z"
+        fill="url(#lg)" stroke="none"/>
+
+  <!-- Text -->
+  <text x="62" y="36" font-family="'Arial Black',Arial,sans-serif" font-weight="900" font-size="22" fill="#0B1B32" letter-spacing="-0.5">CUY</text>
+  <text x="108" y="36" font-family="'Arial Black',Arial,sans-serif" font-weight="900" font-size="22" fill="#00C9A7" letter-spacing="-0.5">PAY</text>
+</svg>

@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 60" fill="none">
+  <defs>
+    <style>
+      .shield-fill { animation: fillUp 2.5s ease-in-out infinite; }
+      .check { animation: draw 0.8s ease forwards 0.3s; stroke-dasharray: 30; stroke-dashoffset: 30; }
+      .shield-glow { animation: shieldGlow 2.5s ease-in-out infinite; }
+      @keyframes fillUp {
+        0%,100% { transform: translateY(10px); opacity:0.3; }
+        60%      { transform: translateY(0);    opacity:1; }
+      }
+      @keyframes draw {
+        to { stroke-dashoffset: 0; }
+      }
+      @keyframes shieldGlow {
+        0%,100% { filter: drop-shadow(0 0 0px #00C9A7); }
+        50%      { filter: drop-shadow(0 0 8px #00C9A7); }
+      }
+    </style>
+    <linearGradient id="sg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#00C9A7"/>
+      <stop offset="100%" stop-color="#0072CE"/>
+    </linearGradient>
+    <clipPath id="shield-clip">
+      <path d="M30 8 L50 15 L50 32 Q50 46 30 54 Q10 46 10 32 L10 15 Z"/>
+    </clipPath>
+  </defs>
+
+  <!-- Shield outline -->
+  <path d="M30 8 L50 15 L50 32 Q50 46 30 54 Q10 46 10 32 L10 15 Z"
+        stroke="url(#sg)" stroke-width="2" fill="none" class="shield-glow"/>
+
+  <!-- Shield fill animation -->
+  <g clip-path="url(#shield-clip)">
+    <rect class="shield-fill" x="10" y="8" width="40" height="46" fill="url(#sg)" opacity="0.15"/>
+  </g>
+
+  <!-- Checkmark -->
+  <polyline class="check" points="20,31 27,38 40,24"
+            stroke="#00C9A7" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Text -->
+  <text x="62" y="36" font-family="'Arial Black',Arial,sans-serif" font-weight="900" font-size="22" fill="#0B1B32" letter-spacing="-0.5">CUY</text>
+  <text x="108" y="36" font-family="'Arial Black',Arial,sans-serif" font-weight="900" font-size="22" fill="#00C9A7" letter-spacing="-0.5">PAY</text>
+</svg>
