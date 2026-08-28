@@ -99,7 +99,7 @@ function buildSubject(tx: TxRecord): string {
 }
 
 // Subject/mensaje para el correo de COMPLETADO (cuando el estado pasa a
-// Completado en una UPDATE — ej. un retiro que Finity ya pagó, un depósito
+// Completado en una UPDATE — ej. un retiro que Mouv ya pagó, un depósito
 // aprobado). Distinto del correo de "creado/montado" que va en el INSERT.
 function buildSubjectCompleted(tx: TxRecord): string {
   const a = fmt(tx.amount, tx.currency)
@@ -209,7 +209,7 @@ function buildDetailRows(tx: TxRecord, completed = false): string {
   if (tx.type === 'convert' || tx.type === 'tx_created') {
     const rd = tx.raw_data ?? {}
     const fromAmount = rd.fromAmount ?? rd.fromAmt
-    const rate = rd.finityRate
+    const rate = rd.mouvRate
     const feePct = rd.feePct
     const gfFee = rd.gasfreeFee
     const dest = rd.destCurrency ?? rd.to_currency

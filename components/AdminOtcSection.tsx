@@ -5,12 +5,12 @@ import { useDatabase } from '../context/DatabaseContext';
 // ─────────────────────────────────────────────
 // AdminOtcSection — Panel "Contabilidad OTC" del admin de Empresas.
 //
-// Arriba: activa/desactiva el servicio OTC (convertidor Finity, en
+// Arriba: activa/desactiva el servicio OTC (convertidor Mouv, en
 // Servicios → OTC) por cliente, y define la comisión de cada uno — cada
 // empresa negocia un % distinto, a diferencia del convertidor general
 // (tasa FastForex + comisión por tramos), que es igual para todos.
 //
-// Abajo: la contabilidad del canal Finity — cuánto USDT ha entrado a la
+// Abajo: la contabilidad del canal Mouv — cuánto USDT ha entrado a la
 // recaudadora por conversiones OTC, cuánto COP se acreditó a cambio,
 // el saldo COP de cada cliente, y el historial de movimientos con su
 // estado (Pendiente / Completado / Rechazado).
@@ -18,7 +18,7 @@ import { useDatabase } from '../context/DatabaseContext';
 
 const DEFAULT_FEE_PCT = 4;
 
-const isOtcConvertTx = (t: any) => t.type === 'convert' && (t.source === 'FINITY' || t.gasfree === true);
+const isOtcConvertTx = (t: any) => t.type === 'convert' && (t.source === 'MOUV' || t.gasfree === true);
 
 const fmtCop = (n: number) => Math.round(n || 0).toLocaleString('es-CO');
 const fmtUsdt = (n: number) => (n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -84,7 +84,7 @@ export const AdminOtcSection: React.FC = () => {
         } finally { setSavingId(null); setFeeEdit(null); }
     };
 
-    // ── Contabilidad: movimientos del canal OTC/Finity ──────────────────
+    // ── Contabilidad: movimientos del canal OTC/Mouv ──────────────────
     const otcTxs = useMemo(() => {
         const all = getAllTransactions() as any[];
         return all
@@ -160,10 +160,10 @@ export const AdminOtcSection: React.FC = () => {
             <div className="space-y-6">
                 <div>
                     <h3 className="font-bold text-slate-800 text-lg flex items-center gap-2">
-                        <ArrowLeftRight size={20} className="text-[#16A34A]" /> OTC · Convertidor Finity por cliente
+                        <ArrowLeftRight size={20} className="text-[#16A34A]" /> OTC · Convertidor Mouv por cliente
                     </h3>
                     <p className="text-xs text-slate-500 mt-0.5">
-                        Activa el servicio y define la comisión de cada empresa. El convertidor general (Servicios → Convertir Divisas) usa tasa FastForex y comisión por tramos igual para todos — este OTC usa la tasa Finity con la comisión negociada por cliente.
+                        Activa el servicio y define la comisión de cada empresa. El convertidor general (Servicios → Convertir Divisas) usa tasa FastForex y comisión por tramos igual para todos — este OTC usa la tasa Mouv con la comisión negociada por cliente.
                     </p>
                 </div>
 
@@ -178,7 +178,7 @@ export const AdminOtcSection: React.FC = () => {
                             <tr>
                                 <th className="text-left px-4 py-3">Empresa</th>
                                 <th className="text-center px-4 py-3">Estado OTC</th>
-                                <th className="text-right px-4 py-3">Comisión Finity (%)</th>
+                                <th className="text-right px-4 py-3">Comisión Mouv (%)</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -242,7 +242,7 @@ export const AdminOtcSection: React.FC = () => {
                 </div>
 
                 <p className="text-[11px] text-slate-400">
-                    ⚡ Con OTC inactivo, el botón "OTC" del cliente en Servicios muestra un aviso de servicio no habilitado. La comisión aquí es la que ve el cliente en el convertidor Finity — cada empresa puede tener una distinta.
+                    ⚡ Con OTC inactivo, el botón "OTC" del cliente en Servicios muestra un aviso de servicio no habilitado. La comisión aquí es la que ve el cliente en el convertidor Mouv — cada empresa puede tener una distinta.
                 </p>
             </div>
 
@@ -250,7 +250,7 @@ export const AdminOtcSection: React.FC = () => {
             <div className="space-y-6 pt-6 border-t border-slate-200">
                 <div>
                     <h3 className="font-bold text-slate-800 text-lg flex items-center gap-2">
-                        <Landmark size={20} className="text-[#16A34A]" /> Contabilidad OTC · Canal Finity
+                        <Landmark size={20} className="text-[#16A34A]" /> Contabilidad OTC · Canal Mouv
                     </h3>
                     <p className="text-xs text-slate-500 mt-0.5">
                         USDT recibido y COP acreditado por conversiones OTC, saldo COP de cada cliente, y el historial de movimientos.

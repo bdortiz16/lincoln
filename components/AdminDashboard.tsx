@@ -545,7 +545,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     let credited = 0;
     for (const wk of walletKeys) {
       try {
-        const r = await fetch(`${SURL}/functions/v1/tatum-wallet`, {
+        const r = await fetch(`${SURL}/functions/v1/gasfree`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': `Bearer ${SKEY}` },
           body: JSON.stringify({ action: 'verify_and_credit', userId, walletKey: wk }),

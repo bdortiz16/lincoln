@@ -7,7 +7,7 @@ import {
 } from '../lib/adminAuth';
 import { NAVY, TEAL } from './shared';
 import { useToast } from '../lib/toast';
-import { callFinity, extractRate } from '../../OtcMigration';
+import { callMouv, extractRate } from '../../OtcMigration';
 
 // ─────────────────────────────────────────────
 // Cliente de datos del panel. Por defecto: proyecto Personas
@@ -19,10 +19,10 @@ import { callFinity, extractRate } from '../../OtcMigration';
 // ─────────────────────────────────────────────
 let ratesDb: typeof supabasePersonas = supabasePersonas;
 // Solo el admin de EMPRESAS repunta el cliente. Ese host es el que tiene
-// Finity (riel Colombia): ahí se muestra además el "Panel de tasas Finity"
+// Mouv (riel Colombia): ahí se muestra además el "Panel de tasas Mouv"
 // con el par USD/COP en exclusión mutua con FastForex.
-let finityHost = false;
-export const setRatesDbClient = (client: typeof supabasePersonas) => { ratesDb = client; finityHost = true; };
+let mouvHost = false;
+export const setRatesDbClient = (client: typeof supabasePersonas) => { ratesDb = client; mouvHost = true; };
 
 // Timeout duro para consultas: una petición que se cuelga (redes filtradas
 // tipo Cisco Umbrella no responden NI fallan) dejaba el panel en
@@ -103,9 +103,9 @@ const SEED_PAIRS: PairConfig[] = ORDER.flatMap(from =>
     }))
 );
 
-// Pares USD↔COP — SOLO en el host de empresas (finityHost). Aparecen en la
+// Pares USD↔COP — SOLO en el host de empresas (mouvHost). Aparecen en la
 // tabla de FastForex para poder prender/apagar la conversión; su toggle es
-// la contraparte del Panel de tasas Finity (exclusión mutua).
+// la contraparte del Panel de tasas Mouv (exclusión mutua).
 const USD_SEED_PAIRS: PairConfig[] = [
     { id: null, from_currency: 'USD', to_currency: 'COP', base_fee_pct: 4, tiers: DEFAULT_TIERS, is_active: true, updated_at: null },
     { id: null, from_currency: 'COP', to_currency: 'USD', base_fee_pct: 4, tiers: DEFAULT_TIERS, is_active: true, updated_at: null },
@@ -146,12 +146,12 @@ const formatMmSs = (s: number) => {
 };
 
 // ─────────────────────────────────────────────
-// Panel de tasas Finity — par USD (USDT) → COP con la tasa REAL del riel
-// Finity (Colombia), refrescada cada 30 s vía finity-proxy. Solo se
+// Panel de tasas Mouv — par USD (USDT) → COP con la tasa REAL del riel
+// Mouv (Colombia), refrescada cada 30 s vía mouv-proxy. Solo se
 // renderiza en el host de empresas. Su toggle y el del par USD/COP de
 // FastForex son mutuamente excluyentes: habilitar uno apaga el otro.
 // ─────────────────────────────────────────────
-const FinityRatesCard: React.FC<{
+const MouvRatesCard: React.FC<{
     profile: AdminProfile;
     enabled: boolean;
     busy: boolean;
@@ -163,10 +163,10 @@ const FinityRatesCard: React.FC<{
     const [rate, setRate] = useState<number | null>(null);
     const [updatedAt, setUpdatedAt] = useState<string | null>(null);
     const [fetching, setFetching] = useState(true);
-    // Respuesta CRUDA de /rates para mapear el campo correcto (Finity
+    // Respuesta CRUDA de /rates para mapear el campo correcto (Mouv
     // devuelve varios — compra/venta/promedio — y hay que elegir el real).
     const [rateRaw, setRateRaw] = useState<{ path?: string; status?: number; data?: any } | null>(null);
-    // Sondeo de endpoints del proxy Finity (acción `discover`): reporta qué
+    // Sondeo de endpoints del proxy Mouv (acción `discover`): reporta qué
     // rutas existen en el sandbox. 404/-1 = no existe; cualquier otro status
     // = el endpoint SÍ existe (aunque pida params o permisos).
     const [discovering, setDiscovering] = useState(false);
@@ -176,20 +176,20 @@ const FinityRatesCard: React.FC<{
     // el servidor configurado y muestra el veredicto textual.
     const [pinging, setPinging] = useState(false);
     const [pingResult, setPingResult] = useState<{ ok: boolean; text: string } | null>(null);
-    // Servidor Finity activo (ping al montar): si es sandbox, la tasa es de
+    // Servidor Mouv activo (ping al montar): si es sandbox, la tasa es de
     // PRUEBA y se marca en ámbar para que nadie la confunda con la real.
     const [srvBase, setSrvBase] = useState('');
     useEffect(() => {
-        callFinity('ping', profile.id).then(r => setSrvBase(String(r?.base ?? ''))).catch(() => {});
+        callMouv('ping', profile.id).then(r => setSrvBase(String(r?.base ?? ''))).catch(() => {});
     }, [profile.id]);
 
     const doPing = async () => {
         setPinging(true);
         setPingResult(null);
         try {
-            const r = await withTimeout(callFinity('ping', profile.id), 15000, 'ping Finity');
-            // `base` viene del proxy: el servidor Finity REAL al que apunta.
-            // sandbox.finity.com.co = datos de ejemplo · api.finity.com.co = real.
+            const r = await withTimeout(callMouv('ping', profile.id), 15000, 'ping Mouv');
+            // `base` viene del proxy: el servidor Mouv REAL al que apunta.
+            // sandbox.mouv.com.co = datos de ejemplo · api.mouv.com.co = real.
             const base = r?.base ? ` · servidor: ${String(r.base).replace(/^https?:\/\//, '')}` : '';
             setPingResult({
                 ok: !!r?.ok,
@@ -205,10 +205,10 @@ const FinityRatesCard: React.FC<{
         setDiscovering(true);
         setDiscoverError(null);
         try {
-            const r = await withTimeout(callFinity('discover', profile.id), 45000, 'discover Finity');
+            const r = await withTimeout(callMouv('discover', profile.id), 45000, 'discover Mouv');
             if (r?.base) setPingResult(prev => prev ?? { ok: true, text: `sondeo contra servidor ${String(r.base).replace(/^https?:\/\//, '')}` });
             if (r?.ok && r.report) setDiscoverReport(r.report);
-            else setDiscoverError(r?.message ?? r?.error ?? 'El proxy no devolvió reporte (¿secrets FINITY_* configurados?).');
+            else setDiscoverError(r?.message ?? r?.error ?? 'El proxy no devolvió reporte (¿secrets MOUV_* configurados?).');
         } catch (e: any) {
             setDiscoverError(String(e?.message ?? e));
         }
@@ -219,8 +219,8 @@ const FinityRatesCard: React.FC<{
         setFetching(true);
         try {
             const r = await withTimeout(
-                callFinity('rates', profile.id, { query: { from: 'USD', to: 'COP' } }),
-                10000, 'tasa Finity',
+                callMouv('rates', profile.id, { query: { from: 'USD', to: 'COP' } }),
+                10000, 'tasa Mouv',
             );
             setRateRaw({ path: r?.path, status: r?.status, data: r?.data });
             const v = r?.ok ? extractRate(r.data) : null;
@@ -241,10 +241,10 @@ const FinityRatesCard: React.FC<{
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
             <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between flex-wrap gap-3">
                 <div className="flex items-center gap-2 flex-wrap">
-                    <h3 className="font-semibold text-slate-900">Panel de tasas Finity</h3>
+                    <h3 className="font-semibold text-slate-900">Panel de tasas Mouv</h3>
                     <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${enabled ? 'bg-green-50 text-green-700 border-green-200' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
                         <span className={`w-1.5 h-1.5 rounded-full ${enabled ? 'bg-green-500 animate-pulse' : 'bg-slate-400'}`} />
-                        {enabled ? 'Activo — la app usa la tasa Finity para USD/COP' : 'Apagado — prende el toggle para operar USD/COP con la tasa Finity'}
+                        {enabled ? 'Activo — la app usa la tasa Mouv para USD/COP' : 'Apagado — prende el toggle para operar USD/COP con la tasa Mouv'}
                     </span>
                     {/sandbox/i.test(srvBase) && (
                         <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-800 border border-amber-200">
@@ -261,7 +261,7 @@ const FinityRatesCard: React.FC<{
                         onClick={doPing}
                         disabled={pinging}
                         className="flex items-center gap-2 px-3 py-2 text-sm font-semibold border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-60"
-                        title="Valida FINITY_CLIENT_ID / FINITY_CLIENT_SECRET contra el servidor configurado"
+                        title="Valida MOUV_CLIENT_ID / MOUV_CLIENT_SECRET contra el servidor configurado"
                     >
                         🔑 {pinging ? 'Probando…' : 'Probar credenciales'}
                     </button>
@@ -269,7 +269,7 @@ const FinityRatesCard: React.FC<{
                         onClick={doDiscover}
                         disabled={discovering}
                         className="flex items-center gap-2 px-3 py-2 text-sm font-semibold border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-60"
-                        title="Sondea las rutas de la API de Finity y reporta cuáles existen"
+                        title="Sondea las rutas de la API de Mouv y reporta cuáles existen"
                     >
                         🔍 {discovering ? 'Sondeando…' : 'Detectar endpoints'}
                     </button>
@@ -290,7 +290,7 @@ const FinityRatesCard: React.FC<{
                 </div>
             )}
             <div className="px-5 py-2.5 bg-slate-50 border-b border-slate-100 text-[11px] text-slate-600 leading-relaxed">
-                <b style={{ color: NAVY }}>Riel Colombia:</b> tasa USD (USDT) → COP en vivo desde Finity, refresca cada 30 s.
+                <b style={{ color: NAVY }}>Riel Colombia:</b> tasa USD (USDT) → COP en vivo desde Mouv, refresca cada 30 s.
                 Al <b>habilitar</b> este par, el par USD/COP de FastForex (tabla de abajo) se <b>apaga</b> automáticamente — y al habilitarlo allá, este se apaga. Nunca operan los dos a la vez.
                 {' '}La comisión que ve cada cliente se ajusta en <b>Admin → OTC</b> (cada empresa puede tener una distinta) — aquí solo se ve la comisión por defecto.
             </div>
@@ -301,7 +301,7 @@ const FinityRatesCard: React.FC<{
                         <tr>
                             <th className="text-left px-5 py-3 font-semibold">Par</th>
                             <th className="text-center px-5 py-3 font-semibold">Conversión</th>
-                            <th className="text-right px-5 py-3 font-semibold">Tasa Finity</th>
+                            <th className="text-right px-5 py-3 font-semibold">Tasa Mouv</th>
                             <th className="text-right px-5 py-3 font-semibold">Tasa cliente (incluye {feePct}%)</th>
                             <th className="text-left px-5 py-3 font-semibold">Última Act.</th>
                         </tr>
@@ -317,7 +317,7 @@ const FinityRatesCard: React.FC<{
                                         onClick={() => onToggle(!enabled)}
                                         disabled={busy}
                                         className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors disabled:opacity-50 ${enabled ? 'bg-green-500' : 'bg-slate-300'}`}
-                                        title={enabled ? 'Desactivar Finity (USD/COP vuelve a FastForex)' : 'Activar Finity (apaga el par USD/COP en FastForex)'}
+                                        title={enabled ? 'Desactivar Mouv (USD/COP vuelve a FastForex)' : 'Activar Mouv (apaga el par USD/COP en FastForex)'}
                                     >
                                         <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${enabled ? 'translate-x-6' : 'translate-x-1'}`} />
                                     </button>
@@ -336,7 +336,7 @@ const FinityRatesCard: React.FC<{
                         {rate == null && !fetching && (
                             <tr>
                                 <td colSpan={5} className="px-5 pb-3 text-[11px] text-amber-700">
-                                    Finity no devolvió tasa (credenciales o endpoint por confirmar — dale a <b>🔍 Detectar endpoints</b> arriba y mándanos el reporte).
+                                    Mouv no devolvió tasa (credenciales o endpoint por confirmar — dale a <b>🔍 Detectar endpoints</b> arriba y mándanos el reporte).
                                     El toggle igual funciona: prende/apaga el par USD/COP de FastForex.
                                 </td>
                             </tr>
@@ -346,7 +346,7 @@ const FinityRatesCard: React.FC<{
                                 <td colSpan={5} className="px-5 pb-3">
                                     <details>
                                         <summary className="text-[11px] text-slate-500 cursor-pointer select-none">
-                                            Ver respuesta cruda de Finity ({rateRaw.path ?? '¿?'} · status {rateRaw.status ?? '¿?'}) — para verificar el campo de la tasa
+                                            Ver respuesta cruda de Mouv ({rateRaw.path ?? '¿?'} · status {rateRaw.status ?? '¿?'}) — para verificar el campo de la tasa
                                         </summary>
                                         <pre className="mt-2 text-[10px] bg-slate-50 border border-slate-200 rounded-lg p-3 overflow-auto max-h-72 whitespace-pre-wrap break-all">
 {JSON.stringify(rateRaw.data ?? null, null, 2)}
@@ -361,7 +361,7 @@ const FinityRatesCard: React.FC<{
 
             {(discoverReport || discoverError) && (
                 <div className="px-5 py-4 border-t border-slate-100">
-                    <p className="text-xs font-bold text-slate-700 mb-2">Reporte de endpoints Finity</p>
+                    <p className="text-xs font-bold text-slate-700 mb-2">Reporte de endpoints Mouv</p>
                     {discoverError && (
                         <p className="text-[11px] text-red-700 bg-red-50 border border-red-200 rounded-lg p-2.5">⚠️ {discoverError}</p>
                     )}
@@ -430,8 +430,8 @@ export const RatesPanel: React.FC<{ profile: AdminProfile }> = ({ profile }) => 
     useEffect(() => { phaseAtRef.current = Date.now(); }, [debugInfo.phase]);
     // Reintentos automáticos de load() cuando hay timeouts (máx 2 por ciclo).
     const loadRetryRef = useRef(0);
-    // Toggle del Panel de tasas Finity (USD/COP) en curso.
-    const [finityBusy, setFinityBusy] = useState(false);
+    // Toggle del Panel de tasas Mouv (USD/COP) en curso.
+    const [mouvBusy, setMouvBusy] = useState(false);
 
     const canManage = PERMISSIONS.canManageBankAccounts(profile.role);
     const toast = useToast();
@@ -573,7 +573,7 @@ export const RatesPanel: React.FC<{ profile: AdminProfile }> = ({ profile }) => 
         //    SOLO en el host personas (Antigravity): en empresas el feed real es
         //    el cron fastforex-sync y el RPC es un stub — llamarlo solo agrega
         //    latencia y, en redes filtradas (Umbrella), un punto de cuelgue.
-        if (!finityHost) {
+        if (!mouvHost) {
             await withTimeout(callSyncXe(), 8000, 'sync').catch(() => null);
         }
         setDebugInfo(d => ({ ...d, phase: 'consultando pares/tasas' }));
@@ -643,7 +643,7 @@ export const RatesPanel: React.FC<{ profile: AdminProfile }> = ({ profile }) => 
         const dbMap = new Map<string, PairConfig>();
         for (const r of dbRows) dbMap.set(pairKey(r.from_currency, r.to_currency), r);
 
-        const seedList = finityHost ? [...SEED_PAIRS, ...USD_SEED_PAIRS] : SEED_PAIRS;
+        const seedList = mouvHost ? [...SEED_PAIRS, ...USD_SEED_PAIRS] : SEED_PAIRS;
         const merged = seedList.map(seed => {
             const db = dbMap.get(pairKey(seed.from_currency, seed.to_currency));
             // base_fee_pct puede venir null de filas creadas por los toggles —
@@ -660,7 +660,7 @@ export const RatesPanel: React.FC<{ profile: AdminProfile }> = ({ profile }) => 
             : merged.filter(p => canSeePair(profile, p.from_currency, p.to_currency));
         // Si la consulta de config DIO TIMEOUT y ya teníamos estado con datos
         // de DB, NO pisar con seeds: se perderían visualmente el toggle
-        // Finity y la comisión que el admin acaba de guardar.
+        // Mouv y la comisión que el admin acaba de guardar.
         const pairsTimedOut = String((pairsRes as any)?.error?.message ?? '').includes('timeout');
         setPairs(prev => (pairsTimedOut && prev.length > 0 ? prev : visible));
 
@@ -753,25 +753,25 @@ export const RatesPanel: React.FC<{ profile: AdminProfile }> = ({ profile }) => 
     }, [load]);
 
     // ─────────────────────────────────────────────
-    // Exclusión mutua Finity ⇄ FastForex para USD/COP (solo empresas).
-    // Finity ON  → el par USD/COP de FastForex se APAGA (is_active=false).
-    // Finity OFF → el par vuelve a FastForex (is_active=true).
-    // Prender el par en la tabla FastForex apaga Finity automáticamente:
-    // el estado Finity se DERIVA de is_active (una sola fuente de verdad
+    // Exclusión mutua Mouv ⇄ FastForex para USD/COP (solo empresas).
+    // Mouv ON  → el par USD/COP de FastForex se APAGA (is_active=false).
+    // Mouv OFF → el par vuelve a FastForex (is_active=true).
+    // Prender el par en la tabla FastForex apaga Mouv automáticamente:
+    // el estado Mouv se DERIVA de is_active (una sola fuente de verdad
     // en fx_pair_config, sin flags extra).
     // ─────────────────────────────────────────────
-    const usdCopFinityOn = finityHost && pairs.some(p =>
+    const usdCopMouvOn = mouvHost && pairs.some(p =>
         p.from_currency === 'USD' && p.to_currency === 'COP' && p.is_active === false);
-    // Comisión Finity editable (incluye IVA). Vive en fx_pair_config.base_fee_pct
+    // Comisión Mouv editable (incluye IVA). Vive en fx_pair_config.base_fee_pct
     // del par USD→COP; 4% de fábrica si aún no se ha guardado.
     const usdCopCfg = pairs.find(p => p.from_currency === 'USD' && p.to_currency === 'COP');
-    const finityFeePct = (() => {
+    const mouvFeePct = (() => {
         const n = Number(usdCopCfg?.base_fee_pct);
         return isFinite(n) && n > 0 ? n : 4;
     })();
-    const saveFinityFee = async (pct: number) => {
+    const saveMouvFee = async (pct: number) => {
         const stamp = new Date().toISOString();
-        const prevPct = finityFeePct;
+        const prevPct = mouvFeePct;
         const setFee = (arr: PairConfig[], v: number) => arr.map(p =>
             ((p.from_currency === 'USD' && p.to_currency === 'COP') || (p.from_currency === 'COP' && p.to_currency === 'USD'))
                 ? { ...p, base_fee_pct: v } : p);
@@ -783,7 +783,7 @@ export const RatesPanel: React.FC<{ profile: AdminProfile }> = ({ profile }) => 
                 { from_currency: 'USD', to_currency: 'COP', base_fee_pct: pct, updated_by: profile.id, updated_at: stamp },
                 { from_currency: 'COP', to_currency: 'USD', base_fee_pct: pct, updated_by: profile.id, updated_at: stamp },
             ], { onConflict: 'from_currency,to_currency' })),
-            15000, 'guardar comisión Finity',
+            15000, 'guardar comisión Mouv',
         ).catch((e: any) => ({ error: { message: String(e?.message ?? e) } }));
         if (res?.error) {
             setPairs(prev => setFee(prev, prevPct));
@@ -791,17 +791,17 @@ export const RatesPanel: React.FC<{ profile: AdminProfile }> = ({ profile }) => 
             toast.error(`No se guardó la comisión (se revirtió a ${prevPct}%): ${res.error.message}${/base_fee_pct/.test(String(res.error.message)) ? ' — corre el ALTER TABLE de base_fee_pct en el SQL Editor.' : ''}`);
             return;
         }
-        toast.success(`Comisión Finity guardada: ${pct}% (incluye IVA). Se aplica sobre la tasa Finity para el cliente.`);
+        toast.success(`Comisión Mouv guardada: ${pct}% (incluye IVA). Se aplica sobre la tasa Mouv para el cliente.`);
         await logAdminAction({
             admin: profile,
-            action: 'finity_usdcop.fee',
+            action: 'mouv_usdcop.fee',
             targetType: 'fx_pair',
-            targetId: 'USD-COP(Finity)',
+            targetId: 'USD-COP(Mouv)',
             metadata: { pct },
         });
     };
-    const toggleFinityUsdCop = async (next: boolean) => {
-        setFinityBusy(true);
+    const toggleMouvUsdCop = async (next: boolean) => {
+        setMouvBusy(true);
         const stamp = new Date().toISOString();
         const flip = (arr: PairConfig[], active: boolean) => arr.map(p =>
             ((p.from_currency === 'USD' && p.to_currency === 'COP') || (p.from_currency === 'COP' && p.to_currency === 'USD'))
@@ -813,24 +813,24 @@ export const RatesPanel: React.FC<{ profile: AdminProfile }> = ({ profile }) => 
                 { from_currency: 'USD', to_currency: 'COP', is_active: !next, updated_by: profile.id, updated_at: stamp },
                 { from_currency: 'COP', to_currency: 'USD', is_active: !next, updated_by: profile.id, updated_at: stamp },
             ], { onConflict: 'from_currency,to_currency' })),
-            15000, 'guardar toggle Finity',
+            15000, 'guardar toggle Mouv',
         ).catch((e: any) => ({ error: { message: String(e?.message ?? e) } }));
         if (res?.error) {
             setPairs(prev => flip(prev, next));
-            toast.error(`No se guardó el cambio de Finity (se revirtió): ${res.error.message}. Reintenta.`);
+            toast.error(`No se guardó el cambio de Mouv (se revirtió): ${res.error.message}. Reintenta.`);
         } else {
             toast.success(next
-                ? 'Panel Finity ACTIVADO para USD/COP. El par en FastForex quedó apagado.'
-                : 'Panel Finity desactivado. USD/COP vuelve a operar con FastForex.');
+                ? 'Panel Mouv ACTIVADO para USD/COP. El par en FastForex quedó apagado.'
+                : 'Panel Mouv desactivado. USD/COP vuelve a operar con FastForex.');
             await logAdminAction({
                 admin: profile,
-                action: next ? 'finity_usdcop.enable' : 'finity_usdcop.disable',
+                action: next ? 'mouv_usdcop.enable' : 'mouv_usdcop.disable',
                 targetType: 'fx_pair',
-                targetId: 'USD-COP(Finity)',
-                metadata: { finity: next },
+                targetId: 'USD-COP(Mouv)',
+                metadata: { mouv: next },
             });
         }
-        setFinityBusy(false);
+        setMouvBusy(false);
     };
 
     // Helper: trae lo más reciente de fx_rate_snapshots por par (es lo que leen las apps)
@@ -1209,16 +1209,16 @@ export const RatesPanel: React.FC<{ profile: AdminProfile }> = ({ profile }) => 
             {/* CONFIG GLOBAL + VENTANA NOCTURNA */}
             <NightWindowCard profile={profile} initial={global} onSaved={load} canManage={canManage} />
 
-            {/* PANEL FINITY — solo host empresas (riel Colombia, USD/COP) */}
-            {finityHost && (
-                <FinityRatesCard
+            {/* PANEL MOUV — solo host empresas (riel Colombia, USD/COP) */}
+            {mouvHost && (
+                <MouvRatesCard
                     profile={profile}
-                    enabled={usdCopFinityOn}
-                    busy={finityBusy}
+                    enabled={usdCopMouvOn}
+                    busy={mouvBusy}
                     canManage={canManage}
-                    onToggle={toggleFinityUsdCop}
-                    feePct={finityFeePct}
-                    onSaveFee={saveFinityFee}
+                    onToggle={toggleMouvUsdCop}
+                    feePct={mouvFeePct}
+                    onSaveFee={saveMouvFee}
                 />
             )}
 

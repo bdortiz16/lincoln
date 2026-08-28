@@ -734,12 +734,12 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       setTimeout(() => reject(new Error('Supabase timeout after 8s')), 8000)
     );
     try {
-      // Fetch current raw_data from DB first so we never lose tatum wallet fields
-      // (e.g. tatumAddresses, tatumHdIndex) that may not be in stale in-memory state
+      // Fetch current raw_data from DB first so we never lose gasfree wallet fields
+      // (e.g. gasfreeAddresses, gasfreeHdIndex) that may not be in stale in-memory state
       //
       // ⚠️ Normalización crítica: mapSupabaseUser APLANA raw_data al nivel
       // superior del usuario, pero updateUserProfile puede traer un raw_data
-      // ANIDADO con los datos más frescos (ej. finityContacts recién
+      // ANIDADO con los datos más frescos (ej. mouvContacts recién
       // agregado). Sin esto, el guardado creaba raw_data.raw_data y el valor
       // viejo aplanado pisaba al nuevo — los contactos "desaparecían" al
       // recargar.

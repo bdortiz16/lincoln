@@ -93,7 +93,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, activeView, onNavigate
         <MenuGroup title="Operaciones">
           <MenuItem icon={Send} label="Enviar Dinero" id="enviar" isActive={activeView === 'enviar'} onClick={() => onNavigate('enviar')} />
           <MenuItem icon={RefreshCw} label="Convertir" id="convertir" isActive={activeView === 'convertir'} onClick={() => onNavigate('convertir')} />
-          <MenuItem icon={Landmark} label="Dispersiones" id="finity" isActive={activeView === 'finity'} onClick={() => onNavigate('finity')} />
+          <MenuItem icon={Landmark} label="Dispersiones" id="mouv" isActive={activeView === 'mouv'} onClick={() => onNavigate('mouv')} />
         </MenuGroup>
 
         <MenuGroup title="Cuenta">

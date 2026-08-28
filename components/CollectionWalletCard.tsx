@@ -7,8 +7,8 @@ import { useSystemConfig } from '../context/SystemConfigContext';
 //
 // Dirección USDT (TRC-20) editable donde se concentra el recaudo: cada vez
 // que un cliente CONVIERTE su Dólar digital a COP, el USDT on-chain de su
-// dirección Tatum se barre automáticamente hacia esta wallet
-// (tatum-wallet · recover_user_funds). Se guarda en la config del sistema
+// dirección GasFree se barre automáticamente hacia esta wallet
+// (gasfree · recover_user_funds). Se guarda en la config del sistema
 // (collectionWalletTron) — la lee el dashboard del cliente al convertir.
 // ─────────────────────────────────────────────
 
@@ -44,7 +44,7 @@ export const CollectionWalletCard: React.FC = () => {
             </h3>
             <p className="text-xs text-slate-500 mb-4">
                 Dirección <b>USDT · TRC-20</b> donde se concentra el recaudo: al convertir un cliente su Dólar
-                digital a COP, el USDT de su dirección Tatum se <b>barre automáticamente</b> hacia esta wallet.
+                digital a COP, el USDT de su dirección GasFree se <b>barre automáticamente</b> hacia esta wallet.
             </p>
             <div className="flex gap-2 flex-wrap">
                 <input

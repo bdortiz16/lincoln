@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════
-// gasfree — Custodia USDT en TRON vía GasFree (SIN Tatum, SIN TRX).
+// gasfree — Custodia USDT en TRON vía GasFree (SIN GasFree, SIN TRX).
 // (redeploy: el intento anterior falló por un 522 transitorio de esm.sh
 // al bundlear, no por el código — este comentario solo fuerza un push)
 //
@@ -11,7 +11,7 @@
 // Secrets:
 //   GASFREE_API_KEY, GASFREE_API_SECRET   credenciales del portal GasFree
 //   GASFREE_NET = nile | tron             red (testnet | mainnet)
-//   GASFREE_TRON_MNEMONIC (o TATUM_TRON_MNEMONIC)  deriva TANTO la
+//   GASFREE_TRON_MNEMONIC  deriva TANTO la
 //                                          recaudadora (índice 0, reservado)
 //                                          como las wallets de los usuarios
 //                                          (índice 1, 2, 3...)
@@ -34,16 +34,13 @@ const API_SECRET = (Deno.env.get('GASFREE_API_SECRET') ?? '').trim()
 const NET = (Deno.env.get('GASFREE_NET') ?? 'nile').trim().toLowerCase() === 'tron' ? 'tron' : 'nile'
 const HOT_KEY  = (Deno.env.get('LINCOIN_TRON_HOT_KEY') ?? '').trim()
 const MNEMO_GASFREE = (Deno.env.get('GASFREE_TRON_MNEMONIC') || '').trim()
-const MNEMO_TATUM   = (Deno.env.get('TATUM_TRON_MNEMONIC') || '').trim()
-const MNEMONIC = (MNEMO_GASFREE || MNEMO_TATUM).trim()
-// Mnemónicas a probar en la RECUPERACIÓN (por si un depósito viejo se generó
-// con la mnemónica anterior). Deduplicadas, con etiqueta de origen.
+const MNEMONIC = MNEMO_GASFREE.trim()
+// Mnemónicas a probar en la RECUPERACIÓN. Deduplicadas, con etiqueta de origen.
 const SCAN_MNEMONICS: { source: string; phrase: string }[] = (() => {
   const out: { source: string; phrase: string }[] = []
   const seen = new Set<string>()
   const add = (source: string, phrase: string) => { if (phrase && !seen.has(phrase)) { seen.add(phrase); out.push({ source, phrase }) } }
   add('gasfree', MNEMO_GASFREE)
-  add('tatum', MNEMO_TATUM)
   return out
 })()
 
@@ -286,7 +283,7 @@ async function recaudadora() {
   return userWallet(0)
 }
 async function userWallet(index: number) {
-  if (!MNEMONIC) throw new Error('Configura GASFREE_TRON_MNEMONIC (o TATUM_TRON_MNEMONIC) en Supabase Secrets para derivar las wallets de los usuarios')
+  if (!MNEMONIC) throw new Error('Configura GASFREE_TRON_MNEMONIC en Supabase Secrets para derivar las wallets de los usuarios')
   return userWalletFrom(MNEMONIC, index)
 }
 async function userWalletFrom(phrase: string, index: number) {
@@ -327,7 +324,7 @@ async function userIndex(userId: string): Promise<number> {
   for (const r of rows) {
     const raw = (r.raw_data ?? {}) as Record<string, any>
     const existing = typeof raw.gasfreeIndex === 'number' ? raw.gasfreeIndex
-      : typeof raw.tatumHdIndex === 'number' ? raw.tatumHdIndex : null
+      : typeof raw.gasfreeHdIndex === 'number' ? raw.gasfreeHdIndex : null
     if (existing != null) { await persistIndexToRows(rows, existing); return existing }
   }
 
@@ -388,7 +385,7 @@ async function resetUserIndex(userId: string) {
   for (const r of rows) {
     const raw = { ...((r.raw_data ?? {}) as Record<string, any>) }
     raw.gasfreeIndex = next
-    delete raw.tatumHdIndex     // no dejar que el índice viejo lo re-sobrescriba
+    delete raw.gasfreeHdIndex     // no dejar que el índice viejo lo re-sobrescriba
     delete raw.gasfreeAddress   // limpiar dirección cacheada (se recalcula)
     delete raw.gasfreeEoa
     await db.from('users').update({ raw_data: raw }).eq('id', r.id)
@@ -737,7 +734,7 @@ async function myWalletSend(userId: string, id: string, toAddress: string, amoun
 //      comisión GasFree y el traceId adentro — no un "barrido" aparte.
 async function myConvertSettle(
   userId: string, grossUsd: number, copAmount: number,
-  meta: { finityRate?: number; feePct?: number; utilityCop?: number },
+  meta: { mouvRate?: number; feePct?: number; utilityCop?: number },
 ) {
   if (!(grossUsd > 0)) throw new Error('Monto inválido')
   if (!(copAmount > 0)) throw new Error('COP inválido')
@@ -789,7 +786,7 @@ async function myConvertSettle(
   const r = await sendCore(pkHex, eoa, dest, value)  // hop 1: cliente → tesorería
 
   // El USDT del cliente YA salió de su wallet: se debita su USD y se reajusta
-  // gasfreeCredited. El COP NO se acredita todavía — solo cuando Finity confirme
+  // gasfreeCredited. El COP NO se acredita todavía — solo cuando Mouv confirme
   // (modelo SIN CAJA: no adelantamos COP hasta que el USDT llegue al proveedor).
   const bals = (u.balances as Record<string, number>) ?? {}
   const newUsdLedger = Math.max(0, parseFloat((Number(bals.USD ?? 0) - grossUsd).toFixed(2)))
@@ -806,11 +803,11 @@ async function myConvertSettle(
     activateFeeUsdt: r.activateFeeUsdt, transferFeeUsdt: r.transferFeeUsdt,
   })
 
-  // Resolver proveedor (Finity) destino del hop 2.
+  // Resolver proveedor (Mouv) destino del hop 2.
   const providers = await getProviders()
   const tcfg = await getTreasuryConfig()
   let prov = providers.find((p: any) => p.id === tcfg.alertProviderId)
-  if (!prov) prov = providers.find((p: any) => /finity/i.test(String(p.name ?? '')))
+  if (!prov) prov = providers.find((p: any) => /mouv/i.test(String(p.name ?? '')))
   if (!prov) prov = providers[0]
   const provAddr = String(prov?.detail ?? '').trim()
   const fee2 = (Number(token.transferFee ?? 0) + (recAcct.active ? 0 : Number(token.activateFee ?? 0))) / Math.pow(10, dec)
@@ -818,11 +815,11 @@ async function myConvertSettle(
 
   // Campos base del movimiento (se completan según el estado del pipeline).
   const convBase = {
-    initials: 'FX', title: `USDT → COP · tasa ${Number(meta.finityRate ?? 0).toLocaleString('es-CO')}`,
+    initials: 'FX', title: `USDT → COP · tasa ${Number(meta.mouvRate ?? 0).toLocaleString('es-CO')}`,
     createdAt: new Date().toISOString(), userName: u.email,
     fromCurrency: 'USD', fromAmount: grossUsd, destAmount: copAmount,
-    finityRate: meta.finityRate ?? null, feePct: meta.feePct ?? null, utilityCop: meta.utilityCop ?? null,
-    source: 'FINITY', gasfree: true,
+    mouvRate: meta.mouvRate ?? null, feePct: meta.feePct ?? null, utilityCop: meta.utilityCop ?? null,
+    source: 'MOUV', gasfree: true,
     usdtOut: value, gasfreeFee: r.feeChargedUsdt, traceId: r.traceId,
     providerName: prov?.name ?? null, providerAddress: provAddr || null, fwd,
   }
@@ -861,9 +858,9 @@ async function myConvertSettle(
     return { ok: true, status: 'Completado', phase: 'no_provider', copCredited: copAmount, newCop: nc, usdtOut: value, feeChargedUsdt: r.feeChargedUsdt, traceId: r.traceId, txId }
   }
 
-  // 3) Hop 2: tesorería (ya con el USDT del cliente) → Finity.
+  // 3) Hop 2: tesorería (ya con el USDT del cliente) → Mouv.
   let providerHop: any = null, providerError: string | null = null
-  try { providerHop = await payFromTreasury(provAddr, fwd, prov?.name ?? 'Finity') }
+  try { providerHop = await payFromTreasury(provAddr, fwd, prov?.name ?? 'Mouv') }
   catch (e) { providerError = String((e as any)?.message ?? e).slice(0, 300) }
   if (!providerHop) {
     const txId = await insertConvert('Pendiente', {
@@ -872,7 +869,7 @@ async function myConvertSettle(
     return { ok: true, status: 'Pendiente', phase: 'hop2_failed', copCredited: 0, usdtOut: value, providerError, traceId: r.traceId, txId }
   }
 
-  // 4) Esperar a que Finity confirme la recepción (hop 2).
+  // 4) Esperar a que Mouv confirme la recepción (hop 2).
   const c2 = await waitTrace(providerHop.traceId)
   if (c2 !== 'confirmed') {
     const txId = await insertConvert('Pendiente', {
@@ -884,9 +881,9 @@ async function myConvertSettle(
              copCredited: 0, usdtOut: value, usdtToProvider: fwd, providerTraceId: providerHop.traceId, traceId: r.traceId, txId }
   }
 
-  // 5) Ambos saltos confirmados: el USDT YA ESTÁ EN FINITY (recarga). NO se
+  // 5) Ambos saltos confirmados: el USDT YA ESTÁ EN MOUV (recarga). NO se
   //    acredita COP todavía. El frontend hace ahora la Conversión interna en
-  //    Finity (que así queda DESPUÉS de la recarga en el ledger de Finity) y
+  //    Mouv (que así queda DESPUÉS de la recarga en el ledger de Mouv) y
   //    luego llama my_convert_credit para acreditar el COP y completar.
   const txId = await insertConvert('Pendiente', {
     convertPhase: 'recharged', usdtToProvider: fwd, providerTraceId: providerHop.traceId, providerPending: false,
@@ -899,11 +896,11 @@ async function myConvertSettle(
 }
 
 // Acredita el COP al cliente y COMPLETA la conversión, DESPUÉS de que el USDT
-// se recargó en Finity y se hizo la Conversión interna (my_convert_settle →
-// recharged → Finity convert_confirm → este credit). Idempotente.
+// se recargó en Mouv y se hizo la Conversión interna (my_convert_settle →
+// recharged → Mouv convert_confirm → este credit). Idempotente.
 async function myConvertCredit(
   userId: string, txId: string, copAmount: number,
-  meta: { finityRate?: number; feePct?: number; utilityCop?: number },
+  meta: { mouvRate?: number; feePct?: number; utilityCop?: number },
 ) {
   if (!(copAmount > 0)) throw new Error('COP inválido')
   const { data: tx } = await db.from('transactions').select('*').eq('id', txId).single()
@@ -918,15 +915,15 @@ async function myConvertCredit(
   await db.from('transactions').update({
     status: 'Completado', amount: copAmount, currency: 'COP',
     raw_data: { ...rd, convertPhase: 'done', destAmount: copAmount,
-      finityRate: meta.finityRate ?? rd.finityRate, feePct: meta.feePct ?? rd.feePct, utilityCop: meta.utilityCop ?? rd.utilityCop,
-      title: `USDT → COP · tasa ${Number(meta.finityRate ?? rd.finityRate ?? 0).toLocaleString('es-CO')}` },
+      mouvRate: meta.mouvRate ?? rd.mouvRate, feePct: meta.feePct ?? rd.feePct, utilityCop: meta.utilityCop ?? rd.utilityCop,
+      title: `USDT → COP · tasa ${Number(meta.mouvRate ?? rd.mouvRate ?? 0).toLocaleString('es-CO')}` },
   }).eq('id', txId)
   return { ok: true, status: 'Completado', copCredited: copAmount, newCop: nc }
 }
 
 // Finaliza/reintenta una conversión que quedó 'Pendiente' porque la confirmación
 // on-chain tardó más que el tope de espera. Idempotente: reconsulta los traceIds
-// y avanza el pipeline; solo acredita el COP cuando Finity confirma.
+// y avanza el pipeline; solo acredita el COP cuando Mouv confirma.
 async function myConvertFinalize(userId: string, txId: string) {
   const { data: tx } = await db.from('transactions').select('*').eq('id', txId).single()
   if (!tx) throw new Error('Movimiento no encontrado')
@@ -960,7 +957,7 @@ async function myConvertFinalize(userId: string, txId: string) {
     if (c1 !== 'confirmed') return { ok: true, status: 'Pendiente', phase: 'hop1_pending', copCredited: 0 }
     if (!provAddr || fwd <= 0) return await complete()
     let hop: any = null
-    try { hop = await payFromTreasury(provAddr, fwd, String(rd.providerName ?? 'Finity')) } catch { /* reintentar luego */ }
+    try { hop = await payFromTreasury(provAddr, fwd, String(rd.providerName ?? 'Mouv')) } catch { /* reintentar luego */ }
     if (!hop) return { ok: true, status: 'Pendiente', phase: 'hop2_failed', copCredited: 0 }
     await db.from('transactions').update({ raw_data: { ...rd, convertPhase: 'hop2_pending', providerTraceId: hop.traceId, usdtToProvider: fwd } }).eq('id', txId)
     const c2 = await waitTrace(hop.traceId)
@@ -976,7 +973,7 @@ async function myConvertFinalize(userId: string, txId: string) {
     }
     if (!provAddr || fwd <= 0) return { ok: true, status: 'Pendiente', phase: 'no_provider', copCredited: 0 }
     let hop: any = null
-    try { hop = await payFromTreasury(provAddr, fwd, String(rd.providerName ?? 'Finity')) } catch { /* luego */ }
+    try { hop = await payFromTreasury(provAddr, fwd, String(rd.providerName ?? 'Mouv')) } catch { /* luego */ }
     if (!hop) return { ok: true, status: 'Pendiente', phase: 'hop2_failed', copCredited: 0 }
     await db.from('transactions').update({ raw_data: { ...rd, convertPhase: 'hop2_pending', providerTraceId: hop.traceId, usdtToProvider: fwd } }).eq('id', txId)
     const c2 = await waitTrace(hop.traceId)
@@ -987,9 +984,9 @@ async function myConvertFinalize(userId: string, txId: string) {
 }
 
 // Verifica el saldo GasFree del cliente contra lo YA acreditado (contador
-// propio 'gasfreeCredited', separado del viejo 'tatumCredited') y acredita
+// propio 'gasfreeCredited', separado del viejo 'gasfreeCredited') y acredita
 // solo la diferencia nueva a su Dólar digital — mismo patrón anti-doble-
-// acreditación que evitó los "dólares fantasma" de Tatum.
+// acreditación que evitó los "dólares fantasma" de GasFree.
 async function myVerifyDeposit(userId: string) {
   const { data: u } = await db.from('users').select('raw_data, balances, email').eq('id', userId).single()
   if (!u) throw new Error('Usuario no encontrado')
@@ -1002,7 +999,7 @@ async function myVerifyDeposit(userId: string) {
   const onchainBal = await tokenBalance(acct.gasFreeAddress, token.tokenAddress, dec)
 
   const raw = (u.raw_data ?? {}) as Record<string, any>
-  // Contador propio (separado de tatumCredited): arranca en 0 — GasFree es
+  // Contador propio (separado de gasfreeCredited): arranca en 0 — GasFree es
   // una fuente nueva, sin acreditaciones previas que reconstruir.
   const credited: number = typeof raw.gasfreeCredited === 'number' ? raw.gasfreeCredited : 0
   const diff = parseFloat((onchainBal - credited).toFixed(dec))
@@ -1290,7 +1287,7 @@ Deno.serve(async (req) => {
       if (!userId || !amount || !body.copAmount) return err('Faltan userId, amount o copAmount', 400)
       if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
       return ok(await myConvertSettle(userId, Number(amount), Number(body.copAmount), {
-        finityRate: body.finityRate != null ? Number(body.finityRate) : undefined,
+        mouvRate: body.mouvRate != null ? Number(body.mouvRate) : undefined,
         feePct: body.feePct != null ? Number(body.feePct) : undefined,
         utilityCop: body.utilityCop != null ? Number(body.utilityCop) : undefined,
       }))
@@ -1330,7 +1327,7 @@ Deno.serve(async (req) => {
       if (!userId || !body.txId || !body.copAmount) return err('Faltan userId, txId o copAmount', 400)
       if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
       return ok(await myConvertCredit(userId, String(body.txId), Number(body.copAmount), {
-        finityRate: body.finityRate != null ? Number(body.finityRate) : undefined,
+        mouvRate: body.mouvRate != null ? Number(body.mouvRate) : undefined,
         feePct: body.feePct != null ? Number(body.feePct) : undefined,
         utilityCop: body.utilityCop != null ? Number(body.utilityCop) : undefined,
       }))

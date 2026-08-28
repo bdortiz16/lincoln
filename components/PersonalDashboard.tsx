@@ -54,7 +54,7 @@ import {
   XCircle
 } from 'lucide-react';
 import { Logo } from './Logo';
-import { FinitySection, fetchFinityBalance, fetchFinityRateValue, fetchFinityUsdCopConfig, callFinity } from './OtcMigration';
+import { MouvSection, fetchMouvBalance, fetchMouvRateValue, fetchMouvUsdCopConfig, callMouv } from './OtcMigration';
 import { ContactsSection, contactStatus } from './ContactsSection';
 import { WalletsGasfreeSection } from './WalletsGasfreeSection';
 import { supabase } from '../lib/supabaseClient';
@@ -212,25 +212,25 @@ function playNotifSound() {
 }
 
 export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }) => {
-  const [activeView, setActiveView] = useState<'dashboard' | 'movements' | 'wallet-detail' | 'profile' | 'notifications' | 'referrals' | 'affiliates' | 'settings' | 'servicios' | 'finity' | 'contactos' | 'walletsGasfree'>('dashboard');
-  // 'finity' se usa para dos entradas distintas: "Dispersar" (Bre-B, flujo
+  const [activeView, setActiveView] = useState<'dashboard' | 'movements' | 'wallet-detail' | 'profile' | 'notifications' | 'referrals' | 'affiliates' | 'settings' | 'servicios' | 'mouv' | 'contactos' | 'walletsGasfree'>('dashboard');
+  // 'mouv' se usa para dos entradas distintas: "Dispersar" (Bre-B, flujo
   // completo con cuentas destino/movimientos) y el boton "OTC" en Servicios
   // (solo el convertidor USD->COP, sin nada de dispersion bancaria).
-  const [finityMode, setFinityMode] = useState<'full' | 'converter'>('full');
+  const [mouvMode, setMouvMode] = useState<'full' | 'converter'>('full');
   const [selectedWalletCode, setSelectedWalletCode] = useState<string | null>(null);
   // BreB Lincoin: saldo COP separado (key 'COP_BREB') que se fondea desde
-  // Peso Lincoin y se usa para dispersar vía Finity (solo Colombia).
+  // Peso Lincoin y se usa para dispersar vía Mouv (solo Colombia).
   const [brebMoveOpen, setBrebMoveOpen] = useState(false);
   const [brebDir, setBrebDir] = useState<'to_breb' | 'to_peso'>('to_breb');
   const [brebAmountStr, setBrebAmountStr] = useState('');
   const [brebMoving, setBrebMoving] = useState(false);
-  // Saldo REAL en Finity (Peso Lincoin está conectado a la cuenta Finity).
+  // Saldo REAL en Mouv (Peso Lincoin está conectado a la cuenta Mouv).
   // null = no disponible → se muestra el saldo interno como respaldo.
-  // finityChecked distingue "cargando" de "ya respondió y no hay saldo".
+  // mouvChecked distingue "cargando" de "ya respondió y no hay saldo".
   // ⚠️ El useEffect que lo carga vive DESPUÉS del useDatabase() — usa
   // currentUser, que se declara allá (si no: TDZ crash al montar).
-  const [finityBal, setFinityBal] = useState<number | null>(null);
-  const [finityChecked, setFinityChecked] = useState(false);
+  const [mouvBal, setMouvBal] = useState<number | null>(null);
+  const [mouvChecked, setMouvChecked] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
@@ -288,9 +288,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const [sendStep, setSendStep] = useState(1);
   // Buscador del selector de contactos inscritos (envíos COP · banco)
   const [contactSearch, setContactSearch] = useState('');
-  // ID de la external account de Finity del contacto elegido — con él la
-  // confirmación crea la ORDEN DE RETIRO REAL en Finity (destination_id).
-  const [finityDestId, setFinityDestId] = useState<string | null>(null);
+  // ID de la external account de Mouv del contacto elegido — con él la
+  // confirmación crea la ORDEN DE RETIRO REAL en Mouv (destination_id).
+  const [mouvDestId, setMouvDestId] = useState<string | null>(null);
   const [sendForm, setSendForm] = useState({
       destinationCountry: 'Chile',
       destinationCurrency: 'CLP',
@@ -308,9 +308,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // Candado síncrono anti doble-clic (el estado de React tarda un render en
   // reflejarse; el ref bloquea desde el primer instante).
   const sendingRef = useRef(false);
-  // true = se despachó una orden a Finity y NO sabemos si se creó (timeout /
+  // true = se despachó una orden a Mouv y NO sabemos si se creó (timeout /
   // error de red). Bloquea reintentos hasta que el usuario verifique.
-  const [finityUnknown, setFinityUnknown] = useState(false);
+  const [mouvUnknown, setMouvUnknown] = useState(false);
 
   // PAY (P2P) flow
   const [sendMode, setSendMode] = useState<'bank' | 'pay' | 'cash' | 'wallet' | null>(null);
@@ -420,7 +420,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
       // Cuenta (contacto) aprobada
       const contactsAll: any[] = [
-          ...(Array.isArray(cuAny?.raw_data?.finityContacts) ? cuAny.raw_data.finityContacts : (Array.isArray(cuAny?.finityContacts) ? cuAny.finityContacts : [])),
+          ...(Array.isArray(cuAny?.raw_data?.mouvContacts) ? cuAny.raw_data.mouvContacts : (Array.isArray(cuAny?.mouvContacts) ? cuAny.mouvContacts : [])),
           ...(Array.isArray(cuAny?.raw_data?.walletContacts) ? cuAny.raw_data.walletContacts : (Array.isArray(cuAny?.walletContacts) ? cuAny.walletContacts : [])),
       ];
       for (const c of contactsAll) {
@@ -463,38 +463,38 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [movements, currentUser?.id, currentUser?.notifications, currentUser?.notifiedEvents, currentUser?.raw_data]);
 
-  // Cargar el saldo real de Finity al abrir la billetera COP
+  // Cargar el saldo real de Mouv al abrir la billetera COP
   useEffect(() => {
     if (activeView !== 'wallet-detail' || selectedWalletCode !== 'COP' || !currentUser?.id) return;
     let alive = true;
-    setFinityChecked(false);
-    fetchFinityBalance(currentUser.id).then(v => {
+    setMouvChecked(false);
+    fetchMouvBalance(currentUser.id).then(v => {
       if (!alive) return;
-      setFinityBal(v);
-      setFinityChecked(true);
+      setMouvBal(v);
+      setMouvChecked(true);
     });
-    // Sincronizar el estado REAL de las órdenes de retiro desde Finity (y de
+    // Sincronizar el estado REAL de las órdenes de retiro desde Mouv (y de
     // paso limpiar duplicados de la misma orden). Así el estado que ve el
-    // cliente lo dicta Finity — se corrige solo tanto lo que ya salió (pasa a
+    // cliente lo dicta Mouv — se corrige solo tanto lo que ya salió (pasa a
     // Completado) como lo que estaba mal marcado (vuelve a Pendiente), sin
-    // depender de que el webhook de Finity haya llegado.
-    callFinity('reconcile_withdrawals', currentUser.id)
+    // depender de que el webhook de Mouv haya llegado.
+    callMouv('reconcile_withdrawals', currentUser.id)
       .then((r: any) => { if (alive && r?.reconciled > 0) refreshData?.(); })
       .catch(() => {});
     return () => { alive = false; };
   }, [activeView, selectedWalletCode, currentUser?.id]);
-  // El convertidor GENERAL ya NO usa Finity para nada — siempre tasa
+  // El convertidor GENERAL ya NO usa Mouv para nada — siempre tasa
   // FastForex (getRate) y comisión por tramos (getFeeForAmount), para
   // TODOS los pares, incluido USD↔COP. La conversión con tasa/comisión de
-  // Finity vive únicamente en "Servicios → OTC" (FinitySection), que es
+  // Mouv vive únicamente en "Servicios → OTC" (MouvSection), que es
   // la que de verdad ejecuta el 2-step contra la API y barre a la
   // recaudadora. Mezclarlas aquí era lo que causaba el "se dañó otra vez"
-  // (esta pantalla ni siquiera ejecutaba Finity — solo mostraba su tasa).
-  const finityCfg: { feePct: number; finityOn: boolean } | null = null;
-  const isFinityPair = false;
+  // (esta pantalla ni siquiera ejecutaba Mouv — solo mostraba su tasa).
+  const mouvCfg: { feePct: number; mouvOn: boolean } | null = null;
+  const isMouvPair = false;
 
   const conversionRate = getRate(sourceCurr, targetCurr);
-  const isLiveFinityRate = false;
+  const isLiveMouvRate = false;
   const notifications = getUserNotifications();
   const unreadNotifications = notifications.filter(n => !n.read).length;
   const allUsers = getAllUsers();
@@ -559,10 +559,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // por tramos (tiers configurados en el admin) se apliquen según el volumen
   // de la operación. Si el par no tiene tiers, cae al flat fee legacy.
   const rawAmount = getRawAmount(convertAmountStr);
-  // USD↔COP con Finity ACTIVO (toggle del admin): manda la comisión del
-  // Panel Finity (fx_pair_config.base_fee_pct, ej. 0.25%), no la legacy.
-  const applicableFeePercentage = (isFinityPair && finityCfg?.finityOn && finityCfg.feePct > 0)
-      ? finityCfg.feePct
+  // USD↔COP con Mouv ACTIVO (toggle del admin): manda la comisión del
+  // Panel Mouv (fx_pair_config.base_fee_pct, ej. 0.25%), no la legacy.
+  const applicableFeePercentage = (isMouvPair && mouvCfg?.mouvOn && mouvCfg.feePct > 0)
+      ? mouvCfg.feePct
       : getFeeForAmount(sourceCurr, targetCurr, rawAmount);
   const baseFee = rawAmount * (applicableFeePercentage / 100);
   
@@ -572,7 +572,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const finalAmount = amountToConvert * conversionRate;
 
   // ── Regla de negocio de cupones ──
-  // Con comisión promocional (<4%, ej. Finity 0.25%) los cupones NO aplican:
+  // Con comisión promocional (<4%, ej. Mouv 0.25%) los cupones NO aplican:
   // el descuento dejaría la operación en margen cero o pérdida. Si el
   // usuario cambia a un par promocional con cupón puesto, se remueve solo.
   const COUPON_MIN_FEE_PCT = 4;
@@ -718,9 +718,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       return false;
   };
 
-  // ── Cargar USDT (Dólar digital): depósito on-chain vía Tatum ──
+  // ── Cargar USDT (Dólar digital): depósito on-chain vía GasFree ──
   // El USD de la app NO se carga por banco: se envía USDT (TRC-20) a la
-  // dirección personal del cliente (tatum-wallet get_or_create) y al
+  // dirección personal del cliente (gasfree get_or_create) y al
   // detectarse el depósito (verify_and_credit) pasa 1:1 al saldo USD.
   const [usdtModalOpen, setUsdtModalOpen] = useState(false);
   const [usdtAddr, setUsdtAddr] = useState('');
@@ -771,7 +771,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // Saldo REAL de la wallet GasFree (blockchain) — la billetera "USDT" ya
   // NO muestra el "Dólar digital" (el contable interno que se podía
   // desincronizar del saldo real y llevó al cliente a intentar enviar más
-  // de lo que en verdad tenía). Mismo patrón que finityBal para Peso Lincoin.
+  // de lo que en verdad tenía). Mismo patrón que mouvBal para Peso Lincoin.
   const [gasfreeBal, setGasfreeBal] = useState<number | null>(null);
   const [gasfreeBalChecked, setGasfreeBalChecked] = useState(false);
   const refreshGasfreeBal = async (uid: string) => {
@@ -873,7 +873,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // ── Consolidación del Dólar digital ──
   // El saldo USD visible ES el agregado de dólares digitales: cualquier
   // USDT que quede en el libro cripto (USDT_TRON/USDT_BSC/USDT — llegan
-  // por webhook de Tatum, OTC o verificación) pasa solo, 1:1, al saldo
+  // por webhook de GasFree, OTC o verificación) pasa solo, 1:1, al saldo
   // USD. Sin esto, un depósito acreditado como USDT_TRON quedaba
   // invisible en la tarjeta Dólar.
   const usdtConsolidatingRef = useRef(false);
@@ -1104,19 +1104,19 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   };
 
   const handleSendSubmit = async () => {
-      if (isSending || sendingRef.current || finityUnknown) return;
+      if (isSending || sendingRef.current || mouvUnknown) return;
       sendingRef.current = true;
       setIsSending(true);
       const amount = getRawAmount(sendForm.amount);
 
-      // ── Dispersión REAL vía Finity (envíos COP a contacto aprobado) ──
+      // ── Dispersión REAL vía Mouv (envíos COP a contacto aprobado) ──
       // Contrato oficial: POST /v0/withdrawal-orders
-      //   { amount, currency: 'COP', destination_id: <finityId del contacto> }
+      //   { amount, currency: 'COP', destination_id: <mouvId del contacto> }
       //   → 201 { id: 'po_...', state, costs: { commission, iva, total } }
       // La orden se crea PRIMERO; el saldo interno solo se registra/debita
-      // si Finity la acepta. Si Finity falla o rechaza, NO se toca nada.
-      if (sendMode === 'bank' && sendForm.destinationCurrency === 'COP' && finityDestId && currentUser?.id) {
-          // Regla de Finity (validada por su API): mínimo 5.000 COP por dispersión
+      // si Mouv la acepta. Si Mouv falla o rechaza, NO se toca nada.
+      if (sendMode === 'bank' && sendForm.destinationCurrency === 'COP' && mouvDestId && currentUser?.id) {
+          // Regla de Mouv (validada por su API): mínimo 5.000 COP por dispersión
           if (amount < 5000) {
               sendingRef.current = false;
               setIsSending(false);
@@ -1125,26 +1125,26 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           }
           try {
               // Sin carrera de abandono: si se corta la espera aquí, la petición
-              // sigue viva y la orden PUEDE crearse en Finity igual (así se
+              // sigue viva y la orden PUEDE crearse en Mouv igual (así se
               // triplicó una dispersión). Se espera hasta 60 s con el botón
               // bloqueado; si aun así no hay respuesta, el resultado es
               // DESCONOCIDO y se bloquea el reintento hasta verificar.
               const r = await Promise.race([
-                  callFinity('create_withdrawal', currentUser.id, {
-                      data: { amount, currency: 'COP', destination_id: finityDestId },
+                  callMouv('create_withdrawal', currentUser.id, {
+                      data: { amount, currency: 'COP', destination_id: mouvDestId },
                   }),
                   new Promise<any>((_, rej) => setTimeout(() => rej(new Error('timeout')), 60000)),
               ]);
               const od = (r?.data ?? {}) as any;
               if (!r?.ok || !od.id) {
-                  // Rechazo EXPLÍCITO de Finity (respuesta llegó): no se creó
+                  // Rechazo EXPLÍCITO de Mouv (respuesta llegó): no se creó
                   // orden, es seguro dejar reintentar.
                   sendingRef.current = false;
                   setIsSending(false);
                   showToast(`La transferencia fue rechazada — no se debitó tu saldo. ${JSON.stringify(r?.data ?? r).slice(0, 180)}`, 10000, 'error');
                   return;
               }
-              // Orden aceptada por Finity → registrar el envío con su referencia
+              // Orden aceptada por Mouv → registrar el envío con su referencia
               await requestWithdrawal(
                   amount,
                   'COP',
@@ -1161,11 +1161,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               return;
           } catch (e: any) {
               // Timeout o error de red: NO sabemos si la orden se creó en
-              // Finity. Prohibido reintentar a ciegas — se bloquea el botón
+              // Mouv. Prohibido reintentar a ciegas — se bloquea el botón
               // hasta que el usuario verifique en su historial/portal.
               sendingRef.current = false;
               setIsSending(false);
-              setFinityUnknown(true);
+              setMouvUnknown(true);
               showToast('La conexión tardó demasiado y NO se sabe si la orden se creó. Verifica en tu Historial antes de reintentar — NO vuelvas a enviar todavía.', 12000);
               return;
           }
@@ -1200,7 +1200,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           } catch {
               sendingRef.current = false;
               setIsSending(false);
-              setFinityUnknown(true);
+              setMouvUnknown(true);
               showToast('La red tardó demasiado y NO se sabe si el envío salió. Revisa tu Historial (o la wallet destino en Tronscan) antes de reintentar.', 12000);
               return;
           }
@@ -1259,8 +1259,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       setSendForm({ ...sendForm, amount: '', beneficiaryName: '', accountNumber: '', reason: 'Envío de dinero', bankName: '' });
       setCashForm({ recipientName: '', docType: 'CC', docNumber: '', phone: '', city: '' });
       setCashReference('');
-      setFinityDestId(null);
-      setFinityUnknown(false);
+      setMouvDestId(null);
+      setMouvUnknown(false);
       sendingRef.current = false;
       setContactSearch('');
   };
@@ -1316,13 +1316,13 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       setIsFeatureModalOpen(true);
   };
 
-  // Las conversiones OTC (Finity) guardan el monto en la moneda DESTINO
+  // Las conversiones OTC (Mouv) guardan el monto en la moneda DESTINO
   // (lo que el cliente RECIBE, ej. COP) — a diferencia del convertidor
   // general, que guarda la moneda de ORIGEN (lo que se debita). Por eso
-  // una conversión Finity SÍ es un crédito visualmente y las demás no.
+  // una conversión Mouv SÍ es un crédito visualmente y las demás no.
   const isTxCredit = (t: any): boolean =>
       t.type === 'load' || t.type === 'referral_payout' || t.type === 'pay_received' || t.type === 'otc_deposit'
-      || (t.type === 'convert' && (t.source === 'FINITY' || t.raw_data?.source === 'FINITY'));
+      || (t.type === 'convert' && (t.source === 'MOUV' || t.raw_data?.source === 'MOUV'));
 
   const baseCurrency = (c?: string) => String(c || '').split('_')[0];
   const getFilteredMovements = (walletCode?: string | null, opts?: { full?: boolean }) => {
@@ -1879,19 +1879,19 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       <p className="text-[10px] uppercase tracking-wider text-slate-500">Cuenta principal · COP</p>
                                   </div>
                               </div>
-                              {finityBal != null && (
+                              {mouvBal != null && (
                                   <span className="text-[9px] font-bold uppercase bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full">
                                       ● Conectado a la red bancaria
                                   </span>
                               )}
                           </div>
                           <p className="text-2xl font-bold text-[#0C0E0D] font-mono">
-                              {formatMoney(finityBal ?? balance, 'COP')}
+                              {formatMoney(mouvBal ?? balance, 'COP')}
                           </p>
                           <p className="text-[11px] text-slate-500 mt-1">
-                              {finityBal != null
+                              {mouvBal != null
                                   ? 'Saldo real de tu cuenta de dispersión — es el que se usa para transferir.'
-                                  : finityChecked
+                                  : mouvChecked
                                       ? 'Tu saldo interno Lincoin: cargas, envíos entre usuarios y conversiones.'
                                       : 'Saldo interno Lincoin · consultando…'}
                           </p>
@@ -1923,7 +1923,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   <RefreshCw size={14} /> Mover saldo
                               </button>
                               <button
-                                  onClick={() => { setFinityMode('full'); setActiveView('finity'); }}
+                                  onClick={() => { setMouvMode('full'); setActiveView('mouv'); }}
                                   disabled={brebBal <= 0}
                                   className="flex-1 py-2.5 rounded-xl bg-[#4ADE80] hover:bg-[#6EE7A0] text-[#0C0E0D] text-sm font-bold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
                               >
@@ -1951,7 +1951,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           </p>
                           <div className="flex gap-2 mt-3 relative z-10">
                               <button
-                                  onClick={() => { setFinityMode('full'); setActiveView('finity'); }}
+                                  onClick={() => { setMouvMode('full'); setActiveView('mouv'); }}
                                   disabled={achBal <= 0}
                                   className="flex-1 py-2.5 rounded-xl bg-[#0C0E0D] hover:bg-[#121413] text-white text-sm font-bold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
                               >
@@ -2530,11 +2530,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     const dateStr = dt ? dt.toLocaleDateString('es-CO', { day: '2-digit', month: 'long', year: 'numeric' }) : (tx.date || '');
     const timeStr = dt ? dt.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }) : '';
     const rawData = tx.raw_data && typeof tx.raw_data === 'object' ? tx.raw_data : {};
-    // Las conversiones OTC (Finity) guardan el monto en la moneda DESTINO
+    // Las conversiones OTC (Mouv) guardan el monto en la moneda DESTINO
     // (lo que el cliente RECIBE — ej. COP), a diferencia del convertidor
     // general que guarda la moneda de ORIGEN (lo que se debita) — por eso
     // esta sí es un crédito y las demás 'convert' no.
-    const isOtcConvertCredit = tx.type === 'convert' && (tx.source === 'FINITY' || rawData.source === 'FINITY');
+    const isOtcConvertCredit = tx.type === 'convert' && (tx.source === 'MOUV' || rawData.source === 'MOUV');
     const isCredit = tx.type === 'load' || tx.type === 'pay_received' || tx.type === 'referral_payout' || tx.type === 'otc_deposit' || isOtcConvertCredit;
     const targetAmount = tx.targetAmount ?? rawData.targetAmount;
     const targetCurrency = tx.targetCurrency ?? rawData.targetCurrency;
@@ -2555,12 +2555,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     const gasfreeTraceId: string = tx.traceId ?? rawData.traceId ?? '';
     const gasfreeFee: number | undefined = tx.feeChargedUsdt ?? tx.gasfreeFee ?? rawData.feeChargedUsdt ?? rawData.gasfreeFee;
     const gasfreeActivateFee: number | undefined = tx.activateFeeUsdt ?? rawData.activateFeeUsdt;
-    // Conversión OTC (Finity): USDT que entró, tasa, USDT que salió a la
+    // Conversión OTC (Mouv): USDT que entró, tasa, USDT que salió a la
     // recaudadora y comisión GasFree — todo en el mismo comprobante.
-    const isFinityConvert = isOtcConvertCredit;
-    const finityFromAmount: number | undefined = tx.fromAmount ?? rawData.fromAmount;
-    const finityRate: number | undefined = tx.finityRate ?? rawData.finityRate;
-    const finityFeePct: number | undefined = tx.feePct ?? rawData.feePct;
+    const isMouvConvert = isOtcConvertCredit;
+    const mouvFromAmount: number | undefined = tx.fromAmount ?? rawData.fromAmount;
+    const mouvRate: number | undefined = tx.mouvRate ?? rawData.mouvRate;
+    const mouvFeePct: number | undefined = tx.feePct ?? rawData.feePct;
     const gasfreeUsdtOut: number | undefined = tx.usdtOut ?? rawData.usdtOut;
 
     // Depósito USDT GasFree (type 'load' con source GASFREE): de dónde vino
@@ -2602,21 +2602,21 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       ...(isGasfreeDeposit && depFrom ? [{ label: 'De (origen)', value: depFrom, copyable: true, mono: true }] : []),
       ...(isGasfreeDeposit && depTo ? [{ label: 'A (tu wallet GasFree)', value: depTo, copyable: true, mono: true }] : []),
       ...(isGasfreeDeposit && depTxId ? [{ label: 'TxID', value: depTxId, copyable: true, link: depTxUrl, mono: true }] : []),
-      // Conversión OTC (Finity): el desglose completo va aquí — USDT que
+      // Conversión OTC (Mouv): el desglose completo va aquí — USDT que
       // entró, tasa, COP recibido, USDT que salió a la recaudadora, comisión.
-      ...(isFinityConvert ? [{ label: 'Par de conversión', value: 'USDT → COP' }] : []),
-      ...(isFinityConvert && finityFromAmount != null ? [{ label: 'USDT convertido', value: `${Number(finityFromAmount).toFixed(2)} USDT` }] : []),
-      ...(isFinityConvert && finityRate != null ? [{ label: 'Tasa Lincoin', value: `1 USD = ${Number(finityRate).toLocaleString('es-CO', { maximumFractionDigits: 2 })} COP${finityFeePct != null ? ` (comisión ${finityFeePct}%)` : ''}` }] : []),
-      ...(isFinityConvert ? [{ label: 'COP recibido', value: `${formatMoney(tx.amount, 'COP')} COP` }] : []),
-      ...(isFinityConvert && gasfreeUsdtOut != null ? [{ label: 'USDT enviado a recaudadora', value: `${Number(gasfreeUsdtOut).toFixed(2)} USDT` }] : []),
+      ...(isMouvConvert ? [{ label: 'Par de conversión', value: 'USDT → COP' }] : []),
+      ...(isMouvConvert && mouvFromAmount != null ? [{ label: 'USDT convertido', value: `${Number(mouvFromAmount).toFixed(2)} USDT` }] : []),
+      ...(isMouvConvert && mouvRate != null ? [{ label: 'Tasa Lincoin', value: `1 USD = ${Number(mouvRate).toLocaleString('es-CO', { maximumFractionDigits: 2 })} COP${mouvFeePct != null ? ` (comisión ${mouvFeePct}%)` : ''}` }] : []),
+      ...(isMouvConvert ? [{ label: 'COP recibido', value: `${formatMoney(tx.amount, 'COP')} COP` }] : []),
+      ...(isMouvConvert && gasfreeUsdtOut != null ? [{ label: 'USDT enviado a recaudadora', value: `${Number(gasfreeUsdtOut).toFixed(2)} USDT` }] : []),
       ...(isGasfree && gasfreeActivateFee ? [{ label: 'Activación de wallet (1ª vez)', value: `${Number(gasfreeActivateFee).toFixed(2)} USDT` }] : []),
       ...(isGasfree && gasfreeFee != null ? [{ label: 'Comisión GasFree', value: `${Number(gasfreeFee).toFixed(2)} USDT` }] : []),
       ...(isGasfree && gasfreeTraceId ? [{ label: 'TxID (GasFree)', value: gasfreeTraceId, copyable: true, mono: true }] : []),
-      // Conversiones internas (no-Finity): par/tasa/monto clásicos.
-      ...(tx.type === 'convert' && !isFinityConvert && targetCurrency ? [{ label: 'Par de conversión', value: `${tx.currency} → ${targetCurrency}` }] : []),
-      ...(tx.type === 'convert' && !isFinityConvert && rate != null ? [{ label: 'Tasa de cambio', value: `1 ${tx.currency} = ${rate.toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 6 })} ${targetCurrency}` }] : []),
-      ...(tx.type === 'convert' && !isFinityConvert && targetAmount != null ? [{ label: 'Monto recibido', value: `${formatMoney(targetAmount, targetCurrency || '')} ${targetCurrency || ''}` }] : []),
-      ...(tx.type === 'convert' && !isFinityConvert && txFee != null ? [{ label: 'Comisión cobrada', value: `${formatMoney(txFee, tx.currency)} ${tx.currency}` }] : []),
+      // Conversiones internas (no-Mouv): par/tasa/monto clásicos.
+      ...(tx.type === 'convert' && !isMouvConvert && targetCurrency ? [{ label: 'Par de conversión', value: `${tx.currency} → ${targetCurrency}` }] : []),
+      ...(tx.type === 'convert' && !isMouvConvert && rate != null ? [{ label: 'Tasa de cambio', value: `1 ${tx.currency} = ${rate.toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 6 })} ${targetCurrency}` }] : []),
+      ...(tx.type === 'convert' && !isMouvConvert && targetAmount != null ? [{ label: 'Monto recibido', value: `${formatMoney(targetAmount, targetCurrency || '')} ${targetCurrency || ''}` }] : []),
+      ...(tx.type === 'convert' && !isMouvConvert && txFee != null ? [{ label: 'Comisión cobrada', value: `${formatMoney(txFee, tx.currency)} ${tx.currency}` }] : []),
       ...(couponCode ? [{ label: 'Cupón aplicado', value: couponCode }] : []),
       ...(tx.bank ? [{ label: 'Banco / Método', value: tx.bank }] : []),
       ...(tx.beneficiary ? [{ label: 'Beneficiario', value: tx.beneficiary }] : []),
@@ -2919,32 +2919,32 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       {activeView === 'contactos' && (
           <ContactsSection onBack={() => setActiveView('dashboard')} />
       )}
-      {activeView === 'finity' && currentUser?.id && (
+      {activeView === 'mouv' && currentUser?.id && (
           <div className="pt-6">
               <button onClick={() => setActiveView('dashboard')} className="flex items-center gap-2 text-slate-700 font-bold text-sm hover:text-[#0C0E0D] mb-2">
                   <ArrowLeft size={16} /> Volver
               </button>
-              {finityMode === 'converter' && (currentUser as any)?.otcConfig?.enabled !== true ? (
+              {mouvMode === 'converter' && (currentUser as any)?.otcConfig?.enabled !== true ? (
                   <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center">
                       <p className="text-slate-500 text-sm">El servicio OTC no está habilitado para tu cuenta todavía.</p>
                       <p className="text-slate-400 text-xs mt-1">Escríbenos a soporte para activarlo.</p>
                   </div>
               ) : (
-              <FinitySection
-                  mode={finityMode}
+              <MouvSection
+                  mode={mouvMode}
                   userId={currentUser.id}
                   brebBalance={getBalance('COP_BREB')}
                   usdBalance={displayBalance('USD')}
                   copBalance={getBalance('COP')}
                   onSwept={() => currentUser?.id && refreshGasfreeBal(currentUser.id)}
                   feePctOverride={(currentUser as any)?.otcConfig?.feePct}
-                  onConverted={async (usdAmount, copClientAmount, finityRate) => {
+                  onConverted={async (usdAmount, copClientAmount, mouvRate) => {
                       // Movimiento OPTIMISTA: aparece al instante en la lista.
                       addLocalTx?.({
                           userId: currentUser.id, type: 'convert', amount: copClientAmount, currency: 'COP', status: 'Completado',
-                          initials: 'FX', title: `USDT → COP · tasa ${Number(finityRate ?? 0).toLocaleString('es-CO')}`,
+                          initials: 'FX', title: `USDT → COP · tasa ${Number(mouvRate ?? 0).toLocaleString('es-CO')}`,
                           userName: (currentUser as any)?.email, fromCurrency: 'USD', fromAmount: usdAmount,
-                          destAmount: copClientAmount, finityRate, source: 'FINITY', gasfree: true,
+                          destAmount: copClientAmount, mouvRate, source: 'MOUV', gasfree: true,
                       });
                       // Todo el asentamiento (débito USDT on-chain, crédito COP y
                       // el movimiento) ya lo hizo el edge (my_convert_settle),
@@ -3329,7 +3329,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       )}
 
       {/* LOAD MODAL */}
-      {/* Cargar USDT — depósito on-chain a la wallet Tatum del cliente */}
+      {/* Cargar USDT — depósito on-chain a la wallet GasFree del cliente */}
       {usdtModalOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
               <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-300">
@@ -3653,8 +3653,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       {sendStep === 3 && sendMode === 'bank' && (() => {
                           const isCopDest = sendForm.destinationCurrency === 'COP';
                           {
-                              const all: any[] = ((currentUser as any)?.raw_data?.finityContacts) ?? ((currentUser as any)?.finityContacts) ?? [];
-                              // Solo contactos del país destino (COP = Colombia vía Finity;
+                              const all: any[] = ((currentUser as any)?.raw_data?.mouvContacts) ?? ((currentUser as any)?.mouvContacts) ?? [];
+                              // Solo contactos del país destino (COP = Colombia vía Mouv;
                               // el resto por su país). Nada de formulario libre: las cuentas
                               // se inscriben únicamente en la sección Contactos.
                               const myContacts = all.filter((c: any) => c.accountKind !== 'wallet' && (c.country ?? 'Colombia') === sendForm.destinationCountry);
@@ -3710,8 +3710,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                                               beneficiaryType: c.kind === 'empresa' ? 'business' : 'personal',
                                                           });
                                                           // COP: con este ID la confirmación crea la orden REAL en
-                                                          // Finity. Otros países: flujo interno, sin Finity.
-                                                          setFinityDestId(isCopDest ? (c.finityId ?? null) : null);
+                                                          // Mouv. Otros países: flujo interno, sin Mouv.
+                                                          setMouvDestId(isCopDest ? (c.mouvId ?? null) : null);
                                                           setSendStep(4);
                                                       }}
                                                       className={`w-full flex items-center justify-between gap-3 p-3.5 rounded-xl border transition-all text-left ${selectable ? 'border-slate-200 hover:border-[#0C0E0D] hover:bg-slate-50' : 'border-slate-100 bg-slate-50/60 opacity-60 cursor-not-allowed'}`}
@@ -3743,12 +3743,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       {/* STEP 3 WALLET: wallets inscritas (solo USD) */}
                       {sendStep === 3 && sendMode === 'wallet' && (() => {
                           // Wallets: lista propia (walletContacts) + compat con las que
-                          // quedaron dentro de finityContacts. Anidado o aplanado.
+                          // quedaron dentro de mouvContacts. Anidado o aplanado.
                           const cuW: any = currentUser as any;
                           const readW = (k: string): any[] => Array.isArray(cuW?.raw_data?.[k]) ? cuW.raw_data[k] : Array.isArray(cuW?.[k]) ? cuW[k] : [];
                           const myWalletsList = [
                               ...readW('walletContacts'),
-                              ...readW('finityContacts').filter((c: any) => c.accountKind === 'wallet'),
+                              ...readW('mouvContacts').filter((c: any) => c.accountKind === 'wallet'),
                           ];
                           const q = contactSearch.trim().toLowerCase();
                           const list = myWalletsList.filter((c: any) =>
@@ -3793,7 +3793,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                                           accountNumber: c.accountNumber,
                                                           beneficiaryType: 'personal',
                                                       });
-                                                      setFinityDestId(null);
+                                                      setMouvDestId(null);
                                                       setSendStep(4);
                                                   }}
                                                   className="w-full flex items-center justify-between gap-3 p-3.5 rounded-xl border border-slate-200 hover:border-[#0C0E0D] hover:bg-slate-50 transition-all text-left"
@@ -3922,14 +3922,14 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       Total a debitar: {formatMoney(getRawAmount(sendForm.amount) + gasfreeFeePreview.feeUsdt, 'USD')} USD (monto + comisión de red de GasFree)
                                   </p>
                               )}
-                              {finityUnknown ? (
+                              {mouvUnknown ? (
                                   <div className="bg-amber-50 border-2 border-amber-400 rounded-xl p-4 space-y-3">
                                       <p className="text-sm font-bold text-amber-800">⚠️ La conexión se demoró y NO se sabe si el envío se procesó.</p>
                                       <p className="text-xs text-amber-700">{sendMode === 'wallet'
                                           ? 'Para evitar envíos duplicados, revisa primero tu Historial en Lincoin (o la wallet destino en Tronscan). Si el envío NO aparece, reintenta.'
                                           : 'Para evitar transferencias duplicadas, revisa primero tu Historial en Lincoin. Si la orden NO aparece, reintenta.'}</p>
                                       <button
-                                          onClick={() => setFinityUnknown(false)}
+                                          onClick={() => setMouvUnknown(false)}
                                           style={{ color: '#FFFFFF' }}
                                           className="w-full py-3 bg-amber-600 text-white font-bold rounded-xl hover:bg-amber-700 transition-colors"
                                       >Ya verifiqué — habilitar reintento</button>
@@ -4172,10 +4172,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               </div>
                               <span className="font-bold text-[#0C0E0D]">
                                   1 {sourceCurr} = {conversionRate} {targetCurr}
-                                  {isLiveFinityRate && (
+                                  {isLiveMouvRate && (
                                       <span className="ml-1.5 text-[9px] font-bold uppercase bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded-full align-middle">● Tasa en vivo</span>
                                   )}
-                                  {isFinityPair && !isLiveFinityRate && finityCfg?.finityOn !== false && (
+                                  {isMouvPair && !isLiveMouvRate && mouvCfg?.mouvOn !== false && (
                                       <span className="ml-1.5 text-[9px] font-bold uppercase bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded-full align-middle">⚠ Tasa de referencia</span>
                                   )}
                               </span>
@@ -4192,7 +4192,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   <div className="flex justify-between"><span className="text-slate-500">Monto bruto</span><span className="font-bold text-slate-700">{formatMoney(rawAmount, sourceCurr)} {sourceCurr}</span></div>
                                   <div className="flex justify-between"><span className="text-slate-500">Comisión ({applicableFeePercentage}%)</span><span className="font-bold text-red-500">- {formatMoney(rawAmount * (appliedCoupon ? (applicableFeePercentage * (100 - appliedCoupon.discount)/100) : applicableFeePercentage)/100, sourceCurr)} {sourceCurr}</span></div>
                                   <div className="flex justify-between"><span className="text-slate-500">Monto a convertir</span><span className="font-bold text-slate-700">{formatMoney(amountToConvert, sourceCurr)} {sourceCurr}</span></div>
-                                  <div className="flex justify-between"><span className="text-slate-500">Tasa de cambio{isLiveFinityRate ? ' · en vivo' : ''}</span><span className="font-bold text-[#0C0E0D]">1 {sourceCurr} = {conversionRate} {targetCurr}</span></div>
+                                  <div className="flex justify-between"><span className="text-slate-500">Tasa de cambio{isLiveMouvRate ? ' · en vivo' : ''}</span><span className="font-bold text-[#0C0E0D]">1 {sourceCurr} = {conversionRate} {targetCurr}</span></div>
                                   <div className="flex justify-between border-t border-slate-100 pt-2 mt-1"><span className="text-slate-700 font-bold">Total a recibir</span><span className="font-bold text-green-600">{formatMoney(amountToConvert * conversionRate, targetCurr)} {targetCurr}</span></div>
                               </div>
                           )}

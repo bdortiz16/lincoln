@@ -122,7 +122,7 @@ export const SystemConfigProvider: React.FC<{ children: ReactNode }> = ({ childr
 
   const SURL = (import.meta as any).env?.VITE_SUPABASE_URL as string || '';
   const SKEY = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY as string || '';
-  const TATUM_WALLET_URL  = SURL ? `${SURL}/functions/v1/tatum-wallet` : '';
+  const GASFREE_WALLET_URL  = SURL ? `${SURL}/functions/v1/gasfree` : '';
   const GET_CONFIG_URL    = SURL ? `${SURL}/functions/v1/get-system-config` : '';
   const ADMIN_DATA_URL    = SURL ? `${SURL}/functions/v1/admin-data` : '';
 
@@ -178,10 +178,10 @@ export const SystemConfigProvider: React.FC<{ children: ReactNode }> = ({ childr
         console.warn('[config] get-system-config failed', e);
       }
     }
-    // Secondary: tatum-wallet get_config (once deployed)
-    if (TATUM_WALLET_URL) {
+    // Secondary: gasfree get_config (once deployed)
+    if (GASFREE_WALLET_URL) {
       try {
-        const res = await fetch(TATUM_WALLET_URL, {
+        const res = await fetch(GASFREE_WALLET_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': `Bearer ${SKEY}` },
           body: JSON.stringify({ action: 'get_config' }),
@@ -191,7 +191,7 @@ export const SystemConfigProvider: React.FC<{ children: ReactNode }> = ({ childr
           if (settings) { applySettings(settings); return; }
         }
       } catch (e) {
-        console.warn('[config] tatum-wallet get_config failed', e);
+        console.warn('[config] gasfree get_config failed', e);
       }
     }
     // Fallback: direct Supabase query (may be blocked by RLS for anon users)
@@ -201,7 +201,7 @@ export const SystemConfigProvider: React.FC<{ children: ReactNode }> = ({ childr
     } catch (e) {
       console.error('Config Sync Error', e);
     }
-  }, [GET_CONFIG_URL, TATUM_WALLET_URL, SKEY, applySettings]);
+  }, [GET_CONFIG_URL, GASFREE_WALLET_URL, SKEY, applySettings]);
 
   // On first load, if palette version is outdated push correct colors to Supabase
   useEffect(() => {
@@ -246,17 +246,17 @@ export const SystemConfigProvider: React.FC<{ children: ReactNode }> = ({ childr
       || localStorage.getItem('cuypay_admin_token')
       || SKEY;
 
-    // Try tatum-wallet/save_config (service key, no auth required)
-    if (TATUM_WALLET_URL) {
+    // Try gasfree/save_config (service key, no auth required)
+    if (GASFREE_WALLET_URL) {
       try {
-        const res = await fetch(TATUM_WALLET_URL, {
+        const res = await fetch(GASFREE_WALLET_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': `Bearer ${token}` },
           body: JSON.stringify({ action: 'save_config', settings: newFull }),
         });
         if (res.ok) return;
       } catch (e) {
-        console.warn('[config] tatum-wallet save_config error', e);
+        console.warn('[config] gasfree save_config error', e);
       }
     }
     // Try admin-data/save_config (service key, requires admin token)

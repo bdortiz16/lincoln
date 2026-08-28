@@ -1,22 +1,22 @@
 import React from 'react';
 
 /**
- * Puente de migración OTC/dispersión: Finity fue eliminado. La conversión
+ * Puente de migración OTC/dispersión: Mouv fue eliminado. La conversión
  * (USD/USDT ↔ COP) y la dispersión Colombia (BreB/ACH) se están migrando a
- * Mouv. Este módulo reemplaza los símbolos que antes exportaba FinitySection
+ * Mouv. Este módulo reemplaza los símbolos que antes exportaba MouvSection
  * con stubs inertes + un placeholder, para que la app compile y las pantallas
  * degraden con elegancia hasta que Mouv esté cableado.
  */
 
-// Stubs inertes (antes llamaban a la edge function finity-proxy, ya eliminada).
-export async function callFinity(..._args: any[]): Promise<any> { return null; }
-export async function fetchFinityBalance(..._args: any[]): Promise<any> { return null; }
-export async function fetchFinityRateValue(..._args: any[]): Promise<number | null> { return null; }
-export async function fetchFinityUsdCopConfig(..._args: any[]): Promise<any> { return null; }
+// Stubs inertes (antes llamaban a la edge function mouv-proxy, ya eliminada).
+export async function callMouv(..._args: any[]): Promise<any> { return null; }
+export async function fetchMouvBalance(..._args: any[]): Promise<any> { return null; }
+export async function fetchMouvRateValue(..._args: any[]): Promise<number | null> { return null; }
+export async function fetchMouvUsdCopConfig(..._args: any[]): Promise<any> { return null; }
 export function extractRate(..._args: any[]): number | null { return null; }
 
 // Placeholder que se muestra donde antes iba el convertidor/dispersión OTC.
-export const FinitySection: React.FC<any> = () => (
+export const MouvSection: React.FC<any> = () => (
   <div
     style={{
       background: '#0C0E0D',

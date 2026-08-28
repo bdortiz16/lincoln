@@ -128,7 +128,7 @@ Deno.serve(async (req: Request) => {
         const { data: { user: selfUser } } = await db.auth.getUser(jwt ?? '')
         if (!selfUser) return json({ error: 'Unauthorized' }, 401)
         const { data: selfProfile } = await db.from('users').select('raw_data').eq('id', selfUser.id).single()
-        const selfIndex: number | undefined = selfProfile?.raw_data?.tatumHdIndex
+        const selfIndex: number | undefined = selfProfile?.raw_data?.gasfreeHdIndex
         await db.from('transactions').delete().eq('user_id', selfUser.id)
         await db.from('users').delete().eq('id', selfUser.id)
         const { error: selfDelErr } = await db.auth.admin.deleteUser(selfUser.id)
@@ -145,15 +145,15 @@ Deno.serve(async (req: Request) => {
           return json({ error: `Perfil eliminado, pero la cuenta de acceso no se pudo borrar: ${selfDelErr.message}. Contacta soporte para liberar el correo.` }, 500)
         }
         if (typeof selfIndex === 'number') {
-          const { data: blCfg } = await db.from('system_config').select('value').eq('key', 'tatum_used_indices').single()
+          const { data: blCfg } = await db.from('system_config').select('value').eq('key', 'gasfree_used_indices').single()
           const blacklist: number[] = JSON.parse(blCfg?.value ?? '[]')
           if (!blacklist.includes(selfIndex)) blacklist.push(selfIndex)
           blacklist.sort((a, b) => a - b)
-          await db.from('system_config').upsert({ key: 'tatum_used_indices', value: JSON.stringify(blacklist) })
-          const { data: ctrCfg } = await db.from('system_config').select('value').eq('key', 'tatum_hd_counter').single()
+          await db.from('system_config').upsert({ key: 'gasfree_used_indices', value: JSON.stringify(blacklist) })
+          const { data: ctrCfg } = await db.from('system_config').select('value').eq('key', 'gasfree_hd_counter').single()
           const current = ctrCfg?.value ? parseInt(ctrCfg.value) : 0
           if (selfIndex > current) {
-            await db.from('system_config').upsert({ key: 'tatum_hd_counter', value: String(selfIndex) })
+            await db.from('system_config').upsert({ key: 'gasfree_hd_counter', value: String(selfIndex) })
           }
         }
         return json({ success: true })
@@ -191,9 +191,9 @@ Deno.serve(async (req: Request) => {
       if (body.action === 'delete_user' && body.userId) {
         const uid: string = body.userId
 
-        // 0. Read tatumHdIndex BEFORE deleting so we can update the counter
+        // 0. Read gasfreeHdIndex BEFORE deleting so we can update the counter
         const { data: deletedUser } = await db.from('users').select('raw_data').eq('id', uid).single()
-        const deletedIndex: number | undefined = deletedUser?.raw_data?.tatumHdIndex
+        const deletedIndex: number | undefined = deletedUser?.raw_data?.gasfreeHdIndex
 
         // 1. Delete all transactions for this user
         await db.from('transactions').delete().eq('user_id', uid)
@@ -213,19 +213,19 @@ Deno.serve(async (req: Request) => {
           return json({ success: true, authWarning: `El perfil se borró, pero la cuenta de acceso (Supabase Auth) no: ${authDelErr.message}. El correo seguirá bloqueado para un registro nuevo hasta limpiarla.` })
         }
 
-        // 4. Add the deleted user's tatumHdIndex to the permanent blacklist so it
+        // 4. Add the deleted user's gasfreeHdIndex to the permanent blacklist so it
         //    is never assigned to a new user, even after the user row is gone.
         if (typeof deletedIndex === 'number') {
-          const { data: blCfg } = await db.from('system_config').select('value').eq('key', 'tatum_used_indices').single()
+          const { data: blCfg } = await db.from('system_config').select('value').eq('key', 'gasfree_used_indices').single()
           const blacklist: number[] = JSON.parse(blCfg?.value ?? '[]')
           if (!blacklist.includes(deletedIndex)) blacklist.push(deletedIndex)
           blacklist.sort((a, b) => a - b)
-          await db.from('system_config').upsert({ key: 'tatum_used_indices', value: JSON.stringify(blacklist) })
+          await db.from('system_config').upsert({ key: 'gasfree_used_indices', value: JSON.stringify(blacklist) })
           // Also bump counter so getUserIndex starts above the deleted index
-          const { data: ctrCfg } = await db.from('system_config').select('value').eq('key', 'tatum_hd_counter').single()
+          const { data: ctrCfg } = await db.from('system_config').select('value').eq('key', 'gasfree_hd_counter').single()
           const current = ctrCfg?.value ? parseInt(ctrCfg.value) : 0
           if (deletedIndex > current) {
-            await db.from('system_config').upsert({ key: 'tatum_hd_counter', value: String(deletedIndex) })
+            await db.from('system_config').upsert({ key: 'gasfree_hd_counter', value: String(deletedIndex) })
           }
         }
 

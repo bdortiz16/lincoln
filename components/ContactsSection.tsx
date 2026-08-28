@@ -6,33 +6,33 @@ import { FlagImg } from './FlagImg';
 
 declare const __BUILD_TS__: string;
 
-// Finity fue retirado (migración a Mouv). La inscripción/sincronización de
+// Mouv fue retirado (migración a Mouv). La inscripción/sincronización de
 // cuentas destino con el proveedor queda deshabilitada: los contactos se
 // guardan localmente y las llamadas al proveedor devuelven "no disponible"
 // para que el flujo degrade con gracia en lugar de romperse.
-const callFinity = async (_action: string, _userId: string, _extra?: any): Promise<any> =>
+const callMouv = async (_action: string, _userId: string, _extra?: any): Promise<any> =>
     ({ ok: false, status: 0, path: '', data: { error: 'Proveedor de dispersión en migración a Mouv' } });
 
 // ─────────────────────────────────────────────
 // ContactsSection — Contactos (cuentas bancarias destino) de EMPRESAS.
 //
-// Modelo Finity: antes de dispersar hay que INSCRIBIR la cuenta destino
+// Modelo Mouv: antes de dispersar hay que INSCRIBIR la cuenta destino
 // (external account). Aquí el cliente registra sus contactos:
-//   1. Se intenta inscribir en Finity (create_external_account).
-//   2. Se guarda en raw_data.finityContacts del usuario (con el id de
-//      Finity si la inscripción pasó; 'pendiente' si no).
+//   1. Se intenta inscribir en Mouv (create_external_account).
+//   2. Se guarda en raw_data.mouvContacts del usuario (con el id de
+//      Mouv si la inscripción pasó; 'pendiente' si no).
 // El flujo de Enviar Dinero (COP · banco) usa estos contactos inscritos.
 // ─────────────────────────────────────────────
 
-// Ciclo de vida (modelo Finity):
-//   Colombia → al inscribir queda EN PROCESO y la API de Finity la pasa a
+// Ciclo de vida (modelo Mouv):
+//   Colombia → al inscribir queda EN PROCESO y la API de Mouv la pasa a
 //              APROBADA o RECHAZADA (se sincroniza automáticamente).
-//   Otros países → se aprueban AUTOMÁTICAMENTE al inscribir (no pasan por Finity).
+//   Otros países → se aprueban AUTOMÁTICAMENTE al inscribir (no pasan por Mouv).
 export type ContactStatus = 'en_proceso' | 'aprobada' | 'rechazada';
 
-export interface FinityContact {
+export interface MouvContact {
     id: string;
-    finityId: string | null;   // id de la external account en Finity (null = pendiente)
+    mouvId: string | null;   // id de la external account en Mouv (null = pendiente)
     kind: 'persona' | 'empresa';
     name: string;
     docType: string;
@@ -48,14 +48,14 @@ export interface FinityContact {
     accountKind?: 'bank' | 'wallet';
     walletCoin?: 'USDT' | 'USDC';
     walletNetwork?: 'TRC-20' | 'BEP-20';
-    // Última respuesta de Finity al intentar inscribir (null = ok). Visible
+    // Última respuesta de Mouv al intentar inscribir (null = ok). Visible
     // en el detalle para diagnosticar rechazos de campos/validación.
     lastError?: string | null;
 }
 
 // Estado efectivo (contactos viejos sin campo status → en proceso si son
 // de Colombia; aprobados si son de otro país).
-export const contactStatus = (c: Partial<FinityContact>): ContactStatus => {
+export const contactStatus = (c: Partial<MouvContact>): ContactStatus => {
     if (c.status) return c.status;
     return (c.country && c.country !== 'Colombia') ? 'aprobada' : 'en_proceso';
 };
@@ -66,14 +66,14 @@ export const contactStatus = (c: Partial<FinityContact>): ContactStatus => {
 //   financial_institution_code, account_holder_fullname,
 //   account_holder_id_type (CC|CE|NIT), account_holder_id_number } }
 // → 201 { id: "ea_...", ... }
-const buildFinityAccountBody = (c: { name: string; docType: string; docNumber: string; bank: string; accountType: string; accountNumber: string; kind?: string }) => ({
+const buildMouvAccountBody = (c: { name: string; docType: string; docNumber: string; bank: string; accountType: string; accountNumber: string; kind?: string }) => ({
     account: {
         geo: 'CO',
         account_type: c.accountType,
         account_number: c.accountNumber,
         financial_institution_code: BANK_CODES_CO[c.bank] ?? '',
         account_holder_fullname: c.name,
-        // Enum de Finity: CC | CE | NIT (PAS no existe → se envía como CE)
+        // Enum de Mouv: CC | CE | NIT (PAS no existe → se envía como CE)
         account_holder_id_type: c.docType === 'PAS' ? 'CE' : c.docType,
         account_holder_id_number: c.docNumber,
     },
@@ -96,7 +96,7 @@ const BANKS_CO = [
 ];
 
 // Códigos ACH Colombia (financial_institution_code — lo exige la
-// validación de Finity: "financial_institution_code should not be empty").
+// validación de Mouv: "financial_institution_code should not be empty").
 const BANK_CODES_CO: Record<string, string> = {
     'Banco de Bogotá': '1001',
     'Banco Popular': '1002',
@@ -174,7 +174,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
     const [saving, setSaving] = useState(false);
     const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
     // Contacto abierto en el modal de detalle (clic sobre la fila)
-    const [detail, setDetail] = useState<FinityContact | null>(null);
+    const [detail, setDetail] = useState<MouvContact | null>(null);
 
     // Buscador + filtros de la lista
     const [search, setSearch] = useState('');
@@ -184,30 +184,30 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
     const [fStatus, setFStatus] = useState<'all' | 'aprobada' | 'en_proceso' | 'rechazada'>('all');
 
     // ── INFRAESTRUCTURA SEPARADA ─────────────────────────────
-    // Cuentas bancarias (finityContacts) y wallets (walletContacts) viven
+    // Cuentas bancarias (mouvContacts) y wallets (walletContacts) viven
     // en LISTAS DISTINTAS de raw_data: guardar una jamás pisa a la otra.
     // Cada lista puede venir anidada (raw_data.X, recién guardada) o
     // aplanada al nivel superior (perfil recargado) — se lee donde esté.
     const cu: any = currentUser as any;
-    const readList = (key: string): FinityContact[] =>
+    const readList = (key: string): MouvContact[] =>
         Array.isArray(cu?.raw_data?.[key]) ? cu.raw_data[key]
         : Array.isArray(cu?.[key]) ? cu[key]
         : [];
-    const rawBankList = readList('finityContacts');
-    // Compat: wallets viejas que quedaron dentro de finityContacts
-    const bankContacts: FinityContact[] = rawBankList.filter((c: any) => c?.accountKind !== 'wallet');
-    const walletContacts: FinityContact[] = [
+    const rawBankList = readList('mouvContacts');
+    // Compat: wallets viejas que quedaron dentro de mouvContacts
+    const bankContacts: MouvContact[] = rawBankList.filter((c: any) => c?.accountKind !== 'wallet');
+    const walletContacts: MouvContact[] = [
         ...readList('walletContacts'),
         ...rawBankList.filter((c: any) => c?.accountKind === 'wallet'),
     ];
     // Vista combinada (lista e interfaz)
-    const contacts: FinityContact[] = [...walletContacts, ...bankContacts];
+    const contacts: MouvContact[] = [...walletContacts, ...bankContacts];
 
     // Guarda UNA lista bajo SU llave a TRAVÉS DEL SERVIDOR (service-role):
     // la edge function escribe raw_data sin pasar por RLS ni el candado —
     // así se acabó el "se guarda en memoria y desaparece al recargar".
     // Actualiza el estado local con lo que la base confirma que quedó.
-    const persistKey = async (key: 'finityContacts' | 'walletContacts', list: FinityContact[]): Promise<boolean> => {
+    const persistKey = async (key: 'mouvContacts' | 'walletContacts', list: MouvContact[]): Promise<boolean> => {
         if (!currentUser?.id) return false;
         // Guarda la lista bajo su llave a través del flujo normal de perfil
         // (updateUserProfile persiste raw_data en la base).
@@ -216,8 +216,8 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
             return true;
         } catch { return false; }
     };
-    const persistBanks = (list: FinityContact[]) => persistKey('finityContacts', list.filter((c: any) => c?.accountKind !== 'wallet'));
-    const persistWallets = (list: FinityContact[]) => persistKey('walletContacts', list.filter((c: any) => c?.accountKind === 'wallet'));
+    const persistBanks = (list: MouvContact[]) => persistKey('mouvContacts', list.filter((c: any) => c?.accountKind !== 'wallet'));
+    const persistWallets = (list: MouvContact[]) => persistKey('walletContacts', list.filter((c: any) => c?.accountKind === 'wallet'));
 
     // Normaliza un número de cuenta / dirección para comparar (solo dígitos en
     // bancos; minúsculas y sin espacios en wallets) → detectar duplicados.
@@ -242,9 +242,9 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
             const dupW = walletContacts.find(c => normAccount(c.accountNumber, true) === wAddr && (c.walletNetwork ?? 'TRC-20') === f.walletNetwork);
             if (dupW) { setNotice({ ok: false, text: `Ya tienes esta wallet inscrita como “${dupW.name}”. No es necesario inscribirla de nuevo.` }); return; }
             setSaving(true);
-            const wc: FinityContact = {
+            const wc: MouvContact = {
                 id: `ct_${Math.random().toString(36).slice(2, 10)}`,
-                finityId: null,
+                mouvId: null,
                 kind: f.kind,
                 name: f.name.trim(),
                 docType: '—', docNumber: '—',
@@ -281,17 +281,17 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
         setNotice(null);
 
         const isColombia = f.country === 'Colombia';
-        let finityId: string | null = null;
+        let mouvId: string | null = null;
         let status: ContactStatus = isColombia ? 'en_proceso' : 'aprobada';
         let lastError: string | null = null;
 
-        // Solo Colombia pasa por Finity: la inscripción queda EN PROCESO y la
-        // API de Finity decide aprobada/rechazada (se sincroniza al entrar
+        // Solo Colombia pasa por Mouv: la inscripción queda EN PROCESO y la
+        // API de Mouv decide aprobada/rechazada (se sincroniza al entrar
         // aquí o con "Actualizar estados"). Otros países: aprobación automática.
         if (isColombia) {
             try {
-                const r = await callFinity('create_external_account', currentUser.id, {
-                    data: buildFinityAccountBody({
+                const r = await callMouv('create_external_account', currentUser.id, {
+                    data: buildMouvAccountBody({
                         name: f.name.trim(),
                         docType: f.docType,
                         docNumber: f.docNumber.trim(),
@@ -302,9 +302,9 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                     }),
                 });
                 const d = (r?.data ?? {}) as any;
-                finityId = d.id ?? d.external_account_id ?? d.account_id ?? null;
+                mouvId = d.id ?? d.external_account_id ?? d.account_id ?? null;
                 status = normalizeStatus(d.verification_status ?? d.status ?? d.estado ?? d.state) ?? 'en_proceso';
-                if (!r?.ok || !finityId) {
+                if (!r?.ok || !mouvId) {
                     lastError = `[${new Date().toLocaleTimeString('es-CO')}] HTTP ${r?.status ?? '—'} en ${r?.path ?? '¿?'}: ${JSON.stringify(r?.data ?? r).slice(0, 260)}`;
                 }
             } catch (e: any) {
@@ -312,9 +312,9 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
             }
         }
 
-        const contact: FinityContact = {
+        const contact: MouvContact = {
             id: `ct_${Math.random().toString(36).slice(2, 10)}`,
-            finityId,
+            mouvId,
             kind: f.kind,
             name: f.name.trim(),
             docType: f.docType,
@@ -337,11 +337,11 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
             : { ok: true, text: `📋 Cuenta inscrita — quedó EN PROCESO. Será aprobada o rechazada en la revisión bancaria; el estado se actualiza solo.` });
     };
 
-    // ── Sincronizar estados con Finity (solo contactos de Colombia) ──
-    // Lee las external accounts de Finity y empareja por número de cuenta:
+    // ── Sincronizar estados con Mouv (solo contactos de Colombia) ──
+    // Lee las external accounts de Mouv y empareja por número de cuenta:
     // el estado del portal (Aprobada / Rechazada / En proceso) manda.
     const [syncing, setSyncing] = useState(false);
-    // Respuesta cruda de la lista de cuentas de Finity (debug del matching)
+    // Respuesta cruda de la lista de cuentas de Mouv (debug del matching)
     const [listRaw, setListRaw] = useState<any>(null);
     const syncStatuses = async (silent = false) => {
         if (!currentUser?.id || syncing) return;
@@ -350,22 +350,22 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
         setSyncing(true);
         try {
             // 0) Reintentar la inscripción de contactos de Colombia que quedaron
-            //    sin ID de Finity (la primera inscripción falló — auth o red).
+            //    sin ID de Mouv (la primera inscripción falló — auth o red).
             let retried = bankContacts;
-            const pendingReg = bankContacts.filter(c => (c.country ?? 'Colombia') === 'Colombia' && !c.finityId);
+            const pendingReg = bankContacts.filter(c => (c.country ?? 'Colombia') === 'Colombia' && !c.mouvId);
             for (const c of pendingReg) {
                 try {
-                    const rr = await callFinity('create_external_account', currentUser.id, {
-                        data: buildFinityAccountBody(c),
+                    const rr = await callMouv('create_external_account', currentUser.id, {
+                        data: buildMouvAccountBody(c),
                     });
                     const dd = (rr?.data ?? {}) as any;
                     const fid = dd.id ?? dd.external_account_id ?? dd.account_id ?? null;
                     if (rr?.ok && fid) {
                         retried = retried.map(x => x.id === c.id
-                            ? { ...x, finityId: fid, status: normalizeStatus(dd.verification_status ?? dd.status ?? dd.estado ?? dd.state) ?? 'en_proceso', lastError: null }
+                            ? { ...x, mouvId: fid, status: normalizeStatus(dd.verification_status ?? dd.status ?? dd.estado ?? dd.state) ?? 'en_proceso', lastError: null }
                             : x);
                     } else {
-                        // Guardar el rechazo de Finity — visible en el detalle del contacto
+                        // Guardar el rechazo de Mouv — visible en el detalle del contacto
                         const err = `[${new Date().toLocaleTimeString('es-CO')}] HTTP ${rr?.status ?? '—'} en ${rr?.path ?? '¿?'}: ${JSON.stringify(rr?.data ?? rr).slice(0, 260)}`;
                         retried = retried.map(x => x.id === c.id ? { ...x, lastError: err } : x);
                     }
@@ -376,7 +376,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
             }
             if (retried !== bankContacts) await persistBanks(retried);
 
-            const r = await callFinity('external_accounts', currentUser.id);
+            const r = await callMouv('external_accounts', currentUser.id);
             setListRaw({ status: r?.status, path: r?.path, data: r?.data });
             const d: any = r?.data ?? {};
             let rows: any[] = Array.isArray(d) ? d
@@ -398,13 +398,13 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
             }
             if (rows.length > 0) {
                 let changed = false;
-                const newlyApproved: FinityContact[] = [];
+                const newlyApproved: MouvContact[] = [];
                 const next = retried.map(c => {
                     if ((c.country ?? 'Colombia') !== 'Colombia') return c;
                     const row = rows.find((x: any) => {
-                        // 1) Por ID de Finity (infalible cuando lo tenemos)
+                        // 1) Por ID de Mouv (infalible cuando lo tenemos)
                         const rid = String(x.id ?? x.external_account_id ?? x.account_id ?? '');
-                        if (c.finityId && rid && rid === c.finityId) return true;
+                        if (c.mouvId && rid && rid === c.mouvId) return true;
                         // 2) Por número de cuenta — comparando solo dígitos, y
                         //    tolerando números enmascarados (****1185)
                         const acc = String(x.account_number ?? x.accountNumber ?? x.number ?? x.account ?? '');
@@ -416,11 +416,11 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                     });
                     if (!row) return c;
                     const st = normalizeStatus(row.verification_status ?? row.status ?? row.estado ?? row.state);
-                    const fid = row.id ?? row.external_account_id ?? row.account_id ?? c.finityId;
-                    if ((st && st !== contactStatus(c)) || (fid && fid !== c.finityId)) {
+                    const fid = row.id ?? row.external_account_id ?? row.account_id ?? c.mouvId;
+                    if ((st && st !== contactStatus(c)) || (fid && fid !== c.mouvId)) {
                         changed = true;
                         const wasApproved = contactStatus(c) === 'aprobada';
-                        const updated = { ...c, status: st ?? contactStatus(c), finityId: fid ?? c.finityId };
+                        const updated = { ...c, status: st ?? contactStatus(c), mouvId: fid ?? c.mouvId };
                         if (st === 'aprobada' && !wasApproved) newlyApproved.push(updated);
                         return updated;
                     }
@@ -432,19 +432,19 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                     // propio usuario. Solo en la TRANSICIÓN a aprobada (la
                     // persistencia evita reenviarlo en cada sincronización).
                     for (const c of newlyApproved) {
-                        callFinity('email_event', currentUser!.id, {
+                        callMouv('email_event', currentUser!.id, {
                             subject: 'Lincoin · Contacto aprobado',
                             title: 'Contacto aprobado',
                             message: `La cuenta de <strong>${c.name}</strong> quedó aprobada. Ya puedes transferirle.`,
                         }).catch(() => {});
                     }
-                    if (!silent) setNotice({ ok: true, text: 'Estados sincronizados con Finity.' });
+                    if (!silent) setNotice({ ok: true, text: 'Estados sincronizados con Mouv.' });
                 } else if (!silent) {
                     setNotice({ ok: true, text: 'Estados al día — sin cambios.' });
                 }
             } else if (!silent) {
                 // Mostrar la respuesta cruda ayuda a mapear el formato real de la lista
-                setNotice({ ok: false, text: `Finity no devolvió cuentas para comparar. Respuesta (${r?.status ?? '—'}): ${JSON.stringify(r?.data ?? r).slice(0, 220)}` });
+                setNotice({ ok: false, text: `Mouv no devolvió cuentas para comparar. Respuesta (${r?.status ?? '—'}): ${JSON.stringify(r?.data ?? r).slice(0, 220)}` });
             }
         } catch { /* red flaky: se reintenta en la próxima visita */ }
         setSyncing(false);
@@ -462,16 +462,16 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
             ? await persistWallets(walletContacts.filter(c => c.id !== id))
             : await persistBanks(bankContacts.filter(c => c.id !== id));
         if (!removedOk) { setNotice({ ok: false, text: 'No se pudo eliminar el contacto. Reintenta.' }); return; }
-        // 2) Des-inscribir en Finity (solo cuentas bancarias de Colombia con id).
+        // 2) Des-inscribir en Mouv (solo cuentas bancarias de Colombia con id).
         //    El backend verifica que NINGÚN otro usuario la siga usando antes de
-        //    borrarla allá — Finity es una sola cuenta de empresa compartida.
-        if (target && target.accountKind !== 'wallet' && (target.country ?? 'Colombia') === 'Colombia' && target.finityId) {
+        //    borrarla allá — Mouv es una sola cuenta de empresa compartida.
+        if (target && target.accountKind !== 'wallet' && (target.country ?? 'Colombia') === 'Colombia' && target.mouvId) {
             try {
-                const r = await callFinity('delete_external_account', currentUser!.id, {
-                    finityId: target.finityId,
+                const r = await callMouv('delete_external_account', currentUser!.id, {
+                    mouvId: target.mouvId,
                     accountNumber: target.accountNumber,
                 });
-                if (r?.deletedInFinity) setNotice({ ok: true, text: 'Contacto eliminado — también des-inscrito en el banco (Finity).' });
+                if (r?.deletedInMouv) setNotice({ ok: true, text: 'Contacto eliminado — también des-inscrito en el banco (Mouv).' });
                 else if (r?.reason === 'still_used') setNotice({ ok: true, text: 'Contacto eliminado de tu lista. La cuenta sigue inscrita porque otro usuario también la tiene.' });
                 else setNotice({ ok: true, text: 'Contacto eliminado.' });
             } catch { setNotice({ ok: true, text: 'Contacto eliminado de tu lista.' }); }
@@ -910,7 +910,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                                     ['Tipo de cuenta', detail.accountType === 'savings' ? 'Ahorros' : 'Corriente'],
                                     ['Número de cuenta', detail.accountNumber],
                                     ['Inscrito el', new Date(detail.createdAt).toLocaleString('es-CO')],
-                                    ['ID de inscripción', detail.finityId ?? '— aún sin ID (en proceso)'],
+                                    ['ID de inscripción', detail.mouvId ?? '— aún sin ID (en proceso)'],
                                     ...(detail.lastError ? [['⚠ Respuesta de la red', detail.lastError]] : []),
                                 ]).map(([k, v]) => (
                                     <div key={k} className="flex items-start justify-between gap-3 px-3.5 py-2.5">

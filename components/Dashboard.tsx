@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Sidebar } from './Sidebar';
-import { FinitySection, fetchFinityBalance } from './OtcMigration';
+import { MouvSection, fetchMouvBalance } from './OtcMigration';
 import { supabase } from '../lib/supabaseClient';
 import { Header } from './Header';
 import { Logo } from './Logo';
@@ -311,7 +311,7 @@ const DiditKycButton: React.FC<{ userId?: string; kycStatus?: string; showToast:
 
 export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanner = false }) => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [activeView, setActiveView] = useState<'dashboard' | 'movements' | 'wallet-detail' | 'profile' | 'notifications' | 'enviar' | 'convertir' | 'referrals' | 'affiliates' | 'otc' | 'servicios' | 'travel' | 'seguros' | 'finity'>('dashboard');
+  const [activeView, setActiveView] = useState<'dashboard' | 'movements' | 'wallet-detail' | 'profile' | 'notifications' | 'enviar' | 'convertir' | 'referrals' | 'affiliates' | 'otc' | 'servicios' | 'travel' | 'seguros' | 'mouv'>('dashboard');
   const [travelTab, setTravelTab] = useState<'vuelos' | 'hoteles' | 'autos'>('vuelos');
   const [segTab, setSegTab] = useState<'vehicular' | 'empresarial'>('vehicular');
   const [segPais, setSegPais] = useState('Colombia');
@@ -425,24 +425,24 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
   // UI States
   const [selectedWalletCode, setSelectedWalletCode] = useState<string | null>(null);
   // BreB Lincoin: saldo COP separado (key 'COP_BREB' en balances) que se
-  // fondea moviendo desde Peso Lincoin y se usa para dispersar vía Finity.
+  // fondea moviendo desde Peso Lincoin y se usa para dispersar vía Mouv.
   const [brebMoveOpen, setBrebMoveOpen] = useState(false);
   const [brebDir, setBrebDir] = useState<'to_breb' | 'to_peso'>('to_breb');
   const [brebAmountStr, setBrebAmountStr] = useState('');
   const [brebMoving, setBrebMoving] = useState(false);
-  // Saldo REAL en Finity (Peso Lincoin conectado a la cuenta Finity).
-  // finityChecked distingue "cargando" de "ya respondió sin saldo".
-  const [finityBal, setFinityBal] = useState<number | null>(null);
-  const [finityChecked, setFinityChecked] = useState(false);
+  // Saldo REAL en Mouv (Peso Lincoin conectado a la cuenta Mouv).
+  // mouvChecked distingue "cargando" de "ya respondió sin saldo".
+  const [mouvBal, setMouvBal] = useState<number | null>(null);
+  const [mouvChecked, setMouvChecked] = useState(false);
 
   useEffect(() => {
     if (activeView !== 'wallet-detail' || selectedWalletCode !== 'COP' || !currentUser?.id) return;
     let alive = true;
-    setFinityChecked(false);
-    fetchFinityBalance(currentUser.id).then(v => {
+    setMouvChecked(false);
+    fetchMouvBalance(currentUser.id).then(v => {
       if (!alive) return;
-      setFinityBal(v);
-      setFinityChecked(true);
+      setMouvBal(v);
+      setMouvChecked(true);
     });
     return () => { alive = false; };
   }, [activeView, selectedWalletCode, currentUser?.id]);
@@ -682,7 +682,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
     const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
     if (currentUser?.id && SURL) {
       const walletKey = otcNetwork['USDT'] ?? 'USDT_TRON';
-      fetch(`${SURL}/functions/v1/tatum-wallet`, {
+      fetch(`${SURL}/functions/v1/gasfree`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': `Bearer ${SKEY}` },
         body: JSON.stringify({ action: 'verify_and_credit', userId: currentUser.id, walletKey }),
@@ -699,7 +699,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
   // Track which walletKeys have already been auto-verified this session
   const autoVerifiedRef = React.useRef<Set<string>>(new Set());
 
-  // Load Tatum OTC wallet when user enters OTC view or changes network
+  // Load GasFree OTC wallet when user enters OTC view or changes network
   const loadOtcWallet = (walletKey: string, force = false) => {
     if (!currentUser?.otcEnabled || !currentUser?.id) return;
     if (!force && otcWallets[walletKey]?.address) return;
@@ -708,7 +708,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
     setOtcWallets(prev => ({ ...prev, [walletKey]: { address: '', balance: 0, loading: true } }));
     (async () => {
       try {
-        const r = await fetch(`${SURL}/functions/v1/tatum-wallet`, {
+        const r = await fetch(`${SURL}/functions/v1/gasfree`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': `Bearer ${SKEY}` },
           body: JSON.stringify({ action: 'get_or_create', userId: currentUser.id, walletKey }),
@@ -718,10 +718,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
           const balance = (currentUser.balances as Record<string, number>)?.[walletKey] ?? 0;
           setOtcWallets(prev => ({ ...prev, [walletKey]: { address: data.address, balance, loading: false } }));
 
-          // Auto-verify on-chain once per session — catches deposits missed by Tatum webhook
+          // Auto-verify on-chain once per session — catches deposits missed by GasFree webhook
           if (!autoVerifiedRef.current.has(walletKey) && SURL && currentUser?.id) {
             autoVerifiedRef.current.add(walletKey);
-            fetch(`${SURL}/functions/v1/tatum-wallet`, {
+            fetch(`${SURL}/functions/v1/gasfree`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': `Bearer ${SKEY}` },
               body: JSON.stringify({ action: 'verify_and_credit', userId: currentUser.id, walletKey }),
@@ -821,7 +821,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
       const timer = setTimeout(() => controller.abort(), 120000); // 2 min max
       let r: Response;
       try {
-        r = await fetch(`${SURL}/functions/v1/tatum-wallet`, {
+        r = await fetch(`${SURL}/functions/v1/gasfree`, {
           method: 'POST',
           keepalive: true, // persists even if tab is closed mid-flight
           headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': `Bearer ${SKEY}` },
@@ -904,7 +904,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
     try {
       const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
       const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-      const r = await fetch(`${SURL}/functions/v1/tatum-wallet`, {
+      const r = await fetch(`${SURL}/functions/v1/gasfree`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': `Bearer ${SKEY}` },
         body: JSON.stringify({ action: 'request_convert', userId: currentUser.id, walletKey, amount: parsedAmt, targetCurrency: otcConvertTarget, rate: pairInfo.rate }),
@@ -1521,7 +1521,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   </div>
               </div>
               {/* COP se divide en DOS SALDOS separados: Peso Lincoin (interno) y
-                  BreB Lincoin (dispersión Bre-B vía Finity — solo Colombia).
+                  BreB Lincoin (dispersión Bre-B vía Mouv — solo Colombia).
                   Se mueven entre sí con el formulario "Mover saldo". */}
               {selectedWalletCode === 'COP' && (() => {
                   const brebBal = getBalance('COP_BREB');
@@ -1539,21 +1539,21 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                       <p className="text-[10px] uppercase tracking-wider text-slate-500">Cuenta principal · COP</p>
                                   </div>
                               </div>
-                              {finityBal != null && (
+                              {mouvBal != null && (
                                   <span className="text-[9px] font-bold uppercase bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full">
-                                      ● Conectado a Finity
+                                      ● Conectado a Mouv
                                   </span>
                               )}
                           </div>
                           <p className="text-2xl font-bold text-[#0C0E0D] font-mono">
-                              {formatMoney(finityBal ?? balance, 'COP')}
+                              {formatMoney(mouvBal ?? balance, 'COP')}
                           </p>
                           <p className="text-[11px] text-slate-500 mt-1">
-                              {finityBal != null
-                                  ? 'Saldo real de tu cuenta Finity — es el que se usa para dispersar.'
-                                  : finityChecked
+                              {mouvBal != null
+                                  ? 'Saldo real de tu cuenta Mouv — es el que se usa para dispersar.'
+                                  : mouvChecked
                                       ? 'Tu saldo interno Lincoin: cargas, envíos entre usuarios y conversiones.'
-                                      : 'Saldo interno Lincoin · consultando Finity…'}
+                                      : 'Saldo interno Lincoin · consultando Mouv…'}
                           </p>
                       </div>
 
@@ -1583,7 +1583,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                   <RefreshCw size={14} /> Mover saldo
                               </button>
                               <button
-                                  onClick={() => setActiveView('finity')}
+                                  onClick={() => setActiveView('mouv')}
                                   disabled={brebBal <= 0}
                                   className="flex-1 py-2.5 rounded-xl bg-[#4ADE80] hover:bg-[#6EE7A0] text-[#0C0E0D] text-sm font-bold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
                               >
@@ -2861,8 +2861,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
           {activeView === 'servicios' && renderServicios()}
           {activeView === 'travel' && renderTravel()}
           {activeView === 'seguros' && renderSeguros()}
-          {activeView === 'finity' && currentUser?.id && (
-              <FinitySection
+          {activeView === 'mouv' && currentUser?.id && (
+              <MouvSection
                   userId={currentUser.id}
                   brebBalance={getBalance('COP_BREB')}
                   onDispersed={async (amount, reference) => {

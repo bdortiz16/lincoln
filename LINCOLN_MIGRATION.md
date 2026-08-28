@@ -30,7 +30,7 @@
 | Config del sistema | `context/SystemConfigContext.tsx`, `context/ExchangeRateContext.tsx` | Tasas, config. |
 | Cliente Supabase | `lib/supabaseClient.ts` | Exporta `supabase` (Empresas) y `supabasePersonas`. **Cambiar los proyectos/keys para Lincoln.** |
 | Login / registro | `components/Login.tsx`, `components/Register.tsx`, `App.tsx` | El registro fuerza rol `business`. |
-| Contactos (destinos bancarios) | `components/ContactsSection.tsx` | Inscribe cuentas destino (Finity `external_accounts`) + wallets. Dedup + borrado en proveedor. |
+| Contactos (destinos bancarios) | `components/ContactsSection.tsx` | Inscribe cuentas destino (Mouv `external_accounts`) + wallets. Dedup + borrado en proveedor. |
 | Landing | `components/LandingPage.tsx` | Marketing. **Rebrand a Lincoln.** |
 
 ## 3. Admin Empresas
@@ -58,11 +58,11 @@
 
 | Pieza | Archivo(s) | Qué hace |
 |---|---|---|
-| UI del convertidor | `components/FinitySection.tsx` | Convertidor OTC: tasa en vivo (30s), flujo no-caja (recarga→confirma→convierte→acredita), reintento, guardas anti-cierre. |
-| Proxy proveedor (Finity) | `supabase/functions/finity-proxy/index.ts` | Auth OAuth, rates/convert/convert_confirm, external accounts, balances portal. |
-| Webhook Finity | `supabase/functions/finity-webhook/index.ts` | Estados de dispersión. |
+| UI del convertidor | `components/MouvSection.tsx` | Convertidor OTC: tasa en vivo (30s), flujo no-caja (recarga→confirma→convierte→acredita), reintento, guardas anti-cierre. |
+| Proxy proveedor (Mouv) | `supabase/functions/mouv-proxy/index.ts` | Auth OAuth, rates/convert/convert_confirm, external accounts, balances portal. |
+| Webhook Mouv | `supabase/functions/mouv-webhook/index.ts` | Estados de dispersión. |
 | Proxy proveedor (Mouv, nuevo) | `supabase/functions/mouv-proxy/index.ts` | **En construcción.** Rails Colombia BREB/ACH/PSE. Auth API key `MOUV_API_KEY`. Base `https://consola.mouvlatam.com/api`. |
-| Gráfico de tasa | `components/FinityRateChart.tsx` | |
+| Gráfico de tasa | `components/MouvRateChart.tsx` | |
 | OTC admin | `components/AdminOtcSection.tsx`, `AdminPersonas/sections/AccountingSection.tsx` | Contabilidad OTC. |
 
 ## 6. Compliance / KYC-KYB / notificaciones (ambos productos las usan)
@@ -76,7 +76,7 @@
 ## 7. Edge functions (lista completa)
 
 `admin-data`, `admin-login`, `crisp-proxy`, `delete-self`, `didit-aml-monitor`,
-`didit-kyc`, `fastforex-sync`, `finity-proxy`, `finity-webhook`, `fx-snapshot`,
+`didit-kyc`, `fastforex-sync`, `mouv-proxy`, `mouv-webhook`, `fx-snapshot`,
 `gasfree`, `get-system-config`, `mouv-proxy`, `notify-account-events`,
 `notify-limit-increase`, `notify-transaction`, `send-compliance-email`,
 `tatum-wallet`, `tatum-webhook`, `user-login`.
@@ -86,7 +86,7 @@ Deploy vía `.github/workflows/deploy-edge-functions.yml`.
 
 1. **Branding**: nombre, logo, colores, textos "CuyPay" → "Lincoln". Ver `components/Logo.tsx`, landing, correos (`notify-*`), y el SVG inline del logo en varios componentes.
 2. **Proyectos Supabase**: crear (o apuntar a) los proyectos Supabase de Lincoln y cambiar URLs/keys en `lib/supabaseClient.ts` y en las env (`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, y las de Personas si aplica).
-3. **Secrets de edge functions** (nuevos, del proyecto de Lincoln): `GASFREE_TRON_MNEMONIC`, `FINITY_CLIENT_ID/SECRET`, `MOUV_API_KEY`, `ADMIN_PASS`, claves de Didit, etc.
+3. **Secrets de edge functions** (nuevos, del proyecto de Lincoln): `GASFREE_TRON_MNEMONIC`, `MOUV_CLIENT_ID/SECRET`, `MOUV_API_KEY`, `ADMIN_PASS`, claves de Didit, etc.
 4. **Dominios/URLs**: reemplazar `cuypay.com` en el código (correos, links, QR, deep-links).
 5. **Migraciones SQL**: `supabase/migrations/**` — correrlas en el proyecto de Lincoln.
 6. **Vercel**: variables de entorno del proyecto Lincoln.

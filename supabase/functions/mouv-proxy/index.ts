@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────
 // mouv-proxy — Proxy server-side para la API de Mouv Platform
-// (rails de pago colombianos: BREB, ACH, PSE). Reemplaza a finity-proxy.
+// (rails de pago colombianos: BREB, ACH, PSE). Reemplaza a mouv-proxy.
 //
 // Autenticación: API key de Mouv (mvk_live_...) enviada como
 //   Authorization: Bearer <MOUV_API_KEY>

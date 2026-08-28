@@ -5,7 +5,7 @@ import { useDatabase } from '../context/DatabaseContext';
 // ─────────────────────────────────────────────
 // AdminGasFreeSection — Panel "GasFree USDT" del admin de Empresas.
 //
-// Modelo NUEVO (reemplaza Tatum): cada cliente tiene una wallet GasFree
+// Modelo NUEVO (reemplaza GasFree): cada cliente tiene una wallet GasFree
 // (su cajita de depósito USDT en TRON). GasFree genera esas direcciones
 // a partir del EOA que deriva Lincoin. Los depósitos y envíos NO usan TRX
 // — la comisión de red se paga en USDT. Todo pasa por aquí.
@@ -41,8 +41,8 @@ async function callGasfree(body: Record<string, unknown>): Promise<any> {
     if (!txt) return { error: r.ok ? 'Respuesta vacía del servidor (posible timeout). Reintenta.' : `HTTP ${r.status} sin cuerpo` };
     try { return JSON.parse(txt); } catch { return { error: `Respuesta no válida (HTTP ${r.status}): ${txt.slice(0, 200)}` }; }
 }
-async function callFinityProxy(body: Record<string, unknown>): Promise<any> {
-    const r = await fetch(`${SURL}/functions/v1/finity-proxy`, {
+async function callMouvProxy(body: Record<string, unknown>): Promise<any> {
+    const r = await fetch(`${SURL}/functions/v1/mouv-proxy`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${SKEY}` },
         body: JSON.stringify(body),
@@ -82,17 +82,17 @@ export const AdminGasFreeSection: React.FC = () => {
     const [rec, setRec] = useState<any>(null);
     const [recLoading, setRecLoading] = useState(false);
 
-    // Saldos de la plataforma Finity (USDt + Peso Finity/COP)
-    const [finityBal, setFinityBal] = useState<{ usdt: number | null; cop: number | null; sandbox?: boolean; error?: string; raw?: any; status?: any; source?: string; needsPortalCreds?: boolean } | null>(null);
-    const [finityBalLoading, setFinityBalLoading] = useState(false);
-    const loadFinityBalances = async () => {
-        setFinityBalLoading(true);
+    // Saldos de la plataforma Mouv (USDt + Peso Mouv/COP)
+    const [mouvBal, setMouvBal] = useState<{ usdt: number | null; cop: number | null; sandbox?: boolean; error?: string; raw?: any; status?: any; source?: string; needsPortalCreds?: boolean } | null>(null);
+    const [mouvBalLoading, setMouvBalLoading] = useState(false);
+    const loadMouvBalances = async () => {
+        setMouvBalLoading(true);
         try {
-            const r = await callFinityProxy({ action: 'treasury_balances' });
-            if (r?.error) setFinityBal({ usdt: r.usdt ?? null, cop: r.cop ?? null, error: r.error, raw: r.raw ?? r, needsPortalCreds: r.needsPortalCreds });
-            else setFinityBal({ usdt: r.usdt ?? null, cop: r.cop ?? null, sandbox: r.sandbox, raw: r.raw, status: r.status, source: r.source });
-        } catch (e: any) { setFinityBal({ usdt: null, cop: null, error: e?.message ?? 'Error' }); }
-        setFinityBalLoading(false);
+            const r = await callMouvProxy({ action: 'treasury_balances' });
+            if (r?.error) setMouvBal({ usdt: r.usdt ?? null, cop: r.cop ?? null, error: r.error, raw: r.raw ?? r, needsPortalCreds: r.needsPortalCreds });
+            else setMouvBal({ usdt: r.usdt ?? null, cop: r.cop ?? null, sandbox: r.sandbox, raw: r.raw, status: r.status, source: r.source });
+        } catch (e: any) { setMouvBal({ usdt: null, cop: null, error: e?.message ?? 'Error' }); }
+        setMouvBalLoading(false);
     };
 
     // ── Recuperación de wallet (localizar índice de una dirección + barrer) ──
@@ -318,11 +318,11 @@ export const AdminGasFreeSection: React.FC = () => {
     };
     const openMovements = () => { setShowMovements(true); loadMovements(); };
 
-    React.useEffect(() => { loadRec(); loadTreasuryCfg(); loadProviders(); loadFinityBalances(); /* eslint-disable-next-line */ }, []);
+    React.useEffect(() => { loadRec(); loadTreasuryCfg(); loadProviders(); loadMouvBalances(); /* eslint-disable-next-line */ }, []);
 
-    // Auto-refresco de los saldos de Finity cada minuto.
+    // Auto-refresco de los saldos de Mouv cada minuto.
     React.useEffect(() => {
-        const id = setInterval(() => { loadFinityBalances(); }, 60_000);
+        const id = setInterval(() => { loadMouvBalances(); }, 60_000);
         return () => clearInterval(id);
         /* eslint-disable-next-line */
     }, []);
@@ -411,44 +411,44 @@ export const AdminGasFreeSection: React.FC = () => {
                 </div>
             </div>
 
-            {/* Saldos en la plataforma Finity (USDt + Peso Finity/COP) */}
+            {/* Saldos en la plataforma Mouv (USDt + Peso Mouv/COP) */}
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
                 <div className="flex items-center justify-between gap-3 flex-wrap mb-4">
                     <div>
                         <p className="font-bold text-slate-800 text-sm flex items-center gap-2">
-                            <Landmark size={15} className="text-[#16A34A]" /> Saldos en Finity
+                            <Landmark size={15} className="text-[#16A34A]" /> Saldos en Mouv
                         </p>
-                        <p className="text-[11px] text-slate-400 mt-0.5">Saldo real de la cuenta Finity de Lincoin (partner de dispersión COP). · Se actualiza solo cada minuto.</p>
+                        <p className="text-[11px] text-slate-400 mt-0.5">Saldo real de la cuenta Mouv de Lincoin (partner de dispersión COP). · Se actualiza solo cada minuto.</p>
                     </div>
-                    <button onClick={loadFinityBalances} disabled={finityBalLoading} className="flex items-center gap-2 px-3 py-1.5 text-xs font-bold border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-60 transition-colors text-slate-700">
-                        <RefreshCw size={13} className={finityBalLoading ? 'animate-spin' : ''} /> {finityBalLoading ? 'Consultando…' : 'Actualizar'}
+                    <button onClick={loadMouvBalances} disabled={mouvBalLoading} className="flex items-center gap-2 px-3 py-1.5 text-xs font-bold border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-60 transition-colors text-slate-700">
+                        <RefreshCw size={13} className={mouvBalLoading ? 'animate-spin' : ''} /> {mouvBalLoading ? 'Consultando…' : 'Actualizar'}
                     </button>
                 </div>
-                {finityBal?.error ? (
-                    <div className="text-xs font-semibold text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">❌ {finityBal.error}</div>
+                {mouvBal?.error ? (
+                    <div className="text-xs font-semibold text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">❌ {mouvBal.error}</div>
                 ) : (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                         <div className="rounded-xl border border-slate-200 p-4">
                             <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">USDt · Dólar Digital</p>
                             <p className="text-2xl font-black text-slate-800 tabular-nums">
-                                {finityBalLoading && !finityBal ? '—' : finityBal?.usdt != null ? `$${finityBal.usdt.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
+                                {mouvBalLoading && !mouvBal ? '—' : mouvBal?.usdt != null ? `$${mouvBal.usdt.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
                                 <span className="text-sm font-bold text-slate-400 ml-1">USDt</span>
                             </p>
                         </div>
                         <div className="rounded-xl border border-slate-200 p-4">
-                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Peso Finity · COP</p>
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Peso Mouv · COP</p>
                             <p className="text-2xl font-black text-slate-800 tabular-nums">
-                                {finityBalLoading && !finityBal ? '—' : finityBal?.cop != null ? `$${finityBal.cop.toLocaleString('es-CO', { maximumFractionDigits: 2 })}` : '—'}
+                                {mouvBalLoading && !mouvBal ? '—' : mouvBal?.cop != null ? `$${mouvBal.cop.toLocaleString('es-CO', { maximumFractionDigits: 2 })}` : '—'}
                                 <span className="text-sm font-bold text-slate-400 ml-1">COP</span>
                             </p>
                         </div>
                     </div>
                 )}
-                {finityBal?.sandbox && (
+                {mouvBal?.sandbox && (
                     <p className="text-[11px] font-bold text-amber-600 mt-3">⚠ El conector está en SANDBOX — estos saldos son de prueba, no reales.</p>
                 )}
-                {finityBal && finityBal.usdt == null && finityBal.cop == null && !finityBal.error && !finityBalLoading && (
-                    <p className="text-[11px] text-slate-400 mt-3">No se pudieron leer los saldos de Finity (revisa credenciales del conector o el formato de la respuesta).</p>
+                {mouvBal && mouvBal.usdt == null && mouvBal.cop == null && !mouvBal.error && !mouvBalLoading && (
+                    <p className="text-[11px] text-slate-400 mt-3">No se pudieron leer los saldos de Mouv (revisa credenciales del conector o el formato de la respuesta).</p>
                 )}
             </div>
 
