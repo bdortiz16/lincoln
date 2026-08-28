@@ -1,0 +1,151 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Las animaciones tipo animate-in / fade-in / zoom-in / slide-in que el
+   Play CDN resolvía se replican acá (subset que usa la app). */
+@layer utilities {
+  .animate-in {
+    animation-duration: 0.3s;
+    animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+    animation-fill-mode: both;
+  }
+  .fade-in { animation-name: cuy-fade-in; }
+  .zoom-in-95 { animation-name: cuy-zoom-in-95; }
+  .slide-in-from-top-4 { animation-name: cuy-slide-top-4; }
+  .slide-in-from-bottom-4 { animation-name: cuy-slide-bottom-4; }
+  .duration-300 { animation-duration: 0.3s; }
+  .duration-500 { animation-duration: 0.5s; }
+}
+
+@keyframes cuy-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes cuy-zoom-in-95 {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes cuy-slide-top-4 {
+  from { opacity: 0; transform: translateY(-1rem); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes cuy-slide-bottom-4 {
+  from { opacity: 0; transform: translateY(1rem); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ─── Blindaje GLOBAL de contraste de botones ───
+   En algunas máquinas (extensiones/filtros de red que tocan estilos) los
+   botones navy quedaban con texto oscuro invisible ("Confirmar Operación",
+   "Revisar Datos", etc.). Regla por atributo con !important: cualquier
+   botón con fondo navy fuerza texto blanco, y los teal fuerzan navy. */
+button[class*="bg-[#0C0E0D]"],
+button[class*="bg-[#0C0E0D]"] *,
+button[class*="bg-[#152e52]"],
+button[class*="bg-[#152e52]"] *,
+button[class*="bg-slate-900"],
+button[class*="bg-slate-900"] * {
+  color: #FFFFFF !important;
+  -webkit-text-fill-color: #FFFFFF !important;
+}
+button[class*="bg-[#0C0E0D]"] svg,
+button[class*="bg-[#152e52]"] svg,
+button[class*="bg-slate-900"] svg {
+  stroke: #FFFFFF !important;
+}
+button[class*="bg-[#4ADE80]"],
+button[class*="bg-[#4ADE80]"] *,
+button[class*="bg-[#6EE7A0]"],
+button[class*="bg-[#6EE7A0]"] *,
+button[class*="bg-green-400"],
+button[class*="bg-green-400"] * {
+  color: #0C0E0D !important;
+  -webkit-text-fill-color: #0C0E0D !important;
+}
+button[class*="bg-[#4ADE80]"] svg,
+button[class*="bg-[#6EE7A0]"] svg,
+button[class*="bg-green-400"] svg {
+  stroke: #0C0E0D !important;
+}
+
+/* Iconos del selector de rol (Personas/Empresas): en hover el círculo se
+   pone oscuro/teal, pero en algunas máquinas el group-hover de Tailwind que
+   cambia el color del icono no se aplica y el icono quedaba invisible. Se
+   fuerza el contraste con !important. */
+.role-card:hover .role-circle-dark svg {
+  stroke: #FFFFFF !important;
+}
+.role-card:hover .role-circle-teal svg {
+  stroke: #0C0E0D !important;
+}
+
+/* ==================================================================
+   Tema oscuro Lincoin — UNIVERSAL (cliente + admin), va después de
+   @tailwind utilities para ganar con !important. Convierte las
+   superficies claras heredadas de CuyPay a la paleta Lincoin.
+   ================================================================== */
+body { background-color: #070808 !important; color: #F4F4F2; }
+.bg-white, .bg-slate-50, .bg-gray-50, .bg-neutral-50, .bg-zinc-50 { background-color: #0C0E0D !important; }
+.bg-slate-100, .bg-gray-100, .bg-neutral-100 { background-color: #121413 !important; }
+.bg-slate-200, .bg-gray-200 { background-color: #161A17 !important; }
+[class*="bg-[#F"], [class*="bg-[#f"], [class*="bg-[#E"], [class*="bg-[#e"] { background-color: #0C0E0D !important; }
+[class*="from-white"], [class*="via-white"], [class*="to-white"],
+[class*="from-slate-50"], [class*="to-slate-50"], [class*="from-gray-50"], [class*="to-gray-50"],
+[class*="from-slate-100"], [class*="to-slate-100"],
+[class*="from-[#F"], [class*="to-[#F"], [class*="from-[#E"], [class*="to-[#E"] { background-image: none !important; background-color: #0C0E0D !important; }
+.text-slate-900, .text-slate-800, .text-slate-700, .text-gray-900, .text-gray-800, .text-gray-700, .text-neutral-900, .text-neutral-800, .text-black, .text-\[\#0C0E0D\] { color: #F4F4F2 !important; }
+.text-slate-600, .text-slate-500, .text-gray-600, .text-gray-500 { color: #8F8F8A !important; }
+.text-slate-400, .text-gray-400 { color: #6B726C !important; }
+.border-slate-100, .border-slate-200, .border-slate-300, .border-gray-100, .border-gray-200, .border-gray-300, .border-\[\#0C0E0D\] { border-color: rgba(255,255,255,0.10) !important; }
+.divide-slate-100 > * + *, .divide-slate-200 > * + *, .divide-gray-100 > * + *, .divide-gray-200 > * + * { border-color: rgba(255,255,255,0.10) !important; }
+input:not([type=checkbox]):not([type=radio]):not([type=range]), select, textarea { background-color: #121413 !important; color: #F4F4F2 !important; border-color: rgba(255,255,255,0.12) !important; }
+::placeholder { color: rgba(244,244,242,0.35) !important; }
+.bg-\[\#0C0E0D\], .from-\[\#0C0E0D\], .to-\[\#0C0E0D\] { background-color: #0C0E0D !important; }
+.bg-\[\#EBF2FA\], [style*="background:#EBF2FA"], [style*="backgroundColor:#EBF2FA"] { background-color: #121413 !important; }
+.bg-\[\#4ADE80\], .bg-green-400, .bg-green-500 { color: #0A0A0A !important; }
+.bg-\[\#4ADE80\] *, .bg-green-400 *, .bg-green-500 * { color: #0A0A0A !important; }
+button[class~="bg-[#0C0E0D]"], a[class~="bg-[#0C0E0D]"] { background-color: #191C1A !important; border: 1px solid rgba(255,255,255,0.12) !important; color: #F4F4F2 !important; }
+button[class~="bg-[#0C0E0D]"]:hover, a[class~="bg-[#0C0E0D]"]:hover { background-color: #22261F !important; }
+
+/* ===== Landing Lincoin — responsive móvil ===== */
+@media (max-width: 820px) {
+  .lincoin-landing-root .wrap { padding-left: 20px !important; padding-right: 20px !important; }
+  .lincoin-landing-root header nav { display: none !important; }        /* ocultar Producto/Seguridad/Monedas/Preguntas */
+  .lincoin-landing-root h1 { font-size: 40px !important; line-height: 1.06 !important; letter-spacing: -1.5px !important; }
+}
+@media (max-width: 460px) {
+  .lincoin-landing-root .wrap { padding-left: 16px !important; padding-right: 16px !important; }
+  .lincoin-landing-root h1 { font-size: 34px !important; }
+}
+
+/* ===== Indicadores "operativo" — línea superior + pulso del botón verde ===== */
+/* Línea verde fija arriba de todos los diseños, con leve shimmer. */
+body::before {
+  content: "";
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  z-index: 99999;
+  pointer-events: none;
+  background: linear-gradient(90deg, rgba(74,222,128,0) 0%, #4ADE80 45%, #6EE7A0 55%, rgba(74,222,128,0) 100%);
+  background-size: 220% 100%;
+  animation: lincoinTopline 5s ease-in-out infinite;
+}
+@keyframes lincoinTopline {
+  0%, 100% { opacity: 0.55; background-position: 0% 0; }
+  50%      { opacity: 1;    background-position: 100% 0; }
+}
+
+/* Botón verde: pulso/latido suave indicando que todo está operativo. */
+.lincoin-landing-root .btn-green,
+button[class~="bg-[#4ADE80]"] {
+  animation: lincoinPulse 2.6s ease-in-out infinite;
+}
+@keyframes lincoinPulse {
+  0%, 100% { filter: drop-shadow(0 0 0px rgba(74,222,128,0.0)); }
+  50%      { filter: drop-shadow(0 0 10px rgba(74,222,128,0.55)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  body::before, .lincoin-landing-root .btn-green, button[class~="bg-[#4ADE80]"] { animation: none; }
+}
