@@ -211,7 +211,7 @@ const FilterChip: React.FC<{ active: boolean; onClick: () => void; children: Rea
 );
 
 export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
-    const { currentUser, updateUserProfile } = useDatabase();
+    const { currentUser, updateUserRawData } = useDatabase();
     const [formOpen, setFormOpen] = useState(false);
     // Paso 0: ¿banco o wallet? → banco: país → datos · wallet: datos wallet
     const [formStep, setFormStep] = useState<'type' | 'country' | 'data' | 'wallet'>('type');
@@ -254,12 +254,13 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
     // Actualiza el estado local con lo que la base confirma que quedó.
     const persistKey = async (key: 'mouvContacts' | 'walletContacts', list: MouvContact[]): Promise<boolean> => {
         if (!currentUser?.id) return false;
-        // Guarda la lista bajo su llave a través del flujo normal de perfil
-        // (updateUserProfile persiste raw_data en la base).
-        try {
-            updateUserProfile(currentUser.id, { raw_data: { [key]: list }, [key]: list } as any);
-            return true;
-        } catch { return false; }
+        // Guardado DIRIGIDO: escribe SOLO raw_data.<key> (merge server-side).
+        // Antes iba por updateUserProfile, que escribe el perfil COMPLETO
+        // (balances incluidos) — el candado de columnas sensibles rechazaba
+        // TODO el update cuando los saldos en memoria estaban desactualizados
+        // (p. ej. tras un cargue del admin) y el contacto se perdía al
+        // recargar. Devuelve true solo si la base confirmó el write.
+        return updateUserRawData(currentUser.id, { [key]: list });
     };
     const persistBanks = (list: MouvContact[]) => persistKey('mouvContacts', list.filter((c: any) => c?.accountKind !== 'wallet'));
     const persistWallets = (list: MouvContact[]) => persistKey('walletContacts', list.filter((c: any) => c?.accountKind === 'wallet'));

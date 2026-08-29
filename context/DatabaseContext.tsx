@@ -71,6 +71,7 @@ interface DatabaseContextType {
   transactions: Transaction[];
   registerUser: (data: any) => Promise<{ error?: string }>;
   updateUserProfile: (id: string, data: any) => Promise<void>;
+  updateUserRawData: (id: string, patch: Record<string, any>) => Promise<boolean>;
   loginUser: (email: string, pass?: string) => Promise<User | null>;
   loginWithGoogle: (role?: 'personal' | 'business') => Promise<void>;
   logoutUser: () => void;
@@ -856,6 +857,59 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     } catch (e) {
       console.error('[saveUser] threw:', e);
       pendingWriteUntilRef.current = 0;
+    }
+  };
+
+  // Guardado DIRIGIDO de raw_data (contactos, preferencias...): escribe SOLO
+  // la columna raw_data — nunca balances/role/kyc. updateUserProfile escribe
+  // el perfil completo y el candado users_sensitive_cols_guard rechaza TODO
+  // el update si una columna sensible difiere de la base (p. ej. saldos en
+  // memoria desactualizados tras un cargue del admin) — así se "perdían" los
+  // contactos al recargar. Devuelve true solo si la base CONFIRMÓ el write.
+  const updateUserRawData = async (id: string, patch: Record<string, any>): Promise<boolean> => {
+    if (!isSupabaseConfigured) {
+      const u = users.find(x => x.id === id);
+      if (!u) return false;
+      lsUpsertUser({ ...u, ...patch });
+      setUsers(prev => prev.map(x => x.id === id ? { ...x, ...patch } : x));
+      if (currentUser?.id === id) setCurrentUser(prev => prev ? { ...prev, ...patch } : prev);
+      return true;
+    }
+    try {
+      // Merge contra la fila REAL para no pisar campos de otros flujos
+      // (gasfreeAddresses, notificaciones...).
+      const { data: cur } = await Promise.race([
+        supabase.from('users').select('raw_data').eq('id', id).single(),
+        new Promise<{ data: null }>(resolve => setTimeout(() => resolve({ data: null }), 5000)),
+      ]) as any;
+      const merged = { ...((cur?.raw_data && typeof cur.raw_data === 'object') ? cur.raw_data : {}), ...patch };
+      // RLS bloquea updates EN SILENCIO (0 filas afectadas, sin error) — el
+      // .select('id') obliga a devolver la fila tocada: sin fila = no escribió.
+      let ok = false;
+      const { data: updRows, error } = await supabase.from('users').update({ raw_data: merged }).eq('id', id).select('id');
+      if (!error && Array.isArray(updRows) && updRows.length > 0) ok = true;
+      if (!ok) {
+        // Fallback: save_user del edge (service-role; upsert solo con las
+        // columnas enviadas — id + raw_data — no toca nada más).
+        const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+        const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+        const token = getStoredToken();
+        const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
+          body: JSON.stringify({ action: 'save_user', user: { id, raw_data: merged } }),
+        }).then(x => x.json()).catch(() => null);
+        ok = !!r?.success;
+      }
+      if (ok) {
+        pendingWriteUntilRef.current = Date.now() + 10000;
+        setUsers(prev => prev.map(x => x.id === id ? { ...x, ...patch, raw_data: merged } as any : x));
+        if (currentUser?.id === id) setCurrentUser(prev => prev ? { ...prev, ...patch, raw_data: merged } as any : prev);
+      }
+      return ok;
+    } catch (e) {
+      console.error('[updateUserRawData] threw:', e);
+      return false;
     }
   };
 
@@ -1827,7 +1881,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   return (
     <DatabaseContext.Provider value={{
-      currentUser, isAuthLoading, users, transactions, registerUser, updateUserProfile, loginUser, loginWithGoogle, logoutUser,
+      currentUser, isAuthLoading, users, transactions, registerUser, updateUserProfile, updateUserRawData, loginUser, loginWithGoogle, logoutUser,
       getBalance, bumpLocalBalance, addLocalTx, getPersonalMovements, getUserNotifications, markNotificationsRead,
       mergeNotifications, deleteNotification, clearNotifications,
       requestDeposit, requestWithdrawal, performConversion, approveDeposit, rejectDeposit,
