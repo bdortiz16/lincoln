@@ -797,7 +797,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
 
   const handleGeneratePayLink = () => {
     const id = Math.random().toString(36).substring(2, 10).toUpperCase();
-    setPayLinkUrl(`https://cuypay.com/pay/${id}`);
+    setPayLinkUrl(`${window.location.origin}/pay/${id}`);
     setPayLinkSecondsLeft(1800);
     setPayLinkStep(3);
   };
@@ -2264,7 +2264,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
           <Handshake size={32} className="mx-auto mb-3 text-[#4ADE80]"/>
           <h3 className="font-bold text-lg mb-1">¿Necesitas un servicio personalizado?</h3>
           <p className="text-green-200 text-sm mb-4">Nuestro equipo diseña soluciones a medida para tu empresa.</p>
-          <a href="mailto:soporte@cuypay.com" className="inline-flex items-center gap-2 bg-[#4ADE80] text-[#0C0E0D] font-bold px-6 py-2.5 rounded-xl hover:bg-[#00b396] transition-colors text-sm">
+          <a href="mailto:soporte@lincoin.me" className="inline-flex items-center gap-2 bg-[#4ADE80] text-[#0C0E0D] font-bold px-6 py-2.5 rounded-xl hover:bg-[#00b396] transition-colors text-sm">
             Contactar a soporte
           </a>
         </div>
@@ -2312,7 +2312,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                           <p className="text-amber-700 text-xs">Este servicio no está habilitado por defecto. Contacta a nuestro equipo de soporte para activarlo en tu cuenta empresarial.</p>
                       </div>
                       <a
-                          href="mailto:soporte@cuypay.com"
+                          href="mailto:soporte@lincoin.me"
                           className="w-full bg-[#0C0E0D] text-white py-4 rounded-2xl font-bold text-base hover:bg-[#152e52] transition-colors flex items-center justify-center gap-2"
                       >
                           <Handshake size={20}/> Solicitar Acceso OTC

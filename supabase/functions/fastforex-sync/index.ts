@@ -1,9 +1,9 @@
 // ════════════════════════════════════════════════════════
 // fastforex-sync — Alimenta fx_rate_snapshots con tasas REALES de
-// FastForex para todos los pares LATAM de CuyPay.
+// FastForex para todos los pares LATAM de Lincoin.
 //
 // Pensada para el proyecto Supabase que NO tiene el cron de Antigravity
-// (el feed original vive en CuyPayANDROID). Desplegar esta función y
+// (el feed original vive en LincoinANDROID). Desplegar esta función y
 // programarla cada 5 minutos deja al proyecto con su propio feed.
 //
 // Secrets:
@@ -31,7 +31,7 @@ const CRON_SECRET  = Deno.env.get('CRON_SECRET') ?? ''
 
 const db = createClient(SUPABASE_URL, SERVICE_KEY)
 
-// Monedas del ecosistema CuyPay. Cada base consulta las demás en UNA
+// Monedas del ecosistema Lincoin. Cada base consulta las demás en UNA
 // llamada (fetch-multi) → 7 requests por corrida, 42 pares.
 const CURRENCIES = ['USD', 'COP', 'CLP', 'PEN', 'MXN', 'BRL', 'VES']
 

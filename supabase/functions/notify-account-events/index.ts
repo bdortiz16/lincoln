@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════
-// notify-account-events — Correos de marca CuyPay para TODOS los
+// notify-account-events — Correos de marca Lincoin para TODOS los
 // eventos de cuenta que antes no notificaban nada:
 //
 //   users (UPDATE):
@@ -115,16 +115,16 @@ function detectUserEvent(rec: Record<string, any>, old: Record<string, any>): Ev
   if (isApproved(rec.kyc_status) && !isApproved(old.kyc_status)) {
     return {
       key: 'kyc_approved', security: false, accent: GREEN,
-      subject: 'CuyPay · ¡Tu cuenta fue aprobada! 🎉',
+      subject: 'Lincoin · ¡Tu cuenta fue aprobada! 🎉',
       heroLabel: 'Cuenta aprobada', title: 'Verificación completada',
-      message: (n) => `Hola <strong style="color:${BRAND_NAVY}">${n}</strong>, ¡bienvenido! Tu identidad fue verificada con éxito y tu cuenta CuyPay quedó completamente activa. Ya puedes cargar dinero, enviar a tus contactos y convertir divisas.`,
-      cta: 'Abrir CuyPay →',
+      message: (n) => `Hola <strong style="color:${BRAND_NAVY}">${n}</strong>, ¡bienvenido! Tu identidad fue verificada con éxito y tu cuenta Lincoin quedó completamente activa. Ya puedes cargar dinero, enviar a tus contactos y convertir divisas.`,
+      cta: 'Abrir Lincoin →',
     }
   }
   if (isRejected(rec.kyc_status) && !isRejected(old.kyc_status)) {
     return {
       key: 'kyc_rejected', security: false, accent: RED,
-      subject: 'CuyPay · No pudimos verificar tu identidad',
+      subject: 'Lincoin · No pudimos verificar tu identidad',
       heroLabel: 'Verificación rechazada', title: 'Necesitamos revisar tu identidad',
       message: (n) => `Hola <strong style="color:${BRAND_NAVY}">${n}</strong>, no pudimos completar la verificación de tu identidad. Abre la app para ver el motivo y volver a intentarlo — normalmente basta con repetir las fotos con buena luz.`,
       cta: 'Reintentar verificación',
@@ -136,7 +136,7 @@ function detectUserEvent(rec: Record<string, any>, old: Record<string, any>): Ev
   if (nowBlocked && !wasBlocked) {
     return {
       key: 'account_blocked', security: false, accent: AMBER,
-      subject: 'CuyPay · Tu cuenta fue suspendida temporalmente',
+      subject: 'Lincoin · Tu cuenta fue suspendida temporalmente',
       heroLabel: 'Cuenta suspendida', title: 'Necesitamos documentación adicional',
       message: (n, r) => `Hola <strong style="color:${BRAND_NAVY}">${n}</strong>, tu cuenta fue suspendida temporalmente por nuestro equipo de cumplimiento${r.block_reason ? ` (motivo: ${escapeHtml(r.block_reason)})` : ''}. Abre la app y ve al <strong>Centro de Cumplimiento</strong> para subir la documentación requerida y reactivarla.`,
       cta: 'Abrir Centro de Cumplimiento',
@@ -145,45 +145,45 @@ function detectUserEvent(rec: Record<string, any>, old: Record<string, any>): Ev
   if (!nowBlocked && wasBlocked) {
     return {
       key: 'account_unblocked', security: false, accent: GREEN,
-      subject: 'CuyPay · Tu cuenta fue reactivada ✅',
+      subject: 'Lincoin · Tu cuenta fue reactivada ✅',
       heroLabel: 'Cuenta reactivada', title: 'Todo en orden',
       message: (n) => `Hola <strong style="color:${BRAND_NAVY}">${n}</strong>, revisamos tu documentación y tu cuenta quedó reactivada. Ya puedes operar con normalidad. Gracias por tu paciencia.`,
-      cta: 'Abrir CuyPay →',
+      cta: 'Abrir Lincoin →',
     }
   }
   // PIN
   if (old.pin_hash && !rec.pin_hash) {
     return {
       key: 'pin_reset', security: true, accent: AMBER,
-      subject: 'CuyPay · Tu PIN fue reseteado',
+      subject: 'Lincoin · Tu PIN fue reseteado',
       heroLabel: 'Alerta de seguridad', title: 'PIN reseteado',
       message: (n) => `Hola <strong style="color:${BRAND_NAVY}">${n}</strong>, tu PIN fue reseteado. La próxima vez que entres a la app te pediremos crear uno nuevo. <strong>Si no lo solicitaste, responde a este correo de inmediato.</strong>`,
-      cta: 'Abrir CuyPay →',
+      cta: 'Abrir Lincoin →',
     }
   }
   if (rec.pin_hash && rec.pin_hash !== old.pin_hash) {
     return {
       key: 'pin_changed', security: true, accent: BRAND_TEAL,
-      subject: 'CuyPay · Tu PIN fue actualizado',
+      subject: 'Lincoin · Tu PIN fue actualizado',
       heroLabel: 'Alerta de seguridad', title: 'PIN actualizado',
       message: (n) => `Hola <strong style="color:${BRAND_NAVY}">${n}</strong>, ${old.pin_hash ? 'tu PIN de seguridad fue cambiado' : 'configuraste tu PIN de seguridad'} correctamente. <strong>Si no fuiste tú, responde a este correo de inmediato.</strong>`,
-      cta: 'Abrir CuyPay →',
+      cta: 'Abrir Lincoin →',
     }
   }
   // 2FA
   if (rec.is_2fa_enabled === true && old.is_2fa_enabled !== true) {
     return {
       key: '2fa_on', security: true, accent: GREEN,
-      subject: 'CuyPay · 2FA activado en tu cuenta',
+      subject: 'Lincoin · 2FA activado en tu cuenta',
       heroLabel: 'Alerta de seguridad', title: 'Autenticación en dos pasos activada',
       message: (n) => `Hola <strong style="color:${BRAND_NAVY}">${n}</strong>, activaste la autenticación en dos pasos. Desde ahora pediremos un código de 6 dígitos para tus envíos de dinero. <strong>Si no fuiste tú, responde a este correo de inmediato.</strong>`,
-      cta: 'Abrir CuyPay →',
+      cta: 'Abrir Lincoin →',
     }
   }
   if (rec.is_2fa_enabled === false && old.is_2fa_enabled === true) {
     return {
       key: '2fa_off', security: true, accent: AMBER,
-      subject: 'CuyPay · 2FA desactivado en tu cuenta',
+      subject: 'Lincoin · 2FA desactivado en tu cuenta',
       heroLabel: 'Alerta de seguridad', title: 'Autenticación en dos pasos desactivada',
       message: (n) => `Hola <strong style="color:${BRAND_NAVY}">${n}</strong>, la autenticación en dos pasos de tu cuenta fue <strong>desactivada</strong>. Si no fuiste tú, responde a este correo de inmediato y reactívala desde Ajustes → Seguridad.`,
       cta: 'Revisar seguridad',
@@ -193,10 +193,10 @@ function detectUserEvent(rec: Record<string, any>, old: Record<string, any>): Ev
   if (rec.email && old.email && rec.email !== old.email) {
     return {
       key: 'email_changed', security: true, accent: AMBER,
-      subject: 'CuyPay · Tu correo de acceso cambió',
+      subject: 'Lincoin · Tu correo de acceso cambió',
       heroLabel: 'Alerta de seguridad', title: 'Correo de acceso actualizado',
       message: (n, r) => `Hola <strong style="color:${BRAND_NAVY}">${n}</strong>, el correo de acceso de tu cuenta cambió a <strong>${escapeHtml(r.email)}</strong>. Si no solicitaste este cambio, responde a este correo de inmediato.`,
-      cta: 'Abrir CuyPay →',
+      cta: 'Abrir Lincoin →',
     }
   }
   return null
@@ -207,7 +207,7 @@ function detectBeneficiaryEvent(rec: Record<string, any>, old: Record<string, an
   if (isApproved(rec.kyc_status) && !isApproved(old.kyc_status)) {
     return {
       key: 'ben_approved', security: false, accent: GREEN,
-      subject: `CuyPay · Tu contacto ${bn} fue aprobado ✅`,
+      subject: `Lincoin · Tu contacto ${bn} fue aprobado ✅`,
       heroLabel: 'Contacto aprobado', title: `${bn} ya puede recibir`,
       message: (n) => `Hola <strong style="color:${BRAND_NAVY}">${n}</strong>, la verificación de tu contacto <strong>${escapeHtml(bn)}</strong> fue aprobada. Ya puedes enviarle dinero sin restricciones.`,
       cta: 'Enviar dinero →',
@@ -216,7 +216,7 @@ function detectBeneficiaryEvent(rec: Record<string, any>, old: Record<string, an
   if (isRejected(rec.kyc_status) && !isRejected(old.kyc_status)) {
     return {
       key: 'ben_rejected', security: false, accent: RED,
-      subject: `CuyPay · La verificación de ${bn} fue rechazada`,
+      subject: `Lincoin · La verificación de ${bn} fue rechazada`,
       heroLabel: 'Contacto rechazado', title: `No pudimos verificar a ${bn}`,
       message: (n) => `Hola <strong style="color:${BRAND_NAVY}">${n}</strong>, la verificación de identidad de tu contacto <strong>${escapeHtml(bn)}</strong> fue rechazada. Abre la app para ver el motivo y reintentar la verificación.`,
       cta: 'Ver detalles',
@@ -225,7 +225,7 @@ function detectBeneficiaryEvent(rec: Record<string, any>, old: Record<string, an
   if (rec.is_active === false && old.is_active !== false) {
     return {
       key: 'ben_blocked', security: false, accent: AMBER,
-      subject: `CuyPay · Tu contacto ${bn} fue bloqueado temporalmente`,
+      subject: `Lincoin · Tu contacto ${bn} fue bloqueado temporalmente`,
       heroLabel: 'Contacto bloqueado', title: `Operaciones hacia ${bn} suspendidas`,
       message: (n, r) => `Hola <strong style="color:${BRAND_NAVY}">${n}</strong>, las operaciones hacia tu contacto <strong>${escapeHtml(bn)}</strong> fueron suspendidas por cumplimiento${r.block_reason ? ` (motivo: ${escapeHtml(r.block_reason)})` : ''}. Revisa el Centro de Cumplimiento para ver la documentación requerida.`,
       cta: 'Abrir Centro de Cumplimiento',
@@ -234,7 +234,7 @@ function detectBeneficiaryEvent(rec: Record<string, any>, old: Record<string, an
   if (rec.is_active === true && old.is_active === false) {
     return {
       key: 'ben_unblocked', security: false, accent: GREEN,
-      subject: `CuyPay · Tu contacto ${bn} fue reactivado ✅`,
+      subject: `Lincoin · Tu contacto ${bn} fue reactivado ✅`,
       heroLabel: 'Contacto reactivado', title: `${bn} vuelve a estar activo`,
       message: (n) => `Hola <strong style="color:${BRAND_NAVY}">${n}</strong>, tu contacto <strong>${escapeHtml(bn)}</strong> fue reactivado y ya puedes volver a enviarle dinero.`,
       cta: 'Enviar dinero →',
@@ -273,7 +273,7 @@ function htmlEmail(ev: EventDef, name: string, rec: Record<string, any>): string
         <table cellpadding="0" cellspacing="0" border="0">
           <tr>
             <td style="width:48px;height:48px;vertical-align:middle">
-              <img src="${LOGO_SVG_DATAURI}" width="48" height="48" alt="CuyPay" style="display:block;border-radius:12px"/>
+              <img src="${LOGO_SVG_DATAURI}" width="48" height="48" alt="Lincoin" style="display:block;border-radius:12px"/>
             </td>
             <td style="padding-left:14px;vertical-align:middle">
               <span style="font-size:22px;font-weight:800;color:#ffffff;letter-spacing:-0.5px">CUY<span style="color:${BRAND_TEAL}">PAY</span></span>
@@ -297,7 +297,7 @@ function htmlEmail(ev: EventDef, name: string, rec: Record<string, any>): string
         <table cellpadding="0" cellspacing="0" border="0">
           <tr>
             <td style="border-radius:10px;background-color:${BRAND_NAVY}">
-              <a href="https://cuypay.com" target="_blank" style="display:inline-block;padding:14px 32px;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none;letter-spacing:0.3px">
+              <a href="https://lincoln-psi.vercel.app" target="_blank" style="display:inline-block;padding:14px 32px;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none;letter-spacing:0.3px">
                 ${escapeHtml(ev.cta)}
               </a>
             </td>
@@ -314,11 +314,11 @@ function htmlEmail(ev: EventDef, name: string, rec: Record<string, any>): string
         <table width="100%" cellpadding="0" cellspacing="0" border="0">
           <tr>
             <td>
-              <p style="margin:0 0 3px 0;font-size:11px;color:rgba(255,255,255,0.45);line-height:1.5">&copy; 2026 CuyPay &middot; Todos los derechos reservados</p>
+              <p style="margin:0 0 3px 0;font-size:11px;color:rgba(255,255,255,0.45);line-height:1.5">&copy; 2026 Lincoin &middot; Todos los derechos reservados</p>
               <p style="margin:0;font-size:10px;color:rgba(255,255,255,0.25)">Mensaje automático &mdash; podés responderlo si es una alerta de seguridad.</p>
             </td>
             <td align="right" style="vertical-align:middle">
-              <a href="https://cuypay.com" style="font-size:11px;color:${BRAND_TEAL};text-decoration:none;font-weight:600">cuypay.com</a>
+              <a href="https://lincoln-psi.vercel.app" style="font-size:11px;color:${BRAND_TEAL};text-decoration:none;font-weight:600">lincoin.me</a>
             </td>
           </tr>
         </table>
@@ -398,7 +398,7 @@ Deno.serve(async (req) => {
       method: 'POST',
       headers: { Authorization: `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        from: `CuyPay <${FROM_EMAIL}>`,
+        from: `Lincoin <${FROM_EMAIL}>`,
         to: email,
         subject: ev.subject,
         html: htmlEmail(ev, name, rec),

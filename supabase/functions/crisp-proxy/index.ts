@@ -15,7 +15,7 @@
 // Secrets requeridos (Edge Functions → Secrets):
 //   CRISP_IDENTIFIER  → identifier del plugin token
 //   CRISP_KEY         → key del plugin token
-//   CRISP_WEBSITE_ID  → opcional (default: el website de CuyPay)
+//   CRISP_WEBSITE_ID  → opcional (default: el website de Lincoin)
 //   SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY → automáticos
 //
 // El token se crea en https://marketplace.crisp.chat → New Plugin
@@ -23,7 +23,7 @@
 //   website:conversation:sessions (read)
 //   website:conversation:messages (read + write)
 //   website:conversation:states   (write)
-// y activando el plugin en el website de CuyPay.
+// y activando el plugin en el website de Lincoin.
 // ════════════════════════════════════════════════════════
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4'
@@ -150,7 +150,7 @@ Deno.serve(async (req) => {
           from:    'operator',
           origin:  'chat',
           content,
-          user:    { nickname: body?.nickname ?? 'CuyPay Soporte' },
+          user:    { nickname: body?.nickname ?? 'Lincoin Soporte' },
         }),
       })
       if (!r.ok) return json({ error: `Crisp ${r.status}`, detail: r.body?.reason ?? r.body }, 502)

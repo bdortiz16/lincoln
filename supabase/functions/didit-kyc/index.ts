@@ -1,5 +1,5 @@
 // ============================================================================
-// CuyPay · didit-kyc v5.1 — con caché de imágenes en Supabase Storage
+// Lincoin · didit-kyc v5.1 — con caché de imágenes en Supabase Storage
 // Primera vez: descarga de Didit + guarda en Storage + cachea en kyc_cache
 // Siguientes veces: lee del caché local (sin llamar a Didit)
 // ?force=true → fuerza recarga desde Didit
@@ -27,7 +27,7 @@ const DIDIT_WORKFLOW_ID     = (Deno.env.get('DIDIT_WORKFLOW_ID') ?? '').trim()
 const DIDIT_WORKFLOW_ID_KYB = (Deno.env.get('DIDIT_WORKFLOW_ID_KYB') ?? '').trim()
 const DIDIT_CLIENT_ID       = (Deno.env.get('DIDIT_CLIENT_ID') ?? '').trim()
 const DIDIT_CLIENT_SECRET   = (Deno.env.get('DIDIT_CLIENT_SECRET') ?? '').trim()
-const APP_RETURN_URL        = (Deno.env.get('KYC_RETURN_URL') ?? 'https://cuypay.com').trim()
+const APP_RETURN_URL        = (Deno.env.get('KYC_RETURN_URL') ?? 'https://lincoln-psi.vercel.app').trim()
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
@@ -613,7 +613,7 @@ serve(async (req: Request) => {
       return json({ ...response, _source: 'didit_live' })
     }
 
-    // ── update_status: Sync CuyPay ↔ Didit status ──
+    // ── update_status: Sync Lincoin ↔ Didit status ──
     if (action === 'update_status') {
       const body = await req.json()
       const { session_id: sid, user_id: uid, new_status, comment } = body
@@ -621,7 +621,7 @@ serve(async (req: Request) => {
       if (!sid) return json({ error: 'session_id required' }, 400)
       if (!new_status) return json({ error: 'new_status required' }, 400)
 
-      // Map CuyPay status names to Didit API values
+      // Map Lincoin status names to Didit API values
       const diditStatusMap: Record<string, string> = {
         'approved': 'Approved',
         'Approved': 'Approved',
@@ -641,7 +641,7 @@ serve(async (req: Request) => {
         }, 400)
       }
 
-      // Map to CuyPay kyc_status
+      // Map to Lincoin kyc_status
       const cuyStatusMap: Record<string, string> = {
         'Approved': 'approved',
         'Declined': 'rejected',
@@ -665,7 +665,7 @@ serve(async (req: Request) => {
               },
               body: JSON.stringify({
                 new_status: diditStatus,
-                comment: comment || `Status changed from CuyPay admin by ${user.email}`,
+                comment: comment || `Status changed from Lincoin admin by ${user.email}`,
               }),
             },
           )
@@ -690,7 +690,7 @@ serve(async (req: Request) => {
         }
       }
 
-      // 2) Update CuyPay user kyc_status
+      // 2) Update Lincoin user kyc_status
       if (uid && cuyStatus) {
         const { error: updateErr } = await supabase
           .from('users')

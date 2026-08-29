@@ -211,7 +211,7 @@ export const StaticPage: React.FC<StaticPageProps> = ({ pageKey, onBack }) => {
                   <Mail className="text-[#0C0E0D] mb-4" size={32} />
                   <h3 className="font-bold text-slate-800 mb-2">Correo Electrónico</h3>
                   <p className="text-sm text-slate-500 mb-4">Para consultas generales y soporte.</p>
-                  <a href="mailto:soporte@cuypay.com" className="text-[#0C0E0D] font-bold hover:underline">soporte@cuypay.com</a>
+                  <a href="mailto:soporte@lincoin.me" className="text-[#0C0E0D] font-bold hover:underline">soporte@lincoin.me</a>
                 </div>
                 
                 <div className="border border-slate-200 p-6 rounded-xl hover:shadow-md transition-shadow">

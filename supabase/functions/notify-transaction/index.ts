@@ -43,7 +43,7 @@ const applyVars = (s: string, vars: Record<string, string>) =>
 // tx_created es un alias visual de convert — comparten textos
 const tplKeyOf = (type: string) => type === 'tx_created' ? 'tx_convert' : `tx_${type}`
 
-// Brand colors — palette CuyPay (matches landing + favicon + admin web).
+// Brand colors — palette Lincoin (matches landing + favicon + admin web).
 const BRAND_NAVY  = '#0C0E0D'
 const BRAND_TEAL  = '#4ADE80'
 const BRAND_TEAL2 = '#5EEAD4'
@@ -84,18 +84,18 @@ function networkLabel(currency: string, rawData?: Record<string, any>): string {
 // Solo lenguaje natural para el usuario.
 function buildSubject(tx: TxRecord): string {
   const a = fmt(tx.amount, tx.currency)
-  if (tx.type === 'pay_received')                  return `CuyPay · Recibiste ${a}`
-  if (tx.type === 'pay_sent')                      return `CuyPay · Enviaste ${a}`
-  if (tx.type === 'load')                          return `CuyPay · Recibimos tu depósito de ${a}`
-  if (tx.type === 'send')                          return `CuyPay · Recibimos tu retiro de ${a}`
-  if (tx.type === 'otc_deposit')                   return `CuyPay · Depósito de ${a} acreditado`
-  if (tx.type === 'otc_withdraw')                  return `CuyPay · Retiro de ${a} procesado`
+  if (tx.type === 'pay_received')                  return `Lincoin · Recibiste ${a}`
+  if (tx.type === 'pay_sent')                      return `Lincoin · Enviaste ${a}`
+  if (tx.type === 'load')                          return `Lincoin · Recibimos tu depósito de ${a}`
+  if (tx.type === 'send')                          return `Lincoin · Recibimos tu retiro de ${a}`
+  if (tx.type === 'otc_deposit')                   return `Lincoin · Depósito de ${a} acreditado`
+  if (tx.type === 'otc_withdraw')                  return `Lincoin · Retiro de ${a} procesado`
   if (tx.type === 'convert' || tx.type === 'tx_created') {
     const dest = tx.raw_data?.destCurrency ?? tx.raw_data?.to_currency
-    if (dest) return `CuyPay · Conversión ${a} → ${dest}`
-    return `CuyPay · Recibimos tu operación de ${a}`
+    if (dest) return `Lincoin · Conversión ${a} → ${dest}`
+    return `Lincoin · Recibimos tu operación de ${a}`
   }
-  return `CuyPay · Movimiento de ${a}`
+  return `Lincoin · Movimiento de ${a}`
 }
 
 // Subject/mensaje para el correo de COMPLETADO (cuando el estado pasa a
@@ -103,10 +103,10 @@ function buildSubject(tx: TxRecord): string {
 // aprobado). Distinto del correo de "creado/montado" que va en el INSERT.
 function buildSubjectCompleted(tx: TxRecord): string {
   const a = fmt(tx.amount, tx.currency)
-  if (tx.type === 'send' || tx.type === 'otc_withdraw') return `CuyPay · Tu retiro de ${a} se completó`
-  if (tx.type === 'load' || tx.type === 'otc_deposit')  return `CuyPay · Tu depósito de ${a} se acreditó`
-  if (tx.type === 'convert' || tx.type === 'tx_created') return `CuyPay · Tu conversión de ${a} se completó`
-  return `CuyPay · Tu operación de ${a} se completó`
+  if (tx.type === 'send' || tx.type === 'otc_withdraw') return `Lincoin · Tu retiro de ${a} se completó`
+  if (tx.type === 'load' || tx.type === 'otc_deposit')  return `Lincoin · Tu depósito de ${a} se acreditó`
+  if (tx.type === 'convert' || tx.type === 'tx_created') return `Lincoin · Tu conversión de ${a} se completó`
+  return `Lincoin · Tu operación de ${a} se completó`
 }
 
 function buildMessageCompleted(tx: TxRecord, name: string): string {
@@ -149,8 +149,8 @@ function txStatusText(type: string): string {
 }
 
 function buildMessage(tx: TxRecord, name: string): string {
-  const from = tx.raw_data?.senderName || 'un usuario CuyPay'
-  const to   = tx.raw_data?.recipientName || 'un usuario CuyPay'
+  const from = tx.raw_data?.senderName || 'un usuario Lincoin'
+  const to   = tx.raw_data?.recipientName || 'un usuario Lincoin'
   const greet = `Hola <strong style="color:${BRAND_NAVY}">${name}</strong>,`
 
   // Override editable desde el panel (Soporte → Formato de correos)
@@ -197,8 +197,8 @@ function buildDetailRows(tx: TxRecord, completed = false): string {
   const rows: string[] = []
   const now = new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'long', year: 'numeric' })
 
-  if (tx.type === 'pay_received') rows.push(detailRow('De', tx.raw_data?.senderName || 'Usuario CuyPay'))
-  if (tx.type === 'pay_sent')     rows.push(detailRow('Para', tx.raw_data?.recipientName || 'Usuario CuyPay'))
+  if (tx.type === 'pay_received') rows.push(detailRow('De', tx.raw_data?.senderName || 'Usuario Lincoin'))
+  if (tx.type === 'pay_sent')     rows.push(detailRow('Para', tx.raw_data?.recipientName || 'Usuario Lincoin'))
 
   if (tx.type === 'otc_deposit' || tx.type === 'otc_withdraw') {
     rows.push(detailRow('Red', networkLabel(tx.currency, tx.raw_data)))
@@ -216,7 +216,7 @@ function buildDetailRows(tx: TxRecord, completed = false): string {
     rows.push(detailRow('Detalle', `Conversión ${rd.fromCurrency ?? 'USD'} → ${dest ?? tx.currency}`))
     if (fromAmount != null) rows.push(detailRow('Convertiste', `${Number(fromAmount).toLocaleString('en-US', { maximumFractionDigits: 2 })} USD`))
     if (rate != null) rows.push(detailRow('Tasa aplicada', `1 USD = ${Number(rate).toLocaleString('es-CO', { maximumFractionDigits: 2 })} COP`))
-    if (feePct != null) rows.push(detailRow('Comisión CuyPay', `${feePct}%`))
+    if (feePct != null) rows.push(detailRow('Comisión Lincoin', `${feePct}%`))
     if (gfFee != null) rows.push(detailRow('Comisión de red', `${Number(gfFee).toFixed(2)} USDT`))
     rows.push(detailRow('Recibiste', fmt(tx.amount, tx.currency)))
     rows.push(detailRow('Fecha', now))
@@ -233,9 +233,9 @@ function buildDetailRows(tx: TxRecord, completed = false): string {
   return rows.join('')
 }
 
-// Logo CuyPay como PNG HOSTEADO (Gmail bloquea imágenes SVG y muchos data
+// Logo Lincoin como PNG HOSTEADO (Gmail bloquea imágenes SVG y muchos data
 // URIs → el logo salía roto). Se sirve desde el sitio en https, que sí carga.
-const LOGO_SVG_DATAURI = 'https://cuypay.com/cuypay-email-logo.png'
+const LOGO_SVG_DATAURI = 'https://lincoln-psi.vercel.app/cuypay-email-logo.png'
 
 function htmlEmail(tx: TxRecord, name: string, subject: string, completed = false): string {
   const label   = completed ? 'Operación completada' : txTypeLabel(tx.type)
@@ -259,7 +259,7 @@ function htmlEmail(tx: TxRecord, name: string, subject: string, completed = fals
 
   <table width="560" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;width:100%;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(15,23,42,0.08)">
 
-    <!-- HEADER navy con logo CuyPay (SVG inline) -->
+    <!-- HEADER navy con logo Lincoin (SVG inline) -->
     <tr>
       <td style="background-color:${BRAND_NAVY};padding:28px 32px">
         <table width="100%" cellpadding="0" cellspacing="0" border="0">
@@ -268,7 +268,7 @@ function htmlEmail(tx: TxRecord, name: string, subject: string, completed = fals
               <table cellpadding="0" cellspacing="0" border="0">
                 <tr>
                   <td style="width:48px;height:48px;vertical-align:middle">
-                    <img src="${LOGO_SVG_DATAURI}" width="48" height="48" alt="CuyPay" style="display:block;border-radius:12px"/>
+                    <img src="${LOGO_SVG_DATAURI}" width="48" height="48" alt="Lincoin" style="display:block;border-radius:12px"/>
                   </td>
                   <td style="padding-left:14px;vertical-align:middle">
                     <span style="font-size:22px;font-weight:800;color:#ffffff;letter-spacing:-0.5px">CUY<span style="color:${BRAND_TEAL}">PAY</span></span>
@@ -319,9 +319,9 @@ function htmlEmail(tx: TxRecord, name: string, subject: string, completed = fals
         <table cellpadding="0" cellspacing="0" border="0">
           <tr>
             <td style="border-radius:10px;background-color:${BRAND_NAVY}">
-              <a href="https://cuypay.com" target="_blank"
+              <a href="https://lincoln-psi.vercel.app" target="_blank"
                 style="display:inline-block;padding:14px 32px;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none;letter-spacing:0.3px">
-                Abrir CuyPay &rarr;
+                Abrir Lincoin &rarr;
               </a>
             </td>
           </tr>
@@ -343,14 +343,14 @@ function htmlEmail(tx: TxRecord, name: string, subject: string, completed = fals
           <tr>
             <td>
               <p style="margin:0 0 3px 0;font-size:11px;color:rgba(255,255,255,0.45);line-height:1.5">
-                &copy; 2026 CuyPay &middot; Todos los derechos reservados
+                &copy; 2026 Lincoin &middot; Todos los derechos reservados
               </p>
               <p style="margin:0;font-size:10px;color:rgba(255,255,255,0.25)">
                 Mensaje automático &mdash; por favor no respondas a este correo a menos que sea una alerta de seguridad.
               </p>
             </td>
             <td align="right" style="vertical-align:middle">
-              <a href="https://cuypay.com" style="font-size:11px;color:${BRAND_TEAL};text-decoration:none;font-weight:600">cuypay.com</a>
+              <a href="https://lincoln-psi.vercel.app" style="font-size:11px;color:${BRAND_TEAL};text-decoration:none;font-weight:600">lincoin.me</a>
             </td>
           </tr>
         </table>
@@ -376,7 +376,7 @@ function customHtmlEmail(title: string, message: string, subject: string): strin
 <table width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="${BRAND_LIGHT}"><tr><td align="center" style="padding:40px 16px 48px">
   <table width="560" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;width:100%;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(15,23,42,0.08)">
     <tr><td style="background-color:${BRAND_NAVY};padding:28px 32px">
-      <img src="${LOGO_SVG_DATAURI}" width="44" height="44" alt="CuyPay" style="display:inline-block;border-radius:11px;vertical-align:middle"/>
+      <img src="${LOGO_SVG_DATAURI}" width="44" height="44" alt="Lincoin" style="display:inline-block;border-radius:11px;vertical-align:middle"/>
       <span style="font-size:22px;font-weight:800;color:#ffffff;letter-spacing:-0.5px;vertical-align:middle;margin-left:12px">CUY<span style="color:${BRAND_TEAL}">PAY</span></span>
     </td></tr>
     <tr><td style="background-color:${BRAND_TEAL};height:4px;line-height:4px;font-size:1px">&zwnj;</td></tr>
@@ -385,12 +385,12 @@ function customHtmlEmail(title: string, message: string, subject: string): strin
       <p style="margin:0 0 16px 0;font-size:24px;font-weight:800;color:${BRAND_NAVY};letter-spacing:-0.5px;line-height:1.2">${title}</p>
       <p style="margin:0 0 24px 0;font-size:15px;color:#475569;line-height:1.7">${message}</p>
       <table cellpadding="0" cellspacing="0" border="0"><tr><td style="border-radius:10px;background-color:${BRAND_NAVY}">
-        <a href="https://cuypay.com" target="_blank" style="display:inline-block;padding:14px 32px;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none">Abrir CuyPay &rarr;</a>
+        <a href="https://lincoln-psi.vercel.app" target="_blank" style="display:inline-block;padding:14px 32px;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none">Abrir Lincoin &rarr;</a>
       </td></tr></table>
       ${footerNoteHtml()}
     </td></tr>
     <tr><td style="background-color:${BRAND_NAVY};padding:20px 32px">
-      <p style="margin:0;font-size:11px;color:rgba(255,255,255,0.45)">&copy; 2026 CuyPay &middot; <a href="https://cuypay.com" style="color:${BRAND_TEAL};text-decoration:none">cuypay.com</a></p>
+      <p style="margin:0;font-size:11px;color:rgba(255,255,255,0.45)">&copy; 2026 Lincoin &middot; <a href="https://lincoln-psi.vercel.app" style="color:${BRAND_TEAL};text-decoration:none">lincoin.me</a></p>
     </td></tr>
   </table>
 </td></tr></table></body></html>`
@@ -417,12 +417,12 @@ Deno.serve(async (req) => {
       const to = String(payload.to ?? '')
       if (!to) return new Response('no_to', { status: 200 })
       await loadFooterNote()
-      const subject = String(payload.subject ?? 'CuyPay')
+      const subject = String(payload.subject ?? 'Lincoin')
       const html = customHtmlEmail(String(payload.title ?? 'Notificación'), String(payload.message ?? ''), subject)
       const res = await fetch('https://api.resend.com/emails', {
         method: 'POST',
         headers: { Authorization: `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ from: `CuyPay <${FROM_EMAIL}>`, to, subject, html }),
+        body: JSON.stringify({ from: `Lincoin <${FROM_EMAIL}>`, to, subject, html }),
       })
       const body = await res.text()
       if (!res.ok) { console.error('[notify] custom email error', res.status, body); return new Response('email_error', { status: 500 }) }
@@ -501,7 +501,7 @@ Deno.serve(async (req) => {
     if (ovSubject) subject = applyVars(String(ovSubject), { nombre: name, monto: fmt(tx.amount, tx.currency) })
 
     const emailPayload = {
-      from: `CuyPay <${FROM_EMAIL}>`,
+      from: `Lincoin <${FROM_EMAIL}>`,
       to: user.email,
       subject,
       html: htmlEmail(tx, name, subject, completed),

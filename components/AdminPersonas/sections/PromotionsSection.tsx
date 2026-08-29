@@ -319,7 +319,7 @@ function renderHtml(subject: string, body: string): string {
           <h1 style="margin:0 0 16px;font-size:20px;color:#0C0E0D">${safeSubject}</h1>
           <div style="font-size:14px;color:#334155">${safeBody}</div>
           <div style="margin:28px 0 0">
-            <a href="https://cuypay.com" style="display:inline-block;background:#4ADE80;color:#0C0E0D;text-decoration:none;font-weight:700;font-size:14px;padding:10px 18px;border-radius:10px">Abrir Lincoin</a>
+            <a href="https://lincoln-psi.vercel.app" style="display:inline-block;background:#4ADE80;color:#0C0E0D;text-decoration:none;font-weight:700;font-size:14px;padding:10px 18px;border-radius:10px">Abrir Lincoin</a>
           </div>
         </td></tr>
         <tr><td style="padding:20px 28px;background:#F8FAFC;border-top:1px solid #E2E8F0;font-size:11px;color:#64748B">

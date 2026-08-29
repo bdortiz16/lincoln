@@ -6,7 +6,7 @@
 // Cada cliente tiene su wallet GasFree (cajita USDT). Los depósitos y
 // envíos no requieren TRX: la comisión de red se paga en USDT. Esta
 // función habla directo con el proveedor GasFree (open.gasfree.io) y
-// firma las autorizaciones TIP-712 con las llaves que CuyPay controla.
+// firma las autorizaciones TIP-712 con las llaves que Lincoin controla.
 //
 // Secrets:
 //   GASFREE_API_KEY, GASFREE_API_SECRET   credenciales del portal GasFree

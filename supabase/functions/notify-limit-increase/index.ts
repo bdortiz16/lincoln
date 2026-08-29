@@ -164,7 +164,7 @@ function htmlEmail(event: EventKind, name: string, benName: string | null, amoun
         <table cellpadding="0" cellspacing="0" border="0">
           <tr>
             <td style="width:48px;height:48px;vertical-align:middle">
-              <img src="${LOGO_SVG_DATAURI}" width="48" height="48" alt="CuyPay" style="display:block;border-radius:12px"/>
+              <img src="${LOGO_SVG_DATAURI}" width="48" height="48" alt="Lincoin" style="display:block;border-radius:12px"/>
             </td>
             <td style="padding-left:14px;vertical-align:middle">
               <span style="font-size:22px;font-weight:800;color:#ffffff;letter-spacing:-0.5px">CUY<span style="color:${BRAND_TEAL}">PAY</span></span>
@@ -188,8 +188,8 @@ function htmlEmail(event: EventKind, name: string, benName: string | null, amoun
         <table cellpadding="0" cellspacing="0" border="0">
           <tr>
             <td style="border-radius:10px;background-color:${BRAND_NAVY}">
-              <a href="https://cuypay.com" target="_blank" style="display:inline-block;padding:14px 32px;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none;letter-spacing:0.3px">
-                Abrir CuyPay →
+              <a href="https://lincoln-psi.vercel.app" target="_blank" style="display:inline-block;padding:14px 32px;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none;letter-spacing:0.3px">
+                Abrir Lincoin →
               </a>
             </td>
           </tr>
@@ -205,11 +205,11 @@ function htmlEmail(event: EventKind, name: string, benName: string | null, amoun
         <table width="100%" cellpadding="0" cellspacing="0" border="0">
           <tr>
             <td>
-              <p style="margin:0 0 3px 0;font-size:11px;color:rgba(255,255,255,0.45);line-height:1.5">&copy; 2026 CuyPay &middot; Todos los derechos reservados</p>
+              <p style="margin:0 0 3px 0;font-size:11px;color:rgba(255,255,255,0.45);line-height:1.5">&copy; 2026 Lincoin &middot; Todos los derechos reservados</p>
               <p style="margin:0;font-size:10px;color:rgba(255,255,255,0.25)">Mensaje automático &mdash; podés responderlo si es una alerta de seguridad.</p>
             </td>
             <td align="right" style="vertical-align:middle">
-              <a href="https://cuypay.com" style="font-size:11px;color:${BRAND_TEAL};text-decoration:none;font-weight:600">cuypay.com</a>
+              <a href="https://lincoln-psi.vercel.app" style="font-size:11px;color:${BRAND_TEAL};text-decoration:none;font-weight:600">lincoin.me</a>
             </td>
           </tr>
         </table>
@@ -412,8 +412,8 @@ Deno.serve(async (req) => {
     await loadFooterNote()
     await loadTemplates()
     let subject = event === 'approved'
-      ? `CuyPay · Ampliación de topes aprobada${benName ? ` — Contacto ${benName}` : ''}`
-      : `CuyPay · Ampliación de topes rechazada${benName ? ` — Contacto ${benName}` : ''}`
+      ? `Lincoin · Ampliación de topes aprobada${benName ? ` — Contacto ${benName}` : ''}`
+      : `Lincoin · Ampliación de topes rechazada${benName ? ` — Contacto ${benName}` : ''}`
     const ovSubject = (TPL[`limit_${event}`] as any)?.subject
     if (ovSubject) subject = applyVars(String(ovSubject), { nombre: name, monto: amount ?? '', contacto: benName ?? '' })
 
@@ -421,7 +421,7 @@ Deno.serve(async (req) => {
       method: 'POST',
       headers: { Authorization: `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        from: `CuyPay <${FROM_EMAIL}>`,
+        from: `Lincoin <${FROM_EMAIL}>`,
         to: email,
         subject,
         html: htmlEmail(event, name, benName, amount, record.admin_notes),

@@ -63,7 +63,7 @@ async function loadTemplates(): Promise<void> {
 const applyVars = (s: string, vars: Record<string, string>) =>
   s.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? '')
 
-// Brand palette CuyPay — misma que usa notify-transaction y el favicon.
+// Brand palette Lincoin — misma que usa notify-transaction y el favicon.
 const BRAND_NAVY  = '#0C0E0D'
 const BRAND_TEAL  = '#4ADE80'
 const BRAND_TEAL2 = '#5EEAD4'
@@ -144,9 +144,9 @@ function categoryLabel(cat: string): string {
 // Templates — subject + hero + message + CTA
 // ─────────────────────────────────────────────
 function buildSubject(event: EventKind, catLabel: string): string {
-  if (event === 'approved') return `CuyPay · ${catLabel} aprobada`
-  if (event === 'rejected') return `CuyPay · ${catLabel} rechazada`
-  return `CuyPay · Necesitamos que vuelvas a subir tu documentación`
+  if (event === 'approved') return `Lincoin · ${catLabel} aprobada`
+  if (event === 'rejected') return `Lincoin · ${catLabel} rechazada`
+  return `Lincoin · Necesitamos que vuelvas a subir tu documentación`
 }
 
 function buildHeroLabel(event: EventKind): string {
@@ -184,11 +184,11 @@ function buildMessage(event: EventKind, name: string, record: DocRequestRecord):
   const comentario = reason
     ? `<br/><br/><strong>Comentario del administrador:</strong> ${escapeHtml(reason)}`
     : ''
-  return `Hola <strong style="color:${BRAND_NAVY}">${name}</strong>, necesitamos que vuelvas a subir tu documentación (${catLabel}) para completar la revisión.${comentario}<br/><br/>Abrí la app CuyPay y andá al <strong>Centro de Cumplimiento</strong> para volver a subir los archivos.`
+  return `Hola <strong style="color:${BRAND_NAVY}">${name}</strong>, necesitamos que vuelvas a subir tu documentación (${catLabel}) para completar la revisión.${comentario}<br/><br/>Abrí la app Lincoin y andá al <strong>Centro de Cumplimiento</strong> para volver a subir los archivos.`
 }
 
 function buildCtaLabel(event: EventKind): string {
-  if (event === 'approved') return 'Abrir CuyPay →'
+  if (event === 'approved') return 'Abrir Lincoin →'
   if (event === 'rejected') return 'Contactar soporte'
   return 'Abrir Centro de Cumplimiento'
 }
@@ -205,7 +205,7 @@ function escapeHtml(s: string): string {
 }
 
 // ─────────────────────────────────────────────
-// Logo CuyPay inline como SVG (mismo del favicon + notify-transaction)
+// Logo Lincoin inline como SVG (mismo del favicon + notify-transaction)
 // ─────────────────────────────────────────────
 const LOGO_SVG_DATAURI = `data:image/svg+xml;base64,${btoa(`
 <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
@@ -240,7 +240,7 @@ function htmlEmail(event: EventKind, name: string, subject: string, record: DocR
 
   <table width="560" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;width:100%;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(15,23,42,0.08)">
 
-    <!-- HEADER navy con logo CuyPay -->
+    <!-- HEADER navy con logo Lincoin -->
     <tr>
       <td style="background-color:${BRAND_NAVY};padding:28px 32px">
         <table width="100%" cellpadding="0" cellspacing="0" border="0">
@@ -249,7 +249,7 @@ function htmlEmail(event: EventKind, name: string, subject: string, record: DocR
               <table cellpadding="0" cellspacing="0" border="0">
                 <tr>
                   <td style="width:48px;height:48px;vertical-align:middle">
-                    <img src="${LOGO_SVG_DATAURI}" width="48" height="48" alt="CuyPay" style="display:block;border-radius:12px"/>
+                    <img src="${LOGO_SVG_DATAURI}" width="48" height="48" alt="Lincoin" style="display:block;border-radius:12px"/>
                   </td>
                   <td style="padding-left:14px;vertical-align:middle">
                     <span style="font-size:22px;font-weight:800;color:#ffffff;letter-spacing:-0.5px">CUY<span style="color:${BRAND_TEAL}">PAY</span></span>
@@ -296,7 +296,7 @@ function htmlEmail(event: EventKind, name: string, subject: string, record: DocR
         <table cellpadding="0" cellspacing="0" border="0">
           <tr>
             <td style="border-radius:10px;background-color:${BRAND_NAVY}">
-              <a href="https://cuypay.com" target="_blank" style="display:inline-block;padding:14px 32px;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none;letter-spacing:0.3px">
+              <a href="https://lincoln-psi.vercel.app" target="_blank" style="display:inline-block;padding:14px 32px;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none;letter-spacing:0.3px">
                 ${escapeHtml(cta)}
               </a>
             </td>
@@ -318,14 +318,14 @@ function htmlEmail(event: EventKind, name: string, subject: string, record: DocR
           <tr>
             <td>
               <p style="margin:0 0 3px 0;font-size:11px;color:rgba(255,255,255,0.45);line-height:1.5">
-                &copy; 2026 CuyPay &middot; Todos los derechos reservados
+                &copy; 2026 Lincoin &middot; Todos los derechos reservados
               </p>
               <p style="margin:0;font-size:10px;color:rgba(255,255,255,0.25)">
                 Mensaje automático &mdash; podés responderlo si es una alerta de seguridad.
               </p>
             </td>
             <td align="right" style="vertical-align:middle">
-              <a href="https://cuypay.com" style="font-size:11px;color:${BRAND_TEAL};text-decoration:none;font-weight:600">cuypay.com</a>
+              <a href="https://lincoln-psi.vercel.app" style="font-size:11px;color:${BRAND_TEAL};text-decoration:none;font-weight:600">lincoin.me</a>
             </td>
           </tr>
         </table>
@@ -403,7 +403,7 @@ Deno.serve(async (req) => {
     if (ovSubject) subject = applyVars(String(ovSubject), { nombre: name, categoria: catLabel })
 
     const emailPayload = {
-      from:    `CuyPay <${FROM_EMAIL}>`,
+      from:    `Lincoin <${FROM_EMAIL}>`,
       to:      user.email,
       subject,
       html:    htmlEmail(event, name, subject, record),

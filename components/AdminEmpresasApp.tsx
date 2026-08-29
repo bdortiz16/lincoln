@@ -99,7 +99,7 @@ const AdminEmpresasInner: React.FC = () => {
                                 autoComplete="username"
                                 required
                                 className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#4ADE80] outline-none"
-                                placeholder="admin@cuypay.com"
+                                placeholder="admin@lincoin.com"
                             />
                         </div>
                         <div>

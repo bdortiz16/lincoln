@@ -2261,7 +2261,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
   const handleGeneratePayLink = () => {
     const id = Math.random().toString(36).substring(2, 10).toUpperCase();
-    setPayLinkUrl(`https://cuypay.com/pay/${id}`);
+    setPayLinkUrl(`${window.location.origin}/pay/${id}`);
     setPayLinkSecondsLeft(1800);
     setPayLinkStep(3);
   };
@@ -2616,7 +2616,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
         <div className="bg-[#0C0E0D] rounded-2xl p-6 text-white text-center">
           <h3 className="font-bold text-lg mb-1">¿Necesitas ayuda?</h3>
           <p className="text-green-200 text-sm mb-4">Nuestro equipo está disponible para asistirte.</p>
-          <a href="mailto:soporte@cuypay.com" className="inline-flex items-center gap-2 bg-[#4ADE80] text-[#0C0E0D] font-bold px-6 py-2.5 rounded-xl hover:bg-[#00b396] transition-colors text-sm">
+          <a href="mailto:soporte@lincoin.me" className="inline-flex items-center gap-2 bg-[#4ADE80] text-[#0C0E0D] font-bold px-6 py-2.5 rounded-xl hover:bg-[#00b396] transition-colors text-sm">
             Contactar soporte
           </a>
         </div>
