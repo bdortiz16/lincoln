@@ -2943,52 +2943,52 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           <div className="flex justify-center pt-3 pb-1 sm:hidden">
             <div className="w-10 h-1 bg-slate-200 rounded-full" />
           </div>
-          {/* Logo + title */}
-          <div className="flex flex-col items-center pt-6 pb-4 px-6">
-            <div className="mb-2"><Logo /></div>
-            <p className="text-base font-bold text-slate-800">Detalle de {isCredit ? 'depósito' : 'retiro'}</p>
+          {/* Logo + title — compacto */}
+          <div className="flex flex-col items-center pt-4 pb-2 px-6">
+            <p className="text-sm font-bold text-slate-800">Detalle de {isCredit ? 'depósito' : 'retiro'}</p>
           </div>
-          {/* Amount */}
-          <div className="mx-6 mb-5 rounded-2xl bg-[#F4F6F9] p-4 text-center">
-            <p className={`text-4xl font-black ${isCredit ? 'text-green-600' : 'text-[#0C0E0D]'}`}>
-              {isCredit ? '+' : '-'}{formatMoney(tx.amount, tx.currency)} <span className="text-xl">{displayCurrency(tx.currency)}</span>{railOfCurrency(tx.currency) && <span className="text-sm font-semibold text-slate-400 ml-1.5">· {railOfCurrency(tx.currency)}</span>}
+          {/* Amount — contenido, no gigante */}
+          <div className="mx-5 mb-3 rounded-xl bg-[#F4F6F9] px-4 py-3 text-center">
+            <p className={`text-2xl font-extrabold tracking-tight ${isCredit ? 'text-green-600' : 'text-[#0C0E0D]'}`}>
+              {isCredit ? '+' : '-'}{formatMoney(tx.amount, tx.currency)} <span className="text-base">{displayCurrency(tx.currency)}</span>{railOfCurrency(tx.currency) && <span className="text-xs font-semibold text-slate-400 ml-1">· {railOfCurrency(tx.currency)}</span>}
             </p>
-            <div className={`inline-flex items-center gap-1.5 mt-2 px-3 py-1 rounded-full text-xs font-bold border ${tx.status === 'Completado' ? 'bg-white text-green-700 border-green-500' : tx.status === 'Pendiente' ? 'bg-white text-orange-600 border-orange-400' : 'bg-white text-red-700 border-red-400'}`}>
-              <CheckCircle size={12} />
+            <div className={`inline-flex items-center gap-1 mt-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${tx.status === 'Completado' ? 'bg-white text-green-700 border-green-500' : tx.status === 'Pendiente' ? 'bg-white text-orange-600 border-orange-400' : 'bg-white text-red-700 border-red-400'}`}>
+              <CheckCircle size={11} />
               {tx.status}
             </div>
           </div>
-          {/* Fields — 2 columnas en desktop; los campos largos (mono / Motivo)
-              ocupan ancho completo para que no se aprieten. */}
-          <div className="px-6 pb-4 grid grid-cols-1 sm:grid-cols-2 sm:gap-x-8">
-            {fields.filter(f => f.label !== 'Estado').map((f) => (
-              <div key={f.label} className={`py-3 border-b border-slate-100 ${(f.mono || f.label === 'Motivo' || f.label === 'Descripción') ? 'sm:col-span-2' : ''}`}>
-                <p className="text-xs font-semibold text-slate-400 mb-1">{f.label}</p>
-                <div className="flex items-start justify-between gap-2">
+          {/* Fields — filas compactas: etiqueta y valor en la misma línea;
+              los largos (mono/Motivo) apilados a lo ancho. */}
+          <div className="px-5 pb-2">
+            {fields.filter(f => f.label !== 'Estado').map((f) => {
+              const stacked = f.mono || f.label === 'Motivo';
+              return (
+              <div key={f.label} className={`py-2 border-b border-slate-100 ${stacked ? '' : 'flex items-center justify-between gap-3'}`}>
+                <p className={`text-[11px] font-semibold text-slate-400 ${stacked ? 'mb-0.5' : 'shrink-0'}`}>{f.label}</p>
+                <div className={`flex items-center gap-1.5 min-w-0 ${stacked ? 'justify-between' : 'justify-end flex-1'}`}>
                   {f.mono ? (
-                    <p className="font-mono text-xs text-slate-800 break-all flex-1 leading-relaxed">{f.value}</p>
+                    <p className="font-mono text-[11px] text-slate-800 break-all flex-1 leading-relaxed">{f.value}</p>
                   ) : (
-                    <p className={`font-bold text-sm text-slate-800 flex-1`}>{f.value}</p>
+                    <p className="font-bold text-[13px] text-slate-800 text-right truncate">{f.value}</p>
                   )}
-                  <div className="flex items-center gap-1 shrink-0 mt-0.5">
-                    {f.copyable && (
-                      <button type="button" onClick={() => copyToClipboard(f.value)} className="p-1 rounded-md hover:bg-slate-100 text-slate-400 hover:text-slate-700 transition-colors">
-                        <Copy size={13} />
-                      </button>
-                    )}
-                    {f.link && (
-                      <a href={f.link} target="_blank" rel="noopener noreferrer" className="p-1 rounded-md hover:bg-slate-100 text-slate-400 hover:text-[#4ADE80] transition-colors">
-                        <Link2 size={13} />
-                      </a>
-                    )}
-                  </div>
+                  {f.copyable && (
+                    <button type="button" onClick={() => copyToClipboard(f.value)} className="p-1 rounded-md hover:bg-slate-100 text-slate-400 hover:text-slate-700 transition-colors shrink-0">
+                      <Copy size={12} />
+                    </button>
+                  )}
+                  {f.link && (
+                    <a href={f.link} target="_blank" rel="noopener noreferrer" className="p-1 rounded-md hover:bg-slate-100 text-slate-400 hover:text-[#4ADE80] transition-colors shrink-0">
+                      <Link2 size={12} />
+                    </a>
+                  )}
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
           {/* Footer */}
-          <div className="px-6 pt-2 pb-8">
-            <button type="button" onClick={() => setSelectedTx(null)} className="w-full h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-xl transition-colors text-sm">
+          <div className="px-5 pt-3 pb-6">
+            <button type="button" onClick={() => setSelectedTx(null)} className="w-full h-11 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-xl transition-colors text-sm">
               Listo
             </button>
           </div>
