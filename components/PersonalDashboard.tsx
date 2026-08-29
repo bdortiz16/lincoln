@@ -1870,7 +1870,27 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                     </span>
                  </button>
              ))}
-             {getFilteredMovements(null, { full: true }).length === 0 && <div className="p-12 text-center text-slate-400">No hay movimientos para mostrar.</div>}
+             {getFilteredMovements(null, { full: true }).length === 0 && (
+                 <div className="p-12 text-center text-slate-400">
+                     No hay movimientos para mostrar.
+                     {(() => {
+                         // Diagnóstico de la última lectura vacía (para depurar en
+                         // móvil, donde no hay consola). Lo escribe fetchData.
+                         try {
+                             const d = JSON.parse(localStorage.getItem('lincoin_tx_debug') || 'null');
+                             if (!d) return null;
+                             return (
+                                 <p style={{ fontSize: 10, color: '#6B726C', marginTop: 10, fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                                     dbg · edge:{d.edge ? `${d.edge.count ?? '—'}${d.edge.error ? ` (${String(d.edge.error).slice(0, 80)})` : ''}` : '—'}
+                                     {' '}· rpc:{d.rpcCount ?? '—'}{d.rpcErr ? ` (${String(d.rpcErr).slice(0, 60)})` : ''}
+                                     {' '}· sel:{d.directCount ?? '—'}{d.directErr ? ` (${String(d.directErr).slice(0, 60)})` : ''}
+                                     {' '}· u:{String(d.userId).slice(0, 8)}
+                                 </p>
+                             );
+                         } catch { return null; }
+                     })()}
+                 </div>
+             )}
           </div>
       </div>
   );

@@ -1391,10 +1391,12 @@ Deno.serve(async (req) => {
         const { data: sib } = await db.from('users').select('id').eq('email', me.email)
         if (Array.isArray(sib) && sib.length) ids = Array.from(new Set(sib.map((x: any) => x.id)))
       }
-      const { data: txs } = await db.from('transactions')
+      // Orden por FECHA: los ids son uuid (orden aleatorio, y el front hacía
+      // b.id - a.id = NaN). created_at es el orden real de los movimientos.
+      const { data: txs, error: txErr } = await db.from('transactions')
         .select('*').in('user_id', ids)
-        .order('id', { ascending: false }).limit(500)
-      return ok({ transactions: txs ?? [], ids })
+        .order('created_at', { ascending: false }).limit(500)
+      return ok({ transactions: txs ?? [], ids, ...(txErr ? { queryError: txErr.message } : {}) })
     }
     // Guardar SOLO campos cosméticos del perfil (nombre, apodo, foto) del
     // propio usuario vía service role — funciona aunque la sesión no tenga

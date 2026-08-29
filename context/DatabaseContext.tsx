@@ -561,11 +561,15 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           if (fresh && JSON.stringify(fresh) !== JSON.stringify(cu)) setCurrentUser(fresh);
         }
       }
+      // Orden por fecha, no por id: los ids de transactions son uuid — la
+      // resta b.id - a.id da NaN y el sort no ordenaba nada.
+      const txTime = (t: any) => new Date(t.createdAt ?? t.created_at ?? t.date ?? 0).getTime() || 0;
       const mapTx = (arr: any[]) => (arr as any[]).map(t => ({
         id: t.id, userId: t.user_id, type: t.type,
         amount: Number(t.amount), currency: t.currency, status: t.status,
+        createdAt: t.created_at ?? t.raw_data?.createdAt,
         ...t.raw_data,
-      })).sort((a: any, b: any) => b.id - a.id);
+      })).sort((a: any, b: any) => txTime(b) - txTime(a));
 
       // ── Lectura de movimientos del propio usuario vía la edge 'gasfree'
       //    (service role) — no depende del RPC, del caché de PostgREST, ni
@@ -575,6 +579,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       //    no conecta y sin reintento los movimientos quedaban vacíos aunque
       //    existan. ────────────────────────────────────────────────────────
       let edgeTxs: any[] = [];
+      let edgeDebug: any = null;
       if (cu?.id) {
         const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
         const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
@@ -588,8 +593,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
               headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${tok ?? SKEY}` },
               body: JSON.stringify({ action: 'my_transactions', userId: cu.id }),
               signal: ctl.signal,
-            }).then(res => res.json()).catch(() => null);
+            }).then(res => res.json()).catch((e) => ({ fetchError: String(e?.message ?? e) }));
             clearTimeout(t);
+            edgeDebug = { count: Array.isArray(r?.transactions) ? r.transactions.length : null, ids: r?.ids ?? null, error: r?.error ?? r?.queryError ?? r?.fetchError ?? null };
             if (Array.isArray(r?.ids) && r.ids.length) emailUserIdsRef.current = r.ids;
             if (Array.isArray(r?.transactions) && r.transactions.length) { edgeTxs = mapTx(r.transactions); break; }
           } catch { /* reintenta */ }
@@ -606,6 +612,19 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         // Caché local por usuario: la próxima vez los movimientos se ven al
         // instante aunque la red falle (se refrescan en segundo plano).
         if (cu?.id) { try { localStorage.setItem(`cuypay_tx_${cu.id}`, JSON.stringify(finalTxs.slice(0, 200))); } catch { /* quota */ } }
+      } else if (cu?.id) {
+        // Diagnóstico visible: si TODAS las fuentes vinieron vacías, guardar
+        // el porqué para mostrarlo en la pantalla de Movimientos (en móvil no
+        // hay consola). count=0 sin error ⇒ la base de verdad no tiene filas
+        // para este usuario (los inserts fallaron o fueron a otro id).
+        try {
+          localStorage.setItem('lincoin_tx_debug', JSON.stringify({
+            at: new Date().toISOString(), userId: cu.id,
+            edge: edgeDebug,
+            rpcErr: txRpc.error?.message ?? null, rpcCount: Array.isArray(txRpc.data) ? txRpc.data.length : null,
+            directErr: directTx.error?.message ?? null, directCount: Array.isArray(directTx.data) ? directTx.data.length : null,
+          }));
+        } catch { /* quota */ }
       }
     } catch (e) { console.error('DB Fetch Error', e); }
   // eslint-disable-next-line react-hooks/exhaustive-deps
