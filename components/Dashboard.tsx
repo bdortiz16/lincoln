@@ -43,6 +43,9 @@ import {
   BarChart3,
   Handshake,
   TrendingUp,
+  Layers,
+  ShoppingBag,
+  GraduationCap,
   Construction,
   Ban,
   Share2,
@@ -2225,12 +2228,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
   };
 
   const renderServicios = () => {
+    // Mismo catálogo que el dashboard personal: 4 servicios + Educación.
     const SERVICES = [
-      { icon: Users,        label: 'Nómina',              desc: 'Paga sueldos locales e internacionales en un clic.',            color: 'bg-slate-50 text-[#4ADE80]', action: undefined },
-      { icon: Plane,        label: 'Travel Corporativo',  desc: 'Vuelos, hoteles y autos para tu equipo al mejor precio.',      color: 'bg-slate-50 text-green-700', action: () => setActiveView('travel') },
-      { icon: CreditCard,   label: 'Tarjeta Virtual',     desc: 'Tarjeta corporativa virtual para pagos en línea.',             color: 'bg-violet-50 text-violet-700', action: undefined },
-      { icon: BarChart3,    label: 'API Empresarial',     desc: 'Integra Lincoin directamente en tu plataforma o ERP.',         color: 'bg-orange-50 text-orange-700', action: undefined },
-      { icon: ShieldCheck,  label: 'Seguros',             desc: 'SOAT, Todo Riesgo y seguros corporativos para tu flota.',     color: 'bg-rose-50 text-rose-700', action: () => setActiveView('seguros') },
+      { icon: ArrowLeftRight, label: 'Mesa OTC',    desc: 'Operaciones de alto volumen con tasa negociada.',    color: 'bg-slate-50 text-green-700', action: undefined },
+      { icon: TrendingUp,     label: 'Staking',     desc: 'Genera rendimientos con tu saldo digital.',          color: 'bg-green-50 text-green-700', action: undefined },
+      { icon: Layers,         label: 'Multiwallet', desc: 'Varias billeteras y monedas en una sola cuenta.',    color: 'bg-violet-50 text-violet-700', action: undefined },
+      { icon: ShoppingBag,    label: 'Comercio',    desc: 'Cobra a tus clientes con links y botones de pago.',  color: 'bg-amber-50 text-amber-700', action: undefined },
+      { icon: GraduationCap,  label: 'Educación',   desc: 'Paga matrículas y cursos en el exterior.',           color: 'bg-rose-50 text-rose-700', action: undefined },
     ];
     return (
       <div className="pt-6 space-y-6 animate-in fade-in duration-300">
