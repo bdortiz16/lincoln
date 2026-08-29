@@ -33,6 +33,8 @@ import {
   Plane,
   ShoppingBag,
   GraduationCap,
+  TrendingUp,
+  Layers,
   MoreHorizontal,
   Settings,
   Loader2,
@@ -1744,9 +1746,14 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   <span style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2' }}>Servicios</span>
                   <button onClick={() => setActiveView('servicios')} style={{ fontSize: 12, color: '#878E88' }} className="hover:text-[#F4F4F2] transition-colors">Ver más ›</button>
                 </div>
-                {[['Mesa OTC', 'Operaciones de alto volumen con tasa negociada'], ['Pagos masivos', 'Nómina y proveedores por lote o CSV'], ['Retiros COP', 'A cuentas en Colombia por BreB y ACH'], ['Extractos', 'Descarga mensual en PDF o CSV']].map(([t, d], i) => (
+                {([
+                  { Icon: ArrowLeftRight, t: 'Mesa OTC',   d: 'Operaciones de alto volumen con tasa negociada' },
+                  { Icon: TrendingUp,     t: 'Staking',    d: 'Genera rendimientos con tu saldo digital' },
+                  { Icon: Layers,         t: 'Multiwallet', d: 'Varias billeteras y monedas en una sola cuenta' },
+                  { Icon: ShoppingBag,    t: 'Comercio',   d: 'Cobra a tus clientes con links y botones de pago' },
+                ] as const).map(({ Icon, t, d }, i) => (
                   <div key={t} className="flex items-center gap-3" style={{ padding: '12px 0', borderTop: i === 0 ? 'none' : '1px solid rgba(255,255,255,0.06)' }}>
-                    <div style={{ width: 32, height: 32, borderRadius: 9, background: 'rgba(255,255,255,0.055)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><Zap size={15} style={{ color: '#F4F4F2' }} /></div>
+                    <div style={{ width: 32, height: 32, borderRadius: 9, background: 'rgba(255,255,255,0.055)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><Icon size={15} style={{ color: '#F4F4F2' }} /></div>
                     <div style={{ minWidth: 0 }}>
                       <p style={{ fontSize: 13.5, fontWeight: 600, color: '#F4F4F2' }}>{t}</p>
                       <p style={{ fontSize: 11.5, color: '#878E88' }}>{d}</p>
@@ -2600,12 +2607,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
   const renderServicios = () => {
     const SERVICES = [
-      // ── USDT/OTC removidos: Lincoin es solo fiat (cripto y OTC viven en Lincoln). ──
-      { icon: Plane,       label: 'Travel',          desc: 'Vuelos, hoteles y experiencias al mejor precio.',         color: 'bg-slate-50 text-green-700' },
-      { icon: ShieldCheck, label: 'Seguros',          desc: 'SOAT, Todo Riesgo y seguros personales.',                color: 'bg-rose-50 text-rose-700' },
-      { icon: CreditCard,  label: 'Tarjeta Virtual',  desc: 'Tarjeta virtual para tus compras en línea.',             color: 'bg-violet-50 text-violet-700' },
-      { icon: GraduationCap, label: 'Educación',      desc: 'Paga matrículas y cursos en el exterior.',              color: 'bg-amber-50 text-amber-700' },
-      { icon: ShoppingBag, label: 'Compras',          desc: 'Recibe tus compras internacionales en tu cuenta.',       color: 'bg-green-50 text-green-700' },
+      { icon: ArrowLeftRight, label: 'Mesa OTC',   desc: 'Operaciones de alto volumen con tasa negociada.',            color: 'bg-slate-50 text-green-700',
+        onClick: () => { setMouvMode('converter'); setActiveView('mouv'); } },
+      { icon: TrendingUp,     label: 'Staking',    desc: 'Genera rendimientos con tu saldo digital.',                  color: 'bg-green-50 text-green-700' },
+      { icon: Layers,         label: 'Multiwallet', desc: 'Varias billeteras y monedas en una sola cuenta.',           color: 'bg-violet-50 text-violet-700' },
+      { icon: ShoppingBag,    label: 'Comercio',   desc: 'Cobra a tus clientes con links y botones de pago.',          color: 'bg-amber-50 text-amber-700' },
+      { icon: GraduationCap,  label: 'Educación',  desc: 'Paga matrículas y cursos en el exterior.',                   color: 'bg-rose-50 text-rose-700' },
     ];
     return (
       <div className="pt-6 space-y-6 animate-in fade-in duration-300">
