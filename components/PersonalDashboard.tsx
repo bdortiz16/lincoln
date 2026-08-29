@@ -1373,6 +1373,38 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       || (t.type === 'convert' && (t.source === 'MOUV' || t.raw_data?.source === 'MOUV'));
 
   const baseCurrency = (c?: string) => String(c || '').split('_')[0];
+
+  // ── Metadatos de fila para las listas de movimientos ─────────────────
+  // Muchas transacciones vienen del servidor SIN initials/title/date (las
+  // inserta el edge). Aquí se derivan SIEMPRE: título por tipo, subtítulo
+  // (beneficiario en dispersiones/envíos, fecha en el resto) e ícono real
+  // en vez del cuadro gris con iniciales vacías.
+  const ROW_LABELS: Record<string, string> = {
+    convert: 'Conversión', load: 'Carga de saldo', send: 'Envío / Retiro',
+    pay_sent: 'Pago enviado', pay_received: 'Pago recibido',
+    otc_deposit: 'Depósito cripto', otc_withdraw: 'Retiro cripto',
+    dispersion: 'Dispersión', adjustment: 'Ajuste de saldo',
+    breb_move: 'Movimiento entre cuentas', referral_payout: 'Bono de referido',
+  };
+  const txRowMeta = (tx: any): { title: string; sub: string; Icon: React.ElementType } => {
+    const title = tx.title || ROW_LABELS[tx.type] || tx.type;
+    const dt = tx.createdAt ? new Date(tx.createdAt) : null;
+    const dateStr = tx.date || (dt ? dt.toLocaleDateString('es-CO', { day: '2-digit', month: 'short' }) : '');
+    const beneficiary = tx.beneficiary || tx.recipient?.holderName || '';
+    const sub = beneficiary ? `a ${beneficiary}${dateStr ? ` · ${dateStr}` : ''}` : dateStr;
+    const Icon: React.ElementType =
+      tx.type === 'dispersion' ? (tx.currency === 'COP_ACH' ? Landmark : Zap)
+      : tx.type === 'load' ? ArrowDownLeft
+      : tx.type === 'send' || tx.type === 'pay_sent' ? Send
+      : tx.type === 'pay_received' || tx.type === 'referral_payout' ? ArrowDownLeft
+      : tx.type === 'convert' ? RefreshCw
+      : tx.type === 'breb_move' ? ArrowLeftRight
+      : tx.type === 'adjustment' ? Wallet
+      : tx.type === 'otc_deposit' ? ArrowDownLeft
+      : tx.type === 'otc_withdraw' ? Send
+      : ArrowLeftRight;
+    return { title, sub, Icon };
+  };
   const getFilteredMovements = (walletCode?: string | null, opts?: { full?: boolean }) => {
       let filtered = movements;
       if (walletCode) filtered = filtered.filter(tx => tx.currency === walletCode);
@@ -1680,13 +1712,14 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               </div>
               {movements.length > 0 ? movements.slice(0, 8).map(tx => {
                 const credit = isTxCredit(tx);
+                const meta = txRowMeta(tx);
                 return (
                   <button key={tx.id} type="button" onClick={() => setSelectedTx(tx)} style={{ width: '100%', display: 'grid', gridTemplateColumns: '1fr auto', alignItems: 'center', gap: 12, padding: '13px 22px', borderTop: '1px solid rgba(255,255,255,0.05)', textAlign: 'left' }} className="hover:bg-white/[0.02] transition-colors">
                     <div className="flex items-center gap-3" style={{ minWidth: 0 }}>
-                      <div style={{ width: 32, height: 32, borderRadius: 9, background: credit ? 'rgba(74,222,128,0.1)' : 'rgba(255,255,255,0.055)', color: credit ? '#4ADE80' : '#F4F4F2', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700, flexShrink: 0 }}>{tx.initials}</div>
+                      <div style={{ width: 32, height: 32, borderRadius: 9, background: credit ? 'rgba(74,222,128,0.1)' : 'rgba(255,255,255,0.055)', color: credit ? '#4ADE80' : '#F4F4F2', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><meta.Icon size={15} /></div>
                       <div style={{ minWidth: 0 }}>
-                        <p style={{ fontSize: 13.5, fontWeight: 600, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{tx.title}</p>
-                        <p style={{ fontSize: 11.5, color: '#878E88' }}>{tx.date}</p>
+                        <p style={{ fontSize: 13.5, fontWeight: 600, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{meta.title}</p>
+                        {meta.sub && <p style={{ fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{meta.sub}</p>}
                       </div>
                     </div>
                     <div style={{ textAlign: 'right' }}>
@@ -1849,18 +1882,20 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           </div>
 
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-             {getFilteredMovements(null, { full: true }).map(tx => (
+             {getFilteredMovements(null, { full: true }).map(tx => {
+                 const meta = txRowMeta(tx);
+                 return (
                  <button key={tx.id} type="button" onClick={() => setSelectedTx(tx)} className="w-full p-4 border-b border-slate-50 flex justify-between items-center gap-3 hover:bg-slate-50 transition-colors text-left cursor-pointer">
                     <div className="flex items-center gap-4 min-w-0">
-                        <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-xs shrink-0 ${isTxCredit(tx) ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600'}`}>
-                            {tx.initials}
+                        <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${isTxCredit(tx) ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600'}`}>
+                            <meta.Icon size={17} />
                         </div>
                         <div className="min-w-0">
-                            <p className="font-bold text-slate-800 text-sm truncate">{tx.title}</p>
-                            <div className="flex items-center gap-2 mt-0.5">
-                                <p className="text-xs text-slate-400">{tx.date}</p>
+                            <p className="font-bold text-slate-800 text-sm truncate">{meta.title}</p>
+                            <div className="flex items-center gap-2 mt-0.5 min-w-0">
+                                {meta.sub && <p className="text-xs text-slate-400 truncate">{meta.sub}</p>}
                                 {tx.status && (
-                                    <span className={`inline-block px-2 py-0.5 rounded-full text-[9px] font-bold uppercase border ${movStatusStyle(tx.status)}`}>{movStatusLabel(tx.status)}</span>
+                                    <span className={`inline-block px-2 py-0.5 rounded-full text-[9px] font-bold uppercase border shrink-0 ${movStatusStyle(tx.status)}`}>{movStatusLabel(tx.status)}</span>
                                 )}
                             </div>
                         </div>
@@ -1869,7 +1904,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                         {isTxCredit(tx) ? '+' : '-'} {formatMoney(tx.amount, tx.currency)}
                     </span>
                  </button>
-             ))}
+                 );
+             })}
              {getFilteredMovements(null, { full: true }).length === 0 && (
                  <div className="p-12 text-center text-slate-400">
                      No hay movimientos para mostrar.
@@ -2147,23 +2183,26 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
               <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
                   <div className="p-4 border-b border-slate-100 font-bold text-slate-800">Movimientos de esta cuenta</div>
-                  {getFilteredMovements(selectedWalletCode).map(tx => (
+                  {getFilteredMovements(selectedWalletCode).map(tx => {
+                       const meta = txRowMeta(tx);
+                       return (
                        <button key={tx.id} type="button" onClick={() => setSelectedTx(tx)} className="w-full p-4 border-b border-slate-50 flex justify-between items-center hover:bg-slate-50 text-left cursor-pointer">
-                           <div className="flex items-center gap-3">
-                               <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs ${isTxCredit(tx) ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600'}`}>{tx.initials}</div>
-                               <div>
-                                   <p className="font-bold text-slate-800 text-sm">{tx.title}</p>
-                                   <p className="text-xs text-slate-400">
-                                       {tx.date}
+                           <div className="flex items-center gap-3 min-w-0">
+                               <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${isTxCredit(tx) ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600'}`}><meta.Icon size={15} /></div>
+                               <div className="min-w-0">
+                                   <p className="font-bold text-slate-800 text-sm truncate">{meta.title}</p>
+                                   <p className="text-xs text-slate-400 truncate">
+                                       {meta.sub}
                                        {(tx.gasfree === true || tx.raw_data?.gasfree === true) && (tx.feeChargedUsdt ?? tx.raw_data?.feeChargedUsdt) != null && (
                                            <span> · comisión {Number(tx.feeChargedUsdt ?? tx.raw_data?.feeChargedUsdt).toFixed(2)} USDT</span>
                                        )}
                                    </p>
                                </div>
                            </div>
-                           <span className={`font-bold text-sm ${isTxCredit(tx) ? 'text-green-600' : 'text-slate-800'}`}>{isTxCredit(tx) ? '+' : '-'} {formatMoney(tx.amount, tx.currency)}</span>
+                           <span className={`font-bold text-sm shrink-0 ${isTxCredit(tx) ? 'text-green-600' : 'text-slate-800'}`}>{isTxCredit(tx) ? '+' : '-'} {formatMoney(tx.amount, tx.currency)}</span>
                        </button>
-                  ))}
+                       );
+                  })}
                   {getFilteredMovements(selectedWalletCode).length === 0 && <div className="p-12 text-center text-slate-400 text-sm">Sin movimientos recientes en {selectedWalletCode}</div>}
               </div>
 
