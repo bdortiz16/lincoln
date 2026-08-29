@@ -99,7 +99,7 @@ async function mouvPayout(
   rail: 'BREB' | 'ACH',
   recipient: Record<string, any>,
   amountCop: number,
-): Promise<{ ok: boolean; status: number; data: any; providerRef?: string; notImplemented?: boolean }> {
+): Promise<{ ok: boolean; status: number; data: any; providerRef?: string; notImplemented?: boolean; targetName?: string; targetDocument?: string }> {
   // Mouv trabaja en CENTAVOS (confirmado contra el saldo real). El monto que
   // llega es en PESOS → se convierte a centavos para /transfers/send.
   const amountCents = Math.round(amountCop * 100)
@@ -136,7 +136,9 @@ async function mouvPayout(
         reference: recipient.reference ?? 'Pago Lincoin',
       }),
     })
-    return { ok: r.ok, status: r.status, data: r.data, providerRef: r.data?.id }
+    // Devolver el titular RESUELTO (oficial, de resolve-key) para que el
+    // comprobante muestre el nombre/documento reales del beneficiario.
+    return { ok: r.ok, status: r.status, data: r.data, providerRef: r.data?.id, targetName, targetDocument }
   }
 
   // ── ACH — mismo endpoint /transfers/send con destino de cuenta bancaria.
@@ -159,7 +161,7 @@ async function mouvPayout(
       reference: recipient.reference ?? 'Pago Lincoin',
     }),
   })
-  return { ok: r.ok, status: r.status, data: r.data, providerRef: r.data?.id }
+  return { ok: r.ok, status: r.status, data: r.data, providerRef: r.data?.id, targetName: recipient.holderName, targetDocument: recipient.documentNumber }
 }
 
 // Registro de auditoría best-effort (no bloquea la operación).
@@ -299,9 +301,25 @@ serve(async (req: Request) => {
 
     // 3) Registrar la transacción (type 'dispersion' — NO colisiona con la
     //    cola de retiros del admin, que es type 'send' + 'Pendiente').
+    //    Los campos amigables (title/beneficiary/bank/account) son los que
+    //    lee el comprobante del cliente — sin ellos salía "dispersion" crudo
+    //    y sin beneficiario.
+    const railLabel = rail === 'BREB' ? 'Bre-B' : 'ACH'
+    const keyTypeLabel = ({ celular: 'Celular', cedula: 'Cédula', correo: 'Correo', alfanumerico: 'Llave' } as Record<string, string>)[String(recipient.keyType ?? '')] ?? 'Llave'
+    const prettyBase = {
+      source: 'mouv_payout', rail,
+      title: `Dispersión ${railLabel}`,
+      beneficiary: recipient.holderName ?? null,
+      bank: rail === 'BREB' ? `Bre-B · ${keyTypeLabel}` : (recipient.bankCode ?? 'ACH'),
+      account: rail === 'BREB' ? (recipient.key ?? null) : (recipient.accountNumber ?? null),
+      ...(recipient.documentNumber ? { documentNumber: recipient.documentNumber } : {}),
+      ...(recipient.documentType ? { documentType: recipient.documentType } : {}),
+      ...(recipient.reference ? { reason: recipient.reference } : {}),
+      recipient,
+    }
     const { data: txIns } = await db.from('transactions').insert({
       user_id: userId, type: 'dispersion', amount, currency: railCol, status: 'Procesando',
-      raw_data: { source: 'mouv_payout', rail, recipient, requestedAt: new Date().toISOString() },
+      raw_data: { ...prettyBase, requestedAt: new Date().toISOString() },
     }).select('id').maybeSingle()
     const txId = (txIns as any)?.id ?? null
 
@@ -311,7 +329,15 @@ serve(async (req: Request) => {
     if (pay.ok) {
       if (txId) await db.from('transactions').update({
         status: 'Completado',
-        raw_data: { source: 'mouv_payout', rail, recipient, providerRef: pay.providerRef ?? null, settledAt: new Date().toISOString() },
+        raw_data: {
+          ...prettyBase,
+          // Titular OFICIAL resuelto por Mouv (resolve-key) — manda sobre lo
+          // que escribió el usuario.
+          ...(pay.targetName ? { beneficiary: pay.targetName } : {}),
+          ...(pay.targetDocument ? { documentNumber: pay.targetDocument } : {}),
+          providerRef: pay.providerRef ?? null,
+          settledAt: new Date().toISOString(),
+        },
       }).eq('id', txId)
       await logAudit(userId, `mouv.${action}.ok`, { amount, rail, providerRef: pay.providerRef ?? null })
       return json(200, { ok: true, providerRef: pay.providerRef ?? null, newBalance: afterDebit })
@@ -324,7 +350,7 @@ serve(async (req: Request) => {
     await db.from('users').update({ balances: { ...bals2, [railCol]: restored } }).eq('id', userId)
     if (txId) await db.from('transactions').update({
       status: pay.notImplemented ? 'Rechazado' : 'Fallido',
-      raw_data: { source: 'mouv_payout', rail, recipient, error: pay.data?.error ?? 'payout_failed', refunded: true, failedAt: new Date().toISOString() },
+      raw_data: { ...prettyBase, error: pay.data?.error ?? 'payout_failed', refunded: true, failedAt: new Date().toISOString() },
     }).eq('id', txId)
     await logAudit(userId, `mouv.${action}.fail`, { amount, rail, notImplemented: !!pay.notImplemented, status: pay.status })
 

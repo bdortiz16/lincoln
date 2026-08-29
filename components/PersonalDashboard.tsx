@@ -2629,7 +2629,14 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     pay_sent: 'Pago Lincoin enviado', pay_received: 'Pago Lincoin recibido',
     otc_withdraw_request: 'Retiro OTC', otc_convert_request: 'Conversión OTC',
     otc_deposit: 'Depósito cripto', otc_withdraw: 'Retiro cripto',
+    dispersion: 'Dispersión', adjustment: 'Ajuste de saldo',
   };
+
+  // Moneda amigable para mostrar: los rieles internos COP_BREB / COP_ACH son
+  // pesos — el sufijo del riel va como contexto, no como ticker.
+  const displayCurrency = (c?: string): string => String(c || '').split('_')[0];
+  const railOfCurrency = (c?: string): string | null =>
+    c === 'COP_BREB' ? 'Bre-B' : c === 'COP_ACH' ? 'ACH' : null;
 
   const WALLET_NETWORK: Record<string, string> = {
     USDT_BSC: 'BSC (BEP-20)', USDC_BSC: 'BSC (BEP-20)', BNB: 'BSC (BEP-20)',
@@ -2722,8 +2729,21 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       navigator.clipboard.writeText(text).then(() => setToastMessage('Copiado al portapapeles')).catch(() => {});
     };
 
+    // Dispersión Mouv (Bre-B/ACH): beneficiario, destino y referencia del
+    // proveedor. Los guarda mouv-proxy (title/beneficiary/bank/account); las
+    // filas viejas solo traen `recipient` — se leen como respaldo.
+    const isDispersion = tx.type === 'dispersion';
+    const dispRecipient = (tx.recipient && typeof tx.recipient === 'object') ? tx.recipient : (rawData.recipient ?? {});
+    const dispBeneficiary: string = tx.beneficiary ?? dispRecipient.holderName ?? '';
+    const dispDest: string = tx.account ?? dispRecipient.key ?? dispRecipient.accountNumber ?? '';
+    const dispProviderRef: string = tx.providerRef ?? rawData.providerRef ?? '';
+
     const fields: { label: string; value: string; copyable?: boolean; link?: string; mono?: boolean }[] = [
-      { label: 'Descripción', value: TX_LABELS[tx.type] || tx.type },
+      { label: 'Descripción', value: tx.title || TX_LABELS[tx.type] || tx.type },
+      ...(isDispersion ? [{ label: 'Riel de pago', value: railOfCurrency(tx.currency) ?? (tx.rail === 'BREB' ? 'Bre-B' : tx.rail === 'ACH' ? 'ACH' : 'Mouv') }] : []),
+      ...(isDispersion && dispBeneficiary && !tx.beneficiary ? [{ label: 'Beneficiario', value: dispBeneficiary }] : []),
+      ...(isDispersion && dispDest && !tx.account ? [{ label: tx.currency === 'COP_BREB' ? 'Llave destino' : 'Cuenta destino', value: dispDest, copyable: true, mono: true }] : []),
+      ...(isDispersion && dispProviderRef ? [{ label: 'Referencia Mouv', value: dispProviderRef, copyable: true, mono: true }] : []),
       { label: 'Estado', value: tx.status },
       { label: 'Fecha', value: timeStr ? `${dateStr} · ${timeStr}` : dateStr },
       ...(isCrypto && networkLabel ? [{ label: 'Red', value: networkLabel }] : []),
@@ -2756,7 +2776,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       ...(tx.beneficiary ? [{ label: 'Beneficiario', value: tx.beneficiary }] : []),
       ...((tx.documentType ?? rawData.documentType) || (tx.documentNumber ?? rawData.documentNumber)
         ? [{ label: 'Documento', value: `${tx.documentType ?? rawData.documentType ?? ''} ${tx.documentNumber ?? rawData.documentNumber ?? ''}`.trim() }] : []),
-      ...(tx.account ? [{ label: 'Número de cuenta', value: tx.account }] : []),
+      ...(tx.account ? [{ label: tx.currency === 'COP_BREB' ? 'Llave destino' : 'Número de cuenta', value: tx.account }] : []),
       ...(!isCrypto && !isGasfreeDeposit && tx.toAddress ? [{ label: 'Dirección destino', value: tx.toAddress, copyable: true, mono: true }] : []),
       ...(tx.reason ? [{ label: 'Motivo', value: tx.reason }] : []),
       { label: 'Referencia', value: String(tx.id) },
@@ -2927,7 +2947,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           {/* Amount */}
           <div className="mx-6 mb-5 rounded-2xl bg-[#F4F6F9] p-4 text-center">
             <p className={`text-4xl font-black ${isCredit ? 'text-green-600' : 'text-[#0C0E0D]'}`}>
-              {isCredit ? '+' : '-'}{formatMoney(tx.amount, tx.currency)} <span className="text-xl">{tx.currency}</span>
+              {isCredit ? '+' : '-'}{formatMoney(tx.amount, tx.currency)} <span className="text-xl">{displayCurrency(tx.currency)}</span>{railOfCurrency(tx.currency) && <span className="text-sm font-semibold text-slate-400 ml-1.5">· {railOfCurrency(tx.currency)}</span>}
             </p>
             <div className={`inline-flex items-center gap-1.5 mt-2 px-3 py-1 rounded-full text-xs font-bold border ${tx.status === 'Completado' ? 'bg-white text-green-700 border-green-500' : tx.status === 'Pendiente' ? 'bg-white text-orange-600 border-orange-400' : 'bg-white text-red-700 border-red-400'}`}>
               <CheckCircle size={12} />
