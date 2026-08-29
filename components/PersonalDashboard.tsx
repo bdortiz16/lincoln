@@ -1738,23 +1738,6 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
             {/* Columna derecha */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-              {/* Tasa de hoy */}
-              {(() => {
-                const rate = getRate('USD', 'COP');
-                return (
-                  <div className="lincoin-panel">
-                    <div className="flex items-center justify-between" style={{ marginBottom: 12 }}>
-                      <span style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2' }}>Tasa de hoy</span>
-                      <span style={{ fontSize: 11, color: '#878E88' }}>vía Mouv</span>
-                    </div>
-                    <div className="flex items-center justify-between" style={{ fontSize: 13 }}>
-                      <span style={{ color: '#878E88' }}>USD → COP</span>
-                      <span style={{ color: '#F4F4F2', fontWeight: 700 }}>{rate ? Math.round(rate).toLocaleString('es-CO') : '—'}</span>
-                    </div>
-                    <button onClick={() => { setSelectedWalletCode('USD'); setActiveView('mouv'); }} style={{ marginTop: 14, width: '100%', padding: '10px', borderRadius: 9, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontSize: 13, fontWeight: 600 }} className="hover:bg-white/[0.09] transition-colors">Convertir a COP</button>
-                  </div>
-                );
-              })()}
               {/* Servicios */}
               <div className="lincoin-panel">
                 <div className="flex items-center justify-between" style={{ marginBottom: 4 }}>
