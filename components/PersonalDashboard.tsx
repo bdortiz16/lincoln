@@ -344,6 +344,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // Contacto elegido para el envío COP (trae destKind/brebKey/banco para la
   // dispersión REAL inline de Mouv).
   const [sendContact, setSendContact] = useState<any>(null);
+  // Método elegido en el paso 2 del flujo (diseño Flujo Enviar): lista radio.
+  const [sendMethodSel, setSendMethodSel] = useState<'breb' | 'ach' | 'pay' | 'cash' | null>(null);
   const [isSending, setIsSending] = useState(false);
   // Candado síncrono anti doble-clic (el estado de React tarda un render en
   // reflejarse; el ref bloquea desde el primer instante).
@@ -1084,6 +1086,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           // Beneficiario preseleccionado (botón "Enviar" de Beneficiarios):
           // ya se sabe destino y método — del monto directo a confirmar.
           if (sendContact && sendMode && sendForm.beneficiaryName) { setSendStep(4); return; }
+          // USDT: único método es wallet — directo al destinatario.
+          if (sendForm.destinationCurrency === 'USD') { setSendMode('wallet'); setSendStep(3); return; }
           setSendStep(2); // → method selection
       } else if (sendStep === 3 && sendMode === 'bank') {
           if (!sendForm.beneficiaryName || !sendForm.documentNumber || !sendForm.accountNumber) {
@@ -1316,6 +1320,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       setContactSearch('');
       setSendSourceRail('COP');
       setSendContact(null);
+      setSendMethodSel(null);
   };
 
   const handleEditProfileClick = () => {
@@ -3773,277 +3778,266 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       )}
 
       {isSendModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden animate-in zoom-in-95 duration-300 flex flex-col max-h-[90vh]">
-                  <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-                      <h3 className="font-bold text-xl text-slate-800">
-                          {sendStep === 1 && "Enviar Dinero"}
-                          {sendStep === 2 && "Elige el Método"}
-                          {sendStep === 3 && sendMode === 'bank' && "Datos del Beneficiario"}
-                          {sendStep === 3 && sendMode === 'wallet' && "Enviar a Wallet"}
-                          {sendStep === 3 && sendMode === 'pay' && "Pago Lincoin"}
-                          {sendStep === 3 && sendMode === 'cash' && "Datos del Receptor"}
-                          {sendStep === 4 && (sendMode === 'bank' || sendMode === 'wallet') && "Confirmar Envío"}
-                          {sendStep === 4 && sendMode === 'pay' && "¡Pago Enviado!"}
-                          {sendStep === 4 && sendMode === 'cash' && "Confirmar Retiro"}
-                          {sendStep === 5 && sendMode !== 'cash' && "¡Envío Exitoso!"}
-                          {sendStep === 5 && sendMode === 'cash' && "¡Retiro Solicitado!"}
-                      </h3>
-                      {sendStep !== 5 && !(sendStep === 4 && sendMode === 'pay') && (
-                          <button onClick={closeSendModal} className="text-slate-400 hover:text-slate-600 p-1 rounded-full hover:bg-slate-200 transition-colors"><X size={20}/></button>
+          <div className="fixed inset-0 z-50 p-4" style={{ background: 'rgba(4,5,4,0.72)', display: 'grid', placeItems: 'center' }}>
+              <div className="w-full animate-in zoom-in-95 duration-300 flex flex-col" role="dialog" aria-modal="true"
+                  style={{ maxWidth: 476, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, overflow: 'hidden', maxHeight: '92vh', fontFamily: "'Archivo', system-ui, sans-serif" }}>
+                  {/* Cabecera + progreso (diseño Flujo Enviar: 4 pasos) */}
+                  <div style={{ padding: '18px 22px 14px' }}>
+                      <div className="flex items-start justify-between gap-3">
+                          <div>
+                              <h3 style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.3px', color: '#F4F4F2' }}>
+                                  {sendStep === 1 && 'Enviar dinero'}
+                                  {sendStep === 2 && '¿Cómo lo enviamos?'}
+                                  {sendStep === 3 && (sendMode === 'bank' ? '¿A quién le envías?' : sendMode === 'wallet' ? 'Enviar a wallet' : sendMode === 'pay' ? 'Pago Lincoin' : 'Datos del receptor')}
+                                  {sendStep === 4 && (sendMode === 'pay' ? '¡Pago enviado!' : 'Confirma el envío')}
+                                  {sendStep === 5 && (sendMode === 'cash' ? '¡Retiro solicitado!' : '¡Envío exitoso!')}
+                              </h3>
+                              <p style={{ fontSize: 12.5, color: '#878E88', marginTop: 3 }}>
+                                  {sendStep === 1 && (sendForm.destinationCurrency === 'USD' ? 'Desde tu billetera USDT' : 'Desde tu cuenta en pesos colombianos')}
+                                  {sendStep === 2 && <>Enviando <span style={{ color: '#F4F4F2', fontWeight: 700 }}>{formatMoney(getRawAmount(sendForm.amount), sendForm.destinationCurrency)} {displayCurrency(sendForm.destinationCurrency)}</span> · <button onClick={() => setSendStep(1)} style={{ textDecoration: 'underline', color: '#F4F4F2' }}>cambiar</button></>}
+                                  {sendStep === 3 && sendMode === 'bank' && <>{formatMoney(getRawAmount(sendForm.amount), 'COP')} COP · {sendSourceRail === 'COP_ACH' ? 'ACH' : 'Bre-B'} · solo beneficiarios inscritos</>}
+                                  {sendStep === 4 && sendMode !== 'pay' && 'Revisa los datos antes de confirmar'}
+                              </p>
+                          </div>
+                          {sendStep !== 5 && !(sendStep === 4 && sendMode === 'pay') && (
+                              <button onClick={closeSendModal} style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                                  <X size={13} style={{ color: '#878E88' }} strokeWidth={1.7} />
+                              </button>
+                          )}
+                      </div>
+                      {sendStep <= 4 && (
+                          <div className="flex" style={{ gap: 5, marginTop: 14 }}>
+                              {[1, 2, 3, 4].map(s => (
+                                  <div key={s} style={{ flex: 1, height: 3, borderRadius: 2, background: sendStep >= s ? '#4ADE80' : 'rgba(255,255,255,0.1)' }} />
+                              ))}
+                          </div>
                       )}
                   </div>
-                  <div className="p-6 overflow-y-auto">
+                  <div style={{ padding: '6px 22px 22px', overflowY: 'auto' }}>
 
-                      {/* STEP 1: Currency + Amount */}
-                      {sendStep === 1 && (
-                          <div className="space-y-6">
+                      {/* STEP 1: DESDE (cuenta + rieles con saldo) + monto */}
+                      {sendStep === 1 && (() => {
+                          const isUsdt = sendForm.destinationCurrency === 'USD';
+                          const avail = isUsdt ? displayBalance('USD') : getBalance(sendSourceRail);
+                          const quicks = isUsdt ? [5, 20, 50] : [10000, 50000, 200000];
+                          const setAmt = (n: number) => setSendForm({ ...sendForm, amount: formatInputNumber(String(Math.floor(n))) });
+                          return (
+                          <div className="space-y-4">
+                              {/* DESDE */}
                               <div>
-                                  <label className="block text-sm font-bold text-slate-700 mb-2">Moneda a enviar</label>
-                                  <div className="grid grid-cols-4 gap-2">
-                                      {SEND_COUNTRIES.map(c => {
-                                          const sel = sendForm.destinationCountry === c.name;
-                                          return (
-                                          <button key={c.code} type="button"
-                                              onClick={() => setSendForm({...sendForm, destinationCountry: c.name, destinationCurrency: c.currency})}
-                                              className="flex flex-col items-center gap-1 p-2.5 rounded-xl transition-all"
-                                              style={{
-                                                  border: sel ? '1.5px solid #4ADE80' : '1px solid rgba(255,255,255,0.14)',
-                                                  background: sel ? 'rgba(74,222,128,0.12)' : 'transparent',
-                                              }}
-                                          >
-                                              <FlagImg code={c.code} className="w-7 h-5 object-cover rounded shadow-sm" />
-                                              <span className="text-[10px] font-bold leading-tight text-center" style={{ color: sel ? '#4ADE80' : '#878E88' }}>{c.name}</span>
-                                          </button>
-                                          );
-                                      })}
-                                  </div>
-                              </div>
-                              {/* Billetera de ORIGEN — solo COP: 3 rieles con saldos separados */}
-                              {sendForm.destinationCurrency === 'COP' && (
-                                  <div>
-                                      <label className="block text-sm font-bold text-slate-700 mb-2">Billetera de origen</label>
-                                      <div className="grid grid-cols-3 gap-2">
+                                  <label style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88' }}>DESDE</label>
+                                  <div style={{ marginTop: 6, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.025)', borderRadius: 13, padding: '13px 15px' }}>
+                                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                                          <div className="flex items-center gap-2.5">
+                                              <span style={{ width: 26, height: 26, borderRadius: '50%', flexShrink: 0, display: 'block', background: isUsdt ? '#26A17B' : 'linear-gradient(180deg,#FCD116 0 50%,#003893 50% 75%,#CE1126 75%)', color: '#fff', fontWeight: 800, fontSize: 11, textAlign: 'center', lineHeight: '26px' }}>{isUsdt ? '₮' : ''}</span>
+                                              <div>
+                                                  <p style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>{isUsdt ? 'Dólar digital' : 'Peso colombiano'}</p>
+                                                  <p style={{ fontSize: 11, color: '#878E88' }}>{isUsdt ? 'USDT · disponible' : `${sendSourceRail === 'COP' ? 'Saldo Lincoin' : sendSourceRail === 'COP_BREB' ? 'Bre-B' : 'ACH'} · disponible`}</p>
+                                              </div>
+                                          </div>
+                                          <p style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.6px', color: '#F4F4F2' }}>{isUsdt ? Number(avail).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : Math.round(avail).toLocaleString('es-CO')}</p>
+                                      </div>
+                                      {/* Chips de riel / cambio de cuenta */}
+                                      <div className="flex flex-wrap" style={{ gap: 6, marginTop: 12 }}>
                                           {([
-                                              { key: 'COP', label: 'Saldo Lincoin', Icon: Wallet },
-                                              { key: 'COP_BREB', label: 'Bre-B', Icon: Zap },
-                                              { key: 'COP_ACH', label: 'ACH', Icon: Landmark },
+                                              { key: 'COP', label: 'Saldo Lincoin' },
+                                              { key: 'COP_BREB', label: 'Bre-B' },
+                                              { key: 'COP_ACH', label: 'ACH' },
                                           ] as const).map(r => {
-                                              const sel = sendSourceRail === r.key;
-                                              const railBal = getBalance(r.key);
+                                              const sel = !isUsdt && sendSourceRail === r.key;
                                               return (
-                                                  <button key={r.key} type="button" onClick={() => setSendSourceRail(r.key)}
-                                                      className="p-2.5 rounded-xl text-left transition-all"
-                                                      style={{ border: sel ? '1.5px solid #4ADE80' : '1px solid rgba(255,255,255,0.14)', background: sel ? 'rgba(74,222,128,0.12)' : 'transparent' }}
-                                                  >
-                                                      <r.Icon size={15} style={{ color: sel ? '#4ADE80' : '#878E88' }} />
-                                                      <p className="text-[11px] font-bold mt-1" style={{ color: sel ? '#4ADE80' : '#F4F4F2' }}>{r.label}</p>
-                                                      <p className="text-[10px] font-semibold mt-0.5" style={{ color: '#878E88' }}>{Math.round(railBal).toLocaleString('es-CO')}</p>
+                                                  <button key={r.key} type="button"
+                                                      onClick={() => { setSendForm(f => ({ ...f, destinationCountry: 'Colombia', destinationCurrency: 'COP' })); setSendSourceRail(r.key); }}
+                                                      style={{ borderRadius: 999, padding: '6px 12px', fontSize: 11.5, fontWeight: sel ? 700 : 500, border: sel ? '1px solid rgba(74,222,128,0.35)' : '1px solid rgba(255,255,255,0.1)', background: sel ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.03)', color: sel ? '#F4F4F2' : '#878E88' }}>
+                                                      {r.label} · {Math.round(getBalance(r.key)).toLocaleString('es-CO')}
                                                   </button>
                                               );
                                           })}
+                                          <button type="button"
+                                              onClick={() => { setSendForm(f => ({ ...f, destinationCountry: 'Estados Unidos', destinationCurrency: 'USD' })); }}
+                                              style={{ borderRadius: 999, padding: '6px 12px', fontSize: 11.5, fontWeight: isUsdt ? 700 : 500, border: isUsdt ? '1px solid rgba(74,222,128,0.35)' : '1px solid rgba(255,255,255,0.1)', background: isUsdt ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.03)', color: isUsdt ? '#F4F4F2' : '#878E88' }}>
+                                              ₮ USDT · {Number(displayBalance('USD')).toLocaleString('es-CO', { maximumFractionDigits: 2 })}
+                                          </button>
                                       </div>
                                   </div>
-                              )}
+                              </div>
+                              {/* MONTO */}
                               <div>
-                                  <label className="block text-sm font-bold text-slate-700 mb-2">Monto a enviar</label>
-                                  <div className="relative">
-                                      <input type="text" value={sendForm.amount} onChange={(e) => setSendForm({...sendForm, amount: formatInputNumber(e.target.value)})} className="w-full h-16 pl-4 pr-16 text-3xl font-bold text-slate-900 border border-slate-300 rounded-xl focus:border-[#0C0E0D] focus:ring-1 focus:ring-[#0C0E0D] outline-none" placeholder="0" autoFocus />
-                                      <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-lg">{sendForm.destinationCurrency}</span>
+                                  <div className="flex items-center justify-between">
+                                      <label style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88' }}>MONTO A ENVIAR</label>
+                                      {!isUsdt && <span style={{ fontSize: 11.5, color: '#878E88' }}>Mínimo <span style={{ color: '#F4F4F2', fontWeight: 700 }}>5 000</span></span>}
                                   </div>
-                                  <p className="text-xs text-slate-400 mt-1">Disponible: <span className="font-bold">{sendForm.destinationCurrency === 'COP' ? `${formatMoney(getBalance(sendSourceRail), 'COP')} COP` : `${formatMoney(displayBalance(sendForm.destinationCurrency), sendForm.destinationCurrency)} ${sendForm.destinationCurrency === 'USD' ? 'USDT' : sendForm.destinationCurrency}`}</span></p>
-                                  {sendForm.destinationCurrency === 'COP' && (
-                                      <p className="text-[10px] text-amber-600 font-bold mt-0.5">Mínimo de transferencia bancaria: 5.000 COP</p>
-                                  )}
+                                  <div className="relative" style={{ marginTop: 6 }}>
+                                      <input type="text" value={sendForm.amount} onChange={(e) => setSendForm({ ...sendForm, amount: formatInputNumber(e.target.value) })} placeholder="0" autoFocus
+                                          style={{ width: '100%', height: 62, padding: '0 74px 0 16px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 13, color: '#F4F4F2', fontSize: 28, fontWeight: 800, letterSpacing: '-1px', outline: 'none', fontFamily: 'inherit' }} />
+                                      <span className="absolute right-4 top-1/2 -translate-y-1/2" style={{ color: '#878E88', fontWeight: 700, fontSize: 15 }}>{isUsdt ? 'USDT' : 'COP'}</span>
+                                  </div>
+                                  <div className="flex flex-wrap" style={{ gap: 6, marginTop: 10 }}>
+                                      {quicks.map(n => (
+                                          <button key={n} type="button" onClick={() => setAmt(n)}
+                                              style={{ borderRadius: 7, padding: '6px 12px', fontSize: 11.5, fontWeight: 600, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.03)', color: '#878E88' }} className="hover:bg-white/[0.09] transition-colors">
+                                              {n.toLocaleString('es-CO')}
+                                          </button>
+                                      ))}
+                                      <button type="button" onClick={() => setAmt(avail)}
+                                          style={{ borderRadius: 7, padding: '6px 12px', fontSize: 11.5, fontWeight: 600, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.03)', color: '#878E88' }} className="hover:bg-white/[0.09] transition-colors">
+                                          Todo
+                                      </button>
+                                  </div>
                               </div>
-                              <button onClick={handleSendNext} style={{ color: '#FFFFFF' }} className="w-full h-14 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] mt-2 flex items-center justify-center gap-2 text-lg shadow-lg">Continuar</button>
+                              <div className="flex items-center" style={{ gap: 8 }}>
+                                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#4ADE80', flexShrink: 0 }} />
+                                  <span style={{ fontSize: 12, color: '#878E88' }}>{isUsdt ? 'Comisión de red GasFree cotizada antes de confirmar.' : 'Sin comisión entre usuarios de Lincoin.'}</span>
+                              </div>
+                              <div className="flex" style={{ gap: 9, paddingTop: 4 }}>
+                                  <button onClick={closeSendModal} style={{ flex: 1, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 14, padding: '13px 0', borderRadius: 10 }} className="hover:bg-white/[0.09] transition-colors">Cancelar</button>
+                                  <button onClick={handleSendNext} className="lincoin-btn-white transition-colors" style={{ flex: 1.5, fontWeight: 700, fontSize: 14, padding: '13px 0', borderRadius: 10, border: 'none' }}>Continuar</button>
+                              </div>
                           </div>
-                      )}
+                          );
+                      })()}
 
-                      {/* STEP 2: Method selection */}
+                      {/* STEP 2: Método — lista de radio (diseño Flujo Enviar) */}
                       {sendStep === 2 && (
-                          <div className="space-y-5">
-                              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-center">
-                                  <p className="text-xs text-slate-400 font-bold uppercase mb-0.5">Enviando</p>
-                                  <p className="text-2xl font-extrabold text-[#0C0E0D]">{formatMoney(getRawAmount(sendForm.amount), sendForm.destinationCurrency)} <span className="text-lg">{sendForm.destinationCurrency}</span></p>
+                          <div className="space-y-4">
+                              <div className="space-y-2">
+                                  {([
+                                      { key: 'breb', title: 'Bre-B a cuenta bancaria', pill: 'SEGUNDOS', desc: 'A cualquier banco de Colombia por llave' },
+                                      { key: 'ach', title: 'ACH tradicional', pill: null, desc: 'L–V 7:00–18:00 · llega el mismo día' },
+                                      { key: 'pay', title: 'A otro usuario de Lincoin', pill: 'SIN COMISIÓN', desc: 'Por ID o correo · instantáneo, 24/7' },
+                                      { key: 'cash', title: 'Retiro en punto físico', pill: null, desc: 'Efectivo en corresponsales aliados · código de retiro' },
+                                  ] as const).map(m => {
+                                      const sel = sendMethodSel === m.key;
+                                      return (
+                                          <button key={m.key} type="button" onClick={() => setSendMethodSel(m.key)}
+                                              className="w-full flex items-center gap-3 text-left transition-colors"
+                                              style={{ padding: '13px 15px', borderRadius: 12, border: sel ? '1px solid rgba(74,222,128,0.35)' : '1px solid rgba(255,255,255,0.1)', background: sel ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.025)' }}>
+                                              <span className="flex-1 min-w-0">
+                                                  <span className="flex items-center gap-2">
+                                                      <span style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>{m.title}</span>
+                                                      {m.pill && <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 8.5, fontWeight: 700, letterSpacing: '0.6px', padding: '2px 6px', borderRadius: 999, whiteSpace: 'nowrap' }}>{m.pill}</span>}
+                                                  </span>
+                                                  <span style={{ display: 'block', fontSize: 11.5, color: '#878E88', marginTop: 2 }}>{m.desc}</span>
+                                              </span>
+                                              <span style={{ width: 17, height: 17, borderRadius: '50%', flexShrink: 0, border: sel ? '5px solid #4ADE80' : '1.5px solid rgba(255,255,255,0.25)' }} />
+                                          </button>
+                                      );
+                                  })}
                               </div>
-                              {/* "Mover entre mis cuentas" SOLO Colombia: mueve Peso ⇄ BreB */}
-                              {sendForm.destinationCurrency === 'COP' && (
-                              <div>
-                                  <p className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">Entre mis cuentas</p>
+                              {/* Mover entre cuentas — fila secundaria, no es un envío */}
+                              <button
+                                  onClick={() => { setIsSendModalOpen(false); setSendStep(1); setSelectedWalletCode('COP'); setBrebMoveOpen(true); setActiveView('wallet-detail'); }}
+                                  className="w-full flex items-center justify-between transition-colors hover:bg-white/[0.04]"
+                                  style={{ padding: '11px 15px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.08)', background: 'transparent' }}>
+                                  <span style={{ fontSize: 12.5, color: '#878E88' }}>¿Solo quieres mover saldo entre tus rieles?</span>
+                                  <span style={{ fontSize: 12.5, fontWeight: 600, color: '#F4F4F2' }}>Mover entre mis cuentas →</span>
+                              </button>
+                              <div className="flex" style={{ gap: 9 }}>
+                                  <button onClick={() => setSendStep(1)} style={{ flex: 1, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 14, padding: '13px 0', borderRadius: 10 }} className="hover:bg-white/[0.09] transition-colors">Atrás</button>
                                   <button
                                       onClick={() => {
-                                          setIsSendModalOpen(false);
-                                          setSendStep(1);
-                                          setSelectedWalletCode('COP');
-                                          setBrebMoveOpen(true);
-                                          setActiveView('wallet-detail');
+                                          if (!sendMethodSel) return;
+                                          if (sendMethodSel === 'breb' || sendMethodSel === 'ach') {
+                                              setSendMode('bank');
+                                              setSendSourceRail(sendMethodSel === 'breb' ? 'COP_BREB' : 'COP_ACH');
+                                          } else {
+                                              setSendMode(sendMethodSel);
+                                          }
+                                          setSendStep(3);
                                       }}
-                                      className="w-full flex items-center gap-3 p-4 border-2 border-slate-200 rounded-2xl hover:border-[#4ADE80] hover:bg-green-50/40 transition-all group text-left"
-                                  >
-                                      <div className="w-12 h-12 bg-[#0C0E0D] rounded-xl flex items-center justify-center shrink-0">
-                                          <RefreshCw size={22} className="text-[#4ADE80]" />
-                                      </div>
-                                      <div>
-                                          <p className="font-bold text-sm text-slate-800">Mover entre mis cuentas</p>
-                                          <p className="text-[10px] text-slate-500 leading-tight">Peso Lincoin ⇄ BreB Lincoin, al instante</p>
-                                      </div>
+                                      disabled={!sendMethodSel}
+                                      className="lincoin-btn-white transition-colors"
+                                      style={{ flex: 1.5, fontWeight: 700, fontSize: 14, padding: '13px 0', borderRadius: 10, border: 'none', opacity: sendMethodSel ? 1 : 0.45, cursor: sendMethodSel ? 'pointer' : 'not-allowed' }}>
+                                      Continuar
                                   </button>
                               </div>
-                              )}
-
-                              <p className="text-xs font-bold uppercase tracking-wider text-slate-500 -mb-2">A terceros / contactos</p>
-                              <div className="grid grid-cols-3 gap-3">
-                                  <button
-                                      onClick={() => { setSendMode('bank'); setSendStep(3); }}
-                                      className="flex flex-col items-center gap-2 p-4 border-2 border-slate-200 rounded-2xl hover:border-[#0C0E0D] hover:bg-slate-50 transition-all group"
-                                  >
-                                      <div className="w-12 h-12 bg-slate-100 group-hover:bg-slate-100 rounded-xl flex items-center justify-center transition-colors">
-                                          <Building2 size={24} className="text-slate-500 group-hover:text-[#0C0E0D]" />
-                                      </div>
-                                      <div className="text-center">
-                                          <p className="font-bold text-sm text-slate-800">Banco</p>
-                                          <p className="text-[10px] text-slate-400 leading-tight">Transferencia bancaria</p>
-                                      </div>
-                                  </button>
-                                  <button
-                                      onClick={() => { setSendMode('pay'); setSendStep(3); }}
-                                      className="flex flex-col items-center gap-2 p-4 border-2 border-slate-200 rounded-2xl hover:border-green-500 hover:bg-green-50 transition-all group"
-                                  >
-                                      <div className="w-12 h-12 bg-green-100 group-hover:bg-green-200 rounded-xl flex items-center justify-center transition-colors">
-                                          <Zap size={24} className="text-green-600" />
-                                      </div>
-                                      <div className="text-center">
-                                          <p className="font-bold text-sm text-slate-800">Lincoin</p>
-                                          <p className="text-[10px] text-slate-400 leading-tight">Instantáneo · Sin comisión</p>
-                                      </div>
-                                  </button>
-                                  {sendForm.destinationCurrency === 'USD' ? (
-                                  <button
-                                      onClick={() => { setSendMode('wallet'); setSendStep(3); }}
-                                      className="flex flex-col items-center gap-2 p-4 border-2 border-slate-200 rounded-2xl hover:border-[#4ADE80] hover:bg-green-50/40 transition-all group"
-                                  >
-                                      <div className="w-12 h-12 bg-green-50 group-hover:bg-green-100 rounded-xl flex items-center justify-center transition-colors">
-                                          <Wallet size={24} className="text-[#16A34A]" />
-                                      </div>
-                                      <div className="text-center">
-                                          <p className="font-bold text-sm text-slate-800">Wallet</p>
-                                          <p className="text-[10px] text-slate-400 leading-tight">USDT a wallet inscrita</p>
-                                      </div>
-                                  </button>
-                                  ) : (
-                                  <button
-                                      onClick={() => { setSendMode('cash'); setSendStep(3); }}
-                                      className="flex flex-col items-center gap-2 p-4 border-2 border-slate-200 rounded-2xl hover:border-orange-400 hover:bg-orange-50 transition-all group"
-                                  >
-                                      <div className="w-12 h-12 bg-orange-100 group-hover:bg-orange-200 rounded-xl flex items-center justify-center transition-colors">
-                                          <MapPin size={24} className="text-orange-600" />
-                                      </div>
-                                      <div className="text-center">
-                                          <p className="font-bold text-sm text-slate-800">Punto Físico</p>
-                                          <p className="text-[10px] text-slate-400 leading-tight">Retiro en efectivo</p>
-                                      </div>
-                                  </button>
-                                  )}
-                              </div>
-                              <button onClick={() => setSendStep(1)} className="text-xs text-slate-400 flex items-center justify-center gap-1 hover:text-slate-600 w-full pt-1">
-                                  <ArrowLeft size={12}/> Cambiar monto
-                              </button>
                           </div>
                       )}
 
-                      {/* STEP 3 BANK: SIEMPRE contactos inscritos (se inscriben en Contactos, no aquí) */}
+                      {/* STEP 3 BANK: beneficiarios inscritos como tarjetas (diseño) */}
                       {sendStep === 3 && sendMode === 'bank' && (() => {
-                          const isCopDest = sendForm.destinationCurrency === 'COP';
-                          {
-                              const all: any[] = ((currentUser as any)?.raw_data?.mouvContacts) ?? ((currentUser as any)?.mouvContacts) ?? [];
-                              // Solo contactos del país destino (COP = Colombia vía Mouv;
-                              // el resto por su país). Nada de formulario libre: las cuentas
-                              // se inscriben únicamente en la sección Contactos.
-                              const myContacts = all.filter((c: any) => c.accountKind !== 'wallet' && (c.country ?? 'Colombia') === sendForm.destinationCountry);
-                              const q = contactSearch.trim().toLowerCase();
-                              const list = myContacts.filter((c: any) =>
-                                  !q || `${c.name} ${c.bank} ${c.docNumber} ${c.accountNumber}`.toLowerCase().includes(q));
-                              const goContacts = () => { setIsSendModalOpen(false); setActiveView('contactos'); };
-                              const maskAcc = (a: string) => (a?.length > 4 ? `···${a.slice(-4)}` : a);
-                              return (
-                                  <div className="space-y-4">
-                                      <button onClick={() => setSendStep(2)} className="text-xs text-slate-400 flex items-center gap-1 hover:text-slate-600 mb-2 font-bold"><ArrowLeft size={12}/> Volver</button>
-                                      <p className="text-sm text-slate-600">
-                                          {isCopDest
-                                              ? <>Las transferencias en COP van <b>solo a contactos inscritos</b>. Elige el destinatario:</>
-                                              : <>Los envíos van <b>solo a contactos inscritos</b> de {sendForm.destinationCountry}. Elige el destinatario:</>}
-                                      </p>
+                          const all: any[] = ((currentUser as any)?.raw_data?.mouvContacts) ?? ((currentUser as any)?.mouvContacts) ?? [];
+                          const railKind = sendSourceRail === 'COP_ACH' ? 'ach' : 'breb';
+                          // Solo Colombia y del riel elegido en el paso 2.
+                          const myContacts = all.filter((c: any) => c.accountKind !== 'wallet' && (c.country ?? 'Colombia') === 'Colombia' && ((c.destKind ?? 'ach') === railKind));
+                          const q = contactSearch.trim().toLowerCase();
+                          const list = myContacts.filter((c: any) => !q || `${c.name} ${c.bank} ${c.docNumber} ${c.accountNumber} ${c.brebKey ?? ''}`.toLowerCase().includes(q));
+                          const goContacts = () => { setIsSendModalOpen(false); setActiveView('contactos'); };
+                          const maskAcc = (a: string) => (a?.length > 4 ? `···${a.slice(-4)}` : a);
+                          const initials = (n: string) => { const p = String(n || '').trim().split(/\s+/); return ((p[0]?.[0] ?? '') + (p[1]?.[0] ?? '')).toUpperCase() || '·'; };
+                          const pickContact = (c: any) => {
+                              setSendForm({
+                                  ...sendForm,
+                                  beneficiaryName: c.name,
+                                  documentType: c.docType ?? sendForm.documentType,
+                                  documentNumber: c.docNumber,
+                                  bankName: c.bank,
+                                  accountNumber: c.accountNumber,
+                                  accountType: c.accountType ?? sendForm.accountType,
+                                  beneficiaryType: c.kind === 'empresa' ? 'business' : 'personal',
+                              });
+                              setSendContact(c);
+                              setSendSourceRail((c as any).destKind === 'breb' ? 'COP_BREB' : 'COP_ACH');
+                              setMouvDestId(null);
+                          };
+                          return (
+                              <div className="space-y-3">
+                                  {myContacts.length > 3 && (
                                       <div className="relative">
-                                          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                                          <input
-                                              value={contactSearch}
-                                              onChange={e => setContactSearch(e.target.value)}
-                                              placeholder="Buscar por nombre, banco, documento o cuenta…"
-                                              className="w-full h-11 pl-9 pr-3 border border-slate-300 rounded-lg focus:border-[#0C0E0D] outline-none text-sm"
-                                          />
+                                          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: '#878E88' }} />
+                                          <input value={contactSearch} onChange={e => setContactSearch(e.target.value)} placeholder="Buscar beneficiario…"
+                                              style={{ width: '100%', height: 40, paddingLeft: 36, paddingRight: 12, background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 9, color: '#F4F4F2', fontSize: 13, outline: 'none' }} />
                                       </div>
-                                      {myContacts.length === 0 ? (
-                                          <div className="text-center py-8 space-y-3">
-                                              <p className="text-sm text-slate-400">Aún no tienes contactos inscritos.</p>
-                                              <button onClick={goContacts} style={{ color: '#0C0E0D' }} className="py-2.5 px-5 rounded-xl bg-[#4ADE80] hover:bg-[#6EE7A0] text-sm font-bold">
-                                                  + Inscribir mi primer contacto
+                                  )}
+                                  <div className="space-y-2" style={{ maxHeight: 300, overflowY: 'auto' }}>
+                                      {list.map((c: any) => {
+                                          const st = contactStatus(c);
+                                          const selectable = st === 'aprobada';
+                                          const sel = sendContact?.id === c.id;
+                                          const railLine = c.destKind === 'breb'
+                                              ? `Bre-B · ${maskAcc(c.brebKey ?? c.accountNumber)}`
+                                              : `${c.accountType === 'savings' ? 'Ahorros' : 'Corriente'} ${maskAcc(c.accountNumber)}`;
+                                          return (
+                                              <button key={c.id} disabled={!selectable} onClick={() => selectable && pickContact(c)}
+                                                  className="w-full flex items-center gap-3 text-left transition-colors"
+                                                  style={{ padding: '12px 14px', borderRadius: 12, opacity: selectable ? 1 : 0.5, cursor: selectable ? 'pointer' : 'not-allowed',
+                                                      border: sel ? '1px solid rgba(74,222,128,0.35)' : '1px solid rgba(255,255,255,0.1)',
+                                                      background: sel ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.025)' }}>
+                                                  <span style={{ width: 36, height: 36, borderRadius: '50%', background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', border: '1px solid rgba(255,255,255,0.12)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                                                      <span style={{ color: '#878E88', fontWeight: 800, fontSize: 12 }}>{initials(c.name)}</span>
+                                                  </span>
+                                                  <span className="flex-1 min-w-0">
+                                                      <span style={{ display: 'block', fontSize: 13.5, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.name}</span>
+                                                      <span style={{ display: 'block', fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{railLine}{c.bank && !String(c.bank).startsWith('Bre-B') ? ` · ${c.bank}` : ''}</span>
+                                                  </span>
+                                                  {selectable
+                                                      ? <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 9, fontWeight: 700, letterSpacing: '0.5px', padding: '3px 8px', borderRadius: 999, whiteSpace: 'nowrap', flexShrink: 0 }}>VERIFICADA</span>
+                                                      : <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 999, whiteSpace: 'nowrap', flexShrink: 0 }}>{st === 'rechazada' ? 'RECHAZADA' : 'EN VALIDACIÓN'}</span>}
                                               </button>
-                                          </div>
-                                      ) : (
-                                          <div className="space-y-2 max-h-72 overflow-y-auto">
-                                              {list.length === 0 && <p className="text-center text-sm text-slate-400 py-4">Sin resultados para "{contactSearch}"</p>}
-                                              {list.map((c: any) => {
-                                                  const st = contactStatus(c);
-                                                  const selectable = st === 'aprobada';
-                                                  return (
-                                                  <button
-                                                      key={c.id}
-                                                      disabled={!selectable}
-                                                      onClick={() => {
-                                                          if (!selectable) return;
-                                                          setSendForm({
-                                                              ...sendForm,
-                                                              beneficiaryName: c.name,
-                                                              documentType: c.docType ?? sendForm.documentType,
-                                                              documentNumber: c.docNumber,
-                                                              bankName: c.bank,
-                                                              accountNumber: c.accountNumber,
-                                                              accountType: c.accountType ?? sendForm.accountType,
-                                                              beneficiaryType: c.kind === 'empresa' ? 'business' : 'personal',
-                                                          });
-                                                          // Guarda el contacto completo (destKind/brebKey/banco) para
-                                                          // la dispersión REAL inline de Mouv, y fija el riel de origen
-                                                          // según el tipo de destino (Bre-B → COP_BREB, ACH → COP_ACH).
-                                                          setSendContact(c);
-                                                          if (isCopDest) setSendSourceRail((c as any).destKind === 'breb' ? 'COP_BREB' : 'COP_ACH');
-                                                          setMouvDestId(isCopDest ? (c.mouvId ?? null) : null);
-                                                          setSendStep(4);
-                                                      }}
-                                                      className={`w-full flex items-center justify-between gap-3 p-3.5 rounded-xl border transition-all text-left ${selectable ? 'border-slate-200 hover:border-[#0C0E0D] hover:bg-slate-50' : 'border-slate-100 bg-slate-50/60 opacity-60 cursor-not-allowed'}`}
-                                                  >
-                                                      <div className="min-w-0">
-                                                          <p className="font-bold text-slate-800 text-sm truncate">{c.name}</p>
-                                                          <p className="text-xs text-slate-500 truncate">{c.bank} · {c.accountType === 'savings' ? 'Ahorros' : 'Corriente'} {maskAcc(c.accountNumber)} · {c.docType} {c.docNumber}</p>
-                                                          {st === 'en_proceso' && <p className="text-[10px] text-amber-600 font-bold">La cuenta está en revisión — disponible al aprobarse</p>}
-                                                          {st === 'rechazada' && <p className="text-[10px] text-red-600 font-bold">La cuenta fue rechazada — inscríbela de nuevo con datos correctos</p>}
-                                                      </div>
-                                                      {st === 'aprobada' && <span className="shrink-0 text-[9px] font-bold uppercase bg-green-50 text-green-700 border border-green-200 px-2 py-0.5 rounded-full">Aprobada</span>}
-                                                      {st === 'en_proceso' && <span className="shrink-0 text-[9px] font-bold uppercase bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-full">En proceso</span>}
-                                                      {st === 'rechazada' && <span className="shrink-0 text-[9px] font-bold uppercase bg-red-50 text-red-700 border border-red-200 px-2 py-0.5 rounded-full">Rechazada</span>}
-                                                  </button>
-                                                  );
-                                              })}
-                                          </div>
+                                          );
+                                      })}
+                                      {list.length === 0 && (
+                                          <p className="text-center py-4" style={{ fontSize: 12.5, color: '#878E88' }}>
+                                              {myContacts.length === 0 ? `Aún no tienes beneficiarios ${railKind === 'breb' ? 'Bre-B' : 'ACH'} inscritos.` : `Sin resultados para "${contactSearch}"`}
+                                          </p>
                                       )}
-                                      {myContacts.length > 0 && (
-                                          <button onClick={goContacts} className="w-full text-xs font-bold text-[#16A34A] hover:underline py-1">
-                                              + Inscribir nuevo contacto
-                                          </button>
-                                      )}
+                                      {/* Inscribir nuevo — tarjeta punteada */}
+                                      <button onClick={goContacts} className="w-full text-left transition-colors hover:bg-white/[0.03]"
+                                          style={{ padding: '12px 14px', borderRadius: 12, border: '1px dashed rgba(255,255,255,0.2)', background: 'transparent' }}>
+                                          <span style={{ fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>+ Inscribir nuevo beneficiario</span>
+                                          <span style={{ display: 'block', fontSize: 11.5, color: '#878E88', marginTop: 2 }}>Se valida con el banco antes del primer envío</span>
+                                      </button>
                                   </div>
-                              );
-                          }
+                                  <div className="flex" style={{ gap: 9, paddingTop: 4 }}>
+                                      <button onClick={() => setSendStep(2)} style={{ flex: 1, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 14, padding: '13px 0', borderRadius: 10 }} className="hover:bg-white/[0.09] transition-colors">Atrás</button>
+                                      <button onClick={() => sendContact && setSendStep(4)} disabled={!sendContact}
+                                          className="lincoin-btn-white transition-colors"
+                                          style={{ flex: 1.5, fontWeight: 700, fontSize: 14, padding: '13px 0', borderRadius: 10, border: 'none', opacity: sendContact ? 1 : 0.45, cursor: sendContact ? 'pointer' : 'not-allowed' }}>
+                                          Continuar
+                                      </button>
+                                  </div>
+                              </div>
+                          );
                       })()}
 
                       {/* STEP 3 WALLET: wallets inscritas (solo USD) */}
@@ -4172,24 +4166,89 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           </div>
                       )}
 
-                      {/* STEP 4 BANK/WALLET: Confirm */}
-                      {sendStep === 4 && (sendMode === 'bank' || sendMode === 'wallet') && (
+                      {/* STEP 4 BANK: Confirmar (diseño Flujo Enviar) */}
+                      {sendStep === 4 && sendMode === 'bank' && (() => {
+                          const amt = getRawAmount(sendForm.amount);
+                          const isBrebM = (sendContact?.destKind ?? (sendSourceRail === 'COP_BREB' ? 'breb' : 'ach')) === 'breb';
+                          const railLbl = isBrebM ? 'Bre-B' : 'ACH';
+                          const initials = (n: string) => { const p = String(n || '').trim().split(/\s+/); return ((p[0]?.[0] ?? '') + (p[1]?.[0] ?? '')).toUpperCase() || '·'; };
+                          const destLine = isBrebM
+                              ? `Bre-B · ${sendContact?.brebKey ? `···${String(sendContact.brebKey).slice(-4)}` : ''}${sendForm.bankName && !String(sendForm.bankName).startsWith('Bre-B') ? ` · ${sendForm.bankName}` : ''}`
+                              : `${sendForm.bankName} · ${sendForm.accountType === 'checking' ? 'Corriente' : 'Ahorros'} ···${String(sendForm.accountNumber || '').slice(-4)}`;
+                          return (
+                          <div className="space-y-4">
+                              {/* Destinatario + Editar */}
+                              <div className="flex items-center gap-3" style={{ padding: '13px 15px', borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.025)' }}>
+                                  <span style={{ width: 38, height: 38, borderRadius: '50%', background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', border: '1px solid rgba(255,255,255,0.12)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                                      <span style={{ color: '#878E88', fontWeight: 800, fontSize: 13 }}>{initials(sendForm.beneficiaryName)}</span>
+                                  </span>
+                                  <div className="flex-1 min-w-0">
+                                      <p style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{sendForm.beneficiaryName}</p>
+                                      <p style={{ fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{destLine}</p>
+                                  </div>
+                                  <button onClick={() => setSendStep(3)} style={{ fontSize: 12.5, fontWeight: 600, color: '#F4F4F2', textDecoration: 'underline', flexShrink: 0 }}>Editar</button>
+                              </div>
+                              {/* RECIBE */}
+                              <div style={{ border: '1px solid rgba(255,255,255,0.1)', borderRadius: 13, padding: '15px 16px', background: 'rgba(255,255,255,0.025)' }}>
+                                  <span style={{ color: '#878E88', fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px' }}>RECIBE</span>
+                                  <p style={{ fontSize: 30, fontWeight: 800, letterSpacing: '-1.2px', color: '#F4F4F2', marginTop: 4 }}>{formatMoney(amt, 'COP')} <span style={{ fontSize: 15, color: '#878E88', fontWeight: 700 }}>COP</span></p>
+                              </div>
+                              {/* Desglose */}
+                              <div style={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: 13, overflow: 'hidden' }}>
+                                  {[
+                                      { l: 'Sale de', v: `${sendSourceRail === 'COP' ? 'Saldo Lincoin' : sendSourceRail === 'COP_BREB' ? 'Bre-B' : 'ACH'} · COP` },
+                                      { l: `Comisión ${railLbl}`, v: 'Sin comisión' },
+                                      { l: 'Llega', v: isBrebM ? 'En segundos' : 'El mismo día hábil' },
+                                  ].map((row, i) => (
+                                      <div key={row.l} className="flex items-center justify-between" style={{ padding: '11px 16px', fontSize: 13, borderTop: i === 0 ? 'none' : '1px solid rgba(255,255,255,0.06)' }}>
+                                          <span style={{ color: '#878E88' }}>{row.l}</span>
+                                          <span style={{ color: '#F4F4F2', fontWeight: 700 }}>{row.v}</span>
+                                      </div>
+                                  ))}
+                                  <div className="flex items-center justify-between" style={{ padding: '11px 16px', fontSize: 13, borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.02)' }}>
+                                      <span style={{ color: '#878E88' }}>Total que sale</span>
+                                      <span style={{ color: '#4ADE80', fontWeight: 700 }}>{formatMoney(amt, 'COP')} COP</span>
+                                  </div>
+                              </div>
+                              {/* Aviso antes de confirmar */}
+                              <div className="flex items-start" style={{ gap: 11, border: '1px solid rgba(255,255,255,0.1)', borderLeft: '2px solid #4ADE80', background: 'rgba(255,255,255,0.03)', borderRadius: 10, padding: '12px 15px' }}>
+                                  <Clock size={16} style={{ color: '#878E88', flexShrink: 0, marginTop: 1 }} strokeWidth={1.5} />
+                                  <span style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5 }}>Al confirmar no se puede reversar. Puede tardar <span style={{ color: '#F4F4F2', fontWeight: 700 }}>hasta 1 minuto</span>; te avisamos aquí y por correo.</span>
+                              </div>
+                              {mouvUnknown ? (
+                                  <div style={{ border: '1px solid rgba(255,255,255,0.14)', borderRadius: 12, padding: 16 }} className="space-y-3">
+                                      <p style={{ fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>La conexión se demoró y NO se sabe si el envío se procesó.</p>
+                                      <p style={{ fontSize: 12, color: '#878E88' }}>Para evitar transferencias duplicadas, revisa primero tu Historial. Si la orden NO aparece, reintenta.</p>
+                                      <button onClick={() => setMouvUnknown(false)} style={{ width: '100%', padding: '12px 0', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 700, fontSize: 13.5, borderRadius: 10 }} className="hover:bg-white/[0.09] transition-colors">Ya verifiqué — habilitar reintento</button>
+                                  </div>
+                              ) : (
+                                  <div className="flex" style={{ gap: 9 }}>
+                                      <button onClick={() => setSendStep(3)} disabled={isSending} style={{ flex: 1, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 14, padding: '13px 0', borderRadius: 10, opacity: isSending ? 0.5 : 1 }} className="hover:bg-white/[0.09] transition-colors">Corregir</button>
+                                      <button onClick={handleSendSubmit} disabled={isSending} className="lincoin-btn-white transition-colors flex items-center justify-center gap-2" style={{ flex: 1.5, fontWeight: 700, fontSize: 14, padding: '13px 0', borderRadius: 10, border: 'none', opacity: isSending ? 0.45 : 1 }}>
+                                          {isSending ? <><Loader2 className="animate-spin" size={16} /> Procesando…</> : 'Confirmar envío'}
+                                      </button>
+                                  </div>
+                              )}
+                              {isSending && <p className="text-center" style={{ fontSize: 11.5, color: '#878E88' }}>Procesando la transferencia — puede tardar hasta 1 minuto. <b style={{ color: '#F4F4F2' }}>No pulses de nuevo ni cierres esta ventana.</b></p>}
+                              <div className="flex items-center justify-center" style={{ gap: 8 }}>
+                                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#4ADE80' }} />
+                                  <span style={{ fontSize: 12, color: '#878E88' }}>Operación protegida · confirmación en dos pasos</span>
+                              </div>
+                          </div>
+                          );
+                      })()}
+
+                      {/* STEP 4 WALLET: Confirm (flujo GasFree existente) */}
+                      {sendStep === 4 && sendMode === 'wallet' && (
                           <div className="space-y-6">
-                              <h4 className="text-center text-slate-500 text-sm mb-2">Confirma los datos de envío</h4>
                               <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 flex flex-col items-center">
                                   <span className="text-xs font-bold text-[#4ADE80] uppercase tracking-widest mb-1">MONTO TOTAL</span>
                                   <span className="text-3xl font-extrabold text-[#0C0E0D]">{formatMoney(getRawAmount(sendForm.amount), sendForm.destinationCurrency)}</span>
                               </div>
                               <div className="bg-slate-50 rounded-xl p-4 space-y-3 text-sm border border-slate-200">
-                                  <div className="flex justify-between"><span className="text-slate-500">{sendMode === 'wallet' ? 'Destinatario:' : 'Beneficiario:'}</span><span className="font-bold text-slate-800">{sendForm.beneficiaryName}</span></div>
-                                  {sendMode === 'bank' && sendForm.documentType && sendForm.documentNumber && sendForm.documentNumber !== '—' && (
-                                      <div className="flex justify-between"><span className="text-slate-500">Documento:</span><span className="font-bold text-slate-800">{sendForm.documentType} {sendForm.documentNumber}</span></div>
-                                  )}
-                                  <div className="flex justify-between"><span className="text-slate-500">{sendMode === 'wallet' ? 'Red:' : 'Banco:'}</span><span className="font-bold text-slate-800">{sendForm.bankName}</span></div>
-                                  {sendMode === 'bank' && sendForm.accountType && (
-                                      <div className="flex justify-between"><span className="text-slate-500">Tipo de cuenta:</span><span className="font-bold text-slate-800">{sendForm.accountType === 'savings' ? 'Ahorros' : sendForm.accountType === 'checking' ? 'Corriente' : sendForm.accountType}</span></div>
-                                  )}
-                                  <div className="flex justify-between gap-3"><span className="text-slate-500">{sendMode === 'wallet' ? 'Dirección:' : 'Cuenta:'}</span><span className={`font-bold text-slate-800 ${sendMode === 'wallet' ? 'font-mono text-xs break-all text-right' : ''}`}>{sendForm.accountNumber}</span></div>
+                                  <div className="flex justify-between"><span className="text-slate-500">Destinatario:</span><span className="font-bold text-slate-800">{sendForm.beneficiaryName}</span></div>
+                                  <div className="flex justify-between"><span className="text-slate-500">Red:</span><span className="font-bold text-slate-800">{sendForm.bankName}</span></div>
+                                  <div className="flex justify-between gap-3"><span className="text-slate-500">Dirección:</span><span className="font-bold text-slate-800 font-mono text-xs break-all text-right">{sendForm.accountNumber}</span></div>
                                   {sendMode === 'wallet' && (
                                       <div className="pt-2 border-t border-slate-200 space-y-1.5">
                                           {gasfreeFeePreview.loading ? (
