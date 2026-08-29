@@ -2738,11 +2738,18 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     const dispDest: string = tx.account ?? dispRecipient.key ?? dispRecipient.accountNumber ?? '';
     const dispProviderRef: string = tx.providerRef ?? rawData.providerRef ?? '';
 
+    // Documento con tipo (CC 1005237062) — usado por dispersión y genéricos.
+    const docValue = `${tx.documentType ?? rawData.documentType ?? ''} ${tx.documentNumber ?? rawData.documentNumber ?? ''}`.trim();
+
     const fields: { label: string; value: string; copyable?: boolean; link?: string; mono?: boolean }[] = [
       { label: 'Descripción', value: tx.title || TX_LABELS[tx.type] || tx.type },
-      ...(isDispersion ? [{ label: 'Riel de pago', value: railOfCurrency(tx.currency) ?? (tx.rail === 'BREB' ? 'Bre-B' : tx.rail === 'ACH' ? 'ACH' : 'Mouv') }] : []),
-      ...(isDispersion && dispBeneficiary && !tx.beneficiary ? [{ label: 'Beneficiario', value: dispBeneficiary }] : []),
-      ...(isDispersion && dispDest && !tx.account ? [{ label: tx.currency === 'COP_BREB' ? 'Llave destino' : 'Cuenta destino', value: dispDest, copyable: true, mono: true }] : []),
+      // ── Dispersión Mouv: bloque ORDENADO y sin redundancias — quién
+      // recibió, a qué llave/cuenta, por qué método, y las referencias.
+      // (El "Riel de pago" ya va en el monto "COP · Bre-B" y en el Método.)
+      ...(isDispersion && dispBeneficiary ? [{ label: 'Beneficiario', value: dispBeneficiary }] : []),
+      ...(isDispersion && docValue ? [{ label: 'Documento', value: docValue }] : []),
+      ...(isDispersion && dispDest ? [{ label: tx.currency === 'COP_BREB' ? 'Llave destino' : 'Cuenta destino', value: dispDest, copyable: true, mono: true }] : []),
+      ...(isDispersion && tx.bank ? [{ label: 'Método', value: tx.bank }] : []),
       ...(isDispersion && dispProviderRef ? [{ label: 'Referencia Mouv', value: dispProviderRef, copyable: true, mono: true }] : []),
       { label: 'Estado', value: tx.status },
       { label: 'Fecha', value: timeStr ? `${dateStr} · ${timeStr}` : dateStr },
@@ -2772,11 +2779,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       ...(tx.type === 'convert' && !isMouvConvert && targetAmount != null ? [{ label: 'Monto recibido', value: `${formatMoney(targetAmount, targetCurrency || '')} ${targetCurrency || ''}` }] : []),
       ...(tx.type === 'convert' && !isMouvConvert && txFee != null ? [{ label: 'Comisión cobrada', value: `${formatMoney(txFee, tx.currency)} ${tx.currency}` }] : []),
       ...(couponCode ? [{ label: 'Cupón aplicado', value: couponCode }] : []),
-      ...(tx.bank ? [{ label: 'Banco / Método', value: tx.bank }] : []),
-      ...(tx.beneficiary ? [{ label: 'Beneficiario', value: tx.beneficiary }] : []),
-      ...((tx.documentType ?? rawData.documentType) || (tx.documentNumber ?? rawData.documentNumber)
-        ? [{ label: 'Documento', value: `${tx.documentType ?? rawData.documentType ?? ''} ${tx.documentNumber ?? rawData.documentNumber ?? ''}`.trim() }] : []),
-      ...(tx.account ? [{ label: tx.currency === 'COP_BREB' ? 'Llave destino' : 'Número de cuenta', value: tx.account }] : []),
+      ...(!isDispersion && tx.bank ? [{ label: 'Banco / Método', value: tx.bank }] : []),
+      ...(!isDispersion && tx.beneficiary ? [{ label: 'Beneficiario', value: tx.beneficiary }] : []),
+      ...(!isDispersion && docValue ? [{ label: 'Documento', value: docValue }] : []),
+      ...(!isDispersion && tx.account ? [{ label: tx.currency === 'COP_BREB' ? 'Llave destino' : 'Número de cuenta', value: tx.account }] : []),
       ...(!isCrypto && !isGasfreeDeposit && tx.toAddress ? [{ label: 'Dirección destino', value: tx.toAddress, copyable: true, mono: true }] : []),
       ...(tx.reason ? [{ label: 'Motivo', value: tx.reason }] : []),
       { label: 'Referencia', value: String(tx.id) },
