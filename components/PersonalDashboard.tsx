@@ -1755,18 +1755,19 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   <button onClick={() => setActiveView('servicios')} style={{ fontSize: 12, color: '#878E88' }} className="hover:text-[#F4F4F2] transition-colors">Ver más ›</button>
                 </div>
                 {([
-                  { Icon: ArrowLeftRight, t: 'Mesa OTC',   d: 'Operaciones de alto volumen con tasa negociada' },
-                  { Icon: TrendingUp,     t: 'Staking',    d: 'Genera rendimientos con tu saldo digital' },
-                  { Icon: Layers,         t: 'Multiwallet', d: 'Varias billeteras y monedas en una sola cuenta' },
-                  { Icon: ShoppingBag,    t: 'Comercio',   d: 'Cobra a tus clientes con links y botones de pago' },
-                ] as const).map(({ Icon, t, d }, i) => (
-                  <div key={t} className="flex items-center gap-3" style={{ padding: '12px 0', borderTop: i === 0 ? 'none' : '1px solid rgba(255,255,255,0.06)' }}>
+                  { Icon: ArrowLeftRight, t: 'Mesa OTC',   d: 'Operaciones de alto volumen con tasa negociada', go: () => { setMouvMode('converter'); setActiveView('mouv'); } },
+                  { Icon: TrendingUp,     t: 'Staking',    d: 'Genera rendimientos con tu saldo digital', go: null },
+                  { Icon: Layers,         t: 'Multiwallet', d: 'Varias billeteras USDT en una sola cuenta', go: () => setActiveView('walletsGasfree') },
+                  { Icon: ShoppingBag,    t: 'Comercio',   d: 'Cobra a tus clientes con links y botones de pago', go: null },
+                ] as const).map(({ Icon, t, d, go }, i) => (
+                  <button key={t} onClick={go ?? undefined} disabled={!go} className="w-full flex items-center gap-3 text-left transition-colors hover:bg-white/[0.02]" style={{ padding: '12px 0', borderTop: i === 0 ? 'none' : '1px solid rgba(255,255,255,0.06)', cursor: go ? 'pointer' : 'default' }}>
                     <div style={{ width: 32, height: 32, borderRadius: 9, background: 'rgba(255,255,255,0.055)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><Icon size={15} style={{ color: '#F4F4F2' }} /></div>
-                    <div style={{ minWidth: 0 }}>
+                    <div style={{ minWidth: 0, flex: 1 }}>
                       <p style={{ fontSize: 13.5, fontWeight: 600, color: '#F4F4F2' }}>{t}</p>
                       <p style={{ fontSize: 11.5, color: '#878E88' }}>{d}</p>
                     </div>
-                  </div>
+                    {go && <span style={{ color: '#878E88', fontSize: 14 }}>›</span>}
+                  </button>
                 ))}
               </div>
               {/* TU DINERO — confianza (aliados reales de Lincoin) */}
@@ -2618,7 +2619,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       { icon: ArrowLeftRight, label: 'Mesa OTC',   desc: 'Operaciones de alto volumen con tasa negociada.',            color: 'bg-slate-50 text-green-700',
         onClick: () => { setMouvMode('converter'); setActiveView('mouv'); } },
       { icon: TrendingUp,     label: 'Staking',    desc: 'Genera rendimientos con tu saldo digital.',                  color: 'bg-green-50 text-green-700' },
-      { icon: Layers,         label: 'Multiwallet', desc: 'Varias billeteras y monedas en una sola cuenta.',           color: 'bg-violet-50 text-violet-700' },
+      { icon: Layers,         label: 'Multiwallet', desc: 'Varias billeteras USDT con nombre — ideal para estudios y negocios.', color: 'bg-violet-50 text-violet-700',
+        onClick: () => setActiveView('walletsGasfree') },
       { icon: ShoppingBag,    label: 'Comercio',   desc: 'Cobra a tus clientes con links y botones de pago.',          color: 'bg-amber-50 text-amber-700' },
       { icon: GraduationCap,  label: 'Educación',  desc: 'Paga matrículas y cursos en el exterior.',                   color: 'bg-rose-50 text-rose-700' },
     ];
