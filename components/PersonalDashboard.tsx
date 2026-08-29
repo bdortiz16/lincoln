@@ -3982,10 +3982,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           };
                           return (
                               <div className="space-y-3">
-                                  {myContacts.length > 3 && (
+                                  {myContacts.length > 0 && (
                                       <div className="relative">
                                           <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: '#878E88' }} />
-                                          <input value={contactSearch} onChange={e => setContactSearch(e.target.value)} placeholder="Buscar beneficiario…"
+                                          <input value={contactSearch} onChange={e => setContactSearch(e.target.value)} placeholder="Buscar por nombre, banco o cuenta…"
                                               style={{ width: '100%', height: 40, paddingLeft: 36, paddingRight: 12, background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 9, color: '#F4F4F2', fontSize: 13, outline: 'none' }} />
                                       </div>
                                   )}
