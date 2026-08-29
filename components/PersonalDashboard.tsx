@@ -1081,6 +1081,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               showToast(sendForm.destinationCurrency === 'COP' ? `Saldo insuficiente en ${railName}.` : `Saldo insuficiente en ${sendForm.destinationCurrency === 'USD' ? 'USDT' : sendForm.destinationCurrency}.`, 3000, 'error');
               return;
           }
+          // Beneficiario preseleccionado (botón "Enviar" de Beneficiarios):
+          // ya se sabe destino y método — del monto directo a confirmar.
+          if (sendContact && sendMode && sendForm.beneficiaryName) { setSendStep(4); return; }
           setSendStep(2); // → method selection
       } else if (sendStep === 3 && sendMode === 'bank') {
           if (!sendForm.beneficiaryName || !sendForm.documentNumber || !sendForm.accountNumber) {
@@ -3053,7 +3056,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               <SidebarItem icon={Send} label="Enviar Dinero" active={false} onClick={() => { if(!handleActionRestricted()) setIsSendModalOpen(true); }} />
               <SidebarItem icon={RefreshCw} label="Convertir" active={false} onClick={() => { if(!handleActionRestricted()) setIsConvertModalOpen(true); }} />
               <SidebarItem icon={Activity} label="Movimientos" active={activeView === 'movements'} onClick={() => {setActiveView('movements'); setIsMobileMenuOpen(false);}} />
-              <SidebarItem icon={BookUser} label="Contactos" active={activeView === 'contactos'} onClick={() => {setActiveView('contactos'); setIsMobileMenuOpen(false);}} />
+              <SidebarItem icon={BookUser} label="Beneficiarios" active={activeView === 'contactos'} onClick={() => {setActiveView('contactos'); setIsMobileMenuOpen(false);}} />
               
               <div className="pt-6 pb-2 pl-4 text-xs font-bold text-slate-500 uppercase tracking-widest">Descubre</div>
               <SidebarItem 
@@ -3104,7 +3107,35 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           />
       )}
       {activeView === 'contactos' && (
-          <ContactsSection onBack={() => setActiveView('dashboard')} />
+          <ContactsSection
+              onBack={() => setActiveView('dashboard')}
+              onSendTo={(c: any) => {
+                  // "Enviar" desde Beneficiarios: abre Enviar Dinero con el
+                  // beneficiario, país y riel preseleccionados. Solo falta el
+                  // monto — al continuar salta directo a la confirmación.
+                  const isWallet = c.accountKind === 'wallet';
+                  setSendForm({
+                      destinationCountry: isWallet ? 'Estados Unidos' : (c.country || 'Colombia'),
+                      destinationCurrency: isWallet ? 'USD' : (c.country && c.country !== 'Colombia' ? sendForm.destinationCurrency : 'COP'),
+                      amount: '',
+                      beneficiaryType: c.kind === 'empresa' ? 'business' : 'personal',
+                      beneficiaryName: c.name,
+                      documentType: c.docType ?? '',
+                      documentNumber: c.docNumber ?? '',
+                      bankName: c.bank ?? '',
+                      accountType: c.accountType ?? '',
+                      accountNumber: c.accountNumber ?? '',
+                      reason: 'Envío de dinero',
+                  });
+                  setSendContact(c);
+                  setSendMode(isWallet ? 'wallet' : 'bank');
+                  setSendSourceRail(isWallet ? 'COP' : (c.destKind === 'breb' ? 'COP_BREB' : 'COP_ACH'));
+                  setMouvDestId(null);
+                  setSendStep(1);
+                  setActiveView('dashboard');
+                  setIsSendModalOpen(true);
+              }}
+          />
       )}
       {activeView === 'mouv' && currentUser?.id && (
           <div className="pt-6">

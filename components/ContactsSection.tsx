@@ -210,8 +210,10 @@ const FilterChip: React.FC<{ active: boolean; onClick: () => void; children: Rea
     </button>
 );
 
-export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
+export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: MouvContact) => void }> = ({ onBack, onSendTo }) => {
     const { currentUser, updateUserRawData } = useDatabase();
+    // Menú "···" abierto (id del contacto)
+    const [menuFor, setMenuFor] = useState<string | null>(null);
     const [formOpen, setFormOpen] = useState(false);
     // Paso 0: ¿banco o wallet? → banco: país → datos · wallet: datos wallet
     const [formStep, setFormStep] = useState<'type' | 'country' | 'data' | 'wallet'>('type');
@@ -557,6 +559,54 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
     const activeFilters = (fCountry !== 'all' ? 1 : 0) + (fType !== 'all' ? 1 : 0) + (fStatus !== 'all' ? 1 : 0);
     const clearFilters = () => { setFCountry('all'); setFType('all'); setFStatus('all'); };
 
+    // ── Diseño "Beneficiarios": helpers de fila ─────────────────────────
+    // Banderas en CSS puro (círculo, sin imágenes) — patrón del handoff.
+    const FLAG_BG: Record<string, string> = {
+        Colombia:  'linear-gradient(180deg,#FCD116 0%,#FCD116 50%,#003893 50%,#003893 75%,#CE1126 75%,#CE1126 100%)',
+        'Brasil':  'radial-gradient(circle at 50% 50%, #002776 0 24%, #FFDF00 25% 46%, #009C3B 47%)',
+        'México':  'linear-gradient(90deg,#006847 0 33%,#FFFFFF 33% 66%,#CE1126 66%)',
+        'Perú':    'linear-gradient(90deg,#D91023 0 33%,#FFFFFF 33% 66%,#D91023 66%)',
+        'Chile':   'linear-gradient(90deg, #0039A6 0 40%, rgba(0,0,0,0) 40%) 0 0/100% 50% no-repeat, linear-gradient(180deg,#FFFFFF 0 50%,#D52B1E 50%)',
+        'Venezuela':'linear-gradient(180deg,#FFCC00 0 33%,#00247D 33% 66%,#CF142B 66%)',
+        'Ecuador': 'linear-gradient(180deg,#FFD100 0 50%,#0072CE 50% 75%,#EF3340 75%)',
+        'Argentina':'linear-gradient(180deg,#74ACDF 0 33%,#FFFFFF 33% 66%,#74ACDF 66%)',
+    };
+    const initialsOf = (name: string) => {
+        const parts = String(name || '').trim().split(/\s+/);
+        return ((parts[0]?.[0] ?? '') + (parts[1]?.[0] ?? parts[0]?.[1] ?? '')).toUpperCase() || '·';
+    };
+    // Capitalización normal aunque el nombre venga en MAYÚSCULAS sostenidas.
+    const prettyName = (name: string) => {
+        const n = String(name || '').trim();
+        if (n && n === n.toUpperCase() && n.length > 3) {
+            return n.toLowerCase().replace(/(^|\s|\.)\p{L}/gu, ch => ch.toUpperCase());
+        }
+        return n;
+    };
+    const last4 = (v?: string) => { const d = String(v ?? '').replace(/\s/g, ''); return d.length > 4 ? d.slice(-4) : d; };
+    const rowMeta = (c: MouvContact) => {
+        const isWallet = c.accountKind === 'wallet';
+        const country = isWallet ? null : (c.country || 'Colombia');
+        const railLine = isWallet
+            ? `${c.walletCoin ?? 'USDT'} · ${c.walletNetwork ?? 'TRC-20'}`
+            : c.destKind === 'breb' ? `Bre-B · ${brebKeyLabel(c.brebKeyType)}`
+            : country === 'Colombia' ? 'ACH · Cuenta bancaria'
+            : 'Transferencia local';
+        const bankName = isWallet ? 'Wallet' : (c.destKind === 'breb' ? (c.bank?.startsWith('Bre-B') ? '—' : c.bank) : (c.bank || '—'));
+        const maskLine = isWallet
+            ? `${mask(c.accountNumber)} · USDT`
+            : c.destKind === 'breb'
+                ? `Llave ···${last4(c.brebKey ?? c.accountNumber)} · COP`
+                : `${c.accountType === 'savings' ? 'Ahorros' : 'Corriente'} ···${last4(c.accountNumber)} · ${country === 'Colombia' ? 'COP' : 'Local'}`;
+        const created = c.createdAt ? new Date(c.createdAt).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' }) : '';
+        const meta = `${isWallet ? 'Wallet' : c.kind === 'empresa' ? 'Empresa' : 'Persona'}${created ? ` · Inscrito el ${created}` : ''}`;
+        return { isWallet, country, railLine, bankName, maskLine, meta };
+    };
+    // Chips por país derivados de los datos (+ Wallets si hay + En validación al final)
+    const chipCountries = Array.from(new Set(contacts.filter(c => c.accountKind !== 'wallet').map(c => c.country || 'Colombia')));
+    const walletCount = contacts.filter(c => c.accountKind === 'wallet').length;
+    const pendingCount = contacts.filter(c => contactStatus(c) === 'en_proceso').length;
+
     return (
         <div className="space-y-6 animate-in fade-in duration-500 pt-6">
             {onBack && (
@@ -564,26 +614,20 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                     ← Volver al inicio
                 </button>
             )}
-            <div className="flex items-center justify-between flex-wrap gap-3">
+            <div className="flex items-start justify-between flex-wrap gap-3">
                 <div>
-                    <h1 className="text-2xl font-extrabold text-[#0C0E0D] flex items-center gap-2">
-                        <BookUser size={22} className="text-[#4ADE80]" /> Contactos
-                    </h1>
-                    <p className="text-sm" style={{ color: '#334155' }}>
-                        Inscribe las cuentas bancarias destino. Las transferencias en COP van
-                        <b style={{ color: '#0C0E0D' }}> solo a contactos inscritos</b>.
-                        <span className="ml-2 text-[10px] font-mono" style={{ color: '#94A3B8' }}>v{typeof __BUILD_TS__ !== 'undefined' ? __BUILD_TS__ : '¿?'}</span>
+                    <h1 style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-0.8px', color: '#F4F4F2' }}>Beneficiarios</h1>
+                    <p style={{ fontSize: 14, color: '#878E88', maxWidth: 560, marginTop: 4, lineHeight: 1.5 }}>
+                        Cuentas inscritas y validadas. Las transferencias locales solo salen hacia beneficiarios aprobados.
                     </p>
                 </div>
-                <div className="flex items-center gap-2">
-                    <button
-                        onClick={() => { setFormOpen(true); setFormStep('country'); setForm({ ...emptyForm }); setNotice(null); }}
-                        style={{ color: '#0C0E0D' }}
-                        className="py-2.5 px-5 rounded-xl bg-[#4ADE80] hover:bg-[#6EE7A0] text-sm font-bold flex items-center gap-2 transition-colors"
-                    >
-                        <Plus size={16} strokeWidth={3} /> Inscribir contacto
-                    </button>
-                </div>
+                <button
+                    onClick={() => { setFormOpen(true); setFormStep('country'); setForm({ ...emptyForm }); setNotice(null); }}
+                    className="lincoin-btn-white flex items-center gap-2 transition-colors"
+                    style={{ fontWeight: 700, fontSize: 13.5, padding: '11px 20px', borderRadius: 9, border: 'none' }}
+                >
+                    <Plus size={15} strokeWidth={2.5} /> Inscribir beneficiario
+                </button>
             </div>
 
             {notice && (
@@ -849,118 +893,156 @@ export const ContactsSection: React.FC<{ onBack?: () => void }> = ({ onBack }) =
                 </div>
             )}
 
-            {/* Buscador + filtros */}
-            {contacts.length > 0 && (
-                <div className="space-y-3">
-                    <div className="flex items-center gap-2">
-                        <div className="relative flex-1">
-                            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                            <input
-                                value={search}
-                                onChange={e => setSearch(e.target.value)}
-                                placeholder="Buscar por nombre, banco, cuenta o documento…"
-                                className="w-full h-11 pl-9 pr-3 rounded-xl border border-slate-200 text-sm outline-none focus:border-[#4ADE80]"
-                            />
-                        </div>
-                        <button
-                            type="button"
-                            onClick={() => setShowFilters(v => !v)}
-                            title="Filtros"
-                            className={`relative h-11 px-3.5 rounded-xl border text-sm font-bold flex items-center gap-2 transition-colors ${showFilters || activeFilters ? 'bg-[#0C0E0D] text-white border-[#0C0E0D]' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
-                        >
-                            <SlidersHorizontal size={16} />
-                            <span className="hidden sm:inline">Filtros</span>
-                            {activeFilters > 0 && (
-                                <span className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-[#4ADE80] text-[#0C0E0D] text-[10px] font-black flex items-center justify-center">{activeFilters}</span>
-                            )}
-                        </button>
-                    </div>
-
-                    {showFilters && (
-                        <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-4">
-                            <div>
-                                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2">País</p>
-                                <div className="flex flex-wrap gap-2">
-                                    <FilterChip active={fCountry === 'all'} onClick={() => setFCountry('all')}>Todos</FilterChip>
-                                    {countryOptions.map(co => (
-                                        <FilterChip key={co} active={fCountry === co} onClick={() => setFCountry(co)}>{co}</FilterChip>
-                                    ))}
-                                </div>
-                            </div>
-                            <div>
-                                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2">Tipo de destino</p>
-                                <div className="flex flex-wrap gap-2">
-                                    <FilterChip active={fType === 'all'} onClick={() => setFType('all')}>Todos</FilterChip>
-                                    <FilterChip active={fType === 'bank'} onClick={() => setFType('bank')}>Banco</FilterChip>
-                                    <FilterChip active={fType === 'wallet'} onClick={() => setFType('wallet')}>Wallet</FilterChip>
-                                </div>
-                            </div>
-                            {activeFilters > 0 && (
-                                <button onClick={clearFilters} className="text-xs font-bold text-[#16A34A] hover:underline">Limpiar filtros</button>
-                            )}
-                        </div>
-                    )}
-
-                    <p className="text-xs text-slate-400">{filteredContacts.length} de {contacts.length} contactos</p>
+            {/* Buscador + chips de filtro por país (diseño Beneficiarios) */}
+            <div className="space-y-3">
+                <div className="relative" style={{ maxWidth: 440 }}>
+                    <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: '#878E88' }} />
+                    <input
+                        value={search}
+                        onChange={e => setSearch(e.target.value)}
+                        placeholder="Buscar por nombre, banco, cuenta o documento"
+                        style={{ width: '100%', height: 42, paddingLeft: 38, paddingRight: 12, background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 9, color: '#F4F4F2', fontSize: 13.5, outline: 'none' }}
+                    />
                 </div>
-            )}
+                <div className="flex flex-wrap gap-2 overflow-x-auto">
+                    {([
+                        { key: 'all', label: `Todos · ${contacts.length}`, active: fCountry === 'all' && fType === 'all' && fStatus === 'all', onClick: clearFilters },
+                        ...chipCountries.map(co => ({
+                            key: co,
+                            label: `${co} · ${contacts.filter(c => c.accountKind !== 'wallet' && (c.country || 'Colombia') === co).length}`,
+                            active: fCountry === co && fType !== 'wallet',
+                            onClick: () => { setFStatus('all'); setFType('bank'); setFCountry(co); },
+                        })),
+                        ...(walletCount > 0 ? [{ key: '__wallets', label: `Wallets · ${walletCount}`, active: fType === 'wallet', onClick: () => { setFStatus('all'); setFCountry('all'); setFType('wallet'); } }] : []),
+                        { key: '__pending', label: `En validación · ${pendingCount}`, active: fStatus === 'en_proceso', onClick: () => { setFCountry('all'); setFType('all'); setFStatus(fStatus === 'en_proceso' ? 'all' : 'en_proceso'); } },
+                    ]).map(chip => (
+                        <button key={chip.key} type="button" onClick={chip.onClick}
+                            style={{
+                                borderRadius: 999, padding: '8px 16px', fontSize: 12.5, whiteSpace: 'nowrap',
+                                fontWeight: chip.active ? 700 : 500,
+                                border: chip.active ? '1px solid rgba(74,222,128,0.35)' : '1px solid rgba(255,255,255,0.1)',
+                                background: chip.active ? 'rgba(74,222,128,0.07)' : 'rgba(255,255,255,0.03)',
+                                color: chip.active ? '#F4F4F2' : '#878E88',
+                            }}>
+                            {chip.label}
+                        </button>
+                    ))}
+                </div>
+            </div>
 
-            {/* Lista */}
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+            {/* Tabla de beneficiarios (diseño Beneficiarios) */}
+            <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, overflow: 'hidden' }}>
+                {/* Encabezados — solo desktop */}
+                <div className="hidden lg:grid" style={{ gridTemplateColumns: '1fr 180px 190px 120px 90px', padding: '9px 22px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                    {['BENEFICIARIO', 'PAÍS Y RIEL', 'BANCO Y CUENTA', 'ESTADO', 'ACCIONES'].map((h, i) => (
+                        <span key={h} style={{ color: '#878E88', fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', textAlign: i === 4 ? 'right' : 'left' }}>{h}</span>
+                    ))}
+                </div>
                 {contacts.length === 0 && (
-                    <div className="p-12 text-center text-slate-400 text-sm">
-                        Aún no tienes contactos inscritos. Inscribe la primera cuenta destino para poder transferir en COP.
+                    <div className="p-12 text-center">
+                        <p style={{ color: '#F4F4F2', fontWeight: 600, fontSize: 14 }}>Aún no tienes beneficiarios inscritos</p>
+                        <p style={{ color: '#878E88', fontSize: 12.5, marginTop: 4 }}>Inscribe la primera cuenta destino para poder transferir.</p>
+                        <button onClick={() => { setFormOpen(true); setFormStep('country'); setForm({ ...emptyForm }); setNotice(null); }}
+                            className="lincoin-btn-white transition-colors" style={{ marginTop: 16, fontWeight: 700, fontSize: 13, padding: '10px 18px', borderRadius: 9, border: 'none' }}>
+                            Inscribir beneficiario
+                        </button>
                     </div>
                 )}
                 {contacts.length > 0 && filteredContacts.length === 0 && (
-                    <div className="p-12 text-center text-slate-400 text-sm">
-                        Ningún contacto coincide con la búsqueda o los filtros.
+                    <div className="p-12 text-center" style={{ color: '#878E88', fontSize: 13 }}>
+                        Ningún beneficiario coincide con la búsqueda o los filtros.
                     </div>
                 )}
-                {filteredContacts.map(c => (
-                    <div key={c.id} className="p-4 border-b border-slate-50 flex items-center justify-between gap-3 flex-wrap hover:bg-slate-50/60">
-                        <button onClick={() => setDetail(c)} className="flex items-center gap-3 min-w-0 text-left flex-1 cursor-pointer" title="Ver datos de la inscripción">
-                            <div className="w-10 h-10 rounded-xl bg-[#0C0E0D] flex items-center justify-center shrink-0">
-                                {c.accountKind === 'wallet'
-                                    ? <Wallet size={16} className="text-[#4ADE80]" />
-                                    : c.destKind === 'breb'
-                                        ? <Zap size={16} className="text-[#4ADE80]" />
-                                        : <Landmark size={16} className="text-[#4ADE80]" />}
+                {filteredContacts.map(c => {
+                    const m = rowMeta(c);
+                    const st = contactStatus(c);
+                    const statusPill = st === 'aprobada'
+                        ? <span className="inline-flex items-center gap-1" style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}><CheckCircle size={10} /> VERIFICADO</span>
+                        : st === 'rechazada'
+                            ? <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }} title={c.lastError ?? undefined}>RECHAZADO</span>
+                            : <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}>EN VALIDACIÓN</span>;
+                    const avatar = (
+                        <div style={{ width: 38, height: 38, borderRadius: '50%', background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', border: '1px solid rgba(255,255,255,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                            <span style={{ color: '#878E88', fontWeight: 800, fontSize: 13 }}>{initialsOf(c.name)}</span>
+                        </div>
+                    );
+                    const flagEl = m.isWallet
+                        ? <span style={{ width: 22, height: 22, borderRadius: '50%', background: '#26A17B', color: '#fff', fontWeight: 800, fontSize: 10, display: 'grid', placeItems: 'center', flexShrink: 0 }}>₮</span>
+                        : <span style={{ width: 22, height: 22, borderRadius: '50%', flexShrink: 0, display: 'block', background: FLAG_BG[m.country ?? ''] ?? '#2E3330' }} />;
+                    const actions = (
+                        <div className="flex items-center justify-end gap-2" style={{ position: 'relative' }}>
+                            <button onClick={() => onSendTo?.(c)} disabled={!onSendTo || st !== 'aprobada'}
+                                style={{ fontSize: 12.5, fontWeight: 600, color: (!onSendTo || st !== 'aprobada') ? '#878E88' : '#F4F4F2', cursor: (!onSendTo || st !== 'aprobada') ? 'not-allowed' : 'pointer' }}
+                                className="hover:text-[#4ADE80] transition-colors">Enviar</button>
+                            <button onClick={() => setMenuFor(menuFor === c.id ? null : c.id)} style={{ color: '#878E88', fontWeight: 700, fontSize: 14, padding: '2px 6px', borderRadius: 6 }} className="hover:bg-white/[0.06] transition-colors">···</button>
+                            {menuFor === c.id && (
+                                <div style={{ position: 'absolute', right: 0, top: '110%', zIndex: 20, background: '#121413', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10, overflow: 'hidden', minWidth: 150, boxShadow: '0 12px 30px rgba(0,0,0,0.5)' }}>
+                                    <button onClick={() => { setMenuFor(null); setDetail(c); }} className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '10px 14px', fontSize: 12.5, color: '#F4F4F2' }}>Ver detalle</button>
+                                    <button onClick={() => { setMenuFor(null); removeContact(c.id); }} className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '10px 14px', fontSize: 12.5, color: '#F87171', borderTop: '1px solid rgba(255,255,255,0.07)' }}>Eliminar</button>
+                                </div>
+                            )}
+                        </div>
+                    );
+                    return (
+                    <div key={c.id}>
+                        {/* Fila desktop */}
+                        <div className="hidden lg:grid items-center hover:bg-white/[0.02] transition-colors" style={{ gridTemplateColumns: '1fr 180px 190px 120px 90px', padding: '14px 22px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                            <button onClick={() => setDetail(c)} className="flex items-center gap-3 min-w-0 text-left cursor-pointer">
+                                {avatar}
+                                <div className="min-w-0">
+                                    <p style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{prettyName(c.name)}</p>
+                                    <p style={{ fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.meta}</p>
+                                </div>
+                            </button>
+                            <div className="flex items-center gap-2 min-w-0">
+                                {flagEl}
+                                <div className="min-w-0">
+                                    <p style={{ fontSize: 13, fontWeight: 600, color: '#F4F4F2' }}>{m.isWallet ? (c.walletCoin ?? 'USDT') : m.country}</p>
+                                    <p style={{ fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.railLine}</p>
+                                </div>
                             </div>
                             <div className="min-w-0">
-                                <p className="font-bold text-slate-800 text-sm truncate">{c.name} <span className="font-normal text-slate-400 text-xs">· {c.accountKind === 'wallet' ? 'Wallet' : (c.kind === 'empresa' ? 'Empresa' : 'Persona')}</span></p>
-                                <p className="text-xs text-slate-500 truncate">
-                                    {c.accountKind === 'wallet'
-                                        ? `${c.walletCoin ?? 'USDT'} · ${c.walletNetwork ?? 'TRC-20'} · ${mask(c.accountNumber)} · solo envíos USD`
-                                        : c.destKind === 'breb'
-                                            ? `Bre-B · ${brebKeyLabel(c.brebKeyType)} · ${mask(c.brebKey ?? c.accountNumber)}`
-                                            : `${(c.country && c.country !== 'Colombia') ? `${c.country} · ` : ''}${c.bank} · ${c.accountType === 'savings' ? 'Ahorros' : 'Corriente'} ${mask(c.accountNumber)} · ${c.docType} ${c.docNumber}`}
-                                </p>
+                                <p style={{ fontSize: 13, fontWeight: 600, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.bankName}</p>
+                                <p style={{ fontSize: 11.5, color: '#878E88', fontFamily: 'ui-monospace, monospace' }}>{m.maskLine}</p>
                             </div>
-                        </button>
-                        <div className="flex items-center gap-3">
-                            {(() => {
-                                const st = contactStatus(c);
-                                if (st === 'aprobada') return (
-                                    <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase bg-green-50 text-green-700 border border-green-200 px-2 py-1 rounded-full">
-                                        <CheckCircle size={11} /> Aprobada
-                                    </span>
-                                );
-                                if (st === 'rechazada') return (
-                                    <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase bg-red-50 text-red-700 border border-red-200 px-2 py-1 rounded-full">
-                                        <X size={11} /> Rechazada
-                                    </span>
-                                );
-                                return (
-                                    <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase bg-amber-50 text-amber-700 border border-amber-200 px-2 py-1 rounded-full">
-                                        <AlertTriangle size={11} /> En proceso
-                                    </span>
-                                );
-                            })()}
-                            <button onClick={() => removeContact(c.id)} className="text-slate-300 hover:text-red-500 transition-colors" title="Eliminar contacto">
-                                <Trash2 size={15} />
-                            </button>
+                            <div>{statusPill}</div>
+                            {actions}
                         </div>
+                        {/* Tarjeta móvil */}
+                        <div className="lg:hidden" style={{ padding: '14px 18px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                            <div className="flex items-center justify-between gap-3">
+                                <button onClick={() => setDetail(c)} className="flex items-center gap-3 min-w-0 text-left flex-1">
+                                    {avatar}
+                                    <div className="min-w-0">
+                                        <p style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{prettyName(c.name)}</p>
+                                        <div className="flex items-center gap-1.5" style={{ marginTop: 2 }}>
+                                            {flagEl}
+                                            <span style={{ fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.railLine} · {m.maskLine}</span>
+                                        </div>
+                                    </div>
+                                </button>
+                                <div className="flex flex-col items-end gap-1.5 shrink-0">
+                                    {statusPill}
+                                    {actions}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    );
+                })}
+            </div>
+
+            {/* Cómo funciona (pie) */}
+            <div className="grid grid-cols-1 md:grid-cols-3" style={{ gap: 14 }}>
+                {[
+                    { n: '1', t: 'Inscribes la cuenta', d: 'Eliges el país y das el dato del riel local: llave Bre-B, cuenta bancaria o wallet USDT.' },
+                    { n: '2', t: 'La validamos', d: 'Confirmamos que los datos estén completos y el destino quede listo para operar.' },
+                    { n: '3', t: 'Envías sin volver a digitar', d: 'El beneficiario queda listo para el riel de su país desde cualquier envío.' },
+                ].map(card => (
+                    <div key={card.n} style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, padding: '18px 20px' }}>
+                        <div style={{ width: 24, height: 24, borderRadius: '50%', background: 'rgba(74,222,128,0.12)', color: '#4ADE80', fontWeight: 800, fontSize: 12, display: 'grid', placeItems: 'center', marginBottom: 10 }}>{card.n}</div>
+                        <p style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>{card.t}</p>
+                        <p style={{ fontSize: 12, color: '#878E88', marginTop: 4, lineHeight: 1.5 }}>{card.d}</p>
                     </div>
                 ))}
             </div>
