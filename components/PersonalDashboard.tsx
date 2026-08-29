@@ -2823,58 +2823,56 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       canvas.width = W * scale; canvas.height = H * scale;
       const ctx = canvas.getContext('2d')!;
       ctx.scale(scale, scale);
-      ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, W, H);
+      // Fondo oscuro Lincoin
+      ctx.fillStyle = '#0C0E0D'; ctx.fillRect(0, 0, W, H);
 
       let y = PAD + 24;
-      // Logo (ícono cubo Lincoin) + título LINCOIN, centrados como grupo
-      ctx.font = `800 24px ${FONT}`;
-      const wCuy = ctx.measureText('CUY').width, wPay = ctx.measureText('PAY').width;
-      const iconS = 26, gap = 8;
-      const groupW = iconS + gap + wCuy + wPay;
-      const gx = (W - groupW) / 2;
-      const iy = y - iconS + 3; // alinear con la línea base del texto
-      // símbolo: cuadro navy + marco teal + punto teal (mismo del app)
-      const s = iconS;
-      roundRect(ctx, gx, iy, s, s, s * 0.22); ctx.fillStyle = '#0C0E0D'; ctx.fill();
-      ctx.strokeStyle = '#4ADE80'; ctx.lineWidth = s * 0.075; ctx.lineJoin = 'round';
-      roundRect(ctx, gx + s * 0.22, iy + s * 0.22, s * 0.56, s * 0.56, s * 0.16); ctx.stroke();
-      ctx.beginPath(); ctx.arc(gx + s * 0.58, iy + s * 0.56, s * 0.08, 0, Math.PI * 2); ctx.fillStyle = '#4ADE80'; ctx.fill();
-      const sx = gx + iconS + gap;
-      ctx.fillStyle = '#0C0E0D'; ctx.fillText('CUY', sx, y);
-      ctx.fillStyle = '#4ADE80'; ctx.fillText('PAY', sx + wCuy, y);
+      // Logo: wordmark tipográfico "Lincoin" + punto verde (NUNCA ícono/cubo
+      // ni el nombre viejo — reglas de marca en CLAUDE.md).
+      ctx.font = `800 26px Archivo, ${FONT}`;
+      const wWord = ctx.measureText('Lincoin').width, wDot = ctx.measureText('.').width;
+      const gx = (W - (wWord + wDot)) / 2;
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#F4F4F2'; ctx.fillText('Lincoin', gx, y);
+      ctx.fillStyle = '#4ADE80'; ctx.fillText('.', gx + wWord, y);
       // Subtítulo
-      y += 22;
-      ctx.textAlign = 'center'; ctx.font = `700 14px ${FONT}`; ctx.fillStyle = '#334155';
+      y += 24;
+      ctx.textAlign = 'center'; ctx.font = `700 14px Archivo, ${FONT}`; ctx.fillStyle = '#878E88';
       ctx.fillText(`Detalle de ${isCredit ? 'depósito' : 'retiro'}`, W / 2, y);
       // Caja de monto
       y += 16;
       const boxY = y, boxH = 72;
-      roundRect(ctx, PAD, boxY, maxW, boxH, 14); ctx.fillStyle = '#F4F6F9'; ctx.fill();
-      ctx.font = `800 25px ${FONT}`; ctx.fillStyle = isCredit ? '#16a34a' : '#0C0E0D';
-      ctx.fillText(`${isCredit ? '+' : '-'}${formatMoney(tx.amount, tx.currency)} ${tx.currency}`, W / 2, boxY + 34);
-      const stCol = tx.status === 'Completado' ? ['#16A34A', '#FFFFFF'] : tx.status === 'Pendiente' ? ['#F97316', '#FFFFFF'] : ['#DC2626', '#FFFFFF'];
-      ctx.font = `700 11px ${FONT}`;
+      roundRect(ctx, PAD, boxY, maxW, boxH, 14); ctx.fillStyle = '#121413'; ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.10)'; ctx.lineWidth = 1;
+      roundRect(ctx, PAD, boxY, maxW, boxH, 14); ctx.stroke();
+      ctx.font = `800 25px Archivo, ${FONT}`; ctx.fillStyle = isCredit ? '#4ADE80' : '#F4F4F2';
+      const amtLabel = `${isCredit ? '+' : '-'}${formatMoney(tx.amount, tx.currency)} ${displayCurrency(tx.currency)}${railOfCurrency(tx.currency) ? ` · ${railOfCurrency(tx.currency)}` : ''}`;
+      ctx.fillText(amtLabel, W / 2, boxY + 34);
+      // Chip de estado: borde de color, sin fondos rojos/naranjas chillones
+      const stCol = tx.status === 'Completado' ? '#4ADE80' : tx.status === 'Pendiente' ? '#F59E0B' : '#F87171';
+      ctx.font = `700 11px Archivo, ${FONT}`;
       const stW = ctx.measureText(tx.status).width + 26;
-      roundRect(ctx, (W - stW) / 2, boxY + 46, stW, 22, 11); ctx.fillStyle = stCol[0]; ctx.fill();
-      ctx.fillStyle = stCol[1]; ctx.fillText(tx.status, W / 2, boxY + 46 + 15);
+      ctx.strokeStyle = stCol; ctx.lineWidth = 1.2;
+      roundRect(ctx, (W - stW) / 2, boxY + 46, stW, 22, 11); ctx.stroke();
+      ctx.fillStyle = stCol; ctx.fillText(tx.status, W / 2, boxY + 46 + 15);
       // Campos
       ctx.textAlign = 'left';
       y = boxY + boxH + 20;
       for (const r of rows) {
-        ctx.font = F_LABEL; ctx.fillStyle = '#94a3b8';
+        ctx.font = F_LABEL; ctx.fillStyle = '#878E88';
         ctx.fillText(r.f.label.toUpperCase(), PAD, y + 10);
         y += 16;
-        ctx.font = F_VALUE; ctx.fillStyle = '#121413';
+        ctx.font = F_VALUE; ctx.fillStyle = '#F4F4F2';
         for (const ln of r.lines) { ctx.fillText(ln, PAD, y + 13); y += 18; }
         y += 6;
-        ctx.strokeStyle = '#f1f5f9'; ctx.lineWidth = 1;
+        ctx.strokeStyle = 'rgba(255,255,255,0.08)'; ctx.lineWidth = 1;
         ctx.beginPath(); ctx.moveTo(PAD, y); ctx.lineTo(W - PAD, y); ctx.stroke();
         y += 8;
       }
       // Pie
       y += 20;
-      ctx.textAlign = 'center'; ctx.font = `600 11px ${FONT}`; ctx.fillStyle = '#94a3b8';
-      ctx.fillText('cuypay.com · Comprobante Lincoin', W / 2, y);
+      ctx.textAlign = 'center'; ctx.font = `600 11px Archivo, ${FONT}`; ctx.fillStyle = 'rgba(244,244,242,0.45)';
+      ctx.fillText('Comprobante Lincoin', W / 2, y);
       return canvas;
     };
     const shareReceipt = async () => {
