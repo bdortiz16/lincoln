@@ -571,6 +571,25 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
         'Ecuador': 'linear-gradient(180deg,#FFD100 0 50%,#0072CE 50% 75%,#EF3340 75%)',
         'Argentina':'linear-gradient(180deg,#74ACDF 0 33%,#FFFFFF 33% 66%,#74ACDF 66%)',
     };
+    // Riel y moneda por país (paso 1 del modal) — config, no hardcode en UI.
+    const COUNTRY_RAILS: Record<string, string> = {
+        Colombia: 'Bre-B · ACH · COP', Chile: 'Transferencia · CLP', 'Perú': 'Transferencia · PEN',
+        'México': 'Transferencia · MXN', Brasil: 'Transferencia · BRL', Venezuela: 'Transferencia · VES',
+        'Estados Unidos': 'Wallet USDT · TRC-20',
+    };
+    // Tokens de inputs del modal (diseño: 46px, fondo translúcido, sin blanco)
+    const INP: React.CSSProperties = {
+        width: '100%', height: 46, marginTop: 6, padding: '0 14px',
+        background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)',
+        borderRadius: 10, color: '#F4F4F2', fontSize: 14, outline: 'none', fontFamily: 'inherit',
+    };
+    const LBL: React.CSSProperties = { fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88', textTransform: 'uppercase' as const, display: 'block' };
+    const ShieldCheckIcon = () => (
+        <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="#878E88" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 1 }}>
+            <path d="M10 2.5l6 2.2v4.5c0 3.6-2.4 6.4-6 8.3-3.6-1.9-6-4.7-6-8.3V4.7l6-2.2z" />
+            <path d="M7.5 10l1.8 1.8 3.2-3.6" />
+        </svg>
+    );
     const initialsOf = (name: string) => {
         const parts = String(name || '').trim().split(/\s+/);
         return ((parts[0]?.[0] ?? '') + (parts[1]?.[0] ?? parts[0]?.[1] ?? '')).toUpperCase() || '·';
@@ -647,249 +666,285 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                 </details>
             )}
 
-            {/* Formulario de inscripción */}
+            {/* Modal "Inscribir beneficiario" — 2 pasos (handoff inscribir_beneficiario) */}
             {formOpen && (
-                <div className="bg-white rounded-2xl border-2 border-[#4ADE80]/40 p-5 space-y-4">
-                    <div className="flex items-center justify-between">
-                        <h3 className="font-bold text-slate-800">Nuevo contacto</h3>
-                        <button onClick={() => setFormOpen(false)} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
+                <div className="fixed inset-0 z-50 p-4" style={{ background: 'rgba(4,5,4,0.72)', display: 'grid', placeItems: 'center' }} onClick={() => !saving && setFormOpen(false)}>
+                <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" className="w-full animate-in zoom-in-95 duration-300"
+                    style={{ maxWidth: 520, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, overflow: 'hidden', maxHeight: '92vh', display: 'flex', flexDirection: 'column', fontFamily: "'Archivo', system-ui, sans-serif" }}>
+                    {/* Cabecera */}
+                    <div style={{ padding: '18px 22px 14px' }}>
+                        <div className="flex items-start justify-between gap-3">
+                            <div>
+                                <h3 style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.3px', color: '#F4F4F2' }}>Inscribir beneficiario</h3>
+                                {formStep === 'country' ? (
+                                    <p style={{ fontSize: 12.5, color: '#878E88', marginTop: 3 }}>¿En qué país está la cuenta de destino?</p>
+                                ) : (
+                                    <div className="flex items-center gap-1.5" style={{ marginTop: 4 }}>
+                                        <span style={{ width: 15, height: 15, borderRadius: '50%', display: 'inline-block', background: FLAG_BG[form.country] ?? '#2E3330', flexShrink: 0 }} />
+                                        <span style={{ fontSize: 12.5, color: '#878E88' }}>{form.country}</span>
+                                        <button onClick={() => setFormStep('country')} style={{ fontSize: 12.5, color: '#F4F4F2', textDecoration: 'underline', marginLeft: 4 }}>cambiar país</button>
+                                    </div>
+                                )}
+                            </div>
+                            <button onClick={() => setFormOpen(false)} style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                                <X size={13} style={{ color: '#878E88' }} strokeWidth={1.7} />
+                            </button>
+                        </div>
+                        {/* Barra de progreso 2 segmentos */}
+                        <div className="flex" style={{ gap: 5, marginTop: 14 }}>
+                            <div style={{ flex: 1, height: 3, borderRadius: 2, background: '#4ADE80' }} />
+                            <div style={{ flex: 1, height: 3, borderRadius: 2, background: formStep === 'country' ? 'rgba(255,255,255,0.1)' : '#4ADE80' }} />
+                        </div>
                     </div>
 
-                    {/* PASO EE. UU. — ¿Banco o Wallet? (solo Estados Unidos / USD) */}
-                    {formStep === 'type' && (
-                        <div className="space-y-3">
-                            <button onClick={() => setFormStep('country')} className="text-xs font-bold text-[#16A34A] hover:underline">← Cambiar país</button>
-                            <p className="text-sm text-slate-600 font-medium">Estados Unidos (USD) — ¿qué tipo de destino vas a inscribir?</p>
-                            <div className="grid grid-cols-2 gap-3">
-                                <button
-                                    type="button"
-                                    onClick={() => { setForm(fm => ({ ...fm, accountKind: 'bank' })); setFormStep('data'); }}
-                                    className="flex flex-col items-center gap-2 p-5 rounded-2xl border-2 border-slate-200 hover:border-[#0C0E0D] hover:bg-slate-50 transition-all"
-                                >
-                                    <div className="w-12 h-12 bg-slate-100 rounded-xl flex items-center justify-center"><Landmark size={24} className="text-[#0C0E0D]" /></div>
-                                    <span className="text-sm font-bold text-slate-800">Cuenta bancaria</span>
-                                    <span className="text-[10px] text-slate-500 leading-tight text-center">Transferencia bancaria en EE. UU.</span>
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => { setForm(fm => ({ ...fm, accountKind: 'wallet', bank: '' })); setFormStep('wallet'); }}
-                                    className="flex flex-col items-center gap-2 p-5 rounded-2xl border-2 border-slate-200 hover:border-[#4ADE80] hover:bg-green-50/40 transition-all"
-                                >
-                                    <div className="w-12 h-12 bg-green-50 rounded-xl flex items-center justify-center"><Wallet size={24} className="text-[#16A34A]" /></div>
-                                    <span className="text-sm font-bold text-slate-800">Wallet</span>
-                                    <span className="text-[10px] text-slate-500 leading-tight text-center">Dirección cripto (USDT/USDC)</span>
-                                </button>
-                            </div>
-                        </div>
-                    )}
+                    {/* Cuerpo scrolleable */}
+                    <div style={{ padding: '6px 22px 20px', overflowY: 'auto' }} className="space-y-4">
 
-                    {/* PASO WALLET — datos de la wallet (solo USD, aprobación automática) */}
+                    {/* PASO WALLET — datos de la wallet USDT (Estados Unidos) */}
                     {formStep === 'wallet' && (<>
-                        <button onClick={() => setFormStep('type')} className="text-xs font-bold text-[#16A34A] hover:underline">← Cambiar tipo</button>
-                        <div className="grid md:grid-cols-2 gap-3">
-                            <div className="md:col-span-2">
-                                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Nombre / Alias del destinatario</label>
-                                <input value={form.name} onChange={e => setForm(fm => ({ ...fm, name: e.target.value }))}
-                                    placeholder="Ej: Proveedor XYZ"
-                                    className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#4ADE80] outline-none" />
-                            </div>
+                        <div>
+                            <label style={LBL}>Nombre / alias del destinatario</label>
+                            <input value={form.name} onChange={e => setForm(fm => ({ ...fm, name: e.target.value }))} placeholder="Ej: Proveedor XYZ" style={INP} />
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
                             <div>
-                                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Moneda</label>
-                                <select value={form.walletCoin} onChange={e => setForm(fm => ({ ...fm, walletCoin: e.target.value as 'USDT' | 'USDC' }))}
-                                    className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm bg-white focus:border-[#4ADE80] outline-none">
+                                <label style={LBL}>Moneda</label>
+                                <select value={form.walletCoin} onChange={e => setForm(fm => ({ ...fm, walletCoin: e.target.value as 'USDT' | 'USDC' }))} style={INP}>
                                     <option value="USDT">USDT (Tether)</option>
                                     <option value="USDC">USDC</option>
                                 </select>
                             </div>
                             <div>
-                                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Red</label>
-                                <select value={form.walletNetwork} onChange={e => setForm(fm => ({ ...fm, walletNetwork: e.target.value as 'TRC-20' | 'BEP-20' }))}
-                                    className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm bg-white focus:border-[#4ADE80] outline-none">
+                                <label style={LBL}>Red</label>
+                                <select value={form.walletNetwork} onChange={e => setForm(fm => ({ ...fm, walletNetwork: e.target.value as 'TRC-20' | 'BEP-20' }))} style={INP}>
                                     <option value="TRC-20">TRON (TRC-20)</option>
                                     <option value="BEP-20">BNB Chain (BEP-20)</option>
                                 </select>
                             </div>
-                            <div className="md:col-span-2">
-                                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Dirección de la wallet</label>
-                                <input value={form.accountNumber} onChange={e => setForm(fm => ({ ...fm, accountNumber: e.target.value.trim() }))}
-                                    placeholder={form.walletNetwork === 'TRC-20' ? 'T…' : '0x…'}
-                                    className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm font-mono focus:border-[#4ADE80] outline-none" />
-                                <p className="text-[10px] text-slate-400 mt-1">⚠️ Verifica la dirección y la red: un envío a una dirección equivocada no se puede recuperar.</p>
-                            </div>
                         </div>
-                        <button
-                            onClick={saveContact}
-                            disabled={saving}
-                            style={{ color: '#FFFFFF' }}
-                            className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#152e52] font-bold text-sm disabled:opacity-60 transition-colors"
-                        >
-                            {saving ? 'Guardando…' : 'Inscribir wallet'}
-                        </button>
+                        <div>
+                            <label style={LBL}>Dirección de la wallet</label>
+                            <input value={form.accountNumber} onChange={e => setForm(fm => ({ ...fm, accountNumber: e.target.value.trim() }))}
+                                placeholder={form.walletNetwork === 'TRC-20' ? 'T…' : '0x…'}
+                                style={{ ...INP, fontFamily: 'ui-monospace, monospace' }} />
+                        </div>
+                        <div className="flex items-start" style={{ gap: 11, border: '1px solid rgba(255,255,255,0.1)', borderLeft: '2px solid #4ADE80', background: 'rgba(255,255,255,0.03)', borderRadius: 10, padding: '12px 15px' }}>
+                            <ShieldCheckIcon />
+                            <span style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5 }}>Verifica la dirección y la red: un envío a una dirección equivocada <span style={{ color: '#F4F4F2', fontWeight: 700 }}>no se puede recuperar</span>.</span>
+                        </div>
                     </>)}
 
-                    {/* PASO 1 — País de la cuenta: tarjetas con bandera */}
-                    {formStep === 'country' && (
-                        <div className="space-y-3">
-                            <p className="text-sm text-slate-600 font-medium">¿En qué país está la cuenta bancaria?</p>
-                            <div className="grid grid-cols-3 md:grid-cols-4 gap-3">
-                                {CONTACT_COUNTRIES.map(c => (
+                    {/* PASO 1 — País de la cuenta: tarjetas-radio 2 columnas */}
+                    {formStep === 'country' && (<>
+                        <div className="grid grid-cols-1 sm:grid-cols-2" style={{ gap: 8 }}>
+                            {CONTACT_COUNTRIES.map(c => {
+                                const sel = form.country === c.name;
+                                const railLabel = COUNTRY_RAILS[c.name] ?? 'Transferencia local';
+                                return (
                                     <button
                                         key={c.code}
                                         type="button"
-                                        onClick={() => {
-                                            setForm(fm => ({ ...fm, country: c.name, bank: '', docType: c.name === 'Colombia' ? 'CC' : fm.docType }));
-                                            // Estados Unidos (USD): preguntar Banco o Wallet.
-                                            // Demás países: directo a los datos bancarios.
-                                            setFormStep(c.name === 'Estados Unidos' ? 'type' : 'data');
+                                        onClick={() => setForm(fm => ({ ...fm, country: c.name, bank: '', docType: c.name === 'Colombia' ? (fm.kind === 'empresa' ? 'NIT' : 'CC') : fm.docType }))}
+                                        className="flex items-center gap-3 text-left transition-colors"
+                                        style={{
+                                            padding: '12px 14px', borderRadius: 12,
+                                            border: sel ? '1px solid rgba(74,222,128,0.35)' : '1px solid rgba(255,255,255,0.1)',
+                                            background: sel ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.025)',
                                         }}
-                                        className="flex flex-col items-center gap-2 p-4 rounded-2xl border-2 border-slate-200 hover:border-[#0C0E0D] hover:bg-slate-50 transition-all"
                                     >
-                                        <FlagImg code={c.code} className="w-10 h-7 object-cover rounded shadow-sm" />
-                                        <span className="text-xs font-bold text-slate-700 leading-tight text-center">{c.name}</span>
-                                        <span className={`text-[9px] font-bold leading-tight text-center ${c.name === 'Colombia' ? 'text-amber-600' : 'text-green-600'}`}>
-                                            {c.name === 'Colombia' ? 'Revisión bancaria' : 'Aprobación automática'}
+                                        <span style={{ width: 30, height: 30, borderRadius: '50%', flexShrink: 0, display: 'block', background: FLAG_BG[c.name] ?? '#2E3330' }} />
+                                        <span className="flex-1 min-w-0">
+                                            <span style={{ display: 'block', fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>{c.name}</span>
+                                            <span style={{ display: 'block', fontSize: 11, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{railLabel}</span>
                                         </span>
-                                    </button>
-                                ))}
-                            </div>
-                        </div>
-                    )}
-
-                    {formStep === 'data' && (<>
-                    <div className="flex items-center justify-between flex-wrap gap-2">
-                        <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2">
-                            <FlagImg code={CONTACT_COUNTRIES.find(c => c.name === form.country)?.code ?? 'CO'} className="w-6 h-4 object-cover rounded shadow-sm" />
-                            <span className="text-sm font-bold text-slate-700">{form.country}</span>
-                            <button onClick={() => setFormStep('country')} className="text-xs font-bold text-[#16A34A] hover:underline ml-1">Cambiar país</button>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2 w-56">
-                            {(['persona', 'empresa'] as const).map(k => (
-                                <button
-                                    key={k}
-                                    onClick={() => setForm(fm => ({ ...fm, kind: k, docType: k === 'empresa' ? 'NIT' : 'CC' }))}
-                                    className={`py-2 rounded-xl text-sm font-bold border transition-colors ${form.kind === k ? 'bg-[#0C0E0D] border-[#0C0E0D]' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
-                                    style={form.kind === k ? { color: '#FFFFFF' } : undefined}
-                                >
-                                    {k === 'persona' ? 'Persona' : 'Empresa'}
-                                </button>
-                            ))}
-                        </div>
-                    </div>
-                    {/* Tipo de destino (solo Colombia): Bre-B o ACH — como en Mouv */}
-                    {form.country === 'Colombia' && (
-                        <div className="grid grid-cols-2 gap-2 mb-1">
-                            {([{ v: 'breb', l: 'Bre-B', s: 'Por llave · segundos' }, { v: 'ach', l: 'ACH', s: 'Cuenta bancaria' }] as const).map(t => {
-                                const sel = form.destKind === t.v;
-                                return (
-                                    <button key={t.v} type="button" onClick={() => setForm(fm => ({ ...fm, destKind: t.v }))}
-                                        className="p-2.5 rounded-xl text-left transition-colors"
-                                        style={{ border: sel ? '1.5px solid #16A34A' : '1px solid #e2e8f0', background: sel ? 'rgba(22,163,74,0.08)' : '#fff' }}>
-                                        <p className="text-sm font-bold" style={{ color: sel ? '#16A34A' : '#334155' }}>{t.l}</p>
-                                        <p className="text-[11px] text-slate-400">{t.s}</p>
+                                        <span style={{ width: 17, height: 17, borderRadius: '50%', flexShrink: 0, border: sel ? '5px solid #4ADE80' : '1.5px solid rgba(255,255,255,0.25)', background: sel ? '#0C0E0D' : 'transparent' }} />
                                     </button>
                                 );
                             })}
                         </div>
-                    )}
-
-                    <div className="grid md:grid-cols-2 gap-3">
-                        <div className="md:col-span-2">
-                            <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">{form.country === 'Colombia' && form.destKind === 'breb' ? 'Alias del destinatario' : 'Nombre completo / Razón social'}</label>
-                            <input value={form.name} onChange={e => setForm(fm => ({ ...fm, name: e.target.value }))}
-                                placeholder={form.country === 'Colombia' && form.destKind === 'breb' ? 'Ej: Juan Proveedor, Nómina Marzo' : ''}
-                                className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#4ADE80] outline-none" />
+                        <div className="flex items-center" style={{ gap: 8 }}>
+                            <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#4ADE80', flexShrink: 0 }} />
+                            <span style={{ fontSize: 12, color: '#878E88' }}>Cada país usa su riel local. La cuenta se valida antes del primer envío.</span>
                         </div>
+                    </>)}
 
-                        {/* ── Rama BRE-B: tipo de llave + llave + contacto opcional ── */}
-                        {form.country === 'Colombia' && form.destKind === 'breb' ? (
-                            <>
+                    {formStep === 'data' && (<>
+                    {/* Segmentado Persona / Empresa */}
+                    <div className="flex" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 10, padding: 3 }}>
+                        {(['persona', 'empresa'] as const).map(k => (
+                            <button
+                                key={k}
+                                onClick={() => setForm(fm => ({ ...fm, kind: k, docType: k === 'empresa' ? 'NIT' : 'CC' }))}
+                                style={{
+                                    flex: 1, padding: '9px 0', borderRadius: 8, fontSize: 13,
+                                    fontWeight: form.kind === k ? 700 : 500,
+                                    background: form.kind === k ? 'rgba(255,255,255,0.09)' : 'transparent',
+                                    color: form.kind === k ? '#F4F4F2' : '#878E88',
+                                }}
+                            >
+                                {k === 'persona' ? 'Persona' : 'Empresa'}
+                            </button>
+                        ))}
+                    </div>
+                    {/* Riel de envío (solo Colombia): Bre-B o ACH */}
+                    {form.country === 'Colombia' && (<div>
+                        <label style={LBL}>Riel de envío</label>
+                        <div className="grid grid-cols-2" style={{ gap: 8, marginTop: 6 }}>
+                            {([{ v: 'breb', l: 'Bre-B', pill: 'SEGUNDOS', s: 'Por llave · 24/7' }, { v: 'ach', l: 'ACH', pill: null, s: 'Cuenta bancaria · L–V' }] as const).map(t => {
+                                const sel = form.destKind === t.v;
+                                return (
+                                    <button key={t.v} type="button" onClick={() => setForm(fm => ({ ...fm, destKind: t.v }))}
+                                        className="text-left transition-colors"
+                                        style={{
+                                            padding: '11px 13px', borderRadius: 11,
+                                            border: sel ? '1px solid rgba(74,222,128,0.35)' : '1px solid rgba(255,255,255,0.1)',
+                                            background: sel ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.025)',
+                                        }}>
+                                        <div className="flex items-center gap-2">
+                                            <p style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>{t.l}</p>
+                                            {t.pill && <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 8.5, fontWeight: 700, letterSpacing: '0.6px', padding: '2px 6px', borderRadius: 999 }}>{t.pill}</span>}
+                                        </div>
+                                        <p style={{ fontSize: 11, color: '#878E88', marginTop: 2 }}>{t.s}</p>
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    </div>)}
+
+                    {/* ── Rama BRE-B: chips de tipo de llave + llave + identidad ── */}
+                    {form.country === 'Colombia' && form.destKind === 'breb' ? (
+                        <>
+                            <div>
+                                <label style={LBL}>Tipo de llave Bre-B</label>
+                                <div className="flex flex-wrap" style={{ gap: 6, marginTop: 6 }}>
+                                    {BREB_KEY_TYPES.map(k => {
+                                        const sel = form.brebKeyType === k.v;
+                                        return (
+                                            <button key={k.v} type="button" onClick={() => setForm(fm => ({ ...fm, brebKeyType: k.v as any }))}
+                                                style={{
+                                                    borderRadius: 999, padding: '7px 14px', fontSize: 12, fontWeight: sel ? 700 : 500,
+                                                    border: sel ? '1px solid rgba(74,222,128,0.35)' : '1px solid rgba(255,255,255,0.1)',
+                                                    background: sel ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.025)',
+                                                    color: sel ? '#F4F4F2' : '#878E88',
+                                                }}>
+                                                {k.l}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                            <div>
+                                <label style={LBL}>Llave Bre-B ({brebKeyLabel(form.brebKeyType)})</label>
+                                <input value={form.brebKey} onChange={e => setForm(fm => ({ ...fm, brebKey: e.target.value }))}
+                                    placeholder={form.brebKeyType === 'celular' ? '+57 300 1234567' : form.brebKeyType === 'correo' ? 'correo@empresa.com' : form.brebKeyType === 'cedula' ? 'Número de cédula' : '@LLAVE123'}
+                                    style={INP} />
+                            </div>
+                            <div>
+                                <label style={LBL}>{form.kind === 'empresa' ? 'Razón social' : 'Nombre completo'}</label>
+                                <input value={form.name} onChange={e => setForm(fm => ({ ...fm, name: e.target.value }))} style={INP} />
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
                                 <div>
-                                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Tipo de llave Bre-B</label>
-                                    <select value={form.brebKeyType} onChange={e => setForm(fm => ({ ...fm, brebKeyType: e.target.value as any }))}
-                                        className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm bg-white focus:border-[#4ADE80] outline-none">
-                                        {BREB_KEY_TYPES.map(k => <option key={k.v} value={k.v}>{k.l}</option>)}
+                                    <label style={LBL}>Tipo de documento</label>
+                                    <select value={form.docType} onChange={e => setForm(fm => ({ ...fm, docType: e.target.value }))} style={INP}>
+                                        {DOC_TYPES.map(d => <option key={d.v} value={d.v}>{d.l}</option>)}
                                     </select>
                                 </div>
                                 <div>
-                                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Llave</label>
-                                    <input value={form.brebKey} onChange={e => setForm(fm => ({ ...fm, brebKey: e.target.value }))}
-                                        placeholder={form.brebKeyType === 'celular' ? '+57 300 1234567' : form.brebKeyType === 'correo' ? 'correo@empresa.com' : form.brebKeyType === 'cedula' ? 'Número de cédula' : 'Llave alfanumérica'}
-                                        className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#4ADE80] outline-none" />
+                                    <label style={LBL}>Número de documento</label>
+                                    <input value={form.docNumber} onChange={e => setForm(fm => ({ ...fm, docNumber: e.target.value }))} inputMode="numeric" style={INP} />
                                 </div>
-                                <div className="md:col-span-2 bg-slate-50 border border-slate-200 rounded-xl p-2.5">
-                                    <p className="text-[11px] text-slate-500 font-semibold">Contacto opcional (solo para notificaciones — no se usa para mover dinero)</p>
-                                </div>
-                                <div>
-                                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Email</label>
-                                    <input value={form.notifyEmail} onChange={e => setForm(fm => ({ ...fm, notifyEmail: e.target.value }))}
-                                        placeholder="opcional@empresa.com"
-                                        className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#4ADE80] outline-none" />
-                                </div>
-                                <div>
-                                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Celular</label>
-                                    <input value={form.notifyPhone} onChange={e => setForm(fm => ({ ...fm, notifyPhone: e.target.value }))}
-                                        placeholder="3001234567"
-                                        className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#4ADE80] outline-none" />
-                                </div>
-                            </>
-                        ) : (
-                        /* ── Rama ACH / otros países: cuenta bancaria ── */
-                        <>
-                        <div>
-                            <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Tipo de documento</label>
-                            <select value={form.docType} onChange={e => setForm(fm => ({ ...fm, docType: e.target.value }))}
-                                className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm bg-white focus:border-[#4ADE80] outline-none">
-                                {DOC_TYPES.map(d => <option key={d.v} value={d.v}>{d.l}</option>)}
-                            </select>
-                        </div>
-                        <div>
-                            <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Número de documento</label>
-                            <input value={form.docNumber} onChange={e => setForm(fm => ({ ...fm, docNumber: e.target.value }))}
-                                inputMode="numeric"
-                                className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#4ADE80] outline-none" />
-                        </div>
-                        <div>
-                            <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Banco destino</label>
-                            {form.country === 'Colombia' ? (
-                                <select value={form.bank} onChange={e => setForm(fm => ({ ...fm, bank: e.target.value }))}
-                                    className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm bg-white focus:border-[#4ADE80] outline-none">
-                                    <option value="">Selecciona…</option>
-                                    {BANKS_CO.map(b => <option key={b} value={b}>{b}</option>)}
-                                </select>
-                            ) : (
-                                <input value={form.bank} onChange={e => setForm(fm => ({ ...fm, bank: e.target.value }))}
-                                    placeholder="Nombre del banco"
-                                    className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#4ADE80] outline-none" />
-                            )}
-                        </div>
-                        <div>
-                            <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Tipo de cuenta</label>
-                            <select value={form.accountType} onChange={e => setForm(fm => ({ ...fm, accountType: e.target.value as 'savings' | 'checking' }))}
-                                className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm bg-white focus:border-[#4ADE80] outline-none">
-                                <option value="savings">Ahorros</option>
-                                <option value="checking">Corriente</option>
-                            </select>
-                        </div>
-                        <div className="md:col-span-2">
-                            <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Número de cuenta</label>
-                            <input value={form.accountNumber} onChange={e => setForm(fm => ({ ...fm, accountNumber: e.target.value.replace(/[^\d-]/g, '') }))}
-                                inputMode="numeric"
-                                className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#4ADE80] outline-none" />
-                        </div>
+                            </div>
                         </>
+                    ) : (
+                    /* ── Rama ACH / otros países: cuenta bancaria ── */
+                    <>
+                        <div>
+                            <label style={LBL}>{form.kind === 'empresa' ? 'Razón social' : 'Nombre completo'}</label>
+                            <input value={form.name} onChange={e => setForm(fm => ({ ...fm, name: e.target.value }))} style={INP} />
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                            <div>
+                                <label style={LBL}>Tipo de documento</label>
+                                <select value={form.docType} onChange={e => setForm(fm => ({ ...fm, docType: e.target.value }))} style={INP}>
+                                    {DOC_TYPES.map(d => <option key={d.v} value={d.v}>{d.l}</option>)}
+                                </select>
+                            </div>
+                            <div>
+                                <label style={LBL}>Número de documento</label>
+                                <input value={form.docNumber} onChange={e => setForm(fm => ({ ...fm, docNumber: e.target.value }))} inputMode="numeric" style={INP} />
+                            </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                            <div>
+                                <label style={LBL}>Banco destino</label>
+                                {form.country === 'Colombia' ? (
+                                    <select value={form.bank} onChange={e => setForm(fm => ({ ...fm, bank: e.target.value }))} style={INP}>
+                                        <option value="">Selecciona…</option>
+                                        {BANKS_CO.map(b => <option key={b} value={b}>{b}</option>)}
+                                    </select>
+                                ) : (
+                                    <input value={form.bank} onChange={e => setForm(fm => ({ ...fm, bank: e.target.value }))} placeholder="Nombre del banco" style={INP} />
+                                )}
+                            </div>
+                            <div>
+                                <label style={LBL}>Tipo de cuenta</label>
+                                <select value={form.accountType} onChange={e => setForm(fm => ({ ...fm, accountType: e.target.value as 'savings' | 'checking' }))} style={INP}>
+                                    <option value="savings">Ahorros</option>
+                                    <option value="checking">Corriente</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div>
+                            <label style={LBL}>Número de cuenta</label>
+                            <input value={form.accountNumber} onChange={e => setForm(fm => ({ ...fm, accountNumber: e.target.value.replace(/[^\d-]/g, '') }))} inputMode="numeric" style={INP} />
+                        </div>
+                    </>
+                    )}
+
+                    {/* Nota de validación con filo verde */}
+                    <div className="flex items-start" style={{ gap: 11, border: '1px solid rgba(255,255,255,0.1)', borderLeft: '2px solid #4ADE80', background: 'rgba(255,255,255,0.03)', borderRadius: 10, padding: '12px 15px' }}>
+                        <ShieldCheckIcon />
+                        <span style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5 }}>Validamos que la cuenta exista y que el titular coincida con el documento. <span style={{ color: '#F4F4F2', fontWeight: 700 }}>Suele tardar minutos.</span></span>
+                    </div>
+                    </>)}
+                    </div>
+
+                    {/* Botonera */}
+                    <div className="flex" style={{ gap: 9, padding: '14px 22px 20px', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+                        <button
+                            onClick={() => formStep === 'country' ? setFormOpen(false) : setFormStep('country')}
+                            disabled={saving}
+                            style={{ flex: 1, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 14, padding: '13px 0', borderRadius: 10 }}
+                            className="hover:bg-white/[0.09] transition-colors"
+                        >
+                            {formStep === 'country' ? 'Cancelar' : 'Atrás'}
+                        </button>
+                        {formStep === 'country' ? (
+                            <button
+                                onClick={() => {
+                                    if (!form.country) return;
+                                    if (form.country === 'Estados Unidos') { setForm(fm => ({ ...fm, accountKind: 'wallet', bank: '' })); setFormStep('wallet'); }
+                                    else { setForm(fm => ({ ...fm, accountKind: 'bank' })); setFormStep('data'); }
+                                }}
+                                disabled={!form.country}
+                                className="lincoin-btn-white transition-colors"
+                                style={{ flex: 1.5, fontWeight: 700, fontSize: 14, padding: '13px 0', borderRadius: 10, border: 'none', opacity: form.country ? 1 : 0.45, cursor: form.country ? 'pointer' : 'not-allowed' }}
+                            >
+                                Continuar
+                            </button>
+                        ) : (
+                            <button
+                                onClick={saveContact}
+                                disabled={saving}
+                                className="lincoin-btn-white transition-colors"
+                                style={{ flex: 1.5, fontWeight: 700, fontSize: 14, padding: '13px 0', borderRadius: 10, border: 'none', opacity: saving ? 0.45 : 1 }}
+                            >
+                                {saving ? 'Inscribiendo…' : 'Inscribir beneficiario'}
+                            </button>
                         )}
                     </div>
-                    <button
-                        onClick={saveContact}
-                        disabled={saving}
-                        style={{ color: '#FFFFFF' }}
-                        className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#152e52] font-bold text-sm disabled:opacity-60 transition-colors"
-                    >
-                        {saving
-                            ? (form.country === 'Colombia' ? 'Inscribiendo…' : 'Guardando…')
-                            : 'Inscribir contacto'}
-                    </button>
-                    </>)}
+                </div>
                 </div>
             )}
 
