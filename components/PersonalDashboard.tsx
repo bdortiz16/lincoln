@@ -294,6 +294,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const [isLoadModalOpen, setIsLoadModalOpen] = useState(false);
   // Recaudo PSE (pay-in por link) — Mouv devuelve un link que el cliente
   // comparte con quien le paga; al confirmarse se acredita el Saldo Lincoin.
+  const [cargarCopOpen, setCargarCopOpen] = useState(false); // modal oscuro de método de carga (Colombia)
   const [pseOpen, setPseOpen] = useState(false);
   const [pseAmount, setPseAmount] = useState('');
   const [pseBusy, setPseBusy] = useState(false);
@@ -1206,6 +1207,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           'COP': 'Colombia', 'CLP': 'Chile', 'PEN': 'Perú',
           'MXN': 'México', 'BRL': 'Brasil', 'VES': 'Venezuela'
       };
+      // Colombia usa el modal oscuro de método (PSE) rediseñado.
+      if (walletCode === 'COP') { setCargarCopOpen(true); return; }
       if (countryMap[walletCode]) {
           setSelectedCountry(countryMap[walletCode]);
           setLoadStep(2);
@@ -4352,6 +4355,61 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 14 }}>
                           <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#4ADE80' }} className="lincoin-op-dot" />
                           <span style={{ fontSize: 12, color: '#878E88' }}>Estamos monitoreando la red. El saldo aparecerá solo.</span>
+                      </div>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* CARGAR SALDO (COP · Colombia) — selección de método, dark */}
+      {cargarCopOpen && (
+          <div className="fixed inset-0 z-50 p-4" style={{ background: 'rgba(4,5,4,0.85)', display: 'grid', placeItems: 'center' }} onClick={() => setCargarCopOpen(false)}>
+              <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true"
+                  style={{ width: '100%', maxWidth: 480, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, overflow: 'hidden', fontFamily: "'Archivo', system-ui, sans-serif" }}>
+                  {/* Cabecera */}
+                  <div style={{ padding: '21px 24px 15px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                      <div className="flex items-start justify-between gap-3">
+                          <div>
+                              <h3 style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.3px', color: '#F4F4F2' }}>Cargar saldo</h3>
+                              <p className="flex items-center" style={{ gap: 7, fontSize: 12.5, color: '#878E88', marginTop: 4 }}>
+                                  <span style={{ width: 15, height: 15, borderRadius: '50%', overflow: 'hidden', display: 'block', flexShrink: 0, background: '#2E3330' }}>
+                                      <img src={flagUrl('co')} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                  </span>
+                                  Peso colombiano · <button onClick={() => { setCargarCopOpen(false); setLoadStep(1); setIsLoadModalOpen(true); setTimeLeft(300); }} style={{ color: '#F4F4F2', fontWeight: 600, textDecoration: 'underline' }}>cambiar país</button>
+                              </p>
+                          </div>
+                          <button onClick={() => setCargarCopOpen(false)} style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', display: 'grid', placeItems: 'center', flexShrink: 0 }}><X size={13} style={{ color: '#878E88' }} strokeWidth={1.7} /></button>
+                      </div>
+                      <p style={{ fontSize: 12.5, color: '#878E88', marginTop: 12 }}>¿Cómo quieres ingresar el dinero?</p>
+                  </div>
+                  {/* Método — solo PSE (preseleccionado) */}
+                  <div style={{ padding: '18px 24px 24px' }}>
+                      <div className="flex items-center" style={{ gap: 13, border: '1px solid rgba(74,222,128,0.35)', background: 'rgba(74,222,128,0.05)', borderRadius: 12, padding: '15px 16px' }}>
+                          <span style={{ width: 38, height: 38, borderRadius: 10, background: 'rgba(255,255,255,0.055)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                              <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                                  <path d="M10 2.5 L17 6 H3 Z M4 6 V14 M8 6 V14 M12 6 V14 M16 6 V14 M2.5 14 H17.5 V16.5 H2.5 Z" stroke="#F4F4F2" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+                              </svg>
+                          </span>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                              <div className="flex items-center flex-wrap" style={{ gap: 8 }}>
+                                  <span style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2' }}>PSE · desde tu banco</span>
+                                  <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 9, fontWeight: 700, letterSpacing: '0.5px', padding: '3px 7px', borderRadius: 999 }}>RECOMENDADO</span>
+                              </div>
+                              <p style={{ fontSize: 12, color: '#878E88', marginTop: 3, lineHeight: 1.45 }}>Paga desde cualquier banco de Colombia. Acredita en minutos.</p>
+                          </div>
+                          <span style={{ width: 17, height: 17, borderRadius: '50%', border: '1.5px solid #4ADE80', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                              <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#4ADE80' }} />
+                          </span>
+                      </div>
+                      {/* Nota de titularidad */}
+                      <div className="flex items-start" style={{ gap: 8, marginTop: 16 }}>
+                          <ShieldCheck size={15} style={{ color: '#878E88', flexShrink: 0, marginTop: 1 }} strokeWidth={1.7} />
+                          <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5 }}>Solo puedes cargar desde cuentas a tu nombre. Verificamos el titular en cada ingreso.</p>
+                      </div>
+                      {/* Botonera */}
+                      <div className="flex" style={{ gap: 9, marginTop: 20 }}>
+                          <button onClick={() => setCargarCopOpen(false)} className="hover:bg-white/[0.09] transition-colors" style={{ flex: 1, padding: '13px 0', borderRadius: 10, fontSize: 14, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)' }}>Cancelar</button>
+                          <button onClick={() => { setCargarCopOpen(false); setPseAmount(''); setPseResult(null); setPseOpen(true); }} className="lincoin-btn-white transition-colors" style={{ flex: 1.5, padding: '13px 0', borderRadius: 10, fontSize: 14, fontWeight: 700, border: 'none' }}>Continuar</button>
                       </div>
                   </div>
               </div>
