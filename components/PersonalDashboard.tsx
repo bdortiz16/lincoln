@@ -309,8 +309,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           if (r?.ok && r?.link) {
               setPseResult({ ok: true, link: r.link, reference: r.reference });
               refreshData?.();
+          } else if (r?.error === 'payin_not_supported') {
+              // El recaudo por API aún no está habilitado en la cuenta de Mouv:
+              // mensaje amable al usuario final (sin JSON técnico).
+              setPseResult({ ok: false, message: 'El cobro por link estará disponible muy pronto. Mientras tanto, recibe por tu llave Bre-B o escríbenos para coordinar tu recarga.' });
           } else {
-              setPseResult({ ok: false, message: r?.message || 'No se pudo generar el link de recaudo.', detail: r?.attempted ? JSON.stringify(r.attempted).slice(0, 300) : undefined });
+              setPseResult({ ok: false, message: r?.message || 'No se pudo generar el link de recaudo.', detail: (r?.candidates || r?.attempted) ? JSON.stringify(r.candidates ?? r.attempted).slice(0, 300) : undefined });
           }
       } catch (e: any) {
           setPseResult({ ok: false, message: 'Error de red al generar el link.', detail: String(e?.message ?? e).slice(0, 200) });
