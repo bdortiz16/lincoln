@@ -35,3 +35,6 @@ verify_jwt = false
 
 [functions.finity-proxy]
 verify_jwt = false
+
+[functions.email-otp]
+verify_jwt = false

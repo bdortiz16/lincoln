@@ -13,6 +13,7 @@ import { PersonalDashboard } from './components/PersonalDashboard';
 import { AdminDashboard } from './components/AdminDashboard';
 import { ToastProvider } from './components/AdminPersonas/lib/toast';
 import { StaticPage } from './components/StaticPage'; // New Import
+import { EmailOtpGate, isOtpRemembered } from './components/EmailOtpGate';
 import { LogoConcepts } from './components/LogoConcepts';
 import { useDatabase } from './context/DatabaseContext';
 import { useSystemConfig } from './context/SystemConfigContext';
@@ -187,6 +188,11 @@ const App: React.FC = () => {
 
   const { currentUser, isAuthLoading, logoutUser } = useDatabase();
   const { config } = useSystemConfig();
+  // Verificación por correo (2 pasos) tras el login. Se pasa una vez por
+  // sesión; "recordar dispositivo" la evita por 30 días en este navegador.
+  const [otpPassed, setOtpPassed] = useState(false);
+  useEffect(() => { setOtpPassed(false); }, [currentUser?.id]);
+  const needsEmailOtp = !!currentUser && currentUser.role !== 'admin' && !otpPassed && !isOtpRemembered(currentUser.id);
   const [inactivityWarning, setInactivityWarning] = useState(false);
   const inactivityTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const warningTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -454,7 +460,14 @@ const App: React.FC = () => {
   return (
       <>
         <ThemeInjector />
-        {renderView()}
+        {needsEmailOtp ? (
+          <EmailOtpGate
+            userId={currentUser!.id}
+            email={currentUser!.email}
+            onVerified={() => setOtpPassed(true)}
+            onLogout={logoutUser}
+          />
+        ) : renderView()}
 
         {/* LOGOUT OVERLAY */}
         {loggingOut && (
