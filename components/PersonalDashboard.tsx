@@ -327,9 +327,13 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // ID de la external account de Mouv del contacto elegido — con él la
   // confirmación crea la ORDEN DE RETIRO REAL en Mouv (destination_id).
   const [mouvDestId, setMouvDestId] = useState<string | null>(null);
+  // Default Colombia/COP: el chip de país se pinta seleccionado por la
+  // MONEDA — si el default fuera otro país (CLP…), Colombia se vería
+  // elegida pero la validación miraría el saldo de la moneda vieja
+  // ("saldo insuficiente en CLP" con plata en Bre-B).
   const [sendForm, setSendForm] = useState({
-      destinationCountry: 'Chile',
-      destinationCurrency: 'CLP',
+      destinationCountry: 'Colombia',
+      destinationCurrency: 'COP',
       amount: '',
       beneficiaryType: 'personal' as 'personal' | 'business',
       beneficiaryName: '',
