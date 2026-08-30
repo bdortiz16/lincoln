@@ -808,6 +808,59 @@ Deno.serve(async (req) => {
       return json(200, { ok: true, rate })
     }
 
+    // ── LINK DE COBRO (Payment Link) — recaudo entrante ───────────────
+    // POST /v0/payment-link/create { destination_amount, amount, currency,
+    //   exchange_rate_id? } → 201 { id, payment_link, ..., status:UNCONFIRMED }
+    // El comercio RECIBE `destination_amount` en `currency` (COP); el pagador
+    // paga `amount` en el activo origen (USD). Se obtiene la tasa primero para
+    // el exchange_rate_id y para calcular el monto origen. copAmount = COP a
+    // recibir. Registra la transacción como Pendiente (se acredita al pago).
+    if (action === 'create_payment_link') {
+      const copAmount = Math.round(Number(payload.copAmount ?? payload.amount ?? 0))
+      if (!(copAmount >= 5000)) return json(400, { error: 'bad_amount', message: 'El monto mínimo es $5.000 COP.' })
+      // 1) Tasa USD→COP para el exchange_rate_id y el monto origen.
+      const qs = `?${new URLSearchParams({ from: 'USD', to: 'COP' })}`
+      const { res: rres } = await finityTry('rates', {}, qs)
+      const rdata = await rres.json().catch(() => null) as any
+      const rate = extractRate(rdata)
+      const rateId = rdata?.id ?? rdata?.exchange_rate_id ?? rdata?.data?.id ?? null
+      if (!rate || rate <= 0) return json(200, { ok: false, error: 'no_rate', message: 'No se pudo obtener la tasa para el cobro.' })
+      const usdAmount = Number((copAmount / rate).toFixed(2))
+      const body: Record<string, unknown> = {
+        destination_amount: copAmount, amount: Math.max(1, usdAmount), currency: 'COP',
+        ...(rateId ? { exchange_rate_id: rateId } : {}),
+      }
+      const r = await finityFetch('/v0/payment-link/create', { method: 'POST', body: JSON.stringify(body) })
+      const data = await r.json().catch(() => null) as any
+      await logAudit(caller.userId ?? null, 'finity.payment_link.create', { status: r.status, copAmount, usdAmount, response: data })
+      if (!r.ok || !data?.payment_link) {
+        return json(200, { ok: false, status: r.status, error: 'link_failed', message: 'No se pudo crear el link de cobro.', data })
+      }
+      const uid = caller.userId ?? String(payload.user_id ?? '')
+      const reference = String(data.id ?? '')
+      if (uid) {
+        await db.from('transactions').insert({
+          user_id: uid, type: 'load', amount: copAmount, currency: 'COP', status: 'Pendiente',
+          raw_data: { source: 'finity_payment_link', method: 'LINK', reference, providerRef: reference,
+            link: data.payment_link, title: 'Cobro por link', rate, usdAmount,
+            expiresAt: data.expires_at ?? null, createdAt: new Date().toISOString() },
+        }).catch(() => {})
+      }
+      return json(200, { ok: true, link: data.payment_link, reference, status: data.status ?? 'UNCONFIRMED', expiresAt: data.expires_at ?? null, rate })
+    }
+
+    // Estado de un link de cobro (para acreditar cuando el pago confirme).
+    if (action === 'payment_link_status') {
+      const id = String(payload.id ?? payload.reference ?? '')
+      if (!id) return json(400, { error: 'missing_id' })
+      for (const p of [`/v0/payment-link/${id}`, `/v0/payment-link/status/${id}`, `/v0/payment-links/${id}`]) {
+        const r = await finityFetch(p, { method: 'GET' })
+        if (r.ok) return json(200, { ok: true, path: p, data: await r.json().catch(() => null) })
+        if (r.status && r.status !== 404) return json(200, { ok: false, path: p, status: r.status, data: await r.json().catch(() => null) })
+      }
+      return json(200, { ok: false, error: 'not_found' })
+    }
+
     // ── Conversión de divisas (Currency Conversion): USD(T) → COP ──
     // Paso 1 de la conversión (doc: Create internal conversion):
     // POST /v0/convert/internal { fromAsset, toAsset, amount, exchange_rate_id }

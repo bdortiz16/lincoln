@@ -305,16 +305,19 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       if (!amt || amt < 5000) { showToast('El monto mínimo de recaudo es $5.000 COP.', 4000, 'error'); return; }
       setPseBusy(true); setPseResult(null);
       try {
-          const r = await callMouvProxy({ action: 'payin_pse', userId: currentUser.id, amount: amt, concept: 'Recarga Lincoin' });
+          // Link de cobro vía el riel de pagos (Finity /v0/payment-link/create).
+          const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+          const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+          const r = await fetch(`${SURL}/functions/v1/finity-proxy`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: myAuthHeader() },
+              body: JSON.stringify({ action: 'create_payment_link', user_id: currentUser.id, copAmount: amt }),
+          }).then(res => res.json()).catch(() => null);
           if (r?.ok && r?.link) {
               setPseResult({ ok: true, link: r.link, reference: r.reference });
               refreshData?.();
-          } else if (r?.error === 'payin_not_supported') {
-              // El recaudo por API aún no está habilitado en la cuenta de Mouv:
-              // mensaje amable al usuario final (sin JSON técnico).
-              setPseResult({ ok: false, message: 'El cobro por link estará disponible muy pronto. Mientras tanto, recibe por tu llave Bre-B o escríbenos para coordinar tu recarga.' });
           } else {
-              setPseResult({ ok: false, message: r?.message || 'No se pudo generar el link de recaudo.', detail: (r?.candidates || r?.attempted) ? JSON.stringify(r.candidates ?? r.attempted).slice(0, 300) : undefined });
+              setPseResult({ ok: false, message: r?.message || 'No se pudo generar el link de cobro.', detail: r?.data ? JSON.stringify(r.data).slice(0, 300) : undefined });
           }
       } catch (e: any) {
           setPseResult({ ok: false, message: 'Error de red al generar el link.', detail: String(e?.message ?? e).slice(0, 200) });
@@ -4447,10 +4450,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           </span>
                           <div style={{ flex: 1, minWidth: 0 }}>
                               <div className="flex items-center flex-wrap" style={{ gap: 8 }}>
-                                  <span style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2' }}>PSE · desde tu banco</span>
+                                  <span style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2' }}>Cobro por link</span>
                                   <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 9, fontWeight: 700, letterSpacing: '0.5px', padding: '3px 7px', borderRadius: 999 }}>RECOMENDADO</span>
                               </div>
-                              <p style={{ fontSize: 12, color: '#878E88', marginTop: 3, lineHeight: 1.45 }}>Paga desde cualquier banco de Colombia. Acredita en minutos.</p>
+                              <p style={{ fontSize: 12, color: '#878E88', marginTop: 3, lineHeight: 1.45 }}>Genera un link, compártelo y recibe el pago en tu Saldo Lincoin.</p>
                           </div>
                           <span style={{ width: 17, height: 17, borderRadius: '50%', border: '1.5px solid #4ADE80', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
                               <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#4ADE80' }} />
@@ -4479,7 +4482,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   <div style={{ padding: '20px 22px 16px', borderBottom: '1px solid rgba(255,255,255,0.08)' }} className="flex items-start justify-between gap-3">
                       <div>
                           <h3 style={{ fontSize: 17, fontWeight: 800, letterSpacing: '-0.4px', color: '#F4F4F2' }}>Cobrar por link</h3>
-                          <p style={{ fontSize: 12.5, color: '#878E88', marginTop: 3 }}>Genera un link PSE y compártelo con quien te paga. Al confirmarse, el saldo entra a tu cuenta.</p>
+                          <p style={{ fontSize: 12.5, color: '#878E88', marginTop: 3 }}>Genera un link y compártelo con quien te paga. Al confirmarse, el saldo entra a tu cuenta.</p>
                       </div>
                       <button onClick={() => !pseBusy && setPseOpen(false)} style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', display: 'grid', placeItems: 'center', flexShrink: 0 }}><X size={13} style={{ color: '#878E88' }} strokeWidth={1.7} /></button>
                   </div>
@@ -4493,7 +4496,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', fontSize: 26, fontWeight: 800, color: '#F4F4F2', minWidth: 0 }} />
                                   <span style={{ fontSize: 13, fontWeight: 700, color: '#878E88' }}>COP</span>
                               </div>
-                              <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 8 }}>Mínimo $5.000 · el pago entra por PSE al Saldo Lincoin.</p>
+                              <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 8 }}>Mínimo $5.000 · el pago entra a tu Saldo Lincoin.</p>
                               {pseResult && !pseResult.ok && (
                                   <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(255,255,255,0.03)' }}>
                                       <p style={{ fontSize: 12.5, color: '#F4F4F2', fontWeight: 600 }}>{pseResult.message}</p>
