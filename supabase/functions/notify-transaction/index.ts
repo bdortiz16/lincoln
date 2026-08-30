@@ -124,7 +124,9 @@ function buildMessageCompleted(tx: TxRecord, name: string): string {
 
 // Solo TEAL como accent. Variamos por tipo solo de etiqueta, no de color
 // — la marca pide consistencia visual.
-const ACCENT = BRAND_TEAL
+// Sobre fondo claro el verde brillante (#4ADE80) casi no se lee → se usa el
+// verde sobre claro de la marca (#22A35C), como pide CLAUDE.md.
+const ACCENT = '#22A35C'
 
 function txTypeLabel(type: string): string {
   if (type === 'pay_received')                       return 'Dinero recibido'
@@ -259,37 +261,19 @@ function htmlEmail(tx: TxRecord, name: string, subject: string, completed = fals
 
   <table width="560" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;width:100%;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(15,23,42,0.08)">
 
-    <!-- HEADER navy con logo Lincoin (SVG inline) -->
+    <!-- HEADER claro: wordmark Lincoin (texto, punto verde #22A35C) -->
     <tr>
-      <td style="background-color:${BRAND_NAVY};padding:28px 32px">
-        <table width="100%" cellpadding="0" cellspacing="0" border="0">
-          <tr>
-            <td style="vertical-align:middle">
-              <table cellpadding="0" cellspacing="0" border="0">
-                <tr>
-                  <td style="width:48px;height:48px;vertical-align:middle">
-                    <img src="${LOGO_SVG_DATAURI}" width="48" height="48" alt="Lincoin" style="display:block;border-radius:12px"/>
-                  </td>
-                  <td style="padding-left:14px;vertical-align:middle">
-                    <span style="font-size:22px;font-weight:800;color:#ffffff;letter-spacing:-0.5px">CUY<span style="color:${BRAND_TEAL}">PAY</span></span>
-                    <div style="margin-top:2px;font-size:11px;color:rgba(255,255,255,0.5);letter-spacing:1px;text-transform:uppercase">Tu dinero sin fronteras</div>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-        </table>
+      <td style="background-color:#ffffff;padding:28px 32px 6px">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+          <td style="vertical-align:middle;font-family:'Archivo',Arial,sans-serif;font-size:22px;font-weight:800;color:#15181A;letter-spacing:-0.5px">Lincoin<span style="color:#22A35C">.</span></td>
+          <td align="right" style="vertical-align:middle;font-family:Arial,sans-serif;font-size:11px;color:#9B9F9B">${label}</td>
+        </tr></table>
       </td>
-    </tr>
-
-    <!-- ACCENT LINE TEAL -->
-    <tr>
-      <td style="background:linear-gradient(90deg,${BRAND_TEAL} 0%,${BRAND_TEAL2} 50%,${BRAND_TEAL} 100%);background-color:${BRAND_TEAL};height:4px;line-height:4px;font-size:1px">&zwnj;</td>
     </tr>
 
     <!-- BODY -->
     <tr>
-      <td style="background-color:#ffffff;padding:36px 32px 28px">
+      <td style="background-color:#ffffff;padding:22px 32px 28px">
 
         <!-- Tipo + monto hero -->
         <p style="margin:0 0 6px 0;font-size:11px;font-weight:700;color:${ACCENT};text-transform:uppercase;letter-spacing:1.5px">${label}</p>
@@ -375,12 +359,10 @@ function customHtmlEmail(title: string, message: string, subject: string): strin
 <body style="margin:0;padding:0;background-color:${BRAND_LIGHT};font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
 <table width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="${BRAND_LIGHT}"><tr><td align="center" style="padding:40px 16px 48px">
   <table width="560" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;width:100%;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(15,23,42,0.08)">
-    <tr><td style="background-color:${BRAND_NAVY};padding:28px 32px">
-      <img src="${LOGO_SVG_DATAURI}" width="44" height="44" alt="Lincoin" style="display:inline-block;border-radius:11px;vertical-align:middle"/>
-      <span style="font-size:22px;font-weight:800;color:#ffffff;letter-spacing:-0.5px;vertical-align:middle;margin-left:12px">CUY<span style="color:${BRAND_TEAL}">PAY</span></span>
+    <tr><td style="background-color:#ffffff;padding:28px 32px 6px">
+      <span style="font-family:'Archivo',Arial,sans-serif;font-size:22px;font-weight:800;color:#15181A;letter-spacing:-0.5px">Lincoin<span style="color:#22A35C">.</span></span>
     </td></tr>
-    <tr><td style="background-color:${BRAND_TEAL};height:4px;line-height:4px;font-size:1px">&zwnj;</td></tr>
-    <tr><td style="background-color:#ffffff;padding:36px 32px 28px">
+    <tr><td style="background-color:#ffffff;padding:16px 32px 28px">
       <p style="margin:0 0 8px 0;font-size:11px;font-weight:700;color:${BRAND_TEAL};text-transform:uppercase;letter-spacing:1.5px">Notificación</p>
       <p style="margin:0 0 16px 0;font-size:24px;font-weight:800;color:${BRAND_NAVY};letter-spacing:-0.5px;line-height:1.2">${title}</p>
       <p style="margin:0 0 24px 0;font-size:15px;color:#475569;line-height:1.7">${message}</p>

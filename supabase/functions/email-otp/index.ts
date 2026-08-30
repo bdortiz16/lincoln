@@ -34,19 +34,45 @@ function findUser(email?: string, userId?: string) {
   return db.from('users').select('id, email, full_name, raw_data').ilike('email', String(email ?? '')).maybeSingle()
 }
 
-const otpEmailHtml = (code: string, name: string) => `
-<!doctype html><html><body style="margin:0;background:#070808;font-family:Archivo,Arial,sans-serif">
-  <div style="max-width:440px;margin:0 auto;padding:40px 24px;color:#F4F4F2">
-    <p style="font-size:22px;font-weight:800;letter-spacing:-0.5px;margin:0 0 24px">Lincoin<span style="color:#4ADE80">.</span></p>
-    <p style="font-size:15px;color:#F4F4F2;margin:0 0 6px">Hola${name ? ` ${name}` : ''},</p>
-    <p style="font-size:13.5px;color:#878E88;line-height:1.5;margin:0 0 22px">Usa este código para confirmar tu ingreso a Lincoin. Vence en 10 minutos.</p>
-    <div style="background:#0C0E0D;border:1px solid rgba(255,255,255,0.12);border-radius:14px;padding:22px;text-align:center">
-      <span style="font-size:34px;font-weight:800;letter-spacing:10px;color:#4ADE80;font-family:ui-monospace,Menlo,monospace">${code}</span>
-    </div>
-    <p style="font-size:12px;color:#878E88;line-height:1.5;margin:22px 0 0">Si no intentaste iniciar sesión, ignora este correo y cambia tu contraseña.</p>
-    <p style="font-size:11px;color:rgba(244,244,242,0.45);margin:26px 0 0"><a href="${APP_URL}" style="color:#4ADE80;text-decoration:none">lincoin.me</a> · Este código es personal, nunca lo compartas.</p>
-  </div>
+// Espacio fino cada 3 dígitos para leer mejor el código (482 916).
+const spacedCode = (c: string) => c.replace(/(\d{3})(\d{3})/, '$1 $2')
+const otpEmailHtml = (code: string, name: string, meta: { device?: string; loc?: string; time?: string; userId?: string }) => `
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head>
+<body style="margin:0;padding:0;background:#F0EFEB">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F0EFEB"><tr><td align="center" style="padding:28px 14px">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#FFFFFF;border:1px solid rgba(21,24,26,0.08);border-radius:14px">
+<tr><td style="padding:28px">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+    <td style="font-family:'Archivo',Arial,sans-serif;font-size:22px;font-weight:800;color:#15181A">Lincoin<span style="color:#22A35C">.</span></td>
+    <td align="right" style="font-family:Arial,sans-serif;font-size:11px;color:#9B9F9B">Correo de seguridad</td>
+  </tr></table>
+  <p style="font-family:'Archivo',Arial,sans-serif;font-size:19px;font-weight:800;color:#15181A;margin:26px 0 10px">Tu código de acceso</p>
+  <p style="font-family:Arial,sans-serif;font-size:13.5px;color:#5C625E;line-height:1.6;margin:0 0 20px">Hola${name ? `, ${name}` : ''}. Alguien está intentando iniciar sesión en tu cuenta Lincoin. Usa este código para continuar:</p>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="background:#F4F4F1;border-radius:10px;padding:22px">
+    <span style="font-family:'Courier New',monospace;font-size:32px;font-weight:800;letter-spacing:10px;color:#15181A">${spacedCode(code)}</span>
+  </td></tr></table>
+  <p style="font-family:Arial,sans-serif;font-size:12.5px;color:#5C625E;text-align:center;margin:12px 0 22px">Vence en <b style="color:#15181A">10 minutos</b> · Un solo uso</p>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-family:Arial,sans-serif;font-size:12.5px">
+    ${meta.device ? `<tr><td style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#5C625E">Dispositivo</td><td align="right" style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#15181A;font-weight:700">${meta.device}</td></tr>` : ''}
+    ${meta.loc ? `<tr><td style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#5C625E">Ubicación aproximada</td><td align="right" style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#15181A;font-weight:700">${meta.loc}</td></tr>` : ''}
+    <tr><td style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#5C625E">Hora</td><td align="right" style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#15181A;font-weight:700">${meta.time ?? new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota' }) + ' (GMT-5)'}</td></tr>
+  </table>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:20px"><tr><td style="background:#F4F4F1;border-radius:10px;padding:16px">
+    <p style="font-family:Arial,sans-serif;font-size:12.5px;color:#15181A;font-weight:700;margin:0 0 6px">¿No fuiste tú?</p>
+    <p style="font-family:Arial,sans-serif;font-size:12px;color:#5C625E;line-height:1.6;margin:0">Ignora este correo y <a href="${APP_URL}" style="color:#22A35C;text-decoration:none;font-weight:600">cambia tu contraseña ahora</a>. Nadie puede entrar sin este código. Recuerda: <b>nunca</b> te pediremos el código por teléfono, WhatsApp ni correo.</p>
+  </td></tr></table>
+  ${footerHtml(`Recibiste este correo porque hay una cuenta en Lincoin${meta.userId ? ` (ID ${meta.userId})` : ''} asociada a esta dirección.`)}
+</td></tr></table>
+</td></tr></table>
 </body></html>`
+
+const footerHtml = (why: string) => `
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:26px;border-top:1px solid rgba(21,24,26,0.06)"><tr><td style="padding-top:18px">
+    <p style="font-family:Arial,sans-serif;font-size:11.5px;color:#5C625E;font-weight:600;margin:0 0 10px">
+      <a href="${APP_URL}" style="color:#5C625E;text-decoration:none">Centro de ayuda</a> · <a href="${APP_URL}" style="color:#5C625E;text-decoration:none">Seguridad</a> · <a href="${APP_URL}" style="color:#5C625E;text-decoration:none">Preferencias de correo</a>
+    </p>
+    <p style="font-family:Arial,sans-serif;font-size:10.5px;color:#9B9F9B;line-height:1.6;margin:0">${why} Lincoin no es un banco. Los criptoactivos no están cubiertos por fondos de garantía de depósitos. El dólar digital (USDT) se mantiene 1:1 con dólares y la custodia opera sobre infraestructura GasFree/Fireblocks. © 2026 Lincoin.</p>
+  </td></tr></table>`
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
@@ -77,8 +103,13 @@ Deno.serve(async (req) => {
         headers: { Authorization: `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           from: `Lincoin <${FROM_EMAIL}>`, to: [user.email],
-          subject: `Tu código de ingreso: ${code}`,
-          html: otpEmailHtml(code, String(user.full_name ?? '').split(' ')[0] ?? ''),
+          subject: `${spacedCode(code)} es tu código de Lincoin`,
+          html: otpEmailHtml(code, String(user.full_name ?? '').split(' ')[0] ?? '', {
+            device: deviceFromUA(req.headers.get('user-agent') ?? ''),
+            loc: undefined,
+            time: new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota', dateStyle: 'medium', timeStyle: 'short' }) + ' (GMT-5)',
+            userId: String(user.id ?? '').slice(0, 8).toUpperCase(),
+          }),
         }),
       })
       if (!res.ok) {
@@ -111,6 +142,13 @@ Deno.serve(async (req) => {
     return json(500, { error: 'internal', message: (e as Error)?.message ?? String(e) })
   }
 })
+
+// Dispositivo legible desde el user-agent ("Chrome · macOS").
+function deviceFromUA(ua: string): string {
+  const browser = /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera' : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : /Firefox\//.test(ua) ? 'Firefox' : 'Navegador'
+  const os = /iPhone|iPad|iOS/.test(ua) ? 'iOS' : /Android/.test(ua) ? 'Android' : /Mac OS X|Macintosh/.test(ua) ? 'macOS' : /Windows/.test(ua) ? 'Windows' : /Linux/.test(ua) ? 'Linux' : 'dispositivo'
+  return `${browser} · ${os}`
+}
 
 function maskEmail(e: string): string {
   const [u, d] = e.split('@')
