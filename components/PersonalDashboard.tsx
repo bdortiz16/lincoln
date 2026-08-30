@@ -2500,10 +2500,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   digital) y COP están activos; el resto va como PRÓXIMAMENTE. */}
               {(() => {
                   const usdShort = displayBalance('USD');
-                  const copShort = getBalance('COP') + getBalance('COP_BREB') + getBalance('COP_ACH');
                   const tabs: { code: string; name: string; badge: string; badgeColor: string; sym: string; sub: string; soon?: boolean }[] = [
                       { code: 'USD', name: 'Dólar digital', badge: '#2775CA', badgeColor: '#fff', sym: '$', sub: `${Number(usdShort).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT` },
-                      { code: 'COP', name: 'Peso colombiano', badge: 'linear-gradient(180deg,#FCD116 0 50%,#003893 50% 75%,#CE1126 75%)', badgeColor: '#fff', sym: '', sub: `${Math.round(copShort).toLocaleString('es-CO')} COP` },
                       { code: '_EUR', name: 'Euro digital', badge: '#16A34A', badgeColor: '#fff', sym: '€', sub: 'EURC', soon: true },
                       { code: '_USDBANK', name: 'Cuenta USD', badge: 'transparent', badgeColor: '#878E88', sym: '$', sub: 'ACH / wire', soon: true },
                       { code: '_EURBANK', name: 'Cuenta EUR', badge: 'transparent', badgeColor: '#878E88', sym: '€', sub: 'SEPA / IBAN', soon: true },
