@@ -1544,7 +1544,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                               </div>
                               {mouvBal != null && (
                                   <span className="text-[9px] font-bold uppercase bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full">
-                                      ● Conectado a Mouv
+                                      ● Riel conectado
                                   </span>
                               )}
                           </div>
@@ -1553,7 +1553,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                           </p>
                           <p className="text-[11px] text-slate-500 mt-1">
                               {mouvBal != null
-                                  ? 'Saldo real de tu cuenta Mouv — es el que se usa para dispersar.'
+                                  ? 'Saldo real de tu cuenta de dispersión — es el que se usa para dispersar.'
                                   : mouvChecked
                                       ? 'Tu saldo interno Lincoin: cargas, envíos entre usuarios y conversiones.'
                                       : 'Saldo interno Lincoin · consultando Mouv…'}

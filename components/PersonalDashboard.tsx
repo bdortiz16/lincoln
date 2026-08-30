@@ -1837,7 +1837,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               {/* TU DINERO — confianza (aliados reales de Lincoin) */}
               <div className="lincoin-panel">
                 <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.8px', color: '#878E88', marginBottom: 14 }}>TU DINERO</p>
-                {[['Respaldo en USDT', 'Dólar digital de Tether (USDT), 1:1 con el dólar.'], ['Rieles locales', 'Retiros en Colombia por BreB y ACH vía Mouv.'], ['Identidad verificada', 'KYC/KYB y monitoreo SARLAFT con Didit.']].map(([t, d]) => (
+                {[['Respaldo en USDT', 'Dólar digital de Tether (USDT), 1:1 con el dólar.'], ['Rieles locales', 'Retiros en Colombia por Bre-B y ACH.'], ['Identidad verificada', 'KYC/KYB y monitoreo SARLAFT con Didit.']].map(([t, d]) => (
                   <div key={t} className="flex items-start gap-3" style={{ marginBottom: 13, fontSize: 12.5 }}>
                     <ShieldCheck size={16} style={{ color: '#878E88', flexShrink: 0, marginTop: 1 }} />
                     <div><span style={{ fontWeight: 700, color: '#F4F4F2' }}>{t}</span> <span style={{ color: '#878E88' }}>— {d}</span></div>
@@ -2853,7 +2853,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       ...(isDispersion && docValue ? [{ label: 'Documento', value: docValue }] : []),
       ...(isDispersion && dispDest ? [{ label: tx.currency === 'COP_BREB' ? 'Llave destino' : 'Cuenta destino', value: dispDest, copyable: true, mono: true }] : []),
       ...(isDispersion && tx.bank ? [{ label: 'Método', value: tx.bank }] : []),
-      ...(isDispersion && dispProviderRef ? [{ label: 'Referencia Mouv', value: dispProviderRef, copyable: true, mono: true }] : []),
+      ...(isDispersion && dispProviderRef ? [{ label: 'Referencia de pago', value: dispProviderRef, copyable: true, mono: true }] : []),
       { label: 'Estado', value: tx.status },
       { label: 'Fecha', value: timeStr ? `${dateStr} · ${timeStr}` : dateStr },
       ...(isCrypto && networkLabel ? [{ label: 'Red', value: networkLabel }] : []),
@@ -3240,7 +3240,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       <span style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>ACH</span>
                                       <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 8.5, fontWeight: 700, letterSpacing: '0.6px', padding: '2px 6px', borderRadius: 999 }}>DISPONIBLE</span>
                                   </div>
-                                  <p style={{ fontSize: 12, color: '#878E88', marginTop: 6, lineHeight: 1.5 }}>Conversión automática vía Finity. El COP llega a tu saldo ACH.</p>
+                                  <p style={{ fontSize: 12, color: '#878E88', marginTop: 6, lineHeight: 1.5 }}>Conversión automática. El COP llega a tu saldo ACH en minutos.</p>
                               </button>
                               <button onClick={() => setOtcRail('breb')} className="text-left transition-colors hover:bg-white/[0.03]"
                                   style={{ padding: '16px 17px', borderRadius: 13, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.025)' }}>
@@ -3249,7 +3249,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       <span style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>Bre-B</span>
                                       <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 8.5, fontWeight: 700, letterSpacing: '0.6px', padding: '2px 6px', borderRadius: 999 }}>PRÓXIMAMENTE</span>
                                   </div>
-                                  <p style={{ fontSize: 12, color: '#878E88', marginTop: 6, lineHeight: 1.5 }}>Vía Mouv — por ahora la conversión Bre-B se gestiona por mesa manual.</p>
+                                  <p style={{ fontSize: 12, color: '#878E88', marginTop: 6, lineHeight: 1.5 }}>Por ahora la conversión con salida Bre-B se gestiona por mesa manual.</p>
                               </button>
                           </div>
                       </div>
@@ -3257,7 +3257,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               ) : mouvMode === 'converter' && otcRail === 'breb' ? (
                   <div style={{ maxWidth: 560, margin: '24px auto', background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 18, padding: '32px 28px', textAlign: 'center', fontFamily: "'Archivo', system-ui, sans-serif" }}>
                       <p style={{ color: '#F4F4F2', fontWeight: 700, fontSize: 16 }}>Mesa Bre-B · por mesa manual</p>
-                      <p style={{ color: '#878E88', fontSize: 13, marginTop: 6, lineHeight: 1.6 }}>La conversión con salida Bre-B (Mouv) aún no está apificada. Escríbenos por el canal de la mesa y la gestionamos al instante — o usa la salida ACH, que es automática.</p>
+                      <p style={{ color: '#878E88', fontSize: 13, marginTop: 6, lineHeight: 1.6 }}>La conversión con salida Bre-B se gestiona por mesa manual. Escríbenos por el canal de la mesa y la gestionamos al instante — o usa la salida ACH, que es automática.</p>
                       <button onClick={() => setOtcRail('ach')} className="lincoin-btn-white transition-colors" style={{ marginTop: 16, fontWeight: 700, fontSize: 13.5, padding: '11px 20px', borderRadius: 10, border: 'none' }}>Usar salida ACH</button>
                       <button onClick={() => setOtcRail(null)} style={{ display: 'block', margin: '12px auto 0', fontSize: 12.5, color: '#878E88', textDecoration: 'underline' }}>← Elegir otro riel</button>
                   </div>

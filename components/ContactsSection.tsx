@@ -400,10 +400,10 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                     finityId = String(fid);
                     status = normalizeStatus(dd.verification_status ?? dd.status ?? dd.estado ?? dd.state) ?? 'en_proceso';
                 } else {
-                    lastError = `[registro Finity] HTTP ${rr?.status ?? '—'} en ${rr?.path ?? '¿?'}: ${JSON.stringify(rr?.data ?? rr).slice(0, 260)}`;
+                    lastError = `[registro bancario] HTTP ${rr?.status ?? '—'}: ${JSON.stringify(rr?.data ?? rr).slice(0, 260)}`;
                 }
             } catch (e: any) {
-                lastError = `[registro Finity] ${String(e?.message ?? e)}`;
+                lastError = `[registro bancario] ${String(e?.message ?? e)}`;
             }
         }
 
@@ -539,13 +539,13 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                             message: `La cuenta de <strong>${c.name}</strong> quedó aprobada. Ya puedes transferirle.`,
                         }).catch(() => {});
                     }
-                    if (!silent) setNotice({ ok: true, text: 'Estados sincronizados con el banco (Finity).' });
+                    if (!silent) setNotice({ ok: true, text: 'Estados sincronizados con el banco.' });
                 } else if (!silent) {
                     setNotice({ ok: true, text: 'Estados al día — sin cambios.' });
                 }
             } else if (!silent) {
                 // Mostrar la respuesta cruda ayuda a mapear el formato real de la lista
-                setNotice({ ok: false, text: `Finity no devolvió cuentas para comparar. Respuesta (${r?.status ?? '—'}): ${JSON.stringify(r?.data ?? r).slice(0, 220)}` });
+                setNotice({ ok: false, text: `El banco no devolvió cuentas para comparar. Respuesta (${r?.status ?? '—'}): ${JSON.stringify(r?.data ?? r).slice(0, 220)}` });
             }
         } catch { /* red flaky: se reintenta en la próxima visita */ }
         setSyncing(false);
@@ -574,7 +574,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                     finityId: target.finityId ?? target.mouvId,
                     accountNumber: target.accountNumber,
                 });
-                if (r?.deletedInFinity || r?.deletedInMouv) setNotice({ ok: true, text: 'Contacto eliminado — también des-inscrito en el banco (Finity).' });
+                if (r?.deletedInFinity || r?.deletedInMouv) setNotice({ ok: true, text: 'Contacto eliminado — también des-inscrito en el banco.' });
                 else if (r?.reason === 'still_used') setNotice({ ok: true, text: 'Contacto eliminado de tu lista. La cuenta sigue inscrita porque otro usuario también la tiene.' });
                 else setNotice({ ok: true, text: 'Contacto eliminado.' });
             } catch { setNotice({ ok: true, text: 'Contacto eliminado de tu lista.' }); }

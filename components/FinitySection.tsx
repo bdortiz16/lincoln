@@ -35,7 +35,7 @@ export async function callFinity(action: string, userId: string, extra: Record<s
         if (!t) return { ok: false, status: r.status, error: 'Respuesta vacía del servicio (posible timeout). Reintenta.' };
         try { return JSON.parse(t); } catch { return { ok: false, status: r.status, error: `Respuesta no válida (HTTP ${r.status}): ${t.slice(0, 150)}` }; }
     } catch (e: any) {
-        return { ok: false, error: e?.name === 'TimeoutError' ? 'El servicio de Finity tardó demasiado (timeout). Reintenta.' : `Error de red: ${String(e?.message ?? e)}` };
+        return { ok: false, error: e?.name === 'TimeoutError' ? 'El riel de pagos tardó demasiado (timeout). Reintenta.' : `Error de red: ${String(e?.message ?? e)}` };
     }
 }
 
@@ -311,7 +311,7 @@ export const FinitySection: React.FC<{
             if (converting) return; // no tocar la tasa durante una conversión en curso
             if (convertConfirm) {
                 setConvertConfirm(null);
-                setConvertResult({ ok: false, text: '⏱️ La tasa de Finity expiró. Dale "Convertir ahora" de nuevo con la tasa actualizada.' });
+                setConvertResult({ ok: false, text: '⏱️ La tasa expiró. Dale "Convertir ahora" de nuevo con la tasa actualizada.' });
             }
             // Refrescar la tasa desde Finity (mantenerla viva).
             const rt = await callFinity('rates', userId, { query: { from: 'USD', to: 'COP' } });
@@ -372,7 +372,7 @@ export const FinitySection: React.FC<{
             // primer intento aunque hubiera respondido un segundo después.
             new Promise<any>(res => setTimeout(() => res({
                 error: 'timeout',
-                message: 'El servicio de Finity está tardando en responder. Dale a "Reintentar".',
+                message: 'El riel de pagos está tardando en responder. Dale a "Reintentar".',
             }), 22000)),
         ]);
         if (p.error === 'finity_not_configured') { setPing('noconf'); setPingMsg(p.message); setLoading(false); return; }
@@ -492,7 +492,7 @@ export const FinitySection: React.FC<{
             if (!fd) {
                 setPendingConvert(p); // ← permite reintentar SOLO la conversión, sin reenviar USDT
                 setConvertStep('error');
-                setConvertResult({ ok: false, text: `Tu USDT ya está en Finity (${p.finityAmount.toFixed(2)} USDT) — no se reenvía. La conversión no se completó (${lastErr}); Finity puede estar lento. Dale "Reintentar conversión".` });
+                setConvertResult({ ok: false, text: `Tu USDT ya está en el riel de pagos (${p.finityAmount.toFixed(2)} USDT) — no se reenvía. La conversión no se completó (${lastErr}); el riel puede estar lento. Dale "Reintentar conversión".` });
                 setConverting(false);
                 return;
             }
@@ -553,7 +553,7 @@ export const FinitySection: React.FC<{
                 // Los saltos no confirmaron dentro del tope → el USDT va en camino
                 // a Finity pero aún no se puede convertir. Queda pendiente.
                 setConvertStep('completado'); await sleep(300);
-                setConvertResult({ ok: true, text: `✅ Envío realizado (${Number(settle.usdtOut ?? 0).toFixed(2)} USDT). La recarga a Finity se está confirmando en la red — si no se completa sola, vuelve a intentar la conversión en un momento.` });
+                setConvertResult({ ok: true, text: `✅ Envío realizado (${Number(settle.usdtOut ?? 0).toFixed(2)} USDT). La recarga al riel de pagos se está confirmando en la red — si no se completa sola, vuelve a intentar la conversión en un momento.` });
                 setUsdAmount(''); load(); onSwept?.();
                 await sleep(1800); setConvertStep(null);
                 setConverting(false);
@@ -783,8 +783,8 @@ export const FinitySection: React.FC<{
 
             {ping === 'noconf' && (
                 <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-sm text-amber-800">
-                    <p className="font-bold mb-1">Falta configurar el riel bancario en Supabase</p>
-                    <p className="text-xs">{pingMsg} — Edge Functions → Manage secrets → agrega <code>FINITY_CLIENT_ID</code> y <code>FINITY_CLIENT_SECRET</code>.</p>
+                    <p className="font-bold mb-1">El riel de pagos aún no está configurado</p>
+                    <p className="text-xs">El servicio no está disponible en este momento — contacta a soporte (soporte@lincoin.me).</p>
                 </div>
             )}
 
@@ -879,31 +879,19 @@ export const FinitySection: React.FC<{
                                             <span style={S.row}>Tasa de referencia</span>
                                             <span style={{ fontSize: 13, fontWeight: 600, color: '#878E88' }}>{rate != null ? `1 USDT = ${rate.toLocaleString('es-CO', { maximumFractionDigits: 2 })} COP` : (loading ? 'obteniendo…' : '—')}</span>
                                         </div>
+                                        {/* Al cliente SOLO se le muestran dos líneas: la comisión
+                                            fija (4) y, la 1ª vez, la activación (1,5). El detalle
+                                            interno de saltos no se expone. */}
                                         <div className="flex items-center justify-between gap-3">
-                                            <span style={S.row}>Costo total del cambio (fijo)</span>
-                                            <span style={{ fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>{costUsdt.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT</span>
+                                            <span style={S.row}>Comisión de conversión (fija)</span>
+                                            <span style={{ fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>{CONVERT_FLAT_FEE_USDT.toFixed(2)} USDT</span>
                                         </div>
-                                        {/* Detalle del costo fijo — el cliente ve QUÉ compone los 4 USDT */}
-                                        <div style={{ paddingLeft: 12, marginTop: -4 }} className="space-y-1">
+                                        {activationUsdt > 0 && (
                                             <div className="flex items-center justify-between gap-3">
-                                                <span style={{ fontSize: 11.5, color: '#878E88' }}>↳ Envío de tu wallet a la tesorería</span>
-                                                <span style={{ fontSize: 11.5, fontWeight: 600, color: '#878E88' }}>{CONVERT_FEE_HOP1_USDT.toFixed(2)} USDT</span>
+                                                <span style={S.row}>Activación de tu wallet (solo la 1ª vez)</span>
+                                                <span style={{ fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>{activationUsdt.toFixed(2)} USDT</span>
                                             </div>
-                                            <div className="flex items-center justify-between gap-3">
-                                                <span style={{ fontSize: 11.5, color: '#878E88' }}>↳ Envío de la tesorería al proveedor</span>
-                                                <span style={{ fontSize: 11.5, fontWeight: 600, color: '#878E88' }}>{CONVERT_FEE_HOP2_USDT.toFixed(2)} USDT</span>
-                                            </div>
-                                            <div className="flex items-center justify-between gap-3">
-                                                <span style={{ fontSize: 11.5, color: '#878E88' }}>↳ Servicio Lincoin</span>
-                                                <span style={{ fontSize: 11.5, fontWeight: 600, color: '#878E88' }}>{CONVERT_FEE_SERVICE_USDT.toFixed(2)} USDT</span>
-                                            </div>
-                                            {activationUsdt > 0 && (
-                                                <div className="flex items-center justify-between gap-3">
-                                                    <span style={{ fontSize: 11.5, color: '#878E88' }}>↳ Activación de tu wallet (solo la 1ª vez)</span>
-                                                    <span style={{ fontSize: 11.5, fontWeight: 600, color: '#878E88' }}>{activationUsdt.toFixed(2)} USDT</span>
-                                                </div>
-                                            )}
-                                        </div>
+                                        )}
                                         <div className="flex items-center justify-between gap-3">
                                             <span style={S.row}>Neto que se convierte</span>
                                             <span style={{ fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>{usd > 0 ? `${netUsd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT` : '—'}</span>
@@ -915,7 +903,7 @@ export const FinitySection: React.FC<{
                                     </div>
                                     {/* CTA */}
                                     <div className="flex items-center justify-between gap-4 flex-wrap" style={{ borderTop: '1px solid rgba(255,255,255,0.08)', marginTop: 16, paddingTop: 16 }}>
-                                        <p style={{ fontSize: 12, color: '#878E88', maxWidth: 320, lineHeight: 1.5 }}>Tus USDT pasan por la tesorería Lincoin y salen automáticamente al proveedor ya registrado. Sin costos ocultos.</p>
+                                        <p style={{ fontSize: 12, color: '#878E88', maxWidth: 320, lineHeight: 1.5 }}>Proceso automático y protegido de punta a punta. Sin costos ocultos.</p>
                                         <button
                                             onClick={doConvert}
                                             disabled={converting || !usdAmount || netUsd <= 0 || rate == null || overBalance}
@@ -1019,7 +1007,7 @@ export const FinitySection: React.FC<{
                                         </div>
                                     ) : (
                                         <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-center">
-                                            <p className="text-xs font-semibold text-amber-700">No se pudo obtener la tasa en vivo (Finity está lento).</p>
+                                            <p className="text-xs font-semibold text-amber-700">No se pudo obtener la tasa en vivo (el riel está lento).</p>
                                             <button onClick={load} className="mt-2 px-4 py-1.5 rounded-lg bg-[#0C0E0D] text-white text-xs font-bold hover:bg-[#152e52]">Reintentar</button>
                                         </div>
                                     )}
