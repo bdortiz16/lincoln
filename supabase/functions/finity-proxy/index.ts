@@ -834,11 +834,14 @@ Deno.serve(async (req) => {
       // en varios nombres y, si falta, se consulta el cobro por su id.
       const pickLink = (o: any): string | null => o?.payment_link ?? o?.link ?? o?.url ?? o?.checkout_url ?? o?.checkoutUrl ?? o?.payment_url ?? o?.short_url ?? o?.data?.payment_link ?? o?.data?.url ?? null
       let link = pickLink(data)
+      // CONFIRMAR el cobro genera la URL final (doc: Confirm payment link):
+      // POST /v0/payment-link/{external_id}/confirm → { payment_link, ... }.
+      // El create deja el cobro UNCONFIRMED sin URL; recién al confirmar sale.
+      let confirmData: any = null
       if (!link) {
-        for (const p of [`/v0/payment-link/${linkId}`, `/v0/payment-links/${linkId}`]) {
-          const g = await finityFetch(p, { method: 'GET' })
-          if (g.ok) { const gd = await g.json().catch(() => null); link = pickLink(gd); if (link) break }
-        }
+        const c = await finityFetch(`/v0/payment-link/${linkId}/confirm`, { method: 'POST', body: JSON.stringify({}) })
+        confirmData = await c.json().catch(() => null)
+        if (c.ok) link = pickLink(confirmData)
       }
       const netCop = Number(data?.destination_amount ?? copAmount)
       const costs = data?.costs ?? null
@@ -853,7 +856,9 @@ Deno.serve(async (req) => {
           })
         } catch { /* el link ya se creó; el registro es best-effort */ }
       }
-      return json(200, { ok: true, link, reference: linkId, status: data?.status ?? 'UNCONFIRMED', grossCop: copAmount, netCop, costs, expiresAt: data?.expires_at ?? null, needsLinkLookup: !link })
+      return json(200, { ok: true, link, reference: linkId, status: link ? 'CONFIRMED' : (data?.status ?? 'UNCONFIRMED'),
+        grossCop: copAmount, netCop, costs, expiresAt: data?.expires_at ?? null,
+        ...(link ? {} : { confirmResponse: confirmData }) })
     }
 
     // Estado de un link de cobro (para acreditar cuando el pago confirme).
