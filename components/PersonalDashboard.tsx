@@ -481,6 +481,16 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   message: `Llegaron ${formatMoney(m.amount, cur)} ${cur.split('_')[0]} a tu wallet.`,
                   amount: Number(m.amount ?? 0) } as any);
           }
+          // Conversión completada (puede terminar en SEGUNDO PLANO en el
+          // servidor mientras el cliente estaba fuera de la app). Solo
+          // conversiones recientes (<24 h) para no revivir el histórico.
+          if (m.status === 'Completado' && m.type === 'convert' && /^COP/.test(cur)) {
+              const ts = (m as any).createdAt ? Date.parse((m as any).createdAt) : NaN;
+              if (isFinite(ts) && Date.now() - ts < 24 * 3600 * 1000) {
+                  candidates.push({ id: `convdone-${m.id}`, type: 'success', title: 'Conversión acreditada',
+                      message: `+${formatMoney(m.amount, 'COP')} COP en tu saldo ACH.` });
+              }
+          }
       }
 
       // Cuenta (contacto) aprobada
@@ -985,6 +995,20 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           .catch(() => { /* silencioso */ });
       // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeView, selectedWalletCode, currentUser?.id]);
+
+  // ── Reanudar conversiones pendientes (AUTOPILOTO del servidor) ──
+  // Si el cliente cerró la app a mitad de conversión, al volver se le da
+  // un "kick" al autopiloto para que la termine en segundo plano.
+  const convertKickAtRef = useRef(0);
+  useEffect(() => {
+      if (!currentUser?.id) return;
+      const pend = (movements || []).find((t: any) => t.type === 'convert' && t.status === 'Pendiente');
+      if (!pend) return;
+      if (Date.now() - convertKickAtRef.current < 60000) return;
+      convertKickAtRef.current = Date.now();
+      callGasfree({ action: 'my_convert_kick', userId: currentUser.id, txId: String(pend.id) }).catch(() => {});
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [movements, currentUser?.id]);
 
   // Saldo a MOSTRAR para una billetera: para USD es el real de GasFree
   // (blockchain); para las demás, el saldo interno de siempre.

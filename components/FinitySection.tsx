@@ -472,6 +472,67 @@ export const FinitySection: React.FC<{
     // el que se acredita al cliente (Lincoin absorbe la 2ª comisión).
     const finishConvert = async (p: { txId: string; finityAmount: number; creditAmount: number; amount: number; previewRate: number | null; gasfreeFeeUsdt: number }) => {
         setConverting(true); setConvertStep('convirtiendo');
+        // Cierre de éxito compartido (convierta quien convierta: este
+        // frontend o el AUTOPILOTO del servidor en segundo plano).
+        const completeUI = async (clientCop: number, finityRate: number, utilityCop: number) => {
+            setPendingConvert(null);
+            setConvertStep('completado'); await sleep(300);
+            await onConverted?.(p.amount, clientCop, finityRate, utilityCop);
+            setConvertResult({
+                ok: true,
+                text: `✅ Conversión completada: ${p.amount.toLocaleString('en-US')} USD → ${clientCop.toLocaleString('es-CO')} COP en tu saldo ACH (tasa ${finityRate.toLocaleString('es-CO')}, comisión ${feePct}%).`,
+            });
+            setUsdAmount(''); load(); onSwept?.();
+            await sleep(1400); setConvertStep(null);
+            setConverting(false);
+        };
+        // ── RECLAMO (CAS): solo UNO convierte — este frontend o el
+        // autopiloto del servidor. Si el servidor ya la tomó, aquí solo se
+        // OBSERVA (y el cliente puede hasta cerrar la app: el servidor
+        // termina solo y el COP le llega a ACH).
+        try {
+            const cl: any = await callGasfree({ action: 'my_convert_claim', userId, txId: p.txId }).catch(() => null);
+            if (cl?.status === 'Completado') {
+                const st: any = await callGasfree({ action: 'my_convert_status', userId, txId: p.txId }).catch(() => null);
+                await completeUI(Number(st?.amount ?? 0), Number(st?.mouvRate ?? p.previewRate ?? 0), Number(st?.utilityCop ?? 0));
+                return;
+            }
+            if (cl && cl.claimed === false && cl.phase === 'converting') {
+                // El servidor la está convirtiendo — observar hasta 3 min.
+                for (let i = 0; i < 45; i++) {
+                    await sleep(4000);
+                    const st: any = await callGasfree({ action: 'my_convert_status', userId, txId: p.txId }).catch(() => null);
+                    if (st?.status === 'Completado') {
+                        await completeUI(Number(st.amount ?? 0), Number(st.mouvRate ?? p.previewRate ?? 0), Number(st.utilityCop ?? 0));
+                        return;
+                    }
+                    if (st?.status === 'Rechazado') {
+                        setConvertStep('error');
+                        setConvertResult({ ok: false, text: 'La conversión fue rechazada y tu USDT fue reembolsado.' });
+                        setConverting(false);
+                        return;
+                    }
+                    if (st?.phase === 'recharged') {
+                        // El servidor soltó el reclamo → intentar tomarlo aquí.
+                        const c2: any = await callGasfree({ action: 'my_convert_claim', userId, txId: p.txId }).catch(() => null);
+                        if (c2?.claimed) break;
+                    }
+                }
+                const stFinal: any = await callGasfree({ action: 'my_convert_status', userId, txId: p.txId }).catch(() => null);
+                if (stFinal?.status === 'Completado') {
+                    await completeUI(Number(stFinal.amount ?? 0), Number(stFinal.mouvRate ?? p.previewRate ?? 0), Number(stFinal.utilityCop ?? 0));
+                    return;
+                }
+                if (stFinal?.phase === 'converting') {
+                    setPendingConvert(p);
+                    setConvertStep('error');
+                    setConvertResult({ ok: false, text: '⏳ La conversión sigue procesándose EN SEGUNDO PLANO en el servidor — puedes salir tranquilo: cuando termine verás el COP en tu saldo ACH y el movimiento Completado.' });
+                    setConverting(false);
+                    return;
+                }
+                // phase volvió a recharged y lo reclamamos → convertir aquí abajo.
+            }
+        } catch { /* sin claim disponible → convertir local como siempre */ }
         try {
             let fd: any = null, lastErr = '';
             for (let attempt = 0; attempt < 2 && !fd; attempt++) {
@@ -490,9 +551,13 @@ export const FinitySection: React.FC<{
                 lastErr = f?.error ?? `estado ${d.status ?? '—'} (HTTP ${f?.status ?? '—'})`;
             }
             if (!fd) {
+                // Soltar el reclamo: el autopiloto del servidor (o el botón
+                // Reintentar) pueden retomarla.
+                callGasfree({ action: 'my_convert_release', userId, txId: p.txId }).catch(() => {});
+                callGasfree({ action: 'my_convert_kick', userId, txId: p.txId }).catch(() => {});
                 setPendingConvert(p); // ← permite reintentar SOLO la conversión, sin reenviar USDT
                 setConvertStep('error');
-                setConvertResult({ ok: false, text: `Tu USDT ya está en el riel de pagos (${p.finityAmount.toFixed(2)} USDT) — no se reenvía. La conversión no se completó (${lastErr}); el riel puede estar lento. Dale "Reintentar conversión".` });
+                setConvertResult({ ok: false, text: `Tu USDT ya está en el riel de pagos (${p.finityAmount.toFixed(2)} USDT) — no se reenvía. La conversión no se completó (${lastErr}) y SEGUIMOS intentándola en segundo plano: puedes salir de la app y el COP te llegará solo, o dale "Reintentar conversión".` });
                 setConverting(false);
                 return;
             }
@@ -518,9 +583,11 @@ export const FinitySection: React.FC<{
             setUsdAmount(''); load(); onSwept?.();
             await sleep(1400); setConvertStep(null);
         } catch (e: any) {
+            callGasfree({ action: 'my_convert_release', userId, txId: p.txId }).catch(() => {});
+            callGasfree({ action: 'my_convert_kick', userId, txId: p.txId }).catch(() => {});
             setPendingConvert(p);
             setConvertStep('error');
-            setConvertResult({ ok: false, text: `Error en la conversión: ${String(e?.message ?? e)}. Dale "Reintentar conversión".` });
+            setConvertResult({ ok: false, text: `Error en la conversión: ${String(e?.message ?? e)}. Seguimos intentándola en segundo plano — o dale "Reintentar conversión".` });
         }
         setConverting(false);
     };
@@ -545,6 +612,7 @@ export const FinitySection: React.FC<{
             const settle = await callGasfree({
                 action: 'my_convert_settle', userId,
                 amount, copAmount: previewCop, finityRate: previewRate, feePct, utilityCop: 0,
+                creditUsd: netAmount,
             });
             if (settle?.error || !settle?.traceId) {
                 setConvertStep('error');
@@ -594,7 +662,7 @@ export const FinitySection: React.FC<{
                 }
                 // ~2,5 min sin confirmación: estado PENDIENTE honesto (no verde).
                 setConvertStep('error');
-                setConvertResult({ ok: false, text: `⏳ Tu envío (${Number(settle.usdtOut ?? 0).toFixed(2)} USDT) sigue confirmándose en la red y la conversión quedó PENDIENTE — tu USDT está seguro en la tesorería. Vuelve en unos minutos y dale "Reintentar conversión", o espera: el equipo también lo está monitoreando.` });
+                setConvertResult({ ok: false, text: `⏳ Tu envío (${Number(settle.usdtOut ?? 0).toFixed(2)} USDT) sigue confirmándose en la red. Tranquilo: la conversión CONTINÚA EN SEGUNDO PLANO en el servidor — puedes salir de la app y el COP te llegará solo a tu saldo ACH (lo verás en Movimientos).` });
                 setPendingConvert({
                     txId: String(settle.txId), finityAmount: netAmount, creditAmount: netAmount,
                     amount, previewRate, gasfreeFeeUsdt: Number(settle.feeChargedUsdt ?? 0),
@@ -659,8 +727,11 @@ export const FinitySection: React.FC<{
                 platformOk = await rechargeVisible();
             }
             if (!platformOk) {
+                // El AUTOPILOTO del servidor sigue empujándola en segundo
+                // plano — el cliente puede salir de la app tranquilo.
+                callGasfree({ action: 'my_convert_kick', userId, txId: String(settle.txId) }).catch(() => {});
                 setConvertStep('error');
-                setConvertResult({ ok: false, text: '⏳ Tu USDT ya llegó a la wallet del riel, pero la plataforma aún no registra la recarga. Para proteger tu conversión quedó EN PAUSA — dale "Reintentar conversión" en un minuto (tu USDT no se reenvía).' });
+                setConvertResult({ ok: false, text: '⏳ Tu USDT ya llegó a la wallet del riel y la plataforma aún no registra la recarga. Tranquilo: la conversión SIGUE EN SEGUNDO PLANO en el servidor — puedes salir de la app y el COP te llegará solo a tu saldo ACH (lo verás en Movimientos). También puedes darle "Reintentar conversión".' });
                 setPendingConvert({
                     txId: String(settle.txId), finityAmount: fwdUsd, creditAmount: netAmount,
                     amount, previewRate, gasfreeFeeUsdt: Number(settle.feeChargedUsdt ?? 0),

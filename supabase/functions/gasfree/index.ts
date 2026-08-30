@@ -868,7 +868,7 @@ async function myWalletSend(userId: string, id: string, toAddress: string, amoun
 //      comisión GasFree y el traceId adentro — no un "barrido" aparte.
 async function myConvertSettle(
   userId: string, grossUsd: number, copAmount: number,
-  meta: { mouvRate?: number; feePct?: number; utilityCop?: number },
+  meta: { mouvRate?: number; feePct?: number; utilityCop?: number; creditUsd?: number },
 ) {
   if (!(grossUsd > 0)) throw new Error('Monto inválido')
   if (!(copAmount > 0)) throw new Error('COP inválido')
@@ -953,6 +953,7 @@ async function myConvertSettle(
     createdAt: new Date().toISOString(), userName: u.email,
     fromCurrency: 'USD', fromAmount: grossUsd, destAmount: copAmount,
     mouvRate: meta.mouvRate ?? null, feePct: meta.feePct ?? null, utilityCop: meta.utilityCop ?? null,
+    creditUsd: meta.creditUsd ?? null,
     source: 'MOUV', gasfree: true,
     usdtOut: value, gasfreeFee: r.feeChargedUsdt, traceId: r.traceId,
     providerName: prov?.name ?? null, providerAddress: provAddr || null, fwd,
@@ -1126,6 +1127,141 @@ async function myConvertFinalize(userId: string, txId: string, settleOnly = fals
   }
 
   return { ok: true, status: tx.status, phase: rd.convertPhase ?? 'unknown', copCredited: 0 }
+}
+
+// ════════════════════════════════════════════════════════
+// AUTOPILOTO de conversión — SEGUNDO PLANO EN EL SERVIDOR.
+// La mayoría de clientes convierten desde el celular: si salen de la app
+// (WhatsApp, llamada) el navegador mata la página y la orquestación del
+// frontend muere con ella. El autopiloto vive en el servidor: avanza los
+// saltos pendientes, espera la recarga REGISTRADA en el proveedor,
+// RECLAMA la conversión (CAS — jamás doble conversión contra el
+// frontend), la ejecuta y acredita el COP en el saldo ACH. Reentrante:
+// cualquier "kick" posterior lo retoma donde iba.
+// ════════════════════════════════════════════════════════
+const sleepMs = (ms: number) => new Promise(res => setTimeout(res, ms))
+const FN_BASE = `${SUPABASE_URL}/functions/v1`
+async function finityCall(action2: string, uid: string, extra: Record<string, unknown> = {}) {
+  const r = await fetch(`${FN_BASE}/finity-proxy`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+    body: JSON.stringify({ action: action2, user_id: uid, ...extra }),
+  }).catch(() => null)
+  if (!r) return null
+  return r.json().catch(() => null)
+}
+// Lanzar trabajo en segundo plano que SOBREVIVE a la respuesta HTTP.
+function bg(p: Promise<unknown>) {
+  try {
+    const er = (globalThis as any).EdgeRuntime
+    if (er?.waitUntil) { er.waitUntil(p.catch(() => {})); return }
+  } catch { /* runtime sin waitUntil */ }
+  p.catch(() => {})
+}
+
+// Reclamo CAS de la conversión: solo UNO (servidor o frontend) convierte.
+async function claimConvert(txId: string): Promise<{ claimed: boolean; status?: string; phase?: string }> {
+  const { data: tx } = await db.from('transactions').select('status, raw_data').eq('id', txId).single()
+  if (!tx) return { claimed: false }
+  const rd = (tx.raw_data ?? {}) as Record<string, any>
+  if (tx.status === 'Completado' || tx.status === 'Rechazado') return { claimed: false, status: tx.status, phase: String(rd.convertPhase ?? '') }
+  if (rd.convertPhase !== 'recharged') return { claimed: false, status: tx.status, phase: String(rd.convertPhase ?? '') }
+  const { data: rows, error } = await db.from('transactions')
+    .update({ raw_data: { ...rd, convertPhase: 'converting', convertingAt: new Date().toISOString() } })
+    .eq('id', txId)
+    .filter('raw_data->>convertPhase', 'eq', 'recharged')
+    .select('id')
+  return { claimed: !error && (rows?.length ?? 0) > 0, status: tx.status, phase: 'converting' }
+}
+async function releaseConvertClaim(txId: string) {
+  const { data: tx } = await db.from('transactions').select('status, raw_data').eq('id', txId).single()
+  const rd = (tx?.raw_data ?? {}) as Record<string, any>
+  if (tx?.status !== 'Completado' && rd.convertPhase === 'converting') {
+    await db.from('transactions').update({ raw_data: { ...rd, convertPhase: 'recharged' } }).eq('id', txId)
+  }
+}
+
+// ¿El proveedor YA registró la recarga en su plataforma? (movimiento de
+// recarga reciente con el monto enviado — no basta la wallet on-chain).
+async function rechargeRegisteredAtProvider(uid: string, fwd: number): Promise<boolean> {
+  try {
+    const mv = await finityCall('movements', uid)
+    const d: any = mv?.data ?? {}
+    const rows: any[] = Array.isArray(d) ? d : Array.isArray(d.data) ? d.data : Array.isArray(d.items) ? d.items
+      : Array.isArray(d.movements) ? d.movements : Array.isArray(d.results) ? d.results : []
+    const nowMs = Date.now()
+    for (const r of rows.slice(0, 12)) {
+      if (!/recarga|recharge|deposit|blockchain|top.?up/i.test(JSON.stringify(r))) continue
+      const nums: number[] = []
+      const collect = (o: any, depth = 0) => {
+        if (!o || typeof o !== 'object' || depth > 2) return
+        for (const v of Object.values(o)) {
+          if (typeof v === 'number') nums.push(v)
+          else if (typeof v === 'string' && /^\d+(\.\d+)?$/.test(v)) nums.push(parseFloat(v))
+          else if (v && typeof v === 'object') collect(v, depth + 1)
+        }
+      }
+      collect(r)
+      if (!nums.some(n => Math.abs(n - fwd) <= Math.max(0.05, fwd * 0.01))) continue
+      const ds = (r.created_at ?? r.createdAt ?? r.date ?? r.creation_date ?? null) as string | null
+      if (ds) { const t = Date.parse(ds); if (isFinite(t) && nowMs - t > 30 * 60 * 1000) continue }
+      return true
+    }
+  } catch { /* próximo intento */ }
+  return false
+}
+
+async function autoConvert(txId: string, uid: string) {
+  try {
+    for (let round = 0; round < 10; round++) {
+      const { data: tx } = await db.from('transactions').select('*').eq('id', txId).single()
+      if (!tx || tx.user_id !== uid || tx.type !== 'convert') return
+      if (tx.status === 'Completado' || tx.status === 'Rechazado') return
+      const rd = (tx.raw_data ?? {}) as Record<string, any>
+      const phase = String(rd.convertPhase ?? '')
+      if (phase === 'converting') return // el frontend (u otro run) la tiene
+      if (phase !== 'recharged') {
+        const fin: any = await myConvertFinalize(uid, txId, true).catch(() => null)
+        if (!fin || (!fin.recharged && fin.phase !== 'recharged')) {
+          if (fin?.status === 'Rechazado' || fin?.status === 'Completado') return
+          await sleepMs(12000); continue
+        }
+      }
+      const fwd = Number(rd.usdtToProvider ?? rd.fwd ?? 0)
+      if (fwd > 0 && !(await rechargeRegisteredAtProvider(uid, fwd))) { await sleepMs(10000); continue }
+      const claim = await claimConvert(txId)
+      if (!claim.claimed) return
+      try {
+        let done: any = null
+        for (let attempt = 0; attempt < 2 && !done; attempt++) {
+          if (attempt > 0) await sleepMs(3000)
+          const q = await finityCall('rates', uid, { query: { from: 'USD', to: 'COP' } })
+          const quote: any = q?.data ?? {}
+          const createBody: Record<string, unknown> = { fromAsset: 'USD', toAsset: 'COP', amount: fwd }
+          if (quote.id) createBody.exchange_rate_id = quote.id
+          if (quote.expires_at) createBody.expires_at = quote.expires_at
+          const c = await finityCall('convert', uid, { data: createBody })
+          const convId = (c?.data as any)?.id
+          if (!c?.ok || !convId) continue
+          const f = await finityCall('convert_confirm', uid, { id: String(convId) })
+          const dd: any = f?.data ?? {}
+          if (f?.ok && String(dd.status ?? '') === 'SUCCESS') { done = dd; break }
+        }
+        if (!done) { await releaseConvertClaim(txId); await sleepMs(15000); continue }
+        const finityRate = Number(done.exchangeRate ?? rd.mouvRate ?? 0)
+        const feePct = Number(rd.feePct ?? 0)
+        const creditUsd = Number(rd.creditUsd ?? 0) || Math.max(0, Number(rd.fromAmount ?? 0) - 4)
+        const grossCop = finityRate > 0 ? creditUsd * finityRate : Number(done.to_amount ?? 0)
+        const clientCop = Math.round(grossCop * (1 - feePct / 100))
+        const utilityCop = Math.max(0, Math.round(grossCop - clientCop))
+        await myConvertCredit(uid, txId, clientCop, { mouvRate: finityRate, feePct, utilityCop })
+        return
+      } catch {
+        await releaseConvertClaim(txId)
+        await sleepMs(15000)
+      }
+    }
+  } catch { /* el próximo kick lo retoma */ }
 }
 
 // Verifica el saldo GasFree del cliente contra lo YA acreditado (contador
@@ -1480,11 +1616,48 @@ Deno.serve(async (req) => {
     if (action === 'my_convert_settle') {
       if (!userId || !amount || !body.copAmount) return err('Faltan userId, amount o copAmount', 400)
       if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
-      return ok(await myConvertSettle(userId, Number(amount), Number(body.copAmount), {
-        mouvRate: body.mouvRate != null ? Number(body.mouvRate) : undefined,
+      const settled: any = await myConvertSettle(userId, Number(amount), Number(body.copAmount), {
+        // El frontend manda la tasa como finityRate — se acepta con ambos nombres.
+        mouvRate: body.mouvRate != null ? Number(body.mouvRate) : (body.finityRate != null ? Number(body.finityRate) : undefined),
         feePct: body.feePct != null ? Number(body.feePct) : undefined,
         utilityCop: body.utilityCop != null ? Number(body.utilityCop) : undefined,
-      }))
+        creditUsd: body.creditUsd != null ? Number(body.creditUsd) : undefined,
+      })
+      // AUTOPILOTO: pase lo que pase con la pestaña del cliente, el servidor
+      // sigue empujando la conversión hasta acreditar el COP en ACH.
+      if (settled?.txId && settled?.status !== 'Rechazado') bg(autoConvert(String(settled.txId), userId))
+      return ok(settled)
+    }
+    // Reclamo de conversión (CAS) — lo usa el frontend antes de convertir:
+    // si el autopiloto del servidor ya la tomó, el frontend solo OBSERVA.
+    if (action === 'my_convert_claim') {
+      if (!userId || !body.txId) return err('Faltan userId o txId', 400)
+      if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
+      return ok(await claimConvert(String(body.txId)))
+    }
+    // Estado de una conversión (para observar desde el frontend).
+    if (action === 'my_convert_status') {
+      if (!userId || !body.txId) return err('Faltan userId o txId', 400)
+      if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
+      const { data: tx } = await db.from('transactions').select('id, user_id, status, amount, currency, raw_data').eq('id', String(body.txId)).single()
+      if (!tx || tx.user_id !== userId) return err('Movimiento no encontrado', 404)
+      const rd = (tx.raw_data ?? {}) as Record<string, any>
+      return ok({ ok: true, status: tx.status, phase: rd.convertPhase ?? null, amount: tx.amount, currency: tx.currency, mouvRate: rd.mouvRate ?? null, utilityCop: rd.utilityCop ?? null })
+    }
+    // Soltar el reclamo (el frontend falló la conversión local) — vuelve a
+    // 'recharged' para que el autopiloto o un reintento la retomen.
+    if (action === 'my_convert_release') {
+      if (!userId || !body.txId) return err('Faltan userId o txId', 400)
+      if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
+      await releaseConvertClaim(String(body.txId))
+      return ok({ ok: true })
+    }
+    // Re-lanzar el autopiloto (al volver a la app, o desde el vigilante).
+    if (action === 'my_convert_kick') {
+      if (!userId || !body.txId) return err('Faltan userId o txId', 400)
+      if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
+      bg(autoConvert(String(body.txId), userId))
+      return ok({ ok: true, kicked: true })
     }
     // ── Multi-wallet del cliente (studios/negocios) ──
     if (action === 'my_wallets_list') {
