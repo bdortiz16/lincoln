@@ -228,7 +228,7 @@ const ACH_FEE_COP = Number(Deno.env.get('ACH_FEE_COP') ?? '2500') || 2500
 const BREB_FEE_COP = Number(Deno.env.get('BREB_FEE_COP') ?? '1200') || 1200
 
 async function finityPayoutAch(userId: string, recipient: Record<string, any>, amountCop: number):
-  Promise<{ ok: boolean; providerRef?: string; state?: string; feeCop: number; costs?: any; error?: any; destinationId?: string }> {
+  Promise<{ ok: boolean; providerRef?: string; state?: string; feeCop: number; costs?: any; error?: any; destinationId?: string; amountMismatch?: Record<string, unknown> | null }> {
   // 1) Cuenta destino en Finity (destination_id). Reusar si el contacto ya
   //    la trae; si no, registrarla ahora.
   let destId: string | null = recipient.finityId ?? null
@@ -250,12 +250,16 @@ async function finityPayoutAch(userId: string, recipient: Record<string, any>, a
     destId = ea?.data?.id ?? ea?.data?.external_account_id ?? ea?.data?.account_id ?? null
     if (!ea?.ok || !destId) return { ok: false, feeCop: 0, error: { step: 'destino', httpStatus: ea?.status ?? null, path: ea?.path ?? null, body: ea?.data ?? null } }
   }
-  // 2) Orden de retiro — contrato OFICIAL confirmado (doc Withdrawal Orders):
+  // 2) Orden de retiro:
   //    POST /v0/withdrawal-orders { destination_id, amount, currency:'COP' }
-  //    amount en UNIDADES MENORES (6000 = $60.00 COP) → pesos × 100.
+  //    ⚠️ amount va en PESOS ENTEROS — NO en centavos. VERIFICADO CONTRA
+  //    PRODUCCIÓN: una dispersión de $10.000 enviada como 1.000.000
+  //    (pesos × 100, como decía la doc de "unidades menores") creó en
+  //    Finity un retiro REAL de COP $1.000.000. NUNCA multiplicar aquí.
   //    → 201 { id, status: PROCESSING|COMPLETED|FAILED, destination_account }
   //    (NO devuelve costs — el precio por transferencia es ACH_FEE_COP.)
-  const w = await finityCall('create_withdrawal', userId, { data: { amount: Math.round(amountCop * 100), currency: 'COP', destination_id: destId } })
+  const requestedCop = Math.round(amountCop)
+  const w = await finityCall('create_withdrawal', userId, { data: { amount: requestedCop, currency: 'COP', destination_id: destId } })
   const od: any = w?.data ?? {}
   // El error DEBE conservar status/path/cuerpo — con '{}' pelado es
   // imposible saber si fue ruta (404), auth (401) o validación (400).
@@ -263,7 +267,21 @@ async function finityPayoutAch(userId: string, recipient: Record<string, any>, a
     ok: false, feeCop: 0, destinationId: destId ?? undefined,
     error: { step: 'retiro', httpStatus: w?.status ?? null, path: w?.path ?? null, body: (od && Object.keys(od).length > 0) ? od : (w?.data ?? w ?? null) },
   }
-  return { ok: true, providerRef: String(od.id), state: od.status ?? od.state ?? 'PROCESSING', feeCop: ACH_FEE_COP, destinationId: destId ?? undefined }
+  // CONTROL DE MONTO (post-orden): si Finity ecoa un amount y NO coincide
+  // con lo pedido (±1 peso; también se detecta el patrón ×100 / ÷100), se
+  // deja constancia para auditoría y se marca la orden para revisión —
+  // exactamente el tipo de discrepancia que produjo el retiro de $1.000.000
+  // por una dispersión de $10.000.
+  let amountMismatch: Record<string, unknown> | null = null
+  const echoed = Number(od.amount ?? od.data?.amount)
+  if (Number.isFinite(echoed) && echoed > 0 && Math.abs(echoed - requestedCop) > 1) {
+    amountMismatch = {
+      requestedCop, providerAmount: echoed,
+      pattern: Math.abs(echoed - requestedCop * 100) <= 1 ? 'x100' : Math.abs(echoed - requestedCop / 100) <= 1 ? '/100' : 'otro',
+    }
+    await logAudit(userId, 'finity.withdrawal.amount_mismatch', { providerRef: String(od.id), ...amountMismatch })
+  }
+  return { ok: true, providerRef: String(od.id), state: od.status ?? od.state ?? 'PROCESSING', feeCop: ACH_FEE_COP, destinationId: destId ?? undefined, amountMismatch }
 }
 
 // Registro de auditoría best-effort (no bloquea la operación).
@@ -442,6 +460,32 @@ serve(async (req: Request) => {
 
     const amount = Number(payload.amount)
     if (!isFinite(amount) || amount <= 0) return json(400, { error: 'bad_amount', message: 'Monto inválido.' })
+    if (Math.round(amount) !== amount) return json(400, { error: 'bad_amount', message: 'El monto debe ser en pesos enteros.' })
+
+    // ── PROTOCOLOS DE SEGURIDAD (estándar fintech) ──
+    // (1) Tope por operación: ninguna dispersión individual puede superar el
+    //     límite (PAYOUT_MAX_COP, default $20.000.000; override por secret).
+    const PAYOUT_MAX_COP = Number(Deno.env.get('PAYOUT_MAX_COP') ?? '20000000') || 20000000
+    if (amount > PAYOUT_MAX_COP) {
+      return json(400, { error: 'over_limit', message: `El monto supera el límite por operación (${PAYOUT_MAX_COP.toLocaleString('es-CO')} COP). Para montos mayores usa la Mesa OTC.` })
+    }
+    // (2) Idempotencia / anti doble-clic: si YA existe una dispersión idéntica
+    //     (mismo usuario, riel y monto) creada hace menos de 2 minutos y que
+    //     no fue rechazada, se bloquea el reenvío — dos toques al botón
+    //     Confirmar no pueden ejecutar la operación dos veces.
+    try {
+      const since = new Date(Date.now() - 2 * 60 * 1000).toISOString()
+      const { data: dup } = await db.from('transactions')
+        .select('id, status, created_at')
+        .eq('user_id', userId).eq('type', 'dispersion').eq('currency', railCol).eq('amount', amount)
+        .gte('created_at', since)
+        .in('status', ['Procesando', 'Completado'])
+        .limit(1)
+      if (dup && dup.length > 0) {
+        await logAudit(userId, `mouv.${action}.duplicate_blocked`, { amount, rail, existingTx: dup[0].id })
+        return json(200, { error: 'duplicate', message: 'Ya hay una dispersión idéntica en curso (hace menos de 2 minutos). Revisa tus Movimientos antes de volver a enviar.' })
+      }
+    } catch { /* si la verificación falla no se bloquea el envío legítimo */ }
 
     const recipient = (payload.recipient ?? {}) as Record<string, any>
     // Validación mínima del destinatario según el riel
@@ -562,6 +606,7 @@ serve(async (req: Request) => {
         raw_data: {
           ...prettyBase, feeProvider: 'finity', feeCop: fin.feeCop, costs: fin.costs ?? null,
           providerRef: fin.providerRef ?? null, state: fin.state ?? null,
+          ...(fin.amountMismatch ? { amountMismatch: fin.amountMismatch, needsReview: true } : {}),
           acceptedAt: new Date().toISOString(),
         },
       }).eq('id', txId)
