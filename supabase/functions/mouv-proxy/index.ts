@@ -206,10 +206,10 @@ async function finityCall(action: string, userId: string, extra: Record<string, 
   })
   return r.json().catch(() => null)
 }
-// Precio por transferencia ACH (Finity no lo devuelve en la orden — doc
-// oficial: respuesta { id, status, amount, destination_account }). Se define
-// como secret y SE COBRA AL CLIENTE. 0 = sin cargo mientras se define.
-const ACH_FEE_COP = Number(Deno.env.get('ACH_FEE_COP') ?? '0') || 0
+// Precio por transferencia ACH que SE COBRA AL CLIENTE: $2.500 COP por
+// envío (override con el secret ACH_FEE_COP). Finity no devuelve costs en
+// la orden — doc oficial: { id, status, amount, destination_account }.
+const ACH_FEE_COP = Number(Deno.env.get('ACH_FEE_COP') ?? '2500') || 2500
 // Comisión FIJA por envío Bre-B que se le cobra al cliente ($1.200 por
 // defecto; override con el secret BREB_FEE_COP). El costo real de Mouv
 // (fija + variable + IVA) lo absorbe Lincoin — al cliente además ya se le
@@ -361,7 +361,8 @@ serve(async (req: Request) => {
     if (rail === 'BREB') {
       return json(200, { ok: true, rail: 'BREB', provider: 'lincoin', feeCop: BREB_FEE_COP, fixedCop: BREB_FEE_COP, variableCop: 0, ivaCop: 0, totalCop: amount + BREB_FEE_COP })
     }
-    return json(200, { ok: true, rail: 'ACH', provider: 'finity', feeCop: ACH_FEE_COP, totalCop: amount + ACH_FEE_COP })
+    // ACH: comisión FIJA única ($2.500) — SIN componente variable.
+    return json(200, { ok: true, rail: 'ACH', provider: 'finity', feeCop: ACH_FEE_COP, fixedCop: ACH_FEE_COP, variableCop: 0, ivaCop: 0, totalCop: amount + ACH_FEE_COP })
   }
 
   // ── dispersión BREB (Mouv) / ACH (Finity) ──

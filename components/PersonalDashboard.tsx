@@ -4050,7 +4050,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               <div className="space-y-2">
                                   {([
                                       { key: 'breb', title: 'Bre-B a cuenta bancaria', pill: 'SEGUNDOS', desc: 'Por llave a cualquier banco · $1.200 por envío' },
-                                      { key: 'ach', title: 'ACH tradicional', pill: null, desc: 'L–V 7:00–18:00 · precio fijo por transferencia' },
+                                      { key: 'ach', title: 'ACH tradicional', pill: null, desc: 'L–V 7:00–18:00 · $2.500 por envío' },
                                       { key: 'pay', title: 'A otro usuario de Lincoin', pill: 'SIN COMISIÓN', desc: 'Por ID o correo · instantáneo, 24/7' },
                                       { key: 'cash', title: 'Retiro en punto físico', pill: null, desc: 'Efectivo en corresponsales aliados · código de retiro' },
                                   ] as const).map(m => {
@@ -4344,10 +4344,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               <div style={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: 13, overflow: 'hidden' }}>
                                   {[
                                       { l: 'Sale de', v: `${sendSourceRail === 'COP' ? 'Saldo Lincoin' : sendSourceRail === 'COP_BREB' ? 'Bre-B' : 'ACH'} · COP` },
-                                      { l: `Comisión ${railLbl}`, v: payoutQuote?.loading ? 'cotizando…'
+                                      { l: `Comisión fija ${railLbl} · sin variable`, v: payoutQuote?.loading ? 'cotizando…'
                                           : payoutQuote?.error ? '—'
                                           : payoutQuote?.feeCop != null ? `${formatMoney(payoutQuote.feeCop, 'COP')} COP`
-                                          : 'Precio fijo Finity · al confirmar' },
+                                          : 'Precio fijo · al confirmar' },
                                       { l: 'Llega', v: isBrebM ? 'En segundos' : 'El mismo día hábil' },
                                   ].map((row, i) => (
                                       <div key={row.l} className="flex items-center justify-between" style={{ padding: '11px 16px', fontSize: 13, borderTop: i === 0 ? 'none' : '1px solid rgba(255,255,255,0.06)' }}>

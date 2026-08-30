@@ -436,10 +436,11 @@ export const FinitySection: React.FC<{
         }
         // COSTO FIJO de la conversión: 4 USDT que paga el cliente — cubren
         // 1,50 del envío wallet→tesorería + 1,50 de tesorería→proveedor
-        // (Finity) + 1,00 de servicio Lincoin. El neto que se convierte es
-        // monto − 4; el USDT que sobra tras los saltos reales queda como
-        // utilidad de Lincoin en el proveedor.
-        const gasfreeCost = CONVERT_FLAT_FEE_USDT;
+        // (Finity) + 1,00 de servicio Lincoin. La PRIMERA vez se suma la
+        // activación de la wallet GasFree (1,5) → 5,5 solo esa vez. El neto
+        // que se convierte es monto − costo; el USDT que sobra tras los
+        // saltos reales queda como utilidad de Lincoin en el proveedor.
+        const gasfreeCost = CONVERT_FLAT_FEE_USDT + Number(gasfreeFee?.activateFeeUsdt ?? 0);
         const netAmount = parseFloat((amount - gasfreeCost).toFixed(2));
         if (netAmount <= 0) {
             setConvertResult({ ok: false, text: `El monto debe ser mayor al costo fijo de conversión (${gasfreeCost.toFixed(2)} USDT).` });
@@ -803,7 +804,10 @@ export const FinitySection: React.FC<{
                         const clientRate = rate != null ? rate * (1 - feePct / 100) : null;
                         const usd = Number(usdAmount) || 0;
                         // Costo FIJO por conversión: 4 USDT (1,5 + 1,5 + 1 de servicio).
-                        const costUsdt = CONVERT_FLAT_FEE_USDT;
+                        // La PRIMERA vez se suma la activación de la wallet GasFree
+                        // (1,5, cotizada en vivo) — total 5,5 solo esa vez.
+                        const activationUsdt = Number(gasfreeFee?.activateFeeUsdt ?? 0);
+                        const costUsdt = CONVERT_FLAT_FEE_USDT + activationUsdt;
                         const netUsd = Math.max(0, usd - costUsdt);
                         const copOut = clientRate != null ? netUsd * clientRate : 0;
                         const overBalance = usdBalance != null && usd > usdBalance;
@@ -841,7 +845,7 @@ export const FinitySection: React.FC<{
                                             </span>
                                         </div>
                                         {overBalance && <p style={{ fontSize: 12, color: '#878E88', marginTop: 4 }}>Supera tu saldo disponible.</p>}
-                                        {!overBalance && usd > 0 && netUsd <= 0 && <p style={{ fontSize: 12, color: '#878E88', marginTop: 4 }}>El monto debe ser mayor al costo fijo de {CONVERT_FLAT_FEE_USDT} USDT.</p>}
+                                        {!overBalance && usd > 0 && netUsd <= 0 && <p style={{ fontSize: 12, color: '#878E88', marginTop: 4 }}>El monto debe ser mayor al costo fijo de {costUsdt.toLocaleString('en-US', { maximumFractionDigits: 2 })} USDT{activationUsdt > 0 ? ' (incluye la activación de la 1ª vez)' : ''}.</p>}
                                     </div>
                                     {/* Flecha entre cajas */}
                                     <div className="flex justify-center" style={{ margin: '-13px 0', position: 'relative', zIndex: 2 }}>
@@ -893,6 +897,12 @@ export const FinitySection: React.FC<{
                                                 <span style={{ fontSize: 11.5, color: '#878E88' }}>↳ Servicio Lincoin</span>
                                                 <span style={{ fontSize: 11.5, fontWeight: 600, color: '#878E88' }}>{CONVERT_FEE_SERVICE_USDT.toFixed(2)} USDT</span>
                                             </div>
+                                            {activationUsdt > 0 && (
+                                                <div className="flex items-center justify-between gap-3">
+                                                    <span style={{ fontSize: 11.5, color: '#878E88' }}>↳ Activación de tu wallet (solo la 1ª vez)</span>
+                                                    <span style={{ fontSize: 11.5, fontWeight: 600, color: '#878E88' }}>{activationUsdt.toFixed(2)} USDT</span>
+                                                </div>
+                                            )}
                                         </div>
                                         <div className="flex items-center justify-between gap-3">
                                             <span style={S.row}>Neto que se convierte</span>
