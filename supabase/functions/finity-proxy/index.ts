@@ -818,21 +818,23 @@ Deno.serve(async (req) => {
     if (action === 'create_payment_link') {
       const copAmount = Math.round(Number(payload.copAmount ?? payload.amount ?? 0))
       if (!(copAmount >= 5000)) return json(400, { error: 'bad_amount', message: 'El monto mínimo es $5.000 COP.' })
-      // 1) Tasa USD→COP para el exchange_rate_id y el monto origen.
+      // Contrato Finity (verificado por sus errores): para un cobro en COP,
+      // `amount` va EN COP (mín. 1.500) y `destination_amount` es lo que el
+      // comercio recibe en el activo destino (USD/USDT ≈ COP/tasa). currency
+      // = COP. La tasa da el exchange_rate_id y el destination_amount en USD.
       const qs = `?${new URLSearchParams({ from: 'USD', to: 'COP' })}`
       const { res: rres } = await finityTry('rates', {}, qs)
       const rdata = await rres.json().catch(() => null) as any
       const rate = extractRate(rdata)
       const rateId = rdata?.id ?? rdata?.exchange_rate_id ?? rdata?.data?.id ?? null
-      if (!rate || rate <= 0) return json(200, { ok: false, error: 'no_rate', message: 'No se pudo obtener la tasa para el cobro.' })
-      const usdAmount = Number((copAmount / rate).toFixed(2))
+      const usdAmount = rate && rate > 0 ? Number((copAmount / rate).toFixed(2)) : 0.01
       const body: Record<string, unknown> = {
-        destination_amount: copAmount, amount: Math.max(1, usdAmount), currency: 'COP',
+        amount: copAmount, destination_amount: Math.max(0.01, usdAmount), currency: 'COP',
         ...(rateId ? { exchange_rate_id: rateId } : {}),
       }
       const r = await finityFetch('/v0/payment-link/create', { method: 'POST', body: JSON.stringify(body) })
       const data = await r.json().catch(() => null) as any
-      await logAudit(caller.userId ?? null, 'finity.payment_link.create', { status: r.status, copAmount, usdAmount, response: data })
+      await logAudit(caller.userId ?? null, 'finity.payment_link.create', { status: r.status, copAmount, usdAmount, body, response: data })
       if (!r.ok || !data?.payment_link) {
         return json(200, { ok: false, status: r.status, error: 'link_failed', message: 'No se pudo crear el link de cobro.', data })
       }
