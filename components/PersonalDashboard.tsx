@@ -1406,10 +1406,30 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       const upper = code.toUpperCase();
       setPayRecipientCode(upper);
       if (upper.length < 4) { setPayRecipientUser(null); setPayLookupStatus('idle'); return; }
+      // 1) Escaneo local (rápido; funciona para admins y antes de endurecer RLS).
       const allUsers = getAllUsers();
       const found = allUsers.find(u => u.ownReferralCode?.toUpperCase() === upper && u.id !== currentUser?.id);
-      if (found) { setPayRecipientUser(found); setPayLookupStatus('found'); }
-      else { setPayRecipientUser(null); setPayLookupStatus('not_found'); }
+      if (found) { setPayRecipientUser(found); setPayLookupStatus('found'); return; }
+      // 2) Con RLS estricta el cliente ya no ve a otros usuarios → se resuelve
+      //    en el servidor (solo devuelve id + nombre, sin saldos ni PII).
+      (async () => {
+        try {
+          const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+          const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+          if (!SURL) { setPayRecipientUser(null); setPayLookupStatus('not_found'); return; }
+          const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: myAuthHeader() },
+            body: JSON.stringify({ action: 'lookup_recipient', code: upper }),
+          }).then(x => x.json()).catch(() => null);
+          if (r?.found && r.id && r.id !== currentUser?.id) {
+            setPayRecipientUser({ id: r.id, name: r.name, ownReferralCode: upper } as any);
+            setPayLookupStatus('found');
+          } else {
+            setPayRecipientUser(null); setPayLookupStatus('not_found');
+          }
+        } catch { setPayRecipientUser(null); setPayLookupStatus('not_found'); }
+      })();
   };
 
   const executePay = async () => {

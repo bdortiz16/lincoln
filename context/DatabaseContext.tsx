@@ -1788,8 +1788,23 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     }
 
     // Look up recipient from local users state (populated by fetchData from Supabase)
-    const recipient = users.find(u => u.ownReferralCode?.toUpperCase() === recipientCode.toUpperCase() && u.id !== currentUser.id);
+    let recipient: any = users.find(u => u.ownReferralCode?.toUpperCase() === recipientCode.toUpperCase() && u.id !== currentUser.id);
+    if (!recipient) {
+      // Con RLS estricta el cliente ya no ve a otros usuarios: se resuelve el
+      // destinatario en el servidor (solo id + nombre). El RPC cuypay_transfer
+      // igual re-valida el destino por código, así que esto es solo para la UI.
+      try {
+        const SURL = SUPABASE_URL_FOR_FN; const SKEY = SUPABASE_ANON_FOR_FN; const token = getStoredToken();
+        const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
+          body: JSON.stringify({ action: 'lookup_recipient', code: recipientCode.toUpperCase() }),
+        }).then(x => x.json()).catch(() => null);
+        if (r?.found && r.id && r.id !== currentUser.id) recipient = { id: r.id, name: r.name, balances: {} };
+      } catch { /* red → cae al 'no encontrado' */ }
+    }
     if (!recipient) return { error: 'Usuario no encontrado' };
+    if (!recipient.balances) recipient.balances = {};
 
     const senderBal = currentUser.balances[currency] || 0;
     if (senderBal < amount) return { error: 'Saldo insuficiente' };

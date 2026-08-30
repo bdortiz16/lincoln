@@ -214,6 +214,31 @@ Deno.serve(async (req: Request) => {
         return json({ success: true, id: txId, balances: { ...fiat, ...cry } })
       }
 
+      // ── Resolver un código de referido a { id, name } para un pago P2P.
+      //    Lo puede pedir CUALQUIER usuario autenticado (no expone saldos ni
+      //    PII). Reemplaza el escaneo cliente de toda la tabla users, que la
+      //    RLS estricta deja de permitir a los no-admin. ─────────────────────
+      if (selfServiceBody.action === 'lookup_recipient') {
+        const authHeader = req.headers.get('Authorization') ?? ''
+        const ADMIN_PASS = Deno.env.get('ADMIN_PASS') ?? ''
+        let authed = ADMIN_PASS !== '' && authHeader === `AdminBypass ${ADMIN_PASS}`
+        if (!authed) {
+          const jwt = authHeader.replace(/^Bearer\s+/i, '').trim()
+          if (jwt) { try { const { data } = await db.auth.getUser(jwt); authed = !!data?.user } catch { /* inválido */ } }
+        }
+        if (!authed) return json({ error: 'No autorizado' }, 401)
+        const code = String(selfServiceBody.code ?? '').toUpperCase().trim()
+        if (code.length < 4) return json({ found: false })
+        const { data: u } = await db.from('users')
+          .select('id, full_name')
+          .eq('raw_data->>ownReferralCode', code)
+          .neq('role', 'admin')
+          .limit(1)
+          .maybeSingle()
+        if (!u) return json({ found: false })
+        return json({ found: true, id: (u as any).id, name: (u as any).full_name ?? 'Usuario Lincoin' })
+      }
+
       // Self-delete: any authenticated user can delete their own account
       if (selfServiceBody.action === 'delete_self') {
         const jwt = req.headers.get('Authorization')?.replace('Bearer ', '').trim()

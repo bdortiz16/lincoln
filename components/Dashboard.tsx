@@ -1021,9 +1021,33 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
       const upper = code.toUpperCase();
       setPayRecipientCode(upper);
       if (upper.length < 4) { setPayRecipientUser(null); setPayLookupStatus('idle'); return; }
+      // 1) Escaneo local (admins y antes de endurecer RLS).
       const found = getAllUsers().find((u: any) => u.ownReferralCode?.toUpperCase() === upper && u.id !== currentUser?.id);
-      if (found) { setPayRecipientUser(found); setPayLookupStatus('found'); }
-      else { setPayRecipientUser(null); setPayLookupStatus('not_found'); }
+      if (found) { setPayRecipientUser(found); setPayLookupStatus('found'); return; }
+      // 2) Con RLS estricta se resuelve en el servidor (solo id + nombre).
+      (async () => {
+        try {
+          const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+          const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+          if (!SURL) { setPayRecipientUser(null); setPayLookupStatus('not_found'); return; }
+          let auth = `Bearer ${SKEY}`;
+          try {
+            const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
+            if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) auth = `Bearer ${d.access_token}`; }
+          } catch { /* sin sesión */ }
+          const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: auth },
+            body: JSON.stringify({ action: 'lookup_recipient', code: upper }),
+          }).then(x => x.json()).catch(() => null);
+          if (r?.found && r.id && r.id !== currentUser?.id) {
+            setPayRecipientUser({ id: r.id, name: r.name, ownReferralCode: upper } as any);
+            setPayLookupStatus('found');
+          } else {
+            setPayRecipientUser(null); setPayLookupStatus('not_found');
+          }
+        } catch { setPayRecipientUser(null); setPayLookupStatus('not_found'); }
+      })();
   };
 
   const handlePaySubmit = () => {
