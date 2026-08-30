@@ -2493,6 +2493,42 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   <span style={{ color: '#F4F4F2', fontWeight: 600 }}>{wallet?.name}</span>
               </div>
 
+              {/* Selector de billetera (tabs). De momento solo USDT (Dólar
+                  digital) y COP están activos; el resto va como PRÓXIMAMENTE. */}
+              {(() => {
+                  const usdShort = displayBalance('USD');
+                  const copShort = getBalance('COP') + getBalance('COP_BREB') + getBalance('COP_ACH');
+                  const tabs: { code: string; name: string; badge: string; badgeColor: string; sym: string; sub: string; soon?: boolean }[] = [
+                      { code: 'USD', name: 'Dólar digital', badge: '#2775CA', badgeColor: '#fff', sym: '$', sub: `${Number(usdShort).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT` },
+                      { code: 'COP', name: 'Peso colombiano', badge: 'linear-gradient(180deg,#FCD116 0 50%,#003893 50% 75%,#CE1126 75%)', badgeColor: '#fff', sym: '', sub: `${Math.round(copShort).toLocaleString('es-CO')} COP` },
+                      { code: '_EUR', name: 'Euro digital', badge: '#16A34A', badgeColor: '#fff', sym: '€', sub: 'EURC', soon: true },
+                      { code: '_USDBANK', name: 'Cuenta USD', badge: 'transparent', badgeColor: '#878E88', sym: '$', sub: 'ACH / wire', soon: true },
+                      { code: '_EURBANK', name: 'Cuenta EUR', badge: 'transparent', badgeColor: '#878E88', sym: '€', sub: 'SEPA / IBAN', soon: true },
+                  ];
+                  return (
+                  <div className="flex items-center overflow-x-auto" style={{ gap: 8, paddingBottom: 2 }}>
+                      {tabs.map(t => {
+                          const active = !t.soon && selectedWalletCode === t.code;
+                          return (
+                              <button key={t.code} type="button" disabled={t.soon}
+                                  onClick={() => { if (!t.soon) { setSelectedWalletCode(t.code); } }}
+                                  className="flex items-center transition-colors" style={{ gap: 9, flexShrink: 0, borderRadius: 11, padding: '10px 16px', cursor: t.soon ? 'default' : 'pointer',
+                                      border: active ? '1px solid rgba(74,222,128,0.35)' : t.soon ? '1px dashed rgba(255,255,255,0.14)' : '1px solid rgba(255,255,255,0.1)',
+                                      background: active ? 'rgba(74,222,128,0.06)' : t.soon ? 'transparent' : 'rgba(255,255,255,0.025)' }}>
+                                  <span style={{ width: 22, height: 22, borderRadius: '50%', flexShrink: 0, display: 'grid', placeItems: 'center', fontSize: 12, fontWeight: 800, color: t.badgeColor,
+                                      background: t.soon ? 'transparent' : t.badge, border: t.soon ? '1px solid rgba(255,255,255,0.18)' : 'none' }}>{t.sym}</span>
+                                  <span style={{ textAlign: 'left', whiteSpace: 'nowrap' }}>
+                                      <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: t.soon ? '#878E88' : '#F4F4F2' }}>{t.name}</span>
+                                      <span style={{ display: 'block', fontSize: 10.5, color: '#878E88', marginTop: 1 }}>{t.sub}</span>
+                                  </span>
+                                  {t.soon && <span style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: '0.5px', color: '#878E88', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 999, padding: '2px 6px', flexShrink: 0 }}>PRÓXIMO</span>}
+                              </button>
+                          );
+                      })}
+                  </div>
+                  );
+              })()}
+
               {selectedWalletCode === 'COP' ? (() => {
                   const _cop = getBalance('COP'), _breb = getBalance('COP_BREB'), _ach = getBalance('COP_ACH');
                   const _total = _cop + _breb + _ach; const _rate = getRate('USD', 'COP');
@@ -2523,29 +2559,68 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   </div>
                   );
               })() : (
-              <div className="bg-gradient-to-br from-[#0C0E0D] to-[#0C0E0D] p-8 rounded-3xl text-white shadow-xl relative overflow-hidden">
-                  <div className="absolute top-0 right-0 w-64 h-64 bg-white/5 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2"></div>
-                  <div className="relative z-10">
-                      <div className="flex justify-between items-start mb-8">
-                          <div className="flex items-center gap-4">
-                              <div className="w-14 h-10 rounded-lg shadow-md ring-2 ring-white/30 bg-white/15 flex items-center justify-center font-bold text-lg">₮</div>
-                              <div><h2 className="text-2xl font-bold">{wallet?.name}</h2><p className="text-green-200">{wallet?.type}</p></div>
+              (() => {
+                  const addr = usdtAddr || '';
+                  const addrShort = addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : 'Generando dirección…';
+                  const bal = displayBalance('USD');
+                  const parts = Number(bal).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).split(',');
+                  return (
+                  <div className="grid gap-4" style={{ gridTemplateColumns: 'minmax(0,1fr)' }}>
+                      <div className="grid gap-4" style={{ gridTemplateColumns: '1fr', ...( {} ) }}>
+                          <div className="grid gap-4 lg:grid-cols-[1fr_340px]">
+                              {/* Tarjeta de saldo */}
+                              <div style={{ position: 'relative', overflow: 'hidden', background: 'linear-gradient(150deg, #101312 0%, #0C0E0D 55%, #0A0C0B 100%)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 16, padding: '26px 28px' }}>
+                                  <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(circle at 92% 0%, rgba(74,222,128,0.1), transparent 42%)', pointerEvents: 'none' }} />
+                                  <div style={{ position: 'relative' }}>
+                                      <div className="flex items-center flex-wrap" style={{ gap: 10 }}>
+                                          <span style={{ width: 40, height: 40, borderRadius: '50%', background: '#2775CA', color: '#fff', fontWeight: 800, fontSize: 19, display: 'grid', placeItems: 'center', flexShrink: 0 }}>$</span>
+                                          <div>
+                                              <div className="flex items-center" style={{ gap: 8 }}>
+                                                  <span style={{ fontSize: 16, fontWeight: 700, color: '#F4F4F2' }}>Dólar digital</span>
+                                                  <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 9, fontWeight: 700, letterSpacing: '0.7px', padding: '3px 7px', borderRadius: 999 }}>PRINCIPAL</span>
+                                              </div>
+                                              <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 2 }}>USDT · red GasFree (TRON) · 1 USDT = 1 USD</p>
+                                          </div>
+                                      </div>
+                                      <div style={{ marginTop: 22, display: 'flex', alignItems: 'baseline', gap: 4 }}>
+                                          <span style={{ fontSize: 46, fontWeight: 800, letterSpacing: '-1.8px', lineHeight: 1, color: '#F4F4F2' }}>{parts[0]}</span>
+                                          <span style={{ fontSize: 28, fontWeight: 800, color: '#878E88' }}>,{parts[1]}</span>
+                                          <span style={{ fontSize: 17, fontWeight: 600, color: '#878E88', marginLeft: 6 }}>USDT</span>
+                                      </div>
+                                      <div className="flex items-center justify-between flex-wrap" style={{ gap: 12, marginTop: 20, paddingTop: 16, borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+                                          <div className="flex" style={{ gap: 26 }}>
+                                              <div><p style={{ fontSize: 11, color: '#878E88' }}>Disponible</p><p style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2', marginTop: 2 }}>{Number(bal).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p></div>
+                                              <div><p style={{ fontSize: 11, color: '#878E88' }}>Retenido</p><p style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2', marginTop: 2 }}>0,00</p></div>
+                                              <div><p style={{ fontSize: 11, color: '#878E88' }}>Red</p><p style={{ fontSize: 13.5, fontWeight: 700, color: '#4ADE80', marginTop: 2 }}>{gasfreeBalChecked ? 'Conectada' : '…'}</p></div>
+                                          </div>
+                                          <svg width="120" height="34" viewBox="0 0 120 34" fill="none" style={{ flexShrink: 0 }}>
+                                              <path d="M2 26 L20 22 L38 24 L56 16 L74 18 L92 9 L118 6" stroke="#4ADE80" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                                          </svg>
+                                      </div>
+                                  </div>
+                              </div>
+
+                              {/* Panel de acciones */}
+                              <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 16, padding: 20, display: 'flex', flexDirection: 'column', gap: 9 }}>
+                                  <button onClick={() => openUsdtDeposit()} disabled={isBlocked} className="lincoin-btn-white transition-colors flex items-center justify-center" style={{ gap: 8, width: '100%', padding: '13px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, border: 'none', opacity: isBlocked ? 0.6 : 1 }}><ArrowDownLeft size={16} /> Cargar</button>
+                                  <div className="flex" style={{ gap: 9 }}>
+                                      <button onClick={() => { if (!handleActionRestricted()) setIsSendModalOpen(true); }} disabled={isBlocked || !isKycVerified} className="flex-1 flex items-center justify-center hover:bg-white/[0.09] transition-colors" style={{ gap: 7, padding: '12px 0', borderRadius: 10, fontSize: 13, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', opacity: (isBlocked || !isKycVerified) ? 0.5 : 1 }}><Send size={15} /> Enviar</button>
+                                      <button onClick={() => { setSelectedWalletCode('USD'); setActiveView('mouv'); }} className="flex-1 flex items-center justify-center hover:bg-white/[0.09] transition-colors" style={{ gap: 7, padding: '12px 0', borderRadius: 10, fontSize: 13, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)' }}><ArrowLeftRight size={15} /> Convertir</button>
+                                  </div>
+                                  <div style={{ marginTop: 8, paddingTop: 14, borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+                                      <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88' }}>DIRECCIÓN DE DEPÓSITO</p>
+                                      <div className="flex items-center justify-between" style={{ gap: 8, marginTop: 8 }}>
+                                          <span style={{ fontSize: 12.5, fontWeight: 600, color: '#F4F4F2', fontFamily: 'ui-monospace, Menlo, monospace' }}>{addrShort}</span>
+                                          <button onClick={() => { if (addr) navigator.clipboard?.writeText(addr).then(() => showToast('Dirección copiada')).catch(() => {}); }} disabled={!addr} className="flex items-center hover:opacity-80 transition-opacity" style={{ gap: 5, fontSize: 12, fontWeight: 700, color: '#4ADE80' }}><Copy size={12} /> Copiar</button>
+                                      </div>
+                                      <p style={{ fontSize: 10.5, color: '#878E88', marginTop: 7 }}>Solo USDT · red TRON (TRC-20). Enviar otra moneda o red puede perder los fondos.</p>
+                                  </div>
+                              </div>
                           </div>
-                          <span className="bg-white/10 px-3 py-1 rounded-lg text-sm font-bold border border-white/20">USDT</span>
-                      </div>
-                      <p className="text-5xl font-bold mb-8 tracking-tight">
-                          {formatMoney(balance, selectedWalletCode)}
-                          <span className="text-base font-normal text-green-200 ml-2">
-                              {gasfreeBalChecked ? (gasfreeBal != null ? 'saldo real en tu wallet GasFree' : 'sin conexión — mostrando último saldo conocido') : 'consultando saldo real…'}
-                          </span>
-                      </p>
-                      <div className="flex gap-4">
-                          <button onClick={() => { handleLoadClick(selectedWalletCode); }} disabled={isBlocked} className={`flex-1 text-[#0C0E0D] py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 transition-colors ${isBlocked ? 'bg-slate-400 cursor-not-allowed opacity-70' : 'bg-[#4ADE80] hover:bg-[#22C55E]'}`}><Plus size={18} /> Cargar</button>
-                          <button onClick={() => { if(!handleActionRestricted()) setIsSendModalOpen(true); }} disabled={isBlocked || !isKycVerified} className={`flex-1 text-white border py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 transition-colors ${isBlocked || !isKycVerified ? 'bg-white/10 border-white/10 cursor-not-allowed opacity-70' : 'bg-white/10 border-white/20 hover:bg-white/20'}`}><Send size={18} /> Enviar</button>
                       </div>
                   </div>
-              </div>
-              )}
+                  );
+              })())}
 
               {/* La billetera Colombia (COP) contiene el saldo interno (Peso Lincoin)
                   y DOS rieles de dispersión vía Mouv: BreB (inmediato 24/7) y
@@ -2707,33 +2782,76 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   );
               })()}
 
-              <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-                  <div className="p-4 border-b border-slate-100 font-bold text-slate-800">Movimientos de esta cuenta</div>
-                  {getFilteredMovements(selectedWalletCode).map(tx => {
-                       const meta = txRowMeta(tx);
-                       return (
-                       <button key={tx.id} type="button" onClick={() => setSelectedTx(tx)} className="w-full p-4 border-b border-slate-50 flex justify-between items-center hover:bg-slate-50 text-left cursor-pointer">
-                           <div className="flex items-center gap-3 min-w-0">
-                               <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${isTxCredit(tx) ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600'}`}><meta.Icon size={15} /></div>
-                               <div className="min-w-0">
-                                   <p className="font-bold text-slate-800 text-sm truncate">{meta.title}</p>
-                                   <p className="text-xs text-slate-400 truncate">
-                                       {meta.sub}
-                                       {(tx.gasfree === true || tx.raw_data?.gasfree === true) && (tx.feeChargedUsdt ?? tx.raw_data?.feeChargedUsdt) != null && (
-                                           <span> · comisión {Number(tx.feeChargedUsdt ?? tx.raw_data?.feeChargedUsdt).toFixed(2)} USDT</span>
-                                       )}
-                                   </p>
-                               </div>
-                           </div>
-                           <span className={`font-bold text-sm shrink-0 ${isTxCredit(tx) ? 'text-green-600' : 'text-slate-800'}`}>{isTxCredit(tx) ? '+' : '-'} {formatMoney(tx.amount, tx.currency)}</span>
-                       </button>
-                       );
-                  })}
-                  {getFilteredMovements(selectedWalletCode).length === 0 && <div className="p-12 text-center text-slate-400 text-sm">Sin movimientos recientes en {selectedWalletCode}</div>}
+              {(() => {
+                  const rows = getFilteredMovements(selectedWalletCode);
+                  const isUsdtCur = (c?: string) => ['USD', 'USDT'].includes(String(c || '').split('_')[0]);
+                  const isConv = (t: any) => t.type === 'convert' || t.type === 'breb_move' || t.type === 'rail_move';
+                  const inFlight = (t: any) => ['Procesando', 'Pendiente'].includes(String(t.status || ''));
+                  const failed = (t: any) => ['Fallido', 'Rechazado'].includes(String(t.status || ''));
+                  const pillOf = (t: any) => String(t.status) === 'Completado' ? { l: 'LIQUIDADO', b: 'rgba(74,222,128,0.3)', c: '#4ADE80' }
+                      : inFlight(t) ? { l: 'EN CURSO', b: 'rgba(255,255,255,0.14)', c: 'rgba(244,244,242,0.7)' }
+                      : failed(t) ? { l: String(t.status) === 'Rechazado' ? 'RECHAZADO' : 'FALLIDO', b: 'rgba(255,255,255,0.14)', c: '#878E88' }
+                      : { l: String(t.status || 'PENDIENTE').toUpperCase(), b: 'rgba(255,255,255,0.14)', c: '#878E88' };
+                  const box = (kind: string) => (
+                      <span style={{ width: 32, height: 32, borderRadius: 9, flexShrink: 0, display: 'grid', placeItems: 'center', background: kind === 'in' ? 'rgba(74,222,128,0.1)' : 'rgba(255,255,255,0.055)' }}>
+                          {kind === 'in' ? <ArrowDownLeft size={16} style={{ color: '#4ADE80' }} strokeWidth={1.8} /> : kind === 'conv' ? <ArrowLeftRight size={16} style={{ color: '#F4F4F2' }} strokeWidth={1.8} /> : <ArrowUpRight size={16} style={{ color: '#F4F4F2' }} strokeWidth={1.8} />}
+                      </span>
+                  );
+                  return (
+                  <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, overflow: 'hidden' }}>
+                      <div className="flex items-center justify-between" style={{ padding: '15px 22px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                          <span style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>Movimientos de esta billetera</span>
+                          <button onClick={() => { setMovementsTab('all'); setActiveView('movements'); }} style={{ fontSize: 12.5, fontWeight: 600, color: '#878E88' }} className="hover:text-[#F4F4F2] transition-colors">Ver todo →</button>
+                      </div>
+                      {rows.map(tx => {
+                          const meta = txRowMeta(tx);
+                          const kind = isConv(tx) ? 'conv' : isTxCredit(tx) ? 'in' : 'out';
+                          const ticker = isUsdtCur(tx.currency) ? 'USDT' : (String(tx.currency || '').split('_')[0] || 'COP');
+                          const rd = (tx.raw_data ?? {}) as any;
+                          const ref0 = tx.providerRef ?? rd.providerRef ?? '';
+                          const reference = ref0 ? (String(ref0).length > 12 ? `${String(ref0).slice(0, 10)}…` : String(ref0)) : `TX-${String(tx.id ?? '').replace(/-/g, '').slice(-6).toUpperCase()}`;
+                          const pill = pillOf(tx);
+                          return (
+                          <button key={tx.id} type="button" onClick={() => setSelectedTx(tx)} className="w-full text-left hover:bg-white/[0.02] transition-colors cursor-pointer grid items-center" style={{ gridTemplateColumns: 'minmax(0,1fr) 130px 110px', gap: 12, padding: '13px 22px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                              <span className="flex items-center" style={{ gap: 11, minWidth: 0 }}>
+                                  {box(kind)}
+                                  <span style={{ minWidth: 0 }}>
+                                      <span style={{ display: 'block', fontSize: 13.5, fontWeight: 600, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{meta.title}</span>
+                                      <span style={{ display: 'block', fontSize: 11, color: '#878E88', fontFamily: 'ui-monospace, Menlo, monospace', marginTop: 1 }}>{reference}</span>
+                                  </span>
+                              </span>
+                              <span style={{ textAlign: 'right', fontSize: 13.5, fontWeight: 700, whiteSpace: 'nowrap', color: kind === 'in' ? '#4ADE80' : '#F4F4F2' }}>
+                                  {kind === 'in' ? '+' : '−'}{formatMoney(tx.amount, tx.currency)} {ticker}
+                              </span>
+                              <span style={{ textAlign: 'right' }}>
+                                  <span style={{ display: 'inline-block', padding: '3px 9px', borderRadius: 999, fontSize: 10, fontWeight: 700, border: `1px solid ${pill.b}`, color: pill.c, whiteSpace: 'nowrap' }}>{pill.l}</span>
+                              </span>
+                          </button>
+                          );
+                      })}
+                      {rows.length === 0 && (
+                          <div className="text-center" style={{ padding: '48px 20px', color: '#878E88', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                              <p style={{ fontSize: 13 }}>Sin movimientos todavía en esta billetera.</p>
+                              {selectedWalletCode === 'USD' && <button onClick={() => openUsdtDeposit()} className="lincoin-btn-white transition-colors" style={{ marginTop: 14, padding: '10px 22px', borderRadius: 10, fontSize: 13, fontWeight: 700, border: 'none' }}>Cargar</button>}
+                          </div>
+                      )}
+                  </div>
+                  );
+              })()}
+
+              {/* Nota de respaldo — veraz: USDT en TRON con custodia GasFree.
+                  (No se afirma emisor/atestaciones que no apliquen al activo.) */}
+              <div className="flex items-start" style={{ gap: 9, padding: '2px 2px' }}>
+                  <ShieldCheck size={15} style={{ color: '#878E88', flexShrink: 0, marginTop: 1 }} strokeWidth={1.7} />
+                  <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5 }}>
+                      {selectedWalletCode === 'USD'
+                          ? 'Tu saldo es USDT (dólar digital) sobre la red TRON, con recepción sin gas vía GasFree. 1 USDT = 1 USD. Convierte a pesos y dispersa por Bre-B o ACH cuando quieras.'
+                          : 'Tu saldo en pesos vive en tres rieles (Saldo Lincoin, Bre-B y ACH). Los envíos a bancos salen por Bre-B (segundos) o ACH (ciclos hábiles).'}
+                  </p>
               </div>
 
               {/* Volver también al final, para no tener que subir la página */}
-              <button onClick={() => setActiveView('dashboard')} style={{ color: '#121413' }} className="flex items-center gap-2 font-bold text-sm hover:text-[#0C0E0D] hover:underline mx-auto">
+              <button onClick={() => setActiveView('dashboard')} style={{ color: '#878E88' }} className="flex items-center gap-2 font-bold text-sm hover:text-[#F4F4F2] transition-colors mx-auto">
                   <ArrowLeft size={16} /> Volver al inicio
               </button>
           </div>
