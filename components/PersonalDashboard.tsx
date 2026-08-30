@@ -571,7 +571,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       // lo que el usuario ya vio/borró.
       if (!seedDone) {
           const seedIds = Array.from(new Set([...seen, ...candidates.map(c => c.id)])).slice(-400);
-          updateUserProfile(currentUser.id, { notifiedEvents: seedIds });
+          // raw_data-only write: no lo rechaza el candado de columnas sensibles.
+          updateUserRawData(currentUser.id, { notifiedEvents: seedIds }).catch(() => {});
           return;
       }
 
@@ -582,8 +583,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       const newNotifs = [...stamped, ...existingNotifs].slice(0, 50);
       const newSeen = Array.from(new Set([...notifiedEvents, ...fresh.map(c => c.id)])).slice(-400);
       // Una sola escritura (notificaciones + eventos avisados) para no pisar
-      // una con la otra.
-      updateUserProfile(currentUser.id, { notifications: newNotifs, notifiedEvents: newSeen });
+      // una con la otra. raw_data-only → sobrevive el candado de saldos.
+      updateUserRawData(currentUser.id, { notifications: newNotifs, notifiedEvents: newSeen }).catch(() => {});
 
       // Depósito USDT nuevo → CELEBRACIÓN (cuadro verde + cha-ching), sin
       // importar en qué pantalla esté el cliente ni qué camino lo acreditó

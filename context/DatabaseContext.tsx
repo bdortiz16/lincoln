@@ -1912,7 +1912,12 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   const markNotificationsRead = () => {
     if (!currentUser) return;
     const updated = (currentUser.notifications || []).map((n: any) => ({ ...n, read: true }));
-    updateUserProfile(currentUser.id, { notifications: updated });
+    // Las notificaciones viven en raw_data. Persistir con updateUserRawData
+    // (escribe SOLO raw_data, confirma la fila y cae al edge si la RLS/candado
+    // de columnas sensibles bloquea) — con updateUserProfile/saveUser el
+    // candado rechazaba TODO el update si el saldo en memoria estaba viejo, y
+    // el "leído" no se guardaba: al recargar volvían a salir sin leer.
+    updateUserRawData(currentUser.id, { notifications: updated }).catch(() => {});
   };
 
   // Agrega varias notificaciones de una (dedup por id estable). Devuelve
@@ -1931,19 +1936,19 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       ...n,
     }));
     const updated = [...stamped, ...existing].slice(0, 50);
-    updateUserProfile(currentUser.id, { notifications: updated });
+    updateUserRawData(currentUser.id, { notifications: updated }).catch(() => {});
     return toAdd.length;
   };
 
   const deleteNotification = (id: string | number) => {
     if (!currentUser) return;
     const updated = (currentUser.notifications || []).filter((n: any) => String(n.id) !== String(id));
-    updateUserProfile(currentUser.id, { notifications: updated });
+    updateUserRawData(currentUser.id, { notifications: updated }).catch(() => {});
   };
 
   const clearNotifications = () => {
     if (!currentUser) return;
-    updateUserProfile(currentUser.id, { notifications: [] });
+    updateUserRawData(currentUser.id, { notifications: [] }).catch(() => {});
   };
 
   return (
