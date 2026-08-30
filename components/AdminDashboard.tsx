@@ -599,7 +599,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       pendingWithdrawals: pendingWithdrawals.length,
       totalVolume: `$ ${Math.round(historyTransactions.reduce((acc, tx) => {
           if (tx.status === 'Completado') {
-             const rate = getRate(tx.currency, 'USD'); 
+             const rate = getRate((tx.currency||'').split('_')[0], 'USD'); 
              return acc + (tx.amount * (rate || 0));
           }
           return acc;
@@ -904,13 +904,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const calculateFinancials = () => {
       const validTx = historyTransactions.filter(tx => tx.status === 'Completado');
       const volumeUSD = validTx.reduce((acc, tx) => {
-          const rate = getRate(tx.currency, 'USD');
+          const rate = getRate((tx.currency||'').split('_')[0], 'USD');
           return acc + (tx.amount * (rate || 0));
       }, 0);
       const grossRevenueUSD = volumeUSD * (systemConfig.globalFee / 100);
       const referralTx = validTx.filter(tx => tx.type === 'referral_payout' || tx.type === 'referral_commission');
       const referralCostUSD = referralTx.reduce((acc, tx) => {
-          const rate = getRate(tx.currency, 'USD');
+          const rate = getRate((tx.currency||'').split('_')[0], 'USD');
           return acc + (tx.amount * rate);
       }, 0);
       const netProfit = grossRevenueUSD - referralCostUSD;

@@ -564,10 +564,25 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       // Orden por fecha, no por id: los ids de transactions son uuid — la
       // resta b.id - a.id da NaN y el sort no ordenaba nada.
       const txTime = (t: any) => new Date(t.createdAt ?? t.created_at ?? t.date ?? 0).getTime() || 0;
+      // Normaliza estados a los canónicos de la app. El panel Personas escribe
+      // 'approved'/'rejected' (y variantes en inglés) que ninguna vista del
+      // cliente entiende → se mapean a Completado/Rechazado; los demás se
+      // dejan tal cual (Completado, Procesando, Pendiente, Rechazado, Fallido).
+      const normStatus = (s: any): string => {
+        const v = String(s ?? '').toLowerCase();
+        if (['approved', 'completed', 'success', 'confirmed', 'paid', 'settled', 'aprobada', 'aprobado'].includes(v)) return 'Completado';
+        if (['rejected', 'cancelled', 'canceled', 'failed', 'denied', 'rechazada'].includes(v)) return 'Rechazado';
+        if (['processing', 'procesando'].includes(v)) return 'Procesando';
+        if (['pending', 'pendiente'].includes(v)) return 'Pendiente';
+        return String(s ?? '');
+      };
       const mapTx = (arr: any[]) => (arr as any[]).map(t => ({
         id: t.id, userId: t.user_id, type: t.type,
-        amount: Number(t.amount), currency: t.currency, status: t.status,
+        amount: Number(t.amount), currency: t.currency, status: normStatus(t.status),
         createdAt: t.created_at ?? t.raw_data?.createdAt,
+        // raw_data se aplana para acceso plano, PERO se conserva bajo su clave
+        // para las vistas que lo leen anidado (motivo de fallo, explorer…).
+        raw_data: t.raw_data ?? {},
         ...t.raw_data,
       })).sort((a: any, b: any) => txTime(b) - txTime(a));
 

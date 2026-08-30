@@ -1404,9 +1404,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       if (sendMode === 'bank' && sendForm.destinationCurrency === 'COP' && currentUser?.id) {
           const isBreb = (sendContact?.destKind ?? 'ach') === 'breb';
           const rail = isBreb ? 'COP_BREB' : 'COP_ACH';
-          if (getBalance(rail) < amount) {
+          // El servidor debita monto + comisión fija ($1.200 Bre-B / $2.500 ACH)
+          // — se valida lo mismo aquí para no llegar al proveedor y volver.
+          const feeCop = isBreb ? 1200 : 2500;
+          if (getBalance(rail) < amount + feeCop) {
               sendingRef.current = false; setIsSending(false);
-              showToast(`Saldo insuficiente en ${isBreb ? 'Bre-B' : 'ACH'} para esta dispersión.`, 6000, 'error');
+              showToast(`Saldo insuficiente en ${isBreb ? 'Bre-B' : 'ACH'}: necesitas ${(amount + feeCop).toLocaleString('es-CO')} COP (monto + comisión ${feeCop.toLocaleString('es-CO')}).`, 7000, 'error');
               return;
           }
           const recipient = isBreb
@@ -1645,7 +1648,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               if (movStatus === 'Pendiente') return st !== 'Completado' && st !== 'Rechazado' && st !== 'Fallido';
               return st === movStatus;
           });
-          if (movType === 'send') filtered = filtered.filter(tx => tx.type === 'send' || tx.type === 'pay_sent');
+          if (movType === 'send') filtered = filtered.filter(tx => ['send', 'pay_sent', 'dispersion', 'otc_withdraw'].includes(tx.type));
           else if (movType === 'load') filtered = filtered.filter(tx => tx.type === 'load' || tx.type === 'otc_deposit' || tx.type === 'pay_received');
           else if (movType === 'convert') filtered = filtered.filter(tx => tx.type === 'convert');
           if (movCurrency !== 'all') filtered = filtered.filter(tx => baseCurrency(tx.currency) === movCurrency);
@@ -2060,12 +2063,17 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       };
       const rows = movChip === 'all' ? all : movChip === 'inflight' ? all.filter(isInFlight) : all.filter(t => chipOf(t) === movChip);
 
-      // Sumas del período en COP equivalente (USDT × tasa USD→COP)
+      // USDT: los depósitos guardan 'USD', los envíos 'USDT_TRON' → ambos
+      // base 'USD'/'USDT' son dólar digital, no COP.
+      const isUsdtCur = (c?: string) => ['USD', 'USDT'].includes(baseCurrency(c));
+      // Sumas del período en COP equivalente (USDT × tasa USD→COP). La salida
+      // real de una dispersión es amount + comisión (feeCop en raw_data).
       const usdCop = getRate('USD', 'COP') || 0;
-      const copEq = (t: any) => baseCurrency(t.currency) === 'USD' ? Number(t.amount || 0) * usdCop : Number(t.amount || 0);
+      const copEq = (t: any) => isUsdtCur(t.currency) ? Number(t.amount || 0) * usdCop : Number(t.amount || 0);
+      const feeOf = (t: any) => Number(t.feeCop ?? (t.raw_data as any)?.feeCop ?? 0);
       const fmtCop = (n: number) => `$${Math.round(n).toLocaleString('es-CO')}`;
       const inSum = rows.filter(t => isTxCredit(t) && !isFailedTx(t)).reduce((s, t) => s + copEq(t), 0);
-      const outSum = rows.filter(t => !isTxCredit(t) && !isConvertTx(t) && !isFailedTx(t)).reduce((s, t) => s + copEq(t), 0);
+      const outSum = rows.filter(t => !isTxCredit(t) && !isConvertTx(t) && !isFailedTx(t)).reduce((s, t) => s + copEq(t) + feeOf(t), 0);
       const flight = rows.filter(isInFlight);
       const flightSum = flight.reduce((s, t) => s + copEq(t), 0);
 
@@ -2089,7 +2097,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       // Metadatos de fila del rediseño (concepto/destino/riel/referencia/pill)
       const rowInfo = (t: any) => {
           const kind = chipOf(t);
-          const ticker = baseCurrency(t.currency) === 'USD' ? 'USDT' : 'COP';
+          const ticker = isUsdtCur(t.currency) ? 'USDT' : 'COP';
           const rd = (t.raw_data ?? {}) as any;
           const ben = titleCase(t.beneficiary || t.recipient?.holderName || rd.beneficiary || '');
           const acct = String(t.account ?? t.recipient?.key ?? t.recipient?.accountNumber ?? rd.account ?? '');
@@ -2110,8 +2118,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           } else if (t.type === 'convert') { dest = 'Saldo ACH'; rail = 'Conversión interna'; }
           else if (t.type === 'rail_move' || t.type === 'breb_move') { dest = 'Entre mis cuentas'; rail = 'Movimiento interno'; }
           else if (t.type === 'send' || t.type === 'pay_sent' || t.type === 'otc_withdraw') {
-              dest = t.bank ? `${String(t.bank).split('·')[0].trim()} ${last4}`.trim() : (acct ? `Cuenta ${last4}` : '—');
-              rail = t.currency === 'USD' ? 'Red TRON · TRC-20' : 'Colombia'; flag = t.currency !== 'USD' && !!t.bank;
+              const usdt = isUsdtCur(t.currency);
+              dest = usdt ? `Wallet ${last4}`.trim() : (t.bank ? `${String(t.bank).split('·')[0].trim()} ${last4}`.trim() : (acct ? `Cuenta ${last4}` : '—'));
+              rail = usdt ? 'Red TRON · TRC-20' : 'Colombia'; flag = !usdt && !!t.bank;
           }
           const ref0 = t.providerRef ?? rd.providerRef ?? '';
           const reference = ref0 ? (String(ref0).length > 12 ? `${String(ref0).slice(0, 10)}…` : String(ref0)) : `TX-${String(t.id ?? '').replace(/-/g, '').slice(-6).toUpperCase()}`;
@@ -4361,7 +4370,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       {/* STEP 1: DESDE (cuenta + rieles con saldo) + monto */}
                       {sendStep === 1 && (() => {
                           const isUsdt = sendForm.destinationCurrency === 'USD';
-                          const avail = isUsdt ? displayBalance('USD') : (getBalance('COP') + getBalance('COP_BREB') + getBalance('COP_ACH'));
+                          // Un envío sale de UN SOLO riel (lo define el método del
+                          // paso 2), así que lo enviable de una vez es el riel MAYOR,
+                          // no la suma — 'Todo' con la suma nunca pasaba la validación.
+                          const avail = isUsdt ? displayBalance('USD') : Math.max(getBalance('COP'), getBalance('COP_BREB'), getBalance('COP_ACH'));
                           const quicks = isUsdt ? [5, 20, 50] : [10000, 50000, 200000];
                           const setAmt = (n: number) => setSendForm({ ...sendForm, amount: formatInputNumber(String(Math.floor(n))) });
                           return (
@@ -4411,7 +4423,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                                         </span>}
                                                   <div>
                                                       <p style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>{isUsdt ? 'Dólar digital' : 'Peso colombiano'}</p>
-                                                      <p style={{ fontSize: 11, color: '#878E88' }}>{isUsdt ? 'USDT · disponible' : 'Total en tus 3 cuentas · el método del siguiente paso define de cuál sale'}</p>
+                                                      <p style={{ fontSize: 11, color: '#878E88' }}>{isUsdt ? 'USDT · disponible' : 'Máximo por envío (tu cuenta con más saldo) · el método define de cuál sale'}</p>
                                                   </div>
                                               </div>
                                               <p style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.6px', color: '#F4F4F2' }}>{isUsdt ? Number(avail).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : Math.round(avail).toLocaleString('es-CO')}</p>
