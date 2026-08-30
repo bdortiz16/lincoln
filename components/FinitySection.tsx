@@ -606,27 +606,68 @@ export const FinitySection: React.FC<{
 
             // ── CONFIRMACIÓN REAL EN LA PLATAFORMA DEL PROVEEDOR ──
             // La wallet YA recibió on-chain (ambos saltos confirmados), pero
-            // la página del proveedor tarda unos segundos más en registrar la
-            // recarga en su ledger. Antes de convertir se VERIFICA que el
-            // saldo de la cuenta haya subido por lo enviado (poll cada 5 s,
-            // hasta 90 s). Si el saldo no se puede leer, espera fija de 45 s.
+            // la plataforma tarda unos segundos más en REGISTRAR la recarga.
+            // Antes de convertir se exige verla registrada por DOS vías:
+            //   a) el saldo de la cuenta subió por lo enviado, o
+            //   b) aparece el movimiento "Recarga por Blockchain" con el
+            //      monto enviado (reciente) en los movimientos del proveedor.
+            // Si en ~2 min no se registra, la conversión queda EN PAUSA con
+            // reintento — JAMÁS se convierte antes de la recarga (eso solo
+            // funcionaba si la cuenta tenía saldo propio previo).
             const fwdUsd = Number(settle.usdtToProvider ?? netAmount);
-            let platformOk = false;
-            if (providerBalBefore != null) {
-                for (let i = 0; i < 18 && !platformOk; i++) {
-                    await sleep(5000);
+            const rowsOf = (d: any): any[] => Array.isArray(d) ? d
+                : Array.isArray(d?.data) ? d.data : Array.isArray(d?.items) ? d.items
+                : Array.isArray(d?.movements) ? d.movements : Array.isArray(d?.results) ? d.results : [];
+            const rechargeVisible = async (): Promise<boolean> => {
+                // a) por delta de saldo
+                if (providerBalBefore != null) {
                     try {
                         const nowBal = await fetchFinityBalance(userId);
-                        if (nowBal != null && nowBal >= providerBalBefore + fwdUsd * 0.9) platformOk = true;
-                    } catch { /* se reintenta en el próximo tick */ }
+                        if (nowBal != null && nowBal >= providerBalBefore + fwdUsd * 0.9) return true;
+                    } catch { /* siguiente vía */ }
                 }
-                // Si tras 90 s el saldo no refleja la recarga, se da un margen
-                // final y se intenta igual: si el proveedor aún no la registró,
-                // la conversión fallará SIN riesgo y queda el reintento (el
-                // USDT no se reenvía nunca).
-                if (!platformOk) await sleep(10000);
-            } else {
-                await sleep(45000);
+                // b) por movimiento de recarga registrado
+                try {
+                    const mv = await callFinity('movements', userId);
+                    const rows = rowsOf(mv?.data).slice(0, 12);
+                    const nowMs = Date.now();
+                    for (const r of rows) {
+                        if (!/recarga|recharge|deposit|blockchain|top.?up/i.test(JSON.stringify(r))) continue;
+                        const nums: number[] = [];
+                        const collect = (o: any, depth = 0) => {
+                            if (!o || typeof o !== 'object' || depth > 2) return;
+                            for (const v of Object.values(o)) {
+                                if (typeof v === 'number') nums.push(v);
+                                else if (typeof v === 'string' && /^\d+(\.\d+)?$/.test(v)) nums.push(parseFloat(v));
+                                else if (v && typeof v === 'object') collect(v, depth + 1);
+                            }
+                        };
+                        collect(r);
+                        if (!nums.some(n => Math.abs(n - fwdUsd) <= Math.max(0.05, fwdUsd * 0.01))) continue;
+                        // Si el movimiento trae fecha, exigir que sea reciente
+                        // (evita confundirse con una recarga vieja del mismo monto).
+                        const dateStr = (r.created_at ?? r.createdAt ?? r.date ?? r.creation_date ?? null) as string | null;
+                        if (dateStr) { const t = Date.parse(dateStr); if (isFinite(t) && nowMs - t > 20 * 60 * 1000) continue; }
+                        return true;
+                    }
+                } catch { /* siguiente tick */ }
+                return false;
+            };
+            let platformOk = false;
+            for (let i = 0; i < 24 && !platformOk; i++) {
+                await sleep(5000);
+                platformOk = await rechargeVisible();
+            }
+            if (!platformOk) {
+                setConvertStep('error');
+                setConvertResult({ ok: false, text: '⏳ Tu USDT ya llegó a la wallet del riel, pero la plataforma aún no registra la recarga. Para proteger tu conversión quedó EN PAUSA — dale "Reintentar conversión" en un minuto (tu USDT no se reenvía).' });
+                setPendingConvert({
+                    txId: String(settle.txId), finityAmount: fwdUsd, creditAmount: netAmount,
+                    amount, previewRate, gasfreeFeeUsdt: Number(settle.feeChargedUsdt ?? 0),
+                });
+                setUsdAmount(''); load(); onSwept?.();
+                setConverting(false);
+                return;
             }
 
             // 2+3) Conversión interna en Finity + acreditación. Se hace en
