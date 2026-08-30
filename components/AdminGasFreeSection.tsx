@@ -152,7 +152,9 @@ export const AdminGasFreeSection: React.FC = () => {
     const [sweepingAll, setSweepingAll] = useState(false);
 
     const allUsers = getAllUsers();
-    const businesses = allUsers.filter((u: any) => u.role !== 'admin' && u.role !== 'personal');
+    // TODOS los clientes (en Lincoin son cuentas personales) — el filtro
+    // viejo de "solo empresas" dejaba la tabla de wallets vacía.
+    const businesses = allUsers.filter((u: any) => u.role !== 'admin');
     const filtered = businesses.filter((u: any) => {
         if (!q) return true;
         const s = q.toLowerCase();
@@ -259,7 +261,14 @@ export const AdminGasFreeSection: React.FC = () => {
     // acumulado en Tesorería) ──
     const [providers, setProvidersList] = useState<any[]>([]);
     const [providersLoaded, setProvidersLoaded] = useState(false);
+    // Solo los DOS partners reales de Lincoin — nada de texto libre: el
+    // "detalle" es la WALLET a la que Tesorería paga de verdad, así que se
+    // cierra a Finity/Mouv + dirección TRC-20 válida para que la plata no
+    // pueda irse a otro lado por un typo.
+    const PROVIDER_OPTIONS = ['Finity', 'Mouv'] as const;
+    const TRC20_RX = /^T[1-9A-HJ-NP-Za-km-z]{33}$/;
     const [newProvider, setNewProvider] = useState({ name: '', detail: '' });
+    const [providerErr, setProviderErr] = useState<string | null>(null);
     const loadProviders = async () => {
         const r = await callGasfree({ action: 'get_providers' });
         if (!r?.error) { setProvidersList(r.providers ?? []); setProvidersLoaded(true); }
@@ -269,8 +278,12 @@ export const AdminGasFreeSection: React.FC = () => {
         await callGasfree({ action: 'set_providers', providers: list });
     };
     const addProvider = () => {
-        if (!newProvider.name.trim()) return;
-        const next = [...providers, { id: `p_${Date.now()}`, name: newProvider.name.trim(), detail: newProvider.detail.trim() }];
+        setProviderErr(null);
+        if (!newProvider.name) { setProviderErr('Elige el proveedor: Finity o Mouv.'); return; }
+        const wallet = newProvider.detail.trim();
+        if (!TRC20_RX.test(wallet)) { setProviderErr('Wallet inválida: debe ser una dirección USDT TRC-20 (empieza con T, 34 caracteres).'); return; }
+        if (providers.some((p: any) => p.name === newProvider.name)) { setProviderErr(`${newProvider.name} ya está registrado. Elimínalo primero si quieres cambiar su wallet.`); return; }
+        const next = [...providers, { id: `p_${Date.now()}`, name: newProvider.name, detail: wallet }];
         setNewProvider({ name: '', detail: '' });
         saveProviders(next);
     };
@@ -602,7 +615,7 @@ export const AdminGasFreeSection: React.FC = () => {
             {/* Proveedores: a quién se paga con el USDT de Tesorería */}
             <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
                 <p className="font-bold text-slate-800 text-sm">🏢 Proveedores</p>
-                <p className="text-[11px] text-slate-400">Registro de a quién se le paga con el USDT acumulado en Tesorería (ej. proveedor de liquidez COP).</p>
+                <p className="text-[11px] text-slate-400">A quién se le paga el USDT acumulado en Tesorería. Solo los partners de Lincoin — <b>Finity</b> (ACH) y <b>Mouv</b> (Bre-B) — y únicamente su wallet USDT, para que la plata no pueda irse a otro lado.</p>
                 <div className="space-y-2">
                     {providers.map((p: any) => (
                         <div key={p.id} className="flex items-center justify-between gap-2 bg-slate-50 rounded-lg px-3 py-2 text-sm">
@@ -619,15 +632,31 @@ export const AdminGasFreeSection: React.FC = () => {
                 </div>
                 <div className="flex items-end gap-2 flex-wrap">
                     <div>
-                        <label className="text-[10px] font-bold uppercase text-slate-500">Nombre</label>
-                        <input value={newProvider.name} onChange={e => setNewProvider(p => ({ ...p, name: e.target.value }))} className="mt-1 w-44 px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#4ADE80]" placeholder="Proveedor X" />
+                        <label className="text-[10px] font-bold uppercase text-slate-500">Proveedor</label>
+                        <div className="mt-1 flex gap-1.5">
+                            {PROVIDER_OPTIONS.map(name => {
+                                const sel = newProvider.name === name;
+                                const taken = providers.some((p: any) => p.name === name);
+                                return (
+                                    <button key={name} type="button" onClick={() => { setNewProvider(p => ({ ...p, name })); setProviderErr(null); }}
+                                        disabled={taken}
+                                        className={`px-4 py-2 rounded-lg text-sm font-bold border transition-colors ${sel ? 'border-[#4ADE80] bg-green-50 text-[#16A34A]' : taken ? 'border-slate-200 text-slate-300 cursor-not-allowed' : 'border-slate-200 text-slate-600 hover:border-slate-300'}`}
+                                        title={taken ? `${name} ya está registrado` : undefined}>
+                                        {name}
+                                    </button>
+                                );
+                            })}
+                        </div>
                     </div>
-                    <div className="flex-1 min-w-[200px]">
-                        <label className="text-[10px] font-bold uppercase text-slate-500">Detalle (wallet, banco, nota)</label>
-                        <input value={newProvider.detail} onChange={e => setNewProvider(p => ({ ...p, detail: e.target.value }))} className="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#4ADE80]" placeholder="T... o datos bancarios" />
+                    <div className="flex-1 min-w-[240px]">
+                        <label className="text-[10px] font-bold uppercase text-slate-500">Wallet USDT (TRC-20) del proveedor</label>
+                        <input value={newProvider.detail} onChange={e => { setNewProvider(p => ({ ...p, detail: e.target.value.trim() })); setProviderErr(null); }}
+                            className="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 text-sm font-mono outline-none focus:border-[#4ADE80]" placeholder="T··· (34 caracteres)" />
                     </div>
                     <button onClick={addProvider} style={{ color: '#FFFFFF' }} className="px-4 py-2 text-sm font-bold bg-[#16A34A] rounded-lg hover:bg-[#0f766e]">+ Agregar</button>
                 </div>
+                {providerErr && <p className="text-[11px] font-bold text-slate-500">⚠ {providerErr}</p>}
+                <p className="text-[10px] text-slate-400">Verifica la wallet con el proveedor antes de guardarla — los pagos de Tesorería salen directo a esa dirección.</p>
             </div>
 
             {/* Acciones + buscador */}
@@ -740,7 +769,7 @@ export const AdminGasFreeSection: React.FC = () => {
                             );
                         })}
                         {filtered.length === 0 && (
-                            <tr><td colSpan={5} className="px-4 py-10 text-center text-slate-400 text-sm">Sin clientes de empresa.</td></tr>
+                            <tr><td colSpan={5} className="px-4 py-10 text-center text-slate-400 text-sm">Sin clientes registrados todavía.</td></tr>
                         )}
                     </tbody>
                 </table>
