@@ -2496,9 +2496,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   <span style={{ color: '#F4F4F2', fontWeight: 600 }}>{wallet?.name}</span>
               </div>
 
-              {/* Selector de billetera (tabs). De momento solo USDT (Dólar
-                  digital) y COP están activos; el resto va como PRÓXIMAMENTE. */}
-              {(() => {
+              {/* Selector de billetera (tabs) — SOLO en el detalle Dólar
+                  digital. En Peso colombiano no aplica (es cuenta local). */}
+              {selectedWalletCode === 'USD' && (() => {
                   const usdShort = displayBalance('USD');
                   const tabs: { code: string; name: string; badge: string; badgeColor: string; sym: string; sub: string; soon?: boolean }[] = [
                       { code: 'USD', name: 'Dólar digital', badge: '#26A17B', badgeColor: '#fff', sym: '₮', sub: `${Number(usdShort).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT` },
