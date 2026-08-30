@@ -150,6 +150,70 @@ Deno.serve(async (req: Request) => {
         return json({ success: true })
       }
 
+      // ── Conversión SERVER-AUTORITATIVA (anti auto-crédito) ───────────────
+      // Aplica DELTAS (nunca saldos absolutos del cliente), valida sin
+      // sobregiro y que el monto recibido sea PLAUSIBLE según la tasa real
+      // (fx_rate_snapshots). Así el cliente no puede pedir "convierte $1 →
+      // $1.000.000" ni escribirse un saldo arbitrario. Enruta cripto vs fiat
+      // a su columna correcta.
+      if (selfServiceBody.action === 'apply_conversion' && selfServiceBody.userId) {
+        if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
+        const userId = String(selfServiceBody.userId)
+        const src = String(selfServiceBody.src ?? '')
+        const tgt = String(selfServiceBody.tgt ?? '')
+        const amtS = Number(selfServiceBody.amtS)
+        const amtT = Number(selfServiceBody.amtT)
+        const fee  = Number(selfServiceBody.fee ?? 0)
+        if (!/^[A-Z0-9_]+$/i.test(src) || !/^[A-Z0-9_]+$/i.test(tgt) || src === tgt ||
+            !isFinite(amtS) || !isFinite(amtT) || amtS <= 0 || amtT <= 0) {
+          return json({ error: 'Parámetros de conversión inválidos' }, 400)
+        }
+        const CRYPTO = new Set(['USDT', 'USDC', 'ETH', 'BNB', 'TRX', 'USDT_BSC', 'USDT_TRON', 'USDC_BSC', 'USDC_BASE', 'USDC_MATIC'])
+        const { data: u } = await db.from('users').select('balances, crypto_balances').eq('id', userId).single()
+        if (!u) return json({ error: 'Usuario no encontrado' }, 404)
+        const fiat: Record<string, number> = { ...((u as any).balances ?? {}) }
+        const cry:  Record<string, number> = { ...((u as any).crypto_balances ?? {}) }
+        const bal = (k: string) => Number((CRYPTO.has(k) ? cry[k] : fiat[k]) ?? 0)
+        const setBal = (k: string, v: number) => { if (CRYPTO.has(k)) cry[k] = v; else fiat[k] = v }
+        if (bal(src) + 1e-9 < amtS) return json({ error: 'Saldo insuficiente' }, 400)
+
+        // Plausibilidad del monto recibido según la tasa real.
+        const baseOf = (k: string) => (/^USD/.test(k) || k === 'USD') ? 'USD' : /^COP/.test(k) ? 'COP' : /^EUR/.test(k) ? 'EUR' : k
+        const bS = baseOf(src), bT = baseOf(tgt)
+        let expected: number | null = null
+        if (bS === bT) {
+          expected = amtS // 1:1 (ej. dólar digital ↔ cuenta USD)
+        } else {
+          const { data: snaps } = await db.from('fx_rate_snapshots')
+            .select('from_currency, to_currency, rate, captured_at')
+            .or(`and(from_currency.eq.${bS},to_currency.eq.${bT}),and(from_currency.eq.${bT},to_currency.eq.${bS})`)
+            .order('captured_at', { ascending: false }).limit(1)
+          const row: any = (snaps ?? [])[0]
+          if (row && Number(row.rate) > 0) {
+            expected = row.from_currency === bS ? amtS * Number(row.rate) : amtS / Number(row.rate)
+          }
+        }
+        const okAmt = expected != null
+          ? (amtT >= expected * 0.60 && amtT <= expected * 1.05)          // comisión hasta ~40% + holgura
+          : (amtT / amtS >= 1e-6 && amtT / amtS <= 1e7)                   // sin tasa: corta absurdos
+        if (!okAmt) return json({ error: 'El monto de la conversión no coincide con la tasa vigente.' }, 400)
+
+        setBal(src, Number((bal(src) - amtS).toFixed(8)))
+        setBal(tgt, Number((bal(tgt) + amtT).toFixed(8)))
+        const { error: upErr } = await db.from('users').update({ balances: fiat, crypto_balances: cry }).eq('id', userId)
+        if (upErr) return json({ error: upErr.message }, 500)
+
+        let txId: number | null = null
+        try {
+          const { data: ins } = await db.from('transactions').insert({
+            user_id: userId, type: 'convert', amount: amtS, currency: src, status: 'Completado',
+            raw_data: { initials: 'CV', title: `${src} a ${tgt}`, targetAmount: amtT, targetCurrency: tgt, destCurrency: tgt, fee, couponCode: selfServiceBody.coupon ?? null, createdAt: new Date().toISOString() },
+          }).select('id').single()
+          txId = (ins as any)?.id ?? null
+        } catch { /* best-effort */ }
+        return json({ success: true, id: txId, balances: { ...fiat, ...cry } })
+      }
+
       // Self-delete: any authenticated user can delete their own account
       if (selfServiceBody.action === 'delete_self') {
         const jwt = req.headers.get('Authorization')?.replace('Bearer ', '').trim()

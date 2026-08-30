@@ -1558,26 +1558,53 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   const performConversion = async (src: string, tgt: string, amtS: number, amtT: number, fee: number, coupon?: string): Promise<{ error?: string }> => {
     if (!currentUser) return { error: 'No autenticado' };
     if (getBalance(src) < amtS) return { error: 'Saldo insuficiente' };
+    const prevBalances = currentUser.balances;
     const newBal = { ...currentUser.balances, [src]: getBalance(src) - amtS, [tgt]: (currentUser.balances[tgt] || 0) + amtT };
     pendingWriteUntilRef.current = Date.now() + 10000;
     // Update local state immediately so UI reflects change without waiting for DB
     setCurrentUser(prev => prev ? { ...prev, balances: newBal } : prev);
     setUsers(prev => prev.map(u => u.id === currentUser.id ? { ...u, balances: newBal } : u));
-    // Fire DB writes in background — don't await (mobile networks can't be trusted)
-    saveUser({ ...currentUser, balances: newBal }).catch(() => {});
-    saveTx({ userId: currentUser.id, userName: currentUser.name, type: 'convert', initials: 'CV', title: `${src} a ${tgt}`, date: new Date().toLocaleDateString(), createdAt: new Date().toISOString(), amount: amtS, currency: src, status: 'Completado', fee, couponCode: coupon, targetAmount: amtT, targetCurrency: tgt }).catch(() => {});
-    // Credit conversion fee to admin balance (fire-and-forget)
-    if (fee > 0 && isSupabaseConfigured) {
-      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
-      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-      if (SURL) {
+
+    const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+    const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+    const creditFee = () => {
+      if (fee > 0 && isSupabaseConfigured && SURL) {
         fetch(`${SURL}/functions/v1/admin-data`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': `Bearer ${SKEY}` },
           body: JSON.stringify({ action: 'credit_conversion_fee', currency: src, amount: fee, fromUserId: currentUser.id, note: `Comisión conversión ${src}→${tgt}` }),
         }).catch(() => {});
       }
+    };
+
+    // ── Vía SEGURA: el SERVIDOR valida saldo y que el monto recibido cuadre
+    //    con la tasa real, y aplica los deltas (no acepta saldos absolutos del
+    //    cliente). Evita que alguien se auto-acredite saldo. Si el endpoint
+    //    aún no está desplegado (o hay red mala) se cae al camino legacy. ────
+    if (isSupabaseConfigured && SURL) {
+      try {
+        const token = getStoredToken();
+        const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
+          body: JSON.stringify({ action: 'apply_conversion', userId: currentUser.id, src, tgt, amtS, amtT, fee, coupon }),
+        }).then(x => x.json()).catch(() => null);
+        if (r?.success) { creditFee(); return {}; }
+        // Rechazo de negocio del servidor (tasa/saldo/parámetros) → revertir y avisar.
+        const HARD = ['Saldo insuficiente', 'El monto de la conversión no coincide con la tasa vigente.', 'Parámetros de conversión inválidos'];
+        if (r?.error && HARD.includes(String(r.error))) {
+          setCurrentUser(prev => prev ? { ...prev, balances: prevBalances } : prev);
+          setUsers(prev => prev.map(u => u.id === currentUser.id ? { ...u, balances: prevBalances } : u));
+          return { error: String(r.error) };
+        }
+        // Cualquier otra cosa (endpoint viejo / null) → camino legacy abajo.
+      } catch { /* red → legacy */ }
     }
+
+    // ── LEGACY (respaldo si apply_conversion no está desplegado) ──
+    saveUser({ ...currentUser, balances: newBal }).catch(() => {});
+    saveTx({ userId: currentUser.id, userName: currentUser.name, type: 'convert', initials: 'CV', title: `${src} a ${tgt}`, date: new Date().toLocaleDateString(), createdAt: new Date().toISOString(), amount: amtS, currency: src, status: 'Completado', fee, couponCode: coupon, targetAmount: amtT, targetCurrency: tgt }).catch(() => {});
+    creditFee();
     return {};
   };
 
