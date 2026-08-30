@@ -4184,7 +4184,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       <div style={{ marginTop: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.025)', borderRadius: 13, padding: '13px 15px' }}>
                                           <div className="flex items-center justify-between gap-2 flex-wrap">
                                               <div className="flex items-center gap-2.5">
-                                                  <span style={{ width: 26, height: 26, borderRadius: '50%', flexShrink: 0, display: 'block', background: isUsdt ? '#26A17B' : FLAGS['Colombia'], color: '#fff', fontWeight: 800, fontSize: 11, textAlign: 'center', lineHeight: '26px' }}>{isUsdt ? '₮' : ''}</span>
+                                                  {isUsdt
+                                                      ? <span style={{ width: 26, height: 26, borderRadius: '50%', flexShrink: 0, display: 'block', background: '#26A17B', color: '#fff', fontWeight: 800, fontSize: 11, textAlign: 'center', lineHeight: '26px' }}>₮</span>
+                                                      : <span style={{ width: 26, height: 26, borderRadius: '50%', flexShrink: 0, display: 'block', overflow: 'hidden', background: '#2E3330' }}>
+                                                            <img src={flagUrl('co')} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                                        </span>}
                                                   <div>
                                                       <p style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>{isUsdt ? 'Dólar digital' : 'Peso colombiano'}</p>
                                                       <p style={{ fontSize: 11, color: '#878E88' }}>{isUsdt ? 'USDT · disponible' : 'Total en tus 3 cuentas · el método del siguiente paso define de cuál sale'}</p>
