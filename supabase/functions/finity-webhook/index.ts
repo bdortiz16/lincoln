@@ -64,21 +64,45 @@ async function audit(event: string, metadata: Record<string, unknown>) {
   } catch (e) { console.warn('[finity-webhook] audit failed:', e) }
 }
 
+// HMAC-SHA256 del cuerpo con el secret — la forma usual en que los
+// proveedores "firman" los webhooks. Se devuelve en hex y base64.
+async function hmacOf(body: string, secret: string): Promise<{ hex: string; b64: string }> {
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(body)))
+  const hex = Array.from(sig).map(b => b.toString(16).padStart(2, '0')).join('')
+  const b64 = btoa(String.fromCharCode(...sig))
+  return { hex, b64 }
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
   if (req.method !== 'POST') return json(405, { error: 'method_not_allowed' })
 
+  const rawBody = await req.text().catch(() => '')
+
   // Autenticación del webhook (si hay secret configurado, se exige).
+  // Se acepta CUALQUIERA de estas formas, porque cada proveedor firma
+  // distinto: (a) ?secret= en la URL, (b) el secret plano en un header,
+  // (c) la firma HMAC-SHA256 del cuerpo (hex o base64, con o sin
+  // prefijo "sha256=") en los headers de firma usuales.
   if (SECRET) {
     const url = new URL(req.url)
-    const given = (url.searchParams.get('secret')
-      ?? req.headers.get('x-webhook-secret')
-      ?? req.headers.get('x-finity-signature')
-      ?? '').trim()
-    if (given !== SECRET) return json(401, { error: 'unauthorized' })
+    const candidates = [
+      url.searchParams.get('secret'),
+      req.headers.get('x-webhook-secret'),
+      req.headers.get('x-finity-signature'),
+      req.headers.get('x-signature'),
+      req.headers.get('x-hub-signature-256'),
+      req.headers.get('webhook-signature'),
+      req.headers.get('signature'),
+    ].filter((v): v is string => !!v).map(v => v.trim().replace(/^sha256=/i, ''))
+    const { hex, b64 } = await hmacOf(rawBody, SECRET)
+    const okAuth = candidates.some(v => v === SECRET || v.toLowerCase() === hex || v === b64)
+    if (!okAuth) return json(401, { error: 'unauthorized' })
   }
 
-  const payload = await req.json().catch(() => null)
+  let payload: unknown = null
+  try { payload = JSON.parse(rawBody) } catch { /* no-json */ }
   if (!payload) return json(400, { error: 'bad_payload' })
 
   await audit('finity.webhook.received', { payload })
