@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
     Landmark, RefreshCw, CheckCircle, XCircle, Plus, Send, ChevronDown,
-    ChevronUp, AlertTriangle, Wallet, Activity, DollarSign,
+    ChevronUp, AlertTriangle, Wallet, Activity, DollarSign, ArrowDown, Clock,
 } from 'lucide-react';
 import { supabase } from '../lib/supabaseClient';
 import { FinityRateChart } from './FinityRateChart';
@@ -242,7 +242,10 @@ export const FinitySection: React.FC<{
     // Evita además el fetch a fx_pair_config (la causa de que la comisión
     // "se dañara": esa lectura por red podía fallar/cachear un valor viejo).
     feePctOverride?: number;
-}> = ({ mode = 'full', userId, brebBalance, onDispersed, usdBalance, copBalance, onConverted, onSwept, feePctOverride }) => {
+    // Últimas conversiones del usuario (las pasa el dashboard desde sus
+    // movimientos) — se muestran en la tarjeta lateral del convertidor.
+    recentConversions?: Array<{ label: string; meta: string; result: string }>;
+}> = ({ mode = 'full', userId, brebBalance, onDispersed, usdBalance, copBalance, onConverted, onSwept, feePctOverride, recentConversions }) => {
     const isConverterOnly = mode === 'converter';
     const [ping, setPing] = useState<'checking' | 'ok' | 'fail' | 'noconf'>('checking');
     const [pingMsg, setPingMsg] = useState('');
@@ -627,35 +630,29 @@ export const FinitySection: React.FC<{
                 const isError = convertStep === 'error';
                 const curIdx = isError ? -1 : order.indexOf(convertStep);
                 return (
-                    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 animate-in fade-in duration-200">
-                        <div className="absolute inset-0 bg-slate-900/70 backdrop-blur-sm" />
-                        <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-md p-7 animate-in zoom-in-95 duration-300">
+                    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 animate-in fade-in duration-200" style={{ fontFamily: "'Archivo', system-ui, sans-serif" }}>
+                        <div className="absolute inset-0" style={{ background: 'rgba(4,5,4,0.74)', backdropFilter: 'blur(4px)' }} />
+                        <div className="relative w-full max-w-md p-7 animate-in zoom-in-95 duration-300" style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 18 }}>
                             <div className="flex flex-col items-center text-center mb-6">
-                                <div className="flex items-center gap-2 mb-3">
-                                    <svg width="34" height="34" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
-                                        <rect x="2" y="2" width="96" height="96" rx="24" fill="#0a0a0a" />
-                                        <path d="M34 30 H47 V58 H58 V71 H34 Z" fill="#F4F4F2" />
-                                        <circle cx="68" cy="67" r="12" fill="#4ADE80" />
-                                    </svg>
-                                    <span className="font-black text-2xl tracking-tight text-[#0C0E0D]">CUY<span className="text-[#4ADE80]">PAY</span></span>
-                                </div>
-                                <h3 className="text-lg font-extrabold text-[#0C0E0D]">
+                                {/* Wordmark Lincoin — tipográfico, punto verde (sin isotipo) */}
+                                <span style={{ fontWeight: 800, fontSize: 23, letterSpacing: '-0.7px', color: '#F4F4F2', marginBottom: 10 }}>Lincoin<span style={{ color: '#4ADE80' }}>.</span></span>
+                                <h3 className="text-lg font-extrabold" style={{ color: '#F4F4F2' }}>
                                     {isError ? 'No se pudo completar' : convertStep === 'completado' ? '¡Conversión completada!' : 'Procesando conversión'}
                                 </h3>
-                                <p className="text-xs text-slate-400 mt-0.5">
-                                    {isError ? 'Revisa el detalle abajo' : 'USDT → Peso Lincoin (COP)'}
+                                <p className="text-xs mt-0.5" style={{ color: '#878E88' }}>
+                                    {isError ? 'Revisa el detalle abajo' : 'USDT → COP · saldo ACH'}
                                 </p>
                             </div>
                             {isError ? (
                                 <div className="flex flex-col items-center py-4 gap-3">
-                                    <XCircle size={44} className="text-red-500" />
-                                    <p className="text-xs font-semibold text-slate-700 text-center px-1 leading-snug">{convertResult?.text ?? 'Ocurrió un error en el proceso.'}</p>
+                                    <XCircle size={42} strokeWidth={1.5} style={{ color: '#878E88' }} />
+                                    <p className="text-xs font-semibold text-center px-1 leading-snug" style={{ color: '#F4F4F2' }}>{convertResult?.text ?? 'Ocurrió un error en el proceso.'}</p>
                                     {pendingConvert && (
-                                        <button onClick={() => finishConvert(pendingConvert)} disabled={converting} className="px-5 py-2.5 rounded-xl bg-[#4ADE80] text-[#0C0E0D] text-sm font-extrabold hover:bg-[#6EE7A0] disabled:opacity-60 flex items-center gap-2">
+                                        <button onClick={() => finishConvert(pendingConvert)} disabled={converting} className="lincoin-btn-white px-5 py-2.5 rounded-xl text-sm font-extrabold disabled:opacity-60 flex items-center gap-2" style={{ border: 'none' }}>
                                             <RefreshCw size={15} className={converting ? 'animate-spin' : ''} /> Reintentar conversión
                                         </button>
                                     )}
-                                    <button onClick={() => { setConvertStep(null); }} className="text-xs text-slate-500 font-bold hover:text-slate-700">Cerrar</button>
+                                    <button onClick={() => { setConvertStep(null); }} className="text-xs font-bold" style={{ color: '#878E88' }}>Cerrar</button>
                                 </div>
                             ) : (
                                 <div className="space-y-1">
@@ -666,21 +663,22 @@ export const FinitySection: React.FC<{
                                         return (
                                             <div key={s.key} className="flex items-center gap-3">
                                                 <div className="flex flex-col items-center">
-                                                    <div className={`w-11 h-11 rounded-full flex items-center justify-center transition-all duration-300 ${done ? 'bg-[#4ADE80]' : active ? 'bg-[#0C0E0D]' : 'bg-slate-100'}`}>
+                                                    <div className="w-11 h-11 rounded-full flex items-center justify-center transition-all duration-300"
+                                                        style={{ background: done ? '#4ADE80' : active ? 'rgba(255,255,255,0.09)' : 'rgba(255,255,255,0.04)', border: done ? 'none' : '1px solid rgba(255,255,255,0.1)' }}>
                                                         {done
-                                                            ? <CheckCircle size={22} className="text-[#0C0E0D]" />
-                                                            : <StepIcon size={20} className={active ? 'text-[#4ADE80] animate-pulse' : 'text-slate-300'} />}
+                                                            ? <CheckCircle size={22} style={{ color: '#0A0C0B' }} />
+                                                            : <StepIcon size={20} strokeWidth={1.6} className={active ? 'animate-pulse' : ''} style={{ color: active ? '#4ADE80' : 'rgba(244,244,242,0.3)' }} />}
                                                     </div>
                                                     {i < STEPS.length - 1 && (
-                                                        <div className={`w-0.5 h-6 my-0.5 rounded-full transition-colors duration-300 ${i < curIdx || convertStep === 'completado' ? 'bg-[#4ADE80]' : 'bg-slate-100'}`} />
+                                                        <div className="w-0.5 h-6 my-0.5 rounded-full transition-colors duration-300" style={{ background: i < curIdx || convertStep === 'completado' ? '#4ADE80' : 'rgba(255,255,255,0.08)' }} />
                                                     )}
                                                 </div>
                                                 <div className={`flex-1 transition-opacity duration-300 ${active || done ? 'opacity-100' : 'opacity-50'}`}>
-                                                    <p className={`text-sm font-bold ${done ? 'text-[#0C0E0D]' : active ? 'text-[#0C0E0D]' : 'text-slate-400'}`}>{s.label}</p>
-                                                    <p className="text-[11px] text-slate-400 leading-tight">{s.sub}</p>
+                                                    <p className="text-sm font-bold" style={{ color: done || active ? '#F4F4F2' : '#878E88' }}>{s.label}</p>
+                                                    <p className="text-[11px] leading-tight" style={{ color: '#878E88' }}>{s.sub}</p>
                                                 </div>
                                                 {active && (
-                                                    <div className="w-4 h-4 rounded-full border-2 border-slate-200 border-t-[#4ADE80] animate-spin" />
+                                                    <div className="w-4 h-4 rounded-full border-2 animate-spin" style={{ borderColor: 'rgba(255,255,255,0.12)', borderTopColor: '#4ADE80' }} />
                                                 )}
                                             </div>
                                         );
@@ -688,22 +686,43 @@ export const FinitySection: React.FC<{
                                 </div>
                             )}
                             {!isError && convertStep !== 'completado' && (
-                                <div className="mt-5 text-center text-[11px] font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-xl py-2.5 px-3 leading-snug">
-                                    ⚠️ No cierres ni recargues esta página hasta que la conversión termine.
+                                <div className="mt-5 text-center text-[11px] font-bold rounded-xl py-2.5 px-3 leading-snug"
+                                    style={{ color: '#F4F4F2', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(74,222,128,0.3)', borderLeft: '2px solid #4ADE80' }}>
+                                    No cierres ni recargues esta página hasta que la conversión termine.
                                 </div>
                             )}
                         </div>
                     </div>
                 );
             })()}
+            {isConverterOnly ? (
+                /* ── Encabezado del convertidor (handoff): título 25/800 + pill de tasa en vivo ── */
+                <div className="flex items-start justify-between flex-wrap gap-3" style={{ fontFamily: "'Archivo', system-ui, sans-serif" }}>
+                    <div>
+                        <h1 style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-0.8px', color: '#F4F4F2' }}>Convertir USDT a pesos colombianos</h1>
+                        <p style={{ fontSize: 14, color: '#878E88', marginTop: 3 }}>De tu billetera de dólar digital a tu saldo ACH en COP, a la tasa del momento.</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        {ping === 'ok' && (
+                            <span className="flex items-center gap-2" style={{ fontSize: 12, color: '#878E88', border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.04)', padding: '7px 13px', borderRadius: 999 }}>
+                                <span style={{ width: 7, height: 7, borderRadius: 999, background: '#4ADE80', display: 'inline-block' }} />
+                                Tasa en vivo{rateExpiresAt != null && rateLeft > 0 ? <> · se actualiza en <b style={{ color: '#F4F4F2', fontVariantNumeric: 'tabular-nums' }}>{rateLeft} s</b></> : null}
+                            </span>
+                        )}
+                        <button onClick={load} title="Refrescar" style={{ padding: 8, borderRadius: 9, border: '1px solid rgba(255,255,255,0.11)', background: 'rgba(255,255,255,0.04)' }}>
+                            <RefreshCw size={14} strokeWidth={1.7} className={loading ? 'animate-spin' : ''} style={{ color: '#878E88' }} />
+                        </button>
+                    </div>
+                </div>
+            ) : (
             <div className="flex items-center justify-between flex-wrap gap-3">
                 <div>
                     <h1 className="text-2xl font-extrabold text-[#0C0E0D] flex items-center gap-2">
-                        <Landmark size={22} className="text-[#4ADE80]" /> {isConverterOnly ? 'OTC · Conversión USD → COP' : 'Dispersiones bancarias'}
+                        <Landmark size={22} className="text-[#4ADE80]" /> Dispersiones bancarias
                     </h1>
                     <p className="text-slate-700 text-sm font-medium">
-                        {isConverterOnly ? 'Convierte tu saldo USD (digital) a COP a la tasa Lincoin' : 'Paga a cuentas bancarias en Colombia'}
-                        {!isConverterOnly && brebBalance != null && (
+                        Paga a cuentas bancarias en Colombia
+                        {brebBalance != null && (
                             <span className="ml-2 font-bold text-[#16A34A]">· Saldo BreB: {brebBalance.toLocaleString('es-CO')} COP</span>
                         )}
                     </p>
@@ -716,18 +735,19 @@ export const FinitySection: React.FC<{
                     </button>
                 </div>
             </div>
+            )}
 
             {/* Animación de carga mientras conecta O mientras carga la tasa —
                 evita mostrar el convertidor a medias ("Sin tasa todavía"). */}
             {ping === 'checking' && (
                 <div className="flex flex-col items-center justify-center py-24 gap-5 animate-in fade-in duration-300">
                     <div className="relative w-14 h-14">
-                        <div className="absolute inset-0 rounded-full border-4 border-slate-100" />
+                        <div className="absolute inset-0 rounded-full border-4" style={{ borderColor: isConverterOnly ? 'rgba(255,255,255,0.08)' : '#F1F5F9' }} />
                         <div className="absolute inset-0 rounded-full border-4 border-transparent border-t-[#4ADE80] animate-spin" />
                     </div>
                     <div className="text-center">
-                        <p className="text-base font-extrabold text-[#0C0E0D]">Cargando convertidor…</p>
-                        <p className="text-sm text-slate-700 mt-1 font-semibold">Conectando con el riel de pagos y la tasa en vivo</p>
+                        <p className="text-base font-extrabold" style={{ color: isConverterOnly ? '#F4F4F2' : '#0C0E0D' }}>Cargando convertidor…</p>
+                        <p className="text-sm mt-1 font-semibold" style={{ color: isConverterOnly ? '#878E88' : '#334155' }}>Conectando con el riel de pagos y la tasa en vivo</p>
                     </div>
                     <div className="flex gap-1.5">
                         <span className="w-2 h-2 rounded-full bg-[#4ADE80] animate-bounce" style={{ animationDelay: '0ms' }} />
@@ -737,38 +757,13 @@ export const FinitySection: React.FC<{
                 </div>
             )}
 
-            {/* No conectó al riel — mensaje claro + reintentar */}
+            {/* No conectó al riel — mensaje claro + reintentar (neutro, sin rojo) */}
             {isConverterOnly && ping === 'fail' && (
-                <div className="rounded-2xl border border-red-200 bg-red-50 p-6 text-center animate-in fade-in duration-300">
-                    <XCircle className="mx-auto text-red-500 mb-2" size={34} />
-                    <p className="text-sm font-extrabold text-red-700">No se pudo conectar con el riel de pagos</p>
-                    <p className="text-xs text-slate-800 font-semibold mt-1 max-w-sm mx-auto">{pingMsg}</p>
-                    <button onClick={load} className="mt-4 px-5 py-2.5 rounded-lg bg-[#0C0E0D] text-white text-xs font-bold hover:bg-[#152e52]">Reintentar</button>
-                </div>
-            )}
-
-            {/* Billeteras — SOLO visualizador. Para mover saldo el cliente
-                tiene que salir de aquí y usar "Enviar" en su billetera. */}
-            {isConverterOnly && ping === 'ok' && (
-                <div className="grid grid-cols-2 gap-3">
-                    <div className="rounded-2xl p-4 border border-slate-200 bg-white flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-xl bg-green-50 text-[#16A34A] flex items-center justify-center shrink-0">
-                            <DollarSign size={18} />
-                        </div>
-                        <div className="min-w-0">
-                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Saldo USD (digital)</p>
-                            <p className="text-lg font-bold font-mono text-[#0C0E0D] truncate">{(usdBalance ?? 0).toLocaleString('en-US', { maximumFractionDigits: 2 })} USDT</p>
-                        </div>
-                    </div>
-                    <div className="rounded-2xl p-4 border border-slate-200 bg-white flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-xl bg-slate-100 text-[#0C0E0D] flex items-center justify-center shrink-0">
-                            <Wallet size={18} />
-                        </div>
-                        <div className="min-w-0">
-                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Saldo ACH (COP)</p>
-                            <p className="text-lg font-bold font-mono text-[#0C0E0D] truncate">{(copBalance ?? 0).toLocaleString('es-CO', { maximumFractionDigits: 0 })} COP</p>
-                        </div>
-                    </div>
+                <div className="text-center animate-in fade-in duration-300" style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, padding: '28px 24px' }}>
+                    <XCircle className="mx-auto mb-2" size={32} strokeWidth={1.5} style={{ color: '#878E88' }} />
+                    <p style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2' }}>No se pudo conectar con el riel de pagos</p>
+                    <p style={{ fontSize: 12, color: '#878E88', marginTop: 4, maxWidth: 380, marginLeft: 'auto', marginRight: 'auto' }}>{pingMsg}</p>
+                    <button onClick={load} className="lincoin-btn-white" style={{ marginTop: 16, padding: '10px 22px', borderRadius: 10, fontSize: 13, fontWeight: 700, border: 'none' }}>Reintentar</button>
                 </div>
             )}
 
@@ -789,7 +784,157 @@ export const FinitySection: React.FC<{
                         </div>
                     )}
 
-                    {/* Tasa en tiempo real + conversión USD(T) → COP */}
+                    {/* ── Convertidor rediseñado (handoff): grid 1fr / 372px ── */}
+                    {isConverterOnly && (() => {
+                        const rate = extractRate(rateResp?.data);
+                        const clientRate = rate != null ? rate * (1 - feePct / 100) : null;
+                        const usd = Number(usdAmount) || 0;
+                        const gasfreeCost = gasfreeFee?.totalFeeUsdt ?? 0;
+                        const netUsd = Math.max(0, usd - gasfreeCost);
+                        const copOut = clientRate != null ? netUsd * clientRate : 0;
+                        // Un solo costo transparente: todo lo que separa el monto
+                        // tecleado de lo que llega (comisión + red), en USDT.
+                        const costUsdt = usd > 0 && rate != null && rate > 0 ? Math.max(0, usd - copOut / rate) : 0;
+                        const overBalance = usdBalance != null && usd > usdBalance;
+                        const copInt = Math.floor(copOut);
+                        const copDec = Math.round((copOut - copInt) * 100);
+                        const S = { lbl: { fontSize: 10.5, fontWeight: 700 as const, letterSpacing: '1.4px', color: '#878E88' }, row: { fontSize: 13, color: '#878E88' } };
+                        const flagCol = 'linear-gradient(180deg,#FCD116 0 50%,#003893 50% 75%,#CE1126 75%)';
+                        return (
+                        <div style={{ fontFamily: "'Archivo', system-ui, sans-serif" }}>
+                            <style>{`.fx-grid{display:grid;grid-template-columns:minmax(0,1fr) 372px;gap:18px}@media(max-width:1100px){.fx-grid{grid-template-columns:1fr}}`}</style>
+                            <div className="fx-grid">
+                                {/* ── Tarjeta convertidor ── */}
+                                <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, padding: 24, alignSelf: 'start' }}>
+                                    {/* CONVIERTES */}
+                                    <div style={{ border: '1px solid rgba(255,255,255,0.09)', background: 'rgba(255,255,255,0.02)', borderRadius: 13, padding: '15px 17px' }}>
+                                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                                            <span style={S.lbl}>CONVIERTES</span>
+                                            <span style={{ fontSize: 12, color: '#878E88' }}>
+                                                Disponible: <b style={{ color: '#F4F4F2' }}>{(usdBalance ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT</b>
+                                                {usdBalance != null && usdBalance > 0 && (
+                                                    <> · <button type="button" onClick={() => setUsdAmount(String(usdBalance))} style={{ color: '#4ADE80', fontWeight: 600 }}>Usar todo</button></>
+                                                )}
+                                            </span>
+                                        </div>
+                                        <div className="flex items-center gap-3" style={{ marginTop: 10 }}>
+                                            <input
+                                                inputMode="decimal" placeholder="0.00" value={usdAmount}
+                                                onChange={e => setUsdAmount(e.target.value.replace(/[^\d.]/g, ''))}
+                                                className="flex-1 min-w-0 bg-transparent outline-none"
+                                                style={{ fontSize: 34, fontWeight: 800, letterSpacing: '-0.8px', color: '#F4F4F2', border: 'none' }}
+                                            />
+                                            <span className="flex items-center gap-2 shrink-0" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 999, padding: '7px 13px' }}>
+                                                <span style={{ width: 20, height: 20, borderRadius: 999, background: '#26A17B', color: '#fff', fontSize: 12, fontWeight: 800, display: 'grid', placeItems: 'center' }}>₮</span>
+                                                <span style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>USDT</span>
+                                            </span>
+                                        </div>
+                                        {overBalance && <p style={{ fontSize: 12, color: '#878E88', marginTop: 4 }}>Supera tu saldo disponible.</p>}
+                                    </div>
+                                    {/* Flecha entre cajas */}
+                                    <div className="flex justify-center" style={{ margin: '-13px 0', position: 'relative', zIndex: 2 }}>
+                                        <span style={{ width: 36, height: 36, borderRadius: 999, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', display: 'grid', placeItems: 'center' }}>
+                                            <ArrowDown size={16} strokeWidth={1.7} style={{ color: '#878E88' }} />
+                                        </span>
+                                    </div>
+                                    {/* RECIBES */}
+                                    <div style={{ border: '1px solid rgba(255,255,255,0.09)', background: 'rgba(255,255,255,0.02)', borderRadius: 13, padding: '15px 17px' }}>
+                                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                                            <span style={S.lbl}>RECIBES EN TU SALDO ACH</span>
+                                            <span style={{ fontSize: 12, color: '#878E88' }}>Cuenta ACH · <b style={{ color: '#F4F4F2' }}>{(copBalance ?? 0).toLocaleString('es-CO', { maximumFractionDigits: 0 })} COP</b></span>
+                                        </div>
+                                        <div className="flex items-center gap-3" style={{ marginTop: 10 }}>
+                                            <p className="flex-1 min-w-0 truncate" style={{ fontSize: 34, fontWeight: 800, letterSpacing: '-0.8px', color: '#F4F4F2' }}>
+                                                {copInt.toLocaleString('es-CO')}<span style={{ fontSize: 22, color: '#878E88', fontWeight: 700 }}>,{String(copDec).padStart(2, '0')}</span>
+                                            </p>
+                                            <span className="flex items-center gap-2 shrink-0" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 999, padding: '7px 13px' }}>
+                                                <span style={{ width: 20, height: 20, borderRadius: 999, background: flagCol, display: 'block' }} />
+                                                <span style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>COP</span>
+                                            </span>
+                                        </div>
+                                    </div>
+                                    {/* Desglose */}
+                                    <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', marginTop: 18, paddingTop: 14 }} className="space-y-2.5">
+                                        <div className="flex items-center justify-between gap-3">
+                                            <span style={S.row}>Tasa aplicada (incluye comisión {feePct} %)</span>
+                                            <span style={{ fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>{clientRate != null ? `1 USDT = ${clientRate.toLocaleString('es-CO', { maximumFractionDigits: 2 })} COP` : '—'}</span>
+                                        </div>
+                                        <div className="flex items-center justify-between gap-3">
+                                            <span style={S.row}>Tasa de referencia</span>
+                                            <span style={{ fontSize: 13, fontWeight: 600, color: '#878E88' }}>{rate != null ? `1 USDT = ${rate.toLocaleString('es-CO', { maximumFractionDigits: 2 })} COP` : (loading ? 'obteniendo…' : '—')}</span>
+                                        </div>
+                                        <div className="flex items-center justify-between gap-3">
+                                            <span style={S.row}>Costo total del cambio</span>
+                                            <span style={{ fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>{usd > 0 ? `${costUsdt.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT` : '—'}</span>
+                                        </div>
+                                        <div className="flex items-center justify-between gap-3">
+                                            <span style={S.row}>Llega a tu saldo</span>
+                                            <span style={{ fontSize: 13, fontWeight: 700, color: '#4ADE80' }}>Hoy · en minutos</span>
+                                        </div>
+                                    </div>
+                                    {/* CTA */}
+                                    <div className="flex items-center justify-between gap-4 flex-wrap" style={{ borderTop: '1px solid rgba(255,255,255,0.08)', marginTop: 16, paddingTop: 16 }}>
+                                        <p style={{ fontSize: 12, color: '#878E88', maxWidth: 320, lineHeight: 1.5 }}>El costo mostrado es el único cargo del cambio — sin costos ocultos.</p>
+                                        <button
+                                            onClick={doConvert}
+                                            disabled={converting || !usdAmount || netUsd <= 0 || rate == null || overBalance}
+                                            className="lincoin-btn-white"
+                                            style={{ padding: '14px 30px', borderRadius: 10, fontSize: 14.5, fontWeight: 700, border: 'none', opacity: (converting || !usdAmount || netUsd <= 0 || rate == null || overBalance) ? 0.45 : 1 }}
+                                        >
+                                            {converting ? 'Convirtiendo…' : rate == null ? 'Obteniendo tasa…' : 'Convertir ahora'}
+                                        </button>
+                                    </div>
+                                    {convertResult && (
+                                        <div style={{ marginTop: 14, borderRadius: 10, padding: '11px 14px', fontSize: 12.5, lineHeight: 1.5,
+                                            border: `1px solid ${convertResult.ok ? 'rgba(74,222,128,0.3)' : 'rgba(255,255,255,0.12)'}`,
+                                            background: convertResult.ok ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.03)',
+                                            color: convertResult.ok ? '#4ADE80' : '#F4F4F2' }}>
+                                            {convertResult.text}
+                                        </div>
+                                    )}
+                                </div>
+                                {/* ── Columna derecha ── */}
+                                <div className="space-y-[18px]" style={{ alignSelf: 'start' }}>
+                                    <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, padding: 8 }}>
+                                        <FinityRateChart from="USD" to="COP" />
+                                    </div>
+                                    <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, padding: 20 }}>
+                                        <span style={{ width: 32, height: 32, borderRadius: 9, border: '1px solid rgba(255,255,255,0.11)', background: 'rgba(255,255,255,0.04)', display: 'grid', placeItems: 'center' }}>
+                                            <Clock size={16} strokeWidth={1.6} style={{ color: '#878E88' }} />
+                                        </span>
+                                        <p style={{ fontSize: 14.5, fontWeight: 700, color: '#F4F4F2', marginTop: 12 }}>¿Conviertes más de $50.000?</p>
+                                        <p style={{ fontSize: 12.5, color: '#878E88', marginTop: 4, lineHeight: 1.5 }}>Mesa OTC con tasa negociada y ejecución dedicada.</p>
+                                        <a href="mailto:soporte@lincoin.me?subject=Mesa%20OTC%20Lincoin" className="block text-center transition-colors"
+                                            style={{ marginTop: 14, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 700, color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.04)' }}>
+                                            Hablar con la mesa OTC
+                                        </a>
+                                    </div>
+                                    <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, padding: 20 }}>
+                                        <p style={S.lbl}>TUS ÚLTIMAS CONVERSIONES</p>
+                                        {recentConversions && recentConversions.length > 0 ? (
+                                            <div style={{ marginTop: 6 }}>
+                                                {recentConversions.slice(0, 3).map((c, i) => (
+                                                    <div key={i} className="flex items-center justify-between gap-3" style={{ padding: '11px 0', borderTop: i > 0 ? '1px solid rgba(255,255,255,0.07)' : 'none' }}>
+                                                        <div className="min-w-0">
+                                                            <p className="truncate" style={{ fontSize: 13, fontWeight: 600, color: '#F4F4F2' }}>{c.label}</p>
+                                                            <p className="truncate" style={{ fontSize: 11.5, color: '#878E88', marginTop: 1 }}>{c.meta}</p>
+                                                        </div>
+                                                        <span className="shrink-0" style={{ fontSize: 13, fontWeight: 700, color: '#4ADE80' }}>{c.result}</span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        ) : (
+                                            <p style={{ fontSize: 12.5, color: '#878E88', marginTop: 10 }}>Tu historial de conversiones aparecerá aquí.</p>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        );
+                    })()}
+
+                    {/* Tasa en tiempo real + conversión USD(T) → COP (solo flujo completo) */}
+                    {!isConverterOnly && (
                     <div className="bg-white rounded-2xl border border-slate-200 p-5">
                         <p className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3 flex items-center gap-2 flex-wrap">
                             Conversión USD (digital) → COP · tasa en tiempo real
@@ -905,9 +1050,7 @@ export const FinitySection: React.FC<{
                             );
                         })()}
                     </div>
-
-                    {/* Gráfico de la tasa Finity (solo convertidor OTC) */}
-                    {isConverterOnly && <FinityRateChart from="USD" to="COP" />}
+                    )}
 
                     {/* Acciones, movimientos y debug — solo en el flujo completo de
                         dispersión bancaria. El convertidor OTC no los necesita. */}
@@ -1054,50 +1197,46 @@ export const FinitySection: React.FC<{
                 const pct = Math.max(0, Math.min(100, (rateLeft / 30) * 100));
                 const urgent = rateLeft <= 8;
                 return (
-                    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4" onClick={() => setConvertConfirm(null)}>
-                        <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200" onClick={e => e.stopPropagation()}>
-                            {/* Encabezado con logo */}
-                            <div className="flex items-center gap-2 px-6 pt-6">
-                                <svg width="26" height="26" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
-                                    <rect x="2" y="2" width="96" height="96" rx="24" fill="#0a0a0a" />
-                                    <path d="M34 30 H47 V58 H58 V71 H34 Z" fill="#F4F4F2" />
-                                    <circle cx="68" cy="67" r="12" fill="#4ADE80" />
-                                </svg>
-                                <h3 className="font-extrabold text-[#0C0E0D] text-lg">Confirmar conversión</h3>
+                    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4" style={{ background: 'rgba(4,5,4,0.74)', backdropFilter: 'blur(4px)', fontFamily: "'Archivo', system-ui, sans-serif" }} onClick={() => setConvertConfirm(null)}>
+                        <div className="w-full max-w-sm overflow-hidden animate-in zoom-in-95 duration-200" style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 18 }} onClick={e => e.stopPropagation()}>
+                            <div className="px-6 pt-6">
+                                <h3 style={{ fontSize: 18, fontWeight: 800, letterSpacing: '-0.5px', color: '#F4F4F2' }}>Confirmar conversión</h3>
+                                <p style={{ fontSize: 12, color: '#878E88', marginTop: 2 }}>La tasa queda congelada mientras confirmas.</p>
                             </div>
                             {/* Monto grande */}
                             <div className="px-6 pt-4 text-center">
-                                <p className="text-2xl font-black text-[#0C0E0D]">{convertConfirm.amount.toLocaleString('en-US')} USD</p>
-                                <p className="text-[#16A34A] font-extrabold text-xl mt-1">≈ {convertConfirm.cop.toLocaleString('es-CO')} COP</p>
-                                <p className="text-[11px] text-slate-400 mt-0.5">en tu Peso Lincoin</p>
+                                <p style={{ fontSize: 24, fontWeight: 800, letterSpacing: '-0.6px', color: '#F4F4F2' }}>{convertConfirm.amount.toLocaleString('en-US')} USDT</p>
+                                <p style={{ fontSize: 19, fontWeight: 800, color: '#4ADE80', marginTop: 2 }}>≈ {convertConfirm.cop.toLocaleString('es-CO')} COP</p>
+                                <p style={{ fontSize: 11, color: '#878E88', marginTop: 2 }}>llegan a tu saldo ACH</p>
                             </div>
-                            {/* Desglose */}
-                            <div className="mx-6 mt-4 rounded-xl bg-slate-50 border border-slate-100 p-3 space-y-1.5 text-xs">
-                                <div className="flex justify-between"><span className="text-slate-500">Tasa Lincoin</span><span className="font-mono font-bold text-slate-700">1 USD = {convertConfirm.clientRate != null ? convertConfirm.clientRate.toLocaleString('es-CO', { maximumFractionDigits: 2 }) : '—'} COP</span></div>
-                                <div className="flex justify-between"><span className="text-slate-500">Comisión GasFree</span><span className="font-mono font-bold text-amber-600">− {convertConfirm.gasfreeCost.toFixed(2)} USDT</span></div>
-                                <div className="flex justify-between border-t border-slate-200 pt-1.5"><span className="text-slate-500">Neto convertido</span><span className="font-mono font-bold text-slate-700">{convertConfirm.netAmount.toLocaleString('en-US', { maximumFractionDigits: 2 })} USDT</span></div>
+                            {/* Desglose — un solo costo transparente */}
+                            <div className="mx-6 mt-4 space-y-1.5" style={{ borderRadius: 13, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', padding: '12px 14px', fontSize: 12 }}>
+                                <div className="flex justify-between"><span style={{ color: '#878E88' }}>Tasa aplicada</span><span style={{ fontWeight: 700, color: '#F4F4F2' }}>1 USDT = {convertConfirm.clientRate != null ? convertConfirm.clientRate.toLocaleString('es-CO', { maximumFractionDigits: 2 }) : '—'} COP</span></div>
+                                <div className="flex justify-between"><span style={{ color: '#878E88' }}>Costo total del cambio</span><span style={{ fontWeight: 700, color: '#F4F4F2' }}>{(convertConfirm.gasfreeCost + convertConfirm.netAmount * feePct / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT</span></div>
+                                <div className="flex justify-between" style={{ borderTop: '1px solid rgba(255,255,255,0.07)', paddingTop: 6 }}><span style={{ color: '#878E88' }}>Neto convertido</span><span style={{ fontWeight: 700, color: '#F4F4F2' }}>{convertConfirm.netAmount.toLocaleString('en-US', { maximumFractionDigits: 2 })} USDT</span></div>
                             </div>
-                            {/* Contador de expiración de la tasa */}
+                            {/* Contador de expiración de la tasa (sin rojo) */}
                             <div className="px-6 pt-4">
-                                <div className="flex items-center justify-between text-[11px] font-bold mb-1">
-                                    <span className={urgent ? 'text-red-600' : 'text-slate-500'}>{urgent ? '⏱️ La tasa está por expirar' : 'Tasa válida por'}</span>
-                                    <span className={urgent ? 'text-red-600' : 'text-[#16A34A]'}>{rateLeft}s</span>
+                                <div className="flex items-center justify-between mb-1" style={{ fontSize: 11, fontWeight: 700 }}>
+                                    <span style={{ color: '#878E88' }}>{urgent ? 'La tasa está por refrescarse' : 'Tasa válida por'}</span>
+                                    <span style={{ color: urgent ? '#F4F4F2' : '#4ADE80', fontVariantNumeric: 'tabular-nums' }}>{rateLeft} s</span>
                                 </div>
-                                <div className="h-1.5 w-full rounded-full bg-slate-100 overflow-hidden">
-                                    <div className={`h-full rounded-full transition-all duration-1000 ease-linear ${urgent ? 'bg-red-500' : 'bg-[#4ADE80]'}`} style={{ width: `${pct}%` }} />
+                                <div className="h-1.5 w-full rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.07)' }}>
+                                    <div className="h-full rounded-full transition-all duration-1000 ease-linear" style={{ width: `${pct}%`, background: '#4ADE80', opacity: urgent ? 0.55 : 1 }} />
                                 </div>
                             </div>
-                            {/* Botones */}
+                            {/* Botones — primario BLANCO */}
                             <div className="px-6 py-6 flex gap-3">
-                                <button onClick={() => setConvertConfirm(null)} className="flex-1 h-11 border border-slate-200 rounded-xl text-slate-600 text-sm font-bold hover:bg-slate-50 transition-colors">
+                                <button onClick={() => setConvertConfirm(null)} className="flex-1 h-11 rounded-xl text-sm font-bold transition-colors"
+                                    style={{ color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.14)', background: 'transparent' }}>
                                     Cancelar
                                 </button>
                                 <button
                                     onClick={() => { const c = convertConfirm; setConvertConfirm(null); runConvert(c.amount, c.netAmount, c.gasfreeCost, c.previewRate); }}
-                                    style={{ color: '#0C0E0D' }}
-                                    className="flex-1 h-11 bg-[#4ADE80] hover:bg-[#6EE7A0] rounded-xl text-sm font-extrabold transition-colors"
+                                    className="lincoin-btn-white flex-1 h-11 rounded-xl text-sm font-extrabold transition-colors"
+                                    style={{ border: 'none' }}
                                 >
-                                    Confirmar
+                                    Confirmar conversión
                                 </button>
                             </div>
                         </div>

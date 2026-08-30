@@ -177,7 +177,8 @@ const SidebarItem: React.FC<{
     `}
   >
     <div className="flex items-center gap-3">
-      <Icon size={small ? 16 : 20} className={active ? 'text-[#4ADE80]' : 'text-slate-500 group-hover:text-[#0C0E0D]'} />
+      {/* Trazo fino 1.6 (handoff): iconos de línea elegantes, monocromos */}
+      <Icon size={small ? 15 : 19} strokeWidth={1.6} className={active ? 'text-[#4ADE80]' : 'text-slate-500 group-hover:text-[#0C0E0D]'} />
       {/* color explícito: el label del item activo se perdía (navy sobre navy
           según el orden de clases) — blanco fijo cuando está activo */}
       <span style={active ? { color: '#FFFFFF' } : undefined}>{label}</span>
@@ -3262,6 +3263,14 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   copBalance={getBalance('COP_ACH')}
                   onSwept={() => currentUser?.id && refreshGasfreeBal(currentUser.id)}
                   feePctOverride={(currentUser as any)?.otcConfig?.feePct}
+                  recentConversions={(movements || [])
+                      .filter((t: any) => t.type === 'convert')
+                      .slice(0, 3)
+                      .map((t: any) => ({
+                          label: `${Number(t.fromAmount ?? (t as any).usdtOut ?? 0).toLocaleString('en-US', { maximumFractionDigits: 2 })} USDT → COP`,
+                          meta: `${(t as any).createdAt ? new Date((t as any).createdAt).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' }) : (t.date ?? '')}${(t as any).mouvRate ? ` · tasa ${Number((t as any).mouvRate).toLocaleString('es-CO', { maximumFractionDigits: 1 })}` : ''}`,
+                          result: `+${Number(t.amount ?? 0).toLocaleString('es-CO', { maximumFractionDigits: 0 })} COP`,
+                      }))}
                   onConverted={async (usdAmount, copClientAmount, mouvRate) => {
                       // Movimiento OPTIMISTA: aparece al instante en la lista.
                       addLocalTx?.({
