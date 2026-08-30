@@ -817,7 +817,10 @@ Deno.serve(async (req) => {
     // recibir. Registra la transacción como Pendiente (se acredita al pago).
     if (action === 'create_payment_link') {
       const copAmount = Math.round(Number(payload.copAmount ?? payload.amount ?? 0))
-      if (!(copAmount >= 5000)) return json(400, { error: 'bad_amount', message: 'El monto mínimo es $5.000 COP.' })
+      // Mínimo por cobro y costo FIJO al cliente (override por secret).
+      const PAYIN_MIN_COP = Number(Deno.env.get('PAYIN_LINK_MIN_COP') ?? '100000') || 100000
+      const PAYIN_FEE_COP = Number(Deno.env.get('PAYIN_LINK_FEE_COP') ?? '2500') || 2500
+      if (!(copAmount >= PAYIN_MIN_COP)) return json(400, { error: 'bad_amount', message: `El monto mínimo es $${PAYIN_MIN_COP.toLocaleString('es-CO')} COP.` })
       // Contrato Finity VERIFICADO contra su respuesta real: cobro COP→COP.
       // `amount` = lo que paga quien te paga (COP). `destination_amount` es
       // requerido pero Finity lo recalcula al neto (amount − comisión − IVA).
@@ -857,7 +860,10 @@ Deno.serve(async (req) => {
         confirmData = await c.json().catch(() => null)
         if (c.ok) link = pickLink(confirmData)
       }
-      const netCop = Number(data?.destination_amount ?? copAmount)
+      // Costo AL CLIENTE fijo ($2.500): recibe el bruto menos la tarifa
+      // Lincoin (el costo real de Finity lo absorbe Lincoin). netCop es lo
+      // que se acredita en ACH.
+      const netCop = Math.max(0, copAmount - PAYIN_FEE_COP)
       const costs = data?.costs ?? null
       const uid = caller.userId ?? String(payload.user_id ?? '')
       if (uid) {
@@ -866,13 +872,13 @@ Deno.serve(async (req) => {
             // El cobro por link (recaudo Finity) se acredita en el riel ACH.
             user_id: uid, type: 'load', amount: Math.round(netCop), currency: 'COP_ACH', status: 'Pendiente',
             raw_data: { source: 'finity_payment_link', method: 'LINK', reference: linkId, providerRef: linkId,
-              link, title: 'Cobro por link · ACH', grossCop: copAmount, netCop, costs,
+              link, title: 'Cobro por link · ACH', grossCop: copAmount, netCop, feeCop: PAYIN_FEE_COP, finityCosts: costs,
               expiresAt: data?.expires_at ?? null, createdAt: new Date().toISOString() },
           })
         } catch { /* el link ya se creó; el registro es best-effort */ }
       }
       return json(200, { ok: true, link, reference: linkId, status: link ? 'CONFIRMED' : (data?.status ?? 'UNCONFIRMED'),
-        grossCop: copAmount, netCop, costs, expiresAt: data?.expires_at ?? null,
+        grossCop: copAmount, netCop, feeCop: PAYIN_FEE_COP, expiresAt: data?.expires_at ?? null,
         ...(link ? {} : { confirmResponse: confirmData }) })
     }
 

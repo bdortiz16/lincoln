@@ -302,7 +302,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const generatePseLink = async () => {
       if (pseBusy || !currentUser?.id) return;
       const amt = getRawAmount(pseAmount);
-      if (!amt || amt < 5000) { showToast('El monto mínimo de recaudo es $5.000 COP.', 4000, 'error'); return; }
+      if (!amt || amt < 100000) { showToast('El monto mínimo del cobro es $100.000 COP.', 4000, 'error'); return; }
       setPseBusy(true); setPseResult(null);
       try {
           // Link de cobro vía el riel de pagos (Finity /v0/payment-link/create).
@@ -4481,7 +4481,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   <span style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2' }}>Cobro por link</span>
                                   <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 9, fontWeight: 700, letterSpacing: '0.5px', padding: '3px 7px', borderRadius: 999 }}>RECOMENDADO</span>
                               </div>
-                              <p style={{ fontSize: 12, color: '#878E88', marginTop: 3, lineHeight: 1.45 }}>Genera un link, compártelo y recibe el pago en tu Saldo Lincoin.</p>
+                              <p style={{ fontSize: 12, color: '#878E88', marginTop: 3, lineHeight: 1.45 }}>Genera un link, compártelo y recibe el pago en tu cuenta ACH.</p>
                           </div>
                           <span style={{ width: 17, height: 17, borderRadius: '50%', border: '1.5px solid #4ADE80', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
                               <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#4ADE80' }} />
@@ -4524,7 +4524,13 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', fontSize: 26, fontWeight: 800, color: '#F4F4F2', minWidth: 0 }} />
                                   <span style={{ fontSize: 13, fontWeight: 700, color: '#878E88' }}>COP</span>
                               </div>
-                              <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 8 }}>Mínimo $5.000 · el pago entra a tu Saldo Lincoin.</p>
+                              <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 8 }}>Mínimo $100.000 · el pago entra a tu cuenta ACH.</p>
+                              {(() => { const a = getRawAmount(pseAmount); if (!a || a < 100000) return null; const net = a - 2500; return (
+                                  <div style={{ marginTop: 12, padding: '11px 13px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.09)', background: 'rgba(255,255,255,0.02)' }}>
+                                      <div className="flex items-center justify-between" style={{ padding: '3px 0' }}><span style={{ fontSize: 12, color: '#878E88' }}>Costo del cobro</span><span style={{ fontSize: 12.5, fontWeight: 600, color: '#F4F4F2' }}>$2.500 COP</span></div>
+                                      <div className="flex items-center justify-between" style={{ padding: '3px 0' }}><span style={{ fontSize: 12, color: '#878E88' }}>Recibes en ACH</span><span style={{ fontSize: 12.5, fontWeight: 700, color: '#4ADE80' }}>${net.toLocaleString('es-CO')} COP</span></div>
+                                  </div>
+                              ); })()}
                               {pseResult && !pseResult.ok && (
                                   <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(255,255,255,0.03)' }}>
                                       <p style={{ fontSize: 12.5, color: '#F4F4F2', fontWeight: 600 }}>{pseResult.message}</p>
