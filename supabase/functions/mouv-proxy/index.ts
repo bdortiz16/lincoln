@@ -41,6 +41,24 @@ function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { ...CORS, 'Content-Type': 'application/json' } })
 }
 
+// Dispara el correo transaccional del envío directamente contra
+// notify-transaction (con service role), sin depender del webhook de la base
+// — que NO estaba llegando para las dispersiones. notify-transaction deduplica
+// por su propio flag (notified / notified_completed / notified_failed), así
+// que llamarlo por cada cambio de estado no manda repetidos.
+async function notifyTx(txId: number | string | null): Promise<void> {
+  if (txId == null) return
+  try {
+    const { data: full } = await db.from('transactions').select('*').eq('id', txId).single()
+    if (!full) return
+    await fetch(`${SUPABASE_URL}/functions/v1/notify-transaction`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SERVICE_KEY}` },
+      body: JSON.stringify({ type: 'UPDATE', table: 'transactions', record: full }),
+    })
+  } catch { /* correo best-effort — nunca romper el flujo de dinero */ }
+}
+
 // Llamada autenticada a Mouv. Timeout duro para no colgar el proxy si Mouv
 // no responde. Devuelve { ok, status, data, path } sin lanzar.
 async function mouvFetch(path: string, init: RequestInit = {}): Promise<{ ok: boolean; status: number; data: any; path: string }> {
@@ -716,6 +734,7 @@ serve(async (req: Request) => {
           },
         }).eq('id', txId)
         await logAudit(userId, `mouv.${action}.ok`, { amount, feeCop, rail, providerRef: pay.providerRef ?? null })
+        await notifyTx(txId) // correo "tu envío llegó a destino"
         return json(200, { ok: true, providerRef: pay.providerRef ?? null, feeCop, newBalance: afterDebit })
       }
       // Falló → REINTEGRAR monto + comisión
@@ -728,6 +747,7 @@ serve(async (req: Request) => {
         raw_data: { ...prettyBase, ...feeDetail, error: pay.data ?? 'payout_failed', httpStatus: pay.status, refunded: true, failedAt: new Date().toISOString() },
       }).eq('id', txId)
       await logAudit(userId, `mouv.${action}.fail`, { amount, rail, status: pay.status, data: pay.data ?? null })
+      await notifyTx(txId) // correo "no pudimos completar tu envío · saldo devuelto"
       // Mensaje LIMPIO para el cliente: si el proveedor manda un error
       // estructurado (código + mensaje), se muestra ese texto humano — NUNCA
       // el JSON crudo. El detalle técnico va aparte en `data` para soporte.
@@ -776,6 +796,7 @@ serve(async (req: Request) => {
         },
       }).eq('id', txId)
       await logAudit(userId, `finity.${action}.ok`, { amount, feeCop: fin.feeCop, providerRef: fin.providerRef ?? null })
+      await notifyTx(txId) // correo "recibimos tu envío · en proceso"
       return json(200, { ok: true, provider: 'finity', providerRef: fin.providerRef ?? null, feeCop: fin.feeCop, newBalance })
     }
     // Finity falló → REINTEGRAR monto + comisión (todo lo debitado)
@@ -788,6 +809,7 @@ serve(async (req: Request) => {
       raw_data: { ...prettyBase, feeProvider: 'finity', error: fin.error ?? 'finity_failed', refunded: true, failedAt: new Date().toISOString() },
     }).eq('id', txId)
     await logAudit(userId, `finity.${action}.fail`, { amount, error: JSON.stringify(fin.error ?? {}).slice(0, 200) })
+    await notifyTx(txId) // correo "no pudimos completar tu envío · saldo devuelto"
     // Mensaje humano: si Finity trae un `message`/`detail` legible se muestra;
     // el detalle crudo va en `data` para soporte (no en el texto al cliente).
     const finErr: any = fin.error

@@ -64,6 +64,8 @@ const NOTIFY_TYPES = new Set([
   'pay_received', 'pay_sent', 'load', 'send',
   'otc_deposit', 'otc_withdraw',
   'convert', 'tx_created',
+  // Dispersión COP (Bre-B / ACH) — envíos a banco/llave desde mouv-proxy.
+  'dispersion',
 ])
 
 function fmt(amount: number, currency: string) {
@@ -88,6 +90,7 @@ function buildSubject(tx: TxRecord): string {
   if (tx.type === 'pay_sent')                      return `Lincoin · Enviaste ${a}`
   if (tx.type === 'load')                          return `Lincoin · Recibimos tu depósito de ${a}`
   if (tx.type === 'send')                          return `Lincoin · Recibimos tu retiro de ${a}`
+  if (tx.type === 'dispersion')                    return `Lincoin · Recibimos tu envío de ${a}`
   if (tx.type === 'otc_deposit')                   return `Lincoin · Depósito de ${a} acreditado`
   if (tx.type === 'otc_withdraw')                  return `Lincoin · Retiro de ${a} procesado`
   if (tx.type === 'convert' || tx.type === 'tx_created') {
@@ -104,6 +107,7 @@ function buildSubject(tx: TxRecord): string {
 function buildSubjectCompleted(tx: TxRecord): string {
   const a = fmt(tx.amount, tx.currency)
   if (tx.type === 'send' || tx.type === 'otc_withdraw') return `Lincoin · Tu retiro de ${a} se completó`
+  if (tx.type === 'dispersion')                         return `Lincoin · Tu envío de ${a} llegó a destino`
   if (tx.type === 'load' || tx.type === 'otc_deposit')  return `Lincoin · Tu depósito de ${a} se acreditó`
   if (tx.type === 'convert' || tx.type === 'tx_created') return `Lincoin · Tu conversión de ${a} se completó`
   return `Lincoin · Tu operación de ${a} se completó`
@@ -115,6 +119,10 @@ function buildMessageCompleted(tx: TxRecord, name: string): string {
   if (ov.message) return escNote(applyVars(String(ov.message), { nombre: name, monto: fmt(tx.amount, tx.currency) }))
   if (tx.type === 'send' || tx.type === 'otc_withdraw')
     return `${greet} tu retiro se <strong>completó</strong> y el dinero ya fue enviado al destino.`
+  if (tx.type === 'dispersion') {
+    const ben = tx.raw_data?.beneficiary
+    return `${greet} tu envío${ben ? ` a <strong>${ben}</strong>` : ''} llegó a destino. El banco confirmó la acreditación.`
+  }
   if (tx.type === 'load' || tx.type === 'otc_deposit')
     return `${greet} tu depósito fue <strong>acreditado</strong> a tu saldo.`
   if (tx.type === 'convert' || tx.type === 'tx_created')
@@ -133,6 +141,7 @@ function txTypeLabel(type: string): string {
   if (type === 'pay_sent')                           return 'Transferencia enviada'
   if (type === 'load')                               return 'Solicitud de depósito'
   if (type === 'send')                               return 'Solicitud de retiro'
+  if (type === 'dispersion')                         return 'Envío de dinero'
   if (type === 'otc_deposit')                        return 'Depósito OTC acreditado'
   if (type === 'otc_withdraw')                       return 'Retiro OTC procesado'
   if (type === 'convert' || type === 'tx_created')   return 'Conversión'
@@ -144,6 +153,7 @@ function txStatusText(type: string): string {
   if (type === 'pay_sent')                           return 'Enviado'
   if (type === 'load')                               return 'En revisión'
   if (type === 'send')                               return 'En proceso'
+  if (type === 'dispersion')                         return 'En proceso'
   if (type === 'otc_deposit')                        return 'Acreditado en tu wallet'
   if (type === 'otc_withdraw')                       return 'Enviado a blockchain'
   if (type === 'convert' || type === 'tx_created')   return 'Completada'
@@ -171,6 +181,10 @@ function buildMessage(tx: TxRecord, name: string): string {
     return `${greet} recibimos tu solicitud de depósito y la estamos <strong>revisando</strong>. Te avisamos cuando se acredite.`
   if (tx.type === 'send')
     return `${greet} estamos <strong>procesando</strong> tu solicitud de retiro. Te avisamos cuando se complete.`
+  if (tx.type === 'dispersion') {
+    const ben = tx.raw_data?.beneficiary
+    return `${greet} estamos <strong>procesando</strong> tu envío${ben ? ` a <strong>${ben}</strong>` : ''}. Te avisamos apenas el banco confirme la acreditación.`
+  }
   if (tx.type === 'otc_deposit') {
     const net = networkLabel(tx.currency, tx.raw_data)
     return `${greet} detectamos tu depósito en la red <strong>${net}</strong> y se acreditó automáticamente en tu wallet OTC.`
@@ -227,9 +241,18 @@ function buildDetailRows(tx: TxRecord, completed = false): string {
     return rows.join('')
   }
 
+  if (tx.type === 'dispersion') {
+    const rd = tx.raw_data ?? {}
+    if (rd.beneficiary) rows.push(detailRow('Beneficiario', String(rd.beneficiary)))
+    if (rd.bank)        rows.push(detailRow('Destino', String(rd.bank)))
+    if (rd.account)     rows.push(detailRow('Cuenta / Llave', String(rd.account)))
+    const feeCop = rd.feeCop
+    if (feeCop != null) rows.push(detailRow('Costo del envío', fmt(Number(feeCop), 'COP')))
+  }
+
   rows.push(detailRow('Monto', fmt(tx.amount, tx.currency)))
   rows.push(detailRow('Fecha', now))
-  rows.push(detailRow('Referencia', `#${tx.id}`))
+  rows.push(detailRow('Referencia', tx.raw_data?.providerRef ? String(tx.raw_data.providerRef) : `#${tx.id}`))
   rows.push(detailRow('Estado', completed ? 'Completado' : txStatusText(tx.type)))
 
   return rows.join('')
@@ -430,8 +453,9 @@ Deno.serve(async (req) => {
     // creado Pendiente + luego Completado), UNO solo en los instantáneos
     // (conversión / envío a wallet que ya nacen Completado), y nunca
     // repetidos porque cada etapa usa su propio flag de dedup.
+    const failed = ['Fallido', 'Rechazado'].includes(String(tx.status))
     const completed = String(tx.status) === 'Completado'
-    const dedupFlag = completed ? 'notified_completed' : 'notified'
+    const dedupFlag = failed ? 'notified_failed' : completed ? 'notified_completed' : 'notified'
 
     // Atomic deduplication (por flag).
     const { data: claimed } = await db
@@ -463,6 +487,7 @@ Deno.serve(async (req) => {
       pay_received: 'notifTransfers',
       load:         'notifDeposits',
       send:         'notifDeposits',
+      dispersion:   'notifTransfers',
       otc_deposit:  'notifDeposits',
       otc_withdraw: 'notifDeposits',
       convert:      'notifTransfers',
@@ -477,16 +502,31 @@ Deno.serve(async (req) => {
     const name = user.full_name || 'Usuario'
     await loadFooterNote()
     await loadTemplates()
-    let subject = completed ? buildSubjectCompleted(tx) : buildSubject(tx)
-    const tplLookupKey = completed ? `${tplKeyOf(tx.type)}_done` : tplKeyOf(tx.type)
-    const ovSubject = (TPL[tplLookupKey] as any)?.subject
-    if (ovSubject) subject = applyVars(String(ovSubject), { nombre: name, monto: fmt(tx.amount, tx.currency) })
+
+    let subject: string
+    let html: string
+    if (failed) {
+      // Operación rechazada con saldo devuelto → correo claro de "no se pudo".
+      const a = fmt(tx.amount, tx.currency)
+      const isSend = tx.type === 'dispersion' || tx.type === 'send' || tx.type === 'otc_withdraw'
+      const noun = isSend ? 'envío' : 'operación'
+      const ben = tx.raw_data?.beneficiary
+      subject = `Lincoin · No pudimos completar tu ${noun} de ${a}`
+      const msg = `Hola <strong style="color:${BRAND_NAVY}">${name}</strong>, no pudimos completar tu ${noun}${ben ? ` a <strong>${ben}</strong>` : ''} por <strong>${a}</strong>. <strong>Tu saldo fue devuelto</strong> y puedes intentarlo de nuevo en unos minutos. Si el problema persiste, escríbenos.`
+      html = customHtmlEmail(`No pudimos completar tu ${noun}`, msg, subject)
+    } else {
+      subject = completed ? buildSubjectCompleted(tx) : buildSubject(tx)
+      const tplLookupKey = completed ? `${tplKeyOf(tx.type)}_done` : tplKeyOf(tx.type)
+      const ovSubject = (TPL[tplLookupKey] as any)?.subject
+      if (ovSubject) subject = applyVars(String(ovSubject), { nombre: name, monto: fmt(tx.amount, tx.currency) })
+      html = htmlEmail(tx, name, subject, completed)
+    }
 
     const emailPayload = {
       from: `Lincoin <${FROM_EMAIL}>`,
       to: user.email,
       subject,
-      html: htmlEmail(tx, name, subject, completed),
+      html,
     }
     console.log('[notify] sending to:', user.email, 'from:', FROM_EMAIL, 'subject:', subject)
 
