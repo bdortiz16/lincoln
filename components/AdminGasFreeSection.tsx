@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { Zap, RefreshCw, Copy, Search, Landmark, Activity, Send, X } from 'lucide-react';
 import { useDatabase } from '../context/DatabaseContext';
-import { RecaudadoraRotativaCard } from './RecaudadoraRotativaCard';
 
 // ─────────────────────────────────────────────
 // AdminGasFreeSection — Panel "GasFree USDT" del admin de Empresas.
@@ -354,8 +353,12 @@ export const AdminGasFreeSection: React.FC = () => {
                 </p>
             </div>
 
-            {/* Recaudadora rotativa del admin (corte el 30, 12pm COT). */}
-            <RecaudadoraRotativaCard />
+            {/* La tarjeta de la "Wallet recaudadora rotativa" (dirección EOA
+                dueña + períodos archivados) se QUITÓ de esta pantalla: mostraba
+                una segunda dirección (la EOA TGaB1…) que NO es donde se
+                deposita — el flujo automático usa la CAJITA GasFree de la
+                tesorería (abajo). Depositar a la EOA dejaba la plata fuera del
+                circuito automático. La rotación sigue funcionando por debajo. */}
 
             {/* Tesorería (recaudadora): aquí llega el USDT de las conversiones de
                 clientes; desde aquí se pagan los envíos y a los proveedores.
@@ -403,6 +406,9 @@ export const AdminGasFreeSection: React.FC = () => {
                                     <Copy size={12} />
                                     {copied === rec.gasFreeAddress && <span className="text-green-300 font-sans">copiado</span>}
                                 </button>
+                                <p className="text-[11px] text-green-100/70 mt-1">
+                                    <b className="text-white">Deposita AQUÍ</b> (USDT · TRC-20). Esta es la ÚNICA dirección del circuito automático: lo que llega sale solo hacia el proveedor y las comisiones GasFree se pagan de este mismo saldo.
+                                </p>
                             </div>
                             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
                                 <WalletStat label="Red" value={rec.net === 'tron' ? 'Mainnet' : 'Nile testnet'} />

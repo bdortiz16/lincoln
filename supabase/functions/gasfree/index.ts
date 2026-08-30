@@ -1504,8 +1504,10 @@ Deno.serve(async (req) => {
     if (action === 'sweep_all') {
       const { data: users } = await db.from('users').select('id, role').limit(1000)
       const out: any[] = []
+      // Se barre a TODOS los clientes (en Lincoin son cuentas personales) —
+      // el filtro viejo de "solo empresas" dejaba el barrido sin efecto.
       for (const u of (users as any[]) ?? []) {
-        if (u.role === 'personal' || u.role === 'admin') continue
+        if (u.role === 'admin') continue
         try { out.push(await sweepUser(u.id)) } catch (e) { out.push({ userId: u.id, error: (e as Error)?.message }) }
       }
       return ok({ ok: true, results: out })
