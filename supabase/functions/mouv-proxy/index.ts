@@ -556,8 +556,11 @@ serve(async (req: Request) => {
       raw_data: { ...prettyBase, feeProvider: 'finity', error: fin.error ?? 'finity_failed', refunded: true, failedAt: new Date().toISOString() },
     }).eq('id', txId)
     await logAudit(userId, `finity.${action}.fail`, { amount, error: JSON.stringify(fin.error ?? {}).slice(0, 200) })
+    // Incluir el DETALLE crudo del proveedor: sin él es imposible saber si
+    // rechazó por saldo, unidades, cuenta destino o validación.
+    const detail = (() => { try { return JSON.stringify(fin.error ?? fin).slice(0, 350) } catch { return String(fin.error ?? 'sin detalle') } })()
     return json(200, { error: 'payout_failed', provider: 'finity', refunded: true, newBalance: restored5, data: fin.error,
-      message: 'Finity rechazó la transferencia ACH. Tu saldo fue devuelto.' })
+      message: `El riel rechazó la transferencia ACH y tu saldo fue devuelto. Detalle técnico: ${detail}` })
   }
 
   return json(200, { error: 'unknown_action', message: `Acción no soportada: ${action}` })

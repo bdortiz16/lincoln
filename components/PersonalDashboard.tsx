@@ -61,6 +61,7 @@ import {
 import { Logo } from './Logo';
 import { MouvSection, fetchMouvBalance, fetchMouvRateValue, fetchMouvUsdCopConfig, callMouv } from './OtcMigration';
 import { MouvDispersion } from './MouvDispersion';
+import { achEta, achEtaShort } from './achEta';
 import { ContactsSection, contactStatus } from './ContactsSection';
 import { WalletsGasfreeSection } from './WalletsGasfreeSection';
 import { supabase } from '../lib/supabaseClient';
@@ -4245,7 +4246,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           const amtStep2 = getRawAmount(sendForm.amount);
                           const METHODS = [
                               { key: 'breb', title: 'Bre-B a cuenta bancaria', pill: 'SEGUNDOS', time: 'Por llave a cualquier banco · en segundos', rail: 'COP_BREB', railLabel: 'Bre-B', fee: 1200 },
-                              { key: 'ach', title: 'ACH tradicional', pill: null, time: 'L–V 7:00–18:00', rail: 'COP_ACH', railLabel: 'ACH', fee: 2500 },
+                              { key: 'ach', title: 'ACH tradicional', pill: null, time: `Ciclos ACH · L–V sin festivos · ${achEtaShort()}`, rail: 'COP_ACH', railLabel: 'ACH', fee: 2500 },
                               { key: 'pay', title: 'A otro usuario de Lincoin', pill: 'SIN COMISIÓN', time: 'Por ID o correo · instantáneo, 24/7', rail: 'COP', railLabel: 'Saldo Lincoin', fee: 0 },
                               { key: 'cash', title: 'Retiro en punto físico', pill: null, time: 'Efectivo en corresponsales aliados', rail: 'COP', railLabel: 'Saldo Lincoin', fee: 0 },
                           ] as const;
@@ -4561,7 +4562,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                           : payoutQuote?.error ? '—'
                                           : payoutQuote?.feeCop != null ? `${formatMoney(payoutQuote.feeCop, 'COP')} COP`
                                           : 'Precio fijo · al confirmar' },
-                                      { l: 'Llega', v: isBrebM ? 'En segundos' : 'El mismo día hábil' },
+                                      { l: 'Llega', v: isBrebM ? 'En segundos' : achEta() },
                                   ].map((row, i) => (
                                       <div key={row.l} className="flex items-center justify-between" style={{ padding: '11px 16px', fontSize: 13, borderTop: i === 0 ? 'none' : '1px solid rgba(255,255,255,0.06)' }}>
                                           <span style={{ color: '#878E88' }}>{row.l}</span>
