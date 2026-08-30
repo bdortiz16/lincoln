@@ -3029,6 +3029,13 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       setMfaEnrolled(true);
       setMfaFactorId(mfaEnrollData.factorId);
       setMfaTotpSecret(mfaEnrollData.secret);
+      // PERSISTIR el 2FA en el perfil — sin esto solo vivía en memoria y al
+      // recargar la página getMFAStatus lo veía como INACTIVO (bug grave:
+      // el envío se bloqueaba de nuevo). 'Desactivar' sí persistía; 'activar'
+      // no. Ahora se guarda mfaEnabled/mfaFactorId/totpSecret.
+      if (currentUser) {
+        updateUserRawData(currentUser.id, { mfaEnabled: true, mfaFactorId: mfaEnrollData.factorId, totpSecret: mfaEnrollData.secret }).catch(() => {});
+      }
       setMfaModalOpen(false);
       setMfaEnrollData(null);
       showToast('¡Verificación en 2 pasos activada!');
