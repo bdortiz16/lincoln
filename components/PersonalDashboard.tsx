@@ -1897,7 +1897,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       <span style={{ fontSize: 10.5, color: '#878E88', fontFamily: 'ui-monospace, Menlo, monospace' }}>{usdtAddr ? `${usdtAddr.slice(0, 6)}…${usdtAddr.slice(-4)}` : 'Red TRON · TRC-20'}</span>
                       <div className="flex items-center" style={{ gap: 13 }}>
                         <button onClick={() => handleLoadClick('USD')} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Cargar</button>
-                        <button onClick={() => { setSelectedWalletCode('USD'); setActiveView('mouv'); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Convertir</button>
+                        <button onClick={() => { if (!handleActionRestricted()) setIsSendModalOpen(true); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Enviar</button>
                       </div>
                     </div>
                   </div>
@@ -1934,7 +1934,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       <span style={{ fontSize: 10.5, color: '#878E88', fontFamily: 'ui-monospace, Menlo, monospace' }}>BreB · ACH</span>
                       <div className="flex items-center" style={{ gap: 13 }}>
                         <button onClick={() => { setSelectedWalletCode('COP'); setActiveView('wallet-detail'); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Ver</button>
-                        <button onClick={() => { setSelectedWalletCode('USD'); setActiveView('mouv'); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Retirar</button>
+                        <button onClick={() => { if (!handleActionRestricted()) setIsSendModalOpen(true); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Enviar</button>
                       </div>
                     </div>
                   </div>
