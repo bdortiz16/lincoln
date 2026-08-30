@@ -1,6 +1,6 @@
 // ════════════════════════════════════════════════════════
-// finity-proxy — Puente CuyPay ⇄ Finity (riel bancario para PAGAR y
-// DISPERSAR a cuentas bancarias colombianas desde CuyPay Empresas).
+// finity-proxy — Puente Lincoin ⇄ Finity (riel bancario para PAGAR y
+// DISPERSAR a cuentas bancarias colombianas desde Lincoin Empresas).
 //
 // Finity es una API machine-to-machine con OAuth2 client_credentials:
 //   POST {BASE}/v0/oauth/token
@@ -559,7 +559,7 @@ Deno.serve(async (req) => {
     // Des-inscribir una cuenta destino en Finity al eliminar el contacto.
     // OJO: Finity es UNA sola cuenta de empresa (no hay subcuenta por usuario),
     // así que la misma cuenta bancaria puede estar inscrita por VARIOS usuarios
-    // de CuyPay apuntando a la misma external account. Antes de borrarla allá,
+    // de Lincoin apuntando a la misma external account. Antes de borrarla allá,
     // se verifica que NINGÚN otro usuario la siga teniendo — si no, se rompen
     // sus envíos. El front ya quitó su copia local antes de llamar aquí, por
     // eso el conteo sobre el estado actual es fiable.
@@ -572,9 +572,14 @@ Deno.serve(async (req) => {
       // teniendo esta cuenta inscrita? Se comparan finityId e igual número.
       let stillUsed = 0
       try {
-        const { data: rows } = await db.from('users').select('contacts:raw_data->finityContacts')
+        // Lincoin guarda los contactos en raw_data.mouvContacts (nombre
+        // histórico); se revisa también la clave vieja finityContacts.
+        const { data: rows } = await db.from('users').select('contacts:raw_data->mouvContacts, legacy:raw_data->finityContacts')
         for (const r of (rows ?? []) as any[]) {
-          const list = Array.isArray(r?.contacts) ? r.contacts : []
+          const list = [
+            ...(Array.isArray(r?.contacts) ? r.contacts : []),
+            ...(Array.isArray(r?.legacy) ? r.legacy : []),
+          ]
           const used = list.some((c: any) => {
             if (c?.accountKind === 'wallet') return false
             const fid = String(c?.finityId ?? '')

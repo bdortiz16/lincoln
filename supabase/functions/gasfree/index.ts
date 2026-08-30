@@ -1030,8 +1030,10 @@ async function myConvertSettle(
 }
 
 // Acredita el COP al cliente y COMPLETA la conversión, DESPUÉS de que el USDT
-// se recargó en Mouv y se hizo la Conversión interna (my_convert_settle →
-// recharged → Mouv convert_confirm → este credit). Idempotente.
+// se recargó con el proveedor y se hizo la conversión real (my_convert_settle →
+// recharged → convert_confirm del proveedor → este credit). El COP entra al
+// SALDO DEL RIEL ACH (COP_ACH): la Mesa OTC hoy liquida por Finity/ACH y el
+// cliente dispone de ese saldo desde su billetera ACH. Idempotente.
 async function myConvertCredit(
   userId: string, txId: string, copAmount: number,
   meta: { mouvRate?: number; feePct?: number; utilityCop?: number },
@@ -1044,15 +1046,15 @@ async function myConvertCredit(
   const rd = (tx.raw_data ?? {}) as Record<string, any>
   const { data: uf } = await db.from('users').select('balances').eq('id', userId).single()
   const bf = (uf?.balances as Record<string, number>) ?? {}
-  const nc = parseFloat((Number(bf.COP ?? 0) + copAmount).toFixed(2))
-  await db.from('users').update({ balances: { ...bf, COP: nc } }).eq('id', userId)
+  const nc = parseFloat((Number(bf.COP_ACH ?? 0) + copAmount).toFixed(2))
+  await db.from('users').update({ balances: { ...bf, COP_ACH: nc } }).eq('id', userId)
   await db.from('transactions').update({
-    status: 'Completado', amount: copAmount, currency: 'COP',
-    raw_data: { ...rd, convertPhase: 'done', destAmount: copAmount,
+    status: 'Completado', amount: copAmount, currency: 'COP_ACH',
+    raw_data: { ...rd, convertPhase: 'done', destAmount: copAmount, creditRail: 'ACH',
       mouvRate: meta.mouvRate ?? rd.mouvRate, feePct: meta.feePct ?? rd.feePct, utilityCop: meta.utilityCop ?? rd.utilityCop,
-      title: `USDT → COP · tasa ${Number(meta.mouvRate ?? rd.mouvRate ?? 0).toLocaleString('es-CO')}` },
+      title: `USDT → COP (ACH) · tasa ${Number(meta.mouvRate ?? rd.mouvRate ?? 0).toLocaleString('es-CO')}` },
   }).eq('id', txId)
-  return { ok: true, status: 'Completado', copCredited: copAmount, newCop: nc }
+  return { ok: true, status: 'Completado', copCredited: copAmount, newCop: nc, rail: 'ACH' }
 }
 
 // Finaliza/reintenta una conversión que quedó 'Pendiente' porque la confirmación
@@ -1472,7 +1474,9 @@ Deno.serve(async (req) => {
       if (!userId || !body.txId || !body.copAmount) return err('Faltan userId, txId o copAmount', 400)
       if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
       return ok(await myConvertCredit(userId, String(body.txId), Number(body.copAmount), {
-        mouvRate: body.mouvRate != null ? Number(body.mouvRate) : undefined,
+        // El convertidor Finity manda la tasa como finityRate; el nombre
+        // histórico interno es mouvRate — se aceptan ambos.
+        mouvRate: body.mouvRate != null ? Number(body.mouvRate) : (body.finityRate != null ? Number(body.finityRate) : undefined),
         feePct: body.feePct != null ? Number(body.feePct) : undefined,
         utilityCop: body.utilityCop != null ? Number(body.utilityCop) : undefined,
       }))

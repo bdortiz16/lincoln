@@ -496,7 +496,7 @@ export const FinitySection: React.FC<{
             await onConverted?.(p.amount, clientCop, finityRate, utilityCop);
             setConvertResult({
                 ok: true,
-                text: `✅ Conversión completada: ${p.amount.toLocaleString('en-US')} USD → ${clientCop.toLocaleString('es-CO')} COP en Peso Lincoin (tasa ${finityRate.toLocaleString('es-CO')}, comisión ${feePct}%). Comisión GasFree ${Number(p.gasfreeFeeUsdt ?? 0).toFixed(2)} USDT.`,
+                text: `✅ Conversión completada: ${p.amount.toLocaleString('en-US')} USD → ${clientCop.toLocaleString('es-CO')} COP en tu saldo ACH (tasa ${finityRate.toLocaleString('es-CO')}, comisión ${feePct}%). Comisión GasFree ${Number(p.gasfreeFeeUsdt ?? 0).toFixed(2)} USDT.`,
             });
             setUsdAmount(''); load(); onSwept?.();
             await sleep(1400); setConvertStep(null);
@@ -765,7 +765,7 @@ export const FinitySection: React.FC<{
                             <Wallet size={18} />
                         </div>
                         <div className="min-w-0">
-                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Peso Lincoin (COP)</p>
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Saldo ACH (COP)</p>
                             <p className="text-lg font-bold font-mono text-[#0C0E0D] truncate">{(copBalance ?? 0).toLocaleString('es-CO', { maximumFractionDigits: 0 })} COP</p>
                         </div>
                     </div>

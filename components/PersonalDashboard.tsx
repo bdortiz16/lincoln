@@ -3255,25 +3255,25 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   userId={currentUser.id}
                   brebBalance={getBalance('COP_BREB')}
                   usdBalance={displayBalance('USD')}
-                  copBalance={getBalance('COP')}
+                  copBalance={getBalance('COP_ACH')}
                   onSwept={() => currentUser?.id && refreshGasfreeBal(currentUser.id)}
                   feePctOverride={(currentUser as any)?.otcConfig?.feePct}
                   onConverted={async (usdAmount, copClientAmount, mouvRate) => {
                       // Movimiento OPTIMISTA: aparece al instante en la lista.
                       addLocalTx?.({
-                          userId: currentUser.id, type: 'convert', amount: copClientAmount, currency: 'COP', status: 'Completado',
-                          initials: 'FX', title: `USDT → COP · tasa ${Number(mouvRate ?? 0).toLocaleString('es-CO')}`,
+                          userId: currentUser.id, type: 'convert', amount: copClientAmount, currency: 'COP_ACH', status: 'Completado',
+                          initials: 'FX', title: `USDT → COP (ACH) · tasa ${Number(mouvRate ?? 0).toLocaleString('es-CO')}`,
                           userName: (currentUser as any)?.email, fromCurrency: 'USD', fromAmount: usdAmount,
-                          destAmount: copClientAmount, mouvRate, source: 'MOUV', gasfree: true,
+                          destAmount: copClientAmount, mouvRate, source: 'FINITY', gasfree: true,
                       });
                       // Todo el asentamiento (débito USDT on-chain, crédito COP y
                       // el movimiento) ya lo hizo el edge (my_convert_settle),
                       // autoritativo. Aquí SOLO se refresca la vista: el COP se
                       // relee de la DB y el saldo USDT del on-chain real.
-                      showToast(`Convertiste ${usdAmount.toLocaleString('en-US')} USDT → ${copClientAmount.toLocaleString('es-CO')} COP (Peso Lincoin) ⚡`);
-                      // Actualización OPTIMISTA e inmediata del Peso Lincoin (el
+                      showToast(`Convertiste ${usdAmount.toLocaleString('en-US')} USDT → ${copClientAmount.toLocaleString('es-CO')} COP en tu saldo ACH ⚡`);
+                      // Actualización OPTIMISTA e inmediata del saldo ACH (el
                       // crédito ya lo hizo el edge) — así no hay que recargar.
-                      bumpLocalBalance?.('COP', copClientAmount);
+                      bumpLocalBalance?.('COP_ACH', copClientAmount);
                       // Refrescos ESCALONADOS: la fila de la conversión pasa de
                       // 'Pendiente' (insert del settle) a 'Completado' (credit)
                       // y en sesiones half-auth la DB puede tardar en reflejarlo
