@@ -210,6 +210,11 @@ async function finityCall(action: string, userId: string, extra: Record<string, 
 // oficial: respuesta { id, status, amount, destination_account }). Se define
 // como secret y SE COBRA AL CLIENTE. 0 = sin cargo mientras se define.
 const ACH_FEE_COP = Number(Deno.env.get('ACH_FEE_COP') ?? '0') || 0
+// Comisión FIJA por envío Bre-B que se le cobra al cliente ($1.200 por
+// defecto; override con el secret BREB_FEE_COP). El costo real de Mouv
+// (fija + variable + IVA) lo absorbe Lincoin — al cliente además ya se le
+// cobró el 0,10% al RECIBIR el cargue en su cuenta Bre-B (admin-data).
+const BREB_FEE_COP = Number(Deno.env.get('BREB_FEE_COP') ?? '1200') || 1200
 
 async function finityPayoutAch(userId: string, recipient: Record<string, any>, amountCop: number):
   Promise<{ ok: boolean; providerRef?: string; state?: string; feeCop: number; costs?: any; error?: any; destinationId?: string }> {
@@ -345,27 +350,25 @@ serve(async (req: Request) => {
   }
 
   // ── Cotización de comisión para el paso Confirmar del cliente ──
-  // BREB → comisión real de Mouv (fija + variable + IVA) vía /transfers/quote.
-  // ACH → Finity cobra precio fijo por transferencia; el valor exacto viene
-  //       en la respuesta de la orden y se descuenta al confirmar.
+  // BREB → comisión FIJA Lincoin ($1.200 por envío; el costo Mouv lo
+  //        absorbe Lincoin — al cliente ya se le cobró 0,10% al recibir
+  //        el cargue). No depende de cotizar a Mouv en vivo.
+  // ACH → precio fijo por transferencia (Finity), ACH_FEE_COP.
   if (action === 'payout_quote') {
     const amount = Number(payload.amount)
     if (!isFinite(amount) || amount <= 0) return json(400, { error: 'bad_amount' })
     const rail = String(payload.rail ?? 'BREB').toUpperCase()
     if (rail === 'BREB') {
-      if (!payload.keyValue) return json(200, { ok: false, error: 'missing_key', message: 'Falta la llave para cotizar.' })
-      const q = await mouvQuoteBreb(amount, String(payload.keyValue))
-      return json(200, { ok: q.ok, rail: 'BREB', provider: 'mouv', feeCop: q.feeCop, fixedCop: q.fixedCop, variableCop: q.variableCop, ivaCop: q.ivaCop, totalCop: amount + q.feeCop, raw: q.raw })
+      return json(200, { ok: true, rail: 'BREB', provider: 'lincoin', feeCop: BREB_FEE_COP, fixedCop: BREB_FEE_COP, variableCop: 0, ivaCop: 0, totalCop: amount + BREB_FEE_COP })
     }
     return json(200, { ok: true, rail: 'ACH', provider: 'finity', feeCop: ACH_FEE_COP, totalCop: amount + ACH_FEE_COP })
   }
 
   // ── dispersión BREB (Mouv) / ACH (Finity) ──
   // El cliente dispersa contra su SALDO INTERNO del riel (COP_BREB / COP_ACH).
-  // La COMISIÓN del proveedor se le cobra al cliente:
-  //   BREB → se cotiza ANTES (quote) y se debita monto + comisión.
-  //   ACH  → Finity devuelve costs en la orden; se debita monto y luego el
-  //          costo real reportado.
+  // La COMISIÓN al cliente:
+  //   BREB → $1.200 fijos por envío (BREB_FEE_COP); se debita monto + 1.200.
+  //   ACH  → precio fijo Finity (ACH_FEE_COP); se debita monto + tarifa.
   // Si el proveedor falla, se REINTEGRA todo lo debitado.
   if (action === 'payout_breb' || action === 'payout_ach') {
     const rail: 'BREB' | 'ACH' = action === 'payout_breb' ? 'BREB' : 'ACH'
@@ -385,17 +388,16 @@ serve(async (req: Request) => {
         return json(400, { error: 'bad_recipient', message: 'Faltan datos de la cuenta ACH (banco, tipo, número y documento).' })
     }
 
-    // 1) Comisión del proveedor (SE COBRA AL CLIENTE)
-    //    BREB → cotización Mouv AHORA (fija + variable + IVA).
-    //    ACH  → Finity la reporta en la orden; aquí arranca en 0 y se
-    //           descuenta después con el valor real.
+    // 1) Comisión que SE COBRA AL CLIENTE
+    //    BREB → FIJA Lincoin ($1.200 por envío, BREB_FEE_COP). El costo
+    //           real de Mouv lo absorbe Lincoin; el 0,10% ya se cobró al
+    //           recibir el cargue Bre-B.
+    //    ACH  → precio fijo por transferencia Finity (ACH_FEE_COP).
     let feeCop = 0
     let feeDetail: Record<string, unknown> = {}
     if (rail === 'BREB') {
-      const q = await mouvQuoteBreb(amount, String(recipient.key))
-      if (!q.ok) return json(200, { error: 'quote_failed', message: 'No se pudo cotizar la comisión Bre-B. Intenta de nuevo.', data: q.raw })
-      feeCop = q.feeCop
-      feeDetail = { feeCop: q.feeCop, feeFixedCop: q.fixedCop, feeVariableCop: q.variableCop, feeIvaCop: q.ivaCop, feeProvider: 'mouv' }
+      feeCop = BREB_FEE_COP
+      feeDetail = { feeCop, feeFixedCop: BREB_FEE_COP, feeVariableCop: 0, feeIvaCop: 0, feeProvider: 'lincoin' }
     } else {
       feeCop = ACH_FEE_COP
       feeDetail = { feeCop, feeProvider: 'finity' }

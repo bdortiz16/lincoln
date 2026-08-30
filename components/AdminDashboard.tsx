@@ -401,7 +401,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       });
       const d = await r.json();
       if (d?.success) {
-        setCarguesMsg({ ok: true, text: `✅ ${railLabel} actualizado. Nuevo saldo: ${formatMoney(d.newBalance ?? 0, '')} COP` });
+        setCarguesMsg({ ok: true, text: d.feeCop > 0
+          ? `✅ ${railLabel} actualizado. Cargue ${formatMoney(d.grossCop ?? raw, '')} − comisión ${formatMoney(d.feeCop, '')} (${d.feePct}%) = ${formatMoney(d.netCop ?? 0, '')} acreditados. Nuevo saldo: ${formatMoney(d.newBalance ?? 0, '')} COP`
+          : `✅ ${railLabel} actualizado. Nuevo saldo: ${formatMoney(d.newBalance ?? 0, '')} COP` });
         setCarguesAmount(''); setCarguesNote('');
         showToast(`Cargue aplicado a ${carguesClient.name}`);
         refreshData();
@@ -1525,25 +1527,47 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                     Vas a {carguesDir === 'credit' ? 'acreditar' : 'descontar'} saldo en el riel <b style={{ color: '#F4F4F2' }}>{railLabelOf(carguesRail)}</b> de <b style={{ color: '#F4F4F2' }}>{carguesClient.name}</b>.
                   </p>
                 </div>
+                {(() => {
+                  // Bre-B: al cliente se le cobra 0,10% POR RECIBIR el cargue —
+                  // el neto es lo que de verdad entra a su billetera Bre-B.
+                  const isBrebCredit = carguesRail === 'COP_BREB' && carguesDir === 'credit';
+                  const fee = isBrebCredit ? Math.round(carguesConfirm.raw * 0.10 / 100) : 0;
+                  const net = carguesConfirm.raw - fee;
+                  const deltaNet = carguesDir === 'credit' ? net : -carguesConfirm.raw;
+                  return (
                 <div style={{ margin: '16px 24px', padding: '16px 18px', background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 13 }}>
                   <div className="flex items-center justify-between" style={{ marginBottom: 10 }}>
-                    <span style={{ fontSize: 12.5, color: '#878E88' }}>Monto</span>
+                    <span style={{ fontSize: 12.5, color: '#878E88' }}>Monto{isBrebCredit ? ' del cargue' : ''}</span>
                     <span style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.6px', color: carguesDir === 'credit' ? '#4ADE80' : '#F87171' }}>
                       {carguesDir === 'credit' ? '+' : '−'} {carguesConfirm.raw.toLocaleString('es-CO')} <span style={{ fontSize: 12, color: '#878E88', fontWeight: 600 }}>COP</span>
                     </span>
                   </div>
-                  <div className="flex items-center justify-between" style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 10 }}>
+                  {isBrebCredit && (
+                    <>
+                      <div className="flex items-center justify-between" style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 10 }}>
+                        <span style={{ fontSize: 12.5, color: '#878E88' }}>Comisión por recepción Bre-B (0,10%)</span>
+                        <span style={{ fontSize: 13.5, fontWeight: 700, color: '#F87171' }}>− {fee.toLocaleString('es-CO')} COP</span>
+                      </div>
+                      <div className="flex items-center justify-between" style={{ marginTop: 8 }}>
+                        <span style={{ fontSize: 12.5, color: '#878E88' }}>Neto que se acredita</span>
+                        <span style={{ fontSize: 13.5, fontWeight: 800, color: '#F4F4F2' }}>{net.toLocaleString('es-CO')} COP</span>
+                      </div>
+                    </>
+                  )}
+                  <div className="flex items-center justify-between" style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 10, marginTop: isBrebCredit ? 10 : 0 }}>
                     <span style={{ fontSize: 12.5, color: '#878E88' }}>Saldo {railLabelOf(carguesRail)} actual</span>
                     <span style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>{Number((carguesClient.balances as any)?.[carguesRail] ?? 0).toLocaleString('es-CO')} COP</span>
                   </div>
                   <div className="flex items-center justify-between" style={{ marginTop: 8 }}>
                     <span style={{ fontSize: 12.5, color: '#878E88' }}>Quedará en</span>
                     <span style={{ fontSize: 13.5, fontWeight: 800, color: '#4ADE80' }}>
-                      {Math.max(0, Number((carguesClient.balances as any)?.[carguesRail] ?? 0) + (carguesDir === 'credit' ? carguesConfirm.raw : -carguesConfirm.raw)).toLocaleString('es-CO')} COP
+                      {Math.max(0, Number((carguesClient.balances as any)?.[carguesRail] ?? 0) + deltaNet).toLocaleString('es-CO')} COP
                     </span>
                   </div>
                   {carguesNote.trim() && <p style={{ fontSize: 12, color: '#878E88', marginTop: 12, fontStyle: 'italic' }}>“{carguesNote.trim()}”</p>}
                 </div>
+                  );
+                })()}
                 <div style={{ display: 'flex', gap: 10, padding: '4px 24px 22px' }}>
                   <button onClick={() => setCarguesConfirm(null)} disabled={carguesBusy}
                     style={{ flex: 1, padding: '12px', borderRadius: 11, fontSize: 14, fontWeight: 700, color: '#F4F4F2', background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', cursor: carguesBusy ? 'default' : 'pointer' }}>

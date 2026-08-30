@@ -277,6 +277,9 @@ Deno.serve(async (req: Request) => {
       // o COP_ACH (ACH). Temporal, mientras Mouv apifica el conversor: el
       // admin recibe el pago por el grupo cerrado y aquí refleja el saldo.
       // body: { action:'admin_credit_balance', userId, currency, amount, note? }
+      // Cargues Bre-B: al cliente se le cobra el 0,10% POR RECIBIR en su
+      // cuenta Bre-B (override con el secret BREB_CARGUE_FEE_PCT, en %).
+      // Ej: cargue de 40.000.000 → comisión 40.000 → se acreditan 39.960.000.
       if (body.action === 'admin_credit_balance' && body.userId && body.currency && body.amount != null) {
         const ALLOWED = ['COP', 'COP_BREB', 'COP_ACH']
         const cur: string = body.currency
@@ -286,23 +289,34 @@ Deno.serve(async (req: Request) => {
         const bals: Record<string, number> = (u?.balances as any) ?? {}
         const delta: number = parseFloat(body.amount)
         if (!isFinite(delta) || delta === 0) return json({ success: false, error: 'Monto inválido' }, 400)
-        const newBal = parseFloat(Math.max(0, (bals[cur] ?? 0) + delta).toFixed(2))
+        const BREB_CARGUE_FEE_PCT = Number(Deno.env.get('BREB_CARGUE_FEE_PCT') ?? '0.10') || 0.10
+        let feeCop = 0
+        let credit = delta
+        if (cur === 'COP_BREB' && delta > 0) {
+          feeCop = Math.round(delta * BREB_CARGUE_FEE_PCT / 100)
+          credit = delta - feeCop
+        }
+        const newBal = parseFloat(Math.max(0, (bals[cur] ?? 0) + credit).toFixed(2))
         await db.from('users').update({ balances: { ...bals, [cur]: newBal } }).eq('id', body.userId)
         await db.from('transactions').insert({
           user_id: body.userId,
           type: delta > 0 ? 'load' : 'adjustment',
-          amount: Math.abs(delta),
+          // El movimiento del cliente muestra lo NETO acreditado.
+          amount: Math.abs(credit),
           currency: cur,
           status: 'Completado',
           raw_data: {
             source: 'admin_cargue',
             rail: cur,
             direction: delta > 0 ? 'credit' : 'debit',
-            note: body.note ?? (delta > 0 ? 'Cargue manual (Mouv)' : 'Ajuste manual'),
+            ...(feeCop > 0 ? { grossCop: delta, feeCop, feePct: BREB_CARGUE_FEE_PCT, feeConcept: 'Comisión por recepción Bre-B' } : {}),
+            note: body.note ?? (delta > 0
+              ? (feeCop > 0 ? `Cargue Bre-B · comisión ${BREB_CARGUE_FEE_PCT}% por recepción` : 'Cargue manual (Mouv)')
+              : 'Ajuste manual'),
             creditedAt: new Date().toISOString(),
           },
         })
-        return json({ success: true, newBalance: newBal })
+        return json({ success: true, newBalance: newBal, grossCop: Math.abs(delta), feeCop, netCop: Math.abs(credit), feePct: feeCop > 0 ? BREB_CARGUE_FEE_PCT : 0 })
       }
 
       // Credit conversion fee to admin's balance (called by performConversion for all users)

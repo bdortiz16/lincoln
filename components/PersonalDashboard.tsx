@@ -4033,7 +4033,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           <div className="space-y-4">
                               <div className="space-y-2">
                                   {([
-                                      { key: 'breb', title: 'Bre-B a cuenta bancaria', pill: 'SEGUNDOS', desc: 'Por llave a cualquier banco · comisión Mouv según monto' },
+                                      { key: 'breb', title: 'Bre-B a cuenta bancaria', pill: 'SEGUNDOS', desc: 'Por llave a cualquier banco · $1.200 por envío' },
                                       { key: 'ach', title: 'ACH tradicional', pill: null, desc: 'L–V 7:00–18:00 · precio fijo por transferencia' },
                                       { key: 'pay', title: 'A otro usuario de Lincoin', pill: 'SIN COMISIÓN', desc: 'Por ID o correo · instantáneo, 24/7' },
                                       { key: 'cash', title: 'Retiro en punto físico', pill: null, desc: 'Efectivo en corresponsales aliados · código de retiro' },
