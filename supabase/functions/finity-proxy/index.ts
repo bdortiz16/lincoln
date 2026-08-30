@@ -52,8 +52,11 @@ const FINITY_SECRET  = (Deno.env.get('FINITY_CLIENT_SECRET') ?? '').trim()
 // las credenciales de producción, la app pasa a la tasa real SOLA.
 // Si FINITY_BASE_URL está seteado, se usa ese servidor y nada más.
 // (trim + sin barras finales: "https://.../" producía //v0/... → 404)
+// Confirmados por la doc oficial (api-finity-docs.readme.io, OpenAPI servers):
+//   Producción: https://api.finity.com.co
+//   Sandbox:    https://sandbox.dev.finity.com.co  (¡lleva .dev!)
 const PROD_BASE      = 'https://api.finity.com.co'
-const SANDBOX_BASE   = 'https://sandbox.finity.com.co'
+const SANDBOX_BASE   = 'https://sandbox.dev.finity.com.co'
 const FINITY_BASE_ENV = (Deno.env.get('FINITY_BASE_URL') ?? '').trim().replace(/\/+$/, '')
 // Servidor activo (se resuelve al obtener el primer token)
 let FINITY_BASE = FINITY_BASE_ENV || PROD_BASE

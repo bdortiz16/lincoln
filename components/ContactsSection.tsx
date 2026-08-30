@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { BookUser, Plus, X, Trash2, CheckCircle, AlertTriangle, Landmark, Wallet, Search, SlidersHorizontal, Zap } from 'lucide-react';
+import { BookUser, Plus, X, Trash2, CheckCircle, AlertTriangle, Landmark, Wallet, Search, SlidersHorizontal, Zap, Copy, Send } from 'lucide-react';
 import { useDatabase } from '../context/DatabaseContext';
 import { useSystemConfig } from '../context/SystemConfigContext';
 import { supabase } from '../lib/supabaseClient';
@@ -212,8 +212,10 @@ const FilterChip: React.FC<{ active: boolean; onClick: () => void; children: Rea
 );
 
 export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: MouvContact) => void }> = ({ onBack, onSendTo }) => {
-    const { currentUser, updateUserRawData } = useDatabase();
+    const { currentUser, updateUserRawData, transactions } = useDatabase();
     const { config: sysConfig } = useSystemConfig();
+    // Menú "···" del modal de detalle
+    const [detailMenu, setDetailMenu] = useState(false);
     // Países habilitados desde Admin → Configuración → Países. Por defecto
     // solo Colombia (COP) y Estados Unidos (USDT); el resto se activa cuando
     // el riel del país esté listo.
@@ -1109,72 +1111,134 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                 ))}
             </div>
 
-            {/* Modal de detalle: todos los datos de la inscripción */}
-            {detail && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm" onClick={() => setDetail(null)}>
-                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-300" onClick={e => e.stopPropagation()}>
-                        <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-                            <h3 className="font-bold text-lg text-slate-800">Datos del contacto</h3>
-                            <button onClick={() => setDetail(null)} className="text-slate-400 hover:text-slate-600 p-1 rounded-full hover:bg-slate-100 transition-colors"><X size={20} /></button>
-                        </div>
-                        <div className="p-5 space-y-3">
-                            <div className="flex items-center justify-between">
-                                <div className="flex items-center gap-2">
-                                    {detail.accountKind === 'wallet'
-                                        ? <><Wallet size={18} className="text-[#16A34A]" /><span className="font-bold text-slate-800">Wallet · {detail.walletCoin ?? 'USDT'} · {detail.walletNetwork ?? 'TRC-20'}</span></>
-                                        : <><FlagImg code={CONTACT_COUNTRIES.find(cc => cc.name === (detail.country ?? 'Colombia'))?.code ?? 'CO'} className="w-7 h-5 object-cover rounded shadow-sm" />
-                                          <span className="font-bold text-slate-800">{detail.country ?? 'Colombia'}</span></>}
+            {/* Modal "Detalle del beneficiario" (handoff detalle_beneficiario) */}
+            {detail && (() => {
+                const st = contactStatus(detail);
+                const m = rowMeta(detail);
+                const isWallet = detail.accountKind === 'wallet';
+                const isBreb = detail.destKind === 'breb';
+                const keyValue = isWallet ? detail.accountNumber : (isBreb ? (detail.brebKey ?? detail.accountNumber) : detail.accountNumber);
+                const copyKey = () => { navigator.clipboard?.writeText(String(keyValue ?? '')); setNotice({ ok: true, text: isBreb ? 'Llave copiada.' : isWallet ? 'Dirección copiada.' : 'Cuenta copiada.' }); };
+                // ACTIVIDAD: envíos a este destino (dispersiones / envíos del usuario)
+                const myTx = (transactions as any[]).filter(t =>
+                    t.userId === currentUser?.id &&
+                    (t.type === 'dispersion' || t.type === 'send') &&
+                    (String(t.account ?? '') === String(keyValue ?? '') || String(t.beneficiary ?? '') === String(detail.name ?? '')) &&
+                    (t.status === 'Completado' || t.status === 'Procesando'));
+                const txTimeOf = (t: any) => new Date(t.createdAt ?? t.date ?? 0).getTime() || 0;
+                const lastTx = [...myTx].sort((a, b) => txTimeOf(b) - txTimeOf(a))[0];
+                const totalSent = myTx.reduce((s, t) => s + (Number(t.amount) || 0), 0);
+                const fmtDate = (d?: string) => d ? new Date(d).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+                const statusPill = st === 'aprobada'
+                    ? <span className="inline-flex items-center gap-1" style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.7px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}><CheckCircle size={10} /> VERIFICADO</span>
+                    : <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.7px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}>{st === 'rechazada' ? 'RECHAZADO' : 'EN VALIDACIÓN'}</span>;
+                const rows: { l: string; v: React.ReactNode; mono?: boolean; copy?: boolean }[] = isWallet ? [
+                    { l: 'Riel', v: `${detail.walletCoin ?? 'USDT'} · ${detail.walletNetwork === 'BEP-20' ? 'BNB Chain (BEP-20)' : 'TRON (TRC-20)'}` },
+                    { l: 'Dirección', v: detail.accountNumber, mono: true, copy: true },
+                    { l: 'Uso', v: 'Solo envíos USDT' },
+                ] : isBreb ? [
+                    { l: 'Riel', v: `Bre-B · ${brebKeyLabel(detail.brebKeyType)}` },
+                    { l: 'Llave', v: keyValue, mono: true, copy: true },
+                    ...(detail.docNumber && detail.docNumber !== '—' ? [{ l: 'Documento del titular', v: `${detail.docType ?? ''} ${detail.docNumber}`.trim() }] : []),
+                ] : [
+                    { l: 'Riel', v: (detail.country ?? 'Colombia') === 'Colombia' ? 'ACH · Cuenta bancaria' : `${detail.country} · Transferencia local` },
+                    { l: 'Cuenta', v: detail.accountNumber, mono: true, copy: true },
+                    { l: 'Banco', v: `${detail.bank} · ${detail.accountType === 'checking' ? 'Corriente' : 'Ahorros'} · ${(detail.country ?? 'Colombia') === 'Colombia' ? 'COP' : 'Local'}` },
+                    { l: 'Documento del titular', v: `${detail.docType ?? ''} ${detail.docNumber ?? ''}`.trim() || '—' },
+                ];
+                return (
+                <div className="fixed inset-0 z-50 p-4" style={{ background: 'rgba(4,5,4,0.72)', display: 'grid', placeItems: 'center' }} onClick={() => { setDetail(null); setDetailMenu(false); }}>
+                    <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" className="w-full animate-in zoom-in-95 duration-300"
+                        style={{ maxWidth: 480, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, overflow: 'hidden', fontFamily: "'Archivo', system-ui, sans-serif" }}>
+                        {/* Cabecera: quién es */}
+                        <div style={{ padding: '22px 24px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                            <div className="flex items-start justify-between gap-3">
+                                <div className="flex items-center gap-3 min-w-0">
+                                    <div style={{ width: 46, height: 46, borderRadius: '50%', background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', border: '1px solid rgba(255,255,255,0.12)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                                        <span style={{ color: '#878E88', fontWeight: 800, fontSize: 15 }}>{initialsOf(detail.name)}</span>
+                                    </div>
+                                    <div className="min-w-0">
+                                        <p style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.3px', color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{prettyName(detail.name)}</p>
+                                        <div className="flex items-center gap-1.5" style={{ marginTop: 3 }}>
+                                            {isWallet
+                                                ? <span style={{ width: 15, height: 15, borderRadius: '50%', background: '#26A17B', color: '#fff', fontWeight: 800, fontSize: 8, display: 'grid', placeItems: 'center', flexShrink: 0 }}>₮</span>
+                                                : <span style={{ width: 15, height: 15, borderRadius: '50%', display: 'block', flexShrink: 0, background: FLAG_BG[m.country ?? ''] ?? '#2E3330' }} />}
+                                            <span style={{ fontSize: 12.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                                {isWallet ? `USDT · ${detail.walletNetwork ?? 'TRC-20'} · Wallet` : `${m.country} · ${isBreb ? 'Bre-B' : 'ACH'} · ${detail.kind === 'empresa' ? 'Empresa' : 'Persona'}`}
+                                            </span>
+                                        </div>
+                                    </div>
                                 </div>
-                                {(() => {
-                                    const st = contactStatus(detail);
-                                    if (st === 'aprobada') return <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase bg-green-50 text-green-700 border border-green-200 px-2.5 py-1 rounded-full"><CheckCircle size={11} /> Aprobada</span>;
-                                    if (st === 'rechazada') return <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase bg-red-50 text-red-700 border border-red-200 px-2.5 py-1 rounded-full"><X size={11} /> Rechazada</span>;
-                                    return <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase bg-amber-50 text-amber-700 border border-amber-200 px-2.5 py-1 rounded-full"><AlertTriangle size={11} /> En proceso</span>;
-                                })()}
+                                <div className="flex items-center gap-2 shrink-0">
+                                    {statusPill}
+                                    <button onClick={() => { setDetail(null); setDetailMenu(false); }} style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', display: 'grid', placeItems: 'center' }}>
+                                        <X size={13} style={{ color: '#878E88' }} strokeWidth={1.7} />
+                                    </button>
+                                </div>
                             </div>
-                            <div className="bg-slate-50 border border-slate-100 rounded-xl divide-y divide-slate-100 text-sm">
-                                {(detail.accountKind === 'wallet' ? [
-                                    ['Destinatario', detail.name],
-                                    ['Moneda', detail.walletCoin ?? 'USDT'],
-                                    ['Red', detail.walletNetwork === 'BEP-20' ? 'BNB Chain (BEP-20)' : 'TRON (TRC-20)'],
-                                    ['Dirección', detail.accountNumber],
-                                    ['Uso', 'Solo envíos en USD'],
-                                    ['Inscrito el', new Date(detail.createdAt).toLocaleString('es-CO')],
-                                ] : [
-                                    ['Titular', detail.name],
-                                    ['Tipo', detail.kind === 'empresa' ? 'Empresa' : 'Persona'],
-                                    ['Documento', `${detail.docType} ${detail.docNumber}`],
-                                    ['Banco', detail.bank],
-                                    ['Tipo de cuenta', detail.accountType === 'savings' ? 'Ahorros' : 'Corriente'],
-                                    ['Número de cuenta', detail.accountNumber],
-                                    ['Inscrito el', new Date(detail.createdAt).toLocaleString('es-CO')],
-                                    ['ID de inscripción', detail.mouvId ?? '— aún sin ID (en proceso)'],
-                                    ...(detail.lastError ? [['⚠ Respuesta de la red', detail.lastError]] : []),
-                                ]).map(([k, v]) => (
-                                    <div key={k} className="flex items-start justify-between gap-3 px-3.5 py-2.5">
-                                        <span className="text-slate-500 text-xs font-bold uppercase tracking-wide shrink-0 pt-0.5">{k}</span>
-                                        <span className="font-semibold text-slate-800 text-right break-all">{v}</span>
+                        </div>
+
+                        <div style={{ padding: '16px 24px 6px' }}>
+                            {/* CUENTA DE DESTINO */}
+                            <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88' }}>CUENTA DE DESTINO</p>
+                            <div>
+                                {rows.map((r, i) => (
+                                    <div key={r.l} className="flex items-center justify-between gap-3" style={{ padding: '11px 0', borderTop: i === 0 ? 'none' : '1px solid rgba(255,255,255,0.06)' }}>
+                                        <span style={{ fontSize: 12.5, color: '#878E88', flexShrink: 0 }}>{r.l}</span>
+                                        <span className="flex items-center gap-1.5 min-w-0">
+                                            <span className="truncate" style={{ fontSize: 13, fontWeight: 600, color: '#F4F4F2', ...(r.mono ? { fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12 } : {}) }}>{r.v}</span>
+                                            {r.copy && (
+                                                <button onClick={copyKey} title="Copiar" style={{ color: '#878E88', flexShrink: 0 }} className="hover:text-[#F4F4F2] transition-colors"><Copy size={13} /></button>
+                                            )}
+                                        </span>
                                     </div>
                                 ))}
                             </div>
-                            <div className="flex gap-2">
-                                <button
-                                    onClick={() => { navigator.clipboard?.writeText(detail.accountNumber); setNotice({ ok: true, text: 'Número de cuenta copiado.' }); }}
-                                    className="flex-1 py-2.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-sm font-bold text-slate-600 transition-colors"
-                                >
-                                    Copiar cuenta
-                                </button>
-                                <button
-                                    onClick={() => { const id = detail.id; setDetail(null); removeContact(id); }}
-                                    className="py-2.5 px-4 rounded-xl border border-red-200 text-red-600 hover:bg-red-50 text-sm font-bold transition-colors"
-                                >
-                                    <Trash2 size={15} />
-                                </button>
+
+                            {/* ACTIVIDAD */}
+                            <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88', marginTop: 14 }}>ACTIVIDAD</p>
+                            <div>
+                                {[
+                                    { l: 'Inscrito', v: fmtDate(detail.createdAt) },
+                                    { l: 'Último envío', v: lastTx ? `${fmtDate(lastTx.createdAt ?? lastTx.date)} · ${Math.round(Number(lastTx.amount) || 0).toLocaleString('es-CO')} COP` : 'Sin envíos aún' },
+                                    ...(myTx.length > 0 ? [{ l: 'Total enviado', v: `${myTx.length} envío${myTx.length === 1 ? '' : 's'} · ${Math.round(totalSent).toLocaleString('es-CO')} COP` }] : []),
+                                ].map((r, i) => (
+                                    <div key={r.l} className="flex items-center justify-between gap-3" style={{ padding: '11px 0', borderTop: i === 0 ? 'none' : '1px solid rgba(255,255,255,0.06)' }}>
+                                        <span style={{ fontSize: 12.5, color: '#878E88' }}>{r.l}</span>
+                                        <span style={{ fontSize: 13, fontWeight: 600, color: '#F4F4F2' }}>{r.v}</span>
+                                    </div>
+                                ))}
                             </div>
+                            {st === 'rechazada' && detail.lastError && (
+                                <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 8, wordBreak: 'break-all' }}>Motivo: {String(detail.lastError).slice(0, 180)}</p>
+                            )}
+                        </div>
+
+                        {/* Botonera */}
+                        <div className="flex items-center" style={{ gap: 9, padding: '16px 24px 22px', borderTop: '1px solid rgba(255,255,255,0.08)', marginTop: 10, position: 'relative' }}>
+                            <button onClick={() => setDetailMenu(v => !v)} style={{ width: 44, height: 44, borderRadius: 10, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#878E88', fontWeight: 700, fontSize: 16, flexShrink: 0 }} className="hover:bg-white/[0.09] transition-colors">···</button>
+                            {detailMenu && (
+                                <div style={{ position: 'absolute', left: 24, bottom: 72, zIndex: 20, background: '#121413', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10, overflow: 'hidden', minWidth: 200, boxShadow: '0 12px 30px rgba(0,0,0,0.5)' }}>
+                                    <button onClick={() => { setDetailMenu(false); const id = detail.id; const name = prettyName(detail.name); if (window.confirm(`¿Eliminar a ${name}? Tendrás que inscribirlo y validarlo de nuevo.`)) { setDetail(null); removeContact(id); } }}
+                                        className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '11px 14px', fontSize: 12.5, color: '#F4F4F2' }}>Eliminar beneficiario</button>
+                                </div>
+                            )}
+                            <button onClick={copyKey} className="flex items-center justify-center gap-2 hover:bg-white/[0.09] transition-colors"
+                                style={{ flex: 1, height: 44, borderRadius: 10, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontSize: 13.5, fontWeight: 600 }}>
+                                <Copy size={14} /> {isBreb ? 'Copiar llave' : isWallet ? 'Copiar dirección' : 'Copiar cuenta'}
+                            </button>
+                            <button
+                                onClick={() => { if (onSendTo && st === 'aprobada') { const c = detail; setDetail(null); setDetailMenu(false); onSendTo(c); } }}
+                                disabled={!onSendTo || st !== 'aprobada'}
+                                className="lincoin-btn-white flex items-center justify-center gap-2 transition-colors"
+                                style={{ flex: 1.4, height: 44, borderRadius: 10, fontSize: 13.5, fontWeight: 700, border: 'none', opacity: (!onSendTo || st !== 'aprobada') ? 0.45 : 1, cursor: (!onSendTo || st !== 'aprobada') ? 'not-allowed' : 'pointer' }}>
+                                <Send size={14} /> Enviar dinero
+                            </button>
                         </div>
                     </div>
                 </div>
-            )}
+                );
+            })()}
         </div>
     );
 };
