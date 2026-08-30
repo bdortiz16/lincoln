@@ -863,9 +863,10 @@ Deno.serve(async (req) => {
       if (uid) {
         try {
           await db.from('transactions').insert({
-            user_id: uid, type: 'load', amount: Math.round(netCop), currency: 'COP', status: 'Pendiente',
+            // El cobro por link (recaudo Finity) se acredita en el riel ACH.
+            user_id: uid, type: 'load', amount: Math.round(netCop), currency: 'COP_ACH', status: 'Pendiente',
             raw_data: { source: 'finity_payment_link', method: 'LINK', reference: linkId, providerRef: linkId,
-              link, title: 'Cobro por link', grossCop: copAmount, netCop, costs,
+              link, title: 'Cobro por link · ACH', grossCop: copAmount, netCop, costs,
               expiresAt: data?.expires_at ?? null, createdAt: new Date().toISOString() },
           })
         } catch { /* el link ya se creó; el registro es best-effort */ }
@@ -873,6 +874,55 @@ Deno.serve(async (req) => {
       return json(200, { ok: true, link, reference: linkId, status: link ? 'CONFIRMED' : (data?.status ?? 'UNCONFIRMED'),
         grossCop: copAmount, netCop, costs, expiresAt: data?.expires_at ?? null,
         ...(link ? {} : { confirmResponse: confirmData }) })
+    }
+
+    // ── RECONCILIAR cobros por link: acreditar el Saldo Lincoin cuando la
+    // recarga PSE aparece COMPLETADA en los movimientos de Finity. Sin
+    // webhook: se cotejan los cobros 'load' Pendientes del usuario contra las
+    // recargas (PSE/payment link) completadas en Finity por monto bruto y
+    // recencia. Idempotente (CAS por estado).
+    if (action === 'reconcile_payin') {
+      const uid = caller.userId ?? String(payload.user_id ?? '')
+      if (!uid) return json(400, { error: 'missing_user' })
+      // Cobros pendientes de este usuario creados por link.
+      const { data: pend } = await db.from('transactions')
+        .select('id, amount, currency, status, raw_data, created_at')
+        .eq('user_id', uid).eq('type', 'load').eq('status', 'Pendiente')
+        .order('created_at', { ascending: true }).limit(20)
+      const pending = (pend ?? []).filter((t: any) => (t.raw_data ?? {}).source === 'finity_payment_link')
+      if (!pending.length) return json(200, { ok: true, credited: 0, note: 'sin cobros pendientes' })
+      // Movimientos recientes de Finity.
+      const { res } = await finityTry('movements', {})
+      const md: any = await res.json().catch(() => null)
+      const rows: any[] = Array.isArray(md) ? md : Array.isArray(md?.data) ? md.data : Array.isArray(md?.items) ? md.items : []
+      const isRecarga = (m: any) => /recarga|pse|payment.?link|deposit|top.?up|cobro/i.test(JSON.stringify(m?.type ?? m?.concept ?? m?.description ?? ''))
+      const isDone = (m: any) => /complet|success|paid|aprobad|settled/i.test(String(m?.status ?? m?.state ?? ''))
+      const amountOf = (m: any) => Number(m?.origin_amount ?? m?.amount ?? m?.original_amount ?? m?.monto ?? 0)
+      let credited = 0
+      for (const tx of pending) {
+        const rd = (tx.raw_data ?? {}) as any
+        const gross = Number(rd.grossCop ?? tx.amount ?? 0)
+        // 1) por id del link (lo más fiable) o 2) por monto bruto + completada.
+        const match = rows.find(m => {
+          const byId = rd.reference && JSON.stringify(m).includes(String(rd.reference))
+          const byAmt = isRecarga(m) && isDone(m) && Math.abs(amountOf(m) - gross) <= Math.max(2, gross * 0.005)
+          return byId || byAmt
+        })
+        if (!match) continue
+        // CAS: reclamar la acreditación.
+        const { data: claimed } = await db.from('transactions').update({
+          status: 'Completado', raw_data: { ...rd, payinStatus: 'PAID', finityMovement: match?.id ?? null, paidAt: new Date().toISOString() },
+        }).eq('id', tx.id).eq('status', 'Pendiente').select('id')
+        if (!claimed?.length) continue
+        const col = String(tx.currency ?? 'COP')
+        const { data: u } = await db.from('users').select('balances').eq('id', uid).single()
+        const bals: Record<string, number> = (u?.balances as any) ?? {}
+        const nb = parseFloat((Number(bals[col] ?? 0) + Number(tx.amount ?? 0)).toFixed(2))
+        await db.from('users').update({ balances: { ...bals, [col]: nb } }).eq('id', uid)
+        await logAudit(uid, 'finity.payin.credited', { txId: tx.id, amount: tx.amount, movement: match?.id ?? null })
+        credited++
+      }
+      return json(200, { ok: true, credited })
     }
 
     // Estado de un link de cobro (para acreditar cuando el pago confirme).

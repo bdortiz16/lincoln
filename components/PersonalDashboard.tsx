@@ -1042,6 +1042,30 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeView, selectedWalletCode, currentUser?.id]);
 
+  // ── Conciliación de cobros por link (recaudo Finity) ──
+  // Si hay cobros por link 'Pendiente', se le pregunta a Finity (por sus
+  // movimientos) si la recarga ya llegó; al confirmarse se acredita el riel
+  // ACH. Sin webhook. Máximo una vez por minuto, desde las vistas relevantes.
+  const payinReconcileAtRef = useRef(0);
+  useEffect(() => {
+      const relevant = activeView === 'movements' || activeView === 'wallet-detail' || activeView === 'dashboard';
+      if (!relevant || !currentUser?.id) return;
+      const hasPending = (movements || []).some((t: any) => t.type === 'load' && t.status === 'Pendiente' && (t.source === 'finity_payment_link' || t.raw_data?.source === 'finity_payment_link'));
+      if (!hasPending) return;
+      if (Date.now() - payinReconcileAtRef.current < 60000) return;
+      payinReconcileAtRef.current = Date.now();
+      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+      fetch(`${SURL}/functions/v1/finity-proxy`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: myAuthHeader() },
+          body: JSON.stringify({ action: 'reconcile_payin', user_id: currentUser.id }),
+      }).then(res => res.json()).then(r => {
+          if (r?.credited > 0) { refreshData?.(); showToast(`✅ Recibiste un cobro por link · +acreditado a tu cuenta ACH`); }
+      }).catch(() => { /* silencioso */ });
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeView, selectedWalletCode, currentUser?.id, movements]);
+
   // ── Verificación de cuentas ACH en SEGUNDO PLANO ──
   // Antes la aprobación del banco solo se sincronizaba al entrar a
   // Beneficiarios. Ahora, si hay cuentas ACH "en validación", se consulta
