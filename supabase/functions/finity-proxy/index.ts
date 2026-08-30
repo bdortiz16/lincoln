@@ -829,7 +829,7 @@ Deno.serve(async (req) => {
       // checkout regrese a Lincoin (no a Finity). No está en el esquema
       // documentado; si Finity lo ignora, no afecta; si lo valida estricto y
       // rechaza, se quita. Override con FINITY_RETURN_URL.
-      const returnUrl = (Deno.env.get('FINITY_RETURN_URL') ?? 'https://lincoln-psi.vercel.app').trim().replace(/\/+$/, '')
+      const returnUrl = (Deno.env.get('FINITY_RETURN_URL') ?? Deno.env.get('APP_BASE_URL') ?? 'https://lincoln-psi.vercel.app').trim().replace(/\/+$/, '')
       const body: Record<string, unknown> = {
         amount: copAmount, destination_amount: copAmount, currency: 'COP',
         return_url: returnUrl, redirect_url: returnUrl, success_url: returnUrl, cancel_url: returnUrl,

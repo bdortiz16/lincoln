@@ -31,6 +31,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const RESEND_KEY   = Deno.env.get('RESEND_API_KEY') ?? ''
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
+const APP_URL = (Deno.env.get('APP_BASE_URL') || 'https://lincoln-psi.vercel.app').replace(/\/+$/, '')
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
 const FROM_EMAIL   = Deno.env.get('FROM_EMAIL') ?? 'onboarding@resend.dev'
 const FCM_SA_RAW   = Deno.env.get('FCM_SERVICE_ACCOUNT') ?? ''
@@ -188,7 +189,7 @@ function htmlEmail(event: EventKind, name: string, benName: string | null, amoun
         <table cellpadding="0" cellspacing="0" border="0">
           <tr>
             <td style="border-radius:10px;background-color:${BRAND_NAVY}">
-              <a href="https://lincoln-psi.vercel.app" target="_blank" style="display:inline-block;padding:14px 32px;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none;letter-spacing:0.3px">
+              <a href="${APP_URL}" target="_blank" style="display:inline-block;padding:14px 32px;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none;letter-spacing:0.3px">
                 Abrir Lincoin →
               </a>
             </td>
@@ -209,7 +210,7 @@ function htmlEmail(event: EventKind, name: string, benName: string | null, amoun
               <p style="margin:0;font-size:10px;color:rgba(255,255,255,0.25)">Mensaje automático &mdash; podés responderlo si es una alerta de seguridad.</p>
             </td>
             <td align="right" style="vertical-align:middle">
-              <a href="https://lincoln-psi.vercel.app" style="font-size:11px;color:${BRAND_TEAL};text-decoration:none;font-weight:600">lincoin.me</a>
+              <a href="${APP_URL}" style="font-size:11px;color:${BRAND_TEAL};text-decoration:none;font-weight:600">lincoin.me</a>
             </td>
           </tr>
         </table>
