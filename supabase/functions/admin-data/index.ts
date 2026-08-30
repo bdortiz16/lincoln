@@ -103,16 +103,18 @@ Deno.serve(async (req: Request) => {
       if (selfServiceBody.action === 'insert_transaction' && selfServiceBody.tx?.user_id) {
         if (!(await verifySelfOrAdmin(req, selfServiceBody.tx.user_id))) return json({ error: 'No autorizado' }, 401)
         let txRow = selfServiceBody.tx
-        // CRÍTICO: un no-admin NO puede forjar filas que disparen créditos o
-        // reembolsos (reconcile por providerRef, aprobación de rail_move…). Se
-        // limita a registros informativos y se neutralizan los campos que
-        // otros procesos leen para mover saldo.
+        // Un no-admin NO puede forjar filas que OTROS procesos leen para mover
+        // saldo: dispersion+providerRef dispara un reembolso vía reconcile, y
+        // rail_move Pendiente lo aprueba el admin acreditando el riel. Se
+        // BLOQUEAN esos tipos server-authored y se neutralizan los campos
+        // sensibles del raw_data. Los tipos informativos del cliente (load,
+        // send, convert, pay_*) siguen permitidos — la app los inserta así.
         if (!(await verifyAdmin(req)).ok) {
-          const SELF_TYPES = new Set(['send', 'pay_sent', 'otc_withdraw_request', 'otc_convert_request'])
-          if (!SELF_TYPES.has(String(txRow.type))) return json({ error: 'Tipo de movimiento no permitido' }, 403)
+          const BLOCKED_TYPES = new Set(['dispersion', 'rail_move', 'breb_move', 'adjustment', 'referral_payout', 'admin_hot_withdrawal', 'fee_income', 'internal'])
+          if (BLOCKED_TYPES.has(String(txRow.type))) return json({ error: 'Tipo de movimiento no permitido' }, 403)
           const rd = { ...(txRow.raw_data ?? {}) }
           for (const k of ['providerRef', 'refunded', 'fromRail', 'toRail', 'gasfreeCredited', 'convertPhase', 'needsReview']) delete (rd as any)[k]
-          txRow = { ...txRow, status: 'Pendiente', raw_data: rd }
+          txRow = { ...txRow, raw_data: rd }
         }
         const { data: inserted, error: insErr } = await db.from('transactions').insert(txRow).select('id').single()
         if (insErr) return json({ error: insErr.message }, 500)
@@ -129,12 +131,19 @@ Deno.serve(async (req: Request) => {
       // (auth.uid()=id) — esto solo la deja llegar cuando ese camino falla.
       if (selfServiceBody.action === 'save_user' && selfServiceBody.user?.id) {
         if (!(await verifySelfOrAdmin(req, selfServiceBody.user.id))) return json({ error: 'No autorizado' }, 401)
-        // CRÍTICO: el upsert corre con service-role (la RLS no aplica). Si el
-        // caller NO es admin, se despojan las columnas sensibles — sin esto un
-        // usuario podía escribirse balances/role arbitrarios en su propia fila.
+        // El upsert corre con service-role (la RLS no aplica). Si el caller NO
+        // es admin se SANEAN los valores de escalación: role solo puede ser
+        // personal/business (nunca 'admin'), kyc_status nunca puede quedar
+        // aprobado/verificado por el propio usuario (eso lo fija el flujo KYC
+        // server-side), y se quitan flags de bloqueo/límites. El onboarding
+        // legítimamente fija role=personal/business y kyc_status=pending/
+        // in_review, así que esos SÍ pasan. Balances no se tocan: el flujo
+        // legacy de retiro del cliente aún los persiste por esta vía.
         const userRow = { ...selfServiceBody.user }
         if (!(await verifyAdmin(req)).ok) {
-          for (const k of ['balances', 'crypto_balances', 'role', 'kyc_status', 'status', 'limits', 'is_blocked']) delete (userRow as any)[k]
+          if (userRow.role != null && !['personal', 'business'].includes(String(userRow.role))) delete (userRow as any).role
+          if (userRow.kyc_status != null && !['pending', 'in_review', 'not_started', 'incomplete', 'rejected'].includes(String(userRow.kyc_status))) delete (userRow as any).kyc_status
+          for (const k of ['is_blocked', 'is_admin', 'limits', 'status']) delete (userRow as any)[k]
         }
         const { error: saveErr } = await db.from('users').upsert(userRow)
         if (saveErr) return json({ error: saveErr.message }, 500)
