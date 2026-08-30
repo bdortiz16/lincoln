@@ -711,16 +711,10 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                 </div>
             )}
 
-            {listRaw && (
-                <details className="bg-white border border-slate-200 rounded-xl px-4 py-3">
-                    <summary className="text-[11px] text-slate-500 cursor-pointer select-none font-bold">
-                        Ver respuesta técnica (lista de cuentas · {listRaw.path ?? '¿?'} · status {listRaw.status ?? '¿?'}) — debug del emparejamiento
-                    </summary>
-                    <pre className="mt-2 text-[10px] bg-slate-50 border border-slate-100 rounded-lg p-3 overflow-auto max-h-80 whitespace-pre-wrap break-all">
-{JSON.stringify(listRaw.data ?? null, null, 2)?.slice(0, 6000)}
-                    </pre>
-                </details>
-            )}
+            {/* El JSON técnico de la lista de cuentas del proveedor ya NO se
+                muestra al cliente (exponía cuentas de otros clientes) — vive
+                en Admin → Contabilidad OTC → "Cuentas inscritas en el
+                proveedor (debug)". */}
 
             {/* Modal "Inscribir beneficiario" — 2 pasos (handoff inscribir_beneficiario) */}
             {formOpen && (

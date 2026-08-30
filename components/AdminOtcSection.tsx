@@ -83,6 +83,11 @@ export const AdminOtcSection: React.FC = () => {
     const clientRateOf = (feePct: number): number | null =>
         baseRate != null ? baseRate * (1 - feePct / 100) : null;
 
+    // Debug: lista cruda de external accounts en Finity (movida aquí desde
+    // la pantalla de Beneficiarios del cliente).
+    const [eaRaw, setEaRaw] = useState<any>(null);
+    const [eaLoading, setEaLoading] = useState(false);
+
     const allUsers = getAllUsers();
     // TODOS los clientes (igual que el resto del admin) — en Lincoin los
     // clientes son cuentas personales; el filtro viejo de "solo empresas"
@@ -357,6 +362,33 @@ export const AdminOtcSection: React.FC = () => {
                 <p className="text-[11px] text-slate-400">
                     ⚡ Con OTC inactivo, el botón "Mesa OTC" del cliente en Servicios muestra un aviso de servicio no habilitado. La comisión aquí se resta de la tasa base de Finity y la tasa resultante es la que ve el cliente en su convertidor ACH — cada empresa puede tener una distinta.
                 </p>
+
+                {/* Debug técnico: cuentas ACH inscritas en Finity (antes salía
+                    en la pantalla de Beneficiarios del CLIENTE — aquí es su
+                    lugar: solo el admin ve la lista completa de la empresa). */}
+                <div className="bg-white rounded-xl border border-slate-200 p-4">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <div>
+                            <p className="text-sm font-bold text-slate-800">🔧 Cuentas inscritas en el proveedor (debug)</p>
+                            <p className="text-[11px] text-slate-400">Lista cruda de external accounts en Finity con su estado de verificación — para diagnosticar emparejamientos y aprobaciones.</p>
+                        </div>
+                        <button onClick={async () => {
+                            if (!currentUser?.id || eaLoading) return;
+                            setEaLoading(true);
+                            try { const r = await callFinity('external_accounts', currentUser.id); setEaRaw({ status: r?.status, path: r?.path, data: r?.data }); }
+                            catch (e: any) { setEaRaw({ error: String(e?.message ?? e) }); }
+                            setEaLoading(false);
+                        }} disabled={eaLoading}
+                            className="px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+                            {eaLoading ? 'Consultando…' : eaRaw ? 'Actualizar' : 'Consultar cuentas'}
+                        </button>
+                    </div>
+                    {eaRaw && (
+                        <pre className="mt-3 text-[10px] bg-slate-50 border border-slate-100 rounded-lg p-3 overflow-auto max-h-80 whitespace-pre-wrap break-all">
+{JSON.stringify(eaRaw.data ?? eaRaw, null, 2)?.slice(0, 8000)}
+                        </pre>
+                    )}
+                </div>
             </div>
 
             {/* ── Contabilidad ────────────────────────────────────────── */}
