@@ -398,7 +398,14 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                 const fid = dd.id ?? dd.external_account_id ?? dd.account_id ?? dd?.account?.id ?? null;
                 if (rr?.ok && fid) {
                     finityId = String(fid);
-                    status = normalizeStatus(dd.verification_status ?? dd.status ?? dd.estado ?? dd.state) ?? 'en_proceso';
+                    // La respuesta de CREACIÓN puede venir con un estado
+                    // optimista ('active') aunque el banco AÚN esté
+                    // verificando — confiar en él dejaba enviar antes de
+                    // tiempo y el envío rebotaba. La cuenta SIEMPRE arranca
+                    // en validación; la aprobación real llega por la
+                    // sincronización con la LISTA del proveedor.
+                    const st0 = normalizeStatus(dd.verification_status ?? dd.status ?? dd.estado ?? dd.state);
+                    status = st0 === 'rechazada' ? 'rechazada' : 'en_proceso';
                 } else {
                     lastError = `[registro bancario] HTTP ${rr?.status ?? '—'}: ${JSON.stringify(rr?.data ?? rr).slice(0, 260)}`;
                 }

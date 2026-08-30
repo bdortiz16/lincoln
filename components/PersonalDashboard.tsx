@@ -420,6 +420,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       sendCuypayPayment,
       currentUser,
       updateUserProfile,
+      updateUserRawData,
       bankingOptions,
       getAllUsers,
       sendPasswordReset,
@@ -996,6 +997,66 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeView, selectedWalletCode, currentUser?.id]);
 
+  // ── Verificación de cuentas ACH en SEGUNDO PLANO ──
+  // Antes la aprobación del banco solo se sincronizaba al entrar a
+  // Beneficiarios. Ahora, si hay cuentas ACH "en validación", se consulta
+  // la lista del proveedor cada minuto desde CUALQUIER pantalla; al
+  // aprobarse se persiste y el observador dispara la notificación
+  // "Cuenta aprobada" — sin que el cliente tenga que ir a Beneficiarios.
+  const achContactSyncAtRef = useRef(0);
+  useEffect(() => {
+      if (!currentUser?.id) return;
+      const cuAny: any = currentUser;
+      const bankList: any[] = Array.isArray(cuAny?.raw_data?.mouvContacts) ? cuAny.raw_data.mouvContacts
+          : (Array.isArray(cuAny?.mouvContacts) ? cuAny.mouvContacts : []);
+      const pending = bankList.filter((c: any) => c?.accountKind !== 'wallet' && (c.country ?? 'Colombia') === 'Colombia' && c.destKind !== 'breb' && c.status === 'en_proceso');
+      if (pending.length === 0) return;
+      if (Date.now() - achContactSyncAtRef.current < 60000) return;
+      achContactSyncAtRef.current = Date.now();
+      const uid = currentUser.id;
+      (async () => {
+          try {
+              const r: any = await callMouv('external_accounts', uid);
+              const d: any = r?.data ?? {};
+              const rows: any[] = Array.isArray(d) ? d : Array.isArray(d.data) ? d.data : Array.isArray(d.items) ? d.items
+                  : Array.isArray(d.accounts) ? d.accounts : Array.isArray(d.external_accounts) ? d.external_accounts
+                  : Array.isArray(d.results) ? d.results : [];
+              if (!rows.length) return;
+              const norm = (v: unknown): string | null => {
+                  const s = String(v ?? '').toLowerCase();
+                  if (!s) return null;
+                  if (/aprob|approv|active|activa|complete|enabled|verified|success/.test(s)) return 'aprobada';
+                  if (/rechaz|reject|denied|declin|fail/.test(s)) return 'rechazada';
+                  if (/proces|pend|review|revis|created|unconfirmed/.test(s)) return 'en_proceso';
+                  return null;
+              };
+              let changed = false;
+              const next = bankList.map((c: any) => {
+                  if (!pending.some(p => p.id === c.id)) return c;
+                  const cid = String(c.finityId ?? c.mouvId ?? '');
+                  const row = rows.find((x: any) => {
+                      const rid = String(x.id ?? x.external_account_id ?? x.account_id ?? '');
+                      if (cid && rid && rid === cid) return true;
+                      const accDigits = String(x.account_number ?? x.accountNumber ?? x.number ?? x.account ?? '').replace(/\D/g, '');
+                      const cDigits = String(c.accountNumber ?? '').replace(/\D/g, '');
+                      return !!accDigits && !!cDigits && (accDigits === cDigits || (accDigits.length >= 4 && cDigits.endsWith(accDigits.slice(-4))));
+                  });
+                  if (!row) return c;
+                  const st = norm(row.verification_status ?? row.status ?? row.estado ?? row.state);
+                  if (st && st !== c.status) { changed = true; return { ...c, status: st }; }
+                  return c;
+              });
+              if (changed) {
+                  const ok = await updateUserRawData(uid, { mouvContacts: next });
+                  // refreshData → el observador de contactos genera la
+                  // notificación "Cuenta aprobada" + toast + campana.
+                  if (ok) refreshData?.();
+              }
+          } catch { /* silencioso — se reintenta en el próximo minuto */ }
+      })();
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id, currentUser?.raw_data, activeView, movements]);
+
   // ── Reanudar conversiones pendientes (AUTOPILOTO del servidor) ──
   // Si el cliente cerró la app a mitad de conversión, al volver se le da
   // un "kick" al autopiloto para que la termine en segundo plano.
@@ -1206,10 +1267,16 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               showToast("Por favor ingresa un monto válido.", 3000, 'error');
               return;
           }
-          const currentBalance = sendForm.destinationCurrency === 'COP' ? getBalance(sendSourceRail) : displayBalance(sendForm.destinationCurrency);
+          // COP: la billetera ya NO se elige en el paso 1 — el método del paso
+          // 2 la define. Aquí solo se valida que ALGUNA de las 3 cuentas
+          // pueda cubrir el monto (el paso 2 exige monto + comisión por método).
+          const currentBalance = sendForm.destinationCurrency === 'COP'
+              ? Math.max(getBalance('COP'), getBalance('COP_BREB'), getBalance('COP_ACH'))
+              : displayBalance(sendForm.destinationCurrency);
           if (currentBalance < rawAmount) {
-              const railName = sendSourceRail === 'COP' ? 'Saldo Lincoin' : sendSourceRail === 'COP_BREB' ? 'Bre-B' : 'ACH';
-              showToast(sendForm.destinationCurrency === 'COP' ? `Saldo insuficiente en ${railName}.` : `Saldo insuficiente en ${sendForm.destinationCurrency === 'USD' ? 'USDT' : sendForm.destinationCurrency}.`, 3000, 'error');
+              showToast(sendForm.destinationCurrency === 'COP'
+                  ? 'Saldo insuficiente: ninguna de tus cuentas COP cubre ese monto.'
+                  : `Saldo insuficiente en ${sendForm.destinationCurrency === 'USD' ? 'USDT' : sendForm.destinationCurrency}.`, 4000, 'error');
               return;
           }
           // Beneficiario preseleccionado (botón "Enviar" de Beneficiarios):
@@ -4054,7 +4121,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       {/* STEP 1: DESDE (cuenta + rieles con saldo) + monto */}
                       {sendStep === 1 && (() => {
                           const isUsdt = sendForm.destinationCurrency === 'USD';
-                          const avail = isUsdt ? displayBalance('USD') : getBalance(sendSourceRail);
+                          const avail = isUsdt ? displayBalance('USD') : (getBalance('COP') + getBalance('COP_BREB') + getBalance('COP_ACH'));
                           const quicks = isUsdt ? [5, 20, 50] : [10000, 50000, 200000];
                           const setAmt = (n: number) => setSendForm({ ...sendForm, amount: formatInputNumber(String(Math.floor(n))) });
                           return (
@@ -4098,26 +4165,25 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                                   <span style={{ width: 26, height: 26, borderRadius: '50%', flexShrink: 0, display: 'block', background: isUsdt ? '#26A17B' : FLAGS['Colombia'], color: '#fff', fontWeight: 800, fontSize: 11, textAlign: 'center', lineHeight: '26px' }}>{isUsdt ? '₮' : ''}</span>
                                                   <div>
                                                       <p style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>{isUsdt ? 'Dólar digital' : 'Peso colombiano'}</p>
-                                                      <p style={{ fontSize: 11, color: '#878E88' }}>{isUsdt ? 'USDT · disponible' : `${sendSourceRail === 'COP' ? 'Saldo Lincoin' : sendSourceRail === 'COP_BREB' ? 'Bre-B' : 'ACH'} · disponible`}</p>
+                                                      <p style={{ fontSize: 11, color: '#878E88' }}>{isUsdt ? 'USDT · disponible' : 'Total en tus 3 cuentas · el método del siguiente paso define de cuál sale'}</p>
                                                   </div>
                                               </div>
                                               <p style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.6px', color: '#F4F4F2' }}>{isUsdt ? Number(avail).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : Math.round(avail).toLocaleString('es-CO')}</p>
                                           </div>
                                           <div className="flex flex-wrap" style={{ gap: 6, marginTop: 12 }}>
                                               {!isUsdt ? (
+                                                  /* Saldos INFORMATIVOS — ya no se elige billetera aquí:
+                                                     el método del paso 2 define de cuál cuenta sale. */
                                                   ([
                                                       { key: 'COP', label: 'Saldo Lincoin' },
                                                       { key: 'COP_BREB', label: 'Bre-B' },
                                                       { key: 'COP_ACH', label: 'ACH' },
-                                                  ] as const).map(r => {
-                                                      const sel = sendSourceRail === r.key;
-                                                      return (
-                                                          <button key={r.key} type="button" onClick={() => setSendSourceRail(r.key)}
-                                                              style={{ borderRadius: 999, padding: '6px 12px', fontSize: 11.5, fontWeight: sel ? 700 : 500, border: sel ? '1px solid rgba(74,222,128,0.35)' : '1px solid rgba(255,255,255,0.1)', background: sel ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.03)', color: sel ? '#F4F4F2' : '#878E88' }}>
-                                                              {r.label} · {Math.round(getBalance(r.key)).toLocaleString('es-CO')}
-                                                          </button>
-                                                      );
-                                                  })
+                                                  ] as const).map(r => (
+                                                      <span key={r.key}
+                                                          style={{ borderRadius: 999, padding: '6px 12px', fontSize: 11.5, fontWeight: 500, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.03)', color: '#878E88' }}>
+                                                          {r.label} · <b style={{ color: '#F4F4F2', fontWeight: 700 }}>{Math.round(getBalance(r.key)).toLocaleString('es-CO')}</b>
+                                                      </span>
+                                                  ))
                                               ) : (
                                                   <>
                                                       <button type="button"
@@ -4172,26 +4238,44 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       })()}
 
                       {/* STEP 2: Método — lista de radio (diseño Flujo Enviar) */}
-                      {sendStep === 2 && (
+                      {sendStep === 2 && (() => {
+                          // El MÉTODO define de qué cuenta sale la plata — aquí se
+                          // muestra el SALDO de cada una y solo se puede elegir la
+                          // que cubra el monto + su comisión.
+                          const amtStep2 = getRawAmount(sendForm.amount);
+                          const METHODS = [
+                              { key: 'breb', title: 'Bre-B a cuenta bancaria', pill: 'SEGUNDOS', time: 'Por llave a cualquier banco · en segundos', rail: 'COP_BREB', railLabel: 'Bre-B', fee: 1200 },
+                              { key: 'ach', title: 'ACH tradicional', pill: null, time: 'L–V 7:00–18:00', rail: 'COP_ACH', railLabel: 'ACH', fee: 2500 },
+                              { key: 'pay', title: 'A otro usuario de Lincoin', pill: 'SIN COMISIÓN', time: 'Por ID o correo · instantáneo, 24/7', rail: 'COP', railLabel: 'Saldo Lincoin', fee: 0 },
+                              { key: 'cash', title: 'Retiro en punto físico', pill: null, time: 'Efectivo en corresponsales aliados', rail: 'COP', railLabel: 'Saldo Lincoin', fee: 0 },
+                          ] as const;
+                          const selMeta = METHODS.find(x => x.key === sendMethodSel);
+                          const selOk = !!selMeta && getBalance(selMeta.rail) >= amtStep2 + selMeta.fee;
+                          return (
                           <div className="space-y-4">
                               <div className="space-y-2">
-                                  {([
-                                      { key: 'breb', title: 'Bre-B a cuenta bancaria', pill: 'SEGUNDOS', desc: 'Por llave a cualquier banco · $1.200 por envío' },
-                                      { key: 'ach', title: 'ACH tradicional', pill: null, desc: 'L–V 7:00–18:00 · $2.500 por envío' },
-                                      { key: 'pay', title: 'A otro usuario de Lincoin', pill: 'SIN COMISIÓN', desc: 'Por ID o correo · instantáneo, 24/7' },
-                                      { key: 'cash', title: 'Retiro en punto físico', pill: null, desc: 'Efectivo en corresponsales aliados · código de retiro' },
-                                  ] as const).map(m => {
+                                  {METHODS.map(m => {
+                                      const bal = getBalance(m.rail);
+                                      const need = amtStep2 + m.fee;
+                                      const enough = bal >= need;
                                       const sel = sendMethodSel === m.key;
                                       return (
-                                          <button key={m.key} type="button" onClick={() => setSendMethodSel(m.key)}
+                                          <button key={m.key} type="button" onClick={() => { if (enough) setSendMethodSel(m.key as any); }}
                                               className="w-full flex items-center gap-3 text-left transition-colors"
-                                              style={{ padding: '13px 15px', borderRadius: 12, border: sel ? '1px solid rgba(74,222,128,0.35)' : '1px solid rgba(255,255,255,0.1)', background: sel ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.025)' }}>
+                                              style={{ padding: '13px 15px', borderRadius: 12, opacity: enough ? 1 : 0.55, cursor: enough ? 'pointer' : 'not-allowed',
+                                                  border: sel ? '1px solid rgba(74,222,128,0.35)' : '1px solid rgba(255,255,255,0.1)', background: sel ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.025)' }}>
                                               <span className="flex-1 min-w-0">
                                                   <span className="flex items-center gap-2">
                                                       <span style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>{m.title}</span>
                                                       {m.pill && <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 8.5, fontWeight: 700, letterSpacing: '0.6px', padding: '2px 6px', borderRadius: 999, whiteSpace: 'nowrap' }}>{m.pill}</span>}
                                                   </span>
-                                                  <span style={{ display: 'block', fontSize: 11.5, color: '#878E88', marginTop: 2 }}>{m.desc}</span>
+                                                  <span style={{ display: 'block', fontSize: 11.5, color: '#878E88', marginTop: 2 }}>
+                                                      {m.time}{m.fee > 0 ? ` · $${m.fee.toLocaleString('es-CO')} por envío` : ''}
+                                                  </span>
+                                                  <span style={{ display: 'block', fontSize: 11.5, marginTop: 3, fontWeight: 600, color: enough ? '#4ADE80' : '#878E88' }}>
+                                                      Saldo {m.railLabel}: ${Math.round(bal).toLocaleString('es-CO')}
+                                                      {!enough && amtStep2 > 0 ? ` · te faltan $${Math.ceil(need - bal).toLocaleString('es-CO')}` : ''}
+                                                  </span>
                                               </span>
                                               <span style={{ width: 17, height: 17, borderRadius: '50%', flexShrink: 0, border: sel ? '5px solid #4ADE80' : '1.5px solid rgba(255,255,255,0.25)' }} />
                                           </button>
@@ -4216,17 +4300,19 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                               setSendSourceRail(sendMethodSel === 'breb' ? 'COP_BREB' : 'COP_ACH');
                                           } else {
                                               setSendMode(sendMethodSel);
+                                              setSendSourceRail('COP');
                                           }
                                           setSendStep(3);
                                       }}
-                                      disabled={!sendMethodSel}
+                                      disabled={!sendMethodSel || !selOk}
                                       className="lincoin-btn-white transition-colors"
-                                      style={{ flex: 1.5, fontWeight: 700, fontSize: 14, padding: '13px 0', borderRadius: 10, border: 'none', opacity: sendMethodSel ? 1 : 0.45, cursor: sendMethodSel ? 'pointer' : 'not-allowed' }}>
+                                      style={{ flex: 1.5, fontWeight: 700, fontSize: 14, padding: '13px 0', borderRadius: 10, border: 'none', opacity: (sendMethodSel && selOk) ? 1 : 0.45, cursor: (sendMethodSel && selOk) ? 'pointer' : 'not-allowed' }}>
                                       Continuar
                                   </button>
                               </div>
                           </div>
-                      )}
+                          );
+                      })()}
 
                       {/* STEP 3 BANK: beneficiarios inscritos como tarjetas (diseño) */}
                       {sendStep === 3 && sendMode === 'bank' && (() => {
