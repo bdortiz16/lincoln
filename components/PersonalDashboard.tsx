@@ -4929,12 +4929,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       {/* lincoin-btn-white (con !important) — un hover:bg-[#E…] aquí
                                           activa la regla global [class*="bg-[#E"] y pinta el botón
                                           oscuro sobre oscuro (invisible). */}
-                                      <button onClick={closeSendModal} className="lincoin-btn-white transition-colors" style={{ flex: 1.3, padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, border: 'none' }}>Finalizar</button>
+                                      <button onClick={closeSendModal} className="lincoin-btn-white transition-colors" style={{ flex: 1.3, padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, border: '1px solid rgba(255,255,255,0.25)', background: '#F4F4F2', color: '#0A0A0A' }}>Finalizar</button>
                                       </>
                                   ) : (
                                       <>
                                       <button onClick={closeSendModal} className="transition-colors hover:bg-white/[0.09]" style={{ flex: 1, padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, color: '#F4F4F2', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)' }}>Cerrar</button>
-                                      <button onClick={() => { setSendResult(null); setSendStep(4); }} className="lincoin-btn-white transition-colors" style={{ flex: 1.3, padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, border: 'none' }}>Reintentar</button>
+                                      <button onClick={() => { setSendResult(null); setSendStep(4); }} className="lincoin-btn-white transition-colors" style={{ flex: 1.3, padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, border: '1px solid rgba(255,255,255,0.25)', background: '#F4F4F2', color: '#0A0A0A' }}>Reintentar</button>
                                       </>
                                   )}
                               </div>
