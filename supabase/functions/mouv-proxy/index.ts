@@ -463,6 +463,13 @@ serve(async (req: Request) => {
     if (Math.round(amount) !== amount) return json(400, { error: 'bad_amount', message: 'El monto debe ser en pesos enteros.' })
 
     // ── PROTOCOLOS DE SEGURIDAD (estándar fintech) ──
+    // (0) Mínimo por operación: los rieles lo exigen (Finity rechaza retiros
+    //     ACH < $5.000 con "amount must be at least 5,000"). Se corta AQUÍ,
+    //     antes de debitar, con mensaje claro.
+    const PAYOUT_MIN_COP = Number(Deno.env.get('PAYOUT_MIN_COP') ?? '5000') || 5000
+    if (amount < PAYOUT_MIN_COP) {
+      return json(400, { error: 'under_minimum', message: `El monto mínimo por envío es ${PAYOUT_MIN_COP.toLocaleString('es-CO')} COP.` })
+    }
     // (1) Tope por operación: ninguna dispersión individual puede superar el
     //     límite (PAYOUT_MAX_COP, default $20.000.000; override por secret).
     const PAYOUT_MAX_COP = Number(Deno.env.get('PAYOUT_MAX_COP') ?? '20000000') || 20000000

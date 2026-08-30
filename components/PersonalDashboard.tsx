@@ -1271,6 +1271,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               showToast("Por favor ingresa un monto válido.", 3000, 'error');
               return;
           }
+          // Mínimo por envío COP: $5.000 (los rieles lo exigen — Finity
+          // rechaza retiros ACH menores con "amount must be at least 5,000").
+          if (sendForm.destinationCurrency === 'COP' && rawAmount < 5000) {
+              showToast('El monto mínimo por envío es $5.000 COP.', 4000, 'error');
+              return;
+          }
           // COP: la billetera ya NO se elige en el paso 1 — el método del paso
           // 2 la define. Aquí solo se valida que ALGUNA de las 3 cuentas
           // pueda cubrir el monto (el paso 2 exige monto + comisión por método).
