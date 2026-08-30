@@ -3026,16 +3026,13 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     try {
       const { ok, error: mfaErr } = await verifyMFAEnrollment(mfaEnrollData.factorId, mfaVerifyCode, mfaEnrollData.secret);
       if (!ok) { setMfaVerifyError(mfaErr || 'Código incorrecto. Intenta nuevamente.'); setMfaVerifyCode(''); return; }
+      // La persistencia (mfaEnabled/mfaFactorId/totpSecret en raw_data) ya la
+      // hace verifyMFAEnrollment con updateUserRawData y confirma contra la
+      // base; si fallara, ok sería false y salimos arriba. Aquí solo reflejamos
+      // el estado local ya confirmado.
       setMfaEnrolled(true);
       setMfaFactorId(mfaEnrollData.factorId);
       setMfaTotpSecret(mfaEnrollData.secret);
-      // PERSISTIR el 2FA en el perfil — sin esto solo vivía en memoria y al
-      // recargar la página getMFAStatus lo veía como INACTIVO (bug grave:
-      // el envío se bloqueaba de nuevo). 'Desactivar' sí persistía; 'activar'
-      // no. Ahora se guarda mfaEnabled/mfaFactorId/totpSecret.
-      if (currentUser) {
-        updateUserRawData(currentUser.id, { mfaEnabled: true, mfaFactorId: mfaEnrollData.factorId, totpSecret: mfaEnrollData.secret }).catch(() => {});
-      }
       setMfaModalOpen(false);
       setMfaEnrollData(null);
       showToast('¡Verificación en 2 pasos activada!');
@@ -3053,7 +3050,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     setMfaEnrolled(false);
     setMfaFactorId(undefined);
     setMfaTotpSecret(undefined);
-    if (currentUser) updateUserProfile(currentUser.id, { raw_data: { ...(currentUser as any).raw_data, mfaEnabled: false, mfaFactorId: null, totpSecret: null } });
+    // Misma vía robusta que al activar: escribe solo raw_data y limpia los
+    // campos aplanados en memoria, para que quede DESACTIVADO tras recargar.
+    if (currentUser) updateUserRawData(currentUser.id, { mfaEnabled: false, mfaFactorId: null, totpSecret: null }).catch(() => {});
     setMfaDisableModalOpen(false);
     showToast('Verificación en 2 pasos desactivada.');
   };

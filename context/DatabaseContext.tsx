@@ -1240,20 +1240,24 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     if (secret) {
       const ok = verifyTOTP(secret, code);
       if (!ok) return { ok: false, error: 'Código incorrecto. Intenta nuevamente.' };
-      // Persist via updateUserProfile (handles JWT auth, keepalive, pendingWriteBlock)
+      // Persistencia ROBUSTA vía updateUserRawData: escribe SOLO la columna
+      // raw_data (no dispara el candado de columnas sensibles como saveUser),
+      // verifica que la fila realmente se tocó (.select('id')) y, si la RLS lo
+      // bloquea en silencio, cae al edge admin-data con service-role. Actualiza
+      // el estado en memoria con los campos aplanados Y anidados, así el 2FA
+      // queda activo al instante y sigue activo tras recargar la página.
       if (currentUser) {
-        const raw = (currentUser as any).raw_data ?? {};
-        const newRaw = { ...raw, mfaEnabled: true, mfaFactorId: factorId, totpSecret: secret };
-        // Update in-memory immediately
-        setCurrentUser((prev: any) => prev ? { ...prev, raw_data: newRaw } : prev);
-        // Persist to DB using the proper auth-aware path
-        const updated = { ...currentUser, raw_data: newRaw } as any;
-        saveUser(updated).catch?.(() => {});
+        // Optimista inmediato: refleja ambos (aplanado + anidado) sin esperar red.
+        setCurrentUser((prev: any) => prev ? { ...prev, mfaEnabled: true, mfaFactorId: factorId, totpSecret: secret, raw_data: { ...(prev.raw_data ?? {}), mfaEnabled: true, mfaFactorId: factorId, totpSecret: secret } } : prev);
+        const persisted = await updateUserRawData(currentUser.id, { mfaEnabled: true, mfaFactorId: factorId, totpSecret: secret });
+        if (!persisted) return { ok: false, error: 'No pudimos guardar la verificación en dos pasos. Reintenta.' };
       }
       return { ok: true };
     }
-    // No secret: check raw_data first (for existing enrolled users)
-    const storedSecret = (currentUser as any)?.raw_data?.totpSecret as string | undefined;
+    // No secret: check stored secret first (for existing enrolled users).
+    // raw_data está aplanado tras recargar, anidado justo tras activar → ambos.
+    const cu = currentUser as any;
+    const storedSecret = (cu?.totpSecret ?? cu?.raw_data?.totpSecret) as string | undefined;
     if (storedSecret) {
       const ok = verifyTOTP(storedSecret, code);
       return ok ? { ok: true } : { ok: false, error: 'Código incorrecto. Intenta nuevamente.' };
@@ -1275,7 +1279,8 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   const unenrollMFA = async (factorId: string): Promise<boolean> => {
     // Local TOTP factors don't exist in Supabase Auth — just succeed
-    if (factorId === 'local' || (currentUser as any)?.raw_data?.totpSecret) return true;
+    const cuu = currentUser as any;
+    if (factorId === 'local' || cuu?.totpSecret || cuu?.raw_data?.totpSecret) return true;
     if (!isSupabaseConfigured) return true;
     try {
       const { error } = await supabase.auth.mfa.unenroll({ factorId });
@@ -1284,10 +1289,18 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   };
 
   const getMFAStatus = async (): Promise<{ enrolled: boolean; factorId?: string; totpSecret?: string }> => {
-    // Always check raw_data first — most reliable without needing Supabase Auth session
-    const raw = (currentUser as any)?.raw_data;
-    if (raw?.mfaEnabled && raw?.mfaFactorId) {
-      return { enrolled: true, factorId: raw.mfaFactorId, totpSecret: raw.totpSecret };
+    // Always check raw_data first — most reliable without needing Supabase Auth session.
+    // ⚠️ mapSupabaseUser APLANA raw_data al nivel superior del usuario, así que
+    // tras recargar la página los campos viven en currentUser.mfaEnabled (no en
+    // currentUser.raw_data). Justo después de activar el 2FA sí están anidados
+    // en raw_data. Leemos de AMBOS para que persista en los dos casos.
+    const u = currentUser as any;
+    const raw = u?.raw_data ?? {};
+    const mfaEnabled  = u?.mfaEnabled  ?? raw?.mfaEnabled;
+    const mfaFactorId = u?.mfaFactorId ?? raw?.mfaFactorId;
+    const totpSecret  = u?.totpSecret  ?? raw?.totpSecret;
+    if (mfaEnabled && mfaFactorId) {
+      return { enrolled: true, factorId: mfaFactorId, totpSecret };
     }
     // Try Supabase Auth as secondary (only works with a valid session)
     if (isSupabaseConfigured) {

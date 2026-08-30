@@ -87,6 +87,10 @@ Deno.serve(async (req) => {
     if (!user) return json(404, { error: 'user_not_found' })
     const raw = (user.raw_data ?? {}) as Record<string, any>
 
+    // IP del cliente (Deno Deploy/Supabase la reenvía en x-forwarded-for).
+    const clientIp = (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim()
+      || req.headers.get('x-real-ip') || ''
+
     if (action === 'send') {
       if (!RESEND_KEY) return json(200, { ok: false, error: 'email_not_configured', message: 'Falta RESEND_API_KEY.' })
       // Rate-limit suave: no reenviar si se emitió hace < 30 s.
@@ -106,7 +110,7 @@ Deno.serve(async (req) => {
           subject: `${spacedCode(code)} es tu código de Lincoin`,
           html: otpEmailHtml(code, String(user.full_name ?? '').split(' ')[0] ?? '', {
             device: deviceFromUA(req.headers.get('user-agent') ?? ''),
-            loc: undefined,
+            loc: await approxLocation(clientIp),
             time: new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota', dateStyle: 'medium', timeStyle: 'short' }) + ' (GMT-5)',
             userId: String(user.id ?? '').slice(0, 8).toUpperCase(),
           }),
@@ -143,11 +147,27 @@ Deno.serve(async (req) => {
   }
 })
 
-// Dispositivo legible desde el user-agent ("Chrome · macOS").
+// Dispositivo legible desde el user-agent ("Chrome · iPhone").
 function deviceFromUA(ua: string): string {
-  const browser = /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera' : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : /Firefox\//.test(ua) ? 'Firefox' : 'Navegador'
-  const os = /iPhone|iPad|iOS/.test(ua) ? 'iOS' : /Android/.test(ua) ? 'Android' : /Mac OS X|Macintosh/.test(ua) ? 'macOS' : /Windows/.test(ua) ? 'Windows' : /Linux/.test(ua) ? 'Linux' : 'dispositivo'
+  const browser = /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera' : /Chrome\//.test(ua) ? 'Chrome' : /Firefox\//.test(ua) ? 'Firefox' : /Safari\//.test(ua) ? 'Safari' : 'Navegador'
+  const os = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android' : /Mac OS X|Macintosh/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : /Linux/.test(ua) ? 'Linux' : 'dispositivo'
   return `${browser} · ${os}`
+}
+
+// Ubicación aproximada por IP (ciudad, país). Servicio gratuito sin llave,
+// con timeout corto: si falla, el correo simplemente omite la fila.
+async function approxLocation(ip: string): Promise<string | undefined> {
+  if (!ip || ip === '127.0.0.1' || ip.startsWith('::1') || ip.startsWith('10.') || ip.startsWith('192.168.')) return undefined
+  try {
+    const res = await Promise.race([
+      fetch(`https://ipwho.is/${encodeURIComponent(ip)}?fields=success,city,country`),
+      new Promise<Response>((_, rej) => setTimeout(() => rej(new Error('geo_timeout')), 2500)),
+    ]) as Response
+    const j = await res.json().catch(() => null) as any
+    if (!j || j.success === false) return undefined
+    const parts = [j.city, j.country].filter((s: unknown) => typeof s === 'string' && s)
+    return parts.length ? parts.join(', ') : undefined
+  } catch { return undefined }
 }
 
 function maskEmail(e: string): string {
