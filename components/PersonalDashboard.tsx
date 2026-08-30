@@ -3006,144 +3006,197 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       showToast('Email de restablecimiento enviado a ' + currentUser.email);
   };
 
-  const renderSettings = () => (
-      <div className="max-w-2xl mx-auto space-y-6 animate-in fade-in duration-300 pt-6">
-          <button onClick={() => setActiveView('dashboard')} className="flex items-center gap-2 text-slate-700 font-bold text-sm mb-4 hover:text-[#0C0E0D]">
-              <ArrowLeft size={16}/> Volver
+  const renderSettings = () => {
+      const raw = (currentUser as any)?.raw_data ?? {};
+      const refCur = raw.refCurrency ?? 'USDT';
+      const lang = raw.lang ?? 'Español';
+      const name = currentUser?.name || 'Mi cuenta';
+      const initial = name.trim().charAt(0).toUpperCase() || 'L';
+      const acctId = currentUser?.ownReferralCode || '—';
+      // Envíos de este mes (débitos COP/USDT) para la barra de límites.
+      const now = new Date();
+      const monthUsed = (movements || []).filter((t: any) => {
+          const d = t.createdAt ? new Date(t.createdAt) : null;
+          if (!d || d.getMonth() !== now.getMonth() || d.getFullYear() !== now.getFullYear()) return false;
+          return ['send', 'pay_sent', 'dispersion', 'otc_withdraw'].includes(t.type) && !['Fallido', 'Rechazado'].includes(String(t.status));
+      }).reduce((s: number, t: any) => {
+          const base = String(t.currency || '').split('_')[0];
+          const usdCop = getRate('USD', 'COP') || 1;
+          return s + (base === 'USD' || base === 'USDT' ? Number(t.amount || 0) : Number(t.amount || 0) / (usdCop || 1));
+      }, 0);
+      const monthLimit = Number(raw.monthlyLimitUsdt ?? 50000);
+      const pct = Math.min(100, Math.round((monthUsed / monthLimit) * 100));
+      const sectionLabel: React.CSSProperties = { fontSize: 10.5, fontWeight: 700, letterSpacing: '1.8px', color: '#878E88' };
+      const card: React.CSSProperties = { background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, padding: '20px 22px' };
+      const secBtn: React.CSSProperties = { border: '1px solid rgba(255,255,255,0.11)', background: 'rgba(255,255,255,0.045)', borderRadius: 8, padding: '8px 15px', fontSize: 12.5, fontWeight: 600, color: '#F4F4F2' };
+      const rowBorder = '1px solid rgba(255,255,255,0.06)';
+      const Toggle = ({ on, onClick }: { on: boolean; onClick: () => void }) => (
+          <button role="switch" aria-checked={on} onClick={onClick} style={{ width: 40, height: 23, borderRadius: 999, flexShrink: 0, position: 'relative', transition: 'background 150ms, border 150ms', background: on ? 'rgba(74,222,128,0.25)' : 'rgba(255,255,255,0.06)', border: on ? '1px solid rgba(74,222,128,0.4)' : '1px solid rgba(255,255,255,0.12)' }}>
+              <span style={{ position: 'absolute', top: 2, left: on ? 19 : 2, width: 17, height: 17, borderRadius: '50%', background: on ? '#4ADE80' : '#878E88', transition: 'left 150ms' }} />
           </button>
-          <h2 className="text-2xl font-bold text-slate-800">Configuración</h2>
-
-          {/* Security */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-              <div className="p-4 border-b border-slate-100 font-bold text-slate-800 flex items-center gap-2">
-                  <Lock size={18} className="text-[#0C0E0D]"/> Seguridad
-              </div>
-              <div className="p-6 space-y-4">
-                  <div className="flex justify-between items-center py-2 border-b border-slate-50">
-                      <div>
-                          <p className="font-medium text-slate-800 text-sm">Contraseña</p>
-                          <p className="text-xs text-slate-500">Recibirás un email para cambiarla</p>
-                      </div>
-                      <button onClick={handleSendPasswordReset} className="px-4 py-2 text-sm font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors">
-                          Cambiar
-                      </button>
-                  </div>
-                  <div className="flex justify-between items-center py-2">
-                      <div>
-                          <p className="font-medium text-slate-800 text-sm">Verificación en dos pasos (2FA)</p>
-                          <p className="text-xs text-slate-500">Código de 6 dígitos cada 30 seg (Google Authenticator, Authy)</p>
-                      </div>
-                      {mfaLoadingStatus ? (
-                          <span className="text-xs text-slate-400">Cargando...</span>
-                      ) : mfaEnrolled ? (
-                          <div className="flex items-center gap-2">
-                              <span className="px-3 py-1 bg-green-50 text-green-700 border border-green-100 rounded-full text-xs font-bold">Activo</span>
-                              <button onClick={() => setMfaDisableModalOpen(true)} className="px-3 py-1.5 text-xs font-bold border border-red-200 text-red-600 rounded-lg hover:bg-red-50 transition-colors">
-                                  Desactivar
-                              </button>
-                          </div>
-                      ) : (
-                          <button onClick={handleOpenMFAEnroll} className="px-4 py-2 text-sm font-bold bg-[#0C0E0D] rounded-lg hover:bg-[#152e52] transition-colors">
-                              Activar
-                          </button>
-                      )}
-                  </div>
-              </div>
+      );
+      const notifRows = [
+          { key: 'notifTransfers', label: 'Transferencias', desc: 'Envíos y recepciones de dinero' },
+          { key: 'notifDeposits', label: 'Depósitos', desc: 'Cargas de saldo acreditadas' },
+          { key: 'notifSecurity', label: 'Seguridad', desc: 'Accesos y cambios en la cuenta' },
+          { key: 'notifPromotions', label: 'Novedades', desc: 'Nuevas funciones y servicios de Lincoin' },
+          { key: 'notifSound', label: 'Sonido de notificaciones', desc: 'Reproduce un sonido al llegar una alerta' },
+      ];
+      const savePref = (patch: Record<string, unknown>) => { if (currentUser?.id) updateUserRawData(currentUser.id, patch).catch(() => {}); };
+      return (
+      <div className="animate-in fade-in duration-300 pt-6" style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+          <div>
+              <button onClick={() => setActiveView('dashboard')} className="flex items-center gap-2 hover:text-[#F4F4F2] transition-colors" style={{ fontSize: 13, color: '#878E88', marginBottom: 12 }}><ArrowLeft size={14} /> Inicio</button>
+              <h2 style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-0.8px', color: '#F4F4F2' }}>Ajustes</h2>
+              <p style={{ fontSize: 14, color: '#878E88', marginTop: 3 }}>Tu cuenta, seguridad y notificaciones</p>
           </div>
 
-          {/* Notifications */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-              <div className="p-4 border-b border-slate-100 font-bold text-slate-800 flex items-center gap-2">
-                  <Bell size={18} className="text-[#0C0E0D]"/> Notificaciones
-              </div>
-              <div className="p-6 space-y-1">
-                  {[
-                      { key: 'notifTransfers', label: 'Transferencias', desc: 'Envíos y recepciones de dinero' },
-                      { key: 'notifDeposits', label: 'Depósitos', desc: 'Cargas de saldo aprobadas' },
-                      { key: 'notifSecurity', label: 'Seguridad', desc: 'Accesos y cambios en la cuenta' },
-                      { key: 'notifPromotions', label: 'Promociones', desc: 'Ofertas y novedades de LINCOIN' },
-                      { key: 'notifSound', label: 'Sonido de notificaciones', desc: 'Reproduce un sonido al llegar una alerta nueva' },
-                  ].map(({ key, label, desc }) => {
-                      const enabled = (currentUser as any)?.[key] !== false;
-                      return (
-                          <div key={key} className="flex justify-between items-center py-3 border-b border-slate-50 last:border-0">
-                              <div>
-                                  <p className="font-medium text-slate-800 text-sm">{label}</p>
-                                  <p className="text-xs text-slate-500">{desc}</p>
+          <div className="grid gap-4 lg:grid-cols-2" style={{ alignItems: 'start' }}>
+              {/* ── COLUMNA IZQUIERDA ── */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+                  {/* PERFIL */}
+                  <div style={card}>
+                      <p style={sectionLabel}>PERFIL</p>
+                      <div className="flex items-center" style={{ gap: 13, marginTop: 14 }}>
+                          <div style={{ width: 46, height: 46, borderRadius: 12, background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', display: 'grid', placeItems: 'center', fontSize: 16, fontWeight: 800, color: '#F4F4F2', flexShrink: 0 }}>{initial}</div>
+                          <div style={{ minWidth: 0, flex: 1 }}>
+                              <p style={{ fontSize: 14.5, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</p>
+                              <p style={{ fontSize: 12, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{currentUser?.email} · ID {acctId}</p>
+                          </div>
+                          <span style={{ flexShrink: 0, border: `1px solid ${isKycVerified ? 'rgba(74,222,128,0.3)' : 'rgba(255,255,255,0.14)'}`, color: isKycVerified ? '#4ADE80' : '#878E88', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '4px 8px', borderRadius: 999, whiteSpace: 'nowrap' }}>{isKycVerified ? '✓ VERIFICADO' : 'KYC PENDIENTE'}</span>
+                      </div>
+                      <div className="flex items-center justify-between" style={{ gap: 12, marginTop: 16, paddingTop: 14, borderTop: rowBorder }}>
+                          <div style={{ minWidth: 0 }}>
+                              <p style={{ fontSize: 13.5, fontWeight: 600, color: '#F4F4F2' }}>Datos del perfil</p>
+                              <p style={{ fontSize: 12, color: '#878E88' }}>Nombre, documento y datos de contacto</p>
+                          </div>
+                          <button onClick={() => setActiveView('profile')} style={secBtn} className="hover:bg-white/[0.09] transition-colors">Editar</button>
+                      </div>
+                  </div>
+
+                  {/* SEGURIDAD */}
+                  <div style={card}>
+                      <p style={sectionLabel}>SEGURIDAD</p>
+                      <div style={{ marginTop: 6 }}>
+                          <div className="flex items-center justify-between" style={{ gap: 12, padding: '14px 0', borderBottom: rowBorder }}>
+                              <div style={{ minWidth: 0 }}>
+                                  <p style={{ fontSize: 13.5, fontWeight: 600, color: '#F4F4F2' }}>Contraseña</p>
+                                  <p style={{ fontSize: 12, color: '#878E88' }}>Te llega un email para cambiarla</p>
                               </div>
-                              <button
-                                  onClick={() => toggleNotifPref(key)}
-                                  className={`w-11 h-6 rounded-full transition-colors relative flex-shrink-0 ${enabled ? 'bg-[#0C0E0D]' : 'bg-slate-200'}`}
-                              >
-                                  <span className={`absolute top-1 w-4 h-4 rounded-full bg-white shadow transition-all ${enabled ? 'left-6' : 'left-1'}`}/>
-                              </button>
+                              <button onClick={handleSendPasswordReset} style={secBtn} className="hover:bg-white/[0.09] transition-colors">Cambiar</button>
                           </div>
-                      );
-                  })}
-              </div>
-          </div>
-
-          {/* Account info */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-              <div className="p-4 border-b border-slate-100 font-bold text-slate-800 flex items-center gap-2">
-                  <User size={18} className="text-[#0C0E0D]"/> Información de Cuenta
-              </div>
-              <div className="p-6 space-y-3">
-                  <div className="flex justify-between border-b border-slate-50 pb-3">
-                      <span className="text-slate-500 text-sm">Email</span>
-                      <span className="font-medium text-slate-800 text-sm truncate ml-4">{currentUser?.email}</span>
-                  </div>
-                  <div className="flex justify-between border-b border-slate-50 pb-3">
-                      <span className="text-slate-500 text-sm">ID de cuenta</span>
-                      <span className="font-mono font-bold text-[#0C0E0D] text-sm">{currentUser?.ownReferralCode}</span>
-                  </div>
-                  <div className="flex justify-between">
-                      <span className="text-slate-500 text-sm">Tipo de cuenta</span>
-                      <span className="font-medium text-slate-800 text-sm capitalize">Personal</span>
-                  </div>
-              </div>
-          </div>
-
-          {/* Danger zone */}
-          <div className="bg-red-50 rounded-2xl border border-red-100 p-6">
-              <h3 className="font-bold text-red-800 mb-1 text-sm">Zona de peligro</h3>
-              <p className="text-xs text-red-600 mb-4">Esta acción es permanente e irreversible.</p>
-              <div className="flex flex-col gap-3">
-                  {!showDeleteAccountConfirm ? (
-                      <button onClick={() => setShowDeleteAccountConfirm(true)} className="px-4 py-2 text-sm font-bold bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors flex items-center gap-2 w-fit">
-                          <Trash2 size={14}/> Eliminar cuenta
-                      </button>
-                  ) : (
-                      <div className="bg-white border border-red-200 rounded-xl p-4 space-y-3">
-                          <p className="text-sm font-bold text-red-800">⚠️ ¿Eliminar tu cuenta permanentemente?</p>
-                          <p className="text-xs text-slate-600">Se eliminarán tu perfil, historial y acceso. Esta acción <span className="font-bold">no se puede deshacer</span>.</p>
-                          <div className="flex gap-2">
-                              <button
-                                  onClick={async () => {
-                                      if (!currentUser) return;
-                                      setIsDeletingAccount(true);
-                                      await Promise.race([
-                                          deleteUser(currentUser.id),
-                                          new Promise(r => setTimeout(r, 12000)),
-                                      ]).catch(() => {});
-                                      logoutUser();
-                                  }}
-                                  disabled={isDeletingAccount}
-                                  className="px-4 py-2 text-xs font-bold bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-60 flex items-center gap-1"
-                              >
-                                  {isDeletingAccount ? <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin inline-block"/> : <Trash2 size={12}/>}
-                                  {isDeletingAccount ? 'Eliminando...' : 'Sí, eliminar'}
-                              </button>
-                              <button onClick={() => setShowDeleteAccountConfirm(false)} className="px-4 py-2 text-xs font-bold text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50">
-                                  Cancelar
-                              </button>
+                          <div className="flex items-center justify-between" style={{ gap: 12, padding: '14px 0', borderBottom: rowBorder }}>
+                              <div style={{ minWidth: 0 }}>
+                                  <div className="flex items-center" style={{ gap: 8 }}>
+                                      <p style={{ fontSize: 13.5, fontWeight: 600, color: '#F4F4F2' }}>Verificación en dos pasos</p>
+                                      <span style={{ border: `1px solid ${mfaEnrolled ? 'rgba(74,222,128,0.3)' : 'rgba(255,255,255,0.14)'}`, color: mfaEnrolled ? '#4ADE80' : '#878E88', fontSize: 8.5, fontWeight: 700, letterSpacing: '0.5px', padding: '2px 6px', borderRadius: 999 }}>{mfaLoadingStatus ? '…' : mfaEnrolled ? 'ACTIVA' : 'INACTIVA'}</span>
+                                  </div>
+                                  <p style={{ fontSize: 12, color: '#878E88' }}>Código de 6 dígitos con Google Authenticator o Authy</p>
+                              </div>
+                              {mfaEnrolled
+                                  ? <button onClick={() => setMfaDisableModalOpen(true)} style={secBtn} className="hover:bg-white/[0.09] transition-colors">Gestionar</button>
+                                  : <button onClick={handleOpenMFAEnroll} disabled={mfaLoadingStatus} className="lincoin-btn-white transition-colors" style={{ padding: '8px 16px', borderRadius: 8, fontSize: 12.5, fontWeight: 700, border: 'none', opacity: mfaLoadingStatus ? 0.6 : 1 }}>Activar</button>}
+                          </div>
+                          <div className="flex items-center justify-between" style={{ gap: 12, padding: '14px 0 4px' }}>
+                              <div style={{ minWidth: 0 }}>
+                                  <p style={{ fontSize: 13.5, fontWeight: 600, color: '#F4F4F2' }}>Sesiones activas</p>
+                                  <p style={{ fontSize: 12, color: '#878E88' }}>Esta sesión · {navigator.platform || 'este dispositivo'}</p>
+                              </div>
+                              <button onClick={() => showToast('Cerrando otras sesiones…')} style={secBtn} className="hover:bg-white/[0.09] transition-colors">Cerrar otras</button>
                           </div>
                       </div>
-                  )}
+                  </div>
+
+                  {/* LÍMITES */}
+                  <div style={card}>
+                      <p style={sectionLabel}>LÍMITES DE LA CUENTA</p>
+                      <div className="flex items-baseline justify-between" style={{ marginTop: 14 }}>
+                          <span style={{ fontSize: 13.5, fontWeight: 600, color: '#F4F4F2' }}>Envíos este mes</span>
+                          <span style={{ fontSize: 13, color: '#878E88' }}><b style={{ color: '#F4F4F2', fontWeight: 700 }}>{monthUsed.toLocaleString('es-CO', { maximumFractionDigits: 0 })}</b> de {monthLimit.toLocaleString('es-CO')} USDT</span>
+                      </div>
+                      <div style={{ height: 4, borderRadius: 2, background: 'rgba(255,255,255,0.08)', marginTop: 10, overflow: 'hidden' }}>
+                          <div style={{ height: '100%', width: `${pct}%`, background: '#4ADE80', borderRadius: 2 }} />
+                      </div>
+                      <p style={{ fontSize: 12, color: '#878E88', marginTop: 12 }}>{isKycVerified ? 'Límites completos activos.' : 'Completa tu verificación para límites completos.'} ¿Necesitas más? <button onClick={() => { setOtcRail(null); setMouvMode('converter'); setActiveView('mouv'); }} style={{ color: '#F4F4F2', textDecoration: 'underline', fontWeight: 600 }}>Habla con la mesa OTC</button></p>
+                  </div>
+              </div>
+
+              {/* ── COLUMNA DERECHA ── */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+                  {/* NOTIFICACIONES */}
+                  <div style={card}>
+                      <p style={sectionLabel}>NOTIFICACIONES</p>
+                      <div style={{ marginTop: 6 }}>
+                          {notifRows.map((n, i) => {
+                              const on = (currentUser as any)?.[n.key] !== false;
+                              return (
+                                  <div key={n.key} className="flex items-center justify-between" style={{ gap: 12, padding: '13px 0', borderBottom: i < notifRows.length - 1 ? rowBorder : 'none' }}>
+                                      <div style={{ minWidth: 0 }}>
+                                          <p style={{ fontSize: 13.5, fontWeight: 600, color: '#F4F4F2' }}>{n.label}</p>
+                                          <p style={{ fontSize: 12, color: '#878E88' }}>{n.desc}</p>
+                                      </div>
+                                      <Toggle on={on} onClick={() => toggleNotifPref(n.key)} />
+                                  </div>
+                              );
+                          })}
+                      </div>
+                  </div>
+
+                  {/* PREFERENCIAS */}
+                  <div style={card}>
+                      <p style={sectionLabel}>PREFERENCIAS</p>
+                      <div style={{ marginTop: 6 }}>
+                          <div className="flex items-center justify-between" style={{ gap: 12, padding: '14px 0', borderBottom: rowBorder }}>
+                              <div style={{ minWidth: 0 }}>
+                                  <p style={{ fontSize: 13.5, fontWeight: 600, color: '#F4F4F2' }}>Moneda de referencia</p>
+                                  <p style={{ fontSize: 12, color: '#878E88' }}>Cómo se muestran los equivalentes</p>
+                              </div>
+                              <select defaultValue={refCur} onChange={e => savePref({ refCurrency: e.target.value })} style={{ ...secBtn, paddingRight: 28 }}>
+                                  {['USDT', 'COP', 'USD', 'EUR'].map(c => <option key={c} value={c}>{c}</option>)}
+                              </select>
+                          </div>
+                          <div className="flex items-center justify-between" style={{ gap: 12, padding: '14px 0 4px' }}>
+                              <div style={{ minWidth: 0 }}>
+                                  <p style={{ fontSize: 13.5, fontWeight: 600, color: '#F4F4F2' }}>Idioma</p>
+                                  <p style={{ fontSize: 12, color: '#878E88' }}>Interfaz y correos</p>
+                              </div>
+                              <select defaultValue={lang} onChange={e => savePref({ lang: e.target.value })} style={{ ...secBtn, paddingRight: 28 }}>
+                                  {['Español', 'English'].map(c => <option key={c} value={c}>{c}</option>)}
+                              </select>
+                          </div>
+                      </div>
+                  </div>
+
+                  {/* CUENTA (solo borde) */}
+                  <div style={{ border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, padding: '20px 22px' }}>
+                      <p style={sectionLabel}>CUENTA</p>
+                      <div style={{ marginTop: 6 }}>
+                          <div className="flex items-center justify-between" style={{ gap: 12, padding: '14px 0', borderBottom: rowBorder }}>
+                              <div style={{ minWidth: 0 }}>
+                                  <p style={{ fontSize: 13.5, fontWeight: 600, color: '#F4F4F2' }}>Descargar mis datos</p>
+                                  <p style={{ fontSize: 12, color: '#878E88' }}>Movimientos, extractos y datos de perfil</p>
+                              </div>
+                              <button onClick={() => { setMovementsTab('all'); setActiveView('movements'); showToast('Ve a Movimientos → Exportar CSV'); }} style={secBtn} className="hover:bg-white/[0.09] transition-colors">Solicitar</button>
+                          </div>
+                          <div className="flex items-center justify-between" style={{ gap: 12, padding: '14px 0 4px' }}>
+                              <div style={{ minWidth: 0 }}>
+                                  <p style={{ fontSize: 13.5, fontWeight: 600, color: '#878E88' }}>Cerrar la cuenta</p>
+                                  <p style={{ fontSize: 12, color: '#878E88' }}>Requiere saldo en cero y confirmación por email</p>
+                              </div>
+                              {!showDeleteAccountConfirm
+                                  ? <button onClick={() => setShowDeleteAccountConfirm(true)} style={{ ...secBtn, color: '#878E88' }} className="hover:bg-white/[0.09] transition-colors">Iniciar</button>
+                                  : <button onClick={async () => { if (!currentUser) return; setIsDeletingAccount(true); await Promise.race([deleteUser(currentUser.id), new Promise(r => setTimeout(r, 12000))]).catch(() => {}); logoutUser(); }} disabled={isDeletingAccount} style={{ ...secBtn, color: '#F4F4F2' }}>{isDeletingAccount ? 'Cerrando…' : 'Confirmar cierre'}</button>}
+                          </div>
+                          {showDeleteAccountConfirm && !isDeletingAccount && (
+                              <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 4 }}>Esta acción es permanente. <button onClick={() => setShowDeleteAccountConfirm(false)} style={{ color: '#F4F4F2', textDecoration: 'underline' }}>Cancelar</button></p>
+                          )}
+                      </div>
+                  </div>
               </div>
           </div>
       </div>
-  );
+      );
+  };
 
   const renderReferrals = () => (
       <div className="animate-in fade-in duration-300">
