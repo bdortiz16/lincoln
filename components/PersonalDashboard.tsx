@@ -887,12 +887,14 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // el saldo y "Movimientos de esta cuenta" se actualizan solos apenas
   // llega el USDT, sin que el cliente tenga que recargar la página.
   useEffect(() => {
-      // Se vigila la llegada de depósitos tanto en el DETALLE de la billetera
-      // USDT como en el INICIO (donde está la tarjeta USDT) — así el saldo se
-      // actualiza solo sin que el cliente tenga que recargar la página.
+      // Se vigila la llegada de depósitos en el DETALLE de la billetera USDT,
+      // en el INICIO y también DENTRO de la Mesa OTC (el cliente suele estar
+      // ahí esperando sus USDT para convertir — antes ahí no salía la
+      // notificación de "Depósito confirmado").
       const onUsdDetail = activeView === 'wallet-detail' && selectedWalletCode === 'USD';
       const onDashboard = activeView === 'dashboard';
-      if (!((onUsdDetail || onDashboard) && currentUser?.id)) return;
+      const onConverter = activeView === 'mouv';
+      if (!((onUsdDetail || onDashboard || onConverter) && currentUser?.id)) return;
       const uid = currentUser.id;
       let alive = true;
       const poll = async () => {
