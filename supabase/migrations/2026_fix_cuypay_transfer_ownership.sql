@@ -46,8 +46,9 @@ BEGIN
     RETURN jsonb_build_object('error', 'Moneda no soportada');
   END IF;
 
-  -- Buscar al receptor por su ownReferralCode.
-  SELECT id, full_name
+  -- Buscar al receptor por su ownReferralCode. (id se castea a text porque la
+  -- columna es uuid y las variables/args son text.)
+  SELECT id::text, full_name
     INTO v_recipient_id, v_recipient_name
     FROM public.users
    WHERE raw_data->>'ownReferralCode' = upper(p_recipient_code)
@@ -67,7 +68,7 @@ BEGIN
   SELECT COALESCE((balances->>p_currency)::NUMERIC, 0)
     INTO v_sender_bal
     FROM public.users
-   WHERE id = p_sender_id
+   WHERE id::text = p_sender_id
    FOR UPDATE;
 
   IF v_sender_bal < p_amount THEN
@@ -81,7 +82,7 @@ BEGIN
            ARRAY[p_currency],
            to_jsonb(COALESCE((balances->>p_currency)::NUMERIC, 0) - p_amount)
          )
-   WHERE id = p_sender_id;
+   WHERE id::text = p_sender_id;
 
   -- Crédito atómico del receptor.
   UPDATE public.users
@@ -90,7 +91,7 @@ BEGIN
            ARRAY[p_currency],
            to_jsonb(COALESCE((balances->>p_currency)::NUMERIC, 0) + p_amount)
          )
-   WHERE id = v_recipient_id;
+   WHERE id::text = v_recipient_id;
 
   RETURN jsonb_build_object(
     'success',        true,

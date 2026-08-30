@@ -11,25 +11,28 @@
 --      sesión REAL de Supabase (JWT), no la contraseña incrustada en el
 --      navegador. El AdminBypass viejo sigue como respaldo hasta la Fase 2.
 --
--- Idempotente: se puede correr varias veces sin problema.
+-- Nota: se comparan ids con ::text en ambos lados para que funcione sin
+-- importar si public.users.id es uuid o text. Idempotente.
 -- ============================================================
 
 -- (a) Si ya existe la fila en public.users para ese auth user, marcarla admin.
 UPDATE public.users u
    SET role = 'admin'
   FROM auth.users a
- WHERE a.id::text = u.id
+ WHERE a.id::text = u.id::text
    AND lower(a.email) = lower('admin@lincoin.com');
 
 -- (b) Si NO existía la fila, crearla como admin.
 INSERT INTO public.users (id, email, role, full_name, kyc_status)
-SELECT a.id::text, a.email, 'admin', 'Administrador', 'approved'
+SELECT a.id, a.email, 'admin', 'Administrador', 'approved'
   FROM auth.users a
  WHERE lower(a.email) = lower('admin@lincoin.com')
-   AND NOT EXISTS (SELECT 1 FROM public.users u WHERE u.id = a.id::text);
+   AND NOT EXISTS (
+     SELECT 1 FROM public.users u WHERE u.id::text = a.id::text
+   );
 
 -- Verificación: debe devolver una fila con role='admin'.
 SELECT u.id, u.email, u.role
   FROM public.users u
-  JOIN auth.users a ON a.id::text = u.id
+  JOIN auth.users a ON a.id::text = u.id::text
  WHERE lower(a.email) = lower('admin@lincoin.com');
