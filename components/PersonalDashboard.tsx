@@ -5520,7 +5520,29 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               <div className="flex" style={{ gap: 9, marginTop: 16 }}>
                                   {ok ? (
                                       <>
-                                      <button onClick={() => { closeSendModal(); setMovementsTab('all'); setActiveView('movements'); }} className="flex items-center justify-center transition-colors hover:bg-white/[0.09]" style={{ flex: 1, gap: 7, padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, color: '#F4F4F2', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)' }}>
+                                      <button onClick={() => {
+                                          // Abrir el detalle real del envío (con descarga de comprobante
+                                          // funcional) en vez de cerrar y mandar a Movimientos.
+                                          const receiptTx = {
+                                              id: sendResult?.providerRef || `TX-${Date.now()}`,
+                                              type: isWalletSend ? 'send' : 'dispersion',
+                                              amount: amt,
+                                              currency: isWalletSend ? 'USDT_TRON' : (isBrebS ? 'COP_BREB' : (isCop ? 'COP_ACH' : sendForm.destinationCurrency)),
+                                              status: 'Completado',
+                                              createdAt: sendResult?.at || new Date().toISOString(),
+                                              beneficiary: name,
+                                              bank: sendContact?.bank || sendForm.bankName || (isBrebS ? 'Bre-B' : 'ACH'),
+                                              account: acctRaw,
+                                              documentType: sendForm.documentType,
+                                              documentNumber: sendForm.documentNumber,
+                                              providerRef: sendResult?.providerRef || '',
+                                              reason: sendForm.reason,
+                                              feeCop,
+                                              recipient: { holderName: name, key: isBrebS ? acctRaw : undefined, accountNumber: !isBrebS ? acctRaw : undefined, keyType: sendContact?.brebKeyType, documentType: sendForm.documentType, documentNumber: sendForm.documentNumber, accountType: sendContact?.accountType },
+                                          };
+                                          closeSendModal();
+                                          setSelectedTx(receiptTx as any);
+                                      }} className="flex items-center justify-center transition-colors hover:bg-white/[0.09]" style={{ flex: 1, gap: 7, padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, color: '#F4F4F2', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)' }}>
                                           <Download size={14} strokeWidth={1.7} /> Comprobante
                                       </button>
                                       {/* lincoin-btn-white (con !important) — un hover:bg-[#E…] aquí
