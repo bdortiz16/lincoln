@@ -93,6 +93,52 @@ export async function fetchFinityBalance(userId: string): Promise<number | null>
 // (editable desde Admin → Tasas → Panel Finity); 4% si no hay valor.
 const DEFAULT_CONVERT_FEE_PCT = 4;
 
+// ── Celebración al COMPLETAR la conversión: fanfarria + confeti ──
+let _fxAudioCtx: any = null;
+function playConvertSuccessSound() {
+    try {
+        const AC = (window as any).AudioContext || (window as any).webkitAudioContext;
+        if (!AC) return;
+        _fxAudioCtx = _fxAudioCtx || new AC();
+        const ctx = _fxAudioCtx;
+        if (ctx.state === 'suspended') ctx.resume();
+        const now = ctx.currentTime;
+        // Fanfarria ascendente + acorde final (más festiva que el cha-ching)
+        ([[523.25, 0], [659.25, 0.09], [783.99, 0.18], [1046.5, 0.3], [1318.5, 0.3], [1568, 0.3]] as Array<[number, number]>).forEach(([freq, t]) => {
+            const o = ctx.createOscillator();
+            const g = ctx.createGain();
+            o.type = 'triangle';
+            o.frequency.value = freq;
+            g.gain.setValueAtTime(0.0001, now + t);
+            g.gain.exponentialRampToValueAtTime(0.22, now + t + 0.02);
+            g.gain.exponentialRampToValueAtTime(0.0001, now + t + 0.6);
+            o.connect(g); g.connect(ctx.destination);
+            o.start(now + t);
+            o.stop(now + t + 0.65);
+        });
+    } catch { /* audio no disponible */ }
+}
+
+const CONFETTI_COLORS = ['#4ADE80', '#F4F4F2', '#22A35C', '#A7F3D0', '#FDE68A', '#93C5FD'];
+const ConfettiBurst: React.FC = () => (
+    <div style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none', borderRadius: 18 }}>
+        <style>{`
+            @keyframes fx-fall { 0% { transform: translateY(-12%) translateX(0) rotate(0deg); opacity: 1; } 100% { transform: translateY(115%) translateX(var(--dx)) rotate(720deg); opacity: 0; } }
+            @keyframes fx-pop { 0% { transform: scale(0.4); } 45% { transform: scale(1.25); } 100% { transform: scale(1); } }
+        `}</style>
+        {Array.from({ length: 28 }).map((_, i) => (
+            <span key={i} style={{
+                position: 'absolute', top: '-6%', left: `${(i * 37) % 100}%`,
+                width: i % 3 === 0 ? 9 : 6, height: i % 4 === 0 ? 12 : 7,
+                background: CONFETTI_COLORS[i % CONFETTI_COLORS.length],
+                borderRadius: i % 2 === 0 ? 2 : '50%',
+                ['--dx' as any]: `${((i % 7) - 3) * 22}px`,
+                animation: `fx-fall ${1.6 + (i % 5) * 0.35}s ease-in ${(i % 6) * 0.12}s both`,
+            }} />
+        ))}
+    </div>
+);
+
 // ── Costo FIJO por conversión (lo paga el cliente): 4 USDT ──
 //   1,50 → envío de la wallet del cliente a la tesorería (GasFree)
 //   1,50 → envío de la tesorería al proveedor (Finity)
@@ -282,6 +328,8 @@ export const FinitySection: React.FC<{
     const [convertResult, setConvertResult] = useState<{ ok: boolean; text: string } | null>(null);
     // Animación por pasos de la conversión: Enviando → Recibido → Convirtiendo → Completado
     const [convertStep, setConvertStep] = useState<null | 'enviando' | 'recibido' | 'convirtiendo' | 'completado' | 'error'>(null);
+    // Celebración al llegar a COMPLETADO: fanfarria + confeti en la ventana.
+    useEffect(() => { if (convertStep === 'completado') playConvertSuccessSound(); }, [convertStep]);
     // Conversión que quedó recargada en Finity pero NO se convirtió (Finity
     // lento/caído): permite reintentar SOLO la conversión sin reenviar USDT.
     const [pendingConvert, setPendingConvert] = useState<{ txId: string; finityAmount: number; creditAmount: number; amount: number; previewRate: number | null; gasfreeFeeUsdt: number } | null>(null);
@@ -483,7 +531,7 @@ export const FinitySection: React.FC<{
                 text: `✅ Conversión completada: ${p.amount.toLocaleString('en-US')} USD → ${clientCop.toLocaleString('es-CO')} COP en tu saldo ACH (tasa ${finityRate.toLocaleString('es-CO')}, comisión ${feePct}%).`,
             });
             setUsdAmount(''); load(); onSwept?.();
-            await sleep(1400); setConvertStep(null);
+            await sleep(2800); setConvertStep(null);
             setConverting(false);
         };
         // ── RECLAMO (CAS): solo UNO convierte — este frontend o el
@@ -581,7 +629,7 @@ export const FinitySection: React.FC<{
                 text: `✅ Conversión completada: ${p.amount.toLocaleString('en-US')} USD → ${clientCop.toLocaleString('es-CO')} COP en tu saldo ACH (tasa ${finityRate.toLocaleString('es-CO')}, comisión ${feePct}%). Comisión GasFree ${Number(p.gasfreeFeeUsdt ?? 0).toFixed(2)} USDT.`,
             });
             setUsdAmount(''); load(); onSwept?.();
-            await sleep(1400); setConvertStep(null);
+            await sleep(2800); setConvertStep(null);
         } catch (e: any) {
             callGasfree({ action: 'my_convert_release', userId, txId: p.txId }).catch(() => {});
             callGasfree({ action: 'my_convert_kick', userId, txId: p.txId }).catch(() => {});
@@ -655,7 +703,7 @@ export const FinitySection: React.FC<{
                         setConvertStep('completado'); await sleep(300);
                         setConvertResult({ ok: true, text: `✅ Tu conversión quedó acreditada en tu Saldo Lincoin (COP) mientras validamos el riel ACH. Desde tu billetera COP puedes solicitar moverlo a ACH (Mover saldo).` });
                         setUsdAmount(''); load(); onSwept?.();
-                        await sleep(2200); setConvertStep(null);
+                        await sleep(2800); setConvertStep(null);
                         setConverting(false);
                         return;
                     }
@@ -822,11 +870,12 @@ export const FinitySection: React.FC<{
                     <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 animate-in fade-in duration-200" style={{ fontFamily: "'Archivo', system-ui, sans-serif" }}>
                         <div className="absolute inset-0" style={{ background: 'rgba(4,5,4,0.74)', backdropFilter: 'blur(4px)' }} />
                         <div className="relative w-full max-w-md p-7 animate-in zoom-in-95 duration-300" style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 18 }}>
+                            {convertStep === 'completado' && <ConfettiBurst />}
                             <div className="flex flex-col items-center text-center mb-6">
                                 {/* Wordmark Lincoin — tipográfico, punto verde (sin isotipo) */}
                                 <span style={{ fontWeight: 800, fontSize: 23, letterSpacing: '-0.7px', color: '#F4F4F2', marginBottom: 10 }}>Lincoin<span style={{ color: '#4ADE80' }}>.</span></span>
-                                <h3 className="text-lg font-extrabold" style={{ color: '#F4F4F2' }}>
-                                    {isError ? 'No se pudo completar' : convertStep === 'completado' ? '¡Conversión completada!' : 'Procesando conversión'}
+                                <h3 className="text-lg font-extrabold" style={{ color: convertStep === 'completado' ? '#4ADE80' : '#F4F4F2', animation: convertStep === 'completado' ? 'fx-pop 0.55s ease-out' : undefined }}>
+                                    {isError ? 'No se pudo completar' : convertStep === 'completado' ? '🎉 ¡Conversión completada!' : 'Procesando conversión'}
                                 </h3>
                                 <p className="text-xs mt-0.5" style={{ color: '#878E88' }}>
                                     {isError ? 'Revisa el detalle abajo' : 'USDT → COP · saldo ACH'}
