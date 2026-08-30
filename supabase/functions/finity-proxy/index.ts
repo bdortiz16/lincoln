@@ -822,10 +822,24 @@ Deno.serve(async (req) => {
       // `amount` = lo que paga quien te paga (COP). `destination_amount` es
       // requerido pero Finity lo recalcula al neto (amount − comisión − IVA).
       // No requiere tasa ni exchange_rate_id (misma moneda).
-      const body: Record<string, unknown> = { amount: copAmount, destination_amount: copAmount, currency: 'COP' }
-      const r = await finityFetch('/v0/payment-link/create', { method: 'POST', body: JSON.stringify(body) })
-      const data = await r.json().catch(() => null) as any
-      await logAudit(caller.userId ?? null, 'finity.payment_link.create', { status: r.status, copAmount, body, response: data })
+      // return_url/redirect_url: para que el botón "volver a la tienda" del
+      // checkout regrese a Lincoin (no a Finity). No está en el esquema
+      // documentado; si Finity lo ignora, no afecta; si lo valida estricto y
+      // rechaza, se quita. Override con FINITY_RETURN_URL.
+      const returnUrl = (Deno.env.get('FINITY_RETURN_URL') ?? 'https://lincoln-psi.vercel.app').trim().replace(/\/+$/, '')
+      const body: Record<string, unknown> = {
+        amount: copAmount, destination_amount: copAmount, currency: 'COP',
+        return_url: returnUrl, redirect_url: returnUrl, success_url: returnUrl, cancel_url: returnUrl,
+        merchant_name: 'Lincoin', store_name: 'Lincoin',
+      }
+      let r = await finityFetch('/v0/payment-link/create', { method: 'POST', body: JSON.stringify(body) })
+      let data = await r.json().catch(() => null) as any
+      // Si Finity rechaza por campos extra (return_url…), reintentar limpio.
+      if (!r.ok) {
+        r = await finityFetch('/v0/payment-link/create', { method: 'POST', body: JSON.stringify({ amount: copAmount, destination_amount: copAmount, currency: 'COP' }) })
+        data = await r.json().catch(() => null) as any
+      }
+      await logAudit(caller.userId ?? null, 'finity.payment_link.create', { status: r.status, copAmount, response: data })
       const linkId = String(data?.id ?? '')
       if (!r.ok || !linkId) {
         return json(200, { ok: false, status: r.status, error: 'link_failed', message: 'No se pudo crear el cobro.', data })
