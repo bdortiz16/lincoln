@@ -296,9 +296,15 @@ Deno.serve(async (req: Request) => {
           feeCop = Math.round(delta * BREB_CARGUE_FEE_PCT / 100)
           credit = delta - feeCop
         }
-        const newBal = parseFloat(Math.max(0, (bals[cur] ?? 0) + credit).toFixed(2))
-        await db.from('users').update({ balances: { ...bals, [cur]: newBal } }).eq('id', body.userId)
-        await db.from('transactions').insert({
+        // recordOnly=true → SOLO registra el movimiento histórico, sin tocar
+        // el saldo (para cuadrar cargues viejos que se acreditaron sin fila
+        // en transacciones y el resumen de Movimientos no los veía). En modo
+        // registro no se aplica comisión: se anota el monto tal cual.
+        const recordOnly = body.recordOnly === true
+        if (recordOnly) { feeCop = 0; credit = delta }
+        // ATÓMICO: primero el movimiento — si el registro falla, NO se toca
+        // el saldo (un cargue sin rastro en el historial es un descuadre).
+        const { error: txInsErr } = await db.from('transactions').insert({
           user_id: body.userId,
           type: delta > 0 ? 'load' : 'adjustment',
           // El movimiento del cliente muestra lo NETO acreditado.
@@ -306,17 +312,24 @@ Deno.serve(async (req: Request) => {
           currency: cur,
           status: 'Completado',
           raw_data: {
-            source: 'admin_cargue',
+            source: recordOnly ? 'admin_backfill' : 'admin_cargue',
             rail: cur,
             direction: delta > 0 ? 'credit' : 'debit',
+            ...(recordOnly ? { recordOnly: true } : {}),
             ...(feeCop > 0 ? { grossCop: delta, feeCop, feePct: BREB_CARGUE_FEE_PCT, feeConcept: 'Comisión por recepción Bre-B' } : {}),
-            note: body.note ?? (delta > 0
+            note: body.note ?? (recordOnly ? 'Registro histórico (no afecta saldo)' : delta > 0
               ? (feeCop > 0 ? `Cargue Bre-B · comisión ${BREB_CARGUE_FEE_PCT}% por recepción` : 'Cargue manual (Mouv)')
               : 'Ajuste manual'),
             creditedAt: new Date().toISOString(),
           },
         })
-        return json({ success: true, newBalance: newBal, grossCop: Math.abs(delta), feeCop, netCop: Math.abs(credit), feePct: feeCop > 0 ? BREB_CARGUE_FEE_PCT : 0 })
+        if (txInsErr) return json({ success: false, error: `No se registró el movimiento (${txInsErr.message}) — el saldo NO fue modificado.` }, 500)
+        let newBal = parseFloat(Number(bals[cur] ?? 0).toFixed(2))
+        if (!recordOnly) {
+          newBal = parseFloat(Math.max(0, (bals[cur] ?? 0) + credit).toFixed(2))
+          await db.from('users').update({ balances: { ...bals, [cur]: newBal } }).eq('id', body.userId)
+        }
+        return json({ success: true, newBalance: newBal, recordOnly, grossCop: Math.abs(delta), feeCop, netCop: Math.abs(credit), feePct: feeCop > 0 ? BREB_CARGUE_FEE_PCT : 0 })
       }
 
       // ── Solicitudes "Mover Saldo Lincoin → ACH" (aprobación manual) ──

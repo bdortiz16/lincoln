@@ -330,6 +330,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const [carguesAmount, setCarguesAmount] = useState('');
   const [carguesNote, setCarguesNote] = useState('');
   const [carguesDir, setCarguesDir] = useState<'credit' | 'debit'>('credit');
+  const [carguesRecordOnly, setCarguesRecordOnly] = useState(false);
   const [carguesBusy, setCarguesBusy] = useState(false);
   const [carguesMsg, setCarguesMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [carguesConfirm, setCarguesConfirm] = useState<{ raw: number } | null>(null);
@@ -397,11 +398,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       const r = await fetch(`${SURL}/functions/v1/admin-data`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: authHeader },
-        body: JSON.stringify({ action: 'admin_credit_balance', userId: carguesClient.id, currency: carguesRail, amount: delta, note: carguesNote.trim() || undefined }),
+        body: JSON.stringify({ action: 'admin_credit_balance', userId: carguesClient.id, currency: carguesRail, amount: delta, note: carguesNote.trim() || undefined, ...(carguesRecordOnly ? { recordOnly: true } : {}) }),
       });
       const d = await r.json();
       if (d?.success) {
-        setCarguesMsg({ ok: true, text: d.feeCop > 0
+        setCarguesMsg({ ok: true, text: d.recordOnly
+          ? `✅ Movimiento registrado en el historial. El saldo NO cambió (${formatMoney(d.newBalance ?? 0, '')} COP).`
+          : d.feeCop > 0
           ? `✅ ${railLabel} actualizado. Cargue ${formatMoney(d.grossCop ?? raw, '')} − comisión ${formatMoney(d.feeCop, '')} (${d.feePct}%) = ${formatMoney(d.netCop ?? 0, '')} acreditados. Nuevo saldo: ${formatMoney(d.newBalance ?? 0, '')} COP`
           : `✅ ${railLabel} actualizado. Nuevo saldo: ${formatMoney(d.newBalance ?? 0, '')} COP` });
         setCarguesAmount(''); setCarguesNote('');
@@ -1518,8 +1521,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                     placeholder="Ref. Mouv, motivo del ajuste..."
                     value={carguesNote}
                     onChange={(e) => setCarguesNote(e.target.value)}
-                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm text-slate-800 focus:border-[#0C0E0D] outline-none mb-4"
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm text-slate-800 focus:border-[#0C0E0D] outline-none mb-3"
                   />
+                  {/* Registro histórico: crea el MOVIMIENTO sin tocar el saldo —
+                      para cuadrar cargues viejos que se acreditaron sin fila en
+                      transacciones (el resumen de Movimientos no los veía). */}
+                  <label className="flex items-center gap-2 mb-4 cursor-pointer select-none">
+                    <input type="checkbox" checked={carguesRecordOnly} onChange={e => setCarguesRecordOnly(e.target.checked)} style={{ width: 15, height: 15, accentColor: '#4ADE80' }} />
+                    <span className="text-xs text-slate-500">Solo registrar movimiento histórico (<b>no</b> modifica el saldo ni cobra comisión)</span>
+                  </label>
 
                   {carguesMsg && (
                     <div className={`text-xs font-medium rounded-lg p-3 mb-3 ${carguesMsg.ok ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
@@ -1559,7 +1569,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                 {(() => {
                   // Bre-B: al cliente se le cobra 0,10% POR RECIBIR el cargue —
                   // el neto es lo que de verdad entra a su billetera Bre-B.
-                  const isBrebCredit = carguesRail === 'COP_BREB' && carguesDir === 'credit';
+                  const isBrebCredit = carguesRail === 'COP_BREB' && carguesDir === 'credit' && !carguesRecordOnly;
                   const fee = isBrebCredit ? Math.round(carguesConfirm.raw * 0.10 / 100) : 0;
                   const net = carguesConfirm.raw - fee;
                   const deltaNet = carguesDir === 'credit' ? net : -carguesConfirm.raw;
