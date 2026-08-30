@@ -311,9 +311,9 @@ async function logAudit(userId: string | null, action: string, metadata: Record<
 
 // Valida quién llama: admin-bypass (header compartido) o un usuario real con
 // JWT válido. Balance y payouts son sensibles → siempre requieren caller.
-async function validCaller(req: Request, payload: any): Promise<{ ok: boolean; userId: string | null; admin: boolean }> {
+async function validCaller(req: Request, payload: any): Promise<{ ok: boolean; userId: string | null; admin: boolean; viaJwt: boolean }> {
   const authHeader = req.headers.get('Authorization') ?? ''
-  if (ADMIN_PASS && authHeader === `AdminBypass ${ADMIN_PASS}`) return { ok: true, userId: null, admin: true }
+  if (ADMIN_PASS && authHeader === `AdminBypass ${ADMIN_PASS}`) return { ok: true, userId: null, admin: true, viaJwt: true }
   const jwt = authHeader.replace('Bearer ', '').trim()
   if (jwt) {
     try {
@@ -323,20 +323,32 @@ async function validCaller(req: Request, payload: any): Promise<{ ok: boolean; u
       ]) as any
       if (user?.id) {
         const { data: u } = await db.from('users').select('id, role').eq('id', user.id).maybeSingle()
-        return { ok: true, userId: user.id, admin: (u as any)?.role === 'admin' }
+        // viaJwt = identidad PROBADA por un token real (no un uid del body).
+        return { ok: true, userId: user.id, admin: (u as any)?.role === 'admin', viaJwt: true }
       }
     } catch { /* jwt inválido/vencido → cae abajo */ }
   }
-  // Respaldo: user_id explícito que exista (medio-auth, como en otros proxies).
-  // NUNCA eleva a admin por un uid del body — el rol admin solo se obtiene con
-  // un JWT real (arriba) o el header AdminBypass. Sin esto, pasar el uuid del
-  // admin desbloqueaba ping/balance/treasury (saldos de la wallet compartida).
+  // Respaldo "medio-auth": user_id explícito que exista. Sirve para acciones
+  // NO sensibles (cotizar, leer estado), pero NUNCA autoriza mover dinero —
+  // eso lo exige requireOwner() con viaJwt. NUNCA eleva a admin por un uid.
   const uid = payload?.user_id ?? payload?.userId
   if (uid) {
     const { data } = await db.from('users').select('id').eq('id', uid).maybeSingle()
-    if (data) return { ok: true, userId: uid, admin: false }
+    if (data) return { ok: true, userId: uid, admin: false, viaJwt: false }
   }
-  return { ok: false, userId: null, admin: false }
+  return { ok: false, userId: null, admin: false, viaJwt: false }
+}
+
+// Puerta para acciones que MUEVEN DINERO o leen saldos sensibles: el que
+// llama debe haber probado su identidad con un JWT real (o AdminBypass). Un
+// simple user_id en el body NO basta — así nadie puede, con solo la llave
+// pública y el id de una víctima, disparar un payout en la cuenta ajena.
+// Devuelve el userId efectivo (el del JWT para no-admins; el del body si es
+// admin) o null si no está autorizado.
+function requireOwner(caller: { userId: string | null; admin: boolean; viaJwt: boolean }, payload: any): string | null {
+  if (caller.admin) return payload?.user_id ?? payload?.userId ?? caller.userId ?? null
+  if (caller.viaJwt && caller.userId) return caller.userId
+  return null
 }
 
 serve(async (req: Request) => {
@@ -619,8 +631,11 @@ serve(async (req: Request) => {
   if (action === 'payout_breb' || action === 'payout_ach') {
     const rail: 'BREB' | 'ACH' = action === 'payout_breb' ? 'BREB' : 'ACH'
     const railCol = action === 'payout_breb' ? 'COP_BREB' : 'COP_ACH'
-    const userId = caller.userId ?? payload.userId ?? payload.user_id
-    if (!userId) return json(400, { error: 'missing_user', message: 'Falta el usuario.' })
+    // SEGURIDAD: mover dinero exige identidad PROBADA con JWT real (o admin).
+    // Un simple user_id en el body ya NO autoriza un payout — así nadie drena
+    // la cuenta de otro con solo la llave pública + el id de la víctima.
+    const userId = requireOwner(caller, payload)
+    if (!userId) return json(403, { error: 'forbidden', message: 'Esta operación requiere una sesión válida. Vuelve a iniciar sesión.' })
 
     const amount = Number(payload.amount)
     if (!isFinite(amount) || amount <= 0) return json(400, { error: 'bad_amount', message: 'Monto inválido.' })
