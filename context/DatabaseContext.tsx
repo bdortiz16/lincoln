@@ -1028,9 +1028,38 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   // --- AUTH ---
 
   const loginUser = async (email: string, pass?: string): Promise<User | null> => {
-    // Admin bypass: authenticate via env vars, skip Supabase Auth entirely
-    // Requires VITE_ADMIN_PASSWORD to be explicitly set — empty string disables the bypass
-    if (SEED_ADMIN_PASSWORD && email === SEED_ADMIN_EMAIL && pass === SEED_ADMIN_PASSWORD) {
+    const isSeedAdminEmail = !!SEED_ADMIN_EMAIL && email === SEED_ADMIN_EMAIL;
+
+    // ── SEGURIDAD (migración del login admin) ──────────────────────────────
+    // Para el correo de admin se intenta PRIMERO una cuenta REAL de Supabase
+    // (sesión con JWT y role='admin' en la tabla users). Si existe, ese es el
+    // camino seguro y se usa. El AdminBypass local de abajo queda solo como
+    // RED DE SEGURIDAD por si la cuenta real aún no está creada — así nunca
+    // te quedas fuera del panel durante la transición. Cuando confirmes que
+    // entras con la cuenta real, se retira el bypass (Fase 2).
+    if (isSupabaseConfigured && isSeedAdminEmail && pass) {
+      try {
+        const { data, error } = await Promise.race([
+          supabase.auth.signInWithPassword({ email, password: pass }),
+          new Promise<any>(resolve => setTimeout(() => resolve({ data: null, error: { message: 'timeout' } }), 6000)),
+        ]) as any;
+        if (!error && data?.user) {
+          const { data: profile } = await supabase.from('users').select('*').eq('id', data.user.id).single();
+          if ((profile as any)?.role === 'admin') {
+            const u = mapSupabaseUser(profile);
+            setCurrentUser(u);
+            return u;
+          }
+          // La cuenta existe pero todavía NO es admin en la tabla users → no
+          // dejamos una sesión no-admin colgando; cerramos y caemos al bypass.
+          try { await supabase.auth.signOut({ scope: 'local' }); } catch { /* noop */ }
+        }
+      } catch { /* cae al AdminBypass local */ }
+    }
+
+    // Admin bypass (RED DE SEGURIDAD): authenticate via env vars, skip Supabase.
+    // Requires VITE_ADMIN_PASSWORD to be explicitly set — empty string disables it.
+    if (SEED_ADMIN_PASSWORD && isSeedAdminEmail && pass === SEED_ADMIN_PASSWORD) {
       const adminUser: User = {
         id: 'admin-bypass',
         email: SEED_ADMIN_EMAIL,

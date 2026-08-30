@@ -339,9 +339,15 @@ async function validCaller(req: Request, payload: Record<string, unknown>): Prom
   // Admin explícito (AdminBypass) también cuenta como interno de confianza.
   if (ADMIN_PASS && auth === `AdminBypass ${ADMIN_PASS}`) return { ok: true, internal: true }
 
-  // (a) JWT real de Supabase
+  // (a) JWT real de Supabase. Si el usuario es admin, se marca `internal`
+  // (confianza plena) para que el panel de admin pueda dejar de usar la
+  // anon-key y autenticar con su propia sesión.
   const { data } = await db.auth.getUser(jwt)
-  if (data?.user) return { ok: true, userId: data.user.id }
+  if (data?.user) {
+    const { data: prof } = await db.from('users').select('role').eq('id', data.user.id).maybeSingle()
+    const isAdmin = (prof as any)?.role === 'admin'
+    return { ok: true, userId: data.user.id, internal: isAdmin }
+  }
 
   // (b) anon key del proyecto + user_id existente en public.users
   if (isProjectAnonKey(jwt)) {
