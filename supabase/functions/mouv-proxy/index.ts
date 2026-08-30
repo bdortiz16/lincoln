@@ -532,16 +532,27 @@ serve(async (req: Request) => {
       reference, description: String(payload.concept ?? 'Recarga Lincoin'),
       callbackUrl: `${SUPABASE_URL}/functions/v1/mouv-proxy`,
     }
-    const paths = ['/collections', '/collections/create', '/payin', '/payin/pse', '/pse/collect', '/transfers/collect']
-    let last: any = null
+    // Lista AMPLIA de rutas candidatas (Mouv usa /api sin versión, estilo
+    // /transfers/send). Se prueba POST en cada una. Un 404 = ruta inexistente;
+    // cualquier OTRO código (400/401/405/422…) significa que la RUTA EXISTE
+    // pero falta ajustar método/body/auth → se reporta como pista fuerte.
+    const paths = [
+      '/collections', '/collections/create', '/collection', '/collect',
+      '/payin', '/payin/pse', '/payins', '/pay-in', '/pse', '/pse/create', '/pse/collect', '/pse/payment',
+      '/recaudo', '/recaudos', '/charges', '/charge',
+      '/payment-links', '/payment_links', '/paymentlinks', '/links', '/link', '/checkout',
+      '/transfers/collect', '/transfers/receive', '/transfers/payin', '/transfers/pse', '/transfers/collect-pse',
+      '/wallets/collect', '/wallets/payin', '/payments/collect', '/payments/pse', '/payments',
+    ]
+    const tried: { path: string; status: number }[] = []
+    const exists: { path: string; status: number; data: any }[] = []
     for (const p of paths) {
       const r = await mouvFetch(p, { method: 'POST', body: JSON.stringify(bodyBase) })
-      last = { path: p, status: r.status, data: r.data }
+      tried.push({ path: p, status: r.status })
       if (r.ok) {
         const d: any = r.data ?? {}
         const link = d.url ?? d.link ?? d.paymentUrl ?? d.checkoutUrl ?? d.redirectUrl ?? d.data?.url ?? null
         const providerRef = d.id ?? d.reference ?? d.collectionId ?? reference
-        // Registrar el recaudo como Pendiente (se acredita al confirmar).
         await db.from('transactions').insert({
           user_id: userId, type: 'load', amount: Math.round(amount), currency: railCol, status: 'Pendiente',
           raw_data: { source: 'mouv_payin_pse', method: 'PSE', reference, providerRef, link, title: 'Recaudo PSE (link)', createdAt: new Date().toISOString() },
@@ -549,11 +560,18 @@ serve(async (req: Request) => {
         await logAudit(userId, 'mouv.payin_pse.created', { amount, reference, providerRef, path: p })
         return json(200, { ok: true, link, reference, providerRef, path: p, raw: d })
       }
-      if (r.status && r.status !== 404) break // error real (no "ruta inexistente")
+      // 404 = ruta no existe. Cualquier otro código = la ruta EXISTE.
+      if (r.status && r.status !== 404 && r.status !== 0) exists.push({ path: p, status: r.status, data: r.data })
     }
-    return json(200, { ok: false, error: 'payin_failed',
-      message: 'No se pudo crear el link de recaudo PSE. Revisa la ruta/campos con la doc de Mouv.',
-      attempted: last })
+    await logAudit(userId, 'mouv.payin_pse.discover', { exists, tried })
+    if (exists.length > 0) {
+      return json(200, { ok: false, error: 'route_found_needs_fields',
+        message: `Encontré la ruta de recaudo (${exists[0].path}) pero falta ajustar el cuerpo. Detalle: ${JSON.stringify(exists[0].data).slice(0, 200)}`,
+        candidates: exists })
+    }
+    return json(200, { ok: false, error: 'payin_not_supported',
+      message: `Ninguna ruta de recaudo respondió (todas 404). Mouv quizá no tiene recaudo PSE por API en esta cuenta, o la ruta es distinta. Probé ${paths.length} rutas.`,
+      tried })
   }
 
   // ── Cotización de comisión para el paso Confirmar del cliente ──
