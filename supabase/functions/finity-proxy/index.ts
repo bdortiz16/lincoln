@@ -905,16 +905,26 @@ Deno.serve(async (req) => {
       const isDone = (m: any) => /complet|success|paid|aprobad|settled/i.test(String(m?.status ?? m?.state ?? ''))
       const amountOf = (m: any) => Number(m?.origin_amount ?? m?.amount ?? m?.original_amount ?? m?.monto ?? 0)
       let credited = 0
+      // Un mismo movimiento REAL de Finity solo puede pagar UN cobro. Sin esto,
+      // dos cobros pendientes del mismo monto (o un cobro nunca pagado + una
+      // recarga real por el mismo valor) hacían match contra el MISMO
+      // movimiento y se acreditaba dos veces (dinero creado de la nada).
+      const consumed = new Set<string>()
+      const movId = (m: any) => String(m?.id ?? m?.reference ?? m?.movement_id ?? JSON.stringify(m))
       for (const tx of pending) {
         const rd = (tx.raw_data ?? {}) as any
         const gross = Number(rd.grossCop ?? tx.amount ?? 0)
         // 1) por id del link (lo más fiable) o 2) por monto bruto + completada.
+        // El id del link es preferente; el monto es respaldo — y siempre se
+        // exige que el movimiento NO se haya usado ya para otro cobro.
         const match = rows.find(m => {
+          if (consumed.has(movId(m))) return false
           const byId = rd.reference && JSON.stringify(m).includes(String(rd.reference))
           const byAmt = isRecarga(m) && isDone(m) && Math.abs(amountOf(m) - gross) <= Math.max(2, gross * 0.005)
           return byId || byAmt
         })
         if (!match) continue
+        consumed.add(movId(match))
         // CAS: reclamar la acreditación.
         const { data: claimed } = await db.from('transactions').update({
           status: 'Completado', raw_data: { ...rd, payinStatus: 'PAID', finityMovement: match?.id ?? null, paidAt: new Date().toISOString() },

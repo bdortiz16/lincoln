@@ -410,6 +410,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // Candado síncrono anti doble-clic (el estado de React tarda un render en
   // reflejarse; el ref bloquea desde el primer instante).
   const sendingRef = useRef(false);
+  // Mismos candados SÍNCRONOS anti doble-clic para pagar (P2P) y convertir:
+  // el estado de React tarda un render; el ref bloquea desde el primer clic.
+  const payingRef = useRef(false);
+  const convertingRef = useRef(false);
   // true = se despachó una orden a Mouv y NO sabemos si se creó (timeout /
   // error de red). Bloquea reintentos hasta que el usuario verifique.
   const [mouvUnknown, setMouvUnknown] = useState(false);
@@ -1332,11 +1336,13 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
   const handleConvertSubmit = () => {
       if (!rawAmount || rawAmount <= 0) return;
+      if (convertingRef.current || isConverting) return; // candado síncrono anti doble-conversión
       const currentBalance = getBalance(sourceCurr);
       if (currentBalance < rawAmount) {
           showToast(`Saldo insuficiente en ${sourceCurr}.`, 3000, 'error');
           return;
       }
+      convertingRef.current = true;
       setIsConverting(true);
       const convTimeout = new Promise<{ error: string }>(resolve =>
           setTimeout(() => resolve({ error: 'Tiempo de espera agotado. Intenta de nuevo.' }), 12000)
@@ -1345,6 +1351,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           performConversion(sourceCurr, targetCurr, rawAmount, finalAmount, finalFee, appliedCoupon?.code),
           convTimeout,
       ]).then((result) => {
+          convertingRef.current = false;
           setIsConverting(false);
           if (result?.error) {
               showToast(result.error, 4000, 'error');
@@ -1352,7 +1359,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               closeConvertModal();
               showToast(`Conversión exitosa. Has recibido ${formatMoney(finalAmount, targetCurr)} ${targetCurr}`);
           }
-      }).catch(() => { setIsConverting(false); showToast('Error al procesar la conversión.', 4000, 'error'); });
+      }).catch(() => { convertingRef.current = false; setIsConverting(false); showToast('Error al procesar la conversión.', 4000, 'error'); });
   };
 
   const handleSendNext = () => {
@@ -1407,6 +1414,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
   const executePay = async () => {
       if (!payRecipientUser) return;
+      if (payingRef.current || isPaySending) return; // candado síncrono anti doble-envío
+      payingRef.current = true;
       setIsPaySending(true);
       try {
           const timeout = new Promise<{ error: string }>(resolve =>
@@ -1419,7 +1428,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           if (result?.error) { showToast(result.error, 4000, 'error'); }
           else { setSendStep(4); }
       } catch { showToast('Error al procesar el pago', 4000, 'error'); }
-      finally { setIsPaySending(false); }
+      finally { payingRef.current = false; setIsPaySending(false); }
   };
 
   const handlePaySubmit = () => {
