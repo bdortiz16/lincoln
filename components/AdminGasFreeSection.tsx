@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Zap, RefreshCw, Copy, Search, Landmark, Activity, Send, X } from 'lucide-react';
+import { Zap, RefreshCw, Copy, Search, Landmark, Activity, Send, X, Settings } from 'lucide-react';
 import { useDatabase } from '../context/DatabaseContext';
+import { RecaudadoraRotativaCard } from './RecaudadoraRotativaCard';
 
 // ─────────────────────────────────────────────
 // AdminGasFreeSection — Panel "GasFree USDT" del admin de Empresas.
@@ -83,6 +84,9 @@ export const AdminGasFreeSection: React.FC = () => {
     // Estado de la recaudadora GasFree
     const [rec, setRec] = useState<any>(null);
     const [recLoading, setRecLoading] = useState(false);
+    // Panel "Ajustes" de Tesorería: muestra la wallet dueña rotativa y sus
+    // períodos archivados SOLO bajo demanda (antes salía siempre y confundía).
+    const [showTreasuryAdjust, setShowTreasuryAdjust] = useState(false);
 
     // Saldos de la plataforma Mouv (USDt + Peso Mouv/COP)
     const [mouvBal, setMouvBal] = useState<{ usdt: number | null; cop: number | null; sandbox?: boolean; error?: string; raw?: any; status?: any; source?: string; needsPortalCreds?: boolean } | null>(null);
@@ -353,12 +357,12 @@ export const AdminGasFreeSection: React.FC = () => {
                 </p>
             </div>
 
-            {/* La tarjeta de la "Wallet recaudadora rotativa" (dirección EOA
-                dueña + períodos archivados) se QUITÓ de esta pantalla: mostraba
-                una segunda dirección (la EOA TGaB1…) que NO es donde se
-                deposita — el flujo automático usa la CAJITA GasFree de la
-                tesorería (abajo). Depositar a la EOA dejaba la plata fuera del
-                circuito automático. La rotación sigue funcionando por debajo. */}
+            {/* La "Wallet recaudadora rotativa" (dirección EOA dueña + períodos
+                archivados) ya NO se muestra siempre: confundía con una segunda
+                dirección (la EOA) que NO es donde se deposita — el flujo
+                automático usa la CAJITA GasFree de la Tesorería. Ahora vive
+                detrás del botón "Ajustes" de la Tesorería (más abajo), para
+                consultarla/actualizarla manualmente cuando haga falta. */}
 
             {/* Tesorería (recaudadora): aquí llega el USDT de las conversiones de
                 clientes; desde aquí se pagan los envíos y a los proveedores.
@@ -381,6 +385,10 @@ export const AdminGasFreeSection: React.FC = () => {
                             </button>
                             <button onClick={loadRec} disabled={recLoading} className="flex items-center gap-2 px-3 py-1.5 text-xs font-bold bg-white/10 hover:bg-white/20 rounded-lg disabled:opacity-60 transition-colors">
                                 <RefreshCw size={13} className={recLoading ? 'animate-spin' : ''} /> {recLoading ? 'Consultando…' : rec?.gasFreeAddress ? 'Actualizar' : 'Generar wallet'}
+                            </button>
+                            <button onClick={() => setShowTreasuryAdjust(v => !v)} className={`flex items-center gap-2 px-3 py-1.5 text-xs font-bold rounded-lg transition-colors ${showTreasuryAdjust ? 'bg-white/25' : 'bg-white/10 hover:bg-white/20'}`}
+                                title="Ver/actualizar manualmente la wallet dueña (rotativa) y sus períodos archivados">
+                                <Settings size={13} /> Ajustes
                             </button>
                         </div>
                     </div>
@@ -435,6 +443,17 @@ export const AdminGasFreeSection: React.FC = () => {
                     )}
                 </div>
             </div>
+
+            {/* Ajustes de Tesorería (MANUAL, bajo demanda): wallet dueña
+                rotativa + períodos archivados. NO es donde se deposita. */}
+            {showTreasuryAdjust && (
+                <div className="space-y-2">
+                    <p className="text-[11px] font-bold text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+                        ⚙️ Ajustes de Tesorería — esta es la wallet DUEÑA (rotativa) y sus períodos archivados, solo para consulta y actualización manual. <b>Aquí NO se deposita</b>: los depósitos van a la cajita GasFree de la Tesorería de arriba.
+                    </p>
+                    <RecaudadoraRotativaCard />
+                </div>
+            )}
 
             {/* Saldos en la plataforma Mouv (USDt + Peso Mouv/COP) */}
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">

@@ -897,6 +897,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       let alive = true;
       const poll = async () => {
           await refreshGasfreeBal(uid);
+          // Nunca dos verificaciones EN PARALELO (poll + botón "Verificar" +
+          // cambio de vista): el servidor además tiene candado CAS, pero
+          // evitar la carrera desde aquí ahorra llamadas y toasts raros.
+          if (verifyDepositInFlight.current) return;
+          verifyDepositInFlight.current = true;
           try {
               const d = await callGasfree({ action: 'my_verify_deposit', userId: uid });
               if (!alive) return;
@@ -905,9 +910,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   refreshData?.();
                   refreshGasfreeBal(uid);
                   celebrateDeposit(credited);
-                  showToast(`✅ Depósito detectado: +${credited.toLocaleString('en-US')} USDT`);
+                  showToast(`✅ Depósito confirmado: +${credited.toLocaleString('en-US')} USDT`);
               }
           } catch { /* silencioso — es un poll en segundo plano, no una acción del usuario */ }
+          finally { verifyDepositInFlight.current = false; }
       };
       poll(); // una verificación inmediata al entrar/cambiar de vista
       const t = setInterval(poll, 15000);
@@ -946,8 +952,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   };
 
   const verifyUsdtDeposit = async () => {
-      if (!currentUser?.id || usdtVerifying) return;
+      if (!currentUser?.id || usdtVerifying || verifyDepositInFlight.current) return;
       setUsdtVerifying(true);
+      verifyDepositInFlight.current = true;
       try {
           const d = await callGasfree({ action: 'my_verify_deposit', userId: currentUser.id });
           const credited = Number(d?.credited ?? 0);

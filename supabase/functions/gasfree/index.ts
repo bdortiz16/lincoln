@@ -1139,6 +1139,14 @@ async function myVerifyDeposit(userId: string) {
   // una fuente nueva, sin acreditaciones previas que reconstruir.
   const credited: number = typeof raw.gasfreeCredited === 'number' ? raw.gasfreeCredited : 0
   const diff = parseFloat((onchainBal - credited).toFixed(dec))
+  // AUTOCURACIÓN: si lo acreditado quedó POR ENCIMA del saldo on-chain
+  // (p. ej. por una doble acreditación vieja), se re-basa el contador al
+  // saldo real — sin tocar balances ni crear movimientos. Si no, el
+  // próximo depósito no se acreditaría (diff quedaría en 0 para siempre).
+  if (diff < -0.0001) {
+    await db.from('users').update({ raw_data: { ...raw, gasfreeCredited: onchainBal } }).eq('id', userId)
+    return { synced: false, onchain: onchainBal, credited: 0, diff: 0, rebased: true, reason: `Contador re-basado al saldo real (${onchainBal} USDT).` }
+  }
   if (diff <= 0.0001) {
     // Diagnóstico: leer cada vía por separado para saber por qué da 0.
     const viaBalanceOf = await tokenBalanceOn(acct.gasFreeAddress, token.tokenAddress, dec, CFG.tronHost)
@@ -1153,10 +1161,24 @@ async function myVerifyDeposit(userId: string) {
   const bals = (u.balances as Record<string, number>) ?? {}
   const newUsd = parseFloat(((Number(bals.USD ?? 0)) + diff).toFixed(2))
   const newCredited = parseFloat((credited + diff).toFixed(dec))
-  await db.from('users').update({
+  // ── ANTI-DOBLE-ACREDITACIÓN (CAS) ──────────────────────────────
+  // El poll de 15 s + el botón "Verificar" pueden llegar AL TIEMPO y ambos
+  // ver el mismo depósito (lectura → comparación → escritura sin candado):
+  // eso acreditaba doble y creaba 2 movimientos + notificaciones falsas.
+  // La escritura ahora es CONDICIONAL: solo pasa si gasfreeCredited sigue
+  // EXACTAMENTE como lo leímos — el perdedor de la carrera no escribe,
+  // no inserta movimiento y responde synced:false (sin toast).
+  let upd = db.from('users').update({
     balances: { ...bals, USD: newUsd },
     raw_data: { ...raw, gasfreeCredited: newCredited },
   }).eq('id', userId)
+  upd = typeof raw.gasfreeCredited === 'number'
+    ? upd.filter('raw_data->>gasfreeCredited', 'eq', String(raw.gasfreeCredited))
+    : upd.filter('raw_data->>gasfreeCredited', 'is', null)
+  const { data: updRows, error: updErr } = await upd.select('id')
+  if (updErr || !updRows || updRows.length === 0) {
+    return { synced: false, raced: true, onchain: onchainBal, credited: 0, diff: 0, reason: 'Otra verificación acreditó este depósito hace un instante.' }
+  }
   // Enriquecer el comprobante con la transferencia entrante real: de dónde
   // vino, a qué dirección llegó (la GasFree del usuario), la red y el TxID.
   const inc = await latestIncomingTrc20(acct.gasFreeAddress, token.tokenAddress, dec, diff)
