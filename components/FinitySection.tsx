@@ -742,13 +742,17 @@ export const FinitySection: React.FC<{
                         if (nowBal != null && nowBal >= providerBalBefore + fwdUsd * 0.9) return true;
                     } catch { /* siguiente vía */ }
                 }
-                // b) por movimiento de recarga registrado
+                // b) por movimiento registrado en la plataforma. DOS pasadas:
+                //    1ª exige que el movimiento "parezca" recarga (tipo);
+                //    2ª acepta CUALQUIER movimiento reciente con el monto
+                //    exacto — la API puede nombrar el tipo distinto al portal
+                //    y el detector estricto dejaba la conversión colgada
+                //    aunque la recarga SÍ estuviera registrada.
                 try {
                     const mv = await callFinity('movements', userId);
                     const rows = rowsOf(mv?.data).slice(0, 12);
                     const nowMs = Date.now();
-                    for (const r of rows) {
-                        if (!/recarga|recharge|deposit|blockchain|top.?up/i.test(JSON.stringify(r))) continue;
+                    const amountsOf = (r: any): number[] => {
                         const nums: number[] = [];
                         const collect = (o: any, depth = 0) => {
                             if (!o || typeof o !== 'object' || depth > 2) return;
@@ -759,12 +763,20 @@ export const FinitySection: React.FC<{
                             }
                         };
                         collect(r);
-                        if (!nums.some(n => Math.abs(n - fwdUsd) <= Math.max(0.05, fwdUsd * 0.01))) continue;
-                        // Si el movimiento trae fecha, exigir que sea reciente
-                        // (evita confundirse con una recarga vieja del mismo monto).
+                        return nums;
+                    };
+                    const recentOk = (r: any) => {
                         const dateStr = (r.created_at ?? r.createdAt ?? r.date ?? r.creation_date ?? null) as string | null;
-                        if (dateStr) { const t = Date.parse(dateStr); if (isFinite(t) && nowMs - t > 20 * 60 * 1000) continue; }
-                        return true;
+                        if (!dateStr) return true;
+                        const t = Date.parse(dateStr);
+                        return !isFinite(t) || nowMs - t <= 30 * 60 * 1000;
+                    };
+                    const amountOk = (r: any) => amountsOf(r).some(n => Math.abs(n - fwdUsd) <= Math.max(0.05, fwdUsd * 0.01));
+                    for (const r of rows) {
+                        if (/recarga|recharge|deposit|blockchain|top.?up/i.test(JSON.stringify(r)) && amountOk(r) && recentOk(r)) return true;
+                    }
+                    for (const r of rows.slice(0, 8)) {
+                        if (amountOk(r) && recentOk(r)) return true;
                     }
                 } catch { /* siguiente tick */ }
                 return false;

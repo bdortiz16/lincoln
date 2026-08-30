@@ -1190,8 +1190,7 @@ async function rechargeRegisteredAtProvider(uid: string, fwd: number): Promise<b
     const rows: any[] = Array.isArray(d) ? d : Array.isArray(d.data) ? d.data : Array.isArray(d.items) ? d.items
       : Array.isArray(d.movements) ? d.movements : Array.isArray(d.results) ? d.results : []
     const nowMs = Date.now()
-    for (const r of rows.slice(0, 12)) {
-      if (!/recarga|recharge|deposit|blockchain|top.?up/i.test(JSON.stringify(r))) continue
+    const amountsOf = (r: any): number[] => {
       const nums: number[] = []
       const collect = (o: any, depth = 0) => {
         if (!o || typeof o !== 'object' || depth > 2) return
@@ -1202,10 +1201,22 @@ async function rechargeRegisteredAtProvider(uid: string, fwd: number): Promise<b
         }
       }
       collect(r)
-      if (!nums.some(n => Math.abs(n - fwd) <= Math.max(0.05, fwd * 0.01))) continue
+      return nums
+    }
+    const recentOk = (r: any) => {
       const ds = (r.created_at ?? r.createdAt ?? r.date ?? r.creation_date ?? null) as string | null
-      if (ds) { const t = Date.parse(ds); if (isFinite(t) && nowMs - t > 30 * 60 * 1000) continue }
-      return true
+      if (!ds) return true
+      const t = Date.parse(ds)
+      return !isFinite(t) || nowMs - t <= 30 * 60 * 1000
+    }
+    const amountOk = (r: any) => amountsOf(r).some(n => Math.abs(n - fwd) <= Math.max(0.05, fwd * 0.01))
+    // 1ª pasada: movimiento que "parece" recarga. 2ª: cualquier movimiento
+    // reciente con el monto exacto (la API puede nombrar el tipo distinto).
+    for (const r of rows.slice(0, 12)) {
+      if (/recarga|recharge|deposit|blockchain|top.?up/i.test(JSON.stringify(r)) && amountOk(r) && recentOk(r)) return true
+    }
+    for (const r of rows.slice(0, 8)) {
+      if (amountOk(r) && recentOk(r)) return true
     }
   } catch { /* próximo intento */ }
   return false

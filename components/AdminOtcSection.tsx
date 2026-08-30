@@ -372,16 +372,20 @@ export const AdminOtcSection: React.FC = () => {
                             <p className="text-sm font-bold text-slate-800">🔧 Cuentas inscritas en el proveedor (debug)</p>
                             <p className="text-[11px] text-slate-400">Lista cruda de external accounts en Finity con su estado de verificación — para diagnosticar emparejamientos y aprobaciones.</p>
                         </div>
-                        <button onClick={async () => {
-                            if (!currentUser?.id || eaLoading) return;
-                            setEaLoading(true);
-                            try { const r = await callFinity('external_accounts', currentUser.id); setEaRaw({ status: r?.status, path: r?.path, data: r?.data }); }
-                            catch (e: any) { setEaRaw({ error: String(e?.message ?? e) }); }
-                            setEaLoading(false);
-                        }} disabled={eaLoading}
-                            className="px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50">
-                            {eaLoading ? 'Consultando…' : eaRaw ? 'Actualizar' : 'Consultar cuentas'}
-                        </button>
+                        <div className="flex gap-2 flex-wrap">
+                            {([['external_accounts', 'Cuentas'], ['movements', 'Movimientos'], ['balance', 'Saldo']] as const).map(([act, label]) => (
+                                <button key={act} onClick={async () => {
+                                    if (!currentUser?.id || eaLoading) return;
+                                    setEaLoading(true);
+                                    try { const r = await callFinity(act, currentUser.id); setEaRaw({ action: act, status: r?.status, path: r?.path, data: r?.data ?? r }); }
+                                    catch (e: any) { setEaRaw({ action: act, error: String(e?.message ?? e) }); }
+                                    setEaLoading(false);
+                                }} disabled={eaLoading}
+                                    className="px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+                                    {eaLoading ? '…' : label}
+                                </button>
+                            ))}
+                        </div>
                     </div>
                     {eaRaw && (
                         <pre className="mt-3 text-[10px] bg-slate-50 border border-slate-100 rounded-lg p-3 overflow-auto max-h-80 whitespace-pre-wrap break-all">
