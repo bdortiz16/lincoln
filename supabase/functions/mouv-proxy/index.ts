@@ -309,11 +309,14 @@ async function validCaller(req: Request, payload: any): Promise<{ ok: boolean; u
       }
     } catch { /* jwt inválido/vencido → cae abajo */ }
   }
-  // Respaldo: user_id explícito que exista (medio-auth, como en otros proxies)
+  // Respaldo: user_id explícito que exista (medio-auth, como en otros proxies).
+  // NUNCA eleva a admin por un uid del body — el rol admin solo se obtiene con
+  // un JWT real (arriba) o el header AdminBypass. Sin esto, pasar el uuid del
+  // admin desbloqueaba ping/balance/treasury (saldos de la wallet compartida).
   const uid = payload?.user_id ?? payload?.userId
   if (uid) {
-    const { data } = await db.from('users').select('id, role').eq('id', uid).maybeSingle()
-    if (data) return { ok: true, userId: uid, admin: (data as any)?.role === 'admin' }
+    const { data } = await db.from('users').select('id').eq('id', uid).maybeSingle()
+    if (data) return { ok: true, userId: uid, admin: false }
   }
   return { ok: false, userId: null, admin: false }
 }
@@ -414,14 +417,18 @@ serve(async (req: Request) => {
         if (rd.refunded) { out.push({ id: tx.id, result: 'already_refunded' }); continue }
         const refund = Number(tx.amount ?? 0) + Number(rd.feeCop ?? 0)
         const railCol = String(tx.currency ?? 'COP_ACH')
+        // CAS: reclamar el reembolso ANTES de tocar el saldo. Si el webhook (o
+        // una ejecución paralela de reconcile_ach) ya reclamó, claimed viene
+        // vacío y NO se acredita de nuevo — evita el doble reembolso.
+        const { data: claimed } = await db.from('transactions').update({
+          status: 'Rechazado',
+          raw_data: { ...rd, refunded: true, refundCop: refund, providerStatus: s, reconciledAt: new Date().toISOString() },
+        }).eq('id', tx.id).neq('status', 'Rechazado').filter('raw_data->>refunded', 'is', null).select('id')
+        if (!claimed?.length) { out.push({ id: tx.id, result: 'refund_already_claimed' }); continue }
         const { data: u } = await db.from('users').select('balances').eq('id', userId).single()
         const bals: Record<string, number> = (u?.balances as any) ?? {}
         const nb = parseFloat(((bals[railCol] ?? 0) + refund).toFixed(2))
         await db.from('users').update({ balances: { ...bals, [railCol]: nb } }).eq('id', userId)
-        await db.from('transactions').update({
-          status: 'Rechazado',
-          raw_data: { ...rd, refunded: true, refundCop: refund, providerStatus: s, reconciledAt: new Date().toISOString() },
-        }).eq('id', tx.id)
         out.push({ id: tx.id, result: 'refunded', refund })
       } else {
         out.push({ id: tx.id, result: 'still_processing', providerStatus: s || null })

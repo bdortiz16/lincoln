@@ -1044,7 +1044,19 @@ async function myConvertCredit(
   if (!tx) throw new Error('Movimiento no encontrado')
   if (tx.user_id !== userId) throw new Error('No autorizado')
   if (tx.status === 'Completado') return { ok: true, status: 'Completado', copCredited: 0 }
+  // CRÍTICO: solo se acredita sobre una CONVERSIÓN real que ya pasó el hop al
+  // proveedor — sin esto un cliente apuntaba esta acción a su propia
+  // dispersión 'Procesando' (o cualquier fila) con un copAmount arbitrario y
+  // se auto-acreditaba millones. Se exige type='convert' y una fase donde el
+  // USDT ya salió; y el COP se acota al USDT real de la conversión × un tope
+  // de tasa razonable, para que un copAmount inflado no pueda pasar.
+  if (tx.type !== 'convert') throw new Error('El movimiento no es una conversión')
   const rd = (tx.raw_data ?? {}) as Record<string, any>
+  const VALID_PHASES = new Set(['recharged', 'converting', 'hop2_pending', 'hop2', 'registered', 'done'])
+  if (rd.convertPhase && !VALID_PHASES.has(String(rd.convertPhase))) throw new Error('La conversión aún no llegó al proveedor')
+  const sweptUsd = Number(rd.creditUsd ?? rd.usdtToProvider ?? rd.fromAmount ?? 0)
+  const MAX_RATE = 8000 // COP por USDT — cota superior histórica muy holgada
+  if (sweptUsd > 0 && copAmount > sweptUsd * MAX_RATE) throw new Error('Monto COP fuera de rango para la conversión')
   const { data: uf } = await db.from('users').select('balances').eq('id', userId).single()
   const bf = (uf?.balances as Record<string, number>) ?? {}
   const nc = parseFloat((Number(bf.COP_ACH ?? 0) + copAmount).toFixed(2))

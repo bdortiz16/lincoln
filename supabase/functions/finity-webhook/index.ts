@@ -129,11 +129,17 @@ Deno.serve(async (req) => {
   const rd = (tx.raw_data ?? {}) as Record<string, any>
 
   if (isDone) {
+    // NO marcar Completado si ya se reembolsó/rechazó (Finity puede mandar un
+    // FAILED transitorio y luego un COMPLETED — sin este guardia el cliente
+    // se quedaba con el reembolso Y el pago).
+    if (tx.status === 'Rechazado' || rd.refunded) {
+      return json(200, { ok: true, matched: true, result: 'already_refunded_ignored' })
+    }
     if (tx.status !== 'Completado') {
       await db.from('transactions').update({
         status: 'Completado',
         raw_data: { ...rd, webhookStatus: status, webhookAt: new Date().toISOString() },
-      }).eq('id', tx.id)
+      }).eq('id', tx.id).neq('status', 'Rechazado')
       await audit('finity.webhook.withdrawal.completed', { txId: tx.id, orderId, status })
     }
     return json(200, { ok: true, matched: true, result: 'completed' })
@@ -143,16 +149,23 @@ Deno.serve(async (req) => {
   if (tx.status === 'Rechazado' || rd.refunded) {
     return json(200, { ok: true, matched: true, result: 'already_refunded' })
   }
+  // CAS: reclamar el reembolso ANTES de tocar el saldo. El update solo afecta
+  // filas que aún NO están Rechazadas; si otra ejecución (reconcile_ach o un
+  // segundo webhook) ya reclamó, updRows viene vacío y NO se acredita de
+  // nuevo. Sin esto, webhook + reconcile reembolsaban dos veces.
   const railCol = String(tx.currency ?? 'COP_ACH')
   const refund = Number(tx.amount ?? 0) + Number(rd.feeCop ?? rd.feeDetail?.feeCop ?? 0)
+  const { data: claimed } = await db.from('transactions').update({
+    status: 'Rechazado',
+    raw_data: { ...rd, refunded: true, refundCop: refund, webhookStatus: status, webhookAt: new Date().toISOString() },
+  }).eq('id', tx.id).neq('status', 'Rechazado').filter('raw_data->>refunded', 'is', null).select('id')
+  if (!claimed?.length) {
+    return json(200, { ok: true, matched: true, result: 'refund_already_claimed' })
+  }
   const { data: u } = await db.from('users').select('balances').eq('id', tx.user_id).single()
   const bals: Record<string, number> = (u?.balances as any) ?? {}
   const newBal = parseFloat(((bals[railCol] ?? 0) + refund).toFixed(2))
   await db.from('users').update({ balances: { ...bals, [railCol]: newBal } }).eq('id', tx.user_id)
-  await db.from('transactions').update({
-    status: 'Rechazado',
-    raw_data: { ...rd, refunded: true, refundCop: refund, webhookStatus: status, webhookAt: new Date().toISOString() },
-  }).eq('id', tx.id)
   await audit('finity.webhook.withdrawal.failed_refunded', { txId: tx.id, orderId, status, refund })
   return json(200, { ok: true, matched: true, result: 'refunded', refund })
 })

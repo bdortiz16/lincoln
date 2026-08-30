@@ -102,7 +102,19 @@ Deno.serve(async (req: Request) => {
       // memoria del navegador para siempre, sin existir de verdad en la DB.
       if (selfServiceBody.action === 'insert_transaction' && selfServiceBody.tx?.user_id) {
         if (!(await verifySelfOrAdmin(req, selfServiceBody.tx.user_id))) return json({ error: 'No autorizado' }, 401)
-        const { data: inserted, error: insErr } = await db.from('transactions').insert(selfServiceBody.tx).select('id').single()
+        let txRow = selfServiceBody.tx
+        // CRÍTICO: un no-admin NO puede forjar filas que disparen créditos o
+        // reembolsos (reconcile por providerRef, aprobación de rail_move…). Se
+        // limita a registros informativos y se neutralizan los campos que
+        // otros procesos leen para mover saldo.
+        if (!(await verifyAdmin(req)).ok) {
+          const SELF_TYPES = new Set(['send', 'pay_sent', 'otc_withdraw_request', 'otc_convert_request'])
+          if (!SELF_TYPES.has(String(txRow.type))) return json({ error: 'Tipo de movimiento no permitido' }, 403)
+          const rd = { ...(txRow.raw_data ?? {}) }
+          for (const k of ['providerRef', 'refunded', 'fromRail', 'toRail', 'gasfreeCredited', 'convertPhase', 'needsReview']) delete (rd as any)[k]
+          txRow = { ...txRow, status: 'Pendiente', raw_data: rd }
+        }
+        const { data: inserted, error: insErr } = await db.from('transactions').insert(txRow).select('id').single()
         if (insErr) return json({ error: insErr.message }, 500)
         return json({ success: true, id: inserted?.id })
       }
@@ -117,7 +129,14 @@ Deno.serve(async (req: Request) => {
       // (auth.uid()=id) — esto solo la deja llegar cuando ese camino falla.
       if (selfServiceBody.action === 'save_user' && selfServiceBody.user?.id) {
         if (!(await verifySelfOrAdmin(req, selfServiceBody.user.id))) return json({ error: 'No autorizado' }, 401)
-        const { error: saveErr } = await db.from('users').upsert(selfServiceBody.user)
+        // CRÍTICO: el upsert corre con service-role (la RLS no aplica). Si el
+        // caller NO es admin, se despojan las columnas sensibles — sin esto un
+        // usuario podía escribirse balances/role arbitrarios en su propia fila.
+        const userRow = { ...selfServiceBody.user }
+        if (!(await verifyAdmin(req)).ok) {
+          for (const k of ['balances', 'crypto_balances', 'role', 'kyc_status', 'status', 'limits', 'is_blocked']) delete (userRow as any)[k]
+        }
+        const { error: saveErr } = await db.from('users').upsert(userRow)
         if (saveErr) return json({ error: saveErr.message }, 500)
         return json({ success: true })
       }

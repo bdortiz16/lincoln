@@ -37,6 +37,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const SUPABASE_URL   = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY    = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+const ADMIN_PASS     = (Deno.env.get('ADMIN_PASS') ?? '').trim()
 // trim(): al pegar credenciales desde WhatsApp/correo se cuelan espacios
 // o saltos de línea — y Finity rechaza el valor con basura invisible.
 const FINITY_ID      = (Deno.env.get('FINITY_CLIENT_ID') ?? '').trim()
@@ -321,19 +322,22 @@ function isProjectAnonKey(jwt: string): boolean {
   }
 }
 
-async function validCaller(req: Request, payload: Record<string, unknown>): Promise<{ ok: boolean; userId?: string }> {
+async function validCaller(req: Request, payload: Record<string, unknown>): Promise<{ ok: boolean; userId?: string; internal?: boolean }> {
   const auth = req.headers.get('authorization') ?? ''
   const jwt = auth.replace(/^Bearer\s+/i, '')
   if (!jwt) return { ok: false }
 
   // (0) Llamada INTERNA servidor-a-servidor (mouv-proxy dispersa ACH,
   // gasfree convierte en segundo plano): se identifican con el
-  // service-role key, que nunca sale del backend. Sin esto, el retiro
-  // ACH moría aquí con 'unauthorized' antes de llegar a Finity.
+  // service-role key, que nunca sale del backend. `internal:true` es lo
+  // ÚNICO que autoriza crear retiros/cuentas externas — el cliente pasa
+  // por mouv-proxy, que debita el saldo ANTES de llamar aquí.
   if (SERVICE_KEY && jwt === SERVICE_KEY) {
     const uid = String(payload.user_id ?? '')
-    return { ok: true, userId: uid || undefined }
+    return { ok: true, userId: uid || undefined, internal: true }
   }
+  // Admin explícito (AdminBypass) también cuenta como interno de confianza.
+  if (ADMIN_PASS && auth === `AdminBypass ${ADMIN_PASS}`) return { ok: true, internal: true }
 
   // (a) JWT real de Supabase
   const { data } = await db.auth.getUser(jwt)
@@ -424,13 +428,22 @@ Deno.serve(async (req) => {
     // publishable vs legacy, admin seed sin fila en users). Todo lo que
     // MUEVE PLATA (withdrawal, convert, external accounts) sigue
     // exigiendo un usuario real.
-    const READ_ACTIONS = new Set(['ping', 'rates', 'discover', 'external_accounts', 'snapshot_finity', 'treasury_balances'])
+    // external_accounts NO es público: lista los datos bancarios (nombre,
+    // documento, cuenta) de todos los destinos registrados de la empresa.
+    const READ_ACTIONS = new Set(['ping', 'rates', 'discover', 'snapshot_finity', 'treasury_balances'])
+    // Acciones que MUEVEN PLATA o exponen datos sensibles: solo llamada
+    // INTERNA (mouv-proxy/gasfree con service-key) o admin. El cliente NUNCA
+    // llama a Finity directo — pasa por mouv-proxy, que debita el saldo antes.
+    const INTERNAL_ONLY = new Set(['create_withdrawal', 'create_external_account', 'convert', 'convert_confirm', 'external_accounts', 'balance', 'movements'])
 
     const caller = await validCaller(req, payload)
     if (!caller.ok && !READ_ACTIONS.has(action)) {
       // 'proxy v3' en el mensaje: si el panel muestra 'unauthorized' pelado,
       // la función desplegada es una versión vieja.
       return json(401, { error: 'unauthorized', message: 'unauthorized (proxy v5.2)' })
+    }
+    if (INTERNAL_ONLY.has(action) && !caller.internal) {
+      return json(403, { error: 'forbidden', message: 'Acción interna: solo backend o admin.' })
     }
 
     if (action === 'ping') {
