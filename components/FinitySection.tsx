@@ -528,6 +528,11 @@ export const FinitySection: React.FC<{
     const runConvert = async (amount: number, netAmount: number, gasfreeCost: number, previewRate: number | null) => {
         setConverting(true); setConvertResult(null); setConvertStep('enviando');
         try {
+            // Saldo de la cuenta del proveedor ANTES de enviar — sirve para
+            // confirmar después que la recarga quedó registrada en su
+            // PLATAFORMA (no solo en la wallet on-chain).
+            let providerBalBefore: number | null = null;
+            try { providerBalBefore = await fetchFinityBalance(userId); } catch { /* opcional */ }
             // ORDEN CORRECTO (para que en el ledger de Finity la RECARGA vaya
             // ANTES que la Conversión interna, y sin caja):
             //   1) Recargar el USDT del cliente a Finity: cliente → tesorería →
@@ -599,11 +604,30 @@ export const FinitySection: React.FC<{
                 return;
             }
 
-            // Espera de SEGURIDAD: darle 45 s a Finity para que REGISTRE la
-            // recarga (su ledger la marca con su propio timestamp interno) antes
-            // de convertir — así la "Recarga" queda antes que la "Conversión
-            // interna" en el ledger de Finity y no al revés por 1 segundo.
-            await sleep(45000);
+            // ── CONFIRMACIÓN REAL EN LA PLATAFORMA DEL PROVEEDOR ──
+            // La wallet YA recibió on-chain (ambos saltos confirmados), pero
+            // la página del proveedor tarda unos segundos más en registrar la
+            // recarga en su ledger. Antes de convertir se VERIFICA que el
+            // saldo de la cuenta haya subido por lo enviado (poll cada 5 s,
+            // hasta 90 s). Si el saldo no se puede leer, espera fija de 45 s.
+            const fwdUsd = Number(settle.usdtToProvider ?? netAmount);
+            let platformOk = false;
+            if (providerBalBefore != null) {
+                for (let i = 0; i < 18 && !platformOk; i++) {
+                    await sleep(5000);
+                    try {
+                        const nowBal = await fetchFinityBalance(userId);
+                        if (nowBal != null && nowBal >= providerBalBefore + fwdUsd * 0.9) platformOk = true;
+                    } catch { /* se reintenta en el próximo tick */ }
+                }
+                // Si tras 90 s el saldo no refleja la recarga, se da un margen
+                // final y se intenta igual: si el proveedor aún no la registró,
+                // la conversión fallará SIN riesgo y queda el reintento (el
+                // USDT no se reenvía nunca).
+                if (!platformOk) await sleep(10000);
+            } else {
+                await sleep(45000);
+            }
 
             // 2+3) Conversión interna en Finity + acreditación. Se hace en
             //    finishConvert (reutilizable/reintentable sin reenviar USDT).
