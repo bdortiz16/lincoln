@@ -921,6 +921,31 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeView, selectedWalletCode, currentUser?.id]);
 
+  // ── Conciliación ACH sin webhook ──
+  // Al abrir Movimientos o la billetera COP, si hay dispersiones ACH en
+  // 'Procesando' se le pregunta al riel su estado real y se actualizan
+  // (Completado, o Rechazado con reembolso). Máximo una vez por minuto.
+  const achReconcileAtRef = useRef(0);
+  useEffect(() => {
+      const relevant = activeView === 'movements' || (activeView === 'wallet-detail' && selectedWalletCode === 'COP') || activeView === 'dashboard';
+      if (!relevant || !currentUser?.id) return;
+      const hasProcessing = (movements || []).some((t: any) => t.type === 'dispersion' && t.status === 'Procesando');
+      if (!hasProcessing) return;
+      if (Date.now() - achReconcileAtRef.current < 60000) return;
+      achReconcileAtRef.current = Date.now();
+      callMouvProxy({ action: 'reconcile_ach', userId: currentUser.id })
+          .then(r => {
+              const changed = (r?.results ?? []).filter((x: any) => x.result === 'completed' || x.result === 'refunded');
+              if (changed.length > 0) {
+                  refreshData?.();
+                  if (changed.some((x: any) => x.result === 'completed')) showToast('✅ Tu dispersión ACH fue completada por el banco.');
+                  if (changed.some((x: any) => x.result === 'refunded')) showToast('Una dispersión ACH fue devuelta por el banco — el monto y la comisión fueron reembolsados a tu saldo.', 8000);
+              }
+          })
+          .catch(() => { /* silencioso */ });
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeView, selectedWalletCode, currentUser?.id]);
+
   // Saldo a MOSTRAR para una billetera: para USD es el real de GasFree
   // (blockchain); para las demás, el saldo interno de siempre.
   // USD (Dólar digital): el saldo REAL es el on-chain de GasFree una vez leído

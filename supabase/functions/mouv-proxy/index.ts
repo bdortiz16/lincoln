@@ -349,6 +349,53 @@ serve(async (req: Request) => {
     return json(200, { ok: true, status: r.status, source: 'mouv', total, breb, ach, cop: total, raw: d })
   }
 
+  // ── Conciliación ACH SIN webhook ──────────────────────────
+  // Mientras el webhook del proveedor no esté activo, la app pregunta el
+  // estado real de las órdenes de retiro de las dispersiones ACH que
+  // siguen 'Procesando' y actualiza: COMPLETED → Completado ·
+  // FAILED/CANCELLED → Rechazado + REEMBOLSO (monto + comisión) al riel.
+  // Idempotente (flag refunded). La llama el frontend al abrir Movimientos.
+  if (action === 'reconcile_ach') {
+    const userId = caller.userId ?? payload.userId ?? payload.user_id
+    if (!userId) return json(400, { error: 'missing_user' })
+    const { data: rows } = await db.from('transactions')
+      .select('id, user_id, amount, currency, status, raw_data')
+      .eq('type', 'dispersion').eq('user_id', userId).eq('status', 'Procesando')
+      .limit(20)
+    const out: any[] = []
+    for (const tx of (rows ?? []) as any[]) {
+      const rd = (tx.raw_data ?? {}) as Record<string, any>
+      const ref = String(rd.providerRef ?? '')
+      if (!ref) continue
+      const st = await finityCall('withdrawal_status', String(userId), { id: ref })
+      const d = (st?.data ?? {}) as any
+      const s = String(d.status ?? d.state ?? '').toUpperCase()
+      if (/COMPLETED|SUCCESS|PAID|SETTLED/.test(s)) {
+        await db.from('transactions').update({
+          status: 'Completado',
+          raw_data: { ...rd, providerStatus: s, reconciledAt: new Date().toISOString() },
+        }).eq('id', tx.id)
+        out.push({ id: tx.id, result: 'completed' })
+      } else if (/FAILED|REJECT|CANCEL|RETURNED/.test(s)) {
+        if (rd.refunded) { out.push({ id: tx.id, result: 'already_refunded' }); continue }
+        const refund = Number(tx.amount ?? 0) + Number(rd.feeCop ?? 0)
+        const railCol = String(tx.currency ?? 'COP_ACH')
+        const { data: u } = await db.from('users').select('balances').eq('id', userId).single()
+        const bals: Record<string, number> = (u?.balances as any) ?? {}
+        const nb = parseFloat(((bals[railCol] ?? 0) + refund).toFixed(2))
+        await db.from('users').update({ balances: { ...bals, [railCol]: nb } }).eq('id', userId)
+        await db.from('transactions').update({
+          status: 'Rechazado',
+          raw_data: { ...rd, refunded: true, refundCop: refund, providerStatus: s, reconciledAt: new Date().toISOString() },
+        }).eq('id', tx.id)
+        out.push({ id: tx.id, result: 'refunded', refund })
+      } else {
+        out.push({ id: tx.id, result: 'still_processing', providerStatus: s || null })
+      }
+    }
+    return json(200, { ok: true, checked: (rows ?? []).length, results: out })
+  }
+
   // ── Cotización de comisión para el paso Confirmar del cliente ──
   // BREB → comisión FIJA Lincoin ($1.200 por envío; el costo Mouv lo
   //        absorbe Lincoin — al cliente ya se le cobró 0,10% al recibir
