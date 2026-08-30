@@ -931,63 +931,138 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
 
   // --- RENDERERS ---
 
-  // NOTE: renderOverview updated to show connection status
-  const renderOverview = () => (
-      <div className="space-y-8 animate-in fade-in duration-300">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-              <StatCard title="Clientes Pendientes" value={stats.pendingClients} icon={UserCheck} color="bg-orange-500" onClick={() => setActiveTab('clients')} subValue="Requieren acción" loading={!dataReady} />
-              <StatCard title="Solicitudes Carga" value={stats.pendingDeposits} icon={ArrowRight} color="bg-[#4ADE80]" onClick={() => setActiveTab('treasury')} subValue="Pendientes" loading={!dataReady} />
-              <StatCard title="Solicitudes Retiro" value={stats.pendingWithdrawals} icon={LogOut} color="bg-red-500" onClick={() => setActiveTab('treasury')} subValue="Pendientes" loading={!dataReady} />
-              <StatCard title="Volumen Total" value={stats.totalVolume} icon={BarChart3} color="bg-green-600" subValue="Transado Histórico" loading={!dataReady} />
+  // Resumen general — diseño de marca (dark, KPIs con contexto, cola
+  // unificada de pendientes, estado del sistema y equipo admin).
+  const renderOverview = () => {
+      const now = new Date();
+      const ageStr = (d?: string) => {
+          if (!d) return '';
+          const ms = Date.now() - new Date(d).getTime();
+          const m = Math.floor(ms / 60000);
+          if (m < 1) return 'recién';
+          if (m < 60) return `hace ${m} min`;
+          const h = Math.floor(m / 60);
+          if (h < 24) return `hace ${h} h`;
+          return `hace ${Math.floor(h / 24)} d`;
+      };
+      const usdEq = (tx: any) => { const r = getRate((tx.currency || '').split('_')[0], 'USD') || 0; return Number(tx.amount || 0) * r; };
+      const fmtUsd = (n: number) => `$${Math.round(n).toLocaleString('es-CO')}`;
+      // Volumen del mes (completadas este mes, en USD eq.)
+      const monthVol = historyTransactions.filter(tx => {
+          const d = tx.createdAt ? new Date(tx.createdAt) : null;
+          return tx.status === 'Completado' && d && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+      }).reduce((s, tx) => s + usdEq(tx), 0);
+      const depSum = pendingDeposits.reduce((s, tx) => s + usdEq(tx), 0);
+      const witSum = pendingWithdrawals.reduce((s, tx) => s + usdEq(tx), 0);
+      const pendingClients = allUsers.filter(u => u.kycStatus === 'pending' || u.kycStatus === 'in_review');
+      // Cola unificada, ordenada por antigüedad (más viejo primero).
+      const queue = [
+          ...pendingClients.map(u => ({ id: `kyc-${u.id}`, sig: (u.name || 'C').charAt(0).toUpperCase(), title: `KYC · ${u.name || 'Cliente'}`, meta: 'Verificación en revisión · falta aprobación manual', at: (u as any).createdAt, tab: 'clients' as const })),
+          ...pendingDeposits.map(tx => ({ id: `dep-${tx.id}`, sig: '↓', title: `Carga · ${fmtUsd(usdEq(tx))} USD eq.`, meta: `${tx.userName || tx.beneficiary || 'Cliente'} · falta acreditar`, at: tx.createdAt, tab: 'treasury' as const })),
+          ...pendingWithdrawals.map(tx => ({ id: `wit-${tx.id}`, sig: '↑', title: `Retiro · ${fmtUsd(usdEq(tx))} USD eq.`, meta: `${tx.bank || tx.beneficiary || 'Destino'} · falta aprobar`, at: tx.createdAt, tab: 'treasury' as const })),
+      ].sort((a, b) => new Date(a.at || 0).getTime() - new Date(b.at || 0).getTime());
+
+      const card: React.CSSProperties = { background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14 };
+      const secBtn: React.CSSProperties = { border: '1px solid rgba(255,255,255,0.11)', background: 'rgba(255,255,255,0.045)', borderRadius: 8, padding: '7px 13px', fontSize: 12, fontWeight: 600, color: '#F4F4F2' };
+      const oldest = queue[0]?.at ? ageStr(queue[0].at) : '';
+      const kpis: { label: string; value: string | number; sub: React.ReactNode; tab: string }[] = [
+          { label: 'Clientes por aprobar', value: pendingClients.length, sub: pendingClients.length ? `KYC en revisión · el más antiguo ${ageStr((pendingClients[0] as any)?.createdAt) || 'hoy'}` : 'Sin KYC en cola', tab: 'clients' },
+          { label: 'Cargas por acreditar', value: pendingDeposits.length, sub: pendingDeposits.length ? `${fmtUsd(depSum)} USD eq. esperando confirmación` : 'Nada por acreditar', tab: 'treasury' },
+          { label: 'Retiros por aprobar', value: pendingWithdrawals.length, sub: pendingWithdrawals.length ? `${fmtUsd(witSum)} USD eq. · requieren aprobación` : 'Nada por aprobar', tab: 'treasury' },
+          { label: 'Volumen del mes', value: fmtUsd(monthVol), sub: <span>{historyTransactions.filter(t => t.status === 'Completado').length} operaciones completadas</span>, tab: 'reports' },
+      ];
+      const services: { name: string; state: string; ok: boolean }[] = [
+          { name: 'Riel de conversión y retiros', state: apiStatus === 'error' ? 'Lento' : 'En línea', ok: apiStatus !== 'error' },
+          { name: 'Custodia GasFree (TRON)', state: 'En línea', ok: true },
+          { name: 'Bre-B · ACH Colombia', state: 'En línea', ok: true },
+          { name: 'Base de datos', state: isOnline ? 'En línea' : 'Desconectada', ok: isOnline },
+      ];
+      return (
+      <div className="animate-in fade-in duration-300" style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+          {/* KPIs */}
+          <div className="grid gap-3.5" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))' }}>
+              {kpis.map(k => (
+                  <button key={k.label} onClick={() => setActiveTab(k.tab as any)} className="text-left transition-colors" style={{ ...card, padding: '18px 20px', cursor: 'pointer' }}
+                      onMouseEnter={e => (e.currentTarget.style.borderColor = 'rgba(255,255,255,0.16)')} onMouseLeave={e => (e.currentTarget.style.borderColor = 'rgba(255,255,255,0.09)')}>
+                      <p style={{ fontSize: 12, color: '#878E88' }}>{k.label}</p>
+                      <p style={{ fontSize: 27, fontWeight: 800, letterSpacing: '-0.8px', color: '#F4F4F2', marginTop: 8 }}>{dataReady ? k.value : '—'}</p>
+                      <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 6, lineHeight: 1.4 }}>{k.sub}</p>
+                  </button>
+              ))}
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-              <div className="lg:col-span-2 bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-                  <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
-                      <Activity className="text-slate-400" size={20}/> Actividad del Sistema
-                  </h3>
-                  <div className="space-y-4">
-                      {activeAlerts.length > 0 ? activeAlerts.map(alert => (
-                          <div key={alert.id} className={`p-4 rounded-lg border flex items-start gap-3 ${alert.type === 'error' ? 'bg-red-50 border-red-100' : alert.type === 'warning' ? 'bg-orange-50 border-orange-100' : 'bg-slate-50 border-slate-200'}`}>
-                              {alert.type === 'error' ? <ShieldAlert className="text-red-500 shrink-0" size={20}/> : <AlertTriangle className="text-orange-500 shrink-0" size={20}/>}
-                              <div>
-                                  <h4 className={`text-sm font-bold ${alert.type === 'error' ? 'text-red-700' : 'text-orange-700'}`}>{alert.title}</h4>
-                                  <p className="text-xs text-slate-600 mt-1">{alert.description}</p>
-                                  {alert.action && <button onClick={() => setActiveTab(alert.action as any)} className="text-xs font-bold underline mt-2">Ver detalles</button>}
-                              </div>
+          <div className="grid gap-4" style={{ gridTemplateColumns: 'minmax(0,1fr)' }}>
+              <div className="grid gap-4 lg:grid-cols-[1fr_360px]">
+                  {/* Pendientes de acción */}
+                  <div style={card}>
+                      <div className="flex items-center justify-between" style={{ padding: '16px 22px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                          <span style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>Pendientes de acción</span>
+                          {queue.length > 0 && <button onClick={() => setActiveTab('treasury')} style={{ fontSize: 12.5, fontWeight: 600, color: '#878E88' }} className="hover:text-[#F4F4F2] transition-colors">Ver todo →</button>}
+                      </div>
+                      {queue.length === 0 ? (
+                          <div className="text-center" style={{ padding: '48px 20px', color: '#878E88' }}>
+                              <p style={{ fontSize: 13 }}>Nada pendiente.</p>
+                              <p style={{ fontSize: 12, marginTop: 4 }}>Las nuevas solicitudes aparecen aquí.</p>
                           </div>
-                      )) : (
-                          <div className="text-center py-8 text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">
-                              <CheckCircle size={32} className="mx-auto mb-2 text-green-500"/>
-                              <p className="font-medium text-slate-600">Todo operativo</p>
-                              <p className="text-xs">El sistema funciona correctamente.</p>
-                          </div>
-                      )}
-                  </div>
-              </div>
-
-              <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-                  <h3 className="font-bold text-slate-800 mb-4">Equipo Administrativo</h3>
-                  <div className="space-y-4">
-                      {adminTeam.map(admin => (
-                          <div key={admin.id} className="flex items-center justify-between">
-                              <div className="flex items-center gap-3">
-                                  <div className="w-8 h-8 bg-slate-100 rounded-full flex items-center justify-center font-bold text-slate-500 text-xs">
-                                      {admin?.name?.charAt(0) ?? "?"}
-                                  </div>
-                                  <div>
-                                      <p className="text-sm font-bold text-slate-700">{admin.name}</p>
-                                      <p className="text-[10px] text-slate-400">{admin.role}</p>
-                                  </div>
+                      ) : queue.slice(0, 8).map(item => (
+                          <div key={item.id} className="flex items-center hover:bg-white/[0.02] transition-colors" style={{ gap: 12, padding: '13px 22px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                              <span style={{ width: 32, height: 32, borderRadius: 9, flexShrink: 0, display: 'grid', placeItems: 'center', background: 'rgba(255,255,255,0.055)', fontSize: 12, fontWeight: 800, color: '#878E88' }}>{item.sig}</span>
+                              <div style={{ minWidth: 0, flex: 1 }}>
+                                  <p style={{ fontSize: 13.5, fontWeight: 600, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.title}</p>
+                                  <p style={{ fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.meta}</p>
                               </div>
-                              <span className="text-[10px] font-medium text-green-600 bg-green-50 px-2 py-0.5 rounded-full">Online</span>
+                              <span style={{ fontSize: 11, color: '#878E88', flexShrink: 0, whiteSpace: 'nowrap' }}>{ageStr(item.at)}</span>
+                              <button onClick={() => setActiveTab(item.tab as any)} style={secBtn} className="hover:bg-white/[0.09] transition-colors" >Revisar</button>
                           </div>
                       ))}
+                  </div>
+
+                  {/* Columna derecha */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                      {/* Estado del sistema */}
+                      <div style={{ ...card, padding: '18px 20px' }}>
+                          <div className="flex items-center justify-between" style={{ marginBottom: 14 }}>
+                              <span style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>Estado del sistema</span>
+                              <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 10, fontWeight: 700, padding: '3px 9px', borderRadius: 999 }}>● OPERATIVO</span>
+                          </div>
+                          {services.map((s, i) => (
+                              <div key={s.name} className="flex items-center justify-between" style={{ gap: 12, padding: '10px 0', borderTop: i > 0 ? '1px solid rgba(255,255,255,0.06)' : 'none' }}>
+                                  <span style={{ fontSize: 12.5, color: '#F4F4F2' }}>{s.name}</span>
+                                  <span style={{ fontSize: 12.5, fontWeight: 600, color: s.ok ? '#4ADE80' : 'rgba(244,244,242,0.7)' }}>{s.state}</span>
+                              </div>
+                          ))}
+                      </div>
+
+                      {/* Equipo admin */}
+                      <div style={{ ...card, padding: '18px 20px' }}>
+                          <div className="flex items-center justify-between" style={{ marginBottom: 12 }}>
+                              <span style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>Equipo admin</span>
+                              <button onClick={() => setActiveTab('team' as any)} style={{ fontSize: 12, fontWeight: 600, color: '#878E88' }} className="hover:text-[#F4F4F2] transition-colors">Gestionar</button>
+                          </div>
+                          {adminTeam.length === 0 ? (
+                              <p style={{ fontSize: 12.5, color: '#878E88', padding: '8px 0' }}>Sin miembros del equipo todavía.</p>
+                          ) : adminTeam.map(admin => (
+                              <div key={admin.id} className="flex items-center justify-between" style={{ gap: 12, padding: '9px 0' }}>
+                                  <div className="flex items-center" style={{ gap: 11, minWidth: 0 }}>
+                                      <span style={{ width: 32, height: 32, borderRadius: '50%', flexShrink: 0, display: 'grid', placeItems: 'center', background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', fontSize: 12, fontWeight: 800, color: '#878E88' }}>{(admin?.name ?? '?').charAt(0).toUpperCase()}</span>
+                                      <div style={{ minWidth: 0 }}>
+                                          <p style={{ fontSize: 13, fontWeight: 600, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{admin.name}</p>
+                                          <p style={{ fontSize: 11, color: '#878E88' }}>{admin.role || 'Administrador'}</p>
+                                      </div>
+                                  </div>
+                                  <span className="flex items-center" style={{ gap: 5, flexShrink: 0 }}>
+                                      <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#4ADE80' }} />
+                                      <span style={{ fontSize: 11, color: '#4ADE80' }}>En línea</span>
+                                  </span>
+                              </div>
+                          ))}
+                      </div>
                   </div>
               </div>
           </div>
       </div>
-  );
+      );
+  };
 
   // ... (keep the rest of renderClients, renderMarketing, renderTreasury, renderReports, renderConfig, renderBanks, renderRates, renderTeam, renderDesign, renderSecurity exactly as they were in previous file)
   // Re-including them for XML validity context if necessary, but skipping for brevity as they don't change logic, just structure. 
