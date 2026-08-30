@@ -237,7 +237,7 @@ async function finityPayoutAch(userId: string, recipient: Record<string, any>, a
     }
     const ea = await finityCall('create_external_account', userId, body)
     destId = ea?.data?.id ?? ea?.data?.external_account_id ?? ea?.data?.account_id ?? null
-    if (!ea?.ok || !destId) return { ok: false, feeCop: 0, error: ea?.data ?? ea }
+    if (!ea?.ok || !destId) return { ok: false, feeCop: 0, error: { step: 'destino', httpStatus: ea?.status ?? null, path: ea?.path ?? null, body: ea?.data ?? null } }
   }
   // 2) Orden de retiro — contrato OFICIAL confirmado (doc Withdrawal Orders):
   //    POST /v0/withdrawal-orders { destination_id, amount, currency:'COP' }
@@ -246,7 +246,12 @@ async function finityPayoutAch(userId: string, recipient: Record<string, any>, a
   //    (NO devuelve costs — el precio por transferencia es ACH_FEE_COP.)
   const w = await finityCall('create_withdrawal', userId, { data: { amount: Math.round(amountCop * 100), currency: 'COP', destination_id: destId } })
   const od: any = w?.data ?? {}
-  if (!w?.ok || !od.id) return { ok: false, feeCop: 0, error: od ?? w, destinationId: destId ?? undefined }
+  // El error DEBE conservar status/path/cuerpo — con '{}' pelado es
+  // imposible saber si fue ruta (404), auth (401) o validación (400).
+  if (!w?.ok || !od.id) return {
+    ok: false, feeCop: 0, destinationId: destId ?? undefined,
+    error: { step: 'retiro', httpStatus: w?.status ?? null, path: w?.path ?? null, body: (od && Object.keys(od).length > 0) ? od : (w?.data ?? w ?? null) },
+  }
   return { ok: true, providerRef: String(od.id), state: od.status ?? od.state ?? 'PROCESSING', feeCop: ACH_FEE_COP, destinationId: destId ?? undefined }
 }
 
