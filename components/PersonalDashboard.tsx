@@ -346,6 +346,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const [sendContact, setSendContact] = useState<any>(null);
   // Método elegido en el paso 2 del flujo (diseño Flujo Enviar): lista radio.
   const [sendMethodSel, setSendMethodSel] = useState<'breb' | 'ach' | 'pay' | 'cash' | null>(null);
+  // Cotización de la comisión del proveedor para el paso Confirmar:
+  // Bre-B → Mouv (fija + variable + IVA, cotizada en vivo y cobrada al
+  // cliente) · ACH → Finity (precio fijo por transferencia, se descuenta al
+  // confirmar con el valor que reporta la orden).
+  const [payoutQuote, setPayoutQuote] = useState<{ loading: boolean; feeCop?: number | null; provider?: string; error?: string } | null>(null);
   const [isSending, setIsSending] = useState(false);
   // Candado síncrono anti doble-clic (el estado de React tarda un render en
   // reflejarse; el ref bloquea desde el primer instante).
@@ -808,6 +813,22 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       });
       return r.json();
   };
+  // Cotizar la comisión del riel al entrar a Confirmar (paso 4 · banco).
+  useEffect(() => {
+      if (!(sendStep === 4 && sendMode === 'bank' && currentUser?.id)) { setPayoutQuote(null); return; }
+      const isBrebM = (sendContact?.destKind ?? (sendSourceRail === 'COP_BREB' ? 'breb' : 'ach')) === 'breb';
+      const amt = getRawAmount(sendForm.amount);
+      if (isBrebM) {
+          setPayoutQuote({ loading: true });
+          callMouvProxy({ action: 'payout_quote', userId: currentUser.id, rail: 'BREB', amount: amt, keyValue: sendContact?.brebKey ?? sendForm.accountNumber })
+              .then(r => setPayoutQuote(r?.ok ? { loading: false, feeCop: Number(r.feeCop ?? 0), provider: 'mouv' } : { loading: false, error: r?.message ?? 'No se pudo cotizar' }))
+              .catch(e => setPayoutQuote({ loading: false, error: String(e?.message ?? e) }));
+      } else {
+          setPayoutQuote({ loading: false, feeCop: null, provider: 'finity' });
+      }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sendStep, sendMode, currentUser?.id]);
+
   const callMouvProxy = async (payload: Record<string, unknown>) => {
       const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
       const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
@@ -1205,7 +1226,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           }
           const recipient = isBreb
               ? { keyType: sendContact?.brebKeyType ?? 'celular', key: sendContact?.brebKey ?? sendContact?.accountNumber ?? sendForm.accountNumber, holderName: sendForm.beneficiaryName, documentNumber: sendForm.documentNumber, reference: sendForm.reason }
-              : { bankCode: sendContact?.bank ?? sendForm.bankName, accountType: (sendContact?.accountType === 'checking' ? 'corriente' : 'ahorros'), accountNumber: sendForm.accountNumber, documentType: sendForm.documentType, documentNumber: sendForm.documentNumber, holderName: sendForm.beneficiaryName, reference: sendForm.reason };
+              : { bankCode: sendContact?.bank ?? sendForm.bankName, accountType: (sendContact?.accountType === 'checking' ? 'corriente' : 'ahorros'), accountNumber: sendForm.accountNumber, documentType: sendForm.documentType, documentNumber: sendForm.documentNumber, holderName: sendForm.beneficiaryName, reference: sendForm.reason, ...(sendContact?.finityId ? { finityId: sendContact.finityId } : {}) };
           try {
               const r = await Promise.race([
                   callMouvProxy({ action: isBreb ? 'payout_breb' : 'payout_ach', userId: currentUser.id, amount, recipient }),
@@ -3974,8 +3995,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           <div className="space-y-4">
                               <div className="space-y-2">
                                   {([
-                                      { key: 'breb', title: 'Bre-B a cuenta bancaria', pill: 'SEGUNDOS', desc: 'A cualquier banco de Colombia por llave' },
-                                      { key: 'ach', title: 'ACH tradicional', pill: null, desc: 'L–V 7:00–18:00 · llega el mismo día' },
+                                      { key: 'breb', title: 'Bre-B a cuenta bancaria', pill: 'SEGUNDOS', desc: 'Por llave a cualquier banco · comisión Mouv según monto' },
+                                      { key: 'ach', title: 'ACH tradicional', pill: null, desc: 'L–V 7:00–18:00 · precio fijo por transferencia' },
                                       { key: 'pay', title: 'A otro usuario de Lincoin', pill: 'SIN COMISIÓN', desc: 'Por ID o correo · instantáneo, 24/7' },
                                       { key: 'cash', title: 'Retiro en punto físico', pill: null, desc: 'Efectivo en corresponsales aliados · código de retiro' },
                                   ] as const).map(m => {
@@ -4265,11 +4286,14 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   <span style={{ color: '#878E88', fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px' }}>RECIBE</span>
                                   <p style={{ fontSize: 30, fontWeight: 800, letterSpacing: '-1.2px', color: '#F4F4F2', marginTop: 4 }}>{formatMoney(amt, 'COP')} <span style={{ fontSize: 15, color: '#878E88', fontWeight: 700 }}>COP</span></p>
                               </div>
-                              {/* Desglose */}
+                              {/* Desglose — la comisión del proveedor se cobra al cliente */}
                               <div style={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: 13, overflow: 'hidden' }}>
                                   {[
                                       { l: 'Sale de', v: `${sendSourceRail === 'COP' ? 'Saldo Lincoin' : sendSourceRail === 'COP_BREB' ? 'Bre-B' : 'ACH'} · COP` },
-                                      { l: `Comisión ${railLbl}`, v: 'Sin comisión' },
+                                      { l: `Comisión ${railLbl}`, v: payoutQuote?.loading ? 'cotizando…'
+                                          : payoutQuote?.error ? '—'
+                                          : payoutQuote?.feeCop != null ? `${formatMoney(payoutQuote.feeCop, 'COP')} COP`
+                                          : 'Precio fijo Finity · al confirmar' },
                                       { l: 'Llega', v: isBrebM ? 'En segundos' : 'El mismo día hábil' },
                                   ].map((row, i) => (
                                       <div key={row.l} className="flex items-center justify-between" style={{ padding: '11px 16px', fontSize: 13, borderTop: i === 0 ? 'none' : '1px solid rgba(255,255,255,0.06)' }}>
@@ -4279,9 +4303,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   ))}
                                   <div className="flex items-center justify-between" style={{ padding: '11px 16px', fontSize: 13, borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.02)' }}>
                                       <span style={{ color: '#878E88' }}>Total que sale</span>
-                                      <span style={{ color: '#4ADE80', fontWeight: 700 }}>{formatMoney(amt, 'COP')} COP</span>
+                                      <span style={{ color: '#4ADE80', fontWeight: 700 }}>{formatMoney(amt + (payoutQuote?.feeCop ?? 0), 'COP')} COP{payoutQuote?.feeCop == null && !isBrebM ? ' + comisión' : ''}</span>
                                   </div>
                               </div>
+                              {payoutQuote?.error && <p style={{ fontSize: 11.5, color: '#878E88' }}>No se pudo cotizar la comisión ({payoutQuote.error}) — se calculará al confirmar.</p>}
                               {/* Aviso antes de confirmar */}
                               <div className="flex items-start" style={{ gap: 11, border: '1px solid rgba(255,255,255,0.1)', borderLeft: '2px solid #4ADE80', background: 'rgba(255,255,255,0.03)', borderRadius: 10, padding: '12px 15px' }}>
                                   <Clock size={16} style={{ color: '#878E88', flexShrink: 0, marginTop: 1 }} strokeWidth={1.5} />

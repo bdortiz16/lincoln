@@ -164,6 +164,80 @@ async function mouvPayout(
   return { ok: r.ok, status: r.status, data: r.data, providerRef: r.data?.id, targetName: recipient.holderName, targetDocument: recipient.documentNumber }
 }
 
+// ── Cotización de comisión Mouv (Bre-B) ────────────────────────────
+// POST /api/transfers/quote { amount(cents), keyValue } →
+// { feeBreakdown:{ fixedFee, variableFee, subtotalFee, ivaAmount,
+//   totalCharged }, totalCost, canAfford }  (valores en CENTAVOS)
+// La comisión SE COBRA AL CLIENTE: el débito del riel es monto + comisión.
+async function mouvQuoteBreb(amountCop: number, keyValue: string): Promise<{ ok: boolean; feeCop: number; fixedCop: number; variableCop: number; ivaCop: number; raw: any }> {
+  const r = await mouvFetch('/transfers/quote', {
+    method: 'POST',
+    body: JSON.stringify({ amount: Math.round(amountCop * 100), keyValue }),
+  })
+  const d: any = r.data ?? {}
+  const fb = d.feeBreakdown ?? {}
+  const toP = (v: any) => (Number(v) || 0) / 100
+  return {
+    ok: r.ok,
+    feeCop: toP(fb.totalCharged ?? d.totalCharged),
+    fixedCop: toP(fb.fixedFee), variableCop: toP(fb.variableFee), ivaCop: toP(fb.ivaAmount),
+    raw: d,
+  }
+}
+
+// ── FINITY (riel ACH) ──────────────────────────────────────────────
+// ACH va por Finity (precio fijo por transferencia, más barato que el
+// 0,10% de Mouv). Se llama a la edge function finity-proxy (restaurada),
+// que maneja OAuth y los paths. El costo REAL viene en la respuesta de la
+// orden (costs.{commission,iva,total}) y SE COBRA AL CLIENTE.
+const BANK_CODES_CO: Record<string, string> = {
+  'Banco de Bogotá': '1001', 'Banco Popular': '1002', 'Itaú': '1006', 'Bancolombia': '1007',
+  'Citibank': '1009', 'GNB Sudameris': '1012', 'BBVA Colombia': '1013', 'Scotiabank Colpatria': '1019',
+  'Banco de Occidente': '1023', 'Banco Caja Social': '1032', 'Banco Agrario': '1040', 'Davivienda': '1051',
+  'Banco AV Villas': '1052', 'Banco Pichincha': '1060', 'Bancoomeva': '1061', 'Banco Falabella': '1062',
+  'Coopcentral': '1066', 'Lulo Bank': '1070', 'Nequi': '1507', 'Daviplata': '1551',
+  'Movii': '1801', 'Nu Colombia': '1809', 'Nu': '1809',
+}
+async function finityCall(action: string, userId: string, extra: Record<string, unknown> = {}): Promise<any> {
+  const r = await fetch(`${SUPABASE_URL}/functions/v1/finity-proxy`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SERVICE_KEY}` },
+    body: JSON.stringify({ action, user_id: userId, ...extra }),
+  })
+  return r.json().catch(() => null)
+}
+async function finityPayoutAch(userId: string, recipient: Record<string, any>, amountCop: number):
+  Promise<{ ok: boolean; providerRef?: string; state?: string; feeCop: number; costs?: any; error?: any; destinationId?: string }> {
+  // 1) Cuenta destino en Finity (destination_id). Reusar si el contacto ya
+  //    la trae; si no, registrarla ahora.
+  let destId: string | null = recipient.finityId ?? null
+  if (!destId) {
+    const body = {
+      data: {
+        account: {
+          geo: 'CO',
+          account_type: recipient.accountType === 'corriente' || recipient.accountType === 'CORRIENTE' || recipient.accountType === 'checking' ? 'checking' : 'savings',
+          account_number: String(recipient.accountNumber ?? ''),
+          financial_institution_code: BANK_CODES_CO[String(recipient.bankCode ?? '')] ?? String(recipient.bankCode ?? ''),
+          account_holder_fullname: String(recipient.holderName ?? ''),
+          account_holder_id_type: String(recipient.documentType ?? 'CC') === 'PAS' ? 'CE' : String(recipient.documentType ?? 'CC'),
+          account_holder_id_number: String(recipient.documentNumber ?? ''),
+        },
+      },
+    }
+    const ea = await finityCall('create_external_account', userId, body)
+    destId = ea?.data?.id ?? ea?.data?.external_account_id ?? ea?.data?.account_id ?? null
+    if (!ea?.ok || !destId) return { ok: false, feeCop: 0, error: ea?.data ?? ea }
+  }
+  // 2) Orden de retiro (amount en PESOS — contrato Finity v0)
+  const w = await finityCall('create_withdrawal', userId, { data: { amount: amountCop, currency: 'COP', destination_id: destId } })
+  const od: any = w?.data ?? {}
+  if (!w?.ok || !od.id) return { ok: false, feeCop: 0, error: od ?? w, destinationId: destId ?? undefined }
+  const costs = od.costs ?? {}
+  const feeCop = Number(costs.total ?? ((Number(costs.commission) || 0) + (Number(costs.iva) || 0))) || 0
+  return { ok: true, providerRef: String(od.id), state: od.state ?? 'CONFIRMED', feeCop, costs, destinationId: destId ?? undefined }
+}
+
 // Registro de auditoría best-effort (no bloquea la operación).
 async function logAudit(userId: string | null, action: string, metadata: Record<string, unknown>) {
   try {
@@ -263,12 +337,29 @@ serve(async (req: Request) => {
     return json(200, { ok: true, status: r.status, source: 'mouv', total, breb, ach, cop: total, raw: d })
   }
 
-  // ── dispersión BREB / ACH ──
-  // El cliente dispersa contra su SALDO INTERNO del riel (COP_BREB / COP_ACH),
-  // el que el admin le cargó — nunca contra el total de la wallet compartida.
-  // Flujo seguro: valida saldo → debita → registra tx → llama a Mouv →
-  // si Mouv falla (o aún no está cableado) REINTEGRA el saldo (no se mueve
-  // plata). Así un cliente jamás gasta más de lo que se le cargó.
+  // ── Cotización de comisión para el paso Confirmar del cliente ──
+  // BREB → comisión real de Mouv (fija + variable + IVA) vía /transfers/quote.
+  // ACH → Finity cobra precio fijo por transferencia; el valor exacto viene
+  //       en la respuesta de la orden y se descuenta al confirmar.
+  if (action === 'payout_quote') {
+    const amount = Number(payload.amount)
+    if (!isFinite(amount) || amount <= 0) return json(400, { error: 'bad_amount' })
+    const rail = String(payload.rail ?? 'BREB').toUpperCase()
+    if (rail === 'BREB') {
+      if (!payload.keyValue) return json(200, { ok: false, error: 'missing_key', message: 'Falta la llave para cotizar.' })
+      const q = await mouvQuoteBreb(amount, String(payload.keyValue))
+      return json(200, { ok: q.ok, rail: 'BREB', provider: 'mouv', feeCop: q.feeCop, fixedCop: q.fixedCop, variableCop: q.variableCop, ivaCop: q.ivaCop, totalCop: amount + q.feeCop, raw: q.raw })
+    }
+    return json(200, { ok: true, rail: 'ACH', provider: 'finity', feeCop: null, message: 'Precio fijo por transferencia — se calcula y descuenta al confirmar.' })
+  }
+
+  // ── dispersión BREB (Mouv) / ACH (Finity) ──
+  // El cliente dispersa contra su SALDO INTERNO del riel (COP_BREB / COP_ACH).
+  // La COMISIÓN del proveedor se le cobra al cliente:
+  //   BREB → se cotiza ANTES (quote) y se debita monto + comisión.
+  //   ACH  → Finity devuelve costs en la orden; se debita monto y luego el
+  //          costo real reportado.
+  // Si el proveedor falla, se REINTEGRA todo lo debitado.
   if (action === 'payout_breb' || action === 'payout_ach') {
     const rail: 'BREB' | 'ACH' = action === 'payout_breb' ? 'BREB' : 'ACH'
     const railCol = action === 'payout_breb' ? 'COP_BREB' : 'COP_ACH'
@@ -287,15 +378,29 @@ serve(async (req: Request) => {
         return json(400, { error: 'bad_recipient', message: 'Faltan datos de la cuenta ACH (banco, tipo, número y documento).' })
     }
 
-    // 1) Leer saldo interno del riel
+    // 1) Comisión del proveedor (SE COBRA AL CLIENTE)
+    //    BREB → cotización Mouv AHORA (fija + variable + IVA).
+    //    ACH  → Finity la reporta en la orden; aquí arranca en 0 y se
+    //           descuenta después con el valor real.
+    let feeCop = 0
+    let feeDetail: Record<string, unknown> = {}
+    if (rail === 'BREB') {
+      const q = await mouvQuoteBreb(amount, String(recipient.key))
+      if (!q.ok) return json(200, { error: 'quote_failed', message: 'No se pudo cotizar la comisión Bre-B. Intenta de nuevo.', data: q.raw })
+      feeCop = q.feeCop
+      feeDetail = { feeCop: q.feeCop, feeFixedCop: q.fixedCop, feeVariableCop: q.variableCop, feeIvaCop: q.ivaCop, feeProvider: 'mouv' }
+    }
+    const totalDebit = Number((amount + feeCop).toFixed(2))
+
+    // 2) Leer saldo interno del riel y validar monto + comisión
     const { data: u } = await db.from('users').select('balances').eq('id', userId).maybeSingle()
     if (!u) return json(404, { error: 'user_not_found', message: 'Usuario no encontrado.' })
     const bals: Record<string, number> = (u.balances as any) ?? {}
     const current = Number(bals[railCol] ?? 0)
-    if (current < amount) return json(400, { error: 'insufficient_funds', message: `Saldo ${rail} insuficiente. Disponible: ${current.toLocaleString('es-CO')} COP.` })
+    if (current < totalDebit) return json(400, { error: 'insufficient_funds', message: `Saldo ${rail} insuficiente para monto + comisión (${totalDebit.toLocaleString('es-CO')} COP). Disponible: ${current.toLocaleString('es-CO')} COP.` })
 
-    // 2) Debitar el saldo interno (read-check-write; sistema temporal/manual)
-    const afterDebit = Number((current - amount).toFixed(2))
+    // 3) Debitar monto + comisión (read-check-write)
+    const afterDebit = Number((current - totalDebit).toFixed(2))
     const { error: debErr } = await db.from('users').update({ balances: { ...bals, [railCol]: afterDebit } }).eq('id', userId)
     if (debErr) return json(500, { error: 'debit_failed', message: 'No se pudo reservar el saldo. Intenta de nuevo.' })
 
@@ -319,47 +424,86 @@ serve(async (req: Request) => {
     }
     const { data: txIns } = await db.from('transactions').insert({
       user_id: userId, type: 'dispersion', amount, currency: railCol, status: 'Procesando',
-      raw_data: { ...prettyBase, requestedAt: new Date().toISOString() },
+      raw_data: { ...prettyBase, ...feeDetail, requestedAt: new Date().toISOString() },
     }).select('id').maybeSingle()
     const txId = (txIns as any)?.id ?? null
 
-    // 4) Llamar a Mouv (punto único de integración — ver mouvPayout)
-    const pay = await mouvPayout(rail, recipient, amount)
-
-    if (pay.ok) {
+    // 4) Llamar al PROVEEDOR del riel: BREB → Mouv · ACH → Finity
+    if (rail === 'BREB') {
+      const pay = await mouvPayout(rail, recipient, amount)
+      if (pay.ok) {
+        if (txId) await db.from('transactions').update({
+          status: 'Completado',
+          raw_data: {
+            ...prettyBase, ...feeDetail,
+            ...(pay.targetName ? { beneficiary: pay.targetName } : {}),
+            ...(pay.targetDocument ? { documentNumber: pay.targetDocument } : {}),
+            providerRef: pay.providerRef ?? null,
+            settledAt: new Date().toISOString(),
+          },
+        }).eq('id', txId)
+        await logAudit(userId, `mouv.${action}.ok`, { amount, feeCop, rail, providerRef: pay.providerRef ?? null })
+        return json(200, { ok: true, providerRef: pay.providerRef ?? null, feeCop, newBalance: afterDebit })
+      }
+      // Falló → REINTEGRAR monto + comisión
+      const { data: u2 } = await db.from('users').select('balances').eq('id', userId).maybeSingle()
+      const bals2: Record<string, number> = (u2?.balances as any) ?? {}
+      const restored = Number((Number(bals2[railCol] ?? 0) + totalDebit).toFixed(2))
+      await db.from('users').update({ balances: { ...bals2, [railCol]: restored } }).eq('id', userId)
       if (txId) await db.from('transactions').update({
-        status: 'Completado',
+        status: 'Fallido',
+        raw_data: { ...prettyBase, ...feeDetail, error: pay.data?.error ?? 'payout_failed', refunded: true, failedAt: new Date().toISOString() },
+      }).eq('id', txId)
+      await logAudit(userId, `mouv.${action}.fail`, { amount, rail, status: pay.status })
+      return json(200, { error: 'payout_failed', refunded: true, newBalance: restored, status: pay.status, data: pay.data,
+        message: `Mouv rechazó la dispersión (HTTP ${pay.status}). Tu saldo fue devuelto.` })
+    }
+
+    // ── ACH vía FINITY ──
+    const fin = await finityPayoutAch(userId, recipient, amount)
+    if (fin.ok) {
+      // Descontar el costo REAL reportado por Finity (precio por transferencia)
+      let newBalance = afterDebit
+      if (fin.feeCop > 0) {
+        const { data: u3 } = await db.from('users').select('balances').eq('id', userId).maybeSingle()
+        const bals3: Record<string, number> = (u3?.balances as any) ?? {}
+        newBalance = Math.max(0, Number((Number(bals3[railCol] ?? 0) - fin.feeCop).toFixed(2)))
+        await db.from('users').update({ balances: { ...bals3, [railCol]: newBalance } }).eq('id', userId)
+      }
+      // Guardar el finityId en el contacto del usuario (reuso en próximos envíos)
+      if (fin.destinationId) {
+        try {
+          const { data: u4 } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
+          const raw4 = (u4?.raw_data ?? {}) as Record<string, any>
+          const list = Array.isArray(raw4.mouvContacts) ? raw4.mouvContacts : []
+          const next = list.map((c: any) => String(c?.accountNumber ?? '') === String(recipient.accountNumber ?? '') ? { ...c, finityId: fin.destinationId } : c)
+          if (JSON.stringify(next) !== JSON.stringify(list)) await db.from('users').update({ raw_data: { ...raw4, mouvContacts: next } }).eq('id', userId)
+        } catch { /* best-effort */ }
+      }
+      if (txId) await db.from('transactions').update({
+        // Finity CONFIRMED = orden aceptada (aún no pagada) → Procesando.
+        status: 'Procesando',
         raw_data: {
-          ...prettyBase,
-          // Titular OFICIAL resuelto por Mouv (resolve-key) — manda sobre lo
-          // que escribió el usuario.
-          ...(pay.targetName ? { beneficiary: pay.targetName } : {}),
-          ...(pay.targetDocument ? { documentNumber: pay.targetDocument } : {}),
-          providerRef: pay.providerRef ?? null,
-          settledAt: new Date().toISOString(),
+          ...prettyBase, feeProvider: 'finity', feeCop: fin.feeCop, costs: fin.costs ?? null,
+          providerRef: fin.providerRef ?? null, state: fin.state ?? null,
+          acceptedAt: new Date().toISOString(),
         },
       }).eq('id', txId)
-      await logAudit(userId, `mouv.${action}.ok`, { amount, rail, providerRef: pay.providerRef ?? null })
-      return json(200, { ok: true, providerRef: pay.providerRef ?? null, newBalance: afterDebit })
+      await logAudit(userId, `finity.${action}.ok`, { amount, feeCop: fin.feeCop, providerRef: fin.providerRef ?? null })
+      return json(200, { ok: true, provider: 'finity', providerRef: fin.providerRef ?? null, feeCop: fin.feeCop, newBalance })
     }
-
-    // 5) Falló o aún no está cableado → REINTEGRAR el saldo
-    const { data: u2 } = await db.from('users').select('balances').eq('id', userId).maybeSingle()
-    const bals2: Record<string, number> = (u2?.balances as any) ?? {}
-    const restored = Number((Number(bals2[railCol] ?? 0) + amount).toFixed(2))
-    await db.from('users').update({ balances: { ...bals2, [railCol]: restored } }).eq('id', userId)
+    // Finity falló → REINTEGRAR el monto
+    const { data: u5 } = await db.from('users').select('balances').eq('id', userId).maybeSingle()
+    const bals5: Record<string, number> = (u5?.balances as any) ?? {}
+    const restored5 = Number((Number(bals5[railCol] ?? 0) + amount).toFixed(2))
+    await db.from('users').update({ balances: { ...bals5, [railCol]: restored5 } }).eq('id', userId)
     if (txId) await db.from('transactions').update({
-      status: pay.notImplemented ? 'Rechazado' : 'Fallido',
-      raw_data: { ...prettyBase, error: pay.data?.error ?? 'payout_failed', refunded: true, failedAt: new Date().toISOString() },
+      status: 'Fallido',
+      raw_data: { ...prettyBase, feeProvider: 'finity', error: fin.error ?? 'finity_failed', refunded: true, failedAt: new Date().toISOString() },
     }).eq('id', txId)
-    await logAudit(userId, `mouv.${action}.fail`, { amount, rail, notImplemented: !!pay.notImplemented, status: pay.status })
-
-    if (pay.notImplemented) {
-      return json(200, { error: 'not_implemented', refunded: true, newBalance: restored,
-        message: 'La dispersión con Mouv aún no está cableada (falta el endpoint exacto de la doc). Tu saldo NO fue afectado.' })
-    }
-    return json(200, { error: 'payout_failed', refunded: true, newBalance: restored, status: pay.status, data: pay.data,
-      message: `Mouv rechazó la dispersión (HTTP ${pay.status}). Tu saldo fue devuelto.` })
+    await logAudit(userId, `finity.${action}.fail`, { amount, error: JSON.stringify(fin.error ?? {}).slice(0, 200) })
+    return json(200, { error: 'payout_failed', provider: 'finity', refunded: true, newBalance: restored5, data: fin.error,
+      message: 'Finity rechazó la transferencia ACH. Tu saldo fue devuelto.' })
   }
 
   return json(200, { error: 'unknown_action', message: `Acción no soportada: ${action}` })

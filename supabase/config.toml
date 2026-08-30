@@ -32,3 +32,6 @@ verify_jwt = false
 
 [functions.finity-webhook]
 verify_jwt = false
+
+[functions.finity-proxy]
+verify_jwt = false
