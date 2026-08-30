@@ -326,6 +326,15 @@ async function validCaller(req: Request, payload: Record<string, unknown>): Prom
   const jwt = auth.replace(/^Bearer\s+/i, '')
   if (!jwt) return { ok: false }
 
+  // (0) Llamada INTERNA servidor-a-servidor (mouv-proxy dispersa ACH,
+  // gasfree convierte en segundo plano): se identifican con el
+  // service-role key, que nunca sale del backend. Sin esto, el retiro
+  // ACH moría aquí con 'unauthorized' antes de llegar a Finity.
+  if (SERVICE_KEY && jwt === SERVICE_KEY) {
+    const uid = String(payload.user_id ?? '')
+    return { ok: true, userId: uid || undefined }
+  }
+
   // (a) JWT real de Supabase
   const { data } = await db.auth.getUser(jwt)
   if (data?.user) return { ok: true, userId: data.user.id }
