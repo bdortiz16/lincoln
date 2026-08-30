@@ -547,7 +547,7 @@ async function allocNextIndex(): Promise<number> {
   } catch { /* RPC no desplegada aún → fallback */ }
   const { data: cfg } = await db.from('system_config').select('value').eq('key', 'gasfree_hd_counter').single()
   const next = cfg?.value ? (parseInt(cfg.value) + 1) : 1
-  await db.from('system_config').upsert({ key: 'gasfree_hd_counter', value: String(next) })
+  await saveSystemConfig('gasfree_hd_counter', String(next))
   return next
 }
 
@@ -1253,6 +1253,21 @@ async function myWalletWithdrawal(userId: string, toAddress: string, amount: num
   }
 }
 
+// ── Guardado VERIFICADO en system_config ──────────────────
+// El upsert de supabase-js NO lanza: devuelve { error } y aquí se estaba
+// IGNORANDO — si la tabla no tiene constraint única en `key` (upsert
+// necesita ON CONFLICT) el guardado fallaba EN SILENCIO y los proveedores
+// "agregados" desaparecían al recargar. Ahora: upsert → si falla,
+// update→insert manual → si todo falla, LANZA (el frontend lo muestra).
+async function saveSystemConfig(key: string, value: string) {
+  const up = await db.from('system_config').upsert({ key, value })
+  if (!up.error) return
+  const upd = await db.from('system_config').update({ value }).eq('key', key).select('key')
+  if (!upd.error && (upd.data?.length ?? 0) > 0) return
+  const ins = await db.from('system_config').insert({ key, value })
+  if (ins.error) throw new Error(`No se pudo guardar ${key}: ${up.error.message}; insert: ${ins.error.message}`)
+}
+
 // ── Tesorería GasFree (recaudadora) — parámetros editables ──
 const TREASURY_KEY = 'gasfree_treasury_config'
 async function getTreasuryConfig() {
@@ -1274,7 +1289,7 @@ async function setTreasuryConfig(cfg: { alertThresholdUsdt?: number; notes?: str
     notes: cfg.notes ?? current.notes,
     alertProviderId: cfg.alertProviderId !== undefined ? cfg.alertProviderId : current.alertProviderId,
   }
-  await db.from('system_config').upsert({ key: TREASURY_KEY, value: JSON.stringify(next) })
+  await saveSystemConfig(TREASURY_KEY, JSON.stringify(next))
   return next
 }
 
@@ -1286,8 +1301,9 @@ async function getProviders() {
   return data?.value ? JSON.parse(data.value) : []
 }
 async function setProviders(list: any[]) {
-  await db.from('system_config').upsert({ key: PROVIDERS_KEY, value: JSON.stringify(list) })
-  return list
+  await saveSystemConfig(PROVIDERS_KEY, JSON.stringify(list))
+  // Releer de la base: lo que se devuelve es lo que DE VERDAD quedó guardado.
+  return await getProviders()
 }
 
 // ── Movimientos de Tesorería (auditoría) ──────────────────
@@ -1301,7 +1317,7 @@ async function logTreasuryMovement(entry: Record<string, unknown>) {
   const { data } = await db.from('system_config').select('value').eq('key', TREASURY_MOVEMENTS_KEY).single()
   const list: any[] = data?.value ? JSON.parse(data.value) : []
   list.unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), ...entry })
-  await db.from('system_config').upsert({ key: TREASURY_MOVEMENTS_KEY, value: JSON.stringify(list.slice(0, 300)) })
+  await saveSystemConfig(TREASURY_MOVEMENTS_KEY, JSON.stringify(list.slice(0, 300)))
 }
 async function getTreasuryMovements() {
   const { data } = await db.from('system_config').select('value').eq('key', TREASURY_MOVEMENTS_KEY).single()

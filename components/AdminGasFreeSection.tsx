@@ -252,12 +252,15 @@ export const AdminGasFreeSection: React.FC = () => {
         const r = await callGasfree({ action: 'get_treasury_config' });
         if (!r?.error) { setTreasuryCfg(r); setTreasuryEdit({ alertThresholdUsdt: String(r.alertThresholdUsdt), notes: r.notes ?? '', alertProviderId: r.alertProviderId ?? '' }); }
     };
+    const [treasuryCfgMsg, setTreasuryCfgMsg] = useState<{ ok: boolean; text: string } | null>(null);
     const saveTreasuryCfg = async () => {
-        setTreasurySaving(true);
+        setTreasurySaving(true); setTreasuryCfgMsg(null);
         try {
             const r = await callGasfree({ action: 'set_treasury_config', config: { alertThresholdUsdt: Number(treasuryEdit.alertThresholdUsdt) || 0, notes: treasuryEdit.notes, alertProviderId: treasuryEdit.alertProviderId || null } });
-            if (!r?.error) setTreasuryCfg(r);
-        } finally { setTreasurySaving(false); }
+            if (r?.error) setTreasuryCfgMsg({ ok: false, text: `⚠ NO quedó guardado: ${r.error}. Reintenta.` });
+            else { setTreasuryCfg(r); setTreasuryCfgMsg({ ok: true, text: '✅ Parámetros de Tesorería guardados.' }); }
+        } catch (e: any) { setTreasuryCfgMsg({ ok: false, text: `⚠ NO quedó guardado (${String(e?.message ?? e)}). Reintenta.` }); }
+        finally { setTreasurySaving(false); }
     };
 
     // ── Proveedores: registro editable (a quién se paga con el USDT
@@ -276,21 +279,46 @@ export const AdminGasFreeSection: React.FC = () => {
         const r = await callGasfree({ action: 'get_providers' });
         if (!r?.error) { setProvidersList(r.providers ?? []); setProvidersLoaded(true); }
     };
-    const saveProviders = async (list: any[]) => {
-        setProvidersList(list);
-        await callGasfree({ action: 'set_providers', providers: list });
+    // Guardado VERIFICADO: se espera la respuesta del servidor y se toma su
+    // lista como la verdad (releída de la base). Si falla, se muestra el
+    // error y se recarga lo que de verdad hay — NUNCA más un "agregado"
+    // fantasma que desaparece al recargar la página.
+    const [providerSaving, setProviderSaving] = useState(false);
+    const saveProviders = async (list: any[]): Promise<boolean> => {
+        setProviderSaving(true);
+        try {
+            const r = await callGasfree({ action: 'set_providers', providers: list });
+            if (r?.error || !Array.isArray(r?.providers)) {
+                setProviderErr(`⚠ NO quedó guardado en el servidor: ${r?.error ?? 'respuesta inválida'}. Reintenta.`);
+                await loadProviders();
+                return false;
+            }
+            setProvidersList(r.providers);
+            return true;
+        } catch (e: any) {
+            setProviderErr(`⚠ NO quedó guardado (error de red: ${String(e?.message ?? e)}). Reintenta.`);
+            await loadProviders();
+            return false;
+        } finally { setProviderSaving(false); }
     };
-    const addProvider = () => {
+    const addProvider = async () => {
         setProviderErr(null);
+        if (providerSaving) return;
         if (!newProvider.name) { setProviderErr('Elige el proveedor: Finity o Mouv.'); return; }
         const wallet = newProvider.detail.trim();
         if (!TRC20_RX.test(wallet)) { setProviderErr('Wallet inválida: debe ser una dirección USDT TRC-20 (empieza con T, 34 caracteres).'); return; }
         if (providers.some((p: any) => p.name === newProvider.name)) { setProviderErr(`${newProvider.name} ya está registrado. Elimínalo primero si quieres cambiar su wallet.`); return; }
         const next = [...providers, { id: `p_${Date.now()}`, name: newProvider.name, detail: wallet }];
-        setNewProvider({ name: '', detail: '' });
-        saveProviders(next);
+        const ok = await saveProviders(next);
+        if (ok) {
+            setNewProvider({ name: '', detail: '' });
+            setProviderErr(null);
+        }
     };
-    const removeProvider = (id: string) => saveProviders(providers.filter(p => p.id !== id));
+    const removeProvider = async (id: string) => {
+        setProviderErr(null);
+        await saveProviders(providers.filter(p => p.id !== id));
+    };
     // A qué proveedor se le paga cuando el saldo de Tesorería supera el
     // umbral configurado — antes solo era una nota de texto libre, sin
     // ligar al registro real de Proveedores (puede haber varios inscritos).
@@ -645,6 +673,9 @@ export const AdminGasFreeSection: React.FC = () => {
                         {treasurySaving ? 'Guardando…' : 'Guardar'}
                     </button>
                 </div>
+                {treasuryCfgMsg && (
+                    <p className={`text-[11px] font-bold ${treasuryCfgMsg.ok ? 'text-green-700' : 'text-slate-600'}`}>{treasuryCfgMsg.text}</p>
+                )}
             </div>
 
             {/* Proveedores: a quién se paga con el USDT de Tesorería */}
@@ -688,9 +719,14 @@ export const AdminGasFreeSection: React.FC = () => {
                         <input value={newProvider.detail} onChange={e => { setNewProvider(p => ({ ...p, detail: e.target.value.trim() })); setProviderErr(null); }}
                             className="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 text-sm font-mono outline-none focus:border-[#4ADE80]" placeholder="T··· (34 caracteres)" />
                     </div>
-                    <button onClick={addProvider} style={{ color: '#FFFFFF' }} className="px-4 py-2 text-sm font-bold bg-[#16A34A] rounded-lg hover:bg-[#0f766e]">+ Agregar</button>
+                    <button onClick={addProvider} disabled={providerSaving} style={{ color: '#FFFFFF' }} className="px-4 py-2 text-sm font-bold bg-[#16A34A] rounded-lg hover:bg-[#0f766e] disabled:opacity-60">
+                        {providerSaving ? 'Guardando…' : '+ Agregar'}
+                    </button>
                 </div>
                 {providerErr && <p className="text-[11px] font-bold text-slate-500">⚠ {providerErr}</p>}
+                {!providerErr && providersLoaded && providers.length > 0 && (
+                    <p className="text-[11px] font-bold text-green-700">✅ {providers.length === 1 ? '1 proveedor guardado' : `${providers.length} proveedores guardados`} en el servidor (verificado).</p>
+                )}
                 <p className="text-[10px] text-slate-400">Verifica la wallet con el proveedor antes de guardarla — los pagos de Tesorería salen directo a esa dirección.</p>
             </div>
 
