@@ -331,6 +331,64 @@ serve(async (req: Request) => {
   const payload = await req.json().catch(() => ({}))
   const action = String(payload.action ?? '')
 
+  // ── WEBHOOK de recaudo PSE (Mouv notifica el pago confirmado) ──────
+  // Mouv postea aquí (callbackUrl) SIN nuestra auth. Se reconoce porque no
+  // trae 'action' pero sí una referencia/estado de recaudo. Se busca la
+  // transacción Pendiente por referencia y, si el pago está aprobado, se
+  // acredita el Saldo Lincoin (idempotente por status). Tolerante al shape:
+  // se excava reference/status en cualquier nivel, como con Finity.
+  if (!action) {
+    const dig = (o: any, keys: string[]): string => {
+      const seen = new Set<any>(); const stack = [o]
+      while (stack.length) { const c = stack.pop(); if (!c || typeof c !== 'object' || seen.has(c)) continue; seen.add(c)
+        for (const [k, v] of Object.entries(c)) { if (keys.includes(k.toLowerCase()) && (typeof v === 'string' || typeof v === 'number')) return String(v); if (v && typeof v === 'object') stack.push(v) } }
+      return ''
+    }
+    const ref = dig(payload, ['reference', 'reference_id', 'referenceid', 'external_id', 'externalid'])
+    const status = dig(payload, ['status', 'state', 'event', 'transaction_status']).toUpperCase()
+    if (!ref) return json(200, { ok: true, ignored: 'no_reference' })
+    const { data: rows } = await db.from('transactions').select('id, user_id, amount, currency, status, raw_data')
+      .eq('type', 'load').filter('raw_data->>reference', 'eq', ref).limit(2)
+    const tx = (rows ?? [])[0] as any
+    if (!tx) return json(200, { ok: true, matched: false, ref })
+    const paid = /APPROVED|APROBAD|COMPLETED|SUCCESS|PAID|CONFIRM|ACCEPTED|OK/.test(status)
+    const failed = /REJECT|DECLIN|FAILED|CANCEL|EXPIRED|ERROR/.test(status)
+    if (tx.status === 'Completado' || tx.status === 'Rechazado') return json(200, { ok: true, already: tx.status })
+    if (paid) {
+      // SEGURIDAD: no se confía en el cuerpo del webhook (no está firmado y
+      // podría forjarse). Se VERIFICA contra la API real de Mouv que el
+      // recaudo esté aprobado antes de acreditar. Si no se puede verificar
+      // (endpoint de estado aún no cableado), NO se acredita — queda para
+      // revisión del admin, nunca crédito por un POST no verificado.
+      const rd = (tx.raw_data ?? {}) as Record<string, any>
+      const pref = String(rd.providerRef ?? ref)
+      let verified = false
+      for (const p of [`/collections/${pref}`, `/payin/${pref}`, `/pse/${pref}`, `/collections/status/${pref}`]) {
+        const chk = await mouvFetch(p, { method: 'GET' })
+        if (chk.ok) { const cs = String((chk.data as any)?.status ?? (chk.data as any)?.state ?? '').toUpperCase(); if (/APPROVED|APROBAD|COMPLETED|SUCCESS|PAID|CONFIRM|ACCEPTED|OK/.test(cs)) { verified = true; break } }
+      }
+      if (!verified) return json(200, { ok: true, unverified: true, ref, note: 'no se pudo verificar con Mouv — sin acreditar' })
+      // CAS: reclamar la acreditación antes de tocar el saldo (idempotente).
+      const { data: claimed } = await db.from('transactions').update({
+        status: 'Completado', raw_data: { ...rd, payinStatus: status, paidAt: new Date().toISOString(), verified: true },
+      }).eq('id', tx.id).neq('status', 'Completado').select('id')
+      if (claimed?.length) {
+        const col = String(tx.currency ?? 'COP')
+        const { data: u } = await db.from('users').select('balances').eq('id', tx.user_id).single()
+        const bals: Record<string, number> = (u?.balances as any) ?? {}
+        const nb = parseFloat((Number(bals[col] ?? 0) + Number(tx.amount ?? 0)).toFixed(2))
+        await db.from('users').update({ balances: { ...bals, [col]: nb } }).eq('id', tx.user_id)
+        await logAudit(tx.user_id, 'mouv.payin_pse.credited', { ref, amount: tx.amount, status })
+      }
+      return json(200, { ok: true, credited: true, ref })
+    }
+    if (failed) {
+      await db.from('transactions').update({ status: 'Rechazado', raw_data: { ...(tx.raw_data ?? {}), payinStatus: status, failedAt: new Date().toISOString() } }).eq('id', tx.id).neq('status', 'Completado')
+      return json(200, { ok: true, rejected: true, ref })
+    }
+    return json(200, { ok: true, pending: true, ref, status })
+  }
+
   const caller = await validCaller(req, payload)
   if (!caller.ok) return json(401, { error: 'unauthorized', message: 'unauthorized (mouv-proxy v1)' })
 
