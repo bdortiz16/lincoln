@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   Landmark,
   CheckCircle2,
+  ArrowUpRight,
+  History,
   Info,
   Home,
   Send,
@@ -278,6 +280,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const [isWalletOrderModalOpen, setIsWalletOrderModalOpen] = useState(false);
   const [walletDraftOrder, setWalletDraftOrder] = useState<string[]>([]);
   const [movementsTab, setMovementsTab] = useState<'all' | 'income' | 'expense'>('all');
+  // Chips + paginación del Historial rediseñado
+  const [movChip, setMovChip] = useState<'all' | 'in' | 'out' | 'convert' | 'inflight'>('all');
+  const [movPage, setMovPage] = useState(1);
   const [movSearch, setMovSearch] = useState('');
   const [movShowFilters, setMovShowFilters] = useState(false);
   const [movStatus, setMovStatus] = useState<'all' | 'Pendiente' | 'Completado' | 'Rechazado'>('all');
@@ -2037,38 +2042,182 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   );
   };
 
-  const renderMovements = () => (
-      <div className="space-y-6 animate-in fade-in duration-300 pt-6">
-          <div className="flex flex-col gap-3">
-              <button onClick={() => setActiveView('dashboard')} style={{ color: '#0C0E0D' }} className="flex items-center gap-2 font-bold text-sm self-start">
-                  <ArrowLeft size={16} /> Volver
-              </button>
-              <div className="flex justify-between items-center">
-                 <h2 className="text-xl font-bold text-slate-800">Historial de Movimientos</h2>
-                 <div className="flex gap-2 bg-white p-1 rounded-lg border border-slate-200">
-                     <button onClick={() => setMovementsTab('all')} className={`px-4 py-2 rounded-lg text-sm font-bold ${movementsTab === 'all' ? 'bg-[#0C0E0D]' : 'text-slate-500 hover:bg-slate-50'}`}>Todos</button>
-                     <button onClick={() => setMovementsTab('income')} className={`px-4 py-2 rounded-lg text-sm font-bold ${movementsTab === 'income' ? 'bg-[#0C0E0D]' : 'text-slate-500 hover:bg-slate-50'}`}>Ingresos</button>
-                     <button onClick={() => setMovementsTab('expense')} className={`px-4 py-2 rounded-lg text-sm font-bold ${movementsTab === 'expense' ? 'bg-[#0C0E0D]' : 'text-slate-500 hover:bg-slate-50'}`}>Egresos</button>
-                 </div>
+  // ── Pantalla Movimientos (rediseño): encabezado con conteo dinámico,
+  // resumen del período, buscador + chips con contador, tabla agrupada por
+  // día con pills de SOLO BORDE (sin rellenos amarillos/verdes) y paginación.
+  const renderMovements = () => {
+      const all = getFilteredMovements(null, { full: true });
+      const isConvertTx = (t: any) => t.type === 'convert' || t.type === 'breb_move' || t.type === 'rail_move';
+      const isInFlight = (t: any) => ['Procesando', 'Pendiente'].includes(String(t.status || ''));
+      const isFailedTx = (t: any) => ['Fallido', 'Rechazado'].includes(String(t.status || ''));
+      const chipOf = (t: any) => isConvertTx(t) ? 'convert' : isTxCredit(t) ? 'in' : 'out';
+      const counts = {
+          all: all.length,
+          in: all.filter(t => chipOf(t) === 'in').length,
+          out: all.filter(t => chipOf(t) === 'out').length,
+          convert: all.filter(t => chipOf(t) === 'convert').length,
+          inflight: all.filter(isInFlight).length,
+      };
+      const rows = movChip === 'all' ? all : movChip === 'inflight' ? all.filter(isInFlight) : all.filter(t => chipOf(t) === movChip);
+
+      // Sumas del período en COP equivalente (USDT × tasa USD→COP)
+      const usdCop = getRate('USD', 'COP') || 0;
+      const copEq = (t: any) => baseCurrency(t.currency) === 'USD' ? Number(t.amount || 0) * usdCop : Number(t.amount || 0);
+      const fmtCop = (n: number) => `$${Math.round(n).toLocaleString('es-CO')}`;
+      const inSum = rows.filter(t => isTxCredit(t) && !isFailedTx(t)).reduce((s, t) => s + copEq(t), 0);
+      const outSum = rows.filter(t => !isTxCredit(t) && !isConvertTx(t) && !isFailedTx(t)).reduce((s, t) => s + copEq(t), 0);
+      const flight = rows.filter(isInFlight);
+      const flightSum = flight.reduce((s, t) => s + copEq(t), 0);
+
+      // Paginación (cliente)
+      const PER = 12;
+      const maxPage = Math.max(1, Math.ceil(rows.length / PER));
+      const page = Math.min(movPage, maxPage);
+      const pageRows = rows.slice((page - 1) * PER, page * PER);
+
+      // Agrupación por día
+      const dayLabelOf = (t: any) => {
+          const d = t.createdAt ? new Date(t.createdAt) : null;
+          if (!d) return 'SIN FECHA';
+          const base = d.toLocaleDateString('es-CO', { day: 'numeric', month: 'short' }).replace('.', '').toUpperCase();
+          if (d.toDateString() === new Date().toDateString()) return `HOY · ${base}`;
+          if (d.toDateString() === new Date(Date.now() - 86400000).toDateString()) return `AYER · ${base}`;
+          return base;
+      };
+      const titleCase = (s: string) => String(s || '').toLowerCase().replace(/(^|[\s.])\p{L}/gu, c => c.toUpperCase());
+
+      // Metadatos de fila del rediseño (concepto/destino/riel/referencia/pill)
+      const rowInfo = (t: any) => {
+          const kind = chipOf(t);
+          const ticker = baseCurrency(t.currency) === 'USD' ? 'USDT' : 'COP';
+          const rd = (t.raw_data ?? {}) as any;
+          const ben = titleCase(t.beneficiary || t.recipient?.holderName || rd.beneficiary || '');
+          const acct = String(t.account ?? t.recipient?.key ?? t.recipient?.accountNumber ?? rd.account ?? '');
+          const last4 = acct ? `···${acct.slice(-4)}` : '';
+          const isBreb = t.currency === 'COP_BREB';
+          let title = t.title || ROW_LABELS[t.type] || t.type;
+          if (t.type === 'dispersion') title = `Dispersión ${isBreb ? 'Bre-B' : 'ACH'}${ben ? ` · ${ben}` : ''}`;
+          else if (t.type === 'convert') title = t.title || 'Cambio USDT → COP';
+          else if (ben && (t.type === 'send' || t.type === 'pay_sent')) title = `Envío a ${ben}`;
+          const time = t.createdAt ? new Date(t.createdAt).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }) : '';
+          let dest = '—', rail = '', flag = false;
+          if (t.type === 'dispersion') {
+              dest = isBreb ? `Llave ${last4}`.trim() : `${t.bank && t.bank !== 'ACH' ? String(t.bank).split('·')[0].trim() : 'Banco'} ${last4}`.trim();
+              rail = isBreb ? 'Colombia · Bre-B' : 'Colombia · ACH'; flag = true;
+          } else if (t.type === 'load' || t.type === 'otc_deposit') {
+              dest = ticker === 'USDT' ? 'Billetera USDT' : 'Saldo Lincoin';
+              rail = ticker === 'USDT' ? 'Depósito · red TRON' : 'Depósito';
+          } else if (t.type === 'convert') { dest = 'Saldo ACH'; rail = 'Conversión interna'; }
+          else if (t.type === 'rail_move' || t.type === 'breb_move') { dest = 'Entre mis cuentas'; rail = 'Movimiento interno'; }
+          else if (t.type === 'send' || t.type === 'pay_sent' || t.type === 'otc_withdraw') {
+              dest = t.bank ? `${String(t.bank).split('·')[0].trim()} ${last4}`.trim() : (acct ? `Cuenta ${last4}` : '—');
+              rail = t.currency === 'USD' ? 'Red TRON · TRC-20' : 'Colombia'; flag = t.currency !== 'USD' && !!t.bank;
+          }
+          const ref0 = t.providerRef ?? rd.providerRef ?? '';
+          const reference = ref0 ? (String(ref0).length > 12 ? `${String(ref0).slice(0, 10)}…` : String(ref0)) : `TX-${String(t.id ?? '').replace(/-/g, '').slice(-6).toUpperCase()}`;
+          const st = String(t.status || '');
+          const pill = st === 'Completado'
+              ? { label: 'COMPLETADO', border: 'rgba(74,222,128,0.3)', color: '#4ADE80' }
+              : isInFlight(t)
+              ? { label: 'EN CURSO', border: 'rgba(255,255,255,0.14)', color: 'rgba(244,244,242,0.7)' }
+              : isFailedTx(t)
+              ? { label: st === 'Rechazado' ? 'RECHAZADO' : 'FALLIDO', border: 'rgba(255,255,255,0.14)', color: '#878E88' }
+              : { label: (st || 'PENDIENTE').toUpperCase(), border: 'rgba(255,255,255,0.14)', color: '#878E88' };
+          const failReason = isFailedTx(t) ? String(rd.error?.message ?? (typeof rd.error === 'string' ? rd.error : '') ?? '').slice(0, 220) : '';
+          const rateVal = t.mouvRate ?? rd.mouvRate;
+          const sub2 = t.type === 'convert' && rateVal ? `tasa ${Math.round(Number(rateVal)).toLocaleString('es-CO')}` : '';
+          return { kind, ticker, title, time, dest, rail, flag, reference, pill, failReason, sub2 };
+      };
+      const IconBox = (kind: string) => (
+          <span style={{ width: 32, height: 32, borderRadius: 9, flexShrink: 0, display: 'grid', placeItems: 'center', background: kind === 'in' ? 'rgba(74,222,128,0.1)' : 'rgba(255,255,255,0.055)' }}>
+              {kind === 'in' ? <ArrowDownLeft size={16} style={{ color: '#4ADE80' }} strokeWidth={1.8} />
+                  : kind === 'convert' ? <ArrowLeftRight size={16} style={{ color: '#F4F4F2' }} strokeWidth={1.8} />
+                  : <ArrowUpRight size={16} style={{ color: '#F4F4F2' }} strokeWidth={1.8} />}
+          </span>
+      );
+      const exportCsv = () => {
+          const esc = (v: any) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+          const lines = [['Fecha', 'Concepto', 'Destino', 'Riel', 'Referencia', 'Monto', 'Moneda', 'Estado'].join(';')];
+          rows.forEach(t => {
+              const i = rowInfo(t);
+              lines.push([t.createdAt ? new Date(t.createdAt).toLocaleString('es-CO') : '', i.title, i.dest, i.rail,
+                  t.providerRef ?? (t.raw_data as any)?.providerRef ?? i.reference,
+                  `${isTxCredit(t) ? '' : '-'}${t.amount}`, i.ticker, t.status ?? ''].map(esc).join(';'));
+          });
+          const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = `movimientos-lincoin-${new Date().toISOString().slice(0, 10)}.csv`;
+          a.click();
+          URL.revokeObjectURL(a.href);
+      };
+      const monthLabel = new Date().toLocaleDateString('es-CO', { month: 'long', year: 'numeric' });
+      const secBtn: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 7, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', borderRadius: 9, padding: '10px 14px', fontSize: 13.5, fontWeight: 600, color: '#F4F4F2' };
+      const pagerBtn: React.CSSProperties = { ...secBtn, padding: '8px 14px', fontSize: 12.5 };
+      const headSt: React.CSSProperties = { fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: '#878E88' };
+      const GRID = 'minmax(0,1fr) 200px 130px 130px 110px';
+      const CHIPS: [typeof movChip, string, number][] = [['all', 'Todos', counts.all], ['in', 'Entradas', counts.in], ['out', 'Salidas', counts.out], ['convert', 'Conversiones', counts.convert], ['inflight', 'En curso', counts.inflight]];
+      const flagCo = (size: number) => (
+          <span style={{ width: size, height: size, borderRadius: '50%', overflow: 'hidden', flexShrink: 0, display: 'block', background: '#2E3330' }}>
+              <img src={flagUrl('co')} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+          </span>
+      );
+      let lastDay = '';
+      return (
+      <div className="animate-in fade-in duration-300 pt-6" style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+          {/* 1. Encabezado */}
+          <div className="flex flex-wrap items-end justify-between gap-3">
+              <div>
+                  <h2 style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-0.8px', color: '#F4F4F2' }}>Movimientos</h2>
+                  <p style={{ fontSize: 14, color: '#878E88', marginTop: 3 }}>{all.length} operaciones · {monthLabel}</p>
               </div>
-          </div>
-          {/* Buscador + filtros */}
-          <div className="space-y-3">
-              <div className="flex items-center gap-2">
-                  <div className="relative flex-1">
-                      <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                      <input value={movSearch} onChange={e => setMovSearch(e.target.value)}
-                          placeholder="Buscar por concepto, monto, beneficiario…"
-                          className="w-full h-11 pl-9 pr-3 rounded-xl border border-slate-200 text-sm outline-none focus:border-[#4ADE80]" />
-                  </div>
-                  <button type="button" onClick={() => setMovShowFilters(v => !v)} title="Filtros"
-                      className={`relative h-11 px-3.5 rounded-xl border text-sm font-bold flex items-center gap-2 transition-colors ${movShowFilters || movActiveFilters ? 'bg-[#0C0E0D] text-white border-[#0C0E0D]' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>
-                      <SlidersHorizontal size={16} />
-                      <span className="hidden sm:inline">Filtros</span>
-                      {movActiveFilters > 0 && <span className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-[#4ADE80] text-[#0C0E0D] text-[10px] font-black flex items-center justify-center">{movActiveFilters}</span>}
+              <div className="flex flex-wrap" style={{ gap: 8 }}>
+                  <button type="button" onClick={() => setMovShowFilters(v => !v)} style={secBtn} className="hover:bg-white/[0.09] transition-colors">
+                      <SlidersHorizontal size={15} strokeWidth={1.7} />
+                      {movDateFrom || movDateTo ? `${movDateFrom || '…'} – ${movDateTo || '…'}` : 'Rango y filtros'}
+                      {movActiveFilters > 0 && <span style={{ minWidth: 18, height: 18, borderRadius: 999, border: '1px solid rgba(74,222,128,0.35)', color: '#4ADE80', fontSize: 10.5, fontWeight: 800, display: 'grid', placeItems: 'center', padding: '0 4px' }}>{movActiveFilters}</span>}
+                  </button>
+                  <button type="button" onClick={exportCsv} style={secBtn} className="hover:bg-white/[0.09] transition-colors">
+                      <Download size={15} strokeWidth={1.7} /> Exportar CSV
                   </button>
               </div>
-              {movShowFilters && (
+          </div>
+
+          {/* 2. Resumen del período (se recalcula con filtros/chips activos) */}
+          <div className="grid grid-cols-1 sm:grid-cols-3" style={{ gap: 14 }}>
+              {[
+                  { l: 'Entradas del período', v: `+${fmtCop(inSum)} COP eq.`, c: '#4ADE80' },
+                  { l: 'Salidas del período', v: `−${fmtCop(outSum)} COP eq.`, c: '#F4F4F2' },
+                  { l: 'En curso', v: `${flight.length} envío${flight.length === 1 ? '' : 's'} · ${fmtCop(flightSum)} COP eq.`, c: '#F4F4F2' },
+              ].map(card => (
+                  <div key={card.l} style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, padding: '16px 20px' }}>
+                      <p style={{ fontSize: 11.5, color: '#878E88' }}>{card.l}</p>
+                      <p style={{ fontSize: 20, fontWeight: 800, color: card.c, marginTop: 5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{card.v}</p>
+                  </div>
+              ))}
+          </div>
+
+          {/* 3. Buscador + chips de filtro */}
+          <div className="flex flex-wrap items-center" style={{ gap: 10 }}>
+              <div className="relative w-full sm:w-auto" style={{ maxWidth: 440, flex: '1 1 260px' }}>
+                  <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: '#878E88' }} />
+                  <input value={movSearch} onChange={e => { setMovSearch(e.target.value); setMovPage(1); }}
+                      placeholder="Buscar por beneficiario, referencia o monto"
+                      style={{ width: '100%', height: 42, paddingLeft: 36, paddingRight: 12, borderRadius: 9, fontSize: 13, background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.08)', color: '#F4F4F2', outline: 'none' }} />
+              </div>
+              <div className="flex items-center overflow-x-auto" style={{ gap: 7 }}>
+                  {CHIPS.map(([k, lbl, n]) => {
+                      const on = movChip === k;
+                      return (
+                          <button key={k} type="button" onClick={() => { setMovChip(k); setMovPage(1); }}
+                              style={{ borderRadius: 999, padding: '8px 16px', fontSize: 12.5, whiteSpace: 'nowrap', fontWeight: on ? 700 : 500, border: on ? '1px solid rgba(74,222,128,0.35)' : '1px solid rgba(255,255,255,0.1)', background: on ? 'rgba(74,222,128,0.07)' : 'transparent', color: on ? '#F4F4F2' : '#878E88' }}>
+                              {lbl} · {n}
+                          </button>
+                      );
+                  })}
+              </div>
+          </div>
+          {movShowFilters && (
                   <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-4">
                       {/* Estado */}
                       <div>
@@ -2127,35 +2276,77 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       )}
                   </div>
               )}
-          </div>
 
-          <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-             {getFilteredMovements(null, { full: true }).map(tx => {
-                 const meta = txRowMeta(tx);
+          {/* 4. Tabla agrupada por día */}
+          <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, overflow: 'hidden' }}>
+             {/* Encabezados de columna (solo desktop) */}
+             <div className="hidden lg:grid" style={{ gridTemplateColumns: GRID, gap: 12, padding: '9px 22px' }}>
+                 <span style={headSt}>CONCEPTO</span>
+                 <span style={headSt}>DESTINO Y RIEL</span>
+                 <span style={headSt}>REFERENCIA</span>
+                 <span style={{ ...headSt, textAlign: 'right' }}>IMPORTE</span>
+                 <span style={{ ...headSt, textAlign: 'right' }}>ESTADO</span>
+             </div>
+             {pageRows.map(tx => {
+                 const i = rowInfo(tx);
+                 const day = dayLabelOf(tx);
+                 const showDay = day !== lastDay;
+                 lastDay = day;
                  return (
-                 <button key={tx.id} type="button" onClick={() => setSelectedTx(tx)} className="w-full p-4 border-b border-slate-50 flex justify-between items-center gap-3 hover:bg-slate-50 transition-colors text-left cursor-pointer">
-                    <div className="flex items-center gap-4 min-w-0">
-                        <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${isTxCredit(tx) ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600'}`}>
-                            <meta.Icon size={17} />
-                        </div>
-                        <div className="min-w-0">
-                            <p className="font-bold text-slate-800 text-sm truncate">{meta.title}</p>
-                            <div className="flex items-center gap-2 mt-0.5 min-w-0">
-                                {meta.sub && <p className="text-xs text-slate-400 truncate">{meta.sub}</p>}
-                                {tx.status && (
-                                    <span className={`inline-block px-2 py-0.5 rounded-full text-[9px] font-bold uppercase border shrink-0 ${movStatusStyle(tx.status)}`}>{movStatusLabel(tx.status)}</span>
-                                )}
-                            </div>
-                        </div>
-                    </div>
-                    <span className={`font-bold text-sm shrink-0 ${isTxCredit(tx) ? 'text-green-600' : 'text-slate-800'}`}>
-                        {isTxCredit(tx) ? '+' : '-'} {formatMoney(tx.amount, tx.currency)}
-                    </span>
-                 </button>
+                 <React.Fragment key={tx.id}>
+                    {showDay && (
+                        <div style={{ ...headSt, padding: '8px 22px', borderTop: '1px solid rgba(255,255,255,0.05)', background: 'rgba(255,255,255,0.015)' }}>{day}</div>
+                    )}
+                    {/* Fila desktop (grid de columnas) */}
+                    <button type="button" onClick={() => setSelectedTx(tx)} title={i.failReason || undefined}
+                        className="hidden lg:grid w-full text-left hover:bg-white/[0.02] transition-colors cursor-pointer"
+                        style={{ gridTemplateColumns: GRID, gap: 12, padding: '13px 22px', borderTop: '1px solid rgba(255,255,255,0.05)', alignItems: 'center' }}>
+                        <span className="flex items-center" style={{ gap: 11, minWidth: 0 }}>
+                            {IconBox(i.kind)}
+                            <span style={{ minWidth: 0 }}>
+                                <span style={{ display: 'block', fontSize: 13.5, fontWeight: 600, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{i.title}</span>
+                                {i.time && <span style={{ display: 'block', fontSize: 11.5, color: '#878E88', marginTop: 1 }}>{i.time}</span>}
+                            </span>
+                        </span>
+                        <span className="flex items-center" style={{ gap: 7, minWidth: 0 }}>
+                            {i.flag && flagCo(18)}
+                            <span style={{ minWidth: 0 }}>
+                                <span style={{ display: 'block', fontSize: 12.5, fontWeight: 600, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{i.dest}</span>
+                                {i.rail && <span style={{ display: 'block', fontSize: 11, color: '#878E88', marginTop: 1 }}>{i.rail}</span>}
+                            </span>
+                        </span>
+                        <span style={{ fontSize: 11.5, color: '#878E88', fontFamily: 'ui-monospace, Menlo, monospace', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{i.reference}</span>
+                        <span style={{ textAlign: 'right' }}>
+                            <span style={{ display: 'block', fontSize: 13.5, fontWeight: 700, whiteSpace: 'nowrap', color: i.kind === 'in' ? '#4ADE80' : '#F4F4F2' }}>
+                                {i.kind === 'in' ? '+' : '−'}{formatMoney(tx.amount, tx.currency)} {i.ticker}
+                            </span>
+                            {i.sub2 && <span style={{ display: 'block', fontSize: 11, color: '#878E88', marginTop: 1 }}>{i.sub2}</span>}
+                        </span>
+                        <span style={{ textAlign: 'right' }}>
+                            <span style={{ display: 'inline-block', padding: '3px 9px', borderRadius: 999, fontSize: 10.5, fontWeight: 700, border: `1px solid ${i.pill.border}`, color: i.pill.color, whiteSpace: 'nowrap' }}>{i.pill.label}</span>
+                        </span>
+                    </button>
+                    {/* Tarjeta móvil */}
+                    <button type="button" onClick={() => setSelectedTx(tx)} title={i.failReason || undefined}
+                        className="lg:hidden w-full text-left flex items-center hover:bg-white/[0.02] transition-colors cursor-pointer"
+                        style={{ gap: 11, padding: '13px 16px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                        {IconBox(i.kind)}
+                        <span style={{ minWidth: 0, flex: 1 }}>
+                            <span style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{i.title}</span>
+                            <span style={{ display: 'block', fontSize: 11, color: '#878E88', marginTop: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{[i.dest, i.rail].filter(Boolean).join(' · ')}</span>
+                        </span>
+                        <span style={{ textAlign: 'right', flexShrink: 0 }}>
+                            <span style={{ display: 'block', fontSize: 13, fontWeight: 700, whiteSpace: 'nowrap', color: i.kind === 'in' ? '#4ADE80' : '#F4F4F2' }}>
+                                {i.kind === 'in' ? '+' : '−'}{formatMoney(tx.amount, tx.currency)} {i.ticker}
+                            </span>
+                            <span style={{ display: 'inline-block', marginTop: 3, padding: '2px 8px', borderRadius: 999, fontSize: 9.5, fontWeight: 700, border: `1px solid ${i.pill.border}`, color: i.pill.color }}>{i.pill.label}</span>
+                        </span>
+                    </button>
+                 </React.Fragment>
                  );
              })}
-             {getFilteredMovements(null, { full: true }).length === 0 && (
-                 <div className="p-12 text-center text-slate-400">
+             {rows.length === 0 && (
+                 <div className="p-12 text-center" style={{ color: '#878E88', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
                      No hay movimientos para mostrar.
                      {(() => {
                          // Diagnóstico de la última lectura vacía (para depurar en
@@ -2175,9 +2366,20 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                      })()}
                  </div>
              )}
+             {/* Paginación */}
+             {rows.length > 0 && (
+                 <div className="flex items-center justify-between flex-wrap" style={{ gap: 10, padding: '13px 22px', background: 'rgba(255,255,255,0.015)', borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+                     <span style={{ fontSize: 12, color: '#878E88' }}>Mostrando {(page - 1) * PER + 1}–{Math.min(page * PER, rows.length)} de {rows.length}</span>
+                     <div className="flex" style={{ gap: 8 }}>
+                         <button type="button" disabled={page <= 1} onClick={() => setMovPage(p => Math.max(1, p - 1))} style={{ ...pagerBtn, opacity: page <= 1 ? 0.4 : 1, cursor: page <= 1 ? 'default' : 'pointer' }}>Anterior</button>
+                         <button type="button" disabled={page >= maxPage} onClick={() => setMovPage(p => Math.min(maxPage, p + 1))} style={{ ...pagerBtn, opacity: page >= maxPage ? 0.4 : 1, cursor: page >= maxPage ? 'default' : 'pointer' }}>Siguiente</button>
+                     </div>
+                 </div>
+             )}
           </div>
       </div>
-  );
+      );
+  };
 
   const handleBrebMove = async () => {
     if (!currentUser?.id || brebMoving) return;
@@ -3353,14 +3555,14 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           <div className="flex-1 overflow-y-auto py-6 px-4 space-y-1">
               <SidebarItem icon={Home} label="Inicio" active={activeView === 'dashboard'} onClick={() => {setActiveView('dashboard'); setIsMobileMenuOpen(false);}} />
               <SidebarItem icon={Send} label="Enviar Dinero" active={false} onClick={() => { if(!handleActionRestricted()) setIsSendModalOpen(true); }} />
-              <SidebarItem icon={RefreshCw} label="Convertir" active={false} onClick={() => { if(!handleActionRestricted()) setIsConvertModalOpen(true); }} />
-              <SidebarItem icon={Activity} label="Movimientos" active={activeView === 'movements'} onClick={() => {setActiveView('movements'); setIsMobileMenuOpen(false);}} />
-              <SidebarItem icon={BookUser} label="Beneficiarios" active={activeView === 'contactos'} onClick={() => {setActiveView('contactos'); setIsMobileMenuOpen(false);}} />
+              <SidebarItem icon={ArrowLeftRight} label="Convertir" active={false} onClick={() => { if(!handleActionRestricted()) setIsConvertModalOpen(true); }} />
+              <SidebarItem icon={History} label="Movimientos" active={activeView === 'movements'} onClick={() => {setActiveView('movements'); setIsMobileMenuOpen(false);}} />
+              <SidebarItem icon={Users} label="Beneficiarios" active={activeView === 'contactos'} onClick={() => {setActiveView('contactos'); setIsMobileMenuOpen(false);}} />
               
               <div className="pt-6 pb-2 pl-4 text-xs font-bold text-slate-500 uppercase tracking-widest">Descubre</div>
-              <SidebarItem 
-                  icon={Share2} 
-                  label="Invita y Gana" 
+              <SidebarItem
+                  icon={Gift}
+                  label="Invita y Gana"
                   active={activeView === 'referrals'} 
                   onClick={() => {setActiveView('referrals'); setIsMobileMenuOpen(false);}} 
                   badge={true}
