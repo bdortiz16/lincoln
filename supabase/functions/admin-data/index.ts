@@ -319,6 +319,39 @@ Deno.serve(async (req: Request) => {
         return json({ success: true, newBalance: newBal, grossCop: Math.abs(delta), feeCop, netCop: Math.abs(credit), feePct: feeCop > 0 ? BREB_CARGUE_FEE_PCT : 0 })
       }
 
+      // ── Solicitudes "Mover Saldo Lincoin → ACH" (aprobación manual) ──
+      // El cliente pide mover COP (Saldo Lincoin) a su riel ACH; el COP ya
+      // quedó DEBITADO al crear la solicitud. El admin manda el respaldo al
+      // proveedor por fuera y aquí aprueba (acredita COP_ACH) o rechaza
+      // (reembolsa al Saldo Lincoin). Idempotente por estado.
+      if ((body.action === 'approve_rail_move' || body.action === 'reject_rail_move') && body.txId) {
+        const { data: tx } = await db.from('transactions').select('*').eq('id', body.txId).single()
+        if (!tx || tx.type !== 'rail_move') return json({ success: false, error: 'Solicitud no encontrada' }, 404)
+        if (tx.status !== 'Pendiente') return json({ success: true, already: true, status: tx.status })
+        const rd = (tx.raw_data ?? {}) as Record<string, any>
+        const { data: u } = await db.from('users').select('balances').eq('id', tx.user_id).single()
+        const bals: Record<string, number> = (u?.balances as any) ?? {}
+        const amt = Number(tx.amount ?? 0)
+        if (body.action === 'approve_rail_move') {
+          const toRail = String(rd.toRail ?? 'COP_ACH')
+          const newBal = parseFloat(((bals[toRail] ?? 0) + amt).toFixed(2))
+          await db.from('users').update({ balances: { ...bals, [toRail]: newBal } }).eq('id', tx.user_id)
+          await db.from('transactions').update({
+            status: 'Completado',
+            raw_data: { ...rd, approvedAt: new Date().toISOString(), title: 'Saldo Lincoin → ACH · aprobado' },
+          }).eq('id', tx.id)
+          return json({ success: true, newBalance: newBal })
+        }
+        const fromRail = String(rd.fromRail ?? 'COP')
+        const refunded = parseFloat(((bals[fromRail] ?? 0) + amt).toFixed(2))
+        await db.from('users').update({ balances: { ...bals, [fromRail]: refunded } }).eq('id', tx.user_id)
+        await db.from('transactions').update({
+          status: 'Rechazado',
+          raw_data: { ...rd, rejectedAt: new Date().toISOString(), rejectReason: body.reason ?? 'Rechazado por administración', title: 'Saldo Lincoin → ACH · rechazado (reembolsado)' },
+        }).eq('id', tx.id)
+        return json({ success: true, refunded: true })
+      }
+
       // Credit conversion fee to admin's balance (called by performConversion for all users)
       // body: { action: 'credit_conversion_fee', currency, amount, fromUserId, note? }
       if (body.action === 'credit_conversion_fee' && body.currency && body.amount != null) {

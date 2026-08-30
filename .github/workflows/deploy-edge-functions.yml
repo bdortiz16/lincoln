@@ -53,7 +53,7 @@ jobs:
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
         run: |
           FAILED=0
-          FUNCTIONS="gasfree mouv-proxy finity-proxy didit-kyc admin-data get-system-config notify-transaction user-login admin-login delete-self fastforex-sync fx-snapshot notify-account-events notify-limit-increase send-compliance-email didit-aml-monitor crisp-proxy"
+          FUNCTIONS="gasfree mouv-proxy finity-proxy finity-webhook didit-kyc admin-data get-system-config notify-transaction user-login admin-login delete-self fastforex-sync fx-snapshot notify-account-events notify-limit-increase send-compliance-email didit-aml-monitor crisp-proxy"
           for fn in $FUNCTIONS; do
             echo "▶ Desplegando $fn…"
             if supabase functions deploy "$fn" \

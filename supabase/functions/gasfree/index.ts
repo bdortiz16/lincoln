@@ -1060,7 +1060,7 @@ async function myConvertCredit(
 // Finaliza/reintenta una conversión que quedó 'Pendiente' porque la confirmación
 // on-chain tardó más que el tope de espera. Idempotente: reconsulta los traceIds
 // y avanza el pipeline; solo acredita el COP cuando Mouv confirma.
-async function myConvertFinalize(userId: string, txId: string) {
+async function myConvertFinalize(userId: string, txId: string, settleOnly = false) {
   const { data: tx } = await db.from('transactions').select('*').eq('id', txId).single()
   if (!tx) throw new Error('Movimiento no encontrado')
   if (tx.user_id !== userId) throw new Error('No autorizado')
@@ -1070,6 +1070,15 @@ async function myConvertFinalize(userId: string, txId: string) {
   const provAddr = String(rd.providerAddress ?? '').trim()
   const fwd = Number(rd.fwd ?? 0)
 
+  // settleOnly (lo usa el conversor mientras el cliente ESPERA en pantalla):
+  // cuando el hop 2 confirma NO se acredita aquí — se marca 'recharged' y el
+  // frontend hace la CONVERSIÓN REAL en el proveedor y acredita al saldo ACH.
+  // Sin settleOnly (respaldo/manual), se mantiene el crédito al Saldo Lincoin
+  // para que el cliente nunca quede sin su plata mientras el equipo revisa.
+  const markRecharged = async (providerTraceId?: string) => {
+    await db.from('transactions').update({ raw_data: { ...rd, convertPhase: 'recharged', usdtToProvider: fwd, providerPending: false, providerTraceId: providerTraceId ?? rd.providerTraceId } }).eq('id', txId)
+    return { ok: true, status: 'Pendiente', phase: 'recharged', recharged: true, usdtToProvider: fwd, copCredited: 0 }
+  }
   const complete = async (providerTraceId?: string) => {
     const { data: uf } = await db.from('users').select('balances').eq('id', userId).single()
     const bf = (uf?.balances as Record<string, number>) ?? {}
@@ -1091,20 +1100,20 @@ async function myConvertFinalize(userId: string, txId: string) {
       return { ok: false, status: 'Rechazado', phase: 'hop1_failed', refunded: true }
     }
     if (c1 !== 'confirmed') return { ok: true, status: 'Pendiente', phase: 'hop1_pending', copCredited: 0 }
-    if (!provAddr || fwd <= 0) return await complete()
+    if (!provAddr || fwd <= 0) return settleOnly ? { ok: true, status: 'Pendiente', phase: 'no_provider', copCredited: 0 } : await complete()
     let hop: any = null
     try { hop = await payFromTreasury(provAddr, fwd, String(rd.providerName ?? 'Mouv')) } catch { /* reintentar luego */ }
     if (!hop) return { ok: true, status: 'Pendiente', phase: 'hop2_failed', copCredited: 0 }
     await db.from('transactions').update({ raw_data: { ...rd, convertPhase: 'hop2_pending', providerTraceId: hop.traceId, usdtToProvider: fwd } }).eq('id', txId)
     const c2 = await waitTrace(hop.traceId)
-    return c2 === 'confirmed' ? await complete(hop.traceId) : { ok: true, status: 'Pendiente', phase: 'hop2_pending', copCredited: 0 }
+    return c2 === 'confirmed' ? (settleOnly ? await markRecharged(hop.traceId) : await complete(hop.traceId)) : { ok: true, status: 'Pendiente', phase: 'hop2_pending', copCredited: 0 }
   }
 
   // Hop 2 pendiente: reconsultar el traceId (o reenviar si no se llegó a enviar).
   if (rd.convertPhase === 'hop2_pending' || rd.convertPhase === 'hop2_failed') {
     if (rd.providerTraceId) {
       const c2 = await gfTraceStatus(String(rd.providerTraceId))
-      if (c2 === 'confirmed') return await complete()
+      if (c2 === 'confirmed') return settleOnly ? await markRecharged() : await complete()
       if (c2 === 'pending') return { ok: true, status: 'Pendiente', phase: 'hop2_pending', copCredited: 0 }
     }
     if (!provAddr || fwd <= 0) return { ok: true, status: 'Pendiente', phase: 'no_provider', copCredited: 0 }
@@ -1113,7 +1122,7 @@ async function myConvertFinalize(userId: string, txId: string) {
     if (!hop) return { ok: true, status: 'Pendiente', phase: 'hop2_failed', copCredited: 0 }
     await db.from('transactions').update({ raw_data: { ...rd, convertPhase: 'hop2_pending', providerTraceId: hop.traceId, usdtToProvider: fwd } }).eq('id', txId)
     const c2 = await waitTrace(hop.traceId)
-    return c2 === 'confirmed' ? await complete(hop.traceId) : { ok: true, status: 'Pendiente', phase: 'hop2_pending', copCredited: 0 }
+    return c2 === 'confirmed' ? (settleOnly ? await markRecharged(hop.traceId) : await complete(hop.traceId)) : { ok: true, status: 'Pendiente', phase: 'hop2_pending', copCredited: 0 }
   }
 
   return { ok: true, status: tx.status, phase: rd.convertPhase ?? 'unknown', copCredited: 0 }
@@ -1490,7 +1499,7 @@ Deno.serve(async (req) => {
     if (action === 'my_convert_finalize') {
       if (!userId || !body.txId) return err('Faltan userId o txId', 400)
       if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
-      return ok(await myConvertFinalize(userId, String(body.txId)))
+      return ok(await myConvertFinalize(userId, String(body.txId), Boolean(body.settleOnly)))
     }
     if (action === 'my_convert_credit') {
       if (!userId || !body.txId || !body.copAmount) return err('Faltan userId, txId o copAmount', 400)

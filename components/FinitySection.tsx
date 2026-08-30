@@ -550,12 +550,51 @@ export const FinitySection: React.FC<{
             setConvertStep('recibido'); await sleep(500);
 
             if (!settle.recharged) {
-                // Los saltos no confirmaron dentro del tope → el USDT va en camino
-                // a Finity pero aún no se puede convertir. Queda pendiente.
-                setConvertStep('completado'); await sleep(300);
-                setConvertResult({ ok: true, text: `✅ Envío realizado (${Number(settle.usdtOut ?? 0).toFixed(2)} USDT). La recarga al riel de pagos se está confirmando en la red — si no se completa sola, vuelve a intentar la conversión en un momento.` });
+                // Los saltos NO confirmaron dentro del tope. NADA de éxito en
+                // falso: la ventana se queda en "Recibido" VALIDANDO de verdad
+                // que el USDT llegue al riel (poll al finalize con settleOnly:
+                // si confirma, se hace la conversión REAL y el COP cae en ACH).
+                for (let i = 0; i < 8; i++) {
+                    await sleep(20000);
+                    let fin: any = null;
+                    try { fin = await callGasfree({ action: 'my_convert_finalize', userId, txId: String(settle.txId), settleOnly: true }); } catch { /* red */ }
+                    if (fin?.recharged || fin?.phase === 'recharged') {
+                        await finishConvert({
+                            txId: String(settle.txId),
+                            finityAmount: Number(fin?.usdtToProvider ?? settle.usdtToProvider ?? netAmount),
+                            creditAmount: netAmount,
+                            amount,
+                            previewRate,
+                            gasfreeFeeUsdt: Number(settle.feeChargedUsdt ?? 0),
+                        });
+                        return;
+                    }
+                    if (fin?.status === 'Rechazado') {
+                        setConvertStep('error');
+                        setConvertResult({ ok: false, text: 'El envío falló on-chain y tu USDT fue REEMBOLSADO a tu wallet. Puedes intentarlo de nuevo.' });
+                        setUsdAmount(''); load(); onSwept?.();
+                        setConverting(false);
+                        return;
+                    }
+                    if (fin?.status === 'Completado') {
+                        // Respaldo del servidor: acreditó en Saldo Lincoin (COP)
+                        // mientras el equipo valida el riel. Honesto con el cliente.
+                        setConvertStep('completado'); await sleep(300);
+                        setConvertResult({ ok: true, text: `✅ Tu conversión quedó acreditada en tu Saldo Lincoin (COP) mientras validamos el riel ACH. Desde tu billetera COP puedes solicitar moverlo a ACH (Mover saldo).` });
+                        setUsdAmount(''); load(); onSwept?.();
+                        await sleep(2200); setConvertStep(null);
+                        setConverting(false);
+                        return;
+                    }
+                }
+                // ~2,5 min sin confirmación: estado PENDIENTE honesto (no verde).
+                setConvertStep('error');
+                setConvertResult({ ok: false, text: `⏳ Tu envío (${Number(settle.usdtOut ?? 0).toFixed(2)} USDT) sigue confirmándose en la red y la conversión quedó PENDIENTE — tu USDT está seguro en la tesorería. Vuelve en unos minutos y dale "Reintentar conversión", o espera: el equipo también lo está monitoreando.` });
+                setPendingConvert({
+                    txId: String(settle.txId), finityAmount: netAmount, creditAmount: netAmount,
+                    amount, previewRate, gasfreeFeeUsdt: Number(settle.feeChargedUsdt ?? 0),
+                });
                 setUsdAmount(''); load(); onSwept?.();
-                await sleep(1800); setConvertStep(null);
                 setConverting(false);
                 return;
             }

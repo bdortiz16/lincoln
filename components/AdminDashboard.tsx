@@ -417,6 +417,35 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     setCarguesConfirm(null);
   };
 
+  // ── Solicitudes de movimiento a ACH (aprobación manual de Tesorería) ──
+  const [railMoveBusy, setRailMoveBusy] = useState<string | number | null>(null);
+  const railMoveAction = async (txId: string | number, action: 'approve' | 'reject') => {
+    if (railMoveBusy) return;
+    if (action === 'approve' && !window.confirm('¿Ya moviste el respaldo al proveedor? Aprobar acredita el saldo ACH del cliente.')) return;
+    if (action === 'reject' && !window.confirm('¿Rechazar la solicitud? El COP se reembolsa al Saldo Lincoin del cliente.')) return;
+    setRailMoveBusy(txId);
+    try {
+      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+      const ADMIN_PASS = (import.meta.env.VITE_ADMIN_PASSWORD as string) || '';
+      let jwt: string | null = null;
+      try {
+        const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
+        if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; }
+      } catch { /* sin sesión supabase */ }
+      const authHeader = jwt ? `Bearer ${jwt}` : (ADMIN_PASS ? `AdminBypass ${ADMIN_PASS}` : `Bearer ${SKEY}`);
+      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: authHeader },
+        body: JSON.stringify({ action: action === 'approve' ? 'approve_rail_move' : 'reject_rail_move', txId }),
+      });
+      const d = await r.json();
+      if (d?.success) { showToast(action === 'approve' ? '✅ Aprobado — saldo ACH acreditado al cliente.' : 'Solicitud rechazada — COP reembolsado.'); refreshData(); }
+      else showToast(`❌ ${d?.error || 'No se pudo aplicar.'}`, 5000, 'error');
+    } catch (e: any) { showToast(`❌ ${e?.message ?? 'Error de red'}`, 5000, 'error'); }
+    setRailMoveBusy(null);
+  };
+
   // Treasury Logic
   const [treasuryTab, setTreasuryTab] = useState<'deposits' | 'withdrawals' | 'history' | 'crypto'>('deposits');
   const [treasurySegment, setTreasurySegment] = useState<'all' | 'personal' | 'business'>('all');
@@ -1635,9 +1664,38 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
           return acc + (Math.max(0, account.amount) * rateToUSD);
       }, 0);
 
+      const pendingRailMoves = (getAllTransactions() as any[]).filter(t => t.type === 'rail_move' && t.status === 'Pendiente');
       return (
       <div className="space-y-8 animate-in fade-in duration-300">
-          
+          {/* ── Solicitudes "Saldo Lincoin → ACH" (aprobación manual) ──
+              El cliente ya quedó debitado; antes de aprobar, mueve el
+              respaldo al proveedor y luego dale Aprobar (acredita su ACH). */}
+          {pendingRailMoves.length > 0 && (
+              <div className="bg-white rounded-xl border-2 border-amber-200 overflow-hidden">
+                  <div className="px-4 py-3 bg-amber-50 border-b border-amber-100 flex items-center justify-between gap-2 flex-wrap">
+                      <p className="text-sm font-bold text-amber-800">🏛 Movimientos a ACH pendientes de aprobación · {pendingRailMoves.length}</p>
+                      <p className="text-[11px] text-amber-700">Antes de aprobar: envía el respaldo al proveedor. Aprobar acredita el saldo ACH del cliente; Rechazar le reembolsa su Saldo Lincoin.</p>
+                  </div>
+                  {pendingRailMoves.map((t: any) => (
+                      <div key={t.id} className="flex items-center justify-between gap-3 px-4 py-3 border-b border-slate-100 flex-wrap">
+                          <div>
+                              <p className="font-bold text-slate-800 text-sm">{t.userName || t.raw_data?.userName || '—'}</p>
+                              <p className="text-xs text-slate-400">{t.createdAt ? new Date(t.createdAt).toLocaleString('es-CO', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : ''} · Saldo Lincoin → ACH</p>
+                          </div>
+                          <p className="font-black text-slate-800 tabular-nums">${Math.round(Number(t.amount ?? 0)).toLocaleString('es-CO')} COP</p>
+                          <div className="flex items-center gap-2">
+                              <button onClick={() => railMoveAction(t.id, 'reject')} disabled={railMoveBusy === t.id}
+                                  className="px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50 disabled:opacity-50">Rechazar</button>
+                              <button onClick={() => railMoveAction(t.id, 'approve')} disabled={railMoveBusy === t.id}
+                                  className="px-3 py-1.5 rounded-lg bg-[#16A34A] text-white text-xs font-bold hover:bg-[#0f766e] disabled:opacity-50">
+                                  {railMoveBusy === t.id ? 'Aplicando…' : 'Aprobar → ACH'}
+                              </button>
+                          </div>
+                      </div>
+                  ))}
+              </div>
+          )}
+
           <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
               <div>
                   <h2 className="text-2xl font-bold text-[#0C0E0D]">Tesoreria y Finanzas</h2>

@@ -258,7 +258,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // BreB Lincoin: saldo COP separado (key 'COP_BREB') que se fondea desde
   // Peso Lincoin y se usa para dispersar vía Mouv (solo Colombia).
   const [brebMoveOpen, setBrebMoveOpen] = useState(false);
-  const [brebDir, setBrebDir] = useState<'to_breb' | 'to_peso'>('to_breb');
+  const [brebDir, setBrebDir] = useState<'to_breb' | 'to_peso' | 'to_ach'>('to_breb');
   const [brebAmountStr, setBrebAmountStr] = useState('');
   const [brebMoving, setBrebMoving] = useState(false);
   // Saldo REAL en Mouv (Peso Lincoin está conectado a la cuenta Mouv).
@@ -1432,7 +1432,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     pay_sent: 'Pago enviado', pay_received: 'Pago recibido',
     otc_deposit: 'Depósito cripto', otc_withdraw: 'Retiro cripto',
     dispersion: 'Dispersión', adjustment: 'Ajuste de saldo',
-    breb_move: 'Movimiento entre cuentas', referral_payout: 'Bono de referido',
+    breb_move: 'Movimiento entre cuentas', rail_move: 'Movimiento a ACH', referral_payout: 'Bono de referido',
   };
   const txRowMeta = (tx: any): { title: string; sub: string; Icon: React.ElementType } => {
     const title = tx.title || ROW_LABELS[tx.type] || tx.type;
@@ -2000,9 +2000,36 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     const cop  = getBalance('COP');
     const breb = getBalance('COP_BREB');
     if (!amount || amount <= 0) { showToast('Ingresa un monto válido', 3000, 'error'); return; }
-    const source = brebDir === 'to_breb' ? cop : breb;
+    const source = brebDir === 'to_peso' ? breb : cop;
     if (amount > source) { showToast('Saldo insuficiente en la cuenta de origen', 3000, 'error'); return; }
     setBrebMoving(true);
+
+    // ── Saldo Lincoin → ACH: SOLICITUD con aprobación de Tesorería ──
+    // El respaldo del riel ACH vive en el proveedor: el equipo primero mueve
+    // el respaldo y luego aprueba. Aquí se DEBITA el COP (queda en espera) y
+    // se crea la solicitud Pendiente que el admin aprueba o rechaza.
+    if (brebDir === 'to_ach') {
+      await updateUserProfile(currentUser.id, { balances: { COP: cop - amount } });
+      try {
+        await supabase.from('transactions').insert({
+          user_id: currentUser.id,
+          type: 'rail_move', amount, currency: 'COP', status: 'Pendiente',
+          raw_data: {
+            initials: 'AC', fromRail: 'COP', toRail: 'COP_ACH',
+            title: 'Saldo Lincoin → ACH · en aprobación',
+            date: new Date().toLocaleDateString('es-CO'), createdAt: new Date().toISOString(),
+            userName: currentUser.name,
+          },
+        });
+      } catch { /* el débito quedó — el equipo lo ve igual en Tesorería */ }
+      setBrebMoving(false);
+      setBrebMoveOpen(false);
+      setBrebAmountStr('');
+      showToast('✅ Solicitud enviada a Tesorería. Te avisamos cuando el saldo quede disponible en tu cuenta ACH.', 7000);
+      refreshData?.();
+      return;
+    }
+
     const newBalances = brebDir === 'to_breb'
       ? { COP: cop - amount, COP_BREB: breb + amount }
       : { COP: cop + amount, COP_BREB: breb - amount };
@@ -2213,11 +2240,17 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       >
                                           BreB → Peso 🏦
                                       </button>
+                                      <button
+                                          onClick={() => setBrebDir('to_ach')}
+                                          className={`flex-1 py-2 rounded-xl text-xs font-bold border transition-colors ${brebDir === 'to_ach' ? 'bg-[#0C0E0D] border-transparent' : 'bg-white text-slate-600 border-slate-200'}`}
+                                      >
+                                          Peso → ACH 🏛
+                                      </button>
                                   </div>
                               </div>
                               <div className="flex-1">
                                   <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                                      Monto (disponible: {formatMoney(brebDir === 'to_breb' ? balance : brebBal, 'COP')})
+                                      Monto (disponible: {formatMoney(brebDir === 'to_peso' ? brebBal : balance, 'COP')})
                                   </label>
                                   <input
                                       inputMode="numeric"
@@ -2236,7 +2269,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               </button>
                           </div>
                           <p className="text-[10px] text-slate-400 mt-2">
-                              El movimiento es inmediato y queda registrado en tus movimientos.
+                              {brebDir === 'to_ach'
+                                  ? 'El paso a ACH requiere APROBACIÓN de Tesorería: el saldo queda en espera y te avisamos cuando esté disponible en tu cuenta ACH (suele tardar poco).'
+                                  : 'El movimiento es inmediato y queda registrado en tus movimientos.'}
                           </p>
                       </div>
                   )}
