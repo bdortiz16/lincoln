@@ -1628,7 +1628,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       // Filtros avanzados (solo en el Historial completo): estado, moneda,
       // rango de fechas y buscador.
       if (opts?.full) {
-          if (movStatus !== 'all') filtered = filtered.filter(tx => String(tx.status || '') === movStatus);
+          if (movStatus !== 'all') filtered = filtered.filter(tx => {
+              const st = String(tx.status || '');
+              if (movStatus === 'Rechazado') return st === 'Rechazado' || st === 'Fallido';
+              if (movStatus === 'Pendiente') return st !== 'Completado' && st !== 'Rechazado' && st !== 'Fallido';
+              return st === movStatus;
+          });
           if (movType === 'send') filtered = filtered.filter(tx => tx.type === 'send' || tx.type === 'pay_sent');
           else if (movType === 'load') filtered = filtered.filter(tx => tx.type === 'load' || tx.type === 'otc_deposit' || tx.type === 'pay_received');
           else if (movType === 'convert') filtered = filtered.filter(tx => tx.type === 'convert');
@@ -1645,8 +1650,15 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const movClearFilters = () => { setMovStatus('all'); setMovCurrency('all'); setMovDateFrom(''); setMovDateTo(''); setMovType('all'); };
   // Badge de estado para las filas de movimientos
   const movStatusStyle = (s: string) => s === 'Completado' ? 'bg-green-50 text-green-700 border-green-200'
-      : s === 'Rechazado' ? 'bg-red-50 text-red-700 border-red-200' : 'bg-amber-50 text-amber-700 border-amber-200';
-  const movStatusLabel = (s: string) => s === 'Completado' ? 'Completado' : s === 'Rechazado' ? 'Rechazado' : 'Pendiente';
+      : (s === 'Rechazado' || s === 'Fallido') ? 'bg-red-50 text-red-700 border-red-200'
+      : 'bg-amber-50 text-amber-700 border-amber-200';
+  // 'Fallido' y 'Procesando' son estados REALES de las dispersiones — no
+  // colapsarlos a 'Pendiente' (una dispersión fallida se veía como pendiente).
+  const movStatusLabel = (s: string) => s === 'Completado' ? 'Completado'
+      : s === 'Rechazado' ? 'Rechazado'
+      : s === 'Fallido' ? 'Fallido'
+      : s === 'Procesando' ? 'Procesando'
+      : 'Pendiente';
   
   const handleConvertInput = (e: React.ChangeEvent<HTMLInputElement>) => { setConvertAmountStr(formatInputNumber(e.target.value)); };
 
@@ -4914,12 +4926,15 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       <button onClick={() => { closeSendModal(); setMovementsTab('all'); setActiveView('movements'); }} className="flex items-center justify-center transition-colors hover:bg-white/[0.09]" style={{ flex: 1, gap: 7, padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, color: '#F4F4F2', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)' }}>
                                           <Download size={14} strokeWidth={1.7} /> Comprobante
                                       </button>
-                                      <button onClick={closeSendModal} style={{ flex: 1.3, padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, background: '#F4F4F2', color: '#0A0A0A' }} className="transition-colors hover:bg-[#E4E4E0]">Finalizar</button>
+                                      {/* lincoin-btn-white (con !important) — un hover:bg-[#E…] aquí
+                                          activa la regla global [class*="bg-[#E"] y pinta el botón
+                                          oscuro sobre oscuro (invisible). */}
+                                      <button onClick={closeSendModal} className="lincoin-btn-white transition-colors" style={{ flex: 1.3, padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, border: 'none' }}>Finalizar</button>
                                       </>
                                   ) : (
                                       <>
                                       <button onClick={closeSendModal} className="transition-colors hover:bg-white/[0.09]" style={{ flex: 1, padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, color: '#F4F4F2', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)' }}>Cerrar</button>
-                                      <button onClick={() => { setSendResult(null); setSendStep(4); }} style={{ flex: 1.3, padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, background: '#F4F4F2', color: '#0A0A0A' }} className="transition-colors hover:bg-[#E4E4E0]">Reintentar</button>
+                                      <button onClick={() => { setSendResult(null); setSendStep(4); }} className="lincoin-btn-white transition-colors" style={{ flex: 1.3, padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, border: 'none' }}>Reintentar</button>
                                       </>
                                   )}
                               </div>
