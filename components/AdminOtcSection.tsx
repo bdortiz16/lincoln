@@ -54,10 +54,11 @@ const MiniBarChart: React.FC<{ data: { label: string; value: number }[] }> = ({ 
 };
 
 export const AdminOtcSection: React.FC = () => {
-    const { getAllUsers, getAllTransactions, updateUserProfile, currentUser } = useDatabase();
+    const { getAllUsers, getAllTransactions, updateUserRawData, currentUser } = useDatabase();
     const [q, setQ] = useState('');
     const [feeEdit, setFeeEdit] = useState<{ userId: string; value: string } | null>(null);
     const [savingId, setSavingId] = useState<string | null>(null);
+    const [saveMsg, setSaveMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
     // ── Partner de la mesa: se pregunta ANTES de mostrar el panel ──
     const [partner, setPartner] = useState<'finity' | null>(null);
@@ -95,23 +96,32 @@ export const AdminOtcSection: React.FC = () => {
 
     const otcConfigOf = (u: any) => (u.otcConfig ?? u.raw_data?.otcConfig ?? {}) as { enabled?: boolean; feePct?: number };
 
+    // Escritura DIRECTA a raw_data (updateUserRawData): el update de perfil
+    // completo se estrellaba contra el candado de columnas sensibles cuando
+    // los saldos en memoria estaban desactualizados y el % no se guardaba.
     const toggleEnabled = async (u: any) => {
         const cfg = otcConfigOf(u);
-        setSavingId(u.id);
+        setSavingId(u.id); setSaveMsg(null);
         try {
-            await updateUserProfile(u.id, { raw_data: { otcConfig: { ...cfg, enabled: !cfg.enabled } } });
+            const ok = await updateUserRawData(u.id, { otcConfig: { ...cfg, enabled: !cfg.enabled } });
+            if (!ok) setSaveMsg({ ok: false, text: `No se pudo ${cfg.enabled ? 'desactivar' : 'activar'} el OTC de ${u.name ?? u.email}. Reintenta.` });
         } finally { setSavingId(null); }
     };
 
     const saveFee = async (u: any) => {
         if (!feeEdit || feeEdit.userId !== u.id) return;
-        const next = parseFloat(feeEdit.value);
-        if (isNaN(next) || next < 0) return;
+        // Acepta coma o punto decimal ("0,25" → 0.25)
+        const next = parseFloat(feeEdit.value.replace(',', '.'));
+        if (isNaN(next) || next < 0 || next >= 100) { setSaveMsg({ ok: false, text: 'Comisión inválida — escribe un % entre 0 y 100 (ej: 0.25).' }); return; }
         const cfg = otcConfigOf(u);
-        setSavingId(u.id);
+        setSavingId(u.id); setSaveMsg(null);
         try {
-            await updateUserProfile(u.id, { raw_data: { otcConfig: { ...cfg, feePct: next } } });
-        } finally { setSavingId(null); setFeeEdit(null); }
+            const ok = await updateUserRawData(u.id, { otcConfig: { ...cfg, feePct: next } });
+            setSaveMsg(ok
+                ? { ok: true, text: `✅ Comisión de ${u.name ?? u.email} guardada: ${next}%.` }
+                : { ok: false, text: 'La comisión NO quedó guardada en el servidor. Reintenta; si persiste, vuelve a iniciar sesión.' });
+            if (ok) setFeeEdit(null);
+        } finally { setSavingId(null); }
     };
 
     // ── Contabilidad: movimientos del canal OTC/Mouv ──────────────────
@@ -253,6 +263,12 @@ export const AdminOtcSection: React.FC = () => {
                     <input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar por empresa, correo o ID…" className="w-full h-10 pl-9 pr-3 border border-slate-200 rounded-lg text-sm outline-none focus:border-[#4ADE80]" />
                 </div>
 
+                {saveMsg && (
+                    <div className={`rounded-xl border px-4 py-2.5 text-xs font-bold ${saveMsg.ok ? 'bg-green-50 border-green-200 text-green-700' : 'bg-red-50 border-red-200 text-red-700'}`}>
+                        {saveMsg.text}
+                    </div>
+                )}
+
                 <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
                     <table className="w-full text-sm">
                         <thead className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wider">
@@ -289,10 +305,10 @@ export const AdminOtcSection: React.FC = () => {
                                         <td className="px-4 py-3 text-right">
                                             {feeEdit?.userId === u.id ? (
                                                 <div className="inline-flex items-center gap-2 bg-white border-2 border-[#4ADE80] rounded-xl pl-3 pr-1.5 py-1 shadow-sm shadow-green-100">
-                                                    <input autoFocus type="number" step="0.01" value={feeEdit.value}
-                                                        onChange={e => setFeeEdit({ userId: u.id, value: e.target.value })}
+                                                    <input autoFocus type="text" inputMode="decimal" placeholder="0.25" value={feeEdit.value}
+                                                        onChange={e => { const v = e.target.value; if (/^[0-9]*[.,]?[0-9]*$/.test(v)) setFeeEdit({ userId: u.id, value: v }); }}
                                                         onKeyDown={e => { if (e.key === 'Enter') saveFee(u); if (e.key === 'Escape') setFeeEdit(null); }}
-                                                        className="w-14 bg-transparent text-right text-base font-bold text-slate-800 outline-none tabular-nums" />
+                                                        className="w-16 bg-transparent text-right text-base font-bold text-slate-800 outline-none tabular-nums" />
                                                     <span className="text-sm text-slate-400 font-medium">%</span>
                                                     <div className="flex items-center gap-1 pl-2 ml-1 border-l border-slate-200">
                                                         <button onClick={() => saveFee(u)} disabled={savingId === u.id} className="w-7 h-7 flex items-center justify-center rounded-full bg-[#16A34A] text-white hover:bg-[#0F766E] transition-colors disabled:opacity-50" title="Guardar">
