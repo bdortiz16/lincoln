@@ -413,6 +413,13 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // true = se despachó una orden a Mouv y NO sabemos si se creó (timeout /
   // error de red). Bloquea reintentos hasta que el usuario verifique.
   const [mouvUnknown, setMouvUnknown] = useState(false);
+  // Desafío 2FA al CONFIRMAR un envío: antes de mover el dinero se pide el
+  // código de la app de autenticación. Sin esto el 2FA solo servía de puerta
+  // para abrir el panel, pero no se validaba al confirmar la transacción.
+  const [sendOtpOpen, setSendOtpOpen] = useState(false);
+  const [sendOtpCode, setSendOtpCode] = useState('');
+  const [sendOtpError, setSendOtpError] = useState('');
+  const [sendOtpLoading, setSendOtpLoading] = useState(false);
 
   // PAY (P2P) flow
   const [sendMode, setSendMode] = useState<'bank' | 'pay' | 'cash' | 'wallet' | null>(null);
@@ -1467,6 +1474,35 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       });
   };
 
+  // Puerta 2FA de la CONFIRMACIÓN: el botón "Confirmar" llama aquí. Si el
+  // usuario tiene 2FA activo (obligatorio para enviar), pide el código antes
+  // de ejecutar el movimiento. Solo tras validarlo se corre handleSendSubmit.
+  const requestSendConfirm = () => {
+      if (isSending || sendingRef.current || mouvUnknown) return;
+      if (mfaEnrolled && (mfaTotpSecret || mfaFactorId)) {
+          setSendOtpCode(''); setSendOtpError(''); setSendOtpOpen(true);
+          return;
+      }
+      // Sin 2FA no debería llegar acá (el envío está gateado), pero por
+      // seguridad se ejecuta el flujo normal si por algún motivo no lo tiene.
+      handleSendSubmit();
+  };
+
+  const confirmSendOtp = async () => {
+      if (sendOtpLoading || sendOtpCode.length !== 6) return;
+      setSendOtpLoading(true); setSendOtpError('');
+      try {
+          const { ok, error: vErr } = await verifyMFAEnrollment(mfaFactorId ?? 'local', sendOtpCode, mfaTotpSecret);
+          if (!ok) { setSendOtpError(vErr || 'Código incorrecto. Intenta nuevamente.'); setSendOtpCode(''); return; }
+          setSendOtpOpen(false); setSendOtpCode('');
+          handleSendSubmit();
+      } catch (e: any) {
+          setSendOtpError(e?.message || 'No se pudo verificar el código.');
+      } finally {
+          setSendOtpLoading(false);
+      }
+  };
+
   const handleSendSubmit = async () => {
       if (isSending || sendingRef.current || mouvUnknown) return;
       sendingRef.current = true;
@@ -1613,6 +1649,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       setMouvDestId(null);
       setMouvUnknown(false);
       setSendResult(null);
+      setSendOtpOpen(false); setSendOtpCode(''); setSendOtpError('');
       sendingRef.current = false;
       setContactSearch('');
       setSendSourceRail('COP');
@@ -4186,6 +4223,44 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           </div>
       )}
 
+      {/* DESAFÍO 2FA AL CONFIRMAR ENVÍO */}
+      {sendOtpOpen && (
+          <div className="fixed inset-0 z-[80] flex items-end sm:items-center justify-center p-0 sm:p-4" style={{ background: 'rgba(4,5,5,0.72)', backdropFilter: 'blur(4px)' }}>
+              <div style={{ width: '100%', maxWidth: 400, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, padding: '26px 24px', fontFamily: "'Archivo', system-ui, sans-serif" }} className="rounded-t-3xl sm:rounded-[18px]">
+                  <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
+                      <div style={{ width: 42, height: 42, borderRadius: '50%', border: '1.5px solid rgba(74,222,128,0.4)', background: 'rgba(74,222,128,0.08)', display: 'grid', placeItems: 'center' }}>
+                          <ShieldCheck size={20} color="#4ADE80" />
+                      </div>
+                      <button type="button" onClick={() => { if (!sendOtpLoading) { setSendOtpOpen(false); setSendOtpCode(''); setSendOtpError(''); } }} style={{ color: '#878E88' }} className="hover:text-white p-1"><X size={20} /></button>
+                  </div>
+                  <h3 style={{ fontSize: 18, fontWeight: 800, letterSpacing: '-0.4px', color: '#F4F4F2', marginTop: 14 }}>Confirma con tu 2FA</h3>
+                  <p style={{ fontSize: 13, color: '#878E88', marginTop: 6, lineHeight: 1.5 }}>Por tu seguridad, ingresa el código de 6 dígitos de tu app de autenticación para autorizar este envío.</p>
+                  <input
+                      type="text" inputMode="numeric" maxLength={6} autoFocus
+                      value={sendOtpCode}
+                      onChange={e => setSendOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                      onKeyDown={e => e.key === 'Enter' && confirmSendOtp()}
+                      placeholder="••••••"
+                      style={{ width: '100%', marginTop: 18, textAlign: 'center', letterSpacing: 12, fontSize: 28, fontWeight: 800, fontFamily: 'ui-monospace, Menlo, monospace', color: '#F4F4F2', background: 'rgba(255,255,255,0.03)', border: `1px solid ${sendOtpError ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.12)'}`, borderRadius: 12, padding: '13px 0', outline: 'none' }}
+                  />
+                  {sendOtpError && <p style={{ fontSize: 12.5, color: '#F4F4F2', marginTop: 10, fontWeight: 600 }}>{sendOtpError}</p>}
+                  <button
+                      type="button"
+                      onClick={confirmSendOtp}
+                      disabled={sendOtpCode.length !== 6 || sendOtpLoading}
+                      className="lincoin-btn-white transition-colors"
+                      style={{ width: '100%', marginTop: 18, padding: '13px 0', borderRadius: 11, fontSize: 14, fontWeight: 700, border: 'none', opacity: (sendOtpCode.length !== 6 || sendOtpLoading) ? 0.5 : 1 }}
+                  >
+                      {sendOtpLoading ? 'Verificando…' : 'Autorizar y enviar'}
+                  </button>
+                  <div className="flex items-center justify-center" style={{ gap: 8, marginTop: 14 }}>
+                      <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#4ADE80' }} />
+                      <span style={{ fontSize: 11.5, color: '#878E88' }}>Operación protegida · verificación en dos pasos</span>
+                  </div>
+              </div>
+          </div>
+      )}
+
       {/* PAY-LINK MODAL */}
       {isPayLinkOpen && (
           <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-slate-900/60 backdrop-blur-sm">
@@ -5283,7 +5358,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               ) : (
                                   <div className="flex" style={{ gap: 9 }}>
                                       <button onClick={() => setSendStep(3)} disabled={isSending} style={{ flex: 1, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 14, padding: '13px 0', borderRadius: 10, opacity: isSending ? 0.5 : 1 }} className="hover:bg-white/[0.09] transition-colors">Corregir</button>
-                                      <button onClick={handleSendSubmit} disabled={isSending} className="lincoin-btn-white transition-colors flex items-center justify-center gap-2" style={{ flex: 1.5, fontWeight: 700, fontSize: 14, padding: '13px 0', borderRadius: 10, border: 'none', opacity: isSending ? 0.45 : 1 }}>
+                                      <button onClick={requestSendConfirm} disabled={isSending} className="lincoin-btn-white transition-colors flex items-center justify-center gap-2" style={{ flex: 1.5, fontWeight: 700, fontSize: 14, padding: '13px 0', borderRadius: 10, border: 'none', opacity: isSending ? 0.45 : 1 }}>
                                           {isSending ? <><Loader2 className="animate-spin" size={16} /> Procesando…</> : 'Confirmar envío'}
                                       </button>
                                   </div>
@@ -5361,7 +5436,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               ) : (
                                   <div className="flex gap-3">
                                       <button onClick={() => setSendStep(3)} disabled={isSending} className="flex-1 py-3 border border-slate-300 text-slate-600 font-bold rounded-xl hover:bg-slate-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">Corregir</button>
-                                      <button onClick={handleSendSubmit} disabled={isSending} style={{ color: '#FFFFFF' }} className="flex-1 py-3 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed">{isSending ? <><Loader2 className="animate-spin" size={18} /> Procesando… no cierres</> : <><Send size={18}/> Confirmar</>}</button>
+                                      <button onClick={requestSendConfirm} disabled={isSending} style={{ color: '#FFFFFF' }} className="flex-1 py-3 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed">{isSending ? <><Loader2 className="animate-spin" size={18} /> Procesando… no cierres</> : <><Send size={18}/> Confirmar</>}</button>
                                   </div>
                               )}
                               {isSending && sendForm.destinationCurrency === 'COP' && (
