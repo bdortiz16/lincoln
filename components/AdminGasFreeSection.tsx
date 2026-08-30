@@ -405,18 +405,28 @@ export const AdminGasFreeSection: React.FC = () => {
                         <div className="text-xs font-semibold text-red-200 bg-red-500/10 border border-red-400/30 rounded-lg p-3 whitespace-pre-wrap">❌ {rec.error}</div>
                     ) : (
                         <>
-                            <div>
-                                <p className="text-4xl font-bold tracking-tight">
-                                    {fmt(rec.balance)} <span className="text-base font-normal text-green-200">USDT</span>
-                                </p>
-                                <button onClick={() => rec.gasFreeAddress && copy(rec.gasFreeAddress)} className="mt-1.5 inline-flex items-center gap-1.5 text-xs text-green-100/80 hover:text-white font-mono">
-                                    {rec.gasFreeAddress}
-                                    <Copy size={12} />
-                                    {copied === rec.gasFreeAddress && <span className="text-green-300 font-sans">copiado</span>}
-                                </button>
-                                <p className="text-[11px] text-green-100/70 mt-1">
-                                    <b className="text-white">Deposita AQUÍ</b> (USDT · TRC-20). Esta es la ÚNICA dirección del circuito automático: lo que llega sale solo hacia el proveedor y las comisiones GasFree se pagan de este mismo saldo.
-                                </p>
+                            <div className="flex items-start justify-between gap-4 flex-wrap">
+                                <div className="min-w-0">
+                                    <p className="text-4xl font-bold tracking-tight">
+                                        {fmt(rec.balance)} <span className="text-base font-normal text-green-200">USDT</span>
+                                    </p>
+                                    <button onClick={() => rec.gasFreeAddress && copy(rec.gasFreeAddress)} className="mt-1.5 inline-flex items-center gap-1.5 text-xs text-green-100/80 hover:text-white font-mono break-all text-left">
+                                        {rec.gasFreeAddress}
+                                        <Copy size={12} className="shrink-0" />
+                                        {copied === rec.gasFreeAddress && <span className="text-green-300 font-sans">copiado</span>}
+                                    </button>
+                                    <p className="text-[11px] text-green-100/70 mt-1 max-w-md">
+                                        <b className="text-white">Deposita AQUÍ</b> (USDT · TRC-20). Esta es la ÚNICA dirección del circuito automático: lo que llega sale solo hacia el proveedor y las comisiones GasFree se pagan de este mismo saldo.
+                                    </p>
+                                </div>
+                                {rec.gasFreeAddress && (
+                                    <div className="shrink-0 text-center">
+                                        <img
+                                            src={`https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${encodeURIComponent(rec.gasFreeAddress)}&color=0A0A0A&bgcolor=FFFFFF&margin=6`}
+                                            alt="QR Tesorería GasFree" className="w-[120px] h-[120px] rounded-lg bg-white p-1" />
+                                        <p className="text-[10px] text-green-100/70 mt-1 font-bold">Escanea para depositar</p>
+                                    </div>
+                                )}
                             </div>
                             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
                                 <WalletStat label="Red" value={rec.net === 'tron' ? 'Mainnet' : 'Nile testnet'} />

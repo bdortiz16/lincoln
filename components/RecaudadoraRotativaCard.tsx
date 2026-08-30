@@ -124,12 +124,22 @@ export const RecaudadoraRotativaCard: React.FC = () => {
                         </span>
                         <span style={{ color: '#F4F4F2', fontWeight: 800, fontSize: 18 }}>{fmtUsd(current.balance)} <span style={{ color: '#878E88', fontSize: 12, fontWeight: 600 }}>USDT</span></span>
                     </div>
-                    <div className="flex items-center gap-2">
-                        <code style={{ color: '#F4F4F2', fontSize: 12.5, wordBreak: 'break-all', flex: 1 }}>{current.address ?? '—'}</code>
+                    <div className="flex items-start gap-3 flex-wrap">
+                        <div className="flex items-center gap-2 flex-1 min-w-[220px]">
+                            <code style={{ color: '#F4F4F2', fontSize: 12.5, wordBreak: 'break-all', flex: 1 }}>{current.address ?? '—'}</code>
+                            {current.address && (
+                                <button onClick={() => copy(current.address)} className="shrink-0 p-1.5 rounded-md" style={{ border: '1px solid rgba(255,255,255,0.12)', color: copied === current.address ? '#4ADE80' : '#878E88' }} title="Copiar">
+                                    {copied === current.address ? <CheckCircle2 size={14} /> : <Copy size={14} />}
+                                </button>
+                            )}
+                        </div>
                         {current.address && (
-                            <button onClick={() => copy(current.address)} className="shrink-0 p-1.5 rounded-md" style={{ border: '1px solid rgba(255,255,255,0.12)', color: copied === current.address ? '#4ADE80' : '#878E88' }} title="Copiar">
-                                {copied === current.address ? <CheckCircle2 size={14} /> : <Copy size={14} />}
-                            </button>
+                            <div className="shrink-0 text-center">
+                                <img
+                                    src={`https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=${encodeURIComponent(current.address)}&color=0A0A0A&bgcolor=FFFFFF&margin=6`}
+                                    alt="QR recaudadora rotativa" style={{ width: 104, height: 104, borderRadius: 10, background: '#fff', padding: 4 }} />
+                                <p style={{ fontSize: 10, color: '#878E88', marginTop: 4, fontWeight: 700 }}>Escanear dirección</p>
+                            </div>
                         )}
                     </div>
                     {current.rotates !== false ? (
