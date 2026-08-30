@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { BookUser, Plus, X, Trash2, CheckCircle, AlertTriangle, Landmark, Wallet, Search, SlidersHorizontal, Zap } from 'lucide-react';
 import { useDatabase } from '../context/DatabaseContext';
+import { useSystemConfig } from '../context/SystemConfigContext';
 import { supabase } from '../lib/supabaseClient';
 import { FlagImg } from './FlagImg';
 
@@ -212,6 +213,12 @@ const FilterChip: React.FC<{ active: boolean; onClick: () => void; children: Rea
 
 export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: MouvContact) => void }> = ({ onBack, onSendTo }) => {
     const { currentUser, updateUserRawData } = useDatabase();
+    const { config: sysConfig } = useSystemConfig();
+    // Países habilitados desde Admin → Configuración → Países. Por defecto
+    // solo Colombia (COP) y Estados Unidos (USDT); el resto se activa cuando
+    // el riel del país esté listo.
+    const countryStatus: Record<string, string> = { Colombia: 'on', 'Estados Unidos': 'on', ...(((sysConfig as any)?.countryStatus) || {}) };
+    const AVAILABLE_COUNTRIES = CONTACT_COUNTRIES.filter(c => countryStatus[c.name] === 'on');
     // Menú "···" abierto (id del contacto)
     const [menuFor, setMenuFor] = useState<string | null>(null);
     const [formOpen, setFormOpen] = useState(false);
@@ -737,7 +744,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                     {/* PASO 1 — País de la cuenta: tarjetas-radio 2 columnas */}
                     {formStep === 'country' && (<>
                         <div className="grid grid-cols-1 sm:grid-cols-2" style={{ gap: 8 }}>
-                            {CONTACT_COUNTRIES.map(c => {
+                            {AVAILABLE_COUNTRIES.map(c => {
                                 const sel = form.country === c.name;
                                 const railLabel = COUNTRY_RAILS[c.name] ?? 'Transferencia local';
                                 return (

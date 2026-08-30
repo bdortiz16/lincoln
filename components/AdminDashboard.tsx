@@ -2213,6 +2213,42 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
 
   const renderConfig = () => (
     <div className="space-y-6 animate-in fade-in duration-300">
+        {/* Países habilitados — modelo hub multi-país. Controla qué países ven
+            los clientes en Enviar/Beneficiarios (Activo), cuáles aparecen como
+            "Próximamente" en el inicio, y cuáles quedan ocultos. */}
+        <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+            <h3 className="font-bold text-slate-800 mb-2 flex items-center gap-2"><Landmark size={20}/> Países y monedas</h3>
+            <p className="text-xs text-slate-500 mb-5">Cada país opera su riel local contra USDT (nunca fiat→fiat directo). Activa un país solo cuando su riel esté conectado.</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {([
+                    { name: 'Colombia', rail: 'Bre-B · ACH · COP', def: 'on' },
+                    { name: 'Estados Unidos', rail: 'USDT (TRON) · USD', def: 'on' },
+                    { name: 'México', rail: 'SPEI · MXN', def: 'soon' },
+                    { name: 'Brasil', rail: 'Pix · BRL', def: 'soon' },
+                    { name: 'Perú', rail: 'CCI · PEN', def: 'off' },
+                    { name: 'Chile', rail: 'Transferencia · CLP', def: 'off' },
+                    { name: 'Venezuela', rail: 'Pago móvil · VES', def: 'off' },
+                ] as const).map(c => {
+                    const cs: Record<string, string> = { Colombia: 'on', 'Estados Unidos': 'on', 'México': 'soon', Brasil: 'soon', ...((systemConfig as any).countryStatus || {}) };
+                    const cur = cs[c.name] ?? c.def;
+                    const setStatus = (v: string) => updateSystemConfig({ countryStatus: { ...cs, [c.name]: v } } as any);
+                    return (
+                        <div key={c.name} className="flex items-center justify-between gap-3 border border-slate-200 rounded-xl px-4 py-3">
+                            <div className="min-w-0">
+                                <p className="font-bold text-slate-800 text-sm">{c.name}</p>
+                                <p className="text-[11px] text-slate-400">{c.rail}</p>
+                            </div>
+                            <select value={cur} onChange={e => setStatus(e.target.value)} className="border border-slate-200 rounded-lg text-xs font-bold p-2">
+                                <option value="on">Activo</option>
+                                <option value="soon">Próximamente</option>
+                                <option value="off">Oculto</option>
+                            </select>
+                        </div>
+                    );
+                })}
+            </div>
+        </div>
+
         <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
             <h3 className="font-bold text-slate-800 mb-6 flex items-center gap-2"><Settings size={20}/> Configuración General</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">

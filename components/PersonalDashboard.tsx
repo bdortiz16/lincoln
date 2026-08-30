@@ -544,7 +544,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const mouvCfg: { feePct: number; mouvOn: boolean } | null = null;
   const isMouvPair = false;
 
-  const conversionRate = getRate(sourceCurr, targetCurr);
+  // Regla de HUB (modelo stablecoin): toda conversión pasa por USDT — nunca
+  // fiat→fiat directo. Si la tasa directa no está configurada (ej. COP→USD),
+  // se usa la inversa de la que sí existe (USD→COP).
+  const conversionRateFwd = getRate(sourceCurr, targetCurr);
+  const conversionRateInv = getRate(targetCurr, sourceCurr);
+  const conversionRate = conversionRateFwd || (conversionRateInv ? 1 / conversionRateInv : 0);
   const isLiveMouvRate = false;
   const notifications = getUserNotifications();
   const unreadNotifications = notifications.filter(n => !n.read).length;
@@ -1298,6 +1303,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const closeConvertModal = () => {
       setIsConvertModalOpen(false);
       setConvertAmountStr('1.000');
+      setSourceCurr('USD'); setTargetCurr('COP');
       setShowConvertDetails(false);
       setAppliedCoupon(null);
       setCouponCode('');
@@ -1710,6 +1716,32 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                 );
               })()}
             </div>
+            {/* Cuentas por país que vienen (modelo hub: cada moneda local
+                convierte SOLO contra USDT). Se controlan desde Admin →
+                Configuración → Países (estado "Próximamente"). */}
+            {(() => {
+              const cs: Record<string, string> = { 'México': 'soon', Brasil: 'soon', ...((config as any).countryStatus || {}) };
+              const soonMeta: Record<string, { rail: string; bg: string }> = {
+                'México': { rail: 'SPEI · MXN', bg: 'linear-gradient(90deg,#006847 0 33%,#FFFFFF 33% 66%,#CE1126 66%)' },
+                Brasil: { rail: 'Pix · BRL', bg: 'radial-gradient(circle at 50% 50%, #002776 0 24%, #FFDF00 25% 46%, #009C3B 47%)' },
+                'Perú': { rail: 'CCI · PEN', bg: 'linear-gradient(90deg,#D91023 0 33%,#FFFFFF 33% 66%,#D91023 66%)' },
+                Chile: { rail: 'Transferencia · CLP', bg: 'linear-gradient(180deg,#FFFFFF 0 50%,#D52B1E 50%)' },
+                Venezuela: { rail: 'Pago móvil · VES', bg: 'linear-gradient(180deg,#FFCC00 0 33%,#00247D 33% 66%,#CF142B 66%)' },
+              };
+              const soon = Object.keys(soonMeta).filter(c => cs[c] === 'soon');
+              if (!soon.length) return null;
+              return (
+              <div className="flex flex-wrap" style={{ gap: 10, marginTop: 12 }}>
+                {soon.map(name => (
+                  <div key={name} className="flex items-center" style={{ gap: 9, padding: '9px 14px', borderRadius: 11, border: '1px dashed rgba(255,255,255,0.14)', opacity: 0.75 }}>
+                    <span style={{ width: 20, height: 20, borderRadius: '50%', flexShrink: 0, display: 'block', background: soonMeta[name].bg }} />
+                    <p style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2' }}>{name} <span style={{ fontWeight: 500, color: '#878E88' }}>· {soonMeta[name].rail}</span></p>
+                    <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 8.5, fontWeight: 700, letterSpacing: '0.6px', padding: '2px 7px', borderRadius: 999 }}>PRÓXIMAMENTE</span>
+                  </div>
+                ))}
+              </div>
+              );
+            })()}
           </div>
 
           {/* ═══════════ ZONA INFERIOR ═══════════ */}
@@ -3825,43 +3857,81 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           const setAmt = (n: number) => setSendForm({ ...sendForm, amount: formatInputNumber(String(Math.floor(n))) });
                           return (
                           <div className="space-y-4">
-                              {/* DESDE */}
+                              {/* DESDE — primero el PAÍS (activables desde admin), luego la
+                                  cuenta/riel dentro del país. Hoy: Colombia (COP) y USA (USDT). */}
                               <div>
                                   <label style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88' }}>DESDE</label>
-                                  <div style={{ marginTop: 6, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.025)', borderRadius: 13, padding: '13px 15px' }}>
-                                      <div className="flex items-center justify-between gap-2 flex-wrap">
-                                          <div className="flex items-center gap-2.5">
-                                              <span style={{ width: 26, height: 26, borderRadius: '50%', flexShrink: 0, display: 'block', background: isUsdt ? '#26A17B' : 'linear-gradient(180deg,#FCD116 0 50%,#003893 50% 75%,#CE1126 75%)', color: '#fff', fontWeight: 800, fontSize: 11, textAlign: 'center', lineHeight: '26px' }}>{isUsdt ? '₮' : ''}</span>
-                                              <div>
-                                                  <p style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>{isUsdt ? 'Dólar digital' : 'Peso colombiano'}</p>
-                                                  <p style={{ fontSize: 11, color: '#878E88' }}>{isUsdt ? 'USDT · disponible' : `${sendSourceRail === 'COP' ? 'Saldo Lincoin' : sendSourceRail === 'COP_BREB' ? 'Bre-B' : 'ACH'} · disponible`}</p>
-                                              </div>
-                                          </div>
-                                          <p style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.6px', color: '#F4F4F2' }}>{isUsdt ? Number(avail).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : Math.round(avail).toLocaleString('es-CO')}</p>
-                                      </div>
-                                      {/* Chips de riel / cambio de cuenta */}
-                                      <div className="flex flex-wrap" style={{ gap: 6, marginTop: 12 }}>
-                                          {([
-                                              { key: 'COP', label: 'Saldo Lincoin' },
-                                              { key: 'COP_BREB', label: 'Bre-B' },
-                                              { key: 'COP_ACH', label: 'ACH' },
-                                          ] as const).map(r => {
-                                              const sel = !isUsdt && sendSourceRail === r.key;
+                                  {(() => {
+                                      const cs: Record<string, string> = { Colombia: 'on', 'Estados Unidos': 'on', ...((config as any).countryStatus || {}) };
+                                      const enabled = ['Colombia', 'Estados Unidos', 'México', 'Brasil', 'Perú', 'Chile', 'Venezuela'].filter(c => cs[c] === 'on');
+                                      const FLAGS: Record<string, string> = {
+                                          Colombia: 'linear-gradient(180deg,#FCD116 0 50%,#003893 50% 75%,#CE1126 75%)',
+                                          'Estados Unidos': 'linear-gradient(180deg,#B22234 0 20%,#fff 20% 40%,#B22234 40% 60%,#fff 60% 80%,#B22234 80%)',
+                                          'México': 'linear-gradient(90deg,#006847 0 33%,#FFFFFF 33% 66%,#CE1126 66%)',
+                                          Brasil: 'radial-gradient(circle at 50% 50%, #002776 0 24%, #FFDF00 25% 46%, #009C3B 47%)',
+                                      };
+                                      return (
+                                      <>
+                                      {/* Selector de país */}
+                                      <div className="flex flex-wrap" style={{ gap: 6, marginTop: 6 }}>
+                                          {enabled.map(country => {
+                                              const sel = country === 'Estados Unidos' ? isUsdt : !isUsdt;
                                               return (
-                                                  <button key={r.key} type="button"
-                                                      onClick={() => { setSendForm(f => ({ ...f, destinationCountry: 'Colombia', destinationCurrency: 'COP' })); setSendSourceRail(r.key); }}
-                                                      style={{ borderRadius: 999, padding: '6px 12px', fontSize: 11.5, fontWeight: sel ? 700 : 500, border: sel ? '1px solid rgba(74,222,128,0.35)' : '1px solid rgba(255,255,255,0.1)', background: sel ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.03)', color: sel ? '#F4F4F2' : '#878E88' }}>
-                                                      {r.label} · {Math.round(getBalance(r.key)).toLocaleString('es-CO')}
+                                                  <button key={country} type="button"
+                                                      onClick={() => setSendForm(f => country === 'Estados Unidos'
+                                                          ? { ...f, destinationCountry: 'Estados Unidos', destinationCurrency: 'USD' }
+                                                          : { ...f, destinationCountry: 'Colombia', destinationCurrency: 'COP' })}
+                                                      className="flex items-center gap-2"
+                                                      style={{ borderRadius: 999, padding: '7px 14px', fontSize: 12.5, fontWeight: sel ? 700 : 500, border: sel ? '1px solid rgba(74,222,128,0.35)' : '1px solid rgba(255,255,255,0.1)', background: sel ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.03)', color: sel ? '#F4F4F2' : '#878E88' }}>
+                                                      <span style={{ width: 16, height: 16, borderRadius: '50%', display: 'block', background: FLAGS[country] ?? '#2E3330', flexShrink: 0 }} />
+                                                      {country}
                                                   </button>
                                               );
                                           })}
-                                          <button type="button"
-                                              onClick={() => { setSendForm(f => ({ ...f, destinationCountry: 'Estados Unidos', destinationCurrency: 'USD' })); }}
-                                              style={{ borderRadius: 999, padding: '6px 12px', fontSize: 11.5, fontWeight: isUsdt ? 700 : 500, border: isUsdt ? '1px solid rgba(74,222,128,0.35)' : '1px solid rgba(255,255,255,0.1)', background: isUsdt ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.03)', color: isUsdt ? '#F4F4F2' : '#878E88' }}>
-                                              ₮ USDT · {Number(displayBalance('USD')).toLocaleString('es-CO', { maximumFractionDigits: 2 })}
-                                          </button>
                                       </div>
-                                  </div>
+                                      {/* Cuenta dentro del país */}
+                                      <div style={{ marginTop: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.025)', borderRadius: 13, padding: '13px 15px' }}>
+                                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                                              <div className="flex items-center gap-2.5">
+                                                  <span style={{ width: 26, height: 26, borderRadius: '50%', flexShrink: 0, display: 'block', background: isUsdt ? '#26A17B' : FLAGS['Colombia'], color: '#fff', fontWeight: 800, fontSize: 11, textAlign: 'center', lineHeight: '26px' }}>{isUsdt ? '₮' : ''}</span>
+                                                  <div>
+                                                      <p style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>{isUsdt ? 'Dólar digital' : 'Peso colombiano'}</p>
+                                                      <p style={{ fontSize: 11, color: '#878E88' }}>{isUsdt ? 'USDT · disponible' : `${sendSourceRail === 'COP' ? 'Saldo Lincoin' : sendSourceRail === 'COP_BREB' ? 'Bre-B' : 'ACH'} · disponible`}</p>
+                                                  </div>
+                                              </div>
+                                              <p style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.6px', color: '#F4F4F2' }}>{isUsdt ? Number(avail).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : Math.round(avail).toLocaleString('es-CO')}</p>
+                                          </div>
+                                          <div className="flex flex-wrap" style={{ gap: 6, marginTop: 12 }}>
+                                              {!isUsdt ? (
+                                                  ([
+                                                      { key: 'COP', label: 'Saldo Lincoin' },
+                                                      { key: 'COP_BREB', label: 'Bre-B' },
+                                                      { key: 'COP_ACH', label: 'ACH' },
+                                                  ] as const).map(r => {
+                                                      const sel = sendSourceRail === r.key;
+                                                      return (
+                                                          <button key={r.key} type="button" onClick={() => setSendSourceRail(r.key)}
+                                                              style={{ borderRadius: 999, padding: '6px 12px', fontSize: 11.5, fontWeight: sel ? 700 : 500, border: sel ? '1px solid rgba(74,222,128,0.35)' : '1px solid rgba(255,255,255,0.1)', background: sel ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.03)', color: sel ? '#F4F4F2' : '#878E88' }}>
+                                                              {r.label} · {Math.round(getBalance(r.key)).toLocaleString('es-CO')}
+                                                          </button>
+                                                      );
+                                                  })
+                                              ) : (
+                                                  <>
+                                                      <button type="button"
+                                                          style={{ borderRadius: 999, padding: '6px 12px', fontSize: 11.5, fontWeight: 700, border: '1px solid rgba(74,222,128,0.35)', background: 'rgba(74,222,128,0.06)', color: '#F4F4F2' }}>
+                                                          ₮ USDT · {Number(displayBalance('USD')).toLocaleString('es-CO', { maximumFractionDigits: 2 })}
+                                                      </button>
+                                                      <span className="flex items-center gap-1.5" style={{ borderRadius: 999, padding: '6px 12px', fontSize: 11.5, fontWeight: 500, border: '1px dashed rgba(255,255,255,0.14)', color: '#878E88', opacity: 0.8 }}>
+                                                          Cuenta USD <span style={{ border: '1px solid rgba(255,255,255,0.14)', fontSize: 8, fontWeight: 700, letterSpacing: '0.5px', padding: '1px 6px', borderRadius: 999 }}>PRÓXIMAMENTE</span>
+                                                      </span>
+                                                  </>
+                                              )}
+                                          </div>
+                                      </div>
+                                      </>
+                                      );
+                                  })()}
                               </div>
                               {/* MONTO */}
                               <div>
@@ -4440,8 +4510,16 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           const cvAvail = displayBalance(sourceCurr);
           const cvOver = rawAmount > cvAvail;
           const cvTotal = amountToConvert * conversionRate;
-          const fmtSrc = (n: number) => Number(n || 0).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-          const srcTicker = sourceCurr === 'USD' ? 'USDT' : sourceCurr;
+          // Modelo HUB: el par SIEMPRE es USDT ⇄ COP (nunca fiat→fiat directo).
+          const srcIsUsdt = sourceCurr === 'USD';
+          const srcTicker = srcIsUsdt ? 'USDT' : 'COP';
+          const tgtTicker = srcIsUsdt ? 'COP' : 'USDT';
+          const fmtSrc = (n: number) => Number(n || 0).toLocaleString('es-CO', srcIsUsdt ? { minimumFractionDigits: 2, maximumFractionDigits: 2 } : { maximumFractionDigits: 0 });
+          const fmtTgt = (n: number) => srcIsUsdt ? Math.round(n).toLocaleString('es-CO') : Number(n || 0).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          const usdCopRate = srcIsUsdt ? conversionRate : (conversionRate ? 1 / conversionRate : 0);
+          const swapDirection = () => { const s = sourceCurr; setSourceCurr(targetCurr); setTargetCurr(s); };
+          const TetherBadge = <span style={{ width: 24, height: 24, borderRadius: '50%', background: '#26A17B', color: '#fff', fontWeight: 800, fontSize: 11, display: 'grid', placeItems: 'center' }}>₮</span>;
+          const CopBadge = <span style={{ width: 24, height: 24, borderRadius: '50%', overflow: 'hidden', display: 'block', background: 'linear-gradient(to bottom, #FCD116 0%, #FCD116 50%, #003893 50%, #003893 75%, #CE1126 75%, #CE1126 100%)' }} />;
           const setPct = (p: number) => {
               // "Todo" descuenta la comisión para que el resultado sea exacto.
               const base = p === 100 ? cvAvail : cvAvail * p / 100;
@@ -4455,7 +4533,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   <div className="flex items-start justify-between" style={{ gap: 16, padding: '21px 24px 17px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
                       <div>
                           <h3 style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.3px', color: '#F4F4F2', margin: 0 }}>Convertir y enviar</h3>
-                          <p style={{ fontSize: 12.5, color: '#878E88', margin: '3px 0 0' }}>De tu billetera {srcTicker} a tu cuenta en pesos</p>
+                          <p style={{ fontSize: 12.5, color: '#878E88', margin: '3px 0 0' }}>{srcIsUsdt ? 'De tu billetera USDT a tu cuenta en pesos' : 'De tu cuenta en pesos a tu billetera USDT'}</p>
                       </div>
                       <button onClick={closeConvertModal} style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
                           <X size={13} style={{ color: '#878E88' }} strokeWidth={1.7} />
@@ -4479,7 +4557,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   style={{ background: 'transparent', border: 'none', fontSize: 34, fontWeight: 800, letterSpacing: '-1.4px', lineHeight: 1.1, color: '#F4F4F2', fontFamily: 'inherit', width: '100%' }}
                               />
                               <div className="flex items-center" style={{ flexShrink: 0, gap: 9, border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.05)', borderRadius: 10, padding: '8px 12px' }}>
-                                  <span style={{ width: 24, height: 24, borderRadius: '50%', background: '#26A17B', color: '#fff', fontWeight: 800, fontSize: 11, display: 'grid', placeItems: 'center' }}>₮</span>
+                                  {srcIsUsdt ? TetherBadge : CopBadge}
                                   <span style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2' }}>{srcTicker}</span>
                               </div>
                           </div>
@@ -4493,12 +4571,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           </div>
                       </div>
 
-                      {/* Switch de dirección (visual) */}
+                      {/* Switch de dirección — invierte USDT ⇄ COP (regla de hub) */}
                       <div className="flex items-center" style={{ gap: 12, padding: '9px 0' }}>
                           <div style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.08)' }} />
-                          <div style={{ width: 32, height: 32, borderRadius: 10, border: '1px solid rgba(255,255,255,0.12)', background: '#0C0E0D', display: 'grid', placeItems: 'center' }}>
+                          <button onClick={swapDirection} title="Invertir dirección" style={{ width: 32, height: 32, borderRadius: 10, border: '1px solid rgba(255,255,255,0.12)', background: '#0C0E0D', display: 'grid', placeItems: 'center', cursor: 'pointer' }} className="hover:bg-white/[0.06] transition-colors">
                               <ArrowLeftRight size={15} style={{ color: '#878E88', transform: 'rotate(90deg)' }} strokeWidth={1.5} />
-                          </div>
+                          </button>
                           <div style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.08)' }} />
                       </div>
 
@@ -4506,15 +4584,15 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       <div style={{ border: '1px solid rgba(255,255,255,0.1)', borderRadius: 13, padding: '15px 16px', background: 'rgba(255,255,255,0.025)' }}>
                           <div className="flex items-center justify-between" style={{ marginBottom: 9 }}>
                               <span style={{ color: '#878E88', fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px' }}>RECIBES</span>
-                              <span style={{ fontSize: 11.5, color: '#878E88' }}>Cuenta local · Colombia</span>
+                              <span style={{ fontSize: 11.5, color: '#878E88' }}>{srcIsUsdt ? 'Cuenta local · Colombia' : 'Billetera USDT · TRON'}</span>
                           </div>
                           <div className="flex items-center" style={{ gap: 12 }}>
                               <span className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap" style={{ fontSize: 34, fontWeight: 800, letterSpacing: '-1.4px', lineHeight: 1.1, color: '#F4F4F2' }}>
-                                  {Math.round(cvTotal).toLocaleString('es-CO')}
+                                  {fmtTgt(cvTotal)}
                               </span>
                               <div className="flex items-center" style={{ flexShrink: 0, gap: 9, border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.05)', borderRadius: 10, padding: '8px 12px' }}>
-                                  <span style={{ width: 24, height: 24, borderRadius: '50%', overflow: 'hidden', display: 'block', background: 'linear-gradient(to bottom, #FCD116 0%, #FCD116 50%, #003893 50%, #003893 75%, #CE1126 75%, #CE1126 100%)' }} />
-                                  <span style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2' }}>COP</span>
+                                  {srcIsUsdt ? CopBadge : TetherBadge}
+                                  <span style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2' }}>{tgtTicker}</span>
                               </div>
                           </div>
                       </div>
@@ -4549,7 +4627,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           {[
                               { l: `Comisión de envío · ${applicableFeePercentage} %`, v: `${fmtSrc(cvFee)} ${srcTicker}` },
                               { l: 'Monto convertido', v: `${fmtSrc(amountToConvert)} ${srcTicker}` },
-                              { l: 'Tasa aplicada', v: `1 ${srcTicker} = ${Number(conversionRate).toLocaleString('es-CO')} COP` },
+                              { l: 'Tasa aplicada', v: `1 USDT = ${Math.round(usdCopRate).toLocaleString('es-CO')} COP` },
                           ].map((row, i) => (
                               <div key={row.l} className="flex items-center justify-between" style={{ padding: '12px 16px', fontSize: 13, borderTop: i === 0 ? 'none' : '1px solid rgba(255,255,255,0.06)' }}>
                                   <span style={{ color: '#878E88' }}>{row.l}</span>
@@ -4558,7 +4636,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           ))}
                           <div className="flex items-center justify-between" style={{ padding: '12px 16px', fontSize: 13, borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.02)' }}>
                               <span style={{ color: '#878E88' }}>Total que recibes</span>
-                              <span style={{ color: '#4ADE80', fontWeight: 700 }}>{Math.round(cvTotal).toLocaleString('es-CO')} COP</span>
+                              <span style={{ color: '#4ADE80', fontWeight: 700 }}>{fmtTgt(cvTotal)} {tgtTicker}</span>
                           </div>
                       </div>
 
