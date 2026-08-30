@@ -248,6 +248,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // completo con cuentas destino/movimientos) y el boton "OTC" en Servicios
   // (solo el convertidor USD->COP, sin nada de dispersion bancaria).
   const [mouvMode, setMouvMode] = useState<'full' | 'converter'>('full');
+  // Mesa OTC: primero se elige el riel de salida del COP — ACH (conversor
+  // Finity, apificado) o Bre-B (Mouv, aún por mesa manual).
+  const [otcRail, setOtcRail] = useState<'ach' | 'breb' | null>(null);
   // Riel elegido para dispersar (lo fija el botón "Dispersar" de cada tarjeta).
   const [dispersRail, setDispersRail] = useState<'COP_BREB' | 'COP_ACH'>('COP_BREB');
   const [selectedWalletCode, setSelectedWalletCode] = useState<string | null>(null);
@@ -818,14 +821,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       if (!(sendStep === 4 && sendMode === 'bank' && currentUser?.id)) { setPayoutQuote(null); return; }
       const isBrebM = (sendContact?.destKind ?? (sendSourceRail === 'COP_BREB' ? 'breb' : 'ach')) === 'breb';
       const amt = getRawAmount(sendForm.amount);
-      if (isBrebM) {
-          setPayoutQuote({ loading: true });
-          callMouvProxy({ action: 'payout_quote', userId: currentUser.id, rail: 'BREB', amount: amt, keyValue: sendContact?.brebKey ?? sendForm.accountNumber })
-              .then(r => setPayoutQuote(r?.ok ? { loading: false, feeCop: Number(r.feeCop ?? 0), provider: 'mouv' } : { loading: false, error: r?.message ?? 'No se pudo cotizar' }))
-              .catch(e => setPayoutQuote({ loading: false, error: String(e?.message ?? e) }));
-      } else {
-          setPayoutQuote({ loading: false, feeCop: null, provider: 'finity' });
-      }
+      setPayoutQuote({ loading: true });
+      callMouvProxy({ action: 'payout_quote', userId: currentUser.id, rail: isBrebM ? 'BREB' : 'ACH', amount: amt, ...(isBrebM ? { keyValue: sendContact?.brebKey ?? sendForm.accountNumber } : {}) })
+          .then(r => setPayoutQuote(r?.ok ? { loading: false, feeCop: Number(r.feeCop ?? 0), provider: isBrebM ? 'mouv' : 'finity' } : { loading: false, error: r?.message ?? 'No se pudo cotizar' }))
+          .catch(e => setPayoutQuote({ loading: false, error: String(e?.message ?? e) }));
       // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sendStep, sendMode, currentUser?.id]);
 
@@ -1808,7 +1807,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   <button onClick={() => setActiveView('servicios')} style={{ fontSize: 12, color: '#878E88' }} className="hover:text-[#F4F4F2] transition-colors">Ver más ›</button>
                 </div>
                 {([
-                  { Icon: ArrowLeftRight, t: 'Mesa OTC',   d: 'Operaciones de alto volumen con tasa negociada', go: () => { setMouvMode('converter'); setActiveView('mouv'); } },
+                  { Icon: ArrowLeftRight, t: 'Mesa OTC',   d: 'Operaciones de alto volumen con tasa negociada', go: () => { setOtcRail(null); setMouvMode('converter'); setActiveView('mouv'); } },
                   { Icon: TrendingUp,     t: 'Staking',    d: 'Genera rendimientos con tu saldo digital', go: null },
                   { Icon: Layers,         t: 'Multiwallet', d: 'Varias billeteras USDT en una sola cuenta', go: () => setActiveView('walletsGasfree') },
                   { Icon: ShoppingBag,    t: 'Comercio',   d: 'Cobra a tus clientes con links y botones de pago', go: null },
@@ -2670,7 +2669,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const renderServicios = () => {
     const SERVICES = [
       { icon: ArrowLeftRight, label: 'Mesa OTC',   desc: 'Operaciones de alto volumen con tasa negociada.',            color: 'bg-slate-50 text-green-700',
-        onClick: () => { setMouvMode('converter'); setActiveView('mouv'); } },
+        onClick: () => { setOtcRail(null); setMouvMode('converter'); setActiveView('mouv'); } },
       { icon: TrendingUp,     label: 'Staking',    desc: 'Genera rendimientos con tu saldo digital.',                  color: 'bg-green-50 text-green-700' },
       { icon: Layers,         label: 'Multiwallet', desc: 'Varias billeteras USDT con nombre — ideal para estudios y negocios.', color: 'bg-violet-50 text-violet-700',
         onClick: () => setActiveView('walletsGasfree') },
@@ -3214,6 +3213,41 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center">
                       <p className="text-slate-500 text-sm">El servicio OTC no está habilitado para tu cuenta todavía.</p>
                       <p className="text-slate-400 text-xs mt-1">Escríbenos a soporte para activarlo.</p>
+                  </div>
+              ) : mouvMode === 'converter' && otcRail === null ? (
+                  /* Mesa OTC Colombia — elegir el riel donde recibirás el COP */
+                  <div style={{ maxWidth: 560, margin: '24px auto', fontFamily: "'Archivo', system-ui, sans-serif" }}>
+                      <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 18, padding: '26px 26px 24px' }}>
+                          <h3 style={{ color: '#F4F4F2', fontWeight: 800, fontSize: 20, letterSpacing: '-0.5px' }}>Mesa OTC · Colombia</h3>
+                          <p style={{ color: '#878E88', fontSize: 13, marginTop: 4, lineHeight: 1.5 }}>Convierte tus USDT a pesos. Elige en qué riel quieres recibir el COP:</p>
+                          <div className="grid grid-cols-1 sm:grid-cols-2" style={{ gap: 10, marginTop: 18 }}>
+                              <button onClick={() => setOtcRail('ach')} className="text-left transition-colors"
+                                  style={{ padding: '16px 17px', borderRadius: 13, border: '1px solid rgba(74,222,128,0.35)', background: 'rgba(74,222,128,0.06)' }}>
+                                  <div className="flex items-center gap-2">
+                                      <Landmark size={17} style={{ color: '#4ADE80' }} />
+                                      <span style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>ACH</span>
+                                      <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 8.5, fontWeight: 700, letterSpacing: '0.6px', padding: '2px 6px', borderRadius: 999 }}>DISPONIBLE</span>
+                                  </div>
+                                  <p style={{ fontSize: 12, color: '#878E88', marginTop: 6, lineHeight: 1.5 }}>Conversión automática vía Finity. El COP llega a tu saldo ACH.</p>
+                              </button>
+                              <button onClick={() => setOtcRail('breb')} className="text-left transition-colors hover:bg-white/[0.03]"
+                                  style={{ padding: '16px 17px', borderRadius: 13, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.025)' }}>
+                                  <div className="flex items-center gap-2">
+                                      <Zap size={17} style={{ color: '#878E88' }} />
+                                      <span style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>Bre-B</span>
+                                      <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 8.5, fontWeight: 700, letterSpacing: '0.6px', padding: '2px 6px', borderRadius: 999 }}>PRÓXIMAMENTE</span>
+                                  </div>
+                                  <p style={{ fontSize: 12, color: '#878E88', marginTop: 6, lineHeight: 1.5 }}>Vía Mouv — por ahora la conversión Bre-B se gestiona por mesa manual.</p>
+                              </button>
+                          </div>
+                      </div>
+                  </div>
+              ) : mouvMode === 'converter' && otcRail === 'breb' ? (
+                  <div style={{ maxWidth: 560, margin: '24px auto', background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 18, padding: '32px 28px', textAlign: 'center', fontFamily: "'Archivo', system-ui, sans-serif" }}>
+                      <p style={{ color: '#F4F4F2', fontWeight: 700, fontSize: 16 }}>Mesa Bre-B · por mesa manual</p>
+                      <p style={{ color: '#878E88', fontSize: 13, marginTop: 6, lineHeight: 1.6 }}>La conversión con salida Bre-B (Mouv) aún no está apificada. Escríbenos por el canal de la mesa y la gestionamos al instante — o usa la salida ACH, que es automática.</p>
+                      <button onClick={() => setOtcRail('ach')} className="lincoin-btn-white transition-colors" style={{ marginTop: 16, fontWeight: 700, fontSize: 13.5, padding: '11px 20px', borderRadius: 10, border: 'none' }}>Usar salida ACH</button>
+                      <button onClick={() => setOtcRail(null)} style={{ display: 'block', margin: '12px auto 0', fontSize: 12.5, color: '#878E88', textDecoration: 'underline' }}>← Elegir otro riel</button>
                   </div>
               ) : (
               <MouvSection

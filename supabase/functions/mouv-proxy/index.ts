@@ -206,6 +206,11 @@ async function finityCall(action: string, userId: string, extra: Record<string, 
   })
   return r.json().catch(() => null)
 }
+// Precio por transferencia ACH (Finity no lo devuelve en la orden — doc
+// oficial: respuesta { id, status, amount, destination_account }). Se define
+// como secret y SE COBRA AL CLIENTE. 0 = sin cargo mientras se define.
+const ACH_FEE_COP = Number(Deno.env.get('ACH_FEE_COP') ?? '0') || 0
+
 async function finityPayoutAch(userId: string, recipient: Record<string, any>, amountCop: number):
   Promise<{ ok: boolean; providerRef?: string; state?: string; feeCop: number; costs?: any; error?: any; destinationId?: string }> {
   // 1) Cuenta destino en Finity (destination_id). Reusar si el contacto ya
@@ -229,13 +234,15 @@ async function finityPayoutAch(userId: string, recipient: Record<string, any>, a
     destId = ea?.data?.id ?? ea?.data?.external_account_id ?? ea?.data?.account_id ?? null
     if (!ea?.ok || !destId) return { ok: false, feeCop: 0, error: ea?.data ?? ea }
   }
-  // 2) Orden de retiro (amount en PESOS — contrato Finity v0)
-  const w = await finityCall('create_withdrawal', userId, { data: { amount: amountCop, currency: 'COP', destination_id: destId } })
+  // 2) Orden de retiro — contrato OFICIAL confirmado (doc Withdrawal Orders):
+  //    POST /v0/withdrawal-orders { destination_id, amount, currency:'COP' }
+  //    amount en UNIDADES MENORES (6000 = $60.00 COP) → pesos × 100.
+  //    → 201 { id, status: PROCESSING|COMPLETED|FAILED, destination_account }
+  //    (NO devuelve costs — el precio por transferencia es ACH_FEE_COP.)
+  const w = await finityCall('create_withdrawal', userId, { data: { amount: Math.round(amountCop * 100), currency: 'COP', destination_id: destId } })
   const od: any = w?.data ?? {}
   if (!w?.ok || !od.id) return { ok: false, feeCop: 0, error: od ?? w, destinationId: destId ?? undefined }
-  const costs = od.costs ?? {}
-  const feeCop = Number(costs.total ?? ((Number(costs.commission) || 0) + (Number(costs.iva) || 0))) || 0
-  return { ok: true, providerRef: String(od.id), state: od.state ?? 'CONFIRMED', feeCop, costs, destinationId: destId ?? undefined }
+  return { ok: true, providerRef: String(od.id), state: od.status ?? od.state ?? 'PROCESSING', feeCop: ACH_FEE_COP, destinationId: destId ?? undefined }
 }
 
 // Registro de auditoría best-effort (no bloquea la operación).
@@ -350,7 +357,7 @@ serve(async (req: Request) => {
       const q = await mouvQuoteBreb(amount, String(payload.keyValue))
       return json(200, { ok: q.ok, rail: 'BREB', provider: 'mouv', feeCop: q.feeCop, fixedCop: q.fixedCop, variableCop: q.variableCop, ivaCop: q.ivaCop, totalCop: amount + q.feeCop, raw: q.raw })
     }
-    return json(200, { ok: true, rail: 'ACH', provider: 'finity', feeCop: null, message: 'Precio fijo por transferencia — se calcula y descuenta al confirmar.' })
+    return json(200, { ok: true, rail: 'ACH', provider: 'finity', feeCop: ACH_FEE_COP, totalCop: amount + ACH_FEE_COP })
   }
 
   // ── dispersión BREB (Mouv) / ACH (Finity) ──
@@ -389,6 +396,9 @@ serve(async (req: Request) => {
       if (!q.ok) return json(200, { error: 'quote_failed', message: 'No se pudo cotizar la comisión Bre-B. Intenta de nuevo.', data: q.raw })
       feeCop = q.feeCop
       feeDetail = { feeCop: q.feeCop, feeFixedCop: q.fixedCop, feeVariableCop: q.variableCop, feeIvaCop: q.ivaCop, feeProvider: 'mouv' }
+    } else {
+      feeCop = ACH_FEE_COP
+      feeDetail = { feeCop, feeProvider: 'finity' }
     }
     const totalDebit = Number((amount + feeCop).toFixed(2))
 
@@ -462,14 +472,8 @@ serve(async (req: Request) => {
     // ── ACH vía FINITY ──
     const fin = await finityPayoutAch(userId, recipient, amount)
     if (fin.ok) {
-      // Descontar el costo REAL reportado por Finity (precio por transferencia)
-      let newBalance = afterDebit
-      if (fin.feeCop > 0) {
-        const { data: u3 } = await db.from('users').select('balances').eq('id', userId).maybeSingle()
-        const bals3: Record<string, number> = (u3?.balances as any) ?? {}
-        newBalance = Math.max(0, Number((Number(bals3[railCol] ?? 0) - fin.feeCop).toFixed(2)))
-        await db.from('users').update({ balances: { ...bals3, [railCol]: newBalance } }).eq('id', userId)
-      }
+      // El precio por transferencia (ACH_FEE_COP) ya se debitó junto al monto.
+      const newBalance = afterDebit
       // Guardar el finityId en el contacto del usuario (reuso en próximos envíos)
       if (fin.destinationId) {
         try {
@@ -492,10 +496,10 @@ serve(async (req: Request) => {
       await logAudit(userId, `finity.${action}.ok`, { amount, feeCop: fin.feeCop, providerRef: fin.providerRef ?? null })
       return json(200, { ok: true, provider: 'finity', providerRef: fin.providerRef ?? null, feeCop: fin.feeCop, newBalance })
     }
-    // Finity falló → REINTEGRAR el monto
+    // Finity falló → REINTEGRAR monto + comisión (todo lo debitado)
     const { data: u5 } = await db.from('users').select('balances').eq('id', userId).maybeSingle()
     const bals5: Record<string, number> = (u5?.balances as any) ?? {}
-    const restored5 = Number((Number(bals5[railCol] ?? 0) + amount).toFixed(2))
+    const restored5 = Number((Number(bals5[railCol] ?? 0) + totalDebit).toFixed(2))
     await db.from('users').update({ balances: { ...bals5, [railCol]: restored5 } }).eq('id', userId)
     if (txId) await db.from('transactions').update({
       status: 'Fallido',
