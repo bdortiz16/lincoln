@@ -151,7 +151,7 @@ export const FinityRateChart: React.FC<{ from?: string; to?: string }> = ({ from
     const upColor = '#4ADE80', downColor = '#f87171';
 
     return (
-        <div className="rounded-2xl overflow-hidden border border-slate-800" style={{ backgroundColor: '#0B1220' }}>
+        <div className="rounded-2xl overflow-hidden border border-white/10" style={{ backgroundColor: '#0C0E0D' }}>
             <div className="px-4 pt-4 pb-2 flex items-center justify-between flex-wrap gap-2">
                 <div>
                     <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{from} → {to} · Lincoin</p>
@@ -230,7 +230,7 @@ export const FinityRateChart: React.FC<{ from?: string; to?: string }> = ({ from
                                 return (
                                     <g key={i}>
                                         <line x1={PADL} y1={y} x2={W - PADR} y2={y} stroke="#121413" strokeDasharray="2,3" />
-                                        <text x={PADL - 6} y={y + 3} textAnchor="end" fontSize="9" fill="#64748b" fontFamily="monospace">{fmtRate(v)}</text>
+                                        <text x={PADL - 6} y={y + 3} textAnchor="end" fontSize="9" fill="#878E88" fontFamily="monospace">{fmtRate(v)}</text>
                                     </g>
                                 );
                             })}
@@ -238,7 +238,7 @@ export const FinityRateChart: React.FC<{ from?: string; to?: string }> = ({ from
                                 const x = xOf(t);
                                 const anchor = i === 0 ? 'start' : i === xTicks.length - 1 ? 'end' : 'middle';
                                 return (
-                                    <text key={`xt-${i}`} x={x} y={H - PADB + 16} textAnchor={anchor} fontSize="9" fill="#64748b">{formatXLabel(t)}</text>
+                                    <text key={`xt-${i}`} x={x} y={H - PADB + 16} textAnchor={anchor} fontSize="9" fill="#878E88">{formatXLabel(t)}</text>
                                 );
                             })}
 
@@ -246,7 +246,7 @@ export const FinityRateChart: React.FC<{ from?: string; to?: string }> = ({ from
                                 <>
                                     <path d={areaPath} fill={upColor} opacity="0.10" />
                                     <path d={path} stroke={upColor} strokeWidth="2" fill="none" />
-                                    <circle cx={xOf(last.bucketStart)} cy={yOf(last.rate)} r="3.5" fill={upColor} stroke="#0B1220" strokeWidth="2" />
+                                    <circle cx={xOf(last.bucketStart)} cy={yOf(last.rate)} r="3.5" fill={upColor} stroke="#0C0E0D" strokeWidth="2" />
                                 </>
                             )}
                             {chartType === 'candles' && (() => {
@@ -269,8 +269,8 @@ export const FinityRateChart: React.FC<{ from?: string; to?: string }> = ({ from
 
                             {hoverIdx !== null && bucketed[hoverIdx] && (
                                 <g pointerEvents="none">
-                                    <line x1={xOf(bucketed[hoverIdx].bucketStart)} y1={PADT} x2={xOf(bucketed[hoverIdx].bucketStart)} y2={H - PADB} stroke="#94a3b8" strokeOpacity="0.4" strokeDasharray="3,3" />
-                                    {hoverY !== null && <line x1={PADL} x2={W - PADR} y1={hoverY} y2={hoverY} stroke="#94a3b8" strokeOpacity="0.4" strokeDasharray="3,3" />}
+                                    <line x1={xOf(bucketed[hoverIdx].bucketStart)} y1={PADT} x2={xOf(bucketed[hoverIdx].bucketStart)} y2={H - PADB} stroke="#9AA09B" strokeOpacity="0.4" strokeDasharray="3,3" />
+                                    {hoverY !== null && <line x1={PADL} x2={W - PADR} y1={hoverY} y2={hoverY} stroke="#9AA09B" strokeOpacity="0.4" strokeDasharray="3,3" />}
                                 </g>
                             )}
                         </svg>
@@ -280,7 +280,7 @@ export const FinityRateChart: React.FC<{ from?: string; to?: string }> = ({ from
                             const flipLeft = xPct > 65;
                             return (
                                 <div
-                                    className="absolute top-1 bg-slate-900 border border-slate-700 rounded-lg shadow-lg px-2.5 py-1.5 text-[11px] pointer-events-none"
+                                    className="absolute top-1 bg-[#121413] border border-white/15 rounded-lg shadow-lg px-2.5 py-1.5 text-[11px] pointer-events-none"
                                     style={{ left: flipLeft ? 'auto' : `calc(${xPct}% + 10px)`, right: flipLeft ? `calc(${100 - xPct}% + 10px)` : 'auto' }}
                                 >
                                     <div className="font-bold text-white font-mono">{fmtRate(hb.rate)}</div>
@@ -292,7 +292,7 @@ export const FinityRateChart: React.FC<{ from?: string; to?: string }> = ({ from
                 )}
             </div>
 
-            <div className="px-4 py-2 border-t border-slate-800 flex items-center justify-between text-[10px] text-slate-500">
+            <div className="px-4 py-2 border-t border-white/10 flex items-center justify-between text-[10px] text-slate-500">
                 <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
                     <input type="checkbox" checked={hideOutliers} onChange={e => setHideOutliers(e.target.checked)} className="rounded" />
                     Quitar atípicos

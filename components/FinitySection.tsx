@@ -622,8 +622,8 @@ export const FinitySection: React.FC<{
             {convertStep && (() => {
                 const order = ['enviando', 'recibido', 'convirtiendo', 'completado'];
                 const STEPS = [
-                    { key: 'enviando', label: 'Enviando', sub: 'Procesando tu USDT', Icon: Send },
-                    { key: 'recibido', label: 'Recibido', sub: 'Confirmando la recarga…', Icon: Wallet },
+                    { key: 'enviando', label: 'Enviando', sub: 'Tu USDT sale hacia la tesorería Lincoin', Icon: Send },
+                    { key: 'recibido', label: 'Recibido', sub: 'De la tesorería sale automático al proveedor…', Icon: Wallet },
                     { key: 'convirtiendo', label: 'Convirtiendo', sub: 'Convirtiendo a pesos (COP)', Icon: RefreshCw },
                     { key: 'completado', label: 'Completado', sub: 'COP acreditado en tu saldo ACH', Icon: CheckCircle },
                 ];
@@ -867,6 +867,33 @@ export const FinitySection: React.FC<{
                                             <span style={S.row}>Costo total del cambio</span>
                                             <span style={{ fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>{usd > 0 ? `${costUsdt.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT` : '—'}</span>
                                         </div>
+                                        {/* Detalle del costo — el cliente ve QUÉ compone el total */}
+                                        {usd > 0 && gasfreeFee != null && (
+                                            <div style={{ paddingLeft: 12, marginTop: -4 }} className="space-y-1">
+                                                {Number(gasfreeFee.transferFeeUsdt ?? 0) > 0 && (
+                                                    <div className="flex items-center justify-between gap-3">
+                                                        <span style={{ fontSize: 11.5, color: '#878E88' }}>↳ Envío a la tesorería y al proveedor (red)</span>
+                                                        <span style={{ fontSize: 11.5, fontWeight: 600, color: '#878E88' }}>{Number(gasfreeFee.transferFeeUsdt).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT</span>
+                                                    </div>
+                                                )}
+                                                {Number(gasfreeFee.activateFeeUsdt ?? 0) > 0 && (
+                                                    <div className="flex items-center justify-between gap-3">
+                                                        <span style={{ fontSize: 11.5, color: '#878E88' }}>↳ Activación de tu wallet GasFree (solo la 1ª vez)</span>
+                                                        <span style={{ fontSize: 11.5, fontWeight: 600, color: '#878E88' }}>{Number(gasfreeFee.activateFeeUsdt).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT</span>
+                                                    </div>
+                                                )}
+                                                {netUsd > 0 && feePct > 0 && (
+                                                    <div className="flex items-center justify-between gap-3">
+                                                        <span style={{ fontSize: 11.5, color: '#878E88' }}>↳ Comisión Lincoin ({feePct} %, incluida en la tasa)</span>
+                                                        <span style={{ fontSize: 11.5, fontWeight: 600, color: '#878E88' }}>{(netUsd * feePct / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT</span>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
+                                        <div className="flex items-center justify-between gap-3">
+                                            <span style={S.row}>Neto que se convierte</span>
+                                            <span style={{ fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>{usd > 0 ? `${netUsd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT` : '—'}</span>
+                                        </div>
                                         <div className="flex items-center justify-between gap-3">
                                             <span style={S.row}>Llega a tu saldo</span>
                                             <span style={{ fontSize: 13, fontWeight: 700, color: '#4ADE80' }}>Hoy · en minutos</span>
@@ -874,7 +901,7 @@ export const FinitySection: React.FC<{
                                     </div>
                                     {/* CTA */}
                                     <div className="flex items-center justify-between gap-4 flex-wrap" style={{ borderTop: '1px solid rgba(255,255,255,0.08)', marginTop: 16, paddingTop: 16 }}>
-                                        <p style={{ fontSize: 12, color: '#878E88', maxWidth: 320, lineHeight: 1.5 }}>El costo mostrado es el único cargo del cambio — sin costos ocultos.</p>
+                                        <p style={{ fontSize: 12, color: '#878E88', maxWidth: 320, lineHeight: 1.5 }}>Tus USDT pasan por la tesorería Lincoin y salen automáticamente al proveedor ya registrado. Sin costos ocultos.</p>
                                         <button
                                             onClick={doConvert}
                                             disabled={converting || !usdAmount || netUsd <= 0 || rate == null || overBalance}
