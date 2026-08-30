@@ -818,37 +818,40 @@ Deno.serve(async (req) => {
     if (action === 'create_payment_link') {
       const copAmount = Math.round(Number(payload.copAmount ?? payload.amount ?? 0))
       if (!(copAmount >= 5000)) return json(400, { error: 'bad_amount', message: 'El monto mínimo es $5.000 COP.' })
-      // Contrato Finity (verificado por sus errores): para un cobro en COP,
-      // `amount` va EN COP (mín. 1.500) y `destination_amount` es lo que el
-      // comercio recibe en el activo destino (USD/USDT ≈ COP/tasa). currency
-      // = COP. La tasa da el exchange_rate_id y el destination_amount en USD.
-      const qs = `?${new URLSearchParams({ from: 'USD', to: 'COP' })}`
-      const { res: rres } = await finityTry('rates', {}, qs)
-      const rdata = await rres.json().catch(() => null) as any
-      const rate = extractRate(rdata)
-      const rateId = rdata?.id ?? rdata?.exchange_rate_id ?? rdata?.data?.id ?? null
-      const usdAmount = rate && rate > 0 ? Number((copAmount / rate).toFixed(2)) : 0.01
-      const body: Record<string, unknown> = {
-        amount: copAmount, destination_amount: Math.max(0.01, usdAmount), currency: 'COP',
-        ...(rateId ? { exchange_rate_id: rateId } : {}),
-      }
+      // Contrato Finity VERIFICADO contra su respuesta real: cobro COP→COP.
+      // `amount` = lo que paga quien te paga (COP). `destination_amount` es
+      // requerido pero Finity lo recalcula al neto (amount − comisión − IVA).
+      // No requiere tasa ni exchange_rate_id (misma moneda).
+      const body: Record<string, unknown> = { amount: copAmount, destination_amount: copAmount, currency: 'COP' }
       const r = await finityFetch('/v0/payment-link/create', { method: 'POST', body: JSON.stringify(body) })
       const data = await r.json().catch(() => null) as any
-      await logAudit(caller.userId ?? null, 'finity.payment_link.create', { status: r.status, copAmount, usdAmount, body, response: data })
-      if (!r.ok || !data?.payment_link) {
-        return json(200, { ok: false, status: r.status, error: 'link_failed', message: 'No se pudo crear el link de cobro.', data })
+      await logAudit(caller.userId ?? null, 'finity.payment_link.create', { status: r.status, copAmount, body, response: data })
+      const linkId = String(data?.id ?? '')
+      if (!r.ok || !linkId) {
+        return json(200, { ok: false, status: r.status, error: 'link_failed', message: 'No se pudo crear el cobro.', data })
       }
+      // La URL del link no siempre viene en la respuesta de create → se busca
+      // en varios nombres y, si falta, se consulta el cobro por su id.
+      const pickLink = (o: any): string | null => o?.payment_link ?? o?.link ?? o?.url ?? o?.checkout_url ?? o?.checkoutUrl ?? o?.payment_url ?? o?.short_url ?? o?.data?.payment_link ?? o?.data?.url ?? null
+      let link = pickLink(data)
+      if (!link) {
+        for (const p of [`/v0/payment-link/${linkId}`, `/v0/payment-links/${linkId}`]) {
+          const g = await finityFetch(p, { method: 'GET' })
+          if (g.ok) { const gd = await g.json().catch(() => null); link = pickLink(gd); if (link) break }
+        }
+      }
+      const netCop = Number(data?.destination_amount ?? copAmount)
+      const costs = data?.costs ?? null
       const uid = caller.userId ?? String(payload.user_id ?? '')
-      const reference = String(data.id ?? '')
       if (uid) {
         await db.from('transactions').insert({
-          user_id: uid, type: 'load', amount: copAmount, currency: 'COP', status: 'Pendiente',
-          raw_data: { source: 'finity_payment_link', method: 'LINK', reference, providerRef: reference,
-            link: data.payment_link, title: 'Cobro por link', rate, usdAmount,
-            expiresAt: data.expires_at ?? null, createdAt: new Date().toISOString() },
+          user_id: uid, type: 'load', amount: Math.round(netCop), currency: 'COP', status: 'Pendiente',
+          raw_data: { source: 'finity_payment_link', method: 'LINK', reference: linkId, providerRef: linkId,
+            link, title: 'Cobro por link', grossCop: copAmount, netCop, costs,
+            expiresAt: data?.expires_at ?? null, createdAt: new Date().toISOString() },
         }).catch(() => {})
       }
-      return json(200, { ok: true, link: data.payment_link, reference, status: data.status ?? 'UNCONFIRMED', expiresAt: data.expires_at ?? null, rate })
+      return json(200, { ok: true, link, reference: linkId, status: data?.status ?? 'UNCONFIRMED', grossCop: copAmount, netCop, costs, expiresAt: data?.expires_at ?? null, needsLinkLookup: !link })
     }
 
     // Estado de un link de cobro (para acreditar cuando el pago confirme).

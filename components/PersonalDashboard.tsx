@@ -316,6 +316,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           if (r?.ok && r?.link) {
               setPseResult({ ok: true, link: r.link, reference: r.reference });
               refreshData?.();
+          } else if (r?.ok && !r?.link) {
+              // El cobro se creó pero Finity no devolvió la URL del link.
+              setPseResult({ ok: false, message: `El cobro se creó (ref ${String(r.reference || '').slice(-8)}) pero el proveedor no devolvió el enlace. Reintenta o escríbenos.` });
+              refreshData?.();
           } else {
               setPseResult({ ok: false, message: r?.message || 'No se pudo generar el link de cobro.', detail: r?.data ? JSON.stringify(r.data).slice(0, 300) : undefined });
           }
