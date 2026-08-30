@@ -144,6 +144,31 @@ Deno.serve(async (req: Request) => {
           if (userRow.role != null && !['personal', 'business'].includes(String(userRow.role))) delete (userRow as any).role
           if (userRow.kyc_status != null && !['pending', 'in_review', 'not_started', 'incomplete', 'rejected'].includes(String(userRow.kyc_status))) delete (userRow as any).kyc_status
           for (const k of ['is_blocked', 'is_admin', 'limits', 'status']) delete (userRow as any)[k]
+
+          // ── CANDADO ANTI AUTO-CRÉDITO (CRÍTICO 2) ──────────────────────────
+          // Un usuario NO puede SUBIRSE el saldo por esta vía (sería inflar
+          // dinero que no existe y luego retirarlo). Se permite BAJARLO (el
+          // flujo legacy de retiro debita por aquí). Los aumentos legítimos
+          // (conversiones) van por apply_conversion, que valida la tasa. Se
+          // reconstruye cada columna de saldo tomando el valor de la base y
+          // aplicando SOLO las bajadas del cliente; cualquier subida se ignora.
+          if (userRow.balances != null || userRow.crypto_balances != null) {
+            const { data: cur } = await db.from('users').select('balances, crypto_balances').eq('id', selfServiceBody.user.id).maybeSingle()
+            const clampNoIncrease = (incoming: Record<string, any> | null | undefined, current: Record<string, any> | null | undefined) => {
+              const base: Record<string, number> = { ...((current && typeof current === 'object') ? current : {}) }
+              if (incoming && typeof incoming === 'object') {
+                for (const [k, v] of Object.entries(incoming)) {
+                  const nv = Number(v), cv = Number(base[k] ?? 0)
+                  // Solo se acepta si NO aumenta (baja o igual). Subidas → se
+                  // conserva el valor real de la base.
+                  if (isFinite(nv) && nv <= cv + 1e-9) base[k] = nv
+                }
+              }
+              return base
+            }
+            if (userRow.balances != null)        userRow.balances        = clampNoIncrease(userRow.balances, (cur as any)?.balances)
+            if (userRow.crypto_balances != null) userRow.crypto_balances = clampNoIncrease(userRow.crypto_balances, (cur as any)?.crypto_balances)
+          }
         }
         const { error: saveErr } = await db.from('users').upsert(userRow)
         if (saveErr) return json({ error: saveErr.message }, 500)
