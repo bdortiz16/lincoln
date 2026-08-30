@@ -621,8 +621,8 @@ export const FinitySection: React.FC<{
                 const STEPS = [
                     { key: 'enviando', label: 'Enviando', sub: 'Procesando tu USDT', Icon: Send },
                     { key: 'recibido', label: 'Recibido', sub: 'Confirmando la recarga…', Icon: Wallet },
-                    { key: 'convirtiendo', label: 'Convirtiendo', sub: 'Convirtiendo a Peso Lincoin', Icon: RefreshCw },
-                    { key: 'completado', label: 'Completado', sub: 'COP acreditado en tu Peso Lincoin', Icon: CheckCircle },
+                    { key: 'convirtiendo', label: 'Convirtiendo', sub: 'Convirtiendo a pesos (COP)', Icon: RefreshCw },
+                    { key: 'completado', label: 'Completado', sub: 'COP acreditado en tu saldo ACH', Icon: CheckCircle },
                 ];
                 const isError = convertStep === 'error';
                 const curIdx = isError ? -1 : order.indexOf(convertStep);
