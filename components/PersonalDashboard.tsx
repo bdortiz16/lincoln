@@ -1636,7 +1636,15 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   };
   const getFilteredMovements = (walletCode?: string | null, opts?: { full?: boolean }) => {
       let filtered = movements;
-      if (walletCode) filtered = filtered.filter(tx => tx.currency === walletCode);
+      // El detalle de una moneda agrupa TODOS sus rieles: COP incluye Saldo
+      // Lincoin (COP), Bre-B (COP_BREB) y ACH (COP_ACH); USD incluye USDT
+      // (USD/USDT_TRON). Sin esto, el detalle COP solo mostraba Saldo Lincoin.
+      if (walletCode) {
+          const group = walletCode === 'COP' ? ['COP', 'COP_BREB', 'COP_ACH']
+              : walletCode === 'USD' ? ['USD', 'USDT', 'USDT_TRON']
+              : [walletCode];
+          filtered = filtered.filter(tx => group.includes(String(tx.currency)) || group.includes(String(tx.currency || '').split('_')[0]));
+      }
       if (movementsTab === 'income') filtered = filtered.filter(tx => tx.type === 'load' || tx.type === 'receive' || tx.type === 'convert' || tx.type === 'pay_received' || tx.type === 'referral_payout' || tx.type === 'referral_commission');
       else if (movementsTab === 'expense') filtered = filtered.filter(tx => tx.type === 'send' || tx.type === 'pay_sent');
       // Filtros avanzados (solo en el Historial completo): estado, moneda,
@@ -1876,7 +1884,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                 const parts = usdt.toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).split(',');
                 return (
                   <div style={{ background: '#0C0E0D', border: '1px solid rgba(74,222,128,0.28)', borderRadius: 14, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-                    <div style={{ padding: '18px 18px 16px', flex: 1 }}>
+                    <div onClick={() => { setSelectedWalletCode('USD'); setActiveView('wallet-detail'); }} style={{ padding: '18px 18px 16px', flex: 1, cursor: 'pointer' }} className="hover:bg-white/[0.015] transition-colors">
                       <div className="flex items-start justify-between" style={{ marginBottom: 14 }}>
                         <div className="flex items-center gap-2.5">
                           <div style={{ width: 32, height: 32, borderRadius: '50%', background: '#26A17B', color: '#fff', fontWeight: 800, fontSize: 16, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>₮</div>
@@ -1910,7 +1918,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                 const rate = getRate('USD', 'COP');
                 return (
                   <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-                    <div style={{ padding: '18px 18px 16px', flex: 1 }}>
+                    <div onClick={() => { setSelectedWalletCode('COP'); setActiveView('wallet-detail'); }} style={{ padding: '18px 18px 16px', flex: 1, cursor: 'pointer' }} className="hover:bg-white/[0.015] transition-colors">
                       <div className="flex items-start justify-between" style={{ marginBottom: 14 }}>
                         <div className="flex items-center gap-2.5">
                           <div style={{ width: 32, height: 32, borderRadius: '50%', overflow: 'hidden', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
