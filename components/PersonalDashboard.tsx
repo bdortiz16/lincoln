@@ -2501,7 +2501,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               {(() => {
                   const usdShort = displayBalance('USD');
                   const tabs: { code: string; name: string; badge: string; badgeColor: string; sym: string; sub: string; soon?: boolean }[] = [
-                      { code: 'USD', name: 'Dólar digital', badge: '#2775CA', badgeColor: '#fff', sym: '$', sub: `${Number(usdShort).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT` },
+                      { code: 'USD', name: 'Dólar digital', badge: '#26A17B', badgeColor: '#fff', sym: '₮', sub: `${Number(usdShort).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT` },
                       { code: '_EUR', name: 'Euro digital', badge: '#16A34A', badgeColor: '#fff', sym: '€', sub: 'EURC', soon: true },
                       { code: '_USDBANK', name: 'Cuenta USD', badge: 'transparent', badgeColor: '#878E88', sym: '$', sub: 'ACH / wire', soon: true },
                       { code: '_EURBANK', name: 'Cuenta EUR', badge: 'transparent', badgeColor: '#878E88', sym: '€', sub: 'SEPA / IBAN', soon: true },
@@ -2574,7 +2574,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(circle at 92% 0%, rgba(74,222,128,0.1), transparent 42%)', pointerEvents: 'none' }} />
                                   <div style={{ position: 'relative' }}>
                                       <div className="flex items-center flex-wrap" style={{ gap: 10 }}>
-                                          <span style={{ width: 40, height: 40, borderRadius: '50%', background: '#2775CA', color: '#fff', fontWeight: 800, fontSize: 19, display: 'grid', placeItems: 'center', flexShrink: 0 }}>$</span>
+                                          <span style={{ width: 40, height: 40, borderRadius: '50%', background: '#26A17B', color: '#fff', fontWeight: 800, fontSize: 21, display: 'grid', placeItems: 'center', flexShrink: 0 }}>₮</span>
                                           <div>
                                               <div className="flex items-center" style={{ gap: 8 }}>
                                                   <span style={{ fontSize: 16, fontWeight: 700, color: '#F4F4F2' }}>Dólar digital</span>
