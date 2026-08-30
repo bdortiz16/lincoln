@@ -854,6 +854,20 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       return false;
   };
 
+  // Abrir el flujo de ENVIAR dinero — exige 2FA (verificación en dos pasos)
+  // activa. Sin 2FA no se puede enviar: se avisa y se lleva a Ajustes.
+  const openSendMoney = (prefill?: () => void) => {
+      if (handleActionRestricted()) return;
+      if (mfaLoadingStatus) { showToast('Verificando tu seguridad… reintenta en un segundo.', 3000); return; }
+      if (!mfaEnrolled) {
+          showToast('Para enviar dinero primero activa la verificación en dos pasos (2FA) en Ajustes → Seguridad.', 8000, 'error');
+          setActiveView('settings');
+          return;
+      }
+      prefill?.();
+      setIsSendModalOpen(true);
+  };
+
   // ── Cargar USDT (Dólar digital): depósito on-chain vía GasFree ──
   // El USD de la app NO se carga por banco: se envía USDT (TRC-20) a la
   // dirección personal del cliente (gasfree get_or_create) y al
@@ -1967,7 +1981,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       <span style={{ fontSize: 10.5, color: '#878E88', fontFamily: 'ui-monospace, Menlo, monospace' }}>{usdtAddr ? `${usdtAddr.slice(0, 6)}…${usdtAddr.slice(-4)}` : 'Red TRON · TRC-20'}</span>
                       <div className="flex items-center" style={{ gap: 13 }}>
                         <button onClick={() => handleLoadClick('USD')} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Cargar</button>
-                        <button onClick={() => { if (!handleActionRestricted()) setIsSendModalOpen(true); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Enviar</button>
+                        <button onClick={() => { openSendMoney(); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Enviar</button>
                       </div>
                     </div>
                   </div>
@@ -2004,7 +2018,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       <span style={{ fontSize: 10.5, color: '#878E88', fontFamily: 'ui-monospace, Menlo, monospace' }}>BreB · ACH</span>
                       <div className="flex items-center" style={{ gap: 13 }}>
                         <button onClick={() => { setSelectedWalletCode('COP'); setActiveView('wallet-detail'); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Ver</button>
-                        <button onClick={() => { if (!handleActionRestricted()) setIsSendModalOpen(true); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Enviar</button>
+                        <button onClick={() => { openSendMoney(); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Enviar</button>
                       </div>
                     </div>
                   </div>
@@ -2590,7 +2604,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       <div className="flex gap-2.5 flex-wrap">
                           <button onClick={() => { setSelectedWalletCode('USD'); setActiveView('mouv'); }} style={{ background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 13.5, padding: '11px 18px', borderRadius: 9 }} className="hover:bg-white/[0.09] transition-colors flex items-center gap-2"><RefreshCw size={15} /> Convertir</button>
                           <button onClick={() => handleLoadClick('COP')} style={{ background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 13.5, padding: '11px 18px', borderRadius: 9 }} className="hover:bg-white/[0.09] transition-colors flex items-center gap-2"><Plus size={15} /> Cargar</button>
-                          <button onClick={() => { if (!handleActionRestricted()) setIsSendModalOpen(true); }} disabled={isBlocked || !isKycVerified} style={{ fontWeight: 700, fontSize: 13.5, padding: '11px 20px', borderRadius: 9, opacity: (isBlocked || !isKycVerified) ? 0.6 : 1 }} className="lincoin-btn-white transition-colors flex items-center gap-2"><Send size={15} /> Enviar dinero</button>
+                          <button onClick={() => { openSendMoney(); }} disabled={isBlocked || !isKycVerified} style={{ fontWeight: 700, fontSize: 13.5, padding: '11px 20px', borderRadius: 9, opacity: (isBlocked || !isKycVerified) ? 0.6 : 1 }} className="lincoin-btn-white transition-colors flex items-center gap-2"><Send size={15} /> Enviar dinero</button>
                       </div>
                   </div>
                   );
@@ -2640,7 +2654,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 16, padding: 20, display: 'flex', flexDirection: 'column', gap: 9 }}>
                                   <button onClick={() => openUsdtDeposit()} disabled={isBlocked} className="lincoin-btn-white transition-colors flex items-center justify-center" style={{ gap: 8, width: '100%', padding: '13px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, border: 'none', opacity: isBlocked ? 0.6 : 1 }}><ArrowDownLeft size={16} /> Cargar</button>
                                   <div className="flex" style={{ gap: 9 }}>
-                                      <button onClick={() => { if (!handleActionRestricted()) setIsSendModalOpen(true); }} disabled={isBlocked || !isKycVerified} className="flex-1 flex items-center justify-center hover:bg-white/[0.09] transition-colors" style={{ gap: 7, padding: '12px 0', borderRadius: 10, fontSize: 13, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', opacity: (isBlocked || !isKycVerified) ? 0.5 : 1 }}><Send size={15} /> Enviar</button>
+                                      <button onClick={() => { openSendMoney(); }} disabled={isBlocked || !isKycVerified} className="flex-1 flex items-center justify-center hover:bg-white/[0.09] transition-colors" style={{ gap: 7, padding: '12px 0', borderRadius: 10, fontSize: 13, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', opacity: (isBlocked || !isKycVerified) ? 0.5 : 1 }}><Send size={15} /> Enviar</button>
                                       <button onClick={() => { setOtcRail(null); setMouvMode('converter'); setSelectedWalletCode('USD'); setActiveView('mouv'); }} className="flex-1 flex items-center justify-center hover:bg-white/[0.09] transition-colors" style={{ gap: 7, padding: '12px 0', borderRadius: 10, fontSize: 13, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)' }}><ArrowLeftRight size={15} /> Mesa OTC</button>
                                   </div>
                                   <div style={{ marginTop: 8, paddingTop: 14, borderTop: '1px solid rgba(255,255,255,0.07)' }}>
@@ -3723,7 +3737,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       { label: 'Referencia', value: truncMid(dispProviderRef || String(tx.id)), mono: true, copy: dispProviderRef || String(tx.id) },
       ...(!isCredit ? [{ label: 'Costo del envío', value: feeCop > 0 ? `${formatMoney(feeCop, 'COP')} COP` : 'Gratis', green: feeCop <= 0 }] : []),
     ];
-    const repeatSend = () => { setSelectedTx(null); if (!handleActionRestricted()) setIsSendModalOpen(true); };
+    const repeatSend = () => { setSelectedTx(null); openSendMoney(); };
     return (
       <div className="fixed inset-0 z-[100] p-4" style={{ background: 'rgba(4,5,4,0.85)', display: 'grid', placeItems: 'center' }} onClick={() => setSelectedTx(null)}>
         <div role="dialog" aria-modal="true" onClick={e => e.stopPropagation()}
@@ -3811,7 +3825,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
           <div className="flex-1 overflow-y-auto py-6 px-4 space-y-1">
               <SidebarItem icon={Home} label="Inicio" active={activeView === 'dashboard'} onClick={() => {setActiveView('dashboard'); setIsMobileMenuOpen(false);}} />
-              <SidebarItem icon={Send} label="Enviar Dinero" active={false} onClick={() => { if(!handleActionRestricted()) setIsSendModalOpen(true); }} />
+              <SidebarItem icon={Send} label="Enviar Dinero" active={false} onClick={() => { openSendMoney(); }} />
               <SidebarItem icon={ArrowLeftRight} label="Convertir" active={false} onClick={() => { if(!handleActionRestricted()) setIsConvertModalOpen(true); }} />
               <SidebarItem icon={History} label="Movimientos" active={activeView === 'movements'} onClick={() => {setActiveView('movements'); setIsMobileMenuOpen(false);}} />
               <SidebarItem icon={Users} label="Beneficiarios" active={activeView === 'contactos'} onClick={() => {setActiveView('contactos'); setIsMobileMenuOpen(false);}} />
@@ -3871,6 +3885,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   // "Enviar" desde Beneficiarios: abre Enviar Dinero con el
                   // beneficiario, país y riel preseleccionados. Solo falta el
                   // monto — al continuar salta directo a la confirmación.
+                  // Exige 2FA como cualquier otro envío.
+                  if (handleActionRestricted()) return;
+                  if (!mfaEnrolled) { showToast('Para enviar dinero primero activa la verificación en dos pasos (2FA) en Ajustes → Seguridad.', 8000, 'error'); setActiveView('settings'); return; }
                   const isWallet = c.accountKind === 'wallet';
                   setSendForm({
                       destinationCountry: isWallet ? 'Estados Unidos' : (c.country || 'Colombia'),

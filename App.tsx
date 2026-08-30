@@ -172,6 +172,50 @@ const SplashScreen: React.FC = () => (
   </div>
 );
 
+// Pantalla para fijar la nueva contraseña tras abrir el enlace de
+// recuperación del correo ("olvidé mi contraseña").
+const SetNewPasswordScreen: React.FC<{ onSet: (pw: string) => Promise<string | null> }> = ({ onSet }) => {
+  const [pw, setPw] = useState('');
+  const [pw2, setPw2] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+  const submit = async () => {
+    if (busy) return;
+    if (pw.length < 8) { setErr('La contraseña debe tener al menos 8 caracteres.'); return; }
+    if (pw !== pw2) { setErr('Las contraseñas no coinciden.'); return; }
+    setBusy(true); setErr(null);
+    const e = await onSet(pw);
+    setBusy(false);
+    if (e) setErr(e); else { setDone(true); setTimeout(() => { try { window.location.replace(window.location.origin); } catch { /* noop */ } }, 1600); }
+  };
+  const inp: React.CSSProperties = { width: '100%', marginTop: 8, padding: '12px 14px', borderRadius: 11, fontSize: 15, color: '#F4F4F2', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.12)', outline: 'none' };
+  return (
+    <div style={{ minHeight: '100vh', background: '#070808', display: 'grid', placeItems: 'center', padding: 16, fontFamily: "'Archivo', system-ui, sans-serif" }}>
+      <div style={{ width: '100%', maxWidth: 400, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, padding: '28px 26px' }}>
+        <p style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.5px', color: '#F4F4F2', marginBottom: 20 }}>Lincoin<span style={{ color: '#4ADE80' }}>.</span></p>
+        {done ? (
+          <>
+            <h2 style={{ fontSize: 19, fontWeight: 800, color: '#F4F4F2' }}>Contraseña actualizada</h2>
+            <p style={{ fontSize: 13, color: '#878E88', marginTop: 8 }}>Ya puedes iniciar sesión con tu nueva contraseña. Redirigiendo…</p>
+          </>
+        ) : (
+          <>
+            <h2 style={{ fontSize: 19, fontWeight: 800, color: '#F4F4F2' }}>Nueva contraseña</h2>
+            <p style={{ fontSize: 13, color: '#878E88', marginTop: 6 }}>Elige una contraseña nueva para tu cuenta.</p>
+            <input type="password" value={pw} onChange={e => setPw(e.target.value)} placeholder="Nueva contraseña" autoFocus style={inp} />
+            <input type="password" value={pw2} onChange={e => setPw2(e.target.value)} placeholder="Repite la contraseña" style={inp} onKeyDown={e => { if (e.key === 'Enter') submit(); }} />
+            {err && <p style={{ fontSize: 12.5, color: '#F4F4F2', fontWeight: 600, marginTop: 10 }}>{err}</p>}
+            <button onClick={submit} disabled={busy} className="lincoin-btn-white transition-colors" style={{ width: '100%', marginTop: 18, padding: '13px 0', borderRadius: 11, fontSize: 14, fontWeight: 700, border: 'none', opacity: busy ? 0.5 : 1 }}>
+              {busy ? 'Guardando…' : 'Guardar contraseña'}
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+};
+
 const App: React.FC = () => {
   // Nota: el routing de /admin-personas Y /admin-empresas se maneja en
   // index.tsx (apps aisladas con su propio login) — acá solo llega el
@@ -186,7 +230,7 @@ const App: React.FC = () => {
   const [showMarketingModal, setShowMarketingModal] = useState(false);
   const [showPersonalDownloadModal, setShowPersonalDownloadModal] = useState(false);
 
-  const { currentUser, isAuthLoading, logoutUser } = useDatabase();
+  const { currentUser, isAuthLoading, logoutUser, isPasswordRecovery, setNewPassword } = useDatabase();
   const { config } = useSystemConfig();
   // Verificación por correo (2 pasos) tras el login. Se pasa una vez por
   // sesión; "recordar dispositivo" la evita por 30 días en este navegador.
@@ -460,7 +504,9 @@ const App: React.FC = () => {
   return (
       <>
         <ThemeInjector />
-        {needsEmailOtp ? (
+        {isPasswordRecovery ? (
+          <SetNewPasswordScreen onSet={setNewPassword} />
+        ) : needsEmailOtp ? (
           <EmailOtpGate
             userId={currentUser!.id}
             email={currentUser!.email}

@@ -113,6 +113,8 @@ interface DatabaseContextType {
   updateBankList: (country: string, banks: BankDetail[]) => void;
   restoreDatabase: (json: any) => boolean;
   sendPasswordReset: (email: string) => Promise<void>;
+  isPasswordRecovery: boolean;
+  setNewPassword: (newPassword: string) => Promise<string | null>;
   sendCuypayPayment: (recipientCode: string, amount: number, currency: string) => Promise<{ error?: string }>;
   mfaPending: boolean;
   completeMFALogin: (code: string) => Promise<User | null>;
@@ -250,6 +252,10 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     } catch { /* sessionStorage no disponible */ }
     return null;
   });
+  // Recuperación de contraseña: cuando el usuario abre el enlace del correo
+  // de "olvidé mi contraseña", Supabase dispara PASSWORD_RECOVERY. La app
+  // muestra una pantalla para fijar la nueva clave.
+  const [isPasswordRecovery, setIsPasswordRecovery] = useState(false);
   // Start online immediately if Supabase is configured — avoids a flash of "Modo Offline"
   // while the first fetchData() is still in flight.
   const [isOnline, setIsOnline] = useState(isSupabaseConfigured);
@@ -318,6 +324,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       try {
+        // Enlace de recuperación de contraseña abierto → mostrar la pantalla
+        // para fijar la nueva clave (no entrar directo al dashboard).
+        if (event === 'PASSWORD_RECOVERY') { setIsPasswordRecovery(true); return; }
         if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION' || event === 'TOKEN_REFRESHED') && session?.user) {
           // Cancel any pending sign-out
           if (signOutTimer) { clearTimeout(signOutTimer); signOutTimer = null; }
@@ -1873,7 +1882,18 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   const sendPasswordReset = async (email: string) => {
     if (!isSupabaseConfigured) return;
-    await supabase.auth.resetPasswordForEmail(email);
+    // redirectTo: el enlace del correo debe regresar a ESTA app para que el
+    // usuario fije su nueva contraseña (si no, cae en el sitio por defecto).
+    await supabase.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin });
+  };
+
+  // Fijar la nueva contraseña tras abrir el enlace de recuperación.
+  const setNewPassword = async (newPassword: string): Promise<string | null> => {
+    if (!isSupabaseConfigured) return 'Sin conexión';
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (error) return error.message;
+    setIsPasswordRecovery(false);
+    return null;
   };
 
   const markNotificationsRead = () => {
@@ -1922,7 +1942,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       completeWithdrawal, rejectWithdrawal, verifyUser, toggleUserBlock, isOnline, dataReady, refreshData: fetchData,
       bankingOptions, treasuryAccounts, getAllUsers, getAllTransactions, updateTxStatus, getAllPendingDeposits, getAllPendingWithdrawals,
       getTransactionHistory, getAdminTeam, addAdminUser, updateAdminUser, deleteAdminUser, deleteUser, registerInternalMovement,
-      updateBankList, restoreDatabase, sendPasswordReset, sendCuypayPayment,
+      updateBankList, restoreDatabase, sendPasswordReset, isPasswordRecovery, setNewPassword, sendCuypayPayment,
       mfaPending, completeMFALogin, cancelMFALogin,
       enrollMFA, verifyMFAEnrollment, unenrollMFA, getMFAStatus,
     }}>
