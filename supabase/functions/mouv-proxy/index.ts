@@ -728,14 +728,26 @@ serve(async (req: Request) => {
         raw_data: { ...prettyBase, ...feeDetail, error: pay.data ?? 'payout_failed', httpStatus: pay.status, refunded: true, failedAt: new Date().toISOString() },
       }).eq('id', txId)
       await logAudit(userId, `mouv.${action}.fail`, { amount, rail, status: pay.status, data: pay.data ?? null })
-      const mouvDetail = (() => {
-        try {
-          const s = typeof pay.data === 'string' ? pay.data : JSON.stringify(pay.data ?? null)
-          return s && s !== 'null' && s !== '{}' ? ` Detalle técnico: ${s.slice(0, 350)}` : ''
-        } catch { return '' }
-      })()
-      return json(200, { error: 'payout_failed', refunded: true, newBalance: restored, status: pay.status, data: pay.data,
-        message: `Mouv rechazó la dispersión (HTTP ${pay.status}).${mouvDetail} Tu saldo fue devuelto.` })
+      // Mensaje LIMPIO para el cliente: si el proveedor manda un error
+      // estructurado (código + mensaje), se muestra ese texto humano — NUNCA
+      // el JSON crudo. El detalle técnico va aparte en `data` para soporte.
+      let provObj: any = null
+      try { provObj = typeof pay.data === 'string' ? JSON.parse(pay.data) : pay.data } catch { provObj = pay.data }
+      const provCode = provObj?.error ?? provObj?.code ?? null
+      const provMsg = typeof provObj?.message === 'string' ? provObj.message : null
+      const retryAfterSeconds = Number(provObj?.retryAfterSeconds ?? 0) || null
+      let friendly: string
+      if (provCode === 'STRUCTURING_WINDOW_BLOCKED' || (pay.status === 409 && !provMsg)) {
+        const secs = retryAfterSeconds ?? 0
+        const mins = secs > 0 ? Math.max(1, Math.ceil(secs / 60)) : (Number(provObj?.windowMinutes) || 5)
+        friendly = `Ya hiciste un envío a este mismo beneficiario hace poco. Por seguridad, espera ${mins} minuto${mins === 1 ? '' : 's'} antes de repetir un pago al mismo destino. Tu saldo fue devuelto.`
+      } else if (provMsg) {
+        friendly = `${provMsg} Tu saldo fue devuelto.`
+      } else {
+        friendly = `No pudimos completar el envío en este momento. Tu saldo fue devuelto — puedes intentarlo de nuevo en unos minutos.`
+      }
+      return json(200, { error: 'payout_failed', code: provCode, retryAfterSeconds, refunded: true, newBalance: restored, status: pay.status, data: pay.data,
+        message: friendly })
     }
 
     // ── ACH vía FINITY ──
@@ -776,11 +788,17 @@ serve(async (req: Request) => {
       raw_data: { ...prettyBase, feeProvider: 'finity', error: fin.error ?? 'finity_failed', refunded: true, failedAt: new Date().toISOString() },
     }).eq('id', txId)
     await logAudit(userId, `finity.${action}.fail`, { amount, error: JSON.stringify(fin.error ?? {}).slice(0, 200) })
-    // Incluir el DETALLE crudo del proveedor: sin él es imposible saber si
-    // rechazó por saldo, unidades, cuenta destino o validación.
+    // Mensaje humano: si Finity trae un `message`/`detail` legible se muestra;
+    // el detalle crudo va en `data` para soporte (no en el texto al cliente).
+    const finErr: any = fin.error
+    const finMsg = (typeof finErr === 'string' ? finErr
+      : (finErr?.message ?? finErr?.detail ?? finErr?.error?.message)) as string | undefined
     const detail = (() => { try { return JSON.stringify(fin.error ?? fin).slice(0, 350) } catch { return String(fin.error ?? 'sin detalle') } })()
-    return json(200, { error: 'payout_failed', provider: 'finity', refunded: true, newBalance: restored5, data: fin.error,
-      message: `El riel rechazó la transferencia ACH y tu saldo fue devuelto. Detalle técnico: ${detail}` })
+    const friendlyAch = finMsg && typeof finMsg === 'string' && finMsg.trim()
+      ? `No pudimos completar la transferencia ACH: ${finMsg}. Tu saldo fue devuelto.`
+      : `No pudimos completar la transferencia ACH en este momento. Tu saldo fue devuelto — puedes intentarlo de nuevo en unos minutos.`
+    return json(200, { error: 'payout_failed', provider: 'finity', refunded: true, newBalance: restored5, data: fin.error, detail,
+      message: friendlyAch })
   }
 
   return json(200, { error: 'unknown_action', message: `Acción no soportada: ${action}` })
