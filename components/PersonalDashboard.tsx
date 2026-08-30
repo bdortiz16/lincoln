@@ -478,7 +478,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           }
           if (m.status === 'Completado' && (m.type === 'load' || m.type === 'otc_deposit') && isUsdt) {
               candidates.push({ id: `usdtin-${m.id}`, type: 'success', title: 'Recibiste USDT',
-                  message: `Llegaron ${formatMoney(m.amount, cur)} ${cur.split('_')[0]} a tu wallet.` });
+                  message: `Llegaron ${formatMoney(m.amount, cur)} ${cur.split('_')[0]} a tu wallet.`,
+                  amount: Number(m.amount ?? 0) } as any);
           }
       }
 
@@ -519,8 +520,18 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       // una con la otra.
       updateUserProfile(currentUser.id, { notifications: newNotifs, notifiedEvents: newSeen });
 
+      // Depósito USDT nuevo → CELEBRACIÓN (cuadro verde + cha-ching), sin
+      // importar en qué pantalla esté el cliente ni qué camino lo acreditó
+      // (vigilante, botón Verificar, otra pestaña). Dedupe por notifiedEvents:
+      // sale UNA sola vez por depósito.
+      const freshDeposit: any = fresh.find(c => c.id.startsWith('usdtin-') && Number((c as any).amount ?? 0) > 0);
+      if (freshDeposit && !recentlyCelebrated(Number(freshDeposit.amount))) {
+          celebrateDeposit(Number(freshDeposit.amount));
+          lastCelebrationRef.current = { amount: Number(freshDeposit.amount), at: Date.now() };
+      }
+
       // El sonido se puede silenciar en Ajustes → Notificaciones (notifSound).
-      if (cuAny?.notifSound !== false) playNotifSound();
+      if (!freshDeposit && cuAny?.notifSound !== false) playNotifSound();
       setBellAnim(true);
       setTimeout(() => setBellAnim(false), 1200);
       showToast(`🔔 ${fresh[0].title}: ${fresh[0].message}`, 5000);
@@ -865,11 +876,35 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // de lo que en verdad tenía). Mismo patrón que mouvBal para Peso Lincoin.
   const [gasfreeBal, setGasfreeBal] = useState<number | null>(null);
   const [gasfreeBalChecked, setGasfreeBalChecked] = useState(false);
+  // Última lectura del saldo on-chain + última celebración disparada — para
+  // la CELEBRACIÓN TEMPRANA: apenas el saldo sube (segundos después de que
+  // envían), sale el cuadro verde, sin esperar la acreditación completa.
+  const gasfreeBalPrevRef = useRef<number | null>(null);
+  const lastCelebrationRef = useRef<{ amount: number; at: number } | null>(null);
+  // ¿Ya se celebró este depósito hace un momento (misma plata, < 3 min)?
+  // Evita el cuadro verde DOBLE: uno al detectar la llegada y otro al
+  // acreditarse en el libro.
+  const recentlyCelebrated = (amount: number) => {
+      const lc = lastCelebrationRef.current;
+      return !!lc && Date.now() - lc.at < 3 * 60 * 1000 && Math.abs(lc.amount - amount) <= Math.max(0.05, amount * 0.02);
+  };
   const refreshGasfreeBal = async (uid: string) => {
       setGasfreeBalChecked(false);
       try {
           const d = await callGasfree({ action: 'my_status', userId: uid });
-          setGasfreeBal(typeof d?.balance === 'number' ? d.balance : null);
+          const bal = typeof d?.balance === 'number' ? d.balance : null;
+          // ── Celebración TEMPRANA: el saldo on-chain SUBIÓ desde la última
+          // lectura → llegó una recarga a la wallet. Se celebra YA (cuadro
+          // verde + cha-ching); la acreditación al libro sigue su curso y su
+          // celebración posterior se deduplica contra esta.
+          const prev = gasfreeBalPrevRef.current;
+          if (bal != null && prev != null && bal - prev > 0.001) {
+              const delta = parseFloat((bal - prev).toFixed(2));
+              celebrateDeposit(delta);
+              lastCelebrationRef.current = { amount: delta, at: Date.now() };
+          }
+          if (bal != null) gasfreeBalPrevRef.current = bal;
+          setGasfreeBal(bal);
       } finally {
           setGasfreeBalChecked(true);
       }
@@ -911,7 +946,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               if (d?.synced && credited > 0) {
                   refreshData?.();
                   refreshGasfreeBal(uid);
-                  celebrateDeposit(credited);
+                  if (!recentlyCelebrated(credited)) {
+                      celebrateDeposit(credited);
+                      lastCelebrationRef.current = { amount: credited, at: Date.now() };
+                  }
                   showToast(`✅ Depósito confirmado: +${credited.toLocaleString('en-US')} USDT`);
               }
           } catch { /* silencioso — es un poll en segundo plano, no una acción del usuario */ }
@@ -989,8 +1027,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               // El servidor ya acreditó balances.USD — refrescamos la vista + saldo on-chain
               refreshData?.();
               if (currentUser?.id) refreshGasfreeBal(currentUser.id);
-              celebrateDeposit(credited);
-              showToast(`✅ Depósito detectado: +${credited.toLocaleString('en-US')} USDT en tu Dólar digital`);
+              if (!recentlyCelebrated(credited)) {
+                  celebrateDeposit(credited);
+                  lastCelebrationRef.current = { amount: credited, at: Date.now() };
+              }
+              showToast(`✅ Depósito confirmado: +${credited.toLocaleString('en-US')} USDT en tu Dólar digital`);
               setUsdtModalOpen(false);
           } else if (d?.error) {
               showToast(`Error verificando: ${d.error}`, 6000, 'error');
