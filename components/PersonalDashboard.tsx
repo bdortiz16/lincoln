@@ -324,6 +324,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
   const [isSendModalOpen, setIsSendModalOpen] = useState(false);
   const [sendStep, setSendStep] = useState(1);
+  // Resultado del envío para el paso 5 ("Envío en camino" / fallo): datos
+  // reales de la dispersión — referencia del proveedor, costo, riel, hora.
+  const [sendResult, setSendResult] = useState<{ ok: boolean; message?: string; providerRef?: string | null; feeCop?: number; rail?: string; at?: string } | null>(null);
   // Buscador del selector de contactos inscritos (envíos COP · banco)
   const [contactSearch, setContactSearch] = useState('');
   // ID de la external account de Mouv del contacto elegido — con él la
@@ -1404,6 +1407,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   new Promise<any>((_, rej) => setTimeout(() => rej(new Error('timeout')), 60000)),
               ]);
               if (r?.ok) {
+                  setSendResult({ ok: true, providerRef: r?.providerRef ?? null, feeCop: Number(r?.feeCop ?? (isBreb ? 1200 : 2500)), rail, at: new Date().toISOString() });
                   sendingRef.current = false; setIsSending(false); setSendStep(5);
                   refreshData?.();
                   return;
@@ -1411,7 +1415,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               // Falló o aún sin cablear → el edge YA reintegró el saldo (refunded).
               sendingRef.current = false; setIsSending(false);
               const msg = r?.message || r?.error || 'La dispersión no se pudo completar.';
-              showToast(msg, 11000, 'error');
+              setSendResult({ ok: false, message: String(msg), rail, at: new Date().toISOString() });
+              setSendStep(5);
               if (r?.refunded) refreshData?.();
               return;
           } catch {
@@ -1442,6 +1447,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               }
               sendingRef.current = false;
               setIsSending(false);
+              setSendResult({ ok: true, providerRef: resp?.traceId ?? null, feeCop: 0, rail: 'USDT', at: new Date().toISOString() });
               setSendStep(5);
               const activateBreakdown = resp.activateFeeUsdt ? ` (incluye ${Number(resp.activateFeeUsdt).toFixed(2)} USDT de activación, solo esta vez)` : '';
               showToast(`✅ Enviado. Comisión GasFree cobrada: ${Number(resp.feeChargedUsdt ?? 0).toFixed(2)} USDT${activateBreakdown}`, 9000);
@@ -1472,7 +1478,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               sendForm.destinationCurrency === 'COP' ? sendSourceRail : undefined
           ),
           sendTimeout,
-      ]).then(() => { sendingRef.current = false; setIsSending(false); setSendStep(5); })
+      ]).then(() => { sendingRef.current = false; setIsSending(false); setSendResult({ ok: true, rail: sendForm.destinationCurrency === 'COP' ? sendSourceRail : sendForm.destinationCurrency, at: new Date().toISOString() }); setSendStep(5); })
         .catch(() => { sendingRef.current = false; setIsSending(false); showToast('Error al procesar el envío.', 4000, 'error'); });
   };
 
@@ -1514,6 +1520,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       setCashReference('');
       setMouvDestId(null);
       setMouvUnknown(false);
+      setSendResult(null);
       sendingRef.current = false;
       setContactSearch('');
       setSendSourceRail('COP');
@@ -4093,7 +4100,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           <div className="fixed inset-0 z-50 p-4" style={{ background: 'rgba(4,5,4,0.72)', display: 'grid', placeItems: 'center' }}>
               <div className="w-full animate-in zoom-in-95 duration-300 flex flex-col" role="dialog" aria-modal="true"
                   style={{ maxWidth: 476, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, overflow: 'hidden', maxHeight: '92vh', fontFamily: "'Archivo', system-ui, sans-serif" }}>
-                  {/* Cabecera + progreso (diseño Flujo Enviar: 4 pasos) */}
+                  {/* Cabecera + progreso (diseño Flujo Enviar: 4 pasos).
+                      En el paso 5 (éxito/fallo, no-cash) se OCULTA: el título
+                      vive una sola vez dentro de la cabecera del resultado. */}
+                  {!(sendStep === 5 && sendMode !== 'cash') && (
                   <div style={{ padding: '18px 22px 14px' }}>
                       <div className="flex items-start justify-between gap-3">
                           <div>
@@ -4125,7 +4135,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           </div>
                       )}
                   </div>
-                  <div style={{ padding: '6px 22px 22px', overflowY: 'auto' }}>
+                  )}
+                  <div style={{ padding: sendStep === 5 && sendMode !== 'cash' ? '0 22px 22px' : '6px 22px 22px', overflowY: 'auto' }}>
 
                       {/* STEP 1: DESDE (cuenta + rieles con saldo) + monto */}
                       {sendStep === 1 && (() => {
@@ -4799,15 +4810,112 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           </div>
                       )}
 
-                      {/* STEP 5: Success */}
-                      {sendStep === 5 && sendMode !== 'cash' && (
-                          <div className="flex flex-col items-center text-center py-8 animate-in zoom-in duration-300">
-                              <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mb-6"><CheckCircle size={40} className="text-green-600" /></div>
-                              <h2 className="text-2xl font-bold text-[#0C0E0D] mb-2">¡Envío Exitoso!</h2>
-                              <p className="text-slate-500 text-sm mb-6">Tu dinero está en camino a {sendForm.destinationCountry}.</p>
-                              <button onClick={closeSendModal} style={{ color: '#FFFFFF' }} className="w-full bg-[#0C0E0D] font-bold py-3 rounded-xl hover:bg-[#152e52] transition-colors">Finalizar</button>
+                      {/* STEP 5: Resultado del envío — "Envío en camino" (o fallo).
+                          Diseño: cabecera con check de BORDE (verde puntual, nunca
+                          relleno grande), monto, tarjeta del destinatario con pill
+                          de estado, filas de detalle (referencia/fecha/costo) y
+                          botonera Comprobante + Finalizar. Todos los datos son de
+                          la transacción real (sendResult + sendForm). */}
+                      {sendStep === 5 && sendMode !== 'cash' && (() => {
+                          const ok = sendResult?.ok !== false;
+                          const isCop = sendForm.destinationCurrency === 'COP';
+                          const isBrebS = (sendResult?.rail ?? sendSourceRail) === 'COP_BREB';
+                          const amt = getRawAmount(sendForm.amount);
+                          const isWalletSend = sendMode === 'wallet' || sendResult?.rail === 'USDT';
+                          const name = (sendForm.beneficiaryName || sendContact?.name || (isWalletSend ? 'Wallet externa' : 'Destinatario')).trim();
+                          const initials = name.split(/\s+/).filter(Boolean).map(w => w[0]).slice(0, 2).join('').toUpperCase() || 'LN';
+                          const acctRaw = String((isBrebS ? (sendContact?.brebKey ?? sendForm.accountNumber) : sendForm.accountNumber) ?? '');
+                          const last4 = acctRaw.slice(-4);
+                          const methodLine = isWalletSend ? `Wallet ···${last4} · TRC-20`
+                              : !isCop ? `Cuenta ···${last4}`
+                              : isBrebS ? `Llave ···${last4} · Bre-B`
+                              : `${sendContact?.bank ?? sendForm.bankName ?? 'Banco'} ···${last4} · ACH`;
+                          const subOk = isWalletSend
+                              ? 'Tu envío ya salió de tu billetera. Te avisamos cuando la red lo confirme.'
+                              : !isCop
+                              ? 'Tu envío está en proceso. Te avisamos cuando el banco confirme.'
+                              : isBrebS
+                              ? 'Bre-B acredita en segundos. Te avisamos cuando el banco confirme.'
+                              : `ACH ${achEtaShort()}. Te avisamos cuando el banco confirme.`;
+                          const ref = sendResult?.providerRef ? String(sendResult.providerRef) : '';
+                          const feeCop = Number(sendResult?.feeCop ?? (isCop ? (isBrebS ? 1200 : 2500) : 0));
+                          const at = sendResult?.at ? new Date(sendResult.at) : new Date();
+                          const dateLabel = `Hoy, ${at.toLocaleDateString('es-CO', { day: 'numeric', month: 'short' })} · ${at.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}`;
+                          const rowStyle: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 2px', borderTop: '1px solid rgba(255,255,255,0.06)' };
+                          return (
+                          <div className="animate-in zoom-in-95 duration-300">
+                              {/* 1. Cabecera de éxito/fallo */}
+                              <div className="text-center" style={{ padding: '32px 28px 24px', margin: '0 -22px', borderBottom: '1px solid rgba(255,255,255,0.08)', background: ok ? 'radial-gradient(circle at 50% 0%, rgba(74,222,128,0.1), transparent 60%)' : 'none' }}>
+                                  <div style={{ width: 52, height: 52, margin: '0 auto 14px', borderRadius: '50%', border: ok ? '1.5px solid rgba(74,222,128,0.4)' : '1.5px solid rgba(255,255,255,0.14)', background: ok ? 'rgba(74,222,128,0.08)' : 'transparent', display: 'grid', placeItems: 'center' }}>
+                                      {ok
+                                          ? <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" stroke="#4ADE80" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                                          : <X size={22} style={{ color: '#F4F4F2' }} strokeWidth={2} />}
+                                  </div>
+                                  <h2 style={{ fontSize: 20, fontWeight: 800, letterSpacing: '-0.5px', color: '#F4F4F2' }}>{ok ? 'Envío en camino' : 'No pudimos completar el envío'}</h2>
+                                  <p style={{ fontSize: 13.5, color: '#878E88', marginTop: 6, lineHeight: 1.45 }}>
+                                      {ok ? subOk : (sendResult?.message || 'El envío no se pudo completar y tu saldo fue devuelto.')}
+                                  </p>
+                              </div>
+                              {/* 2. Monto */}
+                              <div className="text-center" style={{ padding: '22px 0 18px' }}>
+                                  <span style={{ fontSize: 36, fontWeight: 800, letterSpacing: '-1.2px', color: '#F4F4F2' }}>
+                                      {isCop && !isWalletSend ? formatMoney(amt, 'COP') : Number(amt || 0).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                  </span>
+                                  <span style={{ fontSize: 22, fontWeight: 800, color: '#878E88', marginLeft: 8 }}>{isCop && !isWalletSend ? 'COP' : displayCurrency(sendForm.destinationCurrency)}</span>
+                              </div>
+                              {/* 3. Tarjeta del destinatario */}
+                              <div className="flex items-center" style={{ gap: 11, border: '1px solid rgba(255,255,255,0.09)', borderRadius: 12, background: 'rgba(255,255,255,0.02)', padding: '12px 14px' }}>
+                                  <div style={{ width: 38, height: 38, borderRadius: '50%', background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', display: 'grid', placeItems: 'center', fontSize: 13, fontWeight: 800, color: '#878E88', flexShrink: 0 }}>{initials}</div>
+                                  <div style={{ minWidth: 0, flex: 1 }}>
+                                      <p style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</p>
+                                      <p className="flex items-center" style={{ gap: 6, fontSize: 11.5, color: '#878E88', marginTop: 2 }}>
+                                          {isCop && !isWalletSend && <span style={{ width: 13, height: 13, borderRadius: '50%', flexShrink: 0, background: 'linear-gradient(180deg,#FCD116 0 50%,#003893 50% 75%,#CE1126 75%)' }} />}
+                                          <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{methodLine}</span>
+                                      </p>
+                                  </div>
+                                  <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '0.8px', padding: '4px 9px', borderRadius: 999, flexShrink: 0, border: ok ? '1px solid rgba(74,222,128,0.3)' : '1px solid rgba(255,255,255,0.14)', color: ok ? '#4ADE80' : '#878E88' }}>{ok ? 'EN CAMINO' : 'FALLIDO'}</span>
+                              </div>
+                              {/* 4. Filas de detalle */}
+                              <div style={{ marginTop: 14 }}>
+                                  {ref && (
+                                      <div style={{ ...rowStyle, borderTop: 'none' }}>
+                                          <span style={{ fontSize: 12.5, color: '#878E88' }}>Referencia</span>
+                                          <button onClick={() => { navigator.clipboard?.writeText(ref).then(() => showToast('Referencia copiada')).catch(() => {}); }} className="flex items-center" style={{ gap: 6, fontSize: 12.5, fontWeight: 600, color: '#F4F4F2', fontFamily: 'ui-monospace, Menlo, monospace' }}>
+                                              {ref.length > 16 ? `${ref.slice(0, 8)}…${ref.slice(-6)}` : ref}
+                                              <Copy size={12} style={{ color: '#878E88' }} strokeWidth={1.7} />
+                                          </button>
+                                      </div>
+                                  )}
+                                  <div style={ref ? rowStyle : { ...rowStyle, borderTop: 'none' }}>
+                                      <span style={{ fontSize: 12.5, color: '#878E88' }}>Fecha</span>
+                                      <span style={{ fontSize: 12.5, fontWeight: 600, color: '#F4F4F2' }}>{dateLabel}</span>
+                                  </div>
+                                  <div style={rowStyle}>
+                                      <span style={{ fontSize: 12.5, color: '#878E88' }}>Costo del envío</span>
+                                      {feeCop > 0
+                                          ? <span style={{ fontSize: 12.5, fontWeight: 600, color: '#F4F4F2' }}>{formatMoney(feeCop, 'COP')} COP</span>
+                                          : <span style={{ fontSize: 12.5, fontWeight: 700, color: '#4ADE80' }}>Gratis</span>}
+                                  </div>
+                              </div>
+                              {/* 5. Botonera */}
+                              <div className="flex" style={{ gap: 9, marginTop: 16 }}>
+                                  {ok ? (
+                                      <>
+                                      <button onClick={() => { closeSendModal(); setMovementsTab('all'); setActiveView('movements'); }} className="flex items-center justify-center transition-colors hover:bg-white/[0.09]" style={{ flex: 1, gap: 7, padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, color: '#F4F4F2', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)' }}>
+                                          <Download size={14} strokeWidth={1.7} /> Comprobante
+                                      </button>
+                                      <button onClick={closeSendModal} style={{ flex: 1.3, padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, background: '#F4F4F2', color: '#0A0A0A' }} className="transition-colors hover:bg-[#E4E4E0]">Finalizar</button>
+                                      </>
+                                  ) : (
+                                      <>
+                                      <button onClick={closeSendModal} className="transition-colors hover:bg-white/[0.09]" style={{ flex: 1, padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, color: '#F4F4F2', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)' }}>Cerrar</button>
+                                      <button onClick={() => { setSendResult(null); setSendStep(4); }} style={{ flex: 1.3, padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, background: '#F4F4F2', color: '#0A0A0A' }} className="transition-colors hover:bg-[#E4E4E0]">Reintentar</button>
+                                      </>
+                                  )}
+                              </div>
                           </div>
-                      )}
+                          );
+                      })()}
 
                       {/* STEP 5 CASH: Success with reference code */}
                       {sendStep === 5 && sendMode === 'cash' && (
