@@ -65,7 +65,7 @@ import { achEta, achEtaShort } from './achEta';
 import { ContactsSection, contactStatus } from './ContactsSection';
 import { WalletsGasfreeSection } from './WalletsGasfreeSection';
 import { supabase } from '../lib/supabaseClient';
-import { FlagImg, FlagSelect } from './FlagImg';
+import { FlagImg, FlagSelect, flagUrl } from './FlagImg';
 import { useExchangeRates } from '../context/ExchangeRateContext';
 import { useSystemConfig } from '../context/SystemConfigContext'; 
 import { useDatabase } from '../context/DatabaseContext';
@@ -4153,11 +4153,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   {(() => {
                                       const cs: Record<string, string> = { Colombia: 'on', 'Estados Unidos': 'on', ...((config as any).countryStatus || {}) };
                                       const enabled = ['Colombia', 'Estados Unidos', 'México', 'Brasil', 'Perú', 'Chile', 'Venezuela'].filter(c => cs[c] === 'on');
-                                      const FLAGS: Record<string, string> = {
-                                          Colombia: 'linear-gradient(180deg,#FCD116 0 50%,#003893 50% 75%,#CE1126 75%)',
-                                          'Estados Unidos': 'linear-gradient(180deg,#B22234 0 20%,#fff 20% 40%,#B22234 40% 60%,#fff 60% 80%,#B22234 80%)',
-                                          'México': 'linear-gradient(90deg,#006847 0 33%,#FFFFFF 33% 66%,#CE1126 66%)',
-                                          Brasil: 'radial-gradient(circle at 50% 50%, #002776 0 24%, #FFDF00 25% 46%, #009C3B 47%)',
+                                      // Bandera REAL (flagcdn, como en el resto de la app) — los
+                                      // degradados caseros se veían mal (EE. UU. parecía Perú).
+                                      const ISO: Record<string, string> = {
+                                          Colombia: 'co', 'Estados Unidos': 'us', 'México': 'mx',
+                                          Brasil: 'br', 'Perú': 'pe', Chile: 'cl', Venezuela: 've',
                                       };
                                       return (
                                       <>
@@ -4172,7 +4172,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                                           : { ...f, destinationCountry: 'Colombia', destinationCurrency: 'COP' })}
                                                       className="flex items-center gap-2"
                                                       style={{ borderRadius: 999, padding: '7px 14px', fontSize: 12.5, fontWeight: sel ? 700 : 500, border: sel ? '1px solid rgba(74,222,128,0.35)' : '1px solid rgba(255,255,255,0.1)', background: sel ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.03)', color: sel ? '#F4F4F2' : '#878E88' }}>
-                                                      <span style={{ width: 16, height: 16, borderRadius: '50%', display: 'block', background: FLAGS[country] ?? '#2E3330', flexShrink: 0 }} />
+                                                      <span style={{ width: 16, height: 16, borderRadius: '50%', overflow: 'hidden', display: 'block', flexShrink: 0, background: '#2E3330' }}>
+                                                          <img src={flagUrl(ISO[country] ?? 'co')} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                                      </span>
                                                       {country}
                                                   </button>
                                               );
@@ -4869,7 +4871,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   <div style={{ minWidth: 0, flex: 1 }}>
                                       <p style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</p>
                                       <p className="flex items-center" style={{ gap: 6, fontSize: 11.5, color: '#878E88', marginTop: 2 }}>
-                                          {isCop && !isWalletSend && <span style={{ width: 13, height: 13, borderRadius: '50%', flexShrink: 0, background: 'linear-gradient(180deg,#FCD116 0 50%,#003893 50% 75%,#CE1126 75%)' }} />}
+                                          {isCop && !isWalletSend && (
+                                              <span style={{ width: 13, height: 13, borderRadius: '50%', overflow: 'hidden', flexShrink: 0, display: 'block', background: '#2E3330' }}>
+                                                  <img src={flagUrl('co')} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                              </span>
+                                          )}
                                           <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{methodLine}</span>
                                       </p>
                                   </div>
