@@ -4327,7 +4327,18 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           <div className="space-y-4">
                               <button onClick={() => setLoadStep(1)} className="text-xs text-slate-400 flex items-center gap-1 hover:text-slate-600 mb-2"><ArrowLeft size={12}/> Cambiar país</button>
                               <p className="text-sm text-slate-500">Selecciona el método de carga en {selectedCountry}:</p>
-                              {(bankingOptions[selectedCountry] || []).map(bank => (
+                              {/* Colombia: recaudo PSE por link (Mouv) — el método principal.
+                                  Al elegirlo se cierra este modal y se abre el generador de link. */}
+                              {selectedCountry === 'Colombia' && (
+                                  <button onClick={() => { setIsLoadModalOpen(false); setPseAmount(''); setPseResult(null); setPseOpen(true); }} className="w-full flex items-center gap-4 p-4 rounded-xl border border-[#4ADE80]/40 bg-[#4ADE80]/[0.06] hover:bg-[#4ADE80]/[0.1] transition-all group text-left">
+                                      <div className="w-10 h-10 rounded-lg flex items-center justify-center font-bold text-xs" style={{ background: 'rgba(74,222,128,0.14)', color: '#4ADE80' }}>PSE</div>
+                                      <div className="flex-1">
+                                          <p className="font-bold text-slate-700 group-hover:text-[#0C0E0D]">PSE · Cobro por link</p>
+                                          <p className="text-xs text-slate-400">Genera un link y recibe el pago desde cualquier banco</p>
+                                      </div>
+                                  </button>
+                              )}
+                              {(selectedCountry === 'Colombia' ? [] : (bankingOptions[selectedCountry] || [])).map(bank => (
                                   <button key={bank.id} onClick={() => handleBankSelect(bank.name)} className="w-full flex items-center gap-4 p-4 rounded-xl border border-slate-200 hover:border-[#0C0E0D] hover:bg-slate-50 transition-all group text-left">
                                       <div className={`w-10 h-10 rounded-lg flex items-center justify-center font-bold text-xs ${bank.logoColor || 'bg-slate-100 text-slate-600'}`}>{bank.logoText || bank.name.substring(0, 2)}</div>
                                       <div>
