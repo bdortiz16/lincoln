@@ -83,7 +83,10 @@ export const AdminOtcSection: React.FC = () => {
         baseRate != null ? baseRate * (1 - feePct / 100) : null;
 
     const allUsers = getAllUsers();
-    const businesses = allUsers.filter((u: any) => u.role !== 'admin' && u.role !== 'personal');
+    // TODOS los clientes (igual que el resto del admin) — en Lincoin los
+    // clientes son cuentas personales; el filtro viejo de "solo empresas"
+    // dejaba la tabla vacía.
+    const businesses = allUsers.filter((u: any) => u.role !== 'admin');
     const filtered = businesses.filter((u: any) => {
         if (!q) return true;
         const s = q.toLowerCase();
@@ -329,7 +332,7 @@ export const AdminOtcSection: React.FC = () => {
                                 );
                             })}
                             {filtered.length === 0 && (
-                                <tr><td colSpan={4} className="px-4 py-10 text-center text-slate-400 text-sm">Sin clientes de empresa.</td></tr>
+                                <tr><td colSpan={4} className="px-4 py-10 text-center text-slate-400 text-sm">Sin clientes registrados todavía.</td></tr>
                             )}
                         </tbody>
                     </table>
@@ -426,7 +429,7 @@ export const AdminOtcSection: React.FC = () => {
                                 </tr>
                             ))}
                             {perUserReport.length === 0 && (
-                                <tr><td colSpan={4} className="px-4 py-10 text-center text-slate-400 text-sm">Sin clientes de empresa.</td></tr>
+                                <tr><td colSpan={4} className="px-4 py-10 text-center text-slate-400 text-sm">Sin clientes registrados todavía.</td></tr>
                             )}
                         </tbody>
                     </table>
