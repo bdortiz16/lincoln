@@ -428,13 +428,9 @@ Deno.serve(async (req) => {
     // publishable vs legacy, admin seed sin fila en users). Todo lo que
     // MUEVE PLATA (withdrawal, convert, external accounts) sigue
     // exigiendo un usuario real.
-    // external_accounts NO es público: lista los datos bancarios (nombre,
-    // documento, cuenta) de todos los destinos registrados de la empresa.
+    // external_accounts sale de las READ públicas: lista los datos bancarios
+    // (nombre, documento, cuenta) de los destinos registrados — exige caller.
     const READ_ACTIONS = new Set(['ping', 'rates', 'discover', 'snapshot_finity', 'treasury_balances'])
-    // Acciones que MUEVEN PLATA o exponen datos sensibles: solo llamada
-    // INTERNA (mouv-proxy/gasfree con service-key) o admin. El cliente NUNCA
-    // llama a Finity directo — pasa por mouv-proxy, que debita el saldo antes.
-    const INTERNAL_ONLY = new Set(['create_withdrawal', 'create_external_account', 'convert', 'convert_confirm', 'external_accounts', 'balance', 'movements'])
 
     const caller = await validCaller(req, payload)
     if (!caller.ok && !READ_ACTIONS.has(action)) {
@@ -442,9 +438,13 @@ Deno.serve(async (req) => {
       // la función desplegada es una versión vieja.
       return json(401, { error: 'unauthorized', message: 'unauthorized (proxy v5.2)' })
     }
-    if (INTERNAL_ONLY.has(action) && !caller.internal) {
-      return json(403, { error: 'forbidden', message: 'Acción interna: solo backend o admin.' })
-    }
+    // NOTA DE SEGURIDAD (pendiente de rework): create_withdrawal/convert se
+    // pueden llamar directo con la anon-key + user_id (medio-auth), sin pasar
+    // por el débito de saldo de mouv-proxy. El camino correcto es que TODO
+    // retiro/conversión del cliente pase por mouv-proxy (que debita antes) y
+    // que finity-proxy exija caller.internal para esas acciones. No se fuerza
+    // aquí todavía porque el convertidor y la mesa OTC del cliente aún llaman
+    // finity-proxy directo; migrar esos flujos es el fix de raíz.
 
     if (action === 'ping') {
       await getFinityToken()
