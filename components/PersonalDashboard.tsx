@@ -4538,16 +4538,45 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               : `${sendForm.bankName} · ${sendForm.accountType === 'checking' ? 'Corriente' : 'Ahorros'} ···${String(sendForm.accountNumber || '').slice(-4)}`;
                           return (
                           <div className="space-y-4">
-                              {/* Destinatario + Editar */}
-                              <div className="flex items-center gap-3" style={{ padding: '13px 15px', borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.025)' }}>
-                                  <span style={{ width: 38, height: 38, borderRadius: '50%', background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', border: '1px solid rgba(255,255,255,0.12)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
-                                      <span style={{ color: '#878E88', fontWeight: 800, fontSize: 13 }}>{initials(sendForm.beneficiaryName)}</span>
-                                  </span>
-                                  <div className="flex-1 min-w-0">
-                                      <p style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{sendForm.beneficiaryName}</p>
-                                      <p style={{ fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{destLine}</p>
+                              {/* Destinatario + Editar — con los datos COMPLETOS que
+                                  identifican el destino (llave/cuenta y cédula), para
+                                  confirmar que la plata va a la persona correcta. */}
+                              <div style={{ padding: '13px 15px', borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.025)' }}>
+                                  <div className="flex items-center gap-3">
+                                      <span style={{ width: 38, height: 38, borderRadius: '50%', background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', border: '1px solid rgba(255,255,255,0.12)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                                          <span style={{ color: '#878E88', fontWeight: 800, fontSize: 13 }}>{initials(sendForm.beneficiaryName)}</span>
+                                      </span>
+                                      <div className="flex-1 min-w-0">
+                                          <p style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{sendForm.beneficiaryName}</p>
+                                          <p style={{ fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{destLine}</p>
+                                      </div>
+                                      <button onClick={() => setSendStep(3)} style={{ fontSize: 12.5, fontWeight: 600, color: '#F4F4F2', textDecoration: 'underline', flexShrink: 0 }}>Editar</button>
                                   </div>
-                                  <button onClick={() => setSendStep(3)} style={{ fontSize: 12.5, fontWeight: 600, color: '#F4F4F2', textDecoration: 'underline', flexShrink: 0 }}>Editar</button>
+                                  <div style={{ borderTop: '1px solid rgba(255,255,255,0.07)', marginTop: 11, paddingTop: 10 }} className="space-y-1.5">
+                                      {isBrebM ? (
+                                          <>
+                                              <div className="flex items-center justify-between gap-3">
+                                                  <span style={{ fontSize: 11.5, color: '#878E88' }}>Llave Bre-B{sendContact?.brebKeyType ? ` (${sendContact.brebKeyType})` : ''}</span>
+                                                  <span style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2', fontFamily: 'monospace', wordBreak: 'break-all', textAlign: 'right' }}>{sendContact?.brebKey ?? sendForm.accountNumber ?? '—'}</span>
+                                              </div>
+                                          </>
+                                      ) : (
+                                          <>
+                                              <div className="flex items-center justify-between gap-3">
+                                                  <span style={{ fontSize: 11.5, color: '#878E88' }}>Banco</span>
+                                                  <span style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2' }}>{sendForm.bankName || '—'} · {sendForm.accountType === 'checking' ? 'Corriente' : 'Ahorros'}</span>
+                                              </div>
+                                              <div className="flex items-center justify-between gap-3">
+                                                  <span style={{ fontSize: 11.5, color: '#878E88' }}>Cuenta</span>
+                                                  <span style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2', fontFamily: 'monospace' }}>{sendForm.accountNumber || '—'}</span>
+                                              </div>
+                                          </>
+                                      )}
+                                      <div className="flex items-center justify-between gap-3">
+                                          <span style={{ fontSize: 11.5, color: '#878E88' }}>Documento</span>
+                                          <span style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2', fontFamily: 'monospace' }}>{(sendForm.documentType || sendContact?.docType || 'CC')} {sendForm.documentNumber || sendContact?.docNumber || '—'}</span>
+                                      </div>
+                                  </div>
                               </div>
                               {/* RECIBE */}
                               <div style={{ border: '1px solid rgba(255,255,255,0.1)', borderRadius: 13, padding: '15px 16px', background: 'rgba(255,255,255,0.025)' }}>
