@@ -3037,7 +3037,14 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     const dispProviderRef: string = tx.providerRef ?? rawData.providerRef ?? '';
 
     // Documento con tipo (CC 1005237062) — usado por dispersión y genéricos.
-    const docValue = `${tx.documentType ?? rawData.documentType ?? ''} ${tx.documentNumber ?? rawData.documentNumber ?? ''}`.trim();
+    // Las dispersiones Bre-B guardan el número (resolve-key) pero no siempre
+    // el tipo, y los contactos usan docType/docNumber → se leen TODOS los
+    // respaldos y, si hay número sin tipo, se asume CC (cédula).
+    const docTypeVal: string = tx.documentType ?? rawData.documentType ?? dispRecipient.documentType ?? dispRecipient.docType ?? '';
+    const docNumberVal: string = tx.documentNumber ?? rawData.documentNumber ?? dispRecipient.documentNumber ?? dispRecipient.docNumber ?? '';
+    const docValue = docNumberVal ? `${docTypeVal || 'CC'} ${docNumberVal}`.trim() : '';
+    // Tipo de llave Bre-B (Celular/Cédula/Correo/Alfanumérica) para el label.
+    const dispKeyTypeLabel: string = ({ celular: 'Celular', cedula: 'Cédula', correo: 'Correo', alfanumerico: 'Alfanumérica' } as Record<string, string>)[String(dispRecipient.keyType ?? '').toLowerCase()] ?? '';
 
     const fields: { label: string; value: string; copyable?: boolean; link?: string; mono?: boolean }[] = [
       { label: 'Descripción', value: tx.title || TX_LABELS[tx.type] || tx.type },
@@ -3046,7 +3053,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       // (El "Riel de pago" ya va en el monto "COP · Bre-B" y en el Método.)
       ...(isDispersion && dispBeneficiary ? [{ label: 'Beneficiario', value: dispBeneficiary }] : []),
       ...(isDispersion && docValue ? [{ label: 'Documento', value: docValue }] : []),
-      ...(isDispersion && dispDest ? [{ label: tx.currency === 'COP_BREB' ? 'Llave destino' : 'Cuenta destino', value: dispDest, copyable: true, mono: true }] : []),
+      ...(isDispersion && dispDest ? [{ label: tx.currency === 'COP_BREB' ? `Llave destino${dispKeyTypeLabel ? ` · ${dispKeyTypeLabel}` : ''}` : 'Cuenta destino', value: dispDest, copyable: true, mono: true }] : []),
+      ...(isDispersion && tx.currency !== 'COP_BREB' && dispRecipient.accountType ? [{ label: 'Tipo de cuenta', value: String(dispRecipient.accountType).charAt(0).toUpperCase() + String(dispRecipient.accountType).slice(1).toLowerCase() }] : []),
       ...(isDispersion && tx.bank ? [{ label: 'Método', value: tx.bank }] : []),
       ...(isDispersion && dispProviderRef ? [{ label: 'Referencia de pago', value: dispProviderRef, copyable: true, mono: true }] : []),
       { label: 'Estado', value: tx.status },
