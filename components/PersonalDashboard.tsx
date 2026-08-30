@@ -3697,81 +3697,90 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       } catch { showToast('No se pudo generar el comprobante', 4000, 'error'); }
     };
 
+    // ── Datos derivados para el rediseño dark ──
+    const truncMid = (s: string, head = 8, tail = 6) => { const v = String(s || ''); return v.length > head + tail + 1 ? `${v.slice(0, head)}…${v.slice(-tail)}` : v; };
+    const benName = (dispBeneficiary || tx.beneficiary || (isCredit ? 'Depósito' : '')).trim();
+    const benInitials = benName ? benName.split(/\s+/).filter(Boolean).map((w: string) => w[0]).slice(0, 2).join('').toUpperCase() : '';
+    const isCop = String(tx.currency || '').startsWith('COP');
+    const isBrebTx = tx.currency === 'COP_BREB';
+    const railLabel = isBrebTx ? `Bre-B${dispKeyTypeLabel ? ` · Llave ${dispKeyTypeLabel.toLowerCase()}` : ''}` : tx.currency === 'COP_ACH' ? 'ACH · Colombia' : railOfCurrency(tx.currency) || (isCop ? 'Colombia' : 'Red TRON · TRC-20');
+    const feeCop = Number(tx.feeCop ?? rawData.feeCop ?? 0);
+    const st = String(tx.status || '');
+    const pill = st === 'Completado' ? { l: isCredit ? 'ACREDITADO' : 'COMPLETADO', c: '#4ADE80', b: 'rgba(74,222,128,0.3)', ok: true }
+        : (st === 'Procesando' || st === 'Pendiente') ? { l: 'EN CURSO', c: 'rgba(244,244,242,0.7)', b: 'rgba(255,255,255,0.14)', ok: false }
+        : (st === 'Fallido' || st === 'Rechazado') ? { l: st === 'Rechazado' ? 'RECHAZADO' : 'FALLIDO', c: '#878E88', b: 'rgba(255,255,255,0.14)', ok: false }
+        : { l: (st || 'PENDIENTE').toUpperCase(), c: '#878E88', b: 'rgba(255,255,255,0.14)', ok: false };
+    const amtParts = formatMoney(tx.amount, tx.currency).split(',');
+    // Filas de detalle del rediseño
+    const rows2: { label: string; value: string; mono?: boolean; copy?: string; green?: boolean }[] = [
+      { label: 'Riel', value: railLabel },
+      ...(isDispersion && dispDest ? [{ label: isBrebTx ? 'Llave destino' : 'Cuenta destino', value: dispDest, mono: true, copy: dispDest }] : []),
+      ...(isDispersion && tx.currency === 'COP_ACH' && tx.bank ? [{ label: 'Banco', value: String(tx.bank).split('·')[0].trim() }] : []),
+      ...(isMouvConvert && mouvFromAmount != null ? [{ label: 'Debitado de', value: `Billetera USDT · −${Number(mouvFromAmount).toFixed(2)} USDT` }] : []),
+      ...(isMouvConvert && mouvRate != null ? [{ label: 'Tasa aplicada', value: `1 USDT = ${Number(mouvRate).toLocaleString('es-CO', { maximumFractionDigits: 2 })} COP` }] : []),
+      ...(isGasfreeDeposit && depTxId ? [{ label: 'TxID', value: truncMid(depTxId, 8, 8), mono: true, copy: depTxId }] : []),
+      ...(tx.reason ? [{ label: 'Motivo', value: String(tx.reason) }] : []),
+      { label: 'Referencia', value: truncMid(dispProviderRef || String(tx.id)), mono: true, copy: dispProviderRef || String(tx.id) },
+      ...(!isCredit ? [{ label: 'Costo del envío', value: feeCop > 0 ? `${formatMoney(feeCop, 'COP')} COP` : 'Gratis', green: feeCop <= 0 }] : []),
+    ];
+    const repeatSend = () => { setSelectedTx(null); if (!handleActionRestricted()) setIsSendModalOpen(true); };
     return (
-      <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-slate-900/60 backdrop-blur-sm" onClick={() => setSelectedTx(null)}>
-        <div className="relative bg-white w-full sm:max-w-2xl rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden max-h-[92vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-          {/* Descargar / compartir comprobante — navy con icono blanco (visible;
-              antes el hover:bg-[#0C0E0D] activaba la regla global que forzaba el
-              icono a blanco SIEMPRE y quedaba invisible sobre el fondo claro). */}
-          <div className="absolute top-4 right-4 z-10 flex items-center gap-2">
-            <button
-              type="button"
-              onClick={downloadReceipt}
-              title="Descargar comprobante"
-              className="w-9 h-9 rounded-full bg-[#0C0E0D] text-white hover:bg-[#152e52] flex items-center justify-center transition-colors shadow-md"
-            >
-              <Download size={16} />
-            </button>
-            <button
-              type="button"
-              onClick={shareReceipt}
-              title="Compartir comprobante"
-              className="w-9 h-9 rounded-full bg-[#0C0E0D] text-white hover:bg-[#152e52] flex items-center justify-center transition-colors shadow-md"
-            >
-              <Share2 size={16} />
-            </button>
+      <div className="fixed inset-0 z-[100] p-4" style={{ background: 'rgba(4,5,4,0.85)', display: 'grid', placeItems: 'center' }} onClick={() => setSelectedTx(null)}>
+        <div role="dialog" aria-modal="true" onClick={e => e.stopPropagation()}
+          style={{ width: '100%', maxWidth: 460, maxHeight: '92vh', overflowY: 'auto', background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, fontFamily: "'Archivo', system-ui, sans-serif" }}>
+          {/* Cabecera */}
+          <div className="flex items-center justify-between" style={{ padding: '18px 22px 14px' }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: '#878E88' }}>Detalle del {isCredit ? 'depósito' : 'envío'}</span>
+            <button onClick={() => setSelectedTx(null)} style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', display: 'grid', placeItems: 'center' }}><X size={13} style={{ color: '#878E88' }} strokeWidth={1.7} /></button>
           </div>
-          <div className="flex justify-center pt-3 pb-1 sm:hidden">
-            <div className="w-10 h-1 bg-slate-200 rounded-full" />
-          </div>
-          {/* Logo + title — compacto */}
-          <div className="flex flex-col items-center pt-4 pb-2 px-6">
-            <p className="text-sm font-bold text-slate-800">Detalle de {isCredit ? 'depósito' : 'retiro'}</p>
-          </div>
-          {/* Amount — contenido, no gigante */}
-          <div className="mx-5 mb-3 rounded-xl bg-[#F4F6F9] px-4 py-3 text-center">
-            <p className={`text-2xl font-extrabold tracking-tight ${isCredit ? 'text-green-600' : 'text-[#0C0E0D]'}`}>
-              {isCredit ? '+' : '-'}{formatMoney(tx.amount, tx.currency)} <span className="text-base">{displayCurrency(tx.currency)}</span>{railOfCurrency(tx.currency) && <span className="text-xs font-semibold text-slate-400 ml-1">· {railOfCurrency(tx.currency)}</span>}
-            </p>
-            <div className={`inline-flex items-center gap-1 mt-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${tx.status === 'Completado' ? 'bg-white text-green-700 border-green-500' : tx.status === 'Pendiente' ? 'bg-white text-orange-600 border-orange-400' : 'bg-white text-red-700 border-red-400'}`}>
-              <CheckCircle size={11} />
-              {tx.status}
+          {/* Monto */}
+          <div className="text-center" style={{ padding: '4px 22px 20px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'center', gap: 3 }}>
+              <span style={{ fontSize: 34, fontWeight: 800, letterSpacing: '-1.2px', color: isCredit ? '#4ADE80' : '#F4F4F2' }}>{isCredit ? '+' : '−'}{amtParts[0]}</span>
+              {amtParts[1] && <span style={{ fontSize: 21, fontWeight: 800, color: '#878E88' }}>,{amtParts[1]}</span>}
+              <span style={{ fontSize: 17, fontWeight: 600, color: '#878E88', marginLeft: 5 }}>{displayCurrency(tx.currency)}</span>
             </div>
+            <p style={{ fontSize: 12.5, color: '#878E88', marginTop: 8 }}>{timeStr ? `${dateStr} · ${timeStr}` : dateStr}</p>
+            <span className="inline-flex items-center" style={{ gap: 5, marginTop: 12, border: `1px solid ${pill.b}`, color: pill.c, fontSize: 10, fontWeight: 700, padding: '4px 11px', borderRadius: 999 }}>
+              {pill.ok && <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M5 12.5l4.5 4.5L19 7.5" stroke="#4ADE80" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+              {pill.l}
+            </span>
           </div>
-          {/* Fields — filas compactas: etiqueta y valor en la misma línea;
-              los largos (mono/Motivo) apilados a lo ancho. */}
-          <div className="px-5 pb-2">
-            {fields.filter(f => f.label !== 'Estado').map((f) => {
-              const stacked = f.mono || f.label === 'Motivo';
-              return (
-              <div key={f.label} className={`py-2 border-b border-slate-100 ${stacked ? '' : 'flex items-center justify-between gap-3'}`}>
-                <p className={`text-[11px] font-semibold text-slate-400 ${stacked ? 'mb-0.5' : 'shrink-0'}`}>{f.label}</p>
-                <div className={`flex items-center gap-1.5 min-w-0 ${stacked ? 'justify-between' : 'justify-end flex-1'}`}>
-                  {f.mono ? (
-                    <p className="font-mono text-[11px] text-slate-800 break-all flex-1 leading-relaxed">{f.value}</p>
-                  ) : (
-                    <p className="font-bold text-[13px] text-slate-800 text-right truncate">{f.value}</p>
-                  )}
-                  {f.copyable && (
-                    <button type="button" onClick={() => copyToClipboard(f.value)} className="p-1 rounded-md hover:bg-slate-100 text-slate-400 hover:text-slate-700 transition-colors shrink-0">
-                      <Copy size={12} />
-                    </button>
-                  )}
-                  {f.link && (
-                    <a href={f.link} target="_blank" rel="noopener noreferrer" className="p-1 rounded-md hover:bg-slate-100 text-slate-400 hover:text-[#4ADE80] transition-colors shrink-0">
-                      <Link2 size={12} />
-                    </a>
-                  )}
+          <div style={{ padding: '16px 22px 22px' }}>
+            {/* Tarjeta del beneficiario */}
+            {benName && (
+              <div className="flex items-center" style={{ gap: 11, border: '1px solid rgba(255,255,255,0.09)', borderRadius: 12, background: 'rgba(255,255,255,0.02)', padding: '12px 14px', marginBottom: 16 }}>
+                <span style={{ width: 38, height: 38, borderRadius: '50%', flexShrink: 0, display: 'grid', placeItems: 'center', background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', fontSize: 13, fontWeight: 800, color: '#878E88' }}>{benInitials || 'LN'}</span>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <p style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{benName}</p>
+                  <p className="flex items-center" style={{ gap: 6, fontSize: 11.5, color: '#878E88', marginTop: 2 }}>
+                    {isCop && <span style={{ width: 13, height: 13, borderRadius: '50%', overflow: 'hidden', flexShrink: 0, background: '#2E3330' }}><img src={flagUrl('co')} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /></span>}
+                    <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{docValue ? `${docValue}${isCop ? ' · Colombia' : ''}` : (isCop ? 'Colombia' : '')}</span>
+                  </p>
                 </div>
+                {isDispersion && <button onClick={() => { setSelectedTx(null); setActiveView('contactos'); }} style={{ fontSize: 12, fontWeight: 600, color: '#878E88', flexShrink: 0 }} className="hover:text-[#F4F4F2] transition-colors">Ver</button>}
               </div>
-              );
-            })}
-          </div>
-          {/* Footer */}
-          <div className="px-5 pt-3 pb-6">
-            <button type="button" onClick={() => setSelectedTx(null)} className="w-full h-11 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-xl transition-colors text-sm">
-              Listo
-            </button>
+            )}
+            {/* Filas de detalle */}
+            <div>
+              {rows2.map((r, i) => (
+                <div key={r.label} className="flex items-center justify-between" style={{ gap: 12, padding: '11px 0', borderTop: i > 0 ? '1px solid rgba(255,255,255,0.06)' : 'none' }}>
+                  <span style={{ fontSize: 12.5, color: '#878E88', flexShrink: 0 }}>{r.label}</span>
+                  <span className="flex items-center" style={{ gap: 6, minWidth: 0 }}>
+                    <span style={{ fontSize: 12.5, fontWeight: r.green ? 700 : 600, color: r.green ? '#4ADE80' : '#F4F4F2', fontFamily: r.mono ? 'ui-monospace, Menlo, monospace' : undefined, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.value}</span>
+                    {r.copy && <button onClick={() => copyToClipboard(r.copy!)} style={{ flexShrink: 0 }}><Copy size={12} style={{ color: '#878E88' }} /></button>}
+                  </span>
+                </div>
+              ))}
+            </div>
+            {/* Botonera */}
+            <div className="flex" style={{ gap: 9, marginTop: 18 }}>
+              <button onClick={shareReceipt} title="Compartir" style={{ width: 44, height: 44, borderRadius: 10, border: '1px solid rgba(255,255,255,0.11)', background: 'rgba(255,255,255,0.055)', display: 'grid', placeItems: 'center', flexShrink: 0 }} className="hover:bg-white/[0.09] transition-colors"><Share2 size={16} style={{ color: '#F4F4F2' }} /></button>
+              <button onClick={downloadReceipt} className="flex-1 flex items-center justify-center hover:bg-white/[0.09] transition-colors" style={{ gap: 7, borderRadius: 10, fontSize: 13.5, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)' }}><Download size={15} /> Comprobante</button>
+              {isCredit
+                ? <button onClick={() => setSelectedTx(null)} className="lincoin-btn-white transition-colors" style={{ flex: 1.2, padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, border: 'none' }}>Listo</button>
+                : <button onClick={repeatSend} className="lincoin-btn-white transition-colors" style={{ flex: 1.2, padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, border: 'none' }}>Repetir envío</button>}
+            </div>
           </div>
         </div>
       </div>
