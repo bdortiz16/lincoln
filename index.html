@@ -37,8 +37,14 @@
     <meta name="twitter:description" content="Envía y recibe dinero en Colombia, Perú, Chile y México sin costo SWIFT. La mejor tasa del mercado, al instante." />
     <meta name="twitter:image" content="https://www.lincoin.com/og-image.svg" />
 
-    <!-- Favicon -->
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='100' height='100' rx='22' fill='%230C0E0D'/%3E%3Ctext x='26' y='73' font-family='Archivo,Arial,sans-serif' font-weight='800' font-size='62' fill='%23F4F4F2'%3EL%3C/text%3E%3Ccircle cx='66' cy='69' r='7' fill='%234ADE80'/%3E%3C/svg%3E" />
+    <!-- Favicon — variante corta `L.` (public/favicon.svg, trazos puros;
+         ver CLAUDE.md). El mismo asset alimenta favicon, apple-touch-icon
+         y los iconos del manifest. -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
     <!-- Tailwind ahora se COMPILA en el build de Vite (tailwind.config.js
          + index.css). Nada de cdn.tailwindcss.com: los estilos viajan en
          el bundle y funcionan igual en redes corporativas filtradas. -->
