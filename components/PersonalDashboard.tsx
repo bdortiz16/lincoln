@@ -349,7 +349,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const [mfaVerifyLoading, setMfaVerifyLoading] = useState(false);
   const [mfaDisableCode, setMfaDisableCode] = useState('');
   const [mfaDisableModalOpen, setMfaDisableModalOpen] = useState(false);
-  const [mfaLoadingStatus, setMfaLoadingStatus] = useState(false);
+  // Arranca en true: hasta la 1ª verificación de MFA, el envío dice
+  // "verificando" en vez de tratar al usuario como sin 2FA.
+  const [mfaLoadingStatus, setMfaLoadingStatus] = useState(true);
 
   // Conversion States
   const [isConvertModalOpen, setIsConvertModalOpen] = useState(false);
@@ -2957,18 +2959,24 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       </div>
   );
 
-  // Load MFA status when settings view opens
+  // Cargar el estado del 2FA (MFA) al MONTAR y al abrir Ajustes. Antes solo
+  // se cargaba al entrar a Ajustes → tras recargar la página mfaEnrolled
+  // quedaba en false y el envío se bloqueaba como si el 2FA no estuviera
+  // activo. Ahora se consulta apenas hay usuario, en cualquier vista.
   useEffect(() => {
-    if (activeView === 'settings') {
-      setMfaLoadingStatus(true);
-      getMFAStatus().then(({ enrolled, factorId, totpSecret }) => {
-        setMfaEnrolled(enrolled);
-        setMfaFactorId(factorId);
-        setMfaTotpSecret(totpSecret);
-        setMfaLoadingStatus(false);
-      });
-    }
-  }, [activeView]);
+    if (!currentUser?.id) return;
+    let alive = true;
+    setMfaLoadingStatus(true);
+    getMFAStatus().then(({ enrolled, factorId, totpSecret }) => {
+      if (!alive) return;
+      setMfaEnrolled(enrolled);
+      setMfaFactorId(factorId);
+      setMfaTotpSecret(totpSecret);
+      setMfaLoadingStatus(false);
+    }).catch(() => { if (alive) setMfaLoadingStatus(false); });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id, activeView === 'settings']);
 
   // Pay-link 30-min countdown
   useEffect(() => {
