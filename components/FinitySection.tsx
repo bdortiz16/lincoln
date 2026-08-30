@@ -27,7 +27,12 @@ export async function callFinity(action: string, userId: string, extra: Record<s
     try {
         const r = await fetch(`${SURL}/functions/v1/finity-proxy`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${SKEY}` },
+            // Sesión REAL (JWT) del que llama: para un admin resuelve como
+            // interno de confianza (crear retiros/leer tesorería); para un
+            // cliente resuelve como él mismo (inscribir cuenta externa). Sin
+            // JWT cae a la anon key. Antes iba siempre con la anon key, lo que
+            // permitía crear retiros con solo la llave pública + un user_id.
+            headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: myAuthHeader() },
             body: JSON.stringify({ action, user_id: userId, ...extra }),
             signal: AbortSignal.timeout(30000),
         });

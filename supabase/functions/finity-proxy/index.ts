@@ -436,7 +436,9 @@ Deno.serve(async (req) => {
     // exigiendo un usuario real.
     // external_accounts sale de las READ públicas: lista los datos bancarios
     // (nombre, documento, cuenta) de los destinos registrados — exige caller.
-    const READ_ACTIONS = new Set(['ping', 'rates', 'discover', 'snapshot_finity', 'treasury_balances'])
+    // treasury_balances SALE de las READ públicas: expone los saldos de la
+    // tesorería (USDt + COP de la empresa) → solo admin/interno.
+    const READ_ACTIONS = new Set(['ping', 'rates', 'discover', 'snapshot_finity'])
 
     const caller = await validCaller(req, payload)
     if (!caller.ok && !READ_ACTIONS.has(action)) {
@@ -470,6 +472,8 @@ Deno.serve(async (req) => {
     //      GET /convert/copBalance  → saldo COP (Peso Finity)
     //      GET /status              → trae el saldo USDt (y más)
     if (action === 'treasury_balances') {
+      // Saldos de la empresa → solo admin/interno (nunca un cliente).
+      if (!caller.internal) return json(403, { error: 'forbidden', message: 'Operación restringida.' })
       const amountOf = (d: any): number | null => {
         if (d == null) return null
         if (typeof d === 'number') return Number.isFinite(d) ? d : null
@@ -647,6 +651,12 @@ Deno.serve(async (req) => {
     }
 
     if (action === 'create_withdrawal') {
+      // SEGURIDAD: crear un retiro mueve dinero de la cuenta Finity de la
+      // empresa (una sola cuenta compartida). Solo llamadas INTERNAS de
+      // confianza: mouv-proxy (service-role, que YA debitó el saldo del
+      // cliente) o un admin real (JWT con role='admin' / AdminBypass). Un
+      // cliente con anon-key + user_id ya NO puede drenar la tesorería.
+      if (!caller.internal) return json(403, { error: 'forbidden', message: 'Operación restringida.' })
       const { res, path } = await finityTry('withdrawalOrders', {
         method: 'POST',
         body: JSON.stringify(payload.data ?? {}),
