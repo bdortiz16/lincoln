@@ -103,10 +103,16 @@ async function mouvPayout(
   // Mouv trabaja en CENTAVOS (confirmado contra el saldo real). El monto que
   // llega es en PESOS → se convierte a centavos para /transfers/send.
   const amountCents = Math.round(amountCop * 100)
+  // Los contactos pueden traer placeholders ("—", "-") en nombre/documento;
+  // NO sirven para SARLAFT ni para Mouv → tratarlos como ausentes.
+  const cleanField = (v: unknown): string | undefined => {
+    const s = String(v ?? '').trim()
+    return s && s !== '—' && s !== '-' && s !== 'N/A' ? s : undefined
+  }
   if (rail === 'BREB') {
     // 1) Resolver la llave para obtener el titular oficial (SARLAFT).
-    let targetName: string | undefined = recipient.holderName
-    let targetDocument: string | undefined = recipient.documentNumber ?? recipient.docNumber
+    let targetName: string | undefined = cleanField(recipient.holderName)
+    let targetDocument: string | undefined = cleanField(recipient.documentNumber ?? recipient.docNumber)
     let keyType = brebTypeToMouv(recipient.keyType)
     try {
       const rk = await mouvFetch('/transfers/resolve-key', {
@@ -126,6 +132,11 @@ async function mouvPayout(
       return { ok: false, status: 0, data: { error: 'missing_sarlaft', message: 'No se pudo obtener el titular de la llave (nombre/documento requeridos por SARLAFT).' } }
     }
 
+    // Referencia ÚNICA por envío: si Mouv dedupe por referencia (409 Conflict
+    // al repetir {monto, destino, referencia}), un reintento tras reembolso o
+    // dos envíos iguales chocarían. El sufijo corto evita la colisión.
+    const refBase = cleanField(recipient.reference) ?? 'Pago Lincoin'
+    const refUniq = `${refBase} ${Date.now().toString(36).slice(-5)}`
     const r = await mouvFetch('/transfers/send', {
       method: 'POST',
       body: JSON.stringify({
@@ -133,7 +144,7 @@ async function mouvPayout(
         destination: { brebKey: { type: keyType, value: recipient.key } },
         targetName,
         targetDocument,
-        reference: recipient.reference ?? 'Pago Lincoin',
+        reference: refUniq,
       }),
     })
     // Devolver el titular RESUELTO (oficial, de resolve-key) para que el
@@ -517,11 +528,17 @@ serve(async (req: Request) => {
       await db.from('users').update({ balances: { ...bals2, [railCol]: restored } }).eq('id', userId)
       if (txId) await db.from('transactions').update({
         status: 'Fallido',
-        raw_data: { ...prettyBase, ...feeDetail, error: pay.data?.error ?? 'payout_failed', refunded: true, failedAt: new Date().toISOString() },
+        raw_data: { ...prettyBase, ...feeDetail, error: pay.data ?? 'payout_failed', httpStatus: pay.status, refunded: true, failedAt: new Date().toISOString() },
       }).eq('id', txId)
-      await logAudit(userId, `mouv.${action}.fail`, { amount, rail, status: pay.status })
+      await logAudit(userId, `mouv.${action}.fail`, { amount, rail, status: pay.status, data: pay.data ?? null })
+      const mouvDetail = (() => {
+        try {
+          const s = typeof pay.data === 'string' ? pay.data : JSON.stringify(pay.data ?? null)
+          return s && s !== 'null' && s !== '{}' ? ` Detalle técnico: ${s.slice(0, 350)}` : ''
+        } catch { return '' }
+      })()
       return json(200, { error: 'payout_failed', refunded: true, newBalance: restored, status: pay.status, data: pay.data,
-        message: `Mouv rechazó la dispersión (HTTP ${pay.status}). Tu saldo fue devuelto.` })
+        message: `Mouv rechazó la dispersión (HTTP ${pay.status}).${mouvDetail} Tu saldo fue devuelto.` })
     }
 
     // ── ACH vía FINITY ──
