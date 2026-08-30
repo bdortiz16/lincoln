@@ -844,12 +844,14 @@ Deno.serve(async (req) => {
       const costs = data?.costs ?? null
       const uid = caller.userId ?? String(payload.user_id ?? '')
       if (uid) {
-        await db.from('transactions').insert({
-          user_id: uid, type: 'load', amount: Math.round(netCop), currency: 'COP', status: 'Pendiente',
-          raw_data: { source: 'finity_payment_link', method: 'LINK', reference: linkId, providerRef: linkId,
-            link, title: 'Cobro por link', grossCop: copAmount, netCop, costs,
-            expiresAt: data?.expires_at ?? null, createdAt: new Date().toISOString() },
-        }).catch(() => {})
+        try {
+          await db.from('transactions').insert({
+            user_id: uid, type: 'load', amount: Math.round(netCop), currency: 'COP', status: 'Pendiente',
+            raw_data: { source: 'finity_payment_link', method: 'LINK', reference: linkId, providerRef: linkId,
+              link, title: 'Cobro por link', grossCop: copAmount, netCop, costs,
+              expiresAt: data?.expires_at ?? null, createdAt: new Date().toISOString() },
+          })
+        } catch { /* el link ya se creó; el registro es best-effort */ }
       }
       return json(200, { ok: true, link, reference: linkId, status: data?.status ?? 'UNCONFIRMED', grossCop: copAmount, netCop, costs, expiresAt: data?.expires_at ?? null, needsLinkLookup: !link })
     }

@@ -553,10 +553,12 @@ serve(async (req: Request) => {
         const d: any = r.data ?? {}
         const link = d.url ?? d.link ?? d.paymentUrl ?? d.checkoutUrl ?? d.redirectUrl ?? d.data?.url ?? null
         const providerRef = d.id ?? d.reference ?? d.collectionId ?? reference
-        await db.from('transactions').insert({
-          user_id: userId, type: 'load', amount: Math.round(amount), currency: railCol, status: 'Pendiente',
-          raw_data: { source: 'mouv_payin_pse', method: 'PSE', reference, providerRef, link, title: 'Recaudo PSE (link)', createdAt: new Date().toISOString() },
-        }).catch(() => {})
+        try {
+          await db.from('transactions').insert({
+            user_id: userId, type: 'load', amount: Math.round(amount), currency: railCol, status: 'Pendiente',
+            raw_data: { source: 'mouv_payin_pse', method: 'PSE', reference, providerRef, link, title: 'Recaudo PSE (link)', createdAt: new Date().toISOString() },
+          })
+        } catch { /* best-effort */ }
         await logAudit(userId, 'mouv.payin_pse.created', { amount, reference, providerRef, path: p })
         return json(200, { ok: true, link, reference, providerRef, path: p, raw: d })
       }
