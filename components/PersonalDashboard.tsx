@@ -3666,10 +3666,15 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
         return out;
       };
       const rows = fields.filter(f => f.label !== 'Estado').map(f => ({ f, lines: wrap(f.value, F_VALUE) }));
+      // Pie informativo: soporte de la operación + sitio web.
+      const F_FOOT = `500 9.5px ${FONT}`;
+      const footNote = 'Este comprobante es un soporte de la operación realizada a través de Lincoin. No constituye una factura ni un extracto bancario. Lincoin no es un banco; la confianza opera sobre infraestructura de Circle, Fireblocks y SEPA/SWIFT.';
+      const footLines = wrap(footNote, F_FOOT);
       // Medir alto
       let H = PAD + 30 + 22 + 16 + 84 + 20;
       for (const r of rows) H += 16 + r.lines.length * 18 + 14;
-      H += 44;
+      // Pie: espacio + "Comprobante Lincoin" + nota + web + margen inferior
+      H += 20 + 16 + 12 + footLines.length * 13 + 20 + PAD;
 
       const canvas = document.createElement('canvas');
       canvas.width = W * scale; canvas.height = H * scale;
@@ -3723,8 +3728,17 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       }
       // Pie
       y += 20;
-      ctx.textAlign = 'center'; ctx.font = `600 11px Archivo, ${FONT}`; ctx.fillStyle = 'rgba(244,244,242,0.45)';
+      ctx.textAlign = 'center';
+      ctx.font = `700 11px Archivo, ${FONT}`; ctx.fillStyle = 'rgba(244,244,242,0.55)';
       ctx.fillText('Comprobante Lincoin', W / 2, y);
+      // Nota informativa (varias líneas, tenue)
+      y += 12;
+      ctx.font = F_FOOT; ctx.fillStyle = 'rgba(244,244,242,0.40)';
+      for (const ln of footLines) { y += 13; ctx.fillText(ln, W / 2, y); }
+      // Sitio web, en verde de marca
+      y += 20;
+      ctx.font = `700 11px Archivo, ${FONT}`; ctx.fillStyle = '#4ADE80';
+      ctx.fillText('www.lincoin.me', W / 2, y);
       return canvas;
     };
     const shareReceipt = async () => {
