@@ -292,6 +292,30 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const [movType, setMovType] = useState<'all' | 'send' | 'load' | 'convert'>('all');
 
   const [isLoadModalOpen, setIsLoadModalOpen] = useState(false);
+  // Recaudo PSE (pay-in por link) — Mouv devuelve un link que el cliente
+  // comparte con quien le paga; al confirmarse se acredita el Saldo Lincoin.
+  const [pseOpen, setPseOpen] = useState(false);
+  const [pseAmount, setPseAmount] = useState('');
+  const [pseBusy, setPseBusy] = useState(false);
+  const [pseResult, setPseResult] = useState<{ ok: boolean; link?: string | null; reference?: string; message?: string; detail?: string } | null>(null);
+  const generatePseLink = async () => {
+      if (pseBusy || !currentUser?.id) return;
+      const amt = getRawAmount(pseAmount);
+      if (!amt || amt < 5000) { showToast('El monto mínimo de recaudo es $5.000 COP.', 4000, 'error'); return; }
+      setPseBusy(true); setPseResult(null);
+      try {
+          const r = await callMouvProxy({ action: 'payin_pse', userId: currentUser.id, amount: amt, concept: 'Recarga Lincoin' });
+          if (r?.ok && r?.link) {
+              setPseResult({ ok: true, link: r.link, reference: r.reference });
+              refreshData?.();
+          } else {
+              setPseResult({ ok: false, message: r?.message || 'No se pudo generar el link de recaudo.', detail: r?.attempted ? JSON.stringify(r.attempted).slice(0, 300) : undefined });
+          }
+      } catch (e: any) {
+          setPseResult({ ok: false, message: 'Error de red al generar el link.', detail: String(e?.message ?? e).slice(0, 200) });
+      }
+      setPseBusy(false);
+  };
   const [loadStep, setLoadStep] = useState(1);
   const [selectedCountry, setSelectedCountry] = useState('');
   const [selectedBankName, setSelectedBankName] = useState('');
@@ -2564,8 +2588,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   <span style={{ fontSize: 11.5, color: '#878E88' }}>Disponible 24/7 · sin comisión interna</span>
                               </div>
                           </div>
-                          <div style={{ padding: '11px 20px', borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.015)', display: 'flex', gap: 13 }}>
-                              <button onClick={() => handleLoadClick('COP')} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Cargar</button>
+                          <div style={{ padding: '11px 20px', borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.015)', display: 'flex', gap: 13, flexWrap: 'wrap' }}>
+                              <button onClick={() => { setPseAmount(''); setPseResult(null); setPseOpen(true); }} style={{ fontSize: 12, fontWeight: 600, color: '#4ADE80' }} className="hover:opacity-80 transition-opacity">Cobrar por link</button>
                               <button onClick={() => { setBrebMoveOpen(true); setBrebDir('to_breb'); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Mover a otro riel</button>
                           </div>
                       </div>
@@ -4211,6 +4235,63 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#4ADE80' }} className="lincoin-op-dot" />
                           <span style={{ fontSize: 12, color: '#878E88' }}>Estamos monitoreando la red. El saldo aparecerá solo.</span>
                       </div>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* RECAUDO PSE — generar link de cobro (Mouv) */}
+      {pseOpen && (
+          <div className="fixed inset-0 z-50 p-4" style={{ background: 'rgba(4,5,4,0.8)', display: 'grid', placeItems: 'center' }} onClick={() => !pseBusy && setPseOpen(false)}>
+              <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true"
+                  style={{ width: '100%', maxWidth: 420, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, overflow: 'hidden', fontFamily: "'Archivo', system-ui, sans-serif" }}>
+                  <div style={{ padding: '20px 22px 16px', borderBottom: '1px solid rgba(255,255,255,0.08)' }} className="flex items-start justify-between gap-3">
+                      <div>
+                          <h3 style={{ fontSize: 17, fontWeight: 800, letterSpacing: '-0.4px', color: '#F4F4F2' }}>Cobrar por link</h3>
+                          <p style={{ fontSize: 12.5, color: '#878E88', marginTop: 3 }}>Genera un link PSE y compártelo con quien te paga. Al confirmarse, el saldo entra a tu cuenta.</p>
+                      </div>
+                      <button onClick={() => !pseBusy && setPseOpen(false)} style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', display: 'grid', placeItems: 'center', flexShrink: 0 }}><X size={13} style={{ color: '#878E88' }} strokeWidth={1.7} /></button>
+                  </div>
+                  <div style={{ padding: '18px 22px 22px' }}>
+                      {!pseResult?.ok ? (
+                          <>
+                              <label style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: '#878E88' }}>MONTO A COBRAR</label>
+                              <div className="flex items-center" style={{ gap: 8, marginTop: 8, border: '1px solid rgba(255,255,255,0.1)', borderRadius: 11, padding: '12px 14px', background: 'rgba(255,255,255,0.03)' }}>
+                                  <span style={{ fontSize: 22, fontWeight: 800, color: '#878E88' }}>$</span>
+                                  <input value={pseAmount} onChange={e => setPseAmount(formatInputNumber(e.target.value))} inputMode="numeric" placeholder="0" autoFocus
+                                      style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', fontSize: 26, fontWeight: 800, color: '#F4F4F2', minWidth: 0 }} />
+                                  <span style={{ fontSize: 13, fontWeight: 700, color: '#878E88' }}>COP</span>
+                              </div>
+                              <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 8 }}>Mínimo $5.000 · el pago entra por PSE al Saldo Lincoin.</p>
+                              {pseResult && !pseResult.ok && (
+                                  <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(255,255,255,0.03)' }}>
+                                      <p style={{ fontSize: 12.5, color: '#F4F4F2', fontWeight: 600 }}>{pseResult.message}</p>
+                                      {pseResult.detail && <p style={{ fontSize: 10.5, color: '#878E88', marginTop: 4, fontFamily: 'ui-monospace, Menlo, monospace', wordBreak: 'break-all' }}>{pseResult.detail}</p>}
+                                  </div>
+                              )}
+                              <button onClick={generatePseLink} disabled={pseBusy} className="lincoin-btn-white transition-colors" style={{ width: '100%', marginTop: 16, padding: '13px 0', borderRadius: 11, fontSize: 14, fontWeight: 700, border: 'none', opacity: pseBusy ? 0.5 : 1 }}>
+                                  {pseBusy ? 'Generando link…' : 'Generar link de cobro'}
+                              </button>
+                          </>
+                      ) : (
+                          <div className="text-center">
+                              <div style={{ width: 46, height: 46, margin: '0 auto 12px', borderRadius: '50%', border: '1.5px solid rgba(74,222,128,0.4)', background: 'rgba(74,222,128,0.08)', display: 'grid', placeItems: 'center' }}>
+                                  <Link2 size={20} style={{ color: '#4ADE80' }} />
+                              </div>
+                              <p style={{ fontSize: 16, fontWeight: 800, color: '#F4F4F2' }}>¡Link de cobro listo!</p>
+                              <p style={{ fontSize: 12.5, color: '#878E88', marginTop: 4 }}>Compártelo con quien te paga. Ref: {pseResult.reference}</p>
+                              {pseResult.link && (
+                                  <div style={{ margin: '14px auto 0', width: 150, height: 150, borderRadius: 12, overflow: 'hidden', background: '#fff', padding: 8 }}>
+                                      <img src={`https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${encodeURIComponent(pseResult.link)}`} alt="QR de pago" style={{ width: '100%', height: '100%' }} />
+                                  </div>
+                              )}
+                              <div className="flex items-center" style={{ gap: 8, marginTop: 14, border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, padding: '10px 12px', background: 'rgba(255,255,255,0.03)' }}>
+                                  <span style={{ flex: 1, minWidth: 0, fontSize: 11.5, color: '#F4F4F2', fontFamily: 'ui-monospace, Menlo, monospace', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{pseResult.link}</span>
+                                  <button onClick={() => { navigator.clipboard?.writeText(pseResult.link || '').then(() => showToast('Link copiado')).catch(() => {}); }} style={{ fontSize: 12, fontWeight: 700, color: '#4ADE80', flexShrink: 0 }}>Copiar</button>
+                              </div>
+                              <button onClick={() => setPseOpen(false)} className="lincoin-btn-white transition-colors" style={{ width: '100%', marginTop: 14, padding: '12px 0', borderRadius: 11, fontSize: 13.5, fontWeight: 700, border: 'none' }}>Listo</button>
+                          </div>
+                      )}
                   </div>
               </div>
           </div>

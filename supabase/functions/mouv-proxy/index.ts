@@ -437,6 +437,67 @@ serve(async (req: Request) => {
     return json(200, { ok: true, checked: (rows ?? []).length, results: out })
   }
 
+  // ── RECAUDO PSE (pay-in por link) ─────────────────────────────────
+  // Mouv permite recaudo entrante por PSE devolviendo un LINK que el
+  // cliente comparte con quien le paga. Cuando el pago se confirma, Mouv
+  // notifica (webhook) o se consulta el estado, y ahí se acredita el COP.
+  //
+  // ⚠️ La ruta/campos EXACTOS del recaudo PSE están en la doc de Mouv
+  // (developer.mouvlatam.com), bloqueada para este backend. Se prueban
+  // rutas candidatas y varias formas de body; la respuesta CRUDA vuelve
+  // al admin para fijar la ruta correcta (igual que se hizo con Finity).
+  if (action === 'payin_pse' || action === 'payin_status') {
+    const userId = caller.userId ?? payload.userId ?? payload.user_id
+    if (!userId) return json(400, { error: 'missing_user', message: 'Falta el usuario.' })
+
+    if (action === 'payin_status') {
+      const ref = String(payload.reference ?? payload.id ?? '')
+      if (!ref) return json(400, { error: 'missing_ref' })
+      const paths = [`/collections/${ref}`, `/payin/${ref}`, `/pse/${ref}`, `/transfers/collect/${ref}`, `/collections/status/${ref}`]
+      for (const p of paths) {
+        const r = await mouvFetch(p, { method: 'GET' })
+        if (r.ok) return json(200, { ok: true, path: p, data: r.data })
+        if (r.status && r.status !== 404) return json(200, { ok: false, path: p, status: r.status, data: r.data })
+      }
+      return json(200, { ok: false, error: 'not_found', message: 'No se encontró el recaudo (rutas candidatas 404).' })
+    }
+
+    const amount = Number(payload.amount)
+    if (!isFinite(amount) || amount < 5000) return json(400, { error: 'bad_amount', message: 'El monto mínimo de recaudo es $5.000 COP.' })
+    const railCol = 'COP' // el recaudo entra al Saldo Lincoin
+    // Cuerpo tentativo: monto en centavos (como el resto de Mouv), método PSE,
+    // referencia única y datos de quien recibe (el usuario Lincoin).
+    const reference = `LINCOIN-${String(userId).slice(0, 8)}-${Date.now().toString(36).slice(-5)}`.toUpperCase()
+    const bodyBase: Record<string, unknown> = {
+      amount: Math.round(amount * 100), amountCop: Math.round(amount),
+      currency: 'COP', method: 'PSE', rail: 'PSE', type: 'collection',
+      reference, description: String(payload.concept ?? 'Recarga Lincoin'),
+      callbackUrl: `${SUPABASE_URL}/functions/v1/mouv-proxy`,
+    }
+    const paths = ['/collections', '/collections/create', '/payin', '/payin/pse', '/pse/collect', '/transfers/collect']
+    let last: any = null
+    for (const p of paths) {
+      const r = await mouvFetch(p, { method: 'POST', body: JSON.stringify(bodyBase) })
+      last = { path: p, status: r.status, data: r.data }
+      if (r.ok) {
+        const d: any = r.data ?? {}
+        const link = d.url ?? d.link ?? d.paymentUrl ?? d.checkoutUrl ?? d.redirectUrl ?? d.data?.url ?? null
+        const providerRef = d.id ?? d.reference ?? d.collectionId ?? reference
+        // Registrar el recaudo como Pendiente (se acredita al confirmar).
+        await db.from('transactions').insert({
+          user_id: userId, type: 'load', amount: Math.round(amount), currency: railCol, status: 'Pendiente',
+          raw_data: { source: 'mouv_payin_pse', method: 'PSE', reference, providerRef, link, title: 'Recaudo PSE (link)', createdAt: new Date().toISOString() },
+        }).catch(() => {})
+        await logAudit(userId, 'mouv.payin_pse.created', { amount, reference, providerRef, path: p })
+        return json(200, { ok: true, link, reference, providerRef, path: p, raw: d })
+      }
+      if (r.status && r.status !== 404) break // error real (no "ruta inexistente")
+    }
+    return json(200, { ok: false, error: 'payin_failed',
+      message: 'No se pudo crear el link de recaudo PSE. Revisa la ruta/campos con la doc de Mouv.',
+      attempted: last })
+  }
+
   // ── Cotización de comisión para el paso Confirmar del cliente ──
   // BREB → comisión FIJA Lincoin ($1.200 por envío; el costo Mouv lo
   //        absorbe Lincoin — al cliente ya se le cobró 0,10% al recibir
