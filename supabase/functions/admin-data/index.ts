@@ -218,10 +218,15 @@ Deno.serve(async (req: Request) => {
             expected = row.from_currency === bS ? amtS * Number(row.rate) : amtS / Number(row.rate)
           }
         }
-        const okAmt = expected != null
-          ? (amtT >= expected * 0.60 && amtT <= expected * 1.05)          // comisión hasta ~40% + holgura
-          : (amtT / amtS >= 1e-6 && amtT / amtS <= 1e7)                   // sin tasa: corta absurdos
-        if (!okAmt) return json({ error: 'El monto de la conversión no coincide con la tasa vigente.' }, 400)
+        // Con fx_rate_snapshots ya bloqueada a solo-admin, la tasa es de fiar.
+        // Si NO hay tasa para el par (y no es 1:1 misma base), se RECHAZA — ya
+        // no hay banda amplia de respaldo que se pudiera abusar.
+        if (expected == null) {
+          return json({ error: 'No hay tasa vigente para esa conversión. Intenta más tarde.' }, 400)
+        }
+        if (!(amtT >= expected * 0.60 && amtT <= expected * 1.05)) {   // comisión hasta ~40% + holgura
+          return json({ error: 'El monto de la conversión no coincide con la tasa vigente.' }, 400)
+        }
 
         setBal(src, Number((bal(src) - amtS).toFixed(8)))
         setBal(tgt, Number((bal(tgt) + amtT).toFixed(8)))

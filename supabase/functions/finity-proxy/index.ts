@@ -322,7 +322,7 @@ function isProjectAnonKey(jwt: string): boolean {
   }
 }
 
-async function validCaller(req: Request, payload: Record<string, unknown>): Promise<{ ok: boolean; userId?: string; internal?: boolean }> {
+async function validCaller(req: Request, payload: Record<string, unknown>): Promise<{ ok: boolean; userId?: string; internal?: boolean; viaJwt?: boolean }> {
   const auth = req.headers.get('authorization') ?? ''
   const jwt = auth.replace(/^Bearer\s+/i, '')
   if (!jwt) return { ok: false }
@@ -334,27 +334,28 @@ async function validCaller(req: Request, payload: Record<string, unknown>): Prom
   // por mouv-proxy, que debita el saldo ANTES de llamar aquí.
   if (SERVICE_KEY && jwt === SERVICE_KEY) {
     const uid = String(payload.user_id ?? '')
-    return { ok: true, userId: uid || undefined, internal: true }
+    return { ok: true, userId: uid || undefined, internal: true, viaJwt: true }
   }
   // Admin explícito (AdminBypass) también cuenta como interno de confianza.
-  if (ADMIN_PASS && auth === `AdminBypass ${ADMIN_PASS}`) return { ok: true, internal: true }
+  if (ADMIN_PASS && auth === `AdminBypass ${ADMIN_PASS}`) return { ok: true, internal: true, viaJwt: true }
 
   // (a) JWT real de Supabase. Si el usuario es admin, se marca `internal`
   // (confianza plena) para que el panel de admin pueda dejar de usar la
-  // anon-key y autenticar con su propia sesión.
+  // anon-key y autenticar con su propia sesión. viaJwt = identidad PROBADA.
   const { data } = await db.auth.getUser(jwt)
   if (data?.user) {
     const { data: prof } = await db.from('users').select('role').eq('id', data.user.id).maybeSingle()
     const isAdmin = (prof as any)?.role === 'admin'
-    return { ok: true, userId: data.user.id, internal: isAdmin }
+    return { ok: true, userId: data.user.id, internal: isAdmin, viaJwt: true }
   }
 
-  // (b) anon key del proyecto + user_id existente en public.users
+  // (b) anon key del proyecto + user_id existente (medio-auth): NO prueba
+  // identidad (viaJwt:false) → no autoriza acciones sensibles.
   if (isProjectAnonKey(jwt)) {
     const uid = String(payload.user_id ?? '')
     if (!uid) return { ok: false }
     const { data: u } = await db.from('users').select('id').eq('id', uid).maybeSingle()
-    if (u) return { ok: true, userId: uid }
+    if (u) return { ok: true, userId: uid, viaJwt: false }
   }
   return { ok: false }
 }
@@ -445,6 +446,21 @@ Deno.serve(async (req) => {
       // 'proxy v3' en el mensaje: si el panel muestra 'unauthorized' pelado,
       // la función desplegada es una versión vieja.
       return json(401, { error: 'unauthorized', message: 'unauthorized (proxy v5.2)' })
+    }
+
+    // ── Gates de seguridad (pentest H3) ──────────────────────────────────
+    // INTERNO/ADMIN: leer movimientos/saldo de la empresa o convertir sobre la
+    // tesorería compartida. Nunca un cliente (ni con anon-key + user_id).
+    const INTERNAL_ONLY = new Set(['movements', 'convert', 'convert_confirm', 'balance'])
+    if (INTERNAL_ONLY.has(action) && !caller.internal) {
+      return json(403, { error: 'forbidden', message: 'Operación restringida.' })
+    }
+    // IDENTIDAD PROBADA (JWT real, no un user_id en el body): gestionar cuentas
+    // externas y crear cobros. Bloquea al atacante que solo tiene la llave
+    // pública + el id de una víctima.
+    const NEEDS_IDENTITY = new Set(['external_accounts', 'create_external_account', 'delete_external_account', 'create_payment_link'])
+    if (NEEDS_IDENTITY.has(action) && !(caller.viaJwt || caller.internal)) {
+      return json(403, { error: 'forbidden', message: 'Vuelve a iniciar sesión para continuar.' })
     }
     // NOTA DE SEGURIDAD (pendiente de rework): create_withdrawal/convert se
     // pueden llamar directo con la anon-key + user_id (medio-auth), sin pasar

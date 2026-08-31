@@ -547,20 +547,25 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         }
       }
 
-      // Non-admin (or edge function unavailable): use SECURITY DEFINER RPC functions,
-      // falling back to direct SELECT if the functions don't exist yet.
-      const [usersRpc, txRpc] = await Promise.all([
-        supabase.rpc('cuypay_get_all_users'),
-        supabase.rpc('cuypay_get_all_transactions'),
-      ]);
-      if (usersRpc.error) console.warn('[fetchData] cuypay_get_all_users RPC error:', usersRpc.error.code, usersRpc.error.message);
-      if (txRpc.error) console.warn('[fetchData] cuypay_get_all_transactions RPC error:', txRpc.error.code, txRpc.error.message);
-      const directUsers = await supabase.from('users').select('*');
-      const directTx = await supabase.from('transactions').select('*');
+      // SEGURIDAD: el cliente NO admin ya NO descarga toda la base (eso fugaba
+      // totpSecret/PII de todos y alimentaba varios ataques). Lee SOLO su
+      // propia fila y sus propias transacciones. Los admins sí traen todo, pero
+      // por la vía del edge admin-data (service-role) de más arriba; si esa
+      // falla, este respaldo directo depende de la RLS (is_any_admin les da
+      // acceso total; a un cliente, solo lo suyo).
+      const isAdminCaller = (cu as any)?.role === 'admin';
+      let directUsers: any, directTx: any;
+      if (isAdminCaller) {
+        directUsers = await supabase.from('users').select('*');
+        directTx = await supabase.from('transactions').select('*');
+      } else {
+        directUsers = await supabase.from('users').select('*').eq('id', cu?.id ?? '');
+        directTx = await supabase.from('transactions').select('*').eq('user_id', cu?.id ?? '');
+      }
       if (directUsers.error) console.warn('[fetchData] direct users SELECT error:', directUsers.error.code, directUsers.error.message);
       if (directTx.error) console.warn('[fetchData] direct tx SELECT error:', directTx.error.code, directTx.error.message);
-      const usersData = (usersRpc.data?.length ? usersRpc.data : null) ?? directUsers.data;
-      const txData = (txRpc.data?.length ? txRpc.data : null) ?? directTx.data;
+      const usersData = directUsers.data;
+      const txData = directTx.data;
 
       if (usersData) {
         const mapped = (usersData as any[]).map(mapSupabaseUser);
