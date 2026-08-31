@@ -524,27 +524,51 @@ async function userIndex(userId: string): Promise<number> {
     const raw = (r.raw_data ?? {}) as Record<string, any>
     const existing = typeof raw.gasfreeIndex === 'number' ? raw.gasfreeIndex
       : typeof raw.gasfreeHdIndex === 'number' ? raw.gasfreeHdIndex : null
-    if (existing != null) { await persistIndexToRows(rows, existing); return existing }
+    if (existing != null) { await persistIndexToRows(rows, existing, 'reconcile_email'); return existing }
   }
 
   // Sin fila real donde persistir → índice DETERMINISTA por userId.
   if (!rows.length) return deterministicIndex(userId)
   // Asignar nuevo índice atómico y persistir en todas las filas.
   const next = await allocNextIndex()
-  await persistIndexToRows(rows, next)
+  await persistIndexToRows(rows, next, 'first_assign')
   return next
+}
+
+// ── AUDITORÍA de cambios de wallet ────────────────────────────────
+// Cada vez que el índice HD de un usuario cambia (primera asignación,
+// reconciliación entre filas del mismo correo, pin o reset de admin) se deja
+// un registro durable en system_config. Es el "archivo" para saber CUÁNDO y
+// POR QUÉ cambió la wallet de alguien — nada cambia sin dejar rastro.
+const WALLET_LOG_KEY = 'gasfree_wallet_log'
+async function logWalletChange(entry: { userId: string; email?: string | null; oldIndex: number | null; newIndex: number; source: string }) {
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', WALLET_LOG_KEY).single()
+    const list: any[] = data?.value ? JSON.parse(data.value) : []
+    list.unshift({ at: new Date().toISOString(), ...entry })
+    await saveSystemConfig(WALLET_LOG_KEY, JSON.stringify(list.slice(0, 500)))
+  } catch { /* el log jamás bloquea la operación real */ }
+}
+async function getWalletLog(email?: string) {
+  const { data } = await db.from('system_config').select('value').eq('key', WALLET_LOG_KEY).single()
+  const list: any[] = data?.value ? JSON.parse(data.value) : []
+  const e = String(email ?? '').trim().toLowerCase()
+  return e ? list.filter((x) => String(x.email ?? '').toLowerCase() === e) : list
 }
 
 // Fija el índice HD en cada fila SIN pisar el resto de raw_data. Re-lee la
 // fila JUSTO antes de escribir y hace merge SOLO del campo del índice — así
 // este write nunca borra cambios concurrentes del cliente (contactos, 2FA,
 // etc.). Antes escribía un snapshot leído antes y una carrera podía borrarlos.
-async function persistIndexToRows(rows: any[], idx: number) {
+// Cada cambio real de índice queda registrado en el log de wallets.
+async function persistIndexToRows(rows: any[], idx: number, source = 'auto') {
   for (const r of rows) {
-    const { data: fresh } = await db.from('users').select('raw_data').eq('id', r.id).maybeSingle()
+    const { data: fresh } = await db.from('users').select('raw_data, email').eq('id', r.id).maybeSingle()
     const raw = (fresh?.raw_data ?? r.raw_data ?? {}) as Record<string, any>
-    if (raw.gasfreeIndex === idx) continue
+    const prev = typeof raw.gasfreeIndex === 'number' ? raw.gasfreeIndex : null
+    if (prev === idx) continue
     await db.from('users').update({ raw_data: { ...raw, gasfreeIndex: idx } }).eq('id', r.id)
+    await logWalletChange({ userId: r.id, email: (fresh as any)?.email ?? r.email ?? null, oldIndex: prev, newIndex: idx, source })
   }
 }
 
@@ -606,6 +630,7 @@ async function resetUserIndex(userId: string) {
     delete raw.gasfreeAddress   // limpiar dirección cacheada (se recalcula)
     delete raw.gasfreeEoa
     await db.from('users').update({ raw_data: raw }).eq('id', r.id)
+    await logWalletChange({ userId: r.id, email: (r as any).email ?? primary.email ?? null, oldIndex: (r.raw_data ?? {})?.gasfreeIndex ?? null, newIndex: next, source: 'admin_reset' })
   }
   const { eoa } = await userWallet(next)
   const acct = await gfAccount(eoa)
@@ -695,7 +720,7 @@ async function pinAddressToUser(userId: string, address: string) {
     throw new Error(`No se encontró ${addr} en la semilla de Lincoin (probé recaudadora, índices deterministas y escaneo amplio, sin errores de API).${current} Verifica que sea la dirección EXACTA que mostró la app (la "TU DIRECCIÓN USDT"), no una copiada de otro lado.`)
   }
 
-  await persistIndexToRows(rows, match.index)   // escribe el índice y (por el merge) limpia caché
+  await persistIndexToRows(rows, match.index, 'admin_pin')   // escribe el índice y lo registra en el log
   let bal = match.balanceUsdt
   if (bal == null) {
     try { const { token } = await gfConfig(); bal = match.gasFreeAddress ? await tokenBalance(match.gasFreeAddress, token.tokenAddress, Number(token.decimal ?? 6)) : 0 } catch { /* opcional */ }
@@ -2145,6 +2170,11 @@ Deno.serve(async (req) => {
         amount: body.amount != null ? Number(body.amount) : undefined,
         preview: body.preview === true,
       }))
+    }
+    // Historial (log) de cambios de wallet — el "archivo" de auditoría. Con
+    // email filtra por cliente; sin él, los últimos cambios de todos.
+    if (action === 'wallet_log') {
+      return ok({ ok: true, entries: await getWalletLog(body.email ? String(body.email) : undefined) })
     }
     // Auditoría: detectar wallets colisionadas y usuarios sin índice.
     if (action === 'audit_indexes') {

@@ -148,6 +148,23 @@ export const AdminGasFreeSection: React.FC = () => {
         setFixBusy(false);
     };
 
+    // Historial (log) de cambios de wallet — auditoría durable.
+    const [walletLog, setWalletLog] = useState<any[] | null>(null);
+    const [logBusy, setLogBusy] = useState(false);
+    const [logEmail, setLogEmail] = useState('');
+    const loadWalletLog = async () => {
+        setLogBusy(true);
+        try {
+            const r = await callGasfree({ action: 'wallet_log', ...(logEmail.trim() ? { email: logEmail.trim() } : {}) });
+            setWalletLog(Array.isArray(r?.entries) ? r.entries : []);
+        } catch { setWalletLog([]); }
+        setLogBusy(false);
+    };
+    const SOURCE_LABEL: Record<string, string> = {
+        first_assign: 'Primera asignación', reconcile_email: 'Reconciliación (mismo correo)',
+        admin_pin: 'Fijada por admin', admin_reset: 'Reasignada por admin', auto: 'Automático',
+    };
+
     // Por usuario: dirección GasFree + saldo
     const [rows, setRows] = useState<Record<string, { loading?: boolean; gasFreeAddress?: string; balance?: number; active?: boolean; error?: string; debug?: any }>>({});
     const [loadingAll, setLoadingAll] = useState(false);
@@ -663,6 +680,40 @@ export const AdminGasFreeSection: React.FC = () => {
                         </div>
                     )}
                 </div>
+            </div>
+
+            {/* Historial (archivo) de cambios de wallet — auditoría durable */}
+            <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
+                <p className="font-bold text-slate-800 text-sm">📒 Historial de cambios de wallet</p>
+                <p className="text-xs text-slate-500">Cada cambio de wallet (primera asignación, pin/reset de admin, reconciliación) queda registrado aquí — cuándo, de qué índice a cuál, y por qué. Las wallets NO cambian solas; si algo cambia, aparece acá.</p>
+                <div className="flex flex-wrap items-center gap-2">
+                    <input value={logEmail} onChange={e => setLogEmail(e.target.value)} placeholder="Filtrar por correo (opcional)"
+                        className="flex-1 min-w-[180px] px-3 py-2 text-xs rounded-lg border border-slate-200 outline-none focus:border-[#4ADE80]" />
+                    <button onClick={loadWalletLog} disabled={logBusy} className="px-3 py-2 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#152e52] disabled:opacity-60">
+                        {logBusy ? 'Cargando…' : 'Ver historial'}
+                    </button>
+                </div>
+                {walletLog && (walletLog.length === 0 ? (
+                    <p className="text-xs text-slate-400">Sin cambios registrados{logEmail.trim() ? ' para ese correo' : ''}.</p>
+                ) : (
+                    <div className="max-h-72 overflow-auto rounded-lg border border-slate-100">
+                        <table className="w-full text-[11px]">
+                            <thead className="bg-slate-50 text-slate-500 sticky top-0">
+                                <tr><th className="text-left px-2 py-1.5">Fecha</th><th className="text-left px-2 py-1.5">Correo</th><th className="text-left px-2 py-1.5">Índice</th><th className="text-left px-2 py-1.5">Motivo</th></tr>
+                            </thead>
+                            <tbody>
+                                {walletLog.map((e: any, i: number) => (
+                                    <tr key={i} className="border-t border-slate-100">
+                                        <td className="px-2 py-1.5 text-slate-500 whitespace-nowrap">{e.at ? new Date(e.at).toLocaleString('es-CO', { dateStyle: 'short', timeStyle: 'short' }) : '—'}</td>
+                                        <td className="px-2 py-1.5 text-slate-700 truncate max-w-[160px]">{e.email ?? e.userId?.slice(0, 8)}</td>
+                                        <td className="px-2 py-1.5 font-mono text-slate-800">{e.oldIndex ?? '—'} → <b>{e.newIndex}</b></td>
+                                        <td className="px-2 py-1.5"><span className={`px-1.5 py-0.5 rounded ${e.source === 'first_assign' ? 'bg-slate-100 text-slate-600' : e.source?.startsWith('admin') ? 'bg-indigo-50 text-indigo-700' : 'bg-amber-50 text-amber-700'}`}>{SOURCE_LABEL[e.source] ?? e.source}</span></td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                ))}
             </div>
 
             {/* Parámetro editable: umbral de alerta de Tesorería */}
