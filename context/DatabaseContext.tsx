@@ -800,6 +800,14 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       for (const k of Object.keys(safeRest)) {
         if (safeRest[k] === '__stored__') delete safeRest[k];
       }
+      // Campos que administra EXCLUSIVAMENTE el servidor: la wallet GasFree
+      // (índice/dirección/contador), el 2FA (TOTP) y el OTP. saveUser NUNCA
+      // debe escribirlos desde memoria — la memoria puede estar vieja y los
+      // BORRABA/CAMBIABA (la wallet "cambiaba sola", el 2FA "se deshabilitaba").
+      // Siempre se dejan como están en la BASE; y si no pudimos leer la base,
+      // se OMITE raw_data por completo para no pisar nada.
+      const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'mfaEnabled', 'totpSecret', 'totpSecretEnc', 'otp', 'subWallets'];
+      let haveDbRaw = false;
       try {
         // Con timeout: si esta consulta se cuelga (red móvil), el guardado
         // sigue igual — es solo un merge preventivo, no puede bloquear.
@@ -808,9 +816,19 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           new Promise<{ data: null }>(resolve => setTimeout(() => resolve({ data: null }), 4000)),
         ]) as any;
         if (dbRes?.data?.raw_data) {
-          safeRest = { ...dbRes.data.raw_data, ...safeRest };
+          haveDbRaw = true;
+          const dbRaw = dbRes.data.raw_data as Record<string, any>;
+          safeRest = { ...dbRaw, ...safeRest };
+          // Los campos del servidor SIEMPRE reflejan la base, nunca la memoria.
+          for (const k of SERVER_OWNED) {
+            if (k in dbRaw) safeRest[k] = dbRaw[k];
+            else delete safeRest[k];
+          }
         }
       } catch { /* non-blocking */ }
+      // Solo se escribe raw_data si pudimos hacer el merge seguro contra la
+      // base. Si no, se omite (el upsert deja la columna intacta en un UPDATE).
+      const rawDataField = haveDbRaw ? { raw_data: safeRest } : {};
       const result = await Promise.race([
         supabase.from('users').upsert({
           id, email, role,
@@ -849,7 +867,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           rep_doc_country: repDocCountry,
           is_pep: isPep,
           documents,
-          raw_data: safeRest,
+          ...rawDataField,
         }),
         timeout,
       ]);
@@ -888,7 +906,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
                 rep_legal_name: repLegalName, rep_first_name: repFirstName, rep_last_name: repLastName,
                 rep_dob: repDob, rep_nationality: repNationality, rep_doc_type: repDocType,
                 rep_doc_number: repDocNumber, rep_doc_country: repDocCountry, is_pep: isPep,
-                documents, raw_data: safeRest,
+                documents, ...rawDataField,
               },
             }),
           }).then(r2 => r2.json()).catch((e2: any) => ({ error: String(e2?.message ?? e2) }));
