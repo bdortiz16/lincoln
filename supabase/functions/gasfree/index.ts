@@ -499,12 +499,15 @@ async function userWalletFrom(phrase: string, index: number) {
 // nuevo de forma atómica (RPC next_gasfree_index, con fallback).
 async function userIndex(userId: string): Promise<number> {
   const { data: primary } = await db.from('users').select('id, email, raw_data').eq('id', userId).maybeSingle()
-  const praw = (primary?.raw_data ?? {}) as Record<string, any>
-  // Fast-path INTACTO: si la fila primaria ya tiene índice, úsalo tal cual.
-  if (typeof praw.gasfreeIndex === 'number') return praw.gasfreeIndex
 
-  // Resolver hermanos por correo (half-auth / duplicados): el índice puede
-  // estar en otra fila del mismo correo.
+  // Reunir SIEMPRE todas las filas del mismo correo (perfiles duplicados /
+  // sesiones half-auth). El índice HD puede estar guardado en una fila
+  // distinta a la que consulta el admin vs. la que usa el cliente. Antes
+  // había un "fast-path" que devolvía el índice de la fila consultada SIN
+  // mirar las hermanas: si dos filas del mismo correo tenían índices
+  // distintos, el CLIENTE veía una wallet (p. ej. …1gC, donde deposita) y el
+  // ADMIN veía OTRA (…MdW, vacía) para el mismo usuario. Aquí se reconcilia a
+  // UN solo índice canónico para que ambos lados vean SIEMPRE la misma wallet.
   let rows: any[] = primary ? [primary] : []
   const email = primary?.email
   if (email) {
@@ -512,29 +515,78 @@ async function userIndex(userId: string): Promise<number> {
     if (Array.isArray(sibs) && sibs.length) rows = sibs
   }
 
-  // (1) Reusar un índice YA asignado en cualquier fila hermana (estabilidad).
+  // Índices ya asignados (distintos) entre todas las filas hermanas.
+  const found = new Set<number>()
   for (const r of rows) {
     const raw = (r.raw_data ?? {}) as Record<string, any>
     const existing = typeof raw.gasfreeIndex === 'number' ? raw.gasfreeIndex
       : typeof raw.gasfreeHdIndex === 'number' ? raw.gasfreeHdIndex : null
-    if (existing != null) { await persistIndexToRows(rows, existing); return existing }
+    if (existing != null) found.add(existing)
+  }
+  const candidates = Array.from(found)
+
+  // (1) Caso normal: un único índice en las filas → úsalo y persístelo.
+  if (candidates.length === 1) {
+    await persistIndexToRows(rows, candidates[0])
+    return candidates[0]
   }
 
-  // (2) Sin fila real donde persistir → índice DETERMINISTA por userId
-  // (estable entre llamadas y con offset alto para no chocar con el contador).
-  if (!rows.length) return deterministicIndex(userId)
+  // (2) DIVERGENCIA (el bug): varias filas del mismo correo con índices
+  // distintos → cada lado veía otra wallet. Se resuelve hacia la wallet DONDE
+  // ESTÁ EL DINERO: se consulta el saldo on-chain de cada candidato y gana el
+  // de mayor saldo (ahí depositó el cliente). Empate/cero → el índice más bajo
+  // (el asignado primero, el estable). Se persiste el ganador en TODAS las
+  // filas para que la próxima carga ya no diverja.
+  if (candidates.length > 1) {
+    const canonical = await pickFundedIndex(candidates)
+    await persistIndexToRows(rows, canonical)
+    return canonical
+  }
 
-  // (3) Asignar nuevo índice de forma atómica y persistir en TODAS las filas.
+  // (3) Sin índice en ninguna fila:
+  //  - sin fila real donde persistir → índice DETERMINISTA por userId.
+  if (!rows.length) return deterministicIndex(userId)
+  //  - hay fila(s) → asignar nuevo índice atómico y persistir en todas.
   const next = await allocNextIndex()
   await persistIndexToRows(rows, next)
   return next
+}
+
+// Entre varios índices HD candidatos (divergencia), elige aquel cuya wallet
+// GasFree tiene MÁS USDT on-chain — ahí está el dinero real del cliente.
+// Empate o todos en cero → el índice más bajo (el más antiguo/estable). Solo
+// lee saldos (no mueve fondos) y solo corre en el caso raro de divergencia.
+async function pickFundedIndex(indexes: number[]): Promise<number> {
+  const sorted = [...indexes].sort((a, b) => a - b)
+  try {
+    const { token } = await gfConfig()
+    const dec = Number(token.decimal ?? 6)
+    let best = sorted[0], bestBal = -1
+    for (const i of sorted) {
+      try {
+        const { eoa } = await userWallet(i)
+        const acct = await gfAccount(eoa)
+        const bal = acct.gasFreeAddress ? await tokenBalance(acct.gasFreeAddress, token.tokenAddress, dec) : 0
+        if (bal > bestBal) { bestBal = bal; best = i }
+      } catch { /* ignora este candidato y sigue */ }
+    }
+    return bestBal > 0 ? best : sorted[0]
+  } catch {
+    return sorted[0]
+  }
 }
 
 async function persistIndexToRows(rows: any[], idx: number) {
   for (const r of rows) {
     const raw = (r.raw_data ?? {}) as Record<string, any>
     if (raw.gasfreeIndex === idx) continue
-    await db.from('users').update({ raw_data: { ...raw, gasfreeIndex: idx } }).eq('id', r.id)
+    // El índice de esta fila cambió → limpiar la dirección cacheada y el
+    // índice legacy para que se recalcule con el índice canónico.
+    const next = { ...raw, gasfreeIndex: idx }
+    delete next.gasfreeHdIndex
+    delete next.gasfreeAddress
+    delete next.gasfreeEoa
+    await db.from('users').update({ raw_data: next }).eq('id', r.id)
   }
 }
 
