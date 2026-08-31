@@ -91,6 +91,30 @@ const API_KEY    = (Deno.env.get('GASFREE_API_KEY') ?? '').trim()
 const API_SECRET = (Deno.env.get('GASFREE_API_SECRET') ?? '').trim()
 const NET = (Deno.env.get('GASFREE_NET') ?? 'nile').trim().toLowerCase() === 'tron' ? 'tron' : 'nile'
 const HOT_KEY  = (Deno.env.get('LINCOIN_TRON_HOT_KEY') ?? '').trim()
+
+// ── Aviso al admin por correo (cambios sensibles: wallet/recaudadora) ──
+// Se manda solo si hay RESEND_API_KEY y un correo destino (ADMIN_ALERT_EMAIL
+// o ADMIN_EMAIL). Nunca rompe la operación si el correo falla.
+const RESEND_KEY = (Deno.env.get('RESEND_API_KEY') ?? '').trim()
+const ALERT_FROM = (Deno.env.get('FROM_EMAIL') ?? Deno.env.get('OTP_FROM_EMAIL') ?? 'no-reply@lincoin.me').trim()
+const ALERT_TO   = (Deno.env.get('ADMIN_ALERT_EMAIL') ?? Deno.env.get('ADMIN_EMAIL') ?? '').trim()
+async function sendAdminAlert(subject: string, lines: string[]) {
+  if (!RESEND_KEY || !ALERT_TO) return
+  try {
+    const rows = lines.map(l => `<tr><td style="padding:6px 0;font-family:Arial,sans-serif;font-size:13px;color:#15181A">${l}</td></tr>`).join('')
+    const html = `<div style="background:#F0EFEB;padding:24px"><table role="presentation" width="560" style="max-width:560px;background:#fff;border-radius:12px;border:1px solid rgba(21,24,26,0.08)"><tr><td style="padding:24px">
+      <p style="font-family:Archivo,Arial,sans-serif;font-size:20px;font-weight:800;color:#15181A;margin:0 0 4px">Lincoin<span style="color:#22A35C">.</span> · Seguridad</p>
+      <p style="font-family:Arial,sans-serif;font-size:14px;font-weight:700;color:#15181A;margin:12px 0 10px">${subject}</p>
+      <table role="presentation" width="100%">${rows}</table>
+      <p style="font-family:Arial,sans-serif;font-size:11.5px;color:#9B9F9B;margin-top:18px">Aviso automático. Si NO reconoces este cambio, revísalo en el panel → GasFree → Historial de cambios de wallet.</p>
+    </td></tr></table></div>`
+    await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: `Lincoin <${ALERT_FROM}>`, to: [ALERT_TO], subject: `[Lincoin seguridad] ${subject}`, html }),
+    })
+  } catch { /* el aviso jamás rompe la operación */ }
+}
 const MNEMO_GASFREE = (Deno.env.get('GASFREE_TRON_MNEMONIC') || '').trim()
 const MNEMONIC = MNEMO_GASFREE.trim()
 // Mnemónicas a probar en la RECUPERACIÓN. Deduplicadas, con etiqueta de origen.
@@ -514,7 +538,50 @@ async function rotateRecaudadora() {
   const next = cur + 1
   await saveSystemConfig(RECAUDADORA_PIN_KEY, String(next))
   const info = await recaudadoraInfo(next)
+  sendAdminAlert('Rotaste la recaudadora (manual)', [
+    `Período: <b>${periodLabel(cur)} → ${periodLabel(next)}</b>`,
+    `Nueva dirección: <b>${info.gasFreeAddress ?? info.address}</b>`,
+    `La anterior queda archivada — su saldo NO se movió.`,
+  ]).catch(() => {})
   return { ok: true, oldPeriod: cur, oldLabel: periodLabel(cur), newPeriod: next, newLabel: periodLabel(next), gasFreeAddress: info.gasFreeAddress, address: info.address }
+}
+
+// Consolidar: barre el USDT de las recaudadoras ARCHIVADAS (períodos
+// anteriores) hacia la recaudadora ACTUAL, para que no quede plata dispersa.
+// Mueve dinero on-chain (paga la comisión GasFree por cada barrido). Solo lo
+// dispara el admin.
+async function consolidateRecaudadoras(back = 12) {
+  if (HOT_KEY) return { ok: false, error: 'La recaudadora es fija (LINCOIN_TRON_HOT_KEY) — no hay archivadas que consolidar.' }
+  const cur = await effectiveRecaudadoraPeriod()
+  const rec = await recaudadora()
+  const recAcct = await gfAccount(rec.eoa)
+  const dest = recAcct.gasFreeAddress ?? rec.eoa
+  const { token } = await gfConfig()
+  const dec = Number(token.decimal ?? 6)
+  const results: any[] = []
+  let totalSwept = 0
+  for (let p = cur - 1; p >= cur - Math.max(1, back); p--) {
+    try {
+      const { pkHex, eoa } = await recaudadoraWalletFrom(MNEMONIC, p)
+      const acct = await gfAccount(eoa)
+      if (!acct.gasFreeAddress) continue
+      const bal = await tokenBalance(acct.gasFreeAddress, token.tokenAddress, dec)
+      const fee = (Number(token.transferFee ?? 0) + (acct.active ? 0 : Number(token.activateFee ?? 0))) / Math.pow(10, dec)
+      const sendable = parseFloat((bal - fee).toFixed(dec))
+      if (sendable <= 0) continue
+      const r = await sendCore(pkHex, eoa, dest, sendable)
+      totalSwept += sendable
+      results.push({ period: p, label: periodLabel(p), swept: sendable, traceId: r.traceId })
+      await logTreasuryMovement({ direction: 'in', amount: sendable, fromAddress: acct.gasFreeAddress, context: 'consolidacion_recaudadoras', traceId: r.traceId, state: r.state, feeChargedUsdt: r.feeChargedUsdt })
+    } catch (e) { results.push({ period: p, label: periodLabel(p), error: (e as Error)?.message }) }
+  }
+  if (totalSwept > 0) {
+    sendAdminAlert('Consolidaste las recaudadoras archivadas', [
+      `Barrido total: <b>${totalSwept.toFixed(2)} USDT</b> → recaudadora actual (${periodLabel(cur)})`,
+      `Períodos con saldo: <b>${results.filter(r => r.swept).length}</b>`,
+    ]).catch(() => {})
+  }
+  return { ok: true, dest, totalSwept: parseFloat(totalSwept.toFixed(dec)), results }
 }
 async function userWallet(index: number) {
   if (!MNEMONIC) throw new Error('Configura GASFREE_TRON_MNEMONIC en Supabase Secrets para derivar las wallets de los usuarios')
@@ -590,6 +657,16 @@ async function logWalletChange(entry: { userId: string; email?: string | null; o
     list.unshift({ at: new Date().toISOString(), ...entry })
     await saveSystemConfig(WALLET_LOG_KEY, JSON.stringify(list.slice(0, 500)))
   } catch { /* el log jamás bloquea la operación real */ }
+  // AVISO: solo cuando una wallet EXISTENTE cambia (oldIndex != null). La
+  // primera asignación (oldIndex null) no avisa — no es un "cambio".
+  if (entry.oldIndex != null) {
+    const label: Record<string, string> = { admin_pin: 'Fijada por admin', admin_reset: 'Reasignada por admin', reconcile_email: 'Reconciliación (mismo correo)', auto: 'Automático' }
+    sendAdminAlert('Cambió la wallet de un cliente', [
+      `Cliente: <b>${entry.email ?? entry.userId}</b>`,
+      `Índice: <b>${entry.oldIndex} → ${entry.newIndex}</b>`,
+      `Motivo: <b>${label[entry.source] ?? entry.source}</b>`,
+    ]).catch(() => {})
+  }
 }
 async function getWalletLog(email?: string) {
   const { data } = await db.from('system_config').select('value').eq('key', WALLET_LOG_KEY).single()
@@ -2253,6 +2330,8 @@ Deno.serve(async (req) => {
     if (action === 'recaudadora_pin') return ok(await pinRecaudadora())
     // Rotar la recaudadora A MANO (avanza al siguiente período; la anterior queda archivada).
     if (action === 'recaudadora_rotate') return ok(await rotateRecaudadora())
+    // Consolidar: barrer el saldo de las recaudadoras archivadas → la actual.
+    if (action === 'recaudadora_consolidate') return ok(await consolidateRecaudadoras(body.back != null ? Number(body.back) : 12))
 
     return err(`Acción desconocida: ${action}`, 400)
   } catch (e) {

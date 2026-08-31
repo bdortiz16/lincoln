@@ -103,6 +103,17 @@ export const RecaudadoraRotativaCard: React.FC = () => {
     const isManual = current?.manual === true;
 
     const archived = periods.filter(p => p.archived);
+    const archivedWithBalance = archived.filter(p => (p.balance ?? 0) > 0);
+    const [consolidateMsg, setConsolidateMsg] = useState<string | null>(null);
+    const doConsolidate = async () => {
+        const total = archivedWithBalance.reduce((s, p) => s + (p.balance ?? 0), 0);
+        if (!confirm(`¿Barrer ${fmtUsd(total)} USDT de ${archivedWithBalance.length} recaudadora(s) archivada(s) hacia la actual?\n\nMueve dinero on-chain y paga la comisión GasFree por cada barrido.`)) return;
+        setActing('consolidate'); setError(null); setConsolidateMsg(null);
+        const r = await callGasfree({ action: 'recaudadora_consolidate' });
+        setActing(null);
+        if (r?.error) setError(r.error);
+        else { setConsolidateMsg(`✅ Consolidado: ${fmtUsd(r.totalSwept)} USDT barridos a la recaudadora actual.`); load(); }
+    };
 
     return (
         <div style={{ background: '#121413', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 18, padding: 22 }}>
@@ -189,9 +200,18 @@ export const RecaudadoraRotativaCard: React.FC = () => {
             {/* Archivadas */}
             {archived.length > 0 && (
                 <div>
-                    <p className="flex items-center gap-1.5 mb-2" style={{ color: '#878E88', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px' }}>
-                        <Archive size={12} /> Archivadas ({archived.length})
-                    </p>
+                    <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
+                        <p className="flex items-center gap-1.5" style={{ color: '#878E88', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px', margin: 0 }}>
+                            <Archive size={12} /> Archivadas ({archived.length})
+                        </p>
+                        {archivedWithBalance.length > 0 && (
+                            <button onClick={doConsolidate} disabled={acting === 'consolidate'} className="px-3 py-1.5 rounded-lg text-xs font-bold disabled:opacity-60"
+                                style={{ background: 'rgba(74,222,128,0.12)', border: '1px solid rgba(74,222,128,0.35)', color: '#4ADE80' }}>
+                                {acting === 'consolidate' ? 'Consolidando…' : `⇊ Consolidar ${archivedWithBalance.length} → actual`}
+                            </button>
+                        )}
+                    </div>
+                    {consolidateMsg && <p style={{ color: '#4ADE80', fontSize: 11.5, fontWeight: 600, marginBottom: 8 }}>{consolidateMsg}</p>}
                     <div className="flex flex-col gap-1.5">
                         {archived.map((p) => (
                             <div key={p.period} className="flex items-center justify-between" style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '9px 12px' }}>
