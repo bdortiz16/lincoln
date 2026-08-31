@@ -123,13 +123,18 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onNaviga
       heroArt.innerHTML = CONVERTER_HTML;
     }
 
-    // 2) Insertar la sección de la tarjeta antes del footer.
-    const footer = el.querySelector('footer');
-    if (footer && !el.querySelector('#tarjeta')) {
-      const wrap = document.createElement('div');
-      wrap.innerHTML = CARD_SECTION_HTML;
-      const node = wrap.firstElementChild;
-      if (node) footer.parentElement?.insertBefore(node, footer);
+    // 2) Insertar la sección de la tarjeta JUSTO ENCIMA de la franja de
+    //    confianza (la barra "Cifrado AES-256 · USDT y EURT · …"). Si por
+    //    algún motivo no está, se cae al antiguo punto (antes del footer).
+    if (!el.querySelector('#tarjeta')) {
+      const trustSection =
+        el.querySelector('.trust-grid')?.closest('section') || el.querySelector('footer');
+      if (trustSection) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = CARD_SECTION_HTML;
+        const node = wrap.firstElementChild;
+        if (node) trustSection.parentElement?.insertBefore(node, trustSection);
+      }
     }
 
     // 3) Comportamiento del conversor (tasa en vivo + formato es).
