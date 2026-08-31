@@ -213,6 +213,9 @@ async function finityFetchAbs(url: string, init: RequestInit = {}): Promise<Resp
 // que devuelve su propio login (data.signed). Se inicia sesión con las
 // credenciales del portal guardadas como secrets y se cachea el token.
 const PORTAL_BASE     = 'https://prod.finity.com.co:444'
+// ⚠️ Estos secrets se leen UNA vez, al ARRANCAR la función (module load). Si
+// los agregas/cambias en Supabase, hay que REDESPLEGAR finity-proxy para que
+// los tome — una instancia caliente sigue con los valores viejos (o vacíos).
 const PORTAL_EMAIL    = (Deno.env.get('FINITY_PORTAL_EMAIL') ?? '').trim()
 // Se recorta solo un salto de línea/retorno final (típico al pegar el
 // secret), NO espacios que podrían ser parte real de la contraseña.
