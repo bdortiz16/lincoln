@@ -655,14 +655,38 @@ async function pinAddressToUser(userId: string, address: string) {
 
   // (2) Si no cayó en un determinista, escaneo secuencial AMPLIO.
   if (!match) {
-    const hit = await findAddress(addr, 80)
+    const hit = await findAddress(addr, 120)
     if (hit?.found && typeof hit.index === 'number') {
       match = { index: hit.index, eoa: hit.eoa, gasFreeAddress: hit.gasFreeAddress, mnemonic: hit.mnemonic, balanceUsdt: hit.balanceUsdt }
     }
   }
 
   if (!match) {
-    throw new Error(`No se encontró el índice HD para ${addr} (probé índices deterministas y escaneo secuencial). ¿Es una wallet GasFree derivada de la semilla de Lincoin?`)
+    // DIAGNÓSTICO: ¿la dirección es de la RAMA de la RECAUDADORA (change=1)?
+    // Esas NO son wallets de cliente — no se pueden asignar a un usuario.
+    try {
+      const cur = recaudadoraPeriod()
+      for (let p = cur; p > cur - 18; p--) {
+        const { eoa } = await recaudadoraWalletFrom(MNEMONIC, p)
+        const acct = await gfAccount(eoa)
+        if (eoa === addr || acct.gasFreeAddress === addr) {
+          throw new Error(`Esa dirección es la RECAUDADORA (colector de Lincoin) del período ${periodLabel(p)}, NO una wallet de cliente. Su saldo es de tesorería, no de ${primary.email ?? 'este cliente'}. No se puede fijar a un usuario.`)
+        }
+      }
+    } catch (e) {
+      if (e instanceof Error && e.message.includes('RECAUDADORA')) throw e
+      /* si el chequeo de recaudadora falla por red, seguimos al error genérico */
+    }
+    // Qué deriva el usuario AHORA (para comparar) — sin escribir nada.
+    let current = ''
+    try {
+      const praw = (primary.raw_data ?? {}) as Record<string, any>
+      const idx = typeof praw.gasfreeIndex === 'number' ? praw.gasfreeIndex : deterministicIndex(String(primary.id))
+      const { eoa } = await userWallet(idx)
+      const acct = await gfAccount(eoa)
+      current = ` · Hoy este cliente deriva la wallet ${acct.gasFreeAddress ?? eoa} (índice ${idx}).`
+    } catch { /* opcional */ }
+    throw new Error(`No se encontró ${addr} en la semilla de Lincoin (probé recaudadora, índices deterministas y escaneo amplio).${current} Verifica que sea la dirección EXACTA que mostró la app (la "TU DIRECCIÓN USDT"), no una copiada de otro lado.`)
   }
 
   await persistIndexToRows(rows, match.index)   // escribe el índice y (por el merge) limpia caché
