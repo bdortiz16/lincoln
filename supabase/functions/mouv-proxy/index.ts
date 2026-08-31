@@ -720,11 +720,18 @@ serve(async (req: Request) => {
     if (amount < PAYOUT_MIN_COP) {
       return json(400, { error: 'under_minimum', message: `El monto mínimo por envío es ${PAYOUT_MIN_COP.toLocaleString('es-CO')} COP.` })
     }
-    // (1) Tope por operación: ninguna dispersión individual puede superar el
-    //     límite (PAYOUT_MAX_COP, default $20.000.000; override por secret).
+    // (1) Tope por operación. Bre-B tiene un LÍMITE DURO del proveedor (Mouv):
+    //     máximo $12.000.000 COP por transferencia — un envío mayor lo rechaza
+    //     Mouv, así que se corta AQUÍ con un mensaje claro (antes el tope era
+    //     20M y un envío de 12–20M pasaba la app y fallaba en Mouv). ACH usa el
+    //     tope general. Ambos overridables por secret.
+    const BREB_MAX_COP   = Number(Deno.env.get('BREB_MAX_COP')   ?? '12000000') || 12000000
     const PAYOUT_MAX_COP = Number(Deno.env.get('PAYOUT_MAX_COP') ?? '20000000') || 20000000
-    if (amount > PAYOUT_MAX_COP) {
-      return json(400, { error: 'over_limit', message: `El monto supera el límite por operación (${PAYOUT_MAX_COP.toLocaleString('es-CO')} COP). Para montos mayores usa la Mesa OTC.` })
+    const perOpMax = rail === 'BREB' ? Math.min(BREB_MAX_COP, PAYOUT_MAX_COP) : PAYOUT_MAX_COP
+    if (amount > perOpMax) {
+      return json(400, { error: 'over_limit', message: rail === 'BREB'
+        ? `Bre-B permite máximo ${perOpMax.toLocaleString('es-CO')} COP por transferencia. Divide el envío en varias operaciones o usa la Mesa OTC.`
+        : `El monto supera el límite por operación (${perOpMax.toLocaleString('es-CO')} COP). Para montos mayores usa la Mesa OTC.` })
     }
     // (2) Idempotencia / anti doble-clic: si YA existe una dispersión idéntica
     //     (mismo usuario, riel y monto) creada hace menos de 2 minutos y que
