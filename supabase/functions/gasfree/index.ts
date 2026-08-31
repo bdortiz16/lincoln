@@ -1553,7 +1553,17 @@ async function autoConvert(txId: string, uid: string) {
       if (tx.status === 'Completado' || tx.status === 'Rechazado') return
       const rd = (tx.raw_data ?? {}) as Record<string, any>
       const phase = String(rd.convertPhase ?? '')
-      if (phase === 'converting') return // el frontend (u otro run) la tiene
+      if (phase === 'converting') {
+        // Reclamo 'converting': normalmente lo tiene el frontend. Pero si el
+        // frontend falló (p. ej. el viejo camino que daba 'forbidden') y NO
+        // liberó, quedaba colgado para SIEMPRE (el autopiloto salía aquí). Si
+        // el reclamo está VIEJO (> 2 min), se libera y el autopiloto lo retoma.
+        const cAt = Date.parse(String(rd.convertingAt ?? '')) || 0
+        if (Date.now() - cAt < 120000) return   // reciente → el frontend lo tiene
+        await releaseConvertClaim(txId)          // colgado → liberar y retomar
+        await sleepMs(500)
+        continue
+      }
       if (phase !== 'recharged') {
         const fin: any = await myConvertFinalize(uid, txId, true).catch(() => null)
         if (!fin || (!fin.recharged && fin.phase !== 'recharged')) {

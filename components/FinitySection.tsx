@@ -589,60 +589,41 @@ export const FinitySection: React.FC<{
             }
         } catch { /* sin claim disponible → convertir local como siempre */ }
         try {
-            let fd: any = null, lastErr = '';
-            for (let attempt = 0; attempt < 2 && !fd; attempt++) {
-                if (attempt > 0) await sleep(3000);
-                const q = await callFinity('rates', userId, { query: { from: 'USD', to: 'COP' } });
-                const quote = (q?.data ?? {}) as any;
-                const createBody: Record<string, unknown> = { fromAsset: 'USD', toAsset: 'COP', amount: p.finityAmount };
-                if (quote.id) createBody.exchange_rate_id = quote.id;
-                if (quote.expires_at) createBody.expires_at = quote.expires_at;
-                const c = await callFinity('convert', userId, { data: createBody });
-                const convId = (c?.data as any)?.id;
-                if (!c?.ok || !convId) { lastErr = c?.error ?? `HTTP ${c?.status ?? '—'}`; continue; }
-                const f = await callFinity('convert_confirm', userId, { id: String(convId) });
-                const d = (f?.data ?? {}) as any;
-                if (f?.ok && String(d.status ?? '') === 'SUCCESS') { fd = d; break; }
-                lastErr = f?.error ?? `estado ${d.status ?? '—'} (HTTP ${f?.status ?? '—'})`;
+            // La conversión USDT→COP en Finity es una operación de TESORERÍA que
+            // ejecuta el SERVIDOR (el autopiloto, con la llave de servicio). El
+            // cliente NO puede llamarla directo — es interna por seguridad y
+            // daría 'forbidden'. Por eso aquí se LIBERA cualquier reclamo del
+            // cliente, se DISPARA el autopiloto y se OBSERVA hasta que acredite.
+            await callGasfree({ action: 'my_convert_release', userId, txId: p.txId }).catch(() => {});
+            await callGasfree({ action: 'my_convert_kick', userId, txId: p.txId }).catch(() => {});
+            for (let i = 0; i < 40; i++) {   // ~40 × 4s ≈ 2,7 min observando
+                await sleep(4000);
+                const st: any = await callGasfree({ action: 'my_convert_status', userId, txId: p.txId }).catch(() => null);
+                if (st?.status === 'Completado') {
+                    await completeUI(Number(st.amount ?? p.creditAmount ?? 0), Number(st.mouvRate ?? p.previewRate ?? 0), Number(st.utilityCop ?? 0));
+                    return;
+                }
+                if (st?.status === 'Rechazado') {
+                    setPendingConvert(p);
+                    setConvertStep('error');
+                    setConvertResult({ ok: false, text: 'La conversión fue rechazada. Tu USDT sigue en la tesorería — dale "Reintentar conversión" o contacta soporte.' });
+                    setConverting(false);
+                    return;
+                }
+                // Re-disparar el autopiloto cada ~32s por si se detuvo entre rondas.
+                if (i > 0 && i % 8 === 0) callGasfree({ action: 'my_convert_kick', userId, txId: p.txId }).catch(() => {});
             }
-            if (!fd) {
-                // Soltar el reclamo: el autopiloto del servidor (o el botón
-                // Reintentar) pueden retomarla.
-                callGasfree({ action: 'my_convert_release', userId, txId: p.txId }).catch(() => {});
-                callGasfree({ action: 'my_convert_kick', userId, txId: p.txId }).catch(() => {});
-                setPendingConvert(p); // ← permite reintentar SOLO la conversión, sin reenviar USDT
-                setConvertStep('error');
-                setConvertResult({ ok: false, pending: true, text: `Tu USDT ya está en el riel de pagos (${p.finityAmount.toFixed(2)} USDT) — no se reenvía. La conversión no se completó (${lastErr}) y SEGUIMOS intentándola en segundo plano: puedes salir de la app y el COP te llegará solo, o dale "Reintentar conversión".` });
-                setConverting(false);
-                return;
-            }
-            const finityRate = Number(fd.exchangeRate ?? p.previewRate ?? 0);
-            const grossCop = finityRate > 0 ? p.creditAmount * finityRate : Number(fd.to_amount ?? 0);
-            const clientCop = Math.round(grossCop * (1 - feePct / 100));
-            const utilityCop = Math.max(0, Math.round(grossCop - clientCop));
-            const credit = await callGasfree({ action: 'my_convert_credit', userId, txId: p.txId, copAmount: clientCop, finityRate, feePct, utilityCop });
-            if (credit?.error) {
-                setPendingConvert(p);
-                setConvertStep('error');
-                setConvertResult({ ok: false, text: `La conversión se hizo pero no se pudo acreditar el COP (${credit.error}). Dale "Reintentar conversión" o contacta soporte con el ID ${String(p.txId).slice(0, 8)}.` });
-                setConverting(false);
-                return;
-            }
-            setPendingConvert(null);
-            setConvertStep('completado'); await sleep(300);
-            await onConverted?.(p.amount, clientCop, finityRate, utilityCop);
-            setConvertResult({
-                ok: true,
-                text: `✅ Conversión completada: ${p.amount.toLocaleString('en-US')} USD → ${clientCop.toLocaleString('es-CO')} COP en tu saldo ACH (tasa ${finityRate.toLocaleString('es-CO')}, comisión ${feePct}%). Comisión GasFree ${Number(p.gasfreeFeeUsdt ?? 0).toFixed(2)} USDT.`,
-            });
-            setUsdAmount(''); load(); onSwept?.();
-            await sleep(2800); setConvertStep(null);
+            // Timeout de la UI: el autopiloto sigue en segundo plano.
+            callGasfree({ action: 'my_convert_kick', userId, txId: p.txId }).catch(() => {});
+            setPendingConvert(p); // ← permite reintentar SOLO la conversión, sin reenviar USDT
+            setConvertStep('error');
+            setConvertResult({ ok: false, pending: true, text: `Tu USDT ya está en el riel de pagos (${p.finityAmount.toFixed(2)} USDT) — no se reenvía. La conversión sigue procesándose EN SEGUNDO PLANO en el servidor: puedes salir de la app y el COP te llegará solo a tu saldo ACH, o dale "Reintentar conversión".` });
+            setConverting(false);
         } catch (e: any) {
-            callGasfree({ action: 'my_convert_release', userId, txId: p.txId }).catch(() => {});
             callGasfree({ action: 'my_convert_kick', userId, txId: p.txId }).catch(() => {});
             setPendingConvert(p);
             setConvertStep('error');
-            setConvertResult({ ok: false, pending: true, text: `Error en la conversión: ${String(e?.message ?? e)}. Seguimos intentándola en segundo plano — o dale "Reintentar conversión".` });
+            setConvertResult({ ok: false, pending: true, text: `La conversión sigue procesándose en segundo plano (${String(e?.message ?? e)}). Puedes salir de la app o dale "Reintentar conversión".` });
         }
         setConverting(false);
     };
