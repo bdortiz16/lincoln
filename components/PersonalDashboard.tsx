@@ -246,8 +246,47 @@ function playDepositSound() {
     } catch { /* audio no disponible */ }
 }
 
+// Ruteo por URL: cada vista tiene su propia dirección (como un banco:
+// /movimientos, /billetera…) en vez de quedarse siempre en lincoin.me/#.
+// Así el usuario ve dónde está, puede compartir/recargar y usar atrás/adelante.
+const VIEW_PATHS: Record<string, string> = {
+  dashboard: '/inicio',
+  movements: '/movimientos',
+  'wallet-detail': '/billetera',
+  profile: '/perfil',
+  notifications: '/notificaciones',
+  referrals: '/invita',
+  affiliates: '/aliados',
+  settings: '/ajustes',
+  servicios: '/servicios',
+  mouv: '/mesa-otc',
+  contactos: '/beneficiarios',
+  walletsGasfree: '/wallets',
+};
+const PATH_VIEWS: Record<string, string> = Object.fromEntries(
+  Object.entries(VIEW_PATHS).map(([view, path]) => [path, view])
+);
+
 export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }) => {
-  const [activeView, setActiveView] = useState<'dashboard' | 'movements' | 'wallet-detail' | 'profile' | 'notifications' | 'referrals' | 'affiliates' | 'settings' | 'servicios' | 'mouv' | 'contactos' | 'walletsGasfree'>('dashboard');
+  const [activeView, setActiveView] = useState<'dashboard' | 'movements' | 'wallet-detail' | 'profile' | 'notifications' | 'referrals' | 'affiliates' | 'settings' | 'servicios' | 'mouv' | 'contactos' | 'walletsGasfree'>(() => {
+    // Vista inicial según la URL (deep-link / recarga en /movimientos, etc.).
+    try { return (PATH_VIEWS[window.location.pathname] as any) || 'dashboard'; } catch { return 'dashboard'; }
+  });
+  // Sincroniza vista ↔ URL: al cambiar de vista, actualiza la dirección;
+  // y responde a los botones atrás/adelante del navegador.
+  useEffect(() => {
+    try {
+      const path = VIEW_PATHS[activeView] || '/inicio';
+      if (window.location.pathname !== path) window.history.pushState({ view: activeView }, '', path);
+    } catch { /* entorno sin history */ }
+  }, [activeView]);
+  useEffect(() => {
+    const onPop = () => {
+      try { const v = PATH_VIEWS[window.location.pathname]; if (v) setActiveView(v as any); } catch { /* noop */ }
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
   // 'mouv' se usa para dos entradas distintas: "Dispersar" (Bre-B, flujo
   // completo con cuentas destino/movimientos) y el boton "OTC" en Servicios
   // (solo el convertidor USD->COP, sin nada de dispersion bancaria).
