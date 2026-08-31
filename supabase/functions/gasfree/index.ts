@@ -654,10 +654,13 @@ async function pinAddressToUser(userId: string, address: string) {
   }
 
   // (2) Si no cayó en un determinista, escaneo secuencial AMPLIO.
+  let apiErrors = 0
   if (!match) {
     const hit = await findAddress(addr, 120)
     if (hit?.found && typeof hit.index === 'number') {
       match = { index: hit.index, eoa: hit.eoa, gasFreeAddress: hit.gasFreeAddress, mnemonic: hit.mnemonic, balanceUsdt: hit.balanceUsdt }
+    } else {
+      apiErrors = Number((hit as any)?.apiErrors ?? 0)
     }
   }
 
@@ -686,7 +689,10 @@ async function pinAddressToUser(userId: string, address: string) {
       const acct = await gfAccount(eoa)
       current = ` · Hoy este cliente deriva la wallet ${acct.gasFreeAddress ?? eoa} (índice ${idx}).`
     } catch { /* opcional */ }
-    throw new Error(`No se encontró ${addr} en la semilla de Lincoin (probé recaudadora, índices deterministas y escaneo amplio).${current} Verifica que sea la dirección EXACTA que mostró la app (la "TU DIRECCIÓN USDT"), no una copiada de otro lado.`)
+    if (apiErrors > 0) {
+      throw new Error(`No pude confirmar ${addr}: la API de GasFree limitó el escaneo (${apiErrors} consultas fallaron). NO es que no exista — reintenta en 1-2 minutos y debería encontrarla.${current}`)
+    }
+    throw new Error(`No se encontró ${addr} en la semilla de Lincoin (probé recaudadora, índices deterministas y escaneo amplio, sin errores de API).${current} Verifica que sea la dirección EXACTA que mostró la app (la "TU DIRECCIÓN USDT"), no una copiada de otro lado.`)
   }
 
   await persistIndexToRows(rows, match.index)   // escribe el índice y (por el merge) limpia caché
@@ -1825,26 +1831,43 @@ async function findAddress(target: string, extra = 25) {
   // generó con la anterior). Escaneo en PARALELO por lotes; cada derivación
   // en try/catch para que un fallo puntual no tumbe el lote.
   const mnemos = SCAN_MNEMONICS.length ? SCAN_MNEMONICS : [{ source: 'primary', phrase: MNEMONIC }]
-  const CHUNK = 24
+  // La dirección GasFree se consulta a la API de GasFree (open.gasfree.io). Un
+  // escaneo masivo la LIMITA y, si los fallos se ignoran, se pierde la
+  // coincidencia y se reporta "no encontrada" en falso. Por eso: lotes chicos,
+  // pausa entre lotes, REINTENTOS por candidato, y se CUENTAN los fallos de API
+  // para no mentir. Se escanea de arriba hacia abajo (los índices recientes
+  // primero — la wallet reasignada suele estar cerca del contador).
+  const acctRetry = async (eoa: string): Promise<{ gasFreeAddress: string | null; active: boolean } | null> => {
+    for (let a = 0; a < 3; a++) {
+      try { const acct = await gfAccount(eoa); return { gasFreeAddress: acct.gasFreeAddress, active: acct.active } }
+      catch { await new Promise((r) => setTimeout(r, 300 * (a + 1))) }
+    }
+    return null
+  }
+  const CHUNK = 8
+  let apiErrors = 0
   for (const m of mnemos) {
-    for (let base = 0; base <= top; base += CHUNK) {
+    for (let hi = top; hi >= 0; hi -= CHUNK) {
       const idxs: number[] = []
-      for (let i = base; i <= Math.min(top, base + CHUNK - 1); i++) idxs.push(i)
+      for (let i = hi; i > Math.max(-1, hi - CHUNK); i--) idxs.push(i)
       const results = await Promise.all(idxs.map(async (i) => {
         try {
           const { eoa } = await userWalletFrom(m.phrase, i)
-          const acct = await gfAccount(eoa)
+          if (eoa === t) return { i, eoa, gasFreeAddress: null as string | null, active: false }
+          const acct = await acctRetry(eoa)
+          if (!acct) { apiErrors++; return { i, eoa, gasFreeAddress: null as string | null, active: false } }
           return { i, eoa, gasFreeAddress: acct.gasFreeAddress, active: acct.active }
-        } catch { return { i, eoa: null, gasFreeAddress: null, active: false } }
+        } catch { return { i, eoa: null as string | null, gasFreeAddress: null as string | null, active: false } }
       }))
       const hit = results.find((r) => (r.eoa && r.eoa === t) || (r.gasFreeAddress && r.gasFreeAddress === t))
       if (hit) {
         const bal = hit.gasFreeAddress ? await tokenBalance(hit.gasFreeAddress, token.tokenAddress, dec) : 0
         return { found: true, index: hit.i, mnemonic: m.source, eoa: hit.eoa, gasFreeAddress: hit.gasFreeAddress, active: hit.active, balanceUsdt: bal }
       }
+      await new Promise((r) => setTimeout(r, 120))   // respirar entre lotes
     }
   }
-  return { found: false, scannedUpTo: top, mnemonicsTried: mnemos.map((m) => m.source) }
+  return { found: false, scannedUpTo: top, mnemonicsTried: mnemos.map((m) => m.source), apiErrors }
 }
 
 // Barre el USDT de un índice HD específico a la recaudadora (recuperación).
