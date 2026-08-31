@@ -33,7 +33,7 @@ const RESEND_KEY   = Deno.env.get('RESEND_API_KEY') ?? ''
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const APP_URL = (Deno.env.get('APP_BASE_URL') || 'https://lincoln-psi.vercel.app').replace(/\/+$/, '')
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-const FROM_EMAIL   = Deno.env.get('FROM_EMAIL') ?? 'onboarding@resend.dev'
+const FROM_EMAIL   = Deno.env.get('FROM_EMAIL') ?? Deno.env.get('OTP_FROM_EMAIL') ?? 'no-reply@lincoin.me'
 const FCM_SA_RAW   = Deno.env.get('FCM_SERVICE_ACCOUNT') ?? ''
 
 const db = createClient(SUPABASE_URL, SERVICE_KEY)

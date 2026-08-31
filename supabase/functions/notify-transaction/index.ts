@@ -3,7 +3,11 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 const RESEND_KEY = Deno.env.get('RESEND_API_KEY') ?? ''
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-const FROM_EMAIL = Deno.env.get('FROM_EMAIL') ?? 'onboarding@resend.dev'
+// Remitente: dominio lincoin.me VERIFICADO en Resend. El default anterior
+// (onboarding@resend.dev) SOLO entrega al dueño de la cuenta Resend — por eso
+// los correos de retiro/envío no llegaban a los clientes. Se puede sobrescribir
+// con el secret FROM_EMAIL.
+const FROM_EMAIL = Deno.env.get('FROM_EMAIL') ?? Deno.env.get('OTP_FROM_EMAIL') ?? 'no-reply@lincoin.me'
 
 const db = createClient(SUPABASE_URL, SERVICE_KEY)
 
