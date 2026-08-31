@@ -84,6 +84,24 @@ export const RecaudadoraRotativaCard: React.FC = () => {
         try { navigator.clipboard.writeText(addr); setCopied(addr); setTimeout(() => setCopied(null), 1800); } catch { /* */ }
     };
 
+    const [acting, setActing] = useState<string | null>(null);
+    const doPin = async () => {
+        if (!confirm('¿Fijar la recaudadora actual para que NO rote sola? Desde ya la rotación es 100% manual.')) return;
+        setActing('pin'); setError(null);
+        const r = await callGasfree({ action: 'recaudadora_pin' });
+        setActing(null);
+        if (r?.error) setError(r.error); else load();
+    };
+    const doRotate = async () => {
+        if (!confirm('¿Rotar la recaudadora A MANO ahora?\n\nSe genera una dirección NUEVA para recibir de aquí en adelante. La actual queda ARCHIVADA — su saldo NO se mueve (lo consolidas aparte cuando quieras).')) return;
+        setActing('rotate'); setError(null);
+        const r = await callGasfree({ action: 'recaudadora_rotate' });
+        setActing(null);
+        if (r?.error) setError(r.error); else load();
+    };
+    const isHotKey = current && current.rotates === false && current.manual !== true;
+    const isManual = current?.manual === true;
+
     const archived = periods.filter(p => p.archived);
 
     return (
@@ -142,12 +160,28 @@ export const RecaudadoraRotativaCard: React.FC = () => {
                             </div>
                         )}
                     </div>
-                    {current.rotates !== false ? (
-                        <div className="flex items-center gap-1.5 mt-2.5" style={{ color: '#878E88', fontSize: 11.5 }}>
-                            <Clock size={12} /> Próxima rotación: <b style={{ color: '#F4F4F2' }}>{fmtDate(current.nextRotation)}</b>
+                    {isHotKey ? (
+                        <div className="mt-2.5" style={{ color: '#878E88', fontSize: 11.5 }}>Recaudadora fija (LINCOIN_TRON_HOT_KEY) — no rota.</div>
+                    ) : isManual ? (
+                        <div className="mt-2.5 flex items-center justify-between gap-3 flex-wrap">
+                            <span className="flex items-center gap-1.5" style={{ color: '#4ADE80', fontSize: 11.5, fontWeight: 700 }}>
+                                <CheckCircle2 size={12} /> Fija (manual) — no rota sola. La rotas tú cuando quieras.
+                            </span>
+                            <button onClick={doRotate} disabled={acting === 'rotate'} className="px-3 py-1.5 rounded-lg text-xs font-bold disabled:opacity-60"
+                                style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2' }}>
+                                {acting === 'rotate' ? 'Rotando…' : '↻ Rotar a mano'}
+                            </button>
                         </div>
                     ) : (
-                        <div className="mt-2.5" style={{ color: '#878E88', fontSize: 11.5 }}>Recaudadora fija (LINCOIN_TRON_HOT_KEY) — no rota.</div>
+                        <div className="mt-2.5 flex items-center justify-between gap-3 flex-wrap">
+                            <span className="flex items-center gap-1.5" style={{ color: '#878E88', fontSize: 11.5 }}>
+                                <Clock size={12} /> Aún rota sola. Próxima: <b style={{ color: '#F4F4F2' }}>{fmtDate(current.nextRotation)}</b>
+                            </span>
+                            <button onClick={doPin} disabled={acting === 'pin'} className="px-3 py-1.5 rounded-lg text-xs font-bold disabled:opacity-60"
+                                style={{ background: 'rgba(74,222,128,0.12)', border: '1px solid rgba(74,222,128,0.35)', color: '#4ADE80' }}>
+                                {acting === 'pin' ? 'Fijando…' : '📌 Fijar (dejar de rotar)'}
+                            </button>
+                        </div>
                     )}
                 </div>
             )}

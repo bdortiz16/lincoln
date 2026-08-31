@@ -423,6 +423,25 @@ async function recaudadoraWalletFrom(phrase: string, period: number) {
   const eoa = await ethAddressToTron(child.address)
   return { pkHex: child.privateKey, eoa }
 }
+// ── Rotación MANUAL de la recaudadora ─────────────────────────────
+// Por defecto la recaudadora rotaba SOLA cada período (día 30). Ahora se
+// puede FIJAR un período manualmente (system_config) para que NO rote: se
+// queda en esa dirección hasta que el admin decida rotar a mano. Las
+// anteriores siguen siendo derivables y aparecen como ARCHIVADAS.
+const RECAUDADORA_PIN_KEY = 'gasfree_recaudadora_pinned_period'
+async function pinnedRecaudadoraPeriod(): Promise<number | null> {
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', RECAUDADORA_PIN_KEY).single()
+    if (data?.value != null && String(data.value) !== '') { const p = parseInt(String(data.value)); if (Number.isFinite(p)) return p }
+  } catch { /* sin pin → rotación por fecha (legacy) */ }
+  return null
+}
+// El período vigente: el FIJADO a mano si existe; si no, el de la fecha.
+async function effectiveRecaudadoraPeriod(): Promise<number> {
+  const pin = await pinnedRecaudadoraPeriod()
+  return pin != null ? pin : recaudadoraPeriod()
+}
+
 // Recaudadora ACTUAL (la del período vigente). Si hay LINCOIN_TRON_HOT_KEY
 // seteada, se respeta esa dirección fija (no rota) — modo legacy.
 async function recaudadora() {
@@ -432,7 +451,7 @@ async function recaudadora() {
     return { pkHex, eoa, period: null as number | null, pinned: true }
   }
   if (!MNEMONIC) throw new Error('Configura GASFREE_TRON_MNEMONIC en Supabase Secrets para derivar la recaudadora')
-  const period = recaudadoraPeriod()
+  const period = await effectiveRecaudadoraPeriod()
   return { ...(await recaudadoraWalletFrom(MNEMONIC, period)), period, pinned: false }
 }
 // Info (dirección + saldo + fechas) de la recaudadora de un período dado.
@@ -460,19 +479,42 @@ async function recaudadoraCurrent() {
     const balance = await tokenBalance(acct.gasFreeAddress ?? eoa, token.tokenAddress, Number(token.decimal ?? 6))
     return { current: true, pinned: true, rotates: false, address: eoa, gasFreeAddress: acct.gasFreeAddress ?? null, balance, note: 'Recaudadora fija (LINCOIN_TRON_HOT_KEY). No rota.' }
   }
-  const period = recaudadoraPeriod()
-  return { ...(await recaudadoraInfo(period)), current: true, rotates: true, nextRotation: periodCutoverDate(period + 1).toISOString() }
+  const pin = await pinnedRecaudadoraPeriod()
+  const period = pin != null ? pin : recaudadoraPeriod()
+  return {
+    ...(await recaudadoraInfo(period)), current: true,
+    // Con pin manual: NO rota sola. Sin pin: rota por fecha (legacy).
+    rotates: pin == null, manual: pin != null,
+    nextRotation: pin == null ? periodCutoverDate(period + 1).toISOString() : null,
+    note: pin != null ? 'Recaudadora FIJA (manual). No rota sola — la rotas tú.' : 'Rota sola cada período (aún automática).',
+  }
 }
 // Lista la actual + las archivadas (períodos anteriores) con su saldo.
 async function recaudadoraList(back = 12) {
   if (HOT_KEY) return { pinned: true, periods: [await recaudadoraCurrent()] }
-  const cur = recaudadoraPeriod()
+  const pin = await pinnedRecaudadoraPeriod()
+  const cur = pin != null ? pin : recaudadoraPeriod()
   const periods: any[] = []
   for (let p = cur; p > cur - Math.max(1, back); p--) {
     try { periods.push({ ...(await recaudadoraInfo(p)), current: p === cur, archived: p < cur }) }
     catch (e) { periods.push({ period: p, label: periodLabel(p), error: (e as Error)?.message }) }
   }
-  return { current: cur, nextRotation: periodCutoverDate(cur + 1).toISOString(), periods }
+  return { current: cur, manual: pin != null, nextRotation: pin == null ? periodCutoverDate(cur + 1).toISOString() : null, periods }
+}
+// Fijar la recaudadora vigente para que NO rote sola (todo manual desde ya).
+async function pinRecaudadora() {
+  const period = await effectiveRecaudadoraPeriod()
+  await saveSystemConfig(RECAUDADORA_PIN_KEY, String(period))
+  return { ok: true, pinnedPeriod: period, label: periodLabel(period), manual: true }
+}
+// Rotar la recaudadora A MANO: avanza al siguiente período. La anterior queda
+// ARCHIVADA (derivable y listable). Su saldo NO se mueve — se consolida aparte.
+async function rotateRecaudadora() {
+  const cur = await effectiveRecaudadoraPeriod()
+  const next = cur + 1
+  await saveSystemConfig(RECAUDADORA_PIN_KEY, String(next))
+  const info = await recaudadoraInfo(next)
+  return { ok: true, oldPeriod: cur, oldLabel: periodLabel(cur), newPeriod: next, newLabel: periodLabel(next), gasFreeAddress: info.gasFreeAddress, address: info.address }
 }
 async function userWallet(index: number) {
   if (!MNEMONIC) throw new Error('Configura GASFREE_TRON_MNEMONIC en Supabase Secrets para derivar las wallets de los usuarios')
@@ -2207,6 +2249,10 @@ Deno.serve(async (req) => {
     // Recaudadora rotativa: la actual (período vigente) y el histórico archivado.
     if (action === 'recaudadora_current') return ok(await recaudadoraCurrent())
     if (action === 'recaudadora_list') return ok(await recaudadoraList(body.back != null ? Number(body.back) : 12))
+    // Fijar la recaudadora (dejar de rotar sola) — todo manual desde ya.
+    if (action === 'recaudadora_pin') return ok(await pinRecaudadora())
+    // Rotar la recaudadora A MANO (avanza al siguiente período; la anterior queda archivada).
+    if (action === 'recaudadora_rotate') return ok(await rotateRecaudadora())
 
     return err(`Acción desconocida: ${action}`, 400)
   } catch (e) {
