@@ -641,6 +641,67 @@ async function pinAddressToUser(userId: string, address: string) {
   }
 }
 
+// ── Resolver / acreditar una CONVERSIÓN TRABADA (acción admin) ──────────
+// Cuando el USDT ya llegó al proveedor pero la conversión USDT→COP no cerró
+// (p. ej. el monto que llegó fue 4.990,50 y el sistema esperaba 4.992 por una
+// comisión extra), el cliente quedó DEBITADO el USDT sin recibir su COP. Como
+// el USDT ya está en la tesorería de Lincoin, esta acción acredita el COP
+// adeudado al cliente y CIERRA el movimiento. Es idempotente (CAS por estado):
+// si ya se acreditó, no vuelve a acreditar.
+async function resolveConvertTx(ref: string) {
+  const r = String(ref || '').trim()
+  if (!r) return null
+  // Exacto por id; si no, por sufijo (el admin ve "TX-B385BF").
+  let { data: tx } = await db.from('transactions')
+    .select('id, user_id, status, amount, currency, raw_data, type').eq('id', r).maybeSingle()
+  if (!tx) {
+    const { data: rows } = await db.from('transactions')
+      .select('id, user_id, status, amount, currency, raw_data, type')
+      .ilike('id', `%${r.replace(/^tx[-_]?/i, '')}`).order('created_at', { ascending: false }).limit(3)
+    if (rows && rows.length === 1) tx = rows[0]
+    else if (rows && rows.length > 1) throw new Error('Varias transacciones coinciden — pega el ID completo.')
+  }
+  return tx ?? null
+}
+
+async function adminSettleConvert(ref: string, opts: { rail?: string; amount?: number; preview?: boolean }) {
+  const tx = await resolveConvertTx(ref)
+  if (!tx) throw new Error('Movimiento no encontrado (revisa el ID).')
+  const rd = (tx.raw_data ?? {}) as Record<string, any>
+  const owedCop = opts.amount != null ? Math.round(Number(opts.amount)) : Math.round(Number(rd.destAmount ?? tx.amount ?? 0))
+  const { data: cu } = await db.from('users').select('email, full_name').eq('id', tx.user_id).maybeSingle()
+  // Riel destino: por defecto a Saldo Lincoin (COP) — el más seguro cuando el
+  // riel ACH es justo el que no cerró. El admin puede pedir COP_ACH/COP_BREB.
+  const ALLOWED_RAILS = ['COP', 'COP_ACH', 'COP_BREB']
+  const targetRail = opts.rail && ALLOWED_RAILS.includes(opts.rail) ? opts.rail : 'COP'
+  const info = {
+    txId: tx.id, userId: tx.user_id, email: cu?.email ?? null, name: cu?.full_name ?? null,
+    status: tx.status, currency: tx.currency, phase: rd.convertPhase ?? null,
+    owedCop, rail: targetRail, fromAmount: rd.fromAmount ?? null, rate: rd.mouvRate ?? null,
+  }
+  if (opts.preview) return { ok: true, preview: true, ...info }
+  if (tx.status === 'Completado') return { ok: true, already: true, message: 'La conversión ya estaba acreditada.', ...info }
+  if (!(owedCop > 0)) throw new Error('No hay un monto COP válido para acreditar en este movimiento.')
+  // CAS: cerrar el movimiento SOLO si sigue sin completar → evita doble crédito
+  // si se hace clic dos veces o el autopiloto la cierra al tiempo.
+  const { data: claimed } = await db.from('transactions')
+    .update({ status: 'Completado', raw_data: { ...rd, convertPhase: 'done', adminSettled: true, adminSettledAt: new Date().toISOString(), settledRail: targetRail, settledCop: owedCop } })
+    .eq('id', tx.id).neq('status', 'Completado').select('id')
+  if (!claimed || claimed.length === 0) return { ok: true, already: true, message: 'Otra acción ya la acreditó (evité el doble crédito).', ...info }
+  // Acreditar el COP al cliente (atómico; fallback read-write).
+  const { data: adj, error: adjErr } = await db.rpc('adjust_balances', { p_user_id: tx.user_id, p_fiat: { [targetRail]: owedCop } })
+  let newBal: number | null = null
+  if (!adjErr && !(adj as any)?.error) {
+    newBal = Number((adj as any)?.balances?.[targetRail] ?? 0)
+  } else {
+    const { data: u2 } = await db.from('users').select('balances').eq('id', tx.user_id).single()
+    const b = (u2?.balances as Record<string, number>) ?? {}
+    newBal = parseFloat((Number(b[targetRail] ?? 0) + owedCop).toFixed(2))
+    await db.from('users').update({ balances: { ...b, [targetRail]: newBal } }).eq('id', tx.user_id)
+  }
+  return { ok: true, credited: owedCop, rail: targetRail, newBalance: newBal, ...info }
+}
+
 // Índice determinista de respaldo (offset alto: el contador secuencial de
 // clientes arranca en 1 y crece de a uno, así que 1_000_000+ nunca choca).
 function deterministicIndex(userId: string): number {
@@ -1939,6 +2000,17 @@ Deno.serve(async (req) => {
       if (!uid) return err('Falta userId o email de un usuario existente', 400)
       if (!body.address) return err('Falta address (la wallet real del cliente)', 400)
       return ok(await pinAddressToUser(String(uid), String(body.address)))
+    }
+    // Acreditar / cerrar una conversión TRABADA (el USDT ya llegó al proveedor
+    // pero el COP no se acreditó). preview=true solo consulta; sin preview
+    // acredita el COP al cliente y cierra el movimiento (idempotente).
+    if (action === 'admin_settle_convert') {
+      if (!body.txId && !body.ref) return err('Falta txId (o ref del movimiento)', 400)
+      return ok(await adminSettleConvert(String(body.txId ?? body.ref), {
+        rail: body.rail ? String(body.rail) : undefined,
+        amount: body.amount != null ? Number(body.amount) : undefined,
+        preview: body.preview === true,
+      }))
     }
     // Auditoría: detectar wallets colisionadas y usuarios sin índice.
     if (action === 'audit_indexes') {

@@ -342,6 +342,52 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const [mouvPool, setMouvPool] = useState<{ loading: boolean; total?: number | null; breb?: number | null; ach?: number | null; error?: string } | null>(null);
   // Saldo COP de la tesorería Finity (respalda el riel ACH), análogo a Mouv.
   const [finityPool, setFinityPool] = useState<{ loading: boolean; cop?: number | null; usdt?: number | null; error?: string } | null>(null);
+  // Resolver conversión trabada: el USDT llegó al proveedor pero el COP no se
+  // acreditó → se acredita a mano y se cierra el movimiento.
+  const [stuckRef, setStuckRef] = useState('');
+  const [stuckRail, setStuckRail] = useState<'COP' | 'COP_ACH' | 'COP_BREB'>('COP');
+  const [stuckPreview, setStuckPreview] = useState<any>(null);
+  const [stuckBusy, setStuckBusy] = useState(false);
+  const [stuckMsg, setStuckMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const callGasfreeAdmin = async (bodyObj: Record<string, unknown>) => {
+    const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+    const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+    const ADMIN_PASS = (import.meta.env.VITE_ADMIN_PASSWORD as string) || '';
+    let jwt: string | null = null;
+    try {
+      const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
+      if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; }
+    } catch { /* sin sesión */ }
+    const authHeader = jwt ? `Bearer ${jwt}` : (ADMIN_PASS ? `AdminBypass ${ADMIN_PASS}` : `Bearer ${SKEY}`);
+    const r = await fetch(`${SURL}/functions/v1/gasfree`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: authHeader },
+      body: JSON.stringify(bodyObj),
+    });
+    return r.json();
+  };
+  const previewStuck = async () => {
+    if (!stuckRef.trim()) return;
+    setStuckBusy(true); setStuckMsg(null); setStuckPreview(null);
+    try {
+      const r = await callGasfreeAdmin({ action: 'admin_settle_convert', txId: stuckRef.trim(), preview: true });
+      if (r?.error) setStuckMsg({ ok: false, text: r.error });
+      else { setStuckPreview(r); setStuckRail((r.currency && ['COP','COP_ACH','COP_BREB'].includes(r.currency)) ? r.currency : 'COP'); }
+    } catch (e: any) { setStuckMsg({ ok: false, text: e?.message ?? 'Error' }); }
+    setStuckBusy(false);
+  };
+  const settleStuck = async () => {
+    if (!stuckPreview?.txId) return;
+    if (!window.confirm(`¿Acreditar ${Number(stuckPreview.owedCop).toLocaleString('es-CO')} COP a ${stuckPreview.email ?? stuckPreview.userId} en ${stuckRail} y cerrar el movimiento?`)) return;
+    setStuckBusy(true); setStuckMsg(null);
+    try {
+      const r = await callGasfreeAdmin({ action: 'admin_settle_convert', txId: stuckPreview.txId, rail: stuckRail });
+      if (r?.error) setStuckMsg({ ok: false, text: r.error });
+      else if (r?.already) setStuckMsg({ ok: true, text: r.message ?? 'Ya estaba acreditada.' });
+      else setStuckMsg({ ok: true, text: `✅ Acreditados ${Number(r.credited).toLocaleString('es-CO')} COP en ${r.rail}. Movimiento cerrado.` });
+      setStuckPreview(null); setStuckRef('');
+    } catch (e: any) { setStuckMsg({ ok: false, text: e?.message ?? 'Error' }); }
+    setStuckBusy(false);
+  };
   const loadMouvPool = async () => {
     setMouvPool({ loading: true });
     try {
@@ -1581,6 +1627,55 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
               </div>
             ))}
           </div>
+
+          {/* Resolver conversión trabada: el USDT llegó al proveedor pero el
+              COP no se acreditó (p. ej. llegó 4.990,50 y el sistema esperaba
+              4.992). Acredita el COP adeudado y cierra el movimiento. */}
+          <details style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 16 }}>
+            <summary style={{ padding: '14px 18px', cursor: 'pointer', color: '#F4F4F2', fontSize: 13.5, fontWeight: 700, listStyle: 'none' }}>
+              🛟 Resolver conversión trabada (acreditar COP y cerrar)
+            </summary>
+            <div style={{ padding: '0 18px 18px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5 }}>
+                Úsalo cuando el USDT ya llegó al proveedor pero el COP no se acreditó (el cliente quedó debitado sin su COP). Pega el ID o referencia del movimiento (ej. <span style={{ fontFamily: 'monospace' }}>TX-B385BF</span>), revisa y acredita.
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <input value={stuckRef} onChange={e => setStuckRef(e.target.value)} placeholder="ID o ref del movimiento"
+                  style={{ flex: 1, minWidth: 200, background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10, padding: '10px 12px', color: '#F4F4F2', fontSize: 13 }} />
+                <button onClick={previewStuck} disabled={stuckBusy || !stuckRef.trim()}
+                  style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 10, padding: '10px 16px', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>
+                  {stuckBusy ? 'Buscando…' : 'Buscar'}
+                </button>
+              </div>
+              {stuckPreview && (
+                <div style={{ background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div className="flex justify-between" style={{ fontSize: 12.5 }}><span style={{ color: '#878E88' }}>Cliente</span><span style={{ color: '#F4F4F2', fontWeight: 700 }}>{stuckPreview.name ?? stuckPreview.email ?? stuckPreview.userId}</span></div>
+                  <div className="flex justify-between" style={{ fontSize: 12.5 }}><span style={{ color: '#878E88' }}>Estado actual</span><span style={{ color: stuckPreview.status === 'Completado' ? '#4ADE80' : '#F5B44A', fontWeight: 700 }}>{stuckPreview.status}</span></div>
+                  <div className="flex justify-between" style={{ fontSize: 12.5 }}><span style={{ color: '#878E88' }}>COP a acreditar</span><span style={{ color: '#4ADE80', fontWeight: 800 }}>+ {Number(stuckPreview.owedCop).toLocaleString('es-CO')} COP</span></div>
+                  <div className="flex items-center justify-between" style={{ fontSize: 12.5, marginTop: 4 }}>
+                    <span style={{ color: '#878E88' }}>Acreditar en</span>
+                    <select value={stuckRail} onChange={e => setStuckRail(e.target.value as any)}
+                      style={{ background: '#121413', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 8, padding: '6px 10px', fontSize: 12.5 }}>
+                      <option value="COP">Saldo Lincoin (COP)</option>
+                      <option value="COP_ACH">ACH</option>
+                      <option value="COP_BREB">Bre-B</option>
+                    </select>
+                  </div>
+                  {stuckPreview.status === 'Completado' ? (
+                    <p style={{ fontSize: 12, color: '#4ADE80', fontWeight: 600 }}>Este movimiento ya está Completado — no se vuelve a acreditar.</p>
+                  ) : (
+                    <button onClick={settleStuck} disabled={stuckBusy}
+                      style={{ marginTop: 4, background: '#4ADE80', color: '#0A0C0B', border: 'none', borderRadius: 10, padding: '11px', fontWeight: 800, fontSize: 13.5, cursor: 'pointer' }}>
+                      {stuckBusy ? 'Acreditando…' : 'Acreditar y cerrar'}
+                    </button>
+                  )}
+                </div>
+              )}
+              {stuckMsg && (
+                <p style={{ fontSize: 12.5, fontWeight: 600, color: stuckMsg.ok ? '#4ADE80' : '#F87171' }}>{stuckMsg.text}</p>
+              )}
+            </div>
+          </details>
 
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
             {/* Columna izquierda — buscar y elegir cliente */}
