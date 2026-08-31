@@ -3810,8 +3810,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       ctx.font = `800 25px Archivo, ${FONT}`; ctx.fillStyle = isCredit ? '#4ADE80' : '#F4F4F2';
       const amtLabel = `${isCredit ? '+' : '-'}${formatMoney(tx.amount, tx.currency)} ${displayCurrency(tx.currency)}${railOfCurrency(tx.currency) ? ` · ${railOfCurrency(tx.currency)}` : ''}`;
       ctx.fillText(amtLabel, W / 2, boxY + 34);
-      // Chip de estado: borde de color, sin fondos rojos/naranjas chillones
-      const stCol = tx.status === 'Completado' ? '#4ADE80' : tx.status === 'Pendiente' ? '#F59E0B' : '#F87171';
+      // Chip de estado: borde de color, sin fondos rojos/naranjas chillones.
+      // 'Procesando'/'Pendiente' = ámbar (en curso), no rojo de error.
+      const stCol = tx.status === 'Completado' ? '#4ADE80'
+        : (tx.status === 'Pendiente' || tx.status === 'Procesando' || tx.status === 'En proceso') ? '#F59E0B'
+        : '#F87171';
       ctx.font = `700 11px Archivo, ${FONT}`;
       const stW = ctx.measureText(tx.status).width + 26;
       ctx.strokeStyle = stCol; ctx.lineWidth = 1.2;
@@ -5780,12 +5783,22 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       <button onClick={() => {
                                           // Abrir el detalle real del envío (con descarga de comprobante
                                           // funcional) en vez de cerrar y mandar a Movimientos.
+                                          // Estado REAL para el comprobante: se busca el movimiento real
+                                          // por su referencia del proveedor; si aún no sincroniza, se usa
+                                          // el estado por riel (USDT y Bre-B confirman al instante; ACH
+                                          // queda "Procesando" hasta que el banco liquide). Antes se ponía
+                                          // 'Completado' fijo — el comprobante decía Completado con el pago
+                                          // aún en proceso.
+                                          const realMov: any = sendResult?.providerRef
+                                              ? movements.find((m: any) => m?.providerRef === sendResult.providerRef || m?.raw_data?.providerRef === sendResult.providerRef)
+                                              : null;
+                                          const receiptStatus = realMov?.status || (isWalletSend || isBrebS ? 'Completado' : 'Procesando');
                                           const receiptTx = {
                                               id: sendResult?.providerRef || `TX-${Date.now()}`,
                                               type: isWalletSend ? 'send' : 'dispersion',
                                               amount: amt,
                                               currency: isWalletSend ? 'USDT_TRON' : (isBrebS ? 'COP_BREB' : (isCop ? 'COP_ACH' : sendForm.destinationCurrency)),
-                                              status: 'Completado',
+                                              status: receiptStatus,
                                               createdAt: sendResult?.at || new Date().toISOString(),
                                               beneficiary: name,
                                               bank: sendContact?.bank || sendForm.bankName || (isBrebS ? 'Bre-B' : 'ACH'),
