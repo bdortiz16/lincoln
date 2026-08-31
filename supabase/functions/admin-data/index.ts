@@ -728,16 +728,30 @@ Deno.serve(async (req: Request) => {
     }
 
     // GET (or POST without body) — fetch all users and recent transactions
-    const [usersRes, txRes] = await Promise.all([
+    // ⚠️ Los ids de transactions son UUID ALEATORIOS. Ordenar por `id` (como
+    // antes) devolvía 200 filas en orden lexicográfico de UUID = aleatorio en el
+    // tiempo: al pasar de 200 transacciones, las SOLICITUDES NUEVAS (rail_move a
+    // ACH, cargas, retiros) tenían solo ~200/N de chance de venir → "no llegaban"
+    // a Tesorería para aprobar. Ahora se ordena por created_at (columna indexada)
+    // Y ADEMÁS se traen SIEMPRE todas las pendientes, sin que el tope las tape.
+    const [usersRes, txRes, pendingRes] = await Promise.all([
       db.from('users').select('*'),
-      db.from('transactions').select('*').order('id', { ascending: false }).limit(200),
+      db.from('transactions').select('*').order('created_at', { ascending: false }).limit(200),
+      db.from('transactions').select('*').eq('status', 'Pendiente').order('created_at', { ascending: false }).limit(500),
     ])
+
+    // Une recientes + pendientes, deduplicando por id (una pendiente reciente
+    // aparece en ambas — se conserva una sola vez).
+    const txById = new Map<string, Record<string, unknown>>()
+    for (const t of (txRes.data ?? [])) txById.set(String((t as any).id), t)
+    for (const t of (pendingRes.data ?? [])) txById.set(String((t as any).id), t)
+    const allTx = Array.from(txById.values())
 
     const payload = {
       // Usuarios: solo se quitan blobs base64 gigantes (>20 KB) — los campos
       // normales (contactos, wallets, notificaciones) pasan intactos.
       users:        (usersRes.data ?? []).map((u: Record<string, unknown>) => ({ ...u, raw_data: slimRawData(u.raw_data, 20000) })),
-      transactions: (txRes.data ?? []).map((t: Record<string, unknown>) => ({ ...t, raw_data: slimRawData(t.raw_data) })),
+      transactions: allTx.map((t: Record<string, unknown>) => ({ ...t, raw_data: slimRawData(t.raw_data) })),
     }
     const body = JSON.stringify(payload)
     console.log(`[admin-data] respuesta: ${payload.users.length} usuarios, ${payload.transactions.length} tx, ${(body.length / 1024).toFixed(0)} KB`)
