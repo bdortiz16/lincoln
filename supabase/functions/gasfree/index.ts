@@ -623,10 +623,7 @@ async function resetUserIndex(userId: string) {
 async function pinAddressToUser(userId: string, address: string) {
   const addr = String(address || '').trim()
   if (!addr) throw new Error('Falta la dirección a fijar')
-  const hit = await findAddress(addr)
-  if (!hit?.found || typeof hit.index !== 'number') {
-    throw new Error(`No se encontró el índice HD para ${addr} (escaneado hasta ${hit?.scannedUpTo ?? '?'}). ¿Es una wallet GasFree derivada de la semilla de Lincoin?`)
-  }
+
   const { data: primary } = await db.from('users').select('id, email, raw_data').eq('id', userId).maybeSingle()
   if (!primary) throw new Error('Usuario no encontrado')
   let rows: any[] = [primary]
@@ -634,10 +631,48 @@ async function pinAddressToUser(userId: string, address: string) {
     const { data: sibs } = await db.from('users').select('id, email, raw_data').eq('email', primary.email)
     if (Array.isArray(sibs) && sibs.length) rows = sibs
   }
-  await persistIndexToRows(rows, hit.index)   // escribe el índice y limpia caché
+
+  type Match = { index: number; eoa: string; gasFreeAddress: string | null; mnemonic: string; balanceUsdt?: number }
+  let match: Match | null = null
+
+  // (1) Probar los índices DETERMINISTAS del usuario (offset 1.000.000+ que el
+  //     escaneo secuencial NO cubre). Ahí caen las wallets generadas en
+  //     sesiones sin fila real (half-auth) — justo el caso que el escaneo no
+  //     encontraba. Se prueban los de cada fila hermana y el del userId.
+  const detCandidates = Array.from(new Set(
+    rows.map(r => deterministicIndex(String(r.id))).concat([deterministicIndex(String(userId))])
+  ))
+  for (const i of detCandidates) {
+    try {
+      const { eoa } = await userWallet(i)
+      const acct = await gfAccount(eoa)
+      if (eoa === addr || acct.gasFreeAddress === addr) {
+        match = { index: i, eoa, gasFreeAddress: acct.gasFreeAddress ?? null, mnemonic: 'determinista' }
+        break
+      }
+    } catch { /* sigue con el siguiente candidato */ }
+  }
+
+  // (2) Si no cayó en un determinista, escaneo secuencial AMPLIO.
+  if (!match) {
+    const hit = await findAddress(addr, 80)
+    if (hit?.found && typeof hit.index === 'number') {
+      match = { index: hit.index, eoa: hit.eoa, gasFreeAddress: hit.gasFreeAddress, mnemonic: hit.mnemonic, balanceUsdt: hit.balanceUsdt }
+    }
+  }
+
+  if (!match) {
+    throw new Error(`No se encontró el índice HD para ${addr} (probé índices deterministas y escaneo secuencial). ¿Es una wallet GasFree derivada de la semilla de Lincoin?`)
+  }
+
+  await persistIndexToRows(rows, match.index)   // escribe el índice y (por el merge) limpia caché
+  let bal = match.balanceUsdt
+  if (bal == null) {
+    try { const { token } = await gfConfig(); bal = match.gasFreeAddress ? await tokenBalance(match.gasFreeAddress, token.tokenAddress, Number(token.decimal ?? 6)) : 0 } catch { /* opcional */ }
+  }
   return {
-    ok: true, email: primary.email, index: hit.index, mnemonic: hit.mnemonic,
-    eoa: hit.eoa, gasFreeAddress: hit.gasFreeAddress, balanceUsdt: hit.balanceUsdt,
+    ok: true, email: primary.email, index: match.index, mnemonic: match.mnemonic,
+    eoa: match.eoa, gasFreeAddress: match.gasFreeAddress, balanceUsdt: bal,
   }
 }
 
