@@ -330,7 +330,9 @@ export const FinitySection: React.FC<{
     const [rateResp, setRateResp] = useState<any>(null);
     const [usdAmount, setUsdAmount] = useState('');
     const [converting, setConverting] = useState(false);
-    const [convertResult, setConvertResult] = useState<{ ok: boolean; text: string } | null>(null);
+    // `pending: true` = la conversión NO falló; sigue corriendo en el servidor
+    // (timeout de la UI). Se muestra como "En proceso", no como error rojo.
+    const [convertResult, setConvertResult] = useState<{ ok: boolean; text: string; pending?: boolean } | null>(null);
     // Animación por pasos de la conversión: Enviando → Recibido → Convirtiendo → Completado
     const [convertStep, setConvertStep] = useState<null | 'enviando' | 'recibido' | 'convirtiendo' | 'completado' | 'error'>(null);
     // Celebración al llegar a COMPLETADO: fanfarria + confeti en la ventana.
@@ -579,7 +581,7 @@ export const FinitySection: React.FC<{
                 if (stFinal?.phase === 'converting') {
                     setPendingConvert(p);
                     setConvertStep('error');
-                    setConvertResult({ ok: false, text: '⏳ La conversión sigue procesándose EN SEGUNDO PLANO en el servidor — puedes salir tranquilo: cuando termine verás el COP en tu saldo ACH y el movimiento Completado.' });
+                    setConvertResult({ ok: false, pending: true, text: '⏳ La conversión sigue procesándose EN SEGUNDO PLANO en el servidor — puedes salir tranquilo: cuando termine verás el COP en tu saldo ACH y el movimiento Completado.' });
                     setConverting(false);
                     return;
                 }
@@ -610,7 +612,7 @@ export const FinitySection: React.FC<{
                 callGasfree({ action: 'my_convert_kick', userId, txId: p.txId }).catch(() => {});
                 setPendingConvert(p); // ← permite reintentar SOLO la conversión, sin reenviar USDT
                 setConvertStep('error');
-                setConvertResult({ ok: false, text: `Tu USDT ya está en el riel de pagos (${p.finityAmount.toFixed(2)} USDT) — no se reenvía. La conversión no se completó (${lastErr}) y SEGUIMOS intentándola en segundo plano: puedes salir de la app y el COP te llegará solo, o dale "Reintentar conversión".` });
+                setConvertResult({ ok: false, pending: true, text: `Tu USDT ya está en el riel de pagos (${p.finityAmount.toFixed(2)} USDT) — no se reenvía. La conversión no se completó (${lastErr}) y SEGUIMOS intentándola en segundo plano: puedes salir de la app y el COP te llegará solo, o dale "Reintentar conversión".` });
                 setConverting(false);
                 return;
             }
@@ -640,7 +642,7 @@ export const FinitySection: React.FC<{
             callGasfree({ action: 'my_convert_kick', userId, txId: p.txId }).catch(() => {});
             setPendingConvert(p);
             setConvertStep('error');
-            setConvertResult({ ok: false, text: `Error en la conversión: ${String(e?.message ?? e)}. Seguimos intentándola en segundo plano — o dale "Reintentar conversión".` });
+            setConvertResult({ ok: false, pending: true, text: `Error en la conversión: ${String(e?.message ?? e)}. Seguimos intentándola en segundo plano — o dale "Reintentar conversión".` });
         }
         setConverting(false);
     };
@@ -715,7 +717,7 @@ export const FinitySection: React.FC<{
                 }
                 // ~2,5 min sin confirmación: estado PENDIENTE honesto (no verde).
                 setConvertStep('error');
-                setConvertResult({ ok: false, text: `⏳ Tu envío (${Number(settle.usdtOut ?? 0).toFixed(2)} USDT) sigue confirmándose en la red. Tranquilo: la conversión CONTINÚA EN SEGUNDO PLANO en el servidor — puedes salir de la app y el COP te llegará solo a tu saldo ACH (lo verás en Movimientos).` });
+                setConvertResult({ ok: false, pending: true, text: `⏳ Tu envío (${Number(settle.usdtOut ?? 0).toFixed(2)} USDT) sigue confirmándose en la red. Tranquilo: la conversión CONTINÚA EN SEGUNDO PLANO en el servidor — puedes salir de la app y el COP te llegará solo a tu saldo ACH (lo verás en Movimientos).` });
                 setPendingConvert({
                     txId: String(settle.txId), finityAmount: netAmount, creditAmount: netAmount,
                     amount, previewRate, gasfreeFeeUsdt: Number(settle.feeChargedUsdt ?? 0),
@@ -796,7 +798,7 @@ export const FinitySection: React.FC<{
                 // plano — el cliente puede salir de la app tranquilo.
                 callGasfree({ action: 'my_convert_kick', userId, txId: String(settle.txId) }).catch(() => {});
                 setConvertStep('error');
-                setConvertResult({ ok: false, text: '⏳ Tu USDT ya llegó a la wallet del riel y la plataforma aún no registra la recarga. Tranquilo: la conversión SIGUE EN SEGUNDO PLANO en el servidor — puedes salir de la app y el COP te llegará solo a tu saldo ACH (lo verás en Movimientos). También puedes darle "Reintentar conversión".' });
+                setConvertResult({ ok: false, pending: true, text: '⏳ Tu USDT ya llegó a la wallet del riel y la plataforma aún no registra la recarga. Tranquilo: la conversión SIGUE EN SEGUNDO PLANO en el servidor — puedes salir de la app y el COP te llegará solo a tu saldo ACH (lo verás en Movimientos). También puedes darle "Reintentar conversión".' });
                 setPendingConvert({
                     txId: String(settle.txId), finityAmount: fwdUsd, creditAmount: netAmount,
                     amount, previewRate, gasfreeFeeUsdt: Number(settle.feeChargedUsdt ?? 0),
@@ -882,6 +884,9 @@ export const FinitySection: React.FC<{
                     { key: 'completado', label: 'Completado', sub: 'COP acreditado en tu saldo ACH', Icon: CheckCircle },
                 ];
                 const isError = convertStep === 'error';
+                // "En proceso" (no falla): timeout de la UI mientras el servidor
+                // sigue convirtiendo. Se muestra neutro, no como error rojo.
+                const isBackground = isError && convertResult?.pending === true;
                 const curIdx = isError ? -1 : order.indexOf(convertStep);
                 return (
                     <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 animate-in fade-in duration-200" style={{ fontFamily: "'Archivo', system-ui, sans-serif" }}>
@@ -891,16 +896,18 @@ export const FinitySection: React.FC<{
                             <div className="flex flex-col items-center text-center mb-6">
                                 {/* Wordmark Lincoin — tipográfico, punto verde (sin isotipo) */}
                                 <span style={{ fontWeight: 800, fontSize: 23, letterSpacing: '-0.7px', color: '#F4F4F2', marginBottom: 10 }}>Lincoin<span style={{ color: '#4ADE80' }}>.</span></span>
-                                <h3 className="text-lg font-extrabold" style={{ color: convertStep === 'completado' ? '#4ADE80' : '#F4F4F2', animation: convertStep === 'completado' ? 'fx-pop 0.55s ease-out' : undefined }}>
-                                    {isError ? 'No se pudo completar' : convertStep === 'completado' ? '🎉 ¡Conversión completada!' : 'Procesando conversión'}
+                                <h3 className="text-lg font-extrabold" style={{ color: convertStep === 'completado' ? '#4ADE80' : isBackground ? '#4ADE80' : '#F4F4F2', animation: convertStep === 'completado' ? 'fx-pop 0.55s ease-out' : undefined }}>
+                                    {isBackground ? 'En proceso' : isError ? 'No se pudo completar' : convertStep === 'completado' ? '🎉 ¡Conversión completada!' : 'Procesando conversión'}
                                 </h3>
                                 <p className="text-xs mt-0.5" style={{ color: '#878E88' }}>
-                                    {isError ? 'Revisa el detalle abajo' : 'USDT → COP · saldo ACH'}
+                                    {isBackground ? 'Sigue procesándose en el servidor' : isError ? 'Revisa el detalle abajo' : 'USDT → COP · saldo ACH'}
                                 </p>
                             </div>
                             {isError ? (
                                 <div className="flex flex-col items-center py-4 gap-3">
-                                    <XCircle size={42} strokeWidth={1.5} style={{ color: '#878E88' }} />
+                                    {isBackground
+                                        ? <Clock size={42} strokeWidth={1.5} style={{ color: '#4ADE80' }} />
+                                        : <XCircle size={42} strokeWidth={1.5} style={{ color: '#878E88' }} />}
                                     <p className="text-xs font-semibold text-center px-1 leading-snug" style={{ color: '#F4F4F2' }}>{convertResult?.text ?? 'Ocurrió un error en el proceso.'}</p>
                                     {pendingConvert && (
                                         <button onClick={() => finishConvert(pendingConvert)} disabled={converting} className="lincoin-btn-white px-5 py-2.5 rounded-xl text-sm font-extrabold disabled:opacity-60 flex items-center gap-2" style={{ border: 'none' }}>
