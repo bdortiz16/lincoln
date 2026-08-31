@@ -242,6 +242,18 @@ Deno.serve(async (req: Request) => {
           const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'mfaEnabled', 'mfaFactorId', 'totpSecret', 'totpSecretEnc', 'otp', 'subWallets']
           const merged: Record<string, any> = { ...dbRaw, ...incoming }
           for (const k of SERVER_OWNED) { if (k in dbRaw) merged[k] = dbRaw[k]; else delete merged[k] }
+          // COLECCIONES del cliente (contactos, wallets, notificaciones): tienen
+          // su propio escritor DIRIGIDO (updateUserRawData manda solo esa clave).
+          // Un guardado de PERFIL COMPLETO no debe reescribirlas desde una copia
+          // vieja (multi-dispositivo) → se BORRABAN los contactos. Se detecta el
+          // "perfil completo" porque trae columnas de perfil (email/nombre/
+          // balances); un patch dirigido solo trae {id, raw_data}. Solo en el
+          // perfil completo se fuerzan estas colecciones desde la base.
+          const isFullProfileSave = userRow.email !== undefined || userRow.full_name !== undefined || userRow.balances !== undefined || userRow.kyc_status !== undefined
+          if (isFullProfileSave) {
+            const CLIENT_COLLECTIONS = ['mouvContacts', 'walletContacts', 'notifications', 'notifiedEvents']
+            for (const k of CLIENT_COLLECTIONS) { if (k in dbRaw) merged[k] = dbRaw[k]; else delete merged[k] }
+          }
           ;(userRow as any).raw_data = merged
         }
         const { error: saveErr } = await db.from('users').upsert(userRow)

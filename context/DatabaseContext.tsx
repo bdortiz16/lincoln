@@ -807,6 +807,14 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       // Siempre se dejan como están en la BASE; y si no pudimos leer la base,
       // se OMITE raw_data por completo para no pisar nada.
       const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'mfaEnabled', 'totpSecret', 'totpSecretEnc', 'otp', 'subWallets'];
+      // COLECCIONES del cliente que tienen su PROPIO escritor seguro
+      // (updateUserRawData, merge dirigido): contactos, wallets inscritas,
+      // notificaciones. saveUser NUNCA debe reescribirlas desde memoria — una
+      // copia vieja (p. ej. de otro dispositivo, o de un poll que pisó el
+      // estado) BORRABA los contactos/wallets recién inscritos. La BASE MANDA
+      // para estas claves; solo cambian por su escritor dirigido.
+      const CLIENT_COLLECTIONS = ['mouvContacts', 'walletContacts', 'notifications', 'notifiedEvents'];
+      const PREFER_DB = [...SERVER_OWNED, ...CLIENT_COLLECTIONS];
       let haveDbRaw = false;
       try {
         // Con timeout: si esta consulta se cuelga (red móvil), el guardado
@@ -819,8 +827,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           haveDbRaw = true;
           const dbRaw = dbRes.data.raw_data as Record<string, any>;
           safeRest = { ...dbRaw, ...safeRest };
-          // Los campos del servidor SIEMPRE reflejan la base, nunca la memoria.
-          for (const k of SERVER_OWNED) {
+          // Los campos del servidor y las colecciones del cliente SIEMPRE
+          // reflejan la base, nunca la memoria (que puede estar vieja).
+          for (const k of PREFER_DB) {
             if (k in dbRaw) safeRest[k] = dbRaw[k];
             else delete safeRest[k];
           }
