@@ -548,6 +548,18 @@ async function persistIndexToRows(rows: any[], idx: number) {
   }
 }
 
+// ── Merge SEGURO en users.raw_data ────────────────────────────────
+// Escribe SOLO las claves de `patch`, re-leyendo raw_data FRESCO justo antes
+// del write. Así estos writes de la función de wallet (cachear la dirección,
+// gasfreeCredited, sub-wallets…) NUNCA pisan cambios que el cliente guardó en
+// paralelo (2FA/TOTP, beneficiarios), que antes se perdían por la carrera
+// entre "leer raw al inicio" y "escribir raw completo al final".
+async function mergeUserRaw(userId: string, patch: Record<string, any>) {
+  const { data: fresh } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
+  const raw = (fresh?.raw_data ?? {}) as Record<string, any>
+  await db.from('users').update({ raw_data: { ...raw, ...patch } }).eq('id', userId)
+}
+
 // AUDITORÍA: detecta wallets colisionadas (un mismo índice HD compartido por
 // usuarios de CORREOS distintos) y usuarios sin índice asignado. Filas del
 // mismo correo (perfiles duplicados) compartiendo índice NO cuentan como
@@ -750,7 +762,7 @@ async function userAddress(userId: string) {
   const eoaBalance = await tokenBalance(eoa, token.tokenAddress, dec)
   const raw = (u.raw_data ?? {}) as Record<string, any>
   if (acct.gasFreeAddress && raw.gasfreeAddress !== acct.gasFreeAddress) {
-    await db.from('users').update({ raw_data: { ...raw, gasfreeEoa: eoa, gasfreeAddress: acct.gasFreeAddress } }).eq('id', userId)
+    await mergeUserRaw(userId, { gasfreeEoa: eoa, gasfreeAddress: acct.gasFreeAddress })
   }
   // Qué tokens llegaron REALMENTE a la cajita (para diagnosticar depósitos
   // que no aparecen: casi siempre es un contrato USDT distinto).
@@ -810,7 +822,7 @@ async function myStatus(userId: string) {
   // consultarle a GasFree por red (evita el "Generando…" repetido).
   const raw = (u.raw_data ?? {}) as Record<string, any>
   if (acct.gasFreeAddress && raw.gasfreeAddress !== acct.gasFreeAddress) {
-    await db.from('users').update({ raw_data: { ...raw, gasfreeEoa: eoa, gasfreeAddress: acct.gasFreeAddress } }).eq('id', userId)
+    await mergeUserRaw(userId, { gasfreeEoa: eoa, gasfreeAddress: acct.gasFreeAddress })
   }
   return {
     email: u.email, gasFreeAddress: acct.gasFreeAddress, active: acct.active, balance,
@@ -902,7 +914,7 @@ async function myWalletCreate(userId: string, name: string) {
     address: acct.gasFreeAddress ?? eoa, eoa, archived: false, order: subs.length, createdAt: new Date().toISOString(),
   }
   subs.push(w)
-  await db.from('users').update({ raw_data: { ...raw, subWallets: subs } }).eq('id', userId)
+  await mergeUserRaw(userId, { subWallets: subs })
   return { ok: true, wallet: { ...w, balance: 0 } }
 }
 async function myWalletUpdate(userId: string, id: string, patch: { name?: string; archived?: boolean; order?: number }) {
@@ -915,7 +927,7 @@ async function myWalletUpdate(userId: string, id: string, patch: { name?: string
   if (typeof patch.name === 'string' && patch.name.trim()) w.name = patch.name.trim().slice(0, 40)
   if (typeof patch.archived === 'boolean') w.archived = patch.archived
   if (typeof patch.order === 'number') w.order = patch.order
-  await db.from('users').update({ raw_data: { ...raw, subWallets: subs } }).eq('id', userId)
+  await mergeUserRaw(userId, { subWallets: subs })
   return { ok: true, wallet: w }
 }
 // Reordena TODAS las sub-wallets según una lista de ids.
@@ -926,7 +938,7 @@ async function myWalletsReorder(userId: string, ids: string[]) {
   const subs: any[] = Array.isArray(raw.subWallets) ? raw.subWallets : []
   const pos = new Map(ids.map((id, i) => [id, i]))
   for (const w of subs) if (pos.has(w.id)) w.order = pos.get(w.id)
-  await db.from('users').update({ raw_data: { ...raw, subWallets: subs } }).eq('id', userId)
+  await mergeUserRaw(userId, { subWallets: subs })
   return { ok: true }
 }
 async function myWalletSend(userId: string, id: string, toAddress: string, amount: number) {
@@ -1024,7 +1036,10 @@ async function myConvertSettle(
   // (modelo SIN CAJA: no adelantamos COP hasta que el USDT llegue al proveedor).
   const bals = (u.balances as Record<string, number>) ?? {}
   const newUsdLedger = Math.max(0, parseFloat((Number(bals.USD ?? 0) - grossUsd).toFixed(2)))
-  const raw = (u.raw_data ?? {}) as Record<string, any>
+  // Re-leer raw_data fresco para no pisar cambios concurrentes del cliente
+  // (2FA, beneficiarios) al escribir el contador junto con el saldo.
+  const { data: freshCS } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
+  const raw = (freshCS?.raw_data ?? u.raw_data ?? {}) as Record<string, any>
   const onchainAfter = Math.max(0, parseFloat((bal - value - fee).toFixed(dec)))
   await db.from('users').update({
     balances: { ...bals, USD: newUsdLedger },
@@ -1442,7 +1457,7 @@ async function myVerifyDeposit(userId: string) {
   // saldo real — sin tocar balances ni crear movimientos. Si no, el
   // próximo depósito no se acreditaría (diff quedaría en 0 para siempre).
   if (diff < -0.0001) {
-    await db.from('users').update({ raw_data: { ...raw, gasfreeCredited: onchainBal } }).eq('id', userId)
+    await mergeUserRaw(userId, { gasfreeCredited: onchainBal })
     return { synced: false, onchain: onchainBal, credited: 0, diff: 0, rebased: true, reason: `Contador re-basado al saldo real (${onchainBal} USDT).` }
   }
   if (diff <= 0.0001) {
@@ -1466,9 +1481,15 @@ async function myVerifyDeposit(userId: string) {
   // La escritura ahora es CONDICIONAL: solo pasa si gasfreeCredited sigue
   // EXACTAMENTE como lo leímos — el perdedor de la carrera no escribe,
   // no inserta movimiento y responde synced:false (sin toast).
+  // Re-leer raw_data FRESCO justo antes de escribir para no pisar cambios
+  // concurrentes del cliente (2FA, beneficiarios). El CAS sigue usando el
+  // valor ORIGINAL de gasfreeCredited: si otro poll acreditó en el medio, la
+  // condición falla y esta escritura no aplica (no doble-acredita).
+  const { data: freshCU } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
+  const freshRaw = (freshCU?.raw_data ?? raw) as Record<string, any>
   let upd = db.from('users').update({
     balances: { ...bals, USD: newUsd },
-    raw_data: { ...raw, gasfreeCredited: newCredited },
+    raw_data: { ...freshRaw, gasfreeCredited: newCredited },
   }).eq('id', userId)
   upd = typeof raw.gasfreeCredited === 'number'
     ? upd.filter('raw_data->>gasfreeCredited', 'eq', String(raw.gasfreeCredited))
