@@ -140,7 +140,7 @@ export const PersonasAdminLogin: React.FC<PersonasAdminLoginProps> = ({ onLoginS
                             value={email}
                             onChange={(e) => setEmail(e.target.value)}
                             onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
-                            placeholder="adminpersonas@lincoin.com"
+                            placeholder="correo@empresa.com"
                             className="w-full px-3 py-2.5 rounded-md outline-none transition-colors mb-4"
                             style={{
                                 backgroundColor: BG,

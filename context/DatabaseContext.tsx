@@ -486,7 +486,6 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           const authHeader = isAdminBypass
             ? `AdminBypass ${SEED_ADMIN_PASSWORD}`
             : `Bearer ${getStoredToken() ?? SKEY}`;
-          console.log('[LINCOIN ADMIN] bypass=', isAdminBypass, '| pass set=', !!SEED_ADMIN_PASSWORD, '| url=', SURL.slice(0, 40));
           const abortCtl = new AbortController();
           const abortTimer = setTimeout(() => abortCtl.abort(), 20000);
           const fnResult = await fetch(`${SURL}/functions/v1/admin-data`, {
@@ -495,7 +494,6 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             signal: abortCtl.signal,
           }).then(async r => {
             const text = await r.text().catch(() => '');
-            console.log('[LINCOIN ADMIN] edge fn status=', r.status, '| body=', text.slice(0, 300));
             try { const data = JSON.parse(text); return r.ok ? { data, error: null } : { data: null, error: data }; }
             catch { return { data: null, error: text }; }
           }).finally(() => clearTimeout(abortTimer)) as any;

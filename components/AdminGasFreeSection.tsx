@@ -623,7 +623,7 @@ export const AdminGasFreeSection: React.FC = () => {
                         <input
                             value={fixEmail}
                             onChange={(e) => setFixEmail(e.target.value)}
-                            placeholder="correo del usuario · ej. xatechgerencia@gmail.com"
+                            placeholder="correo del usuario · ej. usuario@correo.com"
                             className="flex-1 min-w-[240px] px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#4ADE80]"
                         />
                         <button onClick={reassignWallet} disabled={fixBusy || !fixEmail.trim()} className="px-3 py-2 text-xs font-bold rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-60">

@@ -29,10 +29,13 @@ Deno.serve(async (req) => {
       })
     }
 
-    // If ADMIN_EMAIL is configured, restrict to that email only
+    // If ADMIN_EMAIL is configured, restrict to that email only.
+    // Respuesta UNIFORME (401 invalid_credentials): NO devolver un código
+    // distinto (403/not_admin) para correos que no son el admin — eso
+    // permitiría enumerar / adivinar cuál es el correo admin probando emails.
     if (ADMIN_EMAIL && email.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
-      return new Response(JSON.stringify({ error: 'not_admin' }), {
-        status: 403, headers: { 'Content-Type': 'application/json', ...CORS },
+      return new Response(JSON.stringify({ error: 'invalid_credentials' }), {
+        status: 401, headers: { 'Content-Type': 'application/json', ...CORS },
       })
     }
 

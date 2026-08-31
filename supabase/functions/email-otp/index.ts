@@ -84,7 +84,17 @@ Deno.serve(async (req) => {
     if (!email && !userId) return json(400, { error: 'missing_identity' })
 
     const { data: user } = await findUser(email, userId)
-    if (!user) return json(404, { error: 'user_not_found' })
+    // SEGURIDAD (pentest H3): NO revelar si el correo tiene cuenta o no.
+    // Antes esta función devolvía 404 user_not_found para correos que no
+    // existen y 200 para los que sí — eso permite enumerar direcciones con
+    // cuenta. Respuesta UNIFORME: si no hay usuario, respondemos igual que
+    // el camino de éxito (sin enviar nada) y salimos.
+    if (!user) {
+      if (action === 'verify') return json(200, { ok: false, error: 'invalid', message: 'Código incorrecto.' })
+      // Mismo shape que el camino de éxito (incluye `to` enmascarado del
+      // correo que ENVIÓ el cliente) para no dar pistas de existencia.
+      return json(200, { ok: true, sent: true, to: maskEmail(String(email ?? '')) })
+    }
     const raw = (user.raw_data ?? {}) as Record<string, any>
 
     // IP del cliente (Deno Deploy/Supabase la reenvía en x-forwarded-for).
