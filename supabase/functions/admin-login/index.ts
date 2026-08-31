@@ -65,10 +65,13 @@ Deno.serve(async (req) => {
         })
       }
     } else {
-      // First login — store hash for future verification
-      await db.from('users').update({
-        raw_data: { ...(user.raw_data || {}), passwordHash: inputHash },
-      }).eq('id', user.id)
+      // SEGURIDAD (pentest H2): NO adoptar cualquier contraseña que llegue
+      // cuando la cuenta admin no tiene hash propio — eso permitiría tomarse
+      // la cuenta admin con solo su correo. El admin entra por su sesión real
+      // de Supabase (Authentication → Users). Se rechaza este respaldo.
+      return new Response(JSON.stringify({ error: 'invalid_credentials' }), {
+        status: 401, headers: { 'Content-Type': 'application/json', ...CORS },
+      })
     }
 
     // Return safe profile (no password hash)
