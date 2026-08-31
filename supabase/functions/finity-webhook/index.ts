@@ -80,7 +80,16 @@ Deno.serve(async (req) => {
 
   const rawBody = await req.text().catch(() => '')
 
-  // Autenticación del webhook (si hay secret configurado, se exige).
+  // SEGURIDAD (pentest #8): FALLA CERRADO. Sin secret configurado, este webhook
+  // podía dispararse por cualquiera (POST anónimo) y forzar un REEMBOLSO de una
+  // dispersión ya pagada → doble-gasto. Si no hay FINITY_WEBHOOK_SECRET, no se
+  // procesa nada.
+  if (!SECRET) {
+    console.error('[finity-webhook] FINITY_WEBHOOK_SECRET no configurado — rechazando (fail-closed)')
+    return json(503, { error: 'webhook_not_configured' })
+  }
+
+  // Autenticación del webhook (secret obligatorio, validado abajo).
   // Se acepta CUALQUIERA de estas formas, porque cada proveedor firma
   // distinto: (a) ?secret= en la URL, (b) el secret plano en un header,
   // (c) la firma HMAC-SHA256 del cuerpo (hex o base64, con o sin

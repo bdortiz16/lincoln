@@ -64,3 +64,42 @@ CREATE POLICY fx_global_write_admin ON public.fx_global_config
 DROP POLICY IF EXISTS xe_config_write ON public.xe_config;
 CREATE POLICY xe_config_write_admin ON public.xe_config
   FOR ALL TO authenticated USING (public.is_any_admin()) WITH CHECK (public.is_any_admin());
+
+-- ── Segunda ronda del pentest ────────────────────────────────────────────
+-- #2 cuypay_p2p_transfer: SECURITY DEFINER, GRANTeada a anon, escribía el
+--    objeto `balances` COMPLETO que mandara el cliente sobre CUALQUIER uuid,
+--    sin verificar dueño → acuñar/robar saldo con solo la anon key. Huérfana
+--    (el cliente usa cuypay_transfer). Se ELIMINA en todas sus firmas.
+DO $$
+DECLARE r RECORD;
+BEGIN
+  FOR r IN
+    SELECT oid::regprocedure AS sig FROM pg_proc
+    WHERE proname = 'cuypay_p2p_transfer' AND pronamespace = 'public'::regnamespace
+  LOOP
+    EXECUTE 'DROP FUNCTION IF EXISTS ' || r.sig::text;
+  END LOOP;
+END $$;
+
+-- #5 _credit_user_balance: helper SECURITY DEFINER sin chequeo de admin. Por
+--    defecto Postgres da EXECUTE a PUBLIC → cualquiera con la anon key acreditaba
+--    saldo. Solo lo usan los wrappers (que corren como owner) → se revoca de
+--    PUBLIC/anon/authenticated por completo.
+DO $$
+DECLARE r RECORD;
+BEGIN
+  FOR r IN
+    SELECT oid::regprocedure AS sig FROM pg_proc
+    WHERE proname = '_credit_user_balance' AND pronamespace = 'public'::regnamespace
+  LOOP
+    EXECUTE 'REVOKE ALL ON FUNCTION ' || r.sig::text || ' FROM PUBLIC, anon, authenticated';
+  END LOOP;
+  -- treasury_apply_movement: quitar solo de anon/PUBLIC (por si un flujo admin
+  -- autenticado lo usa; nunca debe estar abierto a anónimos).
+  FOR r IN
+    SELECT oid::regprocedure AS sig FROM pg_proc
+    WHERE proname = 'treasury_apply_movement' AND pronamespace = 'public'::regnamespace
+  LOOP
+    EXECUTE 'REVOKE ALL ON FUNCTION ' || r.sig::text || ' FROM PUBLIC, anon';
+  END LOOP;
+END $$;

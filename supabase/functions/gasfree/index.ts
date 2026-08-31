@@ -1752,6 +1752,8 @@ Deno.serve(async (req) => {
     if (action === 'my_wallet_send') {
       if (!userId || !body.id || !toAddress || !amount) return err('Faltan userId, id, toAddress o amount', 400)
       if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
+      const mfaErr = await require2FA(userId, body.otp)   // envío on-chain → 2FA server-side
+      if (mfaErr) return err(mfaErr, 403)
       return ok(await myWalletSend(userId, String(body.id), String(toAddress), Number(amount)))
     }
     if (action === 'my_convert_finalize') {
@@ -1773,6 +1775,8 @@ Deno.serve(async (req) => {
     if (action === 'my_wallet_withdrawal') {
       if (!userId || !toAddress || !amount) return err('Faltan userId, toAddress o amount', 400)
       if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
+      const mfaErr = await require2FA(userId, body.otp)   // retiro on-chain → 2FA server-side
+      if (mfaErr) return err(mfaErr, 403)
       return ok(await myWalletWithdrawal(userId, String(toAddress), Number(amount)))
     }
 
