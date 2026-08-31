@@ -763,17 +763,27 @@ serve(async (req: Request) => {
     }
     const totalDebit = Number((amount + feeCop).toFixed(2))
 
-    // 2) Leer saldo interno del riel y validar monto + comisión
-    const { data: u } = await db.from('users').select('balances').eq('id', userId).maybeSingle()
-    if (!u) return json(404, { error: 'user_not_found', message: 'Usuario no encontrado.' })
-    const bals: Record<string, number> = (u.balances as any) ?? {}
-    const current = Number(bals[railCol] ?? 0)
-    if (current < totalDebit) return json(400, { error: 'insufficient_funds', message: `Saldo ${rail} insuficiente para monto + comisión (${totalDebit.toLocaleString('es-CO')} COP). Disponible: ${current.toLocaleString('es-CO')} COP.` })
-
-    // 3) Debitar monto + comisión (read-check-write)
-    const afterDebit = Number((current - totalDebit).toFixed(2))
-    const { error: debErr } = await db.from('users').update({ balances: { ...bals, [railCol]: afterDebit } }).eq('id', userId)
-    if (debErr) return json(500, { error: 'debit_failed', message: 'No se pudo reservar el saldo. Intenta de nuevo.' })
+    // 2-3) Debitar monto + comisión de forma ATÓMICA (bloqueo de fila) — así
+    //      una operación concurrente no puede "restaurar" el riel debitado y
+    //      duplicar fondos (pentest #4). Fallback a read-check-write si la RPC
+    //      adjust_balances aún no está desplegada.
+    let afterDebit = 0
+    const { data: adjDeb, error: adjDebErr } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { [railCol]: -totalDebit } })
+    if (!adjDebErr) {
+      const e = (adjDeb as any)?.error
+      if (e === 'not_found') return json(404, { error: 'user_not_found', message: 'Usuario no encontrado.' })
+      if (e) return json(400, { error: 'insufficient_funds', message: `Saldo ${rail} insuficiente para monto + comisión (${totalDebit.toLocaleString('es-CO')} COP).` })
+      afterDebit = Number(((adjDeb as any)?.balances?.[railCol]) ?? 0)
+    } else {
+      const { data: u } = await db.from('users').select('balances').eq('id', userId).maybeSingle()
+      if (!u) return json(404, { error: 'user_not_found', message: 'Usuario no encontrado.' })
+      const bals: Record<string, number> = (u.balances as any) ?? {}
+      const current = Number(bals[railCol] ?? 0)
+      if (current < totalDebit) return json(400, { error: 'insufficient_funds', message: `Saldo ${rail} insuficiente para monto + comisión (${totalDebit.toLocaleString('es-CO')} COP). Disponible: ${current.toLocaleString('es-CO')} COP.` })
+      afterDebit = Number((current - totalDebit).toFixed(2))
+      const { error: debErr } = await db.from('users').update({ balances: { ...bals, [railCol]: afterDebit } }).eq('id', userId)
+      if (debErr) return json(500, { error: 'debit_failed', message: 'No se pudo reservar el saldo. Intenta de nuevo.' })
+    }
 
     // 3) Registrar la transacción (type 'dispersion' — NO colisiona con la
     //    cola de retiros del admin, que es type 'send' + 'Pendiente').
@@ -817,11 +827,17 @@ serve(async (req: Request) => {
         await notifyTx(txId) // correo "tu envío llegó a destino"
         return json(200, { ok: true, providerRef: pay.providerRef ?? null, feeCop, newBalance: afterDebit })
       }
-      // Falló → REINTEGRAR monto + comisión
-      const { data: u2 } = await db.from('users').select('balances').eq('id', userId).maybeSingle()
-      const bals2: Record<string, number> = (u2?.balances as any) ?? {}
-      const restored = Number((Number(bals2[railCol] ?? 0) + totalDebit).toFixed(2))
-      await db.from('users').update({ balances: { ...bals2, [railCol]: restored } }).eq('id', userId)
+      // Falló → REINTEGRAR monto + comisión (atómico; fallback read-write).
+      let restored = 0
+      const { data: adjR, error: adjRErr } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { [railCol]: totalDebit } })
+      if (!adjRErr && !(adjR as any)?.error) {
+        restored = Number(((adjR as any)?.balances?.[railCol]) ?? 0)
+      } else {
+        const { data: u2 } = await db.from('users').select('balances').eq('id', userId).maybeSingle()
+        const bals2: Record<string, number> = (u2?.balances as any) ?? {}
+        restored = Number((Number(bals2[railCol] ?? 0) + totalDebit).toFixed(2))
+        await db.from('users').update({ balances: { ...bals2, [railCol]: restored } }).eq('id', userId)
+      }
       if (txId) await db.from('transactions').update({
         status: 'Fallido',
         raw_data: { ...prettyBase, ...feeDetail, error: pay.data ?? 'payout_failed', httpStatus: pay.status, refunded: true, failedAt: new Date().toISOString() },
@@ -879,11 +895,17 @@ serve(async (req: Request) => {
       await notifyTx(txId) // correo "recibimos tu envío · en proceso"
       return json(200, { ok: true, provider: 'finity', providerRef: fin.providerRef ?? null, feeCop: fin.feeCop, newBalance })
     }
-    // Finity falló → REINTEGRAR monto + comisión (todo lo debitado)
-    const { data: u5 } = await db.from('users').select('balances').eq('id', userId).maybeSingle()
-    const bals5: Record<string, number> = (u5?.balances as any) ?? {}
-    const restored5 = Number((Number(bals5[railCol] ?? 0) + totalDebit).toFixed(2))
-    await db.from('users').update({ balances: { ...bals5, [railCol]: restored5 } }).eq('id', userId)
+    // Finity falló → REINTEGRAR monto + comisión (atómico; fallback read-write).
+    let restored5 = 0
+    const { data: adjR5, error: adjR5Err } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { [railCol]: totalDebit } })
+    if (!adjR5Err && !(adjR5 as any)?.error) {
+      restored5 = Number(((adjR5 as any)?.balances?.[railCol]) ?? 0)
+    } else {
+      const { data: u5 } = await db.from('users').select('balances').eq('id', userId).maybeSingle()
+      const bals5: Record<string, number> = (u5?.balances as any) ?? {}
+      restored5 = Number((Number(bals5[railCol] ?? 0) + totalDebit).toFixed(2))
+      await db.from('users').update({ balances: { ...bals5, [railCol]: restored5 } }).eq('id', userId)
+    }
     if (txId) await db.from('transactions').update({
       status: 'Fallido',
       raw_data: { ...prettyBase, feeProvider: 'finity', error: fin.error ?? 'finity_failed', refunded: true, failedAt: new Date().toISOString() },

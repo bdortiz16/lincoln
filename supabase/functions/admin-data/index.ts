@@ -294,10 +294,23 @@ Deno.serve(async (req: Request) => {
           return json({ error: 'El monto de la conversión no coincide con la tasa vigente.' }, 400)
         }
 
-        setBal(src, Number((bal(src) - amtS).toFixed(8)))
-        setBal(tgt, Number((bal(tgt) + amtT).toFixed(8)))
-        const { error: upErr } = await db.from('users').update({ balances: fiat, crypto_balances: cry }).eq('id', userId)
-        if (upErr) return json({ error: upErr.message }, 500)
+        // Aplicar los deltas de forma ATÓMICA (bloqueo de fila) para evitar la
+        // carrera de duplicación con otra operación concurrente. Fallback a la
+        // escritura del objeto completo si la RPC aún no está desplegada.
+        const fiatD: Record<string, number> = {}; const cryD: Record<string, number> = {}
+        const addD = (k: string, v: number) => { const o = CRYPTO.has(k) ? cryD : fiatD; o[k] = (o[k] ?? 0) + v }
+        addD(src, -amtS); addD(tgt, amtT)
+        const { data: adj, error: adjErr } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: fiatD, p_crypto: cryD })
+        if (!adjErr) {
+          if ((adj as any)?.error) {
+            return json({ error: (adj as any).error === 'insufficient' ? 'Saldo insuficiente' : 'No se pudo aplicar la conversión.' }, 400)
+          }
+        } else {
+          setBal(src, Number((bal(src) - amtS).toFixed(8)))
+          setBal(tgt, Number((bal(tgt) + amtT).toFixed(8)))
+          const { error: upErr } = await db.from('users').update({ balances: fiat, crypto_balances: cry }).eq('id', userId)
+          if (upErr) return json({ error: upErr.message }, 500)
+        }
 
         let txId: number | null = null
         try {
