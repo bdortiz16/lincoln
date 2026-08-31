@@ -606,10 +606,51 @@ async function userWalletFrom(phrase: string, index: number) {
 // Solución: resolver la fila real por id y por CORREO (hermanos), reusar
 // cualquier índice ya asignado, persistir en TODAS las filas, y asignar el
 // nuevo de forma atómica (RPC next_gasfree_index, con fallback).
+// ── Almacén DURABLE del índice HD (a prueba de borrado de raw_data) ──
+// El índice vive TAMBIÉN en system_config, bajo una clave por-usuario que el
+// cliente NO puede escribir (system_config solo lo toca el service_role/admin).
+// Así, aunque un write del cliente BORRE raw_data.gasfreeIndex, el índice —y por
+// tanto la WALLET— sobrevive intacto. Es la fuente de verdad #1: por eso la
+// billetera deja de "cambiar sola" incluso sin el trigger de base de datos.
+function idxKeyForUser(userId: string) { return `gasfree_idx_u:${userId}` }
+function idxKeyForEmail(email: string) { return `gasfree_idx_e:${String(email).trim().toLowerCase()}` }
+async function readDurableIndex(userId: string, email?: string | null): Promise<number | null> {
+  const keys = [idxKeyForUser(userId)]
+  if (email) keys.push(idxKeyForEmail(email))
+  try {
+    const { data } = await db.from('system_config').select('key, value').in('key', keys)
+    // Preferir la clave por-usuario sobre la de correo si ambas existen.
+    const byUser = (data as any[])?.find((r) => r.key === idxKeyForUser(userId))
+    const rowsFound = byUser ? [byUser, ...((data as any[]) ?? [])] : ((data as any[]) ?? [])
+    for (const row of rowsFound) {
+      const n = parseInt(row?.value, 10)
+      if (Number.isFinite(n) && n >= 1) return n
+    }
+  } catch { /* si falla la lectura, caemos a la resolución normal */ }
+  return null
+}
+async function writeDurableIndex(userId: string, email: string | null | undefined, idx: number) {
+  try { await saveSystemConfig(idxKeyForUser(userId), String(idx)) } catch { /* no bloquea la operación */ }
+  if (email) { try { await saveSystemConfig(idxKeyForEmail(email), String(idx)) } catch { /* no bloquea */ } }
+}
+
 async function userIndex(userId: string): Promise<number> {
   const { data: primary } = await db.from('users').select('id, email, raw_data').eq('id', userId).maybeSingle()
   const praw = (primary?.raw_data ?? {}) as Record<string, any>
-  // FAST-PATH: si la fila ya tiene índice, úsalo tal cual y NO escribas nada.
+  const email = primary?.email ?? null
+
+  // FUENTE DE VERDAD #1: el almacén durable (system_config, no escribible por el
+  // cliente). Si existe, MANDA — sobrevive a cualquier borrado de raw_data, así
+  // que la wallet ya no flota. De paso se sana raw_data.gasfreeIndex si se había
+  // perdido (para el fast-path y el resto de la app), sin tocar nada más.
+  const durable = await readDurableIndex(userId, email)
+  if (durable != null) {
+    if (praw.gasfreeIndex !== durable) { try { await mergeUserRaw(userId, { gasfreeIndex: durable }) } catch { /* opcional */ } }
+    return durable
+  }
+
+  // FAST-PATH: si la fila ya tiene índice, úsalo tal cual y SIÉMBRALO en el
+  // durable (para que la próxima vez ya esté blindado). No reescribe raw_data.
   //
   // ⚠️ Antes se reconciliaba en CADA llamada (mirando filas hermanas y
   //    reescribiendo raw_data). Eso resultó PELIGROSO: reescribir la columna
@@ -617,12 +658,14 @@ async function userIndex(userId: string): Promise<number> {
   //    del cliente (contactos, 2FA/TOTP, etc.) y una carrera los borraba.
   //    La divergencia admin↔cliente ahora se corrige de forma DELIBERADA con
   //    el botón "Fijar wallet real" (pin_address), no automáticamente.
-  if (typeof praw.gasfreeIndex === 'number') return praw.gasfreeIndex
+  if (typeof praw.gasfreeIndex === 'number') {
+    await writeDurableIndex(userId, email, praw.gasfreeIndex)
+    return praw.gasfreeIndex
+  }
 
   // Resolver hermanos por correo (half-auth / duplicados): el índice puede
   // estar en otra fila del mismo correo.
   let rows: any[] = primary ? [primary] : []
-  const email = primary?.email
   if (email) {
     const { data: sibs } = await db.from('users').select('id, email, raw_data').eq('email', email)
     if (Array.isArray(sibs) && sibs.length) rows = sibs
@@ -633,14 +676,19 @@ async function userIndex(userId: string): Promise<number> {
     const raw = (r.raw_data ?? {}) as Record<string, any>
     const existing = typeof raw.gasfreeIndex === 'number' ? raw.gasfreeIndex
       : typeof raw.gasfreeHdIndex === 'number' ? raw.gasfreeHdIndex : null
-    if (existing != null) { await persistIndexToRows(rows, existing, 'reconcile_email'); return existing }
+    if (existing != null) {
+      await persistIndexToRows(rows, existing, 'reconcile_email')
+      await writeDurableIndex(userId, email, existing)
+      return existing
+    }
   }
 
   // Sin fila real donde persistir → índice DETERMINISTA por userId.
   if (!rows.length) return deterministicIndex(userId)
-  // Asignar nuevo índice atómico y persistir en todas las filas.
+  // Asignar nuevo índice atómico y persistir en todas las filas + durable.
   const next = await allocNextIndex()
   await persistIndexToRows(rows, next, 'first_assign')
+  await writeDurableIndex(userId, email, next)
   return next
 }
 
@@ -685,9 +733,13 @@ async function persistIndexToRows(rows: any[], idx: number, source = 'auto') {
     const { data: fresh } = await db.from('users').select('raw_data, email').eq('id', r.id).maybeSingle()
     const raw = (fresh?.raw_data ?? r.raw_data ?? {}) as Record<string, any>
     const prev = typeof raw.gasfreeIndex === 'number' ? raw.gasfreeIndex : null
+    const rowEmail = (fresh as any)?.email ?? r.email ?? null
+    // El almacén durable manda: se actualiza SIEMPRE (aunque raw_data ya
+    // coincida) para que un pin/reset/reconciliación no lo deje desfasado.
+    await writeDurableIndex(r.id, rowEmail, idx)
     if (prev === idx) continue
     await db.from('users').update({ raw_data: { ...raw, gasfreeIndex: idx } }).eq('id', r.id)
-    await logWalletChange({ userId: r.id, email: (fresh as any)?.email ?? r.email ?? null, oldIndex: prev, newIndex: idx, source })
+    await logWalletChange({ userId: r.id, email: rowEmail, oldIndex: prev, newIndex: idx, source })
   }
 }
 
@@ -749,6 +801,7 @@ async function resetUserIndex(userId: string) {
     delete raw.gasfreeAddress   // limpiar dirección cacheada (se recalcula)
     delete raw.gasfreeEoa
     await db.from('users').update({ raw_data: raw }).eq('id', r.id)
+    await writeDurableIndex(r.id, (r as any).email ?? primary.email ?? null, next)
     await logWalletChange({ userId: r.id, email: (r as any).email ?? primary.email ?? null, oldIndex: (r.raw_data ?? {})?.gasfreeIndex ?? null, newIndex: next, source: 'admin_reset' })
   }
   const { eoa } = await userWallet(next)
