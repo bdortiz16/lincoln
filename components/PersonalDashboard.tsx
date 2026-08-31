@@ -388,6 +388,25 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const [mfaVerifyLoading, setMfaVerifyLoading] = useState(false);
   const [mfaDisableCode, setMfaDisableCode] = useState('');
   const [mfaDisableModalOpen, setMfaDisableModalOpen] = useState(false);
+  // Desactivar 2FA exige un CÓDIGO DE CORREO (que nadie lo apague sin acceso al
+  // correo). Se envía un OTP al correo del titular y hay que ingresarlo.
+  const [disableOtp, setDisableOtp] = useState<{ sent: boolean; code: string; sending: boolean; busy: boolean; error: string; to?: string }>({ sent: false, code: '', sending: false, busy: false, error: '' });
+  const callEmailOtp = async (action: string, extra: Record<string, unknown> = {}) => {
+    const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+    const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+    try {
+      const r = await fetch(`${SURL}/functions/v1/email-otp`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${SKEY}` },
+        body: JSON.stringify({ action, userId: currentUser?.id, email: currentUser?.email, ...extra }),
+      });
+      return await r.json();
+    } catch { return { ok: false, error: 'network' }; }
+  };
+  const sendDisableOtp = async () => {
+    setDisableOtp(s => ({ ...s, sending: true, error: '' }));
+    const r = await callEmailOtp('send');
+    setDisableOtp(s => ({ ...s, sending: false, sent: r?.ok !== false, to: r?.to, error: r?.ok === false ? (r.message || 'No se pudo enviar el código.') : '' }));
+  };
   // Arranca en true: hasta la 1ª verificación de MFA, el envío dice
   // "verificando" en vez de tratar al usuario como sin 2FA.
   const [mfaLoadingStatus, setMfaLoadingStatus] = useState(true);
@@ -3156,8 +3175,15 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
   const handleDisableMFA = async () => {
     if (!mfaFactorId) return;
+    // SEGURIDAD: exigir el código enviado al correo — así el 2FA NO se puede
+    // desactivar sin acceso al correo del titular (ni por accidente ni por un
+    // tercero que tenga la sesión abierta).
+    if (!/^\d{6}$/.test(disableOtp.code.trim())) { setDisableOtp(s => ({ ...s, error: 'Ingresa el código de 6 dígitos que te llegó al correo.' })); return; }
+    setDisableOtp(s => ({ ...s, busy: true, error: '' }));
+    const v = await callEmailOtp('verify', { code: disableOtp.code.trim() });
+    if (!v?.ok) { setDisableOtp(s => ({ ...s, busy: false, error: v?.message || 'Código incorrecto o vencido.' })); return; }
     const ok = await unenrollMFA(mfaFactorId);
-    if (!ok) { showToast('Error al desactivar. Intenta nuevamente.', 4000, 'error'); return; }
+    if (!ok) { setDisableOtp(s => ({ ...s, busy: false, error: 'Error al desactivar. Intenta nuevamente.' })); return; }
     setMfaEnrolled(false);
     setMfaFactorId(undefined);
     setMfaTotpSecret(undefined);
@@ -3165,6 +3191,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     // campos aplanados en memoria, para que quede DESACTIVADO tras recargar.
     if (currentUser) updateUserRawData(currentUser.id, { mfaEnabled: false, mfaFactorId: null, totpSecret: null, totpSecretEnc: null }).catch(() => {});
     setMfaDisableModalOpen(false);
+    setDisableOtp({ sent: false, code: '', sending: false, busy: false, error: '' });
     showToast('Verificación en 2 pasos desactivada.');
   };
 
@@ -4272,18 +4299,38 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           </div>
       )}
 
-      {/* 2FA DISABLE MODAL */}
+      {/* 2FA DISABLE MODAL — exige código de correo */}
       {mfaDisableModalOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-8 animate-in zoom-in-95">
                   <h3 className="text-lg font-bold text-slate-800 mb-2">Desactivar 2FA</h3>
-                  <p className="text-slate-500 text-sm mb-6">¿Estás seguro? Tu cuenta quedará protegida solo con contraseña.</p>
+                  <p className="text-slate-500 text-sm mb-5">Por seguridad, para desactivar la verificación en 2 pasos necesitas el <b>código que enviamos a tu correo</b>. Así nadie puede quitarla sin acceso a tu correo.</p>
+
+                  {!disableOtp.sent ? (
+                      <button onClick={sendDisableOtp} disabled={disableOtp.sending}
+                          className="w-full h-11 bg-[#0C0E0D] text-white font-bold rounded-lg hover:bg-[#152e52] transition-colors disabled:opacity-60 mb-4">
+                          {disableOtp.sending ? 'Enviando…' : '📧 Enviarme el código al correo'}
+                      </button>
+                  ) : (
+                      <>
+                          <p className="text-xs text-slate-500 mb-2">Enviamos un código a {disableOtp.to || 'tu correo'}. Ingrésalo:</p>
+                          <input value={disableOtp.code} onChange={e => setDisableOtp(s => ({ ...s, code: e.target.value.replace(/\D/g, '').slice(0, 6), error: '' }))}
+                              inputMode="numeric" placeholder="Código de 6 dígitos"
+                              className="w-full h-12 text-center text-xl font-bold tracking-widest rounded-lg border border-slate-200 outline-none focus:border-red-400 mb-2" />
+                          <button onClick={sendDisableOtp} disabled={disableOtp.sending} className="text-xs text-slate-500 font-semibold hover:underline mb-3">
+                              {disableOtp.sending ? 'Reenviando…' : 'Reenviar código'}
+                          </button>
+                      </>
+                  )}
+                  {disableOtp.error && <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg p-2 mb-3">{disableOtp.error}</p>}
+
                   <div className="flex gap-3">
-                      <button onClick={() => setMfaDisableModalOpen(false)} className="flex-1 h-11 border border-slate-200 text-slate-600 font-bold rounded-lg hover:bg-slate-50 transition-colors">
+                      <button onClick={() => { setMfaDisableModalOpen(false); setDisableOtp({ sent: false, code: '', sending: false, busy: false, error: '' }); }} className="flex-1 h-11 border border-slate-200 text-slate-600 font-bold rounded-lg hover:bg-slate-50 transition-colors">
                           Cancelar
                       </button>
-                      <button onClick={handleDisableMFA} className="flex-1 h-11 bg-red-600 text-white font-bold rounded-lg hover:bg-red-700 transition-colors">
-                          Desactivar
+                      <button onClick={handleDisableMFA} disabled={!disableOtp.sent || disableOtp.code.length !== 6 || disableOtp.busy}
+                          className="flex-1 h-11 bg-red-600 text-white font-bold rounded-lg hover:bg-red-700 transition-colors disabled:opacity-50">
+                          {disableOtp.busy ? 'Verificando…' : 'Desactivar'}
                       </button>
                   </div>
               </div>

@@ -229,6 +229,21 @@ Deno.serve(async (req: Request) => {
             if (userRow.crypto_balances != null) userRow.crypto_balances = clampNoIncrease(userRow.crypto_balances, (cur as any)?.crypto_balances)
           }
         }
+        // ── BLINDAJE server-side de campos que administra SOLO el servidor ──
+        // La wallet GasFree (índice/dirección/contador), el 2FA (TOTP) y el OTP
+        // NUNCA se cambian por save_user — se toman SIEMPRE de la base. Así
+        // ningún guardado de perfil/contactos (ni un cliente con bug, ni una
+        // sesión sin JWT) puede deshabilitar el 2FA ni mover la wallet. El 2FA
+        // solo cambia por las acciones dedicadas (mfa_set / mfa_disable).
+        if (userRow.raw_data !== undefined) {
+          const { data: curRaw } = await db.from('users').select('raw_data').eq('id', selfServiceBody.user.id).maybeSingle()
+          const dbRaw = (((curRaw as any)?.raw_data) ?? {}) as Record<string, any>
+          const incoming = ((userRow as any).raw_data ?? {}) as Record<string, any>
+          const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'mfaEnabled', 'mfaFactorId', 'totpSecret', 'totpSecretEnc', 'otp', 'subWallets']
+          const merged: Record<string, any> = { ...dbRaw, ...incoming }
+          for (const k of SERVER_OWNED) { if (k in dbRaw) merged[k] = dbRaw[k]; else delete merged[k] }
+          ;(userRow as any).raw_data = merged
+        }
         const { error: saveErr } = await db.from('users').upsert(userRow)
         if (saveErr) return json({ error: saveErr.message }, 500)
         return json({ success: true })
