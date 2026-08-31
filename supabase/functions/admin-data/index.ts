@@ -284,11 +284,13 @@ Deno.serve(async (req: Request) => {
           return json({ error: 'No hay tasa vigente para esa conversión. Intenta más tarde.' }, 400)
         }
         // El monto RECIBIDO nunca puede superar el justo (una conversión real
-        // cobra comisión → recibes MENOS). El tope 1.05 anterior dejaba recibir
-        // +5% por pata → ida y vuelta compuesta acuñaba dinero. Ahora el tope es
-        // ~el justo (epsilon 0.001 solo por redondeo de floats); el piso 0.60
-        // permite comisiones de hasta ~40%.
-        if (!(amtT >= expected * 0.60 && amtT <= expected * 1.001)) {
+        // cobra comisión → recibes MENOS o igual). Antes el tope multiplicativo
+        // (1.001×) dejaba una micro-ganancia que, en ida y vuelta, se componía
+        // y acuñaba dinero. Ahora el tope es `expected` con un epsilon ABSOLUTO
+        // mínimo (por redondeo de floats), así una conversión nunca deja más de
+        // lo enviado a la tasa. El piso 0.60 permite comisiones de hasta ~40%.
+        const absEps = Math.max(1, expected * 1e-6)
+        if (!(amtT >= expected * 0.60 && amtT <= expected + absEps)) {
           return json({ error: 'El monto de la conversión no coincide con la tasa vigente.' }, 400)
         }
 

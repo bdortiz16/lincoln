@@ -689,12 +689,15 @@ serve(async (req: Request) => {
     if (!caller.admin) {
       const { data: mfaU } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
       const mraw = ((mfaU as any)?.raw_data ?? {}) as Record<string, any>
-      let mfaSecret = ''
-      try { mfaSecret = mraw.totpSecretEnc ? await decField(String(mraw.totpSecretEnc)) : String(mraw.totpSecret ?? '') } catch { mfaSecret = '' }
-      if (mraw.mfaEnabled && mfaSecret) {
+      if (mraw.mfaEnabled) {
+        // FALLA CERRADO: si el 2FA está activo pero el secreto no se puede
+        // obtener (error al descifrar, llave FIELD_ENC_KEY ausente/rotada), se
+        // BLOQUEA — nunca se deja pasar el envío sin verificar.
+        let mfaSecret = ''
+        try { mfaSecret = mraw.totpSecretEnc ? await decField(String(mraw.totpSecretEnc)) : String(mraw.totpSecret ?? '') } catch { mfaSecret = '' }
         const otp = String(payload.otp ?? payload.totp ?? '')
-        if (!(await verifyTOTPServer(mfaSecret, otp))) {
-          return json(403, { error: 'mfa_required', message: 'Código de verificación en dos pasos inválido. Vuelve a intentar el envío.' })
+        if (!mfaSecret || !(await verifyTOTPServer(mfaSecret, otp))) {
+          return json(403, { error: 'mfa_required', message: 'No pudimos verificar tu código de dos pasos. Vuelve a intentar el envío.' })
         }
       }
     }

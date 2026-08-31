@@ -75,11 +75,13 @@ async function decField(v: string): Promise<string> {
 async function require2FA(userId: string, otp: unknown): Promise<string | null> {
   const { data } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
   const raw = ((data as any)?.raw_data ?? {}) as Record<string, any>
-  let secret = ''
-  try { secret = raw.totpSecretEnc ? await decField(String(raw.totpSecretEnc)) : String(raw.totpSecret ?? '') } catch { secret = '' }
-  if (raw.mfaEnabled && secret) {
-    if (!(await verifyTOTPServer(secret, String(otp ?? '')))) {
-      return 'Código de verificación en dos pasos inválido. Vuelve a intentar el envío.'
+  if (raw.mfaEnabled) {
+    // FALLA CERRADO: si el 2FA está activo y el secreto no se puede obtener
+    // (descifrado falla / falta la llave), se bloquea — no se pasa sin 2FA.
+    let secret = ''
+    try { secret = raw.totpSecretEnc ? await decField(String(raw.totpSecretEnc)) : String(raw.totpSecret ?? '') } catch { secret = '' }
+    if (!secret || !(await verifyTOTPServer(secret, String(otp ?? '')))) {
+      return 'No pudimos verificar tu código de dos pasos. Vuelve a intentar el envío.'
     }
   }
   return null
