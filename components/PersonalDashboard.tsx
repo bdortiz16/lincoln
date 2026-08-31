@@ -3174,22 +3174,26 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   };
 
   const handleDisableMFA = async () => {
-    if (!mfaFactorId) return;
-    // SEGURIDAD: exigir el código enviado al correo — así el 2FA NO se puede
-    // desactivar sin acceso al correo del titular (ni por accidente ni por un
-    // tercero que tenga la sesión abierta).
+    if (!mfaFactorId || !currentUser) return;
+    // SEGURIDAD: el 2FA solo se apaga por la acción dedicada mfa_disable, que
+    // verifica el CÓDIGO DE CORREO en el SERVIDOR (nadie lo apaga sin acceso al
+    // correo). save_user ya NO puede tocar el 2FA, así que esta es la única vía.
     if (!/^\d{6}$/.test(disableOtp.code.trim())) { setDisableOtp(s => ({ ...s, error: 'Ingresa el código de 6 dígitos que te llegó al correo.' })); return; }
     setDisableOtp(s => ({ ...s, busy: true, error: '' }));
-    const v = await callEmailOtp('verify', { code: disableOtp.code.trim() });
-    if (!v?.ok) { setDisableOtp(s => ({ ...s, busy: false, error: v?.message || 'Código incorrecto o vencido.' })); return; }
-    const ok = await unenrollMFA(mfaFactorId);
-    if (!ok) { setDisableOtp(s => ({ ...s, busy: false, error: 'Error al desactivar. Intenta nuevamente.' })); return; }
+    try {
+      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: myAuthHeader() },
+        body: JSON.stringify({ action: 'mfa_disable', userId: currentUser.id, emailCode: disableOtp.code.trim() }),
+      }).then(x => x.json()).catch(() => null);
+      if (!r?.success) { setDisableOtp(s => ({ ...s, busy: false, error: r?.error || 'No se pudo desactivar. Revisa el código.' })); return; }
+    } catch { setDisableOtp(s => ({ ...s, busy: false, error: 'Error de red. Intenta de nuevo.' })); return; }
+    await unenrollMFA(mfaFactorId).catch(() => {});
     setMfaEnrolled(false);
     setMfaFactorId(undefined);
     setMfaTotpSecret(undefined);
-    // Misma vía robusta que al activar: escribe solo raw_data y limpia los
-    // campos aplanados en memoria, para que quede DESACTIVADO tras recargar.
-    if (currentUser) updateUserRawData(currentUser.id, { mfaEnabled: false, mfaFactorId: null, totpSecret: null, totpSecretEnc: null }).catch(() => {});
     setMfaDisableModalOpen(false);
     setDisableOtp({ sent: false, code: '', sending: false, busy: false, error: '' });
     showToast('Verificación en 2 pasos desactivada.');

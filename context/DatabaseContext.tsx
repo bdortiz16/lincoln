@@ -941,35 +941,44 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       return true;
     }
     try {
-      // Merge contra la fila REAL para no pisar campos de otros flujos
-      // (gasfreeAddresses, notificaciones...).
+      // Merge contra la fila REAL para no pisar campos de otros flujos.
       const { data: cur } = await Promise.race([
         supabase.from('users').select('raw_data').eq('id', id).single(),
         new Promise<{ data: null }>(resolve => setTimeout(() => resolve({ data: null }), 5000)),
       ]) as any;
-      const merged = { ...((cur?.raw_data && typeof cur.raw_data === 'object') ? cur.raw_data : {}), ...patch };
+      // ⚠️ SEGURIDAD (2FA): si la pre-lectura FALLA (timeout en red móvil, error
+      // transitorio) NO se hace el update directo con un merge PARCIAL — eso
+      // escribía `{...patch}` a secas y BORRABA el 2FA/wallet del raw_data. Solo
+      // se hace el update directo cuando la lectura vino OK; si no, se va al
+      // fallback service-role que re-lee FRESCO y hace merge sobre la fila real.
+      const readOk = !!(cur && cur.raw_data != null && typeof cur.raw_data === 'object');
+      const merged = readOk ? { ...cur.raw_data, ...patch } : { ...patch };
       // RLS bloquea updates EN SILENCIO (0 filas afectadas, sin error) — el
       // .select('id') obliga a devolver la fila tocada: sin fila = no escribió.
       let ok = false;
-      const { data: updRows, error } = await supabase.from('users').update({ raw_data: merged }).eq('id', id).select('id');
-      if (!error && Array.isArray(updRows) && updRows.length > 0) ok = true;
+      if (readOk) {
+        const { data: updRows, error } = await supabase.from('users').update({ raw_data: merged }).eq('id', id).select('id');
+        if (!error && Array.isArray(updRows) && updRows.length > 0) ok = true;
+      }
       if (!ok) {
-        // Fallback: save_user del edge (service-role; upsert solo con las
-        // columnas enviadas — id + raw_data — no toca nada más).
+        // Fallback: save_user del edge (service-role). Se manda SOLO el patch —
+        // admin-data lo mezcla sobre el raw_data FRESCO de la base y fuerza los
+        // campos del servidor (2FA/wallet), así jamás se pierden aunque la
+        // pre-lectura del cliente hubiera fallado.
         const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
         const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
         const token = getStoredToken();
         const r = await fetch(`${SURL}/functions/v1/admin-data`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
-          body: JSON.stringify({ action: 'save_user', user: { id, raw_data: merged } }),
+          body: JSON.stringify({ action: 'save_user', user: { id, raw_data: patch } }),
         }).then(x => x.json()).catch(() => null);
         ok = !!r?.success;
       }
       if (ok) {
         pendingWriteUntilRef.current = Date.now() + 10000;
-        setUsers(prev => prev.map(x => x.id === id ? { ...x, ...patch, raw_data: merged } as any : x));
-        if (currentUser?.id === id) setCurrentUser(prev => prev ? { ...prev, ...patch, raw_data: merged } as any : prev);
+        setUsers(prev => prev.map(x => x.id === id ? { ...x, ...patch } as any : x));
+        if (currentUser?.id === id) setCurrentUser(prev => prev ? { ...prev, ...patch } as any : prev);
       }
       return ok;
     } catch (e) {

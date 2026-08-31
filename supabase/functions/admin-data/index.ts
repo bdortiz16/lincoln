@@ -281,6 +281,14 @@ Deno.serve(async (req: Request) => {
         const bS = baseOf(src), bT = baseOf(tgt)
         let expected: number | null = null
         if (bS === bT) {
+          // Mover ENTRE RIELES COP (Saldo Lincoin ↔ ACH ↔ Bre-B) a 1:1 por aquí
+          // saltaría el respaldo por riel (arbitraje de un riel sin fondos a uno
+          // retirable). Eso va por el flujo "Mover saldo" (rail_move, con
+          // aprobación/respaldo). Aquí solo se permite 1:1 cuando es la MISMA
+          // moneda exacta o un cash-out de dólar digital (USDT ↔ USD).
+          if (bS === 'COP' && src !== tgt) {
+            return json({ error: 'Para mover saldo entre rieles COP usa la opción "Mover saldo", no la conversión.' }, 400)
+          }
           expected = amtS // 1:1 (ej. dólar digital ↔ cuenta USD)
         } else {
           const { data: snaps } = await db.from('fx_rate_snapshots')
@@ -396,6 +404,34 @@ Deno.serve(async (req: Request) => {
         if (!secret) return json({ ok: false, error: 'no_secret' })
         const ok = await verifyTOTPServer(secret, code)
         return json({ ok })
+      }
+
+      // ── 2FA: DESACTIVAR — la ÚNICA vía para apagar el 2FA. Exige un CÓDIGO
+      // DE CORREO verificado server-side (salvo admin), para que nadie lo apague
+      // sin acceso al correo del titular. save_user NO puede tocar el 2FA (está
+      // en la lista SERVER_OWNED), así que esta es la única puerta.
+      if (selfServiceBody.action === 'mfa_disable' && selfServiceBody.userId) {
+        if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
+        const isAdmin = (await verifyAdmin(req)).ok
+        if (!isAdmin) {
+          const code = String(selfServiceBody.emailCode ?? '')
+          if (!/^\d{6}$/.test(code)) return json({ error: 'Falta el código de correo (6 dígitos).' }, 400)
+          const otpRes = await fetch(`${SUPABASE_URL}/functions/v1/email-otp`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+            body: JSON.stringify({ action: 'verify', userId: selfServiceBody.userId, code }),
+          }).then(r => r.json()).catch(() => null)
+          if (!otpRes?.ok) return json({ error: 'Código de correo incorrecto o vencido.' }, 403)
+        }
+        const { data: u } = await db.from('users').select('raw_data').eq('id', selfServiceBody.userId).single()
+        const raw = { ...((u as any)?.raw_data ?? {}) }
+        raw.mfaEnabled = false
+        delete raw.mfaFactorId
+        delete raw.totpSecret
+        delete raw.totpSecretEnc
+        const { error } = await db.from('users').update({ raw_data: raw }).eq('id', selfServiceBody.userId)
+        if (error) return json({ error: error.message }, 500)
+        return json({ success: true })
       }
 
       // Self-delete: any authenticated user can delete their own account
