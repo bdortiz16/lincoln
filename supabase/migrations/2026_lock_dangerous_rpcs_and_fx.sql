@@ -47,21 +47,26 @@ DO $$ BEGIN
 END $$;
 
 -- C3 — bloquear escritura anónima de tasas (feed de apply_conversion).
+-- Se borran AMBOS nombres (viejo y nuevo) para que sea re-ejecutable.
 DROP POLICY IF EXISTS fx_snapshots_insert ON public.fx_rate_snapshots;
+DROP POLICY IF EXISTS fx_snapshots_insert_admin ON public.fx_rate_snapshots;
 CREATE POLICY fx_snapshots_insert_admin ON public.fx_rate_snapshots
   FOR INSERT TO authenticated WITH CHECK (public.is_any_admin());
 
 -- L4 — config FX editable solo por admin (lectura sigue pública para mostrar
 -- tasas; los reads no filtran secretos).
 DROP POLICY IF EXISTS fx_pair_config_write ON public.fx_pair_config;
+DROP POLICY IF EXISTS fx_pair_config_write_admin ON public.fx_pair_config;
 CREATE POLICY fx_pair_config_write_admin ON public.fx_pair_config
   FOR ALL TO authenticated USING (public.is_any_admin()) WITH CHECK (public.is_any_admin());
 
 DROP POLICY IF EXISTS fx_global_write ON public.fx_global_config;
+DROP POLICY IF EXISTS fx_global_write_admin ON public.fx_global_config;
 CREATE POLICY fx_global_write_admin ON public.fx_global_config
   FOR ALL TO authenticated USING (public.is_any_admin()) WITH CHECK (public.is_any_admin());
 
 DROP POLICY IF EXISTS xe_config_write ON public.xe_config;
+DROP POLICY IF EXISTS xe_config_write_admin ON public.xe_config;
 CREATE POLICY xe_config_write_admin ON public.xe_config
   FOR ALL TO authenticated USING (public.is_any_admin()) WITH CHECK (public.is_any_admin());
 
