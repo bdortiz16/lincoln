@@ -69,6 +69,17 @@ const CORS = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
+// Crédito/reintegro ATÓMICO (bloqueo de fila vía adjust_balances) — evita la
+// carrera de duplicación en reconcile (pentest #3). Fallback a read-write.
+async function creditBalanceAtomic(userId: string, col: string, delta: number): Promise<void> {
+  const { error } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { [col]: delta } })
+  if (!error) return
+  const { data: u } = await db.from('users').select('balances').eq('id', userId).single()
+  const bals: Record<string, number> = (u?.balances as any) ?? {}
+  const nb = parseFloat((Number(bals[col] ?? 0) + delta).toFixed(2))
+  await db.from('users').update({ balances: { ...bals, [col]: nb } }).eq('id', userId)
+}
+
 // Paths de la API (v0). Solo el token está confirmado; para el resto se
 // prueban VARIOS candidatos y se cachea el que responda (≠404/405).
 // La acción `discover` sondea todo y reporta qué existe — así la ruta
@@ -785,13 +796,8 @@ Deno.serve(async (req) => {
         const mapped = mapState(realState)
         if (mapped !== keep.status) {
           if (mapped === 'Rechazado' && keep.status !== 'Rechazado') {
-            // Devolver saldo UNA sola vez.
-            const { data: u } = await db.from('users').select('balances').eq('id', keep.user_id).single()
-            if (u) {
-              const bals = (u.balances as Record<string, number>) ?? {}
-              const refunded = parseFloat(((Number(bals[keep.currency] ?? 0)) + Number(keep.amount)).toFixed(2))
-              await db.from('users').update({ balances: { ...bals, [keep.currency]: refunded } }).eq('id', keep.user_id)
-            }
+            // Devolver saldo UNA sola vez (atómico — pentest #3).
+            await creditBalanceAtomic(keep.user_id, String(keep.currency), Number(keep.amount))
           }
           await db.from('transactions').update({ status: mapped }).eq('id', keep.id)
           // Disparar el correo de "pago completado/rechazado" directo (sin
@@ -963,10 +969,7 @@ Deno.serve(async (req) => {
         }).eq('id', tx.id).eq('status', 'Pendiente').select('id')
         if (!claimed?.length) continue
         const col = String(tx.currency ?? 'COP')
-        const { data: u } = await db.from('users').select('balances').eq('id', uid).single()
-        const bals: Record<string, number> = (u?.balances as any) ?? {}
-        const nb = parseFloat((Number(bals[col] ?? 0) + Number(tx.amount ?? 0)).toFixed(2))
-        await db.from('users').update({ balances: { ...bals, [col]: nb } }).eq('id', uid)
+        await creditBalanceAtomic(uid, col, Number(tx.amount ?? 0))   // atómico (pentest #3)
         await logAudit(uid, 'finity.payin.credited', { txId: tx.id, amount: tx.amount, movement: match?.id ?? null })
         credited++
       }

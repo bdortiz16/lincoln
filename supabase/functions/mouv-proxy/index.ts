@@ -86,6 +86,18 @@ function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { ...CORS, 'Content-Type': 'application/json' } })
 }
 
+// Crédito/reintegro ATÓMICO de un riel COP (bloqueo de fila vía adjust_balances)
+// — evita la carrera de duplicación en reconcile/webhooks (pentest #3). Fallback
+// a read-write si la RPC no está desplegada.
+async function creditBalanceAtomic(userId: string, col: string, delta: number): Promise<void> {
+  const { error } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { [col]: delta } })
+  if (!error) return
+  const { data: u } = await db.from('users').select('balances').eq('id', userId).single()
+  const bals: Record<string, number> = (u?.balances as any) ?? {}
+  const nb = parseFloat((Number(bals[col] ?? 0) + delta).toFixed(2))
+  await db.from('users').update({ balances: { ...bals, [col]: nb } }).eq('id', userId)
+}
+
 // Dispara el correo transaccional del envío directamente contra
 // notify-transaction (con service role), sin depender del webhook de la base
 // — que NO estaba llegando para las dispersiones. notify-transaction deduplica
@@ -449,10 +461,7 @@ serve(async (req: Request) => {
       }).eq('id', tx.id).neq('status', 'Completado').select('id')
       if (claimed?.length) {
         const col = String(tx.currency ?? 'COP')
-        const { data: u } = await db.from('users').select('balances').eq('id', tx.user_id).single()
-        const bals: Record<string, number> = (u?.balances as any) ?? {}
-        const nb = parseFloat((Number(bals[col] ?? 0) + Number(tx.amount ?? 0)).toFixed(2))
-        await db.from('users').update({ balances: { ...bals, [col]: nb } }).eq('id', tx.user_id)
+        await creditBalanceAtomic(tx.user_id, col, Number(tx.amount ?? 0))   // atómico (pentest #3)
         await logAudit(tx.user_id, 'mouv.payin_pse.credited', { ref, amount: tx.amount, status })
       }
       return json(200, { ok: true, credited: true, ref })
@@ -558,10 +567,7 @@ serve(async (req: Request) => {
           raw_data: { ...rd, refunded: true, refundCop: refund, providerStatus: s, reconciledAt: new Date().toISOString() },
         }).eq('id', tx.id).neq('status', 'Rechazado').filter('raw_data->>refunded', 'is', null).select('id')
         if (!claimed?.length) { out.push({ id: tx.id, result: 'refund_already_claimed' }); continue }
-        const { data: u } = await db.from('users').select('balances').eq('id', userId).single()
-        const bals: Record<string, number> = (u?.balances as any) ?? {}
-        const nb = parseFloat(((bals[railCol] ?? 0) + refund).toFixed(2))
-        await db.from('users').update({ balances: { ...bals, [railCol]: nb } }).eq('id', userId)
+        await creditBalanceAtomic(userId, railCol, refund)   // atómico (pentest #3)
         out.push({ id: tx.id, result: 'refunded', refund })
       } else {
         out.push({ id: tx.id, result: 'still_processing', providerStatus: s || null })

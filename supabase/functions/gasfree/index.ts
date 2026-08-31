@@ -1024,11 +1024,9 @@ async function myConvertSettle(
     return data?.id
   }
   const creditCop = async () => {
+    await creditBalanceAtomic(userId, 'COP', copAmount)   // atómico (pentest #3)
     const { data: uf } = await db.from('users').select('balances').eq('id', userId).single()
-    const bf = (uf?.balances as Record<string, number>) ?? { ...bals, USD: newUsdLedger }
-    const nc = parseFloat((Number(bf.COP ?? 0) + copAmount).toFixed(2))
-    await db.from('users').update({ balances: { ...bf, COP: nc } }).eq('id', userId)
-    return nc
+    return Number(((uf?.balances as any)?.COP) ?? copAmount)
   }
 
   // 1) Esperar a que la tesorería reciba el USDT del cliente (hop 1).
@@ -1046,6 +1044,7 @@ async function myConvertSettle(
   // 2) Sin proveedor configurado → se acredita el COP (el USDT queda en
   //    tesorería). Mantiene funcionando setups sin proveedor.
   if (!provAddr || fwd <= 0) {
+    await assertCopWithinRate(value, copAmount)   // COP acotado al USDT real × tasa del servidor
     const nc = await creditCop()
     const txId = await insertConvert('Completado', { convertPhase: 'no_provider', usdtToProvider: null, providerTraceId: null })
     return { ok: true, status: 'Completado', phase: 'no_provider', copCredited: copAmount, newCop: nc, usdtOut: value, feeChargedUsdt: r.feeChargedUsdt, traceId: r.traceId, txId }
@@ -1093,6 +1092,36 @@ async function myConvertSettle(
 // recharged → convert_confirm del proveedor → este credit). El COP entra al
 // SALDO DEL RIEL ACH (COP_ACH): la Mesa OTC hoy liquida por Finity/ACH y el
 // cliente dispone de ese saldo desde su billetera ACH. Idempotente.
+// Crédito/reintegro ATÓMICO (bloqueo de fila vía adjust_balances) — evita la
+// carrera de duplicación en las conversiones (pentest #3). Fallback a read-write.
+async function creditBalanceAtomic(userId: string, col: string, delta: number): Promise<void> {
+  const { error } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { [col]: delta } })
+  if (!error) return
+  const { data: u } = await db.from('users').select('balances').eq('id', userId).single()
+  const bals: Record<string, number> = (u?.balances as any) ?? {}
+  const nb = parseFloat((Number(bals[col] ?? 0) + delta).toFixed(2))
+  await db.from('users').update({ balances: { ...bals, [col]: nb } }).eq('id', userId)
+}
+
+// Tasa USD→COP de confianza (snapshot admin-only). El OTC de GasFree NO puede
+// confiar en el copAmount del cliente — se acota el COP acreditado al USDT
+// realmente barrido × tasa del servidor (pentest #2, anti-acuñación).
+async function serverUsdCopRate(): Promise<number | null> {
+  const { data } = await db.from('fx_rate_snapshots')
+    .select('rate, from_currency, to_currency')
+    .or('and(from_currency.eq.USD,to_currency.eq.COP),and(from_currency.eq.COP,to_currency.eq.USD)')
+    .order('captured_at', { ascending: false }).limit(1)
+  const row: any = (data ?? [])[0]
+  if (!row || !(Number(row.rate) > 0)) return null
+  return row.from_currency === 'USD' ? Number(row.rate) : 1 / Number(row.rate)
+}
+async function assertCopWithinRate(sweptUsd: number, copAmount: number) {
+  if (!(sweptUsd > 0)) throw new Error('Conversión sin USDT verificable')
+  const rate = await serverUsdCopRate()
+  if (!rate) throw new Error('No hay tasa vigente para la conversión')
+  if (copAmount > sweptUsd * rate * 1.02) throw new Error('Monto COP fuera de rango para la conversión')
+}
+
 async function myConvertCredit(
   userId: string, txId: string, copAmount: number,
   meta: { mouvRate?: number; feePct?: number; utilityCop?: number },
@@ -1113,12 +1142,12 @@ async function myConvertCredit(
   const VALID_PHASES = new Set(['recharged', 'converting', 'hop2_pending', 'hop2', 'registered', 'done'])
   if (rd.convertPhase && !VALID_PHASES.has(String(rd.convertPhase))) throw new Error('La conversión aún no llegó al proveedor')
   const sweptUsd = Number(rd.creditUsd ?? rd.usdtToProvider ?? rd.fromAmount ?? 0)
-  const MAX_RATE = 8000 // COP por USDT — cota superior histórica muy holgada
-  if (sweptUsd > 0 && copAmount > sweptUsd * MAX_RATE) throw new Error('Monto COP fuera de rango para la conversión')
+  // Acotar el COP al USDT real × la tasa del servidor (no al copAmount del
+  // cliente ni a una cota fija holgada). Bloquea acuñar COP inflando el monto.
+  await assertCopWithinRate(sweptUsd, copAmount)
+  await creditBalanceAtomic(userId, 'COP_ACH', copAmount)   // atómico (pentest #3)
   const { data: uf } = await db.from('users').select('balances').eq('id', userId).single()
-  const bf = (uf?.balances as Record<string, number>) ?? {}
-  const nc = parseFloat((Number(bf.COP_ACH ?? 0) + copAmount).toFixed(2))
-  await db.from('users').update({ balances: { ...bf, COP_ACH: nc } }).eq('id', userId)
+  const nc = Number(((uf?.balances as any)?.COP_ACH) ?? copAmount)
   await db.from('transactions').update({
     status: 'Completado', amount: copAmount, currency: 'COP_ACH',
     raw_data: { ...rd, convertPhase: 'done', destAmount: copAmount, creditRail: 'ACH',
@@ -1151,10 +1180,11 @@ async function myConvertFinalize(userId: string, txId: string, settleOnly = fals
     return { ok: true, status: 'Pendiente', phase: 'recharged', recharged: true, usdtToProvider: fwd, copCredited: 0 }
   }
   const complete = async (providerTraceId?: string) => {
+    // Acotar el COP al USDT real de la conversión × tasa del servidor.
+    await assertCopWithinRate(Number(rd.creditUsd ?? rd.usdtToProvider ?? rd.fromAmount ?? 0), copAmount)
+    await creditBalanceAtomic(userId, 'COP', copAmount)   // atómico (pentest #3)
     const { data: uf } = await db.from('users').select('balances').eq('id', userId).single()
-    const bf = (uf?.balances as Record<string, number>) ?? {}
-    const nc = parseFloat((Number(bf.COP ?? 0) + copAmount).toFixed(2))
-    await db.from('users').update({ balances: { ...bf, COP: nc } }).eq('id', userId)
+    const nc = Number(((uf?.balances as any)?.COP) ?? copAmount)
     await db.from('transactions').update({ status: 'Completado', raw_data: { ...rd, convertPhase: 'done', providerPending: false, providerTraceId: providerTraceId ?? rd.providerTraceId } }).eq('id', txId)
     return { ok: true, status: 'Completado', phase: 'done', copCredited: copAmount, newCop: nc }
   }
@@ -1163,11 +1193,11 @@ async function myConvertFinalize(userId: string, txId: string, settleOnly = fals
   if (rd.convertPhase === 'hop1_pending' || rd.convertPhase === 'hop1_failed') {
     const c1 = await gfTraceStatus(String(rd.traceId ?? ''))
     if (c1 === 'failed') {
-      const { data: uf } = await db.from('users').select('balances').eq('id', userId).single()
-      const bf = (uf?.balances as Record<string, number>) ?? {}
-      const nu = parseFloat((Number(bf.USD ?? 0) + Number(rd.fromAmount ?? 0)).toFixed(2))
-      await db.from('users').update({ balances: { ...bf, USD: nu } }).eq('id', userId)
-      await db.from('transactions').update({ status: 'Rechazado', raw_data: { ...rd, convertPhase: 'hop1_failed', refunded: true } }).eq('id', txId)
+      // CAS: reclamar el reembolso UNA sola vez, luego acreditar atómicamente.
+      const { data: claimed } = await db.from('transactions')
+        .update({ status: 'Rechazado', raw_data: { ...rd, convertPhase: 'hop1_failed', refunded: true } })
+        .eq('id', txId).neq('status', 'Rechazado').filter('raw_data->>refunded', 'is', null).select('id')
+      if (claimed?.length) await creditBalanceAtomic(userId, 'USD', Number(rd.fromAmount ?? 0))
       return { ok: false, status: 'Rechazado', phase: 'hop1_failed', refunded: true }
     }
     if (c1 !== 'confirmed') return { ok: true, status: 'Pendiente', phase: 'hop1_pending', copCredited: 0 }
@@ -1646,6 +1676,7 @@ Deno.serve(async (req) => {
     // devuelve TODAS a anon).
     if (action === 'my_transactions') {
       if (!userId) return err('Falta userId', 400)
+      if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)   // IDOR (pentest #4)
       // Robusto por CORREO: si existen filas de usuario duplicadas (mismo
       // correo, ids distintos — pasa cuando el login creó un perfil con el
       // id del auth distinto al id real), los movimientos pueden estar bajo
@@ -1671,6 +1702,7 @@ Deno.serve(async (req) => {
     // cosmético.
     if (action === 'my_save_profile') {
       if (!userId) return err('Falta userId', 400)
+      if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)   // IDOR (pentest #4)
       const { data: u } = await db.from('users').select('raw_data').eq('id', userId).single()
       if (!u) return err('Usuario no encontrado', 404)
       const raw = (u.raw_data ?? {}) as Record<string, any>

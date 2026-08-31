@@ -171,10 +171,15 @@ Deno.serve(async (req) => {
   if (!claimed?.length) {
     return json(200, { ok: true, matched: true, result: 'refund_already_claimed' })
   }
-  const { data: u } = await db.from('users').select('balances').eq('id', tx.user_id).single()
-  const bals: Record<string, number> = (u?.balances as any) ?? {}
-  const newBal = parseFloat(((bals[railCol] ?? 0) + refund).toFixed(2))
-  await db.from('users').update({ balances: { ...bals, [railCol]: newBal } }).eq('id', tx.user_id)
+  // Reintegro ATÓMICO (bloqueo de fila) — evita la carrera de duplicación con
+  // un payout concurrente (pentest #3). Fallback a read-write si la RPC falta.
+  const { error: adjErr } = await db.rpc('adjust_balances', { p_user_id: tx.user_id, p_fiat: { [railCol]: refund } })
+  if (adjErr) {
+    const { data: u } = await db.from('users').select('balances').eq('id', tx.user_id).single()
+    const bals: Record<string, number> = (u?.balances as any) ?? {}
+    const newBal = parseFloat(((bals[railCol] ?? 0) + refund).toFixed(2))
+    await db.from('users').update({ balances: { ...bals, [railCol]: newBal } }).eq('id', tx.user_id)
+  }
   await audit('finity.webhook.withdrawal.failed_refunded', { txId: tx.id, orderId, status, refund })
   return json(200, { ok: true, matched: true, result: 'refunded', refund })
 })
