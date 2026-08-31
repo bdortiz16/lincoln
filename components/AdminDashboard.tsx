@@ -347,6 +347,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const [stuckRef, setStuckRef] = useState('');
   const [stuckRail, setStuckRail] = useState<'COP' | 'COP_ACH' | 'COP_BREB'>('COP');
   const [stuckPreview, setStuckPreview] = useState<any>(null);
+  const [stuckList, setStuckList] = useState<any[] | null>(null);
   const [stuckBusy, setStuckBusy] = useState(false);
   const [stuckMsg, setStuckMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const callGasfreeAdmin = async (bodyObj: Record<string, unknown>) => {
@@ -372,6 +373,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       const r = await callGasfreeAdmin({ action: 'admin_settle_convert', txId: stuckRef.trim(), preview: true });
       if (r?.error) setStuckMsg({ ok: false, text: r.error });
       else { setStuckPreview(r); setStuckRail((r.currency && ['COP','COP_ACH','COP_BREB'].includes(r.currency)) ? r.currency : 'COP'); }
+    } catch (e: any) { setStuckMsg({ ok: false, text: e?.message ?? 'Error' }); }
+    setStuckBusy(false);
+  };
+  const listStuck = async (userId: string) => {
+    setStuckBusy(true); setStuckMsg(null); setStuckPreview(null); setStuckList(null);
+    try {
+      const r = await callGasfreeAdmin({ action: 'admin_settle_convert', list: true, userId });
+      if (r?.error) setStuckMsg({ ok: false, text: r.error });
+      else setStuckList(Array.isArray(r?.items) ? r.items : []);
     } catch (e: any) { setStuckMsg({ ok: false, text: e?.message ?? 'Error' }); }
     setStuckBusy(false);
   };
@@ -1637,10 +1647,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
             </summary>
             <div style={{ padding: '0 18px 18px', display: 'flex', flexDirection: 'column', gap: 12 }}>
               <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5 }}>
-                Úsalo cuando el USDT ya llegó al proveedor pero el COP no se acreditó (el cliente quedó debitado sin su COP). Pega el ID o referencia del movimiento (ej. <span style={{ fontFamily: 'monospace' }}>TX-B385BF</span>), revisa y acredita.
+                Úsalo cuando el USDT ya llegó al proveedor pero el COP no se acreditó (el cliente quedó debitado sin su COP). Pega el <b style={{ color: '#F4F4F2' }}>ID del movimiento de Lincoin</b> — el que ve el cliente en sus Movimientos (ej. <span style={{ fontFamily: 'monospace' }}>TX-B385BF</span>). <b style={{ color: '#F5B44A' }}>NO</b> es el ID de Finity. O elige un cliente abajo y dale <b style={{ color: '#F4F4F2' }}>“Ver conversiones trabadas”</b>.
               </p>
+              {carguesClient && (
+                <button onClick={() => listStuck(carguesClient.id)} disabled={stuckBusy}
+                  style={{ alignSelf: 'flex-start', background: 'rgba(74,222,128,0.10)', border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', borderRadius: 9, padding: '7px 12px', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>
+                  🔎 Ver conversiones trabadas de {carguesClient.name?.split(' ')[0] ?? 'este cliente'}
+                </button>
+              )}
+              {Array.isArray(stuckList) && stuckList.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {stuckList.map((s: any) => (
+                    <button key={s.txId} onClick={() => { setStuckPreview(s); setStuckRail((s.currency && ['COP','COP_ACH','COP_BREB'].includes(s.currency)) ? s.currency : 'COP'); setStuckList(null); }}
+                      className="flex items-center justify-between" style={{ textAlign: 'left', background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, padding: '10px 13px', cursor: 'pointer' }}>
+                      <span style={{ fontSize: 12, color: '#878E88', fontFamily: 'monospace' }}>{String(s.txId).slice(0, 8)}… · {s.status}</span>
+                      <span style={{ fontSize: 13, color: '#4ADE80', fontWeight: 800 }}>+ {Number(s.owedCop).toLocaleString('es-CO')} COP</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {Array.isArray(stuckList) && stuckList.length === 0 && (
+                <p style={{ fontSize: 12, color: '#878E88' }}>Este cliente no tiene conversiones trabadas.</p>
+              )}
               <div className="flex flex-wrap items-center gap-2">
-                <input value={stuckRef} onChange={e => setStuckRef(e.target.value)} placeholder="ID o ref del movimiento"
+                <input value={stuckRef} onChange={e => setStuckRef(e.target.value)} placeholder="ID de Lincoin (ej. TX-B385BF)"
                   style={{ flex: 1, minWidth: 200, background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10, padding: '10px 12px', color: '#F4F4F2', fontSize: 13 }} />
                 <button onClick={previewStuck} disabled={stuckBusy || !stuckRef.trim()}
                   style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 10, padding: '10px 16px', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>

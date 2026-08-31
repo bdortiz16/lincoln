@@ -664,6 +664,26 @@ async function resolveConvertTx(ref: string) {
   return tx ?? null
 }
 
+// Lista las conversiones TRABADAS (no completadas ni rechazadas). Con userId
+// filtra por cliente. Sirve para que el admin resuelva sin adivinar el ID.
+async function listStuckConverts(userId?: string) {
+  let q = db.from('transactions')
+    .select('id, user_id, status, amount, currency, raw_data, created_at')
+    .eq('type', 'convert')
+    .not('status', 'in', '("Completado","Rechazado","Fallido")')
+    .order('created_at', { ascending: false }).limit(50)
+  if (userId) q = q.eq('user_id', userId)
+  const { data } = await q
+  const items = ((data as any[]) ?? []).map((tx) => {
+    const rd = (tx.raw_data ?? {}) as Record<string, any>
+    return {
+      txId: tx.id, userId: tx.user_id, status: tx.status, currency: tx.currency,
+      owedCop: Math.round(Number(rd.destAmount ?? tx.amount ?? 0)), createdAt: tx.created_at,
+    }
+  })
+  return { ok: true, items }
+}
+
 async function adminSettleConvert(ref: string, opts: { rail?: string; amount?: number; preview?: boolean }) {
   const tx = await resolveConvertTx(ref)
   if (!tx) throw new Error('Movimiento no encontrado (revisa el ID).')
@@ -2005,6 +2025,8 @@ Deno.serve(async (req) => {
     // pero el COP no se acreditó). preview=true solo consulta; sin preview
     // acredita el COP al cliente y cierra el movimiento (idempotente).
     if (action === 'admin_settle_convert') {
+      // Modo LISTA: conversiones trabadas (no completadas) de un cliente.
+      if (body.list === true) return ok(await listStuckConverts(body.userId ? String(body.userId) : undefined))
       if (!body.txId && !body.ref) return err('Falta txId (o ref del movimiento)', 400)
       return ok(await adminSettleConvert(String(body.txId ?? body.ref), {
         rail: body.rail ? String(body.rail) : undefined,
