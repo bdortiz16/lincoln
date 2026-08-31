@@ -334,9 +334,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const [carguesBusy, setCarguesBusy] = useState(false);
   const [carguesMsg, setCarguesMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [carguesConfirm, setCarguesConfirm] = useState<{ raw: number } | null>(null);
+  // "Cargar de todos modos" cuando el cargue excede lo disponible en la bolsa
+  // (protección contra sobre-acreditar más de lo que respalda el proveedor).
+  const [carguesOverride, setCarguesOverride] = useState(false);
   // Saldo REAL de la wallet compartida de Mouv (lo que hay disponible para
   // cargar a los clientes). Se lee del endpoint confirmado /wallets/balance.
   const [mouvPool, setMouvPool] = useState<{ loading: boolean; total?: number | null; breb?: number | null; ach?: number | null; error?: string } | null>(null);
+  // Saldo COP de la tesorería Finity (respalda el riel ACH), análogo a Mouv.
+  const [finityPool, setFinityPool] = useState<{ loading: boolean; cop?: number | null; usdt?: number | null; error?: string } | null>(null);
   const loadMouvPool = async () => {
     setMouvPool({ loading: true });
     try {
@@ -362,8 +367,34 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     }
   };
 
+  const loadFinityPool = async () => {
+    setFinityPool({ loading: true });
+    try {
+      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+      const ADMIN_PASS = (import.meta.env.VITE_ADMIN_PASSWORD as string) || '';
+      let jwt: string | null = null;
+      try {
+        const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
+        if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; }
+      } catch { /* sin sesión */ }
+      const authHeader = jwt ? `Bearer ${jwt}` : (ADMIN_PASS ? `AdminBypass ${ADMIN_PASS}` : `Bearer ${SKEY}`);
+      const r = await fetch(`${SURL}/functions/v1/finity-proxy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: authHeader },
+        body: JSON.stringify({ action: 'treasury_balances' }),
+      });
+      const d = await r.json();
+      if (d?.error) setFinityPool({ loading: false, error: d.error });
+      else setFinityPool({ loading: false, cop: d.cop ?? null, usdt: d.usdt ?? null, error: d.ok === false ? (d.error ?? 'Finity no respondió') : undefined });
+    } catch (e: any) {
+      setFinityPool({ loading: false, error: e?.message ?? 'Error de red' });
+    }
+  };
+
   useEffect(() => {
     if (activeTab === 'cargues' && !mouvPool) loadMouvPool();
+    if (activeTab === 'cargues' && !finityPool) loadFinityPool();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
 
@@ -375,6 +406,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     const raw = parseFloat((carguesAmount || '').replace(/[^\d.]/g, ''));
     if (!isFinite(raw) || raw <= 0) { setCarguesMsg({ ok: false, text: 'Ingresa un monto válido.' }); return; }
     setCarguesMsg(null);
+    setCarguesOverride(false);
     setCarguesConfirm({ raw });
   };
 
@@ -1422,6 +1454,34 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
         COP_ACH:  { label: 'ACH',           sub: 'Interbancario L–V',       icon: Landmark },
       };
 
+      // ── Respaldo y utilidad por riel ──────────────────────────────
+      // Lo que Lincoin YA le debe a los clientes en cada riel (suma de sus
+      // saldos). La bolsa del proveedor (Mouv=Bre-B, Finity=ACH) debe cubrir
+      // eso; lo que sobra es la UTILIDAD que va quedando en pesos.
+      const obligOf = (code: string) => allUsers.reduce((s, u) => s + Number((u.balances as any)?.[code] ?? 0), 0);
+      const obligBreb = obligOf('COP_BREB');
+      const obligAch  = obligOf('COP_ACH');
+      const brebPool  = Number(mouvPool?.breb ?? mouvPool?.total ?? 0);
+      const achPool   = Number(finityPool?.cop ?? 0);
+      const freeBreb  = brebPool - obligBreb;   // disponible para cargar Bre-B (= utilidad Mouv)
+      const freeAch   = achPool - obligAch;     // disponible para cargar ACH   (= utilidad Finity)
+      // Disponible/utilidad del riel actualmente elegido (para el guard del cargue).
+      const poolReady = carguesRail === 'COP_BREB' ? (mouvPool && !mouvPool.loading && !mouvPool.error)
+                      : carguesRail === 'COP_ACH'  ? (finityPool && !finityPool.loading && !finityPool.error)
+                      : false;
+      const freeForRail = carguesRail === 'COP_BREB' ? freeBreb : carguesRail === 'COP_ACH' ? freeAch : Infinity;
+
+      // Guard anti sobre-acreditación: un cargue en Bre-B/ACH NO puede
+      // comprometer más de lo que la bolsa del proveedor tiene libre (si no,
+      // le prometes a un cliente COP que no está respaldado). El neto que se
+      // acredita (bruto − comisión) es lo que aumenta la deuda con clientes.
+      const cRaw = carguesConfirm?.raw ?? 0;
+      const cFee = (carguesRail === 'COP_BREB' && carguesDir === 'credit' && !carguesRecordOnly) ? Math.round(cRaw * 0.10 / 100) : 0;
+      const cNet = cRaw - cFee;
+      const guardActive = carguesDir === 'credit' && !carguesRecordOnly && (carguesRail === 'COP_BREB' || carguesRail === 'COP_ACH') && !!poolReady;
+      const cargueExceeds = guardActive && cNet > freeForRail + 0.5;
+      const cargueShortfall = cargueExceeds ? Math.round(cNet - freeForRail) : 0;
+
       return (
         <div className="space-y-6 animate-in fade-in duration-300">
           {/* Aviso: proceso temporal */}
@@ -1472,6 +1532,54 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                 </button>
               </div>
             </div>
+          </div>
+
+          {/* Respaldo y utilidad por riel: bolsa del proveedor − comprometido
+              con clientes = disponible para cargar (= utilidad en pesos). */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {([
+              { rail: 'COP_BREB', label: 'Bre-B · Mouv', icon: Zap, pool: brebPool, oblig: obligBreb, free: freeBreb,
+                loading: mouvPool?.loading, error: mouvPool?.error, reload: loadMouvPool },
+              { rail: 'COP_ACH', label: 'ACH · Finity', icon: Landmark, pool: achPool, oblig: obligAch, free: freeAch,
+                loading: finityPool?.loading, error: finityPool?.error, reload: loadFinityPool },
+            ] as const).map(c => (
+              <div key={c.rail} style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 16, padding: '16px 18px' }}>
+                <div className="flex items-center justify-between" style={{ marginBottom: 12 }}>
+                  <div className="flex items-center gap-2" style={{ color: '#F4F4F2' }}>
+                    <c.icon size={15} style={{ color: '#4ADE80' }} />
+                    <span style={{ fontSize: 13.5, fontWeight: 700 }}>{c.label}</span>
+                  </div>
+                  <button onClick={c.reload} disabled={c.loading} title="Actualizar"
+                    style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', borderRadius: 9, padding: '6px 8px', cursor: 'pointer' }}>
+                    <RefreshCw size={13} className={c.loading ? 'animate-spin' : ''} />
+                  </button>
+                </div>
+                {c.error ? (
+                  <p style={{ fontSize: 12, color: '#F87171', fontWeight: 600 }}>{c.error}</p>
+                ) : c.loading ? (
+                  <p style={{ fontSize: 13, color: '#878E88' }}>Cargando…</p>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between" style={{ padding: '6px 0' }}>
+                      <span style={{ fontSize: 12.5, color: '#878E88' }}>Bolsa en {c.rail === 'COP_BREB' ? 'Mouv' : 'Finity'}</span>
+                      <span style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>{Math.round(c.pool).toLocaleString('es-CO')} COP</span>
+                    </div>
+                    <div className="flex items-center justify-between" style={{ padding: '6px 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                      <span style={{ fontSize: 12.5, color: '#878E88' }}>Comprometido con clientes</span>
+                      <span style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>− {Math.round(c.oblig).toLocaleString('es-CO')} COP</span>
+                    </div>
+                    <div className="flex items-center justify-between" style={{ padding: '9px 0 2px', borderTop: '1px solid rgba(255,255,255,0.10)', marginTop: 4 }}>
+                      <span style={{ fontSize: 12.5, fontWeight: 700, color: c.free < 0 ? '#F87171' : '#4ADE80' }}>
+                        {c.free < 0 ? '⚠ Faltante (sobre-cargado)' : 'Disponible · utilidad'}
+                      </span>
+                      <span style={{ fontSize: 16, fontWeight: 800, letterSpacing: '-0.4px', color: c.free < 0 ? '#F87171' : '#4ADE80' }}>
+                        {Math.round(c.free).toLocaleString('es-CO')} COP
+                      </span>
+                    </div>
+                  </>
+                )}
+              </div>
+            ))}
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
@@ -1682,14 +1790,26 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                 </div>
                   );
                 })()}
+                {cargueExceeds && (
+                  <div style={{ margin: '0 24px 12px', padding: '12px 14px', background: 'rgba(248,113,113,0.10)', border: '1px solid rgba(248,113,113,0.38)', borderRadius: 12 }}>
+                    <p style={{ fontSize: 12.5, color: '#F87171', fontWeight: 800 }}>⚠ Excede lo disponible en {carguesRail === 'COP_BREB' ? 'Mouv' : 'Finity'}</p>
+                    <p style={{ fontSize: 11.5, color: 'rgba(248,113,113,0.9)', lineHeight: 1.5, marginTop: 4 }}>
+                      Libre para cargar: <b>{Math.round(freeForRail).toLocaleString('es-CO')} COP</b>. Con este cargue quedarías corto en <b>{cargueShortfall.toLocaleString('es-CO')} COP</b> frente a lo que ya les debes a los clientes — estarías acreditando saldo que la bolsa no respalda.
+                    </p>
+                    <label className="flex items-center gap-2" style={{ marginTop: 8, cursor: 'pointer' }}>
+                      <input type="checkbox" checked={carguesOverride} onChange={e => setCarguesOverride(e.target.checked)} />
+                      <span style={{ fontSize: 12, color: '#F4F4F2', fontWeight: 600 }}>Entiendo el faltante — cargar de todos modos</span>
+                    </label>
+                  </div>
+                )}
                 <div style={{ display: 'flex', gap: 10, padding: '4px 24px 22px' }}>
-                  <button onClick={() => setCarguesConfirm(null)} disabled={carguesBusy}
+                  <button onClick={() => { setCarguesConfirm(null); setCarguesOverride(false); }} disabled={carguesBusy}
                     style={{ flex: 1, padding: '12px', borderRadius: 11, fontSize: 14, fontWeight: 700, color: '#F4F4F2', background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', cursor: carguesBusy ? 'default' : 'pointer' }}>
                     Cancelar
                   </button>
-                  <button onClick={submitCargue} disabled={carguesBusy}
+                  <button onClick={submitCargue} disabled={carguesBusy || (cargueExceeds && !carguesOverride)}
                     style={{ flex: 1.4, padding: '12px', borderRadius: 11, fontSize: 14, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-                      color: '#0A0C0B', background: carguesBusy ? 'rgba(74,222,128,0.5)' : '#4ADE80', border: 'none', cursor: carguesBusy ? 'default' : 'pointer' }}>
+                      color: '#0A0C0B', background: (carguesBusy || (cargueExceeds && !carguesOverride)) ? 'rgba(74,222,128,0.4)' : '#4ADE80', border: 'none', cursor: (carguesBusy || (cargueExceeds && !carguesOverride)) ? 'not-allowed' : 'pointer' }}>
                     {carguesBusy ? <><RefreshCw size={15} className="animate-spin" /> Aplicando…</> : <>Confirmar {carguesDir === 'credit' ? 'cargue' : 'descuento'}</>}
                   </button>
                 </div>
