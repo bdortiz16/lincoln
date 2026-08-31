@@ -499,15 +499,19 @@ async function userWalletFrom(phrase: string, index: number) {
 // nuevo de forma atómica (RPC next_gasfree_index, con fallback).
 async function userIndex(userId: string): Promise<number> {
   const { data: primary } = await db.from('users').select('id, email, raw_data').eq('id', userId).maybeSingle()
+  const praw = (primary?.raw_data ?? {}) as Record<string, any>
+  // FAST-PATH: si la fila ya tiene índice, úsalo tal cual y NO escribas nada.
+  //
+  // ⚠️ Antes se reconciliaba en CADA llamada (mirando filas hermanas y
+  //    reescribiendo raw_data). Eso resultó PELIGROSO: reescribir la columna
+  //    raw_data completa en cada my_status/carga corría contra el guardado
+  //    del cliente (contactos, 2FA/TOTP, etc.) y una carrera los borraba.
+  //    La divergencia admin↔cliente ahora se corrige de forma DELIBERADA con
+  //    el botón "Fijar wallet real" (pin_address), no automáticamente.
+  if (typeof praw.gasfreeIndex === 'number') return praw.gasfreeIndex
 
-  // Reunir SIEMPRE todas las filas del mismo correo (perfiles duplicados /
-  // sesiones half-auth). El índice HD puede estar guardado en una fila
-  // distinta a la que consulta el admin vs. la que usa el cliente. Antes
-  // había un "fast-path" que devolvía el índice de la fila consultada SIN
-  // mirar las hermanas: si dos filas del mismo correo tenían índices
-  // distintos, el CLIENTE veía una wallet (p. ej. …1gC, donde deposita) y el
-  // ADMIN veía OTRA (…MdW, vacía) para el mismo usuario. Aquí se reconcilia a
-  // UN solo índice canónico para que ambos lados vean SIEMPRE la misma wallet.
+  // Resolver hermanos por correo (half-auth / duplicados): el índice puede
+  // estar en otra fila del mismo correo.
   let rows: any[] = primary ? [primary] : []
   const email = primary?.email
   if (email) {
@@ -515,78 +519,32 @@ async function userIndex(userId: string): Promise<number> {
     if (Array.isArray(sibs) && sibs.length) rows = sibs
   }
 
-  // Índices ya asignados (distintos) entre todas las filas hermanas.
-  const found = new Set<number>()
+  // Reusar un índice YA asignado en cualquier fila hermana (estabilidad).
   for (const r of rows) {
     const raw = (r.raw_data ?? {}) as Record<string, any>
     const existing = typeof raw.gasfreeIndex === 'number' ? raw.gasfreeIndex
       : typeof raw.gasfreeHdIndex === 'number' ? raw.gasfreeHdIndex : null
-    if (existing != null) found.add(existing)
-  }
-  const candidates = Array.from(found)
-
-  // (1) Caso normal: un único índice en las filas → úsalo y persístelo.
-  if (candidates.length === 1) {
-    await persistIndexToRows(rows, candidates[0])
-    return candidates[0]
+    if (existing != null) { await persistIndexToRows(rows, existing); return existing }
   }
 
-  // (2) DIVERGENCIA (el bug): varias filas del mismo correo con índices
-  // distintos → cada lado veía otra wallet. Se resuelve hacia la wallet DONDE
-  // ESTÁ EL DINERO: se consulta el saldo on-chain de cada candidato y gana el
-  // de mayor saldo (ahí depositó el cliente). Empate/cero → el índice más bajo
-  // (el asignado primero, el estable). Se persiste el ganador en TODAS las
-  // filas para que la próxima carga ya no diverja.
-  if (candidates.length > 1) {
-    const canonical = await pickFundedIndex(candidates)
-    await persistIndexToRows(rows, canonical)
-    return canonical
-  }
-
-  // (3) Sin índice en ninguna fila:
-  //  - sin fila real donde persistir → índice DETERMINISTA por userId.
+  // Sin fila real donde persistir → índice DETERMINISTA por userId.
   if (!rows.length) return deterministicIndex(userId)
-  //  - hay fila(s) → asignar nuevo índice atómico y persistir en todas.
+  // Asignar nuevo índice atómico y persistir en todas las filas.
   const next = await allocNextIndex()
   await persistIndexToRows(rows, next)
   return next
 }
 
-// Entre varios índices HD candidatos (divergencia), elige aquel cuya wallet
-// GasFree tiene MÁS USDT on-chain — ahí está el dinero real del cliente.
-// Empate o todos en cero → el índice más bajo (el más antiguo/estable). Solo
-// lee saldos (no mueve fondos) y solo corre en el caso raro de divergencia.
-async function pickFundedIndex(indexes: number[]): Promise<number> {
-  const sorted = [...indexes].sort((a, b) => a - b)
-  try {
-    const { token } = await gfConfig()
-    const dec = Number(token.decimal ?? 6)
-    let best = sorted[0], bestBal = -1
-    for (const i of sorted) {
-      try {
-        const { eoa } = await userWallet(i)
-        const acct = await gfAccount(eoa)
-        const bal = acct.gasFreeAddress ? await tokenBalance(acct.gasFreeAddress, token.tokenAddress, dec) : 0
-        if (bal > bestBal) { bestBal = bal; best = i }
-      } catch { /* ignora este candidato y sigue */ }
-    }
-    return bestBal > 0 ? best : sorted[0]
-  } catch {
-    return sorted[0]
-  }
-}
-
+// Fija el índice HD en cada fila SIN pisar el resto de raw_data. Re-lee la
+// fila JUSTO antes de escribir y hace merge SOLO del campo del índice — así
+// este write nunca borra cambios concurrentes del cliente (contactos, 2FA,
+// etc.). Antes escribía un snapshot leído antes y una carrera podía borrarlos.
 async function persistIndexToRows(rows: any[], idx: number) {
   for (const r of rows) {
-    const raw = (r.raw_data ?? {}) as Record<string, any>
+    const { data: fresh } = await db.from('users').select('raw_data').eq('id', r.id).maybeSingle()
+    const raw = (fresh?.raw_data ?? r.raw_data ?? {}) as Record<string, any>
     if (raw.gasfreeIndex === idx) continue
-    // El índice de esta fila cambió → limpiar la dirección cacheada y el
-    // índice legacy para que se recalcule con el índice canónico.
-    const next = { ...raw, gasfreeIndex: idx }
-    delete next.gasfreeHdIndex
-    delete next.gasfreeAddress
-    delete next.gasfreeEoa
-    await db.from('users').update({ raw_data: next }).eq('id', r.id)
+    await db.from('users').update({ raw_data: { ...raw, gasfreeIndex: idx } }).eq('id', r.id)
   }
 }
 
@@ -627,7 +585,10 @@ async function resetUserIndex(userId: string) {
   const oldIndex = (primary.raw_data ?? {})?.gasfreeIndex ?? null
   const next = await allocNextIndex()
   for (const r of rows) {
-    const raw = { ...((r.raw_data ?? {}) as Record<string, any>) }
+    // Re-leer fresco justo antes de escribir para no pisar cambios
+    // concurrentes del cliente (contactos, 2FA) al reescribir raw_data.
+    const { data: fresh } = await db.from('users').select('raw_data').eq('id', r.id).maybeSingle()
+    const raw = { ...((fresh?.raw_data ?? r.raw_data ?? {}) as Record<string, any>) }
     raw.gasfreeIndex = next
     delete raw.gasfreeHdIndex     // no dejar que el índice viejo lo re-sobrescriba
     delete raw.gasfreeAddress   // limpiar dirección cacheada (se recalcula)
