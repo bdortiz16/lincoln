@@ -349,6 +349,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
       sendCuypayPayment,
       enrollMFA,
       verifyMFAEnrollment,
+      verifyMfaCode,
       unenrollMFA,
       getMFAStatus,
       updateUserProfile,
@@ -418,7 +419,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
     setMfaEnrolled(false);
     setMfaFactorId(undefined);
     setMfaTotpSecret(undefined);
-    if (currentUser) updateUserProfile(currentUser.id, { raw_data: { ...(currentUser as any).raw_data, mfaEnabled: false, mfaFactorId: null, totpSecret: null } });
+    if (currentUser) updateUserProfile(currentUser.id, { raw_data: { ...(currentUser as any).raw_data, mfaEnabled: false, mfaFactorId: null, totpSecret: null, totpSecretEnc: null } });
     setMfaDisableModalOpen(false);
     showToast('Verificación en 2 pasos desactivada.');
   };
@@ -1076,8 +1077,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
       if (payVerifyLoading || payVerifyCode.length !== 6 || !payRecipientUser) return;
       setPayVerifyLoading(true);
       setPayVerifyError('');
-      const { ok, error: mfaErr } = await verifyMFAEnrollment(mfaFactorId ?? 'local', payVerifyCode, mfaTotpSecret);
-      if (!ok) { setPayVerifyLoading(false); setPayVerifyError(mfaErr || 'Código incorrecto.'); setPayVerifyCode(''); return; }
+      const ok = await verifyMfaCode(payVerifyCode);
+      if (!ok) { setPayVerifyLoading(false); setPayVerifyError('Código incorrecto.'); setPayVerifyCode(''); return; }
       setShowPayVerify(false);
       setPayVerifyLoading(false);
       await executePay();

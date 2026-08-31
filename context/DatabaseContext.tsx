@@ -123,6 +123,7 @@ interface DatabaseContextType {
   verifyMFAEnrollment: (factorId: string, code: string, secret?: string) => Promise<{ ok: boolean; error?: string }>;
   unenrollMFA: (factorId: string) => Promise<boolean>;
   getMFAStatus: () => Promise<{ enrolled: boolean; factorId?: string; totpSecret?: string }>;
+  verifyMfaCode: (code: string) => Promise<boolean>;
 }
 
 // --- LOCALSTORAGE HELPERS (fallback sin Supabase) ---
@@ -1281,8 +1282,21 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       // el estado en memoria con los campos aplanados Y anidados, así el 2FA
       // queda activo al instante y sigue activo tras recargar la página.
       if (currentUser) {
-        // Optimista inmediato: refleja ambos (aplanado + anidado) sin esperar red.
-        setCurrentUser((prev: any) => prev ? { ...prev, mfaEnabled: true, mfaFactorId: factorId, totpSecret: secret, raw_data: { ...(prev.raw_data ?? {}), mfaEnabled: true, mfaFactorId: factorId, totpSecret: secret } } : prev);
+        // Optimista: marcar activo sin conservar el secreto en claro en estado.
+        setCurrentUser((prev: any) => prev ? { ...prev, mfaEnabled: true, mfaFactorId: factorId } : prev);
+        // Guardar el secreto CIFRADO en el servidor (mfa_set). Así nunca queda
+        // en texto plano en la base. Si el endpoint no está desplegado, cae al
+        // guardado legacy (texto plano) para no romper la activación.
+        try {
+          const SURL = SUPABASE_URL_FOR_FN; const SKEY = SUPABASE_ANON_FOR_FN; const token = getStoredToken();
+          const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
+            body: JSON.stringify({ action: 'mfa_set', userId: currentUser.id, secret, factorId }),
+          }).then(x => x.json()).catch(() => null);
+          if (r?.success) return { ok: true };
+        } catch { /* cae al legacy */ }
+        // LEGACY: guardar en texto plano (compat si mfa_set no existe aún).
         const persisted = await updateUserRawData(currentUser.id, { mfaEnabled: true, mfaFactorId: factorId, totpSecret: secret });
         if (!persisted) return { ok: false, error: 'No pudimos guardar la verificación en dos pasos. Reintenta.' };
       }
@@ -1309,6 +1323,25 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     } catch (e: any) {
       return { ok: false, error: e?.message === 'timeout' ? 'Sin respuesta del servidor. Revisa tu conexión.' : (e?.message || 'Error desconocido') };
     }
+  };
+
+  // Verifica un código 2FA. Si el secreto está en memoria (recién activado o
+  // legacy en claro) valida local; si no (secreto cifrado en la base), lo
+  // valida el SERVIDOR con mfa_verify. Devuelve true/false.
+  const verifyMfaCode = async (code: string): Promise<boolean> => {
+    const cu = currentUser as any;
+    const localSecret = (cu?.totpSecret ?? cu?.raw_data?.totpSecret) as string | undefined;
+    if (localSecret) { try { return verifyTOTP(localSecret, code); } catch { return false; } }
+    if (!currentUser) return false;
+    try {
+      const SURL = SUPABASE_URL_FOR_FN; const SKEY = SUPABASE_ANON_FOR_FN; const token = getStoredToken();
+      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
+        body: JSON.stringify({ action: 'mfa_verify', userId: currentUser.id, code }),
+      }).then(x => x.json()).catch(() => null);
+      return !!r?.ok;
+    } catch { return false; }
   };
 
   const unenrollMFA = async (factorId: string): Promise<boolean> => {
@@ -2038,7 +2071,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       getTransactionHistory, getAdminTeam, addAdminUser, updateAdminUser, deleteAdminUser, deleteUser, registerInternalMovement,
       updateBankList, restoreDatabase, sendPasswordReset, isPasswordRecovery, setNewPassword, sendCuypayPayment,
       mfaPending, completeMFALogin, cancelMFALogin,
-      enrollMFA, verifyMFAEnrollment, unenrollMFA, getMFAStatus,
+      enrollMFA, verifyMFAEnrollment, unenrollMFA, getMFAStatus, verifyMfaCode,
     }}>
       {children}
     </DatabaseContext.Provider>

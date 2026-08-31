@@ -28,6 +28,65 @@ function slimRawData(rd: unknown, limit = 2000): unknown {
   return out
 }
 
+// ── Cifrado de campos sensibles a nivel de APLICACIÓN (además del AES-256
+//    en reposo de la base). AES-256-GCM con llave derivada de FIELD_ENC_KEY
+//    (secret del servidor, nunca en la base ni en el cliente). Prefijo
+//    'enc:v1:' distingue cifrado de texto plano legacy. Sin la llave, no
+//    cifra (no rompe) y descifrar plano devuelve el mismo texto.
+const FIELD_ENC_KEY = Deno.env.get('FIELD_ENC_KEY') ?? ''
+let _encKeyPromise: Promise<CryptoKey> | null = null
+function fieldKey(): Promise<CryptoKey> {
+  if (!_encKeyPromise) {
+    _encKeyPromise = crypto.subtle.digest('SHA-256', new TextEncoder().encode(FIELD_ENC_KEY))
+      .then(raw => crypto.subtle.importKey('raw', new Uint8Array(raw), { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']))
+  }
+  return _encKeyPromise
+}
+async function encField(plain: string): Promise<string> {
+  if (!FIELD_ENC_KEY || !plain) return plain
+  const iv = crypto.getRandomValues(new Uint8Array(12))
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await fieldKey(), new TextEncoder().encode(plain)))
+  const buf = new Uint8Array(iv.length + ct.length); buf.set(iv); buf.set(ct, iv.length)
+  return 'enc:v1:' + btoa(String.fromCharCode(...buf))
+}
+async function decField(v: string): Promise<string> {
+  if (typeof v !== 'string' || !v.startsWith('enc:v1:')) return v   // texto plano legacy
+  if (!FIELD_ENC_KEY) throw new Error('FIELD_ENC_KEY missing')
+  const bytes = Uint8Array.from(atob(v.slice(7)), c => c.charCodeAt(0))
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: bytes.slice(0, 12) }, await fieldKey(), bytes.slice(12))
+  return new TextDecoder().decode(pt)
+}
+
+// TOTP nativo (SHA1/6/30, ventana ±2) — para verificar el 2FA en el servidor.
+function base32Decode(s: string): Uint8Array {
+  const alph = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
+  const clean = String(s ?? '').replace(/=+$/, '').toUpperCase().replace(/\s/g, '')
+  let bits = 0, value = 0; const out: number[] = []
+  for (const ch of clean) {
+    const idx = alph.indexOf(ch); if (idx < 0) continue
+    value = (value << 5) | idx; bits += 5
+    if (bits >= 8) { out.push((value >>> (bits - 8)) & 0xff); bits -= 8 }
+  }
+  return new Uint8Array(out)
+}
+async function verifyTOTPServer(secret: string, token: string): Promise<boolean> {
+  const code = String(token ?? '').replace(/\D/g, '')
+  if (code.length !== 6) return false
+  const key = base32Decode(secret); if (!key.length) return false
+  const ck = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-1' }, false, ['sign'])
+  const now = Math.floor(Date.now() / 1000)
+  for (let w = -2; w <= 2; w++) {
+    const counter = Math.floor(now / 30) + w
+    const b = new ArrayBuffer(8); const dv = new DataView(b)
+    dv.setUint32(0, Math.floor(counter / 0x100000000)); dv.setUint32(4, counter >>> 0)
+    const hmac = new Uint8Array(await crypto.subtle.sign('HMAC', ck, b))
+    const off = hmac[hmac.length - 1] & 0x0f
+    const bin = ((hmac[off] & 0x7f) << 24) | (hmac[off + 1] << 16) | (hmac[off + 2] << 8) | hmac[off + 3]
+    if ((bin % 1000000).toString().padStart(6, '0') === code) return true
+  }
+  return false
+}
+
 async function verifyAdmin(req: Request): Promise<{ ok: boolean; error?: string }> {
   const authHeader = req.headers.get('Authorization') ?? ''
 
@@ -272,6 +331,41 @@ Deno.serve(async (req: Request) => {
           .maybeSingle()
         if (!u) return json({ found: false })
         return json({ found: true, id: (u as any).id, name: (u as any).full_name ?? 'Usuario Lincoin' })
+      }
+
+      // ── 2FA: guardar el secreto TOTP CIFRADO (nunca en texto plano) ──────
+      // El cliente verifica el primer código localmente (prueba que configuró
+      // bien su app) y aquí solo se almacena el secreto cifrado con la llave
+      // del servidor. Se borra cualquier totpSecret plano previo.
+      if (selfServiceBody.action === 'mfa_set' && selfServiceBody.userId) {
+        if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
+        const secret = String(selfServiceBody.secret ?? '')
+        if (!/^[A-Z2-7]{16,64}$/i.test(secret)) return json({ error: 'Secreto inválido' }, 400)
+        const factorId = String(selfServiceBody.factorId ?? 'local')
+        const { data: u } = await db.from('users').select('raw_data').eq('id', selfServiceBody.userId).single()
+        const raw = { ...((u as any)?.raw_data ?? {}) }
+        raw.totpSecretEnc = await encField(secret)
+        raw.mfaEnabled = true
+        raw.mfaFactorId = factorId
+        delete raw.totpSecret   // nunca dejar el secreto en claro
+        const { error } = await db.from('users').update({ raw_data: raw }).eq('id', selfServiceBody.userId)
+        if (error) return json({ error: error.message }, 500)
+        return json({ success: true })
+      }
+
+      // ── 2FA: verificar un código contra el secreto CIFRADO (server-side).
+      // Reemplaza la verificación local del cliente (que ya no tiene el
+      // secreto en claro). Acepta legacy en texto plano.
+      if (selfServiceBody.action === 'mfa_verify' && selfServiceBody.userId) {
+        if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
+        const code = String(selfServiceBody.code ?? '')
+        const { data: u } = await db.from('users').select('raw_data').eq('id', selfServiceBody.userId).single()
+        const raw = ((u as any)?.raw_data ?? {}) as Record<string, any>
+        let secret = ''
+        try { secret = raw.totpSecretEnc ? await decField(String(raw.totpSecretEnc)) : String(raw.totpSecret ?? '') } catch { secret = '' }
+        if (!secret) return json({ ok: false, error: 'no_secret' })
+        const ok = await verifyTOTPServer(secret, code)
+        return json({ ok })
       }
 
       // Self-delete: any authenticated user can delete their own account

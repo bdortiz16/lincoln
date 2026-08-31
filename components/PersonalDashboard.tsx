@@ -526,6 +526,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       sendPasswordReset,
       enrollMFA,
       verifyMFAEnrollment,
+      verifyMfaCode,
       unenrollMFA,
       getMFAStatus,
       deleteUser,
@@ -1508,10 +1509,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       if (payVerifyLoading || payVerifyCode.length !== 6 || !payRecipientUser) return;
       setPayVerifyLoading(true);
       setPayVerifyError('');
-      const { ok, error: mfaErr } = await verifyMFAEnrollment(mfaFactorId ?? 'local', payVerifyCode, mfaTotpSecret);
+      const ok = await verifyMfaCode(payVerifyCode);   // local o server (secreto cifrado)
       if (!ok) {
           setPayVerifyLoading(false);
-          setPayVerifyError(mfaErr || 'Código incorrecto. Intenta nuevamente.');
+          setPayVerifyError('Código incorrecto. Intenta nuevamente.');
           setPayVerifyCode('');
           return;
       }
@@ -1564,9 +1565,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       if (sendOtpLoading || sendOtpCode.length !== 6) return;
       setSendOtpLoading(true); setSendOtpError('');
       try {
-          const { ok, error: vErr } = await verifyMFAEnrollment(mfaFactorId ?? 'local', sendOtpCode, mfaTotpSecret);
-          if (!ok) { setSendOtpError(vErr || 'Código incorrecto. Intenta nuevamente.'); setSendOtpCode(''); return; }
-          sentOtpRef.current = sendOtpCode; // el servidor lo re-valida
+          const ok = await verifyMfaCode(sendOtpCode);   // local o server (secreto cifrado)
+          if (!ok) { setSendOtpError('Código incorrecto. Intenta nuevamente.'); setSendOtpCode(''); return; }
+          sentOtpRef.current = sendOtpCode; // el servidor lo re-valida al mover el dinero
           setSendOtpOpen(false); setSendOtpCode('');
           handleSendSubmit();
       } catch (e: any) {
@@ -3162,7 +3163,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     setMfaTotpSecret(undefined);
     // Misma vía robusta que al activar: escribe solo raw_data y limpia los
     // campos aplanados en memoria, para que quede DESACTIVADO tras recargar.
-    if (currentUser) updateUserRawData(currentUser.id, { mfaEnabled: false, mfaFactorId: null, totpSecret: null }).catch(() => {});
+    if (currentUser) updateUserRawData(currentUser.id, { mfaEnabled: false, mfaFactorId: null, totpSecret: null, totpSecretEnc: null }).catch(() => {});
     setMfaDisableModalOpen(false);
     showToast('Verificación en 2 pasos desactivada.');
   };

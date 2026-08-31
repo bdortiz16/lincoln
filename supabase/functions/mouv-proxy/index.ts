@@ -36,6 +36,18 @@ function base32Decode(s: string): Uint8Array {
   }
   return new Uint8Array(out)
 }
+// Descifra un campo 'enc:v1:...' con la llave del servidor (FIELD_ENC_KEY).
+// Texto plano legacy pasa igual. Igual que en admin-data.
+const FIELD_ENC_KEY = Deno.env.get('FIELD_ENC_KEY') ?? ''
+async function decField(v: string): Promise<string> {
+  if (typeof v !== 'string' || !v.startsWith('enc:v1:')) return v
+  if (!FIELD_ENC_KEY) throw new Error('FIELD_ENC_KEY missing')
+  const rawKey = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(FIELD_ENC_KEY)))
+  const ck = await crypto.subtle.importKey('raw', rawKey, { name: 'AES-GCM' }, false, ['decrypt'])
+  const bytes = Uint8Array.from(atob(v.slice(7)), c => c.charCodeAt(0))
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: bytes.slice(0, 12) }, ck, bytes.slice(12))
+  return new TextDecoder().decode(pt)
+}
 async function verifyTOTPServer(secret: string, token: string): Promise<boolean> {
   const code = String(token ?? '').replace(/\D/g, '')
   if (code.length !== 6) return false
@@ -677,9 +689,11 @@ serve(async (req: Request) => {
     if (!caller.admin) {
       const { data: mfaU } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
       const mraw = ((mfaU as any)?.raw_data ?? {}) as Record<string, any>
-      if (mraw.mfaEnabled && mraw.totpSecret) {
+      let mfaSecret = ''
+      try { mfaSecret = mraw.totpSecretEnc ? await decField(String(mraw.totpSecretEnc)) : String(mraw.totpSecret ?? '') } catch { mfaSecret = '' }
+      if (mraw.mfaEnabled && mfaSecret) {
         const otp = String(payload.otp ?? payload.totp ?? '')
-        if (!(await verifyTOTPServer(String(mraw.totpSecret), otp))) {
+        if (!(await verifyTOTPServer(mfaSecret, otp))) {
           return json(403, { error: 'mfa_required', message: 'Código de verificación en dos pasos inválido. Vuelve a intentar el envío.' })
         }
       }

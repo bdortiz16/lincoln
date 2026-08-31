@@ -62,11 +62,23 @@ async function verifyTOTPServer(secret: string, token: string): Promise<boolean>
 }
 // Exige el código 2FA si el usuario lo tiene activo. Devuelve un mensaje de
 // error si falla, o null si pasa (o si no aplica).
+const FIELD_ENC_KEY = Deno.env.get('FIELD_ENC_KEY') ?? ''
+async function decField(v: string): Promise<string> {
+  if (typeof v !== 'string' || !v.startsWith('enc:v1:')) return v
+  if (!FIELD_ENC_KEY) throw new Error('FIELD_ENC_KEY missing')
+  const rawKey = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(FIELD_ENC_KEY)))
+  const ck = await crypto.subtle.importKey('raw', rawKey, { name: 'AES-GCM' }, false, ['decrypt'])
+  const bytes = Uint8Array.from(atob(v.slice(7)), c => c.charCodeAt(0))
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: bytes.slice(0, 12) }, ck, bytes.slice(12))
+  return new TextDecoder().decode(pt)
+}
 async function require2FA(userId: string, otp: unknown): Promise<string | null> {
   const { data } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
   const raw = ((data as any)?.raw_data ?? {}) as Record<string, any>
-  if (raw.mfaEnabled && raw.totpSecret) {
-    if (!(await verifyTOTPServer(String(raw.totpSecret), String(otp ?? '')))) {
+  let secret = ''
+  try { secret = raw.totpSecretEnc ? await decField(String(raw.totpSecretEnc)) : String(raw.totpSecret ?? '') } catch { secret = '' }
+  if (raw.mfaEnabled && secret) {
+    if (!(await verifyTOTPServer(secret, String(otp ?? '')))) {
       return 'Código de verificación en dos pasos inválido. Vuelve a intentar el envío.'
     }
   }
