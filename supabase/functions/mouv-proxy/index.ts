@@ -21,6 +21,39 @@
 // ─────────────────────────────────────────────
 import { serve } from 'https://deno.land/std@0.192.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+// Verificación TOTP en el SERVIDOR (2FA), con Web Crypto NATIVO (sin
+// dependencias externas que pudieran no cargar y tumbar el proxy). Mismo
+// algoritmo que el cliente: SHA1, 6 dígitos, período 30s, ventana ±2. Sin
+// esto el 2FA solo vivía en el navegador y se saltaba llamando al proxy.
+function base32Decode(s: string): Uint8Array {
+  const alph = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
+  const clean = String(s ?? '').replace(/=+$/, '').toUpperCase().replace(/\s/g, '')
+  let bits = 0, value = 0; const out: number[] = []
+  for (const ch of clean) {
+    const idx = alph.indexOf(ch); if (idx < 0) continue
+    value = (value << 5) | idx; bits += 5
+    if (bits >= 8) { out.push((value >>> (bits - 8)) & 0xff); bits -= 8 }
+  }
+  return new Uint8Array(out)
+}
+async function verifyTOTPServer(secret: string, token: string): Promise<boolean> {
+  const code = String(token ?? '').replace(/\D/g, '')
+  if (code.length !== 6) return false
+  const key = base32Decode(secret)
+  if (!key.length) return false
+  const ck = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-1' }, false, ['sign'])
+  const step = 30, now = Math.floor(Date.now() / 1000)
+  for (let w = -2; w <= 2; w++) {
+    const counter = Math.floor(now / step) + w
+    const buf = new ArrayBuffer(8); const view = new DataView(buf)
+    view.setUint32(0, Math.floor(counter / 0x100000000)); view.setUint32(4, counter >>> 0)
+    const hmac = new Uint8Array(await crypto.subtle.sign('HMAC', ck, buf))
+    const offset = hmac[hmac.length - 1] & 0x0f
+    const bin = ((hmac[offset] & 0x7f) << 24) | (hmac[offset + 1] << 16) | (hmac[offset + 2] << 8) | hmac[offset + 3]
+    if ((bin % 1000000).toString().padStart(6, '0') === code) return true
+  }
+  return false
+}
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -636,6 +669,21 @@ serve(async (req: Request) => {
     // la cuenta de otro con solo la llave pública + el id de la víctima.
     const userId = requireOwner(caller, payload)
     if (!userId) return json(403, { error: 'forbidden', message: 'Esta operación requiere una sesión válida. Vuelve a iniciar sesión.' })
+
+    // ── 2FA en el SERVIDOR: si el usuario tiene la verificación en dos pasos
+    //    activa, el código TOTP se valida AQUÍ antes de mover un peso — no
+    //    basta con haber pasado la pantalla del navegador. (Admin/AdminBypass
+    //    exceptuado: es una operación de soporte.) ────────────────────────────
+    if (!caller.admin) {
+      const { data: mfaU } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
+      const mraw = ((mfaU as any)?.raw_data ?? {}) as Record<string, any>
+      if (mraw.mfaEnabled && mraw.totpSecret) {
+        const otp = String(payload.otp ?? payload.totp ?? '')
+        if (!(await verifyTOTPServer(String(mraw.totpSecret), otp))) {
+          return json(403, { error: 'mfa_required', message: 'Código de verificación en dos pasos inválido. Vuelve a intentar el envío.' })
+        }
+      }
+    }
 
     const amount = Number(payload.amount)
     if (!isFinite(amount) || amount <= 0) return json(400, { error: 'bad_amount', message: 'Monto inválido.' })

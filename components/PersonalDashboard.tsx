@@ -414,6 +414,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // el estado de React tarda un render; el ref bloquea desde el primer clic.
   const payingRef = useRef(false);
   const convertingRef = useRef(false);
+  // Código 2FA del envío en curso — se envía al servidor para que RE-valide el
+  // TOTP antes de mover dinero (no basta con la pantalla del navegador).
+  const sentOtpRef = useRef('');
   // true = se despachó una orden a Mouv y NO sabemos si se creó (timeout /
   // error de red). Bloquea reintentos hasta que el usuario verifique.
   const [mouvUnknown, setMouvUnknown] = useState(false);
@@ -1524,6 +1527,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       try {
           const { ok, error: vErr } = await verifyMFAEnrollment(mfaFactorId ?? 'local', sendOtpCode, mfaTotpSecret);
           if (!ok) { setSendOtpError(vErr || 'Código incorrecto. Intenta nuevamente.'); setSendOtpCode(''); return; }
+          sentOtpRef.current = sendOtpCode; // el servidor lo re-valida
           setSendOtpOpen(false); setSendOtpCode('');
           handleSendSubmit();
       } catch (e: any) {
@@ -1561,7 +1565,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               : { bankCode: sendContact?.bank ?? sendForm.bankName, accountType: (sendContact?.accountType === 'checking' ? 'corriente' : 'ahorros'), accountNumber: sendForm.accountNumber, documentType: sendForm.documentType, documentNumber: sendForm.documentNumber, holderName: sendForm.beneficiaryName, reference: sendForm.reason, ...(sendContact?.finityId ? { finityId: sendContact.finityId } : {}) };
           try {
               const r = await Promise.race([
-                  callMouvProxy({ action: isBreb ? 'payout_breb' : 'payout_ach', userId: currentUser.id, amount, recipient }),
+                  callMouvProxy({ action: isBreb ? 'payout_breb' : 'payout_ach', userId: currentUser.id, amount, recipient, otp: sentOtpRef.current }),
                   new Promise<any>((_, rej) => setTimeout(() => rej(new Error('timeout')), 60000)),
               ]);
               if (r?.ok) {
@@ -1594,7 +1598,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       if (sendMode === 'wallet' && currentUser?.id) {
           try {
               const resp = await Promise.race([
-                  callGasfree({ action: 'my_send', userId: currentUser.id, toAddress: sendForm.accountNumber, amount }),
+                  callGasfree({ action: 'my_send', userId: currentUser.id, toAddress: sendForm.accountNumber, amount, otp: sentOtpRef.current }),
                   new Promise<any>((_, rej) => setTimeout(() => rej(new Error('timeout')), 90000)),
               ]);
               if (resp?.error || !resp?.traceId) {
