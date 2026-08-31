@@ -1283,7 +1283,27 @@ async function myConvertCredit(
   // Acotar el COP al USDT real × la tasa del servidor (no al copAmount del
   // cliente ni a una cota fija holgada). Bloquea acuñar COP inflando el monto.
   await assertCopWithinRate(sweptUsd, copAmount)
-  await creditBalanceAtomic(userId, 'COP_ACH', copAmount)   // atómico (pentest #3)
+  // CANDADO ATÓMICO anti doble-crédito: marca creditClaimed SOLO si no estaba
+  // (y el movimiento no está Completado). Si dos llamadas llegan al tiempo
+  // (cliente + autopiloto, o dos clics), únicamente UNA gana el claim y
+  // acredita; la otra sale sin tocar el saldo. Cierra la carrera de la
+  // verificación por estado (leer→comparar→escribir no era atómico).
+  const { data: creditClaim } = await db.from('transactions')
+    .update({ raw_data: { ...rd, creditClaimed: true } })
+    .eq('id', txId).neq('status', 'Completado')
+    .filter('raw_data->>creditClaimed', 'is', null)
+    .select('id')
+  if (!creditClaim || creditClaim.length === 0) {
+    return { ok: true, status: 'Completado', copCredited: 0, already: true }
+  }
+  try {
+    await creditBalanceAtomic(userId, 'COP_ACH', copAmount)   // atómico (pentest #3)
+  } catch (e) {
+    // Si el crédito falla, LIBERAR el claim (rd no trae creditClaimed) para que
+    // un reintento legítimo pueda volver a intentarlo — si no, quedaría trabado.
+    await db.from('transactions').update({ raw_data: { ...rd } }).eq('id', txId)
+    throw e
+  }
   const { data: uf } = await db.from('users').select('balances').eq('id', userId).single()
   const nc = Number(((uf?.balances as any)?.COP_ACH) ?? copAmount)
   await db.from('transactions').update({
