@@ -639,6 +639,35 @@ async function resetUserIndex(userId: string) {
   return { ok: true, email: primary.email, oldIndex, newIndex: next, eoa, gasFreeAddress: acct.gasFreeAddress }
 }
 
+// FIJAR (pin) la wallet REAL de un usuario a una dirección conocida.
+// Caso: la fila del usuario apunta a una wallet (p. ej. …MdW, vacía) distinta
+// de la que el CLIENTE ve y usa (p. ej. …1gC, con su USDT). Eso pasa cuando el
+// índice de …1gC se perdió/sobrescribió y ya no está guardado en ninguna fila,
+// así que la reconciliación por correo no tiene a qué converger. Aquí se
+// ESCANEA para hallar el índice HD que deriva a `address` y se escribe como el
+// gasfreeIndex canónico en TODAS las filas del correo. NO mueve fondos: solo
+// hace que admin y cliente vean la MISMA wallet (la real, con el dinero).
+async function pinAddressToUser(userId: string, address: string) {
+  const addr = String(address || '').trim()
+  if (!addr) throw new Error('Falta la dirección a fijar')
+  const hit = await findAddress(addr)
+  if (!hit?.found || typeof hit.index !== 'number') {
+    throw new Error(`No se encontró el índice HD para ${addr} (escaneado hasta ${hit?.scannedUpTo ?? '?'}). ¿Es una wallet GasFree derivada de la semilla de Lincoin?`)
+  }
+  const { data: primary } = await db.from('users').select('id, email, raw_data').eq('id', userId).maybeSingle()
+  if (!primary) throw new Error('Usuario no encontrado')
+  let rows: any[] = [primary]
+  if (primary.email) {
+    const { data: sibs } = await db.from('users').select('id, email, raw_data').eq('email', primary.email)
+    if (Array.isArray(sibs) && sibs.length) rows = sibs
+  }
+  await persistIndexToRows(rows, hit.index)   // escribe el índice y limpia caché
+  return {
+    ok: true, email: primary.email, index: hit.index, mnemonic: hit.mnemonic,
+    eoa: hit.eoa, gasFreeAddress: hit.gasFreeAddress, balanceUsdt: hit.balanceUsdt,
+  }
+}
+
 // Índice determinista de respaldo (offset alto: el contador secuencial de
 // clientes arranca en 1 y crece de a uno, así que 1_000_000+ nunca choca).
 function deterministicIndex(userId: string): number {
@@ -1916,6 +1945,18 @@ Deno.serve(async (req) => {
     if (action === 'sweep_index') {
       if (body.index == null) return err('Falta index', 400)
       return ok(await sweepIndex(Number(body.index), body.mnemonic ? String(body.mnemonic) : undefined))
+    }
+    // Recuperación: FIJAR la wallet real de un usuario a una dirección conocida
+    // (la que el cliente ve/usa). No mueve fondos; alinea admin ↔ cliente.
+    if (action === 'pin_address') {
+      let uid = userId as string | undefined
+      if (!uid && body.email) {
+        const { data } = await db.from('users').select('id').eq('email', String(body.email)).limit(1).maybeSingle()
+        uid = data?.id
+      }
+      if (!uid) return err('Falta userId o email de un usuario existente', 400)
+      if (!body.address) return err('Falta address (la wallet real del cliente)', 400)
+      return ok(await pinAddressToUser(String(uid), String(body.address)))
     }
     // Auditoría: detectar wallets colisionadas y usuarios sin índice.
     if (action === 'audit_indexes') {

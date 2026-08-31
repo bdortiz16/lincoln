@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Zap, RefreshCw, Copy, Search, Landmark, Activity, Send, X, Settings } from 'lucide-react';
+import { Zap, RefreshCw, Copy, Search, Landmark, Activity, Send, X, Settings, Pin } from 'lucide-react';
 import { useDatabase } from '../context/DatabaseContext';
 import { RecaudadoraRotativaCard } from './RecaudadoraRotativaCard';
 
@@ -221,6 +221,25 @@ export const AdminGasFreeSection: React.FC = () => {
             }
         } catch (e: any) { setSweepMsg(`❌ ${e?.message ?? 'Error'}`); }
         setLocating(null);
+    };
+
+    // Fijar la wallet REAL del cliente: cuando el admin ve una wallet distinta
+    // (vacía) a la que el cliente usa/deposita. Se escanea el índice de esa
+    // dirección y se apunta a ella el usuario. No mueve fondos.
+    const [pinning, setPinning] = useState<string | null>(null);
+    const pinRealWallet = async (userId: string) => {
+        const address = window.prompt('Pega la wallet GasFree REAL que ve el cliente (la que tiene el USDT). El panel apuntará a esa. No mueve fondos.');
+        if (!address || !address.trim()) return;
+        setPinning(userId); setSweepMsg(null);
+        try {
+            const r = await callGasfree({ action: 'pin_address', userId, address: address.trim() });
+            if (r?.error) setSweepMsg(`❌ ${r.error}`);
+            else {
+                setSweepMsg(`📌 Wallet fijada (índice ${r.index}): ${r.gasFreeAddress} · saldo ${fmt(r.balanceUsdt ?? 0)} USDT. Dale "Actualizar saldo".`);
+                loadUser(userId);
+            }
+        } catch (e: any) { setSweepMsg(`❌ ${e?.message ?? 'Error'}`); }
+        setPinning(null);
     };
 
     const sweepAll = async () => {
@@ -833,6 +852,9 @@ export const AdminGasFreeSection: React.FC = () => {
                                             )}
                                             <button onClick={() => locateFunds(u.id)} disabled={locating === u.id} className="inline-flex items-center gap-1 text-xs font-bold text-amber-600 hover:underline disabled:opacity-50" title="Buscar el USDT en mainnet y testnet">
                                                 <Search size={13} /> {locating === u.id ? 'Buscando…' : 'Localizar USDT'}
+                                            </button>
+                                            <button onClick={() => pinRealWallet(u.id)} disabled={pinning === u.id} className="inline-flex items-center gap-1 text-xs font-bold text-indigo-600 hover:underline disabled:opacity-50" title="Fijar la wallet real que ve el cliente (si el panel muestra otra distinta)">
+                                                <Pin size={13} /> {pinning === u.id ? 'Fijando…' : 'Fijar wallet real'}
                                             </button>
                                         </div>
                                     </td>
