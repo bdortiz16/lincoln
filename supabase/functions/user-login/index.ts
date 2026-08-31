@@ -50,8 +50,10 @@ Deno.serve(async (req) => {
       .single()
 
     if (error || !user) {
-      return new Response(JSON.stringify({ error: 'not_found' }), {
-        status: 404, headers: { 'Content-Type': 'application/json', ...CORS },
+      // Respuesta UNIFORME con credenciales inválidas: no revelar si el correo
+      // existe (evita enumeración de cuentas).
+      return new Response(JSON.stringify({ error: 'invalid_credentials' }), {
+        status: 401, headers: { 'Content-Type': 'application/json', ...CORS },
       })
     }
 

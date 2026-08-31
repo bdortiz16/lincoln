@@ -42,16 +42,11 @@ Deno.serve(async (req) => {
       .eq('email', email)
       .single()
 
-    if (error || !user) {
-      return new Response(JSON.stringify({ error: 'not_found' }), {
-        status: 404, headers: { 'Content-Type': 'application/json', ...CORS },
-      })
-    }
-
-    if (user.role !== 'admin') {
-      // Not an admin — don't reveal info about non-admin accounts
-      return new Response(JSON.stringify({ error: 'not_admin' }), {
-        status: 403, headers: { 'Content-Type': 'application/json', ...CORS },
+    // Respuesta UNIFORME: no revelar si el correo existe ni si es admin
+    // (evita enumeración de cuentas / del correo admin).
+    if (error || !user || user.role !== 'admin') {
+      return new Response(JSON.stringify({ error: 'invalid_credentials' }), {
+        status: 401, headers: { 'Content-Type': 'application/json', ...CORS },
       })
     }
 
