@@ -10,7 +10,7 @@ interface LandingPageProps {
 // Landing oficial de Lincoin (Lincoin Landing v2 — "Dinero fuerte, fronteras cero").
 // El HTML del diseño se inyecta tal cual y los botones "Ingresar" / "Crear cuenta"
 // (data-open) se conectan al flujo del app: selección Personas / Empresas → login.
-export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick }) => {
+export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onNavigateTo }) => {
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -22,8 +22,22 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick }) => {
     };
     const nodes = Array.from(el.querySelectorAll<HTMLElement>('[data-open]'));
     nodes.forEach((n) => n.addEventListener('click', goToAuth));
-    return () => nodes.forEach((n) => n.removeEventListener('click', goToAuth));
-  }, [onLoginClick]);
+
+    // Enlaces del footer legal/seguridad → páginas de contenido (Términos,
+    // Privacidad, Licencias, Reclamaciones, Cómo te protegemos, etc.).
+    const goToPage = (e: Event) => {
+      e.preventDefault();
+      const key = (e.currentTarget as HTMLElement).getAttribute('data-page');
+      if (key) onNavigateTo(key);
+    };
+    const pageNodes = Array.from(el.querySelectorAll<HTMLElement>('[data-page]'));
+    pageNodes.forEach((n) => n.addEventListener('click', goToPage));
+
+    return () => {
+      nodes.forEach((n) => n.removeEventListener('click', goToAuth));
+      pageNodes.forEach((n) => n.removeEventListener('click', goToPage));
+    };
+  }, [onLoginClick, onNavigateTo]);
 
   return (
     <div
