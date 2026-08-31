@@ -3858,6 +3858,13 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     const isBrebTx = tx.currency === 'COP_BREB';
     const railLabel = isBrebTx ? `Bre-B${dispKeyTypeLabel ? ` · Llave ${dispKeyTypeLabel.toLowerCase()}` : ''}` : tx.currency === 'COP_ACH' ? 'ACH · Colombia' : railOfCurrency(tx.currency) || (isCop ? 'Colombia' : 'Red TRON · TRC-20');
     const feeCop = Number(tx.feeCop ?? rawData.feeCop ?? 0);
+    // Cargue Bre-B con comisión de recepción: desglose transparente en el
+    // detalle (Monto recibido − Comisión 0,10% = Acreditado). El número grande
+    // sigue siendo el NETO acreditado (tx.amount), igual que en la lista.
+    const grossCop = Number((tx as any).grossCop ?? rawData.grossCop ?? 0);
+    const feePct = Number((tx as any).feePct ?? rawData.feePct ?? 0);
+    const feeConcept = String(rawData.feeConcept || 'Comisión por recepción Bre-B');
+    const showCargueBreakdown = isCredit && grossCop > 0 && feeCop > 0 && grossCop > feeCop;
     const st = String(tx.status || '');
     const pill = st === 'Completado' ? { l: isCredit ? 'ACREDITADO' : 'COMPLETADO', c: '#4ADE80', b: 'rgba(74,222,128,0.3)', ok: true }
         : (st === 'Procesando' || st === 'Pendiente') ? { l: 'EN CURSO', c: 'rgba(244,244,242,0.7)', b: 'rgba(255,255,255,0.14)', ok: false }
@@ -3867,6 +3874,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     // Filas de detalle del rediseño
     const rows2: { label: string; value: string; mono?: boolean; copy?: string; green?: boolean }[] = [
       { label: 'Riel', value: railLabel },
+      ...(showCargueBreakdown ? [
+        { label: 'Monto recibido', value: `${formatMoney(grossCop, 'COP')} COP` },
+        { label: feePct > 0 ? `${feeConcept} (${feePct}%)` : feeConcept, value: `− ${formatMoney(feeCop, 'COP')} COP` },
+        { label: 'Acreditado a tu saldo', value: `${formatMoney(tx.amount, tx.currency)} COP`, green: true },
+      ] : []),
       ...(isDispersion && dispDest ? [{ label: isBrebTx ? 'Llave destino' : 'Cuenta destino', value: dispDest, mono: true, copy: dispDest }] : []),
       ...(isDispersion && tx.currency === 'COP_ACH' && tx.bank ? [{ label: 'Banco', value: String(tx.bank).split('·')[0].trim() }] : []),
       ...(isMouvConvert && mouvFromAmount != null ? [{ label: 'Debitado de', value: `Billetera USDT · −${Number(mouvFromAmount).toFixed(2)} USDT` }] : []),

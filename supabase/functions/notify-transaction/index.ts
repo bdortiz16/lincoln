@@ -254,7 +254,19 @@ function buildDetailRows(tx: TxRecord, completed = false): string {
     if (feeCop != null) rows.push(detailRow('Costo del envío', fmt(Number(feeCop), 'COP')))
   }
 
-  rows.push(detailRow('Monto', fmt(tx.amount, tx.currency)))
+  // Cargue Bre-B con comisión de recepción: desglose transparente
+  // (Monto recibido − Comisión 0,10% = Acreditado). El "Monto" de abajo es el
+  // NETO acreditado (tx.amount ya viene neto).
+  const rdTop = tx.raw_data ?? {}
+  const grossCop = Number(rdTop.grossCop ?? 0)
+  const feeCargue = Number(rdTop.feeCop ?? 0)
+  const hasCargueFee = grossCop > 0 && feeCargue > 0 && grossCop > feeCargue
+  if (hasCargueFee) {
+    const pct = Number(rdTop.feePct ?? 0)
+    rows.push(detailRow('Monto recibido', fmt(grossCop, tx.currency)))
+    rows.push(detailRow(pct > 0 ? `Comisión por recepción Bre-B (${pct}%)` : 'Comisión por recepción Bre-B', `− ${fmt(feeCargue, tx.currency)}`))
+  }
+  rows.push(detailRow(hasCargueFee ? 'Acreditado a tu saldo' : 'Monto', fmt(tx.amount, tx.currency)))
   rows.push(detailRow('Fecha', now))
   rows.push(detailRow('Referencia', tx.raw_data?.providerRef ? String(tx.raw_data.providerRef) : `#${tx.id}`))
   rows.push(detailRow('Estado', completed ? 'Completado' : txStatusText(tx.type)))
