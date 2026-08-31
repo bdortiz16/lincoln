@@ -945,15 +945,15 @@ Deno.serve(async (req) => {
       const movId = (m: any) => String(m?.id ?? m?.reference ?? m?.movement_id ?? JSON.stringify(m))
       for (const tx of pending) {
         const rd = (tx.raw_data ?? {}) as any
-        const gross = Number(rd.grossCop ?? tx.amount ?? 0)
-        // 1) por id del link (lo más fiable) o 2) por monto bruto + completada.
-        // El id del link es preferente; el monto es respaldo — y siempre se
-        // exige que el movimiento NO se haya usado ya para otro cobro.
+        // SEGURIDAD (pentest M1): SOLO se acredita si el movimiento REAL de
+        // Finity referencia el id EXACTO de ESTE link de cobro. Antes también
+        // hacía match por MONTO (±0.5%) contra los movimientos GLOBALES de la
+        // cuenta compartida → un atacante creaba un cobro nunca pagado del
+        // mismo valor y se robaba el depósito de otro. El monto ya NO basta.
+        if (!rd.reference) continue
         const match = rows.find(m => {
           if (consumed.has(movId(m))) return false
-          const byId = rd.reference && JSON.stringify(m).includes(String(rd.reference))
-          const byAmt = isRecarga(m) && isDone(m) && Math.abs(amountOf(m) - gross) <= Math.max(2, gross * 0.005)
-          return byId || byAmt
+          return JSON.stringify(m).includes(String(rd.reference))
         })
         if (!match) continue
         consumed.add(movId(match))
