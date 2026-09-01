@@ -58,7 +58,8 @@ import {
   Search,
   SlidersHorizontal,
   ArrowLeftRight,
-  XCircle
+  XCircle,
+  Archive
 } from 'lucide-react';
 import { Logo } from './Logo';
 import { MouvSection, fetchMouvBalance, fetchMouvRateValue, fetchMouvUsdCopConfig, callMouv } from './OtcMigration';
@@ -953,6 +954,41 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const [usdtLoadErr, setUsdtLoadErr] = useState<string | null>(null);
   const [usdtLoadingAddr, setUsdtLoadingAddr] = useState(false);
   const [usdtVerifying, setUsdtVerifying] = useState(false);
+
+  // ── Archivo de wallets + generar nueva (MANUAL, nunca automático) ──
+  // La wallet NO cambia sola. Solo cambia si el usuario, a propósito, genera
+  // una nueva desde aquí — la actual pasa a "archivadas" y la nueva es
+  // principal. También puede ver sus wallets anteriores.
+  const [walletArchiveOpen, setWalletArchiveOpen] = useState(false);
+  const [walletArchive, setWalletArchive] = useState<{ current?: { address: string; index: number }; archived: { address: string; at: string | null; reason: string }[] } | null>(null);
+  const [walletArchiveLoading, setWalletArchiveLoading] = useState(false);
+  const [regenConfirmOpen, setRegenConfirmOpen] = useState(false);
+  const [regenBusy, setRegenBusy] = useState(false);
+  const [regenError, setRegenError] = useState<string | null>(null);
+  const openWalletArchive = async () => {
+    setWalletArchiveOpen(true);
+    setWalletArchiveLoading(true);
+    try {
+      const d = await callGasfree({ action: 'my_wallet_archive', userId: currentUser?.id });
+      setWalletArchive(d && !d.error ? d : { archived: [] });
+    } catch { setWalletArchive({ archived: [] }); }
+    setWalletArchiveLoading(false);
+  };
+  const doRegenerateWallet = async () => {
+    if (regenBusy || !currentUser?.id) return;
+    setRegenBusy(true); setRegenError(null);
+    try {
+      const d = await callGasfree({ action: 'my_wallet_regenerate', userId: currentUser.id });
+      if (!d?.ok) { setRegenError(d?.error || 'No se pudo generar la nueva wallet. Intenta de nuevo.'); setRegenBusy(false); return; }
+      if (d.address) setUsdtAddr(d.address);
+      setRegenConfirmOpen(false);
+      setWalletArchive(null); // se recargará con la nueva actual + la anterior archivada
+      showToast('✅ Nueva wallet generada. La anterior quedó en tu archivo.', 6000);
+      if (currentUser?.id) refreshGasfreeBal(currentUser.id);
+      refreshData?.();
+    } catch { setRegenError('Error de red. Intenta de nuevo.'); }
+    setRegenBusy(false);
+  };
 
   // JWT de la sesión propia — lo exige gasfree para las acciones "my_*"
   // (nadie más que el propio usuario, ni con la llave pública, puede
@@ -2766,6 +2802,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               <div style={{ position: 'relative', overflow: 'hidden', background: 'linear-gradient(150deg, #101312 0%, #0C0E0D 55%, #0A0C0B 100%)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 16, padding: '26px 28px' }}>
                                   <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(circle at 92% 0%, rgba(74,222,128,0.1), transparent 42%)', pointerEvents: 'none' }} />
                                   <div style={{ position: 'relative' }}>
+                                      <div className="flex items-start justify-between" style={{ gap: 10 }}>
                                       <div className="flex items-center flex-wrap" style={{ gap: 10 }}>
                                           <span style={{ width: 40, height: 40, borderRadius: '50%', background: '#26A17B', color: '#fff', fontWeight: 800, fontSize: 21, display: 'grid', placeItems: 'center', flexShrink: 0 }}>₮</span>
                                           <div>
@@ -2776,6 +2813,21 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                               <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 2 }}>USDT · red GasFree (TRON) · 1 USDT = 1 USD</p>
                                           </div>
                                       </div>
+                                      {/* Esquina superior: archivo de wallets anteriores + generar nueva
+                                          (MANUAL — la wallet nunca cambia sola). */}
+                                      <div className="flex items-center" style={{ gap: 6, flexShrink: 0 }}>
+                                          <button onClick={openWalletArchive} title="Ver mis wallets anteriores (archivadas)"
+                                              className="flex items-center justify-center hover:bg-white/[0.09] transition-colors"
+                                              style={{ width: 34, height: 34, borderRadius: 9, color: '#878E88', background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.1)' }}>
+                                              <Archive size={16} />
+                                          </button>
+                                          <button onClick={() => { setRegenError(null); setRegenConfirmOpen(true); }} title="Generar una nueva wallet de depósito"
+                                              className="flex items-center justify-center hover:bg-white/[0.09] transition-colors"
+                                              style={{ width: 34, height: 34, borderRadius: 9, color: '#4ADE80', background: 'rgba(74,222,128,0.08)', border: '1px solid rgba(74,222,128,0.22)' }}>
+                                              <Plus size={17} />
+                                          </button>
+                                      </div>
+                                  </div>
                                       <div style={{ marginTop: 22, display: 'flex', alignItems: 'baseline', gap: 4 }}>
                                           <span style={{ fontSize: 46, fontWeight: 800, letterSpacing: '-1.8px', lineHeight: 1, color: '#F4F4F2' }}>{parts[0]}</span>
                                           <span style={{ fontSize: 28, fontWeight: 800, color: '#878E88' }}>,{parts[1]}</span>
@@ -4659,6 +4711,66 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   </div>
                   <p style={{ color: '#F4F4F2', fontWeight: 800, fontSize: 26, letterSpacing: '-0.6px', lineHeight: 1 }}>+{depositFx.amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span style={{ fontSize: 16, color: '#878E88' }}>USDT</span></p>
                   <p style={{ color: '#878E88', fontSize: 13, marginTop: 6 }}>Depósito acreditado a tu Dólar digital</p>
+              </div>
+          </div>
+      )}
+
+      {/* Archivo de wallets anteriores del usuario */}
+      {walletArchiveOpen && (
+          <div className="fixed inset-0 z-50 grid place-items-center p-4" style={{ background: 'rgba(4,5,4,0.72)', backdropFilter: 'blur(3px)', fontFamily: "'Archivo', system-ui, sans-serif" }} onClick={() => setWalletArchiveOpen(false)}>
+              <div onClick={(e) => e.stopPropagation()} className="w-full animate-in fade-in zoom-in-95 duration-200" style={{ maxWidth: 468, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, overflow: 'hidden' }} role="dialog" aria-modal="true">
+                  <div className="flex items-center justify-between" style={{ gap: 16, padding: '20px 24px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                      <div className="flex items-center gap-2.5"><Archive size={18} color="#4ADE80" /><span style={{ fontSize: 16, fontWeight: 700, color: '#F4F4F2' }}>Mis wallets</span></div>
+                      <button onClick={() => setWalletArchiveOpen(false)} style={{ color: '#878E88' }}><X size={18} /></button>
+                  </div>
+                  <div style={{ padding: '18px 24px 24px' }}>
+                      {walletArchiveLoading ? (
+                          <p style={{ fontSize: 13, color: '#878E88', textAlign: 'center', padding: '20px 0' }}>Cargando…</p>
+                      ) : (<>
+                          {walletArchive?.current?.address && (
+                              <div style={{ marginBottom: 16 }}>
+                                  <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: '#4ADE80', marginBottom: 6 }}>PRINCIPAL (ACTUAL)</p>
+                                  <div className="flex items-center justify-between" style={{ gap: 8, padding: '12px 14px', borderRadius: 10, background: 'rgba(74,222,128,0.06)', border: '1px solid rgba(74,222,128,0.22)' }}>
+                                      <span style={{ fontSize: 12.5, fontWeight: 600, color: '#F4F4F2', fontFamily: 'ui-monospace, Menlo, monospace' }}>{walletArchive.current.address.slice(0, 10)}…{walletArchive.current.address.slice(-8)}</span>
+                                      <button onClick={() => navigator.clipboard?.writeText(walletArchive!.current!.address).then(() => showToast('Copiada')).catch(() => {})} style={{ color: '#4ADE80', fontSize: 12, fontWeight: 700 }} className="flex items-center gap-1"><Copy size={12} /> Copiar</button>
+                                  </div>
+                              </div>
+                          )}
+                          <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: '#878E88', marginBottom: 6 }}>ARCHIVADAS (ANTERIORES)</p>
+                          {(!walletArchive?.archived || walletArchive.archived.length === 0) ? (
+                              <p style={{ fontSize: 12.5, color: '#878E88', padding: '10px 0' }}>No tienes wallets anteriores. Solo has usado la actual.</p>
+                          ) : (
+                              <div className="space-y-2" style={{ maxHeight: 260, overflowY: 'auto' }}>
+                                  {walletArchive.archived.map((w, i) => (
+                                      <div key={i} className="flex items-center justify-between" style={{ gap: 8, padding: '11px 14px', borderRadius: 10, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.09)' }}>
+                                          <div style={{ minWidth: 0 }}>
+                                              <p style={{ fontSize: 12.5, fontWeight: 600, color: '#C9CFCB', fontFamily: 'ui-monospace, Menlo, monospace' }}>{w.address.slice(0, 10)}…{w.address.slice(-8)}</p>
+                                              <p style={{ fontSize: 10.5, color: '#878E88', marginTop: 2 }}>{w.at ? new Date(w.at).toLocaleDateString('es-CO') : ''}</p>
+                                          </div>
+                                          <button onClick={() => navigator.clipboard?.writeText(w.address).then(() => showToast('Copiada')).catch(() => {})} style={{ color: '#878E88', fontSize: 12, fontWeight: 700 }} className="flex items-center gap-1 hover:opacity-80"><Copy size={12} /></button>
+                                      </div>
+                                  ))}
+                              </div>
+                          )}
+                          <p style={{ fontSize: 11, color: '#878E88', marginTop: 16, lineHeight: 1.5 }}>Tu wallet no cambia sola. Solo cambia si tú generas una nueva a propósito. Los fondos que llegaron a una wallet anterior siguen siendo tuyos.</p>
+                      </>)}
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* Confirmar generación de una NUEVA wallet (manual) */}
+      {regenConfirmOpen && (
+          <div className="fixed inset-0 z-50 grid place-items-center p-4" style={{ background: 'rgba(4,5,4,0.72)', backdropFilter: 'blur(3px)', fontFamily: "'Archivo', system-ui, sans-serif" }} onClick={() => !regenBusy && setRegenConfirmOpen(false)}>
+              <div onClick={(e) => e.stopPropagation()} className="w-full animate-in fade-in zoom-in-95 duration-200" style={{ maxWidth: 420, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, padding: '26px 24px' }} role="dialog" aria-modal="true">
+                  <div className="flex items-center gap-2.5" style={{ marginBottom: 12 }}><span style={{ width: 36, height: 36, borderRadius: 10, background: 'rgba(74,222,128,0.1)', border: '1px solid rgba(74,222,128,0.25)', display: 'grid', placeItems: 'center' }}><Plus size={18} color="#4ADE80" /></span><span style={{ fontSize: 17, fontWeight: 800, color: '#F4F4F2' }}>Generar nueva wallet</span></div>
+                  <p style={{ fontSize: 13.5, color: '#C9CFCB', lineHeight: 1.55, marginBottom: 8 }}>¿Seguro que quieres generar una <b>nueva wallet</b> de depósito? La actual pasará a <b>archivadas</b> y la nueva quedará como <b>principal</b>.</p>
+                  <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, marginBottom: 16 }}>Nota: primero envía o convierte el saldo de la wallet actual. Si tiene fondos, no se podrá generar (para no dejar dinero en la anterior).</p>
+                  {regenError && <p style={{ fontSize: 12.5, color: '#F87171', background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.25)', borderRadius: 8, padding: '9px 11px', marginBottom: 14 }}>{regenError}</p>}
+                  <div className="flex" style={{ gap: 10 }}>
+                      <button onClick={() => setRegenConfirmOpen(false)} disabled={regenBusy} className="flex-1 hover:bg-white/[0.09] transition-colors" style={{ padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', opacity: regenBusy ? 0.5 : 1 }}>Cancelar</button>
+                      <button onClick={doRegenerateWallet} disabled={regenBusy} className="flex-1 transition-colors" style={{ padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, color: '#0A0C0B', background: '#4ADE80', border: 'none', opacity: regenBusy ? 0.6 : 1 }}>{regenBusy ? 'Generando…' : 'Sí, generar nueva'}</button>
+                  </div>
               </div>
           </div>
       )}

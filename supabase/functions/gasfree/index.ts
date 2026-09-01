@@ -807,7 +807,7 @@ async function auditIndexes() {
 // Necesario cuando el índice guardado ya está corrupto (dos usuarios con la
 // misma wallet por el bug previo). NO toca fondos: solo cambia a qué wallet
 // apunta el usuario de aquí en adelante (limpia también la dirección cacheada).
-async function resetUserIndex(userId: string) {
+async function resetUserIndex(userId: string, source = 'admin_reset') {
   const { data: primary } = await db.from('users').select('id, email, raw_data').eq('id', userId).maybeSingle()
   if (!primary) throw new Error('Usuario no encontrado')
   let rows: any[] = [primary]
@@ -817,6 +817,7 @@ async function resetUserIndex(userId: string) {
   }
   const oldIndex = (primary.raw_data ?? {})?.gasfreeIndex ?? null
   const next = await allocNextIndex()
+  const [oldAddress, newAddress] = await Promise.all([addressForIndex(oldIndex), addressForIndex(next)])
   for (const r of rows) {
     // Re-leer fresco justo antes de escribir para no pisar cambios
     // concurrentes del cliente (contactos, 2FA) al reescribir raw_data.
@@ -828,11 +829,55 @@ async function resetUserIndex(userId: string) {
     delete raw.gasfreeEoa
     await db.from('users').update({ raw_data: raw }).eq('id', r.id)
     await writeDurableIndex(r.id, (r as any).email ?? primary.email ?? null, next)
-    await logWalletChange({ userId: r.id, email: (r as any).email ?? primary.email ?? null, oldIndex: (r.raw_data ?? {})?.gasfreeIndex ?? null, newIndex: next, source: 'admin_reset' })
+    await logWalletChange({ userId: r.id, email: (r as any).email ?? primary.email ?? null, oldIndex: (r.raw_data ?? {})?.gasfreeIndex ?? null, newIndex: next, source, oldAddress, newAddress })
   }
-  const { eoa } = await userWallet(next)
-  const acct = await gfAccount(eoa)
-  return { ok: true, email: primary.email, oldIndex, newIndex: next, eoa, gasFreeAddress: acct.gasFreeAddress }
+  return { ok: true, email: primary.email, oldIndex, newIndex: next, eoa: null, gasFreeAddress: newAddress, oldAddress }
+}
+
+// ── ARCHIVO de wallets de UN usuario (para el cliente) ───────────────
+// Devuelve la wallet ACTUAL (principal) y las ANTERIORES (archivadas),
+// reconstruidas del log de cambios. Solo lo del propio usuario.
+async function myWalletArchive(userId: string) {
+  const { data: primary } = await db.from('users').select('id, email').eq('id', userId).maybeSingle()
+  const email = primary?.email ?? null
+  const idx = await userIndex(userId)
+  const currentAddress = await addressForIndex(idx)
+  // Todas las entradas del log de este usuario (por userId o por correo).
+  const { data } = await db.from('system_config').select('value').eq('key', WALLET_LOG_KEY).single()
+  const list: any[] = data?.value ? JSON.parse(data.value) : []
+  const e = String(email ?? '').toLowerCase()
+  const mine = list.filter((x) => String(x.userId ?? '') === userId || (e && String(x.email ?? '').toLowerCase() === e))
+  // Direcciones anteriores = las oldAddress del log que NO son la actual.
+  const seen = new Set<string>()
+  const archived: { address: string; at: string | null; reason: string }[] = []
+  for (const entry of mine) {
+    const addr = entry.oldAddress
+    if (addr && addr !== currentAddress && !seen.has(addr)) {
+      seen.add(addr)
+      archived.push({ address: addr, at: entry.at ?? null, reason: entry.source ?? 'cambio' })
+    }
+  }
+  return { current: { address: currentAddress, index: idx }, archived }
+}
+
+// ── GENERAR nueva wallet MANUALMENTE (acción explícita del usuario) ──
+// La actual pasa a archivadas y la nueva queda principal. GUARDA: si la wallet
+// actual TIENE saldo on-chain, se REHÚSA (para no dejar fondos varados en la
+// wallet vieja) — primero hay que enviar/convertir ese saldo.
+async function regenerateWalletSafe(userId: string) {
+  const idx = await userIndex(userId)
+  const cur = await addressForIndex(idx)
+  // Chequear saldo de la wallet actual (GasFree + EOA) antes de rotar.
+  try {
+    const { token } = await gfConfig()
+    let bal = 0
+    if (cur) bal = await tokenBalance(cur, token.tokenAddress, Number(token.decimal ?? 6))
+    if (bal > 0.01) {
+      return { ok: false, error: `Tu wallet actual todavía tiene ${bal.toFixed(2)} USDT. Envía o convierte ese saldo antes de generar una nueva, para no dejar fondos en la wallet anterior.`, balance: bal, address: cur }
+    }
+  } catch { /* si no se pudo leer el saldo, se permite igual (raro) */ }
+  const res = await resetUserIndex(userId, 'manual_regen')
+  return { ok: true, previousAddress: res.oldAddress ?? cur, address: res.gasFreeAddress, index: res.newIndex }
 }
 
 // FIJAR (pin) la wallet REAL de un usuario a una dirección conocida.
@@ -2268,6 +2313,19 @@ Deno.serve(async (req) => {
       if (!userId || !body.id) return err('Faltan userId o id', 400)
       if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
       return ok(await myWalletUpdate(userId, String(body.id), body.patch ?? {}))
+    }
+    // Archivo de wallets del PROPIO usuario (actual + anteriores).
+    if (action === 'my_wallet_archive') {
+      if (!userId) return err('Falta userId', 400)
+      if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
+      return ok(await myWalletArchive(userId))
+    }
+    // Generar una NUEVA wallet de depósito manualmente (acción explícita del
+    // usuario). La actual pasa a archivadas; rehúsa si tiene saldo.
+    if (action === 'my_wallet_regenerate') {
+      if (!userId) return err('Falta userId', 400)
+      if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
+      return ok(await regenerateWalletSafe(userId))
     }
     if (action === 'my_wallets_reorder') {
       if (!userId || !Array.isArray(body.ids)) return err('Faltan userId o ids', 400)
