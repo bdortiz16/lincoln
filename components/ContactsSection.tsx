@@ -280,7 +280,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
         if (!key || brebLookup?.loading) return;
         setBrebLookup({ loading: true });
         try {
-            const r: any = await callMouvProxy('resolve_breb_key', currentUser!.id, { keyValue: key });
+            const r: any = await callMouvProxy('resolve_breb_key', currentUser!.id, { keyValue: key, keyType: form.brebKeyType });
             if (r?.ok && r?.found) {
                 setForm(fm => ({
                     ...fm,
