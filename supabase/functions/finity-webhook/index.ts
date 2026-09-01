@@ -116,24 +116,20 @@ Deno.serve(async (req) => {
 
   await audit('finity.webhook.received', { payload })
 
-  // ── DESTRABAR conversiones: cuando Finity avisa que un DEPÓSITO de USDT o una
-  // CONVERSIÓN interna se movió, se relanza el autopiloto de conversiones. Ese
-  // autopiloto esperaba a que el USDT quedara REGISTRADO en el proveedor antes
-  // de convertir — justo lo que confirma este webhook. Así "llegan los USDT y la
-  // conversión se hace sola", sin depender de que el cliente tenga la app
-  // abierta. Idempotente (el autopiloto no doble-acredita).
-  const evType = (dig(payload, ['type', 'event_type', 'movement_type', 'movementType', 'event']) ?? '').toUpperCase()
-  if (/DEPOSIT|CONVERSION|FUNDS/.test(evType)) {
-    try {
-      await fetch(`${SUPABASE_URL}/functions/v1/gasfree`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
-        body: JSON.stringify({ action: 'kick_pending_converts' }),
-      })
-    } catch (e) { console.warn('[finity-webhook] kick_pending_converts failed:', e) }
-    await audit('finity.webhook.kicked_converts', { evType })
-    return json(200, { ok: true, kickedConverts: true, evType })
-  }
+  // ── DESTRABAR conversiones: CUALQUIER evento de Finity puede significar que
+  // el USDt de una conversión pendiente ya llegó/se registró en el proveedor.
+  // El autopiloto esperaba justo eso antes de convertir. Se relanza SIEMPRE (es
+  // barato e idempotente: si no hay conversiones pendientes, no hace nada; y el
+  // autopiloto usa CAS por fase, nunca doble-acredita). Así "llegan los USDT y la
+  // conversión se hace sola", sin depender de que el cliente tenga la app abierta
+  // y sin adivinar el nombre exacto del tipo de evento.
+  try {
+    await fetch(`${SUPABASE_URL}/functions/v1/gasfree`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+      body: JSON.stringify({ action: 'kick_pending_converts' }),
+    })
+  } catch (e) { console.warn('[finity-webhook] kick_pending_converts failed:', e) }
 
   // ── Conciliación de órdenes de retiro (dispersión ACH) ──
   const orderId = dig(payload, ['withdrawal_order_id', 'order_id', 'withdrawalOrderId', 'orderId', 'id'])

@@ -1984,10 +1984,11 @@ async function rechargeRegisteredAtProvider(uid: string, fwd: number): Promise<b
   // listarlo), y por eso la conversión se demoraba o no arrancaba.
   try {
     const usd = await finityUsdBalance(uid)
+    // FAST-PATH: si el saldo ya cubre el monto, listo. Si lee bajo o null NO se
+    // bloquea (el pool es compartido y el endpoint puede leer con retraso): se
+    // cae al cruce por movimientos, y el propio paso de conversión maneja el
+    // 400 insufficient balance sin trabarse.
     if (usd != null && usd + 0.01 >= fwd) return true
-    // Si respondió con un saldo REAL menor a lo requerido, el dinero aún no
-    // llegó → no forzamos convertir (evita el 400 insufficient balance).
-    if (usd != null && usd + 0.01 < fwd) return false
   } catch { /* cae al chequeo por movimientos */ }
   try {
     const mv = await finityCall('movements', uid)
@@ -2050,11 +2051,11 @@ async function autoConvert(txId: string, uid: string) {
         const fin: any = await myConvertFinalize(uid, txId, true).catch(() => null)
         if (!fin || (!fin.recharged && fin.phase !== 'recharged')) {
           if (fin?.status === 'Rechazado' || fin?.status === 'Completado') return
-          await sleepMs(12000); continue
+          await sleepMs(6000); continue
         }
       }
       const fwd = Number(rd.usdtToProvider ?? rd.fwd ?? 0)
-      if (fwd > 0 && !(await rechargeRegisteredAtProvider(uid, fwd))) { await sleepMs(10000); continue }
+      if (fwd > 0 && !(await rechargeRegisteredAtProvider(uid, fwd))) { await sleepMs(5000); continue }
       const claim = await claimConvert(txId)
       if (!claim.claimed) return
       try {
