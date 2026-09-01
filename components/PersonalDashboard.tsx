@@ -3909,11 +3909,13 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     const dispKeyTypeLabel: string = ({ celular: 'Celular', cedula: 'Cédula', correo: 'Correo', alfanumerico: 'Alfanumérica' } as Record<string, string>)[String(dispRecipient.keyType ?? '').toLowerCase()] ?? '';
 
     // EMISOR: el titular de la cuenta que originó el movimiento (ej. XATECH).
-    // Se prefiere el nombre que quedó GRABADO en la transacción (así el
-    // comprobante es correcto aunque lo abra un admin viendo la operación de
-    // otro), con respaldo al titular actual (empresa o persona).
+    // Esta es la app del CLIENTE, así que el movimiento es SUYO → se muestra el
+    // nombre ACTUAL de la cuenta (empresa o persona). Así, si el admin le
+    // actualiza el nombre/tipo, los comprobantes reflejan el nombre nuevo (antes
+    // se congelaba el que quedó grabado en la transacción). Respaldo: el nombre
+    // grabado en la transacción.
     const emisorName: string = String(
-      (tx as any).userName ?? rawData.userName ?? (currentUser as any)?.companyName ?? currentUser?.name ?? ''
+      (currentUser as any)?.companyName ?? currentUser?.name ?? (tx as any).userName ?? rawData.userName ?? ''
     ).trim();
 
     const fields: { label: string; value: string; copyable?: boolean; link?: string; mono?: boolean }[] = [
