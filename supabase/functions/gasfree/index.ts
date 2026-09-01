@@ -1952,7 +1952,43 @@ async function releaseConvertClaim(txId: string) {
 
 // ¿El proveedor YA registró la recarga en su plataforma? (movimiento de
 // recarga reciente con el monto enviado — no basta la wallet on-chain).
+// Saldo USD REAL disponible en Finity (lo que el endpoint de conversión valida:
+// su error es literalmente "Insufficient balance"). Lee /v0/account-balance vía
+// el proxy y extrae el USD de las formas comunes de respuesta.
+async function finityUsdBalance(uid: string): Promise<number | null> {
+  try {
+    const b = await finityCall('balance', uid)
+    const data: any = b?.data ?? null
+    if (!data) return null
+    const arr: any[] = Array.isArray(data) ? data : Array.isArray(data.data) ? data.data
+      : Array.isArray(data.balances) ? data.balances : Array.isArray(data.items) ? data.items : []
+    for (const row of arr) {
+      const asset = String(row?.asset ?? row?.currency ?? row?.code ?? '').toUpperCase()
+      if (asset === 'USD' || asset === 'USDT') {
+        const n = Number(String(row?.available ?? row?.available_balance ?? row?.availableBalance ?? row?.balance ?? row?.amount ?? row?.value ?? '').toString().replace(/,/g, ''))
+        if (Number.isFinite(n)) return n
+      }
+    }
+    const direct = data.USD ?? data.usd ?? data.usdBalance ?? data.usdAvailable
+      ?? data.data?.USD ?? data.data?.usd ?? data.data?.usdBalance
+    if (direct != null) { const n = Number(String(direct).replace(/,/g, '')); if (Number.isFinite(n)) return n }
+    return null
+  } catch { return null }
+}
+
 async function rechargeRegisteredAtProvider(uid: string, fwd: number): Promise<boolean> {
+  // AUTORITATIVO: el saldo USD real en Finity. Si ya cubre lo que se va a
+  // convertir, listo — es EXACTAMENTE lo que valida el endpoint de conversión
+  // (400 "Insufficient balance"). Antes solo se cruzaba contra la lista de
+  // movimientos (frágil: la API puede nombrar el tipo distinto o tardar en
+  // listarlo), y por eso la conversión se demoraba o no arrancaba.
+  try {
+    const usd = await finityUsdBalance(uid)
+    if (usd != null && usd + 0.01 >= fwd) return true
+    // Si respondió con un saldo REAL menor a lo requerido, el dinero aún no
+    // llegó → no forzamos convertir (evita el 400 insufficient balance).
+    if (usd != null && usd + 0.01 < fwd) return false
+  } catch { /* cae al chequeo por movimientos */ }
   try {
     const mv = await finityCall('movements', uid)
     const d: any = mv?.data ?? {}
@@ -2023,21 +2059,42 @@ async function autoConvert(txId: string, uid: string) {
       if (!claim.claimed) return
       try {
         let done: any = null
+        let lastErr = ''
         for (let attempt = 0; attempt < 2 && !done; attempt++) {
           if (attempt > 0) await sleepMs(3000)
+          // Cotización FRESCA justo antes de crear — el exchange_rate_id y la
+          // confirmación caducan (~30-60 s), así que create→confirm van seguidos.
           const q = await finityCall('rates', uid, { query: { from: 'USD', to: 'COP' } })
           const quote: any = q?.data ?? {}
           const createBody: Record<string, unknown> = { fromAsset: 'USD', toAsset: 'COP', amount: fwd }
           if (quote.id) createBody.exchange_rate_id = quote.id
           if (quote.expires_at) createBody.expires_at = quote.expires_at
           const c = await finityCall('convert', uid, { data: createBody })
-          const convId = (c?.data as any)?.id
-          if (!c?.ok || !convId) continue
+          const cd: any = c?.data ?? {}
+          const convId = cd?.id
+          if (!c?.ok || !convId) {
+            lastErr = String(cd?.message ?? cd?.error ?? c?.status ?? 'sin id de conversión')
+            // Saldo aún NO reflejado en Finity → no insistir en vano ni gastar la
+            // ventana de 60 s: se libera y se retoma cuando el webhook FUNDS_DEPOSIT
+            // (o el próximo poll) avise que el USD ya llegó.
+            if (/insufficient|balance/i.test(lastErr)) {
+              await releaseConvertClaim(txId)
+              await db.from('transactions').update({ raw_data: { ...rd, convertWaiting: 'finity_usd_balance', lastConvertError: lastErr, lastConvertAt: new Date().toISOString() } }).eq('id', txId)
+              return
+            }
+            continue
+          }
+          // Confirmar de inmediato (la doc exige confirmar dentro de 60 s).
           const f = await finityCall('convert_confirm', uid, { id: String(convId) })
           const dd: any = f?.data ?? {}
           if (f?.ok && String(dd.status ?? '') === 'SUCCESS') { done = dd; break }
+          lastErr = String(dd?.message ?? dd?.error ?? f?.status ?? 'confirm no SUCCESS')
         }
-        if (!done) { await releaseConvertClaim(txId); await sleepMs(15000); continue }
+        if (!done) {
+          await releaseConvertClaim(txId)
+          await db.from('transactions').update({ raw_data: { ...rd, lastConvertError: lastErr, lastConvertAt: new Date().toISOString() } }).eq('id', txId)
+          await sleepMs(15000); continue
+        }
         const finityRate = Number(done.exchangeRate ?? rd.mouvRate ?? 0)
         const feePct = Number(rd.feePct ?? 0)
         const creditUsd = Number(rd.creditUsd ?? 0) || Math.max(0, Number(rd.fromAmount ?? 0) - 4)
