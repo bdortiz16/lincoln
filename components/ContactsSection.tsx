@@ -20,6 +20,29 @@ declare const __BUILD_TS__: string;
 // proveedor de inscripciones ACH (Finity).
 const callMouv = callFinity;
 
+// Llamador a mouv-proxy (Bre-B / directorio de llaves). callFinity/callMouv van a
+// FINITY-proxy — para acciones de Mouv (resolver llave Bre-B) hay que ir aquí.
+async function callMouvProxy(action: string, userId: string, extra: Record<string, unknown> = {}): Promise<any> {
+    const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+    const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+    let auth = `Bearer ${SKEY}`;
+    try {
+        const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
+        if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) auth = `Bearer ${d.access_token}`; }
+    } catch { /* sin sesión */ }
+    try {
+        const r = await fetch(`${SURL}/functions/v1/mouv-proxy`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: auth },
+            body: JSON.stringify({ action, user_id: userId, ...extra }),
+            signal: AbortSignal.timeout(20000),
+        });
+        const t = await r.text();
+        if (!t) return { ok: false, status: r.status, error: 'empty' };
+        try { return JSON.parse(t); } catch { return { ok: false, status: r.status, error: t.slice(0, 150) }; }
+    } catch (e: any) { return { ok: false, error: String(e?.message ?? e) }; }
+}
+
 // ─────────────────────────────────────────────
 // ContactsSection — Contactos (cuentas bancarias destino) de EMPRESAS.
 //
@@ -255,7 +278,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
         lastResolvedKeyRef.current = key;
         setBrebLookup({ loading: true });
         try {
-            const r: any = await callMouv('resolve_breb_key', currentUser!.id, { keyValue: key });
+            const r: any = await callMouvProxy('resolve_breb_key', currentUser!.id, { keyValue: key });
             if (r?.ok && r?.found) {
                 setForm(fm => ({
                     ...fm,
