@@ -594,13 +594,31 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // ── Cuadro de progreso de DEPÓSITO (esquina, sobre la billetera COP) ──
   // Aparece SOLO cuando se detecta un depósito: barra "Recibido → Acreditado".
   // Al acreditarse muestra "Acreditado" y se oculta solo a los pocos segundos.
-  const [depositCard, setDepositCard] = useState<{ amount: number; phase: 'recibido' | 'acreditado' } | null>(null);
+  const [depositCard, setDepositCard] = useState<{ amount: number; phase: 'recibido' | 'acreditado'; at: number } | null>(null);
   const depositCardTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const showDepositReceived = (amount: number) => {
-      if (!(amount > 0)) return;
-      if (depositCardTimer.current) { clearTimeout(depositCardTimer.current); depositCardTimer.current = null; }
-      setDepositCard({ amount, phase: 'recibido' });
-      // Fuerza la verificación/acreditación en el servidor (no esperar al poll).
+  const DEP_CARD_KEY = 'lincoinDepositCard';
+  // Persiste el cuadro para que SOBREVIVA una recarga mientras se acredita.
+  useEffect(() => {
+      try {
+          if (depositCard) sessionStorage.setItem(DEP_CARD_KEY, JSON.stringify(depositCard));
+          else sessionStorage.removeItem(DEP_CARD_KEY);
+      } catch { /* sin storage */ }
+  }, [depositCard]);
+  const armDepositCardTimers = (phase: 'recibido' | 'acreditado') => {
+      if (depositCardTimer.current) clearTimeout(depositCardTimer.current);
+      if (phase === 'acreditado') {
+          depositCardTimer.current = setTimeout(() => setDepositCard(null), 5000);
+      } else {
+          // Red de seguridad: el depósito ya está confirmado on-chain; si el
+          // evento de acreditación no llega en ~18 s, se completa igual para que
+          // NUNCA se quede pegado en "Acreditando".
+          depositCardTimer.current = setTimeout(() => {
+              setDepositCard(prev => prev ? { ...prev, phase: 'acreditado' } : prev);
+              depositCardTimer.current = setTimeout(() => setDepositCard(null), 5000);
+          }, 18000);
+      }
+  };
+  const forceVerifyDeposit = () => {
       if (currentUser?.id && !verifyDepositInFlight.current) {
           verifyDepositInFlight.current = true;
           callGasfree({ action: 'my_verify_deposit', userId: currentUser.id })
@@ -608,21 +626,32 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               .catch(() => {})
               .finally(() => { verifyDepositInFlight.current = false; });
       }
-      // RED DE SEGURIDAD: el depósito YA está confirmado on-chain (por eso subió
-      // el saldo). Si el evento de acreditación al libro no llega en ~18 s (poll
-      // lento, TronGrid limitando), igual se completa el cuadro para que NUNCA
-      // se quede pegado en "Acreditando".
-      if (depositCardTimer.current) clearTimeout(depositCardTimer.current);
-      depositCardTimer.current = setTimeout(() => {
-          setDepositCard(prev => prev ? { ...prev, phase: 'acreditado' } : prev);
-          depositCardTimer.current = setTimeout(() => setDepositCard(null), 5000);
-      }, 18000);
+  };
+  const showDepositReceived = (amount: number) => {
+      if (!(amount > 0)) return;
+      setDepositCard({ amount, phase: 'recibido', at: Date.now() });
+      forceVerifyDeposit();
+      armDepositCardTimers('recibido');
   };
   const markDepositCredited = (amount: number) => {
-      setDepositCard(prev => ({ amount: amount > 0 ? amount : (prev?.amount ?? 0), phase: 'acreditado' }));
-      if (depositCardTimer.current) clearTimeout(depositCardTimer.current);
-      depositCardTimer.current = setTimeout(() => setDepositCard(null), 5000);
+      setDepositCard(prev => ({ amount: amount > 0 ? amount : (prev?.amount ?? 0), phase: 'acreditado', at: prev?.at ?? Date.now() }));
+      armDepositCardTimers('acreditado');
   };
+  // Al montar / recargar: restaura el cuadro si quedó uno reciente (< 3 min) en
+  // curso, y termina de acreditarlo (verifica en el servidor).
+  useEffect(() => {
+      if (!currentUser?.id) return;
+      try {
+          const raw = sessionStorage.getItem(DEP_CARD_KEY);
+          if (!raw) return;
+          const saved = JSON.parse(raw) as { amount: number; phase: 'recibido' | 'acreditado'; at: number };
+          if (!saved || Date.now() - (saved.at ?? 0) > 3 * 60 * 1000) { sessionStorage.removeItem(DEP_CARD_KEY); return; }
+          setDepositCard(saved);
+          if (saved.phase === 'acreditado') { armDepositCardTimers('acreditado'); }
+          else { forceVerifyDeposit(); armDepositCardTimers('recibido'); }
+      } catch { /* sin storage */ }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id]);
   useEffect(() => {
       if (!currentUser?.id) return;
       const cuAny: any = currentUser;
