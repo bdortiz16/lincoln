@@ -4858,13 +4858,26 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                                   ) : archMoves.items.length === 0 ? (
                                                       <p style={{ fontSize: 12, color: '#878E88' }}>Sin movimientos registrados en la app. Revisa TronScan para el detalle on-chain.</p>
                                                   ) : (
-                                                      <div className="space-y-1.5" style={{ maxHeight: 180, overflowY: 'auto' }}>
-                                                          {archMoves.items.map((m: any) => (
-                                                              <div key={m.id} className="flex items-center justify-between" style={{ gap: 8, fontSize: 12 }}>
-                                                                  <span style={{ color: '#C9CFCB' }}>{m.title || m.type}</span>
-                                                                  <span style={{ color: '#F4F4F2', fontWeight: 700 }}>{Number(m.amount).toLocaleString('es-CO')} <span style={{ color: '#878E88', fontWeight: 500 }}>{m.currency}</span></span>
+                                                      <div className="space-y-2" style={{ maxHeight: 200, overflowY: 'auto' }}>
+                                                          {archMoves.items.map((m: any) => {
+                                                              const isIn = ['load', 'otc_deposit', 'pay_received', 'referral_payout'].includes(m.type) || /dep[oó]sito|recib/i.test(String(m.title || ''));
+                                                              const cur = (m.currency === 'USD' || m.currency === 'USDT_TRON') ? 'USDT' : m.currency;
+                                                              const amt = Number(m.amount).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                                                              return (
+                                                              <div key={m.id} className="flex items-center justify-between" style={{ gap: 10 }}>
+                                                                  <div className="flex items-center" style={{ gap: 9, minWidth: 0 }}>
+                                                                      <span style={{ width: 26, height: 26, borderRadius: 7, flexShrink: 0, display: 'grid', placeItems: 'center', background: isIn ? 'rgba(74,222,128,0.1)' : 'rgba(248,113,113,0.1)', color: isIn ? '#4ADE80' : '#F87171' }}>
+                                                                          {isIn ? <ArrowDownLeft size={14} /> : <ArrowUpRight size={14} />}
+                                                                      </span>
+                                                                      <div style={{ minWidth: 0 }}>
+                                                                          <p style={{ fontSize: 12, color: '#F4F4F2', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{isIn ? 'Entrada' : 'Salida'}</p>
+                                                                          <p style={{ fontSize: 10.5, color: '#878E88' }}>{m.at ? new Date(m.at).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' }) : ''}</p>
+                                                                      </div>
+                                                                  </div>
+                                                                  <span style={{ fontSize: 12.5, fontWeight: 700, color: isIn ? '#4ADE80' : '#F87171', whiteSpace: 'nowrap' }}>{isIn ? '+' : '−'}{amt} <span style={{ color: '#878E88', fontWeight: 500, fontSize: 11 }}>{cur}</span></span>
                                                               </div>
-                                                          ))}
+                                                              );
+                                                          })}
                                                       </div>
                                                   )}
                                               </div>
