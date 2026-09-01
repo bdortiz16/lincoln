@@ -116,6 +116,25 @@ Deno.serve(async (req) => {
 
   await audit('finity.webhook.received', { payload })
 
+  // ── DESTRABAR conversiones: cuando Finity avisa que un DEPÓSITO de USDT o una
+  // CONVERSIÓN interna se movió, se relanza el autopiloto de conversiones. Ese
+  // autopiloto esperaba a que el USDT quedara REGISTRADO en el proveedor antes
+  // de convertir — justo lo que confirma este webhook. Así "llegan los USDT y la
+  // conversión se hace sola", sin depender de que el cliente tenga la app
+  // abierta. Idempotente (el autopiloto no doble-acredita).
+  const evType = (dig(payload, ['type', 'event_type', 'movement_type', 'movementType', 'event']) ?? '').toUpperCase()
+  if (/DEPOSIT|CONVERSION|FUNDS/.test(evType)) {
+    try {
+      await fetch(`${SUPABASE_URL}/functions/v1/gasfree`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+        body: JSON.stringify({ action: 'kick_pending_converts' }),
+      })
+    } catch (e) { console.warn('[finity-webhook] kick_pending_converts failed:', e) }
+    await audit('finity.webhook.kicked_converts', { evType })
+    return json(200, { ok: true, kickedConverts: true, evType })
+  }
+
   // ── Conciliación de órdenes de retiro (dispersión ACH) ──
   const orderId = dig(payload, ['withdrawal_order_id', 'order_id', 'withdrawalOrderId', 'orderId', 'id'])
   const status  = (dig(payload, ['status', 'state', 'event_type', 'event']) ?? '').toUpperCase()

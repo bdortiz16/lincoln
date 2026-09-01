@@ -2054,6 +2054,23 @@ async function autoConvert(txId: string, uid: string) {
   } catch { /* el próximo kick lo retoma */ }
 }
 
+// Destraba TODAS las conversiones pendientes: relanza el autopiloto de cada
+// conversión que no esté ni completada ni rechazada. Lo llama finity-webhook
+// cuando Finity avisa que el USDT llegó/convirtió — así la conversión que
+// esperaba el registro del depósito en el proveedor se destraba al instante,
+// sin depender de que el cliente tenga la app abierta. Idempotente (el
+// autopiloto usa CAS por fase, no doble-acredita).
+async function kickPendingConverts() {
+  const { data } = await db.from('transactions')
+    .select('id, user_id')
+    .eq('type', 'convert')
+    .not('status', 'in', '("Completado","Rechazado","Fallido")')
+    .order('created_at', { ascending: false }).limit(50)
+  const rows = ((data as any[]) ?? [])
+  for (const tx of rows) bg(autoConvert(String(tx.id), String(tx.user_id)))
+  return { ok: true, kicked: rows.length }
+}
+
 // Verifica el saldo GasFree del cliente contra lo YA acreditado (contador
 // propio 'gasfreeCredited', separado del viejo 'gasfreeCredited') y acredita
 // solo la diferencia nueva a su Dólar digital — mismo patrón anti-doble-
@@ -2560,6 +2577,16 @@ Deno.serve(async (req) => {
       const mfaErr = await require2FA(userId, body.otp)   // retiro on-chain → 2FA server-side
       if (mfaErr) return err(mfaErr, 403)
       return ok(await myWalletWithdrawal(userId, String(toAddress), Number(amount)))
+    }
+
+    // Acción INTERNA: la llama finity-webhook (con el service key) cuando Finity
+    // avisa que un depósito/conversión se movió, para DESTRABAR las conversiones
+    // pendientes al instante. Acepta el service key O un admin.
+    if (action === 'kick_pending_converts') {
+      const authHeader = req.headers.get('Authorization') ?? ''
+      const isService = !!SERVICE_KEY && authHeader === `Bearer ${SERVICE_KEY}`
+      if (!isService && !(await callerIsAdmin(req))) return err('No autorizado', 401)
+      return ok(await kickPendingConverts())
     }
 
     // ── Acciones ADMIN (mueven fondos de la recaudadora o de cualquier
