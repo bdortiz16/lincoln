@@ -876,6 +876,29 @@ async function myWalletArchive(userId: string) {
       if (!prev || (entry.at && (!prev.at || entry.at > prev.at))) byAddr.set(c.addr, { index: c.index, at: entry.at ?? null, reason: c.reason })
     }
   }
+  // DETECCIÓN extra (sin log): wallets que el usuario pudo tener antes de que
+  // existiera el registro. Se prueban sus índices DETERMINISTAS (offset 1M+, los
+  // de sesiones half-auth) y los gasfreeIndex/HdIndex guardados en filas
+  // hermanas del mismo correo. Así aparecen wallets viejas que el log no tenía.
+  try {
+    const { data: sibs } = email
+      ? await db.from('users').select('id, raw_data').eq('email', email)
+      : { data: [{ id: userId, raw_data: (primary as any)?.raw_data }] as any[] }
+    const extraIdx = new Set<number>()
+    extraIdx.add(deterministicIndex(String(userId)))
+    for (const s of ((sibs as any[]) ?? [])) {
+      extraIdx.add(deterministicIndex(String(s.id)))
+      const raw = (s.raw_data ?? {}) as Record<string, any>
+      for (const k of ['gasfreeIndex', 'gasfreeHdIndex']) {
+        if (typeof raw[k] === 'number') extraIdx.add(raw[k])
+      }
+    }
+    for (const ix of extraIdx) {
+      const a = await resolveAddr(null, ix)
+      if (!a || a === currentAddress || byAddr.has(a)) continue
+      byAddr.set(a, { index: ix, at: null, reason: 'detectada' })
+    }
+  } catch { /* la detección extra nunca bloquea el archivo */ }
   // Saldo on-chain de cada wallet (actual + archivadas) para saber cuánto
   // queda por recuperar. Best-effort: si la API falla, el saldo va como null.
   let token: any = null
