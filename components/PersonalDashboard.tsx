@@ -3703,8 +3703,20 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     // Tipo de llave Bre-B (Celular/Cédula/Correo/Alfanumérica) para el label.
     const dispKeyTypeLabel: string = ({ celular: 'Celular', cedula: 'Cédula', correo: 'Correo', alfanumerico: 'Alfanumérica' } as Record<string, string>)[String(dispRecipient.keyType ?? '').toLowerCase()] ?? '';
 
+    // EMISOR: el titular de la cuenta que originó el movimiento (ej. XATECH).
+    // Se prefiere el nombre que quedó GRABADO en la transacción (así el
+    // comprobante es correcto aunque lo abra un admin viendo la operación de
+    // otro), con respaldo al titular actual (empresa o persona).
+    const emisorName: string = String(
+      (tx as any).userName ?? rawData.userName ?? (currentUser as any)?.companyName ?? currentUser?.name ?? ''
+    ).trim();
+
     const fields: { label: string; value: string; copyable?: boolean; link?: string; mono?: boolean }[] = [
       { label: 'Descripción', value: tx.title || TX_LABELS[tx.type] || tx.type },
+      // Emisor: en salidas (envíos/retiros/dispersiones/conversiones) es el
+      // titular de esta cuenta. En entradas (depósitos) el emisor es externo y
+      // ya se muestra el origen aparte, así que aquí no se repite.
+      ...(!isCredit && emisorName ? [{ label: 'Emisor', value: emisorName }] : []),
       // ── Dispersión Mouv: bloque ORDENADO y sin redundancias — quién
       // recibió, a qué llave/cuenta, por qué método, y las referencias.
       // (El "Riel de pago" ya va en el monto "COP · Bre-B" y en el Método.)
