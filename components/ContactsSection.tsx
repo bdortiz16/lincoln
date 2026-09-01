@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { BookUser, Plus, X, Trash2, CheckCircle, AlertTriangle, Landmark, Wallet, Search, SlidersHorizontal, Zap, Copy, Send } from 'lucide-react';
 import { useDatabase } from '../context/DatabaseContext';
 import { useSystemConfig } from '../context/SystemConfigContext';
@@ -271,15 +271,13 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     // la llave se resuelve el TITULAR (nombre + documento) y su BANCO, y se
     // autollenan los campos. Evita errores de digitación del beneficiario.
     const [brebLookup, setBrebLookup] = useState<{ loading: boolean; found?: boolean; bank?: string | null; msg?: string } | null>(null);
-    const lastResolvedKeyRef = useRef<string>('');
-    // Al ABRIR/cerrar el formulario se olvida la última llave consultada, para
-    // que si el usuario sale sin inscribir y vuelve a escribir la MISMA llave, se
-    // consulte de nuevo (antes quedaba "cacheada" y no volvía a consultar).
-    useEffect(() => { lastResolvedKeyRef.current = ''; setBrebLookup(null); }, [formOpen]);
+    useEffect(() => { setBrebLookup(null); }, [formOpen]);
     const resolveBrebKey = async () => {
         const key = form.brebKey.trim();
-        if (!key || key === lastResolvedKeyRef.current) return;
-        lastResolvedKeyRef.current = key;
+        // Consulta SIEMPRE que haya llave (no se cachea la última): así, si borras
+        // y vuelves a escribir la misma llave, se consulta de nuevo. Solo se evita
+        // llamar dos veces MIENTRAS ya está cargando.
+        if (!key || brebLookup?.loading) return;
         setBrebLookup({ loading: true });
         try {
             const r: any = await callMouvProxy('resolve_breb_key', currentUser!.id, { keyValue: key });
