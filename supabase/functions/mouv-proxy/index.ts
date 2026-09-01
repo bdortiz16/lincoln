@@ -170,6 +170,48 @@ function brebTypeToMouv(t: string): string {
   }
 }
 
+// ── Resolver una llave Bre-B en el directorio de Mouv, con VARIANTES ──
+// El directorio guarda los celulares con indicativo +57, así que una llave
+// real como "3225407320" no se encuentra tal cual. Se prueban variantes (tal
+// cual, +57…, sin +57, 10 dígitos) para celulares. Devuelve el titular
+// (nombre/documento), su banco, el keyType autoritativo y la LLAVE que sí
+// funcionó (matchedKey) para usarla también en el envío.
+async function mouvResolveBrebKey(rawKey: string, keyType?: string): Promise<{
+  found: boolean; matchedKey: string; fullName?: string; idValue?: string; keyType?: string; bank?: string; raw?: any;
+}> {
+  const key = String(rawKey ?? '').trim()
+  const kt = String(keyType ?? '').trim().toLowerCase()
+  const pick = (...xs: any[]) => { for (const x of xs) { const s = x == null ? '' : String(x).trim(); if (s) return s } return undefined }
+  const digits = key.replace(/[^\d]/g, '')
+  const isPhone = kt === 'celular' || kt === 'phone' || (/^\+?\d{10,13}$/.test(key) && digits.length >= 10)
+  const variants: string[] = [key]
+  if (isPhone && digits) {
+    const d10 = digits.replace(/^57/, '')
+    for (const v of [d10, `+57${d10}`, `57${d10}`]) if (!variants.includes(v)) variants.push(v)
+  }
+  let lastRaw: any = null
+  for (const kv of variants) {
+    try {
+      const rk = await mouvFetch('/transfers/resolve-key', { method: 'POST', body: JSON.stringify({ keyValue: kv }) })
+      const rd: any = rk.data ?? {}
+      lastRaw = rd
+      if (!rk.ok) continue
+      const rec = rd.recipient ?? rd.holder ?? {}
+      const fullName = pick(rec.fullName, rec.name, rec.holderName, rd.fullName, rd.name)
+      if (rd.found === true || (rd.found !== false && fullName)) {
+        return {
+          found: true, matchedKey: kv, fullName,
+          idValue: pick(rec.idValue, rec.documentNumber, rec.docNumber, rec.id, rd.idValue),
+          keyType: pick(rd.keyType, rec.keyType),
+          bank: pick(rec.bank, rec.bankName, rec.entity, rec.financialEntity, rec.institution, rec.bankCode, rd.bank, rd.entity, rd.financialEntity),
+          raw: rd,
+        }
+      }
+    } catch { /* siguiente variante */ }
+  }
+  return { found: false, matchedKey: key, raw: lastRaw }
+}
+
 async function mouvPayout(
   rail: 'BREB' | 'ACH',
   recipient: Record<string, any>,
@@ -185,26 +227,24 @@ async function mouvPayout(
     return s && s !== '—' && s !== '-' && s !== 'N/A' ? s : undefined
   }
   if (rail === 'BREB') {
-    // 1) Resolver la llave para obtener el titular oficial (SARLAFT).
+    // 1) Resolver la llave (con variantes de formato) para el titular SARLAFT.
     let targetName: string | undefined = cleanField(recipient.holderName)
     let targetDocument: string | undefined = cleanField(recipient.documentNumber ?? recipient.docNumber)
     let keyType = brebTypeToMouv(recipient.keyType)
-    try {
-      const rk = await mouvFetch('/transfers/resolve-key', {
-        method: 'POST', body: JSON.stringify({ keyValue: recipient.key }),
-      })
-      const rd: any = rk.data ?? {}
-      if (rk.ok && rd.found) {
-        targetName = rd.recipient?.fullName ?? targetName
-        targetDocument = rd.recipient?.idValue ?? targetDocument
-        keyType = rd.keyType ?? keyType   // autoritativo
-      } else if (rk.ok && rd.found === false) {
-        return { ok: false, status: rk.status, data: { error: 'breb_key_not_found', message: 'La llave Bre-B no existe o no está activa.' } }
-      }
-    } catch { /* si resolve falla seguimos con los datos del contacto */ }
-
+    let sendKey = String(recipient.key ?? '').trim()   // la llave a usar en el envío
+    const rr = await mouvResolveBrebKey(recipient.key, recipient.keyType)
+    if (rr.found) {
+      targetName = rr.fullName ?? targetName
+      targetDocument = rr.idValue ?? targetDocument
+      if (rr.keyType) keyType = rr.keyType              // autoritativo
+      sendKey = rr.matchedKey || sendKey               // la variante que sí existe (p. ej. +57…)
+    }
+    // Si resolve NO la encontró pero el beneficiario YA trae nombre + documento
+    // (se inscribió y validó antes), NO se aborta el envío: Mouv hará la
+    // validación final en /transfers/send. Solo se aborta si de plano faltan
+    // los datos SARLAFT (ni resueltos ni guardados).
     if (!targetName || !targetDocument) {
-      return { ok: false, status: 0, data: { error: 'missing_sarlaft', message: 'No se pudo obtener el titular de la llave (nombre/documento requeridos por SARLAFT).' } }
+      return { ok: false, status: 0, data: { error: 'missing_sarlaft', message: 'No se pudo obtener el titular de la llave (nombre/documento requeridos por SARLAFT).', resolveDebug: rr.raw ?? null } }
     }
 
     // Referencia ÚNICA por envío: si Mouv dedupe por referencia (409 Conflict
@@ -216,7 +256,7 @@ async function mouvPayout(
       method: 'POST',
       body: JSON.stringify({
         amount: amountCents,
-        destination: { brebKey: { type: keyType, value: recipient.key } },
+        destination: { brebKey: { type: keyType, value: sendKey } },
         targetName,
         targetDocument,
         reference: refUniq,
@@ -493,42 +533,9 @@ serve(async (req: Request) => {
   if (action === 'resolve_breb_key') {
     const rawKey = String((payload as any).keyValue ?? (payload as any).key ?? '').trim()
     if (!rawKey) return json(400, { error: 'missing_key', message: 'Falta la llave.' })
-    const keyType = String((payload as any).keyType ?? '').trim().toLowerCase()
-    // El directorio Bre-B suele guardar los CELULARES con indicativo +57. Se
-    // prueban VARIANTES del valor (tal cual, +57…, sin +57, solo dígitos) para
-    // que una llave real no salga "no existe" por el formato.
-    const digits = rawKey.replace(/[^\d]/g, '')
-    const isPhone = keyType === 'celular' || (/^\+?\d{10,13}$/.test(rawKey) && digits.length >= 10)
-    const variants = new Set<string>([rawKey])
-    if (isPhone && digits) {
-      const d10 = digits.replace(/^57/, '')                 // sin indicativo
-      variants.add(d10)
-      variants.add(`+57${d10}`)
-      variants.add(`57${d10}`)
-    }
-    const pick = (...xs: any[]) => { for (const x of xs) { const s = x == null ? '' : String(x).trim(); if (s) return s } return null }
-    let lastRd: any = {}
-    for (const kv of variants) {
-      const rk = await mouvFetch('/transfers/resolve-key', { method: 'POST', body: JSON.stringify({ keyValue: kv }) })
-      const rd: any = rk.data ?? {}
-      lastRd = rd
-      if (!rk.ok) continue
-      // Encontrada: found:true, o vino un titular aunque no traiga el flag.
-      const rec = rd.recipient ?? rd.holder ?? {}
-      const fullName = pick(rec.fullName, rec.name, rec.holderName, rd.fullName, rd.name)
-      if (rd.found === true || (rd.found !== false && fullName)) {
-        return json(200, {
-          ok: true, found: true, matchedKey: kv,
-          fullName,
-          idType:   pick(rec.idType, rec.documentType, rec.docType, rd.idType),
-          idValue:  pick(rec.idValue, rec.documentNumber, rec.docNumber, rec.id, rd.idValue),
-          keyType:  pick(rd.keyType, rec.keyType),
-          bank:     pick(rec.bank, rec.bankName, rec.entity, rec.financialEntity, rec.institution, rec.bankCode, rd.bank, rd.entity, rd.financialEntity),
-        })
-      }
-    }
-    // Ninguna variante la encontró.
-    return json(200, { ok: true, found: false, message: 'La llave Bre-B no existe o no está activa.', debug: lastRd })
+    const rr = await mouvResolveBrebKey(rawKey, String((payload as any).keyType ?? ''))
+    if (!rr.found) return json(200, { ok: true, found: false, message: 'La llave Bre-B no existe o no está activa.', debug: rr.raw ?? null })
+    return json(200, { ok: true, found: true, matchedKey: rr.matchedKey, fullName: rr.fullName ?? null, idValue: rr.idValue ?? null, keyType: rr.keyType ?? null, bank: rr.bank ?? null })
   }
 
   // ── ping / balance: saldo de la wallet COMPARTIDA — SOLO ADMIN ──
