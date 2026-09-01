@@ -555,7 +555,7 @@ export const FinitySection: React.FC<{
             if (cl && cl.claimed === false && cl.phase === 'converting') {
                 // El servidor la está convirtiendo — observar hasta 3 min.
                 for (let i = 0; i < 45; i++) {
-                    await sleep(4000);
+                    await sleep(2500);
                     const st: any = await callGasfree({ action: 'my_convert_status', userId, txId: p.txId }).catch(() => null);
                     if (st?.status === 'Completado') {
                         await completeUI(Number(st.amount ?? 0), Number(st.mouvRate ?? p.previewRate ?? 0), Number(st.utilityCop ?? 0));
@@ -597,7 +597,7 @@ export const FinitySection: React.FC<{
             await callGasfree({ action: 'my_convert_release', userId, txId: p.txId }).catch(() => {});
             await callGasfree({ action: 'my_convert_kick', userId, txId: p.txId }).catch(() => {});
             for (let i = 0; i < 40; i++) {   // ~40 × 4s ≈ 2,7 min observando
-                await sleep(4000);
+                await sleep(2500);
                 const st: any = await callGasfree({ action: 'my_convert_status', userId, txId: p.txId }).catch(() => null);
                 if (st?.status === 'Completado') {
                     await completeUI(Number(st.amount ?? p.creditAmount ?? 0), Number(st.mouvRate ?? p.previewRate ?? 0), Number(st.utilityCop ?? 0));
@@ -769,25 +769,14 @@ export const FinitySection: React.FC<{
                 } catch { /* siguiente tick */ }
                 return false;
             };
-            let platformOk = false;
-            for (let i = 0; i < 24 && !platformOk; i++) {
-                await sleep(5000);
-                platformOk = await rechargeVisible();
-            }
-            if (!platformOk) {
-                // El AUTOPILOTO del servidor sigue empujándola en segundo
-                // plano — el cliente puede salir de la app tranquilo.
-                callGasfree({ action: 'my_convert_kick', userId, txId: String(settle.txId) }).catch(() => {});
-                setConvertStep('error');
-                setConvertResult({ ok: false, pending: true, text: '⏳ Tu USDT ya llegó a la wallet del riel y la plataforma aún no registra la recarga. Tranquilo: la conversión SIGUE EN SEGUNDO PLANO en el servidor — puedes salir de la app y el COP te llegará solo a tu saldo ACH (lo verás en Movimientos). También puedes darle "Reintentar conversión".' });
-                setPendingConvert({
-                    txId: String(settle.txId), finityAmount: fwdUsd, creditAmount: netAmount,
-                    amount, previewRate, gasfreeFeeUsdt: Number(settle.feeChargedUsdt ?? 0),
-                });
-                setUsdAmount(''); load(); onSwept?.();
-                setConverting(false);
-                return;
-            }
+            // Ya NO se hace aquí el chequeo frágil de "recarga registrada"
+            // (cruce de saldo/movimientos por monto): daba falsos negativos y
+            // dejaba el cuadro girando en "Recibido" AUNQUE el servidor ya había
+            // convertido. El AUTOPILOTO del servidor es la única autoridad: se
+            // pasa directo a observar la conversión (finishConvert lo relanza y
+            // sigue el estado hasta Completado). void para no marcar rechargeVisible
+            // como sin usar.
+            void rechargeVisible; void fwdUsd;
 
             // 2+3) Conversión interna en Finity + acreditación. Se hace en
             //    finishConvert (reutilizable/reintentable sin reenviar USDT).
