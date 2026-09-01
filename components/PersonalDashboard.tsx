@@ -2189,6 +2189,37 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                 <span style={{ fontSize: 12.5, color: '#878E88' }}>2 activas</span>
               </div>
             </div>
+            {/* Cuadro de progreso de DEPÓSITO — inline, encima de las billeteras.
+                Aparece al detectar el depósito (Recibido → Acreditado) y se
+                oculta solo al completarse. */}
+            {depositCard && (() => {
+                const done = depositCard.phase === 'acreditado';
+                return (
+                <div style={{ marginBottom: 13, animation: 'lincoinSlideIn 0.28s ease-out' }}>
+                    <div style={{ maxWidth: 380, marginLeft: 'auto', background: 'linear-gradient(150deg, #0F1512 0%, #0C0E0D 100%)', border: '1px solid rgba(74,222,128,0.32)', borderRadius: 14, padding: '13px 16px', boxShadow: '0 10px 30px rgba(0,0,0,0.35)' }}>
+                        <div className="flex items-center" style={{ gap: 10 }}>
+                            <span style={{ width: 34, height: 34, borderRadius: 9, flexShrink: 0, display: 'grid', placeItems: 'center', background: 'rgba(74,222,128,0.14)' }}>
+                                {done ? <CheckCircle2 size={19} style={{ color: '#4ADE80' }} /> : <ArrowDownLeft size={18} style={{ color: '#4ADE80' }} />}
+                            </span>
+                            <div style={{ minWidth: 0, flex: 1 }}>
+                                <p style={{ fontSize: 12.5, fontWeight: 800, color: '#F4F4F2', lineHeight: 1.2 }}>{done ? 'Depósito acreditado' : 'Depósito recibido'}</p>
+                                <p style={{ fontSize: 11.5, color: '#4ADE80', fontWeight: 700, marginTop: 1 }}>+{depositCard.amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT</p>
+                            </div>
+                        </div>
+                        <div style={{ marginTop: 11 }}>
+                            <div style={{ height: 5, borderRadius: 999, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
+                                <div style={{ height: '100%', borderRadius: 999, background: 'linear-gradient(90deg, #22A35C, #4ADE80)', width: done ? '100%' : '55%', transition: 'width 0.6s ease', ...(done ? {} : { animation: 'lincoinPulseBar 1.1s ease-in-out infinite' }) }} />
+                            </div>
+                            <div className="flex items-center justify-between" style={{ marginTop: 6 }}>
+                                <span style={{ fontSize: 10, fontWeight: 700, color: '#4ADE80' }}>● Recibido</span>
+                                <span style={{ fontSize: 10, fontWeight: 700, color: done ? '#4ADE80' : '#878E88' }}>{done ? '● Acreditado' : 'Acreditando…'}</span>
+                            </div>
+                        </div>
+                    </div>
+                    <style>{`@keyframes lincoinSlideIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}@keyframes lincoinPulseBar{0%,100%{opacity:0.65}50%{opacity:1}}`}</style>
+                </div>
+                );
+            })()}
             <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))' }}>
               {/* USDT — principal */}
               {(() => {
@@ -4787,39 +4818,6 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               </div>
           </div>
       )}
-
-      {/* Cuadro de progreso de DEPÓSITO — esquina superior derecha, sobre la
-          billetera. Aparece al detectar el depósito y muestra la barra
-          Recibido → Acreditado; al completarse se oculta solo. */}
-      {depositCard && (() => {
-          const done = depositCard.phase === 'acreditado';
-          return (
-          <div className="fixed z-[75]" style={{ top: 18, right: 18, fontFamily: "'Archivo', system-ui, sans-serif", animation: 'lincoinSlideIn 0.28s ease-out' }}>
-              <div style={{ width: 288, background: 'linear-gradient(150deg, #0F1512 0%, #0C0E0D 100%)', border: '1px solid rgba(74,222,128,0.32)', borderRadius: 14, padding: '14px 16px', boxShadow: '0 18px 50px rgba(0,0,0,0.55)' }}>
-                  <div className="flex items-center" style={{ gap: 10 }}>
-                      <span style={{ width: 34, height: 34, borderRadius: 9, flexShrink: 0, display: 'grid', placeItems: 'center', background: 'rgba(74,222,128,0.14)' }}>
-                          {done ? <CheckCircle2 size={19} style={{ color: '#4ADE80' }} /> : <ArrowDownLeft size={18} style={{ color: '#4ADE80' }} />}
-                      </span>
-                      <div style={{ minWidth: 0, flex: 1 }}>
-                          <p style={{ fontSize: 12.5, fontWeight: 800, color: '#F4F4F2', lineHeight: 1.2 }}>{done ? 'Depósito acreditado' : 'Depósito recibido'}</p>
-                          <p style={{ fontSize: 11.5, color: '#4ADE80', fontWeight: 700, marginTop: 1 }}>+{depositCard.amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT</p>
-                      </div>
-                  </div>
-                  {/* Barra de progreso: izquierda Recibido · derecha Acreditado */}
-                  <div style={{ marginTop: 12 }}>
-                      <div style={{ height: 5, borderRadius: 999, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
-                          <div style={{ height: '100%', borderRadius: 999, background: 'linear-gradient(90deg, #22A35C, #4ADE80)', width: done ? '100%' : '55%', transition: 'width 0.6s ease', ...(done ? {} : { animation: 'lincoinPulseBar 1.1s ease-in-out infinite' }) }} />
-                      </div>
-                      <div className="flex items-center justify-between" style={{ marginTop: 6 }}>
-                          <span style={{ fontSize: 10, fontWeight: 700, color: '#4ADE80' }}>● Recibido</span>
-                          <span style={{ fontSize: 10, fontWeight: 700, color: done ? '#4ADE80' : '#878E88' }}>{done ? '● Acreditado' : 'Acreditando…'}</span>
-                      </div>
-                  </div>
-              </div>
-              <style>{`@keyframes lincoinSlideIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}@keyframes lincoinPulseBar{0%,100%{opacity:0.65}50%{opacity:1}}`}</style>
-          </div>
-          );
-      })()}
 
       {/* Archivo de wallets anteriores del usuario */}
       {walletArchiveOpen && (
