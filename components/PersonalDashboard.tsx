@@ -600,6 +600,23 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       if (!(amount > 0)) return;
       if (depositCardTimer.current) { clearTimeout(depositCardTimer.current); depositCardTimer.current = null; }
       setDepositCard({ amount, phase: 'recibido' });
+      // Fuerza la verificación/acreditación en el servidor (no esperar al poll).
+      if (currentUser?.id && !verifyDepositInFlight.current) {
+          verifyDepositInFlight.current = true;
+          callGasfree({ action: 'my_verify_deposit', userId: currentUser.id })
+              .then((d: any) => { if (d?.synced && Number(d?.credited) > 0) { refreshData?.(); markDepositCredited(Number(d.credited)); } })
+              .catch(() => {})
+              .finally(() => { verifyDepositInFlight.current = false; });
+      }
+      // RED DE SEGURIDAD: el depósito YA está confirmado on-chain (por eso subió
+      // el saldo). Si el evento de acreditación al libro no llega en ~18 s (poll
+      // lento, TronGrid limitando), igual se completa el cuadro para que NUNCA
+      // se quede pegado en "Acreditando".
+      if (depositCardTimer.current) clearTimeout(depositCardTimer.current);
+      depositCardTimer.current = setTimeout(() => {
+          setDepositCard(prev => prev ? { ...prev, phase: 'acreditado' } : prev);
+          depositCardTimer.current = setTimeout(() => setDepositCard(null), 5000);
+      }, 18000);
   };
   const markDepositCredited = (amount: number) => {
       setDepositCard(prev => ({ amount: amount > 0 ? amount : (prev?.amount ?? 0), phase: 'acreditado' }));
