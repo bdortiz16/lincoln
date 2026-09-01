@@ -847,16 +847,38 @@ async function myWalletArchive(userId: string) {
   const list: any[] = data?.value ? JSON.parse(data.value) : []
   const e = String(email ?? '').toLowerCase()
   const mine = list.filter((x) => String(x.userId ?? '') === userId || (e && String(x.email ?? '').toLowerCase() === e))
-  // Direcciones anteriores = las oldAddress del log que NO son la actual.
-  const seen = new Set<string>()
-  const archived: { address: string; at: string | null; reason: string }[] = []
+  // Todas las direcciones por las que pasó esta cuenta = las oldAddress/
+  // newAddress del log. Los registros VIEJOS solo tienen índices (oldIndex/
+  // newIndex) porque se guardaron antes de anexar la dirección → aquí se
+  // DERIVA la dirección desde el índice (best-effort, con caché por índice para
+  // no repetir llamadas a la API de GasFree). Así aparecen también las wallets
+  // que cambiaron sin autorización, aunque en su momento no se guardó su dir.
+  const idxAddrCache = new Map<number, string | null>()
+  const resolveAddr = async (storedAddr: string | null | undefined, index: number | null): Promise<string | null> => {
+    if (storedAddr) return storedAddr
+    if (index == null) return null
+    if (idxAddrCache.has(index)) return idxAddrCache.get(index)!
+    const a = await addressForIndex(index)
+    idxAddrCache.set(index, a)
+    return a
+  }
+  // Candidatos: por cada entrada, la wallet ANTERIOR (oldAddress/oldIndex) y la
+  // NUEVA (newAddress/newIndex). Se guarda la fecha más reciente por dirección.
+  const byAddr = new Map<string, { at: string | null; reason: string }>()
   for (const entry of mine) {
-    const addr = entry.oldAddress
-    if (addr && addr !== currentAddress && !seen.has(addr)) {
-      seen.add(addr)
-      archived.push({ address: addr, at: entry.at ?? null, reason: entry.source ?? 'cambio' })
+    const cands = [
+      { addr: await resolveAddr(entry.oldAddress, typeof entry.oldIndex === 'number' ? entry.oldIndex : null), reason: entry.source ?? 'cambio' },
+      { addr: await resolveAddr(entry.newAddress, typeof entry.newIndex === 'number' ? entry.newIndex : null), reason: entry.source ?? 'cambio' },
+    ]
+    for (const c of cands) {
+      if (!c.addr || c.addr === currentAddress) continue
+      const prev = byAddr.get(c.addr)
+      if (!prev || (entry.at && (!prev.at || entry.at > prev.at))) byAddr.set(c.addr, { at: entry.at ?? null, reason: c.reason })
     }
   }
+  const archived = Array.from(byAddr.entries())
+    .map(([address, v]) => ({ address, at: v.at, reason: v.reason }))
+    .sort((a, b) => String(b.at ?? '').localeCompare(String(a.at ?? '')))
   return { current: { address: currentAddress, index: idx }, archived }
 }
 
