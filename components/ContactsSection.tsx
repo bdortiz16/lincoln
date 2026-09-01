@@ -272,6 +272,10 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     // autollenan los campos. Evita errores de digitación del beneficiario.
     const [brebLookup, setBrebLookup] = useState<{ loading: boolean; found?: boolean; bank?: string | null; msg?: string } | null>(null);
     const lastResolvedKeyRef = useRef<string>('');
+    // Al ABRIR/cerrar el formulario se olvida la última llave consultada, para
+    // que si el usuario sale sin inscribir y vuelve a escribir la MISMA llave, se
+    // consulte de nuevo (antes quedaba "cacheada" y no volvía a consultar).
+    useEffect(() => { lastResolvedKeyRef.current = ''; setBrebLookup(null); }, [formOpen]);
     const resolveBrebKey = async () => {
         const key = form.brebKey.trim();
         if (!key || key === lastResolvedKeyRef.current) return;
