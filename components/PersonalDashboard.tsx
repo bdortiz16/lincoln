@@ -2195,24 +2195,24 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
             {depositCard && (() => {
                 const done = depositCard.phase === 'acreditado';
                 return (
-                <div style={{ marginBottom: 13, animation: 'lincoinSlideIn 0.28s ease-out' }}>
-                    <div style={{ maxWidth: 380, marginLeft: 'auto', background: 'linear-gradient(150deg, #0F1512 0%, #0C0E0D 100%)', border: '1px solid rgba(74,222,128,0.32)', borderRadius: 14, padding: '13px 16px', boxShadow: '0 10px 30px rgba(0,0,0,0.35)' }}>
-                        <div className="flex items-center" style={{ gap: 10 }}>
-                            <span style={{ width: 34, height: 34, borderRadius: 9, flexShrink: 0, display: 'grid', placeItems: 'center', background: 'rgba(74,222,128,0.14)' }}>
-                                {done ? <CheckCircle2 size={19} style={{ color: '#4ADE80' }} /> : <ArrowDownLeft size={18} style={{ color: '#4ADE80' }} />}
+                <div style={{ marginBottom: 11, animation: 'lincoinSlideIn 0.28s ease-out' }}>
+                    <div style={{ maxWidth: 264, marginLeft: 'auto', background: 'linear-gradient(150deg, #0F1512 0%, #0C0E0D 100%)', border: '1px solid rgba(74,222,128,0.32)', borderRadius: 11, padding: '9px 11px', boxShadow: '0 8px 22px rgba(0,0,0,0.32)' }}>
+                        <div className="flex items-center" style={{ gap: 8 }}>
+                            <span style={{ width: 26, height: 26, borderRadius: 7, flexShrink: 0, display: 'grid', placeItems: 'center', background: 'rgba(74,222,128,0.14)' }}>
+                                {done ? <CheckCircle2 size={15} style={{ color: '#4ADE80' }} /> : <ArrowDownLeft size={14} style={{ color: '#4ADE80' }} />}
                             </span>
                             <div style={{ minWidth: 0, flex: 1 }}>
-                                <p style={{ fontSize: 12.5, fontWeight: 800, color: '#F4F4F2', lineHeight: 1.2 }}>{done ? 'Depósito acreditado' : 'Depósito recibido'}</p>
-                                <p style={{ fontSize: 11.5, color: '#4ADE80', fontWeight: 700, marginTop: 1 }}>+{depositCard.amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT</p>
+                                <p style={{ fontSize: 11, fontWeight: 800, color: '#F4F4F2', lineHeight: 1.15 }}>{done ? 'Depósito acreditado' : 'Depósito recibido'}</p>
+                                <p style={{ fontSize: 10.5, color: '#4ADE80', fontWeight: 700 }}>+{depositCard.amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT</p>
                             </div>
                         </div>
-                        <div style={{ marginTop: 11 }}>
-                            <div style={{ height: 5, borderRadius: 999, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
+                        <div style={{ marginTop: 8 }}>
+                            <div style={{ height: 4, borderRadius: 999, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
                                 <div style={{ height: '100%', borderRadius: 999, background: 'linear-gradient(90deg, #22A35C, #4ADE80)', width: done ? '100%' : '55%', transition: 'width 0.6s ease', ...(done ? {} : { animation: 'lincoinPulseBar 1.1s ease-in-out infinite' }) }} />
                             </div>
-                            <div className="flex items-center justify-between" style={{ marginTop: 6 }}>
-                                <span style={{ fontSize: 10, fontWeight: 700, color: '#4ADE80' }}>● Recibido</span>
-                                <span style={{ fontSize: 10, fontWeight: 700, color: done ? '#4ADE80' : '#878E88' }}>{done ? '● Acreditado' : 'Acreditando…'}</span>
+                            <div className="flex items-center justify-between" style={{ marginTop: 4 }}>
+                                <span style={{ fontSize: 9, fontWeight: 700, color: '#4ADE80' }}>● Recibido</span>
+                                <span style={{ fontSize: 9, fontWeight: 700, color: done ? '#4ADE80' : '#878E88' }}>{done ? '● Acreditado' : 'Acreditando…'}</span>
                             </div>
                         </div>
                     </div>
