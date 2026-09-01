@@ -619,12 +619,23 @@ async function readDurableIndex(userId: string, email?: string | null): Promise<
   if (email) keys.push(idxKeyForEmail(email))
   try {
     const { data } = await db.from('system_config').select('key, value').in('key', keys)
-    // Preferir la clave por-usuario sobre la de correo si ambas existen.
-    const byUser = (data as any[])?.find((r) => r.key === idxKeyForUser(userId))
-    const rowsFound = byUser ? [byUser, ...((data as any[]) ?? [])] : ((data as any[]) ?? [])
-    for (const row of rowsFound) {
-      const n = parseInt(row?.value, 10)
-      if (Number.isFinite(n) && n >= 1) return n
+    const num = (v: any) => { const n = parseInt(v, 10); return Number.isFinite(n) && n >= 1 ? n : null }
+    // La CLAVE DE CORREO MANDA. El correo = la persona: si existen filas
+    // hermanas (mismo correo, distinto userId), TODAS deben resolver el MISMO
+    // índice. Antes se prefería la clave por-usuario y dos perfiles del mismo
+    // correo podían quedar en wallets distintas (justo el "cambia sola"). Si la
+    // clave por-usuario difiere del correo, se SANA a la del correo.
+    const byEmail = email ? num((data as any[])?.find((r) => r.key === idxKeyForEmail(email))?.value) : null
+    const byUser = num((data as any[])?.find((r) => r.key === idxKeyForUser(userId))?.value)
+    if (byEmail != null) {
+      if (byUser !== byEmail) { try { await saveSystemConfig(idxKeyForUser(userId), String(byEmail)) } catch { /* no bloquea */ } }
+      return byEmail
+    }
+    if (byUser != null) {
+      // Aún no hay clave de correo → sembrarla desde la del usuario para anclar
+      // a los hermanos de aquí en adelante.
+      if (email) { try { await saveSystemConfig(idxKeyForEmail(email), String(byUser)) } catch { /* no bloquea */ } }
+      return byUser
     }
   } catch { /* si falla la lectura, caemos a la resolución normal */ }
   return null
@@ -698,7 +709,19 @@ async function userIndex(userId: string): Promise<number> {
 // un registro durable en system_config. Es el "archivo" para saber CUÁNDO y
 // POR QUÉ cambió la wallet de alguien — nada cambia sin dejar rastro.
 const WALLET_LOG_KEY = 'gasfree_wallet_log'
-async function logWalletChange(entry: { userId: string; email?: string | null; oldIndex: number | null; newIndex: number; source: string }) {
+// Deriva la dirección GasFree (o el EOA de respaldo) de un índice HD, best-
+// effort — si la API de GasFree falla, devuelve null y el log igual se escribe.
+// Sirve para GUARDAR en el archivo la dirección real de cada wallet anterior,
+// no solo el número de índice.
+async function addressForIndex(index: number | null): Promise<string | null> {
+  if (index == null) return null
+  try {
+    const { eoa } = await userWallet(index)
+    const acct = await gfAccount(eoa)
+    return acct.gasFreeAddress ?? eoa ?? null
+  } catch { return null }
+}
+async function logWalletChange(entry: { userId: string; email?: string | null; oldIndex: number | null; newIndex: number; source: string; oldAddress?: string | null; newAddress?: string | null }) {
   try {
     const { data } = await db.from('system_config').select('value').eq('key', WALLET_LOG_KEY).single()
     const list: any[] = data?.value ? JSON.parse(data.value) : []
@@ -739,7 +762,10 @@ async function persistIndexToRows(rows: any[], idx: number, source = 'auto') {
     await writeDurableIndex(r.id, rowEmail, idx)
     if (prev === idx) continue
     await db.from('users').update({ raw_data: { ...raw, gasfreeIndex: idx } }).eq('id', r.id)
-    await logWalletChange({ userId: r.id, email: rowEmail, oldIndex: prev, newIndex: idx, source })
+    // Guarda en el archivo las DIRECCIONES reales (no solo el índice) para que
+    // el admin pueda ver la wallet anterior y la nueva.
+    const [oldAddress, newAddress] = await Promise.all([addressForIndex(prev), addressForIndex(idx)])
+    await logWalletChange({ userId: r.id, email: rowEmail, oldIndex: prev, newIndex: idx, source, oldAddress, newAddress })
   }
 }
 

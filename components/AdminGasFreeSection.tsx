@@ -684,8 +684,8 @@ export const AdminGasFreeSection: React.FC = () => {
 
             {/* Historial (archivo) de cambios de wallet — auditoría durable */}
             <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
-                <p className="font-bold text-slate-800 text-sm">📒 Historial de cambios de wallet</p>
-                <p className="text-xs text-slate-500">Cada cambio de wallet (primera asignación, pin/reset de admin, reconciliación) queda registrado aquí — cuándo, de qué índice a cuál, y por qué. Las wallets NO cambian solas; si algo cambia, aparece acá.</p>
+                <p className="font-bold text-slate-800 text-sm">🗄️ Archivo de wallets anteriores</p>
+                <p className="text-xs text-slate-500">Aquí quedan las wallets ANTERIORES de cada cliente: cada vez que una wallet cambia (primera asignación, pin/reset de admin, reconciliación) se guarda la dirección vieja y la nueva, con fecha y motivo. Las wallets NO cambian solas; si algo cambia, aparece acá para que puedas verlas.</p>
                 <div className="flex flex-wrap items-center gap-2">
                     <input value={logEmail} onChange={e => setLogEmail(e.target.value)} placeholder="Filtrar por correo (opcional)"
                         className="flex-1 min-w-[180px] px-3 py-2 text-xs rounded-lg border border-slate-200 outline-none focus:border-[#4ADE80]" />
@@ -699,17 +699,29 @@ export const AdminGasFreeSection: React.FC = () => {
                     <div className="max-h-72 overflow-auto rounded-lg border border-slate-100">
                         <table className="w-full text-[11px]">
                             <thead className="bg-slate-50 text-slate-500 sticky top-0">
-                                <tr><th className="text-left px-2 py-1.5">Fecha</th><th className="text-left px-2 py-1.5">Correo</th><th className="text-left px-2 py-1.5">Índice</th><th className="text-left px-2 py-1.5">Motivo</th></tr>
+                                <tr><th className="text-left px-2 py-1.5">Fecha</th><th className="text-left px-2 py-1.5">Correo</th><th className="text-left px-2 py-1.5">Wallet anterior → nueva</th><th className="text-left px-2 py-1.5">Motivo</th></tr>
                             </thead>
                             <tbody>
-                                {walletLog.map((e: any, i: number) => (
-                                    <tr key={i} className="border-t border-slate-100">
+                                {walletLog.map((e: any, i: number) => {
+                                    const short = (a: string) => a && a.length > 14 ? `${a.slice(0, 8)}…${a.slice(-6)}` : (a || '—');
+                                    const copy = (a?: string) => { if (a) navigator.clipboard?.writeText(a).catch(() => {}); };
+                                    return (
+                                    <tr key={i} className="border-t border-slate-100 align-top">
                                         <td className="px-2 py-1.5 text-slate-500 whitespace-nowrap">{e.at ? new Date(e.at).toLocaleString('es-CO', { dateStyle: 'short', timeStyle: 'short' }) : '—'}</td>
-                                        <td className="px-2 py-1.5 text-slate-700 truncate max-w-[160px]">{e.email ?? e.userId?.slice(0, 8)}</td>
-                                        <td className="px-2 py-1.5 font-mono text-slate-800">{e.oldIndex ?? '—'} → <b>{e.newIndex}</b></td>
+                                        <td className="px-2 py-1.5 text-slate-700 truncate max-w-[140px]">{e.email ?? e.userId?.slice(0, 8)}</td>
+                                        <td className="px-2 py-1.5 font-mono text-slate-800">
+                                            {e.oldAddress
+                                                ? <button title={`${e.oldAddress} (clic para copiar)`} onClick={() => copy(e.oldAddress)} className="text-slate-500 hover:text-slate-800 hover:underline">{short(e.oldAddress)}</button>
+                                                : <span className="text-slate-400">wallet #{e.oldIndex ?? '—'}</span>}
+                                            <span className="mx-1 text-slate-400">→</span>
+                                            {e.newAddress
+                                                ? <button title={`${e.newAddress} (clic para copiar)`} onClick={() => copy(e.newAddress)} className="font-bold text-slate-900 hover:underline">{short(e.newAddress)}</button>
+                                                : <b>wallet #{e.newIndex}</b>}
+                                        </td>
                                         <td className="px-2 py-1.5"><span className={`px-1.5 py-0.5 rounded ${e.source === 'first_assign' ? 'bg-slate-100 text-slate-600' : e.source?.startsWith('admin') ? 'bg-indigo-50 text-indigo-700' : 'bg-amber-50 text-amber-700'}`}>{SOURCE_LABEL[e.source] ?? e.source}</span></td>
                                     </tr>
-                                ))}
+                                    );
+                                })}
                             </tbody>
                         </table>
                     </div>
