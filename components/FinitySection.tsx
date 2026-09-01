@@ -526,7 +526,7 @@ export const FinitySection: React.FC<{
     // se hizo). `finityAmount` = lo que hay en Finity; `creditAmount` = neto por
     // el que se acredita al cliente (Lincoin absorbe la 2ª comisión).
     const finishConvert = async (p: { txId: string; finityAmount: number; creditAmount: number; amount: number; previewRate: number | null; gasfreeFeeUsdt: number }) => {
-        setConverting(true); setConvertStep('convirtiendo');
+        setConverting(true); setConvertStep('recibido');
         // Cierre de éxito compartido (convierta quien convierta: este
         // frontend o el AUTOPILOTO del servidor en segundo plano).
         const completeUI = async (clientCop: number, finityRate: number, utilityCop: number) => {
@@ -610,6 +610,10 @@ export const FinitySection: React.FC<{
                     setConverting(false);
                     return;
                 }
+                // Refleja el estado REAL: solo pasa a "Convirtiendo" cuando el
+                // servidor DE VERDAD está convirtiendo (el USD ya entró a Finity);
+                // mientras espera el depósito se queda en "Recibido".
+                setConvertStep(st?.phase === 'converting' ? 'convirtiendo' : 'recibido');
                 // Re-disparar el autopiloto cada ~32s por si se detuvo entre rondas.
                 if (i > 0 && i % 8 === 0) callGasfree({ action: 'my_convert_kick', userId, txId: p.txId }).catch(() => {});
             }

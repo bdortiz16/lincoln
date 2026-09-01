@@ -2082,13 +2082,21 @@ async function autoConvert(txId: string, uid: string) {
         }
       }
       const fwd = Number(rd.usdtToProvider ?? rd.fwd ?? 0)
-      // SIN gate frágil: ya NO se cruza el monto contra la lista de movimientos
-      // (la recarga ≠ el neto y el pool es compartido → falsos negativos que
-      // dejaban la conversión en "la plataforma no registra la recarga" aunque
-      // Finity SÍ la mostrara). Finity es la ÚNICA autoridad: se INTENTA convertir
-      // y, si el USD aún no está, su 400 "insufficient balance" (abajo) hace que
-      // se ceda y el webhook/kick retome apenas el USD entre. Así convierte apenas
-      // el dinero está, sin esperas de más ni bloqueos por adivinar el monto.
+      // GATE por SALDO REAL de Finity (autoritativo, no por cruce de montos): NO
+      // se convierte "en el aire". Si el saldo USD de Finity aún NO cubre el
+      // monto, se ESPERA — la conversión queda en 'recharged' y el webhook
+      // FUNDS_DEPOSIT (o el próximo kick) la reanuda apenas el USD entre. Si el
+      // endpoint de saldo no responde (null), se deja pasar y Finity valida con
+      // su propio 400 "insufficient balance" (abajo).
+      if (fwd > 0) {
+        const usd = await finityUsdBalance(uid)
+        if (usd != null && usd + 0.01 < fwd) {
+          await db.from('transactions').update({
+            raw_data: { ...rd, convertPhase: 'recharged', convertWaiting: 'finity_usd_balance', lastConvertError: `Finity USD ${usd} < ${fwd} requerido — esperando el depósito`, lastConvertAt: new Date().toISOString() },
+          }).eq('id', txId)
+          return   // el webhook/kick reanuda apenas el USD esté en Finity
+        }
+      }
       const claim = await claimConvert(txId)
       if (!claim.claimed) return
       try {
