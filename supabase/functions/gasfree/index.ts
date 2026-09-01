@@ -921,13 +921,46 @@ async function myWalletArchive(userId: string) {
 async function userOwnsIndex(userId: string, index: number): Promise<boolean> {
   if (!Number.isFinite(index)) return false
   if ((await userIndex(userId)) === index) return true
-  const { data: primary } = await db.from('users').select('email').eq('id', userId).maybeSingle()
-  const e = String(primary?.email ?? '').toLowerCase()
+  const { data: primary } = await db.from('users').select('id, email').eq('id', userId).maybeSingle()
+  const email = primary?.email ?? null
+  const e = String(email ?? '').toLowerCase()
+  // Índices deterministas propios y de filas hermanas + los guardados en ellas
+  // (los mismos que myWalletArchive puede DETECTAR sin log).
+  if (deterministicIndex(String(userId)) === index) return true
+  try {
+    const { data: sibs } = email
+      ? await db.from('users').select('id, raw_data').eq('email', email)
+      : { data: [] as any[] }
+    for (const s of ((sibs as any[]) ?? [])) {
+      if (deterministicIndex(String(s.id)) === index) return true
+      const raw = (s.raw_data ?? {}) as Record<string, any>
+      if (raw.gasfreeIndex === index || raw.gasfreeHdIndex === index) return true
+    }
+  } catch { /* seguimos con el log */ }
   const { data } = await db.from('system_config').select('value').eq('key', WALLET_LOG_KEY).single()
   const list: any[] = data?.value ? JSON.parse(data.value) : []
   return list.some((x) =>
     (String(x.userId ?? '') === userId || (e && String(x.email ?? '').toLowerCase() === e)) &&
     (x.oldIndex === index || x.newIndex === index))
+}
+
+// Cotización para enviar desde una wallet (por índice): saldo, comisión GasFree
+// y MÁXIMO enviable (saldo − comisión). Así el usuario no adivina cuánto puede
+// enviar — el error InsufficientBalance salía por no restar la comisión.
+async function myArchivedQuote(userId: string, index: number) {
+  if (!(await userOwnsIndex(userId, index))) throw new Error('Esa wallet no es tuya')
+  const { eoa } = await userWallet(index)
+  const acct = await gfAccount(eoa)
+  const { token } = await gfConfig()
+  const dec = Number(token.decimal ?? 6)
+  const address = acct.gasFreeAddress ?? eoa
+  let balance = 0
+  try { balance = await tokenBalance(address, token.tokenAddress, dec) } catch { /* 0 */ }
+  const transferFeeUsdt = Number(token.transferFee ?? 0) / Math.pow(10, dec)
+  const activateFeeUsdt = acct.active ? 0 : Number(token.activateFee ?? 0) / Math.pow(10, dec)
+  const totalFeeUsdt = parseFloat((transferFeeUsdt + activateFeeUsdt).toFixed(dec))
+  const maxSendable = Math.max(0, parseFloat((balance - totalFeeUsdt).toFixed(dec)))
+  return { address, balance, transferFeeUsdt, activateFeeUsdt, totalFeeUsdt, maxSendable, active: !!acct.active }
 }
 
 // ── ENVIAR desde una wallet ARCHIVADA (recuperar sus fondos) ─────────
@@ -2436,6 +2469,12 @@ Deno.serve(async (req) => {
       if (!userId) return err('Falta userId', 400)
       if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
       return ok(await regenerateWalletSafe(userId))
+    }
+    // Cotización de envío de una wallet archivada (saldo, comisión, máximo).
+    if (action === 'my_archived_quote') {
+      if (!userId || body.index == null) return err('Faltan userId o index', 400)
+      if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
+      return ok(await myArchivedQuote(userId, Number(body.index)))
     }
     // Movimientos de una dirección del usuario (para una wallet archivada).
     if (action === 'my_address_movements') {

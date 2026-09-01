@@ -972,6 +972,20 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const [archExpanded, setArchExpanded] = useState<string | null>(null);
   const [archMoves, setArchMoves] = useState<{ loading: boolean; items: any[]; explorer?: string }>({ loading: false, items: [] });
   const [archSend, setArchSend] = useState<{ open: boolean; to: string; amount: string; otp: string; busy: boolean; error: string }>({ open: false, to: '', amount: '', otp: '', busy: false, error: '' });
+  const [archQuote, setArchQuote] = useState<{ loading: boolean; totalFeeUsdt?: number; transferFeeUsdt?: number; activateFeeUsdt?: number; maxSendable?: number; balance?: number; error?: string }>({ loading: false });
+  const openArchSend = async (index: number | null) => {
+    // Abre el formulario y COTIZA: saldo, comisión GasFree y máximo enviable.
+    // Se pre-llena el monto con el máximo (saldo − comisión) para no adivinar.
+    setArchSend(s => ({ ...s, open: true, error: '', to: walletArchive?.current?.address ?? '' }));
+    if (index == null) return;
+    setArchQuote({ loading: true });
+    try {
+      const q = await callGasfree({ action: 'my_archived_quote', userId: currentUser?.id, index });
+      if (q?.error) { setArchQuote({ loading: false, error: q.error }); return; }
+      setArchQuote({ loading: false, totalFeeUsdt: q.totalFeeUsdt, transferFeeUsdt: q.transferFeeUsdt, activateFeeUsdt: q.activateFeeUsdt, maxSendable: q.maxSendable, balance: q.balance });
+      setArchSend(s => ({ ...s, amount: q.maxSendable != null ? String(q.maxSendable) : s.amount }));
+    } catch { setArchQuote({ loading: false, error: 'No se pudo cotizar la comisión.' }); }
+  };
   const toggleArchWallet = async (address: string) => {
     if (archExpanded === address) { setArchExpanded(null); return; }
     setArchExpanded(address);
@@ -4799,7 +4813,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                               <div style={{ padding: '4px 16px 16px', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
                                                   {/* Acciones: solo ENVIAR (recuperar fondos) + TronScan */}
                                                   <div className="flex items-center" style={{ gap: 8, marginTop: 12, marginBottom: 12 }}>
-                                                      <button onClick={() => setArchSend(s => ({ ...s, open: !s.open, error: '', amount: w.balance != null ? String(w.balance) : '', to: walletArchive?.current?.address ?? '' }))}
+                                                      <button onClick={() => { if (archSend.open) { setArchSend(s => ({ ...s, open: false })); } else { openArchSend(w.index); } }}
                                                           disabled={!w.balance || w.balance <= 0}
                                                           className="flex items-center justify-center hover:opacity-90 transition-opacity" style={{ gap: 6, padding: '9px 14px', borderRadius: 9, fontSize: 12.5, fontWeight: 700, color: '#0A0C0B', background: (!w.balance || w.balance <= 0) ? 'rgba(74,222,128,0.3)' : '#4ADE80', border: 'none', cursor: (!w.balance || w.balance <= 0) ? 'not-allowed' : 'pointer' }}>
                                                           <Send size={13} /> Enviar
@@ -4812,8 +4826,23 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                                       <div style={{ padding: '12px', borderRadius: 10, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.09)', marginBottom: 12 }}>
                                                           <label style={{ fontSize: 10.5, fontWeight: 700, color: '#878E88' }}>DIRECCIÓN DESTINO (TRON)</label>
                                                           <input value={archSend.to} onChange={e => setArchSend(s => ({ ...s, to: e.target.value, error: '' }))} placeholder="T…" style={{ width: '100%', marginTop: 5, marginBottom: 10, padding: '9px 11px', borderRadius: 8, background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.12)', color: '#F4F4F2', fontSize: 12.5, fontFamily: 'ui-monospace, Menlo, monospace' }} />
-                                                          <label style={{ fontSize: 10.5, fontWeight: 700, color: '#878E88' }}>MONTO (USDT)</label>
-                                                          <input value={archSend.amount} onChange={e => setArchSend(s => ({ ...s, amount: e.target.value.replace(/[^\d.,]/g, ''), error: '' }))} placeholder="0.00" style={{ width: '100%', marginTop: 5, marginBottom: 10, padding: '9px 11px', borderRadius: 8, background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.12)', color: '#F4F4F2', fontSize: 13 }} />
+                                                          {/* Desglose de comisión GasFree + máximo enviable */}
+                                                          {archQuote.loading ? (
+                                                              <p style={{ fontSize: 11.5, color: '#878E88', marginBottom: 10 }}>Calculando comisión…</p>
+                                                          ) : archQuote.error ? (
+                                                              <p style={{ fontSize: 11.5, color: '#F87171', marginBottom: 10 }}>{archQuote.error}</p>
+                                                          ) : archQuote.maxSendable != null ? (
+                                                              <div style={{ padding: '9px 11px', borderRadius: 8, background: 'rgba(74,222,128,0.05)', border: '1px solid rgba(74,222,128,0.18)', marginBottom: 10 }}>
+                                                                  <div className="flex items-center justify-between" style={{ fontSize: 11.5, color: '#878E88' }}><span>Saldo</span><span style={{ color: '#F4F4F2', fontWeight: 600 }}>{archQuote.balance?.toFixed(2)} USDT</span></div>
+                                                                  <div className="flex items-center justify-between" style={{ fontSize: 11.5, color: '#878E88', marginTop: 3 }}><span>Comisión GasFree{archQuote.activateFeeUsdt ? ' (incl. activación)' : ''}</span><span style={{ color: '#F4F4F2', fontWeight: 600 }}>− {archQuote.totalFeeUsdt?.toFixed(2)} USDT</span></div>
+                                                                  <div className="flex items-center justify-between" style={{ fontSize: 12.5, marginTop: 5, paddingTop: 5, borderTop: '1px solid rgba(255,255,255,0.08)' }}><span style={{ color: '#4ADE80', fontWeight: 700 }}>Máximo a enviar</span><span style={{ color: '#4ADE80', fontWeight: 800 }}>{archQuote.maxSendable.toFixed(2)} USDT</span></div>
+                                                              </div>
+                                                          ) : null}
+                                                          <div className="flex items-center justify-between" style={{ marginBottom: 5 }}>
+                                                              <label style={{ fontSize: 10.5, fontWeight: 700, color: '#878E88' }}>MONTO (USDT)</label>
+                                                              {archQuote.maxSendable != null && <button onClick={() => setArchSend(s => ({ ...s, amount: String(archQuote.maxSendable), error: '' }))} style={{ fontSize: 11, fontWeight: 700, color: '#4ADE80' }}>Máximo</button>}
+                                                          </div>
+                                                          <input value={archSend.amount} onChange={e => setArchSend(s => ({ ...s, amount: e.target.value.replace(/[^\d.,]/g, ''), error: '' }))} placeholder="0.00" style={{ width: '100%', marginBottom: 10, padding: '9px 11px', borderRadius: 8, background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.12)', color: '#F4F4F2', fontSize: 13 }} />
                                                           {mfaEnrolled && (<>
                                                               <label style={{ fontSize: 10.5, fontWeight: 700, color: '#878E88' }}>CÓDIGO 2FA</label>
                                                               <input value={archSend.otp} onChange={e => setArchSend(s => ({ ...s, otp: e.target.value.replace(/\D/g, '').slice(0, 6), error: '' }))} placeholder="000000" inputMode="numeric" style={{ width: '100%', marginTop: 5, marginBottom: 10, padding: '9px 11px', borderRadius: 8, background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.12)', color: '#F4F4F2', fontSize: 13, letterSpacing: '0.3em' }} />
