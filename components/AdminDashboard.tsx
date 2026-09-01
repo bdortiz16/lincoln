@@ -319,6 +319,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const [showBlockInput, setShowBlockInput] = useState(false);
   const [blockReason, setBlockReason] = useState('');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  // Editar datos del cliente (nombre + tipo persona/empresa)
+  const [editClientOpen, setEditClientOpen] = useState(false);
+  const [editClientName, setEditClientName] = useState('');
+  const [editClientRole, setEditClientRole] = useState<'personal' | 'business'>('personal');
+  const [editClientSaving, setEditClientSaving] = useState(false);
+  const openEditClient = () => {
+    if (!selectedClient) return;
+    setEditClientName(selectedClient.name ?? '');
+    setEditClientRole(selectedClient.role === 'business' ? 'business' : 'personal');
+    setEditClientOpen(true); setShowBlockInput(false); setShowDeleteConfirm(false);
+  };
+  const saveEditClient = async () => {
+    if (!selectedClient || editClientSaving) return;
+    const name = editClientName.trim();
+    if (!name) { showToast('El nombre no puede quedar vacío.'); return; }
+    setEditClientSaving(true);
+    try {
+      await updateUserProfile(selectedClient.id, { name, role: editClientRole });
+      setSelectedClient({ ...selectedClient, name, role: editClientRole } as any);
+      showToast('Cliente actualizado.');
+      setEditClientOpen(false);
+    } catch { showToast('No se pudo actualizar. Intenta de nuevo.'); }
+    setEditClientSaving(false);
+  };
   const [deletingUser, setDeletingUser] = useState(false);
   
   // Cargues Logic — acreditar saldo COP manualmente (temporal, mientras
@@ -1277,7 +1301,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                                           <span className="bg-slate-200 text-slate-600 px-2 py-0.5 rounded text-[10px] font-bold uppercase">{selectedClient.role}</span>
                                       </div>
                                   </div>
-                                  <div className="flex gap-2">
+                                  <div className="flex gap-2 flex-wrap justify-end">
+                                      <button onClick={openEditClient} className="bg-slate-800 text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-slate-900 transition-colors flex items-center gap-1">
+                                          <Edit2 size={14}/> Editar
+                                      </button>
                                       {selectedClient.kycStatus !== 'verified' && (
                                           <button onClick={handleApproveKYC} className="bg-green-600 text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-green-700 transition-colors flex items-center gap-1">
                                               <CheckCircle size={14}/> Aprobar
@@ -1307,6 +1334,25 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                                   </div>
                               </div>
                               
+                              {editClientOpen && (
+                                  <div className="p-4 bg-slate-50 border-b border-slate-200 animate-in fade-in slide-in-from-top-2 space-y-3">
+                                      <div>
+                                          <label className="block text-[11px] font-bold uppercase text-slate-500 mb-1">Nombre {editClientRole === 'business' ? '/ Razón social' : 'completo'}</label>
+                                          <input value={editClientName} onChange={e => setEditClientName(e.target.value)} className="w-full h-10 px-3 rounded-lg border border-slate-300 text-sm text-slate-800 outline-none focus:border-slate-800" placeholder="Nombre del cliente" />
+                                      </div>
+                                      <div>
+                                          <label className="block text-[11px] font-bold uppercase text-slate-500 mb-1">Tipo de cuenta</label>
+                                          <div className="flex gap-2">
+                                              <button onClick={() => setEditClientRole('personal')} className={`flex-1 h-10 rounded-lg text-sm font-bold border transition-colors ${editClientRole === 'personal' ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-100'}`}>Persona</button>
+                                              <button onClick={() => setEditClientRole('business')} className={`flex-1 h-10 rounded-lg text-sm font-bold border transition-colors ${editClientRole === 'business' ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-100'}`}>Empresa</button>
+                                          </div>
+                                      </div>
+                                      <div className="flex gap-2">
+                                          <button onClick={() => setEditClientOpen(false)} className="flex-1 h-10 rounded-lg text-sm font-bold border border-slate-300 text-slate-600 hover:bg-slate-100">Cancelar</button>
+                                          <button onClick={saveEditClient} disabled={editClientSaving} className="flex-1 h-10 rounded-lg text-sm font-bold bg-[#0C0E0D] text-white hover:bg-slate-800 disabled:opacity-60">{editClientSaving ? 'Guardando…' : 'Guardar cambios'}</button>
+                                      </div>
+                                  </div>
+                              )}
                               {showBlockInput && (
                                   <div className="p-4 bg-red-50 border-b border-red-100 flex gap-2 animate-in fade-in slide-in-from-top-2">
                                       <input
