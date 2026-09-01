@@ -2944,7 +2944,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
         <div className="max-w-6xl mx-auto min-h-[calc(100vh-160px)]">
           {activeView === 'dashboard' && renderDashboard()}
           {activeView === 'movements' && renderMovements()}
-          {activeView === 'wallet-detail' && renderWalletDetail()}
+          {activeView === 'wallet-detail' && (selectedWalletCode ? renderWalletDetail() : renderDashboard())}
           {activeView === 'profile' && renderProfile()}
           {activeView === 'referrals' && renderReferrals()}
           {activeView === 'affiliates' && renderAffiliates()}

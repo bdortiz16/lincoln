@@ -271,7 +271,13 @@ const PATH_VIEWS: Record<string, string> = Object.fromEntries(
 export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }) => {
   const [activeView, setActiveView] = useState<'dashboard' | 'movements' | 'wallet-detail' | 'profile' | 'notifications' | 'referrals' | 'affiliates' | 'settings' | 'servicios' | 'mouv' | 'contactos' | 'walletsGasfree'>(() => {
     // Vista inicial según la URL (deep-link / recarga en /movimientos, etc.).
-    try { return (PATH_VIEWS[window.location.pathname] as any) || 'dashboard'; } catch { return 'dashboard'; }
+    // /billetera necesita una billetera seleccionada, que NO sobrevive a la
+    // recarga (no va en la URL) → si se recarga ahí, se abre Inicio (donde
+    // están las billeteras) en vez de dejar la pantalla en blanco.
+    try {
+      const v = (PATH_VIEWS[window.location.pathname] as any) || 'dashboard';
+      return v === 'wallet-detail' ? 'dashboard' : v;
+    } catch { return 'dashboard'; }
   });
   // Sincroniza vista ↔ URL: al cambiar de vista, actualiza la dirección;
   // y responde a los botones atrás/adelante del navegador.
@@ -4155,7 +4161,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
           {activeView === 'dashboard' && renderDashboard()}
           {activeView === 'movements' && renderMovements()}
-          {activeView === 'wallet-detail' && renderWalletDetail()}
+          {/* wallet-detail sin billetera elegida (recarga / botón atrás) → Inicio */}
+          {activeView === 'wallet-detail' && (selectedWalletCode ? renderWalletDetail() : renderDashboard())}
           {activeView === 'profile' && renderProfile()}
           {activeView === 'referrals' && renderReferrals()}
           {activeView === 'affiliates' && renderAffiliates()}
