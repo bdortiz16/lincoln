@@ -907,12 +907,16 @@ async function myWalletArchive(userId: string) {
     if (!address || !token) return null
     try { return await tokenBalance(address, token.tokenAddress, Number(token.decimal ?? 6)) } catch { return null }
   }
-  const archived = await Promise.all(
-    Array.from(byAddr.entries())
-      .sort((a, b) => String(b[1].at ?? '').localeCompare(String(a[1].at ?? '')))
-      .map(async ([address, v]) => ({ address, index: v.index, at: v.at, reason: v.reason, balance: await balOf(address) }))
-  )
-  return { current: { address: currentAddress, index: idx, balance: await balOf(currentAddress) }, archived }
+  // SECUENCIAL a propósito: consultar todos los saldos en paralelo hacía que
+  // TronGrid limitara y algunas wallets mostraran 0 falso. Uno por uno es más
+  // lento pero devuelve el saldo REAL de cada una.
+  const currentBalance = await balOf(currentAddress)
+  const entries = Array.from(byAddr.entries()).sort((a, b) => String(b[1].at ?? '').localeCompare(String(a[1].at ?? '')))
+  const archived: { address: string; index: number | null; at: string | null; reason: string; balance: number | null }[] = []
+  for (const [address, v] of entries) {
+    archived.push({ address, index: v.index, at: v.at, reason: v.reason, balance: await balOf(address) })
+  }
+  return { current: { address: currentAddress, index: idx, balance: currentBalance }, archived }
 }
 
 // Verifica que un índice HD sea de la propiedad del usuario (aparece en su log
@@ -985,22 +989,53 @@ async function myArchivedSend(userId: string, index: number, toAddress: string, 
   return r
 }
 
-// Movimientos (registrados en la app) de UNA dirección del usuario — para
-// "ver movimientos" de una wallet archivada. On-chain completo va por TronScan.
-async function myAddressMovements(userId: string, address: string) {
+// Movimientos ON-CHAIN de UNA dirección — la verdad COMPLETA (entradas y
+// salidas), no solo lo que la app registró. Lee las transferencias TRC-20 de la
+// dirección en TronGrid (el mismo dato que muestra Tronscan) y las clasifica en
+// entrada (to == addr) / salida (from == addr). Cae a lo registrado en la app
+// solo si la cadena no respondiera.
+async function myAddressMovements(_userId: string, address: string) {
   const a = String(address || '').trim()
-  if (!a) return { movements: [] }
-  const { data } = await db.from('transactions')
-    .select('id, type, amount, currency, status, raw_data, created_at')
-    .eq('user_id', userId).order('created_at', { ascending: false }).limit(300)
-  const mine = ((data as any[]) ?? []).filter((t) => {
-    const rd = (t.raw_data ?? {}) as Record<string, any>
-    return [rd.toAddress, rd.fromAddress, rd.address, rd.beneficiary, rd.account].some((x) => String(x ?? '') === a)
-  }).map((t) => {
-    const rd = (t.raw_data ?? {}) as Record<string, any>
-    return { id: t.id, type: t.type, amount: t.amount, currency: t.currency, status: t.status, at: t.created_at, title: rd.title ?? null }
-  })
-  return { movements: mine, explorer: `https://tronscan.org/#/address/${a}` }
+  const explorer = `https://tronscan.org/#/address/${a}`
+  if (!a) return { movements: [], explorer }
+  let movements: any[] = []
+  try {
+    const { token } = await gfConfig()
+    const contract = token.tokenAddress
+    const dec = Number(token.decimal ?? 6)
+    const url = `${CFG.tronHost}/v1/accounts/${a}/transactions/trc20?limit=200&contract_address=${contract}`
+    const r = await fetch(url, { headers: tgHeaders() })
+    const d = await r.json()
+    const list: any[] = Array.isArray(d?.data) ? d.data : []
+    movements = list
+      .filter((t) => (t?.type ?? 'Transfer') === 'Transfer' && (t?.to === a || t?.from === a))
+      .map((t) => {
+        const inbound = t?.to === a
+        return {
+          id: t.transaction_id,
+          direction: inbound ? 'in' : 'out',
+          amount: Number(BigInt(String(t?.value ?? '0'))) / Math.pow(10, dec),
+          currency: 'USDT',
+          counterparty: inbound ? t?.from : t?.to,
+          at: t?.block_timestamp ? new Date(Number(t.block_timestamp)).toISOString() : null,
+        }
+      })
+      .sort((x, y) => String(y.at ?? '').localeCompare(String(x.at ?? '')))
+  } catch { /* cae al respaldo de la app */ }
+  if (movements.length === 0) {
+    const { data } = await db.from('transactions')
+      .select('id, type, amount, currency, status, raw_data, created_at')
+      .eq('user_id', _userId).order('created_at', { ascending: false }).limit(300)
+    movements = ((data as any[]) ?? []).filter((t) => {
+      const rd = (t.raw_data ?? {}) as Record<string, any>
+      return [rd.toAddress, rd.fromAddress, rd.address, rd.beneficiary, rd.account].some((x) => String(x ?? '') === a)
+    }).map((t) => {
+      const rd = (t.raw_data ?? {}) as Record<string, any>
+      const inbound = ['load', 'otc_deposit', 'pay_received', 'referral_payout'].includes(t.type) || /dep[oó]sito|recib/i.test(String(rd.title ?? ''))
+      return { id: t.id, direction: inbound ? 'in' : 'out', amount: t.amount, currency: (t.currency === 'USD' || t.currency === 'USDT_TRON') ? 'USDT' : t.currency, at: t.created_at }
+    })
+  }
+  return { movements, explorer }
 }
 
 // ── GENERAR nueva wallet MANUALMENTE (acción explícita del usuario) ──

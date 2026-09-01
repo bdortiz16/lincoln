@@ -4860,7 +4860,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                                   ) : (
                                                       <div className="space-y-2" style={{ maxHeight: 200, overflowY: 'auto' }}>
                                                           {archMoves.items.map((m: any) => {
-                                                              const isIn = ['load', 'otc_deposit', 'pay_received', 'referral_payout'].includes(m.type) || /dep[oó]sito|recib/i.test(String(m.title || ''));
+                                                              const isIn = m.direction ? m.direction === 'in' : (['load', 'otc_deposit', 'pay_received', 'referral_payout'].includes(m.type) || /dep[oó]sito|recib/i.test(String(m.title || '')));
                                                               const cur = (m.currency === 'USD' || m.currency === 'USDT_TRON') ? 'USDT' : m.currency;
                                                               const amt = Number(m.amount).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
                                                               return (
