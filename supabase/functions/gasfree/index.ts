@@ -355,6 +355,21 @@ async function latestIncomingTrc20(address: string, contract: string, decimals: 
   } catch { return null }
 }
 
+// TODAS las transferencias TRC-20 ENTRANTES a una dirección (para acreditar
+// cada depósito por su monto EXACTO y una sola vez, por txId).
+async function incomingTransfersTrc20(address: string, contract: string, decimals: number, limit = 60): Promise<{ from: string; txId: string; amount: number; ts: number }[]> {
+  try {
+    const url = `${CFG.tronHost}/v1/accounts/${address}/transactions/trc20?only_to=true&limit=${limit}&order_by=block_timestamp,desc&contract_address=${contract}`
+    const r = await fetch(url, { headers: tgHeaders() })
+    const d = await r.json()
+    const list: any[] = Array.isArray(d?.data) ? d.data : []
+    return list
+      .filter(t => (t?.type ?? 'Transfer') === 'Transfer' && t?.to === address)
+      .map(t => ({ from: String(t?.from ?? ''), txId: String(t?.transaction_id ?? ''), amount: Number(t?.value ?? 0) / Math.pow(10, decimals), ts: Number(t?.block_timestamp ?? 0) }))
+      .filter(t => t.txId && t.amount > 0)
+  } catch { return [] }
+}
+
 // Localizador: busca los TRC-20 de la dirección GasFree y el EOA de un
 // usuario en AMBAS redes (mainnet + Nile) — para saber dónde quedó un
 // depósito enviado a la red equivocada.
@@ -2163,70 +2178,69 @@ async function myVerifyDeposit(userId: string) {
   const onchainBal = await tokenBalance(acct.gasFreeAddress, token.tokenAddress, dec)
 
   const raw = (u.raw_data ?? {}) as Record<string, any>
-  // Contador propio (separado de gasfreeCredited): arranca en 0 — GasFree es
-  // una fuente nueva, sin acreditaciones previas que reconstruir.
-  const credited: number = typeof raw.gasfreeCredited === 'number' ? raw.gasfreeCredited : 0
-  const diff = parseFloat((onchainBal - credited).toFixed(dec))
-  // AUTOCURACIÓN: si lo acreditado quedó POR ENCIMA del saldo on-chain
-  // (p. ej. por una doble acreditación vieja), se re-basa el contador al
-  // saldo real — sin tocar balances ni crear movimientos. Si no, el
-  // próximo depósito no se acreditaría (diff quedaría en 0 para siempre).
-  if (diff < -0.0001) {
-    await mergeUserRaw(userId, { gasfreeCredited: onchainBal })
-    return { synced: false, onchain: onchainBal, credited: 0, diff: 0, rebased: true, reason: `Contador re-basado al saldo real (${onchainBal} USDT).` }
-  }
-  if (diff <= 0.0001) {
-    // Diagnóstico: leer cada vía por separado para saber por qué da 0.
-    const viaBalanceOf = await tokenBalanceOn(acct.gasFreeAddress, token.tokenAddress, dec, CFG.tronHost)
-    const viaTransfers = await tokenBalanceFromTransfers(acct.gasFreeAddress, token.tokenAddress, dec)
-    const allZero = viaBalanceOf === 0 && viaTransfers === 0
-    const reason = allZero
-      ? `No se leyó saldo on-chain (balanceOf=0, transfers=0) en ${acct.gasFreeAddress} · contrato ${token.tokenAddress} · red ${NET}. Si Tronscan SÍ muestra saldo, TronGrid está limitando al servidor: agrega TRONGRID_API_KEY en Supabase → Edge Functions → Secrets.`
-      : `Sin depósitos nuevos. On-chain=${onchainBal} USDT, ya acreditado=${credited}.`
-    return { synced: false, onchain: onchainBal, credited, diff: 0, reason, debug: { gasFreeAddress: acct.gasFreeAddress, contract: token.tokenAddress, net: NET, viaBalanceOf, viaTransfers } }
+  // ── Acreditación de depósitos POR TRANSFERENCIA (txId), no por delta ──
+  // El esquema viejo (diff = onchain − contador) JUNTABA montos cuando el
+  // contador quedaba atrás ("me llegó 15/16,50 en vez de 6,5") y, en el peor
+  // caso, acreditaba de más. Ahora cada transferencia ENTRANTE se acredita UNA
+  // vez por su monto EXACTO y se registra su propio movimiento.
+  const incoming = await incomingTransfersTrc20(acct.gasFreeAddress, token.tokenAddress, dec, 60)
+
+  // MIGRACIÓN (primera vez con el nuevo esquema): si aún no existe la lista de
+  // depósitos ya acreditados, se SIEMBRA con las transferencias entrantes
+  // actuales (ya reflejadas en el saldo) y se re-basa el contador. NO se
+  // acredita nada aquí → jamás se re-acredita lo viejo (ni se mintea).
+  if (!Array.isArray(raw.gasfreeCreditedTxs)) {
+    const seed = incoming.map(t => t.txId)
+    await mergeUserRaw(userId, { gasfreeCreditedTxs: seed, gasfreeCreditedCount: seed.length, gasfreeCredited: onchainBal })
+    return { synced: false, migrated: true, onchain: onchainBal, credited: 0, diff: 0, reason: 'Depósitos sincronizados; los próximos se acreditan por su monto exacto.' }
   }
 
+  const creditedSet = new Set((raw.gasfreeCreditedTxs as any[]).map(String))
+  const fresh = incoming.filter(t => !creditedSet.has(t.txId))
+  if (fresh.length === 0) {
+    // Diagnóstico de "sin depósitos": distingue TronGrid limitando de sin nada.
+    const viaBalanceOf = await tokenBalanceOn(acct.gasFreeAddress, token.tokenAddress, dec, CFG.tronHost)
+    const viaTransfers = await tokenBalanceFromTransfers(acct.gasFreeAddress, token.tokenAddress, dec)
+    const reason = (viaBalanceOf === 0 && viaTransfers === 0)
+      ? `No se leyó saldo on-chain (balanceOf=0, transfers=0) en ${acct.gasFreeAddress} · contrato ${token.tokenAddress} · red ${NET}. Si Tronscan SÍ muestra saldo, TronGrid está limitando al servidor: agrega TRONGRID_API_KEY.`
+      : `Sin depósitos nuevos. On-chain=${onchainBal} USDT.`
+    return { synced: false, onchain: onchainBal, credited: 0, diff: 0, reason, debug: { gasFreeAddress: acct.gasFreeAddress, contract: token.tokenAddress, net: NET, viaBalanceOf, viaTransfers } }
+  }
+
+  const totalNew = parseFloat(fresh.reduce((s, t) => s + t.amount, 0).toFixed(dec))
   const bals = (u.balances as Record<string, number>) ?? {}
-  const newUsd = parseFloat(((Number(bals.USD ?? 0)) + diff).toFixed(2))
-  const newCredited = parseFloat((credited + diff).toFixed(dec))
-  // ── ANTI-DOBLE-ACREDITACIÓN (CAS) ──────────────────────────────
-  // El poll de 15 s + el botón "Verificar" pueden llegar AL TIEMPO y ambos
-  // ver el mismo depósito (lectura → comparación → escritura sin candado):
-  // eso acreditaba doble y creaba 2 movimientos + notificaciones falsas.
-  // La escritura ahora es CONDICIONAL: solo pasa si gasfreeCredited sigue
-  // EXACTAMENTE como lo leímos — el perdedor de la carrera no escribe,
-  // no inserta movimiento y responde synced:false (sin toast).
-  // Re-leer raw_data FRESCO justo antes de escribir para no pisar cambios
-  // concurrentes del cliente (2FA, beneficiarios). El CAS sigue usando el
-  // valor ORIGINAL de gasfreeCredited: si otro poll acreditó en el medio, la
-  // condición falla y esta escritura no aplica (no doble-acredita).
+  const newUsd = parseFloat(((Number(bals.USD ?? 0)) + totalNew).toFixed(2))
+  const oldCount = typeof raw.gasfreeCreditedCount === 'number' ? raw.gasfreeCreditedCount : creditedSet.size
+  const newSet = [...creditedSet, ...fresh.map(t => t.txId)]
+  // ── ANTI-DOBLE-ACREDITACIÓN (CAS monótono) ──────────────────────
+  // Dos verificaciones simultáneas (poll + botón) no acreditan doble: la
+  // escritura solo pasa si gasfreeCreditedCount sigue como lo leímos. El
+  // perdedor no escribe ni inserta movimiento. Re-lee raw fresco para no pisar
+  // cambios concurrentes del cliente (2FA, beneficiarios).
   const { data: freshCU } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
   const freshRaw = (freshCU?.raw_data ?? raw) as Record<string, any>
-  let upd = db.from('users').update({
+  const upd = await db.from('users').update({
     balances: { ...bals, USD: newUsd },
-    raw_data: { ...freshRaw, gasfreeCredited: newCredited },
+    raw_data: { ...freshRaw, gasfreeCredited: onchainBal, gasfreeCreditedTxs: newSet, gasfreeCreditedCount: oldCount + fresh.length },
   }).eq('id', userId)
-  upd = typeof raw.gasfreeCredited === 'number'
-    ? upd.filter('raw_data->>gasfreeCredited', 'eq', String(raw.gasfreeCredited))
-    : upd.filter('raw_data->>gasfreeCredited', 'is', null)
-  const { data: updRows, error: updErr } = await upd.select('id')
-  if (updErr || !updRows || updRows.length === 0) {
+    .filter('raw_data->>gasfreeCreditedCount', 'eq', String(oldCount))
+    .select('id')
+  if (upd.error || !upd.data || upd.data.length === 0) {
     return { synced: false, raced: true, onchain: onchainBal, credited: 0, diff: 0, reason: 'Otra verificación acreditó este depósito hace un instante.' }
   }
-  // Enriquecer el comprobante con la transferencia entrante real: de dónde
-  // vino, a qué dirección llegó (la GasFree del usuario), la red y el TxID.
-  const inc = await latestIncomingTrc20(acct.gasFreeAddress, token.tokenAddress, dec, diff)
-  await db.from('transactions').insert({
-    user_id: userId, type: 'load', amount: diff, currency: 'USD', status: 'Completado',
-    raw_data: {
-      initials: '₮', title: 'Depósito USDT (GasFree · TRC-20)', createdAt: new Date().toISOString(),
-      userName: u.email, source: 'GASFREE',
-      network: 'TRON (TRC-20)',
-      toAddress: acct.gasFreeAddress,
-      ...(inc ? { fromAddress: inc.from, txId: inc.txId } : {}),
-    },
-  })
-  return { synced: true, credited: diff, onchain: onchainBal, newBalance: newUsd }
+  // UN movimiento por cada transferencia nueva, con su MONTO EXACTO y su txId.
+  for (const t of fresh) {
+    await db.from('transactions').insert({
+      user_id: userId, type: 'load', amount: parseFloat(t.amount.toFixed(dec)), currency: 'USD', status: 'Completado',
+      raw_data: {
+        initials: '₮', title: 'Depósito USDT (GasFree · TRC-20)',
+        createdAt: new Date(t.ts || Date.now()).toISOString(),
+        userName: u.email, source: 'GASFREE', network: 'TRON (TRC-20)',
+        toAddress: acct.gasFreeAddress, fromAddress: t.from, txId: t.txId,
+      },
+    })
+  }
+  return { synced: true, credited: totalNew, onchain: onchainBal, newBalance: newUsd, deposits: fresh.length }
 }
 
 // ⚠️ YA NO la usa el flujo "Enviar → Wallet" del cliente (ver mySend):
