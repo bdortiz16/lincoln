@@ -789,8 +789,10 @@ serve(async (req: Request) => {
     //     20M y un envío de 12–20M pasaba la app y fallaba en Mouv). ACH usa el
     //     tope general. Ambos overridables por secret.
     const BREB_MAX_COP   = Number(Deno.env.get('BREB_MAX_COP')   ?? '12000000') || 12000000
-    const PAYOUT_MAX_COP = Number(Deno.env.get('PAYOUT_MAX_COP') ?? '20000000') || 20000000
-    const perOpMax = rail === 'BREB' ? Math.min(BREB_MAX_COP, PAYOUT_MAX_COP) : PAYOUT_MAX_COP
+    // ACH permite hasta $50.000.000 por transferencia (Finity). Bre-B sigue en
+    // $12.000.000 (tope de Mouv por transferencia). Ambos overridables por secret.
+    const ACH_MAX_COP    = Number(Deno.env.get('ACH_MAX_COP')    ?? '50000000') || 50000000
+    const perOpMax = rail === 'BREB' ? BREB_MAX_COP : ACH_MAX_COP
     if (amount > perOpMax) {
       return json(400, { error: 'over_limit', message: rail === 'BREB'
         ? `Bre-B permite máximo ${perOpMax.toLocaleString('es-CO')} COP por transferencia. Divide el envío en varias operaciones o usa la Mesa OTC.`
