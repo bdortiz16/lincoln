@@ -486,6 +486,30 @@ serve(async (req: Request) => {
   const caller = await validCaller(req, payload)
   if (!caller.ok) return json(401, { error: 'unauthorized', message: 'unauthorized (mouv-proxy v1)' })
 
+  // ── Consultar una llave Bre-B (directorio Mouv): devuelve el TITULAR
+  //    (nombre, documento) y su BANCO para autollenar la inscripción de
+  //    beneficiario. Cualquier usuario autenticado puede consultar (es su
+  //    propio beneficiario). Es de solo LECTURA — no mueve dinero.
+  if (action === 'resolve_breb_key') {
+    const keyValue = String((payload as any).keyValue ?? (payload as any).key ?? '').trim()
+    if (!keyValue) return json(400, { error: 'missing_key', message: 'Falta la llave.' })
+    const rk = await mouvFetch('/transfers/resolve-key', { method: 'POST', body: JSON.stringify({ keyValue }) })
+    const rd: any = rk.data ?? {}
+    if (!rk.ok) return json(200, { ok: false, found: false, message: 'No se pudo consultar la llave en este momento.' })
+    if (rd.found === false) return json(200, { ok: true, found: false, message: 'La llave Bre-B no existe o no está activa.' })
+    const rec = rd.recipient ?? rd.holder ?? {}
+    const pick = (...xs: any[]) => { for (const x of xs) { const s = x == null ? '' : String(x).trim(); if (s) return s } return null }
+    return json(200, {
+      ok: true,
+      found: rd.found ?? true,
+      fullName: pick(rec.fullName, rec.name, rec.holderName, rd.fullName, rd.name),
+      idType:   pick(rec.idType, rec.documentType, rec.docType, rd.idType),
+      idValue:  pick(rec.idValue, rec.documentNumber, rec.docNumber, rec.id, rd.idValue),
+      keyType:  pick(rd.keyType, rec.keyType),
+      bank:     pick(rec.bank, rec.bankName, rec.entity, rec.financialEntity, rec.institution, rec.bankCode, rd.bank, rd.entity, rd.financialEntity),
+    })
+  }
+
   // ── ping / balance: saldo de la wallet COMPARTIDA — SOLO ADMIN ──
   // Los clientes NUNCA pueden ver el saldo total de la wallet Mouv; ellos
   // solo disponen del saldo interno que el admin les cargó (Cargues). Por

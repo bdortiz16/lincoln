@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { BookUser, Plus, X, Trash2, CheckCircle, AlertTriangle, Landmark, Wallet, Search, SlidersHorizontal, Zap, Copy, Send } from 'lucide-react';
 import { useDatabase } from '../context/DatabaseContext';
 import { useSystemConfig } from '../context/SystemConfigContext';
@@ -244,6 +244,35 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     const [form, setForm] = useState({ ...emptyForm });
     const [saving, setSaving] = useState(false);
     const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
+    // Consulta AUTOMÁTICA de la llave Bre-B en el directorio de Mouv: al escribir
+    // la llave se resuelve el TITULAR (nombre + documento) y su BANCO, y se
+    // autollenan los campos. Evita errores de digitación del beneficiario.
+    const [brebLookup, setBrebLookup] = useState<{ loading: boolean; found?: boolean; bank?: string | null; msg?: string } | null>(null);
+    const lastResolvedKeyRef = useRef<string>('');
+    const resolveBrebKey = async () => {
+        const key = form.brebKey.trim();
+        if (!key || key === lastResolvedKeyRef.current) return;
+        lastResolvedKeyRef.current = key;
+        setBrebLookup({ loading: true });
+        try {
+            const r: any = await callMouv('resolve_breb_key', currentUser!.id, { keyValue: key });
+            if (r?.ok && r?.found) {
+                setForm(fm => ({
+                    ...fm,
+                    name: fm.name.trim() ? fm.name : (r.fullName ?? fm.name),
+                    docNumber: fm.docNumber.trim() ? fm.docNumber : (r.idValue ?? fm.docNumber),
+                    bank: r.bank ?? fm.bank,
+                }));
+                setBrebLookup({ loading: false, found: true, bank: r.bank ?? null, msg: r.fullName ? `Titular: ${r.fullName}` : 'Llave verificada' });
+            } else if (r?.found === false) {
+                setBrebLookup({ loading: false, found: false, msg: 'La llave no existe o no está activa.' });
+            } else {
+                setBrebLookup({ loading: false, msg: 'No se pudo consultar la llave ahora. Puedes escribir el nombre manualmente.' });
+            }
+        } catch {
+            setBrebLookup({ loading: false, msg: 'No se pudo consultar la llave ahora.' });
+        }
+    };
     // Contacto abierto en el modal de detalle (clic sobre la fila)
     const [detail, setDetail] = useState<MouvContact | null>(null);
 
@@ -356,7 +385,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                 id: `ct_${Math.random().toString(36).slice(2, 10)}`,
                 mouvId: null, kind: f.kind, name: f.name.trim(),
                 docType: f.docType, docNumber: f.docNumber.trim() || '—',
-                country: 'Colombia', bank: `Bre-B · ${brebKeyLabel(f.brebKeyType)}`,
+                country: 'Colombia', bank: f.bank.trim() || `Bre-B · ${brebKeyLabel(f.brebKeyType)}`,
                 accountType: 'savings', accountNumber: f.brebKey.trim(),
                 status: 'aprobada', createdAt: new Date().toISOString(), lastError: null,
                 destKind: 'breb', brebKeyType: f.brebKeyType, brebKey: f.brebKey.trim(),
@@ -885,13 +914,27 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                             </div>
                             <div>
                                 <label style={LBL}>Llave Bre-B ({brebKeyLabel(form.brebKeyType)})</label>
-                                <input value={form.brebKey} onChange={e => setForm(fm => ({ ...fm, brebKey: e.target.value }))}
+                                <input value={form.brebKey}
+                                    onChange={e => { setForm(fm => ({ ...fm, brebKey: e.target.value })); if (brebLookup) setBrebLookup(null); }}
+                                    onBlur={resolveBrebKey}
+                                    onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); resolveBrebKey(); } }}
                                     placeholder={form.brebKeyType === 'celular' ? '+57 300 1234567' : form.brebKeyType === 'correo' ? 'correo@empresa.com' : form.brebKeyType === 'cedula' ? 'Número de cédula' : '@LLAVE123'}
                                     style={INP} />
+                                {brebLookup && (
+                                    <p style={{ fontSize: 11.5, marginTop: 6, fontWeight: 600, color: brebLookup.loading ? '#878E88' : brebLookup.found ? '#4ADE80' : brebLookup.found === false ? '#F87171' : '#878E88' }}>
+                                        {brebLookup.loading ? '🔎 Consultando la llave…' : (brebLookup.msg ?? '')}
+                                    </p>
+                                )}
                             </div>
                             <div>
                                 <label style={LBL}>{form.kind === 'empresa' ? 'Razón social' : 'Nombre completo'}</label>
-                                <input value={form.name} onChange={e => setForm(fm => ({ ...fm, name: e.target.value }))} style={INP} />
+                                <input value={form.name} onChange={e => setForm(fm => ({ ...fm, name: e.target.value }))}
+                                    placeholder={brebLookup?.loading ? 'Consultando…' : 'Se autollenará con la llave'} style={INP} />
+                            </div>
+                            <div>
+                                <label style={LBL}>Banco</label>
+                                <input value={form.bank} onChange={e => setForm(fm => ({ ...fm, bank: e.target.value }))}
+                                    placeholder={brebLookup?.loading ? 'Consultando…' : 'Se autollena con la llave (o escríbelo)'} style={INP} />
                             </div>
                             <div className="grid grid-cols-2 gap-3">
                                 <div>
