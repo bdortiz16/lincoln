@@ -960,8 +960,38 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // una nueva desde aquí — la actual pasa a "archivadas" y la nueva es
   // principal. También puede ver sus wallets anteriores.
   const [walletArchiveOpen, setWalletArchiveOpen] = useState(false);
-  const [walletArchive, setWalletArchive] = useState<{ current?: { address: string; index: number }; archived: { address: string; at: string | null; reason: string }[] } | null>(null);
+  const [walletArchive, setWalletArchive] = useState<{ current?: { address: string; index: number; balance: number | null }; archived: { address: string; index: number | null; at: string | null; reason: string; balance: number | null }[] } | null>(null);
   const [walletArchiveLoading, setWalletArchiveLoading] = useState(false);
+  // Panel expandido de una wallet archivada: sus movimientos + enviar.
+  const [archExpanded, setArchExpanded] = useState<string | null>(null);
+  const [archMoves, setArchMoves] = useState<{ loading: boolean; items: any[]; explorer?: string }>({ loading: false, items: [] });
+  const [archSend, setArchSend] = useState<{ open: boolean; to: string; amount: string; otp: string; busy: boolean; error: string }>({ open: false, to: '', amount: '', otp: '', busy: false, error: '' });
+  const toggleArchWallet = async (address: string) => {
+    if (archExpanded === address) { setArchExpanded(null); return; }
+    setArchExpanded(address);
+    setArchSend({ open: false, to: '', amount: '', otp: '', busy: false, error: '' });
+    setArchMoves({ loading: true, items: [] });
+    try {
+      const d = await callGasfree({ action: 'my_address_movements', userId: currentUser?.id, address });
+      setArchMoves({ loading: false, items: Array.isArray(d?.movements) ? d.movements : [], explorer: d?.explorer });
+    } catch { setArchMoves({ loading: false, items: [] }); }
+  };
+  const submitArchivedSend = async (index: number | null, maxBal: number | null) => {
+    if (archSend.busy || !currentUser?.id) return;
+    if (index == null) { setArchSend(s => ({ ...s, error: 'No se pudo identificar esta wallet.' })); return; }
+    const amt = Number(String(archSend.amount).replace(',', '.'));
+    if (!(amt > 0)) { setArchSend(s => ({ ...s, error: 'Ingresa un monto válido.' })); return; }
+    if (maxBal != null && amt > maxBal + 1e-9) { setArchSend(s => ({ ...s, error: `El máximo disponible es ${maxBal.toFixed(2)} USDT.` })); return; }
+    if (!archSend.to.trim()) { setArchSend(s => ({ ...s, error: 'Ingresa la dirección destino.' })); return; }
+    setArchSend(s => ({ ...s, busy: true, error: '' }));
+    try {
+      const d = await callGasfree({ action: 'my_archived_send', userId: currentUser.id, index, toAddress: archSend.to.trim(), amount: amt, otp: archSend.otp.trim() || undefined });
+      if (d?.error) { setArchSend(s => ({ ...s, busy: false, error: d.error })); return; }
+      showToast('✅ Envío realizado desde la wallet archivada.', 6000);
+      setArchSend({ open: false, to: '', amount: '', otp: '', busy: false, error: '' });
+      openWalletArchive(); // recargar saldos
+    } catch { setArchSend(s => ({ ...s, busy: false, error: 'Error de red. Intenta de nuevo.' })); }
+  };
   const [regenConfirmOpen, setRegenConfirmOpen] = useState(false);
   const [regenBusy, setRegenBusy] = useState(false);
   const [regenError, setRegenError] = useState<string | null>(null);
@@ -4718,41 +4748,97 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       {/* Archivo de wallets anteriores del usuario */}
       {walletArchiveOpen && (
           <div className="fixed inset-0 z-50 grid place-items-center p-4" style={{ background: 'rgba(4,5,4,0.72)', backdropFilter: 'blur(3px)', fontFamily: "'Archivo', system-ui, sans-serif" }} onClick={() => setWalletArchiveOpen(false)}>
-              <div onClick={(e) => e.stopPropagation()} className="w-full animate-in fade-in zoom-in-95 duration-200" style={{ maxWidth: 468, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, overflow: 'hidden' }} role="dialog" aria-modal="true">
-                  <div className="flex items-center justify-between" style={{ gap: 16, padding: '20px 24px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-                      <div className="flex items-center gap-2.5"><Archive size={18} color="#4ADE80" /><span style={{ fontSize: 16, fontWeight: 700, color: '#F4F4F2' }}>Mis wallets</span></div>
-                      <button onClick={() => setWalletArchiveOpen(false)} style={{ color: '#878E88' }}><X size={18} /></button>
+              <div onClick={(e) => e.stopPropagation()} className="w-full animate-in fade-in zoom-in-95 duration-200" style={{ maxWidth: 640, maxHeight: '88vh', display: 'flex', flexDirection: 'column', background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, overflow: 'hidden' }} role="dialog" aria-modal="true">
+                  <div className="flex items-center justify-between" style={{ gap: 16, padding: '20px 26px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                      <div className="flex items-center gap-2.5"><Archive size={18} color="#4ADE80" /><span style={{ fontSize: 17, fontWeight: 700, color: '#F4F4F2' }}>Mis wallets</span></div>
+                      <button onClick={() => setWalletArchiveOpen(false)} style={{ color: '#878E88' }}><X size={19} /></button>
                   </div>
-                  <div style={{ padding: '18px 24px 24px' }}>
+                  <div style={{ padding: '20px 26px 26px', overflowY: 'auto' }}>
                       {walletArchiveLoading ? (
-                          <p style={{ fontSize: 13, color: '#878E88', textAlign: 'center', padding: '20px 0' }}>Cargando…</p>
+                          <p style={{ fontSize: 13, color: '#878E88', textAlign: 'center', padding: '30px 0' }}>Cargando…</p>
                       ) : (<>
                           {walletArchive?.current?.address && (
-                              <div style={{ marginBottom: 16 }}>
-                                  <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: '#4ADE80', marginBottom: 6 }}>PRINCIPAL (ACTUAL)</p>
-                                  <div className="flex items-center justify-between" style={{ gap: 8, padding: '12px 14px', borderRadius: 10, background: 'rgba(74,222,128,0.06)', border: '1px solid rgba(74,222,128,0.22)' }}>
-                                      <span style={{ fontSize: 12.5, fontWeight: 600, color: '#F4F4F2', fontFamily: 'ui-monospace, Menlo, monospace' }}>{walletArchive.current.address.slice(0, 10)}…{walletArchive.current.address.slice(-8)}</span>
-                                      <button onClick={() => navigator.clipboard?.writeText(walletArchive!.current!.address).then(() => showToast('Copiada')).catch(() => {})} style={{ color: '#4ADE80', fontSize: 12, fontWeight: 700 }} className="flex items-center gap-1"><Copy size={12} /> Copiar</button>
+                              <div style={{ marginBottom: 20 }}>
+                                  <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: '#4ADE80', marginBottom: 8 }}>PRINCIPAL (ACTUAL)</p>
+                                  <div style={{ padding: '14px 16px', borderRadius: 12, background: 'rgba(74,222,128,0.06)', border: '1px solid rgba(74,222,128,0.22)' }}>
+                                      <div className="flex items-center justify-between" style={{ gap: 8 }}>
+                                          <span style={{ fontSize: 13, fontWeight: 600, color: '#F4F4F2', fontFamily: 'ui-monospace, Menlo, monospace' }}>{walletArchive.current.address.slice(0, 12)}…{walletArchive.current.address.slice(-8)}</span>
+                                          <button onClick={() => navigator.clipboard?.writeText(walletArchive!.current!.address).then(() => showToast('Copiada')).catch(() => {})} style={{ color: '#4ADE80', fontSize: 12, fontWeight: 700 }} className="flex items-center gap-1"><Copy size={12} /> Copiar</button>
+                                      </div>
+                                      <p style={{ fontSize: 18, fontWeight: 800, color: '#F4F4F2', marginTop: 8 }}>{walletArchive.current.balance != null ? walletArchive.current.balance.toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'} <span style={{ fontSize: 12, fontWeight: 600, color: '#878E88' }}>USDT</span></p>
                                   </div>
                               </div>
                           )}
-                          <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: '#878E88', marginBottom: 6 }}>ARCHIVADAS (ANTERIORES)</p>
+                          <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: '#878E88', marginBottom: 8 }}>ARCHIVADAS (ANTERIORES)</p>
                           {(!walletArchive?.archived || walletArchive.archived.length === 0) ? (
                               <p style={{ fontSize: 12.5, color: '#878E88', padding: '10px 0' }}>No tienes wallets anteriores. Solo has usado la actual.</p>
                           ) : (
-                              <div className="space-y-2" style={{ maxHeight: 260, overflowY: 'auto' }}>
-                                  {walletArchive.archived.map((w, i) => (
-                                      <div key={i} className="flex items-center justify-between" style={{ gap: 8, padding: '11px 14px', borderRadius: 10, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.09)' }}>
-                                          <div style={{ minWidth: 0 }}>
-                                              <p style={{ fontSize: 12.5, fontWeight: 600, color: '#C9CFCB', fontFamily: 'ui-monospace, Menlo, monospace' }}>{w.address.slice(0, 10)}…{w.address.slice(-8)}</p>
-                                              <p style={{ fontSize: 10.5, color: '#878E88', marginTop: 2 }}>{w.at ? new Date(w.at).toLocaleDateString('es-CO') : ''}</p>
-                                          </div>
-                                          <button onClick={() => navigator.clipboard?.writeText(w.address).then(() => showToast('Copiada')).catch(() => {})} style={{ color: '#878E88', fontSize: 12, fontWeight: 700 }} className="flex items-center gap-1 hover:opacity-80"><Copy size={12} /></button>
+                              <div className="space-y-2.5">
+                                  {walletArchive.archived.map((w, i) => {
+                                      const open = archExpanded === w.address;
+                                      return (
+                                      <div key={i} style={{ borderRadius: 12, background: 'rgba(255,255,255,0.03)', border: `1px solid ${open ? 'rgba(74,222,128,0.25)' : 'rgba(255,255,255,0.09)'}`, overflow: 'hidden' }}>
+                                          <button onClick={() => toggleArchWallet(w.address)} className="w-full flex items-center justify-between hover:bg-white/[0.03] transition-colors" style={{ gap: 8, padding: '13px 16px', textAlign: 'left' }}>
+                                              <div style={{ minWidth: 0 }}>
+                                                  <p style={{ fontSize: 13, fontWeight: 600, color: '#C9CFCB', fontFamily: 'ui-monospace, Menlo, monospace' }}>{w.address.slice(0, 12)}…{w.address.slice(-8)}</p>
+                                                  <p style={{ fontSize: 10.5, color: '#878E88', marginTop: 3 }}>{w.at ? new Date(w.at).toLocaleDateString('es-CO') : ''} · toca para ver movimientos</p>
+                                              </div>
+                                              <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                                                  <p style={{ fontSize: 14.5, fontWeight: 800, color: w.balance && w.balance > 0 ? '#4ADE80' : '#878E88' }}>{w.balance != null ? w.balance.toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}</p>
+                                                  <p style={{ fontSize: 10, color: '#878E88' }}>USDT</p>
+                                              </div>
+                                          </button>
+                                          {open && (
+                                              <div style={{ padding: '4px 16px 16px', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+                                                  {/* Acciones: solo ENVIAR (recuperar fondos) + TronScan */}
+                                                  <div className="flex items-center" style={{ gap: 8, marginTop: 12, marginBottom: 12 }}>
+                                                      <button onClick={() => setArchSend(s => ({ ...s, open: !s.open, error: '', amount: w.balance != null ? String(w.balance) : '', to: walletArchive?.current?.address ?? '' }))}
+                                                          disabled={!w.balance || w.balance <= 0}
+                                                          className="flex items-center justify-center hover:opacity-90 transition-opacity" style={{ gap: 6, padding: '9px 14px', borderRadius: 9, fontSize: 12.5, fontWeight: 700, color: '#0A0C0B', background: (!w.balance || w.balance <= 0) ? 'rgba(74,222,128,0.3)' : '#4ADE80', border: 'none', cursor: (!w.balance || w.balance <= 0) ? 'not-allowed' : 'pointer' }}>
+                                                          <Send size={13} /> Enviar
+                                                      </button>
+                                                      {archMoves.explorer && <a href={archMoves.explorer} target="_blank" rel="noreferrer" style={{ fontSize: 12, fontWeight: 600, color: '#878E88' }} className="flex items-center gap-1 hover:text-white"><Link2 size={12} /> Ver en TronScan</a>}
+                                                  </div>
+                                                  {(!w.balance || w.balance <= 0) && <p style={{ fontSize: 11, color: '#878E88', marginBottom: 8 }}>Sin saldo para enviar.</p>}
+                                                  {/* Formulario de envío */}
+                                                  {archSend.open && (
+                                                      <div style={{ padding: '12px', borderRadius: 10, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.09)', marginBottom: 12 }}>
+                                                          <label style={{ fontSize: 10.5, fontWeight: 700, color: '#878E88' }}>DIRECCIÓN DESTINO (TRON)</label>
+                                                          <input value={archSend.to} onChange={e => setArchSend(s => ({ ...s, to: e.target.value, error: '' }))} placeholder="T…" style={{ width: '100%', marginTop: 5, marginBottom: 10, padding: '9px 11px', borderRadius: 8, background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.12)', color: '#F4F4F2', fontSize: 12.5, fontFamily: 'ui-monospace, Menlo, monospace' }} />
+                                                          <label style={{ fontSize: 10.5, fontWeight: 700, color: '#878E88' }}>MONTO (USDT)</label>
+                                                          <input value={archSend.amount} onChange={e => setArchSend(s => ({ ...s, amount: e.target.value.replace(/[^\d.,]/g, ''), error: '' }))} placeholder="0.00" style={{ width: '100%', marginTop: 5, marginBottom: 10, padding: '9px 11px', borderRadius: 8, background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.12)', color: '#F4F4F2', fontSize: 13 }} />
+                                                          {mfaEnrolled && (<>
+                                                              <label style={{ fontSize: 10.5, fontWeight: 700, color: '#878E88' }}>CÓDIGO 2FA</label>
+                                                              <input value={archSend.otp} onChange={e => setArchSend(s => ({ ...s, otp: e.target.value.replace(/\D/g, '').slice(0, 6), error: '' }))} placeholder="000000" inputMode="numeric" style={{ width: '100%', marginTop: 5, marginBottom: 10, padding: '9px 11px', borderRadius: 8, background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.12)', color: '#F4F4F2', fontSize: 13, letterSpacing: '0.3em' }} />
+                                                          </>)}
+                                                          {archSend.error && <p style={{ fontSize: 11.5, color: '#F87171', marginBottom: 8 }}>{archSend.error}</p>}
+                                                          <button onClick={() => submitArchivedSend(w.index, w.balance)} disabled={archSend.busy} className="w-full hover:opacity-90 transition-opacity" style={{ padding: '10px 0', borderRadius: 9, fontSize: 13, fontWeight: 700, color: '#0A0C0B', background: '#4ADE80', border: 'none', opacity: archSend.busy ? 0.6 : 1 }}>{archSend.busy ? 'Enviando…' : 'Confirmar envío'}</button>
+                                                      </div>
+                                                  )}
+                                                  {/* Movimientos */}
+                                                  <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1px', color: '#878E88', marginBottom: 6 }}>MOVIMIENTOS</p>
+                                                  {archMoves.loading ? (
+                                                      <p style={{ fontSize: 12, color: '#878E88' }}>Cargando…</p>
+                                                  ) : archMoves.items.length === 0 ? (
+                                                      <p style={{ fontSize: 12, color: '#878E88' }}>Sin movimientos registrados en la app. Revisa TronScan para el detalle on-chain.</p>
+                                                  ) : (
+                                                      <div className="space-y-1.5" style={{ maxHeight: 180, overflowY: 'auto' }}>
+                                                          {archMoves.items.map((m: any) => (
+                                                              <div key={m.id} className="flex items-center justify-between" style={{ gap: 8, fontSize: 12 }}>
+                                                                  <span style={{ color: '#C9CFCB' }}>{m.title || m.type}</span>
+                                                                  <span style={{ color: '#F4F4F2', fontWeight: 700 }}>{Number(m.amount).toLocaleString('es-CO')} <span style={{ color: '#878E88', fontWeight: 500 }}>{m.currency}</span></span>
+                                                              </div>
+                                                          ))}
+                                                      </div>
+                                                  )}
+                                              </div>
+                                          )}
                                       </div>
-                                  ))}
+                                      );
+                                  })}
                               </div>
                           )}
-                          <p style={{ fontSize: 11, color: '#878E88', marginTop: 16, lineHeight: 1.5 }}>Tu wallet no cambia sola. Solo cambia si tú generas una nueva a propósito. Los fondos que llegaron a una wallet anterior siguen siendo tuyos.</p>
+                          <p style={{ fontSize: 11, color: '#878E88', marginTop: 18, lineHeight: 1.5 }}>Tu wallet no cambia sola. Solo cambia si tú generas una nueva a propósito. Una wallet archivada <b>solo envía</b> (para recuperar su saldo); no recibe. Los fondos que llegaron a una wallet anterior siguen siendo tuyos.</p>
                       </>)}
                   </div>
               </div>

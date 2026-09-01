@@ -863,23 +863,88 @@ async function myWalletArchive(userId: string) {
     return a
   }
   // Candidatos: por cada entrada, la wallet ANTERIOR (oldAddress/oldIndex) y la
-  // NUEVA (newAddress/newIndex). Se guarda la fecha más reciente por dirección.
-  const byAddr = new Map<string, { at: string | null; reason: string }>()
+  // NUEVA (newAddress/newIndex). Se guarda su índice, fecha y motivo.
+  const byAddr = new Map<string, { index: number | null; at: string | null; reason: string }>()
   for (const entry of mine) {
     const cands = [
-      { addr: await resolveAddr(entry.oldAddress, typeof entry.oldIndex === 'number' ? entry.oldIndex : null), reason: entry.source ?? 'cambio' },
-      { addr: await resolveAddr(entry.newAddress, typeof entry.newIndex === 'number' ? entry.newIndex : null), reason: entry.source ?? 'cambio' },
+      { index: typeof entry.oldIndex === 'number' ? entry.oldIndex : null, addr: await resolveAddr(entry.oldAddress, typeof entry.oldIndex === 'number' ? entry.oldIndex : null), reason: entry.source ?? 'cambio' },
+      { index: typeof entry.newIndex === 'number' ? entry.newIndex : null, addr: await resolveAddr(entry.newAddress, typeof entry.newIndex === 'number' ? entry.newIndex : null), reason: entry.source ?? 'cambio' },
     ]
     for (const c of cands) {
       if (!c.addr || c.addr === currentAddress) continue
       const prev = byAddr.get(c.addr)
-      if (!prev || (entry.at && (!prev.at || entry.at > prev.at))) byAddr.set(c.addr, { at: entry.at ?? null, reason: c.reason })
+      if (!prev || (entry.at && (!prev.at || entry.at > prev.at))) byAddr.set(c.addr, { index: c.index, at: entry.at ?? null, reason: c.reason })
     }
   }
-  const archived = Array.from(byAddr.entries())
-    .map(([address, v]) => ({ address, at: v.at, reason: v.reason }))
-    .sort((a, b) => String(b.at ?? '').localeCompare(String(a.at ?? '')))
-  return { current: { address: currentAddress, index: idx }, archived }
+  // Saldo on-chain de cada wallet (actual + archivadas) para saber cuánto
+  // queda por recuperar. Best-effort: si la API falla, el saldo va como null.
+  let token: any = null
+  try { token = (await gfConfig()).token } catch { /* sin saldo */ }
+  const balOf = async (address: string | null): Promise<number | null> => {
+    if (!address || !token) return null
+    try { return await tokenBalance(address, token.tokenAddress, Number(token.decimal ?? 6)) } catch { return null }
+  }
+  const archived = await Promise.all(
+    Array.from(byAddr.entries())
+      .sort((a, b) => String(b[1].at ?? '').localeCompare(String(a[1].at ?? '')))
+      .map(async ([address, v]) => ({ address, index: v.index, at: v.at, reason: v.reason, balance: await balOf(address) }))
+  )
+  return { current: { address: currentAddress, index: idx, balance: await balOf(currentAddress) }, archived }
+}
+
+// Verifica que un índice HD sea de la propiedad del usuario (aparece en su log
+// de wallets, por userId o correo, O es su índice actual). Impide enviar desde
+// la wallet de OTRO cliente pasando un índice cualquiera.
+async function userOwnsIndex(userId: string, index: number): Promise<boolean> {
+  if (!Number.isFinite(index)) return false
+  if ((await userIndex(userId)) === index) return true
+  const { data: primary } = await db.from('users').select('email').eq('id', userId).maybeSingle()
+  const e = String(primary?.email ?? '').toLowerCase()
+  const { data } = await db.from('system_config').select('value').eq('key', WALLET_LOG_KEY).single()
+  const list: any[] = data?.value ? JSON.parse(data.value) : []
+  return list.some((x) =>
+    (String(x.userId ?? '') === userId || (e && String(x.email ?? '').toLowerCase() === e)) &&
+    (x.oldIndex === index || x.newIndex === index))
+}
+
+// ── ENVIAR desde una wallet ARCHIVADA (recuperar sus fondos) ─────────
+// Solo enviar (una wallet archivada no recibe): mueve el USDT que quedó en una
+// wallet anterior a una dirección destino. Verifica que el índice sea del
+// propio usuario y firma con GasFree.
+async function myArchivedSend(userId: string, index: number, toAddress: string, amount: number) {
+  if (!(amount > 0)) throw new Error('Monto inválido')
+  if (!(await userOwnsIndex(userId, index))) throw new Error('Esa wallet no es tuya')
+  const { pkHex, eoa } = await userWallet(index)
+  const fromAddr = (await gfAccount(eoa)).gasFreeAddress ?? eoa
+  const r = await sendCore(pkHex, eoa, String(toAddress), amount)
+  await db.from('transactions').insert({
+    user_id: userId, type: 'send', amount, currency: 'USDT_TRON', status: 'Completado',
+    raw_data: {
+      title: 'Envío USDT desde wallet archivada', fromWallet: 'Wallet archivada', fromAddress: fromAddr,
+      beneficiary: toAddress, account: toAddress, toAddress, traceId: r.traceId, state: r.state, gasfree: true,
+      feeChargedUsdt: r.feeChargedUsdt, activateFeeUsdt: r.activateFeeUsdt, transferFeeUsdt: r.transferFeeUsdt,
+      sentAt: new Date().toISOString(),
+    },
+  })
+  return r
+}
+
+// Movimientos (registrados en la app) de UNA dirección del usuario — para
+// "ver movimientos" de una wallet archivada. On-chain completo va por TronScan.
+async function myAddressMovements(userId: string, address: string) {
+  const a = String(address || '').trim()
+  if (!a) return { movements: [] }
+  const { data } = await db.from('transactions')
+    .select('id, type, amount, currency, status, raw_data, created_at')
+    .eq('user_id', userId).order('created_at', { ascending: false }).limit(300)
+  const mine = ((data as any[]) ?? []).filter((t) => {
+    const rd = (t.raw_data ?? {}) as Record<string, any>
+    return [rd.toAddress, rd.fromAddress, rd.address, rd.beneficiary, rd.account].some((x) => String(x ?? '') === a)
+  }).map((t) => {
+    const rd = (t.raw_data ?? {}) as Record<string, any>
+    return { id: t.id, type: t.type, amount: t.amount, currency: t.currency, status: t.status, at: t.created_at, title: rd.title ?? null }
+  })
+  return { movements: mine, explorer: `https://tronscan.org/#/address/${a}` }
 }
 
 // ── GENERAR nueva wallet MANUALMENTE (acción explícita del usuario) ──
@@ -2348,6 +2413,21 @@ Deno.serve(async (req) => {
       if (!userId) return err('Falta userId', 400)
       if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
       return ok(await regenerateWalletSafe(userId))
+    }
+    // Movimientos de una dirección del usuario (para una wallet archivada).
+    if (action === 'my_address_movements') {
+      if (!userId || !body.address) return err('Faltan userId o address', 400)
+      if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
+      return ok(await myAddressMovements(userId, String(body.address)))
+    }
+    // Enviar (recuperar) los fondos de una wallet ARCHIVADA. Exige 2FA como
+    // cualquier envío on-chain.
+    if (action === 'my_archived_send') {
+      if (!userId || body.index == null || !toAddress || !amount) return err('Faltan userId, index, toAddress o amount', 400)
+      if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
+      const mfaErr = await require2FA(userId, body.otp)
+      if (mfaErr) return err(mfaErr, 403)
+      return ok(await myArchivedSend(userId, Number(body.index), String(toAddress), Number(amount)))
     }
     if (action === 'my_wallets_reorder') {
       if (!userId || !Array.isArray(body.ids)) return err('Faltan userId o ids', 400)
