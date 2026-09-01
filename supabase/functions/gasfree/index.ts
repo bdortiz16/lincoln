@@ -818,12 +818,24 @@ async function resetUserIndex(userId: string, source = 'admin_reset') {
   const oldIndex = (primary.raw_data ?? {})?.gasfreeIndex ?? null
   const next = await allocNextIndex()
   const [oldAddress, newAddress] = await Promise.all([addressForIndex(oldIndex), addressForIndex(next)])
+  // CONTADOR de depósitos: la wallet NUEVA arranca su propio contador
+  // (gasfreeCredited) igual a SU saldo on-chain real — normalmente 0. Antes se
+  // conservaba el contador de la wallet VIEJA, y como el crédito es por delta
+  // (onchain − contador), el siguiente depósito podía acreditar de más o de
+  // menos (justo el "me llegó 15 en vez de 10"). Con el reset, cada wallet
+  // cuenta SUS propios depósitos desde cero.
+  let newWalletBal = 0
+  try {
+    const { token } = await gfConfig()
+    if (newAddress) newWalletBal = await tokenBalance(newAddress, token.tokenAddress, Number(token.decimal ?? 6))
+  } catch { /* si no se pudo leer, arranca en 0 */ }
   for (const r of rows) {
     // Re-leer fresco justo antes de escribir para no pisar cambios
     // concurrentes del cliente (contactos, 2FA) al reescribir raw_data.
     const { data: fresh } = await db.from('users').select('raw_data').eq('id', r.id).maybeSingle()
     const raw = { ...((fresh?.raw_data ?? r.raw_data ?? {}) as Record<string, any>) }
     raw.gasfreeIndex = next
+    raw.gasfreeCredited = newWalletBal   // el contador de la NUEVA wallet, no el de la vieja
     delete raw.gasfreeHdIndex     // no dejar que el índice viejo lo re-sobrescriba
     delete raw.gasfreeAddress   // limpiar dirección cacheada (se recalcula)
     delete raw.gasfreeEoa

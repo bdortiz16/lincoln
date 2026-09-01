@@ -2628,9 +2628,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                         </span>
                         <span style={{ fontSize: 11.5, color: '#878E88', fontFamily: 'ui-monospace, Menlo, monospace', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{i.reference}</span>
                         <span style={{ textAlign: 'right' }}>
-                            <span style={{ display: 'block', fontSize: 13.5, fontWeight: 700, whiteSpace: 'nowrap', color: i.kind === 'in' ? '#4ADE80' : '#F4F4F2' }}>
-                                {i.kind === 'in' ? '+' : '−'}{formatMoney(tx.amount, tx.currency)} {i.ticker}
+                            {(() => { const rec = i.kind === 'in' || tx.type === 'convert'; return (
+                            <span style={{ display: 'block', fontSize: 13.5, fontWeight: 700, whiteSpace: 'nowrap', color: rec ? '#4ADE80' : '#F4F4F2' }}>
+                                {rec ? '+' : '−'}{formatMoney(tx.amount, tx.currency)} {i.ticker}
                             </span>
+                            ); })()}
                             {i.sub2 && <span style={{ display: 'block', fontSize: 11, color: '#878E88', marginTop: 1 }}>{i.sub2}</span>}
                         </span>
                         <span style={{ textAlign: 'right' }}>
@@ -2647,9 +2649,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                             <span style={{ display: 'block', fontSize: 11, color: '#878E88', marginTop: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{[i.dest, i.rail].filter(Boolean).join(' · ')}</span>
                         </span>
                         <span style={{ textAlign: 'right', flexShrink: 0 }}>
-                            <span style={{ display: 'block', fontSize: 13, fontWeight: 700, whiteSpace: 'nowrap', color: i.kind === 'in' ? '#4ADE80' : '#F4F4F2' }}>
-                                {i.kind === 'in' ? '+' : '−'}{formatMoney(tx.amount, tx.currency)} {i.ticker}
+                            {(() => { const rec = i.kind === 'in' || tx.type === 'convert'; return (
+                            <span style={{ display: 'block', fontSize: 13, fontWeight: 700, whiteSpace: 'nowrap', color: rec ? '#4ADE80' : '#F4F4F2' }}>
+                                {rec ? '+' : '−'}{formatMoney(tx.amount, tx.currency)} {i.ticker}
                             </span>
+                            ); })()}
                             <span style={{ display: 'inline-block', marginTop: 3, padding: '2px 8px', borderRadius: 999, fontSize: 9.5, fontWeight: 700, border: `1px solid ${i.pill.border}`, color: i.pill.color }}>{i.pill.label}</span>
                         </span>
                     </button>
