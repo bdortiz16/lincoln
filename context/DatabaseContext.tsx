@@ -462,7 +462,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       const localUsers = lsGetUsers();
       const localTxs = lsGetTransactions();
       setUsers(localUsers);
-      setTransactions(localTxs.sort((a, b) => b.id - a.id));
+      setTransactions(localTxs.sort(((a:any,b:any)=> (new Date(b.createdAt??b.created_at??b.date??0).getTime()||0) - (new Date(a.createdAt??a.created_at??a.date??0).getTime()||0)) as any));
       const cu = currentUserRef.current;
       if (cu) {
         const fresh = localUsers.find(x => x.id === cu.id);
@@ -525,7 +525,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
                 amount: Number(t.amount), currency: t.currency, status: t.status,
                 ...t.raw_data,
               }));
-              const sortedTx = mappedTx.sort((a: any, b: any) => b.id - a.id);
+              const sortedTx = mappedTx.sort(((a:any,b:any)=> (new Date(b.createdAt??b.created_at??b.date??0).getTime()||0) - (new Date(a.createdAt??a.created_at??a.date??0).getTime()||0)));
               setTransactions(sortedTx);
               mappedTxForCache = sortedTx;
             }
@@ -634,7 +634,12 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       // Se usa la fuente que SÍ trajo datos (edge preferida, si no el RPC/SELECT).
       // Solo se escribe si hay algo — así una lectura vacía nunca borra la lista.
       const rpcTxs = txData?.length ? mapTx(txData) : [];
-      const finalTxs = edgeTxs.length ? edgeTxs : rpcTxs;
+      // Orden por FECHA (desc), no por id: los ids son uuid aleatorios, así que
+      // sin esto "Movimientos recientes" mostraba cualquier orden y un depósito
+      // nuevo podía no salir arriba (o parecer que "no está").
+      const finalTxs = (edgeTxs.length ? edgeTxs : rpcTxs)
+        .slice()
+        .sort((a: any, b: any) => txTime(b) - txTime(a));
       if (finalTxs.length) {
         setTransactions(finalTxs);
         // Caché local por usuario: la próxima vez los movimientos se ven al
@@ -1922,7 +1927,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             amount: Number(t.amount), currency: t.currency, status: t.status,
             ...t.raw_data,
           }));
-          setTransactions(mapped.sort((a: any, b: any) => b.id - a.id));
+          setTransactions(mapped.sort(((a:any,b:any)=> (new Date(b.createdAt??b.created_at??b.date??0).getTime()||0) - (new Date(a.createdAt??a.created_at??a.date??0).getTime()||0))));
         }
       } catch { /* ignore */ }
     };
