@@ -298,21 +298,19 @@ async function finityCall(action: string, userId: string, extra: Record<string, 
 const ACH_FEE_COP = Number(Deno.env.get('ACH_FEE_COP') ?? '2500') || 2500
 // ── Comisión de envío Bre-B ─────────────────────────────────────────
 // Mouv le cobra a Lincoin por CADA transferencia: 0,10% del monto + $800 fijos.
-// Antes se cobraba al cliente un FIJO de $1.200, que en montos grandes NO cubría
-// el 0,10% de Mouv → Lincoin perdía y el pool se iba a negativo. Ahora se le
-// cobra al cliente el COSTO REAL de Mouv (0,10% + $800) MÁS la utilidad de
-// Lincoin ($400 por defecto). Así Lincoin SIEMPRE cubre el costo y gana un fijo
-// por envío, sin importar el tamaño. Todo configurable por secrets.
-const BREB_MOUV_PCT   = Number(Deno.env.get('BREB_MOUV_PCT')   ?? '0.001') || 0.001   // 0,10%
-const BREB_MOUV_FIXED = Number(Deno.env.get('BREB_MOUV_FIXED') ?? '800')  || 800      // $800 fijos de Mouv
-const BREB_MARGIN_COP = Number(Deno.env.get('BREB_MARGIN_COP') ?? '400')  || 400      // utilidad de Lincoin
-// Comisión Bre-B que paga el cliente por una dispersión de `amountCop`.
-function brebFeeCop(amountCop: number): number {
-  const mouvCost = Math.ceil(amountCop * BREB_MOUV_PCT) + BREB_MOUV_FIXED
-  return Math.round(mouvCost + BREB_MARGIN_COP)
+// El 0,10% NO se re-cobra aquí: ya se le cobra al cliente el 0,10% al RECIBIR
+// cada cargue Bre-B (admin-data), y ese 0,10% cubre el 0,10% de Mouv en el
+// envío. Así que en el ENVÍO solo se cobra el FIJO de Mouv ($800) + la utilidad
+// de Lincoin ($400) = $1.200 por defecto. Todo configurable por secrets.
+const BREB_MOUV_FIXED = Number(Deno.env.get('BREB_MOUV_FIXED') ?? '800')  || 800      // $800 fijos de Mouv por envío
+const BREB_MARGIN_COP = Number(Deno.env.get('BREB_MARGIN_COP') ?? '400')  || 400      // utilidad de Lincoin por envío
+// Comisión FIJA Bre-B que paga el cliente por una dispersión (no depende del
+// monto: el componente variable 0,10% ya se cobró en el cargue).
+function brebFeeCop(_amountCop?: number): number {
+  return Math.round(BREB_MOUV_FIXED + BREB_MARGIN_COP)
 }
-// Compatibilidad: fijo legacy (solo referencia; el cobro real usa brebFeeCop).
-const BREB_FEE_COP = Number(Deno.env.get('BREB_FEE_COP') ?? '1200') || 1200
+// Legacy (override directo del total si se quiere fijar a mano).
+const BREB_FEE_COP = Number(Deno.env.get('BREB_FEE_COP') ?? String(BREB_MOUV_FIXED + BREB_MARGIN_COP)) || 1200
 
 async function finityPayoutAch(userId: string, recipient: Record<string, any>, amountCop: number):
   Promise<{ ok: boolean; providerRef?: string; state?: string; feeCop: number; costs?: any; error?: any; destinationId?: string; amountMismatch?: Record<string, unknown> | null }> {
@@ -782,7 +780,7 @@ serve(async (req: Request) => {
     let feeDetail: Record<string, unknown> = {}
     if (rail === 'BREB') {
       feeCop = brebFeeCop(amount)
-      feeDetail = { feeCop, feeFixedCop: BREB_MOUV_FIXED + BREB_MARGIN_COP, feeVariableCop: Math.ceil(amount * BREB_MOUV_PCT), feeIvaCop: 0, feeProvider: 'lincoin' }
+      feeDetail = { feeCop, feeFixedCop: feeCop, feeVariableCop: 0, feeIvaCop: 0, feeProvider: 'lincoin' }
     } else {
       feeCop = ACH_FEE_COP
       feeDetail = { feeCop, feeProvider: 'finity' }
