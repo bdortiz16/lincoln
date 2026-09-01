@@ -296,10 +296,22 @@ async function finityCall(action: string, userId: string, extra: Record<string, 
 // envío (override con el secret ACH_FEE_COP). Finity no devuelve costs en
 // la orden — doc oficial: { id, status, amount, destination_account }.
 const ACH_FEE_COP = Number(Deno.env.get('ACH_FEE_COP') ?? '2500') || 2500
-// Comisión FIJA por envío Bre-B que se le cobra al cliente ($1.200 por
-// defecto; override con el secret BREB_FEE_COP). El costo real de Mouv
-// (fija + variable + IVA) lo absorbe Lincoin — al cliente además ya se le
-// cobró el 0,10% al RECIBIR el cargue en su cuenta Bre-B (admin-data).
+// ── Comisión de envío Bre-B ─────────────────────────────────────────
+// Mouv le cobra a Lincoin por CADA transferencia: 0,10% del monto + $800 fijos.
+// Antes se cobraba al cliente un FIJO de $1.200, que en montos grandes NO cubría
+// el 0,10% de Mouv → Lincoin perdía y el pool se iba a negativo. Ahora se le
+// cobra al cliente el COSTO REAL de Mouv (0,10% + $800) MÁS la utilidad de
+// Lincoin ($400 por defecto). Así Lincoin SIEMPRE cubre el costo y gana un fijo
+// por envío, sin importar el tamaño. Todo configurable por secrets.
+const BREB_MOUV_PCT   = Number(Deno.env.get('BREB_MOUV_PCT')   ?? '0.001') || 0.001   // 0,10%
+const BREB_MOUV_FIXED = Number(Deno.env.get('BREB_MOUV_FIXED') ?? '800')  || 800      // $800 fijos de Mouv
+const BREB_MARGIN_COP = Number(Deno.env.get('BREB_MARGIN_COP') ?? '400')  || 400      // utilidad de Lincoin
+// Comisión Bre-B que paga el cliente por una dispersión de `amountCop`.
+function brebFeeCop(amountCop: number): number {
+  const mouvCost = Math.ceil(amountCop * BREB_MOUV_PCT) + BREB_MOUV_FIXED
+  return Math.round(mouvCost + BREB_MARGIN_COP)
+}
+// Compatibilidad: fijo legacy (solo referencia; el cobro real usa brebFeeCop).
 const BREB_FEE_COP = Number(Deno.env.get('BREB_FEE_COP') ?? '1200') || 1200
 
 async function finityPayoutAch(userId: string, recipient: Record<string, any>, amountCop: number):
@@ -667,7 +679,8 @@ serve(async (req: Request) => {
     if (!isFinite(amount) || amount <= 0) return json(400, { error: 'bad_amount' })
     const rail = String(payload.rail ?? 'BREB').toUpperCase()
     if (rail === 'BREB') {
-      return json(200, { ok: true, rail: 'BREB', provider: 'lincoin', feeCop: BREB_FEE_COP, fixedCop: BREB_FEE_COP, variableCop: 0, ivaCop: 0, totalCop: amount + BREB_FEE_COP })
+      const fee = brebFeeCop(amount)
+      return json(200, { ok: true, rail: 'BREB', provider: 'lincoin', feeCop: fee, fixedCop: fee, variableCop: 0, ivaCop: 0, totalCop: amount + fee })
     }
     // ACH: comisión FIJA única ($2.500) — SIN componente variable.
     return json(200, { ok: true, rail: 'ACH', provider: 'finity', feeCop: ACH_FEE_COP, fixedCop: ACH_FEE_COP, variableCop: 0, ivaCop: 0, totalCop: amount + ACH_FEE_COP })
@@ -768,8 +781,8 @@ serve(async (req: Request) => {
     let feeCop = 0
     let feeDetail: Record<string, unknown> = {}
     if (rail === 'BREB') {
-      feeCop = BREB_FEE_COP
-      feeDetail = { feeCop, feeFixedCop: BREB_FEE_COP, feeVariableCop: 0, feeIvaCop: 0, feeProvider: 'lincoin' }
+      feeCop = brebFeeCop(amount)
+      feeDetail = { feeCop, feeFixedCop: BREB_MOUV_FIXED + BREB_MARGIN_COP, feeVariableCop: Math.ceil(amount * BREB_MOUV_PCT), feeIvaCop: 0, feeProvider: 'lincoin' }
     } else {
       feeCop = ACH_FEE_COP
       feeDetail = { feeCop, feeProvider: 'finity' }

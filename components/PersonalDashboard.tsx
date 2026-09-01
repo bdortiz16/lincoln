@@ -1761,9 +1761,14 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       if (sendMode === 'bank' && sendForm.destinationCurrency === 'COP' && currentUser?.id) {
           const isBreb = (sendContact?.destKind ?? 'ach') === 'breb';
           const rail = isBreb ? 'COP_BREB' : 'COP_ACH';
-          // El servidor debita monto + comisión fija ($1.200 Bre-B / $2.500 ACH)
-          // — se valida lo mismo aquí para no llegar al proveedor y volver.
-          const feeCop = isBreb ? 1200 : 2500;
+          // Comisión estimada para el pre-chequeo de saldo. Bre-B = costo real de
+          // Mouv (0,10% + $800) + utilidad ($400); ACH = fijo $2.500. Si el
+          // servidor ya cotizó (payoutQuote), se usa ese valor exacto para no
+          // subestimar y evitar el rechazo por saldo. El servidor es la
+          // autoridad final del cobro.
+          const feeCop = isBreb
+              ? Number(payoutQuote?.feeCop ?? (Math.ceil(amount * 0.001) + 800 + 400))
+              : 2500;
           if (getBalance(rail) < amount + feeCop) {
               sendingRef.current = false; setIsSending(false);
               showToast(`Saldo insuficiente en ${isBreb ? 'Bre-B' : 'ACH'}: necesitas ${(amount + feeCop).toLocaleString('es-CO')} COP (monto + comisión ${feeCop.toLocaleString('es-CO')}).`, 7000, 'error');
