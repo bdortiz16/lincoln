@@ -213,13 +213,12 @@ async function finityFetchAbs(url: string, init: RequestInit = {}): Promise<Resp
 // que devuelve su propio login (data.signed). Se inicia sesión con las
 // credenciales del portal guardadas como secrets y se cachea el token.
 const PORTAL_BASE     = 'https://prod.finity.com.co:444'
-// ⚠️ Estos secrets se leen UNA vez, al ARRANCAR la función (module load). Si
-// los agregas/cambias en Supabase, hay que REDESPLEGAR finity-proxy para que
-// los tome — una instancia caliente sigue con los valores viejos (o vacíos).
-const PORTAL_EMAIL    = (Deno.env.get('FINITY_PORTAL_EMAIL') ?? '').trim()
-// Se recorta solo un salto de línea/retorno final (típico al pegar el
-// secret), NO espacios que podrían ser parte real de la contraseña.
-const PORTAL_PASSWORD = (Deno.env.get('FINITY_PORTAL_PASSWORD') ?? '').replace(/[\r\n]+$/, '')
+// Los secrets del portal se leen EN CADA LLAMADA (no al arrancar): así, apenas
+// se agregan/cambian en Supabase, la función los toma sin necesidad de que la
+// instancia se reinicie. `.trim()` en el email; en la contraseña solo se
+// recorta el salto de línea final típico al pegar, no espacios internos.
+function portalEmail(): string { return (Deno.env.get('FINITY_PORTAL_EMAIL') ?? '').trim() }
+function portalPassword(): string { return (Deno.env.get('FINITY_PORTAL_PASSWORD') ?? '').replace(/[\r\n]+$/, '') }
 
 // El portal autentica las rutas de saldo con una COOKIE (no con Bearer):
 //   Cookie: plentiapp-prod-server-only=<JWT>   (== data.signed del login)
@@ -231,6 +230,7 @@ let lastPortalLogin: { status: number | string; snippet: string } | null = null
 
 async function getPortalToken(): Promise<string | null> {
   if (portalTokenCache && Date.now() < portalTokenCache.exp - 30_000) return portalTokenCache.cookie
+  const PORTAL_EMAIL = portalEmail(), PORTAL_PASSWORD = portalPassword()
   if (!PORTAL_EMAIL || !PORTAL_PASSWORD) return null
   const res = await fetch(`${PORTAL_BASE}/auth/login`, {
     method: 'POST',
@@ -543,12 +543,12 @@ Deno.serve(async (req) => {
       if (!token) {
         return json(200, {
           ok: false, usdt: null, cop: null,
-          error: PORTAL_EMAIL && PORTAL_PASSWORD
+          error: (portalEmail() && portalPassword())
             ? 'El login del portal Finity fue rechazado (revisa FINITY_PORTAL_EMAIL / FINITY_PORTAL_PASSWORD).'
             : 'Faltan credenciales del portal Finity (define los secrets FINITY_PORTAL_EMAIL y FINITY_PORTAL_PASSWORD).',
-          needsPortalCreds: !(PORTAL_EMAIL && PORTAL_PASSWORD),
+          needsPortalCreds: !(portalEmail() && portalPassword()),
           loginDebug: lastPortalLogin,
-          emailUsed: PORTAL_EMAIL ? `${PORTAL_EMAIL.slice(0, 3)}…@${PORTAL_EMAIL.split('@')[1] ?? ''}` : null,
+          emailUsed: portalEmail() ? `${portalEmail().slice(0, 3)}…@${portalEmail().split('@')[1] ?? ''}` : null,
           raw: { login: lastPortalLogin },
         })
       }
