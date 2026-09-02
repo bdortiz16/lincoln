@@ -704,9 +704,37 @@ Deno.serve(async (req) => {
     if (action === 'withdrawal_status') {
       const id = String(payload.id ?? '')
       if (!id) return json(400, { error: 'missing_id' })
-      const base = WORKING['withdrawalOrders'] ?? CANDIDATES.withdrawalOrders[0]
-      const r = await finityFetch(`${base}/${encodeURIComponent(id)}`)
-      return json(200, { ok: r.ok, status: r.status, data: await r.json().catch(() => null) })
+      const enc = encodeURIComponent(id)
+      // El id de la dispersión ACH es un MOVEMENT id (mvm-…): en Finity vive bajo
+      // /v0/movements/{id} (así lo muestra el portal: "Detalle del movimiento").
+      // Antes sólo se consultaba /v0/withdrawal-orders/{id} y no encontraba el
+      // estado → la dispersión quedaba atascada en 'Procesando'. Se prueba el
+      // DETALLE en movements y órdenes de retiro; gana la 1ª 2xx utilizable.
+      const detailBases = [
+        ...(CANDIDATES.movements ?? []),
+        ...(WORKING['withdrawalOrders'] ? [WORKING['withdrawalOrders']] : []),
+        ...(CANDIDATES.withdrawalOrders ?? []),
+      ]
+      let lastStatus = 0, lastData: any = null
+      for (const base of detailBases) {
+        const r = await finityFetch(`${base}/${enc}`)
+        if (r.status === 404 || r.status === 405 || r.status === 0) continue
+        const data = await r.json().catch(() => null)
+        if (r.ok && data && typeof data === 'object') {
+          return json(200, { ok: true, status: r.status, path: `${base}/{id}`, data })
+        }
+        lastStatus = r.status; lastData = data
+      }
+      // Respaldo: buscar el movimiento por id en la LISTA de movimientos
+      // (endpoint confirmado que ya usa reconcile_payin).
+      try {
+        const { res } = await finityTry('movements', {})
+        const body = await res.json().catch(() => null) as any
+        const arr: any[] = Array.isArray(body) ? body : (Array.isArray(body?.data) ? body.data : (Array.isArray(body?.movements) ? body.movements : (Array.isArray(body?.items) ? body.items : [])))
+        const match = arr.find(m => [m?.id, m?.reference, m?.movement_id, m?.movementId, m?.external_id].map(x => String(x ?? '')).includes(id))
+        if (match) return json(200, { ok: true, status: 200, path: 'movements[list]', data: match })
+      } catch { /* respaldo best-effort */ }
+      return json(200, { ok: false, status: lastStatus, data: lastData })
     }
 
     // ── Enviar un correo de evento al PROPIO usuario (ej. "Contacto
