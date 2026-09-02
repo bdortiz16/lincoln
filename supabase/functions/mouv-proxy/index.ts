@@ -290,6 +290,56 @@ async function mouvPayout(
   return { ok: r.ok, status: r.status, data: r.data, providerRef: r.data?.id, targetName: recipient.holderName, targetDocument: recipient.documentNumber }
 }
 
+// ── Estado REAL de una transferencia Mouv ───────────────────────────
+// Mouv responde /transfers/send con 201 { id, status:'PENDING', rail }: el
+// 200 SÓLO significa "aceptada para procesar", NO "pagada". La transferencia
+// puede terminar DEVUELTA (rechazada por el banco destino) minutos después.
+// Este normalizador clasifica cualquier estado (español o inglés) de Mouv en
+// un veredicto accionable, para no marcar Completado algo que fue devuelto.
+type MouvVerdict = 'completed' | 'returned' | 'pending' | 'unknown'
+function normalizeMouvState(raw: any): { verdict: MouvVerdict; state: string } {
+  const pickState = (o: any): string => {
+    if (o == null) return ''
+    if (typeof o === 'string') return o
+    return String(o.status ?? o.state ?? o.transferStatus ?? o.result ?? o?.data?.status ?? o?.data?.state ?? '')
+  }
+  const s = pickState(raw).trim().toUpperCase()
+  if (!s) return { verdict: 'unknown', state: '' }
+  // DEVUELTO / RETURNED / RECHAZADO / FALLIDO / CANCELADO → dinero NO salió.
+  if (/DEVUEL|RETURN|RECHAZ|REJECT|FAIL|FALL|CANCEL|DECLIN|REVERS|ERROR|BOUNCE/.test(s)) return { verdict: 'returned', state: s }
+  // COMPLETADO / EXITOSO / PAGADO / LIQUIDADO / SETTLED → pago final OK.
+  if (/COMPLET|EXITOS|SUCCESS|PAID|PAGAD|SETTLE|LIQUID|APPROVED|APROBAD|DONE|OK\b/.test(s)) return { verdict: 'completed', state: s }
+  // PENDING / PROCESSING / EN PROCESO / ENVIADO → aún en curso.
+  if (/PEND|PROCES|PROGRESS|SENT|ENVIAD|CREATED|CREAD|ACCEPTED|ACEPTAD|IN_TRANSIT|TRANSIT|QUEUE/.test(s)) return { verdict: 'pending', state: s }
+  return { verdict: 'unknown', state: s }
+}
+
+// Consulta el estado de una transferencia Mouv por su id. La doc de Mouv está
+// bloqueada para este backend, así que se prueban rutas GET candidatas (igual
+// que se hizo con el recaudo PSE). Un 404 = ruta inexistente; la primera que
+// responda 2xx con un estado utilizable gana.
+async function mouvTransferStatus(id: string): Promise<{ found: boolean; verdict: MouvVerdict; state: string; raw: any; path?: string }> {
+  const tid = String(id ?? '').trim()
+  if (!tid) return { found: false, verdict: 'unknown', state: '', raw: null }
+  const enc = encodeURIComponent(tid)
+  const paths = [
+    `/transfers/${enc}`, `/transfers/status/${enc}`, `/transfers/${enc}/status`,
+    `/transfer/${enc}`, `/transactions/${enc}`, `/payments/${enc}`,
+  ]
+  let lastRaw: any = null
+  for (const p of paths) {
+    const r = await mouvFetch(p, { method: 'GET' })
+    if (r.status === 404 || r.status === 0) continue
+    lastRaw = r.data
+    if (r.ok) {
+      const n = normalizeMouvState(r.data)
+      if (n.state) return { found: true, verdict: n.verdict, state: n.state, raw: r.data, path: p }
+      // Ruta válida pero sin estado legible → seguir intentando otras.
+    }
+  }
+  return { found: false, verdict: 'unknown', state: '', raw: lastRaw }
+}
+
 // ── Cotización de comisión Mouv (Bre-B) ────────────────────────────
 // POST /api/transfers/quote { amount(cents), keyValue } →
 // { feeBreakdown:{ fixedFee, variableFee, subtotalFee, ivaAmount,
@@ -481,6 +531,46 @@ serve(async (req: Request) => {
         for (const [k, v] of Object.entries(c)) { if (keys.includes(k.toLowerCase()) && (typeof v === 'string' || typeof v === 'number')) return String(v); if (v && typeof v === 'object') stack.push(v) } }
       return ''
     }
+    // ── Evento de TRANSFERENCIA (dispersión Bre-B): Mouv puede notificar que
+    //    un envío quedó DEVUELTO/RECHAZADO o COMPLETADO. Se busca la dispersión
+    //    por su providerRef (el id de Mouv) y se reconcilia. NO se confía en el
+    //    cuerpo (no está firmado): se RE-VERIFICA el estado contra Mouv antes de
+    //    reembolsar — así un POST forjado no puede forzar un reembolso indebido.
+    const transferId = dig(payload, ['id', 'transfer_id', 'transferid', 'transaction_id', 'transactionid'])
+    if (transferId) {
+      const { data: drows } = await db.from('transactions').select('id, user_id, amount, currency, status, raw_data')
+        .eq('type', 'dispersion').filter('raw_data->>providerRef', 'eq', String(transferId)).limit(2)
+      const dtx = (drows ?? [])[0] as any
+      if (dtx) {
+        const drd = (dtx.raw_data ?? {}) as Record<string, any>
+        if (dtx.status === 'Rechazado' || drd.refunded) return json(200, { ok: true, already: 'refunded' })
+        const st = await mouvTransferStatus(String(transferId))
+        if (st.found && st.verdict === 'returned') {
+          const refund = Number(dtx.amount ?? 0) + Number(drd.feeCop ?? 0)
+          const railCol = String(dtx.currency ?? 'COP_BREB')
+          const { data: claimed } = await db.from('transactions').update({
+            status: 'Rechazado',
+            raw_data: { ...drd, refunded: true, refundCop: refund, providerState: st.state, returnedAt: new Date().toISOString(), source_event: 'mouv_webhook' },
+          }).eq('id', dtx.id).filter('raw_data->>refunded', 'is', null).select('id')
+          if (claimed?.length) {
+            await creditBalanceAtomic(dtx.user_id, railCol, refund)
+            await logAudit(dtx.user_id, 'mouv.webhook.breb_returned', { txId: dtx.id, refund, providerState: st.state, transferId })
+            await notifyTx(dtx.id)
+          }
+          return json(200, { ok: true, refunded: true, id: transferId })
+        }
+        if (st.found && st.verdict === 'completed' && dtx.status !== 'Completado') {
+          await db.from('transactions').update({
+            status: 'Completado', raw_data: { ...drd, providerState: st.state, settledAt: new Date().toISOString(), source_event: 'mouv_webhook' },
+          }).eq('id', dtx.id).neq('status', 'Rechazado')
+          await notifyTx(dtx.id)
+          return json(200, { ok: true, completed: true, id: transferId })
+        }
+        return json(200, { ok: true, pending: true, id: transferId, providerState: st.state || null })
+      }
+      // No es una dispersión conocida → sigue el flujo de recaudo (payin).
+    }
+
     const ref = dig(payload, ['reference', 'reference_id', 'referenceid', 'external_id', 'externalid'])
     const status = dig(payload, ['status', 'state', 'event', 'transaction_status']).toUpperCase()
     if (!ref) return json(200, { ok: true, ignored: 'no_reference' })
@@ -633,6 +723,70 @@ serve(async (req: Request) => {
         out.push({ id: tx.id, result: 'refunded', refund })
       } else {
         out.push({ id: tx.id, result: 'still_processing', providerStatus: s || null })
+      }
+    }
+    return json(200, { ok: true, checked: (rows ?? []).length, results: out })
+  }
+
+  // ── Conciliación Bre-B (Mouv) SIN webhook ─────────────────────────
+  // El 200 de /transfers/send sólo significa "aceptada": Mouv puede DEVOLVER
+  // el pago después (rechazo del banco destino). Esta acción consulta el
+  // estado REAL en Mouv de las dispersiones Bre-B recientes y actualiza:
+  //   completed → Completado
+  //   DEVUELTO/RETURNED/RECHAZADO → Rechazado + REEMBOLSO (monto + comisión)
+  // Cubre tanto las 'Procesando' como las que quedaron 'Completado' en una
+  // ventana reciente (para atrapar una devolución tardía y reembolsar aunque
+  // el comprobante ya dijera Completado). Idempotente (flag refunded, CAS).
+  if (action === 'reconcile_breb') {
+    const userId = caller.userId ?? payload.userId ?? payload.user_id
+    if (!userId) return json(400, { error: 'missing_user' })
+    // Ventana de conciliación para las ya-Completadas: una devolución bancaria
+    // llega en horas/pocos días. Se revisan las Completadas de los últimos N
+    // días (default 5), más TODAS las que sigan 'Procesando'. Overridable.
+    const days = Number(Deno.env.get('BREB_RECONCILE_DAYS') ?? '5') || 5
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
+    const { data: rows } = await db.from('transactions')
+      .select('id, user_id, amount, currency, status, raw_data, created_at')
+      .eq('type', 'dispersion').eq('user_id', userId).eq('currency', 'COP_BREB')
+      .in('status', ['Procesando', 'Completado'])
+      .gte('created_at', since)
+      .order('created_at', { ascending: false })
+      .limit(30)
+    const out: any[] = []
+    for (const tx of (rows ?? []) as any[]) {
+      const rd = (tx.raw_data ?? {}) as Record<string, any>
+      if (rd.refunded) { out.push({ id: tx.id, result: 'already_refunded' }); continue }
+      const ref = String(rd.providerRef ?? '')
+      if (!ref) { out.push({ id: tx.id, result: 'no_provider_ref' }); continue }
+      const st = await mouvTransferStatus(ref)
+      if (!st.found) { out.push({ id: tx.id, result: 'status_unknown' }); continue }
+      if (st.verdict === 'completed') {
+        if (tx.status !== 'Completado') {
+          await db.from('transactions').update({
+            status: 'Completado',
+            raw_data: { ...rd, providerState: st.state, settledAt: new Date().toISOString(), reconciledAt: new Date().toISOString() },
+          }).eq('id', tx.id).neq('status', 'Rechazado')
+          await notifyTx(tx.id)
+          out.push({ id: tx.id, result: 'completed' })
+        } else {
+          out.push({ id: tx.id, result: 'still_completed' })
+        }
+      } else if (st.verdict === 'returned') {
+        const refund = Number(tx.amount ?? 0) + Number(rd.feeCop ?? 0)
+        const railCol = String(tx.currency ?? 'COP_BREB')
+        // CAS: reclamar el reembolso ANTES de tocar el saldo. Si una ejecución
+        // paralela ya reclamó, `claimed` viene vacío y NO se acredita de nuevo.
+        const { data: claimed } = await db.from('transactions').update({
+          status: 'Rechazado',
+          raw_data: { ...rd, refunded: true, refundCop: refund, providerState: st.state, returnedAt: new Date().toISOString(), reconciledAt: new Date().toISOString() },
+        }).eq('id', tx.id).filter('raw_data->>refunded', 'is', null).select('id')
+        if (!claimed?.length) { out.push({ id: tx.id, result: 'refund_already_claimed' }); continue }
+        await creditBalanceAtomic(userId, railCol, refund)
+        await logAudit(userId, 'mouv.reconcile_breb.refunded', { txId: tx.id, refund, providerState: st.state, providerRef: ref })
+        await notifyTx(tx.id) // correo "tu envío fue devuelto · saldo reintegrado"
+        out.push({ id: tx.id, result: 'refunded', refund })
+      } else {
+        out.push({ id: tx.id, result: 'still_processing', providerState: st.state || null })
       }
     }
     return json(200, { ok: true, checked: (rows ?? []).length, results: out })
@@ -890,22 +1044,34 @@ serve(async (req: Request) => {
     // 4) Llamar al PROVEEDOR del riel: BREB → Mouv · ACH → Finity
     if (rail === 'BREB') {
       const pay = await mouvPayout(rail, recipient, amount)
-      if (pay.ok) {
+      // El 200/201 de /transfers/send SÓLO significa "aceptada para procesar"
+      // (Mouv responde status:'PENDING'), NO "pagada". Se clasifica el estado
+      // real: sólo un estado TERMINAL de éxito marca Completado; PENDING/en
+      // proceso queda 'Procesando' y lo finaliza reconcile_breb; y si el propio
+      // send ya viene DEVUELTO, se trata como fallo (reembolso) — así el
+      // comprobante NUNCA dice Completado sobre un pago que fue devuelto.
+      const sendState = pay.ok ? normalizeMouvState(pay.data) : { verdict: 'unknown' as MouvVerdict, state: '' }
+      if (pay.ok && sendState.verdict !== 'returned') {
+        const finalOk = sendState.verdict === 'completed'
         if (txId) await db.from('transactions').update({
-          status: 'Completado',
+          // Terminal-éxito → Completado. PENDING / desconocido → Procesando
+          // (reconcile_breb consulta el estado real y lo cierra o reembolsa).
+          status: finalOk ? 'Completado' : 'Procesando',
           raw_data: {
             ...prettyBase, ...feeDetail,
             ...(pay.targetName ? { beneficiary: pay.targetName } : {}),
             ...(pay.targetDocument ? { documentNumber: pay.targetDocument } : {}),
             providerRef: pay.providerRef ?? null,
-            settledAt: new Date().toISOString(),
+            providerState: sendState.state || null,
+            ...(finalOk ? { settledAt: new Date().toISOString() } : { acceptedAt: new Date().toISOString() }),
           },
         }).eq('id', txId)
-        await logAudit(userId, `mouv.${action}.ok`, { amount, feeCop, rail, providerRef: pay.providerRef ?? null })
-        await notifyTx(txId) // correo "tu envío llegó a destino"
-        return json(200, { ok: true, providerRef: pay.providerRef ?? null, feeCop, newBalance: afterDebit })
+        await logAudit(userId, `mouv.${action}.ok`, { amount, feeCop, rail, providerRef: pay.providerRef ?? null, providerState: sendState.state || null, final: finalOk })
+        await notifyTx(txId) // Completado → "llegó a destino" · Procesando → "en proceso"
+        return json(200, { ok: true, status: finalOk ? 'Completado' : 'Procesando', providerRef: pay.providerRef ?? null, providerState: sendState.state || null, feeCop, newBalance: afterDebit })
       }
-      // Falló → REINTEGRAR monto + comisión (atómico; fallback read-write).
+      // Falló (o el send ya vino DEVUELTO) → REINTEGRAR monto + comisión
+      // (atómico; fallback read-write). El estado devuelto se guarda como error.
       let restored = 0
       const { data: adjR, error: adjRErr } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { [railCol]: totalDebit } })
       if (!adjRErr && !(adjR as any)?.error) {

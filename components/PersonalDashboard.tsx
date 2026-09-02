@@ -1281,6 +1281,40 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeView, selectedWalletCode, currentUser?.id]);
 
+  // ── Conciliación Bre-B (Mouv) sin webhook ──
+  // El 200 de Mouv al enviar sólo significa "aceptada": puede DEVOLVERSE
+  // después. Se consulta el estado real de las dispersiones Bre-B en
+  // 'Procesando', y también de las 'Completado' recientes (por si el banco
+  // destino las devolvió más tarde) para reembolsar aunque ya se vieran
+  // completadas. Máximo una vez por minuto, desde las vistas relevantes.
+  const brebReconcileAtRef = useRef(0);
+  useEffect(() => {
+      const relevant = activeView === 'movements' || (activeView === 'wallet-detail' && (selectedWalletCode === 'COP' || selectedWalletCode === 'COP_BREB')) || activeView === 'dashboard';
+      if (!relevant || !currentUser?.id) return;
+      const fiveDaysAgo = Date.now() - 5 * 24 * 60 * 60 * 1000;
+      const needsCheck = (movements || []).some((t: any) => {
+          if (t.type !== 'dispersion' || t.currency !== 'COP_BREB') return false;
+          if (t.status === 'Procesando') return true;
+          // 'Completado' reciente: vigilar por una devolución tardía.
+          if (t.status === 'Completado') { const ts = t.createdAt ? new Date(t.createdAt).getTime() : 0; return ts >= fiveDaysAgo; }
+          return false;
+      });
+      if (!needsCheck) return;
+      if (Date.now() - brebReconcileAtRef.current < 60000) return;
+      brebReconcileAtRef.current = Date.now();
+      callMouvProxy({ action: 'reconcile_breb', userId: currentUser.id })
+          .then(r => {
+              const changed = (r?.results ?? []).filter((x: any) => x.result === 'completed' || x.result === 'refunded');
+              if (changed.length > 0) {
+                  refreshData?.();
+                  if (changed.some((x: any) => x.result === 'completed')) showToast('✅ Tu envío Bre-B fue confirmado.');
+                  if (changed.some((x: any) => x.result === 'refunded')) showToast('Un envío Bre-B fue devuelto — el monto y la comisión fueron reembolsados a tu saldo.', 8000);
+              }
+          })
+          .catch(() => { /* silencioso */ });
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeView, selectedWalletCode, currentUser?.id]);
+
   // ── Conciliación de cobros por link (recaudo Finity) ──
   // Si hay cobros por link 'Pendiente', se le pregunta a Finity (por sus
   // movimientos) si la recarga ya llegó; al confirmarse se acredita el riel
