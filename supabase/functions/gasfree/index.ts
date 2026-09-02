@@ -1653,17 +1653,26 @@ async function myConvertSettle(
   // El USDT del cliente YA salió de su wallet: se debita su USD y se reajusta
   // gasfreeCredited. El COP NO se acredita todavía — solo cuando Mouv confirme
   // (modelo SIN CAJA: no adelantamos COP hasta que el USDT llegue al proveedor).
-  const bals = (u.balances as Record<string, number>) ?? {}
-  const newUsdLedger = Math.max(0, parseFloat((Number(bals.USD ?? 0) - grossUsd).toFixed(2)))
-  // Re-leer raw_data fresco para no pisar cambios concurrentes del cliente
-  // (2FA, beneficiarios) al escribir el contador junto con el saldo.
-  const { data: freshCS } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
+  // Re-leer saldo y raw_data frescos. El débito del USD va por adjust_balances
+  // (ATÓMICO, solo la columna USD) — antes se sobre-escribía `balances` entero
+  // desde una lectura obsoleta y pisaba los rieles COP u otra operación USD
+  // concurrente. Se debita lo convertido, acotado al disponible (nunca negativo,
+  // preservando el max(0,…) anterior).
+  const { data: freshCS } = await db.from('users').select('balances, raw_data').eq('id', userId).maybeSingle()
   const raw = (freshCS?.raw_data ?? u.raw_data ?? {}) as Record<string, any>
+  const curUsd = Number(((freshCS?.balances as any)?.USD) ?? (u.balances as any)?.USD ?? 0)
+  const debitUsd = Math.min(grossUsd, Math.max(0, curUsd))
+  if (debitUsd > 0) {
+    const { error: dErr } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { USD: -debitUsd } })
+    if (dErr) {
+      // Fallback si la RPC no está desplegada (solo la columna USD, floor en 0).
+      const { data: uu } = await db.from('users').select('balances').eq('id', userId).maybeSingle()
+      const b = (uu?.balances as Record<string, number>) ?? {}
+      await db.from('users').update({ balances: { ...b, USD: Math.max(0, parseFloat((Number(b.USD ?? 0) - debitUsd).toFixed(2))) } }).eq('id', userId)
+    }
+  }
   const onchainAfter = Math.max(0, parseFloat((bal - value - fee).toFixed(dec)))
-  await db.from('users').update({
-    balances: { ...bals, USD: newUsdLedger },
-    raw_data: { ...raw, gasfreeCredited: onchainAfter },
-  }).eq('id', userId)
+  await db.from('users').update({ raw_data: { ...raw, gasfreeCredited: onchainAfter } }).eq('id', userId)
 
   await logTreasuryMovement({
     direction: 'in', amount: value, fromAddress: acct.gasFreeAddress, fromUserEmail: u.email,
@@ -2234,8 +2243,11 @@ async function myVerifyDeposit(userId: string) {
   // cambios concurrentes del cliente (2FA, beneficiarios).
   const { data: freshCU } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
   const freshRaw = (freshCU?.raw_data ?? raw) as Record<string, any>
+  // 1) RECLAMAR el depósito con CAS sobre gasfreeCreditedCount (idempotente:
+  //    solo un verify gana). Aquí NO se tocan las columnas de saldo: escribir
+  //    `balances` completo desde una lectura obsoleta pisaba una operación
+  //    concurrente (retiro/conversión) y podía acuñar/perder USD.
   const upd = await db.from('users').update({
-    balances: { ...bals, USD: newUsd },
     raw_data: { ...freshRaw, gasfreeCredited: onchainBal, gasfreeCreditedTxs: newSet, gasfreeCreditedCount: oldCount + fresh.length },
   }).eq('id', userId)
     .filter('raw_data->>gasfreeCreditedCount', 'eq', String(oldCount))
@@ -2243,6 +2255,9 @@ async function myVerifyDeposit(userId: string) {
   if (upd.error || !upd.data || upd.data.length === 0) {
     return { synced: false, raced: true, onchain: onchainBal, credited: 0, diff: 0, reason: 'Otra verificación acreditó este depósito hace un instante.' }
   }
+  // 2) Ya ganado el claim, acreditar el USD de forma ATÓMICA (bloqueo de fila
+  //    vía adjust_balances) — no pisa otras columnas ni se duplica.
+  await creditBalanceAtomic(userId, 'USD', totalNew)
   // UN movimiento por cada transferencia nueva, con su MONTO EXACTO y su txId.
   for (const t of fresh) {
     await db.from('transactions').insert({
@@ -2266,10 +2281,8 @@ async function myVerifyDeposit(userId: string) {
 // Se deja para pagos que sí deben salir de tesorería (ej. proveedores).
 async function myWalletWithdrawal(userId: string, toAddress: string, amount: number) {
   if (!(amount > 0)) throw new Error('Monto inválido')
-  const { data: u } = await db.from('users').select('balances, email').eq('id', userId).single()
+  const { data: u } = await db.from('users').select('email').eq('id', userId).single()
   if (!u) throw new Error('Usuario no encontrado')
-  const bals = (u.balances as Record<string, number>) ?? {}
-  const usd = Number(bals.USD ?? 0)
 
   const { token } = await gfConfig()
   const rec = await recaudadora()
@@ -2279,10 +2292,23 @@ async function myWalletWithdrawal(userId: string, toAddress: string, amount: num
   const transferFeeUsdt = Number(token.transferFee ?? 0) / Math.pow(10, dec)
   const feeQuoted = parseFloat((activateFeeUsdt + transferFeeUsdt).toFixed(dec))
   const total = parseFloat((amount + feeQuoted).toFixed(2))
-  if (usd < total) throw new Error(`Saldo USD insuficiente (disponible ${usd.toFixed(2)}, se necesitan ${total.toFixed(2)} = ${amount} + comisión GasFree ${feeQuoted.toFixed(2)})`)
 
-  // 1) Debitar primero (monto + comisión cotizada)
-  await db.from('users').update({ balances: { ...bals, USD: parseFloat((usd - total).toFixed(2)) } }).eq('id', userId)
+  // 1) Debitar (monto + comisión) de forma ATÓMICA con bloqueo de fila. Cierra
+  //    el DOBLE-GASTO: antes se leía el saldo, se enviaba on-chain y luego se
+  //    escribía — dos retiros concurrentes pasaban ambos el chequeo, enviaban
+  //    los dos y solo debitaban uno (USDT acuñados). Ahora el segundo débito
+  //    falla si el saldo ya no alcanza, ANTES de enviar nada.
+  const { data: adj, error: adjErr } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { USD: -total } })
+  if (!adjErr) {
+    if ((adj as any)?.error) throw new Error(`Saldo USD insuficiente (se necesitan ${total.toFixed(2)} = ${amount} + comisión GasFree ${feeQuoted.toFixed(2)}).`)
+  } else {
+    // Fallback si la RPC no está desplegada (no atómico, preserva la función).
+    const { data: uf } = await db.from('users').select('balances').eq('id', userId).single()
+    const bals = (uf?.balances as Record<string, number>) ?? {}
+    const usd = Number(bals.USD ?? 0)
+    if (usd < total) throw new Error(`Saldo USD insuficiente (disponible ${usd.toFixed(2)}, se necesitan ${total.toFixed(2)} = ${amount} + comisión GasFree ${feeQuoted.toFixed(2)})`)
+    await db.from('users').update({ balances: { ...bals, USD: parseFloat((usd - total).toFixed(2)) } }).eq('id', userId)
+  }
   try {
     // 2) Enviar on-chain vía GasFree desde la recaudadora
     const r = await sendCore(rec.pkHex, rec.eoa, toAddress, amount)
@@ -2297,12 +2323,9 @@ async function myWalletWithdrawal(userId: string, toAddress: string, amount: num
     })
     return { ok: true, traceId: r.traceId, state: r.state, amountSent: amount, feeChargedUsdt: r.feeChargedUsdt, totalDebitedUsd: total }
   } catch (e) {
-    // Devolver el débito completo — el envío on-chain no salió
-    try {
-      const { data: u2 } = await db.from('users').select('balances').eq('id', userId).single()
-      const b2 = (u2?.balances as Record<string, number>) ?? {}
-      await db.from('users').update({ balances: { ...b2, USD: parseFloat(((Number(b2.USD ?? 0)) + total).toFixed(2)) } }).eq('id', userId)
-    } catch { console.error(`[myWalletWithdrawal] ⚠ NO PUDE DEVOLVER el débito de ${total} a ${userId} — revisar manualmente`) }
+    // Devolver el débito completo (ATÓMICO) — el envío on-chain no salió.
+    try { await creditBalanceAtomic(userId, 'USD', total) }
+    catch { console.error(`[myWalletWithdrawal] ⚠ NO PUDE DEVOLVER el débito de ${total} a ${userId} — revisar manualmente`) }
     throw e
   }
 }
