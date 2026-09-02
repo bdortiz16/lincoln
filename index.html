@@ -6,10 +6,10 @@
     <!-- iOS: no convertir cifras (documentos, cuentas, referencias) en
          links de teléfono azules subrayados -->
     <meta name="format-detection" content="telephone=no" />
-    <!-- Force fresh load — no browser caching -->
-    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
-    <meta http-equiv="Pragma" content="no-cache" />
-    <meta http-equiv="Expires" content="0" />
+    <!-- Revalidar el HTML en cada carga (despliegues siempre frescos) sin
+         decirle a Google "no guardes nada" (no-store perjudica el rastreo).
+         El caché real de assets con hash lo maneja vercel.json. -->
+    <meta http-equiv="Cache-Control" content="no-cache, must-revalidate" />
 
     <!-- SEO Primary -->
     <title>LINCOIN — Transferencias internacionales al mejor precio</title>
@@ -36,6 +36,29 @@
     <meta name="twitter:title" content="LINCOIN — Transferencias internacionales al mejor precio" />
     <meta name="twitter:description" content="Envía y recibe dinero en Colombia, Perú, Chile y México sin costo SWIFT. La mejor tasa del mercado, al instante." />
     <meta name="twitter:image" content="https://www.lincoin.com/og-image.svg" />
+
+    <!-- Datos estructurados (JSON-LD) — para que Google muestre un resultado
+         enriquecido con el nombre, logo y descripción de la marca. -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "Organization",
+      "name": "Lincoin",
+      "url": "https://www.lincoin.com",
+      "logo": "https://www.lincoin.com/icon-512.png",
+      "description": "Envía, recibe y convierte dinero en Latinoamérica sin costo SWIFT, con la mejor tasa de cambio para Colombia, Perú, Chile y México.",
+      "areaServed": ["CO", "PE", "CL", "MX"],
+      "sameAs": []
+    }
+    </script>
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      "name": "Lincoin",
+      "url": "https://www.lincoin.com"
+    }
+    </script>
 
     <!-- Favicon — variante corta `L.` (public/favicon.svg, trazos puros;
          ver CLAUDE.md). El mismo asset alimenta favicon, apple-touch-icon
