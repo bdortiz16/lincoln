@@ -2464,7 +2464,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                     </div>
                     <div style={{ textAlign: 'right' }}>
                       <p style={{ fontSize: 13.5, fontWeight: 700, color: credit ? '#4ADE80' : '#F4F4F2', whiteSpace: 'nowrap' }}>{credit ? '+' : '−'} {formatMoney(tx.amount, tx.currency)}</p>
-                      <span style={{ display: 'inline-block', marginTop: 3, fontSize: 10.5, fontWeight: 700, padding: '2px 8px', borderRadius: 999, border: tx.status === 'Completado' ? '1px solid rgba(74,222,128,0.3)' : '1px solid rgba(255,255,255,0.14)', color: tx.status === 'Completado' ? '#4ADE80' : '#878E88' }}>{tx.status}</span>
+                      <span style={{ display: 'inline-block', marginTop: 3, fontSize: 10.5, fontWeight: 700, padding: '2px 8px', borderRadius: 999, border: tx.status === 'Completado' ? '1px solid rgba(74,222,128,0.3)' : (tx.status === 'Rechazado' || tx.status === 'Fallido') ? '1px solid rgba(248,113,113,0.35)' : '1px solid rgba(255,255,255,0.14)', color: tx.status === 'Completado' ? '#4ADE80' : (tx.status === 'Rechazado' || tx.status === 'Fallido') ? '#F87171' : '#878E88' }}>{tx.status}</span>
                     </div>
                   </button>
                 );
@@ -2586,7 +2586,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               : isInFlight(t)
               ? { label: 'EN CURSO', border: 'rgba(255,255,255,0.14)', color: 'rgba(244,244,242,0.7)' }
               : isFailedTx(t)
-              ? { label: st === 'Rechazado' ? 'RECHAZADO' : 'FALLIDO', border: 'rgba(255,255,255,0.14)', color: '#878E88' }
+              ? { label: st === 'Rechazado' ? 'RECHAZADO' : 'FALLIDO', border: 'rgba(248,113,113,0.35)', color: '#F87171' }
               : { label: (st || 'PENDIENTE').toUpperCase(), border: 'rgba(255,255,255,0.14)', color: '#878E88' };
           const failReason = isFailedTx(t) ? String(rd.error?.message ?? (typeof rd.error === 'string' ? rd.error : '') ?? '').slice(0, 220) : '';
           const rateVal = t.mouvRate ?? rd.mouvRate;
@@ -3244,7 +3244,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   const failed = (t: any) => ['Fallido', 'Rechazado'].includes(String(t.status || ''));
                   const pillOf = (t: any) => String(t.status) === 'Completado' ? { l: 'LIQUIDADO', b: 'rgba(74,222,128,0.3)', c: '#4ADE80' }
                       : inFlight(t) ? { l: 'EN CURSO', b: 'rgba(255,255,255,0.14)', c: 'rgba(244,244,242,0.7)' }
-                      : failed(t) ? { l: String(t.status) === 'Rechazado' ? 'RECHAZADO' : 'FALLIDO', b: 'rgba(255,255,255,0.14)', c: '#878E88' }
+                      : failed(t) ? { l: String(t.status) === 'Rechazado' ? 'RECHAZADO' : 'FALLIDO', b: 'rgba(248,113,113,0.35)', c: '#F87171' }
                       : { l: String(t.status || 'PENDIENTE').toUpperCase(), b: 'rgba(255,255,255,0.14)', c: '#878E88' };
                   const box = (kind: string) => (
                       <span style={{ width: 32, height: 32, borderRadius: 9, flexShrink: 0, display: 'grid', placeItems: 'center', background: kind === 'in' ? 'rgba(74,222,128,0.1)' : 'rgba(255,255,255,0.055)' }}>
@@ -4202,7 +4202,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     const st = String(tx.status || '');
     const pill = st === 'Completado' ? { l: isCredit ? 'ACREDITADO' : 'COMPLETADO', c: '#4ADE80', b: 'rgba(74,222,128,0.3)', ok: true }
         : (st === 'Procesando' || st === 'Pendiente') ? { l: 'EN CURSO', c: 'rgba(244,244,242,0.7)', b: 'rgba(255,255,255,0.14)', ok: false }
-        : (st === 'Fallido' || st === 'Rechazado') ? { l: st === 'Rechazado' ? 'RECHAZADO' : 'FALLIDO', c: '#878E88', b: 'rgba(255,255,255,0.14)', ok: false }
+        : (st === 'Fallido' || st === 'Rechazado') ? { l: st === 'Rechazado' ? 'RECHAZADO' : 'FALLIDO', c: '#F87171', b: 'rgba(248,113,113,0.35)', ok: false }
         : { l: (st || 'PENDIENTE').toUpperCase(), c: '#878E88', b: 'rgba(255,255,255,0.14)', ok: false };
     const amtParts = formatMoney(tx.amount, tx.currency).split(',');
     // Filas de detalle del rediseño
