@@ -2557,8 +2557,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               dest = usdt ? `Wallet ${last4}`.trim() : (t.bank ? `${String(t.bank).split('·')[0].trim()} ${last4}`.trim() : (acct ? `Cuenta ${last4}` : '—'));
               rail = usdt ? 'Red TRON · TRC-20' : 'Colombia'; flag = !usdt && !!t.bank;
           }
-          const ref0 = t.providerRef ?? rd.providerRef ?? '';
-          const reference = ref0 ? (String(ref0).length > 12 ? `${String(ref0).slice(0, 10)}…` : String(ref0)) : `TX-${String(t.id ?? '').replace(/-/g, '').slice(-6).toUpperCase()}`;
+          // Referencia = id del proveedor (Mouv/Finity) COMPLETO — así coincide
+          // con su panel. El recorte visual lo hace el CSS (ellipsis), no se
+          // corta a mano. Sin proveedor → id interno de Lincoin.
+          const ref0 = t.providerRef ?? rd.providerRef ?? rd.providerTraceId ?? '';
+          const reference = ref0 ? String(ref0) : `TX-${String(t.id ?? '').replace(/-/g, '').slice(-6).toUpperCase()}`;
           const st = String(t.status || '');
           const pill = st === 'Completado'
               ? { label: 'COMPLETADO', border: 'rgba(74,222,128,0.3)', color: '#4ADE80' }
@@ -3241,8 +3244,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           const kind = isConv(tx) ? 'conv' : isTxCredit(tx) ? 'in' : 'out';
                           const ticker = isUsdtCur(tx.currency) ? 'USDT' : (String(tx.currency || '').split('_')[0] || 'COP');
                           const rd = (tx.raw_data ?? {}) as any;
-                          const ref0 = tx.providerRef ?? rd.providerRef ?? '';
-                          const reference = ref0 ? (String(ref0).length > 12 ? `${String(ref0).slice(0, 10)}…` : String(ref0)) : `TX-${String(tx.id ?? '').replace(/-/g, '').slice(-6).toUpperCase()}`;
+                          const ref0 = tx.providerRef ?? rd.providerRef ?? rd.providerTraceId ?? '';
+                          const reference = ref0 ? String(ref0) : `TX-${String(tx.id ?? '').replace(/-/g, '').slice(-6).toUpperCase()}`;
                           const pill = pillOf(tx);
                           return (
                           <button key={tx.id} type="button" onClick={() => setSelectedTx(tx)} className="w-full text-left hover:bg-white/[0.02] transition-colors cursor-pointer grid items-center" style={{ gridTemplateColumns: 'minmax(0,1fr) 130px 110px', gap: 12, padding: '13px 22px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
@@ -3250,7 +3253,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   {box(kind)}
                                   <span style={{ minWidth: 0 }}>
                                       <span style={{ display: 'block', fontSize: 13.5, fontWeight: 600, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{meta.title}</span>
-                                      <span style={{ display: 'block', fontSize: 11, color: '#878E88', fontFamily: 'ui-monospace, Menlo, monospace', marginTop: 1 }}>{reference}</span>
+                                      <span style={{ display: 'block', fontSize: 11, color: '#878E88', fontFamily: 'ui-monospace, Menlo, monospace', marginTop: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{reference}</span>
                                   </span>
                               </span>
                               <span style={{ textAlign: 'right', fontSize: 13.5, fontWeight: 700, whiteSpace: 'nowrap', color: kind === 'in' ? '#4ADE80' : '#F4F4F2' }}>
@@ -3930,7 +3933,17 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     const dispRecipient = (tx.recipient && typeof tx.recipient === 'object') ? tx.recipient : (rawData.recipient ?? {});
     const dispBeneficiary: string = tx.beneficiary ?? dispRecipient.holderName ?? '';
     const dispDest: string = tx.account ?? dispRecipient.key ?? dispRecipient.accountNumber ?? '';
-    const dispProviderRef: string = tx.providerRef ?? rawData.providerRef ?? '';
+    // ── ID de operación del PROVEEDOR ────────────────────────────────
+    // Es el MISMO id con el que la operación aparece en el panel de Mouv
+    // (Bre-B) o Finity (ACH / conversión), para poder cruzarla 1:1. Si la
+    // operación no pasó por un proveedor (movimientos internos, Saldo
+    // Lincoin), se usa el id interno de Lincoin como referencia.
+    const providerOpRef: string = String(
+      tx.providerRef ?? rawData.providerRef ?? rawData.providerTraceId ?? ''
+    ).trim();
+    const providerRefLabel: string = tx.currency === 'COP_BREB'
+      ? 'Referencia Mouv'
+      : (tx.currency === 'COP_ACH' || isMouvConvert) ? 'Referencia Finity' : 'Referencia de operación';
 
     // Documento con tipo (CC 1005237062) — usado por dispersión y genéricos.
     // Las dispersiones Bre-B guardan el número (resolve-key) pero no siempre
@@ -3966,7 +3979,6 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       ...(isDispersion && dispDest ? [{ label: tx.currency === 'COP_BREB' ? `Llave destino${dispKeyTypeLabel ? ` · ${dispKeyTypeLabel}` : ''}` : 'Cuenta destino', value: dispDest, copyable: true, mono: true }] : []),
       ...(isDispersion && tx.currency !== 'COP_BREB' && dispRecipient.accountType ? [{ label: 'Tipo de cuenta', value: String(dispRecipient.accountType).charAt(0).toUpperCase() + String(dispRecipient.accountType).slice(1).toLowerCase() }] : []),
       ...(isDispersion && tx.bank ? [{ label: 'Método', value: tx.bank }] : []),
-      ...(isDispersion && dispProviderRef ? [{ label: 'Referencia de pago', value: dispProviderRef, copyable: true, mono: true }] : []),
       { label: 'Estado', value: tx.status },
       { label: 'Fecha', value: timeStr ? `${dateStr} · ${timeStr}` : dateStr },
       ...(isCrypto && networkLabel ? [{ label: 'Red', value: networkLabel }] : []),
@@ -4001,7 +4013,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       ...(!isDispersion && tx.account ? [{ label: tx.currency === 'COP_BREB' ? 'Llave destino' : 'Número de cuenta', value: tx.account }] : []),
       ...(!isCrypto && !isGasfreeDeposit && tx.toAddress ? [{ label: 'Dirección destino', value: tx.toAddress, copyable: true, mono: true }] : []),
       ...(tx.reason ? [{ label: 'Motivo', value: tx.reason }] : []),
-      { label: 'Referencia', value: String(tx.id) },
+      // Referencia de la operación: el id del PROVEEDOR (Mouv/Finity) cuando la
+      // operación pasó por un riel externo — así coincide 1:1 con su panel.
+      // Si no hubo proveedor, el id interno de Lincoin.
+      providerOpRef
+        ? { label: providerRefLabel, value: providerOpRef, copyable: true, mono: true }
+        : { label: 'Referencia', value: String(tx.id) },
     ];
 
     // ── Compartir / descargar el comprobante como imagen (PNG) ──
@@ -4184,7 +4201,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       ...(isMouvConvert && mouvRate != null ? [{ label: 'Tasa aplicada', value: `1 USDT = ${Number(mouvRate).toLocaleString('es-CO', { maximumFractionDigits: 2 })} COP` }] : []),
       ...(isGasfreeDeposit && depTxId ? [{ label: 'TxID', value: truncMid(depTxId, 8, 8), mono: true, copy: depTxId }] : []),
       ...(tx.reason ? [{ label: 'Motivo', value: String(tx.reason) }] : []),
-      { label: 'Referencia', value: truncMid(dispProviderRef || String(tx.id)), mono: true, copy: dispProviderRef || String(tx.id) },
+      // Referencia de la operación = id del proveedor (Mouv/Finity) cuando pasó
+      // por un riel externo → coincide 1:1 con su panel. Si no, id interno.
+      { label: providerOpRef ? providerRefLabel : 'Referencia', value: truncMid(providerOpRef || String(tx.id)), mono: true, copy: providerOpRef || String(tx.id) },
       ...(!isCredit ? [{ label: 'Costo del envío', value: feeCop > 0 ? `${formatMoney(feeCop, 'COP')} COP` : 'Gratis', green: feeCop <= 0 }] : []),
     ];
     const repeatSend = () => { setSelectedTx(null); openSendMoney(); };
