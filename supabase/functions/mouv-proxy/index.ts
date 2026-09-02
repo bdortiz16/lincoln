@@ -715,7 +715,13 @@ serve(async (req: Request) => {
       if (!ref) continue
       const st = await finityCall('withdrawal_status', String(userId), { id: ref })
       const d = (st?.data ?? {}) as any
-      const s = String(d.status ?? d.state ?? '').toUpperCase()
+      // Finity devuelve el estado en distintos niveles según el endpoint; se
+      // excava en todos (antes sólo leía d.status/d.state y, si venía anidado,
+      // quedaba vacío → la dispersión se atascaba en 'Procesando').
+      const s = String(
+        d?.status ?? d?.state ?? d?.data?.status ?? d?.data?.state ??
+        d?.order?.status ?? d?.order?.state ?? d?.attributes?.status ?? d?.attributes?.state ?? ''
+      ).toUpperCase()
       // Estados terminales de Finity (incluye variantes en español que antes no
       // se reconocían y dejaban la dispersión atascada en 'Procesando').
       if (/COMPLET|SETTLE|LIQUID|PAGAD|\bPAID\b|SUCCESS|FINALIZ|DISPERSAD|EXITOS|APROBAD|APPROVED/.test(s)) {
