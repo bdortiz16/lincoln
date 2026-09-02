@@ -2085,6 +2085,33 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const renderDashboard = () => {
       const displayedWallets = showAllWallets ? myWallets : myWallets.slice(0, 3);
 
+      // Panel de Servicios (fila de 4 iconos). Se define una sola vez y se
+      // renderiza en DOS lugares con visibilidad por CSS: en escritorio va en la
+      // columna derecha; en móvil se muestra ARRIBA de "Movimientos recientes".
+      const serviciosBlock = (
+        <div className="lincoin-panel">
+          <div className="flex items-center justify-between" style={{ marginBottom: 4 }}>
+            <span style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2' }}>Servicios</span>
+            <button onClick={() => setActiveView('servicios')} style={{ fontSize: 12, color: '#878E88' }} className="hover:text-[#F4F4F2] transition-colors">Ver más ›</button>
+          </div>
+          {/* Fila de accesos rápidos: los 4 servicios como iconos (icono
+              arriba, nombre abajo) en 4 columnas. */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginTop: 10 }}>
+            {([
+              { Icon: ArrowLeftRight, t: 'Mesa OTC',    go: () => { setOtcRail(null); setMouvMode('converter'); setActiveView('mouv'); } },
+              { Icon: TrendingUp,     t: 'Staking',     go: null },
+              { Icon: Layers,         t: 'Multiwallet', go: () => setActiveView('walletsGasfree') },
+              { Icon: ShoppingBag,    t: 'Comercio',    go: null },
+            ] as const).map(({ Icon, t, go }) => (
+              <button key={t} onClick={go ?? undefined} disabled={!go} className="flex flex-col items-center text-center transition-colors hover:bg-white/[0.03]" style={{ gap: 7, padding: '10px 4px', borderRadius: 12, cursor: go ? 'pointer' : 'default', opacity: go ? 1 : 0.5 }}>
+                <div style={{ width: 46, height: 46, borderRadius: 13, background: 'rgba(255,255,255,0.055)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Icon size={19} style={{ color: '#F4F4F2' }} /></div>
+                <span style={{ fontSize: 11.5, fontWeight: 600, color: '#F4F4F2', lineHeight: 1.15 }}>{t}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      );
+
       return (
       <div className="space-y-10 animate-in fade-in duration-500 pt-6">
           <div className="flex justify-between items-center mb-8">
@@ -2263,6 +2290,14 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           <style>{`
             .lincoin-panel { background:#0C0E0D; border:1px solid rgba(255,255,255,0.09); border-radius:14px; padding:20px; }
             @media (max-width: 1000px) { .lincoin-dash-bottom { grid-template-columns: 1fr !important; } }
+            /* Servicios: en escritorio va en la columna derecha; en móvil (<=1000px)
+               se muestra la copia de arriba (encima de Movimientos) y se oculta la
+               de la derecha. */
+            .lincoin-servicios-mobile { display: none; }
+            @media (max-width: 1000px) {
+              .lincoin-servicios-mobile { display: block; }
+              .lincoin-servicios-desktop { display: none !important; }
+            }
           `}</style>
 
           {/* ═══════════ BILLETERAS ═══════════ */}
@@ -2405,6 +2440,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           </div>
 
           {/* ═══════════ ZONA INFERIOR ═══════════ */}
+          {/* SOLO MÓVIL: Servicios arriba de Movimientos (en escritorio va en la
+              columna derecha, más abajo). */}
+          <div className="lincoin-servicios-mobile" style={{ marginBottom: 18 }}>{serviciosBlock}</div>
           <div className="lincoin-dash-bottom" style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: 18, alignItems: 'start' }}>
             {/* Movimientos recientes */}
             <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, overflow: 'hidden', minWidth: 0 }}>
@@ -2440,28 +2478,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
             {/* Columna derecha */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-              {/* Servicios */}
-              <div className="lincoin-panel">
-                <div className="flex items-center justify-between" style={{ marginBottom: 4 }}>
-                  <span style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2' }}>Servicios</span>
-                  <button onClick={() => setActiveView('servicios')} style={{ fontSize: 12, color: '#878E88' }} className="hover:text-[#F4F4F2] transition-colors">Ver más ›</button>
-                </div>
-                {/* Fila de accesos rápidos: los 4 servicios como iconos (icono
-                    arriba, nombre abajo) en 4 columnas. */}
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginTop: 10 }}>
-                  {([
-                    { Icon: ArrowLeftRight, t: 'Mesa OTC',    go: () => { setOtcRail(null); setMouvMode('converter'); setActiveView('mouv'); } },
-                    { Icon: TrendingUp,     t: 'Staking',     go: null },
-                    { Icon: Layers,         t: 'Multiwallet', go: () => setActiveView('walletsGasfree') },
-                    { Icon: ShoppingBag,    t: 'Comercio',    go: null },
-                  ] as const).map(({ Icon, t, go }) => (
-                    <button key={t} onClick={go ?? undefined} disabled={!go} className="flex flex-col items-center text-center transition-colors hover:bg-white/[0.03]" style={{ gap: 7, padding: '10px 4px', borderRadius: 12, cursor: go ? 'pointer' : 'default', opacity: go ? 1 : 0.5 }}>
-                      <div style={{ width: 46, height: 46, borderRadius: 13, background: 'rgba(255,255,255,0.055)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Icon size={19} style={{ color: '#F4F4F2' }} /></div>
-                      <span style={{ fontSize: 11.5, fontWeight: 600, color: '#F4F4F2', lineHeight: 1.15 }}>{t}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
+              {/* Servicios — SOLO ESCRITORIO (en móvil se muestra arriba). */}
+              <div className="lincoin-servicios-desktop">{serviciosBlock}</div>
               {/* TU DINERO — confianza (aliados reales de Lincoin) */}
               <div className="lincoin-panel">
                 <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.8px', color: '#878E88', marginBottom: 14 }}>TU DINERO</p>
