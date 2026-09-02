@@ -2446,21 +2446,21 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   <span style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2' }}>Servicios</span>
                   <button onClick={() => setActiveView('servicios')} style={{ fontSize: 12, color: '#878E88' }} className="hover:text-[#F4F4F2] transition-colors">Ver más ›</button>
                 </div>
-                {([
-                  { Icon: ArrowLeftRight, t: 'Mesa OTC',   d: 'Operaciones de alto volumen con tasa negociada', go: () => { setOtcRail(null); setMouvMode('converter'); setActiveView('mouv'); } },
-                  { Icon: TrendingUp,     t: 'Staking',    d: 'Genera rendimientos con tu saldo digital', go: null },
-                  { Icon: Layers,         t: 'Multiwallet', d: 'Varias billeteras USDT en una sola cuenta', go: () => setActiveView('walletsGasfree') },
-                  { Icon: ShoppingBag,    t: 'Comercio',   d: 'Cobra a tus clientes con links y botones de pago', go: null },
-                ] as const).map(({ Icon, t, d, go }, i) => (
-                  <button key={t} onClick={go ?? undefined} disabled={!go} className="w-full flex items-center gap-3 text-left transition-colors hover:bg-white/[0.02]" style={{ padding: '12px 0', borderTop: i === 0 ? 'none' : '1px solid rgba(255,255,255,0.06)', cursor: go ? 'pointer' : 'default' }}>
-                    <div style={{ width: 32, height: 32, borderRadius: 9, background: 'rgba(255,255,255,0.055)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><Icon size={15} style={{ color: '#F4F4F2' }} /></div>
-                    <div style={{ minWidth: 0, flex: 1 }}>
-                      <p style={{ fontSize: 13.5, fontWeight: 600, color: '#F4F4F2' }}>{t}</p>
-                      <p style={{ fontSize: 11.5, color: '#878E88' }}>{d}</p>
-                    </div>
-                    {go && <span style={{ color: '#878E88', fontSize: 14 }}>›</span>}
-                  </button>
-                ))}
+                {/* Fila de accesos rápidos: los 4 servicios como iconos (icono
+                    arriba, nombre abajo) en 4 columnas. */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginTop: 10 }}>
+                  {([
+                    { Icon: ArrowLeftRight, t: 'Mesa OTC',    go: () => { setOtcRail(null); setMouvMode('converter'); setActiveView('mouv'); } },
+                    { Icon: TrendingUp,     t: 'Staking',     go: null },
+                    { Icon: Layers,         t: 'Multiwallet', go: () => setActiveView('walletsGasfree') },
+                    { Icon: ShoppingBag,    t: 'Comercio',    go: null },
+                  ] as const).map(({ Icon, t, go }) => (
+                    <button key={t} onClick={go ?? undefined} disabled={!go} className="flex flex-col items-center text-center transition-colors hover:bg-white/[0.03]" style={{ gap: 7, padding: '10px 4px', borderRadius: 12, cursor: go ? 'pointer' : 'default', opacity: go ? 1 : 0.5 }}>
+                      <div style={{ width: 46, height: 46, borderRadius: 13, background: 'rgba(255,255,255,0.055)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Icon size={19} style={{ color: '#F4F4F2' }} /></div>
+                      <span style={{ fontSize: 11.5, fontWeight: 600, color: '#F4F4F2', lineHeight: 1.15 }}>{t}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
               {/* TU DINERO — confianza (aliados reales de Lincoin) */}
               <div className="lincoin-panel">
