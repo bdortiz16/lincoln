@@ -239,7 +239,7 @@ Deno.serve(async (req: Request) => {
           const { data: curRaw } = await db.from('users').select('raw_data').eq('id', selfServiceBody.user.id).maybeSingle()
           const dbRaw = (((curRaw as any)?.raw_data) ?? {}) as Record<string, any>
           const incoming = ((userRow as any).raw_data ?? {}) as Record<string, any>
-          const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'mfaEnabled', 'mfaFactorId', 'totpSecret', 'totpSecretEnc', 'otp', 'subWallets']
+          const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'gasfreeCreditedTxs', 'gasfreeCreditedCount', 'mfaEnabled', 'mfaFactorId', 'totpSecret', 'totpSecretEnc', 'otp', 'subWallets']
           const merged: Record<string, any> = { ...dbRaw, ...incoming }
           for (const k of SERVER_OWNED) { if (k in dbRaw) merged[k] = dbRaw[k]; else delete merged[k] }
           // COLECCIONES del cliente (contactos, wallets, notificaciones): tienen

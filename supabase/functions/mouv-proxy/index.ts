@@ -306,9 +306,12 @@ function normalizeMouvState(raw: any): { verdict: MouvVerdict; state: string } {
   const s = pickState(raw).trim().toUpperCase()
   if (!s) return { verdict: 'unknown', state: '' }
   // DEVUELTO / RETURNED / RECHAZADO / FALLIDO / CANCELADO → dinero NO salió.
-  if (/DEVUEL|RETURN|RECHAZ|REJECT|FAIL|FALL|CANCEL|DECLIN|REVERS|ERROR|BOUNCE/.test(s)) return { verdict: 'returned', state: s }
+  // Términos EXPLÍCITOS de devolución (se quitó 'ERROR' genérico y 'OK\b'/'DONE'
+  // ambiguos): un falso 'returned' dispara un reembolso, así que el veredicto
+  // que mueve dinero exige un estado inequívoco.
+  if (/DEVUEL|RETURN|RECHAZ|REJECT|FAILED|FALLID|CANCEL|ANUL|DECLIN|REVERS|REEMBOL|REFUND/.test(s)) return { verdict: 'returned', state: s }
   // COMPLETADO / EXITOSO / PAGADO / LIQUIDADO / SETTLED → pago final OK.
-  if (/COMPLET|EXITOS|SUCCESS|PAID|PAGAD|SETTLE|LIQUID|APPROVED|APROBAD|DONE|OK\b/.test(s)) return { verdict: 'completed', state: s }
+  if (/COMPLET|EXITOS|SUCCESS|\bPAID\b|PAGAD|SETTLE|LIQUID|APPROVED|APROBAD|DISPERSAD/.test(s)) return { verdict: 'completed', state: s }
   // PENDING / PROCESSING / EN PROCESO / ENVIADO → aún en curso.
   if (/PEND|PROCES|PROGRESS|SENT|ENVIAD|CREATED|CREAD|ACCEPTED|ACEPTAD|IN_TRANSIT|TRANSIT|QUEUE/.test(s)) return { verdict: 'pending', state: s }
   return { verdict: 'unknown', state: s }
@@ -326,15 +329,23 @@ async function mouvTransferStatus(id: string): Promise<{ found: boolean; verdict
     `/transfers/${enc}`, `/transfers/status/${enc}`, `/transfers/${enc}/status`,
     `/transfer/${enc}`, `/transactions/${enc}`, `/payments/${enc}`,
   ]
+  // GUARD ANTI-FALSO-POSITIVO: como las rutas se ADIVINAN, una podría resolver
+  // a OTRO recurso de Mouv (no esta transferencia) y devolver un estado que se
+  // clasificara 'returned' → reembolso indebido de un pago que sí salió. Por
+  // eso se EXIGE que el cuerpo de la respuesta referencie el MISMO id antes de
+  // confiar en su estado. Si no lo referencia, la ruta apuntó a otra cosa.
+  const bodyMentionsId = (data: any): boolean => {
+    try { return JSON.stringify(data ?? '').includes(tid) } catch { return false }
+  }
   let lastRaw: any = null
   for (const p of paths) {
     const r = await mouvFetch(p, { method: 'GET' })
     if (r.status === 404 || r.status === 0) continue
     lastRaw = r.data
-    if (r.ok) {
+    if (r.ok && bodyMentionsId(r.data)) {
       const n = normalizeMouvState(r.data)
       if (n.state) return { found: true, verdict: n.verdict, state: n.state, raw: r.data, path: p }
-      // Ruta válida pero sin estado legible → seguir intentando otras.
+      // Ruta válida y del mismo id pero sin estado legible → seguir intentando.
     }
   }
   return { found: false, verdict: 'unknown', state: '', raw: lastRaw }
@@ -687,8 +698,12 @@ serve(async (req: Request) => {
   // FAILED/CANCELLED → Rechazado + REEMBOLSO (monto + comisión) al riel.
   // Idempotente (flag refunded). La llama el frontend al abrir Movimientos.
   if (action === 'reconcile_ach') {
-    const userId = caller.userId ?? payload.userId ?? payload.user_id
-    if (!userId) return json(400, { error: 'missing_user' })
+    // Identidad PROBADA (JWT/admin): sin esto, con la anon key + el UUID de una
+    // víctima se podían enumerar sus dispersiones y forzar reembolsos/estados
+    // en su cuenta (IDOR). El reembolso siempre va al dueño, pero igual no se
+    // deja tocar la cuenta ajena.
+    const userId = requireOwner(caller, payload)
+    if (!userId) return json(403, { error: 'forbidden', message: 'Vuelve a iniciar sesión.' })
     const { data: rows } = await db.from('transactions')
       .select('id, user_id, amount, currency, status, raw_data')
       .eq('type', 'dispersion').eq('user_id', userId).eq('status', 'Procesando')
@@ -738,8 +753,9 @@ serve(async (req: Request) => {
   // ventana reciente (para atrapar una devolución tardía y reembolsar aunque
   // el comprobante ya dijera Completado). Idempotente (flag refunded, CAS).
   if (action === 'reconcile_breb') {
-    const userId = caller.userId ?? payload.userId ?? payload.user_id
-    if (!userId) return json(400, { error: 'missing_user' })
+    // Identidad PROBADA (JWT/admin) — mismo motivo que reconcile_ach (IDOR).
+    const userId = requireOwner(caller, payload)
+    if (!userId) return json(403, { error: 'forbidden', message: 'Vuelve a iniciar sesión.' })
     // Ventana de conciliación para las ya-Completadas: una devolución bancaria
     // llega en horas/pocos días. Se revisan las Completadas de los últimos N
     // días (default 5), más TODAS las que sigan 'Procesando'. Overridable.

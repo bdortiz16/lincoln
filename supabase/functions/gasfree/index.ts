@@ -1817,7 +1817,12 @@ async function myConvertCredit(
   const rd = (tx.raw_data ?? {}) as Record<string, any>
   const VALID_PHASES = new Set(['recharged', 'converting', 'hop2_pending', 'hop2', 'registered', 'done'])
   if (rd.convertPhase && !VALID_PHASES.has(String(rd.convertPhase))) throw new Error('La conversión aún no llegó al proveedor')
-  const sweptUsd = Number(rd.creditUsd ?? rd.usdtToProvider ?? rd.fromAmount ?? 0)
+  // ANCLA ANTI-ACUÑACIÓN: el USDT que de verdad se reenvió on-chain al
+  // proveedor (usdtToProvider = fwd) o, en su defecto, el barrido real
+  // (usdtOut = value). NUNCA rd.creditUsd ni rd.fromAmount: esos vienen del
+  // `meta` del cliente (body.creditUsd) y, si se usaran, un cliente podría
+  // inflar creditUsd para pasar assertCopWithinRate y acuñar COP.
+  const sweptUsd = Number(rd.usdtOut ?? rd.usdtToProvider ?? 0)
   // Acotar el COP al USDT real × la tasa del servidor (no al copAmount del
   // cliente ni a una cota fija holgada). Bloquea acuñar COP inflando el monto.
   await assertCopWithinRate(sweptUsd, copAmount)
@@ -1876,8 +1881,10 @@ async function myConvertFinalize(userId: string, txId: string, settleOnly = fals
     return { ok: true, status: 'Pendiente', phase: 'recharged', recharged: true, usdtToProvider: fwd, copCredited: 0 }
   }
   const complete = async (providerTraceId?: string) => {
-    // Acotar el COP al USDT real de la conversión × tasa del servidor.
-    await assertCopWithinRate(Number(rd.creditUsd ?? rd.usdtToProvider ?? rd.fromAmount ?? 0), copAmount)
+    // Acotar el COP al USDT REAL reenviado (usdtToProvider = fwd, o el barrido
+    // usdtOut) × tasa del servidor. NUNCA rd.creditUsd/rd.fromAmount: vienen del
+    // `meta` del cliente y un valor inflado dejaría acuñar COP.
+    await assertCopWithinRate(Number(rd.usdtOut ?? rd.usdtToProvider ?? rd.fwd ?? 0), copAmount)
     await creditBalanceAtomic(userId, 'COP', copAmount)   // atómico (pentest #3)
     const { data: uf } = await db.from('users').select('balances').eq('id', userId).single()
     const nc = Number(((uf?.balances as any)?.COP) ?? copAmount)

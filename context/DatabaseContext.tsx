@@ -811,7 +811,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       // BORRABA/CAMBIABA (la wallet "cambiaba sola", el 2FA "se deshabilitaba").
       // Siempre se dejan como están en la BASE; y si no pudimos leer la base,
       // se OMITE raw_data por completo para no pisar nada.
-      const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'mfaEnabled', 'totpSecret', 'totpSecretEnc', 'otp', 'subWallets'];
+      const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'gasfreeCreditedTxs', 'gasfreeCreditedCount', 'mfaEnabled', 'totpSecret', 'totpSecretEnc', 'otp', 'subWallets'];
       // COLECCIONES del cliente que tienen su PROPIO escritor seguro
       // (updateUserRawData, merge dirigido): contactos, wallets inscritas,
       // notificaciones. saveUser NUNCA debe reescribirlas desde memoria — una

@@ -472,7 +472,12 @@ Deno.serve(async (req) => {
     // IDENTIDAD PROBADA (JWT real, no un user_id en el body): gestionar cuentas
     // externas y crear cobros. Bloquea al atacante que solo tiene la llave
     // pública + el id de una víctima.
-    const NEEDS_IDENTITY = new Set(['external_accounts', 'create_external_account', 'delete_external_account', 'create_payment_link'])
+    // Acciones que leen o MUTAN datos/saldo de una cuenta: exigen identidad
+    // PROBADA (JWT real o service-role interno), nunca un user_id suelto en el
+    // body. Sin esto, cualquiera con la anon key + el UUID de una víctima podía
+    // enumerar sus retiros (fuga) y forzar cambios de estado/reembolsos en su
+    // cuenta (IDOR). Los reconciliadores mueven saldo → aquí adentro.
+    const NEEDS_IDENTITY = new Set(['external_accounts', 'create_external_account', 'delete_external_account', 'create_payment_link', 'reconcile_withdrawals', 'reconcile_payin'])
     if (NEEDS_IDENTITY.has(action) && !(caller.viaJwt || caller.internal)) {
       return json(403, { error: 'forbidden', message: 'Vuelve a iniciar sesión para continuar.' })
     }
@@ -799,10 +804,24 @@ Deno.serve(async (req) => {
         const mapped = mapState(realState)
         if (mapped !== keep.status) {
           if (mapped === 'Rechazado' && keep.status !== 'Rechazado') {
-            // Devolver saldo UNA sola vez (atómico — pentest #3).
-            await creditBalanceAtomic(keep.user_id, String(keep.currency), Number(keep.amount))
+            // CAS ANTI DOBLE-REEMBOLSO: reclamar el rechazo+reembolso ANTES de
+            // tocar el saldo. `keep.status` viene del snapshot del inicio del
+            // request; dos llamadas concurrentes lo leían 'Pendiente' y ambas
+            // acreditaban. Ahora solo la que gane el claim (raw_data.refunded
+            // pasa de null a true, y el estado no era ya Rechazado) acredita —
+            // la otra sale sin duplicar. creditBalanceAtomic es atómico por
+            // llamada pero NO idempotente; el claim es lo que da idempotencia.
+            const krd = (keep.raw_data ?? {}) as Record<string, unknown>
+            const { data: claimed } = await db.from('transactions')
+              .update({ status: 'Rechazado', raw_data: { ...krd, refunded: true, reconciledAt: new Date().toISOString(), finityState: realState } })
+              .eq('id', keep.id).neq('status', 'Rechazado').filter('raw_data->>refunded', 'is', null)
+              .select('id')
+            if (claimed?.length) {
+              await creditBalanceAtomic(keep.user_id, String(keep.currency), Number(keep.amount))
+            }
+          } else {
+            await db.from('transactions').update({ status: mapped }).eq('id', keep.id)
           }
-          await db.from('transactions').update({ status: mapped }).eq('id', keep.id)
           // Disparar el correo de "pago completado/rechazado" directo (sin
           // depender del trigger de la base). notify-transaction deduplica
           // con su propio flag, así que no se manda repetido.

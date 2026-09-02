@@ -34,8 +34,14 @@ DECLARE
   is_privileged boolean;
   k text;
   -- Claves de raw_data que SOLO el servidor puede cambiar.
+  -- OJO: 'gasfreeCreditedTxs' y 'gasfreeCreditedCount' son el ledger de
+  -- deduplicación de depósitos USDT del esquema NUEVO (por-TxID). Sin
+  -- protegerlos, un cliente podía resetearlos por PATCH directo a su propio
+  -- raw_data y re-acreditar depósitos ya acreditados (minteo repetible) —
+  -- el mismo agujero que 'gasfreeCredited' cerró para el esquema viejo.
   protected text[] := ARRAY[
-    'gasfreeCredited', 'gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress',
+    'gasfreeCredited', 'gasfreeCreditedTxs', 'gasfreeCreditedCount',
+    'gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress',
     'gasfreeEoa', 'gasfreeAddresses', 'subWallets',
     'mfaEnabled', 'mfaFactorId', 'totpSecret', 'totpSecretEnc', 'otp'
   ];
