@@ -8,4 +8,4 @@ Allow: /
 Disallow: /admin
 Disallow: /dashboard
 
-Sitemap: https://www.lincoin.com/sitemap.xml
+Sitemap: https://www.lincoin.me/sitemap.xml
