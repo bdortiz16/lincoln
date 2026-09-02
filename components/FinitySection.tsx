@@ -1039,7 +1039,7 @@ export const FinitySection: React.FC<{
                         const flagCol = 'linear-gradient(180deg,#FCD116 0 50%,#003893 50% 75%,#CE1126 75%)';
                         return (
                         <div style={{ fontFamily: "'Archivo', system-ui, sans-serif" }}>
-                            <style>{`.fx-grid{display:grid;grid-template-columns:minmax(0,1fr) 372px;gap:18px}@media(max-width:1100px){.fx-grid{grid-template-columns:1fr}}`}</style>
+                            <style>{`.fx-grid{display:grid;grid-template-columns:minmax(0,1fr) 372px;gap:18px}@media(max-width:1100px){.fx-grid{grid-template-columns:minmax(0,1fr)}}`}</style>
                             <div className="fx-grid">
                                 {/* ── Tarjeta convertidor ── */}
                                 <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, padding: 24, alignSelf: 'start' }}>
