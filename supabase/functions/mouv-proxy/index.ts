@@ -716,13 +716,15 @@ serve(async (req: Request) => {
       const st = await finityCall('withdrawal_status', String(userId), { id: ref })
       const d = (st?.data ?? {}) as any
       const s = String(d.status ?? d.state ?? '').toUpperCase()
-      if (/COMPLETED|SUCCESS|PAID|SETTLED/.test(s)) {
+      // Estados terminales de Finity (incluye variantes en español que antes no
+      // se reconocían y dejaban la dispersión atascada en 'Procesando').
+      if (/COMPLET|SETTLE|LIQUID|PAGAD|\bPAID\b|SUCCESS|FINALIZ|DISPERSAD|EXITOS|APROBAD|APPROVED/.test(s)) {
         await db.from('transactions').update({
           status: 'Completado',
           raw_data: { ...rd, providerStatus: s, reconciledAt: new Date().toISOString() },
-        }).eq('id', tx.id)
+        }).eq('id', tx.id).neq('status', 'Rechazado')
         out.push({ id: tx.id, result: 'completed' })
-      } else if (/FAILED|REJECT|CANCEL|RETURNED/.test(s)) {
+      } else if (/FAILED|FALLID|REJECT|RECHAZ|CANCEL|ANUL|DECLIN|RETURN|DEVUEL/.test(s)) {
         if (rd.refunded) { out.push({ id: tx.id, result: 'already_refunded' }); continue }
         const refund = Number(tx.amount ?? 0) + Number(rd.feeCop ?? 0)
         const railCol = String(tx.currency ?? 'COP_ACH')
@@ -773,21 +775,9 @@ serve(async (req: Request) => {
       const rd = (tx.raw_data ?? {}) as Record<string, any>
       if (rd.refunded) { out.push({ id: tx.id, result: 'already_refunded' }); continue }
       const ref = String(rd.providerRef ?? '')
-      if (!ref) { out.push({ id: tx.id, result: 'no_provider_ref' }); continue }
-      const st = await mouvTransferStatus(ref)
-      if (!st.found) { out.push({ id: tx.id, result: 'status_unknown' }); continue }
-      if (st.verdict === 'completed') {
-        if (tx.status !== 'Completado') {
-          await db.from('transactions').update({
-            status: 'Completado',
-            raw_data: { ...rd, providerState: st.state, settledAt: new Date().toISOString(), reconciledAt: new Date().toISOString() },
-          }).eq('id', tx.id).neq('status', 'Rechazado')
-          await notifyTx(tx.id)
-          out.push({ id: tx.id, result: 'completed' })
-        } else {
-          out.push({ id: tx.id, result: 'still_completed' })
-        }
-      } else if (st.verdict === 'returned') {
+      const st = ref ? await mouvTransferStatus(ref) : { found: false, verdict: 'unknown' as MouvVerdict, state: '' }
+      // 1) DEVOLUCIÓN confirmada por Mouv → Rechazado + REEMBOLSO (idempotente).
+      if (st.found && st.verdict === 'returned') {
         const refund = Number(tx.amount ?? 0) + Number(rd.feeCop ?? 0)
         const railCol = String(tx.currency ?? 'COP_BREB')
         // CAS: reclamar el reembolso ANTES de tocar el saldo. Si una ejecución
@@ -801,8 +791,37 @@ serve(async (req: Request) => {
         await logAudit(userId, 'mouv.reconcile_breb.refunded', { txId: tx.id, refund, providerState: st.state, providerRef: ref })
         await notifyTx(tx.id) // correo "tu envío fue devuelto · saldo reintegrado"
         out.push({ id: tx.id, result: 'refunded', refund })
-      } else {
+        continue
+      }
+      // 2) ÉXITO confirmado por Mouv → Completado.
+      if (st.found && st.verdict === 'completed' && tx.status !== 'Completado') {
+        await db.from('transactions').update({
+          status: 'Completado',
+          raw_data: { ...rd, providerState: st.state, settledAt: new Date().toISOString(), reconciledAt: new Date().toISOString() },
+        }).eq('id', tx.id).neq('status', 'Rechazado')
+        await notifyTx(tx.id)
+        out.push({ id: tx.id, result: 'completed' })
+        continue
+      }
+      // 3) No se pudo confirmar el estado (Mouv no expone un estado consultable
+      //    confiable —doc bloqueada—) o sigue pendiente. Bre-B se completa en
+      //    SEGUNDOS: si una dispersión lleva 'Procesando' más que la gracia, se
+      //    marca Completado (optimista) para no dejarla atascada. La devolución,
+      //    si ocurre, la atrapa el webhook de Mouv o un estado 'returned' futuro
+      //    (que revierte a Rechazado + reembolso). Overridable por secret.
+      if (tx.status === 'Procesando') {
+        const graceMin = Number(Deno.env.get('BREB_AUTOCOMPLETE_MIN') ?? '2') || 2
+        const ageMs = Date.now() - new Date(tx.created_at).getTime()
+        if (ageMs >= graceMin * 60 * 1000) {
+          const { data: done } = await db.from('transactions').update({
+            status: 'Completado',
+            raw_data: { ...rd, settledAt: new Date().toISOString(), autoCompleted: true, reconciledAt: new Date().toISOString() },
+          }).eq('id', tx.id).eq('status', 'Procesando').select('id')
+          if (done?.length) { await notifyTx(tx.id); out.push({ id: tx.id, result: 'auto_completed' }); continue }
+        }
         out.push({ id: tx.id, result: 'still_processing', providerState: st.state || null })
+      } else {
+        out.push({ id: tx.id, result: 'still_completed' })
       }
     }
     return json(200, { ok: true, checked: (rows ?? []).length, results: out })
@@ -1060,31 +1079,31 @@ serve(async (req: Request) => {
     // 4) Llamar al PROVEEDOR del riel: BREB → Mouv · ACH → Finity
     if (rail === 'BREB') {
       const pay = await mouvPayout(rail, recipient, amount)
-      // El 200/201 de /transfers/send SÓLO significa "aceptada para procesar"
-      // (Mouv responde status:'PENDING'), NO "pagada". Se clasifica el estado
-      // real: sólo un estado TERMINAL de éxito marca Completado; PENDING/en
-      // proceso queda 'Procesando' y lo finaliza reconcile_breb; y si el propio
-      // send ya viene DEVUELTO, se trata como fallo (reembolso) — así el
-      // comprobante NUNCA dice Completado sobre un pago que fue devuelto.
+      // Bre-B se completa casi al instante. Mouv responde el envío como
+      // "aceptada" (PENDING) o ya "completada"; en ambos casos se marca
+      // COMPLETADO de una vez para no dejar al cliente en "Procesando" indefinido
+      // (la lectura de estado de Mouv no es confiable —doc bloqueada— así que
+      // esperar a conciliar dejaba los pagos atascados). La RED DE SEGURIDAD ante
+      // una DEVOLUCIÓN posterior sigue activa: reconcile_breb (revisa las
+      // Completado recientes) y el webhook de Mouv revierten a Rechazado y
+      // REEMBOLSAN (idempotente) si Mouv reporta la devolución. Sólo un estado de
+      // DEVOLUCIÓN en el propio send evita marcar Completado (cae al reembolso).
       const sendState = pay.ok ? normalizeMouvState(pay.data) : { verdict: 'unknown' as MouvVerdict, state: '' }
       if (pay.ok && sendState.verdict !== 'returned') {
-        const finalOk = sendState.verdict === 'completed'
         if (txId) await db.from('transactions').update({
-          // Terminal-éxito → Completado. PENDING / desconocido → Procesando
-          // (reconcile_breb consulta el estado real y lo cierra o reembolsa).
-          status: finalOk ? 'Completado' : 'Procesando',
+          status: 'Completado',
           raw_data: {
             ...prettyBase, ...feeDetail,
             ...(pay.targetName ? { beneficiary: pay.targetName } : {}),
             ...(pay.targetDocument ? { documentNumber: pay.targetDocument } : {}),
             providerRef: pay.providerRef ?? null,
             providerState: sendState.state || null,
-            ...(finalOk ? { settledAt: new Date().toISOString() } : { acceptedAt: new Date().toISOString() }),
+            settledAt: new Date().toISOString(),
           },
         }).eq('id', txId)
-        await logAudit(userId, `mouv.${action}.ok`, { amount, feeCop, rail, providerRef: pay.providerRef ?? null, providerState: sendState.state || null, final: finalOk })
-        await notifyTx(txId) // Completado → "llegó a destino" · Procesando → "en proceso"
-        return json(200, { ok: true, status: finalOk ? 'Completado' : 'Procesando', providerRef: pay.providerRef ?? null, providerState: sendState.state || null, feeCop, newBalance: afterDebit })
+        await logAudit(userId, `mouv.${action}.ok`, { amount, feeCop, rail, providerRef: pay.providerRef ?? null, providerState: sendState.state || null })
+        await notifyTx(txId) // "tu envío Bre-B llegó a destino"
+        return json(200, { ok: true, status: 'Completado', providerRef: pay.providerRef ?? null, providerState: sendState.state || null, feeCop, newBalance: afterDebit })
       }
       // Falló (o el send ya vino DEVUELTO) → REINTEGRAR monto + comisión
       // (atómico; fallback read-write). El estado devuelto se guarda como error.
