@@ -23,7 +23,7 @@ const FEATURES = [
   {
     icon: Shield,
     title: 'Seguridad y cumplimiento',
-    desc: 'Plataforma regulada con verificación KYC/AML para proteger tus operaciones.',
+    desc: 'Verificación KYC/AML y controles antifraude para proteger tus operaciones.',
     color: 'bg-orange-50 text-orange-700',
   },
   {

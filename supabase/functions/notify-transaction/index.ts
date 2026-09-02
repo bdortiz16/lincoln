@@ -276,7 +276,15 @@ function buildDetailRows(tx: TxRecord, completed = false): string {
 
 // Logo Lincoin como PNG HOSTEADO (Gmail bloquea imágenes SVG y muchos data
 // URIs → el logo salía roto). Se sirve desde el sitio en https, que sí carga.
-const LOGO_SVG_DATAURI = 'https://lincoln-psi.vercel.app/cuypay-email-logo.png'
+// Logo Lincoin — variante corta "L." (misma que usan los demás correos): cuadro
+// oscuro + "L" en Archivo 800 + punto verde. Inline (data URI) para no depender
+// de un asset externo y no volver a servir el isotipo viejo de CuyPay.
+const LOGO_SVG_DATAURI = `data:image/svg+xml;base64,${btoa(`
+<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+  <rect x="2" y="2" width="96" height="96" rx="24" fill="${BRAND_NAVY}"/>
+  <path d="M34 30 H47 V58 H58 V71 H34 Z" fill="#F4F4F2"/>
+  <circle cx="68" cy="67" r="12" fill="${BRAND_TEAL}"/>
+</svg>`.trim())}`
 
 function htmlEmail(tx: TxRecord, name: string, subject: string, completed = false): string {
   const label   = completed ? 'Operación completada' : txTypeLabel(tx.type)
@@ -342,7 +350,7 @@ function htmlEmail(tx: TxRecord, name: string, subject: string, completed = fals
         <table cellpadding="0" cellspacing="0" border="0">
           <tr>
             <td style="border-radius:10px;background-color:${BRAND_NAVY}">
-              <a href="https://lincoln-psi.vercel.app" target="_blank"
+              <a href="https://www.lincoin.me" target="_blank"
                 style="display:inline-block;padding:14px 32px;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none;letter-spacing:0.3px">
                 Abrir Lincoin &rarr;
               </a>
@@ -373,7 +381,7 @@ function htmlEmail(tx: TxRecord, name: string, subject: string, completed = fals
               </p>
             </td>
             <td align="right" style="vertical-align:middle">
-              <a href="https://lincoln-psi.vercel.app" style="font-size:11px;color:${BRAND_TEAL};text-decoration:none;font-weight:600">lincoin.me</a>
+              <a href="https://www.lincoin.me" style="font-size:11px;color:${BRAND_TEAL};text-decoration:none;font-weight:600">lincoin.me</a>
             </td>
           </tr>
         </table>
@@ -406,12 +414,12 @@ function customHtmlEmail(title: string, message: string, subject: string): strin
       <p style="margin:0 0 16px 0;font-size:24px;font-weight:800;color:${BRAND_NAVY};letter-spacing:-0.5px;line-height:1.2">${title}</p>
       <p style="margin:0 0 24px 0;font-size:15px;color:#475569;line-height:1.7">${message}</p>
       <table cellpadding="0" cellspacing="0" border="0"><tr><td style="border-radius:10px;background-color:${BRAND_NAVY}">
-        <a href="https://lincoln-psi.vercel.app" target="_blank" style="display:inline-block;padding:14px 32px;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none">Abrir Lincoin &rarr;</a>
+        <a href="https://www.lincoin.me" target="_blank" style="display:inline-block;padding:14px 32px;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none">Abrir Lincoin &rarr;</a>
       </td></tr></table>
       ${footerNoteHtml()}
     </td></tr>
     <tr><td style="background-color:${BRAND_NAVY};padding:20px 32px">
-      <p style="margin:0;font-size:11px;color:rgba(255,255,255,0.45)">&copy; 2026 Lincoin &middot; <a href="https://lincoln-psi.vercel.app" style="color:${BRAND_TEAL};text-decoration:none">lincoin.me</a></p>
+      <p style="margin:0;font-size:11px;color:rgba(255,255,255,0.45)">&copy; 2026 Lincoin &middot; <a href="https://www.lincoin.me" style="color:${BRAND_TEAL};text-decoration:none">lincoin.me</a></p>
     </td></tr>
   </table>
 </td></tr></table></body></html>`
