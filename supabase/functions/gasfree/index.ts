@@ -118,11 +118,21 @@ async function sendAdminAlert(subject: string, lines: string[]) {
 const MNEMO_GASFREE = (Deno.env.get('GASFREE_TRON_MNEMONIC') || '').trim()
 const MNEMONIC = MNEMO_GASFREE.trim()
 // Mnemónicas a probar en la RECUPERACIÓN. Deduplicadas, con etiqueta de origen.
+// Se prueban VARIAS por si una wallet vieja se generó con una semilla anterior
+// o con otra que se creó en algún momento. Cada una se define como SECRET en
+// Supabase (nunca en el código ni en el chat):
+//   GASFREE_TRON_MNEMONIC            principal (actual)
+//   GASFREE_TRON_MNEMONIC_2..5       adicionales
+//   GASFREE_TRON_MNEMONIC_OLD        la anterior, si la reemplazaste
+//   GASFREE_SCAN_MNEMONICS           varias juntas, separadas por línea o " | "
 const SCAN_MNEMONICS: { source: string; phrase: string }[] = (() => {
   const out: { source: string; phrase: string }[] = []
   const seen = new Set<string>()
-  const add = (source: string, phrase: string) => { if (phrase && !seen.has(phrase)) { seen.add(phrase); out.push({ source, phrase }) } }
+  const add = (source: string, phrase: string) => { const p = (phrase || '').trim(); if (p && !seen.has(p)) { seen.add(p); out.push({ source, phrase: p }) } }
   add('gasfree', MNEMO_GASFREE)
+  add('mnemonic_old', Deno.env.get('GASFREE_TRON_MNEMONIC_OLD') ?? '')
+  for (let i = 2; i <= 5; i++) add(`mnemonic_${i}`, Deno.env.get(`GASFREE_TRON_MNEMONIC_${i}`) ?? '')
+  ;(Deno.env.get('GASFREE_SCAN_MNEMONICS') ?? '').split(/\n|\s\|\s/).map((s) => s.trim()).filter(Boolean).forEach((ph, i) => add(`extra_${i + 1}`, ph))
   return out
 })()
 

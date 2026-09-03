@@ -171,6 +171,8 @@ export const AdminGasFreeSection: React.FC = () => {
             ]);
             const hit0 = (t0?.found && t0) || (n0?.found && n0);
             if (hit0) { setRecResult(hit0); setAutoProgress(''); setAutoRunning(false); setRecBusy(false); return; }
+            const mnem = (t0?.mnemonicsTried ?? n0?.mnemonicsTried ?? []);
+            setAutoProgress(`Probando ${mnem.length} mnemónica(s): ${mnem.join(', ')}. Subiendo el rango…`);
             // Punto de arranque para trepar: el índice más alto ya cubierto.
             let from = Math.max(Number(t0?.scannedUpTo ?? 0), Number(n0?.scannedUpTo ?? 0));
             const ceiling = from + AUTO_CAP_ABOVE;
@@ -759,6 +761,9 @@ export const AdminGasFreeSection: React.FC = () => {
                                     </div>
                                 </div>
                                 <p className="text-[10px] text-slate-400">Servidor operando en: <b>{auditNet.deployNet === 'tron' ? 'mainnet' : 'Nile'}</b>. El saldo real (USDT que se ve en TronScan) está en mainnet.</p>
+                                {(auditNet.scan?.mainnet?.mnemonicsTried || auditNet.scan?.nile?.mnemonicsTried) && (
+                                    <p className="text-[10px] text-slate-400">Mnemónicas probadas: <b>{(auditNet.scan?.mainnet?.mnemonicsTried ?? auditNet.scan?.nile?.mnemonicsTried ?? []).join(', ')}</b> — si falta la que buscas, agrégala como secret en Supabase y reintenta.</p>
+                                )}
                             </>
                         )}
                     </div>
