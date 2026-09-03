@@ -72,7 +72,7 @@ interface DatabaseContextType {
   registerUser: (data: any) => Promise<{ error?: string }>;
   updateUserProfile: (id: string, data: any) => Promise<void>;
   updateUserRawData: (id: string, patch: Record<string, any>) => Promise<boolean>;
-  loginUser: (email: string, pass?: string) => Promise<User | null>;
+  loginUser: (email: string, pass?: string) => Promise<User | null | 'MFA_REQUIRED'>;
   loginWithGoogle: (role?: 'personal' | 'business') => Promise<void>;
   logoutUser: () => void;
   getBalance: (curr: string) => number;
@@ -1101,7 +1101,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   // --- AUTH ---
 
-  const loginUser = async (email: string, pass?: string): Promise<User | null> => {
+  const loginUser = async (email: string, pass?: string): Promise<User | null | 'MFA_REQUIRED'> => {
     const isSeedAdminEmail = !!SEED_ADMIN_EMAIL && email === SEED_ADMIN_EMAIL;
 
     // ── SEGURIDAD (migración del login admin) ──────────────────────────────
@@ -1127,7 +1127,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
               setPendingMFAProfile(u);
               setPendingMFAMode('custom');
               setMfaPending(true);
-              return null;
+              return 'MFA_REQUIRED';
             }
             setCurrentUser(u);
             return u;
@@ -1289,7 +1289,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       setPendingMFAProfile(user);
       setPendingMFAMode('custom');
       setMfaPending(true);
-      return null;
+      return 'MFA_REQUIRED';
     }
 
     try {
@@ -1302,7 +1302,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         setPendingMFAProfile(user);
         setPendingMFAMode('native');
         setMfaPending(true);
-        return null;
+        return 'MFA_REQUIRED';
       }
     } catch { /* MFA not available, continue normally */ }
 

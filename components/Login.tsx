@@ -60,14 +60,17 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
     const safetyTimer = setTimeout(() => setIsLoading(false), 20000);
     try {
       await getRecaptchaToken();
-      const user = await loginUser(email, password);
+      const result = await loginUser(email, password);
 
-      if (!user && !mfaPending) {
+      // 2FA pendiente: la contraseña FUE correcta; se muestra la pantalla del
+      // código (vía el estado mfaPending). No mostrar "credenciales inválidas".
+      if (result === 'MFA_REQUIRED') return;
+
+      const user = result;
+      if (!user) {
         setErrorMsg("Credenciales inválidas. Por favor intenta nuevamente.");
         return;
       }
-
-      if (mfaPending) return;
 
       if (user && userRole !== 'admin' && user.role !== 'admin' && user.role !== userRole) {
         logoutUser();
