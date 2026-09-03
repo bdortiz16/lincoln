@@ -219,6 +219,16 @@ export const AdminGasFreeSection: React.FC = () => {
         } catch (e: any) { setForensic({ error: e?.message ?? 'Error' }); }
         setForensicBusy(false);
     };
+    const [provRaw, setProvRaw] = useState<any>(null);
+    const [provRawBusy, setProvRawBusy] = useState(false);
+    const loadProvRaw = async () => {
+        setProvRawBusy(true); setProvRaw(null);
+        try {
+            const r = await callGasfree({ action: 'provider_config_raw' });
+            setProvRaw(r?.error ? { error: r.error } : r);
+        } catch (e: any) { setProvRaw({ error: e?.message ?? 'Error' }); }
+        setProvRawBusy(false);
+    };
     const [lookupEmail, setLookupEmail] = useState('');
     const [lookupRes, setLookupRes] = useState<any>(null);
     const [lookupBusy, setLookupBusy] = useState(false);
@@ -930,6 +940,35 @@ export const AdminGasFreeSection: React.FC = () => {
                         )}
                     </div>
                 )}
+                <div className="pt-2 border-t border-red-200/70">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <p className="text-[11px] font-bold text-slate-600">🕐 ¿Cuándo se cambió la dirección del proveedor? (ancla para los logs)</p>
+                        <button onClick={loadProvRaw} disabled={provRawBusy} className="px-3 py-1.5 text-xs font-bold rounded-lg border border-slate-300 hover:bg-slate-50 text-slate-700 disabled:opacity-60">{provRawBusy ? 'Leyendo…' : 'Ver fecha del cambio'}</button>
+                    </div>
+                    {provRaw && (
+                        <div className="text-xs bg-white border border-slate-200 rounded-lg p-3 mt-2 space-y-1.5">
+                            {provRaw.error ? <p className="text-red-700 font-semibold">❌ {provRaw.error}</p> : (
+                                <>
+                                    {provRaw.row?.updated_at || provRaw.row?.created_at ? (
+                                        <p className="text-slate-800 font-bold">🕐 Última vez guardada: {new Date(provRaw.row.updated_at ?? provRaw.row.created_at).toLocaleString('es-CO')}</p>
+                                    ) : (
+                                        <p className="text-amber-700">La tabla no guarda fecha de modificación. Usa como ancla la hora del movimiento de tesorería que salió a la dirección externa (Tesorería → ese movimiento).</p>
+                                    )}
+                                    {Array.isArray(provRaw.auditChanges) && provRaw.auditChanges.length > 0 ? (
+                                        <div className="mt-1">
+                                            <p className="text-slate-600 font-semibold">Cambios registrados (desde que existe la auditoría):</p>
+                                            {provRaw.auditChanges.map((a: any, i: number) => (
+                                                <p key={i} className="text-[11px] text-slate-500">{a.metadata?.at ? new Date(a.metadata.at).toLocaleString('es-CO') : '—'} · por {a.metadata?.byEmail ?? 'sin sesión'} · IP {a.metadata?.ip ?? '—'}</p>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <p className="text-[11px] text-slate-400">Sin cambios en el audit (el cambio pasó ANTES de que existiera esta auditoría). La hora de arriba + los logs de Supabase son la vía.</p>
+                                    )}
+                                </>
+                            )}
+                        </div>
+                    )}
+                </div>
                 <div className="pt-2 border-t border-red-200/70">
                     <p className="text-[11px] font-bold text-slate-600 mb-1.5">🔍 Buscar de dónde salió un correo</p>
                     <div className="flex items-end gap-2 flex-wrap">
