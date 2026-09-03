@@ -2498,7 +2498,7 @@ async function payFromTreasury(toAddress: string, amount: number, providerName?:
 // Escanea índices 0..top derivando cada wallet y comparando con `target`
 // (acepta la dirección GasFree o la EOA). Sirve para recuperar depósitos que
 // llegaron a una wallet cuyo índice se "perdió" por el bug de userIndex.
-async function findAddress(target: string, extra = 25, net?: 'tron' | 'nile') {
+async function findAddress(target: string, extra = 25, net?: 'tron' | 'nile', band?: { min?: number; max?: number }) {
   const t = String(target || '').trim()
   if (!t) throw new Error('Falta la dirección a localizar')
   // Red a escanear: la explícita si se pide, si no la del deploy. Cuando difiere
@@ -2506,8 +2506,15 @@ async function findAddress(target: string, extra = 25, net?: 'tron' | 'nile') {
   // y el balance se lee directo de TronGrid de esa red (sin API de GasFree).
   const scanNet: 'tron' | 'nile' = net ?? NET
   const useOther = scanNet !== NET
-  const { data: cfg } = await db.from('system_config').select('value').eq('key', 'gasfree_hd_counter').single()
-  const top = (cfg?.value ? parseInt(cfg.value) : 0) + Math.max(0, extra)
+  // Banda explícita [min..max] para el auto-escaneo por tramos (no re-escanea lo
+  // ya cubierto). Sin banda, se ancla en el contador HD + extra y baja hasta 0.
+  let top: number, bottom: number
+  if (band && band.max != null) {
+    top = Math.max(0, Math.floor(band.max)); bottom = Math.max(0, Math.floor(band.min ?? 0))
+  } else {
+    const { data: cfg } = await db.from('system_config').select('value').eq('key', 'gasfree_hd_counter').single()
+    top = (cfg?.value ? parseInt(cfg.value) : 0) + Math.max(0, extra); bottom = 0
+  }
   let dec = 6, tokenAddr = NET_USDT[scanNet]
   if (!useOther) { const { token } = await gfConfig(); dec = Number(token.decimal ?? 6); tokenAddr = token.tokenAddress }
   const mnemos = SCAN_MNEMONICS.length ? SCAN_MNEMONICS : [{ source: 'primary', phrase: MNEMONIC }]
@@ -2529,9 +2536,9 @@ async function findAddress(target: string, extra = 25, net?: 'tron' | 'nile') {
   const CHUNK = 8
   let apiErrors = 0
   for (const m of mnemos) {
-    for (let hi = top; hi >= 0; hi -= CHUNK) {
+    for (let hi = top; hi >= bottom; hi -= CHUNK) {
       const idxs: number[] = []
-      for (let i = hi; i > Math.max(-1, hi - CHUNK); i--) idxs.push(i)
+      for (let i = hi; i > Math.max(bottom - 1, hi - CHUNK); i--) idxs.push(i)
       const results = await Promise.all(idxs.map(async (i) => {
         try {
           const { eoa } = await userWalletFrom(m.phrase, i)
@@ -2549,7 +2556,7 @@ async function findAddress(target: string, extra = 25, net?: 'tron' | 'nile') {
       await new Promise((r) => setTimeout(r, 120))   // respirar entre lotes
     }
   }
-  return { found: false, net: scanNet, scannedUpTo: top, mnemonicsTried: mnemos.map((m) => m.source), apiErrors }
+  return { found: false, net: scanNet, scannedFrom: bottom, scannedUpTo: top, mnemonicsTried: mnemos.map((m) => m.source), apiErrors }
 }
 
 // Barre el USDT de un índice HD específico a la recaudadora (recuperación).
@@ -2832,7 +2839,10 @@ Deno.serve(async (req) => {
     if (action === 'find_address') {
       if (!body.address) return err('Falta address', 400)
       const net = body.net === 'tron' || body.net === 'nile' ? body.net : undefined
-      return ok(await findAddress(String(body.address), body.extra != null ? Number(body.extra) : 25, net))
+      const band = (body.minIndex != null || body.maxIndex != null)
+        ? { min: body.minIndex != null ? Number(body.minIndex) : undefined, max: body.maxIndex != null ? Number(body.maxIndex) : undefined }
+        : undefined
+      return ok(await findAddress(String(body.address), body.extra != null ? Number(body.extra) : 25, net, band))
     }
     // AUDITORÍA COMPLETA: escanea la dirección en AMBAS redes (mainnet + Nile) y
     // reporta el saldo USDT on-chain de la dirección en cada red. Deja claro,

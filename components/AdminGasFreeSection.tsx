@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { Zap, RefreshCw, Copy, Search, Landmark, Activity, Send, X, Settings, Pin } from 'lucide-react';
 import { useDatabase } from '../context/DatabaseContext';
 import { RecaudadoraRotativaCard } from './RecaudadoraRotativaCard';
@@ -145,6 +145,56 @@ export const AdminGasFreeSection: React.FC = () => {
         } catch (e: any) { setAuditNet({ error: e?.message ?? 'Error' }); }
         setRecBusy(false);
     };
+
+    // ── Auto-escaneo: sube el rango SOLO (en bandas) hasta ubicar la dirección
+    // o hasta un tope, en AMBAS redes, sin que el admin tenga que reintentar. ──
+    const [autoRunning, setAutoRunning] = useState(false);
+    const [autoProgress, setAutoProgress] = useState<string>('');
+    const autoCancelRef = useRef(false);
+    const BAND = 800;                 // índices por tramo
+    const AUTO_CAP_ABOVE = 20000;     // tope de índices por encima del arranque
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const scanBand = async (net: 'tron' | 'nile', min: number, max: number) =>
+        callGasfree({ action: 'find_address', address: recAddr.trim(), net, minIndex: min, maxIndex: max });
+    const autoScan = async () => {
+        const addr = recAddr.trim();
+        if (!addr) return;
+        autoCancelRef.current = false;
+        setAutoRunning(true); setRecResult(null); setAuditNet(null); setRecBusy(true);
+        setAutoProgress('Arrancando escaneo en mainnet y Nile…');
+        try {
+            // Ronda 0: escaneo base (ancla en el contador HD, baja hasta 0) en ambas redes.
+            const baseExtra = Number(recRange) || 1000;
+            const [t0, n0] = await Promise.all([
+                callGasfree({ action: 'find_address', address: addr, net: 'tron', extra: baseExtra }),
+                callGasfree({ action: 'find_address', address: addr, net: 'nile', extra: baseExtra }),
+            ]);
+            const hit0 = (t0?.found && t0) || (n0?.found && n0);
+            if (hit0) { setRecResult(hit0); setAutoProgress(''); setAutoRunning(false); setRecBusy(false); return; }
+            // Punto de arranque para trepar: el índice más alto ya cubierto.
+            let from = Math.max(Number(t0?.scannedUpTo ?? 0), Number(n0?.scannedUpTo ?? 0));
+            const ceiling = from + AUTO_CAP_ABOVE;
+            while (from < ceiling) {
+                if (autoCancelRef.current) { setAutoProgress('Detenido por el usuario.'); break; }
+                const to = from + BAND;
+                setAutoProgress(`Escaneando índices ${from.toLocaleString()}–${to.toLocaleString()} en mainnet y Nile…`);
+                const [tb, nb] = await Promise.all([scanBand('tron', from, to), scanBand('nile', from, to)]);
+                const hit = (tb?.found && tb) || (nb?.found && nb);
+                if (hit) { setRecResult(hit); setAutoProgress(`✅ Ubicada en el índice ${hit.index} (${hit.net === 'tron' ? 'mainnet' : 'Nile'}).`); break; }
+                const apiErr = Number(tb?.apiErrors ?? 0) + Number(nb?.apiErrors ?? 0);
+                if (apiErr > 0) { setAutoProgress(`GasFree limitó (${apiErr} err.) en ${from.toLocaleString()}–${to.toLocaleString()}. Esperando y reintentando el mismo tramo…`); await sleep(4000); continue; }
+                from = to;
+                await sleep(300);
+            }
+            if (!autoCancelRef.current && from >= ceiling) {
+                setAutoProgress(`Auto-escaneo completo hasta el índice ${ceiling.toLocaleString()} en mainnet y Nile, con 0 errores de API. La dirección NO es nuestra en ninguna red — no sale de nuestra semilla en ningún índice. Es externa.`);
+            }
+        } catch (e: any) {
+            setAutoProgress(`Error en el auto-escaneo: ${e?.message ?? 'desconocido'}`);
+        }
+        setAutoRunning(false); setRecBusy(false);
+    };
+    const stopAuto = () => { autoCancelRef.current = true; };
     // Auditoría de wallets: detectar colisiones (mismo índice en correos distintos).
     const [auditBusy, setAuditBusy] = useState(false);
     const [audit, setAudit] = useState<{ considered?: number; uniqueIndexes?: number; noIndex?: number; collisions?: { index: number; emails: string[] }[]; error?: string } | null>(null);
@@ -672,7 +722,22 @@ export const AdminGasFreeSection: React.FC = () => {
                     <button onClick={auditAddr} disabled={recBusy || !recAddr.trim()} title="Escanea la dirección en mainnet Y Nile, y muestra su saldo en cada red" className="px-3 py-2 text-xs font-bold rounded-lg border border-slate-500 text-slate-200 hover:bg-white/5 disabled:opacity-60">
                         {recBusy ? '…' : 'Auditar (mainnet + Nile)'}
                     </button>
+                    {autoRunning ? (
+                        <button onClick={stopAuto} className="px-3 py-2 text-xs font-bold rounded-lg bg-red-600 text-white hover:bg-red-700">
+                            Detener auto-escaneo
+                        </button>
+                    ) : (
+                        <button onClick={autoScan} disabled={recBusy || !recAddr.trim()} title="Sube el rango solo, en bandas, en ambas redes, hasta ubicarla o hasta el tope" className="px-3 py-2 text-xs font-bold rounded-lg bg-amber-500 text-[#0C0E0D] hover:bg-amber-600 disabled:opacity-60">
+                            Auto-ubicar (sube rango solo)
+                        </button>
+                    )}
                 </div>
+                {(autoRunning || autoProgress) && (
+                    <div className="text-[11px] bg-black/30 border border-amber-500/40 rounded-lg p-2.5 flex items-start gap-2">
+                        {autoRunning && <span className="inline-block w-3 h-3 mt-0.5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin shrink-0" />}
+                        <span className="text-amber-200">{autoProgress || 'Escaneando…'}</span>
+                    </div>
+                )}
                 <p className="text-[10px] text-slate-400 -mt-1">"Barrer a recaudadora" localiza y barre en un paso — solo mueve fondos si la dirección es una wallet nuestra. "Auditar" la busca en LAS DOS redes (mainnet y Nile) y te dice en cuál está el saldo. Sube el "rango" (ej. 300–1000) si no la encuentra.</p>
                 {auditNet && (
                     <div className="text-xs bg-white border border-slate-200 rounded-lg p-3 space-y-1.5">
