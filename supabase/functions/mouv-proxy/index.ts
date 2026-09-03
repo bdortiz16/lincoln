@@ -1190,14 +1190,21 @@ serve(async (req: Request) => {
         friendly = `Ya hiciste un envío a este mismo beneficiario hace poco. Por seguridad, espera ${mins} minuto${mins === 1 ? '' : 's'} antes de repetir un pago al mismo destino. Tu saldo fue devuelto.`
       } else if (isKeyProblem) {
         friendly = `La llave Bre-B del beneficiario no es válida o no está activa. Pídele que te confirme su llave Bre-B exacta (celular, correo, cédula o alias) y vuelve a intentarlo. Tu saldo fue devuelto.`
-      } else if (provMsg) {
+      } else if (provMsg && !/[{}\[\]]|http\s*\d|status\s*code|errors?\b|\bpath\b|brebkey/i.test(provMsg)) {
+        // Solo se muestra el mensaje del proveedor si es TEXTO HUMANO (sin JSON,
+        // códigos ni jerga). Si trae basura técnica, se usa el genérico limpio.
         friendly = `${provMsg} Tu saldo fue devuelto.`
       } else {
-        friendly = `No pudimos completar el envío en este momento. Tu saldo fue devuelto — puedes intentarlo de nuevo en unos minutos.${techHint ? ` (Detalle: ${techHint})` : ''}`
+        // AL CLIENTE: mensaje limpio, SIN detalles técnicos. El detalle real
+        // (techHint) NO se muestra aquí — queda guardado en la tx (errorMessage)
+        // y en el audit_log para el Panel de Fallos del admin.
+        friendly = `No pudimos completar el envío en este momento. Tu saldo fue devuelto — puedes intentarlo de nuevo en unos minutos.`
       }
       // Guardar el motivo legible en la tx para que el comprobante del fallo lo muestre.
       if (txId) { try { await db.from('transactions').update({ raw_data: { ...prettyBase, ...feeDetail, error: pay.data ?? 'payout_failed', errorMessage: provMsg ?? techHint ?? null, httpStatus: pay.status, refunded: true, failedAt: new Date().toISOString() } }).eq('id', txId) } catch { /* best-effort */ } }
-      return json(200, { error: 'payout_failed', code: provCode, retryAfterSeconds, refunded: true, newBalance: restored, status: pay.status, data: pay.data, detail: techHint,
+      // NOTA: no se devuelven `data`/`detail` técnicos al cliente. El detalle
+      // real vive en la tx (errorMessage/error/httpStatus) y en el audit_log.
+      return json(200, { error: 'payout_failed', code: provCode, retryAfterSeconds, refunded: true, newBalance: restored,
         message: friendly })
     }
 
@@ -1241,22 +1248,25 @@ serve(async (req: Request) => {
       restored5 = Number((Number(bals5[railCol] ?? 0) + totalDebit).toFixed(2))
       await db.from('users').update({ balances: { ...bals5, [railCol]: restored5 } }).eq('id', userId)
     }
+    const finErr: any = fin.error
+    const finMsgRaw = (typeof finErr === 'string' ? finErr
+      : (finErr?.message ?? finErr?.detail ?? finErr?.error?.message)) as string | undefined
+    const detail = (() => { try { return JSON.stringify(fin.error ?? fin).slice(0, 350) } catch { return String(fin.error ?? 'sin detalle') } })()
     if (txId) await db.from('transactions').update({
       status: 'Fallido',
-      raw_data: { ...prettyBase, feeProvider: 'finity', error: fin.error ?? 'finity_failed', refunded: true, failedAt: new Date().toISOString() },
+      // errorMessage = detalle técnico para el Panel de Fallos del admin.
+      raw_data: { ...prettyBase, feeProvider: 'finity', error: fin.error ?? 'finity_failed', errorMessage: (finMsgRaw ?? detail) ?? null, refunded: true, failedAt: new Date().toISOString() },
     }).eq('id', txId)
     await logAudit(userId, `finity.${action}.fail`, { amount, error: JSON.stringify(fin.error ?? {}).slice(0, 200) })
     await notifyTx(txId) // correo "no pudimos completar tu envío · saldo devuelto"
-    // Mensaje humano: si Finity trae un `message`/`detail` legible se muestra;
-    // el detalle crudo va en `data` para soporte (no en el texto al cliente).
-    const finErr: any = fin.error
-    const finMsg = (typeof finErr === 'string' ? finErr
-      : (finErr?.message ?? finErr?.detail ?? finErr?.error?.message)) as string | undefined
-    const detail = (() => { try { return JSON.stringify(fin.error ?? fin).slice(0, 350) } catch { return String(fin.error ?? 'sin detalle') } })()
-    const friendlyAch = finMsg && typeof finMsg === 'string' && finMsg.trim()
+    // AL CLIENTE: mensaje LIMPIO. Solo se usa el texto de Finity si es HUMANO
+    // (sin JSON, códigos ni jerga). El detalle técnico NO se devuelve — vive en
+    // la tx (errorMessage) y el audit_log para el Panel de Fallos del admin.
+    const finMsg = finMsgRaw && !/[{}\[\]]|http\s*\d|status\s*code|errors?\b|\bpath\b/i.test(finMsgRaw) ? finMsgRaw : null
+    const friendlyAch = finMsg && finMsg.trim()
       ? `No pudimos completar la transferencia ACH: ${finMsg}. Tu saldo fue devuelto.`
       : `No pudimos completar la transferencia ACH en este momento. Tu saldo fue devuelto — puedes intentarlo de nuevo en unos minutos.`
-    return json(200, { error: 'payout_failed', provider: 'finity', refunded: true, newBalance: restored5, data: fin.error, detail,
+    return json(200, { error: 'payout_failed', provider: 'finity', refunded: true, newBalance: restored5,
       message: friendlyAch })
   }
 

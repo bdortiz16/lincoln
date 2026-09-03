@@ -264,7 +264,7 @@ const DiditAdminPanel: React.FC<{ client: any; showToast: (m: string) => void }>
 };
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos'>('overview');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [ratesSaved, setRatesSaved] = useState(false);
   const [showPaletteChooser, setShowPaletteChooser] = useState(false);
@@ -683,6 +683,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const historyTransactions = getTransactionHistory().filter(isBusinessTx);
   const allUsers = rawUsers.filter((u: any) => u.role !== 'admin');
   const adminTeam = getAdminTeam();
+
+  // ── Panel de Fallos ──────────────────────────────────────────────────────
+  // Operaciones de dinero que FALLARON o fueron RECHAZADAS, con el error
+  // técnico real (para el admin). Al cliente solo se le muestra el mensaje
+  // amable ("la llave no es válida…"); el detalle vive aquí.
+  const failuresList = (getTransactionHistory() as any[])
+    .filter(t => ['Fallido', 'Rechazado'].includes(String(t.status)))
+    .sort((a, b) => new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime());
+  const failuresCount = failuresList.length;
 
   const pendingClientsCount = allUsers.filter(u => u.kycStatus === 'pending' || u.kycStatus === 'in_review').length;
 
@@ -3426,6 +3435,73 @@ const renderDesign = () => (
       );
   };
 
+  const renderFallos = () => {
+    const railLabel = (cur: string): string => {
+      const c = String(cur ?? '');
+      if (c === 'COP_BREB') return 'Bre-B';
+      if (c === 'COP_ACH') return 'ACH';
+      if (c === 'COP') return 'Saldo Lincoin';
+      if (c.startsWith('USD')) return 'USDT';
+      return c || '—';
+    };
+    const errText = (t: any): string => {
+      const em = t.errorMessage ?? t.raw_data?.errorMessage;
+      if (em) return String(em);
+      const e = t.error ?? t.raw_data?.error;
+      let s = '';
+      try { s = typeof e === 'string' ? e : (e ? JSON.stringify(e) : ''); } catch { s = String(e ?? ''); }
+      const http = t.httpStatus ?? t.raw_data?.httpStatus;
+      return [http ? `HTTP ${http}` : '', s].filter(Boolean).join(' · ') || 'Sin detalle técnico';
+    };
+    const emailOf = (t: any): string => allUsers.find((u: any) => u.id === t.userId)?.email ?? t.userName ?? t.raw_data?.userName ?? t.userId ?? '—';
+    const fmtDate = (d: any) => { try { return new Date(d).toLocaleString('es-CO', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }); } catch { return '—'; } };
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div>
+            <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2"><AlertTriangle size={18} className="text-red-500" /> Fallos de operaciones</h2>
+            <p className="text-sm text-slate-500">Envíos/retiros que fallaron o fueron rechazados, con el error técnico real. Al cliente solo se le muestra un mensaje amable.</p>
+          </div>
+          <span className="text-xs font-bold px-3 py-1.5 rounded-full bg-red-50 text-red-700 border border-red-200">{failuresCount} {failuresCount === 1 ? 'fallo' : 'fallos'}</span>
+        </div>
+        {failuresList.length === 0 ? (
+          <div className="bg-white rounded-xl border border-slate-200 p-10 text-center">
+            <p className="text-slate-700 font-semibold">Sin fallos recientes</p>
+            <p className="text-slate-400 text-sm mt-1">Cuando una operación falle o sea rechazada, aparecerá aquí con su motivo técnico.</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {failuresList.map((t: any) => (
+              <div key={t.id} className="bg-white rounded-xl border border-slate-200 p-4">
+                <div className="flex items-start justify-between gap-3 flex-wrap">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{railLabel(t.currency)}</span>
+                      <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-200">{String(t.status).toUpperCase()}</span>
+                      <span className="text-xs text-slate-400">{fmtDate(t.createdAt)}</span>
+                    </div>
+                    <p className="text-sm font-bold text-slate-800 mt-1.5">{Number(t.amount).toLocaleString('es-CO')} <span className="text-slate-400 font-medium">{String(t.currency ?? '').split('_')[0]}</span></p>
+                    <p className="text-xs text-slate-500 mt-0.5">Cliente: <span className="font-semibold text-slate-700">{emailOf(t)}</span></p>
+                    {(t.beneficiary || t.account) && (
+                      <p className="text-xs text-slate-500">Beneficiario: <span className="font-semibold text-slate-700">{t.beneficiary ?? '—'}</span>{t.account ? ` · ${t.account}` : ''}</p>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => { navigator.clipboard.writeText(errText(t)).then(() => showToast('Error copiado')).catch(() => {}); }}
+                    className="text-xs font-semibold text-slate-500 hover:text-slate-800 flex items-center gap-1 shrink-0"
+                  ><Copy size={13} /> Copiar</button>
+                </div>
+                <div className="mt-2.5 rounded-lg bg-slate-900 text-slate-100 p-3 overflow-x-auto">
+                  <code className="text-[11px] leading-relaxed whitespace-pre-wrap break-words" style={{ fontFamily: 'ui-monospace, Menlo, monospace' }}>{errText(t)}</code>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const closeSidebar = () => setIsSidebarOpen(false);
   const navTo = (tab: string) => { setActiveTab(tab); closeSidebar(); };
 
@@ -3448,6 +3524,7 @@ const renderDesign = () => (
                 <AdminSidebarItem icon={Users} label="Clientes" active={activeTab === 'clients'} badge={pendingClientsCount > 0 ? pendingClientsCount : undefined} onClick={() => navTo('clients')} />
                 <AdminSidebarItem icon={Landmark} label="Tesorería" active={activeTab === 'treasury'} badge={pendingDeposits.length + pendingWithdrawals.length > 0 ? pendingDeposits.length + pendingWithdrawals.length : undefined} onClick={() => navTo('treasury')} />
                 <AdminSidebarItem icon={Wallet} label="Cargues" active={activeTab === 'cargues'} onClick={() => navTo('cargues')} />
+                <AdminSidebarItem icon={AlertTriangle} label="Fallos" active={activeTab === 'fallos'} badge={failuresCount > 0 ? failuresCount : undefined} onClick={() => navTo('fallos')} />
                 <AdminSidebarItem icon={FileText} label="Reportes" active={activeTab === 'reports'} onClick={() => navTo('reports')} />
                 <AdminSidebarItem icon={Settings} label="Configuración" active={activeTab === 'config'} onClick={() => navTo('config')} />
                 <AdminSidebarItem icon={Palette} label="Diseño" active={activeTab === 'design'} onClick={() => navTo('design')} />
@@ -3495,6 +3572,7 @@ const renderDesign = () => (
                 {activeTab === 'security' && renderSecurity()}
                 {activeTab === 'gasfree' && <AdminGasFreeSection />}
                 {activeTab === 'otcConfig' && <AdminOtcSection />}
+                {activeTab === 'fallos' && renderFallos()}
             </div>
         </main>
 
