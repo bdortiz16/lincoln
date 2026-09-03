@@ -293,13 +293,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     try {
       const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
       const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-      const ADMIN_PASS = (import.meta.env.VITE_ADMIN_PASSWORD as string) || '';
       let jwt: string | null = null;
       try {
         const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
         if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; }
       } catch { /* sin sesión supabase */ }
-      const authHeader = jwt ? `Bearer ${jwt}` : (ADMIN_PASS ? `AdminBypass ${ADMIN_PASS}` : `Bearer ${SKEY}`);
+      const authHeader = jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}`;
       const r = await fetch(`${SURL}/functions/v1/admin-data`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: authHeader },
@@ -377,13 +376,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const callGasfreeAdmin = async (bodyObj: Record<string, unknown>) => {
     const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
     const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-    const ADMIN_PASS = (import.meta.env.VITE_ADMIN_PASSWORD as string) || '';
     let jwt: string | null = null;
     try {
       const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
       if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; }
     } catch { /* sin sesión */ }
-    const authHeader = jwt ? `Bearer ${jwt}` : (ADMIN_PASS ? `AdminBypass ${ADMIN_PASS}` : `Bearer ${SKEY}`);
+    const authHeader = jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}`;
     const r = await fetch(`${SURL}/functions/v1/gasfree`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: authHeader },
       body: JSON.stringify(bodyObj),
@@ -427,13 +425,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     try {
       const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
       const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-      const ADMIN_PASS = (import.meta.env.VITE_ADMIN_PASSWORD as string) || '';
       let jwt: string | null = null;
       try {
         const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
         if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; }
       } catch { /* sin sesión */ }
-      const authHeader = jwt ? `Bearer ${jwt}` : (ADMIN_PASS ? `AdminBypass ${ADMIN_PASS}` : `Bearer ${SKEY}`);
+      const authHeader = jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}`;
       const r = await fetch(`${SURL}/functions/v1/mouv-proxy`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: authHeader },
@@ -452,13 +449,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     try {
       const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
       const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-      const ADMIN_PASS = (import.meta.env.VITE_ADMIN_PASSWORD as string) || '';
       let jwt: string | null = null;
       try {
         const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
         if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; }
       } catch { /* sin sesión */ }
-      const authHeader = jwt ? `Bearer ${jwt}` : (ADMIN_PASS ? `AdminBypass ${ADMIN_PASS}` : `Bearer ${SKEY}`);
+      const authHeader = jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}`;
       const r = await fetch(`${SURL}/functions/v1/finity-proxy`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: authHeader },
@@ -500,13 +496,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     try {
       const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
       const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-      const ADMIN_PASS = (import.meta.env.VITE_ADMIN_PASSWORD as string) || '';
       let jwt: string | null = null;
       try {
         const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
         if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; }
       } catch { /* sin sesión supabase */ }
-      const authHeader = jwt ? `Bearer ${jwt}` : (ADMIN_PASS ? `AdminBypass ${ADMIN_PASS}` : `Bearer ${SKEY}`);
+      const authHeader = jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}`;
       const r = await fetch(`${SURL}/functions/v1/admin-data`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: authHeader },
@@ -542,13 +537,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     try {
       const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
       const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-      const ADMIN_PASS = (import.meta.env.VITE_ADMIN_PASSWORD as string) || '';
       let jwt: string | null = null;
       try {
         const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
         if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; }
       } catch { /* sin sesión supabase */ }
-      const authHeader = jwt ? `Bearer ${jwt}` : (ADMIN_PASS ? `AdminBypass ${ADMIN_PASS}` : `Bearer ${SKEY}`);
+      const authHeader = jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}`;
       const r = await fetch(`${SURL}/functions/v1/admin-data`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: authHeader },
@@ -576,13 +570,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     if (!tx || tx.proofUrl !== '__stored__') return;
     const SURL = (import.meta as any).env?.VITE_SUPABASE_URL as string || '';
     const SKEY = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY as string || '';
-    const ADMIN_PASS = (import.meta as any).env?.VITE_ADMIN_PASSWORD as string || '';
     let jwt: string | null = null;
     try {
       const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
       if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; }
     } catch { /* sin sesión supabase */ }
-    const authHeader = jwt ? `Bearer ${jwt}` : (ADMIN_PASS ? `AdminBypass ${ADMIN_PASS}` : `Bearer ${SKEY}`);
+    const authHeader = jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}`;
     fetch(`${SURL}/functions/v1/admin-data`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': authHeader },

@@ -90,11 +90,10 @@ async function verifyTOTPServer(secret: string, token: string): Promise<boolean>
 async function verifyAdmin(req: Request): Promise<{ ok: boolean; error?: string }> {
   const authHeader = req.headers.get('Authorization') ?? ''
 
-  // Admin bypass: frontend sends "AdminBypass <password>" when using the local bypass session.
-  // Requires ADMIN_PASS secret in Supabase Edge Function settings (same value as VITE_ADMIN_PASSWORD).
-  const ADMIN_PASS = Deno.env.get('ADMIN_PASS') ?? ''
-  if (ADMIN_PASS && authHeader === `AdminBypass ${ADMIN_PASS}`) return { ok: true }
-
+  // Identidad de admin SOLO por JWT real de Supabase (role='admin'). Se eliminó
+  // el esquema "AdminBypass <password>": esa contraseña compartida viajaba en el
+  // bundle público del frontend (VITE_ADMIN_PASSWORD) y cualquiera podía
+  // extraerla y tomar control total. El admin entra con su cuenta real.
   const jwt = authHeader.replace('Bearer ', '').trim()
   if (!jwt) return { ok: false, error: 'No authorization token' }
 
@@ -364,12 +363,10 @@ Deno.serve(async (req: Request) => {
       //    RLS estricta deja de permitir a los no-admin. ─────────────────────
       if (selfServiceBody.action === 'lookup_recipient') {
         const authHeader = req.headers.get('Authorization') ?? ''
-        const ADMIN_PASS = Deno.env.get('ADMIN_PASS') ?? ''
-        let authed = ADMIN_PASS !== '' && authHeader === `AdminBypass ${ADMIN_PASS}`
-        if (!authed) {
-          const jwt = authHeader.replace(/^Bearer\s+/i, '').trim()
-          if (jwt) { try { const { data } = await db.auth.getUser(jwt); authed = !!data?.user } catch { /* inválido */ } }
-        }
+        // Cualquier usuario AUTENTICADO (JWT real) — no expone saldos ni PII.
+        let authed = false
+        const jwt = authHeader.replace(/^Bearer\s+/i, '').trim()
+        if (jwt) { try { const { data } = await db.auth.getUser(jwt); authed = !!data?.user } catch { /* inválido */ } }
         if (!authed) return json({ error: 'No autorizado' }, 401)
         const code = String(selfServiceBody.code ?? '').toUpperCase().trim()
         if (code.length < 4) return json({ found: false })

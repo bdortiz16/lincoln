@@ -133,8 +133,12 @@ const LS_TRANSACTIONS = 'cuypay_transactions';
 const LS_TX_SEQ = 'cuypay_tx_seq';
 
 const SEED_ADMIN_EMAIL = (import.meta.env.VITE_ADMIN_EMAIL as string) || 'admin@cuypay.com';
-// No hardcoded fallback — admin bypass requires VITE_ADMIN_PASSWORD to be explicitly set in .env
-const SEED_ADMIN_PASSWORD = (import.meta.env.VITE_ADMIN_PASSWORD as string) || '';
+// SEGURIDAD: el "admin bypass" fue ELIMINADO. Ya NO se lee VITE_ADMIN_PASSWORD
+// (viajaba en el bundle público y cualquiera podía extraerla para tomar control
+// total). Queda en '' → todas las rutas de bypass (guardas `SEED_ADMIN_PASSWORD
+// && …`) quedan inertes. El admin entra con su cuenta REAL de Supabase (JWT +
+// role='admin'), que el servidor exige.
+const SEED_ADMIN_PASSWORD = '';
 const SUPABASE_URL_FOR_FN = (import.meta.env.VITE_SUPABASE_URL as string) || '';
 const SUPABASE_ANON_FOR_FN = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
 

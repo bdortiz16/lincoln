@@ -15,12 +15,10 @@ import { RecaudadoraRotativaCard } from './RecaudadoraRotativaCard';
 const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
 const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
 
-// La función ahora exige sesión de admin real (antes bastaba la llave
-// pública — cualquiera pudo haber movido fondos de la recaudadora con
-// solo esa key, ya visible en el bundle JS). Se manda el JWT real de la
-// sesión, o AdminBypass si es una sesión de administrador sin Supabase Auth.
+// Exige sesión de admin REAL: se manda el JWT de Supabase de la sesión (el
+// servidor exige role='admin'). Se eliminó el "AdminBypass": esa contraseña
+// compartida viajaba en el bundle JS público y cualquiera podía extraerla.
 function adminAuthHeader(): string {
-    const ADMIN_PASS = (import.meta.env.VITE_ADMIN_PASSWORD as string) || '';
     try {
         const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
         if (k) {
@@ -28,7 +26,7 @@ function adminAuthHeader(): string {
             if (d.access_token) return `Bearer ${d.access_token}`;
         }
     } catch { /* sin sesión supabase */ }
-    return ADMIN_PASS ? `AdminBypass ${ADMIN_PASS}` : `Bearer ${SKEY}`;
+    return `Bearer ${SKEY}`;
 }
 async function callGasfree(body: Record<string, unknown>): Promise<any> {
     const r = await fetch(`${SURL}/functions/v1/gasfree`, {

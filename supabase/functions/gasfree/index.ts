@@ -142,10 +142,10 @@ const err = (msg: string, status = 500) => new Response(JSON.stringify({ error: 
 // podía llamar 'send'/'sweep_all' y mover fondos reales de la
 // recaudadora. Acciones admin exigen rol admin; las acciones "propias"
 // del cliente exigen que su JWT coincida con el userId que pide.
-const ADMIN_PASS = Deno.env.get('ADMIN_PASS') ?? ''
 async function callerIsAdmin(req: Request): Promise<boolean> {
   const authHeader = req.headers.get('Authorization') ?? ''
-  if (ADMIN_PASS && authHeader === `AdminBypass ${ADMIN_PASS}`) return true
+  // Solo JWT real de Supabase con role='admin'. Se eliminó el "AdminBypass
+  // <password>" (secreto compartido que se filtraba en el bundle del frontend).
   const jwt = authHeader.replace(/^Bearer\s+/i, '').trim()
   if (!jwt) return false
   try {

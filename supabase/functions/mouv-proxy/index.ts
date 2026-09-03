@@ -80,7 +80,6 @@ const db = createClient(SUPABASE_URL, SERVICE_KEY)
 const MOUV_API_KEY = (Deno.env.get('MOUV_API_KEY') ?? '').trim()
 // Overridable por si mañana cambia el host o hay sandbox; default = prod.
 const MOUV_BASE = (Deno.env.get('MOUV_BASE_URL') ?? 'https://consola.mouvlatam.com/api').replace(/\/+$/, '')
-const ADMIN_PASS = Deno.env.get('ADMIN_PASS') ?? ''
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { ...CORS, 'Content-Type': 'application/json' } })
@@ -481,7 +480,8 @@ async function logAudit(userId: string | null, action: string, metadata: Record<
 // JWT válido. Balance y payouts son sensibles → siempre requieren caller.
 async function validCaller(req: Request, payload: any): Promise<{ ok: boolean; userId: string | null; admin: boolean; viaJwt: boolean }> {
   const authHeader = req.headers.get('Authorization') ?? ''
-  if (ADMIN_PASS && authHeader === `AdminBypass ${ADMIN_PASS}`) return { ok: true, userId: null, admin: true, viaJwt: true }
+  // (El "AdminBypass <password>" se eliminó: secreto compartido que se filtraba
+  //  en el bundle del frontend. El admin real entra por JWT con role='admin'.)
   const jwt = authHeader.replace('Bearer ', '').trim()
   if (jwt) {
     try {

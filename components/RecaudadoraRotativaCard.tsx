@@ -15,7 +15,6 @@ const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
 const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
 
 function adminAuthHeader(): string {
-    const ADMIN_PASS = (import.meta.env.VITE_ADMIN_PASSWORD as string) || '';
     try {
         const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
         if (k) {
@@ -23,7 +22,7 @@ function adminAuthHeader(): string {
             if (d.access_token) return `Bearer ${d.access_token}`;
         }
     } catch { /* sin sesión supabase */ }
-    return ADMIN_PASS ? `AdminBypass ${ADMIN_PASS}` : `Bearer ${SKEY}`;
+    return `Bearer ${SKEY}`;
 }
 async function callGasfree(body: Record<string, unknown>): Promise<any> {
     const r = await fetch(`${SURL}/functions/v1/gasfree`, {

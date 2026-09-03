@@ -37,7 +37,6 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const SUPABASE_URL   = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY    = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-const ADMIN_PASS     = (Deno.env.get('ADMIN_PASS') ?? '').trim()
 // trim(): al pegar credenciales desde WhatsApp/correo se cuelan espacios
 // o saltos de línea — y Finity rechaza el valor con basura invisible.
 const FINITY_ID      = (Deno.env.get('FINITY_CLIENT_ID') ?? '').trim()
@@ -350,8 +349,8 @@ async function validCaller(req: Request, payload: Record<string, unknown>): Prom
     const uid = String(payload.user_id ?? '')
     return { ok: true, userId: uid || undefined, internal: true, viaJwt: true }
   }
-  // Admin explícito (AdminBypass) también cuenta como interno de confianza.
-  if (ADMIN_PASS && auth === `AdminBypass ${ADMIN_PASS}`) return { ok: true, internal: true, viaJwt: true }
+  // (El "AdminBypass <password>" se eliminó: era un secreto compartido que
+  //  viajaba en el bundle del frontend. El admin real entra por JWT abajo.)
 
   // (a) JWT real de Supabase. Si el usuario es admin, se marca `internal`
   // (confianza plena) para que el panel de admin pueda dejar de usar la
