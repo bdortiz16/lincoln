@@ -159,14 +159,24 @@ async function mouvFetch(path: string, init: RequestInit = {}): Promise<{ ok: bo
 
 // Mapea el tipo de llave interno → el enum de Mouv (fallback; lo ideal es
 // usar el keyType que devuelve resolve-key, que es autoritativo).
-function brebTypeToMouv(t: string): string {
-  switch ((t || '').toLowerCase()) {
-    case 'celular': return 'PHONE'
-    case 'correo': return 'EMAIL'
-    case 'cedula': return 'DOCUMENT'
-    case 'alfanumerico': return 'ALPHANUMERIC'
-    default: return 'PHONE'
-  }
+// Normaliza CUALQUIER tipo de llave (el interno: celular/correo/cedula/
+// alfanumerico; o el que devuelve resolve-key: PHONE/EMAIL/MERCHANT/DOCUMENT/
+// NRIC/…) al ENUM que EXIGE /transfers/send: PHONE | EMAIL | ALPHANUM | NRIC.
+// Mouv rechaza con 400 cualquier otro valor (p. ej. 'MERCHANT', 'DOCUMENT',
+// 'ALPHANUMERIC'). Si el tipo no se reconoce, se infiere por el formato del valor.
+function brebTypeToMouv(t: string, keyValue?: string): 'PHONE' | 'EMAIL' | 'ALPHANUM' | 'NRIC' {
+  const s = String(t ?? '').trim().toUpperCase()
+  if (/PHONE|CELULAR|M[OÓ]VIL|MOBILE|TEL/.test(s)) return 'PHONE'
+  if (/EMAIL|CORREO|MAIL/.test(s)) return 'EMAIL'
+  if (/NRIC|C[EÉ]DULA|DOCUMENT|DOCUMENTO|\bCC\b|\bNIT\b|\bID\b/.test(s)) return 'NRIC'
+  if (/ALPHANUM|ALFANUM|MERCHANT|COMERCIO|C[OÓ]DIGO|CODE|LLAVE|ALIAS/.test(s)) return 'ALPHANUM'
+  // Tipo desconocido → inferir por el formato del valor de la llave.
+  const v = String(keyValue ?? '').trim()
+  if (/@/.test(v)) return 'EMAIL'
+  const digits = v.replace(/[^\d]/g, '')
+  if (/^\+?\d[\d\s-]{9,14}$/.test(v) && digits.length >= 10) return 'PHONE'
+  if (/^\d{6,10}$/.test(digits)) return 'NRIC'
+  return 'ALPHANUM'
 }
 
 // ── Resolver una llave Bre-B en el directorio de Mouv, con VARIANTES ──
@@ -229,14 +239,17 @@ async function mouvPayout(
     // 1) Resolver la llave (con variantes de formato) para el titular SARLAFT.
     let targetName: string | undefined = cleanField(recipient.holderName)
     let targetDocument: string | undefined = cleanField(recipient.documentNumber ?? recipient.docNumber)
-    let keyType = brebTypeToMouv(recipient.keyType)
     let sendKey = String(recipient.key ?? '').trim()   // la llave a usar en el envío
+    let keyType = brebTypeToMouv(recipient.keyType, sendKey)
     const rr = await mouvResolveBrebKey(recipient.key, recipient.keyType)
     if (rr.found) {
       targetName = rr.fullName ?? targetName
       targetDocument = rr.idValue ?? targetDocument
-      if (rr.keyType) keyType = rr.keyType              // autoritativo
       sendKey = rr.matchedKey || sendKey               // la variante que sí existe (p. ej. +57…)
+      // El keyType de resolve-key es autoritativo, PERO se normaliza al enum del
+      // send (PHONE/EMAIL/ALPHANUM/NRIC): resolve puede devolver 'MERCHANT',
+      // 'DOCUMENT', etc., que el send rechaza con 400.
+      if (rr.keyType) keyType = brebTypeToMouv(rr.keyType, sendKey)
     }
     // Si resolve NO la encontró pero el beneficiario YA trae nombre + documento
     // (se inscribió y validó antes), NO se aborta el envío: Mouv hará la
