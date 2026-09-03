@@ -389,6 +389,8 @@ export const AdminGasFreeSection: React.FC = () => {
     const [showMovements, setShowMovements] = useState(false);
     const [movements, setMovements] = useState<any[] | null>(null);
     const [movementsLoading, setMovementsLoading] = useState(false);
+    const [selectedMovement, setSelectedMovement] = useState<any | null>(null);
+    const [traceLookup, setTraceLookup] = useState<{ loading?: boolean; txid?: string | null; error?: string } | null>(null);
     const loadMovements = async () => {
         setMovementsLoading(true);
         try {
@@ -997,7 +999,7 @@ export const AdminGasFreeSection: React.FC = () => {
                                     </thead>
                                     <tbody>
                                         {movements.map((m: any) => (
-                                            <tr key={m.id} className="border-t border-slate-100">
+                                            <tr key={m.id} className="border-t border-slate-100 cursor-pointer hover:bg-slate-50" onClick={() => { setSelectedMovement(m); setTraceLookup(null); }} title="Ver detalle (TxID, destino, estado)">
                                                 <td className="px-4 py-2.5">
                                                     <span className={`inline-flex items-center gap-1 text-[10px] font-bold uppercase px-1.5 py-0.5 rounded-full mr-1.5 ${m.direction === 'in' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>
                                                         {m.direction === 'in' ? '↓ Entrada' : '↑ Salida'}
@@ -1016,6 +1018,86 @@ export const AdminGasFreeSection: React.FC = () => {
                     </div>
                 </div>
             )}
+
+            {/* Detalle de un movimiento de tesorería: TxID/trace, destino, estado
+                y enlaces a TronScan para verificar en cadena (p. ej. por qué el
+                proveedor no registró el ingreso). */}
+            {selectedMovement && (() => {
+                const m = selectedMovement;
+                const isHash = (s: any) => typeof s === 'string' && /^[0-9a-fA-F]{64}$/.test(s.replace(/^0x/, ''));
+                const tronTx = (h: string) => `https://tronscan.org/#/transaction/${h.replace(/^0x/, '')}`;
+                const tronAddr = (a: string) => `https://tronscan.org/#/address/${a}`;
+                const copy = (t: string) => { navigator.clipboard.writeText(t).then(() => setCopied(t)).catch(() => {}); setTimeout(() => setCopied(null), 1500); };
+                const Row: React.FC<{ label: string; value?: string; href?: string }> = ({ label, value, href }) => (
+                    <div className="bg-slate-50 rounded-lg p-2.5">
+                        <p className="text-[9px] uppercase tracking-wider text-slate-400">{label}</p>
+                        <div className="text-sm font-bold font-mono text-slate-800 break-all flex items-center gap-2">
+                            <span className="min-w-0 break-all">{value ?? '—'}</span>
+                            {value && <button onClick={() => copy(value)} className="text-slate-400 hover:text-[#16A34A] shrink-0" title="Copiar"><Copy size={12} /></button>}
+                            {value && href && <a href={href} target="_blank" rel="noopener noreferrer" className="text-[#16A34A] hover:underline text-[11px] font-semibold shrink-0">TronScan ↗</a>}
+                            {value && copied === value && <span className="text-[10px] text-green-600 shrink-0">copiado</span>}
+                        </div>
+                    </div>
+                );
+                return (
+                    <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4" onClick={() => setSelectedMovement(null)}>
+                        <div className="bg-white rounded-2xl w-full max-w-md max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+                            <div className="flex justify-between items-center p-5 border-b border-slate-100">
+                                <div>
+                                    <h3 className="font-bold text-slate-800">{m.direction === 'in' ? '↓ Entrada (barrido)' : '↑ Salida (pago a proveedor)'}</h3>
+                                    <p className="text-xs text-slate-400 mt-0.5">{m.direction === 'in' ? (m.fromUserEmail ?? 'Barrido de cliente') : (m.providerName ?? 'Proveedor')} · {m.at ? new Date(m.at).toLocaleString('es-CO') : '—'}</p>
+                                </div>
+                                <button onClick={() => setSelectedMovement(null)} className="text-slate-400 hover:text-slate-600"><X size={20}/></button>
+                            </div>
+                            <div className="p-5 space-y-2.5">
+                                <div className="grid grid-cols-2 gap-2.5">
+                                    <Row label="Monto" value={`${fmt(m.amount)} USDT`} />
+                                    <Row label="Comisión GasFree" value={m.feeChargedUsdt != null ? `${fmt(m.feeChargedUsdt)} USDT` : '—'} />
+                                </div>
+                                {m.state && <Row label="Estado GasFree" value={String(m.state)} />}
+                                {/* TxID on-chain / Trace de GasFree: si es un hash de 64 hex, enlaza a la tx en TronScan. */}
+                                {m.txHash || m.txId ? (
+                                    <Row label="TxID (on-chain)" value={String(m.txHash ?? m.txId)} href={tronTx(String(m.txHash ?? m.txId))} />
+                                ) : m.traceId ? (
+                                    <Row label={isHash(m.traceId) ? 'TxID (on-chain)' : 'Trace GasFree (id de la operación)'} value={String(m.traceId)} href={isHash(m.traceId) ? tronTx(String(m.traceId)) : undefined} />
+                                ) : <Row label="TxID / Trace" value="—" />}
+                                {/* Si solo hay traceId (no hash), buscar el TxID on-chain real en GasFree. */}
+                                {m.traceId && !isHash(m.traceId) && !(m.txHash || m.txId) && (
+                                    traceLookup?.txid ? (
+                                        <Row label="TxID (on-chain)" value={String(traceLookup.txid)} href={tronTx(String(traceLookup.txid))} />
+                                    ) : (
+                                        <div>
+                                            <button
+                                                onClick={async () => {
+                                                    setTraceLookup({ loading: true });
+                                                    try {
+                                                        const r: any = await callGasfree({ action: 'trace', traceId: String(m.traceId) });
+                                                        const d = r?.data ?? {};
+                                                        const txid = d.txnHash ?? d.txHash ?? d.txid ?? d.txId ?? d.transactionHash ?? d.hash ?? d.txnId ?? null;
+                                                        setTraceLookup({ loading: false, txid: txid ?? null, error: txid ? undefined : 'GasFree aún no reporta el hash on-chain (puede tardar unos segundos tras el envío). Mientras tanto, verifica en el Destino.' });
+                                                    } catch (e: any) { setTraceLookup({ loading: false, error: String(e?.message ?? e) }); }
+                                                }}
+                                                disabled={traceLookup?.loading}
+                                                className="w-full text-sm font-semibold text-[#16A34A] border border-[#16A34A]/30 rounded-lg py-2 hover:bg-[#16A34A]/5 disabled:opacity-50"
+                                            >{traceLookup?.loading ? 'Buscando…' : 'Buscar TxID on-chain'}</button>
+                                            {traceLookup?.error && <p className="text-[11px] text-slate-400 mt-1.5">{traceLookup.error}</p>}
+                                        </div>
+                                    )
+                                )}
+                                {m.direction === 'out' && m.toAddress && (
+                                    <Row label="Destino (dirección del proveedor)" value={String(m.toAddress)} href={tronAddr(String(m.toAddress))} />
+                                )}
+                                {m.fromAddress && (
+                                    <Row label="Origen (wallet GasFree)" value={String(m.fromAddress)} href={tronAddr(String(m.fromAddress))} />
+                                )}
+                                <p className="text-[11px] text-slate-400 leading-relaxed pt-1">
+                                    Para verificar por qué el proveedor no registró el ingreso: abre el <b>Destino</b> en TronScan y revisa si la transferencia por <b>{fmt(m.amount)} USDT</b> llegó a esa dirección a la hora del movimiento. Si el TxID es un hash on-chain, ábrelo directo.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
         </div>
     );
 };
