@@ -114,6 +114,22 @@ async function verifyAdmin(req: Request): Promise<{ ok: boolean; error?: string 
   }
 }
 
+// Auditoría DURABLE de acciones sensibles del admin (borrado de cuentas, etc.).
+// Antes un borrado no dejaba rastro en la app: solo en los logs de Supabase,
+// que CADUCAN. Ahora queda para siempre en audit_log con quién, cuándo e IP.
+async function auditAdmin(req: Request, action: string, metadata: Record<string, unknown>) {
+  try {
+    let byEmail: string | null = null, byId: string | null = null
+    try {
+      const jwt = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
+      if (jwt) { const { data } = await db.auth.getUser(jwt); byEmail = data?.user?.email ?? null; byId = data?.user?.id ?? null }
+    } catch { /* sin identidad */ }
+    const ip = (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim() || req.headers.get('cf-connecting-ip') || req.headers.get('x-real-ip') || null
+    const userAgent = req.headers.get('user-agent') ?? null
+    await db.from('audit_log').insert({ user_id: byId, action, metadata: { ...metadata, byEmail, ip, userAgent, hadSession: !!byEmail, at: new Date().toISOString() } })
+  } catch { /* best-effort — nunca romper la operación */ }
+}
+
 // true si quien llama es admin, O si su JWT resuelve al MISMO userId que
 // pide la acción (para insert_transaction: cualquier cliente puede
 // insertar SU PROPIA transacción, nunca la de otro).
@@ -524,9 +540,16 @@ Deno.serve(async (req: Request) => {
       if (body.action === 'delete_user' && body.userId) {
         const uid: string = body.userId
 
-        // 0. Read gasfreeHdIndex BEFORE deleting so we can update the counter
-        const { data: deletedUser } = await db.from('users').select('raw_data').eq('id', uid).single()
+        // 0. Read gasfreeHdIndex + email/rol BEFORE deleting (para el counter y
+        //    para el registro DURABLE de auditoría de quién borró a quién).
+        const { data: deletedUser } = await db.from('users').select('raw_data, email, role').eq('id', uid).single()
         const deletedIndex: number | undefined = deletedUser?.raw_data?.gasfreeHdIndex
+        await auditAdmin(req, 'admin.delete_user', {
+          deletedUserId: uid,
+          deletedEmail: (deletedUser as any)?.email ?? null,
+          deletedRole: (deletedUser as any)?.role ?? null,
+          gasfreeIndex: deletedIndex ?? null,
+        })
 
         // 1. Delete all transactions for this user
         await db.from('transactions').delete().eq('user_id', uid)

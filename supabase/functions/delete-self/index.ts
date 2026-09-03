@@ -25,6 +25,14 @@ Deno.serve(async (req: Request) => {
     // Only allow deleting own account
     const uid = user.id
 
+    // Registro DURABLE del borrado (quién, cuándo, IP) — antes no quedaba rastro
+    // en la app, solo en los logs de Supabase que caducan.
+    try {
+      const { data: prof } = await db.from('users').select('email, role').eq('id', uid).single()
+      const ip = (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim() || req.headers.get('cf-connecting-ip') || req.headers.get('x-real-ip') || null
+      await db.from('audit_log').insert({ user_id: uid, action: 'user.delete_self', metadata: { deletedEmail: (prof as any)?.email ?? user.email ?? null, deletedRole: (prof as any)?.role ?? null, ip, userAgent: req.headers.get('user-agent') ?? null, at: new Date().toISOString() } })
+    } catch { /* best-effort */ }
+
     await db.from('transactions').delete().eq('user_id', uid)
     await db.from('users').delete().eq('id', uid)
 
