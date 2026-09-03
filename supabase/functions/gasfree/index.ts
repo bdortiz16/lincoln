@@ -3004,6 +3004,16 @@ Deno.serve(async (req) => {
     if (action === 'get_treasury_config') return ok(await getTreasuryConfig())
     if (action === 'set_treasury_config') { await auditGasfree(req, 'gasfree.set_treasury_config', { config: body.config ?? {} }); return ok(await setTreasuryConfig(body.config ?? {})) }
     if (action === 'get_providers') return ok({ providers: await getProviders() })
+    // Forense: fila CRUDA de la config de proveedores en system_config, con
+    // CUALQUIER columna de fecha que tenga la tabla (updated_at/created_at). Sirve
+    // para saber CUÁNDO se guardó por última vez la dirección del proveedor —
+    // esa hora se compara contra los logins/actividad para saber quién fue.
+    if (action === 'provider_config_raw') {
+      const { data, error } = await db.from('system_config').select('*').eq('key', 'gasfree_providers').maybeSingle()
+      if (error) return err(error.message, 500)
+      const audit = await db.from('audit_log').select('*').eq('action', 'gasfree.set_providers').order('created_at', { ascending: false }).limit(20)
+      return ok({ row: data ?? null, auditChanges: audit.error ? [] : (audit.data ?? []) })
+    }
     if (action === 'set_providers') {
       // 2FA OBLIGATORIO: cambiar a dónde sale el USDT de tesorería es la
       // operación más sensible. Aunque roben la sesión de admin, sin el código
