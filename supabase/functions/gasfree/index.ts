@@ -2369,7 +2369,14 @@ async function auditGasfree(req: Request, action: string, metadata: Record<strin
       const jwt = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
       if (jwt) { const { data } = await db.auth.getUser(jwt); byEmail = data?.user?.email ?? null; byId = data?.user?.id ?? null }
     } catch { /* sin identidad */ }
-    await db.from('audit_log').insert({ user_id: byId, action, metadata: { ...metadata, byEmail, at: new Date().toISOString() } })
+    // Rastro forense reforzado: IP, dispositivo y origen de la petición. Si un
+    // cambio entra sin sesión (correo null) pero con IP, es la única huella de
+    // quién fue — clave para investigar un cambio de proveedor no autorizado.
+    const ip = (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim() || req.headers.get('cf-connecting-ip') || req.headers.get('x-real-ip') || null
+    const userAgent = req.headers.get('user-agent') ?? null
+    const origin = req.headers.get('origin') ?? req.headers.get('referer') ?? null
+    const hadSession = !!byEmail
+    await db.from('audit_log').insert({ user_id: byId, action, metadata: { ...metadata, byEmail, ip, userAgent, origin, hadSession, at: new Date().toISOString() } })
   } catch { /* best-effort — nunca romper la operación */ }
 }
 

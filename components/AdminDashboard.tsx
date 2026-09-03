@@ -3572,6 +3572,15 @@ const renderDesign = () => (
                     </div>
                     <p className="text-sm font-bold text-slate-800 mt-1.5">{actionLabel(row.action)}</p>
                     <p className="text-xs text-slate-500 mt-0.5">Por: <span className="font-semibold text-slate-700">{actorOf(row)}</span></p>
+                    {row?.metadata?.hadSession === false && (
+                      <p className="text-[11px] font-bold text-red-600 mt-0.5">⚠ Sin sesión iniciada — posible AdminBypass (clave filtrada). La IP es la única huella.</p>
+                    )}
+                    {row?.metadata?.ip && (
+                      <p className="text-[11px] text-slate-500 mt-0.5">IP: <span className="font-mono text-slate-700">{row.metadata.ip}</span>{row?.metadata?.origin ? ` · ${row.metadata.origin}` : ''}</p>
+                    )}
+                    {row?.metadata?.userAgent && (
+                      <p className="text-[11px] text-slate-400 mt-0.5 break-all">Dispositivo: {String(row.metadata.userAgent).slice(0, 120)}</p>
+                    )}
                   </div>
                 </div>
                 {isProviderChange(row) && (
