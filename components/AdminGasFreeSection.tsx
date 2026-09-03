@@ -401,6 +401,52 @@ export const AdminGasFreeSection: React.FC = () => {
     };
     const openMovements = () => { setShowMovements(true); loadMovements(); };
 
+    // Comprobante (PNG) de un movimiento de tesorería — para soporte / probarle
+    // al proveedor que el USDT salió. Incluye TxID, destino, estado y fecha.
+    const downloadTreasuryReceipt = (m: any, txid?: string | null) => {
+        try {
+            const W = 720, PAD = 48;
+            const rows: [string, string][] = [
+                ['Tipo', m.direction === 'in' ? 'Entrada (barrido de cliente)' : 'Salida (pago a proveedor)'],
+                [m.direction === 'in' ? 'Origen' : 'Proveedor', m.direction === 'in' ? (m.fromUserEmail ?? 'Barrido de cliente') : (m.providerName ?? 'Proveedor')],
+                ['Monto', `${fmt(m.amount)} USDT`],
+                ['Comisión GasFree', m.feeChargedUsdt != null ? `${fmt(m.feeChargedUsdt)} USDT` : '—'],
+                ['Estado', String(m.state ?? '—')],
+                ['TxID on-chain', String(txid ?? m.txHash ?? m.txId ?? m.traceId ?? '—')],
+                ...(m.toAddress ? [['Destino (dirección)', String(m.toAddress)] as [string, string]] : []),
+                ...(m.fromAddress ? [['Origen (wallet GasFree)', String(m.fromAddress)] as [string, string]] : []),
+                ['Fecha', m.at ? new Date(m.at).toLocaleString('es-CO') : '—'],
+            ];
+            const H = PAD * 2 + 120 + rows.length * 62 + 60;
+            const c = document.createElement('canvas'); c.width = W; c.height = H;
+            const x = c.getContext('2d'); if (!x) return;
+            x.fillStyle = '#0C0E0D'; x.fillRect(0, 0, W, H);
+            const F = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
+            // Wordmark Lincoin
+            x.font = `800 30px ${F}`; x.fillStyle = '#F4F4F2'; x.textBaseline = 'alphabetic';
+            x.fillText('Lincoin', PAD, PAD + 24);
+            const w = x.measureText('Lincoin').width; x.fillStyle = '#4ADE80'; x.fillText('.', PAD + w + 2, PAD + 24);
+            x.font = `600 13px ${F}`; x.fillStyle = '#878E88'; x.fillText('Comprobante de Tesorería', PAD, PAD + 48);
+            x.strokeStyle = 'rgba(255,255,255,0.10)'; x.beginPath(); x.moveTo(PAD, PAD + 78); x.lineTo(W - PAD, PAD + 78); x.stroke();
+            let y = PAD + 120;
+            for (const [k, v] of rows) {
+                x.font = `500 12px ${F}`; x.fillStyle = '#878E88'; x.fillText(k.toUpperCase(), PAD, y);
+                x.font = `700 15px ${F}`; x.fillStyle = '#F4F4F2';
+                // Envolver valores largos (direcciones/hash)
+                const maxW = W - PAD * 2; let val = v;
+                if (x.measureText(val).width > maxW) {
+                    // partir en dos líneas
+                    const mid = Math.ceil(val.length / 2);
+                    x.fillText(val.slice(0, mid), PAD, y + 22); x.fillText(val.slice(mid), PAD, y + 40); y += 62;
+                } else { x.fillText(val, PAD, y + 22); y += 62; }
+            }
+            x.font = `500 11px ${F}`; x.fillStyle = 'rgba(244,244,242,0.45)';
+            x.fillText('Movimiento interno de tesorería · Lincoin · lincoin.me', PAD, H - 30);
+            const url = c.toDataURL('image/png');
+            const a = document.createElement('a'); a.href = url; a.download = `Lincoin-tesoreria-${String(txid ?? m.id ?? '').slice(0, 12)}.png`; a.click();
+        } catch { /* noop */ }
+    };
+
     React.useEffect(() => { loadRec(); loadTreasuryCfg(); loadProviders(); loadMouvBalances(); /* eslint-disable-next-line */ }, []);
 
     // Auto-refresco de los saldos de Mouv cada minuto.
@@ -1071,10 +1117,9 @@ export const AdminGasFreeSection: React.FC = () => {
                                                 onClick={async () => {
                                                     setTraceLookup({ loading: true });
                                                     try {
-                                                        const r: any = await callGasfree({ action: 'trace', traceId: String(m.traceId) });
-                                                        const d = r?.data ?? {};
-                                                        const txid = d.txnHash ?? d.txHash ?? d.txid ?? d.txId ?? d.transactionHash ?? d.hash ?? d.txnId ?? null;
-                                                        setTraceLookup({ loading: false, txid: txid ?? null, error: txid ? undefined : 'GasFree aún no reporta el hash on-chain (puede tardar unos segundos tras el envío). Mientras tanto, verifica en el Destino.' });
+                                                        const r: any = await callGasfree({ action: 'treasury_txid', traceId: String(m.traceId ?? ''), toAddress: String(m.toAddress ?? ''), amount: Number(m.amount ?? 0) });
+                                                        const txid = r?.txid ?? null;
+                                                        setTraceLookup({ loading: false, txid, error: txid ? undefined : 'Aún no encontramos el hash on-chain (puede tardar unos segundos tras el envío). Verifica en el Destino en TronScan y reintenta.' });
                                                     } catch (e: any) { setTraceLookup({ loading: false, error: String(e?.message ?? e) }); }
                                                 }}
                                                 disabled={traceLookup?.loading}
@@ -1093,6 +1138,10 @@ export const AdminGasFreeSection: React.FC = () => {
                                 <p className="text-[11px] text-slate-400 leading-relaxed pt-1">
                                     Para verificar por qué el proveedor no registró el ingreso: abre el <b>Destino</b> en TronScan y revisa si la transferencia por <b>{fmt(m.amount)} USDT</b> llegó a esa dirección a la hora del movimiento. Si el TxID es un hash on-chain, ábrelo directo.
                                 </p>
+                                <button
+                                    onClick={() => downloadTreasuryReceipt(m, traceLookup?.txid ?? m.txHash ?? m.txId ?? m.traceId)}
+                                    className="w-full mt-1 text-sm font-bold bg-[#0C0E0D] text-white rounded-lg py-2.5 hover:bg-[#16A34A] transition-colors"
+                                >⬇ Descargar comprobante</button>
                             </div>
                         </div>
                     </div>

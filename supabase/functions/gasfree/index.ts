@@ -2810,6 +2810,36 @@ Deno.serve(async (req) => {
       const r = await gfGet(`/api/v1/gasfree/${body.traceId}`)
       return ok({ ok: r?.code === 200, data: r?.data ?? r })
     }
+    // Resolver el TxID ON-CHAIN de un movimiento de tesorería (comprobante).
+    // 1) Detalle de la traza en GasFree (trae el hash cuando ya está minado).
+    // 2) Si no, se busca en las transferencias ENTRANTES de la dirección DESTINO
+    //    (la wallet del proveedor, ej. Finity) el TRC-20 que cuadre por monto
+    //    cerca de la hora — ese es el hash que Finity debería haber registrado.
+    if (action === 'treasury_txid') {
+      const traceId = String(body.traceId ?? '')
+      const toAddress = String(body.toAddress ?? '')
+      const amount = Number(body.amount ?? 0)
+      const { token } = await gfConfig()
+      const dec = Number(token.decimal ?? 6)
+      let txid: string | null = null
+      let source: string | null = null
+      if (traceId) {
+        try {
+          const r = await gfGet(`/api/v1/gasfree/${traceId}`)
+          const d = (r?.data ?? {}) as any
+          txid = d.txnHash ?? d.txHash ?? d.txid ?? d.txId ?? d.transactionHash ?? d.hash ?? d.txnId ?? null
+          if (txid) source = 'gasfree'
+        } catch { /* sigue al match on-chain */ }
+      }
+      if (!txid && toAddress && amount > 0) {
+        try {
+          const incoming = await incomingTransfersTrc20(toAddress, token.tokenAddress, dec, 60)
+          const match = incoming.find(t => Math.abs(t.amount - amount) < 0.5)
+          if (match?.txId) { txid = match.txId; source = 'onchain_dest' }
+        } catch { /* best-effort */ }
+      }
+      return ok({ ok: true, txid: txid ?? null, source, explorer: txid ? `https://tronscan.org/#/transaction/${String(txid).replace(/^0x/, '')}` : null })
+    }
     if (action === 'get_treasury_config') return ok(await getTreasuryConfig())
     if (action === 'set_treasury_config') return ok(await setTreasuryConfig(body.config ?? {}))
     if (action === 'get_providers') return ok({ providers: await getProviders() })
