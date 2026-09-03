@@ -2784,6 +2784,29 @@ Deno.serve(async (req) => {
       if (body.index == null) return err('Falta index', 400)
       return ok(await sweepIndex(Number(body.index), body.mnemonic ? String(body.mnemonic) : undefined))
     }
+    // Recuperación en UN paso: dada una DIRECCIÓN, localiza su índice HD y —si
+    // es una wallet nuestra con saldo— la barre a la recaudadora. Si NO es
+    // nuestra (no tenemos la llave privada) devuelve un veredicto claro, sin
+    // mover nada: barrer una dirección externa es físicamente imposible.
+    if (action === 'sweep_address') {
+      if (!body.address) return err('Falta address', 400)
+      const extra = body.extra != null ? Number(body.extra) : 300
+      const loc = await findAddress(String(body.address), extra) as any
+      if (!loc?.found) {
+        return ok({
+          swept: null, found: false,
+          scannedUpTo: loc?.scannedUpTo, apiErrors: loc?.apiErrors ?? 0, mnemonicsTried: loc?.mnemonicsTried,
+          reason: Number(loc?.apiErrors ?? 0) > 0
+            ? 'GasFree limitó la búsqueda (429). Resultado no concluyente: reintenta en 1–2 minutos.'
+            : 'No es una wallet nuestra: se recorrió toda la ruta HD sin errores de API y no coincide con ninguna llave que controlemos. Sin la llave privada no se puede barrer.',
+        })
+      }
+      if (!(Number(loc.balanceUsdt ?? 0) > 0)) {
+        return ok({ swept: 0, found: true, index: loc.index, gasFreeAddress: loc.gasFreeAddress, mnemonic: loc.mnemonic, reason: 'La dirección es nuestra pero su saldo es 0 USDT — no hay nada que barrer.' })
+      }
+      const sw = await sweepIndex(Number(loc.index), loc.mnemonic ? String(loc.mnemonic) : undefined) as any
+      return ok({ found: true, index: loc.index, gasFreeAddress: loc.gasFreeAddress, mnemonic: loc.mnemonic, balanceUsdt: loc.balanceUsdt, ...sw })
+    }
     // Recuperación: FIJAR la wallet real de un usuario a una dirección conocida
     // (la que el cliente ve/usa). No mueve fondos; alinea admin ↔ cliente.
     if (action === 'pin_address') {

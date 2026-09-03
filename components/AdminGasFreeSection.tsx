@@ -103,7 +103,7 @@ export const AdminGasFreeSection: React.FC = () => {
     const [recAddr, setRecAddr] = useState('');
     const [recRange, setRecRange] = useState('300');
     const [recBusy, setRecBusy] = useState(false);
-    const [recResult, setRecResult] = useState<{ found?: boolean; index?: number; mnemonic?: string; balanceUsdt?: number; gasFreeAddress?: string; scannedUpTo?: number; error?: string; swept?: number; traceId?: string; apiErrors?: number; mnemonicsTried?: string[] } | null>(null);
+    const [recResult, setRecResult] = useState<{ found?: boolean; index?: number; mnemonic?: string; balanceUsdt?: number; gasFreeAddress?: string; scannedUpTo?: number; error?: string; swept?: number | null; traceId?: string; apiErrors?: number; mnemonicsTried?: string[]; reason?: string } | null>(null);
     const locateAddr = async () => {
         setRecBusy(true); setRecResult(null);
         try {
@@ -119,6 +119,18 @@ export const AdminGasFreeSection: React.FC = () => {
             const r = await callGasfree({ action: 'sweep_index', index, mnemonic });
             setRecResult((prev) => ({ ...(prev ?? {}), ...(r?.error ? { error: r.error } : { swept: r.swept, traceId: r.traceId }) }));
         } catch (e: any) { setRecResult((prev) => ({ ...(prev ?? {}), error: e?.message ?? 'Error' })); }
+        setRecBusy(false);
+    };
+    // Localizar + barrer en UN paso: para recuperar el saldo de una dirección
+    // (p. ej. TLf5…) sin tener que hacer los dos clics. Solo funciona si es una
+    // wallet nuestra (tenemos su llave); si es externa, lo dice sin mover nada.
+    const sweepAddr = async () => {
+        if (!confirm('¿Localizar esta dirección y BARRER su saldo a la recaudadora? Solo se moverá si es una wallet nuestra (tenemos su llave). Esto mueve fondos on-chain.')) return;
+        setRecBusy(true); setRecResult(null);
+        try {
+            const r = await callGasfree({ action: 'sweep_address', address: recAddr.trim(), extra: Number(recRange) || 300 });
+            setRecResult(r?.error ? { error: r.error } : r);
+        } catch (e: any) { setRecResult({ error: e?.message ?? 'Error' }); }
         setRecBusy(false);
     };
     // Auditoría de wallets: detectar colisiones (mismo índice en correos distintos).
@@ -642,8 +654,11 @@ export const AdminGasFreeSection: React.FC = () => {
                     <button onClick={locateAddr} disabled={recBusy || !recAddr.trim()} className="px-3 py-2 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#152e52] disabled:opacity-60">
                         {recBusy ? 'Buscando…' : 'Localizar'}
                     </button>
+                    <button onClick={sweepAddr} disabled={recBusy || !recAddr.trim()} title="Localiza y barre el saldo a la recaudadora en un solo paso" className="px-3 py-2 text-xs font-bold rounded-lg bg-[#4ADE80] text-[#0C0E0D] hover:bg-[#26bda9] disabled:opacity-60">
+                        {recBusy ? '…' : 'Barrer a recaudadora'}
+                    </button>
                 </div>
-                <p className="text-[10px] text-slate-400 -mt-1">Sube el "rango" (ej. 300) si no la encuentra — escanea más índices.</p>
+                <p className="text-[10px] text-slate-400 -mt-1">"Barrer a recaudadora" localiza y barre en un paso — solo mueve fondos si la dirección es una wallet nuestra (tenemos su llave). Sube el "rango" (ej. 300–1000) si no la encuentra.</p>
                 {recResult && (
                     <div className="text-xs bg-white border border-slate-200 rounded-lg p-3 space-y-2">
                         {recResult.error ? (
@@ -657,8 +672,11 @@ export const AdminGasFreeSection: React.FC = () => {
                                         {recBusy ? 'Barriendo…' : `Barrer ${Number(recResult.balanceUsdt ?? 0).toFixed(2)} USDT a Tesorería`}
                                     </button>
                                 )}
-                                {recResult.swept != null && (
-                                    <p className="text-green-700 font-semibold">✅ Barrido {Number(recResult.swept).toFixed(2)} USDT · TxID {String(recResult.traceId ?? '').slice(0, 14)}…</p>
+                                {recResult.swept != null && Number(recResult.swept) > 0 && (
+                                    <p className="text-green-700 font-semibold">✅ Barrido {Number(recResult.swept).toFixed(2)} USDT a la recaudadora · TxID {String(recResult.traceId ?? '').slice(0, 14)}…</p>
+                                )}
+                                {recResult.swept === 0 && recResult.reason && (
+                                    <p className="text-slate-500">{recResult.reason}</p>
                                 )}
                             </>
                         ) : (
