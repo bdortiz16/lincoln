@@ -213,25 +213,38 @@ async function gfAuth(method: string, path: string): Promise<Record<string, stri
   const b64 = btoa(String.fromCharCode(...new Uint8Array(sig)))
   return { 'Timestamp': String(ts), 'Authorization': `ApiKey ${API_KEY}:${b64}` }
 }
-async function gfGet(apiPath: string): Promise<any> {
+// Espera respetando Retry-After (o backoff exponencial) cuando GasFree limita
+// (429 Too Many Requests) o está saturado (503). Evita que un rate limit
+// transitorio rompa el saldo de tesorería o el escaneo de recuperación.
+async function gfBackoff(r: Response, attempt: number): Promise<void> {
+  const ra = Number(r.headers.get('retry-after')) || 0
+  const waitMs = ra > 0 ? Math.min(ra * 1000, 10000) : Math.min(600 * Math.pow(2, attempt), 8000)
+  await new Promise(res => setTimeout(res, waitMs))
+}
+async function gfGet(apiPath: string, attempt = 0): Promise<any> {
   const path = `${CFG.prefix}${apiPath}`
   const r = await fetch(`${CFG.host}${path}`, { headers: await gfAuth('GET', path) })
+  if ((r.status === 429 || r.status === 503) && attempt < 3) { await gfBackoff(r, attempt); return gfGet(apiPath, attempt + 1) }
   const txt = await r.text()
   try { return JSON.parse(txt) }
   catch {
     // GasFree devuelve texto plano en errores de auth (ej. "Apikey not found.").
-    const hint = /apikey/i.test(txt) ? ' — revisa GASFREE_API_KEY/SECRET en Supabase Secrets y que sean del entorno correcto (mainnet/tron vs nile) y estén verificadas.' : ''
+    const hint = /apikey/i.test(txt) ? ' — revisa GASFREE_API_KEY/SECRET en Supabase Secrets y que sean del entorno correcto (mainnet/tron vs nile) y estén verificadas.'
+      : (r.status === 429 ? ' — GasFree está limitando por exceso de peticiones (429). Espera un momento y evita escaneos con rango muy alto.' : '')
     throw new Error(`GasFree respondió (HTTP ${r.status}): ${txt.slice(0, 180)}${hint}`)
   }
 }
-async function gfPost(apiPath: string, body: any): Promise<any> {
+async function gfPost(apiPath: string, body: any, attempt = 0): Promise<any> {
   const path = `${CFG.prefix}${apiPath}`
   const headers = { ...(await gfAuth('POST', path)), 'Content-Type': 'application/json' }
   const r = await fetch(`${CFG.host}${path}`, { method: 'POST', headers, body: JSON.stringify(body) })
+  // 429/503 = la petición NO se procesó → reintentar es seguro (no duplica).
+  if ((r.status === 429 || r.status === 503) && attempt < 3) { await gfBackoff(r, attempt); return gfPost(apiPath, body, attempt + 1) }
   const txt = await r.text()
   try { return JSON.parse(txt) }
   catch {
-    const hint = /apikey/i.test(txt) ? ' — revisa GASFREE_API_KEY/SECRET en Supabase Secrets y que sean del entorno correcto (mainnet/tron vs nile) y estén verificadas.' : ''
+    const hint = /apikey/i.test(txt) ? ' — revisa GASFREE_API_KEY/SECRET en Supabase Secrets y que sean del entorno correcto (mainnet/tron vs nile) y estén verificadas.'
+      : (r.status === 429 ? ' — GasFree está limitando por exceso de peticiones (429). Espera un momento.' : '')
     throw new Error(`GasFree respondió (HTTP ${r.status}): ${txt.slice(0, 180)}${hint}`)
   }
 }
