@@ -264,7 +264,9 @@ const DiditAdminPanel: React.FC<{ client: any; showToast: (m: string) => void }>
 };
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria'>('overview');
+  const [auditRows, setAuditRows] = useState<any[] | null>(null);
+  const [auditLoading, setAuditLoading] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [ratesSaved, setRatesSaved] = useState(false);
   const [showPaletteChooser, setShowPaletteChooser] = useState(false);
@@ -468,9 +470,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     }
   };
 
+  const loadAudit = async () => {
+    setAuditLoading(true);
+    try {
+      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+      let jwt: string | null = null;
+      try { const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token')); if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; } } catch { /* */ }
+      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}` },
+        body: JSON.stringify({ action: 'list_audit', limit: 300 }),
+      });
+      const d = await r.json();
+      setAuditRows(Array.isArray(d?.audit) ? d.audit : []);
+    } catch { setAuditRows([]); }
+    setAuditLoading(false);
+  };
+
   useEffect(() => {
     if (activeTab === 'cargues' && !mouvPool) loadMouvPool();
     if (activeTab === 'cargues' && !finityPool) loadFinityPool();
+    if (activeTab === 'auditoria') loadAudit();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
 
@@ -3502,6 +3523,85 @@ const renderDesign = () => (
     );
   };
 
+  const renderAuditoria = () => {
+    const fmtDate = (d: any) => { try { return new Date(d).toLocaleString('es-CO', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }); } catch { return '—'; } };
+    const actionLabel = (a: string): string => {
+      const s = String(a ?? '');
+      if (s === 'gasfree.set_providers') return 'Cambió la dirección de un proveedor de tesorería';
+      if (s === 'gasfree.set_treasury_config') return 'Modificó la configuración de tesorería';
+      return s || 'Acción';
+    };
+    const actorOf = (row: any): string => row?.metadata?.byEmail ?? row?.metadata?.byId ?? row?.user_id ?? 'Desconocido';
+    const whenOf = (row: any): any => row?.metadata?.at ?? row?.created_at ?? row?.createdAt;
+    const isProviderChange = (row: any) => String(row?.action) === 'gasfree.set_providers';
+    const providerDiff = (row: any) => {
+      const before: any[] = Array.isArray(row?.metadata?.before) ? row.metadata.before : [];
+      const after: any[] = Array.isArray(row?.metadata?.after) ? row.metadata.after : [];
+      const ids = Array.from(new Set([...before.map((p) => p.id), ...after.map((p) => p.id)]));
+      return ids.map((id) => {
+        const b = before.find((p) => p.id === id);
+        const a = after.find((p) => p.id === id);
+        return { id, name: a?.name ?? b?.name ?? id, from: b?.detail ?? '—', to: a?.detail ?? '—', changed: (b?.detail ?? '') !== (a?.detail ?? '') };
+      });
+    };
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div>
+            <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Shield size={18} className="text-slate-500" /> Auditoría</h2>
+            <p className="text-sm text-slate-500">Registro de cambios sensibles: quién cambió la dirección de un proveedor de tesorería y cuándo. Solo cubre cambios <span className="font-semibold">a partir de ahora</span>; los cambios anteriores a esta función no quedaron registrados.</p>
+          </div>
+          <button onClick={loadAudit} disabled={auditLoading} className="text-xs font-semibold text-slate-600 hover:text-slate-900 border border-slate-200 rounded-lg px-3 py-1.5 disabled:opacity-50">{auditLoading ? 'Cargando…' : 'Actualizar'}</button>
+        </div>
+        {auditLoading && auditRows === null ? (
+          <div className="bg-white rounded-xl border border-slate-200 p-10 text-center text-slate-400 text-sm">Cargando registro…</div>
+        ) : (auditRows ?? []).length === 0 ? (
+          <div className="bg-white rounded-xl border border-slate-200 p-10 text-center">
+            <p className="text-slate-700 font-semibold">Sin registros de auditoría</p>
+            <p className="text-slate-400 text-sm mt-1">Cuando alguien cambie la dirección de un proveedor u otra configuración de tesorería, aparecerá aquí con el correo y la fecha.</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {(auditRows ?? []).map((row: any, i: number) => (
+              <div key={row.id ?? i} className="bg-white rounded-xl border border-slate-200 p-4">
+                <div className="flex items-start justify-between gap-3 flex-wrap">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {isProviderChange(row) && <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">Cambio de proveedor</span>}
+                      <span className="text-xs text-slate-400">{fmtDate(whenOf(row))}</span>
+                    </div>
+                    <p className="text-sm font-bold text-slate-800 mt-1.5">{actionLabel(row.action)}</p>
+                    <p className="text-xs text-slate-500 mt-0.5">Por: <span className="font-semibold text-slate-700">{actorOf(row)}</span></p>
+                  </div>
+                </div>
+                {isProviderChange(row) && (
+                  <div className="mt-2.5 space-y-2">
+                    {providerDiff(row).filter((d) => d.changed).length === 0 ? (
+                      <p className="text-xs text-slate-400">Sin cambios de dirección detectados en este registro.</p>
+                    ) : providerDiff(row).filter((d) => d.changed).map((d) => (
+                      <div key={d.id} className="rounded-lg border border-slate-200 p-3 bg-slate-50">
+                        <p className="text-xs font-bold text-slate-700 mb-1">{d.name}</p>
+                        <div className="text-[11px] leading-relaxed break-all" style={{ fontFamily: 'ui-monospace, Menlo, monospace' }}>
+                          <p className="text-red-600">− {d.from}</p>
+                          <p className="text-green-700">+ {d.to}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {!isProviderChange(row) && row.metadata && (
+                  <div className="mt-2.5 rounded-lg bg-slate-900 text-slate-100 p-3 overflow-x-auto">
+                    <code className="text-[11px] leading-relaxed whitespace-pre-wrap break-words" style={{ fontFamily: 'ui-monospace, Menlo, monospace' }}>{(() => { try { return JSON.stringify(row.metadata, null, 2); } catch { return String(row.metadata); } })()}</code>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const closeSidebar = () => setIsSidebarOpen(false);
   const navTo = (tab: string) => { setActiveTab(tab); closeSidebar(); };
 
@@ -3525,6 +3625,7 @@ const renderDesign = () => (
                 <AdminSidebarItem icon={Landmark} label="Tesorería" active={activeTab === 'treasury'} badge={pendingDeposits.length + pendingWithdrawals.length > 0 ? pendingDeposits.length + pendingWithdrawals.length : undefined} onClick={() => navTo('treasury')} />
                 <AdminSidebarItem icon={Wallet} label="Cargues" active={activeTab === 'cargues'} onClick={() => navTo('cargues')} />
                 <AdminSidebarItem icon={AlertTriangle} label="Fallos" active={activeTab === 'fallos'} badge={failuresCount > 0 ? failuresCount : undefined} onClick={() => navTo('fallos')} />
+                <AdminSidebarItem icon={Shield} label="Auditoría" active={activeTab === 'auditoria'} onClick={() => navTo('auditoria')} />
                 <AdminSidebarItem icon={FileText} label="Reportes" active={activeTab === 'reports'} onClick={() => navTo('reports')} />
                 <AdminSidebarItem icon={Settings} label="Configuración" active={activeTab === 'config'} onClick={() => navTo('config')} />
                 <AdminSidebarItem icon={Palette} label="Diseño" active={activeTab === 'design'} onClick={() => navTo('design')} />
@@ -3573,6 +3674,7 @@ const renderDesign = () => (
                 {activeTab === 'gasfree' && <AdminGasFreeSection />}
                 {activeTab === 'otcConfig' && <AdminOtcSection />}
                 {activeTab === 'fallos' && renderFallos()}
+                {activeTab === 'auditoria' && renderAuditoria()}
             </div>
         </main>
 

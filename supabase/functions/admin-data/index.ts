@@ -489,6 +489,18 @@ Deno.serve(async (req: Request) => {
     if (req.method === 'POST') {
       const body = selfServiceBody ?? {}
 
+      // ── Registro de AUDITORÍA (admin-only) — quién cambió qué y cuándo ──
+      // Lee audit_log (cambios de proveedor de tesorería, payouts, etc.). Sirve
+      // para investigar, p. ej., quién configuró la dirección de un proveedor.
+      if (body.action === 'list_audit') {
+        const limit = Math.min(Number(body.limit ?? 200) || 200, 500)
+        let rows: any[] = []
+        let res = await db.from('audit_log').select('*').order('created_at', { ascending: false }).limit(limit)
+        if (res.error) res = await db.from('audit_log').select('*').order('id', { ascending: false }).limit(limit)
+        if (!res.error) rows = res.data ?? []
+        return json({ ok: true, audit: rows })
+      }
+
       if (body.action === 'save_config') {
         const { settings } = body
         if (!settings) return json({ error: 'Missing settings' }, 400)
