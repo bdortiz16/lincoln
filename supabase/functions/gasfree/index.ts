@@ -2859,6 +2859,14 @@ Deno.serve(async (req) => {
     if (action === 'set_treasury_config') { await auditGasfree(req, 'gasfree.set_treasury_config', { config: body.config ?? {} }); return ok(await setTreasuryConfig(body.config ?? {})) }
     if (action === 'get_providers') return ok({ providers: await getProviders() })
     if (action === 'set_providers') {
+      // 2FA OBLIGATORIO: cambiar a dónde sale el USDT de tesorería es la
+      // operación más sensible. Aunque roben la sesión de admin, sin el código
+      // TOTP no pueden desviar el dinero. Falla cerrado si el 2FA está activo.
+      const jwt = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
+      let uid: string | null = null
+      try { if (jwt) { const { data } = await db.auth.getUser(jwt); uid = data?.user?.id ?? null } } catch { /* */ }
+      const mfaErr = uid ? await require2FA(uid, body.otp) : null
+      if (mfaErr) return err('Para cambiar la dirección de un proveedor debes ingresar tu código de dos pasos (2FA).', 403)
       // AUDITORÍA: a dónde sale el dinero de tesorería es lo más sensible.
       const before = await getProviders()
       await auditGasfree(req, 'gasfree.set_providers', {

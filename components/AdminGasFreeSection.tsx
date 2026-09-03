@@ -319,9 +319,12 @@ export const AdminGasFreeSection: React.FC = () => {
     // fantasma que desaparece al recargar la página.
     const [providerSaving, setProviderSaving] = useState(false);
     const saveProviders = async (list: any[]): Promise<boolean> => {
+        // 2FA: cambiar a dónde sale el dinero de tesorería exige el código de dos
+        // pasos (si la cuenta admin lo tiene activo). Déjalo vacío si no usas 2FA.
+        const otp = (typeof window !== 'undefined' ? window.prompt('Código de dos pasos (2FA) para cambiar la dirección del proveedor. Déjalo vacío si tu cuenta no tiene 2FA:') : '') ?? '';
         setProviderSaving(true);
         try {
-            const r = await callGasfree({ action: 'set_providers', providers: list });
+            const r = await callGasfree({ action: 'set_providers', providers: list, otp });
             if (r?.error || !Array.isArray(r?.providers)) {
                 setProviderErr(`⚠ NO quedó guardado en el servidor: ${r?.error ?? 'respuesta inválida'}. Reintenta.`);
                 await loadProviders();
