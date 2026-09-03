@@ -101,9 +101,9 @@ export const AdminGasFreeSection: React.FC = () => {
 
     // ── Recuperación de wallet (localizar índice de una dirección + barrer) ──
     const [recAddr, setRecAddr] = useState('');
-    const [recRange, setRecRange] = useState('25');
+    const [recRange, setRecRange] = useState('300');
     const [recBusy, setRecBusy] = useState(false);
-    const [recResult, setRecResult] = useState<{ found?: boolean; index?: number; mnemonic?: string; balanceUsdt?: number; gasFreeAddress?: string; scannedUpTo?: number; error?: string; swept?: number; traceId?: string } | null>(null);
+    const [recResult, setRecResult] = useState<{ found?: boolean; index?: number; mnemonic?: string; balanceUsdt?: number; gasFreeAddress?: string; scannedUpTo?: number; error?: string; swept?: number; traceId?: string; apiErrors?: number; mnemonicsTried?: string[] } | null>(null);
     const locateAddr = async () => {
         setRecBusy(true); setRecResult(null);
         try {
@@ -662,7 +662,20 @@ export const AdminGasFreeSection: React.FC = () => {
                                 )}
                             </>
                         ) : (
-                            <p className="text-slate-500">No se encontró esa dirección en los índices escaneados (hasta {recResult.scannedUpTo}). Verifica la dirección o aumenta el rango.</p>
+                            <div className="space-y-1.5">
+                                {Number(recResult.apiErrors ?? 0) > 0 ? (
+                                    <>
+                                        <p className="text-amber-700 font-bold">⚠ Resultado NO concluyente — GasFree limitó la búsqueda ({recResult.apiErrors} error(es) de API / 429).</p>
+                                        <p className="text-slate-500">La dirección pudo quedar sin revisar por el rate-limit. <b>Espera 1–2 minutos y vuelve a "Localizar"</b> con el mismo rango. Solo cuando salga 0 errores de API el "no encontrada" es real.</p>
+                                    </>
+                                ) : (
+                                    <>
+                                        <p className="text-slate-700 font-bold">No es una wallet nuestra.</p>
+                                        <p className="text-slate-500">Escaneada TODA la ruta HD hasta el índice <b>{recResult.scannedUpTo}</b> sin errores de API, probando {recResult.mnemonicsTried?.length ?? 1} mnemónica(s){recResult.mnemonicsTried?.length ? ` (${recResult.mnemonicsTried.join(', ')})` : ''}, y esta dirección no coincide con ninguna de nuestras wallets ni sus direcciones GasFree. <b>No tenemos la llave privada</b> → no se puede barrer desde aquí. Es una dirección externa: quien controle su llave es el único que puede mover ese saldo.</p>
+                                        <p className="text-slate-400 text-[11px]">Si crees que el índice es aún más alto, sube el rango (ej. 1000) y reintenta; pero con 0 errores de API el barrido de la ruta ya fue completo.</p>
+                                    </>
+                                )}
+                            </div>
                         )}
                     </div>
                 )}
