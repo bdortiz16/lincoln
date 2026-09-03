@@ -2947,6 +2947,48 @@ Deno.serve(async (req) => {
     if (action === 'wallet_log') {
       return ok({ ok: true, entries: await getWalletLog(body.email ? String(body.email) : undefined) })
     }
+    // FORENSE: cruza el archivo de wallets contra la lista real de usuarios y
+    // marca los correos que aparecen con asignaciones pero YA NO son clientes
+    // (cuentas borradas o creadas solo para generar wallets). Agrupa por correo,
+    // cuenta cambios y marca los "manual_regen" (regeneraciones).
+    if (action === 'wallet_forensics') {
+      const log = await getWalletLog()
+      const { data: users } = await db.from('users').select('id, email')
+      const emailSet = new Set((users ?? []).map((u: any) => String(u.email ?? '').toLowerCase()).filter(Boolean))
+      const idSet = new Set((users ?? []).map((u: any) => String(u.id)))
+      const byEmail: Record<string, { email: string; changes: number; regens: number; isClient: boolean; hasUserId: boolean; lastAt: string | null; addresses: string[] }> = {}
+      for (const e of (log as any[]) ?? []) {
+        const email = String(e.email ?? '').toLowerCase() || `(sin correo · id ${String(e.userId ?? '').slice(0, 8)})`
+        const g = byEmail[email] ?? (byEmail[email] = { email, changes: 0, regens: 0, isClient: emailSet.has(email), hasUserId: idSet.has(String(e.userId)), lastAt: null, addresses: [] })
+        g.changes++
+        if (String(e.source ?? '').includes('regen') || String(e.source ?? '').includes('reset')) g.regens++
+        if (!g.lastAt || String(e.at) > g.lastAt) g.lastAt = String(e.at)
+        if (e.newAddress && !g.addresses.includes(e.newAddress)) g.addresses.push(e.newAddress)
+      }
+      const groups = Object.values(byEmail).sort((a, b) => b.changes - a.changes)
+      const ghosts = groups.filter((g) => !g.isClient && !g.email.startsWith('(sin correo'))
+      return ok({
+        ok: true, totalUsers: (users ?? []).length, totalLogEntries: ((log as any[]) ?? []).length,
+        groups, ghosts,
+        note: ghosts.length ? `${ghosts.length} correo(s) con wallets asignadas que NO están en la lista de clientes actual (cuentas borradas o creadas para generar wallets).` : 'Todos los correos con wallets asignadas son clientes actuales.',
+      })
+    }
+    // FORENSE: ¿de dónde salió un correo? Devuelve la(s) fila(s) crudas del
+    // usuario (cuándo se creó, rol, KYC, cómo se registró) para saber si es una
+    // cuenta real escondida por el filtro de Clientes o una cuenta fantasma.
+    if (action === 'user_by_email') {
+      const email = String(body.email ?? '').trim().toLowerCase()
+      if (!email) return err('Falta email', 400)
+      const { data: rows } = await db.from('users').select('*').ilike('email', email)
+      const list = (rows ?? []).map((u: any) => ({
+        id: u.id, email: u.email, role: u.role, kyc_status: u.kyc_status,
+        created_at: u.created_at, full_name: u.full_name,
+        gasfreeIndex: (u.raw_data ?? {})?.gasfreeIndex ?? null,
+        signupSource: (u.raw_data ?? {})?.signupSource ?? (u.raw_data ?? {})?.source ?? null,
+        provider: (u.raw_data ?? {})?.provider ?? null,
+      }))
+      return ok({ ok: true, found: list.length, users: list })
+    }
     // Auditoría: detectar wallets colisionadas y usuarios sin índice.
     if (action === 'audit_indexes') {
       return ok(await auditIndexes())

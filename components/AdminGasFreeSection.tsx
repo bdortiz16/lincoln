@@ -208,6 +208,30 @@ export const AdminGasFreeSection: React.FC = () => {
         } catch (e: any) { setAudit({ error: e?.message ?? 'Error' }); }
         setAuditBusy(false);
     };
+    // ── Forense: cruce del archivo de wallets vs clientes + búsqueda de correo ──
+    const [forensicBusy, setForensicBusy] = useState(false);
+    const [forensic, setForensic] = useState<any>(null);
+    const runForensic = async () => {
+        setForensicBusy(true); setForensic(null);
+        try {
+            const r = await callGasfree({ action: 'wallet_forensics' });
+            setForensic(r?.error ? { error: r.error } : r);
+        } catch (e: any) { setForensic({ error: e?.message ?? 'Error' }); }
+        setForensicBusy(false);
+    };
+    const [lookupEmail, setLookupEmail] = useState('');
+    const [lookupRes, setLookupRes] = useState<any>(null);
+    const [lookupBusy, setLookupBusy] = useState(false);
+    const lookupUser = async (email?: string) => {
+        const e = (email ?? lookupEmail).trim();
+        if (!e) return;
+        setLookupEmail(e); setLookupBusy(true); setLookupRes(null);
+        try {
+            const r = await callGasfree({ action: 'user_by_email', email: e });
+            setLookupRes(r?.error ? { error: r.error } : r);
+        } catch (err: any) { setLookupRes({ error: err?.message ?? 'Error' }); }
+        setLookupBusy(false);
+    };
     // Reparación de colisión: reasignar a un usuario (por correo) una wallet nueva.
     const [fixEmail, setFixEmail] = useState('');
     const [fixBusy, setFixBusy] = useState(false);
@@ -864,6 +888,69 @@ export const AdminGasFreeSection: React.FC = () => {
                                     <p className="text-green-700 font-semibold">✅ {fixResult.email}: índice {fixResult.oldIndex ?? '—'} → <b>{fixResult.newIndex}</b></p>
                                     <p className="text-[11px] font-mono text-slate-500 break-all mt-1">Nueva wallet: {fixResult.gasFreeAddress ?? '(se genera al primer uso)'}</p>
                                     <p className="text-[11px] text-slate-400 mt-1">El usuario debe cerrar sesión y volver a entrar para ver su nueva dirección.</p>
+                                </>
+                            )}
+                        </div>
+                    )}
+                </div>
+            </div>
+
+            {/* Forense: correos con wallet que NO son clientes + búsqueda de correo */}
+            <div className="rounded-xl border border-red-200 bg-red-50/40 p-4 space-y-3">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div>
+                        <p className="font-bold text-slate-800 text-sm">🔎 Forense de cuentas y wallets</p>
+                        <p className="text-[11px] text-slate-500">Cruza el archivo de wallets contra los clientes reales y marca correos "fantasma" (con wallet pero que NO son clientes). Y busca de dónde salió un correo.</p>
+                    </div>
+                    <button onClick={runForensic} disabled={forensicBusy} className="px-3 py-1.5 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#152e52] disabled:opacity-60">
+                        {forensicBusy ? 'Cruzando…' : 'Cruzar wallets ↔ clientes'}
+                    </button>
+                </div>
+                {forensic && (
+                    <div className="text-xs bg-white border border-slate-200 rounded-lg p-3 space-y-2">
+                        {forensic.error ? <p className="text-red-700 font-semibold">❌ {forensic.error}</p> : (
+                            <>
+                                <p className="text-slate-600">Clientes actuales: <b>{forensic.totalUsers}</b> · registros de wallet: <b>{forensic.totalLogEntries}</b></p>
+                                <p className={forensic.ghosts?.length ? 'text-red-700 font-bold' : 'text-green-700 font-bold'}>{forensic.ghosts?.length ? `⚠ ${forensic.note}` : `✅ ${forensic.note}`}</p>
+                                {forensic.ghosts?.length > 0 && (
+                                    <div className="space-y-1.5 mt-1">
+                                        {forensic.ghosts.map((g: any) => (
+                                            <div key={g.email} className="rounded-lg border border-red-200 bg-red-50/50 p-2">
+                                                <div className="flex items-center justify-between gap-2 flex-wrap">
+                                                    <p className="font-bold text-slate-800 break-all">{g.email}</p>
+                                                    <button onClick={() => lookupUser(g.email)} className="text-[11px] font-bold text-blue-700 hover:underline shrink-0">¿De dónde salió?</button>
+                                                </div>
+                                                <p className="text-[11px] text-slate-500">{g.changes} cambio(s) de wallet{g.regens ? ` · ${g.regens} regeneración(es)` : ''} · último {g.lastAt ? new Date(g.lastAt).toLocaleString('es-CO') : '—'}</p>
+                                                {g.addresses?.length > 0 && <p className="text-[10px] font-mono text-slate-400 break-all">{g.addresses.slice(0, 4).join(' · ')}</p>}
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </>
+                        )}
+                    </div>
+                )}
+                <div className="pt-2 border-t border-red-200/70">
+                    <p className="text-[11px] font-bold text-slate-600 mb-1.5">🔍 Buscar de dónde salió un correo</p>
+                    <div className="flex items-end gap-2 flex-wrap">
+                        <input value={lookupEmail} onChange={(e) => setLookupEmail(e.target.value)} placeholder="correo · ej. xaloy46425@mapsguy.com" className="flex-1 min-w-[240px] px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#4ADE80]" />
+                        <button onClick={() => lookupUser()} disabled={lookupBusy || !lookupEmail.trim()} className="px-3 py-2 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#152e52] disabled:opacity-60">{lookupBusy ? 'Buscando…' : 'Buscar'}</button>
+                    </div>
+                    {lookupRes && (
+                        <div className="text-xs bg-white border border-slate-200 rounded-lg p-3 mt-2 space-y-1.5">
+                            {lookupRes.error ? <p className="text-red-700 font-semibold">❌ {lookupRes.error}</p> : lookupRes.found === 0 ? (
+                                <p className="text-amber-700 font-semibold">La cuenta ya NO existe en la base (fue borrada). Pero dejó rastro en el archivo de wallets — cuenta fantasma. Revisa los logs de Supabase para ver cuándo se creó/borró y desde qué IP.</p>
+                            ) : (
+                                <>
+                                    <p className="text-slate-700 font-bold">Existe {lookupRes.found} cuenta(s) con ese correo:</p>
+                                    {lookupRes.users.map((u: any) => (
+                                        <div key={u.id} className="rounded-lg border border-slate-200 p-2">
+                                            <p className="text-slate-700"><b>Rol:</b> {u.role ?? '—'} · <b>KYC:</b> {u.kyc_status ?? '—'} · <b>Índice wallet:</b> {u.gasfreeIndex ?? '—'}</p>
+                                            <p className="text-slate-500">Creada: {u.created_at ? new Date(u.created_at).toLocaleString('es-CO') : '—'} · id {String(u.id).slice(0, 8)}…</p>
+                                            {u.signupSource && <p className="text-slate-500">Origen registro: {u.signupSource}</p>}
+                                            <p className="text-[11px] text-slate-400 mt-1">Si el rol no es "business" (o el que filtra Clientes), por eso no aparece en la lista — pero la cuenta SÍ existe. Compara "Creada" con tu actividad para saber si la creaste tú o alguien más.</p>
+                                        </div>
+                                    ))}
                                 </>
                             )}
                         </div>
