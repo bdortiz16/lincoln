@@ -1135,8 +1135,33 @@ serve(async (req: Request) => {
       let provObj: any = null
       try { provObj = typeof pay.data === 'string' ? JSON.parse(pay.data) : pay.data } catch { provObj = pay.data }
       const provCode = provObj?.error ?? provObj?.code ?? null
-      const provMsg = typeof provObj?.message === 'string' ? provObj.message : null
+      // Excavar un mensaje HUMANO en las formas típicas de error de Mouv.
+      const digMsg = (o: any): string | null => {
+        if (o == null) return null
+        if (typeof o === 'string') return o.trim() || null
+        return (
+          (typeof o.message === 'string' && o.message) ||
+          (typeof o.detail === 'string' && o.detail) ||
+          (typeof o.error?.message === 'string' && o.error.message) ||
+          (Array.isArray(o.errors) && typeof o.errors[0]?.message === 'string' && o.errors[0].message) ||
+          (typeof o.reason === 'string' && o.reason) ||
+          (typeof o.error === 'string' && o.error) ||
+          null
+        )
+      }
+      const provMsg = digMsg(provObj)
       const retryAfterSeconds = Number(provObj?.retryAfterSeconds ?? 0) || null
+      // Pista técnica compacta (para diagnóstico) cuando Mouv no da un mensaje
+      // humano: casi siempre es saldo insuficiente en la wallet Mouv, timeout, o
+      // Mouv respondió sin cuerpo legible. Se guarda en la tx y se muestra al
+      // final del mensaje para poder identificar la causa real.
+      const techHint = (() => {
+        const parts: string[] = []
+        if (pay.status) parts.push(`HTTP ${pay.status}`); else parts.push('sin respuesta de Mouv')
+        if (provCode && typeof provCode === 'string') parts.push(provCode)
+        if (!provMsg) { try { const s = typeof pay.data === 'string' ? pay.data : JSON.stringify(pay.data ?? ''); if (s && s !== '{}' && s !== 'null' && s !== '""') parts.push(s.slice(0, 140)) } catch { /* */ } }
+        return parts.filter(Boolean).join(' · ')
+      })()
       let friendly: string
       if (provCode === 'STRUCTURING_WINDOW_BLOCKED' || (pay.status === 409 && !provMsg)) {
         const secs = retryAfterSeconds ?? 0
@@ -1145,9 +1170,11 @@ serve(async (req: Request) => {
       } else if (provMsg) {
         friendly = `${provMsg} Tu saldo fue devuelto.`
       } else {
-        friendly = `No pudimos completar el envío en este momento. Tu saldo fue devuelto — puedes intentarlo de nuevo en unos minutos.`
+        friendly = `No pudimos completar el envío en este momento. Tu saldo fue devuelto — puedes intentarlo de nuevo en unos minutos.${techHint ? ` (Detalle: ${techHint})` : ''}`
       }
-      return json(200, { error: 'payout_failed', code: provCode, retryAfterSeconds, refunded: true, newBalance: restored, status: pay.status, data: pay.data,
+      // Guardar el motivo legible en la tx para que el comprobante del fallo lo muestre.
+      if (txId) { try { await db.from('transactions').update({ raw_data: { ...prettyBase, ...feeDetail, error: pay.data ?? 'payout_failed', errorMessage: provMsg ?? techHint ?? null, httpStatus: pay.status, refunded: true, failedAt: new Date().toISOString() } }).eq('id', txId) } catch { /* best-effort */ } }
+      return json(200, { error: 'payout_failed', code: provCode, retryAfterSeconds, refunded: true, newBalance: restored, status: pay.status, data: pay.data, detail: techHint,
         message: friendly })
     }
 
