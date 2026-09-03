@@ -287,6 +287,10 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   const [isAuthLoading, setIsAuthLoading] = useState(hasStoredSession);
   const [mfaPending, setMfaPending] = useState(false);
   const [pendingMFAProfile, setPendingMFAProfile] = useState<User | null>(null);
+  // 'custom' = TOTP nuestro (raw_data.mfaEnabled, verifica vía mfa_verify);
+  // 'native' = MFA de Supabase Auth (challenge/verify). Decide cómo verificar
+  // el código en completeMFALogin.
+  const [pendingMFAMode, setPendingMFAMode] = useState<'custom' | 'native'>('native');
   // Tracks when a local write is in progress so fetchData doesn't overwrite optimistic state
   const pendingWriteUntilRef = useRef<number>(0);
   // Ids de usuario que comparten el correo del usuario actual (por si hay
@@ -1096,6 +1100,14 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           const { data: profile } = await supabase.from('users').select('*').eq('id', data.user.id).single();
           if ((profile as any)?.role === 'admin') {
             const u = mapSupabaseUser(profile);
+            // 2FA en el login del admin: si tiene el 2FA custom activo, NO se
+            // entra directo — se pide el código de 6 dígitos antes de dar acceso.
+            if ((u as any)?.mfaEnabled || (profile as any)?.raw_data?.mfaEnabled) {
+              setPendingMFAProfile(u);
+              setPendingMFAMode('custom');
+              setMfaPending(true);
+              return null;
+            }
             setCurrentUser(u);
             return u;
           }
@@ -1250,6 +1262,15 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
     const user = mapSupabaseUser(profile);
 
+    // 2FA custom (TOTP nuestro): si la cuenta lo tiene activo, se pide el código
+    // en el login antes de dar acceso. Cubre admin y clientes por igual.
+    if ((user as any)?.mfaEnabled || (profile as any)?.raw_data?.mfaEnabled) {
+      setPendingMFAProfile(user);
+      setPendingMFAMode('custom');
+      setMfaPending(true);
+      return null;
+    }
+
     try {
       const mfaTimeout = new Promise<{ data: null }>(resolve => setTimeout(() => resolve({ data: null }), 3000));
       const { data: aalData } = await Promise.race([
@@ -1258,6 +1279,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       ]) as any;
       if (aalData?.nextLevel === 'aal2' && aalData?.currentLevel !== 'aal2') {
         setPendingMFAProfile(user);
+        setPendingMFAMode('native');
         setMfaPending(true);
         return null;
       }
@@ -1268,7 +1290,28 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   };
 
   const completeMFALogin = async (code: string): Promise<User | null> => {
-    if (!isSupabaseConfigured || !pendingMFAProfile) return null;
+    if (!pendingMFAProfile) return null;
+    // 2FA CUSTOM: verifica el código contra el secreto CIFRADO en el servidor
+    // (mfa_verify en admin-data descifra y valida). Es el esquema que activa la
+    // tarjeta de Seguridad del admin y protege el cambio de proveedor.
+    if (pendingMFAMode === 'custom') {
+      try {
+        const SURL = SUPABASE_URL_FOR_FN, SKEY = SUPABASE_ANON_FOR_FN, token = getStoredToken();
+        const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
+          body: JSON.stringify({ action: 'mfa_verify', userId: pendingMFAProfile.id, code }),
+        }).then(x => x.json()).catch(() => null);
+        if (!r?.ok) return null;
+        const user = pendingMFAProfile;
+        setCurrentUser(user);
+        setMfaPending(false);
+        setPendingMFAProfile(null);
+        return user;
+      } catch { return null; }
+    }
+    // 2FA NATIVO de Supabase Auth.
+    if (!isSupabaseConfigured) return null;
     try {
       const { data: factors } = await supabase.auth.mfa.listFactors();
       const factorId = factors?.totp?.[0]?.id;
