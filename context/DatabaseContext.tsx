@@ -378,6 +378,19 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
               if (logoutCounterRef.current !== snapshotLogoutCount) return;
               profile = { ...profile, role: metaRoleOnFound };
             }
+            // GATE 2FA: si la cuenta tiene 2FA custom activo y aún no se verificó
+            // el código EN ESTA sesión, NO se entra — se deja pendiente el código.
+            // (Antes este listener seteaba currentUser directo y saltaba el 2FA.)
+            // La marca 'mfa_ok' vive en sessionStorage: sobrevive un refresco de la
+            // pestaña pero NO una pestaña/navegador nuevo → ahí sí re-pide 2FA.
+            const mfaOn2 = !!(profile as any)?.raw_data?.mfaEnabled;
+            let mfaOk = false; try { mfaOk = sessionStorage.getItem('mfa_ok') === '1'; } catch { /* */ }
+            if (mfaOn2 && !mfaOk && event !== 'TOKEN_REFRESHED') {
+              setPendingMFAProfile(mapSupabaseUser(profile));
+              setPendingMFAMode('custom');
+              setMfaPending(true);
+              return;
+            }
             setCurrentUser(mapSupabaseUser(profile));
           } else {
             // Check if a profile already exists with this email (e.g. email/password account)
@@ -402,6 +415,14 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
               // ⚠️ SECURITY: el auto-promote a role='admin' / kyc_status='approved'
               // se removió (security audit finding #10). Admin seed se hace UNA VEZ
               // por SQL; el trigger guard_users_sensitive_cols bloquea el cambio.
+              const mfaOnE = !!(existingByEmail as any)?.raw_data?.mfaEnabled;
+              let mfaOkE = false; try { mfaOkE = sessionStorage.getItem('mfa_ok') === '1'; } catch { /* */ }
+              if (mfaOnE && !mfaOkE && event !== 'TOKEN_REFRESHED') {
+                setPendingMFAProfile(mapSupabaseUser(existingByEmail));
+                setPendingMFAMode('custom');
+                setMfaPending(true);
+                return;
+              }
               setCurrentUser(mapSupabaseUser(existingByEmail));
             } else if (!lookupCompleted) {
               // No se confirmó si existe (timeout/red). NO crear perfil nuevo
@@ -1304,6 +1325,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         }).then(x => x.json()).catch(() => null);
         if (!r?.ok) return null;
         const user = pendingMFAProfile;
+        try { sessionStorage.setItem('mfa_ok', '1'); } catch { /* */ }
         setCurrentUser(user);
         setMfaPending(false);
         setPendingMFAProfile(null);
@@ -1330,6 +1352,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   const cancelMFALogin = () => {
     if (isSupabaseConfigured) supabase.auth.signOut();
+    try { sessionStorage.removeItem('mfa_ok'); } catch { /* */ }
     setMfaPending(false);
     setPendingMFAProfile(null);
   };
@@ -1483,6 +1506,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     // Increment before any await so in-flight SIGNED_IN handlers abort instead of re-setting the user
     logoutCounterRef.current++;
     sessionStorage.removeItem('cuypay_admin_session');
+    try { sessionStorage.removeItem('mfa_ok'); } catch { /* */ }
     localStorage.removeItem('cuypay_config');
     // Purga proactiva del token de Supabase: si el signOut de red se cuelga,
     // igual NO queda una sesión "fantasma" en localStorage que dispare
