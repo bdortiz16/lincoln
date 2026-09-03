@@ -133,6 +133,18 @@ export const AdminGasFreeSection: React.FC = () => {
         } catch (e: any) { setRecResult({ error: e?.message ?? 'Error' }); }
         setRecBusy(false);
     };
+    // Auditoría completa: escanea la dirección en AMBAS redes (mainnet + Nile) y
+    // muestra el saldo on-chain en cada una. Cierra la duda de "¿y si está en la
+    // otra red?" de una vez.
+    const [auditNet, setAuditNet] = useState<any>(null);
+    const auditAddr = async () => {
+        setRecBusy(true); setAuditNet(null); setRecResult(null);
+        try {
+            const r = await callGasfree({ action: 'audit_address', address: recAddr.trim(), extra: Number(recRange) || 300 });
+            setAuditNet(r?.error ? { error: r.error } : r);
+        } catch (e: any) { setAuditNet({ error: e?.message ?? 'Error' }); }
+        setRecBusy(false);
+    };
     // Auditoría de wallets: detectar colisiones (mismo índice en correos distintos).
     const [auditBusy, setAuditBusy] = useState(false);
     const [audit, setAudit] = useState<{ considered?: number; uniqueIndexes?: number; noIndex?: number; collisions?: { index: number; emails: string[] }[]; error?: string } | null>(null);
@@ -657,8 +669,35 @@ export const AdminGasFreeSection: React.FC = () => {
                     <button onClick={sweepAddr} disabled={recBusy || !recAddr.trim()} title="Localiza y barre el saldo a la recaudadora en un solo paso" className="px-3 py-2 text-xs font-bold rounded-lg bg-[#4ADE80] text-[#0C0E0D] hover:bg-[#26bda9] disabled:opacity-60">
                         {recBusy ? '…' : 'Barrer a recaudadora'}
                     </button>
+                    <button onClick={auditAddr} disabled={recBusy || !recAddr.trim()} title="Escanea la dirección en mainnet Y Nile, y muestra su saldo en cada red" className="px-3 py-2 text-xs font-bold rounded-lg border border-slate-500 text-slate-200 hover:bg-white/5 disabled:opacity-60">
+                        {recBusy ? '…' : 'Auditar (mainnet + Nile)'}
+                    </button>
                 </div>
-                <p className="text-[10px] text-slate-400 -mt-1">"Barrer a recaudadora" localiza y barre en un paso — solo mueve fondos si la dirección es una wallet nuestra (tenemos su llave). Sube el "rango" (ej. 300–1000) si no la encuentra.</p>
+                <p className="text-[10px] text-slate-400 -mt-1">"Barrer a recaudadora" localiza y barre en un paso — solo mueve fondos si la dirección es una wallet nuestra. "Auditar" la busca en LAS DOS redes (mainnet y Nile) y te dice en cuál está el saldo. Sube el "rango" (ej. 300–1000) si no la encuentra.</p>
+                {auditNet && (
+                    <div className="text-xs bg-white border border-slate-200 rounded-lg p-3 space-y-1.5">
+                        {auditNet.error ? (
+                            <p className="text-red-700 font-semibold">❌ {auditNet.error}</p>
+                        ) : (
+                            <>
+                                <p className={auditNet.ours ? 'text-green-700 font-bold' : 'text-slate-700 font-bold'}>{auditNet.ours ? '✅' : '⛔'} {auditNet.verdict}</p>
+                                <div className="grid grid-cols-2 gap-2 mt-1">
+                                    <div className="rounded-lg border border-slate-200 p-2">
+                                        <p className="text-[10px] uppercase tracking-wide text-slate-400 font-bold">Mainnet</p>
+                                        <p className="text-slate-800 font-bold">{auditNet.onchainUsdt?.mainnet == null ? '—' : `${Number(auditNet.onchainUsdt.mainnet).toFixed(2)} USDT`}</p>
+                                        <p className="text-[10px] text-slate-400">{auditNet.scan?.mainnet?.found ? `Nuestra · índice ${auditNet.scan.mainnet.index}` : auditNet.scan?.mainnet?.apiErrors > 0 ? `No concluyente (${auditNet.scan.mainnet.apiErrors} err. API)` : 'No es nuestra'}</p>
+                                    </div>
+                                    <div className="rounded-lg border border-slate-200 p-2">
+                                        <p className="text-[10px] uppercase tracking-wide text-slate-400 font-bold">Nile (testnet)</p>
+                                        <p className="text-slate-800 font-bold">{auditNet.onchainUsdt?.nile == null ? '—' : `${Number(auditNet.onchainUsdt.nile).toFixed(2)} USDT`}</p>
+                                        <p className="text-[10px] text-slate-400">{auditNet.scan?.nile?.found ? `Nuestra · índice ${auditNet.scan.nile.index}` : auditNet.scan?.nile?.apiErrors > 0 ? `No concluyente (${auditNet.scan.nile.apiErrors} err. API)` : 'No es nuestra'}</p>
+                                    </div>
+                                </div>
+                                <p className="text-[10px] text-slate-400">Servidor operando en: <b>{auditNet.deployNet === 'tron' ? 'mainnet' : 'Nile'}</b>. El saldo real (USDT que se ve en TronScan) está en mainnet.</p>
+                            </>
+                        )}
+                    </div>
+                )}
                 {recResult && (
                     <div className="text-xs bg-white border border-slate-200 rounded-lg p-3 space-y-2">
                         {recResult.error ? (

@@ -432,6 +432,48 @@ async function gfAccount(eoaB58: string) {
   }
 }
 
+// ── Consulta GasFree contra una RED EXPLÍCITA (mainnet o Nile) ──
+// La búsqueda de recuperación normal usa la red del deploy (GASFREE_NET). Pero
+// para una AUDITORÍA COMPLETA hay que poder mirar la OTRA red a voluntad (p. ej.
+// el dinero está en mainnet pero el deploy corre en Nile). Estas variantes
+// reciben la config de red y las credenciales de esa red.
+//   Credenciales por red (opcionales): GASFREE_API_KEY_TRON / _SECRET_TRON,
+//   GASFREE_API_KEY_NILE / _SECRET_NILE. Si no existen, cae a las genéricas
+//   (que solo autentican contra la red para la que fueron emitidas).
+const NET_USDT: Record<'tron' | 'nile', string> = {
+  tron: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t',   // USDT real (mainnet)
+  nile: 'TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf',   // USDT de GasFree (Nile)
+}
+function cfgFor(net: 'tron' | 'nile') {
+  return net === 'tron'
+    ? { host: 'https://open.gasfree.io', prefix: '/tron', tronHost: 'https://api.trongrid.io' }
+    : { host: 'https://open-test.gasfree.io', prefix: '/nile', tronHost: 'https://nile.trongrid.io' }
+}
+function keysFor(net: 'tron' | 'nile') {
+  const suf = net.toUpperCase()
+  const key = (Deno.env.get(`GASFREE_API_KEY_${suf}`) ?? '').trim() || API_KEY
+  const secret = (Deno.env.get(`GASFREE_API_SECRET_${suf}`) ?? '').trim() || API_SECRET
+  return { key, secret }
+}
+async function gfAuthWith(method: string, path: string, key: string, secret: string): Promise<Record<string, string>> {
+  const ts = Math.floor(Date.now() / 1000)
+  const cryptoKey = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  const sig = await crypto.subtle.sign('HMAC', cryptoKey, new TextEncoder().encode(`${method}${path}${ts}`))
+  return { 'Timestamp': String(ts), 'Authorization': `ApiKey ${key}:${btoa(String.fromCharCode(...new Uint8Array(sig)))}` }
+}
+async function gfAccountOn(net: 'tron' | 'nile', eoaB58: string) {
+  const cfg = cfgFor(net); const { key, secret } = keysFor(net)
+  const path = `${cfg.prefix}/api/v1/address/${eoaB58}`
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const r = await fetch(`${cfg.host}${path}`, { headers: await gfAuthWith('GET', path, key, secret) })
+    if ((r.status === 429 || r.status === 503) && attempt < 2) { await gfBackoff(r, attempt); continue }
+    const txt = await r.text()
+    let a: any = null; try { a = JSON.parse(txt) } catch { throw new Error(`GasFree ${net} no-JSON: ${txt.slice(0, 120)}`) }
+    return { gasFreeAddress: a?.data?.gasFreeAddress ?? null, active: a?.data?.active ?? false, code: a?.code, message: a?.message }
+  }
+  throw new Error(`GasFree ${net}: agotados los reintentos (rate limit)`)
+}
+
 // ── Wallets (recaudadora + usuarios) ──────────────────────
 // La recaudadora ya NO exige pegar una llave privada a mano en Secrets
 // (LINCOIN_TRON_HOT_KEY sigue soportado, por si ya se financió esa
@@ -2456,29 +2498,33 @@ async function payFromTreasury(toAddress: string, amount: number, providerName?:
 // Escanea índices 0..top derivando cada wallet y comparando con `target`
 // (acepta la dirección GasFree o la EOA). Sirve para recuperar depósitos que
 // llegaron a una wallet cuyo índice se "perdió" por el bug de userIndex.
-async function findAddress(target: string, extra = 25) {
+async function findAddress(target: string, extra = 25, net?: 'tron' | 'nile') {
   const t = String(target || '').trim()
   if (!t) throw new Error('Falta la dirección a localizar')
+  // Red a escanear: la explícita si se pide, si no la del deploy. Cuando difiere
+  // de la del deploy se usan las variantes *On (config + credenciales de esa red)
+  // y el balance se lee directo de TronGrid de esa red (sin API de GasFree).
+  const scanNet: 'tron' | 'nile' = net ?? NET
+  const useOther = scanNet !== NET
   const { data: cfg } = await db.from('system_config').select('value').eq('key', 'gasfree_hd_counter').single()
   const top = (cfg?.value ? parseInt(cfg.value) : 0) + Math.max(0, extra)
-  const { token } = await gfConfig()
-  const dec = Number(token.decimal ?? 6)
-  // Se prueban TODAS las mnemónicas conocidas (por si el depósito viejo se
-  // generó con la anterior). Escaneo en PARALELO por lotes; cada derivación
-  // en try/catch para que un fallo puntual no tumbe el lote.
+  let dec = 6, tokenAddr = NET_USDT[scanNet]
+  if (!useOther) { const { token } = await gfConfig(); dec = Number(token.decimal ?? 6); tokenAddr = token.tokenAddress }
   const mnemos = SCAN_MNEMONICS.length ? SCAN_MNEMONICS : [{ source: 'primary', phrase: MNEMONIC }]
-  // La dirección GasFree se consulta a la API de GasFree (open.gasfree.io). Un
-  // escaneo masivo la LIMITA y, si los fallos se ignoran, se pierde la
-  // coincidencia y se reporta "no encontrada" en falso. Por eso: lotes chicos,
-  // pausa entre lotes, REINTENTOS por candidato, y se CUENTAN los fallos de API
-  // para no mentir. Se escanea de arriba hacia abajo (los índices recientes
-  // primero — la wallet reasignada suele estar cerca del contador).
+  // La dirección GasFree se consulta a la API de GasFree. Un escaneo masivo la
+  // LIMITA y, si los fallos se ignoran, se pierde la coincidencia y se reporta
+  // "no encontrada" en falso. Por eso: lotes chicos, pausa entre lotes,
+  // REINTENTOS por candidato, y se CUENTAN los fallos de API para no mentir.
   const acctRetry = async (eoa: string): Promise<{ gasFreeAddress: string | null; active: boolean } | null> => {
     for (let a = 0; a < 3; a++) {
-      try { const acct = await gfAccount(eoa); return { gasFreeAddress: acct.gasFreeAddress, active: acct.active } }
+      try { const acct = useOther ? await gfAccountOn(scanNet, eoa) : await gfAccount(eoa); return { gasFreeAddress: acct.gasFreeAddress, active: acct.active } }
       catch { await new Promise((r) => setTimeout(r, 300 * (a + 1))) }
     }
     return null
+  }
+  const balOf = async (addr: string): Promise<number> => {
+    if (useOther) { const b = await tokenBalanceOnDebug(addr, tokenAddr, dec, cfgFor(scanNet).tronHost); return b.balance }
+    return await tokenBalance(addr, tokenAddr, dec)
   }
   const CHUNK = 8
   let apiErrors = 0
@@ -2497,13 +2543,13 @@ async function findAddress(target: string, extra = 25) {
       }))
       const hit = results.find((r) => (r.eoa && r.eoa === t) || (r.gasFreeAddress && r.gasFreeAddress === t))
       if (hit) {
-        const bal = hit.gasFreeAddress ? await tokenBalance(hit.gasFreeAddress, token.tokenAddress, dec) : 0
-        return { found: true, index: hit.i, mnemonic: m.source, eoa: hit.eoa, gasFreeAddress: hit.gasFreeAddress, active: hit.active, balanceUsdt: bal }
+        const bal = hit.gasFreeAddress ? await balOf(hit.gasFreeAddress) : 0
+        return { found: true, net: scanNet, index: hit.i, mnemonic: m.source, eoa: hit.eoa, gasFreeAddress: hit.gasFreeAddress, active: hit.active, balanceUsdt: bal }
       }
       await new Promise((r) => setTimeout(r, 120))   // respirar entre lotes
     }
   }
-  return { found: false, scannedUpTo: top, mnemonicsTried: mnemos.map((m) => m.source), apiErrors }
+  return { found: false, net: scanNet, scannedUpTo: top, mnemonicsTried: mnemos.map((m) => m.source), apiErrors }
 }
 
 // Barre el USDT de un índice HD específico a la recaudadora (recuperación).
@@ -2782,9 +2828,39 @@ Deno.serve(async (req) => {
       return ok(await payFromTreasury(String(toAddress), Number(amount), body.providerName ? String(body.providerName) : undefined))
     }
     // Recuperación: localizar el índice HD de una dirección (escaneo).
+    // net opcional ('tron' | 'nile') para escanear una red explícita.
     if (action === 'find_address') {
       if (!body.address) return err('Falta address', 400)
-      return ok(await findAddress(String(body.address), body.extra != null ? Number(body.extra) : 25))
+      const net = body.net === 'tron' || body.net === 'nile' ? body.net : undefined
+      return ok(await findAddress(String(body.address), body.extra != null ? Number(body.extra) : 25, net))
+    }
+    // AUDITORÍA COMPLETA: escanea la dirección en AMBAS redes (mainnet + Nile) y
+    // reporta el saldo USDT on-chain de la dirección en cada red. Deja claro,
+    // sin ambigüedad, si la dirección es nuestra en alguna red y dónde está el
+    // dinero — para cerrar la investigación de un cambio de proveedor.
+    if (action === 'audit_address') {
+      if (!body.address) return err('Falta address', 400)
+      const addr = String(body.address).trim()
+      const extra = body.extra != null ? Number(body.extra) : 300
+      const [tron, nile] = await Promise.all([
+        findAddress(addr, extra, 'tron').catch((e) => ({ found: false, net: 'tron', error: (e as Error)?.message })),
+        findAddress(addr, extra, 'nile').catch((e) => ({ found: false, net: 'nile', error: (e as Error)?.message })),
+      ])
+      const [balTron, balNile] = await Promise.all([
+        tokenBalanceOnDebug(addr, NET_USDT.tron, 6, cfgFor('tron').tronHost).then((b) => b.balance).catch(() => null),
+        tokenBalanceOnDebug(addr, NET_USDT.nile, 6, cfgFor('nile').tronHost).then((b) => b.balance).catch(() => null),
+      ])
+      const hitNet = (tron as any)?.found ? (tron as any) : (nile as any)?.found ? (nile as any) : null
+      const ours = !!hitNet
+      return ok({
+        address: addr, deployNet: NET,
+        onchainUsdt: { mainnet: balTron, nile: balNile },
+        scan: { mainnet: tron, nile: nile },
+        ours,
+        verdict: hitNet
+          ? `Es una wallet NUESTRA en ${hitNet.net === 'tron' ? 'mainnet' : 'Nile'} (índice ${hitNet.index}). Se puede barrer con "Barrer a recaudadora".`
+          : 'NO es una wallet nuestra en ninguna de las dos redes: la dirección no sale de nuestra frase secreta. No tenemos su llave privada en mainnet ni en Nile → no se puede mover por software.',
+      })
     }
     // Recuperación: barrer el USDT de un índice HD específico a la recaudadora.
     if (action === 'sweep_index') {
@@ -2798,7 +2874,14 @@ Deno.serve(async (req) => {
     if (action === 'sweep_address') {
       if (!body.address) return err('Falta address', 400)
       const extra = body.extra != null ? Number(body.extra) : 300
-      const loc = await findAddress(String(body.address), extra) as any
+      const net = body.net === 'tron' || body.net === 'nile' ? body.net : undefined
+      const loc = await findAddress(String(body.address), extra, net) as any
+      // El barrido (firmar y enviar) usa la red del deploy. Si la wallet resultó
+      // nuestra pero en OTRA red, no se puede barrer desde este deploy.
+      if (loc?.found && (loc.net ?? NET) !== NET) {
+        return ok({ swept: null, found: true, net: loc.net, index: loc.index, gasFreeAddress: loc.gasFreeAddress, balanceUsdt: loc.balanceUsdt,
+          reason: `La wallet es nuestra pero en la red ${loc.net === 'tron' ? 'mainnet' : 'Nile'}, y este servidor está operando en ${NET === 'tron' ? 'mainnet' : 'Nile'}. Para barrerla, cambia GASFREE_NET a "${loc.net}" y reintenta.` })
+      }
       if (!loc?.found) {
         return ok({
           swept: null, found: false,
