@@ -1175,11 +1175,21 @@ serve(async (req: Request) => {
         if (!provMsg) { try { const s = typeof pay.data === 'string' ? pay.data : JSON.stringify(pay.data ?? ''); if (s && s !== '{}' && s !== 'null' && s !== '""') parts.push(s.slice(0, 140)) } catch { /* */ } }
         return parts.filter(Boolean).join(' · ')
       })()
+      // Texto completo del error (para clasificar la causa).
+      const errText = (() => {
+        let s = String(provMsg ?? '')
+        try { s += ' ' + (typeof pay.data === 'string' ? pay.data : JSON.stringify(pay.data ?? '')) } catch { /* */ }
+        return s.toLowerCase()
+      })()
+      // ¿Es un problema de la LLAVE del beneficiario (no un fallo de Mouv)?
+      const isKeyProblem = /brebkey|destination|no existe|not\s*found|inv[aá]lid|no.{0,3}activ|resolver la llave|llave no|unknown\s*key|key\s*not/.test(errText)
       let friendly: string
       if (provCode === 'STRUCTURING_WINDOW_BLOCKED' || (pay.status === 409 && !provMsg)) {
         const secs = retryAfterSeconds ?? 0
         const mins = secs > 0 ? Math.max(1, Math.ceil(secs / 60)) : (Number(provObj?.windowMinutes) || 5)
         friendly = `Ya hiciste un envío a este mismo beneficiario hace poco. Por seguridad, espera ${mins} minuto${mins === 1 ? '' : 's'} antes de repetir un pago al mismo destino. Tu saldo fue devuelto.`
+      } else if (isKeyProblem) {
+        friendly = `La llave Bre-B del beneficiario no es válida o no está activa. Pídele que te confirme su llave Bre-B exacta (celular, correo, cédula o alias) y vuelve a intentarlo. Tu saldo fue devuelto.`
       } else if (provMsg) {
         friendly = `${provMsg} Tu saldo fue devuelto.`
       } else {
