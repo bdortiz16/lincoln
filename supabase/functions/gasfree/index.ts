@@ -2345,6 +2345,21 @@ async function saveSystemConfig(key: string, value: string) {
   if (ins.error) throw new Error(`No se pudo guardar ${key}: ${up.error.message}; insert: ${ins.error.message}`)
 }
 
+// Auditoría de cambios SENSIBLES (a dónde sale el dinero de tesorería). Antes
+// no había NINGÚN rastro de quién cambiaba la dirección de los proveedores —
+// un cambio a una dirección equivocada (o maliciosa) desviaba todos los pagos
+// sin dejar huella. Ahora cada cambio queda en audit_log con quién y cuándo.
+async function auditGasfree(req: Request, action: string, metadata: Record<string, unknown>) {
+  try {
+    let byEmail: string | null = null, byId: string | null = null
+    try {
+      const jwt = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
+      if (jwt) { const { data } = await db.auth.getUser(jwt); byEmail = data?.user?.email ?? null; byId = data?.user?.id ?? null }
+    } catch { /* sin identidad */ }
+    await db.from('audit_log').insert({ user_id: byId, action, metadata: { ...metadata, byEmail, at: new Date().toISOString() } })
+  } catch { /* best-effort — nunca romper la operación */ }
+}
+
 // ── Tesorería GasFree (recaudadora) — parámetros editables ──
 const TREASURY_KEY = 'gasfree_treasury_config'
 async function getTreasuryConfig() {
@@ -2841,9 +2856,17 @@ Deno.serve(async (req) => {
       return ok({ ok: true, txid: txid ?? null, source, explorer: txid ? `https://tronscan.org/#/transaction/${String(txid).replace(/^0x/, '')}` : null })
     }
     if (action === 'get_treasury_config') return ok(await getTreasuryConfig())
-    if (action === 'set_treasury_config') return ok(await setTreasuryConfig(body.config ?? {}))
+    if (action === 'set_treasury_config') { await auditGasfree(req, 'gasfree.set_treasury_config', { config: body.config ?? {} }); return ok(await setTreasuryConfig(body.config ?? {})) }
     if (action === 'get_providers') return ok({ providers: await getProviders() })
-    if (action === 'set_providers') return ok({ providers: await setProviders(body.providers ?? []) })
+    if (action === 'set_providers') {
+      // AUDITORÍA: a dónde sale el dinero de tesorería es lo más sensible.
+      const before = await getProviders()
+      await auditGasfree(req, 'gasfree.set_providers', {
+        before: (before ?? []).map((p: any) => ({ id: p.id, name: p.name, detail: p.detail })),
+        after: (body.providers ?? []).map((p: any) => ({ id: p.id, name: p.name, detail: p.detail })),
+      })
+      return ok({ providers: await setProviders(body.providers ?? []) })
+    }
     // Recaudadora rotativa: la actual (período vigente) y el histórico archivado.
     if (action === 'recaudadora_current') return ok(await recaudadoraCurrent())
     if (action === 'recaudadora_list') return ok(await recaudadoraList(body.back != null ? Number(body.back) : 12))
