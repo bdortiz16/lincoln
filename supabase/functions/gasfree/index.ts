@@ -87,6 +87,26 @@ async function require2FA(userId: string, otp: unknown): Promise<string | null> 
   return null
 }
 
+// 2FA ESTRICTO — para las acciones MÁS sensibles (cambiar a dónde sale el USDT
+// de tesorería). FALLA CERRADO SIEMPRE: exige uid resuelto, 2FA ACTIVO y código
+// válido. Si la cuenta no tiene 2FA, NO deja pasar: obliga a activarlo primero.
+// (El require2FA normal deja pasar a quien no tiene 2FA — bien para operaciones
+// del cliente, pero PELIGROSO para cambiar un proveedor.)
+async function require2FAStrict(userId: string | null, otp: unknown): Promise<string | null> {
+  if (!userId) return 'Sesión de administrador no válida. Vuelve a iniciar sesión para hacer este cambio.'
+  const { data } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
+  const raw = ((data as any)?.raw_data ?? {}) as Record<string, any>
+  if (!raw.mfaEnabled) {
+    return 'Para cambiar la dirección de un proveedor DEBES activar primero el código de dos pasos (2FA) en tu cuenta. Ve a Seguridad → activar 2FA y vuelve a intentarlo. (Sin 2FA, cualquiera con acceso al panel podría desviar el dinero.)'
+  }
+  let secret = ''
+  try { secret = raw.totpSecretEnc ? await decField(String(raw.totpSecretEnc)) : String(raw.totpSecret ?? '') } catch { secret = '' }
+  if (!secret || !(await verifyTOTPServer(secret, String(otp ?? '')))) {
+    return 'Código de dos pasos (2FA) inválido o vencido. Ingresa el código actual de tu app de autenticación.'
+  }
+  return null
+}
+
 const API_KEY    = (Deno.env.get('GASFREE_API_KEY') ?? '').trim()
 const API_SECRET = (Deno.env.get('GASFREE_API_SECRET') ?? '').trim()
 const NET = (Deno.env.get('GASFREE_NET') ?? 'nile').trim().toLowerCase() === 'tron' ? 'tron' : 'nile'
@@ -3063,8 +3083,10 @@ Deno.serve(async (req) => {
       const jwt = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
       let uid: string | null = null
       try { if (jwt) { const { data } = await db.auth.getUser(jwt); uid = data?.user?.id ?? null } } catch { /* */ }
-      const mfaErr = uid ? await require2FA(uid, body.otp) : null
-      if (mfaErr) return err('Para cambiar la dirección de un proveedor debes ingresar tu código de dos pasos (2FA).', 403)
+      // FALLA CERRADO: sin sesión válida, sin 2FA activo o sin código válido → se
+      // rechaza. Antes require2FA dejaba pasar si la cuenta no tenía 2FA (hueco).
+      const mfaErr = await require2FAStrict(uid, body.otp)
+      if (mfaErr) return err(mfaErr, 403)
       // AUDITORÍA: a dónde sale el dinero de tesorería es lo más sensible.
       const before = await getProviders()
       await auditGasfree(req, 'gasfree.set_providers', {

@@ -429,9 +429,10 @@ export const AdminGasFreeSection: React.FC = () => {
     // fantasma que desaparece al recargar la página.
     const [providerSaving, setProviderSaving] = useState(false);
     const saveProviders = async (list: any[]): Promise<boolean> => {
-        // 2FA: cambiar a dónde sale el dinero de tesorería exige el código de dos
-        // pasos (si la cuenta admin lo tiene activo). Déjalo vacío si no usas 2FA.
-        const otp = (typeof window !== 'undefined' ? window.prompt('Código de dos pasos (2FA) para cambiar la dirección del proveedor. Déjalo vacío si tu cuenta no tiene 2FA:') : '') ?? '';
+        // 2FA OBLIGATORIO: cambiar a dónde sale el dinero de tesorería exige el
+        // código de dos pasos. Si la cuenta admin no tiene 2FA activo, el servidor
+        // RECHAZA el cambio y pide activarlo primero (Seguridad → activar 2FA).
+        const otp = (typeof window !== 'undefined' ? window.prompt('Ingresa tu código de dos pasos (2FA) para cambiar la dirección del proveedor.\n\nSi tu cuenta NO tiene 2FA activo, primero actívalo en Seguridad — sin 2FA el servidor NO permite este cambio (es la protección contra que desvíen el dinero).') : '') ?? '';
         setProviderSaving(true);
         try {
             const r = await callGasfree({ action: 'set_providers', providers: list, otp });
