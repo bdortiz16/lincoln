@@ -27,6 +27,19 @@ const DIDIT_WORKFLOW_ID     = (Deno.env.get('DIDIT_WORKFLOW_ID') ?? '').trim()
 const DIDIT_WORKFLOW_ID_KYB = (Deno.env.get('DIDIT_WORKFLOW_ID_KYB') ?? '').trim()
 const DIDIT_CLIENT_ID       = (Deno.env.get('DIDIT_CLIENT_ID') ?? '').trim()
 const DIDIT_CLIENT_SECRET   = (Deno.env.get('DIDIT_CLIENT_SECRET') ?? '').trim()
+// Secreto de firma del webhook de Didit (Webhook Secret Key del panel de Didit).
+// Sin esto, el webhook NO se procesa (fail-closed): un POST anónimo forjado
+// podía marcar a cualquiera 'verified' y eludir el KYC/AML por completo.
+const DIDIT_WEBHOOK_SECRET  = (Deno.env.get('DIDIT_WEBHOOK_SECRET') ?? '').trim()
+
+// HMAC-SHA256 del cuerpo crudo (hex y base64) para verificar la firma del webhook.
+async function hmacOf(body: string, secret: string): Promise<{ hex: string; b64: string }> {
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(body)))
+  const hex = Array.from(sig).map(b => b.toString(16).padStart(2, '0')).join('')
+  const b64 = btoa(String.fromCharCode(...sig))
+  return { hex, b64 }
+}
 const APP_RETURN_URL        = (Deno.env.get('KYC_RETURN_URL') ?? 'https://lincoln-psi.vercel.app').trim()
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -336,15 +349,48 @@ const mapDiditStatus = (s: string): string => {
 }
 
 async function handleDiditWebhook(db: any, req: Request) {
-  const payload = await req.json()
+  const rawBody = await req.text().catch(() => '')
+
+  // ── SEGURIDAD: FALLA CERRADO ──────────────────────────────────────────────
+  // Sin secreto de firma, este webhook (sin JWT) lo podía disparar CUALQUIERA:
+  // un POST con { vendor_data: <userId>, status: 'approved' } marcaba la cuenta
+  // 'verified' sin verificación real → bypass total de KYC/AML. Se EXIGE la
+  // firma HMAC del cuerpo con DIDIT_WEBHOOK_SECRET (Webhook Secret Key de Didit).
+  if (!DIDIT_WEBHOOK_SECRET) {
+    console.error('[didit-kyc] DIDIT_WEBHOOK_SECRET no configurado — rechazando (fail-closed)')
+    return new Response(JSON.stringify({ error: 'webhook_not_configured' }), { status: 503, headers: { 'Content-Type': 'application/json' } })
+  }
+  const sigHeaders = [
+    req.headers.get('x-signature'),
+    req.headers.get('x-didit-signature'),
+    req.headers.get('webhook-signature'),
+    req.headers.get('signature'),
+  ].filter((v): v is string => !!v).map(v => v.trim().replace(/^sha256=/i, ''))
+  const { hex, b64 } = await hmacOf(rawBody, DIDIT_WEBHOOK_SECRET)
+  const okAuth = sigHeaders.some(v => v.toLowerCase() === hex || v === b64)
+  if (!okAuth) {
+    console.error('[didit-kyc] firma de webhook inválida — rechazando')
+    return new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401, headers: { 'Content-Type': 'application/json' } })
+  }
+
+  let payload: any = null
+  try { payload = JSON.parse(rawBody) } catch { return new Response(JSON.stringify({ error: 'bad_payload' }), { status: 400, headers: { 'Content-Type': 'application/json' } }) }
   console.log('[didit-kyc] webhook:', JSON.stringify(payload).slice(0, 400))
   const { session_id, status, vendor_data } = payload
   const userId: string = vendor_data
   if (!userId || !session_id) return new Response('ok', { status: 200 })
 
   const kycStatus = mapDiditStatus(status)
-  const { data: u } = await db.from('users').select('raw_data, notifications').eq('id', userId).single()
+  const { data: u } = await db.from('users').select('raw_data, notifications, didit_session_id').eq('id', userId).single()
   if (!u) return new Response('ok', { status: 200 })
+  // Defensa en profundidad: el session_id del webhook debe ser el que se guardó
+  // al crear la sesión de ESTE usuario (si hay uno guardado). Evita cruzar
+  // sesiones aunque la firma sea válida.
+  const storedSid = String(u.didit_session_id ?? (u.raw_data as any)?.diditSessionId ?? '')
+  if (storedSid && String(session_id) !== storedSid) {
+    console.error(`[didit-kyc] webhook: session_id ${session_id} no coincide con el guardado de ${userId} — ignorado`)
+    return new Response('ok', { status: 200 })
+  }
   const notifications = [...(u.notifications ?? [])]
   if (kycStatus === 'verified') {
     notifications.push({ id: Date.now(), type: 'kyc', read: false, title: 'Verificación aprobada',
