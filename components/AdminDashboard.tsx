@@ -685,7 +685,35 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       dataReady,
       refreshData,
       currentUser,
+      enrollMFA,
+      verifyMFAEnrollment,
   } = useDatabase();
+
+  // ── 2FA del propio admin (protege el cambio de proveedor de tesorería) ──
+  const [mfaEnroll, setMfaEnroll] = useState<{ qrCode: string; secret: string; factorId: string } | null>(null);
+  const [mfaCode, setMfaCode] = useState('');
+  const [mfaBusy, setMfaBusy] = useState(false);
+  const [mfaMsg, setMfaMsg] = useState<string | null>(null);
+  const adminMfaOn = !!((currentUser as any)?.mfaEnabled || (currentUser as any)?.raw_data?.mfaEnabled);
+  const startMfaEnroll = async () => {
+    setMfaBusy(true); setMfaMsg(null);
+    try {
+      const d = await enrollMFA();
+      if (!d) setMfaMsg('No se pudo iniciar la activación de 2FA. Reintenta.');
+      else { setMfaEnroll(d); setMfaCode(''); }
+    } catch (e: any) { setMfaMsg(e?.message ?? 'Error'); }
+    setMfaBusy(false);
+  };
+  const confirmMfaEnroll = async () => {
+    if (!mfaEnroll || mfaCode.length !== 6) return;
+    setMfaBusy(true); setMfaMsg(null);
+    try {
+      const { ok, error } = await verifyMFAEnrollment(mfaEnroll.factorId, mfaCode, mfaEnroll.secret);
+      if (ok) { setMfaMsg('✅ 2FA activado. Ahora el cambio de proveedor exige tu código.'); setMfaEnroll(null); setMfaCode(''); }
+      else setMfaMsg(error ?? 'Código incorrecto. Intenta de nuevo.');
+    } catch (e: any) { setMfaMsg(e?.message ?? 'Error'); }
+    setMfaBusy(false);
+  };
 
   // ── Este admin es SOLO de EMPRESAS ──
   // El producto PERSONAS vive en OTRA base de datos (proyecto Supabase
@@ -3279,7 +3307,41 @@ const renderDesign = () => (
       const userTransactions = selectedSecurityUser ? historyTransactions.filter(tx => tx.userId === selectedSecurityUser.id).sort((a,b) => b.id - a.id) : [];
 
       return (
-          <div className="space-y-6 animate-in fade-in duration-300 flex h-[calc(100vh-140px)]">
+        <div className="space-y-6 animate-in fade-in duration-300">
+          {/* Tu propio 2FA — protege el cambio de proveedor de tesorería */}
+          <div className={`rounded-xl border p-4 ${adminMfaOn ? 'border-green-200 bg-green-50/50' : 'border-amber-300 bg-amber-50/60'}`}>
+            <div className="flex items-start justify-between gap-3 flex-wrap">
+              <div className="min-w-0">
+                <p className="font-bold text-slate-800 flex items-center gap-2"><Shield size={16} className={adminMfaOn ? 'text-green-600' : 'text-amber-600'} /> Tu verificación en dos pasos (2FA)</p>
+                <p className="text-xs text-slate-500 mt-0.5">{adminMfaOn ? 'Activo. El cambio de dirección de un proveedor exige tu código — nadie puede desviar el dinero sin él.' : 'NO está activo. Sin 2FA, el sistema BLOQUEA cambiar la dirección de un proveedor (protección). Actívalo para poder gestionarlos y para blindar tu cuenta.'}</p>
+              </div>
+              <span className={`text-xs font-bold px-3 py-1.5 rounded-full ${adminMfaOn ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>{adminMfaOn ? '✅ Activo' : '⚠ Inactivo'}</span>
+            </div>
+            {!adminMfaOn && !mfaEnroll && (
+              <button onClick={startMfaEnroll} disabled={mfaBusy} className="mt-3 px-4 py-2 text-sm font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#152e52] disabled:opacity-60">{mfaBusy ? 'Generando…' : 'Activar 2FA ahora'}</button>
+            )}
+            {mfaEnroll && (
+              <div className="mt-3 grid md:grid-cols-2 gap-4 items-start">
+                <div className="bg-white rounded-lg border border-slate-200 p-3 text-center">
+                  <p className="text-xs text-slate-500 mb-2">1. Escanea este QR con Google Authenticator / Authy</p>
+                  {mfaEnroll.qrCode ? <img src={mfaEnroll.qrCode} alt="QR 2FA" className="w-44 h-44 mx-auto" /> : <p className="text-xs text-slate-400">QR no disponible — usa la clave de abajo.</p>}
+                  <p className="text-[11px] text-slate-500 mt-2">o ingresa esta clave a mano:</p>
+                  <p className="text-[11px] font-mono break-all text-slate-700 bg-slate-50 rounded p-1.5 mt-1">{mfaEnroll.secret}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-slate-500 mb-2">2. Escribe el código de 6 dígitos que muestra la app</p>
+                  <input value={mfaCode} onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, '').slice(0, 6))} onKeyDown={(e) => { if (e.key === 'Enter') confirmMfaEnroll(); }} placeholder="123 456" inputMode="numeric" className="w-full px-3 py-3 rounded-lg border border-slate-300 outline-none focus:border-[#0C0E0D] font-mono text-lg tracking-widest text-center" />
+                  <div className="flex gap-2 mt-2">
+                    <button onClick={confirmMfaEnroll} disabled={mfaBusy || mfaCode.length !== 6} className="px-4 py-2 text-sm font-bold rounded-lg bg-[#4ADE80] text-[#0C0E0D] hover:bg-[#26bda9] disabled:opacity-60">{mfaBusy ? 'Verificando…' : 'Confirmar y activar'}</button>
+                    <button onClick={() => { setMfaEnroll(null); setMfaCode(''); setMfaMsg(null); }} className="px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100 rounded-lg">Cancelar</button>
+                  </div>
+                </div>
+              </div>
+            )}
+            {mfaMsg && <p className={`mt-2 text-xs font-semibold ${mfaMsg.startsWith('✅') ? 'text-green-700' : 'text-red-700'}`}>{mfaMsg}</p>}
+          </div>
+
+          <div className="flex h-[calc(100vh-260px)]">
               {/* Left Panel: User List */}
               <div className="w-1/3 bg-white border border-slate-200 rounded-xl flex flex-col overflow-hidden">
                   <div className="p-4 border-b border-slate-100 bg-slate-50">
@@ -3453,6 +3515,7 @@ const renderDesign = () => (
                   )}
               </div>
           </div>
+        </div>
       );
   };
 
