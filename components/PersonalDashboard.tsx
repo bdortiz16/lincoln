@@ -4298,6 +4298,16 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           </div>
       )}
 
+      {/* Backdrop móvil: al tocar fuera de la barra, se cierra el menú. Va
+          debajo del sidebar (z-30) y encima del contenido; solo en móvil. */}
+      {isMobileMenuOpen && (
+        <div
+          className="fixed inset-0 z-[25] bg-black/50 lg:hidden"
+          onClick={() => setIsMobileMenuOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
       {/* Sidebar - COLLAPSIBLE ON MOBILE */}
       <aside className={`
           fixed inset-y-0 left-0 z-30 w-64 bg-white border-r border-slate-200 transform transition-transform duration-300 lg:translate-x-0
