@@ -1218,6 +1218,21 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
               const { user: fnUser, authSynced } = await fnRes.json();
               if (fnUser) {
                 const mapped = mapSupabaseUser(fnUser);
+                // ⚠️ SEGURIDAD: este camino de respaldo NO puede saltarse el
+                // 2FA. Si la cuenta lo tiene activo se exige el código igual
+                // que en el login normal. Primero se ESPERA la sesión real
+                // (el fn de servicio ya sincronizó la contraseña) para que la
+                // verificación del código tenga un JWT con el cual
+                // autorizarse; sin sesión, se deniega — nunca se entra.
+                if ((mapped as any)?.mfaEnabled || (fnUser as any)?.raw_data?.mfaEnabled) {
+                  if (authSynced) {
+                    try { await supabase.auth.signInWithPassword({ email, password: pass! }); } catch { /* */ }
+                  }
+                  setPendingMFAProfile(mapped);
+                  setPendingMFAMode('custom');
+                  setMfaPending(true);
+                  return 'MFA_REQUIRED';
+                }
                 setCurrentUser(mapped);
                 // user-login (service-role) acaba de sincronizar/crear el
                 // usuario de Auth con esta contraseña — reintentar el login
@@ -1264,6 +1279,17 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             }
           }
           const user = mapSupabaseUser(fbProfile);
+          // ⚠️ SEGURIDAD: igual que arriba — una cuenta con 2FA activo jamás
+          // entra por el respaldo directo a la base. Aquí no hay sesión de
+          // Auth (justo falló), así que la verificación del código no podrá
+          // autorizarse y el acceso queda denegado: es el comportamiento
+          // correcto (fallar cerrado), no un atajo.
+          if ((user as any)?.mfaEnabled || fbProfile.raw_data?.mfaEnabled) {
+            setPendingMFAProfile(user);
+            setPendingMFAMode('custom');
+            setMfaPending(true);
+            return 'MFA_REQUIRED';
+          }
           setCurrentUser(user);
           return user;
         }
