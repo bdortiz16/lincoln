@@ -2388,6 +2388,11 @@ async function myVerifyDeposit(userId: string) {
 // Se deja para pagos que sí deben salir de tesorería (ej. proveedores).
 async function myWalletWithdrawal(userId: string, toAddress: string, amount: number) {
   if (!(amount > 0)) throw new Error('Monto inválido')
+  // Esta salida se firma con la llave de la RECAUDADORA, que custodia el USDT
+  // agrupado de TODOS los clientes. El destino lo manda el cliente, así que sin
+  // lista blanca se podía drenar la tesorería a cualquier wallet. Se verifica
+  // ANTES de debitar, para no dejar un débito colgado si el destino no vale.
+  assertTreasuryDestination(toAddress)
   const { data: u } = await db.from('users').select('email').eq('id', userId).single()
   if (!u) throw new Error('Usuario no encontrado')
 
@@ -2525,6 +2530,19 @@ const ENV_PROVIDERS: { id: string; name: string; detail: string; locked: true }[
 const isLockedProvider = (p: any) =>
   ENV_PROVIDERS.some(e => e.id === p?.id || String(e.name).toLowerCase() === String(p?.name ?? '').toLowerCase())
 
+// REGLA DE NEGOCIO: de la RECAUDADORA solo sale dinero hacia las wallets de
+// partners fijadas en la Bóveda (Finity / Mouv). Ninguna otra dirección, venga
+// de donde venga la llamada — pago manual, hop 2 automático de la conversión,
+// sus reintentos o un retiro pedido por un cliente. La recaudadora custodia el
+// USDT agrupado de TODOS los clientes: un destino libre permitiría drenarla.
+function assertTreasuryDestination(toAddress: string) {
+  if (!ENV_PROVIDERS.length) return   // sin Bóveda configurada, comportamiento previo
+  const dest = String(toAddress ?? '').trim()
+  if (!ENV_PROVIDERS.some(e => e.detail === dest)) {
+    throw new Error('Destino no permitido: desde la Tesorería solo se puede pagar a las wallets de partners verificadas en la Bóveda.')
+  }
+}
+
 async function getProviders() {
   const { data } = await db.from('system_config').select('value').eq('key', PROVIDERS_KEY).single()
   const stored: any[] = data?.value ? JSON.parse(data.value) : []
@@ -2575,18 +2593,7 @@ async function getTreasuryMovements() {
 // vivo y se cobra aparte del monto (igual que cualquier envío GasFree).
 async function payFromTreasury(toAddress: string, amount: number, providerName?: string) {
   if (!(amount > 0)) throw new Error('Monto inválido')
-  // LISTA BLANCA EN LA RAÍZ: TODA salida de tesorería pasa por aquí — el pago
-  // manual, el hop 2 automático de la conversión y sus reintentos. Antes la
-  // verificación vivía solo en la acción `send`, así que el flujo automático
-  // podía pagar a un proveedor viejo guardado en base (elegido por
-  // alertProviderId) y saltarse la Bóveda. Con wallets fijadas, el destino
-  // SOLO puede ser una de ellas, venga de donde venga la llamada.
-  if (ENV_PROVIDERS.length) {
-    const dest = String(toAddress ?? '').trim()
-    if (!ENV_PROVIDERS.some(e => e.detail === dest)) {
-      throw new Error('Destino no permitido: la Tesorería solo puede pagar a wallets de partners verificadas en la Bóveda.')
-    }
-  }
+  assertTreasuryDestination(toAddress)   // lista blanca de la Bóveda
   const rec = await recaudadora()
   const r = await sendCore(rec.pkHex, rec.eoa, toAddress, amount)
   await logTreasuryMovement({
