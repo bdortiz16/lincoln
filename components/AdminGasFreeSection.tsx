@@ -323,7 +323,9 @@ export const AdminGasFreeSection: React.FC = () => {
     const allUsers = getAllUsers();
     // TODOS los clientes (en Lincoin son cuentas personales) — el filtro
     // viejo de "solo empresas" dejaba la tabla de wallets vacía.
-    const businesses = allUsers.filter((u: any) => u.role !== 'admin');
+    // Se excluyen las cuentas en LISTA NEGRA: no deben aparecer en la operación
+    // de wallets/tesorería (siguen visibles en Clientes para poder revertirlas).
+    const businesses = allUsers.filter((u: any) => u.role !== 'admin' && !(u.blacklisted === true || u.raw_data?.blacklisted === true));
     const filtered = businesses.filter((u: any) => {
         if (!q) return true;
         const s = q.toLowerCase();

@@ -766,7 +766,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     .sort((a, b) => new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime());
   const failuresCount = failuresList.length;
 
-  const pendingClientsCount = allUsers.filter(u => u.kycStatus === 'pending' || u.kycStatus === 'in_review').length;
+  // Las cuentas en LISTA NEGRA no cuentan como pendientes: no hay nada que
+  // aprobarles, y aparecer ahí solo ensucia la operación.
+  const isBlacklisted = (u: any) => u?.blacklisted === true || u?.raw_data?.blacklisted === true;
+  const pendingClientsCount = allUsers.filter(u => !isBlacklisted(u) && (u.kycStatus === 'pending' || u.kycStatus === 'in_review')).length;
 
   const getUserVolume = (userId: string) => {
       const userTx = historyTransactions.filter(tx => tx.userId === userId && tx.status === 'Completado');
@@ -892,6 +895,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     showToast('Cliente rechazado.');
   };
   const handleBlockUser = () => { if (!selectedClient) return; toggleUserBlock(selectedClient.id, !selectedClient.isBlocked, blockReason); showToast("Estado de bloqueo actualizado"); setSelectedClient(null); setShowBlockInput(false); setBlockReason(''); };
+  // LISTA NEGRA: bloqueo reforzado para cuentas maliciosas (hackeo/fraude).
+  // Además de bloquear, marca blacklisted → el SERVIDOR rechaza toda operación
+  // de dinero y la cuenta desaparece de las listas operativas (Cargues,
+  // GasFree, pendientes). Es reversible desde aquí mismo.
+  const handleBlacklistUser = async () => {
+    if (!selectedClient) return;
+    const isBl = !!(selectedClient as any).blacklisted;
+    if (!isBl && !window.confirm(`¿Enviar a LISTA NEGRA a ${selectedClient.email}?\n\nQuedará bloqueada, el servidor rechazará TODAS sus operaciones de dinero y desaparecerá de Cargues, GasFree y pendientes.`)) return;
+    await updateUserProfile(selectedClient.id, {
+      blacklisted: !isBl,
+      isBlocked: !isBl ? true : (selectedClient as any).isBlocked,
+      blockReason: !isBl ? (blockReason || 'Lista negra — actividad maliciosa') : (selectedClient as any).blockReason,
+      blacklistedAt: !isBl ? new Date().toISOString() : null,
+    });
+    showToast(!isBl ? '🚫 Cuenta enviada a lista negra' : 'Cuenta retirada de la lista negra');
+    setSelectedClient(null); setShowBlockInput(false); setBlockReason('');
+  };
   const handleDeleteUser = async () => {
     if (!selectedClient) return;
     setDeletingUser(true);
@@ -1141,7 +1161,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       }).reduce((s, tx) => s + usdEq(tx), 0);
       const depSum = pendingDeposits.reduce((s, tx) => s + usdEq(tx), 0);
       const witSum = pendingWithdrawals.reduce((s, tx) => s + usdEq(tx), 0);
-      const pendingClients = allUsers.filter(u => u.kycStatus === 'pending' || u.kycStatus === 'in_review');
+      const pendingClients = allUsers.filter(u => !isBlacklisted(u) && (u.kycStatus === 'pending' || u.kycStatus === 'in_review'));
       // Cola unificada, ordenada por antigüedad (más viejo primero).
       const queue = [
           ...pendingClients.map(u => ({ id: `kyc-${u.id}`, sig: (u.name || 'C').charAt(0).toUpperCase(), title: `KYC · ${u.name || 'Cliente'}`, meta: 'Verificación en revisión · falta aprobación manual', at: (u as any).createdAt, tab: 'clients' as const })),
@@ -1355,7 +1375,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                                           <p className="text-xs text-slate-500 truncate w-40">{client.email}</p>
                                       </div>
                                   </div>
-                                  {client.isBlocked && <span className="text-[10px] text-red-500 font-bold mt-1 block">BLOQUEADO</span>}
+                                  {isBlacklisted(client)
+                                    ? <span className="text-[10px] font-bold mt-1 inline-block px-1.5 py-0.5 rounded bg-[#0C0E0D] text-white">🚫 LISTA NEGRA</span>
+                                    : client.isBlocked && <span className="text-[10px] text-red-500 font-bold mt-1 block">BLOQUEADO</span>}
                               </div>
                           ))}
                       </div>
@@ -1387,6 +1409,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                                       )}
                                       <button onClick={() => setShowBlockInput(!showBlockInput)} className="bg-red-100 text-red-700 border border-red-200 px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-red-200 transition-colors flex items-center gap-1">
                                           <Ban size={14}/> {selectedClient.isBlocked ? 'Desbloquear' : 'Bloquear'}
+                                      </button>
+                                      <button onClick={handleBlacklistUser} title="Bloqueo reforzado: el servidor rechaza TODAS sus operaciones y desaparece de las listas operativas" className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors flex items-center gap-1 ${(selectedClient as any).blacklisted ? 'bg-slate-200 text-slate-700 hover:bg-slate-300' : 'bg-[#0C0E0D] text-white hover:bg-black'}`}>
+                                          <Shield size={14}/> {(selectedClient as any).blacklisted ? 'Sacar de lista negra' : 'Lista negra'}
                                       </button>
                                       <button onClick={() => { setShowDeleteConfirm(true); setShowBlockInput(false); }} className="bg-red-600 text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-red-700 transition-colors flex items-center gap-1">
                                           <Trash2 size={14}/> Eliminar
@@ -1622,6 +1647,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const renderCargues = () => {
       const q = carguesSearch.trim().toLowerCase();
       const list = allUsers
+        .filter(u => !isBlacklisted(u))   // las cuentas en lista negra no se cargan
         .filter(u => !q || (u.name ?? '').toLowerCase().includes(q) || (u.email ?? '').toLowerCase().includes(q))
         .slice(0, 40);
       const bal = (u: User | null, code: string) => Number((u?.balances as any)?.[code] ?? 0);

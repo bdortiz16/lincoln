@@ -87,6 +87,24 @@ async function require2FA(userId: string, otp: unknown): Promise<string | null> 
   return null
 }
 
+// ── GUARDIA DE BLOQUEO / LISTA NEGRA ──────────────────────────────
+// Antes el bloqueo solo existía en la interfaz: un usuario bloqueado (p. ej.
+// por hackeo) podía seguir moviendo dinero llamando la API directo. Ahora el
+// SERVIDOR rechaza toda operación de dinero de una cuenta bloqueada o en lista
+// negra. Devuelve un mensaje si está bloqueada, o null si puede operar.
+async function assertNotBlocked(userId: string): Promise<string | null> {
+  try {
+    const { data } = await db.from('users').select('is_blocked, is_active, raw_data').eq('id', userId).maybeSingle()
+    if (!data) return null
+    const raw = ((data as any).raw_data ?? {}) as Record<string, any>
+    const blacklisted = raw.blacklisted === true
+    const blocked = (data as any).is_blocked === true || (data as any).is_active === false || raw.isBlocked === true
+    if (blacklisted) return 'Esta cuenta está en la lista negra y no puede realizar operaciones. Contacta a soporte.'
+    if (blocked) return 'Esta cuenta está bloqueada y no puede realizar operaciones. Contacta a soporte.'
+    return null
+  } catch { return null }   // si la lectura falla, no se bloquea la operación legítima
+}
+
 // 2FA ESTRICTO — para las acciones MÁS sensibles (cambiar a dónde sale el USDT
 // de tesorería). FALLA CERRADO SIEMPRE: exige uid resuelto, 2FA ACTIVO y código
 // válido. Si la cuenta no tiene 2FA, NO deja pasar: obliga a activarlo primero.
@@ -2636,6 +2654,19 @@ Deno.serve(async (req) => {
     }
     const body = await req.json()
     const { action, userId, toAddress, amount } = body
+
+    // GUARDIA DE BLOQUEO / LISTA NEGRA — server-side. Ninguna cuenta bloqueada
+    // o en lista negra puede mover dinero, aunque llame la API directo (el
+    // bloqueo de la interfaz por sí solo no protege).
+    const MONEY_ACTIONS = new Set([
+      'my_send', 'my_wallet_send', 'my_wallet_withdrawal', 'my_archived_send',
+      'my_convert_settle', 'my_convert_claim', 'my_convert_release', 'my_convert_kick',
+      'my_verify_deposit', 'my_wallet_regenerate',
+    ])
+    if (userId && MONEY_ACTIONS.has(String(action))) {
+      const blockedMsg = await assertNotBlocked(String(userId))
+      if (blockedMsg) return err(blockedMsg, 403)
+    }
 
     if (action === 'ping')   return ok({ ok: true, service: 'gasfree', version: 'v6-cache-user-address', net: NET })
 
