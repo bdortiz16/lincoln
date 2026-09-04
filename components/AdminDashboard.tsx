@@ -817,7 +817,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
           const newAlerts: SystemAlert[] = [];
           if (apiStatus === 'error') newAlerts.push({ id: 'api-error', type: 'error', title: 'Error de Conexión API', description: 'No se pueden obtener tasas de cambio en tiempo real.' });
           
-          if (!isOnline) newAlerts.push({ id: 'db-offline', type: 'error', title: 'Base de Datos Desconectada', description: 'La app está en modo local. Configura Supabase.' });
+          if (!isOnline) newAlerts.push({ id: 'db-offline', type: 'error', title: 'Base de Datos Desconectada', description: 'La app está en modo local. Revisa la conexión del servidor.' });
 
           const totalPendingTx = pendingDeposits.length + pendingWithdrawals.length;
           if (pendingClientsCount > 0) newAlerts.push({ id: 'kyc-pending', type: 'info', title: 'Verificación de Clientes', description: `Hay ${pendingClientsCount} usuarios esperando validación KYC.`, action: 'clients' });
@@ -1337,7 +1337,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                       <p className="text-sm font-bold text-amber-800">Liberar correo huérfano</p>
                       <p className="text-xs text-amber-700">
                           Úsalo cuando alguien eliminó su cuenta pero un registro nuevo con el <b>mismo correo</b> nunca se crea
-                          (ej. pasar de Personal a Empresa) — pasa cuando el perfil se borró pero la cuenta de acceso de Supabase
+                          (ej. pasar de Personal a Empresa) — pasa cuando el perfil se borró pero la cuenta de acceso
                           quedó "atascada" con ese correo. Esto borra cualquier rastro que quede de ese correo, permanentemente.
                       </p>
                       <div className="flex gap-2 flex-wrap items-center">
@@ -3685,7 +3685,7 @@ const renderDesign = () => (
                     <p className="text-[11px] text-slate-400">Cuenta creada: {a.created_at ? new Date(a.created_at).toLocaleString('es-CO') : '—'}</p>
                   </div>
                 ))}
-                {(adminLogins.admins ?? []).length === 0 && <p className="text-xs text-slate-400">No se pudo leer la fecha de ingreso desde Supabase Auth.</p>}
+                {(adminLogins.admins ?? []).length === 0 && <p className="text-xs text-slate-400">No se pudo leer la fecha del último ingreso.</p>}
               </div>
               {(adminLogins.activity ?? []).length > 0 && (
                 <div>
@@ -3707,7 +3707,7 @@ const renderDesign = () => (
                   </div>
                 </div>
               )}
-              <p className="text-[11px] text-slate-400">"Último ingreso" viene de Supabase Auth (fecha única). La actividad con IP se registra de aquí en adelante — los ingresos anteriores no quedaron con IP.</p>
+              <p className="text-[11px] text-slate-400">"Último ingreso" es una fecha única del servidor de acceso. La actividad con IP se registra de aquí en adelante — los ingresos anteriores no quedaron con IP.</p>
             </div>
           )}
         </div>

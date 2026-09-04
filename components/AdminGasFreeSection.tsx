@@ -1270,6 +1270,16 @@ export const AdminGasFreeSection: React.FC = () => {
                     ))}
                     {providersLoaded && providers.length === 0 && <p className="text-xs text-slate-400">Aún no hay proveedores registrados.</p>}
                 </div>
+                {/* Con wallets fijadas en la Bóveda, el alta y la baja NO se hacen
+                    desde el panel: se administran fuera, con doble aprobación. */}
+                {providers.some((p: any) => p.locked) ? (
+                    <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                        <p className="text-xs font-bold text-emerald-800">🔒 Administrado en la Bóveda</p>
+                        <p className="text-[11px] text-emerald-700 mt-1">
+                            Las wallets de partners no se agregan, editan ni eliminan desde este panel. Se fijan fuera de la aplicación con doble aprobación, y la Tesorería solo puede pagar a esas direcciones.
+                        </p>
+                    </div>
+                ) : (
                 <div className="flex items-end gap-2 flex-wrap">
                     <div>
                         <label className="text-[10px] font-bold uppercase text-slate-500">Proveedor</label>
@@ -1297,9 +1307,15 @@ export const AdminGasFreeSection: React.FC = () => {
                         {providerSaving ? 'Guardando…' : '+ Agregar'}
                     </button>
                 </div>
+                )}
                 {providerErr && <p className="text-[11px] font-bold text-slate-500">⚠ {providerErr}</p>}
                 {!providerErr && providersLoaded && providers.length > 0 && (
-                    <p className="text-[11px] font-bold text-green-700">✅ {providers.length === 1 ? '1 proveedor guardado' : `${providers.length} proveedores guardados`} en el servidor (verificado).</p>
+                    <p className="text-[11px] font-bold text-green-700">✅ {providers.length === 1 ? '1 proveedor guardado' : `${providers.length} proveedores guardados`} (verificado).</p>
+                )}
+                {!providers.some((p: any) => p.locked) && (
+                    <p className="text-[11px] font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2">
+                        ⚠ Ninguna wallet está fijada en la Bóveda todavía — mientras tanto se pueden editar desde aquí. Fíjalas en la Bóveda para blindarlas.
+                    </p>
                 )}
                 <p className="text-[10px] text-slate-400">Verifica la wallet con el proveedor antes de guardarla — los pagos de Tesorería salen directo a esa dirección.</p>
             </div>
