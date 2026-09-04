@@ -1176,6 +1176,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       const ageStr = (d?: string) => {
           if (!d) return '';
           const ms = Date.now() - new Date(d).getTime();
+          if (!Number.isFinite(ms)) return '';   // fecha ilegible → sin "hace NaN d"
           const m = Math.floor(ms / 60000);
           if (m < 1) return 'recién';
           if (m < 60) return `hace ${m} min`;
@@ -2127,9 +2128,27 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       // ── Datos REALES para el panel de cabecera de Tesorería ──
       const nowD = new Date();
       const isEntrada = (t: any) => /carga|dep[óo]sito|load/i.test(String(t.title ?? t.type ?? ''));
+      // Las transacciones guardan la fecha en DD/MM/YYYY (así la escribe la
+      // base) y otras en ISO. new Date('04/09/2026') lo lee como MM/DD o como
+      // Invalid Date según el caso, y de ahí salían NaN que reventaban el
+      // panel. Se parsea explícitamente y se devuelve null si no se puede.
+      const txDate = (t: any): Date | null => {
+        const v = t?.date ?? t?.createdAt;
+        if (v instanceof Date) return isNaN(v.getTime()) ? null : v;
+        const s = String(v ?? '').trim();
+        if (!s) return null;
+        const dmy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+        if (dmy) {
+          const d = new Date(Number(dmy[3]), Number(dmy[2]) - 1, Number(dmy[1]));
+          return isNaN(d.getTime()) ? null : d;
+        }
+        const d = new Date(s);
+        return isNaN(d.getTime()) ? null : d;
+      };
       let inflow = 0, outflow = 0, monthVolume = 0, monthOps = 0;
       for (const t of historyTransactions) {
-        const d = new Date(t.date ?? t.createdAt ?? 0);
+        const d = txDate(t);
+        if (!d) continue;
         if (d.getMonth() !== nowD.getMonth() || d.getFullYear() !== nowD.getFullYear()) continue;
         const amt = Math.abs(Number(t.amount) || 0);
         monthVolume += amt; monthOps++;
@@ -2138,10 +2157,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       // Flujo diario de los últimos 14 días (entradas vs salidas).
       const flow14 = new Array(14).fill(0).map(() => ({ in: 0, out: 0 }));
       for (const t of historyTransactions) {
-        const d = new Date(t.date ?? t.createdAt ?? 0).getTime();
-        const daysAgo = Math.floor((Date.now() - d) / 86400000);
-        if (daysAgo < 0 || daysAgo > 13) continue;
+        const dt = txDate(t);
+        if (!dt) continue;
+        const daysAgo = Math.floor((Date.now() - dt.getTime()) / 86400000);
+        // OJO: un NaN aquí pasaba las DOS comparaciones y caía en flow14[NaN],
+        // que es undefined — de ahí el "Cannot read properties of undefined".
+        if (!Number.isFinite(daysAgo) || daysAgo < 0 || daysAgo > 13) continue;
         const slot = flow14[13 - daysAgo];
+        if (!slot) continue;
         const amt = Math.abs(Number(t.amount) || 0);
         if (isEntrada(t)) slot.in += amt; else slot.out += amt;
       }
