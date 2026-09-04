@@ -47,7 +47,11 @@ DECLARE
     -- 'mfaBackupHashes' son los códigos de respaldo del 2FA (hasheados). Si el
     -- cliente pudiera escribirlos, plantaría sus propios códigos y entraría a
     -- cualquier cuenta sin el TOTP: es una credencial, no una preferencia.
-    'mfaBackupHashes'
+    'mfaBackupHashes',
+    -- 'mfaSessions' marca QUE sesion supero el 2FA. Si el cliente pudiera
+    -- escribirla, se anotaria a si mismo como verificado y el segundo factor
+    -- del servidor dejaria de valer.
+    'mfaSessions'
   ];
   oldraw jsonb := COALESCE(OLD.raw_data, '{}'::jsonb);
   newraw jsonb := COALESCE(NEW.raw_data, '{}'::jsonb);

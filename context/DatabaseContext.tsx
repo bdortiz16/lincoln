@@ -247,17 +247,14 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   const { config, updateConfig } = useSystemConfig();
   const [users, setUsers] = useState<User[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [currentUser, setCurrentUser] = useState<User | null>(() => {
-    // Restaurar la sesión de admin (bypass) de forma SÍNCRONA: así el panel
-    // de Empresas NO parpadea "Verificando sesión…" en cada recarga (antes
-    // se restauraba dentro de un useEffect, después del primer render, y se
-    // veía un frame del loader aunque ya había sesión).
-    try {
-      const saved = sessionStorage.getItem('cuypay_admin_session');
-      if (saved) return JSON.parse(saved);
-    } catch { /* sessionStorage no disponible */ }
-    return null;
-  });
+  // ⚠️ SEGURIDAD: NO se restaura ninguna sesión desde sessionStorage.
+  // Antes se leía 'cuypay_admin_session' y se confiaba en ese JSON tal cual,
+  // rol incluido. Cualquiera que pudiera escribir en sessionStorage (un XSS,
+  // una extensión, o la propia consola del navegador) se volvía admin en la
+  // interfaz sin contraseña, sin 2FA y sin CAPTCHA. El bypass que lo escribía
+  // ya estaba desactivado, así que esto era superficie de ataque muerta.
+  // La identidad SIEMPRE sale del JWT de Supabase.
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
   // Recuperación de contraseña: cuando el usuario abre el enlace del correo
   // de "olvidé mi contraseña", Supabase dispara PASSWORD_RECOVERY. La app
   // muestra una pantalla para fijar la nueva clave.
@@ -321,13 +318,10 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   useEffect(() => {
     if (!isSupabaseConfigured) return;
 
-    // Restore admin bypass session on page load (sessionStorage — expires when tab closes)
-    const savedAdmin = sessionStorage.getItem('cuypay_admin_session');
-    if (savedAdmin) {
-      try { setCurrentUser(JSON.parse(savedAdmin)); } catch {}
-      setIsAuthLoading(false);
-      // Still set up listener so Supabase regular users work on same browser
-    }
+    // Se retiró la restauración de 'cuypay_admin_session' (ver arriba): la
+    // sesión de admin sale del JWT, nunca de un JSON del navegador. Por si
+    // quedó escrita de una versión anterior, se borra.
+    try { sessionStorage.removeItem('cuypay_admin_session'); } catch { /* */ }
 
     // Safety net: never stay stuck on loading screen more than 5 seconds
     const timeout = setTimeout(() => setIsAuthLoading(false), 5000);
@@ -515,10 +509,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         try {
           const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
           const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-          const isAdminBypass = cu.id === 'admin-bypass';
-          const authHeader = isAdminBypass
-            ? `AdminBypass ${SEED_ADMIN_PASSWORD}`
-            : `Bearer ${getStoredToken() ?? SKEY}`;
+          const authHeader = `Bearer ${getStoredToken() ?? SKEY}`;
           const abortCtl = new AbortController();
           const abortTimer = setTimeout(() => abortCtl.abort(), 20000);
           const fnResult = await fetch(`${SURL}/functions/v1/admin-data`, {
@@ -874,7 +865,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       // BORRABA/CAMBIABA (la wallet "cambiaba sola", el 2FA "se deshabilitaba").
       // Siempre se dejan como están en la BASE; y si no pudimos leer la base,
       // se OMITE raw_data por completo para no pisar nada.
-      const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'gasfreeCreditedTxs', 'gasfreeCreditedCount', 'mfaEnabled', 'totpSecret', 'totpSecretEnc', 'mfaBackupHashes', 'otp', 'subWallets'];
+      const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'gasfreeCreditedTxs', 'gasfreeCreditedCount', 'mfaEnabled', 'totpSecret', 'totpSecretEnc', 'mfaBackupHashes', 'mfaSessions', 'otp', 'subWallets'];
       // COLECCIONES del cliente que tienen su PROPIO escritor seguro
       // (updateUserRawData, merge dirigido): contactos, wallets inscritas,
       // notificaciones. saveUser NUNCA debe reescribirlas desde memoria — una
@@ -964,8 +955,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         try {
           const SURL2 = (import.meta.env.VITE_SUPABASE_URL as string) || '';
           const SKEY2 = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-          const isBypass = currentUserRef.current?.id === 'admin-bypass';
-          const authHeader = isBypass ? `AdminBypass ${SEED_ADMIN_PASSWORD}` : `Bearer ${token ?? SKEY2}`;
+          const authHeader = `Bearer ${token ?? SKEY2}`;
           const r = await fetch(`${SURL2}/functions/v1/admin-data`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', apikey: SKEY2, Authorization: authHeader },
@@ -1180,23 +1170,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       } catch { /* cae al AdminBypass local */ }
     }
 
-    // Admin bypass (RED DE SEGURIDAD): authenticate via env vars, skip Supabase.
-    // Requires VITE_ADMIN_PASSWORD to be explicitly set — empty string disables it.
-    if (SEED_ADMIN_PASSWORD && isSeedAdminEmail && pass === SEED_ADMIN_PASSWORD) {
-      const adminUser: User = {
-        id: 'admin-bypass',
-        email: SEED_ADMIN_EMAIL,
-        role: 'admin',
-        name: 'Administrador',
-        balances: {},
-        kycStatus: 'approved',
-        notifications: [],
-      };
-      // sessionStorage expires when the tab is closed, reducing XSS session-theft window
-      sessionStorage.setItem('cuypay_admin_session', JSON.stringify(adminUser));
-      setCurrentUser(adminUser);
-      return adminUser;
-    }
+    // (Se eliminó el "admin bypass" por contraseña de entorno: fabricaba una
+    //  sesión de admin sin JWT, sin 2FA y sin registro. El admin entra con su
+    //  cuenta real de Supabase.)
 
     if (!isSupabaseConfigured) {
       const user = users.find(u => u.email === email && u.password === pass);
@@ -2173,15 +2149,12 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     const action = isSelf ? 'delete_self' : 'delete_user';
     const body = isSelf ? { action } : { action, userId: id };
 
-    // Use direct fetch so we can pass the bypass token for admin-bypass sessions.
+    // Fetch directo para poder mandar el JWT del admin en el header.
     let edgeFnOk = false;
     try {
       const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
       const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-      const cu2 = currentUserRef.current;
-      const authHeader2 = cu2?.id === 'admin-bypass'
-        ? `AdminBypass ${SEED_ADMIN_PASSWORD}`
-        : `Bearer ${getStoredToken() ?? SKEY}`;
+      const authHeader2 = `Bearer ${getStoredToken() ?? SKEY}`;
       const result = await safe(
         fetch(`${SURL}/functions/v1/admin-data`, {
           method: 'POST',

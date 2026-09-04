@@ -139,6 +139,66 @@ async function verifyTOTPServer(secret: string, token: string): Promise<boolean>
   return false
 }
 
+// ── 2FA REAL: verificada en el SERVIDOR, no solo en la pantalla ───────────
+// El 2FA se pedía únicamente en la interfaz. El servidor solo miraba
+// "¿JWT válido + role='admin'?", así que quien tuviera la CONTRASEÑA podía
+// pedir un token con signInWithPassword y llamar a las acciones sensibles
+// directamente, sin pasar jamás por el código de 6 dígitos.
+//
+// Ahora, al verificar el 2FA se anota la SESIÓN que lo hizo, y las acciones
+// sensibles exigen que la sesión que llama sea una de esas. El id de sesión
+// viaja dentro del JWT firmado por Supabase: no se puede inventar ni quitar
+// sin invalidar la firma, que getUser() ya comprobó.
+const MFA_SESSION_TTL_MS = 24 * 3600 * 1000
+
+function sessionIdOf(req: Request): string | null {
+  try {
+    const jwt = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
+    const part = jwt.split('.')[1]
+    if (!part) return null
+    const pad = part.replace(/-/g, '+').replace(/_/g, '/')
+    const payload = JSON.parse(atob(pad + '='.repeat((4 - pad.length % 4) % 4)))
+    return payload?.session_id ?? null
+  } catch { return null }
+}
+
+async function rememberMfaSession(req: Request, userId: string) {
+  const sid = sessionIdOf(req)
+  if (!sid) return
+  try {
+    const { data: u } = await db.from('users').select('raw_data').eq('id', userId).single()
+    const raw = { ...((u as any)?.raw_data ?? {}) }
+    const list: any[] = Array.isArray(raw.mfaSessions) ? raw.mfaSessions : []
+    const rest = list.filter((x: any) => x?.sid !== sid)
+    raw.mfaSessions = [{ sid, at: new Date().toISOString() }, ...rest].slice(0, 5)
+    await db.from('users').update({ raw_data: raw }).eq('id', userId)
+  } catch { /* si no se puede anotar, la acción sensible pedirá 2FA de nuevo */ }
+}
+
+// Devuelve un mensaje de error si la sesión que llama NO pasó por el 2FA.
+// null = puede continuar.
+async function requireMfaSession(req: Request, userId: string | undefined): Promise<string | null> {
+  if (!userId) return null
+  try {
+    const { data: u } = await db.from('users').select('raw_data').eq('id', userId).single()
+    const raw = (u as any)?.raw_data ?? {}
+    // Cuenta sin 2FA activo → nada cambia respecto a antes. El 2FA se activa
+    // desde el panel; no se le puede exigir a quien todavía no lo tiene.
+    if (!raw.mfaEnabled) return null
+    const sid = sessionIdOf(req)
+    // Token sin claim de sesión (GoTrue antiguo): no se puede distinguir, y
+    // bloquear aquí dejaría al admin sin panel. No es forjable de todos modos.
+    if (!sid) return null
+    const list: any[] = Array.isArray(raw.mfaSessions) ? raw.mfaSessions : []
+    const hit = list.find((x: any) => x?.sid === sid)
+    if (!hit) return 'Esta sesión no verificó el segundo factor. Vuelve a iniciar sesión e ingresa tu código.'
+    if (Date.now() - new Date(hit.at).getTime() > MFA_SESSION_TTL_MS) {
+      return 'La verificación en dos pasos de esta sesión venció. Vuelve a iniciar sesión.'
+    }
+    return null
+  } catch { return null }
+}
+
 // ── Seguridad de acceso: IP, geolocalización y bloqueo ────────────────────
 function ipOf(req: Request): string | null {
   const fwd = (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim()
@@ -192,7 +252,7 @@ async function isIpBlocked(req: Request): Promise<boolean> {
   return (await blockedIps()).some(b => b.ip === ip)
 }
 
-async function verifyAdmin(req: Request): Promise<{ ok: boolean; error?: string }> {
+async function verifyAdmin(req: Request): Promise<{ ok: boolean; error?: string; userId?: string }> {
   const authHeader = req.headers.get('Authorization') ?? ''
 
   // Identidad de admin SOLO por JWT real de Supabase (role='admin'). Se eliminó
@@ -209,11 +269,13 @@ async function verifyAdmin(req: Request): Promise<{ ok: boolean; error?: string 
     ])
     const { data: { user }, error: authErr } = authResult as any
     if (authErr || !user) return { ok: false, error: 'Invalid or expired token' }
-    const isAdminEmail = user.email === ADMIN_EMAIL
+    // El rol SOLO sale de la tabla. Antes bastaba con que el correo del token
+    // fuera ADMIN_EMAIL para conceder admin AUNQUE la fila no tuviera
+    // role='admin' — es decir, quitarle el rol a esa cuenta en la base no le
+    // quitaba nada. La identidad y el permiso deben venir de la misma fuente.
     const { data: profile } = await db.from('users').select('role').eq('id', user.id).single()
-    if (!profile?.role && !isAdminEmail) return { ok: false, error: 'Forbidden: admin only' }
-    if (profile?.role !== 'admin' && !isAdminEmail) return { ok: false, error: 'Forbidden: admin only' }
-    return { ok: true }
+    if (profile?.role !== 'admin') return { ok: false, error: 'Forbidden: admin only' }
+    return { ok: true, userId: user.id }
   } catch {
     return { ok: false, error: 'Auth check failed' }
   }
@@ -285,13 +347,17 @@ Deno.serve(async (req: Request) => {
         const ip = ipOf(req)
         const email = String(selfServiceBody.email ?? '').slice(0, 120)
         const reason = String(selfServiceBody.reason ?? 'credenciales').slice(0, 60)
-        await auditAdmin(req, 'auth.failed_login', { email, reason })
         let blocked = false
+        if (!ip) await auditAdmin(req, 'auth.failed_login', { email, reason })
         if (ip) {
           const sinceH = new Date(Date.now() - 3600_000).toISOString()
           const { data: recent } = await db.from('audit_log').select('metadata, created_at')
             .eq('action', 'auth.failed_login').gte('created_at', sinceH).limit(200)
           const fails = (recent ?? []).filter((r: any) => r?.metadata?.ip === ip).length
+          // Tope de escritura: este endpoint es público, así que sin un límite
+          // se le podía inundar la auditoría a punta de peticiones. Pasado el
+          // tope la IP ya está bloqueada y no hace falta seguir anotando.
+          if (fails < 40) await auditAdmin(req, 'auth.failed_login', { email, reason })
           if (fails >= 3) {
             const list = await blockedIps()
             if (!list.some(b => b.ip === ip)) {
@@ -397,7 +463,7 @@ Deno.serve(async (req: Request) => {
           const { data: curRaw } = await db.from('users').select('raw_data').eq('id', selfServiceBody.user.id).maybeSingle()
           const dbRaw = (((curRaw as any)?.raw_data) ?? {}) as Record<string, any>
           const incoming = ((userRow as any).raw_data ?? {}) as Record<string, any>
-          const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'gasfreeCreditedTxs', 'gasfreeCreditedCount', 'mfaEnabled', 'mfaFactorId', 'totpSecret', 'totpSecretEnc', 'mfaBackupHashes', 'otp', 'subWallets']
+          const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'gasfreeCreditedTxs', 'gasfreeCreditedCount', 'mfaEnabled', 'mfaFactorId', 'totpSecret', 'totpSecretEnc', 'mfaBackupHashes', 'mfaSessions', 'otp', 'subWallets']
           const merged: Record<string, any> = { ...dbRaw, ...incoming }
           for (const k of SERVER_OWNED) { if (k in dbRaw) merged[k] = dbRaw[k]; else delete merged[k] }
           // COLECCIONES del cliente (contactos, wallets, notificaciones): tienen
@@ -587,6 +653,7 @@ Deno.serve(async (req: Request) => {
             const rest = hashes.filter((_, i) => i !== idx)
             await db.from('users').update({ raw_data: { ...raw, mfaBackupHashes: rest } }).eq('id', selfServiceBody.userId)
             await auditAdmin(req, 'mfa_backup_code_used', { userId: selfServiceBody.userId, remaining: rest.length })
+            await rememberMfaSession(req, String(selfServiceBody.userId))
             return json({ ok: true, usedBackup: true, remaining: rest.length })
           }
           return json({ ok: false, error: 'backup_invalid' })
@@ -610,6 +677,9 @@ Deno.serve(async (req: Request) => {
           })
         }
         const ok = await verifyTOTPServer(secret, code)
+        // Queda constancia de QUÉ sesión superó el 2FA: es lo que después
+        // exigen las acciones sensibles.
+        if (ok) await rememberMfaSession(req, String(selfServiceBody.userId))
         return json({ ok })
       }
 
@@ -716,6 +786,27 @@ Deno.serve(async (req: Request) => {
 
     if (req.method === 'POST') {
       const body = selfServiceBody ?? {}
+
+      // Acciones que cambian dinero, cuentas o la propia seguridad: exigen
+      // que ESTA sesión haya pasado el 2FA, no solo la contraseña. Las de
+      // consulta se dejan fuera a propósito, para no dejar al admin sin panel
+      // si algo del 2FA falla — lo que se protege es lo que hace daño.
+      const SENSITIVE_ADMIN_ACTIONS = new Set([
+        // Mueven dinero
+        'admin_credit_balance', 'admin_credit_crypto', 'credit_conversion_fee',
+        'approve_rail_move', 'reject_rail_move',
+        // Cambian cuentas o el estado de cumplimiento
+        // ('save_user' NO va aquí: se resuelve antes, en la zona self-service
+        //  que también usan los clientes con su propia cuenta. Ahí lo que
+        //  protege es SERVER_OWNED + el trigger de columnas sensibles.)
+        'delete_user', 'force_delete_by_email', 'set_kyc_status',
+        // Cambian la configuración o la propia seguridad
+        'save_config', 'block_ip', 'unblock_ip', 'log_key_rotation',
+      ])
+      if (SENSITIVE_ADMIN_ACTIONS.has(String(body.action))) {
+        const mfaErr = await requireMfaSession(req, auth.userId)
+        if (mfaErr) return json({ error: mfaErr, needs2fa: true }, 403)
+      }
 
       // ── Registro de AUDITORÍA (admin-only) — quién cambió qué y cuándo ──
       // Lee audit_log (cambios de proveedor de tesorería, payouts, etc.). Sirve
