@@ -818,47 +818,6 @@ export const AdminGasFreeSection: React.FC = () => {
                 </div>
             )}
 
-            {/* Saldos en la plataforma Mouv (USDt + Peso Mouv/COP) */}
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
-                <div className="flex items-center justify-between gap-3 flex-wrap mb-4">
-                    <div>
-                        <p className="font-bold text-slate-800 text-sm flex items-center gap-2">
-                            <Landmark size={15} className="text-[#16A34A]" /> Saldos en Mouv
-                        </p>
-                        <p className="text-[11px] text-slate-400 mt-0.5">Saldo real de la cuenta Mouv de Lincoin (partner de dispersión COP). · Se actualiza solo cada minuto.</p>
-                    </div>
-                    <button onClick={loadMouvBalances} disabled={mouvBalLoading} className="flex items-center gap-2 px-3 py-1.5 text-xs font-bold border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-60 transition-colors text-slate-700">
-                        <RefreshCw size={13} className={mouvBalLoading ? 'animate-spin' : ''} /> {mouvBalLoading ? 'Consultando…' : 'Actualizar'}
-                    </button>
-                </div>
-                {mouvBal?.error ? (
-                    <div className="text-xs font-semibold text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">❌ {mouvBal.error}</div>
-                ) : (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <div className="rounded-xl border border-slate-200 p-4">
-                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">USDt · Dólar Digital</p>
-                            <p className="text-2xl font-black text-slate-800 tabular-nums">
-                                {mouvBalLoading && !mouvBal ? '—' : mouvBal?.usdt != null ? `$${mouvBal.usdt.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
-                                <span className="text-sm font-bold text-slate-400 ml-1">USDt</span>
-                            </p>
-                        </div>
-                        <div className="rounded-xl border border-slate-200 p-4">
-                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Peso Mouv · COP</p>
-                            <p className="text-2xl font-black text-slate-800 tabular-nums">
-                                {mouvBalLoading && !mouvBal ? '—' : mouvBal?.cop != null ? `$${mouvBal.cop.toLocaleString('es-CO', { maximumFractionDigits: 2 })}` : '—'}
-                                <span className="text-sm font-bold text-slate-400 ml-1">COP</span>
-                            </p>
-                        </div>
-                    </div>
-                )}
-                {mouvBal?.sandbox && (
-                    <p className="text-[11px] font-bold text-amber-600 mt-3">⚠ El conector está en SANDBOX — estos saldos son de prueba, no reales.</p>
-                )}
-                {mouvBal && mouvBal.usdt == null && mouvBal.cop == null && !mouvBal.error && !mouvBalLoading && (
-                    <p className="text-[11px] text-slate-400 mt-3">No se pudieron leer los saldos de Mouv (revisa credenciales del conector o el formato de la respuesta).</p>
-                )}
-            </div>
-
             {/* TODAS las herramientas de recuperación/forense detrás de UN solo
                 botón: la página queda limpia y solo se abren cuando se usan. */}
             <button onClick={() => setShowTools(v => !v)}
