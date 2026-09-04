@@ -2538,7 +2538,9 @@ async function setProviders(list: any[]) {
     for (const p of incoming) {
       const locked = ENV_PROVIDERS.find(e => e.id === p?.id || String(e.name).toLowerCase() === String(p?.name ?? '').toLowerCase())
       if (locked && String(p?.detail ?? '').trim() !== locked.detail) {
-        throw new Error(`La wallet de ${locked.name} está FIJADA en Supabase (secret PROVIDER_WALLET_${locked.name.toUpperCase()}) y no se puede cambiar desde el panel. Cámbiala en Supabase → Edge Functions → Secrets.`)
+        // NOTA: el mensaje llega a la pantalla del admin — NUNCA nombrar la
+        // infraestructura donde vive el secreto. Solo se dice "Bóveda".
+        throw new Error(`La wallet de ${locked.name} está fijada en la Bóveda y no se puede cambiar desde el panel. Su modificación requiere doble aprobación fuera de la aplicación.`)
       }
     }
     // Solo se persisten los proveedores NO fijados; los fijados se reinyectan
@@ -2963,7 +2965,7 @@ Deno.serve(async (req) => {
       if (ENV_PROVIDERS.length) {
         const dest = String(toAddress).trim()
         if (!ENV_PROVIDERS.some(e => e.detail === dest)) {
-          return err(`Destino no permitido. La tesorería solo puede enviar a las wallets de proveedor fijadas en Supabase (${ENV_PROVIDERS.map(e => e.name).join(', ')}). Para usar otra dirección, defínela como secret PROVIDER_WALLET_… en Supabase.`, 403)
+          return err(`Destino no permitido. La tesorería solo puede pagar a wallets de partners verificadas en la Bóveda (${ENV_PROVIDERS.map(e => e.name).join(', ')}). Dar de alta otro destino requiere doble aprobación fuera de la aplicación.`, 403)
         }
       }
       await auditGasfree(req, 'gasfree.treasury_send', { toAddress: String(toAddress), amount: Number(amount), providerName: body.providerName ?? null })

@@ -1,7 +1,8 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Zap, RefreshCw, Copy, Search, Landmark, Activity, Send, X, Settings, Pin } from 'lucide-react';
 import { useDatabase } from '../context/DatabaseContext';
 import { RecaudadoraRotativaCard } from './RecaudadoraRotativaCard';
+import { AdminCustodyPanel, maskAddr, type AuditEntry } from './AdminCustodyPanel';
 
 // ─────────────────────────────────────────────
 // AdminGasFreeSection — Panel "GasFree USDT" del admin de Empresas.
@@ -430,7 +431,50 @@ export const AdminGasFreeSection: React.FC = () => {
         setSweepingAll(false);
     };
 
-    const mask = (a?: string) => a && a.length > 12 ? `${a.slice(0, 8)}…${a.slice(-6)}` : (a ?? '—');
+    // ── Modo discreto (ON por defecto): enmascara TODAS las direcciones de la
+    // página y oculta el QR. Desactivarlo queda registrado en la auditoría. ──
+    const [discreet, setDiscreet] = useState(true);
+    const [pageAudit, setPageAudit] = useState<AuditEntry[]>([]);
+    const addAudit = (text: string, sev: 'info' | 'warn' = 'info') =>
+        setPageAudit(p => [{ at: Date.now(), text, sev }, ...p].slice(0, 60));
+    const toggleDiscreet = () => {
+        const next = !discreet;
+        setDiscreet(next);
+        addAudit(next ? 'Activó el Modo discreto' : 'Desactivó el Modo discreto', next ? 'info' : 'warn');
+    };
+    // Con Modo discreto ON el enmascarado es más fuerte (solo 4 + 6 caracteres).
+    const mask = (a?: string) => discreet
+        ? maskAddr(a)
+        : (a && a.length > 12 ? `${a.slice(0, 8)}…${a.slice(-6)}` : (a ?? '—'));
+
+    // Latencia en vivo de los rieles (real: se mide el ida y vuelta).
+    const [netSvcs, setNetSvcs] = useState<{ name: string; latency: number | null; up: boolean }[]>([
+        { name: 'Red TRON', latency: null, up: true },
+        { name: 'Relay GasFree', latency: null, up: true },
+        { name: 'API Mouv', latency: null, up: true },
+        { name: 'Base de datos', latency: null, up: true },
+    ]);
+    useEffect(() => {
+        const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+        const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+        const targets = [
+            { name: 'Red TRON', url: `${SURL}/functions/v1/gasfree?action=ping` },
+            { name: 'Relay GasFree', url: `${SURL}/functions/v1/gasfree?action=ping` },
+            { name: 'API Mouv', url: `${SURL}/functions/v1/mouv-proxy` },
+            { name: 'Base de datos', url: `${SURL}/functions/v1/admin-data?action=ping` },
+        ];
+        let alive = true;
+        const run = async () => {
+            const out = await Promise.all(targets.map(async t => {
+                const t0 = performance.now();
+                try { await fetch(t.url, { headers: { apikey: SKEY } }); return { name: t.name, latency: Math.round(performance.now() - t0), up: true }; }
+                catch { return { name: t.name, latency: null, up: false }; }
+            }));
+            if (alive) setNetSvcs(out);
+        };
+        run(); const iv = setInterval(run, 8000);
+        return () => { alive = false; clearInterval(iv); };
+    }, []);
 
     // ── Tesorería: parámetro de alerta editable (ej. avisar cuando el
     // saldo de la recaudadora supere 10,000 USDT) ──
@@ -619,6 +663,24 @@ export const AdminGasFreeSection: React.FC = () => {
 
     return (
         <div className="space-y-6 animate-in fade-in duration-300">
+            {/* Dashboard de custodia — cabecera. NUNCA nombra la infraestructura
+                donde vive el secreto: al almacenamiento se le dice "Bóveda". */}
+            <AdminCustodyPanel
+                discreet={discreet}
+                onToggleDiscreet={toggleDiscreet}
+                treasuryAddress={(rec as any)?.gasFreeAddress ?? (rec as any)?.eoa ?? null}
+                treasuryBalance={Number((rec as any)?.balance ?? 0)}
+                mouvCop={mouvBal?.cop ?? null}
+                walletsCount={businesses.length}
+                providerLocked={providers.some((p: any) => p.locked)}
+                providerAssigned={!!treasuryCfg?.alertProviderId}
+                mfaCovered={allUsers.filter((u: any) => u.role === 'admin' && (u.mfaEnabled || u.raw_data?.mfaEnabled)).length}
+                mfaTotal={allUsers.filter((u: any) => u.role === 'admin').length}
+                alertThreshold={Number(treasuryCfg?.alertThresholdUsdt ?? 10000)}
+                audit={pageAudit}
+                onAudit={addAudit}
+                services={netSvcs}
+            />
             <div>
                 <h3 className="font-bold text-slate-800 text-lg flex items-center gap-2">
                     <Zap size={20} className="text-[#16A34A]" /> GasFree · Custodia USDT (TRON)
@@ -844,7 +906,7 @@ export const AdminGasFreeSection: React.FC = () => {
                                 </div>
                                 <p className="text-[10px] text-slate-400">Servidor operando en: <b>{auditNet.deployNet === 'tron' ? 'mainnet' : 'Nile'}</b>. El saldo real (USDT que se ve en TronScan) está en mainnet.</p>
                                 {(auditNet.scan?.mainnet?.mnemonicsTried || auditNet.scan?.nile?.mnemonicsTried) && (
-                                    <p className="text-[10px] text-slate-400">Mnemónicas probadas: <b>{(auditNet.scan?.mainnet?.mnemonicsTried ?? auditNet.scan?.nile?.mnemonicsTried ?? []).join(', ')}</b> — si falta la que buscas, agrégala como secret en Supabase y reintenta.</p>
+                                    <p className="text-[10px] text-slate-400">Mnemónicas probadas: <b>{(auditNet.scan?.mainnet?.mnemonicsTried ?? auditNet.scan?.nile?.mnemonicsTried ?? []).join(', ')}</b> — si falta la que buscas, agrégala en la Bóveda y reintenta.</p>
                                 )}
                             </>
                         )}
@@ -964,7 +1026,7 @@ export const AdminGasFreeSection: React.FC = () => {
                 </div>
                 {seedSources && (
                     seedSources.length === 0 ? (
-                        <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2">No hay semillas cargadas. Agrega la mnemónica como secret en Supabase (GASFREE_TRON_MNEMONIC_OLD o _2) — NO sobreescribas GASFREE_TRON_MNEMONIC.</p>
+                        <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2">No hay semillas cargadas. Agrega la semilla en la Bóveda con un alias nuevo — no reemplaces la principal.</p>
                     ) : (
                         <>
                             <p className="text-[11px] text-slate-600">Semillas cargadas: <b>{seedSources.join(', ')}</b> {seedSources.length === 1 && <span className="text-amber-700">— solo hay 1. Si esperabas la vieja, agrégala con otro nombre y recarga.</span>}</p>
@@ -1070,7 +1132,7 @@ export const AdminGasFreeSection: React.FC = () => {
                                             ))}
                                         </div>
                                     ) : (
-                                        <p className="text-[11px] text-slate-400">Sin cambios en el audit (el cambio pasó ANTES de que existiera esta auditoría). La hora de arriba + los logs de Supabase son la vía.</p>
+                                        <p className="text-[11px] text-slate-400">Sin cambios en el audit (el cambio pasó ANTES de que existiera esta auditoría). La hora de arriba + los registros del servidor son la vía.</p>
                                     )}
                                 </>
                             )}
@@ -1086,7 +1148,7 @@ export const AdminGasFreeSection: React.FC = () => {
                     {lookupRes && (
                         <div className="text-xs bg-white border border-slate-200 rounded-lg p-3 mt-2 space-y-1.5">
                             {lookupRes.error ? <p className="text-red-700 font-semibold">❌ {lookupRes.error}</p> : lookupRes.found === 0 ? (
-                                <p className="text-amber-700 font-semibold">La cuenta ya NO existe en la base (fue borrada). Pero dejó rastro en el archivo de wallets — cuenta fantasma. Revisa los logs de Supabase para ver cuándo se creó/borró y desde qué IP.</p>
+                                <p className="text-amber-700 font-semibold">La cuenta ya NO existe en la base (fue borrada). Pero dejó rastro en el archivo de wallets — cuenta fantasma. Revisa los registros del servidor para ver cuándo se creó/borró y desde qué IP.</p>
                             ) : (
                                 <>
                                     <p className="text-slate-700 font-bold">Existe {lookupRes.found} cuenta(s) con ese correo:</p>
@@ -1193,15 +1255,15 @@ export const AdminGasFreeSection: React.FC = () => {
                             <div className="min-w-0">
                                 <span className="font-bold text-slate-800">{p.name}</span>
                                 {p.detail && <span className="text-slate-400"> · {mask(p.detail)}</span>}
-                                {p.locked && <span className="ml-2 text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-600 text-white">🔒 FIJADA EN SUPABASE</span>}
-                                {p.locked && <p className="text-[10px] text-emerald-700 mt-0.5">Solo se cambia en Supabase → Edge Functions → Secrets. No editable desde el panel.</p>}
+                                {p.locked && <span className="ml-2 text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-600 text-white">🔒 BÓVEDA</span>}
+                                {p.locked && <p className="text-[10px] text-emerald-700 mt-0.5">Fijada fuera del panel con doble aprobación. No editable ni visible completa desde aquí.</p>}
                             </div>
                             <div className="flex items-center gap-3 shrink-0">
                                 <button onClick={() => { setPayTarget(p); setPayAmount(''); setPayMsg(null); }} className="inline-flex items-center gap-1 text-xs font-bold text-[#16A34A] hover:underline" title="Pagar a este proveedor desde Tesorería — manual, sin mínimo acumulado">
                                     <Send size={12} /> Pagar
                                 </button>
                                 {p.locked
-                                    ? <span className="text-[11px] text-slate-400 font-semibold" title="Fijada por secret de Supabase">Protegida</span>
+                                    ? <span className="text-[11px] text-slate-400 font-semibold" title="Fijada en la Bóveda">Protegida</span>
                                     : <button onClick={() => removeProvider(p.id)} className="text-red-500 hover:underline text-xs font-bold">Eliminar</button>}
                             </div>
                         </div>
