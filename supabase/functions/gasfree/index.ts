@@ -2388,11 +2388,11 @@ async function myVerifyDeposit(userId: string) {
 // Se deja para pagos que sí deben salir de tesorería (ej. proveedores).
 async function myWalletWithdrawal(userId: string, toAddress: string, amount: number) {
   if (!(amount > 0)) throw new Error('Monto inválido')
-  // Esta salida se firma con la llave de la RECAUDADORA, que custodia el USDT
-  // agrupado de TODOS los clientes. El destino lo manda el cliente, así que sin
-  // lista blanca se podía drenar la tesorería a cualquier wallet. Se verifica
-  // ANTES de debitar, para no dejar un débito colgado si el destino no vale.
-  assertTreasuryDestination(toAddress)
+  // NO lleva lista blanca a propósito: aquí el CLIENTE saca SU propio USDT a la
+  // wallet que quiera. La tesorería solo hace de custodio — el débito atómico de
+  // abajo (adjust_balances con bloqueo de fila) impide que retire más de lo que
+  // tiene, así que no es una vía para drenar el fondo común. La lista blanca de
+  // la Bóveda aplica al circuito de la CONVERSIÓN (tesorería → proveedor).
   const { data: u } = await db.from('users').select('email').eq('id', userId).single()
   if (!u) throw new Error('Usuario no encontrado')
 
