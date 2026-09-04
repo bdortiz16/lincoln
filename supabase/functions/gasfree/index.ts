@@ -2734,6 +2734,23 @@ Deno.serve(async (req) => {
       if (blockedMsg) return err(blockedMsg, 403)
     }
 
+    // Bloqueo por IP: aquí es donde el bloqueo se vuelve REAL. La pantalla de
+    // ingreso solo puede disuadir (el atacante controla su navegador), pero
+    // nada que mueva dinero pasa por una IP bloqueada.
+    if (MONEY_ACTIONS.has(String(action))) {
+      const reqIp = (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim()
+        || req.headers.get('cf-connecting-ip') || req.headers.get('x-real-ip') || ''
+      if (reqIp) {
+        try {
+          const { data } = await db.from('system_config').select('value').eq('key', 'blocked_ips').single()
+          const list: any[] = data?.value ? JSON.parse(data.value) : []
+          if (list.some((b: any) => b?.ip === reqIp)) {
+            return err('Esta conexión está bloqueada por seguridad. Contacta a soporte.', 403)
+          }
+        } catch { /* si no se puede leer la lista, no se bloquea a nadie por error */ }
+      }
+    }
+
     if (action === 'ping')   return ok({ ok: true, service: 'gasfree', version: 'v6-cache-user-address', net: NET })
 
     // ── Acciones del propio CLIENTE (su wallet, su envío) ──

@@ -778,6 +778,20 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     } catch { /* nunca rompe el login */ }
   };
 
+  // Deja constancia de un intento de ingreso FALLIDO. El servidor le pone la
+  // IP y la ubicación aproximada, cuenta los fallos de esa IP y la bloquea al
+  // tercero en una hora. Nunca rompe ni demora el login: es fire-and-forget.
+  const logFailedLogin = (email: string, reason: string) => {
+    try {
+      if (!SUPABASE_URL_FOR_FN) return;
+      fetch(`${SUPABASE_URL_FOR_FN}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_FOR_FN, Authorization: `Bearer ${SUPABASE_ANON_FOR_FN}` },
+        body: JSON.stringify({ action: 'log_failed_login', email, reason }),
+      }).catch(() => {});
+    } catch { /* nunca rompe el login */ }
+  };
+
   // PBKDF2 password hash using Web Crypto — fallback when Supabase Auth is misconfigured
   const hashPassword = async (password: string, salt: string): Promise<string> => {
     try {
@@ -1268,7 +1282,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           const storedHash = fbProfile.raw_data?.passwordHash as string | undefined;
           if (storedHash) {
             const inputHash = await hashPassword(pass!, email);
-            if (!inputHash || inputHash !== storedHash) return null;
+            if (!inputHash || inputHash !== storedHash) { logFailedLogin(email, 'contraseña incorrecta'); return null; }
           } else {
             // First fallback login — store hash for future use
             const hash = await hashPassword(pass!, email);
@@ -1303,6 +1317,8 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           return localMatch;
         }
       }
+      // Ninguna vía reconoció las credenciales → queda registrado con IP.
+      logFailedLogin(email, 'credenciales incorrectas');
       return null;
     }
     if (!data.user) return null;
@@ -1392,6 +1408,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
               ? 'La sesión no autorizó la verificación. Vuelve a intentar el inicio de sesión.'
               : r?.error ? `Verificación rechazada: ${r.error}` : null;
           setMfaErrorDetail(why);
+          // Un código de 2FA rechazado también es un intento fallido: es la
+          // señal más clara de que alguien ya tiene la contraseña.
+          logFailedLogin(pendingMFAProfile.email ?? '', r?.error === 'backup_invalid' ? 'código de respaldo inválido' : 'código 2FA incorrecto');
           return null;
         }
         const user = pendingMFAProfile;

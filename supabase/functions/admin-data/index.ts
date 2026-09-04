@@ -139,6 +139,59 @@ async function verifyTOTPServer(secret: string, token: string): Promise<boolean>
   return false
 }
 
+// ── Seguridad de acceso: IP, geolocalización y bloqueo ────────────────────
+function ipOf(req: Request): string | null {
+  const fwd = (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim()
+  return fwd || req.headers.get('cf-connecting-ip') || req.headers.get('x-real-ip') || null
+}
+
+// Geolocalización aproximada por IP. IMPORTANTE: una IP da CIUDAD/REGIÓN como
+// mucho — normalmente la del nodo del operador, no la del edificio. No es una
+// dirección exacta y no debe presentarse como tal.
+type Geo = { city?: string; region?: string; country?: string; org?: string; approx?: string }
+const GEO_CACHE_KEY = 'ip_geo_cache'
+async function geoOf(ip: string | null): Promise<Geo | null> {
+  if (!ip || /^(10\.|127\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip)) return null
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', GEO_CACHE_KEY).single()
+    const cache = data?.value ? JSON.parse(data.value) : {}
+    if (cache[ip]) return cache[ip]
+    const ctl = new AbortController()
+    const t = setTimeout(() => ctl.abort(), 2500)
+    const r = await fetch(`https://ipwho.is/${encodeURIComponent(ip)}`, { signal: ctl.signal }).then(x => x.json()).catch(() => null)
+    clearTimeout(t)
+    if (!r?.success) return null
+    const geo: Geo = {
+      city: r.city ?? undefined, region: r.region ?? undefined, country: r.country ?? undefined,
+      org: r.connection?.isp ?? undefined,
+      approx: [r.city, r.region, r.country].filter(Boolean).join(', ') || undefined,
+    }
+    // Caché acotada: evita pegarle al servicio por cada evento repetido.
+    const keys = Object.keys(cache)
+    if (keys.length > 250) for (const k of keys.slice(0, 100)) delete cache[k]
+    cache[ip] = geo
+    await db.from('system_config').upsert({ key: GEO_CACHE_KEY, value: JSON.stringify(cache) }, { onConflict: 'key' })
+    return geo
+  } catch { return null }
+}
+
+const BLOCKED_IPS_KEY = 'blocked_ips'
+type BlockedIp = { ip: string; at: string; reason: string; attempts: number; geo?: Geo | null }
+async function blockedIps(): Promise<BlockedIp[]> {
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', BLOCKED_IPS_KEY).single()
+    return data?.value ? JSON.parse(data.value) : []
+  } catch { return [] }
+}
+async function saveBlockedIps(list: BlockedIp[]) {
+  await db.from('system_config').upsert({ key: BLOCKED_IPS_KEY, value: JSON.stringify(list.slice(0, 500)) }, { onConflict: 'key' })
+}
+async function isIpBlocked(req: Request): Promise<boolean> {
+  const ip = ipOf(req)
+  if (!ip) return false
+  return (await blockedIps()).some(b => b.ip === ip)
+}
+
 async function verifyAdmin(req: Request): Promise<{ ok: boolean; error?: string }> {
   const authHeader = req.headers.get('Authorization') ?? ''
 
@@ -176,9 +229,12 @@ async function auditAdmin(req: Request, action: string, metadata: Record<string,
       const jwt = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
       if (jwt) { const { data } = await db.auth.getUser(jwt); byEmail = data?.user?.email ?? null; byId = data?.user?.id ?? null }
     } catch { /* sin identidad */ }
-    const ip = (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim() || req.headers.get('cf-connecting-ip') || req.headers.get('x-real-ip') || null
+    const ip = ipOf(req)
     const userAgent = req.headers.get('user-agent') ?? null
-    await db.from('audit_log').insert({ user_id: byId, action, metadata: { ...metadata, byEmail, ip, userAgent, hadSession: !!byEmail, at: new Date().toISOString() } })
+    // Ubicación aproximada por IP (ciudad/región), cacheada. Nunca bloquea:
+    // si el servicio no responde, el evento se guarda igual sin geo.
+    const geo = await geoOf(ip)
+    await db.from('audit_log').insert({ user_id: byId, action, metadata: { ...metadata, byEmail, ip, geo, userAgent, hadSession: !!byEmail, at: new Date().toISOString() } })
   } catch { /* best-effort — nunca romper la operación */ }
 }
 
@@ -220,6 +276,41 @@ Deno.serve(async (req: Request) => {
     let selfServiceBody: any = null
     if (req.method === 'POST') {
       selfServiceBody = await req.json().catch(() => ({}))
+
+      // ── Intento de ingreso FALLIDO ────────────────────────────────────
+      // Va SIN autenticación a propósito: quien falla el login justamente no
+      // tiene sesión. Solo escribe en auditoría; no devuelve ningún dato.
+      // Al 3.er fallo desde la misma IP en una hora, la IP queda bloqueada.
+      if (selfServiceBody.action === 'log_failed_login') {
+        const ip = ipOf(req)
+        const email = String(selfServiceBody.email ?? '').slice(0, 120)
+        const reason = String(selfServiceBody.reason ?? 'credenciales').slice(0, 60)
+        await auditAdmin(req, 'auth.failed_login', { email, reason })
+        let blocked = false
+        if (ip) {
+          const sinceH = new Date(Date.now() - 3600_000).toISOString()
+          const { data: recent } = await db.from('audit_log').select('metadata, created_at')
+            .eq('action', 'auth.failed_login').gte('created_at', sinceH).limit(200)
+          const fails = (recent ?? []).filter((r: any) => r?.metadata?.ip === ip).length
+          if (fails >= 3) {
+            const list = await blockedIps()
+            if (!list.some(b => b.ip === ip)) {
+              list.unshift({ ip, at: new Date().toISOString(), reason: `${fails} intentos fallidos en 1 h`, attempts: fails, geo: await geoOf(ip) })
+              await saveBlockedIps(list)
+              await auditAdmin(req, 'auth.ip_blocked', { ip, attempts: fails, email })
+            }
+            blocked = true
+          }
+        }
+        return json({ ok: true, blocked })
+      }
+
+      // Consulta previa al login: dice si esta IP está bloqueada. Sirve para
+      // frenar el intento en la pantalla; el bloqueo DURO vive en las acciones
+      // que mueven dinero, que es donde importa.
+      if (selfServiceBody.action === 'login_gate') {
+        return json({ ok: true, blocked: await isIpBlocked(req) })
+      }
 
       // Insertar la PROPIA transacción — la RLS de public.transactions solo
       // deja insertar a admins (tx_insert_admin), así que un cliente normal
@@ -653,6 +744,97 @@ Deno.serve(async (req: Request) => {
         const withIp = (acts ?? []).filter((a: any) => a?.metadata?.ip || a?.action === 'auth.admin_login')
           .map((a: any) => ({ action: a.action, at: a.metadata?.at ?? a.created_at, byEmail: a.metadata?.byEmail ?? null, ip: a.metadata?.ip ?? null, userAgent: a.metadata?.userAgent ?? null, hadSession: a.metadata?.hadSession }))
         return json({ ok: true, admins, activity: withIp })
+      }
+
+      // ── Panel de seguridad: datos REALES de acceso ────────────────────
+      // Reemplaza los tres recuadros que estaban en "demo": rotación de
+      // llaves, intentos fallidos / IPs bloqueadas, e historial de accesos
+      // (con IP y ubicación aproximada).
+      if (body.action === 'security_stats') {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0)
+        const { data: rows } = await db.from('audit_log').select('*')
+          .order('created_at', { ascending: false }).limit(500)
+        const all = rows ?? []
+        const at = (r: any) => r?.metadata?.at ?? r?.created_at
+        const failed = all.filter((r: any) => r.action === 'auth.failed_login')
+        const failedToday = failed.filter((r: any) => new Date(at(r)) >= startOfDay)
+        // Fallidos agrupados por IP (para ver de dónde vienen).
+        const byIpMap: Record<string, any> = {}
+        for (const f of failedToday) {
+          const ip = f?.metadata?.ip ?? 'desconocida'
+          byIpMap[ip] ??= { ip, count: 0, geo: f?.metadata?.geo ?? null, lastAt: at(f), emails: [] as string[] }
+          byIpMap[ip].count++
+          const em = f?.metadata?.email
+          if (em && !byIpMap[ip].emails.includes(em)) byIpMap[ip].emails.push(em)
+        }
+        // Historial de accesos: cada ingreso al panel, con IP y ubicación.
+        const access = all.filter((r: any) => r.action === 'auth.admin_login').slice(0, 40).map((r: any) => ({
+          at: at(r), email: r?.metadata?.byEmail ?? null, ip: r?.metadata?.ip ?? null,
+          geo: r?.metadata?.geo ?? null, userAgent: r?.metadata?.userAgent ?? null,
+        }))
+        // Incidentes de servicio: caídas y recuperaciones que registró el
+        // monitoreo. Se emparejan aquí para poder mostrar la duración.
+        const incRows = all.filter((r: any) => r.action === 'ops.incident')
+        const incidents: any[] = []
+        for (const r of incRows) {
+          const m = r.metadata ?? {}
+          if (m.kind !== 'down') continue
+          const up = incRows.find((u: any) => u.metadata?.kind === 'up' && u.metadata?.service === m.service && new Date(at(u)) > new Date(at(r)))
+          incidents.push({
+            service: m.service, at: at(r),
+            resolvedAt: up ? at(up) : null,
+            minutes: up ? Math.max(1, Math.round((new Date(at(up)).getTime() - new Date(at(r)).getTime()) / 60000)) : null,
+          })
+          if (incidents.length >= 20) break
+        }
+        const rot = all.find((r: any) => r.action === 'security.key_rotation')
+        return json({
+          ok: true,
+          failedToday: failedToday.length,
+          failedByIp: Object.values(byIpMap).sort((a: any, b: any) => b.count - a.count),
+          blockedIps: await blockedIps(),
+          access,
+          incidents,
+          keyRotation: rot ? { at: at(rot), byEmail: rot?.metadata?.byEmail ?? null, note: rot?.metadata?.note ?? null } : null,
+        })
+      }
+
+      // El monitoreo avisa cuando un servicio se cae o se recupera. Queda en
+      // auditoria para poder armar el historial de incidentes.
+      if (body.action === 'log_incident' && body.service && body.kind) {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        await auditAdmin(req, 'ops.incident', { service: String(body.service).slice(0, 60), kind: String(body.kind) === 'up' ? 'up' : 'down' })
+        return json({ ok: true })
+      }
+
+      // Desbloquear una IP (solo admin, queda auditado).
+      if (body.action === 'unblock_ip' && body.ip) {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        const list = (await blockedIps()).filter(b => b.ip !== String(body.ip))
+        await saveBlockedIps(list)
+        await auditAdmin(req, 'auth.ip_unblocked', { ip: String(body.ip) })
+        return json({ ok: true, blockedIps: list })
+      }
+
+      // Bloquear una IP a mano.
+      if (body.action === 'block_ip' && body.ip) {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        const ip = String(body.ip).trim()
+        const list = await blockedIps()
+        if (!list.some(b => b.ip === ip)) {
+          list.unshift({ ip, at: new Date().toISOString(), reason: String(body.reason ?? 'bloqueo manual').slice(0, 80), attempts: 0, geo: await geoOf(ip) })
+          await saveBlockedIps(list)
+          await auditAdmin(req, 'auth.ip_blocked', { ip, manual: true })
+        }
+        return json({ ok: true, blockedIps: list })
+      }
+
+      // Dejar constancia de una rotación de llaves/API.
+      if (body.action === 'log_key_rotation') {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        await auditAdmin(req, 'security.key_rotation', { note: String(body.note ?? '').slice(0, 200) || null })
+        return json({ ok: true })
       }
 
       // Registrar un INGRESO de admin (lo llama el front tras un login exitoso).

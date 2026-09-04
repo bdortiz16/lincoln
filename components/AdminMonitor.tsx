@@ -11,11 +11,15 @@ import { useDatabase } from '../context/DatabaseContext';
 // verde #4ADE80, texto #F4F4F2/#878E88, bordes rgba(255,255,255,.08).
 // Tipografía Archivo. Estados funcionales: ámbar #FBBF24, rojo #F87171.
 //
-// REAL: salud por servicio (ping a las edge functions con latencia),
-// conectividad del navegador + beep, feed de auditoría, cobertura 2FA,
-// score de seguridad, volumen desde transacciones, retiros inusuales.
-// DEMO (marcado "demo · pendiente de datos"): sesiones activas, geo-alertas,
-// uptime histórico, historial de incidentes, bloqueo de IP.
+// TODO el panel corre con datos reales: salud por servicio (ping a las edge
+// functions con latencia), conectividad del navegador + beep, feed de
+// auditoría, cobertura 2FA, score de seguridad, volumen desde transacciones,
+// retiros inusuales, intentos de login fallidos con IP y ubicación, bloqueo
+// de IP, historial de accesos e historial de incidentes.
+//
+// Sobre la ubicación: se deduce de la IP, así que llega a ciudad o región
+// (normalmente la del nodo del operador). No es una dirección exacta y la UI
+// lo dice explícitamente — prometer más sería mentir.
 // ─────────────────────────────────────────────────────────────
 
 // Paleta
@@ -56,10 +60,6 @@ const Spark: React.FC<{ data: number[]; color: string }> = ({ data, color }) => 
     </svg>
   );
 };
-
-const DemoTag = () => (
-  <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase', color: C.amber, background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.3)', borderRadius: 6, padding: '2px 6px' }}>demo · pendiente de datos</span>
-);
 
 export const AdminMonitor: React.FC = () => {
   const { transactions, getAllUsers, currentUser } = useDatabase() as any;
@@ -126,13 +126,34 @@ export const AdminMonitor: React.FC = () => {
       const next = await Promise.all(cur.map(pingOne));
       if (!alive) return;
       setServices(next);
-      next.forEach((s, i) => { if (s.status === 'down' && cur[i].status !== 'down') addAlert({ kind: 'SERVICIO CAÍDO', sev: 'crit', text: `${s.name} caído · retiros pausados` }); });
+      next.forEach((s, i) => {
+        const before = cur[i].status;
+        if (s.status === 'down' && before !== 'down') {
+          addAlert({ kind: 'SERVICIO CAÍDO', sev: 'crit', text: `${s.name} caído · retiros pausados` });
+          reportIncident(s.name, 'down');
+        }
+        // Solo cuenta como recuperación si ANTES estaba caído — así no se
+        // registra un incidente en el primer ping de la página.
+        if (s.status === 'up' && before === 'down') reportIncident(s.name, 'up');
+      });
     };
     run(); const t = setInterval(run, 6000);
     return () => { alive = false; clearInterval(t); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const servicesRef = useRef(services); servicesRef.current = services;
+
+  // Avisa al servidor de una caída o una recuperación, para que el historial
+  // de incidentes tenga datos propios en vez de estar vacío.
+  const reportIncident = (service: string, kind: 'down' | 'up') => {
+    try {
+      fetch(`${SURL}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${tokenOf() ?? SKEY}` },
+        body: JSON.stringify({ action: 'log_incident', service, kind }),
+      }).catch(() => {});
+    } catch { /* nunca interrumpe el monitoreo */ }
+  };
 
   // Feed de auditoría (real)
   useEffect(() => {
@@ -143,6 +164,35 @@ export const AdminMonitor: React.FC = () => {
       } catch { setAudit([]); }
     })();
   }, []);
+
+  // Seguridad de acceso (real): intentos fallidos, IPs bloqueadas, historial
+  // de ingresos con IP y ubicación, y última rotación de llaves.
+  const [sec, setSec] = useState<any>(null);
+  const [secBusy, setSecBusy] = useState(false);
+  const loadSec = async () => {
+    try {
+      const r = await fetch(`${SURL}/functions/v1/admin-data`, { method: 'POST', headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${tokenOf() ?? SKEY}` }, body: JSON.stringify({ action: 'security_stats' }) });
+      const d = await r.json();
+      if (d?.ok) setSec(d);
+    } catch { /* se reintenta en el próximo ciclo */ }
+  };
+  useEffect(() => { loadSec(); const t = setInterval(loadSec, 60000); return () => clearInterval(t); // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const secAction = async (payload: any) => {
+    setSecBusy(true);
+    try {
+      await fetch(`${SURL}/functions/v1/admin-data`, { method: 'POST', headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${tokenOf() ?? SKEY}` }, body: JSON.stringify(payload) });
+      await loadSec();
+    } catch { /* */ }
+    setSecBusy(false);
+  };
+  // "Chrome en Mac" a partir del user-agent — más legible que la cadena cruda.
+  const uaShort = (ua?: string | null) => {
+    if (!ua) return 'Navegador desconocido';
+    const b = /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera' : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : /Firefox\//.test(ua) ? 'Firefox' : 'Navegador';
+    const o = /iPhone|iPad/.test(ua) ? 'iPhone/iPad' : /Android/.test(ua) ? 'Android' : /Mac OS X/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : /Linux/.test(ua) ? 'Linux' : '';
+    return o ? `${b} · ${o}` : b;
+  };
 
   // ── Datos derivados REALES ──
   const admins = users.filter(u => u.role === 'admin');
@@ -327,9 +377,17 @@ export const AdminMonitor: React.FC = () => {
             <p style={label}>Rotación de llaves / API</p>
             <KeyRound size={15} color={C.amber} />
           </div>
-          <p style={{ fontSize: 13, margin: '10px 0 4px', color: C.text }}>Última rotación: <span style={{ ...num }}>—</span></p>
-          <p style={{ color: C.sub, fontSize: 12, margin: 0 }}>Registra la rotación en Auditoría cuando cambies llaves.</p>
-          <div style={{ marginTop: 8 }}><DemoTag /></div>
+          <p style={{ fontSize: 13, margin: '10px 0 4px', color: C.text }}>Última rotación:{' '}
+            <span style={{ ...num }}>{sec?.keyRotation?.at ? new Date(sec.keyRotation.at).toLocaleString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' }) : 'sin registro'}</span>
+          </p>
+          <p style={{ color: C.sub, fontSize: 12, margin: 0 }}>
+            {sec?.keyRotation?.byEmail ? `Registrada por ${sec.keyRotation.byEmail}.` : 'Deja constancia cada vez que cambies una llave o API.'}
+          </p>
+          <button onClick={() => { if (window.confirm('¿Registrar que acabas de rotar llaves/API? Queda en auditoría con tu correo, IP y hora.')) secAction({ action: 'log_key_rotation', note: 'rotación registrada desde Monitoreo' }); }}
+            disabled={secBusy}
+            style={{ marginTop: 10, background: 'transparent', border: `1px solid ${C.border2}`, color: C.text, borderRadius: 8, padding: '6px 11px', fontSize: 11.5, fontWeight: 700, cursor: 'pointer' }}>
+            Registrar rotación
+          </button>
         </div>
       </div>
 
@@ -348,30 +406,91 @@ export const AdminMonitor: React.FC = () => {
           </div>
         </div>
         <div style={{ ...cardStyle, padding: 16 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-            <p style={label}>Intentos de login y bloqueo de IP</p><DemoTag />
-          </div>
-          <p style={{ ...num, fontSize: 13, color: C.text, margin: '0 0 6px' }}>Intentos fallidos hoy: <b>0</b></p>
-          <p style={{ color: C.sub, fontSize: 12, margin: 0 }}>Al 3.er intento fallido desde una IP → bloqueo automático + alerta + entrada en auditoría. Requiere registrar los intentos fallidos en el servidor (pendiente).</p>
+          <p style={{ ...label, marginBottom: 10 }}>Intentos de login y bloqueo de IP</p>
+          <p style={{ ...num, fontSize: 13, color: C.text, margin: '0 0 8px' }}>
+            Intentos fallidos hoy: <b style={{ color: (sec?.failedToday ?? 0) > 0 ? C.amber : C.green }}>{sec?.failedToday ?? 0}</b>
+          </p>
+
+          {(sec?.failedByIp ?? []).length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 10 }}>
+              {sec.failedByIp.slice(0, 5).map((f: any) => (
+                <div key={f.ip} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, background: C.elev, border: `1px solid ${C.border}`, borderRadius: 8, padding: '7px 10px' }}>
+                  <div style={{ minWidth: 0 }}>
+                    <p style={{ ...num, fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12, margin: 0, color: C.text }}>{f.ip}</p>
+                    <p style={{ color: C.dim, fontSize: 10.5, margin: 0 }}>
+                      {f.geo?.approx ?? 'ubicación no disponible'}{f.emails?.length ? ` · ${f.emails.slice(0, 2).join(', ')}` : ''}
+                    </p>
+                  </div>
+                  <span style={{ fontSize: 11, fontWeight: 800, color: C.amber, whiteSpace: 'nowrap' }}>{f.count}×</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {(sec?.blockedIps ?? []).length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
+              <p style={{ ...label, color: C.red, marginBottom: 2 }}>IPs bloqueadas</p>
+              {sec.blockedIps.map((b: any) => (
+                <div key={b.ip} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.28)', borderRadius: 8, padding: '7px 10px' }}>
+                  <div style={{ minWidth: 0 }}>
+                    <p style={{ ...num, fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12, margin: 0, color: C.text }}>{b.ip}</p>
+                    <p style={{ color: C.dim, fontSize: 10.5, margin: 0 }}>{b.geo?.approx ? `${b.geo.approx} · ` : ''}{b.reason}</p>
+                  </div>
+                  <button onClick={() => secAction({ action: 'unblock_ip', ip: b.ip })} disabled={secBusy}
+                    style={{ background: 'transparent', border: `1px solid ${C.border2}`, color: C.sub, borderRadius: 7, padding: '4px 9px', fontSize: 10.5, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                    Desbloquear
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          <p style={{ color: C.sub, fontSize: 11.5, margin: 0, lineHeight: 1.5 }}>
+            Al 3.er fallo desde una misma IP en una hora, se bloquea sola y queda en auditoría.
+            El bloqueo <b style={{ color: C.text }}>impide mover dinero</b> desde esa conexión; en la pantalla de ingreso
+            solo puede disuadir, porque el navegador lo controla quien ataca.
+          </p>
         </div>
       </div>
 
       {/* Sesiones activas (demo) + Retiros inusuales (real) */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 14, marginBottom: 22 }}>
         <div style={{ ...cardStyle, padding: 16 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-            <p style={label}>Sesiones activas · cierre remoto</p><DemoTag />
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <Users size={15} color={C.sub} />
-              <div>
-                <p style={{ fontSize: 13, margin: 0 }}>{currentUser?.email ?? 'Tú'} <span style={{ color: C.green, fontSize: 11 }}>· esta sesión</span></p>
-                <p style={{ color: C.dim, fontSize: 11, margin: 0 }}>Navegador actual · ahora</p>
+          <p style={{ ...label, marginBottom: 10 }}>Historial de accesos al panel</p>
+          <div style={{ maxHeight: 280, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+            {sec == null ? (
+              <p style={{ color: C.dim, fontSize: 12 }}>Cargando…</p>
+            ) : (sec.access ?? []).length === 0 ? (
+              <p style={{ color: C.dim, fontSize: 12 }}>Sin ingresos registrados todavía. El próximo inicio de sesión aparecerá aquí.</p>
+            ) : sec.access.map((a: any, i: number) => (
+              <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '9px 0', borderTop: i ? `1px solid ${C.border}` : 'none' }}>
+                <Users size={14} color={i === 0 ? C.green : C.dim} style={{ marginTop: 2, flexShrink: 0 }} />
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <p style={{ fontSize: 12.5, margin: 0, color: C.text }}>
+                    {a.email ?? 'sin identificar'}
+                    {i === 0 && <span style={{ color: C.green, fontSize: 10.5 }}> · más reciente</span>}
+                  </p>
+                  <p style={{ color: C.sub, fontSize: 11, margin: '1px 0 0' }}>
+                    {a.geo?.approx ?? 'ubicación no disponible'} · {uaShort(a.userAgent)}
+                  </p>
+                  <p style={{ ...num, fontFamily: 'ui-monospace, Menlo, monospace', color: C.dim, fontSize: 10.5, margin: '1px 0 0' }}>
+                    {a.ip ?? 'IP no registrada'}{a.geo?.org ? ` · ${a.geo.org}` : ''} · {a.at ? new Date(a.at).toLocaleString('es-CO', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—'}
+                  </p>
+                </div>
+                {a.ip && !(sec.blockedIps ?? []).some((b: any) => b.ip === a.ip) && (
+                  <button onClick={() => { if (window.confirm(`¿Bloquear la IP ${a.ip}? No podrá mover dinero.`)) secAction({ action: 'block_ip', ip: a.ip, reason: 'bloqueo manual desde el historial' }); }}
+                    disabled={secBusy}
+                    style={{ background: 'transparent', border: `1px solid ${C.border2}`, color: C.dim, borderRadius: 7, padding: '3px 8px', fontSize: 10, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                    Bloquear
+                  </button>
+                )}
               </div>
-            </div>
+            ))}
           </div>
-          <p style={{ color: C.sub, fontSize: 11, margin: '6px 0 0' }}>La lista de todas las sesiones (ciudad, navegador) y el cierre remoto requieren la API de sesiones de Supabase (pendiente).</p>
+          <p style={{ color: C.dim, fontSize: 10.5, margin: '8px 0 0', lineHeight: 1.5 }}>
+            La ubicación se deduce de la IP: llega a <b style={{ color: C.sub }}>ciudad o región</b>, y suele ser la del nodo
+            del operador. No es una dirección exacta.
+          </p>
         </div>
         <div style={{ ...cardStyle, padding: 16 }}>
           <p style={{ ...label, marginBottom: 10 }}>Retiros inusuales (&gt; 3× promedio)</p>
@@ -396,8 +515,24 @@ export const AdminMonitor: React.FC = () => {
       {/* Historial de incidentes (demo) */}
       <SectionTitle icon={Clock}>Historial de incidentes</SectionTitle>
       <div style={{ ...cardStyle, padding: 16, marginBottom: 8 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}><DemoTag /></div>
-        <p style={{ color: C.sub, fontSize: 12, margin: 0 }}>Aquí quedará el historial (RESUELTO/MITIGADO, descripción, fecha, duración) en cuanto se registren incidentes reales de servicios. Los cortes detectados por el monitoreo de arriba se irán guardando aquí.</p>
+        {(sec?.incidents ?? []).length === 0 ? (
+          <p style={{ color: C.dim, fontSize: 12, margin: 0 }}>Sin incidentes registrados. Cuando el monitoreo detecte que un servicio se cae, quedará aquí con su duración.</p>
+        ) : sec.incidents.map((inc: any, i: number) => (
+          <div key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '9px 0', borderTop: i ? `1px solid ${C.border}` : 'none' }}>
+            <div style={{ minWidth: 0 }}>
+              <p style={{ fontSize: 13, margin: 0, color: C.text }}>{inc.service}</p>
+              <p style={{ ...num, color: C.dim, fontSize: 11, margin: 0 }}>
+                {new Date(inc.at).toLocaleString('es-CO', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                {inc.minutes != null ? ` · duró ${inc.minutes} min` : ' · aún sin recuperarse'}
+              </p>
+            </div>
+            <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: 0.4, whiteSpace: 'nowrap', borderRadius: 6, padding: '3px 8px',
+                           color: inc.resolvedAt ? C.green : C.red,
+                           background: inc.resolvedAt ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.12)' }}>
+              {inc.resolvedAt ? 'RESUELTO' : 'EN CURSO'}
+            </span>
+          </div>
+        ))}
       </div>
 
       {/* Panel lateral de alertas */}
