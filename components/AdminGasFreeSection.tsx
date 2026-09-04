@@ -1214,20 +1214,21 @@ export const AdminGasFreeSection: React.FC = () => {
                 <p className="text-[11px] text-slate-400">A quién se le paga el USDT acumulado en Tesorería. Solo los partners de Lincoin — <b>Finity</b> (ACH) y <b>Mouv</b> (Bre-B) — y únicamente su wallet USDT, para que la plata no pueda irse a otro lado.</p>
                 <div className="space-y-2">
                     {providers.map((p: any) => (
-                        <div key={p.id} className={`flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-sm ${p.locked ? 'bg-emerald-50 border border-emerald-200' : 'bg-slate-50'}`}>
+                        <div key={p.id} className="flex items-center justify-between gap-2 rounded-lg px-3 py-2.5 text-sm"
+                            style={{ background: p.locked ? 'rgba(74,222,128,0.09)' : 'rgba(255,255,255,0.04)', border: `1px solid ${p.locked ? 'rgba(74,222,128,0.30)' : 'rgba(255,255,255,0.10)'}` }}>
                             <div className="min-w-0">
-                                <span className="font-bold text-slate-800">{p.name}</span>
-                                {p.detail && <span className="text-slate-400"> · {mask(p.detail)}</span>}
-                                {p.locked && <span className="ml-2 text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-600 text-white">🔒 BÓVEDA</span>}
-                                {p.locked && <p className="text-[10px] text-emerald-700 mt-0.5">Fijada fuera del panel con doble aprobación. No editable ni visible completa desde aquí.</p>}
+                                <span style={{ color: '#F4F4F2', fontWeight: 700 }}>{p.name}</span>
+                                {p.detail && <span style={{ color: '#878E88', fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12 }}> · {mask(p.detail)}</span>}
+                                {p.locked && <span className="ml-2 text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ background: '#4ADE80', color: '#0C0E0D' }}>🔒 BÓVEDA</span>}
+                                {p.locked && <p className="text-[10px] mt-1" style={{ color: '#4ADE80' }}>Fijada fuera del panel con doble aprobación. No editable ni visible completa desde aquí.</p>}
                             </div>
                             <div className="flex items-center gap-3 shrink-0">
-                                <button onClick={() => { setPayTarget(p); setPayAmount(''); setPayMsg(null); }} className="inline-flex items-center gap-1 text-xs font-bold text-[#16A34A] hover:underline" title="Pagar a este proveedor desde Tesorería — manual, sin mínimo acumulado">
+                                <button onClick={() => { setPayTarget(p); setPayAmount(''); setPayMsg(null); }} className="inline-flex items-center gap-1 text-xs font-bold hover:underline" style={{ color: '#4ADE80' }} title="Pagar a este proveedor desde Tesorería — manual, sin mínimo acumulado">
                                     <Send size={12} /> Pagar
                                 </button>
                                 {p.locked
-                                    ? <span className="text-[11px] text-slate-400 font-semibold" title="Fijada en la Bóveda">Protegida</span>
-                                    : <button onClick={() => removeProvider(p.id)} className="text-red-500 hover:underline text-xs font-bold">Eliminar</button>}
+                                    ? <span className="text-[11px] font-semibold" style={{ color: '#5b675f' }} title="Fijada en la Bóveda">Protegida</span>
+                                    : <button onClick={() => removeProvider(p.id)} className="hover:underline text-xs font-bold" style={{ color: '#F87171' }}>Eliminar</button>}
                             </div>
                         </div>
                     ))}
@@ -1235,10 +1236,17 @@ export const AdminGasFreeSection: React.FC = () => {
                 </div>
                 {/* Con wallets fijadas en la Bóveda, el alta y la baja NO se hacen
                     desde el panel: se administran fuera, con doble aprobación. */}
-                {providers.some((p: any) => p.locked) ? (
-                    <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
-                        <p className="text-xs font-bold text-emerald-800">🔒 Administrado en la Bóveda</p>
-                        <p className="text-[11px] text-emerald-700 mt-1">
+                {/* Hasta que los proveedores NO hayan cargado no se muestra nada
+                    editable: si no, se alcanzaba a ver por un instante el
+                    formulario de alta/baja antes de saber que están en la Bóveda. */}
+                {!providersLoaded ? (
+                    <div className="rounded-lg p-3" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.10)' }}>
+                        <p className="text-xs font-bold" style={{ color: '#878E88' }}>Verificando el registro de partners…</p>
+                    </div>
+                ) : providers.some((p: any) => p.locked) ? (
+                    <div className="rounded-lg p-3" style={{ background: 'rgba(74,222,128,0.09)', border: '1px solid rgba(74,222,128,0.30)' }}>
+                        <p className="text-xs font-bold" style={{ color: '#4ADE80' }}>🔒 Administrado en la Bóveda</p>
+                        <p className="text-[11px] mt-1" style={{ color: '#878E88' }}>
                             Las wallets de partners no se agregan, editan ni eliminan desde este panel. Se fijan fuera de la aplicación con doble aprobación, y la Tesorería solo puede pagar a esas direcciones.
                         </p>
                     </div>
@@ -1275,8 +1283,8 @@ export const AdminGasFreeSection: React.FC = () => {
                 {!providerErr && providersLoaded && providers.length > 0 && (
                     <p className="text-[11px] font-bold text-green-700">✅ {providers.length === 1 ? '1 proveedor guardado' : `${providers.length} proveedores guardados`} (verificado).</p>
                 )}
-                {!providers.some((p: any) => p.locked) && (
-                    <p className="text-[11px] font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2">
+                {providersLoaded && !providers.some((p: any) => p.locked) && (
+                    <p className="text-[11px] font-bold rounded-lg p-2" style={{ color: '#FBBF24', background: 'rgba(251,191,36,0.10)', border: '1px solid rgba(251,191,36,0.30)' }}>
                         ⚠ Ninguna wallet está fijada en la Bóveda todavía — mientras tanto se pueden editar desde aquí. Fíjalas en la Bóveda para blindarlas.
                     </p>
                 )}

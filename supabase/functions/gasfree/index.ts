@@ -2534,19 +2534,13 @@ async function getProviders() {
 async function setProviders(list: any[]) {
   const incoming: any[] = Array.isArray(list) ? list : []
   if (ENV_PROVIDERS.length) {
-    // Intento de cambiar la dirección de un proveedor fijado → se RECHAZA.
-    for (const p of incoming) {
-      const locked = ENV_PROVIDERS.find(e => e.id === p?.id || String(e.name).toLowerCase() === String(p?.name ?? '').toLowerCase())
-      if (locked && String(p?.detail ?? '').trim() !== locked.detail) {
-        // NOTA: el mensaje llega a la pantalla del admin — NUNCA nombrar la
-        // infraestructura donde vive el secreto. Solo se dice "Bóveda".
-        throw new Error(`La wallet de ${locked.name} está fijada en la Bóveda y no se puede cambiar desde el panel. Su modificación requiere doble aprobación fuera de la aplicación.`)
-      }
-    }
-    // Solo se persisten los proveedores NO fijados; los fijados se reinyectan
-    // siempre desde el secret, así que tampoco se pueden borrar desde el panel.
-    await saveSystemConfig(PROVIDERS_KEY, JSON.stringify(incoming.filter(p => !isLockedProvider(p))))
-    return await getProviders()
+    // CANDADO TOTAL: con wallets fijadas en la Bóveda, el registro de partners
+    // es de SOLO LECTURA desde la aplicación. No se admite alta, baja ni edición
+    // — ni siquiera de un proveedor "nuevo": si se pudiera agregar uno, el panel
+    // volvería a ser un punto donde manipular a quién se le paga.
+    // NOTA: el mensaje llega a la pantalla del admin — NUNCA nombrar la
+    // infraestructura donde vive el secreto. Solo se dice "Bóveda".
+    throw new Error('Las wallets de partners se administran en la Bóveda: no se pueden agregar, editar ni eliminar desde el panel. Requieren doble aprobación fuera de la aplicación.')
   }
   await saveSystemConfig(PROVIDERS_KEY, JSON.stringify(incoming))
   // Releer de la base: lo que se devuelve es lo que DE VERDAD quedó guardado.
