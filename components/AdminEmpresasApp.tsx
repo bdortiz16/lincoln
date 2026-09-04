@@ -8,6 +8,7 @@ import { setRatesDbClient } from './AdminPersonas/sections/RatesPanel';
 import { supabase } from '../lib/supabaseClient';
 import { AdminDashboard } from './AdminDashboard';
 import { Logo } from './Logo';
+import { TurnstileWidget, captchaEnabled } from './TurnstileWidget';
 import { Lock, LogOut, ShieldCheck } from 'lucide-react';
 
 // ─────────────────────────────────────────────
@@ -39,14 +40,19 @@ const AdminEmpresasInner: React.FC = () => {
     const [mfaCode, setMfaCode] = useState('');
     const [mfaError, setMfaError] = useState<string | null>(null);
     const [verifying, setVerifying] = useState(false);
+    const [captchaToken, setCaptchaToken] = useState('');
+    const [captchaKey, setCaptchaKey] = useState(0);
 
     const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault();
         if (submitting) return;
+        if (captchaEnabled && !captchaToken) { setError('Completa la verificación anti-bot (CAPTCHA).'); return; }
         setSubmitting(true);
         setError(null);
         try {
-            const result = await loginUser(email.trim(), password);
+            const result = await loginUser(email.trim(), password, captchaToken || undefined);
+            // El token de CAPTCHA es de un solo uso — se resetea para el próximo intento.
+            setCaptchaToken(''); setCaptchaKey(k => k + 1);
             // 2FA pendiente: la contraseña FUE correcta. La pantalla cambia al
             // paso del código (vía mfaPending). No mostrar "credenciales".
             if (result === 'MFA_REQUIRED') { setSubmitting(false); return; }
@@ -157,12 +163,13 @@ const AdminEmpresasInner: React.FC = () => {
                                 placeholder="••••••••"
                             />
                         </div>
+                        {captchaEnabled && <TurnstileWidget onToken={setCaptchaToken} resetKey={captchaKey} className="flex justify-center" />}
                         {error && (
                             <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-xl p-2.5">{error}</p>
                         )}
                         <button
                             type="submit"
-                            disabled={submitting}
+                            disabled={submitting || (captchaEnabled && !captchaToken)}
                             style={{ color: '#FFFFFF' }}
                             className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#152e52] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60 transition-colors"
                         >

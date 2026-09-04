@@ -72,7 +72,7 @@ interface DatabaseContextType {
   registerUser: (data: any) => Promise<{ error?: string }>;
   updateUserProfile: (id: string, data: any) => Promise<void>;
   updateUserRawData: (id: string, patch: Record<string, any>) => Promise<boolean>;
-  loginUser: (email: string, pass?: string) => Promise<User | null | 'MFA_REQUIRED'>;
+  loginUser: (email: string, pass?: string, captchaToken?: string) => Promise<User | null | 'MFA_REQUIRED'>;
   loginWithGoogle: (role?: 'personal' | 'business') => Promise<void>;
   logoutUser: () => void;
   getBalance: (curr: string) => number;
@@ -112,7 +112,7 @@ interface DatabaseContextType {
   registerInternalMovement: (amt: number, curr: string, type: 'credit' | 'debit', reason: string, accId: string, refId?: string, proof?: string) => Promise<void>;
   updateBankList: (country: string, banks: BankDetail[]) => void;
   restoreDatabase: (json: any) => boolean;
-  sendPasswordReset: (email: string) => Promise<void>;
+  sendPasswordReset: (email: string, captchaToken?: string) => Promise<void>;
   isPasswordRecovery: boolean;
   setNewPassword: (newPassword: string) => Promise<string | null>;
   sendCuypayPayment: (recipientCode: string, amount: number, currency: string) => Promise<{ error?: string }>;
@@ -1115,8 +1115,10 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   // --- AUTH ---
 
-  const loginUser = async (email: string, pass?: string): Promise<User | null | 'MFA_REQUIRED'> => {
+  const loginUser = async (email: string, pass?: string, captchaToken?: string): Promise<User | null | 'MFA_REQUIRED'> => {
     const isSeedAdminEmail = !!SEED_ADMIN_EMAIL && email === SEED_ADMIN_EMAIL;
+    // Opciones de auth con el token del CAPTCHA (si Turnstile está activo).
+    const authOpts = captchaToken ? { captchaToken } : undefined;
 
     // ── SEGURIDAD (migración del login admin) ──────────────────────────────
     // Para el correo de admin se intenta PRIMERO una cuenta REAL de Supabase
@@ -1128,7 +1130,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     if (isSupabaseConfigured && isSeedAdminEmail && pass) {
       try {
         const { data, error } = await Promise.race([
-          supabase.auth.signInWithPassword({ email, password: pass }),
+          supabase.auth.signInWithPassword({ email, password: pass, options: authOpts }),
           new Promise<any>(resolve => setTimeout(() => resolve({ data: null, error: { message: 'timeout' } }), 6000)),
         ]) as any;
         if (!error && data?.user) {
@@ -1181,7 +1183,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       resolve => setTimeout(() => resolve({ data: { user: null, session: null }, error: { message: 'auth_timeout', status: 408 } }), 6000)
     );
     const { data, error } = await Promise.race([
-      supabase.auth.signInWithPassword({ email, password: pass! }),
+      supabase.auth.signInWithPassword({ email, password: pass!, options: authOpts }),
       authTimeout,
     ]);
     if (error) {
@@ -1573,6 +1575,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           role: data.role || 'business',
           full_name: data.name || 'Usuario',
         },
+        ...(data.captchaToken ? { captchaToken: data.captchaToken } : {}),
       },
     });
     if (error) return { error: error.message };
@@ -2128,11 +2131,11 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     return {};
   };
 
-  const sendPasswordReset = async (email: string) => {
+  const sendPasswordReset = async (email: string, captchaToken?: string) => {
     if (!isSupabaseConfigured) return;
     // redirectTo: el enlace del correo debe regresar a ESTA app para que el
     // usuario fije su nueva contraseña (si no, cae en el sitio por defecto).
-    await supabase.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin });
+    await supabase.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin, ...(captchaToken ? { captchaToken } : {}) });
   };
 
   // Fijar la nueva contraseña tras abrir el enlace de recuperación.

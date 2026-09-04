@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Eye, EyeOff, HelpCircle, ChevronDown, ArrowLeft, Users } from 'lucide-react';
 import { Logo } from './Logo';
+import { TurnstileWidget, captchaEnabled } from './TurnstileWidget';
 import { useDatabase } from '../context/DatabaseContext';
 import { FlagImg } from './FlagImg';
 
@@ -62,6 +63,8 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
   const [companyCountry, setCompanyCountry] = useState('');
   const [cooldown, setCooldown] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [captchaToken, setCaptchaToken] = useState('');
+  const [captchaKey, setCaptchaKey] = useState(0);
 
   const { registerUser, loginWithGoogle } = useDatabase();
 
@@ -136,6 +139,7 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
   const handleSubmit = async () => {
       if (cooldown > 0 || loading) return;
       setErrorMsg(null);
+      if (captchaEnabled && !captchaToken) { setErrorMsg('Completa la verificación anti-bot (CAPTCHA).'); return; }
       setLoading(true);
       if (!email || !password) {
           setErrorMsg("Por favor completa todos los campos requeridos.");
@@ -171,9 +175,12 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
             companyName: userRole === 'business' ? companyName : undefined,
             country: userRole === 'business' ? companyCountry : undefined,
             referralCode,
+            captchaToken: captchaToken || undefined,
           }),
           timeout,
         ]);
+        // Token de un solo uso — resetear para un posible reintento.
+        setCaptchaToken(''); setCaptchaKey(k => k + 1);
 
         if (result?.error) {
             setErrorMsg(result.error);
@@ -317,9 +324,10 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
                     </label>
                 </div>
 
+                {captchaEnabled && <TurnstileWidget onToken={setCaptchaToken} resetKey={captchaKey} className="flex justify-center mt-4" />}
                 <button
                     onClick={handleSubmit}
-                    disabled={cooldown > 0 || loading}
+                    disabled={cooldown > 0 || loading || (captchaEnabled && !captchaToken)}
                     className="w-full h-12 bg-[#4ADE80] hover:bg-[#4ADE80] text-white font-bold rounded-lg transition-colors shadow-lg shadow-slate-200 mt-6 disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                     {loading ? 'Registrando...' : cooldown > 0 ? `Espera ${cooldown}s...` : 'Registrarme'}
@@ -441,9 +449,10 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
                     </label>
                 </div>
 
+                {captchaEnabled && <TurnstileWidget onToken={setCaptchaToken} resetKey={captchaKey} className="flex justify-center mt-4" />}
                 <button
                     onClick={handleSubmit}
-                    disabled={cooldown > 0 || loading}
+                    disabled={cooldown > 0 || loading || (captchaEnabled && !captchaToken)}
                     className="w-full h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg transition-colors shadow-lg shadow-green-900/20 mt-4 disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                     {loading ? 'Registrando...' : cooldown > 0 ? `Espera ${cooldown}s...` : 'Registrarse'}

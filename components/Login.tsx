@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 declare global { interface Window { grecaptcha: any } }
 import { Eye, EyeOff, ArrowLeft, AlertTriangle, X, CheckCircle, ShieldCheck } from 'lucide-react';
 import { Logo } from './Logo';
+import { TurnstileWidget, captchaEnabled } from './TurnstileWidget';
 import { useSystemConfig } from '../context/SystemConfigContext';
 import { useDatabase } from '../context/DatabaseContext';
 
@@ -38,6 +39,9 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
   const [mfaCode, setMfaCode] = useState('');
   const [mfaError, setMfaError] = useState('');
   const [mfaLoading, setMfaLoading] = useState(false);
+  // CAPTCHA (Turnstile) — token de un solo uso; captchaKey remonta el widget.
+  const [captchaToken, setCaptchaToken] = useState('');
+  const [captchaKey, setCaptchaKey] = useState(0);
 
   // reCAPTCHA v3: get a token invisibly — always resolves within 3 s
   const getRecaptchaToken = (): Promise<string> =>
@@ -55,12 +59,14 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
 
   const handleLogin = async () => {
     setErrorMsg(null);
+    if (captchaEnabled && !captchaToken) { setErrorMsg('Completa la verificación anti-bot (CAPTCHA).'); return; }
     setIsLoading(true);
     // Absolute safety net — button always unsticks after 20 s even if something hangs
     const safetyTimer = setTimeout(() => setIsLoading(false), 20000);
     try {
       await getRecaptchaToken();
-      const result = await loginUser(email, password);
+      const result = await loginUser(email, password, captchaToken || undefined);
+      setCaptchaToken(''); setCaptchaKey(k => k + 1);
 
       // 2FA pendiente: la contraseña FUE correcta; se muestra la pantalla del
       // código (vía el estado mfaPending). No mostrar "credenciales inválidas".
@@ -250,9 +256,11 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
           </button>
         </div>
 
+        {captchaEnabled && <TurnstileWidget onToken={setCaptchaToken} resetKey={captchaKey} className="flex justify-center" />}
+
         <button
           onClick={handleLogin}
-          disabled={isLoading}
+          disabled={isLoading || (captchaEnabled && !captchaToken)}
           className="btn-shine w-full h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg transition-all duration-200 shadow-lg shadow-green-900/20 disabled:opacity-70 hover:shadow-xl hover:shadow-green-500/30 hover:-translate-y-0.5 active:scale-[0.98] active:translate-y-0"
         >
           {isLoading ? 'Iniciando sesión...' : 'Iniciar sesión'}
