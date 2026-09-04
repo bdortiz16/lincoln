@@ -80,8 +80,9 @@ import {
 import { Logo } from './Logo';
 import { RatesPanel } from './AdminPersonas/sections/RatesPanel';
 import { AdminGasFreeSection } from './AdminGasFreeSection';
+import { AdminMonitor } from './AdminMonitor';
 import { AdminOtcSection } from './AdminOtcSection';
-import { Zap, ArrowLeftRight, Info } from 'lucide-react';
+import { Zap, ArrowLeftRight, Info, ChevronRight, Activity } from 'lucide-react';
 import { CollectionWalletCard } from './CollectionWalletCard';
 import type { AdminProfile } from './AdminPersonas/lib/adminAuth';
 import { FlagImg, flagUrl } from './FlagImg';
@@ -264,11 +265,17 @@ const DiditAdminPanel: React.FC<{ client: any; showToast: (m: string) => void }>
 };
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo'>('overview');
   const [auditRows, setAuditRows] = useState<any[] | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
   const [adminLogins, setAdminLogins] = useState<{ admins: any[]; activity: any[] } | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  // Grupos colapsables del sidebar (estado persistido).
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() => {
+    try { const s = localStorage.getItem('lincoin_admin_groups'); if (s) return JSON.parse(s); } catch { /* */ }
+    return { operacion: true, finanzas: false, sistema: false };
+  });
+  const toggleGroup = (g: string) => setOpenGroups(p => { const n = { ...p, [g]: !p[g] }; try { localStorage.setItem('lincoin_admin_groups', JSON.stringify(n)); } catch { /* */ } return n; });
   const [ratesSaved, setRatesSaved] = useState(false);
   const [showPaletteChooser, setShowPaletteChooser] = useState(false);
   
@@ -3734,7 +3741,10 @@ const renderDesign = () => (
   };
 
   const closeSidebar = () => setIsSidebarOpen(false);
-  const navTo = (tab: string) => { setActiveTab(tab); closeSidebar(); };
+  const navTo = (tab: string) => { setActiveTab(tab as any); closeSidebar(); };
+  // El Dashboard/Monitoreo usan el tema oscuro Lincoin (AdminMonitor trae su
+  // propio header); el resto de secciones mantienen su lienzo claro actual.
+  const isDark = activeTab === 'overview' || activeTab === 'monitoreo';
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] font-sans text-slate-900 flex">
@@ -3750,36 +3760,81 @@ const renderDesign = () => (
                   <X size={20}/>
                 </button>
             </div>
-            <div className="flex-1 overflow-y-auto py-6 px-4 space-y-1">
-                <AdminSidebarItem icon={BarChart3} label="Dashboard" active={activeTab === 'overview'} onClick={() => navTo('overview')} />
-                <AdminSidebarItem icon={Users} label="Clientes" active={activeTab === 'clients'} badge={pendingClientsCount > 0 ? pendingClientsCount : undefined} onClick={() => navTo('clients')} />
-                <AdminSidebarItem icon={Landmark} label="Tesorería" active={activeTab === 'treasury'} badge={pendingDeposits.length + pendingWithdrawals.length > 0 ? pendingDeposits.length + pendingWithdrawals.length : undefined} onClick={() => navTo('treasury')} />
-                <AdminSidebarItem icon={Wallet} label="Cargues" active={activeTab === 'cargues'} onClick={() => navTo('cargues')} />
-                <AdminSidebarItem icon={AlertTriangle} label="Fallos" active={activeTab === 'fallos'} badge={failuresCount > 0 ? failuresCount : undefined} onClick={() => navTo('fallos')} />
-                <AdminSidebarItem icon={Shield} label="Auditoría" active={activeTab === 'auditoria'} onClick={() => navTo('auditoria')} />
-                <AdminSidebarItem icon={FileText} label="Reportes" active={activeTab === 'reports'} onClick={() => navTo('reports')} />
-                <AdminSidebarItem icon={Settings} label="Configuración" active={activeTab === 'config'} onClick={() => navTo('config')} />
-                <AdminSidebarItem icon={Palette} label="Diseño" active={activeTab === 'design'} onClick={() => navTo('design')} />
-                <AdminSidebarItem icon={Shield} label="Seguridad" active={activeTab === 'security'} onClick={() => navTo('security')} />
-                <AdminSidebarItem icon={Megaphone} label="Marketing" active={activeTab === 'marketing'} onClick={() => navTo('marketing')} />
-                <AdminSidebarItem icon={Building2} label="Bancos" active={activeTab === 'banks'} onClick={() => navTo('banks')} />
-                <AdminSidebarItem icon={TrendingUp} label="Tasas de Cambio" active={activeTab === 'rates'} onClick={() => navTo('rates')} />
-                <AdminSidebarItem icon={Zap} label="GasFree USDT" active={activeTab === 'gasfree'} onClick={() => navTo('gasfree')} />
-                <AdminSidebarItem icon={ArrowLeftRight} label="Contabilidad OTC" active={activeTab === 'otcConfig'} onClick={() => navTo('otcConfig')} />
-                <AdminSidebarItem icon={UserCheck} label="Equipo Admin" active={activeTab === 'team'} onClick={() => navTo('team')} />
+            <div className="flex-1 overflow-y-auto py-5 px-3 space-y-1">
+                {/* Dashboard — fijo arriba, resaltado en verde */}
+                <button onClick={() => navTo('overview')} className={`flex items-center gap-3 w-full px-3 py-2.5 rounded-xl font-semibold text-sm transition-colors ${activeTab === 'overview' ? 'bg-[#4ADE80]/12 text-[#4ADE80]' : 'text-slate-300 hover:bg-white/5'}`} style={activeTab === 'overview' ? { background: 'rgba(74,222,128,0.12)' } : undefined}>
+                    <BarChart3 size={18} /> Dashboard
+                </button>
+
+                {(() => {
+                    const operacionBadge = (pendingClientsCount || 0) + pendingDeposits.length + pendingWithdrawals.length + (failuresCount || 0);
+                    const groups: { key: string; title: string; badge?: number; items: React.ReactNode }[] = [
+                        { key: 'operacion', title: 'Operación', badge: operacionBadge, items: <>
+                            <AdminSidebarItem icon={Users} label="Clientes" active={activeTab === 'clients'} badge={pendingClientsCount > 0 ? pendingClientsCount : undefined} onClick={() => navTo('clients')} />
+                            <AdminSidebarItem icon={Landmark} label="Tesorería" active={activeTab === 'treasury'} badge={pendingDeposits.length + pendingWithdrawals.length > 0 ? pendingDeposits.length + pendingWithdrawals.length : undefined} onClick={() => navTo('treasury')} />
+                            <AdminSidebarItem icon={Wallet} label="Cargues" active={activeTab === 'cargues'} onClick={() => navTo('cargues')} />
+                            <AdminSidebarItem icon={AlertTriangle} label="Fallos" active={activeTab === 'fallos'} badge={failuresCount > 0 ? failuresCount : undefined} onClick={() => navTo('fallos')} />
+                            <AdminSidebarItem icon={Zap} label="GasFree USDT" active={activeTab === 'gasfree'} onClick={() => navTo('gasfree')} />
+                        </> },
+                        { key: 'finanzas', title: 'Finanzas', items: <>
+                            <AdminSidebarItem icon={FileText} label="Reportes" active={activeTab === 'reports'} onClick={() => navTo('reports')} />
+                            <AdminSidebarItem icon={Building2} label="Bancos" active={activeTab === 'banks'} onClick={() => navTo('banks')} />
+                            <AdminSidebarItem icon={TrendingUp} label="Tasas de Cambio" active={activeTab === 'rates'} onClick={() => navTo('rates')} />
+                            <AdminSidebarItem icon={ArrowLeftRight} label="Contabilidad OTC" active={activeTab === 'otcConfig'} onClick={() => navTo('otcConfig')} />
+                        </> },
+                        { key: 'sistema', title: 'Sistema', items: <>
+                            <AdminSidebarItem icon={Shield} label="Seguridad" active={activeTab === 'security'} onClick={() => navTo('security')} />
+                            <AdminSidebarItem icon={Shield} label="Auditoría" active={activeTab === 'auditoria'} onClick={() => navTo('auditoria')} />
+                            <AdminSidebarItem icon={Activity} label="Monitoreo" active={activeTab === 'monitoreo'} onClick={() => navTo('monitoreo')} />
+                            <AdminSidebarItem icon={UserCheck} label="Equipo Admin" active={activeTab === 'team'} onClick={() => navTo('team')} />
+                            <AdminSidebarItem icon={Megaphone} label="Marketing" active={activeTab === 'marketing'} onClick={() => navTo('marketing')} />
+                            <AdminSidebarItem icon={Palette} label="Diseño" active={activeTab === 'design'} onClick={() => navTo('design')} />
+                            <AdminSidebarItem icon={Settings} label="Configuración" active={activeTab === 'config'} onClick={() => navTo('config')} />
+                        </> },
+                    ];
+                    return groups.map(g => {
+                        const open = !!openGroups[g.key];
+                        return (
+                            <div key={g.key} className="pt-3">
+                                <button onClick={() => toggleGroup(g.key)} className="flex items-center justify-between w-full px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-500 hover:text-slate-300 transition-colors">
+                                    <span className="flex items-center gap-1.5">
+                                        <ChevronRight size={12} className={`transition-transform ${open ? 'rotate-90' : ''}`} /> {g.title}
+                                    </span>
+                                    {!open && g.badge ? <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-500/90 text-white">{g.badge}</span> : null}
+                                </button>
+                                {open && <div className="mt-1 space-y-1">{g.items}</div>}
+                            </div>
+                        );
+                    });
+                })()}
             </div>
-            <div className="p-4 border-t border-white/10">
-                <button onClick={onLogout} className="flex items-center gap-3 w-full px-4 py-3 text-slate-400 hover:text-white hover:bg-white/10 rounded-xl transition-colors font-medium text-sm">
+            <div className="p-3 border-t border-white/10 space-y-2">
+                <div className="flex items-center gap-2.5 px-2 py-2">
+                    <div className="w-8 h-8 rounded-full bg-white/10 grid place-items-center text-xs font-bold text-white shrink-0">{(currentUser?.email ?? 'A').charAt(0).toUpperCase()}</div>
+                    <div className="min-w-0 flex-1">
+                        <p className="text-xs font-semibold text-white truncate">{currentUser?.email ?? 'Administrador'}</p>
+                        <p className="text-[10px] flex items-center gap-1.5" style={{ color: !isOnline ? '#F87171' : dataReady ? '#4ADE80' : '#FBBF24' }}>
+                            <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: !isOnline ? '#F87171' : dataReady ? '#4ADE80' : '#FBBF24' }} />
+                            {!isOnline ? 'Sin conexión' : dataReady ? 'Conectado' : 'Conectando…'}
+                        </p>
+                    </div>
+                </div>
+                <button onClick={onLogout} className="flex items-center gap-3 w-full px-4 py-2.5 text-slate-400 hover:text-white hover:bg-white/10 rounded-xl transition-colors font-medium text-sm">
                     <LogOut size={18} /> Cerrar Sesión
                 </button>
             </div>
         </aside>
 
-        <main className="flex-1 flex flex-col h-screen overflow-hidden">
+        <main className={`flex-1 flex flex-col h-screen overflow-hidden ${isDark ? 'bg-[#070808]' : ''}`}>
+            {isDark ? (
+                <div className="lg:hidden flex items-center h-14 px-4 border-b border-white/10">
+                    <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="text-white/70"><Menu size={24}/></button>
+                </div>
+            ) : (
             <header className="h-20 bg-white border-b border-slate-200 flex items-center justify-between px-8">
                 <div className="flex items-center gap-4">
                     <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="lg:hidden text-slate-500"><Menu size={24}/></button>
-                    <h1 className="text-xl font-bold text-slate-800 capitalize">{activeTab === 'overview' ? 'Resumen General' : activeTab === 'design' ? 'Diseño y Apariencia' : activeTab}</h1>
+                    <h1 className="text-xl font-bold text-slate-800 capitalize">{activeTab === 'design' ? 'Diseño y Apariencia' : activeTab}</h1>
                 </div>
                 <div className="flex items-center gap-4">
                     <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold ${!isOnline ? 'bg-red-50 text-red-700' : dataReady ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700'}`}>
@@ -3788,9 +3843,11 @@ const renderDesign = () => (
                     </div>
                 </div>
             </header>
+            )}
 
-            <div className="flex-1 overflow-y-auto p-8">
-                {activeTab === 'overview' && renderOverview()}
+            <div className={`flex-1 overflow-y-auto ${isDark ? 'p-6' : 'p-8'}`}>
+                {activeTab === 'overview' && <AdminMonitor />}
+                {activeTab === 'monitoreo' && <AdminMonitor />}
                 {activeTab === 'clients' && renderClients()}
                 {activeTab === 'marketing' && renderMarketing()}
                 {activeTab === 'treasury' && renderTreasury()}
