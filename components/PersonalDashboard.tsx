@@ -1,5 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
+  Landmark,
+  CheckCircle2,
+  ArrowUpRight,
+  History,
+  Info,
   Home,
   Send,
   RefreshCw,
@@ -30,6 +35,8 @@ import {
   Plane,
   ShoppingBag,
   GraduationCap,
+  TrendingUp,
+  Layers,
   MoreHorizontal,
   Settings,
   Loader2,
@@ -51,14 +58,17 @@ import {
   Search,
   SlidersHorizontal,
   ArrowLeftRight,
-  XCircle
+  XCircle,
+  Archive
 } from 'lucide-react';
 import { Logo } from './Logo';
 import { MouvSection, fetchMouvBalance, fetchMouvRateValue, fetchMouvUsdCopConfig, callMouv } from './OtcMigration';
+import { MouvDispersion } from './MouvDispersion';
+import { achEta, achEtaShort } from './achEta';
 import { ContactsSection, contactStatus } from './ContactsSection';
 import { WalletsGasfreeSection } from './WalletsGasfreeSection';
 import { supabase } from '../lib/supabaseClient';
-import { FlagImg, FlagSelect } from './FlagImg';
+import { FlagImg, FlagSelect, flagUrl } from './FlagImg';
 import { useExchangeRates } from '../context/ExchangeRateContext';
 import { useSystemConfig } from '../context/SystemConfigContext'; 
 import { useDatabase } from '../context/DatabaseContext';
@@ -171,7 +181,8 @@ const SidebarItem: React.FC<{
     `}
   >
     <div className="flex items-center gap-3">
-      <Icon size={small ? 16 : 20} className={active ? 'text-[#4ADE80]' : 'text-slate-500 group-hover:text-[#0C0E0D]'} />
+      {/* Trazo fino 1.6 (handoff): iconos de línea elegantes, monocromos */}
+      <Icon size={small ? 15 : 19} strokeWidth={1.6} className={active ? 'text-[#4ADE80]' : 'text-slate-500 group-hover:text-[#0C0E0D]'} />
       {/* color explícito: el label del item activo se perdía (navy sobre navy
           según el orden de clases) — blanco fijo cuando está activo */}
       <span style={active ? { color: '#FFFFFF' } : undefined}>{label}</span>
@@ -211,17 +222,92 @@ function playNotifSound() {
     } catch { /* audio no disponible */ }
 }
 
+// Sonido de DEPÓSITO recibido — acorde ascendente tipo "cha-ching" (más
+// celebratorio que el ding normal). Mismo AudioContext.
+function playDepositSound() {
+    try {
+        const AC = (window as any).AudioContext || (window as any).webkitAudioContext;
+        if (!AC) return;
+        _notifAudioCtx = _notifAudioCtx || new AC();
+        const ctx = _notifAudioCtx;
+        if (ctx.state === 'suspended') ctx.resume();
+        const now = ctx.currentTime;
+        ([[523.25, 0], [659.25, 0.1], [783.99, 0.2], [1046.5, 0.32]] as Array<[number, number]>).forEach(([freq, t]) => {
+            const o = ctx.createOscillator();
+            const g = ctx.createGain();
+            o.type = 'triangle';
+            o.frequency.value = freq;
+            g.gain.setValueAtTime(0.0001, now + t);
+            g.gain.exponentialRampToValueAtTime(0.25, now + t + 0.02);
+            g.gain.exponentialRampToValueAtTime(0.0001, now + t + 0.42);
+            o.connect(g); g.connect(ctx.destination);
+            o.start(now + t);
+            o.stop(now + t + 0.46);
+        });
+    } catch { /* audio no disponible */ }
+}
+
+// Ruteo por URL: cada vista tiene su propia dirección (como un banco:
+// /movimientos, /billetera…) en vez de quedarse siempre en lincoin.me/#.
+// Así el usuario ve dónde está, puede compartir/recargar y usar atrás/adelante.
+const VIEW_PATHS: Record<string, string> = {
+  dashboard: '/inicio',
+  movements: '/movimientos',
+  'wallet-detail': '/billetera',
+  profile: '/perfil',
+  notifications: '/notificaciones',
+  referrals: '/invita',
+  affiliates: '/aliados',
+  settings: '/ajustes',
+  servicios: '/servicios',
+  mouv: '/mesa-otc',
+  contactos: '/beneficiarios',
+  walletsGasfree: '/wallets',
+};
+const PATH_VIEWS: Record<string, string> = Object.fromEntries(
+  Object.entries(VIEW_PATHS).map(([view, path]) => [path, view])
+);
+
 export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }) => {
-  const [activeView, setActiveView] = useState<'dashboard' | 'movements' | 'wallet-detail' | 'profile' | 'notifications' | 'referrals' | 'affiliates' | 'settings' | 'servicios' | 'mouv' | 'contactos' | 'walletsGasfree'>('dashboard');
+  const [activeView, setActiveView] = useState<'dashboard' | 'movements' | 'wallet-detail' | 'profile' | 'notifications' | 'referrals' | 'affiliates' | 'settings' | 'servicios' | 'mouv' | 'contactos' | 'walletsGasfree'>(() => {
+    // Vista inicial según la URL (deep-link / recarga en /movimientos, etc.).
+    // /billetera necesita una billetera seleccionada, que NO sobrevive a la
+    // recarga (no va en la URL) → si se recarga ahí, se abre Inicio (donde
+    // están las billeteras) en vez de dejar la pantalla en blanco.
+    try {
+      const v = (PATH_VIEWS[window.location.pathname] as any) || 'dashboard';
+      return v === 'wallet-detail' ? 'dashboard' : v;
+    } catch { return 'dashboard'; }
+  });
+  // Sincroniza vista ↔ URL: al cambiar de vista, actualiza la dirección;
+  // y responde a los botones atrás/adelante del navegador.
+  useEffect(() => {
+    try {
+      const path = VIEW_PATHS[activeView] || '/inicio';
+      if (window.location.pathname !== path) window.history.pushState({ view: activeView }, '', path);
+    } catch { /* entorno sin history */ }
+  }, [activeView]);
+  useEffect(() => {
+    const onPop = () => {
+      try { const v = PATH_VIEWS[window.location.pathname]; if (v) setActiveView(v as any); } catch { /* noop */ }
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
   // 'mouv' se usa para dos entradas distintas: "Dispersar" (Bre-B, flujo
   // completo con cuentas destino/movimientos) y el boton "OTC" en Servicios
   // (solo el convertidor USD->COP, sin nada de dispersion bancaria).
   const [mouvMode, setMouvMode] = useState<'full' | 'converter'>('full');
+  // Mesa OTC: primero se elige el riel de salida del COP — ACH (conversor
+  // Finity, apificado) o Bre-B (Mouv, aún por mesa manual).
+  const [otcRail, setOtcRail] = useState<'ach' | 'breb' | null>(null);
+  // Riel elegido para dispersar (lo fija el botón "Dispersar" de cada tarjeta).
+  const [dispersRail, setDispersRail] = useState<'COP_BREB' | 'COP_ACH'>('COP_BREB');
   const [selectedWalletCode, setSelectedWalletCode] = useState<string | null>(null);
   // BreB Lincoin: saldo COP separado (key 'COP_BREB') que se fondea desde
   // Peso Lincoin y se usa para dispersar vía Mouv (solo Colombia).
   const [brebMoveOpen, setBrebMoveOpen] = useState(false);
-  const [brebDir, setBrebDir] = useState<'to_breb' | 'to_peso'>('to_breb');
+  const [brebDir, setBrebDir] = useState<'to_breb' | 'to_peso' | 'to_ach'>('to_breb');
   const [brebAmountStr, setBrebAmountStr] = useState('');
   const [brebMoving, setBrebMoving] = useState(false);
   // Saldo REAL en Mouv (Peso Lincoin está conectado a la cuenta Mouv).
@@ -240,6 +326,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const [isWalletOrderModalOpen, setIsWalletOrderModalOpen] = useState(false);
   const [walletDraftOrder, setWalletDraftOrder] = useState<string[]>([]);
   const [movementsTab, setMovementsTab] = useState<'all' | 'income' | 'expense'>('all');
+  // Chips + paginación del Historial rediseñado
+  const [movChip, setMovChip] = useState<'all' | 'in' | 'out' | 'convert' | 'inflight'>('all');
+  const [movPage, setMovPage] = useState(1);
   const [movSearch, setMovSearch] = useState('');
   const [movShowFilters, setMovShowFilters] = useState(false);
   const [movStatus, setMovStatus] = useState<'all' | 'Pendiente' | 'Completado' | 'Rechazado'>('all');
@@ -249,6 +338,42 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const [movType, setMovType] = useState<'all' | 'send' | 'load' | 'convert'>('all');
 
   const [isLoadModalOpen, setIsLoadModalOpen] = useState(false);
+  // Recaudo PSE (pay-in por link) — Mouv devuelve un link que el cliente
+  // comparte con quien le paga; al confirmarse se acredita el Saldo Lincoin.
+  const [cargarCopOpen, setCargarCopOpen] = useState(false); // modal oscuro de método de carga (Colombia)
+  const [pseOpen, setPseOpen] = useState(false);
+  const [pseAmount, setPseAmount] = useState('');
+  const [pseBusy, setPseBusy] = useState(false);
+  const [pseResult, setPseResult] = useState<{ ok: boolean; link?: string | null; reference?: string; message?: string; detail?: string } | null>(null);
+  const generatePseLink = async () => {
+      if (pseBusy || !currentUser?.id) return;
+      const amt = getRawAmount(pseAmount);
+      if (!amt || amt < 100000) { showToast('El monto mínimo del cobro es $100.000 COP.', 4000, 'error'); return; }
+      setPseBusy(true); setPseResult(null);
+      try {
+          // Link de cobro vía el riel de pagos (Finity /v0/payment-link/create).
+          const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+          const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+          const r = await fetch(`${SURL}/functions/v1/finity-proxy`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: myAuthHeader() },
+              body: JSON.stringify({ action: 'create_payment_link', user_id: currentUser.id, copAmount: amt }),
+          }).then(res => res.json()).catch(() => null);
+          if (r?.ok && r?.link) {
+              setPseResult({ ok: true, link: r.link, reference: r.reference });
+              refreshData?.();
+          } else if (r?.ok && !r?.link) {
+              // El cobro se creó pero el confirm no devolvió la URL del link.
+              setPseResult({ ok: false, message: `El cobro se creó (ref ${String(r.reference || '').slice(-8)}) pero el proveedor no devolvió el enlace.`, detail: r?.confirmResponse ? JSON.stringify(r.confirmResponse).slice(0, 300) : undefined });
+              refreshData?.();
+          } else {
+              setPseResult({ ok: false, message: r?.message || 'No se pudo generar el link de cobro.', detail: r?.data ? JSON.stringify(r.data).slice(0, 300) : undefined });
+          }
+      } catch (e: any) {
+          setPseResult({ ok: false, message: 'Error de red al generar el link.', detail: String(e?.message ?? e).slice(0, 200) });
+      }
+      setPseBusy(false);
+  };
   const [loadStep, setLoadStep] = useState(1);
   const [selectedCountry, setSelectedCountry] = useState('');
   const [selectedBankName, setSelectedBankName] = useState('');
@@ -270,7 +395,28 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const [mfaVerifyLoading, setMfaVerifyLoading] = useState(false);
   const [mfaDisableCode, setMfaDisableCode] = useState('');
   const [mfaDisableModalOpen, setMfaDisableModalOpen] = useState(false);
-  const [mfaLoadingStatus, setMfaLoadingStatus] = useState(false);
+  // Desactivar 2FA exige un CÓDIGO DE CORREO (que nadie lo apague sin acceso al
+  // correo). Se envía un OTP al correo del titular y hay que ingresarlo.
+  const [disableOtp, setDisableOtp] = useState<{ sent: boolean; code: string; sending: boolean; busy: boolean; error: string; to?: string }>({ sent: false, code: '', sending: false, busy: false, error: '' });
+  const callEmailOtp = async (action: string, extra: Record<string, unknown> = {}) => {
+    const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+    const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+    try {
+      const r = await fetch(`${SURL}/functions/v1/email-otp`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${SKEY}` },
+        body: JSON.stringify({ action, userId: currentUser?.id, email: currentUser?.email, ...extra }),
+      });
+      return await r.json();
+    } catch { return { ok: false, error: 'network' }; }
+  };
+  const sendDisableOtp = async () => {
+    setDisableOtp(s => ({ ...s, sending: true, error: '' }));
+    const r = await callEmailOtp('send');
+    setDisableOtp(s => ({ ...s, sending: false, sent: r?.ok !== false, to: r?.to, error: r?.ok === false ? (r.message || 'No se pudo enviar el código.') : '' }));
+  };
+  // Arranca en true: hasta la 1ª verificación de MFA, el envío dice
+  // "verificando" en vez de tratar al usuario como sin 2FA.
+  const [mfaLoadingStatus, setMfaLoadingStatus] = useState(true);
 
   // Conversion States
   const [isConvertModalOpen, setIsConvertModalOpen] = useState(false);
@@ -286,14 +432,21 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
   const [isSendModalOpen, setIsSendModalOpen] = useState(false);
   const [sendStep, setSendStep] = useState(1);
+  // Resultado del envío para el paso 5 ("Envío en camino" / fallo): datos
+  // reales de la dispersión — referencia del proveedor, costo, riel, hora.
+  const [sendResult, setSendResult] = useState<{ ok: boolean; message?: string; providerRef?: string | null; feeCop?: number; rail?: string; at?: string } | null>(null);
   // Buscador del selector de contactos inscritos (envíos COP · banco)
   const [contactSearch, setContactSearch] = useState('');
   // ID de la external account de Mouv del contacto elegido — con él la
   // confirmación crea la ORDEN DE RETIRO REAL en Mouv (destination_id).
   const [mouvDestId, setMouvDestId] = useState<string | null>(null);
+  // Default Colombia/COP: el chip de país se pinta seleccionado por la
+  // MONEDA — si el default fuera otro país (CLP…), Colombia se vería
+  // elegida pero la validación miraría el saldo de la moneda vieja
+  // ("saldo insuficiente en CLP" con plata en Bre-B).
   const [sendForm, setSendForm] = useState({
-      destinationCountry: 'Chile',
-      destinationCurrency: 'CLP',
+      destinationCountry: 'Colombia',
+      destinationCurrency: 'COP',
       amount: '',
       beneficiaryType: 'personal' as 'personal' | 'business',
       beneficiaryName: '',
@@ -304,13 +457,41 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       accountNumber: '',
       reason: 'Envío de dinero',
   });
+  // Billetera de ORIGEN para envíos COP: los 3 rieles son saldos SEPARADOS
+  // (Saldo Lincoin / Bre-B / ACH). El cliente elige de cuál sale el dinero;
+  // el disponible, la validación y el débito salen de ese riel.
+  const [sendSourceRail, setSendSourceRail] = useState<'COP' | 'COP_BREB' | 'COP_ACH'>('COP');
+  // Contacto elegido para el envío COP (trae destKind/brebKey/banco para la
+  // dispersión REAL inline de Mouv).
+  const [sendContact, setSendContact] = useState<any>(null);
+  // Método elegido en el paso 2 del flujo (diseño Flujo Enviar): lista radio.
+  const [sendMethodSel, setSendMethodSel] = useState<'breb' | 'ach' | 'pay' | 'cash' | null>(null);
+  // Cotización de la comisión del proveedor para el paso Confirmar:
+  // Bre-B → Mouv (fija + variable + IVA, cotizada en vivo y cobrada al
+  // cliente) · ACH → Finity (precio fijo por transferencia, se descuenta al
+  // confirmar con el valor que reporta la orden).
+  const [payoutQuote, setPayoutQuote] = useState<{ loading: boolean; feeCop?: number | null; provider?: string; error?: string } | null>(null);
   const [isSending, setIsSending] = useState(false);
   // Candado síncrono anti doble-clic (el estado de React tarda un render en
   // reflejarse; el ref bloquea desde el primer instante).
   const sendingRef = useRef(false);
+  // Mismos candados SÍNCRONOS anti doble-clic para pagar (P2P) y convertir:
+  // el estado de React tarda un render; el ref bloquea desde el primer clic.
+  const payingRef = useRef(false);
+  const convertingRef = useRef(false);
+  // Código 2FA del envío en curso — se envía al servidor para que RE-valide el
+  // TOTP antes de mover dinero (no basta con la pantalla del navegador).
+  const sentOtpRef = useRef('');
   // true = se despachó una orden a Mouv y NO sabemos si se creó (timeout /
   // error de red). Bloquea reintentos hasta que el usuario verifique.
   const [mouvUnknown, setMouvUnknown] = useState(false);
+  // Desafío 2FA al CONFIRMAR un envío: antes de mover el dinero se pide el
+  // código de la app de autenticación. Sin esto el 2FA solo servía de puerta
+  // para abrir el panel, pero no se validaba al confirmar la transacción.
+  const [sendOtpOpen, setSendOtpOpen] = useState(false);
+  const [sendOtpCode, setSendOtpCode] = useState('');
+  const [sendOtpError, setSendOtpError] = useState('');
+  const [sendOtpLoading, setSendOtpLoading] = useState(false);
 
   // PAY (P2P) flow
   const [sendMode, setSendMode] = useState<'bank' | 'pay' | 'cash' | 'wallet' | null>(null);
@@ -365,11 +546,13 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       sendCuypayPayment,
       currentUser,
       updateUserProfile,
+      updateUserRawData,
       bankingOptions,
       getAllUsers,
       sendPasswordReset,
       enrollMFA,
       verifyMFAEnrollment,
+      verifyMfaCode,
       unenrollMFA,
       getMFAStatus,
       deleteUser,
@@ -399,6 +582,76 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   //    porque su id sigue marcado como "ya avisado" aunque ya no esté en la
   //    lista visible. ──────────────────────────────────────────────────
   const [bellAnim, setBellAnim] = useState(false);
+  // Celebración visible cuando llega un depósito (animación + sonido cha-ching).
+  const [depositFx, setDepositFx] = useState<{ amount: number } | null>(null);
+  const celebrateDeposit = (amount: number) => {
+      setDepositFx({ amount });
+      if ((currentUser as any)?.notifSound !== false) playDepositSound();
+      setBellAnim(true);
+      setTimeout(() => setBellAnim(false), 1200);
+      setTimeout(() => setDepositFx(null), 4200);
+  };
+  // ── Cuadro de progreso de DEPÓSITO (esquina, sobre la billetera COP) ──
+  // Aparece SOLO cuando se detecta un depósito: barra "Recibido → Acreditado".
+  // Al acreditarse muestra "Acreditado" y se oculta solo a los pocos segundos.
+  const [depositCard, setDepositCard] = useState<{ amount: number; phase: 'recibido' | 'acreditado'; at: number } | null>(null);
+  const depositCardTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const DEP_CARD_KEY = 'lincoinDepositCard';
+  // Persiste el cuadro para que SOBREVIVA una recarga mientras se acredita.
+  useEffect(() => {
+      try {
+          if (depositCard) sessionStorage.setItem(DEP_CARD_KEY, JSON.stringify(depositCard));
+          else sessionStorage.removeItem(DEP_CARD_KEY);
+      } catch { /* sin storage */ }
+  }, [depositCard]);
+  const armDepositCardTimers = (phase: 'recibido' | 'acreditado') => {
+      if (depositCardTimer.current) clearTimeout(depositCardTimer.current);
+      if (phase === 'acreditado') {
+          depositCardTimer.current = setTimeout(() => setDepositCard(null), 5000);
+      } else {
+          // Red de seguridad: el depósito ya está confirmado on-chain; si el
+          // evento de acreditación no llega en ~18 s, se completa igual para que
+          // NUNCA se quede pegado en "Acreditando".
+          depositCardTimer.current = setTimeout(() => {
+              setDepositCard(prev => prev ? { ...prev, phase: 'acreditado' } : prev);
+              depositCardTimer.current = setTimeout(() => setDepositCard(null), 5000);
+          }, 18000);
+      }
+  };
+  const forceVerifyDeposit = () => {
+      if (currentUser?.id && !verifyDepositInFlight.current) {
+          verifyDepositInFlight.current = true;
+          callGasfree({ action: 'my_verify_deposit', userId: currentUser.id })
+              .then((d: any) => { if (d?.synced && Number(d?.credited) > 0) { refreshData?.(); markDepositCredited(Number(d.credited)); } })
+              .catch(() => {})
+              .finally(() => { verifyDepositInFlight.current = false; });
+      }
+  };
+  const showDepositReceived = (amount: number) => {
+      if (!(amount > 0)) return;
+      setDepositCard({ amount, phase: 'recibido', at: Date.now() });
+      forceVerifyDeposit();
+      armDepositCardTimers('recibido');
+  };
+  const markDepositCredited = (amount: number) => {
+      setDepositCard(prev => ({ amount: amount > 0 ? amount : (prev?.amount ?? 0), phase: 'acreditado', at: prev?.at ?? Date.now() }));
+      armDepositCardTimers('acreditado');
+  };
+  // Al montar / recargar: restaura el cuadro si quedó uno reciente (< 3 min) en
+  // curso, y termina de acreditarlo (verifica en el servidor).
+  useEffect(() => {
+      if (!currentUser?.id) return;
+      try {
+          const raw = sessionStorage.getItem(DEP_CARD_KEY);
+          if (!raw) return;
+          const saved = JSON.parse(raw) as { amount: number; phase: 'recibido' | 'acreditado'; at: number };
+          if (!saved || Date.now() - (saved.at ?? 0) > 3 * 60 * 1000) { sessionStorage.removeItem(DEP_CARD_KEY); return; }
+          setDepositCard(saved);
+          if (saved.phase === 'acreditado') { armDepositCardTimers('acreditado'); }
+          else { forceVerifyDeposit(); armDepositCardTimers('recibido'); }
+      } catch { /* sin storage */ }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id]);
   useEffect(() => {
       if (!currentUser?.id) return;
       const cuAny: any = currentUser;
@@ -414,7 +667,18 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           }
           if (m.status === 'Completado' && (m.type === 'load' || m.type === 'otc_deposit') && isUsdt) {
               candidates.push({ id: `usdtin-${m.id}`, type: 'success', title: 'Recibiste USDT',
-                  message: `Llegaron ${formatMoney(m.amount, cur)} ${cur.split('_')[0]} a tu wallet.` });
+                  message: `Llegaron ${formatMoney(m.amount, cur)} ${cur.split('_')[0]} a tu wallet.`,
+                  amount: Number(m.amount ?? 0) } as any);
+          }
+          // Conversión completada (puede terminar en SEGUNDO PLANO en el
+          // servidor mientras el cliente estaba fuera de la app). Solo
+          // conversiones recientes (<24 h) para no revivir el histórico.
+          if (m.status === 'Completado' && m.type === 'convert' && /^COP/.test(cur)) {
+              const ts = (m as any).createdAt ? Date.parse((m as any).createdAt) : NaN;
+              if (isFinite(ts) && Date.now() - ts < 24 * 3600 * 1000) {
+                  candidates.push({ id: `convdone-${m.id}`, type: 'success', title: 'Conversión acreditada',
+                      message: `+${formatMoney(m.amount, 'COP')} COP en tu saldo ACH.` });
+              }
           }
       }
 
@@ -441,7 +705,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       // lo que el usuario ya vio/borró.
       if (!seedDone) {
           const seedIds = Array.from(new Set([...seen, ...candidates.map(c => c.id)])).slice(-400);
-          updateUserProfile(currentUser.id, { notifiedEvents: seedIds });
+          // raw_data-only write: no lo rechaza el candado de columnas sensibles.
+          updateUserRawData(currentUser.id, { notifiedEvents: seedIds }).catch(() => {});
           return;
       }
 
@@ -452,11 +717,21 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       const newNotifs = [...stamped, ...existingNotifs].slice(0, 50);
       const newSeen = Array.from(new Set([...notifiedEvents, ...fresh.map(c => c.id)])).slice(-400);
       // Una sola escritura (notificaciones + eventos avisados) para no pisar
-      // una con la otra.
-      updateUserProfile(currentUser.id, { notifications: newNotifs, notifiedEvents: newSeen });
+      // una con la otra. raw_data-only → sobrevive el candado de saldos.
+      updateUserRawData(currentUser.id, { notifications: newNotifs, notifiedEvents: newSeen }).catch(() => {});
+
+      // Depósito USDT nuevo → CELEBRACIÓN (cuadro verde + cha-ching), sin
+      // importar en qué pantalla esté el cliente ni qué camino lo acreditó
+      // (vigilante, botón Verificar, otra pestaña). Dedupe por notifiedEvents:
+      // sale UNA sola vez por depósito.
+      const freshDeposit: any = fresh.find(c => c.id.startsWith('usdtin-') && Number((c as any).amount ?? 0) > 0);
+      if (freshDeposit && !recentlyCelebrated(Number(freshDeposit.amount))) {
+          celebrateDeposit(Number(freshDeposit.amount));
+          lastCelebrationRef.current = { amount: Number(freshDeposit.amount), at: Date.now() };
+      }
 
       // El sonido se puede silenciar en Ajustes → Notificaciones (notifSound).
-      if (cuAny?.notifSound !== false) playNotifSound();
+      if (!freshDeposit && cuAny?.notifSound !== false) playNotifSound();
       setBellAnim(true);
       setTimeout(() => setBellAnim(false), 1200);
       showToast(`🔔 ${fresh[0].title}: ${fresh[0].message}`, 5000);
@@ -493,7 +768,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const mouvCfg: { feePct: number; mouvOn: boolean } | null = null;
   const isMouvPair = false;
 
-  const conversionRate = getRate(sourceCurr, targetCurr);
+  // Regla de HUB (modelo stablecoin): toda conversión pasa por USDT — nunca
+  // fiat→fiat directo. Si la tasa directa no está configurada (ej. COP→USD),
+  // se usa la inversa de la que sí existe (USD→COP).
+  const conversionRateFwd = getRate(sourceCurr, targetCurr);
+  const conversionRateInv = getRate(targetCurr, sourceCurr);
+  const conversionRate = conversionRateFwd || (conversionRateInv ? 1 / conversionRateInv : 0);
   const isLiveMouvRate = false;
   const notifications = getUserNotifications();
   const unreadNotifications = notifications.filter(n => !n.read).length;
@@ -718,6 +998,20 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       return false;
   };
 
+  // Abrir el flujo de ENVIAR dinero — exige 2FA (verificación en dos pasos)
+  // activa. Sin 2FA no se puede enviar: se avisa y se lleva a Ajustes.
+  const openSendMoney = (prefill?: () => void) => {
+      if (handleActionRestricted()) return;
+      if (mfaLoadingStatus) { showToast('Verificando tu seguridad… reintenta en un segundo.', 3000); return; }
+      if (!mfaEnrolled) {
+          showToast('Para enviar dinero primero activa la verificación en dos pasos (2FA) en Ajustes → Seguridad.', 8000, 'error');
+          setActiveView('settings');
+          return;
+      }
+      prefill?.();
+      setIsSendModalOpen(true);
+  };
+
   // ── Cargar USDT (Dólar digital): depósito on-chain vía GasFree ──
   // El USD de la app NO se carga por banco: se envía USDT (TRC-20) a la
   // dirección personal del cliente (gasfree get_or_create) y al
@@ -727,6 +1021,85 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const [usdtLoadErr, setUsdtLoadErr] = useState<string | null>(null);
   const [usdtLoadingAddr, setUsdtLoadingAddr] = useState(false);
   const [usdtVerifying, setUsdtVerifying] = useState(false);
+
+  // ── Archivo de wallets + generar nueva (MANUAL, nunca automático) ──
+  // La wallet NO cambia sola. Solo cambia si el usuario, a propósito, genera
+  // una nueva desde aquí — la actual pasa a "archivadas" y la nueva es
+  // principal. También puede ver sus wallets anteriores.
+  const [walletArchiveOpen, setWalletArchiveOpen] = useState(false);
+  const [walletArchive, setWalletArchive] = useState<{ current?: { address: string; index: number; balance: number | null }; archived: { address: string; index: number | null; at: string | null; reason: string; balance: number | null }[] } | null>(null);
+  const [walletArchiveLoading, setWalletArchiveLoading] = useState(false);
+  // Panel expandido de una wallet archivada: sus movimientos + enviar.
+  const [archExpanded, setArchExpanded] = useState<string | null>(null);
+  const [archMoves, setArchMoves] = useState<{ loading: boolean; items: any[]; explorer?: string }>({ loading: false, items: [] });
+  const [archSend, setArchSend] = useState<{ open: boolean; to: string; amount: string; otp: string; busy: boolean; error: string }>({ open: false, to: '', amount: '', otp: '', busy: false, error: '' });
+  const [archQuote, setArchQuote] = useState<{ loading: boolean; totalFeeUsdt?: number; transferFeeUsdt?: number; activateFeeUsdt?: number; maxSendable?: number; balance?: number; error?: string }>({ loading: false });
+  const openArchSend = async (index: number | null) => {
+    // Abre el formulario y COTIZA: saldo, comisión GasFree y máximo enviable.
+    // Se pre-llena el monto con el máximo (saldo − comisión) para no adivinar.
+    setArchSend(s => ({ ...s, open: true, error: '', to: walletArchive?.current?.address ?? '' }));
+    if (index == null) return;
+    setArchQuote({ loading: true });
+    try {
+      const q = await callGasfree({ action: 'my_archived_quote', userId: currentUser?.id, index });
+      if (q?.error) { setArchQuote({ loading: false, error: q.error }); return; }
+      setArchQuote({ loading: false, totalFeeUsdt: q.totalFeeUsdt, transferFeeUsdt: q.transferFeeUsdt, activateFeeUsdt: q.activateFeeUsdt, maxSendable: q.maxSendable, balance: q.balance });
+      setArchSend(s => ({ ...s, amount: q.maxSendable != null ? String(q.maxSendable) : s.amount }));
+    } catch { setArchQuote({ loading: false, error: 'No se pudo cotizar la comisión.' }); }
+  };
+  const toggleArchWallet = async (address: string) => {
+    if (archExpanded === address) { setArchExpanded(null); return; }
+    setArchExpanded(address);
+    setArchSend({ open: false, to: '', amount: '', otp: '', busy: false, error: '' });
+    setArchMoves({ loading: true, items: [] });
+    try {
+      const d = await callGasfree({ action: 'my_address_movements', userId: currentUser?.id, address });
+      setArchMoves({ loading: false, items: Array.isArray(d?.movements) ? d.movements : [], explorer: d?.explorer });
+    } catch { setArchMoves({ loading: false, items: [] }); }
+  };
+  const submitArchivedSend = async (index: number | null, maxBal: number | null) => {
+    if (archSend.busy || !currentUser?.id) return;
+    if (index == null) { setArchSend(s => ({ ...s, error: 'No se pudo identificar esta wallet.' })); return; }
+    const amt = Number(String(archSend.amount).replace(',', '.'));
+    if (!(amt > 0)) { setArchSend(s => ({ ...s, error: 'Ingresa un monto válido.' })); return; }
+    if (maxBal != null && amt > maxBal + 1e-9) { setArchSend(s => ({ ...s, error: `El máximo disponible es ${maxBal.toFixed(2)} USDT.` })); return; }
+    if (!archSend.to.trim()) { setArchSend(s => ({ ...s, error: 'Ingresa la dirección destino.' })); return; }
+    setArchSend(s => ({ ...s, busy: true, error: '' }));
+    try {
+      const d = await callGasfree({ action: 'my_archived_send', userId: currentUser.id, index, toAddress: archSend.to.trim(), amount: amt, otp: archSend.otp.trim() || undefined });
+      if (d?.error) { setArchSend(s => ({ ...s, busy: false, error: d.error })); return; }
+      showToast('✅ Envío realizado desde la wallet archivada.', 6000);
+      setArchSend({ open: false, to: '', amount: '', otp: '', busy: false, error: '' });
+      openWalletArchive(); // recargar saldos
+    } catch { setArchSend(s => ({ ...s, busy: false, error: 'Error de red. Intenta de nuevo.' })); }
+  };
+  const [regenConfirmOpen, setRegenConfirmOpen] = useState(false);
+  const [regenBusy, setRegenBusy] = useState(false);
+  const [regenError, setRegenError] = useState<string | null>(null);
+  const openWalletArchive = async () => {
+    setWalletArchiveOpen(true);
+    setWalletArchiveLoading(true);
+    try {
+      const d = await callGasfree({ action: 'my_wallet_archive', userId: currentUser?.id });
+      setWalletArchive(d && !d.error ? d : { archived: [] });
+    } catch { setWalletArchive({ archived: [] }); }
+    setWalletArchiveLoading(false);
+  };
+  const doRegenerateWallet = async () => {
+    if (regenBusy || !currentUser?.id) return;
+    setRegenBusy(true); setRegenError(null);
+    try {
+      const d = await callGasfree({ action: 'my_wallet_regenerate', userId: currentUser.id });
+      if (!d?.ok) { setRegenError(d?.error || 'No se pudo generar la nueva wallet. Intenta de nuevo.'); setRegenBusy(false); return; }
+      if (d.address) setUsdtAddr(d.address);
+      setRegenConfirmOpen(false);
+      setWalletArchive(null); // se recargará con la nueva actual + la anterior archivada
+      showToast('✅ Nueva wallet generada. La anterior quedó en tu archivo.', 6000);
+      if (currentUser?.id) refreshGasfreeBal(currentUser.id);
+      refreshData?.();
+    } catch { setRegenError('Error de red. Intenta de nuevo.'); }
+    setRegenBusy(false);
+  };
 
   // JWT de la sesión propia — lo exige gasfree para las acciones "my_*"
   // (nadie más que el propio usuario, ni con la llave pública, puede
@@ -746,6 +1119,28 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
       const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
       const r = await fetch(`${SURL}/functions/v1/gasfree`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: myAuthHeader() },
+          body: JSON.stringify(payload),
+      });
+      return r.json();
+  };
+  // Cotizar la comisión del riel al entrar a Confirmar (paso 4 · banco).
+  useEffect(() => {
+      if (!(sendStep === 4 && sendMode === 'bank' && currentUser?.id)) { setPayoutQuote(null); return; }
+      const isBrebM = (sendContact?.destKind ?? (sendSourceRail === 'COP_BREB' ? 'breb' : 'ach')) === 'breb';
+      const amt = getRawAmount(sendForm.amount);
+      setPayoutQuote({ loading: true });
+      callMouvProxy({ action: 'payout_quote', userId: currentUser.id, rail: isBrebM ? 'BREB' : 'ACH', amount: amt, ...(isBrebM ? { keyValue: sendContact?.brebKey ?? sendForm.accountNumber } : {}) })
+          .then(r => setPayoutQuote(r?.ok ? { loading: false, feeCop: Number(r.feeCop ?? 0), provider: isBrebM ? 'mouv' : 'finity' } : { loading: false, error: r?.message ?? 'No se pudo cotizar' }))
+          .catch(e => setPayoutQuote({ loading: false, error: String(e?.message ?? e) }));
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sendStep, sendMode, currentUser?.id]);
+
+  const callMouvProxy = async (payload: Record<string, unknown>) => {
+      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+      const r = await fetch(`${SURL}/functions/v1/mouv-proxy`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: myAuthHeader() },
           body: JSON.stringify(payload),
@@ -774,11 +1169,36 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // de lo que en verdad tenía). Mismo patrón que mouvBal para Peso Lincoin.
   const [gasfreeBal, setGasfreeBal] = useState<number | null>(null);
   const [gasfreeBalChecked, setGasfreeBalChecked] = useState(false);
+  // Última lectura del saldo on-chain + última celebración disparada — para
+  // la CELEBRACIÓN TEMPRANA: apenas el saldo sube (segundos después de que
+  // envían), sale el cuadro verde, sin esperar la acreditación completa.
+  const gasfreeBalPrevRef = useRef<number | null>(null);
+  const lastCelebrationRef = useRef<{ amount: number; at: number } | null>(null);
+  // ¿Ya se celebró este depósito hace un momento (misma plata, < 3 min)?
+  // Evita el cuadro verde DOBLE: uno al detectar la llegada y otro al
+  // acreditarse en el libro.
+  const recentlyCelebrated = (amount: number) => {
+      const lc = lastCelebrationRef.current;
+      return !!lc && Date.now() - lc.at < 3 * 60 * 1000 && Math.abs(lc.amount - amount) <= Math.max(0.05, amount * 0.02);
+  };
   const refreshGasfreeBal = async (uid: string) => {
       setGasfreeBalChecked(false);
       try {
           const d = await callGasfree({ action: 'my_status', userId: uid });
-          setGasfreeBal(typeof d?.balance === 'number' ? d.balance : null);
+          const bal = typeof d?.balance === 'number' ? d.balance : null;
+          // ── Celebración TEMPRANA: el saldo on-chain SUBIÓ desde la última
+          // lectura → llegó una recarga a la wallet. Se celebra YA (cuadro
+          // verde + cha-ching); la acreditación al libro sigue su curso y su
+          // celebración posterior se deduplica contra esta.
+          const prev = gasfreeBalPrevRef.current;
+          if (bal != null && prev != null && bal - prev > 0.001) {
+              const delta = parseFloat((bal - prev).toFixed(2));
+              celebrateDeposit(delta);
+              showDepositReceived(delta);   // cuadro esquina: "Recibido → acreditando…"
+              lastCelebrationRef.current = { amount: delta, at: Date.now() };
+          }
+          if (bal != null) gasfreeBalPrevRef.current = bal;
+          setGasfreeBal(bal);
       } finally {
           setGasfreeBalChecked(true);
       }
@@ -796,25 +1216,39 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // el saldo y "Movimientos de esta cuenta" se actualizan solos apenas
   // llega el USDT, sin que el cliente tenga que recargar la página.
   useEffect(() => {
-      // Se vigila la llegada de depósitos tanto en el DETALLE de la billetera
-      // USDT como en el INICIO (donde está la tarjeta USDT) — así el saldo se
-      // actualiza solo sin que el cliente tenga que recargar la página.
+      // Se vigila la llegada de depósitos en el DETALLE de la billetera USDT,
+      // en el INICIO y también DENTRO de la Mesa OTC (el cliente suele estar
+      // ahí esperando sus USDT para convertir — antes ahí no salía la
+      // notificación de "Depósito confirmado").
       const onUsdDetail = activeView === 'wallet-detail' && selectedWalletCode === 'USD';
       const onDashboard = activeView === 'dashboard';
-      if (!((onUsdDetail || onDashboard) && currentUser?.id)) return;
+      const onConverter = activeView === 'mouv';
+      if (!((onUsdDetail || onDashboard || onConverter) && currentUser?.id)) return;
       const uid = currentUser.id;
       let alive = true;
       const poll = async () => {
           await refreshGasfreeBal(uid);
+          // Nunca dos verificaciones EN PARALELO (poll + botón "Verificar" +
+          // cambio de vista): el servidor además tiene candado CAS, pero
+          // evitar la carrera desde aquí ahorra llamadas y toasts raros.
+          if (verifyDepositInFlight.current) return;
+          verifyDepositInFlight.current = true;
           try {
               const d = await callGasfree({ action: 'my_verify_deposit', userId: uid });
               if (!alive) return;
               const credited = Number(d?.credited ?? 0);
               if (d?.synced && credited > 0) {
                   refreshData?.();
-                  showToast(`✅ Depósito detectado: +${credited.toLocaleString('en-US')} USDT`);
+                  refreshGasfreeBal(uid);
+                  if (!recentlyCelebrated(credited)) {
+                      celebrateDeposit(credited);
+                      lastCelebrationRef.current = { amount: credited, at: Date.now() };
+                  }
+                  markDepositCredited(credited);   // cuadro esquina → "Acreditado" y se oculta solo
+                  showToast(`✅ Depósito acreditado: +${credited.toLocaleString('en-US')} USDT en tu Dólar digital`);
               }
           } catch { /* silencioso — es un poll en segundo plano, no una acción del usuario */ }
+          finally { verifyDepositInFlight.current = false; }
       };
       poll(); // una verificación inmediata al entrar/cambiar de vista
       const t = setInterval(poll, 15000);
@@ -822,9 +1256,170 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeView, selectedWalletCode, currentUser?.id]);
 
+  // ── Conciliación ACH sin webhook ──
+  // Al abrir Movimientos o la billetera COP, si hay dispersiones ACH en
+  // 'Procesando' se le pregunta al riel su estado real y se actualizan
+  // (Completado, o Rechazado con reembolso). Máximo una vez por minuto.
+  const achReconcileAtRef = useRef(0);
+  useEffect(() => {
+      const relevant = activeView === 'movements' || (activeView === 'wallet-detail' && selectedWalletCode === 'COP') || activeView === 'dashboard';
+      if (!relevant || !currentUser?.id) return;
+      const hasProcessing = (movements || []).some((t: any) => t.type === 'dispersion' && t.status === 'Procesando');
+      if (!hasProcessing) return;
+      if (Date.now() - achReconcileAtRef.current < 60000) return;
+      achReconcileAtRef.current = Date.now();
+      callMouvProxy({ action: 'reconcile_ach', userId: currentUser.id })
+          .then(r => {
+              const changed = (r?.results ?? []).filter((x: any) => x.result === 'completed' || x.result === 'refunded');
+              if (changed.length > 0) {
+                  refreshData?.();
+                  if (changed.some((x: any) => x.result === 'completed')) showToast('✅ Tu dispersión ACH fue completada por el banco.');
+                  if (changed.some((x: any) => x.result === 'refunded')) showToast('Una dispersión ACH fue devuelta por el banco — el monto y la comisión fueron reembolsados a tu saldo.', 8000);
+              }
+          })
+          .catch(() => { /* silencioso */ });
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeView, selectedWalletCode, currentUser?.id]);
+
+  // ── Conciliación Bre-B (Mouv) sin webhook ──
+  // El 200 de Mouv al enviar sólo significa "aceptada": puede DEVOLVERSE
+  // después. Se consulta el estado real de las dispersiones Bre-B en
+  // 'Procesando', y también de las 'Completado' recientes (por si el banco
+  // destino las devolvió más tarde) para reembolsar aunque ya se vieran
+  // completadas. Máximo una vez por minuto, desde las vistas relevantes.
+  const brebReconcileAtRef = useRef(0);
+  useEffect(() => {
+      const relevant = activeView === 'movements' || (activeView === 'wallet-detail' && (selectedWalletCode === 'COP' || selectedWalletCode === 'COP_BREB')) || activeView === 'dashboard';
+      if (!relevant || !currentUser?.id) return;
+      const fiveDaysAgo = Date.now() - 5 * 24 * 60 * 60 * 1000;
+      const needsCheck = (movements || []).some((t: any) => {
+          if (t.type !== 'dispersion' || t.currency !== 'COP_BREB') return false;
+          if (t.status === 'Procesando') return true;
+          // 'Completado' reciente: vigilar por una devolución tardía.
+          if (t.status === 'Completado') { const ts = t.createdAt ? new Date(t.createdAt).getTime() : 0; return ts >= fiveDaysAgo; }
+          return false;
+      });
+      if (!needsCheck) return;
+      if (Date.now() - brebReconcileAtRef.current < 60000) return;
+      brebReconcileAtRef.current = Date.now();
+      callMouvProxy({ action: 'reconcile_breb', userId: currentUser.id })
+          .then(r => {
+              const changed = (r?.results ?? []).filter((x: any) => x.result === 'completed' || x.result === 'refunded');
+              if (changed.length > 0) {
+                  refreshData?.();
+                  if (changed.some((x: any) => x.result === 'completed')) showToast('✅ Tu envío Bre-B fue confirmado.');
+                  if (changed.some((x: any) => x.result === 'refunded')) showToast('Un envío Bre-B fue devuelto — el monto y la comisión fueron reembolsados a tu saldo.', 8000);
+              }
+          })
+          .catch(() => { /* silencioso */ });
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeView, selectedWalletCode, currentUser?.id]);
+
+  // ── Conciliación de cobros por link (recaudo Finity) ──
+  // Si hay cobros por link 'Pendiente', se le pregunta a Finity (por sus
+  // movimientos) si la recarga ya llegó; al confirmarse se acredita el riel
+  // ACH. Sin webhook. Máximo una vez por minuto, desde las vistas relevantes.
+  const payinReconcileAtRef = useRef(0);
+  useEffect(() => {
+      const relevant = activeView === 'movements' || activeView === 'wallet-detail' || activeView === 'dashboard';
+      if (!relevant || !currentUser?.id) return;
+      const hasPending = (movements || []).some((t: any) => t.type === 'load' && t.status === 'Pendiente' && (t.source === 'finity_payment_link' || t.raw_data?.source === 'finity_payment_link'));
+      if (!hasPending) return;
+      if (Date.now() - payinReconcileAtRef.current < 60000) return;
+      payinReconcileAtRef.current = Date.now();
+      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+      fetch(`${SURL}/functions/v1/finity-proxy`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: myAuthHeader() },
+          body: JSON.stringify({ action: 'reconcile_payin', user_id: currentUser.id }),
+      }).then(res => res.json()).then(r => {
+          if (r?.credited > 0) { refreshData?.(); showToast(`✅ Recibiste un cobro por link · +acreditado a tu cuenta ACH`); }
+      }).catch(() => { /* silencioso */ });
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeView, selectedWalletCode, currentUser?.id, movements]);
+
+  // ── Verificación de cuentas ACH en SEGUNDO PLANO ──
+  // Antes la aprobación del banco solo se sincronizaba al entrar a
+  // Beneficiarios. Ahora, si hay cuentas ACH "en validación", se consulta
+  // la lista del proveedor cada minuto desde CUALQUIER pantalla; al
+  // aprobarse se persiste y el observador dispara la notificación
+  // "Cuenta aprobada" — sin que el cliente tenga que ir a Beneficiarios.
+  const achContactSyncAtRef = useRef(0);
+  useEffect(() => {
+      if (!currentUser?.id) return;
+      const cuAny: any = currentUser;
+      const bankList: any[] = Array.isArray(cuAny?.raw_data?.mouvContacts) ? cuAny.raw_data.mouvContacts
+          : (Array.isArray(cuAny?.mouvContacts) ? cuAny.mouvContacts : []);
+      const pending = bankList.filter((c: any) => c?.accountKind !== 'wallet' && (c.country ?? 'Colombia') === 'Colombia' && c.destKind !== 'breb' && c.status === 'en_proceso');
+      if (pending.length === 0) return;
+      if (Date.now() - achContactSyncAtRef.current < 60000) return;
+      achContactSyncAtRef.current = Date.now();
+      const uid = currentUser.id;
+      (async () => {
+          try {
+              const r: any = await callMouv('external_accounts', uid);
+              const d: any = r?.data ?? {};
+              const rows: any[] = Array.isArray(d) ? d : Array.isArray(d.data) ? d.data : Array.isArray(d.items) ? d.items
+                  : Array.isArray(d.accounts) ? d.accounts : Array.isArray(d.external_accounts) ? d.external_accounts
+                  : Array.isArray(d.results) ? d.results : [];
+              if (!rows.length) return;
+              const norm = (v: unknown): string | null => {
+                  const s = String(v ?? '').toLowerCase();
+                  if (!s) return null;
+                  if (/aprob|approv|active|activa|complete|enabled|verified|success/.test(s)) return 'aprobada';
+                  if (/rechaz|reject|denied|declin|fail/.test(s)) return 'rechazada';
+                  if (/proces|pend|review|revis|created|unconfirmed/.test(s)) return 'en_proceso';
+                  return null;
+              };
+              let changed = false;
+              const next = bankList.map((c: any) => {
+                  if (!pending.some(p => p.id === c.id)) return c;
+                  const cid = String(c.finityId ?? c.mouvId ?? '');
+                  const row = rows.find((x: any) => {
+                      const rid = String(x.id ?? x.external_account_id ?? x.account_id ?? '');
+                      if (cid && rid && rid === cid) return true;
+                      const accDigits = String(x.account_number ?? x.accountNumber ?? x.number ?? x.account ?? '').replace(/\D/g, '');
+                      const cDigits = String(c.accountNumber ?? '').replace(/\D/g, '');
+                      return !!accDigits && !!cDigits && (accDigits === cDigits || (accDigits.length >= 4 && cDigits.endsWith(accDigits.slice(-4))));
+                  });
+                  if (!row) return c;
+                  const st = norm(row.verification_status ?? row.status ?? row.estado ?? row.state);
+                  if (st && st !== c.status) { changed = true; return { ...c, status: st }; }
+                  return c;
+              });
+              if (changed) {
+                  const ok = await updateUserRawData(uid, { mouvContacts: next });
+                  // refreshData → el observador de contactos genera la
+                  // notificación "Cuenta aprobada" + toast + campana.
+                  if (ok) refreshData?.();
+              }
+          } catch { /* silencioso — se reintenta en el próximo minuto */ }
+      })();
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id, currentUser?.raw_data, activeView, movements]);
+
+  // ── Reanudar conversiones pendientes (AUTOPILOTO del servidor) ──
+  // Si el cliente cerró la app a mitad de conversión, al volver se le da
+  // un "kick" al autopiloto para que la termine en segundo plano.
+  const convertKickAtRef = useRef(0);
+  useEffect(() => {
+      if (!currentUser?.id) return;
+      const pend = (movements || []).find((t: any) => t.type === 'convert' && t.status === 'Pendiente');
+      if (!pend) return;
+      if (Date.now() - convertKickAtRef.current < 60000) return;
+      convertKickAtRef.current = Date.now();
+      callGasfree({ action: 'my_convert_kick', userId: currentUser.id, txId: String(pend.id) }).catch(() => {});
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [movements, currentUser?.id]);
+
   // Saldo a MOSTRAR para una billetera: para USD es el real de GasFree
   // (blockchain); para las demás, el saldo interno de siempre.
-  const displayBalance = (code: string): number => (code === 'USD' ? (gasfreeBal ?? getBalance('USD')) : getBalance(code));
+  // USD (Dólar digital): el saldo REAL es el on-chain de GasFree una vez leído
+  // (gasfreeBal). Mientras carga, se usa el de la BD. No se usa Math.max para no
+  // "congelar" un valor sobre-acreditado por pruebas — la verdad es la cadena.
+  const displayBalance = (code: string): number =>
+    code === 'USD' ? (gasfreeBalChecked ? Number(gasfreeBal ?? 0) : Number(getBalance('USD') ?? 0)) : getBalance(code);
 
   const openUsdtDeposit = async () => {
       if (!currentUser?.id) return;
@@ -849,20 +1444,27 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   };
 
   const verifyUsdtDeposit = async () => {
-      if (!currentUser?.id || usdtVerifying) return;
+      if (!currentUser?.id || usdtVerifying || verifyDepositInFlight.current) return;
       setUsdtVerifying(true);
+      verifyDepositInFlight.current = true;
       try {
           const d = await callGasfree({ action: 'my_verify_deposit', userId: currentUser.id });
           const credited = Number(d?.credited ?? 0);
           if (d?.synced && credited > 0) {
-              // El servidor ya acreditó balances.USD — solo refrescamos la vista
+              // El servidor ya acreditó balances.USD — refrescamos la vista + saldo on-chain
               refreshData?.();
-              showToast(`✅ Depósito detectado: +${credited.toLocaleString('en-US')} USDT en tu Dólar digital`);
+              if (currentUser?.id) refreshGasfreeBal(currentUser.id);
+              if (!recentlyCelebrated(credited)) {
+                  celebrateDeposit(credited);
+                  lastCelebrationRef.current = { amount: credited, at: Date.now() };
+              }
+              markDepositCredited(credited);   // cuadro esquina → "Acreditado"
+              showToast(`✅ Depósito acreditado: +${credited.toLocaleString('en-US')} USDT en tu Dólar digital`);
               setUsdtModalOpen(false);
           } else if (d?.error) {
-              showToast(`Error verificando: ${d.error}`, 5000, 'error');
+              showToast(`Error verificando: ${d.error}`, 6000, 'error');
           } else {
-              showToast('Aún no se detecta el depósito. La red puede tardar unos minutos — vuelve a verificar.');
+              showToast(d?.reason || 'Aún no se detecta el depósito. La red puede tardar unos minutos — vuelve a verificar.', 8000);
           }
       } catch (e: any) {
           showToast(`Error verificando: ${String(e?.message ?? e)}`, 5000, 'error');
@@ -914,6 +1516,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           'COP': 'Colombia', 'CLP': 'Chile', 'PEN': 'Perú',
           'MXN': 'México', 'BRL': 'Brasil', 'VES': 'Venezuela'
       };
+      // Colombia usa el modal oscuro de método (PSE) rediseñado.
+      if (walletCode === 'COP') { setCargarCopOpen(true); return; }
       if (countryMap[walletCode]) {
           setSelectedCountry(countryMap[walletCode]);
           setLoadStep(2);
@@ -978,11 +1582,13 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
   const handleConvertSubmit = () => {
       if (!rawAmount || rawAmount <= 0) return;
+      if (convertingRef.current || isConverting) return; // candado síncrono anti doble-conversión
       const currentBalance = getBalance(sourceCurr);
       if (currentBalance < rawAmount) {
           showToast(`Saldo insuficiente en ${sourceCurr}.`, 3000, 'error');
           return;
       }
+      convertingRef.current = true;
       setIsConverting(true);
       const convTimeout = new Promise<{ error: string }>(resolve =>
           setTimeout(() => resolve({ error: 'Tiempo de espera agotado. Intenta de nuevo.' }), 12000)
@@ -991,6 +1597,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           performConversion(sourceCurr, targetCurr, rawAmount, finalAmount, finalFee, appliedCoupon?.code),
           convTimeout,
       ]).then((result) => {
+          convertingRef.current = false;
           setIsConverting(false);
           if (result?.error) {
               showToast(result.error, 4000, 'error');
@@ -998,7 +1605,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               closeConvertModal();
               showToast(`Conversión exitosa. Has recibido ${formatMoney(finalAmount, targetCurr)} ${targetCurr}`);
           }
-      }).catch(() => { setIsConverting(false); showToast('Error al procesar la conversión.', 4000, 'error'); });
+      }).catch(() => { convertingRef.current = false; setIsConverting(false); showToast('Error al procesar la conversión.', 4000, 'error'); });
   };
 
   const handleSendNext = () => {
@@ -1008,11 +1615,29 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               showToast("Por favor ingresa un monto válido.", 3000, 'error');
               return;
           }
-          const currentBalance = displayBalance(sendForm.destinationCurrency);
-          if (currentBalance < rawAmount) {
-              showToast(`Saldo insuficiente en ${sendForm.destinationCurrency === 'USD' ? 'USDT' : sendForm.destinationCurrency}.`, 3000, 'error');
+          // Mínimo por envío COP: $5.000 (los rieles lo exigen — Finity
+          // rechaza retiros ACH menores con "amount must be at least 5,000").
+          if (sendForm.destinationCurrency === 'COP' && rawAmount < 5000) {
+              showToast('El monto mínimo por envío es $5.000 COP.', 4000, 'error');
               return;
           }
+          // COP: la billetera ya NO se elige en el paso 1 — el método del paso
+          // 2 la define. Aquí solo se valida que ALGUNA de las 3 cuentas
+          // pueda cubrir el monto (el paso 2 exige monto + comisión por método).
+          const currentBalance = sendForm.destinationCurrency === 'COP'
+              ? Math.max(getBalance('COP'), getBalance('COP_BREB'), getBalance('COP_ACH'))
+              : displayBalance(sendForm.destinationCurrency);
+          if (currentBalance < rawAmount) {
+              showToast(sendForm.destinationCurrency === 'COP'
+                  ? 'Saldo insuficiente: ninguna de tus cuentas COP cubre ese monto.'
+                  : `Saldo insuficiente en ${sendForm.destinationCurrency === 'USD' ? 'USDT' : sendForm.destinationCurrency}.`, 4000, 'error');
+              return;
+          }
+          // Beneficiario preseleccionado (botón "Enviar" de Beneficiarios):
+          // ya se sabe destino y método — del monto directo a confirmar.
+          if (sendContact && sendMode && sendForm.beneficiaryName) { setSendStep(4); return; }
+          // USDT: único método es wallet — directo al destinatario.
+          if (sendForm.destinationCurrency === 'USD') { setSendMode('wallet'); setSendStep(3); return; }
           setSendStep(2); // → method selection
       } else if (sendStep === 3 && sendMode === 'bank') {
           if (!sendForm.beneficiaryName || !sendForm.documentNumber || !sendForm.accountNumber) {
@@ -1027,14 +1652,36 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       const upper = code.toUpperCase();
       setPayRecipientCode(upper);
       if (upper.length < 4) { setPayRecipientUser(null); setPayLookupStatus('idle'); return; }
+      // 1) Escaneo local (rápido; funciona para admins y antes de endurecer RLS).
       const allUsers = getAllUsers();
       const found = allUsers.find(u => u.ownReferralCode?.toUpperCase() === upper && u.id !== currentUser?.id);
-      if (found) { setPayRecipientUser(found); setPayLookupStatus('found'); }
-      else { setPayRecipientUser(null); setPayLookupStatus('not_found'); }
+      if (found) { setPayRecipientUser(found); setPayLookupStatus('found'); return; }
+      // 2) Con RLS estricta el cliente ya no ve a otros usuarios → se resuelve
+      //    en el servidor (solo devuelve id + nombre, sin saldos ni PII).
+      (async () => {
+        try {
+          const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+          const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+          if (!SURL) { setPayRecipientUser(null); setPayLookupStatus('not_found'); return; }
+          const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: myAuthHeader() },
+            body: JSON.stringify({ action: 'lookup_recipient', code: upper }),
+          }).then(x => x.json()).catch(() => null);
+          if (r?.found && r.id && r.id !== currentUser?.id) {
+            setPayRecipientUser({ id: r.id, name: r.name, ownReferralCode: upper } as any);
+            setPayLookupStatus('found');
+          } else {
+            setPayRecipientUser(null); setPayLookupStatus('not_found');
+          }
+        } catch { setPayRecipientUser(null); setPayLookupStatus('not_found'); }
+      })();
   };
 
   const executePay = async () => {
       if (!payRecipientUser) return;
+      if (payingRef.current || isPaySending) return; // candado síncrono anti doble-envío
+      payingRef.current = true;
       setIsPaySending(true);
       try {
           const timeout = new Promise<{ error: string }>(resolve =>
@@ -1047,7 +1694,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           if (result?.error) { showToast(result.error, 4000, 'error'); }
           else { setSendStep(4); }
       } catch { showToast('Error al procesar el pago', 4000, 'error'); }
-      finally { setIsPaySending(false); }
+      finally { payingRef.current = false; setIsPaySending(false); }
   };
 
   const handlePaySubmit = () => {
@@ -1065,10 +1712,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       if (payVerifyLoading || payVerifyCode.length !== 6 || !payRecipientUser) return;
       setPayVerifyLoading(true);
       setPayVerifyError('');
-      const { ok, error: mfaErr } = await verifyMFAEnrollment(mfaFactorId ?? 'local', payVerifyCode, mfaTotpSecret);
+      const ok = await verifyMfaCode(payVerifyCode);   // local o server (secreto cifrado)
       if (!ok) {
           setPayVerifyLoading(false);
-          setPayVerifyError(mfaErr || 'Código incorrecto. Intenta nuevamente.');
+          setPayVerifyError('Código incorrecto. Intenta nuevamente.');
           setPayVerifyCode('');
           return;
       }
@@ -1103,70 +1750,88 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       });
   };
 
+  // Puerta 2FA de la CONFIRMACIÓN: el botón "Confirmar" llama aquí. Si el
+  // usuario tiene 2FA activo (obligatorio para enviar), pide el código antes
+  // de ejecutar el movimiento. Solo tras validarlo se corre handleSendSubmit.
+  const requestSendConfirm = () => {
+      if (isSending || sendingRef.current || mouvUnknown) return;
+      if (mfaEnrolled && (mfaTotpSecret || mfaFactorId)) {
+          setSendOtpCode(''); setSendOtpError(''); setSendOtpOpen(true);
+          return;
+      }
+      // Sin 2FA no debería llegar acá (el envío está gateado), pero por
+      // seguridad se ejecuta el flujo normal si por algún motivo no lo tiene.
+      handleSendSubmit();
+  };
+
+  const confirmSendOtp = async () => {
+      if (sendOtpLoading || sendOtpCode.length !== 6) return;
+      setSendOtpLoading(true); setSendOtpError('');
+      try {
+          const ok = await verifyMfaCode(sendOtpCode);   // local o server (secreto cifrado)
+          if (!ok) { setSendOtpError('Código incorrecto. Intenta nuevamente.'); setSendOtpCode(''); return; }
+          sentOtpRef.current = sendOtpCode; // el servidor lo re-valida al mover el dinero
+          setSendOtpOpen(false); setSendOtpCode('');
+          handleSendSubmit();
+      } catch (e: any) {
+          setSendOtpError(e?.message || 'No se pudo verificar el código.');
+      } finally {
+          setSendOtpLoading(false);
+      }
+  };
+
   const handleSendSubmit = async () => {
       if (isSending || sendingRef.current || mouvUnknown) return;
       sendingRef.current = true;
       setIsSending(true);
       const amount = getRawAmount(sendForm.amount);
 
-      // ── Dispersión REAL vía Mouv (envíos COP a contacto aprobado) ──
-      // Contrato oficial: POST /v0/withdrawal-orders
-      //   { amount, currency: 'COP', destination_id: <mouvId del contacto> }
-      //   → 201 { id: 'po_...', state, costs: { commission, iva, total } }
-      // La orden se crea PRIMERO; el saldo interno solo se registra/debita
-      // si Mouv la acepta. Si Mouv falla o rechaza, NO se toca nada.
-      if (sendMode === 'bank' && sendForm.destinationCurrency === 'COP' && mouvDestId && currentUser?.id) {
-          // Regla de Mouv (validada por su API): mínimo 5.000 COP por dispersión
-          if (amount < 5000) {
-              sendingRef.current = false;
-              setIsSending(false);
-              showToast('El mínimo por transferencia bancaria en Colombia es 5.000 COP. Ajusta el monto.', 8000);
+      // ── Dispersión REAL vía Mouv (envíos COP a banco/llave) ──
+      // El riel lo determina el TIPO de destino: contacto Bre-B → payout_breb
+      // (debita COP_BREB) · contacto ACH/cuenta → payout_ach (debita COP_ACH).
+      // Todo el asentamiento (validar saldo interno → debitar → llamar a Mouv
+      // /transfers/send → REINTEGRAR si falla) lo hace el edge mouv-proxy, así
+      // que NUNCA queda saldo descontado sin transferencia.
+      if (sendMode === 'bank' && sendForm.destinationCurrency === 'COP' && currentUser?.id) {
+          const isBreb = (sendContact?.destKind ?? 'ach') === 'breb';
+          const rail = isBreb ? 'COP_BREB' : 'COP_ACH';
+          // Comisión estimada para el pre-chequeo de saldo. Bre-B = fijo $1.200
+          // ($800 de Mouv + $400 de utilidad); el 0,10% NO va aquí (ya se cobró
+          // en el cargue). ACH = fijo $2.500. Si el servidor ya cotizó
+          // (payoutQuote), se usa ese valor exacto.
+          const feeCop = isBreb
+              ? Number(payoutQuote?.feeCop ?? 1200)
+              : 2500;
+          if (getBalance(rail) < amount + feeCop) {
+              sendingRef.current = false; setIsSending(false);
+              showToast(`Saldo insuficiente en ${isBreb ? 'Bre-B' : 'ACH'}: necesitas ${(amount + feeCop).toLocaleString('es-CO')} COP (monto + comisión ${feeCop.toLocaleString('es-CO')}).`, 7000, 'error');
               return;
           }
+          const recipient = isBreb
+              ? { keyType: sendContact?.brebKeyType ?? 'celular', key: sendContact?.brebKey ?? sendContact?.accountNumber ?? sendForm.accountNumber, holderName: sendForm.beneficiaryName, documentNumber: sendForm.documentNumber, reference: sendForm.reason }
+              : { bankCode: sendContact?.bank ?? sendForm.bankName, accountType: (sendContact?.accountType === 'checking' ? 'corriente' : 'ahorros'), accountNumber: sendForm.accountNumber, documentType: sendForm.documentType, documentNumber: sendForm.documentNumber, holderName: sendForm.beneficiaryName, reference: sendForm.reason, ...(sendContact?.finityId ? { finityId: sendContact.finityId } : {}) };
           try {
-              // Sin carrera de abandono: si se corta la espera aquí, la petición
-              // sigue viva y la orden PUEDE crearse en Mouv igual (así se
-              // triplicó una dispersión). Se espera hasta 60 s con el botón
-              // bloqueado; si aun así no hay respuesta, el resultado es
-              // DESCONOCIDO y se bloquea el reintento hasta verificar.
               const r = await Promise.race([
-                  callMouv('create_withdrawal', currentUser.id, {
-                      data: { amount, currency: 'COP', destination_id: mouvDestId },
-                  }),
+                  callMouvProxy({ action: isBreb ? 'payout_breb' : 'payout_ach', userId: currentUser.id, amount, recipient, otp: sentOtpRef.current }),
                   new Promise<any>((_, rej) => setTimeout(() => rej(new Error('timeout')), 60000)),
               ]);
-              const od = (r?.data ?? {}) as any;
-              if (!r?.ok || !od.id) {
-                  // Rechazo EXPLÍCITO de Mouv (respuesta llegó): no se creó
-                  // orden, es seguro dejar reintentar.
-                  sendingRef.current = false;
-                  setIsSending(false);
-                  showToast(`La transferencia fue rechazada — no se debitó tu saldo. ${JSON.stringify(r?.data ?? r).slice(0, 180)}`, 10000, 'error');
+              if (r?.ok) {
+                  setSendResult({ ok: true, providerRef: r?.providerRef ?? null, feeCop: Number(r?.feeCop ?? (isBreb ? 1200 : 2500)), rail, at: new Date().toISOString() });
+                  sendingRef.current = false; setIsSending(false); setSendStep(5);
+                  refreshData?.();
                   return;
               }
-              // Orden aceptada por Mouv → registrar el envío con su referencia
-              await requestWithdrawal(
-                  amount,
-                  'COP',
-                  sendForm.bankName,
-                  sendForm.accountNumber,
-                  sendForm.beneficiaryName,
-                  `${sendForm.reason} · Orden ${od.id} · ${od.state ?? 'CONFIRMED'}`,
-                  sendForm.documentType,
-                  sendForm.documentNumber
-              );
-              sendingRef.current = false;
-              setIsSending(false);
+              // Falló o aún sin cablear → el edge YA reintegró el saldo (refunded).
+              sendingRef.current = false; setIsSending(false);
+              const msg = r?.message || r?.error || 'La dispersión no se pudo completar.';
+              setSendResult({ ok: false, message: String(msg), rail, at: new Date().toISOString() });
               setSendStep(5);
+              if (r?.refunded) refreshData?.();
               return;
-          } catch (e: any) {
-              // Timeout o error de red: NO sabemos si la orden se creó en
-              // Mouv. Prohibido reintentar a ciegas — se bloquea el botón
-              // hasta que el usuario verifique en su historial/portal.
-              sendingRef.current = false;
-              setIsSending(false);
-              setMouvUnknown(true);
-              showToast('La conexión tardó demasiado y NO se sabe si la orden se creó. Verifica en tu Historial antes de reintentar — NO vuelvas a enviar todavía.', 12000);
+          } catch {
+              // Timeout: NO sabemos si Mouv la creó → bloquear reintento.
+              sendingRef.current = false; setIsSending(false); setMouvUnknown(true);
+              showToast('La conexión tardó demasiado y NO se sabe si la dispersión salió. Revisa tu Historial antes de reintentar — NO vuelvas a enviar todavía.', 12000);
               return;
           }
       }
@@ -1180,7 +1845,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       if (sendMode === 'wallet' && currentUser?.id) {
           try {
               const resp = await Promise.race([
-                  callGasfree({ action: 'my_send', userId: currentUser.id, toAddress: sendForm.accountNumber, amount }),
+                  callGasfree({ action: 'my_send', userId: currentUser.id, toAddress: sendForm.accountNumber, amount, otp: sentOtpRef.current }),
                   new Promise<any>((_, rej) => setTimeout(() => rej(new Error('timeout')), 90000)),
               ]);
               if (resp?.error || !resp?.traceId) {
@@ -1191,6 +1856,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               }
               sendingRef.current = false;
               setIsSending(false);
+              setSendResult({ ok: true, providerRef: resp?.traceId ?? null, feeCop: 0, rail: 'USDT', at: new Date().toISOString() });
               setSendStep(5);
               const activateBreakdown = resp.activateFeeUsdt ? ` (incluye ${Number(resp.activateFeeUsdt).toFixed(2)} USDT de activación, solo esta vez)` : '';
               showToast(`✅ Enviado. Comisión GasFree cobrada: ${Number(resp.feeChargedUsdt ?? 0).toFixed(2)} USDT${activateBreakdown}`, 9000);
@@ -1217,10 +1883,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               sendForm.beneficiaryName,
               sendForm.reason,
               sendForm.documentType,
-              sendForm.documentNumber
+              sendForm.documentNumber,
+              sendForm.destinationCurrency === 'COP' ? sendSourceRail : undefined
           ),
           sendTimeout,
-      ]).then(() => { sendingRef.current = false; setIsSending(false); setSendStep(5); })
+      ]).then(() => { sendingRef.current = false; setIsSending(false); setSendResult({ ok: true, rail: sendForm.destinationCurrency === 'COP' ? sendSourceRail : sendForm.destinationCurrency, at: new Date().toISOString() }); setSendStep(5); })
         .catch(() => { sendingRef.current = false; setIsSending(false); showToast('Error al procesar el envío.', 4000, 'error'); });
   };
 
@@ -1243,6 +1910,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const closeConvertModal = () => {
       setIsConvertModalOpen(false);
       setConvertAmountStr('1.000');
+      setSourceCurr('USD'); setTargetCurr('COP');
       setShowConvertDetails(false);
       setAppliedCoupon(null);
       setCouponCode('');
@@ -1261,8 +1929,13 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       setCashReference('');
       setMouvDestId(null);
       setMouvUnknown(false);
+      setSendResult(null);
+      setSendOtpOpen(false); setSendOtpCode(''); setSendOtpError('');
       sendingRef.current = false;
       setContactSearch('');
+      setSendSourceRail('COP');
+      setSendContact(null);
+      setSendMethodSel(null);
   };
 
   const handleEditProfileClick = () => {
@@ -1325,16 +1998,61 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       || (t.type === 'convert' && (t.source === 'MOUV' || t.raw_data?.source === 'MOUV'));
 
   const baseCurrency = (c?: string) => String(c || '').split('_')[0];
+
+  // ── Metadatos de fila para las listas de movimientos ─────────────────
+  // Muchas transacciones vienen del servidor SIN initials/title/date (las
+  // inserta el edge). Aquí se derivan SIEMPRE: título por tipo, subtítulo
+  // (beneficiario en dispersiones/envíos, fecha en el resto) e ícono real
+  // en vez del cuadro gris con iniciales vacías.
+  const ROW_LABELS: Record<string, string> = {
+    convert: 'Conversión', load: 'Carga de saldo', send: 'Envío / Retiro',
+    pay_sent: 'Pago enviado', pay_received: 'Pago recibido',
+    otc_deposit: 'Depósito cripto', otc_withdraw: 'Retiro cripto',
+    dispersion: 'Dispersión', adjustment: 'Ajuste de saldo',
+    breb_move: 'Movimiento entre cuentas', rail_move: 'Movimiento a ACH', referral_payout: 'Bono de referido',
+  };
+  const txRowMeta = (tx: any): { title: string; sub: string; Icon: React.ElementType } => {
+    const title = tx.title || ROW_LABELS[tx.type] || tx.type;
+    const dt = tx.createdAt ? new Date(tx.createdAt) : null;
+    const dateStr = tx.date || (dt ? dt.toLocaleDateString('es-CO', { day: '2-digit', month: 'short' }) : '');
+    const beneficiary = tx.beneficiary || tx.recipient?.holderName || '';
+    const sub = beneficiary ? `a ${beneficiary}${dateStr ? ` · ${dateStr}` : ''}` : dateStr;
+    const Icon: React.ElementType =
+      tx.type === 'dispersion' ? (tx.currency === 'COP_ACH' ? Landmark : Zap)
+      : tx.type === 'load' ? ArrowDownLeft
+      : tx.type === 'send' || tx.type === 'pay_sent' ? Send
+      : tx.type === 'pay_received' || tx.type === 'referral_payout' ? ArrowDownLeft
+      : tx.type === 'convert' ? RefreshCw
+      : tx.type === 'breb_move' ? ArrowLeftRight
+      : tx.type === 'adjustment' ? Wallet
+      : tx.type === 'otc_deposit' ? ArrowDownLeft
+      : tx.type === 'otc_withdraw' ? Send
+      : ArrowLeftRight;
+    return { title, sub, Icon };
+  };
   const getFilteredMovements = (walletCode?: string | null, opts?: { full?: boolean }) => {
       let filtered = movements;
-      if (walletCode) filtered = filtered.filter(tx => tx.currency === walletCode);
+      // El detalle de una moneda agrupa TODOS sus rieles: COP incluye Saldo
+      // Lincoin (COP), Bre-B (COP_BREB) y ACH (COP_ACH); USD incluye USDT
+      // (USD/USDT_TRON). Sin esto, el detalle COP solo mostraba Saldo Lincoin.
+      if (walletCode) {
+          const group = walletCode === 'COP' ? ['COP', 'COP_BREB', 'COP_ACH']
+              : walletCode === 'USD' ? ['USD', 'USDT', 'USDT_TRON']
+              : [walletCode];
+          filtered = filtered.filter(tx => group.includes(String(tx.currency)) || group.includes(String(tx.currency || '').split('_')[0]));
+      }
       if (movementsTab === 'income') filtered = filtered.filter(tx => tx.type === 'load' || tx.type === 'receive' || tx.type === 'convert' || tx.type === 'pay_received' || tx.type === 'referral_payout' || tx.type === 'referral_commission');
       else if (movementsTab === 'expense') filtered = filtered.filter(tx => tx.type === 'send' || tx.type === 'pay_sent');
       // Filtros avanzados (solo en el Historial completo): estado, moneda,
       // rango de fechas y buscador.
       if (opts?.full) {
-          if (movStatus !== 'all') filtered = filtered.filter(tx => String(tx.status || '') === movStatus);
-          if (movType === 'send') filtered = filtered.filter(tx => tx.type === 'send' || tx.type === 'pay_sent');
+          if (movStatus !== 'all') filtered = filtered.filter(tx => {
+              const st = String(tx.status || '');
+              if (movStatus === 'Rechazado') return st === 'Rechazado' || st === 'Fallido';
+              if (movStatus === 'Pendiente') return st !== 'Completado' && st !== 'Rechazado' && st !== 'Fallido';
+              return st === movStatus;
+          });
+          if (movType === 'send') filtered = filtered.filter(tx => ['send', 'pay_sent', 'dispersion', 'otc_withdraw'].includes(tx.type));
           else if (movType === 'load') filtered = filtered.filter(tx => tx.type === 'load' || tx.type === 'otc_deposit' || tx.type === 'pay_received');
           else if (movType === 'convert') filtered = filtered.filter(tx => tx.type === 'convert');
           if (movCurrency !== 'all') filtered = filtered.filter(tx => baseCurrency(tx.currency) === movCurrency);
@@ -1350,8 +2068,15 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const movClearFilters = () => { setMovStatus('all'); setMovCurrency('all'); setMovDateFrom(''); setMovDateTo(''); setMovType('all'); };
   // Badge de estado para las filas de movimientos
   const movStatusStyle = (s: string) => s === 'Completado' ? 'bg-green-50 text-green-700 border-green-200'
-      : s === 'Rechazado' ? 'bg-red-50 text-red-700 border-red-200' : 'bg-amber-50 text-amber-700 border-amber-200';
-  const movStatusLabel = (s: string) => s === 'Completado' ? 'Completado' : s === 'Rechazado' ? 'Rechazado' : 'Pendiente';
+      : (s === 'Rechazado' || s === 'Fallido') ? 'bg-red-50 text-red-700 border-red-200'
+      : 'bg-amber-50 text-amber-700 border-amber-200';
+  // 'Fallido' y 'Procesando' son estados REALES de las dispersiones — no
+  // colapsarlos a 'Pendiente' (una dispersión fallida se veía como pendiente).
+  const movStatusLabel = (s: string) => s === 'Completado' ? 'Completado'
+      : s === 'Rechazado' ? 'Rechazado'
+      : s === 'Fallido' ? 'Fallido'
+      : s === 'Procesando' ? 'Procesando'
+      : 'Pendiente';
   
   const handleConvertInput = (e: React.ChangeEvent<HTMLInputElement>) => { setConvertAmountStr(formatInputNumber(e.target.value)); };
 
@@ -1360,54 +2085,80 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const renderDashboard = () => {
       const displayedWallets = showAllWallets ? myWallets : myWallets.slice(0, 3);
 
+      // Panel de Servicios (fila de 4 iconos). Se define una sola vez y se
+      // renderiza en DOS lugares con visibilidad por CSS: en escritorio va en la
+      // columna derecha; en móvil se muestra ARRIBA de "Movimientos recientes".
+      const serviciosBlock = (
+        <div className="lincoin-panel">
+          <div className="flex items-center justify-between" style={{ marginBottom: 4 }}>
+            <span style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2' }}>Servicios</span>
+            <button onClick={() => setActiveView('servicios')} style={{ fontSize: 12, color: '#878E88' }} className="hover:text-[#F4F4F2] transition-colors">Ver más ›</button>
+          </div>
+          {/* Fila de accesos rápidos: los 4 servicios como iconos (icono
+              arriba, nombre abajo) en 4 columnas. */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginTop: 10 }}>
+            {([
+              { Icon: ArrowLeftRight, t: 'Mesa OTC',    go: () => { setOtcRail(null); setMouvMode('converter'); setActiveView('mouv'); } },
+              { Icon: TrendingUp,     t: 'Staking',     go: null },
+              { Icon: Layers,         t: 'Multiwallet', go: () => setActiveView('walletsGasfree') },
+              { Icon: ShoppingBag,    t: 'Comercio',    go: null },
+            ] as const).map(({ Icon, t, go }) => (
+              <button key={t} onClick={go ?? undefined} disabled={!go} className="flex flex-col items-center text-center transition-colors hover:bg-white/[0.03]" style={{ gap: 7, padding: '10px 4px', borderRadius: 12, cursor: go ? 'pointer' : 'default', opacity: go ? 1 : 0.5 }}>
+                <div style={{ width: 46, height: 46, borderRadius: 13, background: 'rgba(255,255,255,0.055)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Icon size={19} style={{ color: '#F4F4F2' }} /></div>
+                <span style={{ fontSize: 11.5, fontWeight: 600, color: '#F4F4F2', lineHeight: 1.15 }}>{t}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      );
+
       return (
       <div className="space-y-10 animate-in fade-in duration-500 pt-6">
           <div className="flex justify-between items-center mb-8">
               <div>
-                  <h1 className="text-3xl font-extrabold text-[#0C0E0D] flex items-center gap-3 flex-wrap">
-                      Hola, {(currentUser?.role === 'business' ? (currentUser?.companyName || currentUser?.name) : currentUser?.name?.split(' ')[0]) || 'León'}
-                      {seasonEmojis.length > 0 && <span>{seasonEmojis[0]}</span>}
-                  </h1>
-                  <p className="font-medium" style={{ color: '#475569' }}>
-                      {currentUser?.role === 'business' ? 'Gestiona el dinero de tu empresa globalmente.' : 'Gestiona tu dinero globalmente.'}
+                  <h1 style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-0.8px', color: '#F4F4F2' }}>Tus cuentas</h1>
+                  <p className="font-medium" style={{ color: '#878E88', fontSize: 14, marginTop: 5, textTransform: 'capitalize' }}>
+                      {new Date().toLocaleDateString('es-CO', { weekday: 'long', day: 'numeric', month: 'long' })}
+                      {(currentUser?.companyName || currentUser?.name) ? ` · ${currentUser?.role === 'business' ? (currentUser?.companyName || currentUser?.name) : currentUser?.name}` : ''}
                   </p>
               </div>
               <div className="flex items-center gap-4 relative">
                   {/* Identidad de la sesión SIEMPRE visible — los magic links de los
                       correos de verificación inician sesión sin contraseña y esto
                       hace obvio con qué cuenta quedaste. */}
-                  <span className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-300 rounded-full text-xs shadow-sm max-w-[220px]">
-                      <span className="w-1.5 h-1.5 rounded-full bg-[#4ADE80] shrink-0"></span>
-                      <span className="truncate font-bold" style={{ color: '#0C0E0D' }}>{currentUser?.email}</span>
+                  <span className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs max-w-[220px]" style={{ background: '#121413', border: '1px solid rgba(255,255,255,0.09)' }}>
+                      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: '#4ADE80' }}></span>
+                      <span className="truncate font-bold" style={{ color: '#F4F4F2' }}>{currentUser?.email}</span>
                   </span>
-                  <button onClick={handleNotificationsClick} style={{ color: '#0C0E0D' }} className={`w-10 h-10 rounded-full bg-white border border-slate-300 flex items-center justify-center hover:border-[#0C0E0D] transition-all relative shadow-sm ${bellAnim ? 'animate-bounce' : ''}`}>
-                      <Bell size={20} className={bellAnim ? 'text-[#16A34A]' : ''} />
-                      {unreadNotifications > 0 && <span className={`absolute top-0 right-0 w-3 h-3 bg-[#4ADE80] rounded-full border-2 border-white ${bellAnim ? 'animate-ping' : ''}`}></span>}
+                  <button onClick={handleNotificationsClick} className={`w-10 h-10 rounded-[9px] flex items-center justify-center transition-all relative ${bellAnim ? 'animate-bounce' : ''}`} style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.11)', color: bellAnim ? '#4ADE80' : '#F4F4F2' }}>
+                      <Bell size={19} />
+                      {unreadNotifications > 0 && <span className={`absolute w-2.5 h-2.5 rounded-full ${bellAnim ? 'animate-ping' : ''}`} style={{ top: 8, right: 9, background: '#4ADE80', border: '1.5px solid #0A0C0B' }}></span>}
                   </button>
                   {showNotifications && (
-                      <div className="absolute top-full right-0 mt-3 w-80 bg-white rounded-xl shadow-2xl border border-slate-100 z-50 overflow-hidden animate-in fade-in zoom-in-95 origin-top-right">
-                          <div className="p-4 border-b border-slate-50 flex justify-between items-center bg-slate-50/50">
-                              <span className="font-bold text-slate-800 text-sm">Notificaciones</span>
+                      <div className="absolute top-full right-0 mt-3 w-80 rounded-xl z-50 overflow-hidden animate-in fade-in zoom-in-95 origin-top-right" style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', boxShadow: '0 24px 60px rgba(0,0,0,0.6)' }}>
+                          <div className="p-4 flex justify-between items-center" style={{ borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+                              <span className="font-bold text-sm" style={{ color: '#F4F4F2' }}>Notificaciones</span>
                               <div className="flex items-center gap-3">
                                   {unreadNotifications > 0 && (
-                                      <button onClick={() => markNotificationsRead()} className="text-[11px] font-bold text-[#16A34A] hover:underline transition-colors">Marcar como leído</button>
+                                      <button onClick={() => markNotificationsRead()} className="text-[11px] font-bold hover:underline transition-colors" style={{ color: '#4ADE80' }}>Marcar como leído</button>
                                   )}
-                                  <button onClick={() => setShowNotifications(false)}><X size={16} className="text-slate-400"/></button>
+                                  <button onClick={() => setShowNotifications(false)}><X size={16} style={{ color: '#878E88' }}/></button>
                               </div>
                           </div>
                           <div className="max-h-64 overflow-y-auto p-2">
                               {notifications.length > 0 ? notifications.map(n => (
-                                  <div key={n.id} className={`group p-3 rounded-lg hover:bg-slate-50 transition-colors mb-1 animate-in fade-in slide-in-from-top-1 duration-300 ${n.read ? 'opacity-60' : ''}`}>
+                                  <div key={n.id} className={`group p-3 rounded-lg transition-colors mb-1 hover:bg-white/[0.03] animate-in fade-in slide-in-from-top-1 duration-300 ${n.read ? 'opacity-60' : ''}`}>
                                       <div className="flex gap-3">
-                                          <div className={`mt-1 w-2 h-2 rounded-full shrink-0 ${n.read ? 'bg-slate-300' : n.type === 'success' ? 'bg-[#4ADE80]' : 'bg-red-500'}`}></div>
+                                          <div className="mt-1 w-2 h-2 rounded-full shrink-0" style={{ background: n.read ? '#878E88' : n.type === 'success' ? '#4ADE80' : '#EF4444' }}></div>
                                           <div className="flex-1 min-w-0">
-                                              <p className={`text-xs text-slate-800 ${n.read ? 'font-semibold' : 'font-bold'}`}>{n.title}</p>
-                                              <p className="text-xs text-slate-500 mt-0.5">{n.message}</p>
-                                              <p className="text-[10px] text-slate-400 mt-1">{n.date}</p>
+                                              <p className={`text-xs ${n.read ? 'font-semibold' : 'font-bold'}`} style={{ color: '#F4F4F2' }}>{n.title}</p>
+                                              <p className="text-xs mt-0.5" style={{ color: '#878E88' }}>{n.message}</p>
+                                              <p className="text-[10px] mt-1" style={{ color: '#878E88' }}>{n.date}</p>
                                           </div>
                                           <button
                                               onClick={(e) => { e.stopPropagation(); deleteNotification(n.id); }}
-                                              className="shrink-0 text-slate-300 hover:text-red-500 active:text-red-600 transition-colors self-start p-1"
+                                              className="shrink-0 hover:text-red-500 active:text-red-600 transition-colors self-start p-1"
+                                              style={{ color: '#878E88' }}
                                               title="Eliminar notificación"
                                           >
                                               <Trash2 size={14} />
@@ -1415,31 +2166,31 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       </div>
                                   </div>
                               )) : (
-                                  <div className="p-6 text-center text-xs text-slate-400">Sin notificaciones</div>
+                                  <div className="p-6 text-center text-xs" style={{ color: '#878E88' }}>Sin notificaciones</div>
                               )}
                           </div>
                       </div>
                   )}
                   
                   <div className="relative group">
-                      <button onClick={() => setIsProfileMenuOpen(!isProfileMenuOpen)} className="flex items-center gap-3 pl-1 pr-3 py-1 bg-white border border-slate-200 rounded-full hover:shadow-md transition-all">
-                          <div className="w-8 h-8 rounded-full bg-[#0C0E0D] text-white flex items-center justify-center font-bold text-sm overflow-hidden">
-                              {currentUser?.avatarUrl ? <img src={currentUser.avatarUrl} className="w-full h-full object-cover"/> : currentUser?.name?.charAt(0) ?? '?'}
+                      <button onClick={() => setIsProfileMenuOpen(!isProfileMenuOpen)} className="flex items-center gap-2.5 pl-1 pr-2.5 py-1 rounded-full transition-all" style={{ background: '#121413', border: '1px solid rgba(255,255,255,0.09)' }}>
+                          <div className="w-7 h-7 rounded-[7px] flex items-center justify-center font-extrabold text-xs overflow-hidden" style={{ background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', border: '1px solid rgba(255,255,255,0.1)', color: '#F4F4F2' }}>
+                              {currentUser?.avatarUrl ? <img src={currentUser.avatarUrl} className="w-full h-full object-cover"/> : (currentUser?.name?.charAt(0) ?? '?').toUpperCase()}
                           </div>
-                          <ChevronDown size={14} className="text-slate-400"/>
+                          <ChevronDown size={13} style={{ color: '#878E88' }}/>
                       </button>
-                      
+
                       {isProfileMenuOpen && (
-                          <div className="absolute top-full right-0 mt-3 w-56 bg-white rounded-xl shadow-2xl border border-slate-100 z-50 overflow-hidden animate-in fade-in zoom-in-95 origin-top-right">
-                              <div className="p-4 border-b border-slate-50 bg-slate-50/50">
-                                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Cuenta</p>
-                                  <p className="text-sm font-bold text-slate-800 truncate">{currentUser?.email}</p>
+                          <div className="absolute top-full right-0 mt-3 w-56 rounded-xl z-50 overflow-hidden animate-in fade-in zoom-in-95 origin-top-right" style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', boxShadow: '0 24px 60px rgba(0,0,0,0.6)' }}>
+                              <div className="p-4" style={{ borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+                                  <p className="text-[10px] font-bold uppercase tracking-wider mb-1" style={{ color: '#878E88' }}>Cuenta</p>
+                                  <p className="text-sm font-bold truncate" style={{ color: '#F4F4F2' }}>{currentUser?.email}</p>
                               </div>
                               <div className="p-2 space-y-1">
-                                  <button onClick={() => { setActiveView('profile'); setIsProfileMenuOpen(false); }} className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-slate-50 rounded-lg text-slate-600 text-sm font-medium transition-colors"><User size={16} /> Mi Perfil</button>
-                                  <button onClick={() => { setActiveView('settings'); setIsProfileMenuOpen(false); }} className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-slate-50 rounded-lg text-slate-600 text-sm font-medium transition-colors"><Settings size={16} /> Configuración</button>
-                                  <div className="h-px bg-slate-100 my-1"></div>
-                                  <button onClick={onLogout} className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-red-50 text-red-600 rounded-lg text-sm font-medium transition-colors"><LogOut size={16} /> Salir</button>
+                                  <button onClick={() => { setActiveView('profile'); setIsProfileMenuOpen(false); }} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors hover:bg-white/[0.04]" style={{ color: '#878E88' }}><User size={16} /> Mi Perfil</button>
+                                  <button onClick={() => { setActiveView('settings'); setIsProfileMenuOpen(false); }} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors hover:bg-white/[0.04]" style={{ color: '#878E88' }}><Settings size={16} /> Configuración</button>
+                                  <div className="h-px my-1" style={{ background: 'rgba(255,255,255,0.07)' }}></div>
+                                  <button onClick={onLogout} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors hover:bg-red-500/10" style={{ color: '#F87171' }}><LogOut size={16} /> Salir</button>
                               </div>
                           </div>
                       )}
@@ -1451,13 +2202,14 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           {currentUser?.ownReferralCode && (
               <div className="flex items-center gap-2">
                   <div
-                      className="inline-flex items-center gap-2 bg-white border border-slate-200 px-3 py-1.5 rounded-lg cursor-pointer hover:border-green-400 hover:bg-green-50 transition-all shadow-sm"
+                      className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg cursor-pointer transition-all hover:border-[rgba(74,222,128,0.4)]"
+                      style={{ background: '#121413', border: '1px solid rgba(255,255,255,0.09)' }}
                       onClick={() => { navigator.clipboard.writeText(currentUser.ownReferralCode || ''); showToast('ID Lincoin copiado'); }}
                   >
-                      <Zap size={13} className="text-[#16A34A]" />
-                      <span className="text-[10px] font-bold text-slate-600 uppercase tracking-wider">Mi ID Lincoin:</span>
-                      <span className="font-mono font-extrabold text-[#0C0E0D] tracking-widest text-sm">{currentUser.ownReferralCode}</span>
-                      <Copy size={11} className="text-slate-400" />
+                      <Zap size={13} style={{ color: '#4ADE80' }} />
+                      <span className="text-[10px] font-bold uppercase tracking-wider" style={{ color: '#878E88' }}>Mi ID Lincoin:</span>
+                      <span className="font-mono font-extrabold tracking-widest text-sm" style={{ color: '#F4F4F2' }}>{currentUser.ownReferralCode}</span>
+                      <Copy size={11} style={{ color: '#878E88' }} />
                   </div>
               </div>
           )}
@@ -1534,175 +2286,403 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               );
           })()}
 
-          <div className="space-y-4">
-              <div className="flex justify-between items-center">
-                  <h3 className="font-bold text-[#0C0E0D] text-sm tracking-wide flex items-center gap-2">TUS CUENTAS <span className="bg-[#0C0E0D] text-white text-[10px] font-bold px-2 py-0.5 rounded-full min-w-[20px] text-center">{myWallets.length}</span></h3>
-                  <div className="flex items-center gap-3">
-                      <button onClick={openWalletOrderModal} title="Ordenar billeteras" style={{ color: '#334155' }} className="hover:text-[#0C0E0D] transition-colors">
-                          <Settings size={15} />
-                      </button>
-                      <button onClick={() => setShowAllWallets(!showAllWallets)} className="text-[#0C0E0D] text-xs font-bold hover:underline">
-                          {showAllWallets ? 'Ver menos' : 'Ver más'}
-                      </button>
-                  </div>
+
+          <style>{`
+            .lincoin-panel { background:#0C0E0D; border:1px solid rgba(255,255,255,0.09); border-radius:14px; padding:20px; }
+            @media (max-width: 1000px) { .lincoin-dash-bottom { grid-template-columns: 1fr !important; } }
+            /* Servicios: en escritorio va en la columna derecha; en móvil (<=1000px)
+               se muestra la copia de arriba (encima de Movimientos) y se oculta la
+               de la derecha. */
+            .lincoin-servicios-mobile { display: none; }
+            @media (max-width: 1000px) {
+              .lincoin-servicios-mobile { display: block; }
+              .lincoin-servicios-desktop { display: none !important; }
+            }
+          `}</style>
+
+          {/* ═══════════ BILLETERAS ═══════════ */}
+          <div>
+            <div className="flex items-baseline justify-between" style={{ marginBottom: 13 }}>
+              <div className="flex items-baseline gap-2">
+                <span style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>Billeteras</span>
+                <span style={{ fontSize: 12.5, color: '#878E88' }}>2 activas</span>
               </div>
-
-              <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 items-stretch">
-                  {displayedWallets.map((wallet, index) => {
-                      const bal = displayBalance(wallet.code);
-                      const isPrimary = index === 0;
-                      return (
-                          <div
-                              key={wallet.code}
-                              onClick={() => handleWalletClick(wallet.code)}
-                              className={`
-                                  relative overflow-hidden rounded-2xl p-4 transition-all cursor-pointer border flex flex-col
-                                  ${isPrimary
-                                      ? 'col-span-2 lg:col-span-1 bg-gradient-to-br from-[#0C0E0D] to-[#0C0E0D] text-white border-transparent shadow-xl shadow-green-900/20'
-                                      : 'bg-white text-slate-800 border-slate-200 hover:border-slate-300 hover:shadow-lg'}
-                              `}
-                          >
-                              {isPrimary && <div className="absolute -right-10 -top-10 w-40 h-40 bg-white/5 rounded-full blur-3xl"></div>}
-                              <div className="flex justify-between items-start mb-3 relative z-10">
-                                  <div className="flex items-center gap-2">
-                                      {wallet.code === 'USD' ? (
-                                          <div className={`w-7 h-5 rounded shadow-sm flex items-center justify-center font-bold text-[10px] ${isPrimary ? 'bg-white/15 text-white ring-2 ring-white/30' : 'bg-green-50 text-[#16A34A] ring-1 ring-slate-200'}`}>₮</div>
-                                      ) : (
-                                          <FlagImg code={wallet.code} size="lg" className={`w-7 h-5 object-cover rounded shadow-sm ${isPrimary ? 'ring-2 ring-white/30' : 'ring-1 ring-slate-200'}`} />
-                                      )}
-                                      <div>
-                                          <p className={`font-bold text-sm leading-tight ${isPrimary ? 'text-white' : 'text-slate-700'}`}>{wallet.name}</p>
-                                          <p className={`text-[10px] font-medium uppercase tracking-wider ${isPrimary ? 'text-green-200' : 'text-slate-400'}`}>{wallet.type}</p>
-                                      </div>
-                                  </div>
-                              </div>
-                              <div className="relative z-10 mb-3 flex-1">
-                                  <p className={`text-2xl font-bold tracking-tight ${isPrimary ? 'text-white' : 'text-slate-800'}`}>
-                                      {formatMoney(bal, wallet.code)} <span className={`text-sm font-normal ${isPrimary ? 'text-green-200' : 'text-slate-400'}`}>{wallet.code === 'USD' ? 'USDT' : wallet.code}</span>
-                                  </p>
-                              </div>
-                              <div className={`flex gap-2 relative z-10 ${isPrimary ? '' : 'border-t border-slate-100 pt-2'}`}>
-                                  <button onClick={(e) => { e.stopPropagation(); handleLoadClick(wallet.code); }} disabled={isBlocked}
-                                      className={`flex-1 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-colors ${isBlocked ? (isPrimary ? 'bg-slate-600 text-slate-300' : 'bg-slate-200 text-slate-400') : 'bg-[#4ADE80] text-[#0C0E0D] hover:bg-[#6EE7A0]'}`}>
-                                      <Plus size={12} strokeWidth={3} /> Cargar
-                                  </button>
-                                  <button onClick={(e) => { e.stopPropagation(); if(!handleActionRestricted()) setIsSendModalOpen(true); }} disabled={isBlocked || !isKycVerified}
-                                      className={`flex-1 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-colors ${isPrimary ? 'bg-white/10 text-white hover:bg-white/20' : 'bg-white border border-slate-300 text-[#0C0E0D] hover:bg-slate-50'}`}>
-                                      <Send size={12} /> Enviar
-                                  </button>
-                              </div>
+            </div>
+            {/* Cuadro de progreso de DEPÓSITO — inline, encima de las billeteras.
+                Aparece al detectar el depósito (Recibido → Acreditado) y se
+                oculta solo al completarse. */}
+            {depositCard && (() => {
+                const done = depositCard.phase === 'acreditado';
+                return (
+                <div style={{ marginBottom: 11, animation: 'lincoinSlideIn 0.28s ease-out' }}>
+                    <div style={{ maxWidth: 264, marginLeft: 'auto', background: 'linear-gradient(150deg, #0F1512 0%, #0C0E0D 100%)', border: '1px solid rgba(74,222,128,0.32)', borderRadius: 11, padding: '9px 11px', boxShadow: '0 8px 22px rgba(0,0,0,0.32)' }}>
+                        <div className="flex items-center" style={{ gap: 8 }}>
+                            <span style={{ width: 26, height: 26, borderRadius: 7, flexShrink: 0, display: 'grid', placeItems: 'center', background: 'rgba(74,222,128,0.14)' }}>
+                                {done ? <CheckCircle2 size={15} style={{ color: '#4ADE80' }} /> : <ArrowDownLeft size={14} style={{ color: '#4ADE80' }} />}
+                            </span>
+                            <div style={{ minWidth: 0, flex: 1 }}>
+                                <p style={{ fontSize: 11, fontWeight: 800, color: '#F4F4F2', lineHeight: 1.15 }}>{done ? 'Depósito acreditado' : 'Depósito recibido'}</p>
+                                <p style={{ fontSize: 10.5, color: '#4ADE80', fontWeight: 700 }}>+{depositCard.amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT</p>
+                            </div>
+                        </div>
+                        <div style={{ marginTop: 8 }}>
+                            <div style={{ height: 4, borderRadius: 999, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
+                                <div style={{ height: '100%', borderRadius: 999, background: 'linear-gradient(90deg, #22A35C, #4ADE80)', width: done ? '100%' : '55%', transition: 'width 0.6s ease', ...(done ? {} : { animation: 'lincoinPulseBar 1.1s ease-in-out infinite' }) }} />
+                            </div>
+                            <div className="flex items-center justify-between" style={{ marginTop: 4 }}>
+                                <span style={{ fontSize: 9, fontWeight: 700, color: '#4ADE80' }}>● Recibido</span>
+                                <span style={{ fontSize: 9, fontWeight: 700, color: done ? '#4ADE80' : '#878E88' }}>{done ? '● Acreditado' : 'Acreditando…'}</span>
+                            </div>
+                        </div>
+                    </div>
+                    <style>{`@keyframes lincoinSlideIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}@keyframes lincoinPulseBar{0%,100%{opacity:0.65}50%{opacity:1}}`}</style>
+                </div>
+                );
+            })()}
+            <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))' }}>
+              {/* USDT — principal */}
+              {(() => {
+                const usdt = displayBalance('USD');
+                const parts = usdt.toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).split(',');
+                return (
+                  <div style={{ background: '#0C0E0D', border: '1px solid rgba(74,222,128,0.28)', borderRadius: 14, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                    <div onClick={() => { setSelectedWalletCode('USD'); setActiveView('wallet-detail'); }} style={{ padding: '18px 18px 16px', flex: 1, cursor: 'pointer' }} className="hover:bg-white/[0.015] transition-colors">
+                      <div className="flex items-start justify-between" style={{ marginBottom: 14 }}>
+                        <div className="flex items-center gap-2.5">
+                          <div style={{ width: 32, height: 32, borderRadius: '50%', background: '#26A17B', color: '#fff', fontWeight: 800, fontSize: 16, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>₮</div>
+                          <div>
+                            <p style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>Dólar digital</p>
+                            <p style={{ fontSize: 11, color: '#878E88' }}>USDT · GasFree · TRON</p>
                           </div>
-                      );
-                  })}
-              </div>
-          </div>
-
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <button onClick={() => { if(!handleActionRestricted(false)) { setLoadStep(1); setIsLoadModalOpen(true); } }} className={`bg-white p-5 rounded-xl border border-slate-200 transition-all group text-left ${isBlocked ? 'opacity-50 cursor-not-allowed' : 'hover:border-[#4ADE80] hover:shadow-md'}`}>
-                  <div className="w-10 h-10 bg-green-50 rounded-lg flex items-center justify-center text-[#4ADE80] mb-3 group-hover:scale-110 transition-transform">
-                      <Plus size={20} strokeWidth={2.5} />
-                  </div>
-                  <p className="font-bold text-slate-800 text-sm">Cargar Dinero</p>
-                  <p className="text-[11px] text-slate-500">Vía transferencia o tarjeta</p>
-              </button>
-
-              <button onClick={() => { if(!handleActionRestricted()) setIsSendModalOpen(true); }} className={`bg-white p-5 rounded-xl border border-slate-200 transition-all group text-left ${isBlocked || !isKycVerified ? 'opacity-50 cursor-not-allowed' : 'hover:border-[#0C0E0D] hover:shadow-md'}`}>
-                  <div className="w-10 h-10 bg-slate-50 rounded-lg flex items-center justify-center text-[#0C0E0D] mb-3 group-hover:scale-110 transition-transform">
-                      <Send size={20} />
-                  </div>
-                  <p className="font-bold text-slate-800 text-sm">Enviar a Contacto</p>
-                  <p className="text-[11px] text-slate-500">Local o internacional</p>
-              </button>
-
-              <button onClick={() => { if(!handleActionRestricted()) setIsConvertModalOpen(true); }} className={`bg-white p-5 rounded-xl border border-slate-200 transition-all group text-left ${isBlocked || !isKycVerified ? 'opacity-50 cursor-not-allowed' : 'hover:border-purple-500 hover:shadow-md'}`}>
-                  <div className="w-10 h-10 bg-purple-50 rounded-lg flex items-center justify-center text-purple-600 mb-3 group-hover:scale-110 transition-transform">
-                      <RefreshCw size={20} />
-                  </div>
-                  <p className="font-bold text-slate-800 text-sm">Convertir Divisas</p>
-                  <p className="text-[11px] text-slate-500">Cambio inmediato</p>
-              </button>
-
-              <button onClick={() => setActiveView('servicios')} className="bg-white p-5 rounded-xl border border-slate-200 hover:border-[#4ADE80] hover:shadow-md transition-all group text-left">
-                  <div className="w-10 h-10 bg-slate-50 rounded-lg flex items-center justify-center text-green-600 mb-3 group-hover:scale-110 transition-transform">
-                      <LayoutGrid size={20} />
-                  </div>
-                  <p className="font-bold text-slate-800 text-sm">Servicios</p>
-                  <p className="text-[11px] text-slate-500">Travel, seguros y más</p>
-              </button>
-
-          </div>
-
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-              <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-white">
-                  <h3 className="font-bold text-slate-800 text-sm flex items-center gap-2">
-                      <Activity size={16} className="text-[#4ADE80]" /> Movimientos Recientes
-                  </h3>
-                  <button onClick={() => { setMovementsTab('all'); setActiveView('movements'); }} className="text-[#16A34A] text-xs font-bold hover:underline">Ver historial completo →</button>
-              </div>
-              <div className="divide-y divide-slate-50">
-                  {movements.length > 0 ? movements.slice(0, 5).map(tx => (
-                      <button key={tx.id} type="button" className="w-full p-4 flex items-center justify-between hover:bg-slate-50 transition-colors text-left" onClick={() => setSelectedTx(tx)}>
-                          <div className="flex items-center gap-4">
-                              <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-xs shadow-sm ${isTxCredit(tx) ? 'bg-green-100 text-green-700' : tx.type === 'send' || tx.type === 'pay_sent' ? 'bg-slate-100 text-slate-600' : 'bg-slate-100 text-[#4ADE80]'}`}>
-                                  {tx.initials}
-                              </div>
-                              <div>
-                                  <p className="font-bold text-slate-800 text-sm mb-0.5">{tx.title}</p>
-                                  <p className="text-[10px] text-slate-400 font-medium">{tx.date} • {tx.userName}</p>
-                              </div>
-                          </div>
-                          <div className="text-right">
-                              <p className={`font-bold text-sm mb-0.5 ${isTxCredit(tx) ? 'text-green-600' : 'text-slate-800'}`}>{isTxCredit(tx) ? '+' : '-'} {formatMoney(tx.amount, tx.currency)} <span className="text-[10px] text-slate-400">{tx.currency}</span></p>
-                              <span className={`inline-block text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${tx.status === 'Completado' ? 'bg-green-100 text-green-700' : tx.status === 'Pendiente' ? 'bg-orange-100 text-orange-700' : 'bg-red-100 text-red-700'}`}>{tx.status}</span>
-                          </div>
-                      </button>
-                  )) : (
-                      <div className="p-12 text-center flex flex-col items-center justify-center">
-                          <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mb-4">
-                              <Activity size={24} className="text-slate-300" />
-                          </div>
-                          <p className="text-slate-700 font-semibold text-sm">Aún no tienes movimientos</p>
-                          <p className="text-slate-500 text-xs mt-1">Cuando cargues, envíes o conviertas, tus operaciones aparecerán aquí.</p>
+                        </div>
+                        <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 9, fontWeight: 700, letterSpacing: '0.7px', padding: '3px 7px', borderRadius: 999, whiteSpace: 'nowrap' }}>PRINCIPAL</span>
                       </div>
-                  )}
+                      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 6 }}>
+                        <span style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-1px', lineHeight: 1, color: '#F4F4F2' }}>{parts[0]}<span style={{ fontSize: 16, color: '#878E88' }}>,{parts[1]}</span></span>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: '#878E88', marginBottom: 1 }}>USDT</span>
+                      </div>
+                      <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 5 }}>Disponible · 1 USDT = 1 USD</p>
+                    </div>
+                    <div style={{ padding: '11px 18px', borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.015)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: 10.5, color: '#878E88', fontFamily: 'ui-monospace, Menlo, monospace' }}>{usdtAddr ? `${usdtAddr.slice(0, 6)}…${usdtAddr.slice(-4)}` : 'Red TRON · TRC-20'}</span>
+                      <div className="flex items-center" style={{ gap: 13 }}>
+                        <button onClick={() => handleLoadClick('USD')} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Cargar</button>
+                        <button onClick={() => { openSendMoney(); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Enviar</button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+              {/* COP — cuenta local (BreB + ACH vía Mouv) */}
+              {(() => {
+                const cop = getBalance('COP') + getBalance('COP_BREB') + getBalance('COP_ACH');
+                const usdt = displayBalance('USD');
+                const rate = getRate('USD', 'COP');
+                return (
+                  <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                    <div onClick={() => { setSelectedWalletCode('COP'); setActiveView('wallet-detail'); }} style={{ padding: '18px 18px 16px', flex: 1, cursor: 'pointer' }} className="hover:bg-white/[0.015] transition-colors">
+                      <div className="flex items-start justify-between" style={{ marginBottom: 14 }}>
+                        <div className="flex items-center gap-2.5">
+                          <div style={{ width: 32, height: 32, borderRadius: '50%', overflow: 'hidden', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+                            <span style={{ height: '50%', background: '#FCD116' }} />
+                            <span style={{ height: '25%', background: '#003893' }} />
+                            <span style={{ height: '25%', background: '#CE1126' }} />
+                          </div>
+                          <div>
+                            <p style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>Peso colombiano</p>
+                            <p style={{ fontSize: 11, color: '#878E88' }}>Cuenta local · COP</p>
+                          </div>
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 6 }}>
+                        <span style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-1px', lineHeight: 1, color: '#F4F4F2' }}>{Math.round(cop).toLocaleString('es-CO')}</span>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: '#878E88', marginBottom: 1 }}>COP</span>
+                      </div>
+                      <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 5 }}>{rate ? `≈ ${(cop / rate).toLocaleString('es-CO', { maximumFractionDigits: 2 })} USDT · ${Math.round(rate).toLocaleString('es-CO')}` : 'BreB · ACH'}</p>
+                    </div>
+                    <div style={{ padding: '11px 18px', borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.015)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: 10.5, color: '#878E88', fontFamily: 'ui-monospace, Menlo, monospace' }}>BreB · ACH</span>
+                      <div className="flex items-center" style={{ gap: 13 }}>
+                        <button onClick={() => { setSelectedWalletCode('COP'); setActiveView('wallet-detail'); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Ver</button>
+                        <button onClick={() => { openSendMoney(); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Enviar</button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+            {/* Cuentas por país que vienen (modelo hub: cada moneda local
+                convierte SOLO contra USDT). Se controlan desde Admin →
+                Configuración → Países (estado "Próximamente"). */}
+            {(() => {
+              const cs: Record<string, string> = { 'México': 'soon', Brasil: 'soon', ...((config as any).countryStatus || {}) };
+              const soonMeta: Record<string, { rail: string; bg: string }> = {
+                'México': { rail: 'SPEI · MXN', bg: 'linear-gradient(90deg,#006847 0 33%,#FFFFFF 33% 66%,#CE1126 66%)' },
+                Brasil: { rail: 'Pix · BRL', bg: 'radial-gradient(circle at 50% 50%, #002776 0 24%, #FFDF00 25% 46%, #009C3B 47%)' },
+                'Perú': { rail: 'CCI · PEN', bg: 'linear-gradient(90deg,#D91023 0 33%,#FFFFFF 33% 66%,#D91023 66%)' },
+                Chile: { rail: 'Transferencia · CLP', bg: 'linear-gradient(180deg,#FFFFFF 0 50%,#D52B1E 50%)' },
+                Venezuela: { rail: 'Pago móvil · VES', bg: 'linear-gradient(180deg,#FFCC00 0 33%,#00247D 33% 66%,#CF142B 66%)' },
+              };
+              const soon = Object.keys(soonMeta).filter(c => cs[c] === 'soon');
+              if (!soon.length) return null;
+              return (
+              <div className="flex flex-wrap" style={{ gap: 10, marginTop: 12 }}>
+                {soon.map(name => (
+                  <div key={name} className="flex items-center" style={{ gap: 9, padding: '9px 14px', borderRadius: 11, border: '1px dashed rgba(255,255,255,0.14)', opacity: 0.75 }}>
+                    <span style={{ width: 20, height: 20, borderRadius: '50%', flexShrink: 0, display: 'block', background: soonMeta[name].bg }} />
+                    <p style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2' }}>{name} <span style={{ fontWeight: 500, color: '#878E88' }}>· {soonMeta[name].rail}</span></p>
+                    <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 8.5, fontWeight: 700, letterSpacing: '0.6px', padding: '2px 7px', borderRadius: 999 }}>PRÓXIMAMENTE</span>
+                  </div>
+                ))}
               </div>
+              );
+            })()}
           </div>
+
+          {/* ═══════════ ZONA INFERIOR ═══════════ */}
+          {/* SOLO MÓVIL: Servicios arriba de Movimientos (en escritorio va en la
+              columna derecha, más abajo). */}
+          <div className="lincoin-servicios-mobile" style={{ marginBottom: 18 }}>{serviciosBlock}</div>
+          <div className="lincoin-dash-bottom" style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: 18, alignItems: 'start' }}>
+            {/* Movimientos recientes */}
+            <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, overflow: 'hidden', minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 22px', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+                <span style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>Movimientos recientes</span>
+                <button onClick={() => { setMovementsTab('all'); setActiveView('movements'); }} style={{ fontSize: 12.5, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Ver todo →</button>
+              </div>
+              {movements.length > 0 ? movements.slice(0, 8).map(tx => {
+                const credit = isTxCredit(tx);
+                const meta = txRowMeta(tx);
+                return (
+                  <button key={tx.id} type="button" onClick={() => setSelectedTx(tx)} style={{ width: '100%', display: 'grid', gridTemplateColumns: '1fr auto', alignItems: 'center', gap: 12, padding: '13px 22px', borderTop: '1px solid rgba(255,255,255,0.05)', textAlign: 'left' }} className="hover:bg-white/[0.02] transition-colors">
+                    <div className="flex items-center gap-3" style={{ minWidth: 0 }}>
+                      <div style={{ width: 32, height: 32, borderRadius: 9, background: credit ? 'rgba(74,222,128,0.1)' : 'rgba(255,255,255,0.055)', color: credit ? '#4ADE80' : '#F4F4F2', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><meta.Icon size={15} /></div>
+                      <div style={{ minWidth: 0 }}>
+                        <p style={{ fontSize: 13.5, fontWeight: 600, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{meta.title}</p>
+                        {meta.sub && <p style={{ fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{meta.sub}</p>}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      <p style={{ fontSize: 13.5, fontWeight: 700, color: credit ? '#4ADE80' : '#F4F4F2', whiteSpace: 'nowrap' }}>{credit ? '+' : '−'} {formatMoney(tx.amount, tx.currency)}</p>
+                      <span style={{ display: 'inline-block', marginTop: 3, fontSize: 10.5, fontWeight: 700, padding: '2px 8px', borderRadius: 999, border: tx.status === 'Completado' ? '1px solid rgba(74,222,128,0.3)' : (tx.status === 'Rechazado' || tx.status === 'Fallido') ? '1px solid rgba(248,113,113,0.35)' : '1px solid rgba(255,255,255,0.14)', color: tx.status === 'Completado' ? '#4ADE80' : (tx.status === 'Rechazado' || tx.status === 'Fallido') ? '#F87171' : '#878E88' }}>{tx.status}</span>
+                    </div>
+                  </button>
+                );
+              }) : (
+                <div style={{ padding: 40, textAlign: 'center' }}>
+                  <p style={{ color: '#F4F4F2', fontWeight: 600, fontSize: 13.5 }}>Aún no tienes movimientos</p>
+                  <p style={{ color: '#878E88', fontSize: 12, marginTop: 4 }}>Cuando cargues, conviertas o retires, tus operaciones aparecerán aquí.</p>
+                </div>
+              )}
+            </div>
+
+            {/* Columna derecha */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+              {/* Servicios — SOLO ESCRITORIO (en móvil se muestra arriba). */}
+              <div className="lincoin-servicios-desktop">{serviciosBlock}</div>
+              {/* TU DINERO — confianza (aliados reales de Lincoin) */}
+              <div className="lincoin-panel">
+                <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.8px', color: '#878E88', marginBottom: 14 }}>TU DINERO</p>
+                {[['Respaldo en USDT', 'Dólar digital de Tether (USDT), 1:1 con el dólar.'], ['Rieles locales', 'Retiros en Colombia por Bre-B y ACH.'], ['Identidad verificada', 'KYC/KYB y monitoreo SARLAFT con Didit.']].map(([t, d]) => (
+                  <div key={t} className="flex items-start gap-3" style={{ marginBottom: 13, fontSize: 12.5 }}>
+                    <ShieldCheck size={16} style={{ color: '#878E88', flexShrink: 0, marginTop: 1 }} />
+                    <div><span style={{ fontWeight: 700, color: '#F4F4F2' }}>{t}</span> <span style={{ color: '#878E88' }}>— {d}</span></div>
+                  </div>
+                ))}
+                <p style={{ borderTop: '1px solid rgba(255,255,255,0.07)', paddingTop: 12, marginTop: 2, fontSize: 11.5, color: '#878E88', lineHeight: 1.5 }}>Lincoin no es un banco. Los criptoactivos no están cubiertos por fondos de garantía de depósitos.</p>
+              </div>
+            </div>
+          </div>
+
       </div>
   );
   };
 
-  const renderMovements = () => (
-      <div className="space-y-6 animate-in fade-in duration-300 pt-6">
-          <div className="flex flex-col gap-3">
-              <button onClick={() => setActiveView('dashboard')} style={{ color: '#0C0E0D' }} className="flex items-center gap-2 font-bold text-sm self-start">
-                  <ArrowLeft size={16} /> Volver
-              </button>
-              <div className="flex justify-between items-center">
-                 <h2 className="text-xl font-bold text-slate-800">Historial de Movimientos</h2>
-                 <div className="flex gap-2 bg-white p-1 rounded-lg border border-slate-200">
-                     <button onClick={() => setMovementsTab('all')} className={`px-4 py-2 rounded-lg text-sm font-bold ${movementsTab === 'all' ? 'bg-[#0C0E0D]' : 'text-slate-500 hover:bg-slate-50'}`}>Todos</button>
-                     <button onClick={() => setMovementsTab('income')} className={`px-4 py-2 rounded-lg text-sm font-bold ${movementsTab === 'income' ? 'bg-[#0C0E0D]' : 'text-slate-500 hover:bg-slate-50'}`}>Ingresos</button>
-                     <button onClick={() => setMovementsTab('expense')} className={`px-4 py-2 rounded-lg text-sm font-bold ${movementsTab === 'expense' ? 'bg-[#0C0E0D]' : 'text-slate-500 hover:bg-slate-50'}`}>Egresos</button>
-                 </div>
+  // ── Pantalla Movimientos (rediseño): encabezado con conteo dinámico,
+  // resumen del período, buscador + chips con contador, tabla agrupada por
+  // día con pills de SOLO BORDE (sin rellenos amarillos/verdes) y paginación.
+  const renderMovements = () => {
+      const all = getFilteredMovements(null, { full: true });
+      const isConvertTx = (t: any) => t.type === 'convert' || t.type === 'breb_move' || t.type === 'rail_move';
+      const isInFlight = (t: any) => ['Procesando', 'Pendiente'].includes(String(t.status || ''));
+      const isFailedTx = (t: any) => ['Fallido', 'Rechazado'].includes(String(t.status || ''));
+      const chipOf = (t: any) => isConvertTx(t) ? 'convert' : isTxCredit(t) ? 'in' : 'out';
+      const counts = {
+          all: all.length,
+          in: all.filter(t => chipOf(t) === 'in').length,
+          out: all.filter(t => chipOf(t) === 'out').length,
+          convert: all.filter(t => chipOf(t) === 'convert').length,
+          inflight: all.filter(isInFlight).length,
+      };
+      const rows = movChip === 'all' ? all : movChip === 'inflight' ? all.filter(isInFlight) : all.filter(t => chipOf(t) === movChip);
+
+      // USDT: los depósitos guardan 'USD', los envíos 'USDT_TRON' → ambos
+      // base 'USD'/'USDT' son dólar digital, no COP.
+      const isUsdtCur = (c?: string) => ['USD', 'USDT'].includes(baseCurrency(c));
+      // Sumas del período en COP equivalente (USDT × tasa USD→COP). La salida
+      // real de una dispersión es amount + comisión (feeCop en raw_data).
+      const usdCop = getRate('USD', 'COP') || 0;
+      const copEq = (t: any) => isUsdtCur(t.currency) ? Number(t.amount || 0) * usdCop : Number(t.amount || 0);
+      const feeOf = (t: any) => Number(t.feeCop ?? (t.raw_data as any)?.feeCop ?? 0);
+      const fmtCop = (n: number) => `$${Math.round(n).toLocaleString('es-CO')}`;
+      const inSum = rows.filter(t => isTxCredit(t) && !isFailedTx(t)).reduce((s, t) => s + copEq(t), 0);
+      const outSum = rows.filter(t => !isTxCredit(t) && !isConvertTx(t) && !isFailedTx(t)).reduce((s, t) => s + copEq(t) + feeOf(t), 0);
+      const flight = rows.filter(isInFlight);
+      const flightSum = flight.reduce((s, t) => s + copEq(t), 0);
+
+      // Paginación (cliente)
+      const PER = 12;
+      const maxPage = Math.max(1, Math.ceil(rows.length / PER));
+      const page = Math.min(movPage, maxPage);
+      const pageRows = rows.slice((page - 1) * PER, page * PER);
+
+      // Agrupación por día
+      const dayLabelOf = (t: any) => {
+          const d = t.createdAt ? new Date(t.createdAt) : null;
+          if (!d) return 'SIN FECHA';
+          const base = d.toLocaleDateString('es-CO', { day: 'numeric', month: 'short' }).replace('.', '').toUpperCase();
+          if (d.toDateString() === new Date().toDateString()) return `HOY · ${base}`;
+          if (d.toDateString() === new Date(Date.now() - 86400000).toDateString()) return `AYER · ${base}`;
+          return base;
+      };
+      const titleCase = (s: string) => String(s || '').toLowerCase().replace(/(^|[\s.])\p{L}/gu, c => c.toUpperCase());
+
+      // Metadatos de fila del rediseño (concepto/destino/riel/referencia/pill)
+      const rowInfo = (t: any) => {
+          const kind = chipOf(t);
+          const ticker = isUsdtCur(t.currency) ? 'USDT' : 'COP';
+          const rd = (t.raw_data ?? {}) as any;
+          const ben = titleCase(t.beneficiary || t.recipient?.holderName || rd.beneficiary || '');
+          const acct = String(t.account ?? t.recipient?.key ?? t.recipient?.accountNumber ?? rd.account ?? '');
+          const last4 = acct ? `···${acct.slice(-4)}` : '';
+          const isBreb = t.currency === 'COP_BREB';
+          let title = t.title || ROW_LABELS[t.type] || t.type;
+          if (t.type === 'dispersion') title = `Dispersión ${isBreb ? 'Bre-B' : 'ACH'}${ben ? ` · ${ben}` : ''}`;
+          else if (t.type === 'convert') title = t.title || 'Cambio USDT → COP';
+          else if (ben && (t.type === 'send' || t.type === 'pay_sent')) title = `Envío a ${ben}`;
+          const time = t.createdAt ? new Date(t.createdAt).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }) : '';
+          let dest = '—', rail = '', flag = false;
+          if (t.type === 'dispersion') {
+              dest = isBreb ? `Llave ${last4}`.trim() : `${t.bank && t.bank !== 'ACH' ? String(t.bank).split('·')[0].trim() : 'Banco'} ${last4}`.trim();
+              rail = isBreb ? 'Colombia · Bre-B' : 'Colombia · ACH'; flag = true;
+          } else if (t.type === 'load' || t.type === 'otc_deposit') {
+              dest = ticker === 'USDT' ? 'Billetera USDT' : 'Saldo Lincoin';
+              rail = ticker === 'USDT' ? 'Depósito · red TRON' : 'Depósito';
+          } else if (t.type === 'convert') { dest = 'Saldo ACH'; rail = 'Conversión interna'; }
+          else if (t.type === 'rail_move' || t.type === 'breb_move') { dest = 'Entre mis cuentas'; rail = 'Movimiento interno'; }
+          else if (t.type === 'send' || t.type === 'pay_sent' || t.type === 'otc_withdraw') {
+              const usdt = isUsdtCur(t.currency);
+              dest = usdt ? `Wallet ${last4}`.trim() : (t.bank ? `${String(t.bank).split('·')[0].trim()} ${last4}`.trim() : (acct ? `Cuenta ${last4}` : '—'));
+              rail = usdt ? 'Red TRON · TRC-20' : 'Colombia'; flag = !usdt && !!t.bank;
+          }
+          // Referencia = id del proveedor (Mouv/Finity) COMPLETO — así coincide
+          // con su panel. El recorte visual lo hace el CSS (ellipsis), no se
+          // corta a mano. Sin proveedor → id interno de Lincoin.
+          const ref0 = t.providerRef ?? rd.providerRef ?? rd.providerTraceId ?? '';
+          const reference = ref0 ? String(ref0) : `TX-${String(t.id ?? '').replace(/-/g, '').slice(-6).toUpperCase()}`;
+          const st = String(t.status || '');
+          const pill = st === 'Completado'
+              ? { label: 'COMPLETADO', border: 'rgba(74,222,128,0.3)', color: '#4ADE80' }
+              : isInFlight(t)
+              ? { label: 'EN CURSO', border: 'rgba(255,255,255,0.14)', color: 'rgba(244,244,242,0.7)' }
+              : isFailedTx(t)
+              ? { label: st === 'Rechazado' ? 'RECHAZADO' : 'FALLIDO', border: 'rgba(248,113,113,0.35)', color: '#F87171' }
+              : { label: (st || 'PENDIENTE').toUpperCase(), border: 'rgba(255,255,255,0.14)', color: '#878E88' };
+          const failReason = isFailedTx(t) ? String(rd.error?.message ?? (typeof rd.error === 'string' ? rd.error : '') ?? '').slice(0, 220) : '';
+          const rateVal = t.mouvRate ?? rd.mouvRate;
+          const sub2 = t.type === 'convert' && rateVal ? `tasa ${Math.round(Number(rateVal)).toLocaleString('es-CO')}` : '';
+          return { kind, ticker, title, time, dest, rail, flag, reference, pill, failReason, sub2 };
+      };
+      const IconBox = (kind: string) => (
+          <span style={{ width: 32, height: 32, borderRadius: 9, flexShrink: 0, display: 'grid', placeItems: 'center', background: kind === 'in' ? 'rgba(74,222,128,0.1)' : 'rgba(255,255,255,0.055)' }}>
+              {kind === 'in' ? <ArrowDownLeft size={16} style={{ color: '#4ADE80' }} strokeWidth={1.8} />
+                  : kind === 'convert' ? <ArrowLeftRight size={16} style={{ color: '#F4F4F2' }} strokeWidth={1.8} />
+                  : <ArrowUpRight size={16} style={{ color: '#F4F4F2' }} strokeWidth={1.8} />}
+          </span>
+      );
+      const exportCsv = () => {
+          const esc = (v: any) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+          const lines = [['Fecha', 'Concepto', 'Destino', 'Riel', 'Referencia', 'Monto', 'Moneda', 'Estado'].join(';')];
+          rows.forEach(t => {
+              const i = rowInfo(t);
+              lines.push([t.createdAt ? new Date(t.createdAt).toLocaleString('es-CO') : '', i.title, i.dest, i.rail,
+                  t.providerRef ?? (t.raw_data as any)?.providerRef ?? i.reference,
+                  `${isTxCredit(t) ? '' : '-'}${t.amount}`, i.ticker, t.status ?? ''].map(esc).join(';'));
+          });
+          const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = `movimientos-lincoin-${new Date().toISOString().slice(0, 10)}.csv`;
+          a.click();
+          URL.revokeObjectURL(a.href);
+      };
+      const monthLabel = new Date().toLocaleDateString('es-CO', { month: 'long', year: 'numeric' });
+      const secBtn: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 7, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', borderRadius: 9, padding: '10px 14px', fontSize: 13.5, fontWeight: 600, color: '#F4F4F2' };
+      const pagerBtn: React.CSSProperties = { ...secBtn, padding: '8px 14px', fontSize: 12.5 };
+      const headSt: React.CSSProperties = { fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: '#878E88' };
+      const GRID = 'minmax(0,1fr) 200px 130px 130px 110px';
+      const CHIPS: [typeof movChip, string, number][] = [['all', 'Todos', counts.all], ['in', 'Entradas', counts.in], ['out', 'Salidas', counts.out], ['convert', 'Conversiones', counts.convert], ['inflight', 'En curso', counts.inflight]];
+      const flagCo = (size: number) => (
+          <span style={{ width: size, height: size, borderRadius: '50%', overflow: 'hidden', flexShrink: 0, display: 'block', background: '#2E3330' }}>
+              <img src={flagUrl('co')} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+          </span>
+      );
+      let lastDay = '';
+      return (
+      <div className="animate-in fade-in duration-300 pt-6" style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+          {/* 1. Encabezado */}
+          <div className="flex flex-wrap items-end justify-between gap-3">
+              <div>
+                  <h2 style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-0.8px', color: '#F4F4F2' }}>Movimientos</h2>
+                  <p style={{ fontSize: 14, color: '#878E88', marginTop: 3 }}>{all.length} operaciones · {monthLabel}</p>
               </div>
-          </div>
-          {/* Buscador + filtros */}
-          <div className="space-y-3">
-              <div className="flex items-center gap-2">
-                  <div className="relative flex-1">
-                      <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                      <input value={movSearch} onChange={e => setMovSearch(e.target.value)}
-                          placeholder="Buscar por concepto, monto, beneficiario…"
-                          className="w-full h-11 pl-9 pr-3 rounded-xl border border-slate-200 text-sm outline-none focus:border-[#4ADE80]" />
-                  </div>
-                  <button type="button" onClick={() => setMovShowFilters(v => !v)} title="Filtros"
-                      className={`relative h-11 px-3.5 rounded-xl border text-sm font-bold flex items-center gap-2 transition-colors ${movShowFilters || movActiveFilters ? 'bg-[#0C0E0D] text-white border-[#0C0E0D]' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>
-                      <SlidersHorizontal size={16} />
-                      <span className="hidden sm:inline">Filtros</span>
-                      {movActiveFilters > 0 && <span className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-[#4ADE80] text-[#0C0E0D] text-[10px] font-black flex items-center justify-center">{movActiveFilters}</span>}
+              <div className="flex flex-wrap" style={{ gap: 8 }}>
+                  <button type="button" onClick={() => setMovShowFilters(v => !v)} style={secBtn} className="hover:bg-white/[0.09] transition-colors">
+                      <SlidersHorizontal size={15} strokeWidth={1.7} />
+                      {movDateFrom || movDateTo ? `${movDateFrom || '…'} – ${movDateTo || '…'}` : 'Rango y filtros'}
+                      {movActiveFilters > 0 && <span style={{ minWidth: 18, height: 18, borderRadius: 999, border: '1px solid rgba(74,222,128,0.35)', color: '#4ADE80', fontSize: 10.5, fontWeight: 800, display: 'grid', placeItems: 'center', padding: '0 4px' }}>{movActiveFilters}</span>}
+                  </button>
+                  <button type="button" onClick={exportCsv} style={secBtn} className="hover:bg-white/[0.09] transition-colors">
+                      <Download size={15} strokeWidth={1.7} /> Exportar CSV
                   </button>
               </div>
-              {movShowFilters && (
+          </div>
+
+          {/* 2. Resumen del período (se recalcula con filtros/chips activos) */}
+          <div className="grid grid-cols-1 sm:grid-cols-3" style={{ gap: 14 }}>
+              {[
+                  { l: 'Entradas del período', v: `+${fmtCop(inSum)} COP eq.`, c: '#4ADE80' },
+                  { l: 'Salidas del período', v: `−${fmtCop(outSum)} COP eq.`, c: '#F4F4F2' },
+                  { l: 'En curso', v: `${flight.length} envío${flight.length === 1 ? '' : 's'} · ${fmtCop(flightSum)} COP eq.`, c: '#F4F4F2' },
+              ].map(card => (
+                  <div key={card.l} style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, padding: '16px 20px' }}>
+                      <p style={{ fontSize: 11.5, color: '#878E88' }}>{card.l}</p>
+                      <p style={{ fontSize: 20, fontWeight: 800, color: card.c, marginTop: 5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{card.v}</p>
+                  </div>
+              ))}
+          </div>
+
+          {/* 3. Buscador + chips de filtro */}
+          <div className="flex flex-wrap items-center" style={{ gap: 10 }}>
+              <div className="relative w-full sm:w-auto" style={{ maxWidth: 440, flex: '1 1 260px' }}>
+                  <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: '#878E88' }} />
+                  <input value={movSearch} onChange={e => { setMovSearch(e.target.value); setMovPage(1); }}
+                      placeholder="Buscar por beneficiario, referencia o monto"
+                      style={{ width: '100%', height: 42, paddingLeft: 36, paddingRight: 12, borderRadius: 9, fontSize: 13, background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.08)', color: '#F4F4F2', outline: 'none' }} />
+              </div>
+              <div className="flex items-center overflow-x-auto" style={{ gap: 7 }}>
+                  {CHIPS.map(([k, lbl, n]) => {
+                      const on = movChip === k;
+                      return (
+                          <button key={k} type="button" onClick={() => { setMovChip(k); setMovPage(1); }}
+                              style={{ borderRadius: 999, padding: '8px 16px', fontSize: 12.5, whiteSpace: 'nowrap', fontWeight: on ? 700 : 500, border: on ? '1px solid rgba(74,222,128,0.35)' : '1px solid rgba(255,255,255,0.1)', background: on ? 'rgba(74,222,128,0.07)' : 'transparent', color: on ? '#F4F4F2' : '#878E88' }}>
+                              {lbl} · {n}
+                          </button>
+                      );
+                  })}
+              </div>
+          </div>
+          {movShowFilters && (
                   <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-4">
                       {/* Estado */}
                       <div>
@@ -1761,34 +2741,114 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       )}
                   </div>
               )}
-          </div>
 
-          <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-             {getFilteredMovements(null, { full: true }).map(tx => (
-                 <button key={tx.id} type="button" onClick={() => setSelectedTx(tx)} className="w-full p-4 border-b border-slate-50 flex justify-between items-center gap-3 hover:bg-slate-50 transition-colors text-left cursor-pointer">
-                    <div className="flex items-center gap-4 min-w-0">
-                        <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-xs shrink-0 ${isTxCredit(tx) ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600'}`}>
-                            {tx.initials}
-                        </div>
-                        <div className="min-w-0">
-                            <p className="font-bold text-slate-800 text-sm truncate">{tx.title}</p>
-                            <div className="flex items-center gap-2 mt-0.5">
-                                <p className="text-xs text-slate-400">{tx.date}</p>
-                                {tx.status && (
-                                    <span className={`inline-block px-2 py-0.5 rounded-full text-[9px] font-bold uppercase border ${movStatusStyle(tx.status)}`}>{movStatusLabel(tx.status)}</span>
-                                )}
-                            </div>
-                        </div>
-                    </div>
-                    <span className={`font-bold text-sm shrink-0 ${isTxCredit(tx) ? 'text-green-600' : 'text-slate-800'}`}>
-                        {isTxCredit(tx) ? '+' : '-'} {formatMoney(tx.amount, tx.currency)}
-                    </span>
-                 </button>
-             ))}
-             {getFilteredMovements(null, { full: true }).length === 0 && <div className="p-12 text-center text-slate-400">No hay movimientos para mostrar.</div>}
+          {/* 4. Tabla agrupada por día */}
+          <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, overflow: 'hidden' }}>
+             {/* Encabezados de columna (solo desktop) */}
+             <div className="hidden lg:grid" style={{ gridTemplateColumns: GRID, gap: 12, padding: '9px 22px' }}>
+                 <span style={headSt}>CONCEPTO</span>
+                 <span style={headSt}>DESTINO Y RIEL</span>
+                 <span style={headSt}>REFERENCIA</span>
+                 <span style={{ ...headSt, textAlign: 'right' }}>IMPORTE</span>
+                 <span style={{ ...headSt, textAlign: 'right' }}>ESTADO</span>
+             </div>
+             {pageRows.map(tx => {
+                 const i = rowInfo(tx);
+                 const day = dayLabelOf(tx);
+                 const showDay = day !== lastDay;
+                 lastDay = day;
+                 return (
+                 <React.Fragment key={tx.id}>
+                    {showDay && (
+                        <div style={{ ...headSt, padding: '8px 22px', borderTop: '1px solid rgba(255,255,255,0.05)', background: 'rgba(255,255,255,0.015)' }}>{day}</div>
+                    )}
+                    {/* Fila desktop (grid de columnas) */}
+                    <button type="button" onClick={() => setSelectedTx(tx)} title={i.failReason || undefined}
+                        className="hidden lg:grid w-full text-left hover:bg-white/[0.02] transition-colors cursor-pointer"
+                        style={{ gridTemplateColumns: GRID, gap: 12, padding: '13px 22px', borderTop: '1px solid rgba(255,255,255,0.05)', alignItems: 'center' }}>
+                        <span className="flex items-center" style={{ gap: 11, minWidth: 0 }}>
+                            {IconBox(i.kind)}
+                            <span style={{ minWidth: 0 }}>
+                                <span style={{ display: 'block', fontSize: 13.5, fontWeight: 600, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{i.title}</span>
+                                {i.time && <span style={{ display: 'block', fontSize: 11.5, color: '#878E88', marginTop: 1 }}>{i.time}</span>}
+                            </span>
+                        </span>
+                        <span className="flex items-center" style={{ gap: 7, minWidth: 0 }}>
+                            {i.flag && flagCo(18)}
+                            <span style={{ minWidth: 0 }}>
+                                <span style={{ display: 'block', fontSize: 12.5, fontWeight: 600, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{i.dest}</span>
+                                {i.rail && <span style={{ display: 'block', fontSize: 11, color: '#878E88', marginTop: 1 }}>{i.rail}</span>}
+                            </span>
+                        </span>
+                        <span style={{ fontSize: 11.5, color: '#878E88', fontFamily: 'ui-monospace, Menlo, monospace', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{i.reference}</span>
+                        <span style={{ textAlign: 'right' }}>
+                            {(() => { const rec = i.kind === 'in' || tx.type === 'convert'; return (
+                            <span style={{ display: 'block', fontSize: 13.5, fontWeight: 700, whiteSpace: 'nowrap', color: rec ? '#4ADE80' : '#F4F4F2' }}>
+                                {rec ? '+' : '−'}{formatMoney(tx.amount, tx.currency)} {i.ticker}
+                            </span>
+                            ); })()}
+                            {i.sub2 && <span style={{ display: 'block', fontSize: 11, color: '#878E88', marginTop: 1 }}>{i.sub2}</span>}
+                        </span>
+                        <span style={{ textAlign: 'right' }}>
+                            <span style={{ display: 'inline-block', padding: '3px 9px', borderRadius: 999, fontSize: 10.5, fontWeight: 700, border: `1px solid ${i.pill.border}`, color: i.pill.color, whiteSpace: 'nowrap' }}>{i.pill.label}</span>
+                        </span>
+                    </button>
+                    {/* Tarjeta móvil */}
+                    <button type="button" onClick={() => setSelectedTx(tx)} title={i.failReason || undefined}
+                        className="lg:hidden w-full text-left flex items-center hover:bg-white/[0.02] transition-colors cursor-pointer"
+                        style={{ gap: 11, padding: '13px 16px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                        {IconBox(i.kind)}
+                        <span style={{ minWidth: 0, flex: 1 }}>
+                            <span style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{i.title}</span>
+                            <span style={{ display: 'block', fontSize: 11, color: '#878E88', marginTop: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{[i.dest, i.rail].filter(Boolean).join(' · ')}</span>
+                        </span>
+                        <span style={{ textAlign: 'right', flexShrink: 0 }}>
+                            {(() => { const rec = i.kind === 'in' || tx.type === 'convert'; return (
+                            <span style={{ display: 'block', fontSize: 13, fontWeight: 700, whiteSpace: 'nowrap', color: rec ? '#4ADE80' : '#F4F4F2' }}>
+                                {rec ? '+' : '−'}{formatMoney(tx.amount, tx.currency)} {i.ticker}
+                            </span>
+                            ); })()}
+                            <span style={{ display: 'inline-block', marginTop: 3, padding: '2px 8px', borderRadius: 999, fontSize: 9.5, fontWeight: 700, border: `1px solid ${i.pill.border}`, color: i.pill.color }}>{i.pill.label}</span>
+                        </span>
+                    </button>
+                 </React.Fragment>
+                 );
+             })}
+             {rows.length === 0 && (
+                 <div className="p-12 text-center" style={{ color: '#878E88', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                     No hay movimientos para mostrar.
+                     {(() => {
+                         // Diagnóstico de la última lectura vacía (para depurar en
+                         // móvil, donde no hay consola). Lo escribe fetchData.
+                         try {
+                             const d = JSON.parse(localStorage.getItem('lincoin_tx_debug') || 'null');
+                             if (!d) return null;
+                             return (
+                                 <p style={{ fontSize: 10, color: '#6B726C', marginTop: 10, fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                                     dbg · edge:{d.edge ? `${d.edge.count ?? '—'}${d.edge.error ? ` (${String(d.edge.error).slice(0, 80)})` : ''}` : '—'}
+                                     {' '}· rpc:{d.rpcCount ?? '—'}{d.rpcErr ? ` (${String(d.rpcErr).slice(0, 60)})` : ''}
+                                     {' '}· sel:{d.directCount ?? '—'}{d.directErr ? ` (${String(d.directErr).slice(0, 60)})` : ''}
+                                     {' '}· u:{String(d.userId).slice(0, 8)}
+                                 </p>
+                             );
+                         } catch { return null; }
+                     })()}
+                 </div>
+             )}
+             {/* Paginación */}
+             {rows.length > 0 && (
+                 <div className="flex items-center justify-between flex-wrap" style={{ gap: 10, padding: '13px 22px', background: 'rgba(255,255,255,0.015)', borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+                     <span style={{ fontSize: 12, color: '#878E88' }}>Mostrando {(page - 1) * PER + 1}–{Math.min(page * PER, rows.length)} de {rows.length}</span>
+                     <div className="flex" style={{ gap: 8 }}>
+                         <button type="button" disabled={page <= 1} onClick={() => setMovPage(p => Math.max(1, p - 1))} style={{ ...pagerBtn, opacity: page <= 1 ? 0.4 : 1, cursor: page <= 1 ? 'default' : 'pointer' }}>Anterior</button>
+                         <button type="button" disabled={page >= maxPage} onClick={() => setMovPage(p => Math.min(maxPage, p + 1))} style={{ ...pagerBtn, opacity: page >= maxPage ? 0.4 : 1, cursor: page >= maxPage ? 'default' : 'pointer' }}>Siguiente</button>
+                     </div>
+                 </div>
+             )}
           </div>
       </div>
-  );
+      );
+  };
 
   const handleBrebMove = async () => {
     if (!currentUser?.id || brebMoving) return;
@@ -1796,9 +2856,48 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     const cop  = getBalance('COP');
     const breb = getBalance('COP_BREB');
     if (!amount || amount <= 0) { showToast('Ingresa un monto válido', 3000, 'error'); return; }
-    const source = brebDir === 'to_breb' ? cop : breb;
+    const source = brebDir === 'to_peso' ? breb : cop;
     if (amount > source) { showToast('Saldo insuficiente en la cuenta de origen', 3000, 'error'); return; }
     setBrebMoving(true);
+
+    // ── Saldo Lincoin → ACH: SOLICITUD con aprobación de Tesorería ──
+    // El respaldo del riel ACH vive en el proveedor: el equipo primero mueve
+    // el respaldo y luego aprueba. Aquí se DEBITA el COP (queda en espera) y
+    // se crea la solicitud Pendiente que el admin aprueba o rechaza.
+    if (brebDir === 'to_ach') {
+      // Se crea la SOLICITUD PRIMERO y solo si quedó registrada se debita el
+      // saldo. Antes se debitaba antes de insertar y, si el insert fallaba (p.
+      // ej. sesión sin JWT real), el cliente quedaba descontado SIN que
+      // Tesorería recibiera nada para aprobar — plata en el limbo.
+      let createdId: string | null = null;
+      try {
+        const { data: ins } = await supabase.from('transactions').insert({
+          user_id: currentUser.id,
+          type: 'rail_move', amount, currency: 'COP', status: 'Pendiente',
+          raw_data: {
+            initials: 'AC', fromRail: 'COP', toRail: 'COP_ACH',
+            title: 'Saldo Lincoin → ACH · en aprobación',
+            date: new Date().toLocaleDateString('es-CO'), createdAt: new Date().toISOString(),
+            userName: currentUser.name,
+          },
+        }).select('id').single();
+        createdId = (ins as any)?.id ?? null;
+      } catch { createdId = null; }
+      if (!createdId) {
+        setBrebMoving(false);
+        showToast('No pudimos registrar la solicitud y NO se descontó tu saldo. Intenta de nuevo en un momento.', 7000, 'error');
+        return;
+      }
+      // Solicitud registrada → ahora sí se debita (queda en espera de aprobación).
+      await updateUserProfile(currentUser.id, { balances: { COP: cop - amount } });
+      setBrebMoving(false);
+      setBrebMoveOpen(false);
+      setBrebAmountStr('');
+      showToast('✅ Solicitud enviada a Tesorería. Te avisamos cuando el saldo quede disponible en tu cuenta ACH.', 7000);
+      refreshData?.();
+      return;
+    }
+
     const newBalances = brebDir === 'to_breb'
       ? { COP: cop - amount, COP_BREB: breb + amount }
       : { COP: cop + amount, COP_BREB: breb - amount };
@@ -1827,139 +2926,257 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       const balance = displayBalance(selectedWalletCode);
       return (
           <div className="space-y-6 animate-in fade-in duration-300 pt-6">
-              <button onClick={() => setActiveView('dashboard')} style={{ color: '#121413' }} className="flex items-center gap-2 font-bold text-sm hover:text-[#0C0E0D] hover:underline">
-                  <ArrowLeft size={16} /> Volver al inicio
-              </button>
-              <div className="bg-gradient-to-br from-[#0C0E0D] to-[#0C0E0D] p-8 rounded-3xl text-white shadow-xl relative overflow-hidden">
-                  <div className="absolute top-0 right-0 w-64 h-64 bg-white/5 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2"></div>
-                  <div className="relative z-10">
-                      <div className="flex justify-between items-start mb-8">
-                          <div className="flex items-center gap-4">
-                              {wallet?.code === 'USD' ? (
-                                  <div className="w-14 h-10 rounded-lg shadow-md ring-2 ring-white/30 bg-white/15 flex items-center justify-center font-bold text-lg">₮</div>
-                              ) : (
-                                  <FlagImg code={wallet?.code ?? ''} className="w-14 h-10 object-cover rounded-lg shadow-md ring-2 ring-white/30" />
-                              )}
-                              <div><h2 className="text-2xl font-bold">{wallet?.name}</h2><p className="text-green-200">{wallet?.type}</p></div>
+              {/* Breadcrumb */}
+              <div className="flex items-center gap-2" style={{ fontSize: 13, color: '#878E88' }}>
+                  <button onClick={() => setActiveView('dashboard')} className="flex items-center gap-2 hover:text-[#F4F4F2] transition-colors"><ArrowLeft size={14} /> Billeteras</button>
+                  <span style={{ color: 'rgba(244,244,242,0.3)' }}>/</span>
+                  <span style={{ color: '#F4F4F2', fontWeight: 600 }}>{wallet?.name}</span>
+              </div>
+
+              {/* Selector de billetera (tabs) — SOLO en el detalle Dólar
+                  digital. En Peso colombiano no aplica (es cuenta local). */}
+              {selectedWalletCode === 'USD' && (() => {
+                  const usdShort = displayBalance('USD');
+                  const tabs: { code: string; name: string; badge: string; badgeColor: string; sym: string; sub: string; soon?: boolean }[] = [
+                      { code: 'USD', name: 'Dólar digital', badge: '#26A17B', badgeColor: '#fff', sym: '₮', sub: `${Number(usdShort).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT` },
+                      { code: '_EUR', name: 'Euro digital', badge: '#16A34A', badgeColor: '#fff', sym: '€', sub: 'EURC', soon: true },
+                      { code: '_USDBANK', name: 'Cuenta USD', badge: 'transparent', badgeColor: '#878E88', sym: '$', sub: 'ACH / wire', soon: true },
+                      { code: '_EURBANK', name: 'Cuenta EUR', badge: 'transparent', badgeColor: '#878E88', sym: '€', sub: 'SEPA / IBAN', soon: true },
+                  ];
+                  return (
+                  <div className="flex items-center overflow-x-auto" style={{ gap: 8, paddingBottom: 2 }}>
+                      {tabs.map(t => {
+                          const active = !t.soon && selectedWalletCode === t.code;
+                          return (
+                              <button key={t.code} type="button" disabled={t.soon}
+                                  onClick={() => { if (!t.soon) { setSelectedWalletCode(t.code); } }}
+                                  className="flex items-center transition-colors" style={{ gap: 9, flexShrink: 0, borderRadius: 11, padding: '10px 16px', cursor: t.soon ? 'default' : 'pointer',
+                                      border: active ? '1px solid rgba(74,222,128,0.35)' : t.soon ? '1px dashed rgba(255,255,255,0.14)' : '1px solid rgba(255,255,255,0.1)',
+                                      background: active ? 'rgba(74,222,128,0.06)' : t.soon ? 'transparent' : 'rgba(255,255,255,0.025)' }}>
+                                  <span style={{ width: 22, height: 22, borderRadius: '50%', flexShrink: 0, display: 'grid', placeItems: 'center', fontSize: 12, fontWeight: 800, color: t.badgeColor,
+                                      background: t.soon ? 'transparent' : t.badge, border: t.soon ? '1px solid rgba(255,255,255,0.18)' : 'none' }}>{t.sym}</span>
+                                  <span style={{ textAlign: 'left', whiteSpace: 'nowrap' }}>
+                                      <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: t.soon ? '#878E88' : '#F4F4F2' }}>{t.name}</span>
+                                      <span style={{ display: 'block', fontSize: 10.5, color: '#878E88', marginTop: 1 }}>{t.sub}</span>
+                                  </span>
+                                  {t.soon && <span style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: '0.5px', color: '#878E88', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 999, padding: '2px 6px', flexShrink: 0 }}>PRÓXIMO</span>}
+                              </button>
+                          );
+                      })}
+                  </div>
+                  );
+              })()}
+
+              {selectedWalletCode === 'COP' ? (() => {
+                  const _cop = getBalance('COP'), _breb = getBalance('COP_BREB'), _ach = getBalance('COP_ACH');
+                  const _total = _cop + _breb + _ach; const _rate = getRate('USD', 'COP');
+                  return (
+                  <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 16, padding: '26px 28px' }} className="flex flex-col lg:flex-row lg:items-start justify-between gap-8">
+                      <div>
+                          <div className="flex items-center gap-3">
+                              <div style={{ width: 38, height: 38, borderRadius: '50%', overflow: 'hidden', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+                                  <span style={{ height: '50%', background: '#FCD116' }} /><span style={{ height: '25%', background: '#003893' }} /><span style={{ height: '25%', background: '#CE1126' }} />
+                              </div>
+                              <div className="flex items-baseline gap-2.5">
+                                  <h2 style={{ fontSize: 21, fontWeight: 800, letterSpacing: '-0.6px', color: '#F4F4F2' }}>Peso colombiano</h2>
+                                  <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 10.5, fontWeight: 700, letterSpacing: '1px', padding: '3px 8px', borderRadius: 999 }}>COP</span>
+                              </div>
                           </div>
-                          <span className="bg-white/10 px-3 py-1 rounded-lg text-sm font-bold border border-white/20">{wallet?.code === 'USD' ? 'USDT' : wallet?.code}</span>
+                          <p style={{ fontSize: 13, color: '#878E88', marginTop: 3 }}>Cuenta local · Colombia · 3 rieles</p>
+                          <div style={{ marginTop: 22, display: 'flex', alignItems: 'baseline', gap: 10 }}>
+                              <span style={{ fontSize: 42, fontWeight: 800, letterSpacing: '-1.8px', lineHeight: 1, color: '#F4F4F2' }}>{Math.round(_total).toLocaleString('es-CO')}</span>
+                              <span style={{ fontSize: 16, fontWeight: 600, color: '#878E88' }}>COP</span>
+                          </div>
+                          <p style={{ marginTop: 9, fontSize: 13.5, color: '#878E88' }}>{_rate ? `≈ ${(_total / _rate).toLocaleString('es-CO', { maximumFractionDigits: 2 })} USDT · tasa ${Math.round(_rate).toLocaleString('es-CO')}` : 'Saldo Lincoin · Bre-B · ACH'}</p>
                       </div>
-                      <p className="text-5xl font-bold mb-8 tracking-tight">
-                          {formatMoney(balance, selectedWalletCode)}
-                          {selectedWalletCode === 'USD' && (
-                              <span className="text-base font-normal text-green-200 ml-2">
-                                  {gasfreeBalChecked ? (gasfreeBal != null ? 'saldo real en tu wallet GasFree' : 'sin conexión — mostrando último saldo conocido') : 'consultando saldo real…'}
-                              </span>
-                          )}
-                      </p>
-                      <div className="flex gap-4">
-                          <button onClick={() => { handleLoadClick(selectedWalletCode); }} disabled={isBlocked} className={`flex-1 text-[#0C0E0D] py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 transition-colors ${isBlocked ? 'bg-slate-400 cursor-not-allowed opacity-70' : 'bg-[#4ADE80] hover:bg-[#22C55E]'}`}><Plus size={18} /> Cargar</button>
-                          <button onClick={() => { if(!handleActionRestricted()) setIsSendModalOpen(true); }} disabled={isBlocked || !isKycVerified} className={`flex-1 text-white border py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 transition-colors ${isBlocked || !isKycVerified ? 'bg-white/10 border-white/10 cursor-not-allowed opacity-70' : 'bg-white/10 border-white/20 hover:bg-white/20'}`}><Send size={18} /> Enviar</button>
+                      <div className="flex gap-2.5 flex-wrap">
+                          <button onClick={() => { setSelectedWalletCode('USD'); setActiveView('mouv'); }} style={{ background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 13.5, padding: '11px 18px', borderRadius: 9 }} className="hover:bg-white/[0.09] transition-colors flex items-center gap-2"><RefreshCw size={15} /> Convertir</button>
+                          <button onClick={() => handleLoadClick('COP')} style={{ background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 13.5, padding: '11px 18px', borderRadius: 9 }} className="hover:bg-white/[0.09] transition-colors flex items-center gap-2"><Plus size={15} /> Cargar</button>
+                          <button onClick={() => { openSendMoney(); }} disabled={isBlocked || !isKycVerified} style={{ fontWeight: 700, fontSize: 13.5, padding: '11px 20px', borderRadius: 9, opacity: (isBlocked || !isKycVerified) ? 0.6 : 1 }} className="lincoin-btn-white transition-colors flex items-center gap-2"><Send size={15} /> Enviar dinero</button>
                       </div>
                   </div>
-              </div>
+                  );
+              })() : (
+              (() => {
+                  const addr = usdtAddr || '';
+                  const addrShort = addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : 'Generando dirección…';
+                  const bal = displayBalance('USD');
+                  const parts = Number(bal).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).split(',');
+                  return (
+                  <div className="grid gap-4" style={{ gridTemplateColumns: 'minmax(0,1fr)' }}>
+                      <div className="grid gap-4" style={{ gridTemplateColumns: '1fr', ...( {} ) }}>
+                          <div className="grid gap-4 lg:grid-cols-[1fr_340px]">
+                              {/* Tarjeta de saldo */}
+                              <div style={{ position: 'relative', overflow: 'hidden', background: 'linear-gradient(150deg, #101312 0%, #0C0E0D 55%, #0A0C0B 100%)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 16, padding: '26px 28px' }}>
+                                  <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(circle at 92% 0%, rgba(74,222,128,0.1), transparent 42%)', pointerEvents: 'none' }} />
+                                  <div style={{ position: 'relative' }}>
+                                      <div className="flex items-start justify-between" style={{ gap: 10 }}>
+                                      <div className="flex items-center flex-wrap" style={{ gap: 10 }}>
+                                          <span style={{ width: 40, height: 40, borderRadius: '50%', background: '#26A17B', color: '#fff', fontWeight: 800, fontSize: 21, display: 'grid', placeItems: 'center', flexShrink: 0 }}>₮</span>
+                                          <div>
+                                              <div className="flex items-center" style={{ gap: 8 }}>
+                                                  <span style={{ fontSize: 16, fontWeight: 700, color: '#F4F4F2' }}>Dólar digital</span>
+                                                  <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 9, fontWeight: 700, letterSpacing: '0.7px', padding: '3px 7px', borderRadius: 999 }}>PRINCIPAL</span>
+                                              </div>
+                                              <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 2 }}>USDT · red GasFree (TRON) · 1 USDT = 1 USD</p>
+                                          </div>
+                                      </div>
+                                      {/* Esquina superior: archivo de wallets anteriores + generar nueva
+                                          (MANUAL — la wallet nunca cambia sola). */}
+                                      <div className="flex items-center" style={{ gap: 6, flexShrink: 0 }}>
+                                          <button onClick={openWalletArchive} title="Ver mis wallets anteriores (archivadas)"
+                                              className="flex items-center justify-center hover:bg-white/[0.09] transition-colors"
+                                              style={{ width: 34, height: 34, borderRadius: 9, color: '#878E88', background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.1)' }}>
+                                              <Archive size={16} />
+                                          </button>
+                                          <button onClick={() => { setRegenError(null); setRegenConfirmOpen(true); }} title="Generar una nueva wallet de depósito"
+                                              className="flex items-center justify-center hover:bg-white/[0.09] transition-colors"
+                                              style={{ width: 34, height: 34, borderRadius: 9, color: '#4ADE80', background: 'rgba(74,222,128,0.08)', border: '1px solid rgba(74,222,128,0.22)' }}>
+                                              <Plus size={17} />
+                                          </button>
+                                      </div>
+                                  </div>
+                                      <div style={{ marginTop: 22, display: 'flex', alignItems: 'baseline', gap: 4 }}>
+                                          <span style={{ fontSize: 46, fontWeight: 800, letterSpacing: '-1.8px', lineHeight: 1, color: '#F4F4F2' }}>{parts[0]}</span>
+                                          <span style={{ fontSize: 28, fontWeight: 800, color: '#878E88' }}>,{parts[1]}</span>
+                                          <span style={{ fontSize: 17, fontWeight: 600, color: '#878E88', marginLeft: 6 }}>USDT</span>
+                                      </div>
+                                      <div className="flex items-center justify-between flex-wrap" style={{ gap: 12, marginTop: 20, paddingTop: 16, borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+                                          <div className="flex" style={{ gap: 26 }}>
+                                              <div><p style={{ fontSize: 11, color: '#878E88' }}>Disponible</p><p style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2', marginTop: 2 }}>{Number(bal).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p></div>
+                                              <div><p style={{ fontSize: 11, color: '#878E88' }}>Retenido</p><p style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2', marginTop: 2 }}>0,00</p></div>
+                                              <div><p style={{ fontSize: 11, color: '#878E88' }}>Red</p><p style={{ fontSize: 13.5, fontWeight: 700, color: '#4ADE80', marginTop: 2 }}>{gasfreeBalChecked ? 'Conectada' : '…'}</p></div>
+                                          </div>
+                                          <svg width="120" height="34" viewBox="0 0 120 34" fill="none" style={{ flexShrink: 0 }}>
+                                              <path d="M2 26 L20 22 L38 24 L56 16 L74 18 L92 9 L118 6" stroke="#4ADE80" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                                          </svg>
+                                      </div>
+                                  </div>
+                              </div>
+
+                              {/* Panel de acciones */}
+                              <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 16, padding: 20, display: 'flex', flexDirection: 'column', gap: 9 }}>
+                                  <button onClick={() => openUsdtDeposit()} disabled={isBlocked} className="lincoin-btn-white transition-colors flex items-center justify-center" style={{ gap: 8, width: '100%', padding: '13px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, border: 'none', opacity: isBlocked ? 0.6 : 1 }}><ArrowDownLeft size={16} /> Cargar</button>
+                                  <div className="flex" style={{ gap: 9 }}>
+                                      <button onClick={() => { openSendMoney(); }} disabled={isBlocked || !isKycVerified} className="flex-1 flex items-center justify-center hover:bg-white/[0.09] transition-colors" style={{ gap: 7, padding: '12px 0', borderRadius: 10, fontSize: 13, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', opacity: (isBlocked || !isKycVerified) ? 0.5 : 1 }}><Send size={15} /> Enviar</button>
+                                      <button onClick={() => { setOtcRail(null); setMouvMode('converter'); setSelectedWalletCode('USD'); setActiveView('mouv'); }} className="flex-1 flex items-center justify-center hover:bg-white/[0.09] transition-colors" style={{ gap: 7, padding: '12px 0', borderRadius: 10, fontSize: 13, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)' }}><ArrowLeftRight size={15} /> Mesa OTC</button>
+                                  </div>
+                                  <div style={{ marginTop: 8, paddingTop: 14, borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+                                      <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88' }}>DIRECCIÓN DE DEPÓSITO</p>
+                                      <div className="flex items-center justify-between" style={{ gap: 8, marginTop: 8 }}>
+                                          <span style={{ fontSize: 12.5, fontWeight: 600, color: '#F4F4F2', fontFamily: 'ui-monospace, Menlo, monospace' }}>{addrShort}</span>
+                                          <button onClick={() => { if (addr) navigator.clipboard?.writeText(addr).then(() => showToast('Dirección copiada')).catch(() => {}); }} disabled={!addr} className="flex items-center hover:opacity-80 transition-opacity" style={{ gap: 5, fontSize: 12, fontWeight: 700, color: '#4ADE80' }}><Copy size={12} /> Copiar</button>
+                                      </div>
+                                      <p style={{ fontSize: 10.5, color: '#878E88', marginTop: 7 }}>Solo USDT · red TRON (TRC-20). Enviar otra moneda o red puede perder los fondos.</p>
+                                  </div>
+                              </div>
+                          </div>
+                      </div>
+                  </div>
+                  );
+              })())}
 
               {/* La billetera Colombia (COP) contiene el saldo interno (Peso Lincoin)
                   y DOS rieles de dispersión vía Mouv: BreB (inmediato 24/7) y
                   ACH (L-V). Saldos separados con claves COP_BREB y COP_ACH. */}
               {selectedWalletCode === 'COP' && (() => {
+                  const cop = getBalance('COP');
                   const brebBal = getBalance('COP_BREB');
                   const achBal = getBalance('COP_ACH');
+                  // Estado del riel ACH: L–V 7:00–18:00 hora Colombia (UTC-5).
+                  const _cot = new Date(Date.now() - 5 * 3600 * 1000);
+                  const _dow = _cot.getUTCDay(); const _hr = _cot.getUTCHours();
+                  const achOpen = _dow >= 1 && _dow <= 5 && _hr >= 7 && _hr < 18;
                   return (
                   <>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                      <div className="bg-white rounded-2xl border border-slate-200 p-5">
-                          <div className="flex items-center justify-between mb-2">
-                              <div className="flex items-center gap-2">
-                                  <div className="w-9 h-9 rounded-xl bg-[#0C0E0D] flex items-center justify-center">
-                                      <Wallet size={16} className="text-[#4ADE80]" />
+                  <div>
+                    <div className="flex items-baseline justify-between" style={{ marginBottom: 13 }}>
+                        <div className="flex items-baseline gap-2.5 flex-wrap">
+                            <span style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>Rieles de esta cuenta</span>
+                            <span style={{ fontSize: 12.5, color: '#878E88' }}>Cómo entra y sale el dinero en Colombia</span>
+                        </div>
+                    </div>
+                    <div className="grid gap-3.5" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
+                      {/* Riel 1 — Saldo Lincoin (principal) */}
+                      <div style={{ background: '#0C0E0D', border: '1px solid rgba(74,222,128,0.28)', borderRadius: 14, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                          <div style={{ padding: '18px 20px 16px', flex: 1 }}>
+                              <div className="flex items-start justify-between" style={{ gap: 10 }}>
+                                  <div className="flex items-center gap-2.5">
+                                      <div style={{ width: 34, height: 34, borderRadius: 10, background: 'rgba(255,255,255,0.055)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><Wallet size={17} style={{ color: '#F4F4F2' }} /></div>
+                                      <div>
+                                          <p style={{ fontSize: 14.5, fontWeight: 700, color: '#F4F4F2' }}>Saldo Lincoin</p>
+                                          <p style={{ fontSize: 11, color: '#878E88' }}>Cuenta principal · COP</p>
+                                      </div>
                                   </div>
-                                  <div>
-                                      <p className="font-bold text-slate-800 text-sm">Peso Lincoin</p>
-                                      <p className="text-[10px] uppercase tracking-wider text-slate-500">Cuenta principal · COP</p>
-                                  </div>
+                                  <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 9, fontWeight: 700, letterSpacing: '0.7px', padding: '3px 7px', borderRadius: 999, whiteSpace: 'nowrap' }}>PRINCIPAL</span>
                               </div>
-                              {mouvBal != null && (
-                                  <span className="text-[9px] font-bold uppercase bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full">
-                                      ● Conectado a la red bancaria
-                                  </span>
-                              )}
-                          </div>
-                          <p className="text-2xl font-bold text-[#0C0E0D] font-mono">
-                              {formatMoney(mouvBal ?? balance, 'COP')}
-                          </p>
-                          <p className="text-[11px] text-slate-500 mt-1">
-                              {mouvBal != null
-                                  ? 'Saldo real de tu cuenta de dispersión — es el que se usa para transferir.'
-                                  : mouvChecked
-                                      ? 'Tu saldo interno Lincoin: cargas, envíos entre usuarios y conversiones.'
-                                      : 'Saldo interno Lincoin · consultando…'}
-                          </p>
-                      </div>
-
-                      <div className="bg-white rounded-2xl border-2 border-[#4ADE80]/40 p-5 relative overflow-hidden">
-                          <div className="absolute -right-8 -top-8 w-28 h-28 bg-[#4ADE80]/10 rounded-full blur-2xl"></div>
-                          <div className="flex items-center justify-between mb-2 relative z-10">
-                              <div className="flex items-center gap-2">
-                                  <div className="w-9 h-9 rounded-xl bg-[#4ADE80] flex items-center justify-center">
-                                      <Zap size={16} className="text-[#0C0E0D]" />
-                                  </div>
-                                  <div>
-                                      <p className="font-bold text-slate-800 text-sm">BreB Lincoin</p>
-                                      <p className="text-[10px] uppercase tracking-wider text-slate-500">Pagos instantáneos Bre-B · Solo Colombia</p>
-                                  </div>
+                              <p style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-1px', color: '#F4F4F2', marginTop: 16 }}>{Math.round(cop).toLocaleString('es-CO')}</p>
+                              <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '8px 0 0' }}>Cargas, envíos entre usuarios de Lincoin y conversiones a USDT.</p>
+                              <div className="flex items-center" style={{ gap: 7, marginTop: 12 }}>
+                                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#4ADE80' }} />
+                                  <span style={{ fontSize: 11.5, color: '#878E88' }}>Disponible 24/7 · sin comisión interna</span>
                               </div>
-                              <span className="text-[9px] font-bold uppercase bg-[#4ADE80]/15 text-[#16A34A] px-2 py-0.5 rounded-full">Bre-B</span>
                           </div>
-                          <p className="text-2xl font-bold text-[#0C0E0D] font-mono relative z-10">{formatMoney(brebBal, 'COP')}</p>
-                          <p className="text-[11px] text-slate-600 mt-1 relative z-10">
-                              Saldo para dispersar a cuentas bancarias en Colombia en segundos, por el riel Bre-B.
-                          </p>
-                          <div className="flex gap-2 mt-3 relative z-10">
-                              <button
-                                  onClick={() => { setBrebMoveOpen(!brebMoveOpen); setBrebDir('to_breb'); }}
-                                  className="flex-1 py-2.5 rounded-xl bg-white border border-slate-300 text-[#0C0E0D] text-sm font-bold flex items-center justify-center gap-1.5 hover:bg-slate-50 transition-colors"
-                              >
-                                  <RefreshCw size={14} /> Mover saldo
-                              </button>
-                              <button
-                                  onClick={() => { setMouvMode('full'); setActiveView('mouv'); }}
-                                  disabled={brebBal <= 0}
-                                  className="flex-1 py-2.5 rounded-xl bg-[#4ADE80] hover:bg-[#6EE7A0] text-[#0C0E0D] text-sm font-bold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
-                              >
-                                  <Send size={14} /> Dispersar
-                              </button>
+                          <div style={{ padding: '11px 20px', borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.015)', display: 'flex', gap: 13, flexWrap: 'wrap' }}>
+                              <button onClick={() => { setPseAmount(''); setPseResult(null); setPseOpen(true); }} style={{ fontSize: 12, fontWeight: 600, color: '#4ADE80' }} className="hover:opacity-80 transition-opacity">Cobrar por link</button>
+                              <button onClick={() => { setBrebMoveOpen(true); setBrebDir('to_breb'); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Mover a otro riel</button>
                           </div>
                       </div>
 
-                      {/* Sub-wallet ACH (riel Mouv, horario hábil) */}
-                      <div className="bg-white rounded-2xl border-2 border-slate-300 p-5 relative overflow-hidden">
-                          <div className="absolute -right-8 -top-8 w-28 h-28 bg-slate-200/50 rounded-full blur-2xl"></div>
-                          <div className="flex items-center justify-between mb-2 relative z-10">
-                              <div className="flex items-center gap-2">
-                                  <div className="w-9 h-9 rounded-xl bg-[#0C0E0D] flex items-center justify-center text-base">🏦</div>
-                                  <div>
-                                      <p className="font-bold text-slate-800 text-sm">ACH Lincoin</p>
-                                      <p className="text-[10px] uppercase tracking-wider text-slate-500">Transferencias ACH · L-V 7am–6pm</p>
+                      {/* Riel 2 — Bre-B */}
+                      <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                          <div style={{ padding: '18px 20px 16px', flex: 1 }}>
+                              <div className="flex items-start justify-between" style={{ gap: 10 }}>
+                                  <div className="flex items-center gap-2.5">
+                                      <div style={{ width: 34, height: 34, borderRadius: 10, background: 'rgba(255,255,255,0.055)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><Zap size={17} style={{ color: '#F4F4F2' }} /></div>
+                                      <div>
+                                          <p style={{ fontSize: 14.5, fontWeight: 700, color: '#F4F4F2' }}>Bre-B</p>
+                                          <p style={{ fontSize: 11, color: '#878E88' }}>Pagos inmediatos · Colombia</p>
+                                      </div>
                                   </div>
+                                  <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9, fontWeight: 700, letterSpacing: '0.7px', padding: '3px 7px', borderRadius: 999, whiteSpace: 'nowrap' }}>SEGUNDOS</span>
                               </div>
-                              <span className="text-[9px] font-bold uppercase bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">ACH</span>
+                              <p style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-1px', color: '#F4F4F2', marginTop: 16 }}>{Math.round(brebBal).toLocaleString('es-CO')}</p>
+                              <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '8px 0 0' }}>Dispersa a cuentas bancarias colombianas por llave Bre-B en segundos.</p>
+                              <div className="flex items-center" style={{ gap: 7, marginTop: 12 }}>
+                                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#4ADE80' }} />
+                                  <span style={{ fontSize: 11.5, color: '#878E88' }}>Operativo 24/7 · hasta 50 M por envío</span>
+                              </div>
                           </div>
-                          <p className="text-2xl font-bold text-[#0C0E0D] font-mono relative z-10">{formatMoney(achBal, 'COP')}</p>
-                          <p className="text-[11px] text-slate-600 mt-1 relative z-10">
-                              Saldo para dispersar a cuentas bancarias en Colombia por el riel ACH, en horario hábil.
-                          </p>
-                          <div className="flex gap-2 mt-3 relative z-10">
-                              <button
-                                  onClick={() => { setMouvMode('full'); setActiveView('mouv'); }}
-                                  disabled={achBal <= 0}
-                                  className="flex-1 py-2.5 rounded-xl bg-[#0C0E0D] hover:bg-[#121413] text-white text-sm font-bold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
-                              >
-                                  <Send size={14} /> Dispersar
-                              </button>
+                          <div style={{ padding: '11px 20px', borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.015)', display: 'flex', gap: 13 }}>
+                              <button onClick={() => { setDispersRail('COP_BREB'); setMouvMode('full'); setActiveView('mouv'); }} disabled={brebBal <= 0} style={{ fontSize: 12, fontWeight: 600, color: brebBal <= 0 ? '#878E88' : '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors disabled:cursor-not-allowed">Dispersar</button>
+                              <button onClick={() => { setBrebMoveOpen(true); setBrebDir('to_peso'); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Mover saldo</button>
                           </div>
                       </div>
+
+                      {/* Riel 3 — ACH (horario) */}
+                      <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                          <div style={{ padding: '18px 20px 16px', flex: 1 }}>
+                              <div className="flex items-start justify-between" style={{ gap: 10 }}>
+                                  <div className="flex items-center gap-2.5">
+                                      <div style={{ width: 34, height: 34, borderRadius: 10, background: 'rgba(255,255,255,0.055)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><Landmark size={17} style={{ color: '#F4F4F2' }} /></div>
+                                      <div>
+                                          <p style={{ fontSize: 14.5, fontWeight: 700, color: '#F4F4F2' }}>ACH</p>
+                                          <p style={{ fontSize: 11, color: '#878E88' }}>Transferencias interbancarias</p>
+                                      </div>
+                                  </div>
+                                  <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9, fontWeight: 700, letterSpacing: '0.7px', padding: '3px 7px', borderRadius: 999, whiteSpace: 'nowrap' }}>HORARIO</span>
+                              </div>
+                              <p style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-1px', color: '#F4F4F2', marginTop: 16 }}>{Math.round(achBal).toLocaleString('es-CO')}</p>
+                              <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '8px 0 0' }}>Dispersa a cualquier cuenta en Colombia por el riel ACH tradicional.</p>
+                              <div className="flex items-center" style={{ gap: 7, marginTop: 12 }}>
+                                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: achOpen ? '#4ADE80' : '#878E88' }} />
+                                  <span style={{ fontSize: 11.5, color: '#878E88' }}>L–V 7:00–18:00 · {achOpen ? 'operativo ahora' : 'fuera de horario'}</span>
+                              </div>
+                          </div>
+                          <div style={{ padding: '11px 20px', borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.015)', display: 'flex', gap: 13 }}>
+                              <button onClick={() => { if (achOpen) { setDispersRail('COP_ACH'); setMouvMode('full'); setActiveView('mouv'); } }} disabled={!achOpen || achBal <= 0} title={achOpen ? '' : 'Disponible L–V 7:00–18:00 hora Colombia'} style={{ fontSize: 12, fontWeight: 600, color: (!achOpen || achBal <= 0) ? '#878E88' : '#F4F4F2', cursor: achOpen ? 'pointer' : 'not-allowed' }} className="transition-colors">Dispersar</button>
+                              <button onClick={() => { setBrebMoveOpen(true); setBrebDir('to_peso'); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Mover saldo</button>
+                          </div>
+                      </div>
+                    </div>
                   </div>
+
 
                   {brebMoveOpen && (
                       <div className="bg-white rounded-2xl border border-slate-200 p-5">
@@ -1980,11 +3197,17 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       >
                                           BreB → Peso 🏦
                                       </button>
+                                      <button
+                                          onClick={() => setBrebDir('to_ach')}
+                                          className={`flex-1 py-2 rounded-xl text-xs font-bold border transition-colors ${brebDir === 'to_ach' ? 'bg-[#0C0E0D] border-transparent' : 'bg-white text-slate-600 border-slate-200'}`}
+                                      >
+                                          Peso → ACH 🏛
+                                      </button>
                                   </div>
                               </div>
                               <div className="flex-1">
                                   <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                                      Monto (disponible: {formatMoney(brebDir === 'to_breb' ? balance : brebBal, 'COP')})
+                                      Monto (disponible: {formatMoney(brebDir === 'to_peso' ? brebBal : balance, 'COP')})
                                   </label>
                                   <input
                                       inputMode="numeric"
@@ -2003,7 +3226,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               </button>
                           </div>
                           <p className="text-[10px] text-slate-400 mt-2">
-                              El movimiento es inmediato y queda registrado en tus movimientos.
+                              {brebDir === 'to_ach'
+                                  ? 'El paso a ACH requiere APROBACIÓN de Tesorería: el saldo queda en espera y te avisamos cuando esté disponible en tu cuenta ACH (suele tardar poco).'
+                                  : 'El movimiento es inmediato y queda registrado en tus movimientos.'}
                           </p>
                       </div>
                   )}
@@ -2011,30 +3236,76 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   );
               })()}
 
-              <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-                  <div className="p-4 border-b border-slate-100 font-bold text-slate-800">Movimientos de esta cuenta</div>
-                  {getFilteredMovements(selectedWalletCode).map(tx => (
-                       <button key={tx.id} type="button" onClick={() => setSelectedTx(tx)} className="w-full p-4 border-b border-slate-50 flex justify-between items-center hover:bg-slate-50 text-left cursor-pointer">
-                           <div className="flex items-center gap-3">
-                               <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs ${isTxCredit(tx) ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600'}`}>{tx.initials}</div>
-                               <div>
-                                   <p className="font-bold text-slate-800 text-sm">{tx.title}</p>
-                                   <p className="text-xs text-slate-400">
-                                       {tx.date}
-                                       {(tx.gasfree === true || tx.raw_data?.gasfree === true) && (tx.feeChargedUsdt ?? tx.raw_data?.feeChargedUsdt) != null && (
-                                           <span> · comisión {Number(tx.feeChargedUsdt ?? tx.raw_data?.feeChargedUsdt).toFixed(2)} USDT</span>
-                                       )}
-                                   </p>
-                               </div>
-                           </div>
-                           <span className={`font-bold text-sm ${isTxCredit(tx) ? 'text-green-600' : 'text-slate-800'}`}>{isTxCredit(tx) ? '+' : '-'} {formatMoney(tx.amount, tx.currency)}</span>
-                       </button>
-                  ))}
-                  {getFilteredMovements(selectedWalletCode).length === 0 && <div className="p-12 text-center text-slate-400 text-sm">Sin movimientos recientes en {selectedWalletCode}</div>}
+              {(() => {
+                  const rows = getFilteredMovements(selectedWalletCode);
+                  const isUsdtCur = (c?: string) => ['USD', 'USDT'].includes(String(c || '').split('_')[0]);
+                  const isConv = (t: any) => t.type === 'convert' || t.type === 'breb_move' || t.type === 'rail_move';
+                  const inFlight = (t: any) => ['Procesando', 'Pendiente'].includes(String(t.status || ''));
+                  const failed = (t: any) => ['Fallido', 'Rechazado'].includes(String(t.status || ''));
+                  const pillOf = (t: any) => String(t.status) === 'Completado' ? { l: 'LIQUIDADO', b: 'rgba(74,222,128,0.3)', c: '#4ADE80' }
+                      : inFlight(t) ? { l: 'EN CURSO', b: 'rgba(255,255,255,0.14)', c: 'rgba(244,244,242,0.7)' }
+                      : failed(t) ? { l: String(t.status) === 'Rechazado' ? 'RECHAZADO' : 'FALLIDO', b: 'rgba(248,113,113,0.35)', c: '#F87171' }
+                      : { l: String(t.status || 'PENDIENTE').toUpperCase(), b: 'rgba(255,255,255,0.14)', c: '#878E88' };
+                  const box = (kind: string) => (
+                      <span style={{ width: 32, height: 32, borderRadius: 9, flexShrink: 0, display: 'grid', placeItems: 'center', background: kind === 'in' ? 'rgba(74,222,128,0.1)' : 'rgba(255,255,255,0.055)' }}>
+                          {kind === 'in' ? <ArrowDownLeft size={16} style={{ color: '#4ADE80' }} strokeWidth={1.8} /> : kind === 'conv' ? <ArrowLeftRight size={16} style={{ color: '#F4F4F2' }} strokeWidth={1.8} /> : <ArrowUpRight size={16} style={{ color: '#F4F4F2' }} strokeWidth={1.8} />}
+                      </span>
+                  );
+                  return (
+                  <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, overflow: 'hidden' }}>
+                      <div className="flex items-center justify-between" style={{ padding: '15px 22px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                          <span style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>Movimientos de esta billetera</span>
+                          <button onClick={() => { setMovementsTab('all'); setActiveView('movements'); }} style={{ fontSize: 12.5, fontWeight: 600, color: '#878E88' }} className="hover:text-[#F4F4F2] transition-colors">Ver todo →</button>
+                      </div>
+                      {rows.map(tx => {
+                          const meta = txRowMeta(tx);
+                          const kind = isConv(tx) ? 'conv' : isTxCredit(tx) ? 'in' : 'out';
+                          const ticker = isUsdtCur(tx.currency) ? 'USDT' : (String(tx.currency || '').split('_')[0] || 'COP');
+                          const rd = (tx.raw_data ?? {}) as any;
+                          const ref0 = tx.providerRef ?? rd.providerRef ?? rd.providerTraceId ?? '';
+                          const reference = ref0 ? String(ref0) : `TX-${String(tx.id ?? '').replace(/-/g, '').slice(-6).toUpperCase()}`;
+                          const pill = pillOf(tx);
+                          return (
+                          <button key={tx.id} type="button" onClick={() => setSelectedTx(tx)} className="w-full text-left hover:bg-white/[0.02] transition-colors cursor-pointer grid items-center" style={{ gridTemplateColumns: 'minmax(0,1fr) 130px 110px', gap: 12, padding: '13px 22px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                              <span className="flex items-center" style={{ gap: 11, minWidth: 0 }}>
+                                  {box(kind)}
+                                  <span style={{ minWidth: 0 }}>
+                                      <span style={{ display: 'block', fontSize: 13.5, fontWeight: 600, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{meta.title}</span>
+                                      <span style={{ display: 'block', fontSize: 11, color: '#878E88', fontFamily: 'ui-monospace, Menlo, monospace', marginTop: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{reference}</span>
+                                  </span>
+                              </span>
+                              <span style={{ textAlign: 'right', fontSize: 13.5, fontWeight: 700, whiteSpace: 'nowrap', color: kind === 'in' ? '#4ADE80' : '#F4F4F2' }}>
+                                  {kind === 'in' ? '+' : '−'}{formatMoney(tx.amount, tx.currency)} {ticker}
+                              </span>
+                              <span style={{ textAlign: 'right' }}>
+                                  <span style={{ display: 'inline-block', padding: '3px 9px', borderRadius: 999, fontSize: 10, fontWeight: 700, border: `1px solid ${pill.b}`, color: pill.c, whiteSpace: 'nowrap' }}>{pill.l}</span>
+                              </span>
+                          </button>
+                          );
+                      })}
+                      {rows.length === 0 && (
+                          <div className="text-center" style={{ padding: '48px 20px', color: '#878E88', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                              <p style={{ fontSize: 13 }}>Sin movimientos todavía en esta billetera.</p>
+                              {selectedWalletCode === 'USD' && <button onClick={() => openUsdtDeposit()} className="lincoin-btn-white transition-colors" style={{ marginTop: 14, padding: '10px 22px', borderRadius: 10, fontSize: 13, fontWeight: 700, border: 'none' }}>Cargar</button>}
+                          </div>
+                      )}
+                  </div>
+                  );
+              })()}
+
+              {/* Nota de respaldo — veraz: USDT en TRON con custodia GasFree.
+                  (No se afirma emisor/atestaciones que no apliquen al activo.) */}
+              <div className="flex items-start" style={{ gap: 9, padding: '2px 2px' }}>
+                  <ShieldCheck size={15} style={{ color: '#878E88', flexShrink: 0, marginTop: 1 }} strokeWidth={1.7} />
+                  <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5 }}>
+                      {selectedWalletCode === 'USD'
+                          ? 'Tu saldo es USDT (dólar digital) sobre la red TRON, con recepción sin gas vía GasFree. 1 USDT = 1 USD. Convierte a pesos y dispersa por Bre-B o ACH cuando quieras.'
+                          : 'Tu saldo en pesos vive en tres rieles (Saldo Lincoin, Bre-B y ACH). Los envíos a bancos salen por Bre-B (segundos) o ACH (ciclos hábiles).'}
+                  </p>
               </div>
 
               {/* Volver también al final, para no tener que subir la página */}
-              <button onClick={() => setActiveView('dashboard')} style={{ color: '#121413' }} className="flex items-center gap-2 font-bold text-sm hover:text-[#0C0E0D] hover:underline mx-auto">
+              <button onClick={() => setActiveView('dashboard')} style={{ color: '#878E88' }} className="flex items-center gap-2 font-bold text-sm hover:text-[#F4F4F2] transition-colors mx-auto">
                   <ArrowLeft size={16} /> Volver al inicio
               </button>
           </div>
@@ -2090,18 +3361,24 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       </div>
   );
 
-  // Load MFA status when settings view opens
+  // Cargar el estado del 2FA (MFA) al MONTAR y al abrir Ajustes. Antes solo
+  // se cargaba al entrar a Ajustes → tras recargar la página mfaEnrolled
+  // quedaba en false y el envío se bloqueaba como si el 2FA no estuviera
+  // activo. Ahora se consulta apenas hay usuario, en cualquier vista.
   useEffect(() => {
-    if (activeView === 'settings') {
-      setMfaLoadingStatus(true);
-      getMFAStatus().then(({ enrolled, factorId, totpSecret }) => {
-        setMfaEnrolled(enrolled);
-        setMfaFactorId(factorId);
-        setMfaTotpSecret(totpSecret);
-        setMfaLoadingStatus(false);
-      });
-    }
-  }, [activeView]);
+    if (!currentUser?.id) return;
+    let alive = true;
+    setMfaLoadingStatus(true);
+    getMFAStatus().then(({ enrolled, factorId, totpSecret }) => {
+      if (!alive) return;
+      setMfaEnrolled(enrolled);
+      setMfaFactorId(factorId);
+      setMfaTotpSecret(totpSecret);
+      setMfaLoadingStatus(false);
+    }).catch(() => { if (alive) setMfaLoadingStatus(false); });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id, activeView === 'settings']);
 
   // Pay-link 30-min countdown
   useEffect(() => {
@@ -2127,7 +3404,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
   const handleGeneratePayLink = () => {
     const id = Math.random().toString(36).substring(2, 10).toUpperCase();
-    setPayLinkUrl(`https://cuypay.com/pay/${id}`);
+    setPayLinkUrl(`${window.location.origin}/pay/${id}`);
     setPayLinkSecondsLeft(1800);
     setPayLinkStep(3);
   };
@@ -2151,6 +3428,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     try {
       const { ok, error: mfaErr } = await verifyMFAEnrollment(mfaEnrollData.factorId, mfaVerifyCode, mfaEnrollData.secret);
       if (!ok) { setMfaVerifyError(mfaErr || 'Código incorrecto. Intenta nuevamente.'); setMfaVerifyCode(''); return; }
+      // La persistencia (mfaEnabled/mfaFactorId/totpSecret en raw_data) ya la
+      // hace verifyMFAEnrollment con updateUserRawData y confirma contra la
+      // base; si fallara, ok sería false y salimos arriba. Aquí solo reflejamos
+      // el estado local ya confirmado.
       setMfaEnrolled(true);
       setMfaFactorId(mfaEnrollData.factorId);
       setMfaTotpSecret(mfaEnrollData.secret);
@@ -2165,14 +3446,28 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   };
 
   const handleDisableMFA = async () => {
-    if (!mfaFactorId) return;
-    const ok = await unenrollMFA(mfaFactorId);
-    if (!ok) { showToast('Error al desactivar. Intenta nuevamente.', 4000, 'error'); return; }
+    if (!mfaFactorId || !currentUser) return;
+    // SEGURIDAD: el 2FA solo se apaga por la acción dedicada mfa_disable, que
+    // verifica el CÓDIGO DE CORREO en el SERVIDOR (nadie lo apaga sin acceso al
+    // correo). save_user ya NO puede tocar el 2FA, así que esta es la única vía.
+    if (!/^\d{6}$/.test(disableOtp.code.trim())) { setDisableOtp(s => ({ ...s, error: 'Ingresa el código de 6 dígitos que te llegó al correo.' })); return; }
+    setDisableOtp(s => ({ ...s, busy: true, error: '' }));
+    try {
+      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: myAuthHeader() },
+        body: JSON.stringify({ action: 'mfa_disable', userId: currentUser.id, emailCode: disableOtp.code.trim() }),
+      }).then(x => x.json()).catch(() => null);
+      if (!r?.success) { setDisableOtp(s => ({ ...s, busy: false, error: r?.error || 'No se pudo desactivar. Revisa el código.' })); return; }
+    } catch { setDisableOtp(s => ({ ...s, busy: false, error: 'Error de red. Intenta de nuevo.' })); return; }
+    await unenrollMFA(mfaFactorId).catch(() => {});
     setMfaEnrolled(false);
     setMfaFactorId(undefined);
     setMfaTotpSecret(undefined);
-    if (currentUser) updateUserProfile(currentUser.id, { raw_data: { ...(currentUser as any).raw_data, mfaEnabled: false, mfaFactorId: null, totpSecret: null } });
     setMfaDisableModalOpen(false);
+    setDisableOtp({ sent: false, code: '', sending: false, busy: false, error: '' });
     showToast('Verificación en 2 pasos desactivada.');
   };
 
@@ -2188,144 +3483,197 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       showToast('Email de restablecimiento enviado a ' + currentUser.email);
   };
 
-  const renderSettings = () => (
-      <div className="max-w-2xl mx-auto space-y-6 animate-in fade-in duration-300 pt-6">
-          <button onClick={() => setActiveView('dashboard')} className="flex items-center gap-2 text-slate-700 font-bold text-sm mb-4 hover:text-[#0C0E0D]">
-              <ArrowLeft size={16}/> Volver
+  const renderSettings = () => {
+      const raw = (currentUser as any)?.raw_data ?? {};
+      const refCur = raw.refCurrency ?? 'USDT';
+      const lang = raw.lang ?? 'Español';
+      const name = currentUser?.name || 'Mi cuenta';
+      const initial = name.trim().charAt(0).toUpperCase() || 'L';
+      const acctId = currentUser?.ownReferralCode || '—';
+      // Envíos de este mes (débitos COP/USDT) para la barra de límites.
+      const now = new Date();
+      const monthUsed = (movements || []).filter((t: any) => {
+          const d = t.createdAt ? new Date(t.createdAt) : null;
+          if (!d || d.getMonth() !== now.getMonth() || d.getFullYear() !== now.getFullYear()) return false;
+          return ['send', 'pay_sent', 'dispersion', 'otc_withdraw'].includes(t.type) && !['Fallido', 'Rechazado'].includes(String(t.status));
+      }).reduce((s: number, t: any) => {
+          const base = String(t.currency || '').split('_')[0];
+          const usdCop = getRate('USD', 'COP') || 1;
+          return s + (base === 'USD' || base === 'USDT' ? Number(t.amount || 0) : Number(t.amount || 0) / (usdCop || 1));
+      }, 0);
+      const monthLimit = Number(raw.monthlyLimitUsdt ?? 50000);
+      const pct = Math.min(100, Math.round((monthUsed / monthLimit) * 100));
+      const sectionLabel: React.CSSProperties = { fontSize: 10.5, fontWeight: 700, letterSpacing: '1.8px', color: '#878E88' };
+      const card: React.CSSProperties = { background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, padding: '20px 22px' };
+      const secBtn: React.CSSProperties = { border: '1px solid rgba(255,255,255,0.11)', background: 'rgba(255,255,255,0.045)', borderRadius: 8, padding: '8px 15px', fontSize: 12.5, fontWeight: 600, color: '#F4F4F2' };
+      const rowBorder = '1px solid rgba(255,255,255,0.06)';
+      const Toggle = ({ on, onClick }: { on: boolean; onClick: () => void }) => (
+          <button role="switch" aria-checked={on} onClick={onClick} style={{ width: 40, height: 23, borderRadius: 999, flexShrink: 0, position: 'relative', transition: 'background 150ms, border 150ms', background: on ? 'rgba(74,222,128,0.25)' : 'rgba(255,255,255,0.06)', border: on ? '1px solid rgba(74,222,128,0.4)' : '1px solid rgba(255,255,255,0.12)' }}>
+              <span style={{ position: 'absolute', top: 2, left: on ? 19 : 2, width: 17, height: 17, borderRadius: '50%', background: on ? '#4ADE80' : '#878E88', transition: 'left 150ms' }} />
           </button>
-          <h2 className="text-2xl font-bold text-slate-800">Configuración</h2>
-
-          {/* Security */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-              <div className="p-4 border-b border-slate-100 font-bold text-slate-800 flex items-center gap-2">
-                  <Lock size={18} className="text-[#0C0E0D]"/> Seguridad
-              </div>
-              <div className="p-6 space-y-4">
-                  <div className="flex justify-between items-center py-2 border-b border-slate-50">
-                      <div>
-                          <p className="font-medium text-slate-800 text-sm">Contraseña</p>
-                          <p className="text-xs text-slate-500">Recibirás un email para cambiarla</p>
-                      </div>
-                      <button onClick={handleSendPasswordReset} className="px-4 py-2 text-sm font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors">
-                          Cambiar
-                      </button>
-                  </div>
-                  <div className="flex justify-between items-center py-2">
-                      <div>
-                          <p className="font-medium text-slate-800 text-sm">Verificación en dos pasos (2FA)</p>
-                          <p className="text-xs text-slate-500">Código de 6 dígitos cada 30 seg (Google Authenticator, Authy)</p>
-                      </div>
-                      {mfaLoadingStatus ? (
-                          <span className="text-xs text-slate-400">Cargando...</span>
-                      ) : mfaEnrolled ? (
-                          <div className="flex items-center gap-2">
-                              <span className="px-3 py-1 bg-green-50 text-green-700 border border-green-100 rounded-full text-xs font-bold">Activo</span>
-                              <button onClick={() => setMfaDisableModalOpen(true)} className="px-3 py-1.5 text-xs font-bold border border-red-200 text-red-600 rounded-lg hover:bg-red-50 transition-colors">
-                                  Desactivar
-                              </button>
-                          </div>
-                      ) : (
-                          <button onClick={handleOpenMFAEnroll} className="px-4 py-2 text-sm font-bold bg-[#0C0E0D] rounded-lg hover:bg-[#152e52] transition-colors">
-                              Activar
-                          </button>
-                      )}
-                  </div>
-              </div>
+      );
+      const notifRows = [
+          { key: 'notifTransfers', label: 'Transferencias', desc: 'Envíos y recepciones de dinero' },
+          { key: 'notifDeposits', label: 'Depósitos', desc: 'Cargas de saldo acreditadas' },
+          { key: 'notifSecurity', label: 'Seguridad', desc: 'Accesos y cambios en la cuenta' },
+          { key: 'notifPromotions', label: 'Novedades', desc: 'Nuevas funciones y servicios de Lincoin' },
+          { key: 'notifSound', label: 'Sonido de notificaciones', desc: 'Reproduce un sonido al llegar una alerta' },
+      ];
+      const savePref = (patch: Record<string, unknown>) => { if (currentUser?.id) updateUserRawData(currentUser.id, patch).catch(() => {}); };
+      return (
+      <div className="animate-in fade-in duration-300 pt-6" style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+          <div>
+              <button onClick={() => setActiveView('dashboard')} className="flex items-center gap-2 hover:text-[#F4F4F2] transition-colors" style={{ fontSize: 13, color: '#878E88', marginBottom: 12 }}><ArrowLeft size={14} /> Inicio</button>
+              <h2 style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-0.8px', color: '#F4F4F2' }}>Ajustes</h2>
+              <p style={{ fontSize: 14, color: '#878E88', marginTop: 3 }}>Tu cuenta, seguridad y notificaciones</p>
           </div>
 
-          {/* Notifications */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-              <div className="p-4 border-b border-slate-100 font-bold text-slate-800 flex items-center gap-2">
-                  <Bell size={18} className="text-[#0C0E0D]"/> Notificaciones
-              </div>
-              <div className="p-6 space-y-1">
-                  {[
-                      { key: 'notifTransfers', label: 'Transferencias', desc: 'Envíos y recepciones de dinero' },
-                      { key: 'notifDeposits', label: 'Depósitos', desc: 'Cargas de saldo aprobadas' },
-                      { key: 'notifSecurity', label: 'Seguridad', desc: 'Accesos y cambios en la cuenta' },
-                      { key: 'notifPromotions', label: 'Promociones', desc: 'Ofertas y novedades de LINCOIN' },
-                      { key: 'notifSound', label: 'Sonido de notificaciones', desc: 'Reproduce un sonido al llegar una alerta nueva' },
-                  ].map(({ key, label, desc }) => {
-                      const enabled = (currentUser as any)?.[key] !== false;
-                      return (
-                          <div key={key} className="flex justify-between items-center py-3 border-b border-slate-50 last:border-0">
-                              <div>
-                                  <p className="font-medium text-slate-800 text-sm">{label}</p>
-                                  <p className="text-xs text-slate-500">{desc}</p>
+          <div className="grid gap-4 lg:grid-cols-2" style={{ alignItems: 'start' }}>
+              {/* ── COLUMNA IZQUIERDA ── */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+                  {/* PERFIL */}
+                  <div style={card}>
+                      <p style={sectionLabel}>PERFIL</p>
+                      <div className="flex items-center" style={{ gap: 13, marginTop: 14 }}>
+                          <div style={{ width: 46, height: 46, borderRadius: 12, background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', display: 'grid', placeItems: 'center', fontSize: 16, fontWeight: 800, color: '#F4F4F2', flexShrink: 0 }}>{initial}</div>
+                          <div style={{ minWidth: 0, flex: 1 }}>
+                              <p style={{ fontSize: 14.5, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</p>
+                              <p style={{ fontSize: 12, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{currentUser?.email} · ID {acctId}</p>
+                          </div>
+                          <span style={{ flexShrink: 0, border: `1px solid ${isKycVerified ? 'rgba(74,222,128,0.3)' : 'rgba(255,255,255,0.14)'}`, color: isKycVerified ? '#4ADE80' : '#878E88', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '4px 8px', borderRadius: 999, whiteSpace: 'nowrap' }}>{isKycVerified ? '✓ VERIFICADO' : 'KYC PENDIENTE'}</span>
+                      </div>
+                      <div className="flex items-center justify-between" style={{ gap: 12, marginTop: 16, paddingTop: 14, borderTop: rowBorder }}>
+                          <div style={{ minWidth: 0 }}>
+                              <p style={{ fontSize: 13.5, fontWeight: 600, color: '#F4F4F2' }}>Datos del perfil</p>
+                              <p style={{ fontSize: 12, color: '#878E88' }}>Nombre, documento y datos de contacto</p>
+                          </div>
+                          <button onClick={() => setActiveView('profile')} style={secBtn} className="hover:bg-white/[0.09] transition-colors">Editar</button>
+                      </div>
+                  </div>
+
+                  {/* SEGURIDAD */}
+                  <div style={card}>
+                      <p style={sectionLabel}>SEGURIDAD</p>
+                      <div style={{ marginTop: 6 }}>
+                          <div className="flex items-center justify-between" style={{ gap: 12, padding: '14px 0', borderBottom: rowBorder }}>
+                              <div style={{ minWidth: 0 }}>
+                                  <p style={{ fontSize: 13.5, fontWeight: 600, color: '#F4F4F2' }}>Contraseña</p>
+                                  <p style={{ fontSize: 12, color: '#878E88' }}>Te llega un email para cambiarla</p>
                               </div>
-                              <button
-                                  onClick={() => toggleNotifPref(key)}
-                                  className={`w-11 h-6 rounded-full transition-colors relative flex-shrink-0 ${enabled ? 'bg-[#0C0E0D]' : 'bg-slate-200'}`}
-                              >
-                                  <span className={`absolute top-1 w-4 h-4 rounded-full bg-white shadow transition-all ${enabled ? 'left-6' : 'left-1'}`}/>
-                              </button>
+                              <button onClick={handleSendPasswordReset} style={secBtn} className="hover:bg-white/[0.09] transition-colors">Cambiar</button>
                           </div>
-                      );
-                  })}
-              </div>
-          </div>
-
-          {/* Account info */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-              <div className="p-4 border-b border-slate-100 font-bold text-slate-800 flex items-center gap-2">
-                  <User size={18} className="text-[#0C0E0D]"/> Información de Cuenta
-              </div>
-              <div className="p-6 space-y-3">
-                  <div className="flex justify-between border-b border-slate-50 pb-3">
-                      <span className="text-slate-500 text-sm">Email</span>
-                      <span className="font-medium text-slate-800 text-sm truncate ml-4">{currentUser?.email}</span>
-                  </div>
-                  <div className="flex justify-between border-b border-slate-50 pb-3">
-                      <span className="text-slate-500 text-sm">ID de cuenta</span>
-                      <span className="font-mono font-bold text-[#0C0E0D] text-sm">{currentUser?.ownReferralCode}</span>
-                  </div>
-                  <div className="flex justify-between">
-                      <span className="text-slate-500 text-sm">Tipo de cuenta</span>
-                      <span className="font-medium text-slate-800 text-sm capitalize">Personal</span>
-                  </div>
-              </div>
-          </div>
-
-          {/* Danger zone */}
-          <div className="bg-red-50 rounded-2xl border border-red-100 p-6">
-              <h3 className="font-bold text-red-800 mb-1 text-sm">Zona de peligro</h3>
-              <p className="text-xs text-red-600 mb-4">Esta acción es permanente e irreversible.</p>
-              <div className="flex flex-col gap-3">
-                  {!showDeleteAccountConfirm ? (
-                      <button onClick={() => setShowDeleteAccountConfirm(true)} className="px-4 py-2 text-sm font-bold bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors flex items-center gap-2 w-fit">
-                          <Trash2 size={14}/> Eliminar cuenta
-                      </button>
-                  ) : (
-                      <div className="bg-white border border-red-200 rounded-xl p-4 space-y-3">
-                          <p className="text-sm font-bold text-red-800">⚠️ ¿Eliminar tu cuenta permanentemente?</p>
-                          <p className="text-xs text-slate-600">Se eliminarán tu perfil, historial y acceso. Esta acción <span className="font-bold">no se puede deshacer</span>.</p>
-                          <div className="flex gap-2">
-                              <button
-                                  onClick={async () => {
-                                      if (!currentUser) return;
-                                      setIsDeletingAccount(true);
-                                      await Promise.race([
-                                          deleteUser(currentUser.id),
-                                          new Promise(r => setTimeout(r, 12000)),
-                                      ]).catch(() => {});
-                                      logoutUser();
-                                  }}
-                                  disabled={isDeletingAccount}
-                                  className="px-4 py-2 text-xs font-bold bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-60 flex items-center gap-1"
-                              >
-                                  {isDeletingAccount ? <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin inline-block"/> : <Trash2 size={12}/>}
-                                  {isDeletingAccount ? 'Eliminando...' : 'Sí, eliminar'}
-                              </button>
-                              <button onClick={() => setShowDeleteAccountConfirm(false)} className="px-4 py-2 text-xs font-bold text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50">
-                                  Cancelar
-                              </button>
+                          <div className="flex items-center justify-between" style={{ gap: 12, padding: '14px 0', borderBottom: rowBorder }}>
+                              <div style={{ minWidth: 0 }}>
+                                  <div className="flex items-center" style={{ gap: 8 }}>
+                                      <p style={{ fontSize: 13.5, fontWeight: 600, color: '#F4F4F2' }}>Verificación en dos pasos</p>
+                                      <span style={{ border: `1px solid ${mfaEnrolled ? 'rgba(74,222,128,0.3)' : 'rgba(255,255,255,0.14)'}`, color: mfaEnrolled ? '#4ADE80' : '#878E88', fontSize: 8.5, fontWeight: 700, letterSpacing: '0.5px', padding: '2px 6px', borderRadius: 999 }}>{mfaLoadingStatus ? '…' : mfaEnrolled ? 'ACTIVA' : 'INACTIVA'}</span>
+                                  </div>
+                                  <p style={{ fontSize: 12, color: '#878E88' }}>Código de 6 dígitos con Google Authenticator o Authy</p>
+                              </div>
+                              {mfaEnrolled
+                                  ? <button onClick={() => setMfaDisableModalOpen(true)} style={secBtn} className="hover:bg-white/[0.09] transition-colors">Gestionar</button>
+                                  : <button onClick={handleOpenMFAEnroll} disabled={mfaLoadingStatus} className="lincoin-btn-white transition-colors" style={{ padding: '8px 16px', borderRadius: 8, fontSize: 12.5, fontWeight: 700, border: 'none', opacity: mfaLoadingStatus ? 0.6 : 1 }}>Activar</button>}
+                          </div>
+                          <div className="flex items-center justify-between" style={{ gap: 12, padding: '14px 0 4px' }}>
+                              <div style={{ minWidth: 0 }}>
+                                  <p style={{ fontSize: 13.5, fontWeight: 600, color: '#F4F4F2' }}>Sesiones activas</p>
+                                  <p style={{ fontSize: 12, color: '#878E88' }}>Esta sesión · {navigator.platform || 'este dispositivo'}</p>
+                              </div>
+                              <button onClick={() => showToast('Cerrando otras sesiones…')} style={secBtn} className="hover:bg-white/[0.09] transition-colors">Cerrar otras</button>
                           </div>
                       </div>
-                  )}
+                  </div>
+
+                  {/* LÍMITES */}
+                  <div style={card}>
+                      <p style={sectionLabel}>LÍMITES DE LA CUENTA</p>
+                      <div className="flex items-baseline justify-between" style={{ marginTop: 14 }}>
+                          <span style={{ fontSize: 13.5, fontWeight: 600, color: '#F4F4F2' }}>Envíos este mes</span>
+                          <span style={{ fontSize: 13, color: '#878E88' }}><b style={{ color: '#F4F4F2', fontWeight: 700 }}>{monthUsed.toLocaleString('es-CO', { maximumFractionDigits: 0 })}</b> de {monthLimit.toLocaleString('es-CO')} USDT</span>
+                      </div>
+                      <div style={{ height: 4, borderRadius: 2, background: 'rgba(255,255,255,0.08)', marginTop: 10, overflow: 'hidden' }}>
+                          <div style={{ height: '100%', width: `${pct}%`, background: '#4ADE80', borderRadius: 2 }} />
+                      </div>
+                      <p style={{ fontSize: 12, color: '#878E88', marginTop: 12 }}>{isKycVerified ? 'Límites completos activos.' : 'Completa tu verificación para límites completos.'} ¿Necesitas más? <button onClick={() => { setOtcRail(null); setMouvMode('converter'); setActiveView('mouv'); }} style={{ color: '#F4F4F2', textDecoration: 'underline', fontWeight: 600 }}>Habla con la mesa OTC</button></p>
+                  </div>
+              </div>
+
+              {/* ── COLUMNA DERECHA ── */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+                  {/* NOTIFICACIONES */}
+                  <div style={card}>
+                      <p style={sectionLabel}>NOTIFICACIONES</p>
+                      <div style={{ marginTop: 6 }}>
+                          {notifRows.map((n, i) => {
+                              const on = (currentUser as any)?.[n.key] !== false;
+                              return (
+                                  <div key={n.key} className="flex items-center justify-between" style={{ gap: 12, padding: '13px 0', borderBottom: i < notifRows.length - 1 ? rowBorder : 'none' }}>
+                                      <div style={{ minWidth: 0 }}>
+                                          <p style={{ fontSize: 13.5, fontWeight: 600, color: '#F4F4F2' }}>{n.label}</p>
+                                          <p style={{ fontSize: 12, color: '#878E88' }}>{n.desc}</p>
+                                      </div>
+                                      <Toggle on={on} onClick={() => toggleNotifPref(n.key)} />
+                                  </div>
+                              );
+                          })}
+                      </div>
+                  </div>
+
+                  {/* PREFERENCIAS */}
+                  <div style={card}>
+                      <p style={sectionLabel}>PREFERENCIAS</p>
+                      <div style={{ marginTop: 6 }}>
+                          <div className="flex items-center justify-between" style={{ gap: 12, padding: '14px 0', borderBottom: rowBorder }}>
+                              <div style={{ minWidth: 0 }}>
+                                  <p style={{ fontSize: 13.5, fontWeight: 600, color: '#F4F4F2' }}>Moneda de referencia</p>
+                                  <p style={{ fontSize: 12, color: '#878E88' }}>Cómo se muestran los equivalentes</p>
+                              </div>
+                              <select defaultValue={refCur} onChange={e => savePref({ refCurrency: e.target.value })} style={{ ...secBtn, paddingRight: 28 }}>
+                                  {['USDT', 'COP', 'USD', 'EUR'].map(c => <option key={c} value={c}>{c}</option>)}
+                              </select>
+                          </div>
+                          <div className="flex items-center justify-between" style={{ gap: 12, padding: '14px 0 4px' }}>
+                              <div style={{ minWidth: 0 }}>
+                                  <p style={{ fontSize: 13.5, fontWeight: 600, color: '#F4F4F2' }}>Idioma</p>
+                                  <p style={{ fontSize: 12, color: '#878E88' }}>Interfaz y correos</p>
+                              </div>
+                              <select defaultValue={lang} onChange={e => savePref({ lang: e.target.value })} style={{ ...secBtn, paddingRight: 28 }}>
+                                  {['Español', 'English'].map(c => <option key={c} value={c}>{c}</option>)}
+                              </select>
+                          </div>
+                      </div>
+                  </div>
+
+                  {/* CUENTA (solo borde) */}
+                  <div style={{ border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, padding: '20px 22px' }}>
+                      <p style={sectionLabel}>CUENTA</p>
+                      <div style={{ marginTop: 6 }}>
+                          <div className="flex items-center justify-between" style={{ gap: 12, padding: '14px 0', borderBottom: rowBorder }}>
+                              <div style={{ minWidth: 0 }}>
+                                  <p style={{ fontSize: 13.5, fontWeight: 600, color: '#F4F4F2' }}>Descargar mis datos</p>
+                                  <p style={{ fontSize: 12, color: '#878E88' }}>Movimientos, extractos y datos de perfil</p>
+                              </div>
+                              <button onClick={() => { setMovementsTab('all'); setActiveView('movements'); showToast('Ve a Movimientos → Exportar CSV'); }} style={secBtn} className="hover:bg-white/[0.09] transition-colors">Solicitar</button>
+                          </div>
+                          <div className="flex items-center justify-between" style={{ gap: 12, padding: '14px 0 4px' }}>
+                              <div style={{ minWidth: 0 }}>
+                                  <p style={{ fontSize: 13.5, fontWeight: 600, color: '#878E88' }}>Cerrar la cuenta</p>
+                                  <p style={{ fontSize: 12, color: '#878E88' }}>Requiere saldo en cero y confirmación por email</p>
+                              </div>
+                              {!showDeleteAccountConfirm
+                                  ? <button onClick={() => setShowDeleteAccountConfirm(true)} style={{ ...secBtn, color: '#878E88' }} className="hover:bg-white/[0.09] transition-colors">Iniciar</button>
+                                  : <button onClick={async () => { if (!currentUser) return; setIsDeletingAccount(true); await Promise.race([deleteUser(currentUser.id), new Promise(r => setTimeout(r, 12000))]).catch(() => {}); logoutUser(); }} disabled={isDeletingAccount} style={{ ...secBtn, color: '#F4F4F2' }}>{isDeletingAccount ? 'Cerrando…' : 'Confirmar cierre'}</button>}
+                          </div>
+                          {showDeleteAccountConfirm && !isDeletingAccount && (
+                              <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 4 }}>Esta acción es permanente. <button onClick={() => setShowDeleteAccountConfirm(false)} style={{ color: '#F4F4F2', textDecoration: 'underline' }}>Cancelar</button></p>
+                          )}
+                      </div>
+                  </div>
               </div>
           </div>
       </div>
-  );
+      );
+  };
 
   const renderReferrals = () => (
       <div className="animate-in fade-in duration-300">
@@ -2444,12 +3792,13 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
   const renderServicios = () => {
     const SERVICES = [
-      // ── USDT/OTC removidos: Lincoin es solo fiat (cripto y OTC viven en Lincoln). ──
-      { icon: Plane,       label: 'Travel',          desc: 'Vuelos, hoteles y experiencias al mejor precio.',         color: 'bg-slate-50 text-green-700' },
-      { icon: ShieldCheck, label: 'Seguros',          desc: 'SOAT, Todo Riesgo y seguros personales.',                color: 'bg-rose-50 text-rose-700' },
-      { icon: CreditCard,  label: 'Tarjeta Virtual',  desc: 'Tarjeta virtual para tus compras en línea.',             color: 'bg-violet-50 text-violet-700' },
-      { icon: GraduationCap, label: 'Educación',      desc: 'Paga matrículas y cursos en el exterior.',              color: 'bg-amber-50 text-amber-700' },
-      { icon: ShoppingBag, label: 'Compras',          desc: 'Recibe tus compras internacionales en tu cuenta.',       color: 'bg-green-50 text-green-700' },
+      { icon: ArrowLeftRight, label: 'Mesa OTC',   desc: 'Operaciones de alto volumen con tasa negociada.',            color: 'bg-slate-50 text-green-700',
+        onClick: () => { setOtcRail(null); setMouvMode('converter'); setActiveView('mouv'); } },
+      { icon: TrendingUp,     label: 'Staking',    desc: 'Genera rendimientos con tu saldo digital.',                  color: 'bg-green-50 text-green-700' },
+      { icon: Layers,         label: 'Multiwallet', desc: 'Varias billeteras USDT con nombre — ideal para estudios y negocios.', color: 'bg-violet-50 text-violet-700',
+        onClick: () => setActiveView('walletsGasfree') },
+      { icon: ShoppingBag,    label: 'Comercio',   desc: 'Cobra a tus clientes con links y botones de pago.',          color: 'bg-amber-50 text-amber-700' },
+      { icon: GraduationCap,  label: 'Educación',  desc: 'Paga matrículas y cursos en el exterior.',                   color: 'bg-rose-50 text-rose-700' },
     ];
     return (
       <div className="pt-6 space-y-6 animate-in fade-in duration-300">
@@ -2482,7 +3831,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
         <div className="bg-[#0C0E0D] rounded-2xl p-6 text-white text-center">
           <h3 className="font-bold text-lg mb-1">¿Necesitas ayuda?</h3>
           <p className="text-green-200 text-sm mb-4">Nuestro equipo está disponible para asistirte.</p>
-          <a href="mailto:soporte@cuypay.com" className="inline-flex items-center gap-2 bg-[#4ADE80] text-[#0C0E0D] font-bold px-6 py-2.5 rounded-xl hover:bg-[#00b396] transition-colors text-sm">
+          <a href="mailto:soporte@lincoin.me" className="inline-flex items-center gap-2 bg-[#4ADE80] text-[#0C0E0D] font-bold px-6 py-2.5 rounded-xl hover:bg-[#00b396] transition-colors text-sm">
             Contactar soporte
           </a>
         </div>
@@ -2495,7 +3844,14 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     pay_sent: 'Pago Lincoin enviado', pay_received: 'Pago Lincoin recibido',
     otc_withdraw_request: 'Retiro OTC', otc_convert_request: 'Conversión OTC',
     otc_deposit: 'Depósito cripto', otc_withdraw: 'Retiro cripto',
+    dispersion: 'Dispersión', adjustment: 'Ajuste de saldo',
   };
+
+  // Moneda amigable para mostrar: los rieles internos COP_BREB / COP_ACH son
+  // pesos — el sufijo del riel va como contexto, no como ticker.
+  const displayCurrency = (c?: string): string => String(c || '').split('_')[0];
+  const railOfCurrency = (c?: string): string | null =>
+    c === 'COP_BREB' ? 'Bre-B' : c === 'COP_ACH' ? 'ACH' : null;
 
   const WALLET_NETWORK: Record<string, string> = {
     USDT_BSC: 'BSC (BEP-20)', USDC_BSC: 'BSC (BEP-20)', BNB: 'BSC (BEP-20)',
@@ -2588,8 +3944,59 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       navigator.clipboard.writeText(text).then(() => setToastMessage('Copiado al portapapeles')).catch(() => {});
     };
 
+    // Dispersión Mouv (Bre-B/ACH): beneficiario, destino y referencia del
+    // proveedor. Los guarda mouv-proxy (title/beneficiary/bank/account); las
+    // filas viejas solo traen `recipient` — se leen como respaldo.
+    const isDispersion = tx.type === 'dispersion';
+    const dispRecipient = (tx.recipient && typeof tx.recipient === 'object') ? tx.recipient : (rawData.recipient ?? {});
+    const dispBeneficiary: string = tx.beneficiary ?? dispRecipient.holderName ?? '';
+    const dispDest: string = tx.account ?? dispRecipient.key ?? dispRecipient.accountNumber ?? '';
+    // ── ID de operación del PROVEEDOR ────────────────────────────────
+    // Es el MISMO id con el que la operación aparece en el panel de Mouv
+    // (Bre-B) o Finity (ACH / conversión), para poder cruzarla 1:1. Si la
+    // operación no pasó por un proveedor (movimientos internos, Saldo
+    // Lincoin), se usa el id interno de Lincoin como referencia.
+    const providerOpRef: string = String(
+      tx.providerRef ?? rawData.providerRef ?? rawData.providerTraceId ?? ''
+    ).trim();
+    const providerRefLabel: string = tx.currency === 'COP_BREB'
+      ? 'Referencia Mouv'
+      : (tx.currency === 'COP_ACH' || isMouvConvert) ? 'Referencia Finity' : 'Referencia de operación';
+
+    // Documento con tipo (CC 1005237062) — usado por dispersión y genéricos.
+    // Las dispersiones Bre-B guardan el número (resolve-key) pero no siempre
+    // el tipo, y los contactos usan docType/docNumber → se leen TODOS los
+    // respaldos y, si hay número sin tipo, se asume CC (cédula).
+    const docTypeVal: string = tx.documentType ?? rawData.documentType ?? dispRecipient.documentType ?? dispRecipient.docType ?? '';
+    const docNumberVal: string = tx.documentNumber ?? rawData.documentNumber ?? dispRecipient.documentNumber ?? dispRecipient.docNumber ?? '';
+    const docValue = docNumberVal ? `${docTypeVal || 'CC'} ${docNumberVal}`.trim() : '';
+    // Tipo de llave Bre-B (Celular/Cédula/Correo/Alfanumérica) para el label.
+    const dispKeyTypeLabel: string = ({ celular: 'Celular', cedula: 'Cédula', correo: 'Correo', alfanumerico: 'Alfanumérica' } as Record<string, string>)[String(dispRecipient.keyType ?? '').toLowerCase()] ?? '';
+
+    // EMISOR: el titular de la cuenta que originó el movimiento (ej. XATECH).
+    // Esta es la app del CLIENTE, así que el movimiento es SUYO → se muestra el
+    // nombre ACTUAL de la cuenta (empresa o persona). Así, si el admin le
+    // actualiza el nombre/tipo, los comprobantes reflejan el nombre nuevo (antes
+    // se congelaba el que quedó grabado en la transacción). Respaldo: el nombre
+    // grabado en la transacción.
+    const emisorName: string = String(
+      (currentUser as any)?.companyName ?? currentUser?.name ?? (tx as any).userName ?? rawData.userName ?? ''
+    ).trim();
+
     const fields: { label: string; value: string; copyable?: boolean; link?: string; mono?: boolean }[] = [
-      { label: 'Descripción', value: TX_LABELS[tx.type] || tx.type },
+      { label: 'Descripción', value: tx.title || TX_LABELS[tx.type] || tx.type },
+      // Emisor: en salidas (envíos/retiros/dispersiones/conversiones) es el
+      // titular de esta cuenta. En entradas (depósitos) el emisor es externo y
+      // ya se muestra el origen aparte, así que aquí no se repite.
+      ...(!isCredit && emisorName ? [{ label: 'Emisor', value: emisorName }] : []),
+      // ── Dispersión Mouv: bloque ORDENADO y sin redundancias — quién
+      // recibió, a qué llave/cuenta, por qué método, y las referencias.
+      // (El "Riel de pago" ya va en el monto "COP · Bre-B" y en el Método.)
+      ...(isDispersion && dispBeneficiary ? [{ label: 'Beneficiario', value: dispBeneficiary }] : []),
+      ...(isDispersion && docValue ? [{ label: 'Documento', value: docValue }] : []),
+      ...(isDispersion && dispDest ? [{ label: tx.currency === 'COP_BREB' ? `Llave destino${dispKeyTypeLabel ? ` · ${dispKeyTypeLabel}` : ''}` : 'Cuenta destino', value: dispDest, copyable: true, mono: true }] : []),
+      ...(isDispersion && tx.currency !== 'COP_BREB' && dispRecipient.accountType ? [{ label: 'Tipo de cuenta', value: String(dispRecipient.accountType).charAt(0).toUpperCase() + String(dispRecipient.accountType).slice(1).toLowerCase() }] : []),
+      ...(isDispersion && tx.bank ? [{ label: 'Método', value: tx.bank }] : []),
       { label: 'Estado', value: tx.status },
       { label: 'Fecha', value: timeStr ? `${dateStr} · ${timeStr}` : dateStr },
       ...(isCrypto && networkLabel ? [{ label: 'Red', value: networkLabel }] : []),
@@ -2618,14 +4025,18 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       ...(tx.type === 'convert' && !isMouvConvert && targetAmount != null ? [{ label: 'Monto recibido', value: `${formatMoney(targetAmount, targetCurrency || '')} ${targetCurrency || ''}` }] : []),
       ...(tx.type === 'convert' && !isMouvConvert && txFee != null ? [{ label: 'Comisión cobrada', value: `${formatMoney(txFee, tx.currency)} ${tx.currency}` }] : []),
       ...(couponCode ? [{ label: 'Cupón aplicado', value: couponCode }] : []),
-      ...(tx.bank ? [{ label: 'Banco / Método', value: tx.bank }] : []),
-      ...(tx.beneficiary ? [{ label: 'Beneficiario', value: tx.beneficiary }] : []),
-      ...((tx.documentType ?? rawData.documentType) || (tx.documentNumber ?? rawData.documentNumber)
-        ? [{ label: 'Documento', value: `${tx.documentType ?? rawData.documentType ?? ''} ${tx.documentNumber ?? rawData.documentNumber ?? ''}`.trim() }] : []),
-      ...(tx.account ? [{ label: 'Número de cuenta', value: tx.account }] : []),
+      ...(!isDispersion && tx.bank ? [{ label: 'Banco / Método', value: tx.bank }] : []),
+      ...(!isDispersion && tx.beneficiary ? [{ label: 'Beneficiario', value: tx.beneficiary }] : []),
+      ...(!isDispersion && docValue ? [{ label: 'Documento', value: docValue }] : []),
+      ...(!isDispersion && tx.account ? [{ label: tx.currency === 'COP_BREB' ? 'Llave destino' : 'Número de cuenta', value: tx.account }] : []),
       ...(!isCrypto && !isGasfreeDeposit && tx.toAddress ? [{ label: 'Dirección destino', value: tx.toAddress, copyable: true, mono: true }] : []),
       ...(tx.reason ? [{ label: 'Motivo', value: tx.reason }] : []),
-      { label: 'Referencia', value: String(tx.id) },
+      // Referencia de la operación: el id del PROVEEDOR (Mouv/Finity) cuando la
+      // operación pasó por un riel externo — así coincide 1:1 con su panel.
+      // Si no hubo proveedor, el id interno de Lincoin.
+      providerOpRef
+        ? { label: providerRefLabel, value: providerOpRef, copyable: true, mono: true }
+        : { label: 'Referencia', value: String(tx.id) },
     ];
 
     // ── Compartir / descargar el comprobante como imagen (PNG) ──
@@ -2660,67 +4071,82 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
         return out;
       };
       const rows = fields.filter(f => f.label !== 'Estado').map(f => ({ f, lines: wrap(f.value, F_VALUE) }));
+      // Pie informativo: soporte de la operación + sitio web.
+      const F_FOOT = `500 9.5px ${FONT}`;
+      const footNote = 'Este comprobante es un soporte de la operación realizada a través de Lincoin. No constituye una factura ni un extracto bancario. Lincoin no es un banco; la confianza opera sobre infraestructura de Circle, Fireblocks y SEPA/SWIFT.';
+      const footLines = wrap(footNote, F_FOOT);
       // Medir alto
       let H = PAD + 30 + 22 + 16 + 84 + 20;
       for (const r of rows) H += 16 + r.lines.length * 18 + 14;
-      H += 44;
+      // Pie: espacio + "Comprobante Lincoin" + nota + web + margen inferior
+      H += 20 + 16 + 12 + footLines.length * 13 + 20 + PAD;
 
       const canvas = document.createElement('canvas');
       canvas.width = W * scale; canvas.height = H * scale;
       const ctx = canvas.getContext('2d')!;
       ctx.scale(scale, scale);
-      ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, W, H);
+      // Fondo oscuro Lincoin
+      ctx.fillStyle = '#0C0E0D'; ctx.fillRect(0, 0, W, H);
 
       let y = PAD + 24;
-      // Logo (ícono cubo Lincoin) + título LINCOIN, centrados como grupo
-      ctx.font = `800 24px ${FONT}`;
-      const wCuy = ctx.measureText('CUY').width, wPay = ctx.measureText('PAY').width;
-      const iconS = 26, gap = 8;
-      const groupW = iconS + gap + wCuy + wPay;
-      const gx = (W - groupW) / 2;
-      const iy = y - iconS + 3; // alinear con la línea base del texto
-      // símbolo: cuadro navy + marco teal + punto teal (mismo del app)
-      const s = iconS;
-      roundRect(ctx, gx, iy, s, s, s * 0.22); ctx.fillStyle = '#0C0E0D'; ctx.fill();
-      ctx.strokeStyle = '#4ADE80'; ctx.lineWidth = s * 0.075; ctx.lineJoin = 'round';
-      roundRect(ctx, gx + s * 0.22, iy + s * 0.22, s * 0.56, s * 0.56, s * 0.16); ctx.stroke();
-      ctx.beginPath(); ctx.arc(gx + s * 0.58, iy + s * 0.56, s * 0.08, 0, Math.PI * 2); ctx.fillStyle = '#4ADE80'; ctx.fill();
-      const sx = gx + iconS + gap;
-      ctx.fillStyle = '#0C0E0D'; ctx.fillText('CUY', sx, y);
-      ctx.fillStyle = '#4ADE80'; ctx.fillText('PAY', sx + wCuy, y);
+      // Logo: wordmark tipográfico "Lincoin" + punto verde (NUNCA ícono/cubo
+      // ni el nombre viejo — reglas de marca en CLAUDE.md).
+      ctx.font = `800 26px Archivo, ${FONT}`;
+      const wWord = ctx.measureText('Lincoin').width, wDot = ctx.measureText('.').width;
+      const gx = (W - (wWord + wDot)) / 2;
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#F4F4F2'; ctx.fillText('Lincoin', gx, y);
+      ctx.fillStyle = '#4ADE80'; ctx.fillText('.', gx + wWord, y);
       // Subtítulo
-      y += 22;
-      ctx.textAlign = 'center'; ctx.font = `700 14px ${FONT}`; ctx.fillStyle = '#334155';
+      y += 24;
+      ctx.textAlign = 'center'; ctx.font = `700 14px Archivo, ${FONT}`; ctx.fillStyle = '#878E88';
       ctx.fillText(`Detalle de ${isCredit ? 'depósito' : 'retiro'}`, W / 2, y);
       // Caja de monto
       y += 16;
       const boxY = y, boxH = 72;
-      roundRect(ctx, PAD, boxY, maxW, boxH, 14); ctx.fillStyle = '#F4F6F9'; ctx.fill();
-      ctx.font = `800 25px ${FONT}`; ctx.fillStyle = isCredit ? '#16a34a' : '#0C0E0D';
-      ctx.fillText(`${isCredit ? '+' : '-'}${formatMoney(tx.amount, tx.currency)} ${tx.currency}`, W / 2, boxY + 34);
-      const stCol = tx.status === 'Completado' ? ['#16A34A', '#FFFFFF'] : tx.status === 'Pendiente' ? ['#F97316', '#FFFFFF'] : ['#DC2626', '#FFFFFF'];
-      ctx.font = `700 11px ${FONT}`;
+      roundRect(ctx, PAD, boxY, maxW, boxH, 14); ctx.fillStyle = '#121413'; ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.10)'; ctx.lineWidth = 1;
+      roundRect(ctx, PAD, boxY, maxW, boxH, 14); ctx.stroke();
+      ctx.font = `800 25px Archivo, ${FONT}`; ctx.fillStyle = isCredit ? '#4ADE80' : '#F4F4F2';
+      const amtLabel = `${isCredit ? '+' : '-'}${formatMoney(tx.amount, tx.currency)} ${displayCurrency(tx.currency)}${railOfCurrency(tx.currency) ? ` · ${railOfCurrency(tx.currency)}` : ''}`;
+      ctx.fillText(amtLabel, W / 2, boxY + 34);
+      // Chip de estado: borde de color, sin fondos rojos/naranjas chillones.
+      // 'Procesando'/'Pendiente' = ámbar (en curso), no rojo de error.
+      const stCol = tx.status === 'Completado' ? '#4ADE80'
+        : (tx.status === 'Pendiente' || tx.status === 'Procesando' || tx.status === 'En proceso') ? '#F59E0B'
+        : '#F87171';
+      ctx.font = `700 11px Archivo, ${FONT}`;
       const stW = ctx.measureText(tx.status).width + 26;
-      roundRect(ctx, (W - stW) / 2, boxY + 46, stW, 22, 11); ctx.fillStyle = stCol[0]; ctx.fill();
-      ctx.fillStyle = stCol[1]; ctx.fillText(tx.status, W / 2, boxY + 46 + 15);
+      ctx.strokeStyle = stCol; ctx.lineWidth = 1.2;
+      roundRect(ctx, (W - stW) / 2, boxY + 46, stW, 22, 11); ctx.stroke();
+      ctx.fillStyle = stCol; ctx.fillText(tx.status, W / 2, boxY + 46 + 15);
       // Campos
       ctx.textAlign = 'left';
       y = boxY + boxH + 20;
       for (const r of rows) {
-        ctx.font = F_LABEL; ctx.fillStyle = '#94a3b8';
+        ctx.font = F_LABEL; ctx.fillStyle = '#878E88';
         ctx.fillText(r.f.label.toUpperCase(), PAD, y + 10);
         y += 16;
-        ctx.font = F_VALUE; ctx.fillStyle = '#121413';
+        ctx.font = F_VALUE; ctx.fillStyle = '#F4F4F2';
         for (const ln of r.lines) { ctx.fillText(ln, PAD, y + 13); y += 18; }
         y += 6;
-        ctx.strokeStyle = '#f1f5f9'; ctx.lineWidth = 1;
+        ctx.strokeStyle = 'rgba(255,255,255,0.08)'; ctx.lineWidth = 1;
         ctx.beginPath(); ctx.moveTo(PAD, y); ctx.lineTo(W - PAD, y); ctx.stroke();
         y += 8;
       }
       // Pie
       y += 20;
-      ctx.textAlign = 'center'; ctx.font = `600 11px ${FONT}`; ctx.fillStyle = '#94a3b8';
-      ctx.fillText('cuypay.com · Comprobante Lincoin', W / 2, y);
+      ctx.textAlign = 'center';
+      ctx.font = `700 11px Archivo, ${FONT}`; ctx.fillStyle = 'rgba(244,244,242,0.55)';
+      ctx.fillText('Comprobante Lincoin', W / 2, y);
+      // Nota informativa (varias líneas, tenue)
+      y += 12;
+      ctx.font = F_FOOT; ctx.fillStyle = 'rgba(244,244,242,0.40)';
+      for (const ln of footLines) { y += 13; ctx.fillText(ln, W / 2, y); }
+      // Sitio web, en verde de marca
+      y += 20;
+      ctx.font = `700 11px Archivo, ${FONT}`; ctx.fillStyle = '#4ADE80';
+      ctx.fillText('www.lincoin.me', W / 2, y);
       return canvas;
     };
     const shareReceipt = async () => {
@@ -2758,81 +4184,104 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       } catch { showToast('No se pudo generar el comprobante', 4000, 'error'); }
     };
 
+    // ── Datos derivados para el rediseño dark ──
+    const truncMid = (s: string, head = 8, tail = 6) => { const v = String(s || ''); return v.length > head + tail + 1 ? `${v.slice(0, head)}…${v.slice(-tail)}` : v; };
+    const benName = (dispBeneficiary || tx.beneficiary || (isCredit ? 'Depósito' : '')).trim();
+    const benInitials = benName ? benName.split(/\s+/).filter(Boolean).map((w: string) => w[0]).slice(0, 2).join('').toUpperCase() : '';
+    const isCop = String(tx.currency || '').startsWith('COP');
+    const isBrebTx = tx.currency === 'COP_BREB';
+    const railLabel = isBrebTx ? `Bre-B${dispKeyTypeLabel ? ` · Llave ${dispKeyTypeLabel.toLowerCase()}` : ''}` : tx.currency === 'COP_ACH' ? 'ACH · Colombia' : railOfCurrency(tx.currency) || (isCop ? 'Colombia' : 'Red TRON · TRC-20');
+    const feeCop = Number(tx.feeCop ?? rawData.feeCop ?? 0);
+    // Cargue Bre-B con comisión de recepción: desglose transparente en el
+    // detalle (Monto recibido − Comisión 0,10% = Acreditado). El número grande
+    // sigue siendo el NETO acreditado (tx.amount), igual que en la lista.
+    const grossCop = Number((tx as any).grossCop ?? rawData.grossCop ?? 0);
+    const feePct = Number((tx as any).feePct ?? rawData.feePct ?? 0);
+    const feeConcept = String(rawData.feeConcept || 'Comisión por recepción Bre-B');
+    const showCargueBreakdown = isCredit && grossCop > 0 && feeCop > 0 && grossCop > feeCop;
+    const st = String(tx.status || '');
+    const pill = st === 'Completado' ? { l: isCredit ? 'ACREDITADO' : 'COMPLETADO', c: '#4ADE80', b: 'rgba(74,222,128,0.3)', ok: true }
+        : (st === 'Procesando' || st === 'Pendiente') ? { l: 'EN CURSO', c: 'rgba(244,244,242,0.7)', b: 'rgba(255,255,255,0.14)', ok: false }
+        : (st === 'Fallido' || st === 'Rechazado') ? { l: st === 'Rechazado' ? 'RECHAZADO' : 'FALLIDO', c: '#F87171', b: 'rgba(248,113,113,0.35)', ok: false }
+        : { l: (st || 'PENDIENTE').toUpperCase(), c: '#878E88', b: 'rgba(255,255,255,0.14)', ok: false };
+    const amtParts = formatMoney(tx.amount, tx.currency).split(',');
+    // Filas de detalle del rediseño
+    const rows2: { label: string; value: string; mono?: boolean; copy?: string; green?: boolean }[] = [
+      { label: 'Riel', value: railLabel },
+      ...(showCargueBreakdown ? [
+        { label: 'Monto recibido', value: `${formatMoney(grossCop, 'COP')} COP` },
+        { label: feePct > 0 ? `${feeConcept} (${feePct}%)` : feeConcept, value: `− ${formatMoney(feeCop, 'COP')} COP` },
+        { label: 'Acreditado a tu saldo', value: `${formatMoney(tx.amount, tx.currency)} COP`, green: true },
+      ] : []),
+      ...(isDispersion && dispDest ? [{ label: isBrebTx ? 'Llave destino' : 'Cuenta destino', value: dispDest, mono: true, copy: dispDest }] : []),
+      ...(isDispersion && tx.currency === 'COP_ACH' && tx.bank ? [{ label: 'Banco', value: String(tx.bank).split('·')[0].trim() }] : []),
+      ...(isMouvConvert && mouvFromAmount != null ? [{ label: 'Debitado de', value: `Billetera USDT · −${Number(mouvFromAmount).toFixed(2)} USDT` }] : []),
+      ...(isMouvConvert && mouvRate != null ? [{ label: 'Tasa aplicada', value: `1 USDT = ${Number(mouvRate).toLocaleString('es-CO', { maximumFractionDigits: 2 })} COP` }] : []),
+      ...(isGasfreeDeposit && depTxId ? [{ label: 'TxID', value: truncMid(depTxId, 8, 8), mono: true, copy: depTxId }] : []),
+      ...(tx.reason ? [{ label: 'Motivo', value: String(tx.reason) }] : []),
+      // Referencia de la operación = id del proveedor (Mouv/Finity) cuando pasó
+      // por un riel externo → coincide 1:1 con su panel. Si no, id interno.
+      { label: providerOpRef ? providerRefLabel : 'Referencia', value: truncMid(providerOpRef || String(tx.id)), mono: true, copy: providerOpRef || String(tx.id) },
+      ...(!isCredit ? [{ label: 'Costo del envío', value: feeCop > 0 ? `${formatMoney(feeCop, 'COP')} COP` : 'Gratis', green: feeCop <= 0 }] : []),
+    ];
+    const repeatSend = () => { setSelectedTx(null); openSendMoney(); };
     return (
-      <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-slate-900/60 backdrop-blur-sm" onClick={() => setSelectedTx(null)}>
-        <div className="relative bg-white w-full sm:max-w-2xl rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden max-h-[92vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-          {/* Descargar / compartir comprobante — navy con icono blanco (visible;
-              antes el hover:bg-[#0C0E0D] activaba la regla global que forzaba el
-              icono a blanco SIEMPRE y quedaba invisible sobre el fondo claro). */}
-          <div className="absolute top-4 right-4 z-10 flex items-center gap-2">
-            <button
-              type="button"
-              onClick={downloadReceipt}
-              title="Descargar comprobante"
-              className="w-9 h-9 rounded-full bg-[#0C0E0D] text-white hover:bg-[#152e52] flex items-center justify-center transition-colors shadow-md"
-            >
-              <Download size={16} />
-            </button>
-            <button
-              type="button"
-              onClick={shareReceipt}
-              title="Compartir comprobante"
-              className="w-9 h-9 rounded-full bg-[#0C0E0D] text-white hover:bg-[#152e52] flex items-center justify-center transition-colors shadow-md"
-            >
-              <Share2 size={16} />
-            </button>
+      <div className="fixed inset-0 z-[100] p-4" style={{ background: 'rgba(4,5,4,0.85)', display: 'grid', placeItems: 'center' }} onClick={() => setSelectedTx(null)}>
+        <div role="dialog" aria-modal="true" onClick={e => e.stopPropagation()}
+          style={{ width: '100%', maxWidth: 460, maxHeight: '92vh', overflowY: 'auto', background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, fontFamily: "'Archivo', system-ui, sans-serif" }}>
+          {/* Cabecera */}
+          <div className="flex items-center justify-between" style={{ padding: '18px 22px 14px' }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: '#878E88' }}>Detalle del {isCredit ? 'depósito' : 'envío'}</span>
+            <button onClick={() => setSelectedTx(null)} style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', display: 'grid', placeItems: 'center' }}><X size={13} style={{ color: '#878E88' }} strokeWidth={1.7} /></button>
           </div>
-          <div className="flex justify-center pt-3 pb-1 sm:hidden">
-            <div className="w-10 h-1 bg-slate-200 rounded-full" />
-          </div>
-          {/* Logo + title */}
-          <div className="flex flex-col items-center pt-6 pb-4 px-6">
-            <div className="mb-2"><Logo /></div>
-            <p className="text-base font-bold text-slate-800">Detalle de {isCredit ? 'depósito' : 'retiro'}</p>
-          </div>
-          {/* Amount */}
-          <div className="mx-6 mb-5 rounded-2xl bg-[#F4F6F9] p-4 text-center">
-            <p className={`text-4xl font-black ${isCredit ? 'text-green-600' : 'text-[#0C0E0D]'}`}>
-              {isCredit ? '+' : '-'}{formatMoney(tx.amount, tx.currency)} <span className="text-xl">{tx.currency}</span>
-            </p>
-            <div className={`inline-flex items-center gap-1.5 mt-2 px-3 py-1 rounded-full text-xs font-bold border ${tx.status === 'Completado' ? 'bg-white text-green-700 border-green-500' : tx.status === 'Pendiente' ? 'bg-white text-orange-600 border-orange-400' : 'bg-white text-red-700 border-red-400'}`}>
-              <CheckCircle size={12} />
-              {tx.status}
+          {/* Monto */}
+          <div className="text-center" style={{ padding: '4px 22px 20px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'center', gap: 3 }}>
+              <span style={{ fontSize: 34, fontWeight: 800, letterSpacing: '-1.2px', color: isCredit ? '#4ADE80' : '#F4F4F2' }}>{isCredit ? '+' : '−'}{amtParts[0]}</span>
+              {amtParts[1] && <span style={{ fontSize: 21, fontWeight: 800, color: '#878E88' }}>,{amtParts[1]}</span>}
+              <span style={{ fontSize: 17, fontWeight: 600, color: '#878E88', marginLeft: 5 }}>{displayCurrency(tx.currency)}</span>
             </div>
+            <p style={{ fontSize: 12.5, color: '#878E88', marginTop: 8 }}>{timeStr ? `${dateStr} · ${timeStr}` : dateStr}</p>
+            <span className="inline-flex items-center" style={{ gap: 5, marginTop: 12, border: `1px solid ${pill.b}`, color: pill.c, fontSize: 10, fontWeight: 700, padding: '4px 11px', borderRadius: 999 }}>
+              {pill.ok && <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M5 12.5l4.5 4.5L19 7.5" stroke="#4ADE80" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+              {pill.l}
+            </span>
           </div>
-          {/* Fields — 2 columnas en desktop; los campos largos (mono / Motivo)
-              ocupan ancho completo para que no se aprieten. */}
-          <div className="px-6 pb-4 grid grid-cols-1 sm:grid-cols-2 sm:gap-x-8">
-            {fields.filter(f => f.label !== 'Estado').map((f) => (
-              <div key={f.label} className={`py-3 border-b border-slate-100 ${(f.mono || f.label === 'Motivo' || f.label === 'Descripción') ? 'sm:col-span-2' : ''}`}>
-                <p className="text-xs font-semibold text-slate-400 mb-1">{f.label}</p>
-                <div className="flex items-start justify-between gap-2">
-                  {f.mono ? (
-                    <p className="font-mono text-xs text-slate-800 break-all flex-1 leading-relaxed">{f.value}</p>
-                  ) : (
-                    <p className={`font-bold text-sm text-slate-800 flex-1`}>{f.value}</p>
-                  )}
-                  <div className="flex items-center gap-1 shrink-0 mt-0.5">
-                    {f.copyable && (
-                      <button type="button" onClick={() => copyToClipboard(f.value)} className="p-1 rounded-md hover:bg-slate-100 text-slate-400 hover:text-slate-700 transition-colors">
-                        <Copy size={13} />
-                      </button>
-                    )}
-                    {f.link && (
-                      <a href={f.link} target="_blank" rel="noopener noreferrer" className="p-1 rounded-md hover:bg-slate-100 text-slate-400 hover:text-[#4ADE80] transition-colors">
-                        <Link2 size={13} />
-                      </a>
-                    )}
-                  </div>
+          <div style={{ padding: '16px 22px 22px' }}>
+            {/* Tarjeta del beneficiario */}
+            {benName && (
+              <div className="flex items-center" style={{ gap: 11, border: '1px solid rgba(255,255,255,0.09)', borderRadius: 12, background: 'rgba(255,255,255,0.02)', padding: '12px 14px', marginBottom: 16 }}>
+                <span style={{ width: 38, height: 38, borderRadius: '50%', flexShrink: 0, display: 'grid', placeItems: 'center', background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', fontSize: 13, fontWeight: 800, color: '#878E88' }}>{benInitials || 'LN'}</span>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <p style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{benName}</p>
+                  <p className="flex items-center" style={{ gap: 6, fontSize: 11.5, color: '#878E88', marginTop: 2 }}>
+                    {isCop && <span style={{ width: 13, height: 13, borderRadius: '50%', overflow: 'hidden', flexShrink: 0, background: '#2E3330' }}><img src={flagUrl('co')} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /></span>}
+                    <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{docValue ? `${docValue}${isCop ? ' · Colombia' : ''}` : (isCop ? 'Colombia' : '')}</span>
+                  </p>
                 </div>
+                {isDispersion && <button onClick={() => { setSelectedTx(null); setActiveView('contactos'); }} style={{ fontSize: 12, fontWeight: 600, color: '#878E88', flexShrink: 0 }} className="hover:text-[#F4F4F2] transition-colors">Ver</button>}
               </div>
-            ))}
-          </div>
-          {/* Footer */}
-          <div className="px-6 pt-2 pb-8">
-            <button type="button" onClick={() => setSelectedTx(null)} className="w-full h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-xl transition-colors text-sm">
-              Listo
-            </button>
+            )}
+            {/* Filas de detalle */}
+            <div>
+              {rows2.map((r, i) => (
+                <div key={r.label} className="flex items-center justify-between" style={{ gap: 12, padding: '11px 0', borderTop: i > 0 ? '1px solid rgba(255,255,255,0.06)' : 'none' }}>
+                  <span style={{ fontSize: 12.5, color: '#878E88', flexShrink: 0 }}>{r.label}</span>
+                  <span className="flex items-center" style={{ gap: 6, minWidth: 0 }}>
+                    <span style={{ fontSize: 12.5, fontWeight: r.green ? 700 : 600, color: r.green ? '#4ADE80' : '#F4F4F2', fontFamily: r.mono ? 'ui-monospace, Menlo, monospace' : undefined, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.value}</span>
+                    {r.copy && <button onClick={() => copyToClipboard(r.copy!)} style={{ flexShrink: 0 }}><Copy size={12} style={{ color: '#878E88' }} /></button>}
+                  </span>
+                </div>
+              ))}
+            </div>
+            {/* Botonera */}
+            <div className="flex" style={{ gap: 9, marginTop: 18 }}>
+              <button onClick={shareReceipt} title="Compartir" style={{ width: 44, height: 44, borderRadius: 10, border: '1px solid rgba(255,255,255,0.11)', background: 'rgba(255,255,255,0.055)', display: 'grid', placeItems: 'center', flexShrink: 0 }} className="hover:bg-white/[0.09] transition-colors"><Share2 size={16} style={{ color: '#F4F4F2' }} /></button>
+              <button onClick={downloadReceipt} className="flex-1 flex items-center justify-center hover:bg-white/[0.09] transition-colors" style={{ gap: 7, borderRadius: 10, fontSize: 13.5, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)' }}><Download size={15} /> Comprobante</button>
+              {isCredit
+                ? <button onClick={() => setSelectedTx(null)} className="lincoin-btn-white transition-colors" style={{ flex: 1.2, padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, border: 'none' }}>Listo</button>
+                : <button onClick={repeatSend} className="lincoin-btn-white transition-colors" style={{ flex: 1.2, padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, border: 'none' }}>Repetir envío</button>}
+            </div>
           </div>
         </div>
       </div>
@@ -2849,6 +4298,16 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           </div>
       )}
 
+      {/* Backdrop móvil: al tocar fuera de la barra, se cierra el menú. Va
+          debajo del sidebar (z-30) y encima del contenido; solo en móvil. */}
+      {isMobileMenuOpen && (
+        <div
+          className="fixed inset-0 z-[25] bg-black/50 lg:hidden"
+          onClick={() => setIsMobileMenuOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
       {/* Sidebar - COLLAPSIBLE ON MOBILE */}
       <aside className={`
           fixed inset-y-0 left-0 z-30 w-64 bg-white border-r border-slate-200 transform transition-transform duration-300 lg:translate-x-0
@@ -2863,15 +4322,15 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
           <div className="flex-1 overflow-y-auto py-6 px-4 space-y-1">
               <SidebarItem icon={Home} label="Inicio" active={activeView === 'dashboard'} onClick={() => {setActiveView('dashboard'); setIsMobileMenuOpen(false);}} />
-              <SidebarItem icon={Send} label="Enviar Dinero" active={false} onClick={() => { if(!handleActionRestricted()) setIsSendModalOpen(true); }} />
-              <SidebarItem icon={RefreshCw} label="Convertir" active={false} onClick={() => { if(!handleActionRestricted()) setIsConvertModalOpen(true); }} />
-              <SidebarItem icon={Activity} label="Movimientos" active={activeView === 'movements'} onClick={() => {setActiveView('movements'); setIsMobileMenuOpen(false);}} />
-              <SidebarItem icon={BookUser} label="Contactos" active={activeView === 'contactos'} onClick={() => {setActiveView('contactos'); setIsMobileMenuOpen(false);}} />
+              <SidebarItem icon={Send} label="Enviar Dinero" active={false} onClick={() => { openSendMoney(); }} />
+              <SidebarItem icon={ArrowLeftRight} label="Convertir" active={false} onClick={() => { if(!handleActionRestricted()) setIsConvertModalOpen(true); }} />
+              <SidebarItem icon={History} label="Movimientos" active={activeView === 'movements'} onClick={() => {setActiveView('movements'); setIsMobileMenuOpen(false);}} />
+              <SidebarItem icon={Users} label="Beneficiarios" active={activeView === 'contactos'} onClick={() => {setActiveView('contactos'); setIsMobileMenuOpen(false);}} />
               
               <div className="pt-6 pb-2 pl-4 text-xs font-bold text-slate-500 uppercase tracking-widest">Descubre</div>
-              <SidebarItem 
-                  icon={Share2} 
-                  label="Invita y Gana" 
+              <SidebarItem
+                  icon={Gift}
+                  label="Invita y Gana"
                   active={activeView === 'referrals'} 
                   onClick={() => {setActiveView('referrals'); setIsMobileMenuOpen(false);}} 
                   badge={true}
@@ -2902,7 +4361,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
           {activeView === 'dashboard' && renderDashboard()}
           {activeView === 'movements' && renderMovements()}
-          {activeView === 'wallet-detail' && renderWalletDetail()}
+          {/* wallet-detail sin billetera elegida (recarga / botón atrás) → Inicio */}
+          {activeView === 'wallet-detail' && (selectedWalletCode ? renderWalletDetail() : renderDashboard())}
           {activeView === 'profile' && renderProfile()}
           {activeView === 'referrals' && renderReferrals()}
           {activeView === 'affiliates' && renderAffiliates()}
@@ -2917,17 +4377,91 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           />
       )}
       {activeView === 'contactos' && (
-          <ContactsSection onBack={() => setActiveView('dashboard')} />
+          <ContactsSection
+              onBack={() => setActiveView('dashboard')}
+              onSendTo={(c: any) => {
+                  // "Enviar" desde Beneficiarios: abre Enviar Dinero con el
+                  // beneficiario, país y riel preseleccionados. Solo falta el
+                  // monto — al continuar salta directo a la confirmación.
+                  // Exige 2FA como cualquier otro envío.
+                  if (handleActionRestricted()) return;
+                  if (!mfaEnrolled) { showToast('Para enviar dinero primero activa la verificación en dos pasos (2FA) en Ajustes → Seguridad.', 8000, 'error'); setActiveView('settings'); return; }
+                  const isWallet = c.accountKind === 'wallet';
+                  setSendForm({
+                      destinationCountry: isWallet ? 'Estados Unidos' : (c.country || 'Colombia'),
+                      destinationCurrency: isWallet ? 'USD' : (c.country && c.country !== 'Colombia' ? sendForm.destinationCurrency : 'COP'),
+                      amount: '',
+                      beneficiaryType: c.kind === 'empresa' ? 'business' : 'personal',
+                      beneficiaryName: c.name,
+                      documentType: c.docType ?? '',
+                      documentNumber: c.docNumber ?? '',
+                      bankName: c.bank ?? '',
+                      accountType: c.accountType ?? '',
+                      accountNumber: c.accountNumber ?? '',
+                      reason: 'Envío de dinero',
+                  });
+                  setSendContact(c);
+                  setSendMode(isWallet ? 'wallet' : 'bank');
+                  setSendSourceRail(isWallet ? 'COP' : (c.destKind === 'breb' ? 'COP_BREB' : 'COP_ACH'));
+                  setMouvDestId(null);
+                  setSendStep(1);
+                  setActiveView('dashboard');
+                  setIsSendModalOpen(true);
+              }}
+          />
       )}
       {activeView === 'mouv' && currentUser?.id && (
           <div className="pt-6">
               <button onClick={() => setActiveView('dashboard')} className="flex items-center gap-2 text-slate-700 font-bold text-sm hover:text-[#0C0E0D] mb-2">
                   <ArrowLeft size={16} /> Volver
               </button>
-              {mouvMode === 'converter' && (currentUser as any)?.otcConfig?.enabled !== true ? (
+              {mouvMode === 'full' ? (
+                  <MouvDispersion
+                      userId={currentUser.id}
+                      rail={dispersRail}
+                      balance={getBalance(dispersRail)}
+                      authHeader={myAuthHeader}
+                      onDone={() => refreshData?.()}
+                  />
+              ) : mouvMode === 'converter' && (currentUser as any)?.otcConfig?.enabled !== true ? (
                   <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center">
                       <p className="text-slate-500 text-sm">El servicio OTC no está habilitado para tu cuenta todavía.</p>
                       <p className="text-slate-400 text-xs mt-1">Escríbenos a soporte para activarlo.</p>
+                  </div>
+              ) : mouvMode === 'converter' && otcRail === null ? (
+                  /* Mesa OTC Colombia — elegir el riel donde recibirás el COP */
+                  <div style={{ maxWidth: 560, margin: '24px auto', fontFamily: "'Archivo', system-ui, sans-serif" }}>
+                      <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 18, padding: '26px 26px 24px' }}>
+                          <h3 style={{ color: '#F4F4F2', fontWeight: 800, fontSize: 20, letterSpacing: '-0.5px' }}>Mesa OTC · Colombia</h3>
+                          <p style={{ color: '#878E88', fontSize: 13, marginTop: 4, lineHeight: 1.5 }}>Convierte tus USDT a pesos. Elige en qué riel quieres recibir el COP:</p>
+                          <div className="grid grid-cols-1 sm:grid-cols-2" style={{ gap: 10, marginTop: 18 }}>
+                              <button onClick={() => setOtcRail('ach')} className="text-left transition-colors"
+                                  style={{ padding: '16px 17px', borderRadius: 13, border: '1px solid rgba(74,222,128,0.35)', background: 'rgba(74,222,128,0.06)' }}>
+                                  <div className="flex items-center gap-2">
+                                      <Landmark size={17} style={{ color: '#4ADE80' }} />
+                                      <span style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>ACH</span>
+                                      <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 8.5, fontWeight: 700, letterSpacing: '0.6px', padding: '2px 6px', borderRadius: 999 }}>DISPONIBLE</span>
+                                  </div>
+                                  <p style={{ fontSize: 12, color: '#878E88', marginTop: 6, lineHeight: 1.5 }}>Conversión automática. El COP llega a tu saldo ACH en minutos.</p>
+                              </button>
+                              <button onClick={() => setOtcRail('breb')} className="text-left transition-colors hover:bg-white/[0.03]"
+                                  style={{ padding: '16px 17px', borderRadius: 13, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.025)' }}>
+                                  <div className="flex items-center gap-2">
+                                      <Zap size={17} style={{ color: '#878E88' }} />
+                                      <span style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>Bre-B</span>
+                                      <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 8.5, fontWeight: 700, letterSpacing: '0.6px', padding: '2px 6px', borderRadius: 999 }}>PRÓXIMAMENTE</span>
+                                  </div>
+                                  <p style={{ fontSize: 12, color: '#878E88', marginTop: 6, lineHeight: 1.5 }}>Por ahora la conversión con salida Bre-B se gestiona por mesa manual.</p>
+                              </button>
+                          </div>
+                      </div>
+                  </div>
+              ) : mouvMode === 'converter' && otcRail === 'breb' ? (
+                  <div style={{ maxWidth: 560, margin: '24px auto', background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 18, padding: '32px 28px', textAlign: 'center', fontFamily: "'Archivo', system-ui, sans-serif" }}>
+                      <p style={{ color: '#F4F4F2', fontWeight: 700, fontSize: 16 }}>Mesa Bre-B · por mesa manual</p>
+                      <p style={{ color: '#878E88', fontSize: 13, marginTop: 6, lineHeight: 1.6 }}>La conversión con salida Bre-B se gestiona por mesa manual. Escríbenos por el canal de la mesa y la gestionamos al instante — o usa la salida ACH, que es automática.</p>
+                      <button onClick={() => setOtcRail('ach')} className="lincoin-btn-white transition-colors" style={{ marginTop: 16, fontWeight: 700, fontSize: 13.5, padding: '11px 20px', borderRadius: 10, border: 'none' }}>Usar salida ACH</button>
+                      <button onClick={() => setOtcRail(null)} style={{ display: 'block', margin: '12px auto 0', fontSize: 12.5, color: '#878E88', textDecoration: 'underline' }}>← Elegir otro riel</button>
                   </div>
               ) : (
               <MouvSection
@@ -2935,25 +4469,33 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   userId={currentUser.id}
                   brebBalance={getBalance('COP_BREB')}
                   usdBalance={displayBalance('USD')}
-                  copBalance={getBalance('COP')}
+                  copBalance={getBalance('COP_ACH')}
                   onSwept={() => currentUser?.id && refreshGasfreeBal(currentUser.id)}
                   feePctOverride={(currentUser as any)?.otcConfig?.feePct}
+                  recentConversions={(movements || [])
+                      .filter((t: any) => t.type === 'convert')
+                      .slice(0, 3)
+                      .map((t: any) => ({
+                          label: `${Number(t.fromAmount ?? (t as any).usdtOut ?? 0).toLocaleString('en-US', { maximumFractionDigits: 2 })} USDT → COP`,
+                          meta: `${(t as any).createdAt ? new Date((t as any).createdAt).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' }) : (t.date ?? '')}${(t as any).mouvRate ? ` · tasa ${Number((t as any).mouvRate).toLocaleString('es-CO', { maximumFractionDigits: 1 })}` : ''}`,
+                          result: `+${Number(t.amount ?? 0).toLocaleString('es-CO', { maximumFractionDigits: 0 })} COP`,
+                      }))}
                   onConverted={async (usdAmount, copClientAmount, mouvRate) => {
                       // Movimiento OPTIMISTA: aparece al instante en la lista.
                       addLocalTx?.({
-                          userId: currentUser.id, type: 'convert', amount: copClientAmount, currency: 'COP', status: 'Completado',
-                          initials: 'FX', title: `USDT → COP · tasa ${Number(mouvRate ?? 0).toLocaleString('es-CO')}`,
+                          userId: currentUser.id, type: 'convert', amount: copClientAmount, currency: 'COP_ACH', status: 'Completado',
+                          initials: 'FX', title: `USDT → COP (ACH) · tasa ${Number(mouvRate ?? 0).toLocaleString('es-CO')}`,
                           userName: (currentUser as any)?.email, fromCurrency: 'USD', fromAmount: usdAmount,
-                          destAmount: copClientAmount, mouvRate, source: 'MOUV', gasfree: true,
+                          destAmount: copClientAmount, mouvRate, source: 'FINITY', gasfree: true,
                       });
                       // Todo el asentamiento (débito USDT on-chain, crédito COP y
                       // el movimiento) ya lo hizo el edge (my_convert_settle),
                       // autoritativo. Aquí SOLO se refresca la vista: el COP se
                       // relee de la DB y el saldo USDT del on-chain real.
-                      showToast(`Convertiste ${usdAmount.toLocaleString('en-US')} USDT → ${copClientAmount.toLocaleString('es-CO')} COP (Peso Lincoin) ⚡`);
-                      // Actualización OPTIMISTA e inmediata del Peso Lincoin (el
+                      showToast(`Convertiste ${usdAmount.toLocaleString('en-US')} USDT → ${copClientAmount.toLocaleString('es-CO')} COP en tu saldo ACH ⚡`);
+                      // Actualización OPTIMISTA e inmediata del saldo ACH (el
                       // crédito ya lo hizo el edge) — así no hay que recargar.
-                      bumpLocalBalance?.('COP', copClientAmount);
+                      bumpLocalBalance?.('COP_ACH', copClientAmount);
                       // Refrescos ESCALONADOS: la fila de la conversión pasa de
                       // 'Pendiente' (insert del settle) a 'Completado' (credit)
                       // y en sesiones half-auth la DB puede tardar en reflejarlo
@@ -3077,18 +4619,38 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           </div>
       )}
 
-      {/* 2FA DISABLE MODAL */}
+      {/* 2FA DISABLE MODAL — exige código de correo */}
       {mfaDisableModalOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-8 animate-in zoom-in-95">
                   <h3 className="text-lg font-bold text-slate-800 mb-2">Desactivar 2FA</h3>
-                  <p className="text-slate-500 text-sm mb-6">¿Estás seguro? Tu cuenta quedará protegida solo con contraseña.</p>
+                  <p className="text-slate-500 text-sm mb-5">Por seguridad, para desactivar la verificación en 2 pasos necesitas el <b>código que enviamos a tu correo</b>. Así nadie puede quitarla sin acceso a tu correo.</p>
+
+                  {!disableOtp.sent ? (
+                      <button onClick={sendDisableOtp} disabled={disableOtp.sending}
+                          className="w-full h-11 bg-[#0C0E0D] text-white font-bold rounded-lg hover:bg-[#152e52] transition-colors disabled:opacity-60 mb-4">
+                          {disableOtp.sending ? 'Enviando…' : '📧 Enviarme el código al correo'}
+                      </button>
+                  ) : (
+                      <>
+                          <p className="text-xs text-slate-500 mb-2">Enviamos un código a {disableOtp.to || 'tu correo'}. Ingrésalo:</p>
+                          <input value={disableOtp.code} onChange={e => setDisableOtp(s => ({ ...s, code: e.target.value.replace(/\D/g, '').slice(0, 6), error: '' }))}
+                              inputMode="numeric" placeholder="Código de 6 dígitos"
+                              className="w-full h-12 text-center text-xl font-bold tracking-widest rounded-lg border border-slate-200 outline-none focus:border-red-400 mb-2" />
+                          <button onClick={sendDisableOtp} disabled={disableOtp.sending} className="text-xs text-slate-500 font-semibold hover:underline mb-3">
+                              {disableOtp.sending ? 'Reenviando…' : 'Reenviar código'}
+                          </button>
+                      </>
+                  )}
+                  {disableOtp.error && <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg p-2 mb-3">{disableOtp.error}</p>}
+
                   <div className="flex gap-3">
-                      <button onClick={() => setMfaDisableModalOpen(false)} className="flex-1 h-11 border border-slate-200 text-slate-600 font-bold rounded-lg hover:bg-slate-50 transition-colors">
+                      <button onClick={() => { setMfaDisableModalOpen(false); setDisableOtp({ sent: false, code: '', sending: false, busy: false, error: '' }); }} className="flex-1 h-11 border border-slate-200 text-slate-600 font-bold rounded-lg hover:bg-slate-50 transition-colors">
                           Cancelar
                       </button>
-                      <button onClick={handleDisableMFA} className="flex-1 h-11 bg-red-600 text-white font-bold rounded-lg hover:bg-red-700 transition-colors">
-                          Desactivar
+                      <button onClick={handleDisableMFA} disabled={!disableOtp.sent || disableOtp.code.length !== 6 || disableOtp.busy}
+                          className="flex-1 h-11 bg-red-600 text-white font-bold rounded-lg hover:bg-red-700 transition-colors disabled:opacity-50">
+                          {disableOtp.busy ? 'Verificando…' : 'Desactivar'}
                       </button>
                   </div>
               </div>
@@ -3128,6 +4690,44 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           </div>
       )}
 
+      {/* DESAFÍO 2FA AL CONFIRMAR ENVÍO */}
+      {sendOtpOpen && (
+          <div className="fixed inset-0 z-[80] flex items-end sm:items-center justify-center p-0 sm:p-4" style={{ background: 'rgba(4,5,5,0.72)', backdropFilter: 'blur(4px)' }}>
+              <div style={{ width: '100%', maxWidth: 400, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, padding: '26px 24px', fontFamily: "'Archivo', system-ui, sans-serif" }} className="rounded-t-3xl sm:rounded-[18px]">
+                  <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
+                      <div style={{ width: 42, height: 42, borderRadius: '50%', border: '1.5px solid rgba(74,222,128,0.4)', background: 'rgba(74,222,128,0.08)', display: 'grid', placeItems: 'center' }}>
+                          <ShieldCheck size={20} color="#4ADE80" />
+                      </div>
+                      <button type="button" onClick={() => { if (!sendOtpLoading) { setSendOtpOpen(false); setSendOtpCode(''); setSendOtpError(''); } }} style={{ color: '#878E88' }} className="hover:text-white p-1"><X size={20} /></button>
+                  </div>
+                  <h3 style={{ fontSize: 18, fontWeight: 800, letterSpacing: '-0.4px', color: '#F4F4F2', marginTop: 14 }}>Confirma con tu 2FA</h3>
+                  <p style={{ fontSize: 13, color: '#878E88', marginTop: 6, lineHeight: 1.5 }}>Por tu seguridad, ingresa el código de 6 dígitos de tu app de autenticación para autorizar este envío.</p>
+                  <input
+                      type="text" inputMode="numeric" maxLength={6} autoFocus
+                      value={sendOtpCode}
+                      onChange={e => setSendOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                      onKeyDown={e => e.key === 'Enter' && confirmSendOtp()}
+                      placeholder="••••••"
+                      style={{ width: '100%', marginTop: 18, textAlign: 'center', letterSpacing: 12, fontSize: 28, fontWeight: 800, fontFamily: 'ui-monospace, Menlo, monospace', color: '#F4F4F2', background: 'rgba(255,255,255,0.03)', border: `1px solid ${sendOtpError ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.12)'}`, borderRadius: 12, padding: '13px 0', outline: 'none' }}
+                  />
+                  {sendOtpError && <p style={{ fontSize: 12.5, color: '#F4F4F2', marginTop: 10, fontWeight: 600 }}>{sendOtpError}</p>}
+                  <button
+                      type="button"
+                      onClick={confirmSendOtp}
+                      disabled={sendOtpCode.length !== 6 || sendOtpLoading}
+                      className="lincoin-btn-white transition-colors"
+                      style={{ width: '100%', marginTop: 18, padding: '13px 0', borderRadius: 11, fontSize: 14, fontWeight: 700, border: 'none', opacity: (sendOtpCode.length !== 6 || sendOtpLoading) ? 0.5 : 1 }}
+                  >
+                      {sendOtpLoading ? 'Verificando…' : 'Autorizar y enviar'}
+                  </button>
+                  <div className="flex items-center justify-center" style={{ gap: 8, marginTop: 14 }}>
+                      <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#4ADE80' }} />
+                      <span style={{ fontSize: 11.5, color: '#878E88' }}>Operación protegida · verificación en dos pasos</span>
+                  </div>
+              </div>
+          </div>
+      )}
+
       {/* PAY-LINK MODAL */}
       {isPayLinkOpen && (
           <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-slate-900/60 backdrop-blur-sm">
@@ -3162,16 +4762,23 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               <div>
                                   <label className="block text-xs font-bold text-slate-400 uppercase mb-3">País del pagador</label>
                                   <div className="grid grid-cols-4 gap-2">
-                                      {PAY_LINK_COUNTRIES.map(c => (
+                                      {PAY_LINK_COUNTRIES.map(c => {
+                                          const sel = payLinkCountry === c.code;
+                                          return (
                                           <button
                                               key={c.code}
                                               onClick={() => handleSelectPayLinkCountry(c.code)}
-                                              className={`flex flex-col items-center gap-1 p-2.5 rounded-xl border transition-all ${payLinkCountry === c.code ? 'border-[#0C0E0D] bg-slate-50 shadow-sm' : 'border-slate-200 hover:border-slate-300'}`}
+                                              className="flex flex-col items-center gap-1 p-2.5 rounded-xl transition-all"
+                                              style={{
+                                                  border: sel ? '1.5px solid #4ADE80' : '1px solid rgba(255,255,255,0.14)',
+                                                  background: sel ? 'rgba(74,222,128,0.12)' : 'transparent',
+                                              }}
                                           >
                                               <FlagImg code={c.code} className="w-8 h-6 object-cover rounded shadow-sm" />
-                                              <span className={`text-[10px] font-bold ${payLinkCountry === c.code ? 'text-[#0C0E0D]' : 'text-slate-500'}`}>{c.code}</span>
+                                              <span className="text-[10px] font-bold" style={{ color: sel ? '#4ADE80' : '#878E88' }}>{c.code}</span>
                                           </button>
-                                      ))}
+                                          );
+                                      })}
                                   </div>
                               </div>
 
@@ -3329,57 +4936,356 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       )}
 
       {/* LOAD MODAL */}
-      {/* Cargar USDT — depósito on-chain a la wallet GasFree del cliente */}
-      {usdtModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-300">
-                  <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-                      <h3 className="font-bold text-lg text-slate-800">Cargar USDT · Dólar digital</h3>
-                      <button onClick={() => setUsdtModalOpen(false)} className="text-slate-400 hover:text-slate-600 p-1 rounded-full hover:bg-slate-100 transition-colors"><X size={20}/></button>
+      {/* Celebración cuando llega un depósito — animación + (sonido ya sonó) */}
+      {depositFx && (
+          <div className="fixed inset-0 z-[70] flex items-center justify-center pointer-events-none p-4" style={{ fontFamily: "'Archivo', system-ui, sans-serif" }}>
+              <div className="lincoin-deposit-fx" style={{ background: '#0C0E0D', border: '1px solid rgba(74,222,128,0.4)', borderRadius: 20, padding: '30px 40px', textAlign: 'center', boxShadow: '0 30px 90px rgba(0,0,0,0.65)' }}>
+                  <div style={{ position: 'relative', width: 72, height: 72, margin: '0 auto 16px' }}>
+                      <span className="lincoin-fx-ring" style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '2px solid rgba(74,222,128,0.5)' }} />
+                      <div className="lincoin-fx-check" style={{ width: 72, height: 72, borderRadius: '50%', background: 'rgba(74,222,128,0.14)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <CheckCircle2 size={40} style={{ color: '#4ADE80' }} />
+                      </div>
                   </div>
-                  <div className="p-6 space-y-4">
-                      <p className="text-sm text-slate-600">
-                          Envía <b>USDT por la red TRON (TRC-20)</b> a tu dirección personal. Al confirmarse
-                          en la red, el saldo se acredita <b>1:1</b> en tu cuenta Dólar digital (1 USDT = 1 USD).
-                      </p>
-                      {usdtLoadingAddr && <p className="text-sm text-slate-400">Generando tu dirección…</p>}
-                      {usdtLoadErr && (
-                          <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-xl p-3">{usdtLoadErr}</p>
-                      )}
-                      {usdtAddr && (
-                          <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
-                              <div className="flex justify-center mb-3">
-                                  <div className="bg-white border-2 border-slate-200 rounded-xl p-2">
-                                      <img
-                                          src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(usdtAddr)}&color=0B1B32&margin=8`}
-                                          alt="QR dirección USDT TRC-20"
-                                          className="w-44 h-44"
-                                      />
+                  <p style={{ color: '#F4F4F2', fontWeight: 800, fontSize: 26, letterSpacing: '-0.6px', lineHeight: 1 }}>+{depositFx.amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span style={{ fontSize: 16, color: '#878E88' }}>USDT</span></p>
+                  <p style={{ color: '#878E88', fontSize: 13, marginTop: 6 }}>Depósito acreditado a tu Dólar digital</p>
+              </div>
+          </div>
+      )}
+
+      {/* Archivo de wallets anteriores del usuario */}
+      {walletArchiveOpen && (
+          <div className="fixed inset-0 z-50 grid place-items-center p-4" style={{ background: 'rgba(4,5,4,0.72)', backdropFilter: 'blur(3px)', fontFamily: "'Archivo', system-ui, sans-serif" }} onClick={() => setWalletArchiveOpen(false)}>
+              <div onClick={(e) => e.stopPropagation()} className="w-full animate-in fade-in zoom-in-95 duration-200" style={{ maxWidth: 640, maxHeight: '88vh', display: 'flex', flexDirection: 'column', background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, overflow: 'hidden' }} role="dialog" aria-modal="true">
+                  <div className="flex items-center justify-between" style={{ gap: 16, padding: '20px 26px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                      <div className="flex items-center gap-2.5"><Archive size={18} color="#4ADE80" /><span style={{ fontSize: 17, fontWeight: 700, color: '#F4F4F2' }}>Mis wallets</span></div>
+                      <button onClick={() => setWalletArchiveOpen(false)} style={{ color: '#878E88' }}><X size={19} /></button>
+                  </div>
+                  <div style={{ padding: '20px 26px 26px', overflowY: 'auto' }}>
+                      {walletArchiveLoading ? (
+                          <p style={{ fontSize: 13, color: '#878E88', textAlign: 'center', padding: '30px 0' }}>Cargando…</p>
+                      ) : (<>
+                          {walletArchive?.current?.address && (
+                              <div style={{ marginBottom: 20 }}>
+                                  <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: '#4ADE80', marginBottom: 8 }}>PRINCIPAL (ACTUAL)</p>
+                                  <div style={{ padding: '14px 16px', borderRadius: 12, background: 'rgba(74,222,128,0.06)', border: '1px solid rgba(74,222,128,0.22)' }}>
+                                      <div className="flex items-center justify-between" style={{ gap: 8 }}>
+                                          <span style={{ fontSize: 13, fontWeight: 600, color: '#F4F4F2', fontFamily: 'ui-monospace, Menlo, monospace' }}>{walletArchive.current.address.slice(0, 12)}…{walletArchive.current.address.slice(-8)}</span>
+                                          <button onClick={() => navigator.clipboard?.writeText(walletArchive!.current!.address).then(() => showToast('Copiada')).catch(() => {})} style={{ color: '#4ADE80', fontSize: 12, fontWeight: 700 }} className="flex items-center gap-1"><Copy size={12} /> Copiar</button>
+                                      </div>
+                                      <p style={{ fontSize: 18, fontWeight: 800, color: '#F4F4F2', marginTop: 8 }}>{walletArchive.current.balance != null ? walletArchive.current.balance.toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'} <span style={{ fontSize: 12, fontWeight: 600, color: '#878E88' }}>USDT</span></p>
                                   </div>
                               </div>
-                              <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-1 text-center">Tu dirección USDT (TRC-20)</p>
-                              <p className="font-mono text-sm break-all text-[#0C0E0D] text-center">{usdtAddr}</p>
-                              <div className="flex justify-center">
-                                  <button
-                                      onClick={() => { navigator.clipboard?.writeText(usdtAddr); showToast('Dirección copiada'); }}
-                                      className="mt-3 text-xs font-bold text-[#16A34A] hover:underline"
-                                  >
-                                      Copiar dirección
-                                  </button>
+                          )}
+                          <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: '#878E88', marginBottom: 8 }}>ARCHIVADAS (ANTERIORES)</p>
+                          {(!walletArchive?.archived || walletArchive.archived.length === 0) ? (
+                              <p style={{ fontSize: 12.5, color: '#878E88', padding: '10px 0' }}>No tienes wallets anteriores. Solo has usado la actual.</p>
+                          ) : (
+                              <div className="space-y-2.5">
+                                  {walletArchive.archived.map((w, i) => {
+                                      const open = archExpanded === w.address;
+                                      return (
+                                      <div key={i} style={{ borderRadius: 12, background: 'rgba(255,255,255,0.03)', border: `1px solid ${open ? 'rgba(74,222,128,0.25)' : 'rgba(255,255,255,0.09)'}`, overflow: 'hidden' }}>
+                                          <button onClick={() => toggleArchWallet(w.address)} className="w-full flex items-center justify-between hover:bg-white/[0.03] transition-colors" style={{ gap: 8, padding: '13px 16px', textAlign: 'left' }}>
+                                              <div style={{ minWidth: 0 }}>
+                                                  <p style={{ fontSize: 13, fontWeight: 600, color: '#C9CFCB', fontFamily: 'ui-monospace, Menlo, monospace' }}>{w.address.slice(0, 12)}…{w.address.slice(-8)}</p>
+                                                  <p style={{ fontSize: 10.5, color: '#878E88', marginTop: 3 }}>{w.at ? new Date(w.at).toLocaleDateString('es-CO') : ''} · toca para ver movimientos</p>
+                                              </div>
+                                              <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                                                  <p style={{ fontSize: 14.5, fontWeight: 800, color: w.balance && w.balance > 0 ? '#4ADE80' : '#878E88' }}>{w.balance != null ? w.balance.toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}</p>
+                                                  <p style={{ fontSize: 10, color: '#878E88' }}>USDT</p>
+                                              </div>
+                                          </button>
+                                          {open && (
+                                              <div style={{ padding: '4px 16px 16px', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+                                                  {/* Acciones: solo ENVIAR (recuperar fondos) + TronScan */}
+                                                  <div className="flex items-center" style={{ gap: 8, marginTop: 12, marginBottom: 12 }}>
+                                                      <button onClick={() => { if (archSend.open) { setArchSend(s => ({ ...s, open: false })); } else { openArchSend(w.index); } }}
+                                                          disabled={!w.balance || w.balance <= 0}
+                                                          className="flex items-center justify-center hover:opacity-90 transition-opacity" style={{ gap: 6, padding: '9px 14px', borderRadius: 9, fontSize: 12.5, fontWeight: 700, color: '#0A0C0B', background: (!w.balance || w.balance <= 0) ? 'rgba(74,222,128,0.3)' : '#4ADE80', border: 'none', cursor: (!w.balance || w.balance <= 0) ? 'not-allowed' : 'pointer' }}>
+                                                          <Send size={13} /> Enviar
+                                                      </button>
+                                                      {archMoves.explorer && <a href={archMoves.explorer} target="_blank" rel="noreferrer" style={{ fontSize: 12, fontWeight: 600, color: '#878E88' }} className="flex items-center gap-1 hover:text-white"><Link2 size={12} /> Ver en TronScan</a>}
+                                                  </div>
+                                                  {(!w.balance || w.balance <= 0) && <p style={{ fontSize: 11, color: '#878E88', marginBottom: 8 }}>Sin saldo para enviar.</p>}
+                                                  {/* Formulario de envío */}
+                                                  {archSend.open && (
+                                                      <div style={{ padding: '12px', borderRadius: 10, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.09)', marginBottom: 12 }}>
+                                                          <label style={{ fontSize: 10.5, fontWeight: 700, color: '#878E88' }}>DIRECCIÓN DESTINO (TRON)</label>
+                                                          <input value={archSend.to} onChange={e => setArchSend(s => ({ ...s, to: e.target.value, error: '' }))} placeholder="T…" style={{ width: '100%', marginTop: 5, marginBottom: 10, padding: '9px 11px', borderRadius: 8, background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.12)', color: '#F4F4F2', fontSize: 12.5, fontFamily: 'ui-monospace, Menlo, monospace' }} />
+                                                          {/* Desglose de comisión GasFree + máximo enviable */}
+                                                          {archQuote.loading ? (
+                                                              <p style={{ fontSize: 11.5, color: '#878E88', marginBottom: 10 }}>Calculando comisión…</p>
+                                                          ) : archQuote.error ? (
+                                                              <p style={{ fontSize: 11.5, color: '#F87171', marginBottom: 10 }}>{archQuote.error}</p>
+                                                          ) : archQuote.maxSendable != null ? (
+                                                              <div style={{ padding: '9px 11px', borderRadius: 8, background: 'rgba(74,222,128,0.05)', border: '1px solid rgba(74,222,128,0.18)', marginBottom: 10 }}>
+                                                                  <div className="flex items-center justify-between" style={{ fontSize: 11.5, color: '#878E88' }}><span>Saldo</span><span style={{ color: '#F4F4F2', fontWeight: 600 }}>{archQuote.balance?.toFixed(2)} USDT</span></div>
+                                                                  <div className="flex items-center justify-between" style={{ fontSize: 11.5, color: '#878E88', marginTop: 3 }}><span>Comisión GasFree{archQuote.activateFeeUsdt ? ' (incl. activación)' : ''}</span><span style={{ color: '#F4F4F2', fontWeight: 600 }}>− {archQuote.totalFeeUsdt?.toFixed(2)} USDT</span></div>
+                                                                  <div className="flex items-center justify-between" style={{ fontSize: 12.5, marginTop: 5, paddingTop: 5, borderTop: '1px solid rgba(255,255,255,0.08)' }}><span style={{ color: '#4ADE80', fontWeight: 700 }}>Máximo a enviar</span><span style={{ color: '#4ADE80', fontWeight: 800 }}>{archQuote.maxSendable.toFixed(2)} USDT</span></div>
+                                                              </div>
+                                                          ) : null}
+                                                          <div className="flex items-center justify-between" style={{ marginBottom: 5 }}>
+                                                              <label style={{ fontSize: 10.5, fontWeight: 700, color: '#878E88' }}>MONTO (USDT)</label>
+                                                              {archQuote.maxSendable != null && <button onClick={() => setArchSend(s => ({ ...s, amount: String(archQuote.maxSendable), error: '' }))} style={{ fontSize: 11, fontWeight: 700, color: '#4ADE80' }}>Máximo</button>}
+                                                          </div>
+                                                          <input value={archSend.amount} onChange={e => setArchSend(s => ({ ...s, amount: e.target.value.replace(/[^\d.,]/g, ''), error: '' }))} placeholder="0.00" style={{ width: '100%', marginBottom: 10, padding: '9px 11px', borderRadius: 8, background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.12)', color: '#F4F4F2', fontSize: 13 }} />
+                                                          {mfaEnrolled && (<>
+                                                              <label style={{ fontSize: 10.5, fontWeight: 700, color: '#878E88' }}>CÓDIGO 2FA</label>
+                                                              <input value={archSend.otp} onChange={e => setArchSend(s => ({ ...s, otp: e.target.value.replace(/\D/g, '').slice(0, 6), error: '' }))} placeholder="000000" inputMode="numeric" style={{ width: '100%', marginTop: 5, marginBottom: 10, padding: '9px 11px', borderRadius: 8, background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.12)', color: '#F4F4F2', fontSize: 13, letterSpacing: '0.3em' }} />
+                                                          </>)}
+                                                          {archSend.error && <p style={{ fontSize: 11.5, color: '#F87171', marginBottom: 8 }}>{archSend.error}</p>}
+                                                          <button onClick={() => submitArchivedSend(w.index, w.balance)} disabled={archSend.busy} className="w-full hover:opacity-90 transition-opacity" style={{ padding: '10px 0', borderRadius: 9, fontSize: 13, fontWeight: 700, color: '#0A0C0B', background: '#4ADE80', border: 'none', opacity: archSend.busy ? 0.6 : 1 }}>{archSend.busy ? 'Enviando…' : 'Confirmar envío'}</button>
+                                                      </div>
+                                                  )}
+                                                  {/* Movimientos */}
+                                                  <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1px', color: '#878E88', marginBottom: 6 }}>MOVIMIENTOS</p>
+                                                  {archMoves.loading ? (
+                                                      <p style={{ fontSize: 12, color: '#878E88' }}>Cargando…</p>
+                                                  ) : archMoves.items.length === 0 ? (
+                                                      <p style={{ fontSize: 12, color: '#878E88' }}>Sin movimientos registrados en la app. Revisa TronScan para el detalle on-chain.</p>
+                                                  ) : (
+                                                      <div className="space-y-2" style={{ maxHeight: 200, overflowY: 'auto' }}>
+                                                          {archMoves.items.map((m: any) => {
+                                                              const isIn = m.direction ? m.direction === 'in' : (['load', 'otc_deposit', 'pay_received', 'referral_payout'].includes(m.type) || /dep[oó]sito|recib/i.test(String(m.title || '')));
+                                                              const cur = (m.currency === 'USD' || m.currency === 'USDT_TRON') ? 'USDT' : m.currency;
+                                                              const amt = Number(m.amount).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                                                              return (
+                                                              <div key={m.id} className="flex items-center justify-between" style={{ gap: 10 }}>
+                                                                  <div className="flex items-center" style={{ gap: 9, minWidth: 0 }}>
+                                                                      <span style={{ width: 26, height: 26, borderRadius: 7, flexShrink: 0, display: 'grid', placeItems: 'center', background: isIn ? 'rgba(74,222,128,0.1)' : 'rgba(248,113,113,0.1)', color: isIn ? '#4ADE80' : '#F87171' }}>
+                                                                          {isIn ? <ArrowDownLeft size={14} /> : <ArrowUpRight size={14} />}
+                                                                      </span>
+                                                                      <div style={{ minWidth: 0 }}>
+                                                                          <p style={{ fontSize: 12, color: '#F4F4F2', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{isIn ? 'Entrada' : 'Salida'}</p>
+                                                                          <p style={{ fontSize: 10.5, color: '#878E88' }}>{m.at ? new Date(m.at).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' }) : ''}</p>
+                                                                      </div>
+                                                                  </div>
+                                                                  <span style={{ fontSize: 12.5, fontWeight: 700, color: isIn ? '#4ADE80' : '#F87171', whiteSpace: 'nowrap' }}>{isIn ? '+' : '−'}{amt} <span style={{ color: '#878E88', fontWeight: 500, fontSize: 11 }}>{cur}</span></span>
+                                                              </div>
+                                                              );
+                                                          })}
+                                                      </div>
+                                                  )}
+                                              </div>
+                                          )}
+                                      </div>
+                                      );
+                                  })}
+                              </div>
+                          )}
+                          <p style={{ fontSize: 11, color: '#878E88', marginTop: 18, lineHeight: 1.5 }}>Tu wallet no cambia sola. Solo cambia si tú generas una nueva a propósito. Una wallet archivada <b>solo envía</b> (para recuperar su saldo); no recibe. Los fondos que llegaron a una wallet anterior siguen siendo tuyos.</p>
+                      </>)}
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* Confirmar generación de una NUEVA wallet (manual) */}
+      {regenConfirmOpen && (
+          <div className="fixed inset-0 z-50 grid place-items-center p-4" style={{ background: 'rgba(4,5,4,0.72)', backdropFilter: 'blur(3px)', fontFamily: "'Archivo', system-ui, sans-serif" }} onClick={() => !regenBusy && setRegenConfirmOpen(false)}>
+              <div onClick={(e) => e.stopPropagation()} className="w-full animate-in fade-in zoom-in-95 duration-200" style={{ maxWidth: 420, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, padding: '26px 24px' }} role="dialog" aria-modal="true">
+                  <div className="flex items-center gap-2.5" style={{ marginBottom: 12 }}><span style={{ width: 36, height: 36, borderRadius: 10, background: 'rgba(74,222,128,0.1)', border: '1px solid rgba(74,222,128,0.25)', display: 'grid', placeItems: 'center' }}><Plus size={18} color="#4ADE80" /></span><span style={{ fontSize: 17, fontWeight: 800, color: '#F4F4F2' }}>Generar nueva wallet</span></div>
+                  <p style={{ fontSize: 13.5, color: '#C9CFCB', lineHeight: 1.55, marginBottom: 8 }}>¿Seguro que quieres generar una <b>nueva wallet</b> de depósito? La actual pasará a <b>archivadas</b> y la nueva quedará como <b>principal</b>.</p>
+                  <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, marginBottom: 16 }}>Nota: primero envía o convierte el saldo de la wallet actual. Si tiene fondos, no se podrá generar (para no dejar dinero en la anterior).</p>
+                  {regenError && <p style={{ fontSize: 12.5, color: '#F87171', background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.25)', borderRadius: 8, padding: '9px 11px', marginBottom: 14 }}>{regenError}</p>}
+                  <div className="flex" style={{ gap: 10 }}>
+                      <button onClick={() => setRegenConfirmOpen(false)} disabled={regenBusy} className="flex-1 hover:bg-white/[0.09] transition-colors" style={{ padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', opacity: regenBusy ? 0.5 : 1 }}>Cancelar</button>
+                      <button onClick={doRegenerateWallet} disabled={regenBusy} className="flex-1 transition-colors" style={{ padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, color: '#0A0C0B', background: '#4ADE80', border: 'none', opacity: regenBusy ? 0.6 : 1 }}>{regenBusy ? 'Generando…' : 'Sí, generar nueva'}</button>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* Cargar USDT — depósito on-chain a la wallet GasFree del cliente */}
+      {usdtModalOpen && (
+          <div className="fixed inset-0 z-50 grid place-items-center p-4" style={{ background: 'rgba(4,5,4,0.72)', backdropFilter: 'blur(3px)', fontFamily: "'Archivo', system-ui, sans-serif" }} onClick={() => setUsdtModalOpen(false)}>
+              <div onClick={(e) => e.stopPropagation()} className="w-full animate-in fade-in zoom-in-95 duration-200" style={{ maxWidth: 468, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, overflow: 'hidden' }} role="dialog" aria-modal="true">
+                  {/* Cabecera — mismo fondo, sin banda gris */}
+                  <div className="flex items-start justify-between" style={{ gap: 16, padding: '22px 24px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                      <div className="flex items-center gap-3">
+                          <div style={{ width: 38, height: 38, borderRadius: '50%', background: '#26A17B', color: '#fff', fontWeight: 800, fontSize: 17, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>₮</div>
+                          <div>
+                              <h3 style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.3px', color: '#F4F4F2' }}>Cargar dólar digital</h3>
+                              <p style={{ fontSize: 12.5, color: '#878E88', marginTop: 3 }}>Recibe USDT en tu dirección personal</p>
+                          </div>
+                      </div>
+                      <button onClick={() => setUsdtModalOpen(false)} style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', color: '#878E88', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }} className="hover:bg-white/[0.05] transition-colors"><X size={14}/></button>
+                  </div>
+
+                  <div style={{ padding: '20px 24px 24px' }}>
+                      {/* Red de depósito — Lincoin solo usa TRON */}
+                      <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88', marginBottom: 9 }}>RED DE DEPÓSITO</p>
+                      <div style={{ display: 'flex', gap: 7 }}>
+                          <div style={{ flex: 1, textAlign: 'center', padding: '10px 0', borderRadius: 9, fontSize: 13, fontWeight: 700, color: '#F4F4F2', border: '1px solid rgba(74,222,128,0.35)', background: 'rgba(74,222,128,0.07)' }}>TRON · TRC-20</div>
+                      </div>
+                      <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '9px 0 0' }}>El USDT circula por la red TRON (TRC-20). Sin gas para ti: la comisión de red se paga en USDT vía GasFree.</p>
+
+                      {/* QR + dirección */}
+                      {usdtLoadingAddr ? (
+                          <div style={{ marginTop: 16, height: 156, borderRadius: 14, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }} className="animate-pulse" />
+                      ) : usdtLoadErr ? (
+                          <div style={{ marginTop: 16, padding: 16, borderRadius: 14, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.1)', color: '#878E88', fontSize: 12.5 }}>{usdtLoadErr}</div>
+                      ) : usdtAddr && (
+                          <div style={{ marginTop: 16, padding: 20, borderRadius: 14, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', display: 'flex', gap: 18, alignItems: 'center' }}>
+                              <div style={{ width: 116, height: 116, background: '#F4F4F2', borderRadius: 10, padding: 8, flexShrink: 0 }}>
+                                  <img src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(usdtAddr)}&color=0A0A0A&bgcolor=F4F4F2&margin=0`} alt="QR dirección USDT" style={{ width: '100%', height: '100%' }} />
+                              </div>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                  <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: '#878E88' }}>TU DIRECCIÓN USDT · TRON</p>
+                                  <p style={{ fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 13, lineHeight: 1.5, wordBreak: 'break-all', color: '#F4F4F2', marginTop: 7 }}>{usdtAddr}</p>
+                                  <div style={{ display: 'flex', gap: 7, marginTop: 12 }}>
+                                      <button onClick={() => { navigator.clipboard?.writeText(usdtAddr); showToast('Dirección copiada'); }} style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', borderRadius: 8, padding: '7px 12px', fontSize: 12.5, fontWeight: 600, color: '#F4F4F2' }} className="hover:bg-white/[0.09] transition-colors"><Copy size={13}/> Copiar</button>
+                                      <button onClick={() => { const t = `Mi dirección USDT (TRON): ${usdtAddr}`; if ((navigator as any).share) { (navigator as any).share({ text: t }).catch(() => {}); } else { navigator.clipboard?.writeText(usdtAddr); showToast('Dirección copiada'); } }} style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', borderRadius: 8, padding: '7px 12px', fontSize: 12.5, fontWeight: 600, color: '#F4F4F2' }} className="hover:bg-white/[0.09] transition-colors"><Send size={13}/> Compartir</button>
+                                  </div>
                               </div>
                           </div>
                       )}
-                      <div className="bg-amber-50 border border-amber-100 rounded-xl p-3 text-[11px] text-amber-800">
-                          ⚠️ Envía únicamente <b>USDT</b> por la red <b>TRON (TRC-20)</b>. Otra moneda u otra red puede perder los fondos.
+
+                      {/* Detalles del depósito */}
+                      <div style={{ marginTop: 16, border: '1px solid rgba(255,255,255,0.08)', borderRadius: 14, overflow: 'hidden' }}>
+                          {[['Moneda aceptada', 'USDT únicamente', false], ['Depósito mínimo', '1,00 USDT', false], ['Se acredita tras', 'confirmación en TRON · ~1 min', false], ['Comisión de Lincoin', 'Sin comisión', true]].map(([k, v, green], i) => (
+                              <div key={k as string} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', fontSize: 13, borderTop: i === 0 ? 'none' : '1px solid rgba(255,255,255,0.06)' }}>
+                                  <span style={{ color: '#878E88' }}>{k}</span>
+                                  <span style={{ color: green ? '#4ADE80' : '#F4F4F2', fontWeight: 700 }}>{v}</span>
+                              </div>
+                          ))}
                       </div>
-                      <button
-                          onClick={verifyUsdtDeposit}
-                          disabled={usdtVerifying || !usdtAddr}
-                          style={{ color: '#0C0E0D' }}
-                          className="w-full py-3 rounded-xl bg-[#4ADE80] hover:bg-[#6EE7A0] font-bold text-sm disabled:opacity-50 transition-colors"
-                      >
-                          {usdtVerifying ? 'Verificando en la red…' : 'Ya envié — Verificar depósito'}
-                      </button>
+
+                      {/* Advertencia — gris con filo verde, sin amarillo */}
+                      <div style={{ display: 'flex', gap: 11, marginTop: 16, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.1)', borderLeft: '2px solid #4ADE80', borderRadius: 10, padding: '13px 15px' }}>
+                          <Info size={16} style={{ color: '#878E88', flexShrink: 0, marginTop: 1 }} />
+                          <p style={{ fontSize: 12.5, color: '#878E88', lineHeight: 1.55 }}>Envía <b style={{ color: '#F4F4F2', fontWeight: 700 }}>solo USDT por la red TRON (TRC-20)</b> a esta dirección. Otra moneda u otra red no se puede recuperar.</p>
+                      </div>
+
+                      {/* Acciones — primario BLANCO, sin verde ni glow */}
+                      <div style={{ display: 'flex', gap: 9, marginTop: 20 }}>
+                          <button onClick={() => setUsdtModalOpen(false)} style={{ flex: 1, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 14, padding: '13px 0', borderRadius: 10 }} className="hover:bg-white/[0.09] transition-colors">Cerrar</button>
+                          <button onClick={verifyUsdtDeposit} disabled={usdtVerifying || !usdtAddr} style={{ flex: 1.4, fontWeight: 700, fontSize: 14, padding: '13px 0', borderRadius: 10, opacity: (usdtVerifying || !usdtAddr) ? 0.6 : 1 }} className="lincoin-btn-white transition-colors">{usdtVerifying ? 'Buscando tu depósito…' : 'Ya envié el depósito'}</button>
+                      </div>
+
+                      {/* Estado de monitoreo */}
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 14 }}>
+                          <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#4ADE80' }} className="lincoin-op-dot" />
+                          <span style={{ fontSize: 12, color: '#878E88' }}>Estamos monitoreando la red. El saldo aparecerá solo.</span>
+                      </div>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* CARGAR SALDO (COP · Colombia) — selección de método, dark */}
+      {cargarCopOpen && (
+          <div className="fixed inset-0 z-50 p-4" style={{ background: 'rgba(4,5,4,0.85)', display: 'grid', placeItems: 'center' }} onClick={() => setCargarCopOpen(false)}>
+              <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true"
+                  style={{ width: '100%', maxWidth: 480, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, overflow: 'hidden', fontFamily: "'Archivo', system-ui, sans-serif" }}>
+                  {/* Cabecera */}
+                  <div style={{ padding: '21px 24px 15px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                      <div className="flex items-start justify-between gap-3">
+                          <div>
+                              <h3 style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.3px', color: '#F4F4F2' }}>Cargar saldo</h3>
+                              <p className="flex items-center" style={{ gap: 7, fontSize: 12.5, color: '#878E88', marginTop: 4 }}>
+                                  <span style={{ width: 15, height: 15, borderRadius: '50%', overflow: 'hidden', display: 'block', flexShrink: 0, background: '#2E3330' }}>
+                                      <img src={flagUrl('co')} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                  </span>
+                                  Peso colombiano · <button onClick={() => { setCargarCopOpen(false); setLoadStep(1); setIsLoadModalOpen(true); setTimeLeft(300); }} style={{ color: '#F4F4F2', fontWeight: 600, textDecoration: 'underline' }}>cambiar país</button>
+                              </p>
+                          </div>
+                          <button onClick={() => setCargarCopOpen(false)} style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', display: 'grid', placeItems: 'center', flexShrink: 0 }}><X size={13} style={{ color: '#878E88' }} strokeWidth={1.7} /></button>
+                      </div>
+                      <p style={{ fontSize: 12.5, color: '#878E88', marginTop: 12 }}>¿Cómo quieres ingresar el dinero?</p>
+                  </div>
+                  {/* Método — solo PSE (preseleccionado) */}
+                  <div style={{ padding: '18px 24px 24px' }}>
+                      <div className="flex items-center" style={{ gap: 13, border: '1px solid rgba(74,222,128,0.35)', background: 'rgba(74,222,128,0.05)', borderRadius: 12, padding: '15px 16px' }}>
+                          <span style={{ width: 38, height: 38, borderRadius: 10, background: 'rgba(255,255,255,0.055)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                              <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                                  <path d="M10 2.5 L17 6 H3 Z M4 6 V14 M8 6 V14 M12 6 V14 M16 6 V14 M2.5 14 H17.5 V16.5 H2.5 Z" stroke="#F4F4F2" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+                              </svg>
+                          </span>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                              <div className="flex items-center flex-wrap" style={{ gap: 8 }}>
+                                  <span style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2' }}>Cobro por link</span>
+                                  <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 9, fontWeight: 700, letterSpacing: '0.5px', padding: '3px 7px', borderRadius: 999 }}>RECOMENDADO</span>
+                              </div>
+                              <p style={{ fontSize: 12, color: '#878E88', marginTop: 3, lineHeight: 1.45 }}>Genera un link, compártelo y recibe el pago en tu cuenta ACH.</p>
+                          </div>
+                          <span style={{ width: 17, height: 17, borderRadius: '50%', border: '1.5px solid #4ADE80', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                              <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#4ADE80' }} />
+                          </span>
+                      </div>
+                      {/* Nota de titularidad */}
+                      <div className="flex items-start" style={{ gap: 8, marginTop: 16 }}>
+                          <ShieldCheck size={15} style={{ color: '#878E88', flexShrink: 0, marginTop: 1 }} strokeWidth={1.7} />
+                          <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5 }}>Solo puedes cargar desde cuentas a tu nombre. Verificamos el titular en cada ingreso.</p>
+                      </div>
+                      {/* Botonera */}
+                      <div className="flex" style={{ gap: 9, marginTop: 20 }}>
+                          <button onClick={() => setCargarCopOpen(false)} className="hover:bg-white/[0.09] transition-colors" style={{ flex: 1, padding: '13px 0', borderRadius: 10, fontSize: 14, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)' }}>Cancelar</button>
+                          <button onClick={() => { setCargarCopOpen(false); setPseAmount(''); setPseResult(null); setPseOpen(true); }} className="lincoin-btn-white transition-colors" style={{ flex: 1.5, padding: '13px 0', borderRadius: 10, fontSize: 14, fontWeight: 700, border: 'none' }}>Continuar</button>
+                      </div>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* RECAUDO PSE — generar link de cobro (Mouv) */}
+      {pseOpen && (
+          <div className="fixed inset-0 z-50 p-4" style={{ background: 'rgba(4,5,4,0.8)', display: 'grid', placeItems: 'center' }} onClick={() => !pseBusy && setPseOpen(false)}>
+              <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true"
+                  style={{ width: '100%', maxWidth: 420, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, overflow: 'hidden', fontFamily: "'Archivo', system-ui, sans-serif" }}>
+                  <div style={{ padding: '20px 22px 16px', borderBottom: '1px solid rgba(255,255,255,0.08)' }} className="flex items-start justify-between gap-3">
+                      <div>
+                          <h3 style={{ fontSize: 17, fontWeight: 800, letterSpacing: '-0.4px', color: '#F4F4F2' }}>Cobrar por link</h3>
+                          <p style={{ fontSize: 12.5, color: '#878E88', marginTop: 3 }}>Genera un link y compártelo con quien te paga. Al confirmarse, el saldo entra a tu cuenta.</p>
+                      </div>
+                      <button onClick={() => !pseBusy && setPseOpen(false)} style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', display: 'grid', placeItems: 'center', flexShrink: 0 }}><X size={13} style={{ color: '#878E88' }} strokeWidth={1.7} /></button>
+                  </div>
+                  <div style={{ padding: '18px 22px 22px' }}>
+                      {!pseResult?.ok ? (
+                          <>
+                              <label style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: '#878E88' }}>MONTO A COBRAR</label>
+                              <div className="flex items-center" style={{ gap: 8, marginTop: 8, border: '1px solid rgba(255,255,255,0.1)', borderRadius: 11, padding: '12px 14px', background: 'rgba(255,255,255,0.03)' }}>
+                                  <span style={{ fontSize: 22, fontWeight: 800, color: '#878E88' }}>$</span>
+                                  <input value={pseAmount} onChange={e => setPseAmount(formatInputNumber(e.target.value))} inputMode="numeric" placeholder="0" autoFocus
+                                      style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', fontSize: 26, fontWeight: 800, color: '#F4F4F2', minWidth: 0 }} />
+                                  <span style={{ fontSize: 13, fontWeight: 700, color: '#878E88' }}>COP</span>
+                              </div>
+                              <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 8 }}>Mínimo $100.000 · el pago entra a tu cuenta ACH.</p>
+                              {(() => { const a = getRawAmount(pseAmount); if (!a || a < 100000) return null; const net = a - 2500; return (
+                                  <div style={{ marginTop: 12, padding: '11px 13px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.09)', background: 'rgba(255,255,255,0.02)' }}>
+                                      <div className="flex items-center justify-between" style={{ padding: '3px 0' }}><span style={{ fontSize: 12, color: '#878E88' }}>Costo del cobro</span><span style={{ fontSize: 12.5, fontWeight: 600, color: '#F4F4F2' }}>$2.500 COP</span></div>
+                                      <div className="flex items-center justify-between" style={{ padding: '3px 0' }}><span style={{ fontSize: 12, color: '#878E88' }}>Recibes en ACH</span><span style={{ fontSize: 12.5, fontWeight: 700, color: '#4ADE80' }}>${net.toLocaleString('es-CO')} COP</span></div>
+                                  </div>
+                              ); })()}
+                              {pseResult && !pseResult.ok && (
+                                  <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(255,255,255,0.03)' }}>
+                                      <p style={{ fontSize: 12.5, color: '#F4F4F2', fontWeight: 600 }}>{pseResult.message}</p>
+                                      {pseResult.detail && <p style={{ fontSize: 10.5, color: '#878E88', marginTop: 4, fontFamily: 'ui-monospace, Menlo, monospace', wordBreak: 'break-all' }}>{pseResult.detail}</p>}
+                                  </div>
+                              )}
+                              <button onClick={generatePseLink} disabled={pseBusy} className="lincoin-btn-white transition-colors" style={{ width: '100%', marginTop: 16, padding: '13px 0', borderRadius: 11, fontSize: 14, fontWeight: 700, border: 'none', opacity: pseBusy ? 0.5 : 1 }}>
+                                  {pseBusy ? 'Generando link…' : 'Generar link de cobro'}
+                              </button>
+                          </>
+                      ) : (
+                          <div className="text-center">
+                              <div style={{ width: 46, height: 46, margin: '0 auto 12px', borderRadius: '50%', border: '1.5px solid rgba(74,222,128,0.4)', background: 'rgba(74,222,128,0.08)', display: 'grid', placeItems: 'center' }}>
+                                  <Link2 size={20} style={{ color: '#4ADE80' }} />
+                              </div>
+                              <p style={{ fontSize: 16, fontWeight: 800, color: '#F4F4F2' }}>¡Link de cobro listo!</p>
+                              <p style={{ fontSize: 12.5, color: '#878E88', marginTop: 4 }}>Compártelo con quien te paga. Ref: {pseResult.reference}</p>
+                              {pseResult.link && (
+                                  <div style={{ margin: '14px auto 0', width: 150, height: 150, borderRadius: 12, overflow: 'hidden', background: '#fff', padding: 8 }}>
+                                      <img src={`https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${encodeURIComponent(pseResult.link)}`} alt="QR de pago" style={{ width: '100%', height: '100%' }} />
+                                  </div>
+                              )}
+                              <div className="flex items-center" style={{ gap: 8, marginTop: 14, border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, padding: '10px 12px', background: 'rgba(255,255,255,0.03)' }}>
+                                  <span style={{ flex: 1, minWidth: 0, fontSize: 11.5, color: '#F4F4F2', fontFamily: 'ui-monospace, Menlo, monospace', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{pseResult.link}</span>
+                                  <button onClick={() => { navigator.clipboard?.writeText(pseResult.link || '').then(() => showToast('Link copiado')).catch(() => {}); }} style={{ fontSize: 12, fontWeight: 700, color: '#4ADE80', flexShrink: 0 }}>Copiar</button>
+                              </div>
+                              <button onClick={() => setPseOpen(false)} className="lincoin-btn-white transition-colors" style={{ width: '100%', marginTop: 14, padding: '12px 0', borderRadius: 11, fontSize: 13.5, fontWeight: 700, border: 'none' }}>Listo</button>
+                          </div>
+                      )}
                   </div>
               </div>
           </div>
@@ -3415,7 +5321,18 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           <div className="space-y-4">
                               <button onClick={() => setLoadStep(1)} className="text-xs text-slate-400 flex items-center gap-1 hover:text-slate-600 mb-2"><ArrowLeft size={12}/> Cambiar país</button>
                               <p className="text-sm text-slate-500">Selecciona el método de carga en {selectedCountry}:</p>
-                              {(bankingOptions[selectedCountry] || []).map(bank => (
+                              {/* Colombia: recaudo PSE por link (Mouv) — el método principal.
+                                  Al elegirlo se cierra este modal y se abre el generador de link. */}
+                              {selectedCountry === 'Colombia' && (
+                                  <button onClick={() => { setIsLoadModalOpen(false); setPseAmount(''); setPseResult(null); setPseOpen(true); }} className="w-full flex items-center gap-4 p-4 rounded-xl border border-[#4ADE80]/40 bg-[#4ADE80]/[0.06] hover:bg-[#4ADE80]/[0.1] transition-all group text-left">
+                                      <div className="w-10 h-10 rounded-lg flex items-center justify-center font-bold text-xs" style={{ background: 'rgba(74,222,128,0.14)', color: '#4ADE80' }}>PSE</div>
+                                      <div className="flex-1">
+                                          <p className="font-bold text-slate-700 group-hover:text-[#0C0E0D]">PSE · Cobro por link</p>
+                                          <p className="text-xs text-slate-400">Genera un link y recibe el pago desde cualquier banco</p>
+                                      </div>
+                                  </button>
+                              )}
+                              {(selectedCountry === 'Colombia' ? [] : (bankingOptions[selectedCountry] || [])).map(bank => (
                                   <button key={bank.id} onClick={() => handleBankSelect(bank.name)} className="w-full flex items-center gap-4 p-4 rounded-xl border border-slate-200 hover:border-[#0C0E0D] hover:bg-slate-50 transition-all group text-left">
                                       <div className={`w-10 h-10 rounded-lg flex items-center justify-center font-bold text-xs ${bank.logoColor || 'bg-slate-100 text-slate-600'}`}>{bank.logoText || bank.name.substring(0, 2)}</div>
                                       <div>
@@ -3503,241 +5420,336 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       )}
 
       {isSendModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden animate-in zoom-in-95 duration-300 flex flex-col max-h-[90vh]">
-                  <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-                      <h3 className="font-bold text-xl text-slate-800">
-                          {sendStep === 1 && "Enviar Dinero"}
-                          {sendStep === 2 && "Elige el Método"}
-                          {sendStep === 3 && sendMode === 'bank' && "Datos del Beneficiario"}
-                          {sendStep === 3 && sendMode === 'wallet' && "Enviar a Wallet"}
-                          {sendStep === 3 && sendMode === 'pay' && "Pago Lincoin"}
-                          {sendStep === 3 && sendMode === 'cash' && "Datos del Receptor"}
-                          {sendStep === 4 && (sendMode === 'bank' || sendMode === 'wallet') && "Confirmar Envío"}
-                          {sendStep === 4 && sendMode === 'pay' && "¡Pago Enviado!"}
-                          {sendStep === 4 && sendMode === 'cash' && "Confirmar Retiro"}
-                          {sendStep === 5 && sendMode !== 'cash' && "¡Envío Exitoso!"}
-                          {sendStep === 5 && sendMode === 'cash' && "¡Retiro Solicitado!"}
-                      </h3>
-                      {sendStep !== 5 && !(sendStep === 4 && sendMode === 'pay') && (
-                          <button onClick={closeSendModal} className="text-slate-400 hover:text-slate-600 p-1 rounded-full hover:bg-slate-200 transition-colors"><X size={20}/></button>
+          <div className="fixed inset-0 z-50 p-4" style={{ background: 'rgba(4,5,4,0.72)', display: 'grid', placeItems: 'center' }}>
+              <div className="w-full animate-in zoom-in-95 duration-300 flex flex-col" role="dialog" aria-modal="true"
+                  style={{ maxWidth: 476, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, overflow: 'hidden', maxHeight: '92vh', fontFamily: "'Archivo', system-ui, sans-serif" }}>
+                  {/* Cabecera + progreso (diseño Flujo Enviar: 4 pasos).
+                      En el paso 5 (éxito/fallo, no-cash) se OCULTA: el título
+                      vive una sola vez dentro de la cabecera del resultado. */}
+                  {!(sendStep === 5 && sendMode !== 'cash') && (
+                  <div style={{ padding: '18px 22px 14px' }}>
+                      <div className="flex items-start justify-between gap-3">
+                          <div>
+                              <h3 style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.3px', color: '#F4F4F2' }}>
+                                  {sendStep === 1 && 'Enviar dinero'}
+                                  {sendStep === 2 && '¿Cómo lo enviamos?'}
+                                  {sendStep === 3 && (sendMode === 'bank' ? '¿A quién le envías?' : sendMode === 'wallet' ? 'Enviar a wallet' : sendMode === 'pay' ? 'Pago Lincoin' : 'Datos del receptor')}
+                                  {sendStep === 4 && (sendMode === 'pay' ? '¡Pago enviado!' : 'Confirma el envío')}
+                                  {sendStep === 5 && (sendMode === 'cash' ? '¡Retiro solicitado!' : '¡Envío exitoso!')}
+                              </h3>
+                              <p style={{ fontSize: 12.5, color: '#878E88', marginTop: 3 }}>
+                                  {sendStep === 1 && (sendForm.destinationCurrency === 'USD' ? 'Desde tu billetera USDT' : 'Desde tu cuenta en pesos colombianos')}
+                                  {sendStep === 2 && <>Enviando <span style={{ color: '#F4F4F2', fontWeight: 700 }}>{formatMoney(getRawAmount(sendForm.amount), sendForm.destinationCurrency)} {displayCurrency(sendForm.destinationCurrency)}</span> · <button onClick={() => setSendStep(1)} style={{ textDecoration: 'underline', color: '#F4F4F2' }}>cambiar</button></>}
+                                  {sendStep === 3 && sendMode === 'bank' && <>{formatMoney(getRawAmount(sendForm.amount), 'COP')} COP · {sendSourceRail === 'COP_ACH' ? 'ACH' : 'Bre-B'} · solo beneficiarios inscritos</>}
+                                  {sendStep === 4 && sendMode !== 'pay' && 'Revisa los datos antes de confirmar'}
+                              </p>
+                          </div>
+                          {sendStep !== 5 && !(sendStep === 4 && sendMode === 'pay') && (
+                              <button onClick={closeSendModal} style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                                  <X size={13} style={{ color: '#878E88' }} strokeWidth={1.7} />
+                              </button>
+                          )}
+                      </div>
+                      {sendStep <= 4 && (
+                          <div className="flex" style={{ gap: 5, marginTop: 14 }}>
+                              {[1, 2, 3, 4].map(s => (
+                                  <div key={s} style={{ flex: 1, height: 3, borderRadius: 2, background: sendStep >= s ? '#4ADE80' : 'rgba(255,255,255,0.1)' }} />
+                              ))}
+                          </div>
                       )}
                   </div>
-                  <div className="p-6 overflow-y-auto">
+                  )}
+                  <div style={{ padding: sendStep === 5 && sendMode !== 'cash' ? '0 22px 22px' : '6px 22px 22px', overflowY: 'auto' }}>
 
-                      {/* STEP 1: Currency + Amount */}
-                      {sendStep === 1 && (
-                          <div className="space-y-6">
+                      {/* STEP 1: DESDE (cuenta + rieles con saldo) + monto */}
+                      {sendStep === 1 && (() => {
+                          const isUsdt = sendForm.destinationCurrency === 'USD';
+                          // Un envío sale de UN SOLO riel (lo define el método del
+                          // paso 2), así que lo enviable de una vez es el riel MAYOR,
+                          // no la suma — 'Todo' con la suma nunca pasaba la validación.
+                          const avail = isUsdt ? displayBalance('USD') : Math.max(getBalance('COP'), getBalance('COP_BREB'), getBalance('COP_ACH'));
+                          const quicks = isUsdt ? [5, 20, 50] : [10000, 50000, 200000];
+                          const setAmt = (n: number) => setSendForm({ ...sendForm, amount: formatInputNumber(String(Math.floor(n))) });
+                          return (
+                          <div className="space-y-4">
+                              {/* DESDE — primero el PAÍS (activables desde admin), luego la
+                                  cuenta/riel dentro del país. Hoy: Colombia (COP) y USA (USDT). */}
                               <div>
-                                  <label className="block text-sm font-bold text-slate-700 mb-2">Moneda a enviar</label>
-                                  <div className="grid grid-cols-4 gap-2">
-                                      {SEND_COUNTRIES.map(c => (
-                                          <button key={c.code} type="button"
-                                              onClick={() => setSendForm({...sendForm, destinationCountry: c.name, destinationCurrency: c.currency})}
-                                              className={`flex flex-col items-center gap-1 p-2.5 rounded-xl border transition-all ${sendForm.destinationCountry === c.name ? 'border-[#0C0E0D] bg-slate-50' : 'border-slate-200 hover:border-slate-300'}`}
-                                          >
-                                              <FlagImg code={c.code} className="w-7 h-5 object-cover rounded shadow-sm" />
-                                              <span className={`text-[10px] font-bold leading-tight text-center ${sendForm.destinationCountry === c.name ? 'text-[#0C0E0D]' : 'text-slate-500'}`}>{c.name}</span>
+                                  <label style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88' }}>DESDE</label>
+                                  {(() => {
+                                      const cs: Record<string, string> = { Colombia: 'on', 'Estados Unidos': 'on', ...((config as any).countryStatus || {}) };
+                                      const enabled = ['Colombia', 'Estados Unidos', 'México', 'Brasil', 'Perú', 'Chile', 'Venezuela'].filter(c => cs[c] === 'on');
+                                      // Bandera REAL (flagcdn, como en el resto de la app) — los
+                                      // degradados caseros se veían mal (EE. UU. parecía Perú).
+                                      const ISO: Record<string, string> = {
+                                          Colombia: 'co', 'Estados Unidos': 'us', 'México': 'mx',
+                                          Brasil: 'br', 'Perú': 'pe', Chile: 'cl', Venezuela: 've',
+                                      };
+                                      return (
+                                      <>
+                                      {/* Selector de país */}
+                                      <div className="flex flex-wrap" style={{ gap: 6, marginTop: 6 }}>
+                                          {enabled.map(country => {
+                                              const sel = country === 'Estados Unidos' ? isUsdt : !isUsdt;
+                                              return (
+                                                  <button key={country} type="button"
+                                                      onClick={() => setSendForm(f => country === 'Estados Unidos'
+                                                          ? { ...f, destinationCountry: 'Estados Unidos', destinationCurrency: 'USD' }
+                                                          : { ...f, destinationCountry: 'Colombia', destinationCurrency: 'COP' })}
+                                                      className="flex items-center gap-2"
+                                                      style={{ borderRadius: 999, padding: '7px 14px', fontSize: 12.5, fontWeight: sel ? 700 : 500, border: sel ? '1px solid rgba(74,222,128,0.35)' : '1px solid rgba(255,255,255,0.1)', background: sel ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.03)', color: sel ? '#F4F4F2' : '#878E88' }}>
+                                                      <span style={{ width: 16, height: 16, borderRadius: '50%', overflow: 'hidden', display: 'block', flexShrink: 0, background: '#2E3330' }}>
+                                                          <img src={flagUrl(ISO[country] ?? 'co')} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                                      </span>
+                                                      {country}
+                                                  </button>
+                                              );
+                                          })}
+                                      </div>
+                                      {/* Cuenta dentro del país */}
+                                      <div style={{ marginTop: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.025)', borderRadius: 13, padding: '13px 15px' }}>
+                                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                                              <div className="flex items-center gap-2.5">
+                                                  {isUsdt
+                                                      ? <span style={{ width: 26, height: 26, borderRadius: '50%', flexShrink: 0, display: 'block', background: '#26A17B', color: '#fff', fontWeight: 800, fontSize: 11, textAlign: 'center', lineHeight: '26px' }}>₮</span>
+                                                      : <span style={{ width: 26, height: 26, borderRadius: '50%', flexShrink: 0, display: 'block', overflow: 'hidden', background: '#2E3330' }}>
+                                                            <img src={flagUrl('co')} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                                        </span>}
+                                                  <div>
+                                                      <p style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>{isUsdt ? 'Dólar digital' : 'Peso colombiano'}</p>
+                                                      <p style={{ fontSize: 11, color: '#878E88' }}>{isUsdt ? 'USDT · disponible' : 'Máximo por envío (tu cuenta con más saldo) · el método define de cuál sale'}</p>
+                                                  </div>
+                                              </div>
+                                              <p style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.6px', color: '#F4F4F2' }}>{isUsdt ? Number(avail).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : Math.round(avail).toLocaleString('es-CO')}</p>
+                                          </div>
+                                          <div className="flex flex-wrap" style={{ gap: 6, marginTop: 12 }}>
+                                              {!isUsdt ? (
+                                                  /* Saldos INFORMATIVOS — ya no se elige billetera aquí:
+                                                     el método del paso 2 define de cuál cuenta sale. */
+                                                  ([
+                                                      { key: 'COP', label: 'Saldo Lincoin' },
+                                                      { key: 'COP_BREB', label: 'Bre-B' },
+                                                      { key: 'COP_ACH', label: 'ACH' },
+                                                  ] as const).map(r => (
+                                                      <span key={r.key}
+                                                          style={{ borderRadius: 999, padding: '6px 12px', fontSize: 11.5, fontWeight: 500, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.03)', color: '#878E88' }}>
+                                                          {r.label} · <b style={{ color: '#F4F4F2', fontWeight: 700 }}>{Math.round(getBalance(r.key)).toLocaleString('es-CO')}</b>
+                                                      </span>
+                                                  ))
+                                              ) : (
+                                                  <>
+                                                      <button type="button"
+                                                          style={{ borderRadius: 999, padding: '6px 12px', fontSize: 11.5, fontWeight: 700, border: '1px solid rgba(74,222,128,0.35)', background: 'rgba(74,222,128,0.06)', color: '#F4F4F2' }}>
+                                                          ₮ USDT · {Number(displayBalance('USD')).toLocaleString('es-CO', { maximumFractionDigits: 2 })}
+                                                      </button>
+                                                      <span className="flex items-center gap-1.5" style={{ borderRadius: 999, padding: '6px 12px', fontSize: 11.5, fontWeight: 500, border: '1px dashed rgba(255,255,255,0.14)', color: '#878E88', opacity: 0.8 }}>
+                                                          Cuenta USD <span style={{ border: '1px solid rgba(255,255,255,0.14)', fontSize: 8, fontWeight: 700, letterSpacing: '0.5px', padding: '1px 6px', borderRadius: 999 }}>PRÓXIMAMENTE</span>
+                                                      </span>
+                                                  </>
+                                              )}
+                                          </div>
+                                      </div>
+                                      </>
+                                      );
+                                  })()}
+                              </div>
+                              {/* MONTO */}
+                              <div>
+                                  <div className="flex items-center justify-between">
+                                      <label style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88' }}>MONTO A ENVIAR</label>
+                                      {!isUsdt && <span style={{ fontSize: 11.5, color: '#878E88' }}>Mínimo <span style={{ color: '#F4F4F2', fontWeight: 700 }}>5 000</span></span>}
+                                  </div>
+                                  <div className="relative" style={{ marginTop: 6 }}>
+                                      <input type="text" value={sendForm.amount} onChange={(e) => setSendForm({ ...sendForm, amount: formatInputNumber(e.target.value) })} placeholder="0" autoFocus
+                                          style={{ width: '100%', height: 62, padding: '0 74px 0 16px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 13, color: '#F4F4F2', fontSize: 28, fontWeight: 800, letterSpacing: '-1px', outline: 'none', fontFamily: 'inherit' }} />
+                                      <span className="absolute right-4 top-1/2 -translate-y-1/2" style={{ color: '#878E88', fontWeight: 700, fontSize: 15 }}>{isUsdt ? 'USDT' : 'COP'}</span>
+                                  </div>
+                                  <div className="flex flex-wrap" style={{ gap: 6, marginTop: 10 }}>
+                                      {quicks.map(n => (
+                                          <button key={n} type="button" onClick={() => setAmt(n)}
+                                              style={{ borderRadius: 7, padding: '6px 12px', fontSize: 11.5, fontWeight: 600, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.03)', color: '#878E88' }} className="hover:bg-white/[0.09] transition-colors">
+                                              {n.toLocaleString('es-CO')}
                                           </button>
                                       ))}
+                                      <button type="button" onClick={() => setAmt(avail)}
+                                          style={{ borderRadius: 7, padding: '6px 12px', fontSize: 11.5, fontWeight: 600, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.03)', color: '#878E88' }} className="hover:bg-white/[0.09] transition-colors">
+                                          Todo
+                                      </button>
                                   </div>
                               </div>
-                              <div>
-                                  <label className="block text-sm font-bold text-slate-700 mb-2">Monto a enviar</label>
-                                  <div className="relative">
-                                      <input type="text" value={sendForm.amount} onChange={(e) => setSendForm({...sendForm, amount: formatInputNumber(e.target.value)})} className="w-full h-16 pl-4 pr-16 text-3xl font-bold text-slate-900 border border-slate-300 rounded-xl focus:border-[#0C0E0D] focus:ring-1 focus:ring-[#0C0E0D] outline-none" placeholder="0" autoFocus />
-                                      <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-lg">{sendForm.destinationCurrency}</span>
-                                  </div>
-                                  <p className="text-xs text-slate-400 mt-1">Disponible: <span className="font-bold">{formatMoney(displayBalance(sendForm.destinationCurrency), sendForm.destinationCurrency)} {sendForm.destinationCurrency === 'USD' ? 'USDT' : sendForm.destinationCurrency}</span></p>
-                                  {sendForm.destinationCurrency === 'COP' && (
-                                      <p className="text-[10px] text-amber-600 font-bold mt-0.5">Mínimo de transferencia bancaria: 5.000 COP</p>
-                                  )}
+                              <div className="flex items-center" style={{ gap: 8 }}>
+                                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#4ADE80', flexShrink: 0 }} />
+                                  <span style={{ fontSize: 12, color: '#878E88' }}>{isUsdt ? 'Comisión de red GasFree cotizada antes de confirmar.' : 'Sin comisión entre usuarios de Lincoin.'}</span>
                               </div>
-                              <button onClick={handleSendNext} style={{ color: '#FFFFFF' }} className="w-full h-14 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] mt-2 flex items-center justify-center gap-2 text-lg shadow-lg">Continuar</button>
+                              <div className="flex" style={{ gap: 9, paddingTop: 4 }}>
+                                  <button onClick={closeSendModal} style={{ flex: 1, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 14, padding: '13px 0', borderRadius: 10 }} className="hover:bg-white/[0.09] transition-colors">Cancelar</button>
+                                  <button onClick={handleSendNext} className="lincoin-btn-white transition-colors" style={{ flex: 1.5, fontWeight: 700, fontSize: 14, padding: '13px 0', borderRadius: 10, border: 'none' }}>Continuar</button>
+                              </div>
                           </div>
-                      )}
+                          );
+                      })()}
 
-                      {/* STEP 2: Method selection */}
-                      {sendStep === 2 && (
-                          <div className="space-y-5">
-                              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-center">
-                                  <p className="text-xs text-slate-400 font-bold uppercase mb-0.5">Enviando</p>
-                                  <p className="text-2xl font-extrabold text-[#0C0E0D]">{formatMoney(getRawAmount(sendForm.amount), sendForm.destinationCurrency)} <span className="text-lg">{sendForm.destinationCurrency}</span></p>
+                      {/* STEP 2: Método — lista de radio (diseño Flujo Enviar) */}
+                      {sendStep === 2 && (() => {
+                          // El MÉTODO define de qué cuenta sale la plata — aquí se
+                          // muestra el SALDO de cada una y solo se puede elegir la
+                          // que cubra el monto + su comisión.
+                          const amtStep2 = getRawAmount(sendForm.amount);
+                          const METHODS = [
+                              { key: 'breb', title: 'Bre-B a cuenta bancaria', pill: 'SEGUNDOS', time: 'Por llave a cualquier banco · en segundos', rail: 'COP_BREB', railLabel: 'Bre-B', fee: 1200 },
+                              { key: 'ach', title: 'ACH tradicional', pill: null, time: `Ciclos ACH · L–V sin festivos · ${achEtaShort()}`, rail: 'COP_ACH', railLabel: 'ACH', fee: 2500 },
+                              { key: 'pay', title: 'A otro usuario de Lincoin', pill: 'SIN COMISIÓN', time: 'Por ID o correo · instantáneo, 24/7', rail: 'COP', railLabel: 'Saldo Lincoin', fee: 0 },
+                              { key: 'cash', title: 'Retiro en punto físico', pill: null, time: 'Efectivo en corresponsales aliados', rail: 'COP', railLabel: 'Saldo Lincoin', fee: 0 },
+                          ] as const;
+                          const selMeta = METHODS.find(x => x.key === sendMethodSel);
+                          const selOk = !!selMeta && getBalance(selMeta.rail) >= amtStep2 + selMeta.fee;
+                          return (
+                          <div className="space-y-4">
+                              <div className="space-y-2">
+                                  {METHODS.map(m => {
+                                      const bal = getBalance(m.rail);
+                                      const need = amtStep2 + m.fee;
+                                      const enough = bal >= need;
+                                      const sel = sendMethodSel === m.key;
+                                      return (
+                                          <button key={m.key} type="button" onClick={() => { if (enough) setSendMethodSel(m.key as any); }}
+                                              className="w-full flex items-center gap-3 text-left transition-colors"
+                                              style={{ padding: '13px 15px', borderRadius: 12, opacity: enough ? 1 : 0.55, cursor: enough ? 'pointer' : 'not-allowed',
+                                                  border: sel ? '1px solid rgba(74,222,128,0.35)' : '1px solid rgba(255,255,255,0.1)', background: sel ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.025)' }}>
+                                              <span className="flex-1 min-w-0">
+                                                  <span className="flex items-center gap-2">
+                                                      <span style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>{m.title}</span>
+                                                      {m.pill && <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 8.5, fontWeight: 700, letterSpacing: '0.6px', padding: '2px 6px', borderRadius: 999, whiteSpace: 'nowrap' }}>{m.pill}</span>}
+                                                  </span>
+                                                  <span style={{ display: 'block', fontSize: 11.5, color: '#878E88', marginTop: 2 }}>
+                                                      {m.time}{m.fee > 0 ? ` · $${m.fee.toLocaleString('es-CO')} por envío` : ''}
+                                                  </span>
+                                                  <span style={{ display: 'block', fontSize: 11.5, marginTop: 3, fontWeight: 600, color: enough ? '#4ADE80' : '#878E88' }}>
+                                                      Saldo {m.railLabel}: ${Math.round(bal).toLocaleString('es-CO')}
+                                                      {!enough && amtStep2 > 0 ? ` · te faltan $${Math.ceil(need - bal).toLocaleString('es-CO')}` : ''}
+                                                  </span>
+                                              </span>
+                                              <span style={{ width: 17, height: 17, borderRadius: '50%', flexShrink: 0, border: sel ? '5px solid #4ADE80' : '1.5px solid rgba(255,255,255,0.25)' }} />
+                                          </button>
+                                      );
+                                  })}
                               </div>
-                              {/* "Mover entre mis cuentas" SOLO Colombia: mueve Peso ⇄ BreB */}
-                              {sendForm.destinationCurrency === 'COP' && (
-                              <div>
-                                  <p className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">Entre mis cuentas</p>
+                              {/* Mover entre cuentas — fila secundaria, no es un envío */}
+                              <button
+                                  onClick={() => { setIsSendModalOpen(false); setSendStep(1); setSelectedWalletCode('COP'); setBrebMoveOpen(true); setActiveView('wallet-detail'); }}
+                                  className="w-full flex items-center justify-between transition-colors hover:bg-white/[0.04]"
+                                  style={{ padding: '11px 15px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.08)', background: 'transparent' }}>
+                                  <span style={{ fontSize: 12.5, color: '#878E88' }}>¿Solo quieres mover saldo entre tus rieles?</span>
+                                  <span style={{ fontSize: 12.5, fontWeight: 600, color: '#F4F4F2' }}>Mover entre mis cuentas →</span>
+                              </button>
+                              <div className="flex" style={{ gap: 9 }}>
+                                  <button onClick={() => setSendStep(1)} style={{ flex: 1, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 14, padding: '13px 0', borderRadius: 10 }} className="hover:bg-white/[0.09] transition-colors">Atrás</button>
                                   <button
                                       onClick={() => {
-                                          setIsSendModalOpen(false);
-                                          setSendStep(1);
-                                          setSelectedWalletCode('COP');
-                                          setBrebMoveOpen(true);
-                                          setActiveView('wallet-detail');
+                                          if (!sendMethodSel) return;
+                                          if (sendMethodSel === 'breb' || sendMethodSel === 'ach') {
+                                              setSendMode('bank');
+                                              setSendSourceRail(sendMethodSel === 'breb' ? 'COP_BREB' : 'COP_ACH');
+                                          } else {
+                                              setSendMode(sendMethodSel);
+                                              setSendSourceRail('COP');
+                                          }
+                                          setSendStep(3);
                                       }}
-                                      className="w-full flex items-center gap-3 p-4 border-2 border-slate-200 rounded-2xl hover:border-[#4ADE80] hover:bg-green-50/40 transition-all group text-left"
-                                  >
-                                      <div className="w-12 h-12 bg-[#0C0E0D] rounded-xl flex items-center justify-center shrink-0">
-                                          <RefreshCw size={22} className="text-[#4ADE80]" />
-                                      </div>
-                                      <div>
-                                          <p className="font-bold text-sm text-slate-800">Mover entre mis cuentas</p>
-                                          <p className="text-[10px] text-slate-500 leading-tight">Peso Lincoin ⇄ BreB Lincoin, al instante</p>
-                                      </div>
+                                      disabled={!sendMethodSel || !selOk}
+                                      className="lincoin-btn-white transition-colors"
+                                      style={{ flex: 1.5, fontWeight: 700, fontSize: 14, padding: '13px 0', borderRadius: 10, border: 'none', opacity: (sendMethodSel && selOk) ? 1 : 0.45, cursor: (sendMethodSel && selOk) ? 'pointer' : 'not-allowed' }}>
+                                      Continuar
                                   </button>
                               </div>
-                              )}
-
-                              <p className="text-xs font-bold uppercase tracking-wider text-slate-500 -mb-2">A terceros / contactos</p>
-                              <div className="grid grid-cols-3 gap-3">
-                                  <button
-                                      onClick={() => { setSendMode('bank'); setSendStep(3); }}
-                                      className="flex flex-col items-center gap-2 p-4 border-2 border-slate-200 rounded-2xl hover:border-[#0C0E0D] hover:bg-slate-50 transition-all group"
-                                  >
-                                      <div className="w-12 h-12 bg-slate-100 group-hover:bg-slate-100 rounded-xl flex items-center justify-center transition-colors">
-                                          <Building2 size={24} className="text-slate-500 group-hover:text-[#0C0E0D]" />
-                                      </div>
-                                      <div className="text-center">
-                                          <p className="font-bold text-sm text-slate-800">Banco</p>
-                                          <p className="text-[10px] text-slate-400 leading-tight">Transferencia bancaria</p>
-                                      </div>
-                                  </button>
-                                  <button
-                                      onClick={() => { setSendMode('pay'); setSendStep(3); }}
-                                      className="flex flex-col items-center gap-2 p-4 border-2 border-slate-200 rounded-2xl hover:border-green-500 hover:bg-green-50 transition-all group"
-                                  >
-                                      <div className="w-12 h-12 bg-green-100 group-hover:bg-green-200 rounded-xl flex items-center justify-center transition-colors">
-                                          <Zap size={24} className="text-green-600" />
-                                      </div>
-                                      <div className="text-center">
-                                          <p className="font-bold text-sm text-slate-800">Lincoin</p>
-                                          <p className="text-[10px] text-slate-400 leading-tight">Instantáneo · Sin comisión</p>
-                                      </div>
-                                  </button>
-                                  {sendForm.destinationCurrency === 'USD' ? (
-                                  <button
-                                      onClick={() => { setSendMode('wallet'); setSendStep(3); }}
-                                      className="flex flex-col items-center gap-2 p-4 border-2 border-slate-200 rounded-2xl hover:border-[#4ADE80] hover:bg-green-50/40 transition-all group"
-                                  >
-                                      <div className="w-12 h-12 bg-green-50 group-hover:bg-green-100 rounded-xl flex items-center justify-center transition-colors">
-                                          <Wallet size={24} className="text-[#16A34A]" />
-                                      </div>
-                                      <div className="text-center">
-                                          <p className="font-bold text-sm text-slate-800">Wallet</p>
-                                          <p className="text-[10px] text-slate-400 leading-tight">USDT a wallet inscrita</p>
-                                      </div>
-                                  </button>
-                                  ) : (
-                                  <button
-                                      onClick={() => { setSendMode('cash'); setSendStep(3); }}
-                                      className="flex flex-col items-center gap-2 p-4 border-2 border-slate-200 rounded-2xl hover:border-orange-400 hover:bg-orange-50 transition-all group"
-                                  >
-                                      <div className="w-12 h-12 bg-orange-100 group-hover:bg-orange-200 rounded-xl flex items-center justify-center transition-colors">
-                                          <MapPin size={24} className="text-orange-600" />
-                                      </div>
-                                      <div className="text-center">
-                                          <p className="font-bold text-sm text-slate-800">Punto Físico</p>
-                                          <p className="text-[10px] text-slate-400 leading-tight">Retiro en efectivo</p>
-                                      </div>
-                                  </button>
-                                  )}
-                              </div>
-                              <button onClick={() => setSendStep(1)} className="text-xs text-slate-400 flex items-center justify-center gap-1 hover:text-slate-600 w-full pt-1">
-                                  <ArrowLeft size={12}/> Cambiar monto
-                              </button>
                           </div>
-                      )}
+                          );
+                      })()}
 
-                      {/* STEP 3 BANK: SIEMPRE contactos inscritos (se inscriben en Contactos, no aquí) */}
+                      {/* STEP 3 BANK: beneficiarios inscritos como tarjetas (diseño) */}
                       {sendStep === 3 && sendMode === 'bank' && (() => {
-                          const isCopDest = sendForm.destinationCurrency === 'COP';
-                          {
-                              const all: any[] = ((currentUser as any)?.raw_data?.mouvContacts) ?? ((currentUser as any)?.mouvContacts) ?? [];
-                              // Solo contactos del país destino (COP = Colombia vía Mouv;
-                              // el resto por su país). Nada de formulario libre: las cuentas
-                              // se inscriben únicamente en la sección Contactos.
-                              const myContacts = all.filter((c: any) => c.accountKind !== 'wallet' && (c.country ?? 'Colombia') === sendForm.destinationCountry);
-                              const q = contactSearch.trim().toLowerCase();
-                              const list = myContacts.filter((c: any) =>
-                                  !q || `${c.name} ${c.bank} ${c.docNumber} ${c.accountNumber}`.toLowerCase().includes(q));
-                              const goContacts = () => { setIsSendModalOpen(false); setActiveView('contactos'); };
-                              const maskAcc = (a: string) => (a?.length > 4 ? `···${a.slice(-4)}` : a);
-                              return (
-                                  <div className="space-y-4">
-                                      <button onClick={() => setSendStep(2)} className="text-xs text-slate-400 flex items-center gap-1 hover:text-slate-600 mb-2 font-bold"><ArrowLeft size={12}/> Volver</button>
-                                      <p className="text-sm text-slate-600">
-                                          {isCopDest
-                                              ? <>Las transferencias en COP van <b>solo a contactos inscritos</b>. Elige el destinatario:</>
-                                              : <>Los envíos van <b>solo a contactos inscritos</b> de {sendForm.destinationCountry}. Elige el destinatario:</>}
-                                      </p>
+                          const all: any[] = ((currentUser as any)?.raw_data?.mouvContacts) ?? ((currentUser as any)?.mouvContacts) ?? [];
+                          const railKind = sendSourceRail === 'COP_ACH' ? 'ach' : 'breb';
+                          // Solo Colombia y del riel elegido en el paso 2.
+                          const myContacts = all.filter((c: any) => c.accountKind !== 'wallet' && (c.country ?? 'Colombia') === 'Colombia' && ((c.destKind ?? 'ach') === railKind));
+                          const q = contactSearch.trim().toLowerCase();
+                          const list = myContacts.filter((c: any) => !q || `${c.name} ${c.bank} ${c.docNumber} ${c.accountNumber} ${c.brebKey ?? ''}`.toLowerCase().includes(q));
+                          const goContacts = () => { setIsSendModalOpen(false); setActiveView('contactos'); };
+                          const maskAcc = (a: string) => (a?.length > 4 ? `···${a.slice(-4)}` : a);
+                          const initials = (n: string) => { const p = String(n || '').trim().split(/\s+/); return ((p[0]?.[0] ?? '') + (p[1]?.[0] ?? '')).toUpperCase() || '·'; };
+                          const pickContact = (c: any) => {
+                              setSendForm({
+                                  ...sendForm,
+                                  beneficiaryName: c.name,
+                                  documentType: c.docType ?? sendForm.documentType,
+                                  documentNumber: c.docNumber,
+                                  bankName: c.bank,
+                                  accountNumber: c.accountNumber,
+                                  accountType: c.accountType ?? sendForm.accountType,
+                                  beneficiaryType: c.kind === 'empresa' ? 'business' : 'personal',
+                              });
+                              setSendContact(c);
+                              setSendSourceRail((c as any).destKind === 'breb' ? 'COP_BREB' : 'COP_ACH');
+                              setMouvDestId(null);
+                          };
+                          return (
+                              <div className="space-y-3">
+                                  {myContacts.length > 0 && (
                                       <div className="relative">
-                                          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                                          <input
-                                              value={contactSearch}
-                                              onChange={e => setContactSearch(e.target.value)}
-                                              placeholder="Buscar por nombre, banco, documento o cuenta…"
-                                              className="w-full h-11 pl-9 pr-3 border border-slate-300 rounded-lg focus:border-[#0C0E0D] outline-none text-sm"
-                                          />
+                                          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: '#878E88' }} />
+                                          <input value={contactSearch} onChange={e => setContactSearch(e.target.value)} placeholder="Buscar por nombre, banco o cuenta…"
+                                              style={{ width: '100%', height: 40, paddingLeft: 36, paddingRight: 12, background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 9, color: '#F4F4F2', fontSize: 13, outline: 'none' }} />
                                       </div>
-                                      {myContacts.length === 0 ? (
-                                          <div className="text-center py-8 space-y-3">
-                                              <p className="text-sm text-slate-400">Aún no tienes contactos inscritos.</p>
-                                              <button onClick={goContacts} style={{ color: '#0C0E0D' }} className="py-2.5 px-5 rounded-xl bg-[#4ADE80] hover:bg-[#6EE7A0] text-sm font-bold">
-                                                  + Inscribir mi primer contacto
+                                  )}
+                                  <div className="space-y-2" style={{ maxHeight: 300, overflowY: 'auto' }}>
+                                      {list.map((c: any) => {
+                                          const st = contactStatus(c);
+                                          const selectable = st === 'aprobada';
+                                          const sel = sendContact?.id === c.id;
+                                          const railLine = c.destKind === 'breb'
+                                              ? `Bre-B · ${maskAcc(c.brebKey ?? c.accountNumber)}`
+                                              : `${c.accountType === 'savings' ? 'Ahorros' : 'Corriente'} ${maskAcc(c.accountNumber)}`;
+                                          return (
+                                              <button key={c.id} disabled={!selectable} onClick={() => selectable && pickContact(c)}
+                                                  className="w-full flex items-center gap-3 text-left transition-colors"
+                                                  style={{ padding: '12px 14px', borderRadius: 12, opacity: selectable ? 1 : 0.5, cursor: selectable ? 'pointer' : 'not-allowed',
+                                                      border: sel ? '1px solid rgba(74,222,128,0.35)' : '1px solid rgba(255,255,255,0.1)',
+                                                      background: sel ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.025)' }}>
+                                                  <span style={{ width: 36, height: 36, borderRadius: '50%', background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', border: '1px solid rgba(255,255,255,0.12)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                                                      <span style={{ color: '#878E88', fontWeight: 800, fontSize: 12 }}>{initials(c.name)}</span>
+                                                  </span>
+                                                  <span className="flex-1 min-w-0">
+                                                      <span style={{ display: 'block', fontSize: 13.5, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.name}</span>
+                                                      <span style={{ display: 'block', fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{railLine}{c.bank && !String(c.bank).startsWith('Bre-B') ? ` · ${c.bank}` : ''}</span>
+                                                  </span>
+                                                  {selectable
+                                                      ? <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 9, fontWeight: 700, letterSpacing: '0.5px', padding: '3px 8px', borderRadius: 999, whiteSpace: 'nowrap', flexShrink: 0 }}>VERIFICADA</span>
+                                                      : <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 999, whiteSpace: 'nowrap', flexShrink: 0 }}>{st === 'rechazada' ? 'RECHAZADA' : 'EN VALIDACIÓN'}</span>}
                                               </button>
-                                          </div>
-                                      ) : (
-                                          <div className="space-y-2 max-h-72 overflow-y-auto">
-                                              {list.length === 0 && <p className="text-center text-sm text-slate-400 py-4">Sin resultados para "{contactSearch}"</p>}
-                                              {list.map((c: any) => {
-                                                  const st = contactStatus(c);
-                                                  const selectable = st === 'aprobada';
-                                                  return (
-                                                  <button
-                                                      key={c.id}
-                                                      disabled={!selectable}
-                                                      onClick={() => {
-                                                          if (!selectable) return;
-                                                          setSendForm({
-                                                              ...sendForm,
-                                                              beneficiaryName: c.name,
-                                                              documentType: c.docType ?? sendForm.documentType,
-                                                              documentNumber: c.docNumber,
-                                                              bankName: c.bank,
-                                                              accountNumber: c.accountNumber,
-                                                              accountType: c.accountType ?? sendForm.accountType,
-                                                              beneficiaryType: c.kind === 'empresa' ? 'business' : 'personal',
-                                                          });
-                                                          // COP: con este ID la confirmación crea la orden REAL en
-                                                          // Mouv. Otros países: flujo interno, sin Mouv.
-                                                          setMouvDestId(isCopDest ? (c.mouvId ?? null) : null);
-                                                          setSendStep(4);
-                                                      }}
-                                                      className={`w-full flex items-center justify-between gap-3 p-3.5 rounded-xl border transition-all text-left ${selectable ? 'border-slate-200 hover:border-[#0C0E0D] hover:bg-slate-50' : 'border-slate-100 bg-slate-50/60 opacity-60 cursor-not-allowed'}`}
-                                                  >
-                                                      <div className="min-w-0">
-                                                          <p className="font-bold text-slate-800 text-sm truncate">{c.name}</p>
-                                                          <p className="text-xs text-slate-500 truncate">{c.bank} · {c.accountType === 'savings' ? 'Ahorros' : 'Corriente'} {maskAcc(c.accountNumber)} · {c.docType} {c.docNumber}</p>
-                                                          {st === 'en_proceso' && <p className="text-[10px] text-amber-600 font-bold">La cuenta está en revisión — disponible al aprobarse</p>}
-                                                          {st === 'rechazada' && <p className="text-[10px] text-red-600 font-bold">La cuenta fue rechazada — inscríbela de nuevo con datos correctos</p>}
-                                                      </div>
-                                                      {st === 'aprobada' && <span className="shrink-0 text-[9px] font-bold uppercase bg-green-50 text-green-700 border border-green-200 px-2 py-0.5 rounded-full">Aprobada</span>}
-                                                      {st === 'en_proceso' && <span className="shrink-0 text-[9px] font-bold uppercase bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-full">En proceso</span>}
-                                                      {st === 'rechazada' && <span className="shrink-0 text-[9px] font-bold uppercase bg-red-50 text-red-700 border border-red-200 px-2 py-0.5 rounded-full">Rechazada</span>}
-                                                  </button>
-                                                  );
-                                              })}
-                                          </div>
+                                          );
+                                      })}
+                                      {list.length === 0 && (
+                                          <p className="text-center py-4" style={{ fontSize: 12.5, color: '#878E88' }}>
+                                              {myContacts.length === 0 ? `Aún no tienes beneficiarios ${railKind === 'breb' ? 'Bre-B' : 'ACH'} inscritos.` : `Sin resultados para "${contactSearch}"`}
+                                          </p>
                                       )}
-                                      {myContacts.length > 0 && (
-                                          <button onClick={goContacts} className="w-full text-xs font-bold text-[#16A34A] hover:underline py-1">
-                                              + Inscribir nuevo contacto
-                                          </button>
-                                      )}
+                                      {/* Inscribir nuevo — tarjeta punteada */}
+                                      <button onClick={goContacts} className="w-full text-left transition-colors hover:bg-white/[0.03]"
+                                          style={{ padding: '12px 14px', borderRadius: 12, border: '1px dashed rgba(255,255,255,0.2)', background: 'transparent' }}>
+                                          <span style={{ fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>+ Inscribir nuevo beneficiario</span>
+                                          <span style={{ display: 'block', fontSize: 11.5, color: '#878E88', marginTop: 2 }}>Se valida con el banco antes del primer envío</span>
+                                      </button>
                                   </div>
-                              );
-                          }
+                                  <div className="flex" style={{ gap: 9, paddingTop: 4 }}>
+                                      <button onClick={() => setSendStep(2)} style={{ flex: 1, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 14, padding: '13px 0', borderRadius: 10 }} className="hover:bg-white/[0.09] transition-colors">Atrás</button>
+                                      <button onClick={() => sendContact && setSendStep(4)} disabled={!sendContact}
+                                          className="lincoin-btn-white transition-colors"
+                                          style={{ flex: 1.5, fontWeight: 700, fontSize: 14, padding: '13px 0', borderRadius: 10, border: 'none', opacity: sendContact ? 1 : 0.45, cursor: sendContact ? 'pointer' : 'not-allowed' }}>
+                                          Continuar
+                                      </button>
+                                  </div>
+                              </div>
+                          );
                       })()}
 
                       {/* STEP 3 WALLET: wallets inscritas (solo USD) */}
@@ -3866,24 +5878,122 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           </div>
                       )}
 
-                      {/* STEP 4 BANK/WALLET: Confirm */}
-                      {sendStep === 4 && (sendMode === 'bank' || sendMode === 'wallet') && (
+                      {/* STEP 4 BANK: Confirmar (diseño Flujo Enviar) */}
+                      {sendStep === 4 && sendMode === 'bank' && (() => {
+                          const amt = getRawAmount(sendForm.amount);
+                          const isBrebM = (sendContact?.destKind ?? (sendSourceRail === 'COP_BREB' ? 'breb' : 'ach')) === 'breb';
+                          const railLbl = isBrebM ? 'Bre-B' : 'ACH';
+                          const initials = (n: string) => { const p = String(n || '').trim().split(/\s+/); return ((p[0]?.[0] ?? '') + (p[1]?.[0] ?? '')).toUpperCase() || '·'; };
+                          const destLine = isBrebM
+                              ? `Bre-B · ${sendContact?.brebKey ? `···${String(sendContact.brebKey).slice(-4)}` : ''}${sendForm.bankName && !String(sendForm.bankName).startsWith('Bre-B') ? ` · ${sendForm.bankName}` : ''}`
+                              : `${sendForm.bankName} · ${sendForm.accountType === 'checking' ? 'Corriente' : 'Ahorros'} ···${String(sendForm.accountNumber || '').slice(-4)}`;
+                          return (
+                          <div className="space-y-4">
+                              {/* Destinatario + Editar — con los datos COMPLETOS que
+                                  identifican el destino (llave/cuenta y cédula), para
+                                  confirmar que la plata va a la persona correcta. */}
+                              <div style={{ padding: '13px 15px', borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.025)' }}>
+                                  <div className="flex items-center gap-3">
+                                      <span style={{ width: 38, height: 38, borderRadius: '50%', background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', border: '1px solid rgba(255,255,255,0.12)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                                          <span style={{ color: '#878E88', fontWeight: 800, fontSize: 13 }}>{initials(sendForm.beneficiaryName)}</span>
+                                      </span>
+                                      <div className="flex-1 min-w-0">
+                                          <p style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{sendForm.beneficiaryName}</p>
+                                          <p style={{ fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{destLine}</p>
+                                      </div>
+                                      <button onClick={() => setSendStep(3)} style={{ fontSize: 12.5, fontWeight: 600, color: '#F4F4F2', textDecoration: 'underline', flexShrink: 0 }}>Editar</button>
+                                  </div>
+                                  <div style={{ borderTop: '1px solid rgba(255,255,255,0.07)', marginTop: 11, paddingTop: 10 }} className="space-y-1.5">
+                                      {isBrebM ? (
+                                          <>
+                                              <div className="flex items-center justify-between gap-3">
+                                                  <span style={{ fontSize: 11.5, color: '#878E88' }}>Llave Bre-B{sendContact?.brebKeyType ? ` (${sendContact.brebKeyType})` : ''}</span>
+                                                  <span style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2', fontFamily: 'monospace', wordBreak: 'break-all', textAlign: 'right' }}>{sendContact?.brebKey ?? sendForm.accountNumber ?? '—'}</span>
+                                              </div>
+                                          </>
+                                      ) : (
+                                          <>
+                                              <div className="flex items-center justify-between gap-3">
+                                                  <span style={{ fontSize: 11.5, color: '#878E88' }}>Banco</span>
+                                                  <span style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2' }}>{sendForm.bankName || '—'} · {sendForm.accountType === 'checking' ? 'Corriente' : 'Ahorros'}</span>
+                                              </div>
+                                              <div className="flex items-center justify-between gap-3">
+                                                  <span style={{ fontSize: 11.5, color: '#878E88' }}>Cuenta</span>
+                                                  <span style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2', fontFamily: 'monospace' }}>{sendForm.accountNumber || '—'}</span>
+                                              </div>
+                                          </>
+                                      )}
+                                      <div className="flex items-center justify-between gap-3">
+                                          <span style={{ fontSize: 11.5, color: '#878E88' }}>Documento</span>
+                                          <span style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2', fontFamily: 'monospace' }}>{(sendForm.documentType || sendContact?.docType || 'CC')} {sendForm.documentNumber || sendContact?.docNumber || '—'}</span>
+                                      </div>
+                                  </div>
+                              </div>
+                              {/* RECIBE */}
+                              <div style={{ border: '1px solid rgba(255,255,255,0.1)', borderRadius: 13, padding: '15px 16px', background: 'rgba(255,255,255,0.025)' }}>
+                                  <span style={{ color: '#878E88', fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px' }}>RECIBE</span>
+                                  <p style={{ fontSize: 30, fontWeight: 800, letterSpacing: '-1.2px', color: '#F4F4F2', marginTop: 4 }}>{formatMoney(amt, 'COP')} <span style={{ fontSize: 15, color: '#878E88', fontWeight: 700 }}>COP</span></p>
+                              </div>
+                              {/* Desglose — la comisión del proveedor se cobra al cliente */}
+                              <div style={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: 13, overflow: 'hidden' }}>
+                                  {[
+                                      { l: 'Sale de', v: `${sendSourceRail === 'COP' ? 'Saldo Lincoin' : sendSourceRail === 'COP_BREB' ? 'Bre-B' : 'ACH'} · COP` },
+                                      { l: `Comisión fija ${railLbl} · sin variable`, v: payoutQuote?.loading ? 'cotizando…'
+                                          : payoutQuote?.error ? '—'
+                                          : payoutQuote?.feeCop != null ? `${formatMoney(payoutQuote.feeCop, 'COP')} COP`
+                                          : 'Precio fijo · al confirmar' },
+                                      { l: 'Llega', v: isBrebM ? 'En segundos' : achEta() },
+                                  ].map((row, i) => (
+                                      <div key={row.l} className="flex items-center justify-between" style={{ padding: '11px 16px', fontSize: 13, borderTop: i === 0 ? 'none' : '1px solid rgba(255,255,255,0.06)' }}>
+                                          <span style={{ color: '#878E88' }}>{row.l}</span>
+                                          <span style={{ color: '#F4F4F2', fontWeight: 700 }}>{row.v}</span>
+                                      </div>
+                                  ))}
+                                  <div className="flex items-center justify-between" style={{ padding: '11px 16px', fontSize: 13, borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.02)' }}>
+                                      <span style={{ color: '#878E88' }}>Total que sale</span>
+                                      <span style={{ color: '#4ADE80', fontWeight: 700 }}>{formatMoney(amt + (payoutQuote?.feeCop ?? 0), 'COP')} COP{payoutQuote?.feeCop == null && !isBrebM ? ' + comisión' : ''}</span>
+                                  </div>
+                              </div>
+                              {payoutQuote?.error && <p style={{ fontSize: 11.5, color: '#878E88' }}>No se pudo cotizar la comisión ({payoutQuote.error}) — se calculará al confirmar.</p>}
+                              {/* Aviso antes de confirmar */}
+                              <div className="flex items-start" style={{ gap: 11, border: '1px solid rgba(255,255,255,0.1)', borderLeft: '2px solid #4ADE80', background: 'rgba(255,255,255,0.03)', borderRadius: 10, padding: '12px 15px' }}>
+                                  <Clock size={16} style={{ color: '#878E88', flexShrink: 0, marginTop: 1 }} strokeWidth={1.5} />
+                                  <span style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5 }}>Al confirmar no se puede reversar. Puede tardar <span style={{ color: '#F4F4F2', fontWeight: 700 }}>hasta 1 minuto</span>; te avisamos aquí y por correo.</span>
+                              </div>
+                              {mouvUnknown ? (
+                                  <div style={{ border: '1px solid rgba(255,255,255,0.14)', borderRadius: 12, padding: 16 }} className="space-y-3">
+                                      <p style={{ fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>La conexión se demoró y NO se sabe si el envío se procesó.</p>
+                                      <p style={{ fontSize: 12, color: '#878E88' }}>Para evitar transferencias duplicadas, revisa primero tu Historial. Si la orden NO aparece, reintenta.</p>
+                                      <button onClick={() => setMouvUnknown(false)} style={{ width: '100%', padding: '12px 0', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 700, fontSize: 13.5, borderRadius: 10 }} className="hover:bg-white/[0.09] transition-colors">Ya verifiqué — habilitar reintento</button>
+                                  </div>
+                              ) : (
+                                  <div className="flex" style={{ gap: 9 }}>
+                                      <button onClick={() => setSendStep(3)} disabled={isSending} style={{ flex: 1, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 14, padding: '13px 0', borderRadius: 10, opacity: isSending ? 0.5 : 1 }} className="hover:bg-white/[0.09] transition-colors">Corregir</button>
+                                      <button onClick={requestSendConfirm} disabled={isSending} className="lincoin-btn-white transition-colors flex items-center justify-center gap-2" style={{ flex: 1.5, fontWeight: 700, fontSize: 14, padding: '13px 0', borderRadius: 10, border: 'none', opacity: isSending ? 0.45 : 1 }}>
+                                          {isSending ? <><Loader2 className="animate-spin" size={16} /> Procesando…</> : 'Confirmar envío'}
+                                      </button>
+                                  </div>
+                              )}
+                              {isSending && <p className="text-center" style={{ fontSize: 11.5, color: '#878E88' }}>Procesando la transferencia — puede tardar hasta 1 minuto. <b style={{ color: '#F4F4F2' }}>No pulses de nuevo ni cierres esta ventana.</b></p>}
+                              <div className="flex items-center justify-center" style={{ gap: 8 }}>
+                                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#4ADE80' }} />
+                                  <span style={{ fontSize: 12, color: '#878E88' }}>Operación protegida · confirmación en dos pasos</span>
+                              </div>
+                          </div>
+                          );
+                      })()}
+
+                      {/* STEP 4 WALLET: Confirm (flujo GasFree existente) */}
+                      {sendStep === 4 && sendMode === 'wallet' && (
                           <div className="space-y-6">
-                              <h4 className="text-center text-slate-500 text-sm mb-2">Confirma los datos de envío</h4>
                               <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 flex flex-col items-center">
                                   <span className="text-xs font-bold text-[#4ADE80] uppercase tracking-widest mb-1">MONTO TOTAL</span>
                                   <span className="text-3xl font-extrabold text-[#0C0E0D]">{formatMoney(getRawAmount(sendForm.amount), sendForm.destinationCurrency)}</span>
                               </div>
                               <div className="bg-slate-50 rounded-xl p-4 space-y-3 text-sm border border-slate-200">
-                                  <div className="flex justify-between"><span className="text-slate-500">{sendMode === 'wallet' ? 'Destinatario:' : 'Beneficiario:'}</span><span className="font-bold text-slate-800">{sendForm.beneficiaryName}</span></div>
-                                  {sendMode === 'bank' && sendForm.documentType && sendForm.documentNumber && sendForm.documentNumber !== '—' && (
-                                      <div className="flex justify-between"><span className="text-slate-500">Documento:</span><span className="font-bold text-slate-800">{sendForm.documentType} {sendForm.documentNumber}</span></div>
-                                  )}
-                                  <div className="flex justify-between"><span className="text-slate-500">{sendMode === 'wallet' ? 'Red:' : 'Banco:'}</span><span className="font-bold text-slate-800">{sendForm.bankName}</span></div>
-                                  {sendMode === 'bank' && sendForm.accountType && (
-                                      <div className="flex justify-between"><span className="text-slate-500">Tipo de cuenta:</span><span className="font-bold text-slate-800">{sendForm.accountType === 'savings' ? 'Ahorros' : sendForm.accountType === 'checking' ? 'Corriente' : sendForm.accountType}</span></div>
-                                  )}
-                                  <div className="flex justify-between gap-3"><span className="text-slate-500">{sendMode === 'wallet' ? 'Dirección:' : 'Cuenta:'}</span><span className={`font-bold text-slate-800 ${sendMode === 'wallet' ? 'font-mono text-xs break-all text-right' : ''}`}>{sendForm.accountNumber}</span></div>
+                                  <div className="flex justify-between"><span className="text-slate-500">Destinatario:</span><span className="font-bold text-slate-800">{sendForm.beneficiaryName}</span></div>
+                                  <div className="flex justify-between"><span className="text-slate-500">Red:</span><span className="font-bold text-slate-800">{sendForm.bankName}</span></div>
+                                  <div className="flex justify-between gap-3"><span className="text-slate-500">Dirección:</span><span className="font-bold text-slate-800 font-mono text-xs break-all text-right">{sendForm.accountNumber}</span></div>
                                   {sendMode === 'wallet' && (
                                       <div className="pt-2 border-t border-slate-200 space-y-1.5">
                                           {gasfreeFeePreview.loading ? (
@@ -3937,7 +6047,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               ) : (
                                   <div className="flex gap-3">
                                       <button onClick={() => setSendStep(3)} disabled={isSending} className="flex-1 py-3 border border-slate-300 text-slate-600 font-bold rounded-xl hover:bg-slate-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">Corregir</button>
-                                      <button onClick={handleSendSubmit} disabled={isSending} style={{ color: '#FFFFFF' }} className="flex-1 py-3 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed">{isSending ? <><Loader2 className="animate-spin" size={18} /> Procesando… no cierres</> : <><Send size={18}/> Confirmar</>}</button>
+                                      <button onClick={requestSendConfirm} disabled={isSending} style={{ color: '#FFFFFF' }} className="flex-1 py-3 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed">{isSending ? <><Loader2 className="animate-spin" size={18} /> Procesando… no cierres</> : <><Send size={18}/> Confirmar</>}</button>
                                   </div>
                               )}
                               {isSending && sendForm.destinationCurrency === 'COP' && (
@@ -4032,15 +6142,151 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           </div>
                       )}
 
-                      {/* STEP 5: Success */}
-                      {sendStep === 5 && sendMode !== 'cash' && (
-                          <div className="flex flex-col items-center text-center py-8 animate-in zoom-in duration-300">
-                              <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mb-6"><CheckCircle size={40} className="text-green-600" /></div>
-                              <h2 className="text-2xl font-bold text-[#0C0E0D] mb-2">¡Envío Exitoso!</h2>
-                              <p className="text-slate-500 text-sm mb-6">Tu dinero está en camino a {sendForm.destinationCountry}.</p>
-                              <button onClick={closeSendModal} style={{ color: '#FFFFFF' }} className="w-full bg-[#0C0E0D] font-bold py-3 rounded-xl hover:bg-[#152e52] transition-colors">Finalizar</button>
+                      {/* STEP 5: Resultado del envío — "Envío en camino" (o fallo).
+                          Diseño: cabecera con check de BORDE (verde puntual, nunca
+                          relleno grande), monto, tarjeta del destinatario con pill
+                          de estado, filas de detalle (referencia/fecha/costo) y
+                          botonera Comprobante + Finalizar. Todos los datos son de
+                          la transacción real (sendResult + sendForm). */}
+                      {sendStep === 5 && sendMode !== 'cash' && (() => {
+                          const ok = sendResult?.ok !== false;
+                          const isCop = sendForm.destinationCurrency === 'COP';
+                          const isBrebS = (sendResult?.rail ?? sendSourceRail) === 'COP_BREB';
+                          const amt = getRawAmount(sendForm.amount);
+                          const isWalletSend = sendMode === 'wallet' || sendResult?.rail === 'USDT';
+                          const name = (sendForm.beneficiaryName || sendContact?.name || (isWalletSend ? 'Wallet externa' : 'Destinatario')).trim();
+                          const initials = name.split(/\s+/).filter(Boolean).map(w => w[0]).slice(0, 2).join('').toUpperCase() || 'LN';
+                          const acctRaw = String((isBrebS ? (sendContact?.brebKey ?? sendForm.accountNumber) : sendForm.accountNumber) ?? '');
+                          const last4 = acctRaw.slice(-4);
+                          const methodLine = isWalletSend ? `Wallet ···${last4} · TRC-20`
+                              : !isCop ? `Cuenta ···${last4}`
+                              : isBrebS ? `Llave ···${last4} · Bre-B`
+                              : `${sendContact?.bank ?? sendForm.bankName ?? 'Banco'} ···${last4} · ACH`;
+                          const subOk = isWalletSend
+                              ? 'Tu envío ya salió de tu billetera. Te avisamos cuando la red lo confirme.'
+                              : !isCop
+                              ? 'Tu envío está en proceso. Te avisamos cuando el banco confirme.'
+                              : isBrebS
+                              ? 'Bre-B acredita en segundos. Te avisamos cuando el banco confirme.'
+                              : `ACH ${achEtaShort()}. Te avisamos cuando el banco confirme.`;
+                          const ref = sendResult?.providerRef ? String(sendResult.providerRef) : '';
+                          const feeCop = Number(sendResult?.feeCop ?? (isCop ? (isBrebS ? 1200 : 2500) : 0));
+                          const at = sendResult?.at ? new Date(sendResult.at) : new Date();
+                          const dateLabel = `Hoy, ${at.toLocaleDateString('es-CO', { day: 'numeric', month: 'short' })} · ${at.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}`;
+                          const rowStyle: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 2px', borderTop: '1px solid rgba(255,255,255,0.06)' };
+                          return (
+                          <div className="animate-in zoom-in-95 duration-300">
+                              {/* 1. Cabecera de éxito/fallo */}
+                              <div className="text-center" style={{ padding: '32px 28px 24px', margin: '0 -22px', borderBottom: '1px solid rgba(255,255,255,0.08)', background: ok ? 'radial-gradient(circle at 50% 0%, rgba(74,222,128,0.1), transparent 60%)' : 'none' }}>
+                                  <div style={{ width: 52, height: 52, margin: '0 auto 14px', borderRadius: '50%', border: ok ? '1.5px solid rgba(74,222,128,0.4)' : '1.5px solid rgba(255,255,255,0.14)', background: ok ? 'rgba(74,222,128,0.08)' : 'transparent', display: 'grid', placeItems: 'center' }}>
+                                      {ok
+                                          ? <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" stroke="#4ADE80" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                                          : <X size={22} style={{ color: '#F4F4F2' }} strokeWidth={2} />}
+                                  </div>
+                                  <h2 style={{ fontSize: 20, fontWeight: 800, letterSpacing: '-0.5px', color: '#F4F4F2' }}>{ok ? 'Envío en camino' : 'No pudimos completar el envío'}</h2>
+                                  <p style={{ fontSize: 13.5, color: '#878E88', marginTop: 6, lineHeight: 1.45 }}>
+                                      {ok ? subOk : (sendResult?.message || 'El envío no se pudo completar y tu saldo fue devuelto.')}
+                                  </p>
+                              </div>
+                              {/* 2. Monto */}
+                              <div className="text-center" style={{ padding: '22px 0 18px' }}>
+                                  <span style={{ fontSize: 36, fontWeight: 800, letterSpacing: '-1.2px', color: '#F4F4F2' }}>
+                                      {isCop && !isWalletSend ? formatMoney(amt, 'COP') : Number(amt || 0).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                  </span>
+                                  <span style={{ fontSize: 22, fontWeight: 800, color: '#878E88', marginLeft: 8 }}>{isCop && !isWalletSend ? 'COP' : displayCurrency(sendForm.destinationCurrency)}</span>
+                              </div>
+                              {/* 3. Tarjeta del destinatario */}
+                              <div className="flex items-center" style={{ gap: 11, border: '1px solid rgba(255,255,255,0.09)', borderRadius: 12, background: 'rgba(255,255,255,0.02)', padding: '12px 14px' }}>
+                                  <div style={{ width: 38, height: 38, borderRadius: '50%', background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', display: 'grid', placeItems: 'center', fontSize: 13, fontWeight: 800, color: '#878E88', flexShrink: 0 }}>{initials}</div>
+                                  <div style={{ minWidth: 0, flex: 1 }}>
+                                      <p style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</p>
+                                      <p className="flex items-center" style={{ gap: 6, fontSize: 11.5, color: '#878E88', marginTop: 2 }}>
+                                          {isCop && !isWalletSend && (
+                                              <span style={{ width: 13, height: 13, borderRadius: '50%', overflow: 'hidden', flexShrink: 0, display: 'block', background: '#2E3330' }}>
+                                                  <img src={flagUrl('co')} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                              </span>
+                                          )}
+                                          <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{methodLine}</span>
+                                      </p>
+                                  </div>
+                                  <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '0.8px', padding: '4px 9px', borderRadius: 999, flexShrink: 0, border: ok ? '1px solid rgba(74,222,128,0.3)' : '1px solid rgba(255,255,255,0.14)', color: ok ? '#4ADE80' : '#878E88' }}>{ok ? 'EN CAMINO' : 'FALLIDO'}</span>
+                              </div>
+                              {/* 4. Filas de detalle */}
+                              <div style={{ marginTop: 14 }}>
+                                  {ref && (
+                                      <div style={{ ...rowStyle, borderTop: 'none' }}>
+                                          <span style={{ fontSize: 12.5, color: '#878E88' }}>Referencia</span>
+                                          <button onClick={() => { navigator.clipboard?.writeText(ref).then(() => showToast('Referencia copiada')).catch(() => {}); }} className="flex items-center" style={{ gap: 6, fontSize: 12.5, fontWeight: 600, color: '#F4F4F2', fontFamily: 'ui-monospace, Menlo, monospace' }}>
+                                              {ref.length > 16 ? `${ref.slice(0, 8)}…${ref.slice(-6)}` : ref}
+                                              <Copy size={12} style={{ color: '#878E88' }} strokeWidth={1.7} />
+                                          </button>
+                                      </div>
+                                  )}
+                                  <div style={ref ? rowStyle : { ...rowStyle, borderTop: 'none' }}>
+                                      <span style={{ fontSize: 12.5, color: '#878E88' }}>Fecha</span>
+                                      <span style={{ fontSize: 12.5, fontWeight: 600, color: '#F4F4F2' }}>{dateLabel}</span>
+                                  </div>
+                                  <div style={rowStyle}>
+                                      <span style={{ fontSize: 12.5, color: '#878E88' }}>Costo del envío</span>
+                                      {feeCop > 0
+                                          ? <span style={{ fontSize: 12.5, fontWeight: 600, color: '#F4F4F2' }}>{formatMoney(feeCop, 'COP')} COP</span>
+                                          : <span style={{ fontSize: 12.5, fontWeight: 700, color: '#4ADE80' }}>Gratis</span>}
+                                  </div>
+                              </div>
+                              {/* 5. Botonera */}
+                              <div className="flex" style={{ gap: 9, marginTop: 16 }}>
+                                  {ok ? (
+                                      <>
+                                      <button onClick={() => {
+                                          // Abrir el detalle real del envío (con descarga de comprobante
+                                          // funcional) en vez de cerrar y mandar a Movimientos.
+                                          // Estado REAL para el comprobante: se busca el movimiento real
+                                          // por su referencia del proveedor; si aún no sincroniza, se usa
+                                          // el estado por riel (USDT y Bre-B confirman al instante; ACH
+                                          // queda "Procesando" hasta que el banco liquide). Antes se ponía
+                                          // 'Completado' fijo — el comprobante decía Completado con el pago
+                                          // aún en proceso.
+                                          const realMov: any = sendResult?.providerRef
+                                              ? movements.find((m: any) => m?.providerRef === sendResult.providerRef || m?.raw_data?.providerRef === sendResult.providerRef)
+                                              : null;
+                                          const receiptStatus = realMov?.status || (isWalletSend || isBrebS ? 'Completado' : 'Procesando');
+                                          const receiptTx = {
+                                              id: sendResult?.providerRef || `TX-${Date.now()}`,
+                                              type: isWalletSend ? 'send' : 'dispersion',
+                                              amount: amt,
+                                              currency: isWalletSend ? 'USDT_TRON' : (isBrebS ? 'COP_BREB' : (isCop ? 'COP_ACH' : sendForm.destinationCurrency)),
+                                              status: receiptStatus,
+                                              createdAt: sendResult?.at || new Date().toISOString(),
+                                              beneficiary: name,
+                                              bank: sendContact?.bank || sendForm.bankName || (isBrebS ? 'Bre-B' : 'ACH'),
+                                              account: acctRaw,
+                                              documentType: sendForm.documentType,
+                                              documentNumber: sendForm.documentNumber,
+                                              providerRef: sendResult?.providerRef || '',
+                                              reason: sendForm.reason,
+                                              feeCop,
+                                              recipient: { holderName: name, key: isBrebS ? acctRaw : undefined, accountNumber: !isBrebS ? acctRaw : undefined, keyType: sendContact?.brebKeyType, documentType: sendForm.documentType, documentNumber: sendForm.documentNumber, accountType: sendContact?.accountType },
+                                          };
+                                          closeSendModal();
+                                          setSelectedTx(receiptTx as any);
+                                      }} className="flex items-center justify-center transition-colors hover:bg-white/[0.09]" style={{ flex: 1, gap: 7, padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, color: '#F4F4F2', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)' }}>
+                                          <Download size={14} strokeWidth={1.7} /> Comprobante
+                                      </button>
+                                      {/* lincoin-btn-white (con !important) — un hover:bg-[#E…] aquí
+                                          activa la regla global [class*="bg-[#E"] y pinta el botón
+                                          oscuro sobre oscuro (invisible). */}
+                                      <button onClick={closeSendModal} className="lincoin-btn-white transition-colors" style={{ flex: 1.3, padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, border: '1px solid rgba(255,255,255,0.25)', background: '#F4F4F2', color: '#0A0A0A' }}>Finalizar</button>
+                                      </>
+                                  ) : (
+                                      <>
+                                      <button onClick={closeSendModal} className="transition-colors hover:bg-white/[0.09]" style={{ flex: 1, padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, color: '#F4F4F2', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)' }}>Cerrar</button>
+                                      <button onClick={() => { setSendResult(null); setSendStep(4); }} className="lincoin-btn-white transition-colors" style={{ flex: 1.3, padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, border: '1px solid rgba(255,255,255,0.25)', background: '#F4F4F2', color: '#0A0A0A' }}>Reintentar</button>
+                                      </>
+                                  )}
+                              </div>
                           </div>
-                      )}
+                          );
+                      })()}
 
                       {/* STEP 5 CASH: Success with reference code */}
                       {sendStep === 5 && sendMode === 'cash' && (
@@ -4068,159 +6314,172 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       )}
 
       {/* CONVERT MODAL */}
-      {isConvertModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-[480px] overflow-hidden animate-in zoom-in-95 duration-300 relative">
-                  
-                  {/* Close Button Top Right */}
-                  <button onClick={closeConvertModal} className="absolute top-4 right-4 text-slate-300 hover:text-slate-600 z-10 p-1 rounded-full hover:bg-slate-100 transition-colors">
-                      <X size={20}/>
-                  </button>
+      {isConvertModalOpen && (() => {
+          const cvFee = rawAmount * (appliedCoupon ? (applicableFeePercentage * (100 - appliedCoupon.discount) / 100) : applicableFeePercentage) / 100;
+          const cvAvail = displayBalance(sourceCurr);
+          const cvOver = rawAmount > cvAvail;
+          const cvTotal = amountToConvert * conversionRate;
+          // Modelo HUB: el par SIEMPRE es USDT ⇄ COP (nunca fiat→fiat directo).
+          const srcIsUsdt = sourceCurr === 'USD';
+          const srcTicker = srcIsUsdt ? 'USDT' : 'COP';
+          const tgtTicker = srcIsUsdt ? 'COP' : 'USDT';
+          const fmtSrc = (n: number) => Number(n || 0).toLocaleString('es-CO', srcIsUsdt ? { minimumFractionDigits: 2, maximumFractionDigits: 2 } : { maximumFractionDigits: 0 });
+          const fmtTgt = (n: number) => srcIsUsdt ? Math.round(n).toLocaleString('es-CO') : Number(n || 0).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          const usdCopRate = srcIsUsdt ? conversionRate : (conversionRate ? 1 / conversionRate : 0);
+          const swapDirection = () => { const s = sourceCurr; setSourceCurr(targetCurr); setTargetCurr(s); };
+          const TetherBadge = <span style={{ width: 24, height: 24, borderRadius: '50%', background: '#26A17B', color: '#fff', fontWeight: 800, fontSize: 11, display: 'grid', placeItems: 'center' }}>₮</span>;
+          const CopBadge = <span style={{ width: 24, height: 24, borderRadius: '50%', overflow: 'hidden', display: 'block', background: 'linear-gradient(to bottom, #FCD116 0%, #FCD116 50%, #003893 50%, #003893 75%, #CE1126 75%, #CE1126 100%)' }} />;
+          const setPct = (p: number) => {
+              // "Todo" descuenta la comisión para que el resultado sea exacto.
+              const base = p === 100 ? cvAvail : cvAvail * p / 100;
+              setConvertAmountStr(formatInputNumber(String(Math.floor(base * 100) / 100)));
+          };
+          return (
+          <div className="fixed inset-0 z-50 p-4" style={{ background: 'rgba(4,5,4,0.74)', backdropFilter: 'blur(3px)', display: 'grid', placeItems: 'center' }} onClick={closeConvertModal}>
+              <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" className="w-full animate-in zoom-in-95 duration-300" style={{ maxWidth: 476, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, overflow: 'hidden', fontFamily: "'Archivo', system-ui, sans-serif" }}>
 
-                  <div className="p-8 pb-4">
-                      {/* Input: TU ENVÍAS */}
-                      <div className="border border-slate-200 rounded-2xl p-4 mb-3 relative bg-white hover:border-[#0C0E0D] transition-colors group focus-within:border-[#0C0E0D]">
-                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
-                              TU ENVÍAS
-                          </label>
-                          <div className="flex justify-between items-center gap-2">
-                              <input 
-                                type="text" 
-                                value={convertAmountStr}
-                                onChange={handleConvertInput}
-                                className="text-3xl font-bold text-slate-900 w-full outline-none bg-transparent"
-                              />
-                              <FlagSelect items={CONVERSION_CURRENCIES} value={sourceCurr} onChange={setSourceCurr} />
-                          </div>
+                  {/* Cabecera */}
+                  <div className="flex items-start justify-between" style={{ gap: 16, padding: '21px 24px 17px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                      <div>
+                          <h3 style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.3px', color: '#F4F4F2', margin: 0 }}>Convertir y enviar</h3>
+                          <p style={{ fontSize: 12.5, color: '#878E88', margin: '3px 0 0' }}>{srcIsUsdt ? 'De tu billetera USDT a tu cuenta en pesos' : 'De tu cuenta en pesos a tu billetera USDT'}</p>
                       </div>
-
-                      {/* Divider Icon */}
-                      <div className="flex justify-center -my-6 relative z-10 pointer-events-none">
-                          <div className="bg-white border border-slate-200 rounded-full p-1.5 shadow-sm text-slate-400">
-                              <div className="font-serif font-bold text-xs">$</div> 
-                          </div>
-                      </div>
-
-                      {/* Output: TU CONTACTO RECIBE */}
-                      <div className="border border-slate-200 rounded-2xl p-4 mt-3 mb-4 relative bg-white hover:border-[#0C0E0D] transition-colors group">
-                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
-                              RECIBES
-                          </label>
-                          <div className="flex justify-between items-center gap-2">
-                              <span className="text-3xl font-bold text-slate-900 w-full overflow-hidden text-ellipsis whitespace-nowrap">
-                                  {formatInputNumber((getRawAmount(convertAmountStr) * (1 - (appliedCoupon ? (applicableFeePercentage * (100 - appliedCoupon.discount)/100) : applicableFeePercentage)/100) * conversionRate).toFixed(0))}
-                              </span>
-                              <FlagSelect items={CONVERSION_CURRENCIES} value={targetCurr} onChange={setTargetCurr} />
-                          </div>
-                      </div>
-
-                      {/* Coupon Section */}
-                      <div className="mb-4">
-                          {!showCouponInput && !appliedCoupon && couponsAllowed && (
-                              <button onClick={() => setShowCouponInput(true)} className="text-xs font-bold text-[#0C0E0D] flex items-center gap-1 hover:underline">
-                                  <Tag size={14} /> ¿Tienes un cupón?
-                              </button>
-                          )}
-                          
-                          {showCouponInput && (
-                              <div className="flex gap-2 animate-in fade-in slide-in-from-top-1">
-                                  <input 
-                                    type="text" 
-                                    value={couponCode} 
-                                    onChange={(e) => setCouponCode(e.target.value.toUpperCase())} 
-                                    className="flex-1 border border-slate-300 rounded-lg px-3 py-1.5 text-xs uppercase focus:border-[#0C0E0D] outline-none" 
-                                    placeholder="CÓDIGO"
-                                  />
-                                  <button onClick={handleApplyCoupon} className="bg-[#0C0E0D] px-3 py-1.5 rounded-lg font-bold text-xs hover:bg-[#152e52]">Aplicar</button>
-                                  <button onClick={() => setShowCouponInput(false)} className="text-slate-400 hover:text-slate-600"><X size={16}/></button>
-                              </div>
-                          )}
-
-                          {appliedCoupon && (
-                              <div className="flex justify-between items-center bg-green-50 border border-green-100 p-2 rounded-lg text-xs animate-in fade-in">
-                                  <span className="text-green-700 font-bold flex items-center gap-1"><Tag size={12}/> Cupón {appliedCoupon.code} aplicado</span>
-                                  <div className="flex items-center gap-2">
-                                      <span className="text-green-600 font-bold">-{appliedCoupon.discount}% Fee</span>
-                                      <button onClick={() => { setAppliedCoupon(null); setCouponCode(''); }} className="text-slate-400 hover:text-red-500"><X size={12}/></button>
-                                  </div>
-                              </div>
-                          )}
-                      </div>
-
-                      {/* Breakdown */}
-                      <div className="space-y-3 mb-4 px-1">
-                          <div className="flex justify-between items-center text-xs">
-                              <div className="flex items-center gap-2 text-[#415DA1] font-medium">
-                                  <div className="w-4 h-4 rounded-full bg-[#415DA1] text-white flex items-center justify-center text-[8px]"><Minus size={8} strokeWidth={4}/></div>
-                                  Costo de envío ({applicableFeePercentage}%):
-                              </div>
-                              <span className="font-bold text-[#0C0E0D]">{formatMoney(rawAmount * (appliedCoupon ? (applicableFeePercentage * (100 - appliedCoupon.discount)/100) : applicableFeePercentage)/100, sourceCurr)} {sourceCurr}</span>
-                          </div>
-                          
-                          <div className="flex justify-between items-center text-xs">
-                              <div className="flex items-center gap-2 text-slate-500 font-medium">
-                                  <div className="w-4 h-4 rounded-full bg-[#415DA1] text-white flex items-center justify-center text-[8px]"><Equal size={8} strokeWidth={4}/></div>
-                                  Monto a convertir:
-                              </div>
-                              <span className="font-bold text-[#0C0E0D]">{formatMoney(amountToConvert, sourceCurr)} {sourceCurr}</span>
-                          </div>
-
-                          <div className="flex justify-between items-center text-xs">
-                              <div className="flex items-center gap-2 text-slate-500 font-medium">
-                                  <div className="w-4 h-4 rounded-full bg-[#415DA1] text-white flex items-center justify-center text-[8px]">÷</div>
-                                  Tipo de cambio:
-                              </div>
-                              <span className="font-bold text-[#0C0E0D]">
-                                  1 {sourceCurr} = {conversionRate} {targetCurr}
-                                  {isLiveMouvRate && (
-                                      <span className="ml-1.5 text-[9px] font-bold uppercase bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded-full align-middle">● Tasa en vivo</span>
-                                  )}
-                                  {isMouvPair && !isLiveMouvRate && mouvCfg?.mouvOn !== false && (
-                                      <span className="ml-1.5 text-[9px] font-bold uppercase bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded-full align-middle">⚠ Tasa de referencia</span>
-                                  )}
-                              </span>
-                          </div>
-                          
-                          <div className="flex justify-center pt-1">
-                              <button onClick={() => setShowConvertDetails(!showConvertDetails)} className="text-[#415DA1] text-xs font-medium hover:underline flex items-center gap-1">
-                                  {showConvertDetails ? 'Ocultar detalle' : 'Ver detalle completo'} <ChevronDown size={12} className={showConvertDetails ? 'rotate-180' : ''} style={{transition:'transform 0.2s'}}/>
-                              </button>
-                          </div>
-
-                          {showConvertDetails && (
-                              <div className="mt-3 border-t border-slate-100 pt-3 space-y-2 text-xs">
-                                  <div className="flex justify-between"><span className="text-slate-500">Monto bruto</span><span className="font-bold text-slate-700">{formatMoney(rawAmount, sourceCurr)} {sourceCurr}</span></div>
-                                  <div className="flex justify-between"><span className="text-slate-500">Comisión ({applicableFeePercentage}%)</span><span className="font-bold text-red-500">- {formatMoney(rawAmount * (appliedCoupon ? (applicableFeePercentage * (100 - appliedCoupon.discount)/100) : applicableFeePercentage)/100, sourceCurr)} {sourceCurr}</span></div>
-                                  <div className="flex justify-between"><span className="text-slate-500">Monto a convertir</span><span className="font-bold text-slate-700">{formatMoney(amountToConvert, sourceCurr)} {sourceCurr}</span></div>
-                                  <div className="flex justify-between"><span className="text-slate-500">Tasa de cambio{isLiveMouvRate ? ' · en vivo' : ''}</span><span className="font-bold text-[#0C0E0D]">1 {sourceCurr} = {conversionRate} {targetCurr}</span></div>
-                                  <div className="flex justify-between border-t border-slate-100 pt-2 mt-1"><span className="text-slate-700 font-bold">Total a recibir</span><span className="font-bold text-green-600">{formatMoney(amountToConvert * conversionRate, targetCurr)} {targetCurr}</span></div>
-                              </div>
-                          )}
-                      </div>
-
-                      {/* Delivery Info */}
-                      <div className="bg-[#EBF2FA] rounded-xl p-3 flex items-start gap-3 mb-6">
-                          <div className="bg-white p-1 rounded-full text-[#0C0E0D] shrink-0"><Clock size={14}/></div>
-                          <span className="text-xs text-[#0C0E0D]">Tu dinero llega de forma <span className="font-bold">inmediata</span> una vez confirmada la operación</span>
-                      </div>
-
-                      {/* Action Button */}
-                      <button
-                          onClick={handleConvertSubmit}
-                          disabled={isConverting}
-                          style={{ color: '#FFFFFF' }}
-                          className="w-full h-12 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg text-sm transition-transform active:scale-95 flex justify-center items-center gap-2"
-                      >
-                          {isConverting ? <Loader2 className="animate-spin" /> : 'Confirmar Operación'}
+                      <button onClick={closeConvertModal} style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                          <X size={13} style={{ color: '#878E88' }} strokeWidth={1.7} />
                       </button>
-                      
-                      <div className="text-center mt-4 flex items-center justify-center gap-2 text-[10px] text-slate-400 font-medium">
-                          <div className="w-1.5 h-1.5 bg-slate-300 rounded-full"></div> Sistema de envíos seguros
+                  </div>
+
+                  <div style={{ padding: '20px 24px 24px' }}>
+                      {/* CONVIERTES */}
+                      <div style={{ border: cvOver ? '1px solid rgba(255,255,255,0.2)' : '1px solid rgba(255,255,255,0.1)', borderRadius: 13, padding: '15px 16px', background: 'rgba(255,255,255,0.025)' }}>
+                          <div className="flex items-center justify-between" style={{ marginBottom: 9 }}>
+                              <span style={{ color: '#878E88', fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px' }}>CONVIERTES</span>
+                              <button onClick={() => setPct(100)} style={{ fontSize: 11.5, color: '#878E88' }}>Disponible <span style={{ color: '#F4F4F2', fontWeight: 700 }}>{fmtSrc(cvAvail)}</span></button>
+                          </div>
+                          <div className="flex items-center" style={{ gap: 12 }}>
+                              <input
+                                  type="text"
+                                  value={convertAmountStr}
+                                  onChange={handleConvertInput}
+                                  autoFocus
+                                  className="flex-1 min-w-0 outline-none"
+                                  style={{ background: 'transparent', border: 'none', fontSize: 34, fontWeight: 800, letterSpacing: '-1.4px', lineHeight: 1.1, color: '#F4F4F2', fontFamily: 'inherit', width: '100%' }}
+                              />
+                              <div className="flex items-center" style={{ flexShrink: 0, gap: 9, border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.05)', borderRadius: 10, padding: '8px 12px' }}>
+                                  {srcIsUsdt ? TetherBadge : CopBadge}
+                                  <span style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2' }}>{srcTicker}</span>
+                              </div>
+                          </div>
+                          {cvOver && <p style={{ fontSize: 12, color: '#878E88', marginTop: 6 }}>Supera tu saldo disponible</p>}
+                          <div className="flex" style={{ gap: 6, marginTop: 12 }}>
+                              {[25, 50, 100].map(p => (
+                                  <button key={p} onClick={() => setPct(p)} style={{ border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.03)', borderRadius: 7, padding: '5px 11px', fontSize: 11.5, fontWeight: 600, color: '#878E88' }} className="hover:bg-white/[0.09] transition-colors">
+                                      {p === 100 ? 'Todo' : `${p} %`}
+                                  </button>
+                              ))}
+                          </div>
+                      </div>
+
+                      {/* Switch de dirección — invierte USDT ⇄ COP (regla de hub) */}
+                      <div className="flex items-center" style={{ gap: 12, padding: '9px 0' }}>
+                          <div style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.08)' }} />
+                          <button onClick={swapDirection} title="Invertir dirección" style={{ width: 32, height: 32, borderRadius: 10, border: '1px solid rgba(255,255,255,0.12)', background: '#0C0E0D', display: 'grid', placeItems: 'center', cursor: 'pointer' }} className="hover:bg-white/[0.06] transition-colors">
+                              <ArrowLeftRight size={15} style={{ color: '#878E88', transform: 'rotate(90deg)' }} strokeWidth={1.5} />
+                          </button>
+                          <div style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.08)' }} />
+                      </div>
+
+                      {/* RECIBES */}
+                      <div style={{ border: '1px solid rgba(255,255,255,0.1)', borderRadius: 13, padding: '15px 16px', background: 'rgba(255,255,255,0.025)' }}>
+                          <div className="flex items-center justify-between" style={{ marginBottom: 9 }}>
+                              <span style={{ color: '#878E88', fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px' }}>RECIBES</span>
+                              <span style={{ fontSize: 11.5, color: '#878E88' }}>{srcIsUsdt ? 'Cuenta local · Colombia' : 'Billetera USDT · TRON'}</span>
+                          </div>
+                          <div className="flex items-center" style={{ gap: 12 }}>
+                              <span className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap" style={{ fontSize: 34, fontWeight: 800, letterSpacing: '-1.4px', lineHeight: 1.1, color: '#F4F4F2' }}>
+                                  {fmtTgt(cvTotal)}
+                              </span>
+                              <div className="flex items-center" style={{ flexShrink: 0, gap: 9, border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.05)', borderRadius: 10, padding: '8px 12px' }}>
+                                  {srcIsUsdt ? CopBadge : TetherBadge}
+                                  <span style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2' }}>{tgtTicker}</span>
+                              </div>
+                          </div>
+                      </div>
+
+                      {/* Cupón (compacto, mismo lenguaje) */}
+                      {couponsAllowed && (
+                          <div style={{ marginTop: 12 }}>
+                              {!showCouponInput && !appliedCoupon && (
+                                  <button onClick={() => setShowCouponInput(true)} style={{ fontSize: 12, fontWeight: 600, color: '#878E88' }} className="hover:text-[#4ADE80] transition-colors flex items-center gap-1">
+                                      <Tag size={13} /> ¿Tienes un cupón?
+                                  </button>
+                              )}
+                              {showCouponInput && (
+                                  <div className="flex gap-2 animate-in fade-in slide-in-from-top-1">
+                                      <input type="text" value={couponCode} onChange={(e) => setCouponCode(e.target.value.toUpperCase())} placeholder="CÓDIGO"
+                                          style={{ flex: 1, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: '7px 11px', fontSize: 12, color: '#F4F4F2', textTransform: 'uppercase', outline: 'none' }} />
+                                      <button onClick={handleApplyCoupon} style={{ background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', borderRadius: 8, padding: '7px 13px', fontSize: 12, fontWeight: 700 }}>Aplicar</button>
+                                      <button onClick={() => setShowCouponInput(false)} style={{ color: '#878E88' }}><X size={15}/></button>
+                                  </div>
+                              )}
+                              {appliedCoupon && (
+                                  <div className="flex justify-between items-center animate-in fade-in" style={{ border: '1px solid rgba(74,222,128,0.3)', background: 'rgba(74,222,128,0.08)', borderRadius: 8, padding: '7px 11px', fontSize: 12 }}>
+                                      <span style={{ color: '#4ADE80', fontWeight: 700 }} className="flex items-center gap-1"><Tag size={12}/> Cupón {appliedCoupon.code} · −{appliedCoupon.discount}% fee</span>
+                                      <button onClick={() => { setAppliedCoupon(null); setCouponCode(''); }} style={{ color: '#878E88' }}><X size={12}/></button>
+                                  </div>
+                              )}
+                          </div>
+                      )}
+
+                      {/* Desglose — siempre visible */}
+                      <div style={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: 13, overflow: 'hidden', marginTop: 16 }}>
+                          {[
+                              { l: `Comisión de envío · ${applicableFeePercentage} %`, v: `${fmtSrc(cvFee)} ${srcTicker}` },
+                              { l: 'Monto convertido', v: `${fmtSrc(amountToConvert)} ${srcTicker}` },
+                              { l: 'Tasa aplicada', v: `1 USDT = ${Math.round(usdCopRate).toLocaleString('es-CO')} COP` },
+                          ].map((row, i) => (
+                              <div key={row.l} className="flex items-center justify-between" style={{ padding: '12px 16px', fontSize: 13, borderTop: i === 0 ? 'none' : '1px solid rgba(255,255,255,0.06)' }}>
+                                  <span style={{ color: '#878E88' }}>{row.l}</span>
+                                  <span style={{ color: '#F4F4F2', fontWeight: 700 }}>{row.v}</span>
+                              </div>
+                          ))}
+                          <div className="flex items-center justify-between" style={{ padding: '12px 16px', fontSize: 13, borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.02)' }}>
+                              <span style={{ color: '#878E88' }}>Total que recibes</span>
+                              <span style={{ color: '#4ADE80', fontWeight: 700 }}>{fmtTgt(cvTotal)} {tgtTicker}</span>
+                          </div>
+                      </div>
+
+                      {/* Aviso de entrega */}
+                      <div className="flex items-center" style={{ gap: 11, border: '1px solid rgba(255,255,255,0.1)', borderLeft: '2px solid #4ADE80', background: 'rgba(255,255,255,0.03)', borderRadius: 10, padding: '12px 15px', marginTop: 14 }}>
+                          <Clock size={16} style={{ color: '#878E88', flexShrink: 0 }} strokeWidth={1.5} />
+                          <span style={{ fontSize: 12.5, color: '#878E88', lineHeight: 1.5 }}>El dinero llega <span style={{ color: '#F4F4F2', fontWeight: 700 }}>en segundos</span> una vez confirmes la operación.</span>
+                      </div>
+
+                      {/* Acciones */}
+                      <div className="flex" style={{ gap: 9, marginTop: 18 }}>
+                          <button onClick={closeConvertModal} style={{ flex: 1, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 14, padding: '13px 0', borderRadius: 10 }} className="hover:bg-white/[0.09] transition-colors">Cancelar</button>
+                          <button
+                              onClick={handleConvertSubmit}
+                              disabled={isConverting || rawAmount <= 0 || cvOver}
+                              className="lincoin-btn-white flex justify-center items-center gap-2 transition-colors"
+                              style={(isConverting || rawAmount <= 0 || cvOver)
+                                  ? { flex: 1.5, background: 'rgba(255,255,255,0.1)', color: '#878E88', fontWeight: 700, fontSize: 14, padding: '13px 0', borderRadius: 10, cursor: 'not-allowed', border: 'none' }
+                                  : { flex: 1.5, fontWeight: 700, fontSize: 14, padding: '13px 0', borderRadius: 10, border: 'none' }}
+                          >
+                              {isConverting ? <Loader2 size={16} className="animate-spin" /> : 'Confirmar conversión'}
+                          </button>
+                      </div>
+
+                      {/* Pie de confianza */}
+                      <div className="flex items-center justify-center" style={{ gap: 8, marginTop: 13 }}>
+                          <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#4ADE80' }} />
+                          <span style={{ fontSize: 12, color: '#878E88' }}>Operación protegida · confirmación en dos pasos</span>
                       </div>
                   </div>
               </div>
           </div>
-      )}
+          );
+      })()}
 
       {/* EDIT PROFILE MODAL */}
       {isEditProfileModalOpen && (

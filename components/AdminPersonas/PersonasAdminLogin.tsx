@@ -114,7 +114,7 @@ export const PersonasAdminLogin: React.FC<PersonasAdminLoginProps> = ({ onLoginS
                             <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: '#22C55E' }} />
                         </div>
                         <span style={{ color: TEXT_MUTED, fontSize: '11px', marginLeft: '8px' }}>
-                            ~/cuypay-personas/admin
+                            ~/lincoin-personas/admin
                         </span>
                     </div>
 
@@ -140,7 +140,7 @@ export const PersonasAdminLogin: React.FC<PersonasAdminLoginProps> = ({ onLoginS
                             value={email}
                             onChange={(e) => setEmail(e.target.value)}
                             onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
-                            placeholder="adminpersonas@cuypay.com"
+                            placeholder="correo@empresa.com"
                             className="w-full px-3 py-2.5 rounded-md outline-none transition-colors mb-4"
                             style={{
                                 backgroundColor: BG,
@@ -219,7 +219,7 @@ export const PersonasAdminLogin: React.FC<PersonasAdminLoginProps> = ({ onLoginS
                         style={{ borderTop: `1px solid ${BORDER}`, backgroundColor: '#0C0E0D' }}
                     >
                         <span style={{ color: TEXT_MUTED, fontSize: '10px', letterSpacing: '0.1em' }}>
-                            DB: cuypay-personas
+                            DB: lincoin-personas
                         </span>
                         <span style={{ color: '#22C55E', fontSize: '10px', letterSpacing: '0.1em' }}>
                             ● ONLINE

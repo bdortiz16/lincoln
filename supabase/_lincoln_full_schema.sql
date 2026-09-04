@@ -4544,19 +4544,27 @@ BEGIN
      OR (TG_OP = 'UPDATE'
          AND NEW.status IS DISTINCT FROM OLD.status
          AND NEW.status = 'Completado') THEN
-    PERFORM net.http_post(
-      url     := 'https://<TU_PROJECT_REF>.supabase.co/functions/v1/notify-transaction',
-      headers := jsonb_build_object(
-        'Content-Type', 'application/json',
-        'apikey', '<ANON_KEY>',
-        'Authorization', 'Bearer <ANON_KEY>'
-      ),
-      body    := jsonb_build_object(
-        'type', TG_OP,
-        'table', 'transactions',
-        'record', to_jsonb(NEW)
-      )
-    );
+    -- ⚠️ Best-effort SIEMPRE: si pg_net no está habilitada o la URL/key son
+    -- placeholders sin configurar, esto LANZABA y revertía el INSERT entero —
+    -- ninguna transacción se guardaba en la base (movimientos siempre vacíos).
+    -- Una notificación jamás puede tumbar el registro del movimiento.
+    BEGIN
+      PERFORM net.http_post(
+        url     := 'https://<TU_PROJECT_REF>.supabase.co/functions/v1/notify-transaction',
+        headers := jsonb_build_object(
+          'Content-Type', 'application/json',
+          'apikey', '<ANON_KEY>',
+          'Authorization', 'Bearer <ANON_KEY>'
+        ),
+        body    := jsonb_build_object(
+          'type', TG_OP,
+          'table', 'transactions',
+          'record', to_jsonb(NEW)
+        )
+      );
+    EXCEPTION WHEN OTHERS THEN
+      RAISE WARNING 'cuypay_notify_tx: notificación falló (%), el movimiento se guarda igual', SQLERRM;
+    END;
   END IF;
   RETURN NEW;
 END $$;

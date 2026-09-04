@@ -90,6 +90,15 @@ body { background-color: #070808 !important; color: #F4F4F2; }
 .bg-slate-100, .bg-gray-100, .bg-neutral-100 { background-color: #121413 !important; }
 .bg-slate-200, .bg-gray-200 { background-color: #161A17 !important; }
 [class*="bg-[#F"], [class*="bg-[#f"], [class*="bg-[#E"], [class*="bg-[#e"] { background-color: #0C0E0D !important; }
+/* HOVER claros sobre tema oscuro: Tailwind pinta hover:bg-white / slate-50 /
+   gray-50 en claro, pero el texto está forzado a claro (!important) → texto
+   claro sobre fondo claro = invisible (sidebar, menús, tabs, filas...).
+   Se reemplazan por un overlay sutil oscuro-friendly en toda la app. */
+[class*="hover:bg-white"]:hover,
+[class*="hover:bg-slate-50"]:hover, [class*="hover:bg-slate-100"]:hover,
+[class*="hover:bg-gray-50"]:hover, [class*="hover:bg-gray-100"]:hover,
+[class*="hover:bg-neutral-50"]:hover, [class*="hover:bg-neutral-100"]:hover,
+[class*="hover:bg-zinc-50"]:hover { background-color: rgba(255,255,255,0.06) !important; }
 [class*="from-white"], [class*="via-white"], [class*="to-white"],
 [class*="from-slate-50"], [class*="to-slate-50"], [class*="from-gray-50"], [class*="to-gray-50"],
 [class*="from-slate-100"], [class*="to-slate-100"],
@@ -149,3 +158,21 @@ button[class~="bg-[#4ADE80]"] {
 @media (prefers-reduced-motion: reduce) {
   body::before, .lincoin-landing-root .btn-green, button[class~="bg-[#4ADE80]"] { animation: none; }
 }
+
+/* Punto "monitoreando la red" — pulso suave (modal Cargar) */
+@keyframes lincoinOpDot { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+.lincoin-op-dot { animation: lincoinOpDot 2s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .lincoin-op-dot { animation: none; } }
+
+/* Botón primario BLANCO (diseño Lincoin) — gana al catch-all del tema oscuro */
+.lincoin-btn-white { background: #F4F4F2 !important; color: #0A0A0A !important; }
+.lincoin-btn-white:hover { background: #E4E4E0 !important; }
+
+/* Celebración de depósito recibido (Dólar digital) */
+@keyframes lincoinDepositPop { 0%{opacity:0;transform:scale(0.82) translateY(12px)} 12%{opacity:1;transform:scale(1) translateY(0)} 86%{opacity:1;transform:scale(1)} 100%{opacity:0;transform:scale(0.98)} }
+.lincoin-deposit-fx { animation: lincoinDepositPop 4.2s cubic-bezier(.5,1.4,.5,1) forwards; }
+@keyframes lincoinFxCheck { 0%{transform:scale(0.5)} 55%{transform:scale(1.14)} 100%{transform:scale(1)} }
+.lincoin-fx-check { animation: lincoinFxCheck 0.6s ease-out; }
+@keyframes lincoinFxRing { 0%{transform:scale(1);opacity:0.7} 100%{transform:scale(1.7);opacity:0} }
+.lincoin-fx-ring { animation: lincoinFxRing 1.1s ease-out 0.15s; }
+@media (prefers-reduced-motion: reduce) { .lincoin-deposit-fx,.lincoin-fx-check,.lincoin-fx-ring{animation:none} }

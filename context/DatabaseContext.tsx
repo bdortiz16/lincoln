@@ -71,7 +71,8 @@ interface DatabaseContextType {
   transactions: Transaction[];
   registerUser: (data: any) => Promise<{ error?: string }>;
   updateUserProfile: (id: string, data: any) => Promise<void>;
-  loginUser: (email: string, pass?: string) => Promise<User | null>;
+  updateUserRawData: (id: string, patch: Record<string, any>) => Promise<boolean>;
+  loginUser: (email: string, pass?: string, captchaToken?: string) => Promise<User | null | 'MFA_REQUIRED'>;
   loginWithGoogle: (role?: 'personal' | 'business') => Promise<void>;
   logoutUser: () => void;
   getBalance: (curr: string) => number;
@@ -84,7 +85,7 @@ interface DatabaseContextType {
   deleteNotification: (id: string | number) => void;
   clearNotifications: () => void;
   requestDeposit: (amount: number, curr: string, method: string, proof?: string) => Promise<void>;
-  requestWithdrawal: (amount: number, curr: string, bank: string, acc: string, ben: string, reason: string, docType?: string, docNumber?: string) => Promise<void>;
+  requestWithdrawal: (amount: number, curr: string, bank: string, acc: string, ben: string, reason: string, docType?: string, docNumber?: string, debitKey?: string) => Promise<void>;
   performConversion: (src: string, tgt: string, amtS: number, amtT: number, fee: number, coup?: string) => Promise<{ error?: string }>;
   approveDeposit: (id: number) => Promise<void>;
   rejectDeposit: (id: number) => Promise<void>;
@@ -111,7 +112,9 @@ interface DatabaseContextType {
   registerInternalMovement: (amt: number, curr: string, type: 'credit' | 'debit', reason: string, accId: string, refId?: string, proof?: string) => Promise<void>;
   updateBankList: (country: string, banks: BankDetail[]) => void;
   restoreDatabase: (json: any) => boolean;
-  sendPasswordReset: (email: string) => Promise<void>;
+  sendPasswordReset: (email: string, captchaToken?: string) => Promise<void>;
+  isPasswordRecovery: boolean;
+  setNewPassword: (newPassword: string) => Promise<string | null>;
   sendCuypayPayment: (recipientCode: string, amount: number, currency: string) => Promise<{ error?: string }>;
   mfaPending: boolean;
   completeMFALogin: (code: string) => Promise<User | null>;
@@ -120,6 +123,7 @@ interface DatabaseContextType {
   verifyMFAEnrollment: (factorId: string, code: string, secret?: string) => Promise<{ ok: boolean; error?: string }>;
   unenrollMFA: (factorId: string) => Promise<boolean>;
   getMFAStatus: () => Promise<{ enrolled: boolean; factorId?: string; totpSecret?: string }>;
+  verifyMfaCode: (code: string) => Promise<boolean>;
 }
 
 // --- LOCALSTORAGE HELPERS (fallback sin Supabase) ---
@@ -129,8 +133,12 @@ const LS_TRANSACTIONS = 'cuypay_transactions';
 const LS_TX_SEQ = 'cuypay_tx_seq';
 
 const SEED_ADMIN_EMAIL = (import.meta.env.VITE_ADMIN_EMAIL as string) || 'admin@cuypay.com';
-// No hardcoded fallback — admin bypass requires VITE_ADMIN_PASSWORD to be explicitly set in .env
-const SEED_ADMIN_PASSWORD = (import.meta.env.VITE_ADMIN_PASSWORD as string) || '';
+// SEGURIDAD: el "admin bypass" fue ELIMINADO. Ya NO se lee VITE_ADMIN_PASSWORD
+// (viajaba en el bundle público y cualquiera podía extraerla para tomar control
+// total). Queda en '' → todas las rutas de bypass (guardas `SEED_ADMIN_PASSWORD
+// && …`) quedan inertes. El admin entra con su cuenta REAL de Supabase (JWT +
+// role='admin'), que el servidor exige.
+const SEED_ADMIN_PASSWORD = '';
 const SUPABASE_URL_FOR_FN = (import.meta.env.VITE_SUPABASE_URL as string) || '';
 const SUPABASE_ANON_FOR_FN = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
 
@@ -249,6 +257,10 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     } catch { /* sessionStorage no disponible */ }
     return null;
   });
+  // Recuperación de contraseña: cuando el usuario abre el enlace del correo
+  // de "olvidé mi contraseña", Supabase dispara PASSWORD_RECOVERY. La app
+  // muestra una pantalla para fijar la nueva clave.
+  const [isPasswordRecovery, setIsPasswordRecovery] = useState(false);
   // Start online immediately if Supabase is configured — avoids a flash of "Modo Offline"
   // while the first fetchData() is still in flight.
   const [isOnline, setIsOnline] = useState(isSupabaseConfigured);
@@ -275,6 +287,10 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   const [isAuthLoading, setIsAuthLoading] = useState(hasStoredSession);
   const [mfaPending, setMfaPending] = useState(false);
   const [pendingMFAProfile, setPendingMFAProfile] = useState<User | null>(null);
+  // 'custom' = TOTP nuestro (raw_data.mfaEnabled, verifica vía mfa_verify);
+  // 'native' = MFA de Supabase Auth (challenge/verify). Decide cómo verificar
+  // el código en completeMFALogin.
+  const [pendingMFAMode, setPendingMFAMode] = useState<'custom' | 'native'>('native');
   // Tracks when a local write is in progress so fetchData doesn't overwrite optimistic state
   const pendingWriteUntilRef = useRef<number>(0);
   // Ids de usuario que comparten el correo del usuario actual (por si hay
@@ -317,6 +333,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       try {
+        // Enlace de recuperación de contraseña abierto → mostrar la pantalla
+        // para fijar la nueva clave (no entrar directo al dashboard).
+        if (event === 'PASSWORD_RECOVERY') { setIsPasswordRecovery(true); return; }
         if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION' || event === 'TOKEN_REFRESHED') && session?.user) {
           // Cancel any pending sign-out
           if (signOutTimer) { clearTimeout(signOutTimer); signOutTimer = null; }
@@ -359,6 +378,19 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
               if (logoutCounterRef.current !== snapshotLogoutCount) return;
               profile = { ...profile, role: metaRoleOnFound };
             }
+            // GATE 2FA: si la cuenta tiene 2FA custom activo y aún no se verificó
+            // el código EN ESTA sesión, NO se entra — se deja pendiente el código.
+            // (Antes este listener seteaba currentUser directo y saltaba el 2FA.)
+            // La marca 'mfa_ok' vive en sessionStorage: sobrevive un refresco de la
+            // pestaña pero NO una pestaña/navegador nuevo → ahí sí re-pide 2FA.
+            const mfaOn2 = !!(profile as any)?.raw_data?.mfaEnabled;
+            let mfaOk = false; try { mfaOk = sessionStorage.getItem('mfa_ok') === '1'; } catch { /* */ }
+            if (mfaOn2 && !mfaOk && event !== 'TOKEN_REFRESHED') {
+              setPendingMFAProfile(mapSupabaseUser(profile));
+              setPendingMFAMode('custom');
+              setMfaPending(true);
+              return;
+            }
             setCurrentUser(mapSupabaseUser(profile));
           } else {
             // Check if a profile already exists with this email (e.g. email/password account)
@@ -383,6 +415,14 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
               // ⚠️ SECURITY: el auto-promote a role='admin' / kyc_status='approved'
               // se removió (security audit finding #10). Admin seed se hace UNA VEZ
               // por SQL; el trigger guard_users_sensitive_cols bloquea el cambio.
+              const mfaOnE = !!(existingByEmail as any)?.raw_data?.mfaEnabled;
+              let mfaOkE = false; try { mfaOkE = sessionStorage.getItem('mfa_ok') === '1'; } catch { /* */ }
+              if (mfaOnE && !mfaOkE && event !== 'TOKEN_REFRESHED') {
+                setPendingMFAProfile(mapSupabaseUser(existingByEmail));
+                setPendingMFAMode('custom');
+                setMfaPending(true);
+                return;
+              }
               setCurrentUser(mapSupabaseUser(existingByEmail));
             } else if (!lookupCompleted) {
               // No se confirmó si existe (timeout/red). NO crear perfil nuevo
@@ -451,7 +491,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       const localUsers = lsGetUsers();
       const localTxs = lsGetTransactions();
       setUsers(localUsers);
-      setTransactions(localTxs.sort((a, b) => b.id - a.id));
+      setTransactions(localTxs.sort(((a:any,b:any)=> (new Date(b.createdAt??b.created_at??b.date??0).getTime()||0) - (new Date(a.createdAt??a.created_at??a.date??0).getTime()||0)) as any));
       const cu = currentUserRef.current;
       if (cu) {
         const fresh = localUsers.find(x => x.id === cu.id);
@@ -475,7 +515,6 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           const authHeader = isAdminBypass
             ? `AdminBypass ${SEED_ADMIN_PASSWORD}`
             : `Bearer ${getStoredToken() ?? SKEY}`;
-          console.log('[LINCOIN ADMIN] bypass=', isAdminBypass, '| pass set=', !!SEED_ADMIN_PASSWORD, '| url=', SURL.slice(0, 40));
           const abortCtl = new AbortController();
           const abortTimer = setTimeout(() => abortCtl.abort(), 20000);
           const fnResult = await fetch(`${SURL}/functions/v1/admin-data`, {
@@ -484,7 +523,6 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             signal: abortCtl.signal,
           }).then(async r => {
             const text = await r.text().catch(() => '');
-            console.log('[LINCOIN ADMIN] edge fn status=', r.status, '| body=', text.slice(0, 300));
             try { const data = JSON.parse(text); return r.ok ? { data, error: null } : { data: null, error: data }; }
             catch { return { data: null, error: text }; }
           }).finally(() => clearTimeout(abortTimer)) as any;
@@ -516,7 +554,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
                 amount: Number(t.amount), currency: t.currency, status: t.status,
                 ...t.raw_data,
               }));
-              const sortedTx = mappedTx.sort((a: any, b: any) => b.id - a.id);
+              const sortedTx = mappedTx.sort(((a:any,b:any)=> (new Date(b.createdAt??b.created_at??b.date??0).getTime()||0) - (new Date(a.createdAt??a.created_at??a.date??0).getTime()||0)));
               setTransactions(sortedTx);
               mappedTxForCache = sortedTx;
             }
@@ -537,20 +575,25 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         }
       }
 
-      // Non-admin (or edge function unavailable): use SECURITY DEFINER RPC functions,
-      // falling back to direct SELECT if the functions don't exist yet.
-      const [usersRpc, txRpc] = await Promise.all([
-        supabase.rpc('cuypay_get_all_users'),
-        supabase.rpc('cuypay_get_all_transactions'),
-      ]);
-      if (usersRpc.error) console.warn('[fetchData] cuypay_get_all_users RPC error:', usersRpc.error.code, usersRpc.error.message);
-      if (txRpc.error) console.warn('[fetchData] cuypay_get_all_transactions RPC error:', txRpc.error.code, txRpc.error.message);
-      const directUsers = await supabase.from('users').select('*');
-      const directTx = await supabase.from('transactions').select('*');
+      // SEGURIDAD: el cliente NO admin ya NO descarga toda la base (eso fugaba
+      // totpSecret/PII de todos y alimentaba varios ataques). Lee SOLO su
+      // propia fila y sus propias transacciones. Los admins sí traen todo, pero
+      // por la vía del edge admin-data (service-role) de más arriba; si esa
+      // falla, este respaldo directo depende de la RLS (is_any_admin les da
+      // acceso total; a un cliente, solo lo suyo).
+      const isAdminCaller = (cu as any)?.role === 'admin';
+      let directUsers: any, directTx: any;
+      if (isAdminCaller) {
+        directUsers = await supabase.from('users').select('*');
+        directTx = await supabase.from('transactions').select('*');
+      } else {
+        directUsers = await supabase.from('users').select('*').eq('id', cu?.id ?? '');
+        directTx = await supabase.from('transactions').select('*').eq('user_id', cu?.id ?? '');
+      }
       if (directUsers.error) console.warn('[fetchData] direct users SELECT error:', directUsers.error.code, directUsers.error.message);
       if (directTx.error) console.warn('[fetchData] direct tx SELECT error:', directTx.error.code, directTx.error.message);
-      const usersData = (usersRpc.data?.length ? usersRpc.data : null) ?? directUsers.data;
-      const txData = (txRpc.data?.length ? txRpc.data : null) ?? directTx.data;
+      const usersData = directUsers.data;
+      const txData = directTx.data;
 
       if (usersData) {
         const mapped = (usersData as any[]).map(mapSupabaseUser);
@@ -560,11 +603,30 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           if (fresh && JSON.stringify(fresh) !== JSON.stringify(cu)) setCurrentUser(fresh);
         }
       }
+      // Orden por fecha, no por id: los ids de transactions son uuid — la
+      // resta b.id - a.id da NaN y el sort no ordenaba nada.
+      const txTime = (t: any) => new Date(t.createdAt ?? t.created_at ?? t.date ?? 0).getTime() || 0;
+      // Normaliza estados a los canónicos de la app. El panel Personas escribe
+      // 'approved'/'rejected' (y variantes en inglés) que ninguna vista del
+      // cliente entiende → se mapean a Completado/Rechazado; los demás se
+      // dejan tal cual (Completado, Procesando, Pendiente, Rechazado, Fallido).
+      const normStatus = (s: any): string => {
+        const v = String(s ?? '').toLowerCase();
+        if (['approved', 'completed', 'success', 'confirmed', 'paid', 'settled', 'aprobada', 'aprobado'].includes(v)) return 'Completado';
+        if (['rejected', 'cancelled', 'canceled', 'failed', 'denied', 'rechazada'].includes(v)) return 'Rechazado';
+        if (['processing', 'procesando'].includes(v)) return 'Procesando';
+        if (['pending', 'pendiente'].includes(v)) return 'Pendiente';
+        return String(s ?? '');
+      };
       const mapTx = (arr: any[]) => (arr as any[]).map(t => ({
         id: t.id, userId: t.user_id, type: t.type,
-        amount: Number(t.amount), currency: t.currency, status: t.status,
+        amount: Number(t.amount), currency: t.currency, status: normStatus(t.status),
+        createdAt: t.created_at ?? t.raw_data?.createdAt,
+        // raw_data se aplana para acceso plano, PERO se conserva bajo su clave
+        // para las vistas que lo leen anidado (motivo de fallo, explorer…).
+        raw_data: t.raw_data ?? {},
         ...t.raw_data,
-      })).sort((a: any, b: any) => b.id - a.id);
+      })).sort((a: any, b: any) => txTime(b) - txTime(a));
 
       // ── Lectura de movimientos del propio usuario vía la edge 'gasfree'
       //    (service role) — no depende del RPC, del caché de PostgREST, ni
@@ -574,6 +636,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       //    no conecta y sin reintento los movimientos quedaban vacíos aunque
       //    existan. ────────────────────────────────────────────────────────
       let edgeTxs: any[] = [];
+      let edgeDebug: any = null;
       if (cu?.id) {
         const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
         const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
@@ -587,8 +650,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
               headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${tok ?? SKEY}` },
               body: JSON.stringify({ action: 'my_transactions', userId: cu.id }),
               signal: ctl.signal,
-            }).then(res => res.json()).catch(() => null);
+            }).then(res => res.json()).catch((e) => ({ fetchError: String(e?.message ?? e) }));
             clearTimeout(t);
+            edgeDebug = { count: Array.isArray(r?.transactions) ? r.transactions.length : null, ids: r?.ids ?? null, error: r?.error ?? r?.queryError ?? r?.fetchError ?? null };
             if (Array.isArray(r?.ids) && r.ids.length) emailUserIdsRef.current = r.ids;
             if (Array.isArray(r?.transactions) && r.transactions.length) { edgeTxs = mapTx(r.transactions); break; }
           } catch { /* reintenta */ }
@@ -599,12 +663,30 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       // Se usa la fuente que SÍ trajo datos (edge preferida, si no el RPC/SELECT).
       // Solo se escribe si hay algo — así una lectura vacía nunca borra la lista.
       const rpcTxs = txData?.length ? mapTx(txData) : [];
-      const finalTxs = edgeTxs.length ? edgeTxs : rpcTxs;
+      // Orden por FECHA (desc), no por id: los ids son uuid aleatorios, así que
+      // sin esto "Movimientos recientes" mostraba cualquier orden y un depósito
+      // nuevo podía no salir arriba (o parecer que "no está").
+      const finalTxs = (edgeTxs.length ? edgeTxs : rpcTxs)
+        .slice()
+        .sort((a: any, b: any) => txTime(b) - txTime(a));
       if (finalTxs.length) {
         setTransactions(finalTxs);
         // Caché local por usuario: la próxima vez los movimientos se ven al
         // instante aunque la red falle (se refrescan en segundo plano).
         if (cu?.id) { try { localStorage.setItem(`cuypay_tx_${cu.id}`, JSON.stringify(finalTxs.slice(0, 200))); } catch { /* quota */ } }
+      } else if (cu?.id) {
+        // Diagnóstico visible: si TODAS las fuentes vinieron vacías, guardar
+        // el porqué para mostrarlo en la pantalla de Movimientos (en móvil no
+        // hay consola). count=0 sin error ⇒ la base de verdad no tiene filas
+        // para este usuario (los inserts fallaron o fueron a otro id).
+        try {
+          localStorage.setItem('lincoin_tx_debug', JSON.stringify({
+            at: new Date().toISOString(), userId: cu.id,
+            edge: edgeDebug,
+            rpcErr: txRpc.error?.message ?? null, rpcCount: Array.isArray(txRpc.data) ? txRpc.data.length : null,
+            directErr: directTx.error?.message ?? null, directCount: Array.isArray(directTx.data) ? directTx.data.length : null,
+          }));
+        } catch { /* quota */ }
       }
     } catch (e) { console.error('DB Fetch Error', e); }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -674,6 +756,20 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) return d.access_token; }
     } catch {}
     return null;
+  };
+
+  // Registra un INGRESO de admin (durable, con IP server-side) tras un login
+  // exitoso. Best-effort: nunca bloquea ni rompe el login si falla.
+  const logAdminLogin = (u: any) => {
+    try {
+      if (!u || u.role !== 'admin' || !SUPABASE_URL_FOR_FN) return;
+      const token = getStoredToken();
+      fetch(`${SUPABASE_URL_FOR_FN}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_FOR_FN, Authorization: token ? `Bearer ${token}` : `Bearer ${SUPABASE_ANON_FOR_FN}` },
+        body: JSON.stringify({ action: 'log_login' }),
+      }).catch(() => {});
+    } catch { /* nunca rompe el login */ }
   };
 
   // PBKDF2 password hash using Web Crypto — fallback when Supabase Auth is misconfigured
@@ -752,6 +848,22 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       for (const k of Object.keys(safeRest)) {
         if (safeRest[k] === '__stored__') delete safeRest[k];
       }
+      // Campos que administra EXCLUSIVAMENTE el servidor: la wallet GasFree
+      // (índice/dirección/contador), el 2FA (TOTP) y el OTP. saveUser NUNCA
+      // debe escribirlos desde memoria — la memoria puede estar vieja y los
+      // BORRABA/CAMBIABA (la wallet "cambiaba sola", el 2FA "se deshabilitaba").
+      // Siempre se dejan como están en la BASE; y si no pudimos leer la base,
+      // se OMITE raw_data por completo para no pisar nada.
+      const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'gasfreeCreditedTxs', 'gasfreeCreditedCount', 'mfaEnabled', 'totpSecret', 'totpSecretEnc', 'otp', 'subWallets'];
+      // COLECCIONES del cliente que tienen su PROPIO escritor seguro
+      // (updateUserRawData, merge dirigido): contactos, wallets inscritas,
+      // notificaciones. saveUser NUNCA debe reescribirlas desde memoria — una
+      // copia vieja (p. ej. de otro dispositivo, o de un poll que pisó el
+      // estado) BORRABA los contactos/wallets recién inscritos. La BASE MANDA
+      // para estas claves; solo cambian por su escritor dirigido.
+      const CLIENT_COLLECTIONS = ['mouvContacts', 'walletContacts', 'notifications', 'notifiedEvents'];
+      const PREFER_DB = [...SERVER_OWNED, ...CLIENT_COLLECTIONS];
+      let haveDbRaw = false;
       try {
         // Con timeout: si esta consulta se cuelga (red móvil), el guardado
         // sigue igual — es solo un merge preventivo, no puede bloquear.
@@ -760,9 +872,20 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           new Promise<{ data: null }>(resolve => setTimeout(() => resolve({ data: null }), 4000)),
         ]) as any;
         if (dbRes?.data?.raw_data) {
-          safeRest = { ...dbRes.data.raw_data, ...safeRest };
+          haveDbRaw = true;
+          const dbRaw = dbRes.data.raw_data as Record<string, any>;
+          safeRest = { ...dbRaw, ...safeRest };
+          // Los campos del servidor y las colecciones del cliente SIEMPRE
+          // reflejan la base, nunca la memoria (que puede estar vieja).
+          for (const k of PREFER_DB) {
+            if (k in dbRaw) safeRest[k] = dbRaw[k];
+            else delete safeRest[k];
+          }
         }
       } catch { /* non-blocking */ }
+      // Solo se escribe raw_data si pudimos hacer el merge seguro contra la
+      // base. Si no, se omite (el upsert deja la columna intacta en un UPDATE).
+      const rawDataField = haveDbRaw ? { raw_data: safeRest } : {};
       const result = await Promise.race([
         supabase.from('users').upsert({
           id, email, role,
@@ -801,7 +924,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           rep_doc_country: repDocCountry,
           is_pep: isPep,
           documents,
-          raw_data: safeRest,
+          ...rawDataField,
         }),
         timeout,
       ]);
@@ -840,7 +963,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
                 rep_legal_name: repLegalName, rep_first_name: repFirstName, rep_last_name: repLastName,
                 rep_dob: repDob, rep_nationality: repNationality, rep_doc_type: repDocType,
                 rep_doc_number: repDocNumber, rep_doc_country: repDocCountry, is_pep: isPep,
-                documents, raw_data: safeRest,
+                documents, ...rawDataField,
               },
             }),
           }).then(r2 => r2.json()).catch((e2: any) => ({ error: String(e2?.message ?? e2) }));
@@ -856,6 +979,68 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     } catch (e) {
       console.error('[saveUser] threw:', e);
       pendingWriteUntilRef.current = 0;
+    }
+  };
+
+  // Guardado DIRIGIDO de raw_data (contactos, preferencias...): escribe SOLO
+  // la columna raw_data — nunca balances/role/kyc. updateUserProfile escribe
+  // el perfil completo y el candado users_sensitive_cols_guard rechaza TODO
+  // el update si una columna sensible difiere de la base (p. ej. saldos en
+  // memoria desactualizados tras un cargue del admin) — así se "perdían" los
+  // contactos al recargar. Devuelve true solo si la base CONFIRMÓ el write.
+  const updateUserRawData = async (id: string, patch: Record<string, any>): Promise<boolean> => {
+    if (!isSupabaseConfigured) {
+      const u = users.find(x => x.id === id);
+      if (!u) return false;
+      lsUpsertUser({ ...u, ...patch });
+      setUsers(prev => prev.map(x => x.id === id ? { ...x, ...patch } : x));
+      if (currentUser?.id === id) setCurrentUser(prev => prev ? { ...prev, ...patch } : prev);
+      return true;
+    }
+    try {
+      // Merge contra la fila REAL para no pisar campos de otros flujos.
+      const { data: cur } = await Promise.race([
+        supabase.from('users').select('raw_data').eq('id', id).single(),
+        new Promise<{ data: null }>(resolve => setTimeout(() => resolve({ data: null }), 5000)),
+      ]) as any;
+      // ⚠️ SEGURIDAD (2FA): si la pre-lectura FALLA (timeout en red móvil, error
+      // transitorio) NO se hace el update directo con un merge PARCIAL — eso
+      // escribía `{...patch}` a secas y BORRABA el 2FA/wallet del raw_data. Solo
+      // se hace el update directo cuando la lectura vino OK; si no, se va al
+      // fallback service-role que re-lee FRESCO y hace merge sobre la fila real.
+      const readOk = !!(cur && cur.raw_data != null && typeof cur.raw_data === 'object');
+      const merged = readOk ? { ...cur.raw_data, ...patch } : { ...patch };
+      // RLS bloquea updates EN SILENCIO (0 filas afectadas, sin error) — el
+      // .select('id') obliga a devolver la fila tocada: sin fila = no escribió.
+      let ok = false;
+      if (readOk) {
+        const { data: updRows, error } = await supabase.from('users').update({ raw_data: merged }).eq('id', id).select('id');
+        if (!error && Array.isArray(updRows) && updRows.length > 0) ok = true;
+      }
+      if (!ok) {
+        // Fallback: save_user del edge (service-role). Se manda SOLO el patch —
+        // admin-data lo mezcla sobre el raw_data FRESCO de la base y fuerza los
+        // campos del servidor (2FA/wallet), así jamás se pierden aunque la
+        // pre-lectura del cliente hubiera fallado.
+        const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+        const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+        const token = getStoredToken();
+        const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
+          body: JSON.stringify({ action: 'save_user', user: { id, raw_data: patch } }),
+        }).then(x => x.json()).catch(() => null);
+        ok = !!r?.success;
+      }
+      if (ok) {
+        pendingWriteUntilRef.current = Date.now() + 10000;
+        setUsers(prev => prev.map(x => x.id === id ? { ...x, ...patch } as any : x));
+        if (currentUser?.id === id) setCurrentUser(prev => prev ? { ...prev, ...patch } as any : prev);
+      }
+      return ok;
+    } catch (e) {
+      console.error('[updateUserRawData] threw:', e);
+      return false;
     }
   };
 
@@ -930,10 +1115,54 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   // --- AUTH ---
 
-  const loginUser = async (email: string, pass?: string): Promise<User | null> => {
-    // Admin bypass: authenticate via env vars, skip Supabase Auth entirely
-    // Requires VITE_ADMIN_PASSWORD to be explicitly set — empty string disables the bypass
-    if (SEED_ADMIN_PASSWORD && email === SEED_ADMIN_EMAIL && pass === SEED_ADMIN_PASSWORD) {
+  const loginUser = async (email: string, pass?: string, captchaToken?: string): Promise<User | null | 'MFA_REQUIRED'> => {
+    const isSeedAdminEmail = !!SEED_ADMIN_EMAIL && email === SEED_ADMIN_EMAIL;
+    // Cada login EXPLÍCITO vuelve a exigir 2FA: se borra la marca 'mfa_ok' (que
+    // solo debe durar mientras la sesión ya verificada se refresca). Sin esto,
+    // un logout+login en la MISMA pestaña se saltaba el 2FA.
+    try { sessionStorage.removeItem('mfa_ok'); } catch { /* */ }
+    // Opciones de auth con el token del CAPTCHA (si Turnstile está activo).
+    const authOpts = captchaToken ? { captchaToken } : undefined;
+
+    // ── SEGURIDAD (migración del login admin) ──────────────────────────────
+    // Para el correo de admin se intenta PRIMERO una cuenta REAL de Supabase
+    // (sesión con JWT y role='admin' en la tabla users). Si existe, ese es el
+    // camino seguro y se usa. El AdminBypass local de abajo queda solo como
+    // RED DE SEGURIDAD por si la cuenta real aún no está creada — así nunca
+    // te quedas fuera del panel durante la transición. Cuando confirmes que
+    // entras con la cuenta real, se retira el bypass (Fase 2).
+    if (isSupabaseConfigured && isSeedAdminEmail && pass) {
+      try {
+        const { data, error } = await Promise.race([
+          supabase.auth.signInWithPassword({ email, password: pass, options: authOpts }),
+          new Promise<any>(resolve => setTimeout(() => resolve({ data: null, error: { message: 'timeout' } }), 6000)),
+        ]) as any;
+        if (!error && data?.user) {
+          const { data: profile } = await supabase.from('users').select('*').eq('id', data.user.id).single();
+          if ((profile as any)?.role === 'admin') {
+            const u = mapSupabaseUser(profile);
+            // 2FA en el login del admin: si tiene el 2FA custom activo, NO se
+            // entra directo — se pide el código de 6 dígitos antes de dar acceso.
+            if ((u as any)?.mfaEnabled || (profile as any)?.raw_data?.mfaEnabled) {
+              setPendingMFAProfile(u);
+              setPendingMFAMode('custom');
+              setMfaPending(true);
+              return 'MFA_REQUIRED';
+            }
+            setCurrentUser(u);
+            logAdminLogin(u);
+            return u;
+          }
+          // La cuenta existe pero todavía NO es admin en la tabla users → no
+          // dejamos una sesión no-admin colgando; cerramos y caemos al bypass.
+          try { await supabase.auth.signOut({ scope: 'local' }); } catch { /* noop */ }
+        }
+      } catch { /* cae al AdminBypass local */ }
+    }
+
+    // Admin bypass (RED DE SEGURIDAD): authenticate via env vars, skip Supabase.
+    // Requires VITE_ADMIN_PASSWORD to be explicitly set — empty string disables it.
+    if (SEED_ADMIN_PASSWORD && isSeedAdminEmail && pass === SEED_ADMIN_PASSWORD) {
       const adminUser: User = {
         id: 'admin-bypass',
         email: SEED_ADMIN_EMAIL,
@@ -958,7 +1187,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       resolve => setTimeout(() => resolve({ data: { user: null, session: null }, error: { message: 'auth_timeout', status: 408 } }), 6000)
     );
     const { data, error } = await Promise.race([
-      supabase.auth.signInWithPassword({ email, password: pass! }),
+      supabase.auth.signInWithPassword({ email, password: pass!, options: authOpts }),
       authTimeout,
     ]);
     if (error) {
@@ -1075,6 +1304,15 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
     const user = mapSupabaseUser(profile);
 
+    // 2FA custom (TOTP nuestro): si la cuenta lo tiene activo, se pide el código
+    // en el login antes de dar acceso. Cubre admin y clientes por igual.
+    if ((user as any)?.mfaEnabled || (profile as any)?.raw_data?.mfaEnabled) {
+      setPendingMFAProfile(user);
+      setPendingMFAMode('custom');
+      setMfaPending(true);
+      return 'MFA_REQUIRED';
+    }
+
     try {
       const mfaTimeout = new Promise<{ data: null }>(resolve => setTimeout(() => resolve({ data: null }), 3000));
       const { data: aalData } = await Promise.race([
@@ -1083,8 +1321,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       ]) as any;
       if (aalData?.nextLevel === 'aal2' && aalData?.currentLevel !== 'aal2') {
         setPendingMFAProfile(user);
+        setPendingMFAMode('native');
         setMfaPending(true);
-        return null;
+        return 'MFA_REQUIRED';
       }
     } catch { /* MFA not available, continue normally */ }
 
@@ -1093,7 +1332,30 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   };
 
   const completeMFALogin = async (code: string): Promise<User | null> => {
-    if (!isSupabaseConfigured || !pendingMFAProfile) return null;
+    if (!pendingMFAProfile) return null;
+    // 2FA CUSTOM: verifica el código contra el secreto CIFRADO en el servidor
+    // (mfa_verify en admin-data descifra y valida). Es el esquema que activa la
+    // tarjeta de Seguridad del admin y protege el cambio de proveedor.
+    if (pendingMFAMode === 'custom') {
+      try {
+        const SURL = SUPABASE_URL_FOR_FN, SKEY = SUPABASE_ANON_FOR_FN, token = getStoredToken();
+        const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
+          body: JSON.stringify({ action: 'mfa_verify', userId: pendingMFAProfile.id, code }),
+        }).then(x => x.json()).catch(() => null);
+        if (!r?.ok) return null;
+        const user = pendingMFAProfile;
+        try { sessionStorage.setItem('mfa_ok', '1'); } catch { /* */ }
+        setCurrentUser(user);
+        setMfaPending(false);
+        setPendingMFAProfile(null);
+        logAdminLogin(user);
+        return user;
+      } catch { return null; }
+    }
+    // 2FA NATIVO de Supabase Auth.
+    if (!isSupabaseConfigured) return null;
     try {
       const { data: factors } = await supabase.auth.mfa.listFactors();
       const factorId = factors?.totp?.[0]?.id;
@@ -1112,6 +1374,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   const cancelMFALogin = () => {
     if (isSupabaseConfigured) supabase.auth.signOut();
+    try { sessionStorage.removeItem('mfa_ok'); } catch { /* */ }
     setMfaPending(false);
     setPendingMFAProfile(null);
   };
@@ -1143,20 +1406,37 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     if (secret) {
       const ok = verifyTOTP(secret, code);
       if (!ok) return { ok: false, error: 'Código incorrecto. Intenta nuevamente.' };
-      // Persist via updateUserProfile (handles JWT auth, keepalive, pendingWriteBlock)
+      // Persistencia ROBUSTA vía updateUserRawData: escribe SOLO la columna
+      // raw_data (no dispara el candado de columnas sensibles como saveUser),
+      // verifica que la fila realmente se tocó (.select('id')) y, si la RLS lo
+      // bloquea en silencio, cae al edge admin-data con service-role. Actualiza
+      // el estado en memoria con los campos aplanados Y anidados, así el 2FA
+      // queda activo al instante y sigue activo tras recargar la página.
       if (currentUser) {
-        const raw = (currentUser as any).raw_data ?? {};
-        const newRaw = { ...raw, mfaEnabled: true, mfaFactorId: factorId, totpSecret: secret };
-        // Update in-memory immediately
-        setCurrentUser((prev: any) => prev ? { ...prev, raw_data: newRaw } : prev);
-        // Persist to DB using the proper auth-aware path
-        const updated = { ...currentUser, raw_data: newRaw } as any;
-        saveUser(updated).catch?.(() => {});
+        // Optimista: marcar activo sin conservar el secreto en claro en estado.
+        setCurrentUser((prev: any) => prev ? { ...prev, mfaEnabled: true, mfaFactorId: factorId } : prev);
+        // Guardar el secreto CIFRADO en el servidor (mfa_set). Así nunca queda
+        // en texto plano en la base. Si el endpoint no está desplegado, cae al
+        // guardado legacy (texto plano) para no romper la activación.
+        try {
+          const SURL = SUPABASE_URL_FOR_FN; const SKEY = SUPABASE_ANON_FOR_FN; const token = getStoredToken();
+          const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
+            body: JSON.stringify({ action: 'mfa_set', userId: currentUser.id, secret, factorId }),
+          }).then(x => x.json()).catch(() => null);
+          if (r?.success) return { ok: true };
+        } catch { /* cae al legacy */ }
+        // LEGACY: guardar en texto plano (compat si mfa_set no existe aún).
+        const persisted = await updateUserRawData(currentUser.id, { mfaEnabled: true, mfaFactorId: factorId, totpSecret: secret });
+        if (!persisted) return { ok: false, error: 'No pudimos guardar la verificación en dos pasos. Reintenta.' };
       }
       return { ok: true };
     }
-    // No secret: check raw_data first (for existing enrolled users)
-    const storedSecret = (currentUser as any)?.raw_data?.totpSecret as string | undefined;
+    // No secret: check stored secret first (for existing enrolled users).
+    // raw_data está aplanado tras recargar, anidado justo tras activar → ambos.
+    const cu = currentUser as any;
+    const storedSecret = (cu?.totpSecret ?? cu?.raw_data?.totpSecret) as string | undefined;
     if (storedSecret) {
       const ok = verifyTOTP(storedSecret, code);
       return ok ? { ok: true } : { ok: false, error: 'Código incorrecto. Intenta nuevamente.' };
@@ -1176,9 +1456,29 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     }
   };
 
+  // Verifica un código 2FA. Si el secreto está en memoria (recién activado o
+  // legacy en claro) valida local; si no (secreto cifrado en la base), lo
+  // valida el SERVIDOR con mfa_verify. Devuelve true/false.
+  const verifyMfaCode = async (code: string): Promise<boolean> => {
+    const cu = currentUser as any;
+    const localSecret = (cu?.totpSecret ?? cu?.raw_data?.totpSecret) as string | undefined;
+    if (localSecret) { try { return verifyTOTP(localSecret, code); } catch { return false; } }
+    if (!currentUser) return false;
+    try {
+      const SURL = SUPABASE_URL_FOR_FN; const SKEY = SUPABASE_ANON_FOR_FN; const token = getStoredToken();
+      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
+        body: JSON.stringify({ action: 'mfa_verify', userId: currentUser.id, code }),
+      }).then(x => x.json()).catch(() => null);
+      return !!r?.ok;
+    } catch { return false; }
+  };
+
   const unenrollMFA = async (factorId: string): Promise<boolean> => {
     // Local TOTP factors don't exist in Supabase Auth — just succeed
-    if (factorId === 'local' || (currentUser as any)?.raw_data?.totpSecret) return true;
+    const cuu = currentUser as any;
+    if (factorId === 'local' || cuu?.totpSecret || cuu?.raw_data?.totpSecret) return true;
     if (!isSupabaseConfigured) return true;
     try {
       const { error } = await supabase.auth.mfa.unenroll({ factorId });
@@ -1187,10 +1487,18 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   };
 
   const getMFAStatus = async (): Promise<{ enrolled: boolean; factorId?: string; totpSecret?: string }> => {
-    // Always check raw_data first — most reliable without needing Supabase Auth session
-    const raw = (currentUser as any)?.raw_data;
-    if (raw?.mfaEnabled && raw?.mfaFactorId) {
-      return { enrolled: true, factorId: raw.mfaFactorId, totpSecret: raw.totpSecret };
+    // Always check raw_data first — most reliable without needing Supabase Auth session.
+    // ⚠️ mapSupabaseUser APLANA raw_data al nivel superior del usuario, así que
+    // tras recargar la página los campos viven en currentUser.mfaEnabled (no en
+    // currentUser.raw_data). Justo después de activar el 2FA sí están anidados
+    // en raw_data. Leemos de AMBOS para que persista en los dos casos.
+    const u = currentUser as any;
+    const raw = u?.raw_data ?? {};
+    const mfaEnabled  = u?.mfaEnabled  ?? raw?.mfaEnabled;
+    const mfaFactorId = u?.mfaFactorId ?? raw?.mfaFactorId;
+    const totpSecret  = u?.totpSecret  ?? raw?.totpSecret;
+    if (mfaEnabled && mfaFactorId) {
+      return { enrolled: true, factorId: mfaFactorId, totpSecret };
     }
     // Try Supabase Auth as secondary (only works with a valid session)
     if (isSupabaseConfigured) {
@@ -1220,6 +1528,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     // Increment before any await so in-flight SIGNED_IN handlers abort instead of re-setting the user
     logoutCounterRef.current++;
     sessionStorage.removeItem('cuypay_admin_session');
+    try { sessionStorage.removeItem('mfa_ok'); } catch { /* */ }
     localStorage.removeItem('cuypay_config');
     // Purga proactiva del token de Supabase: si el signOut de red se cuelga,
     // igual NO queda una sesión "fantasma" en localStorage que dispare
@@ -1270,6 +1579,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           role: data.role || 'business',
           full_name: data.name || 'Usuario',
         },
+        ...(data.captchaToken ? { captchaToken: data.captchaToken } : {}),
       },
     });
     if (error) return { error: error.message };
@@ -1391,9 +1701,13 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     }).catch(() => {});
   };
 
-  const requestWithdrawal = async (amount: number, currency: string, bank: string, account: string, beneficiary: string, reason: string, docType?: string, docNumber?: string) => {
-    if (!currentUser || getBalance(currency) < amount) return;
-    const newBal = { ...currentUser.balances, [currency]: getBalance(currency) - amount };
+  const requestWithdrawal = async (amount: number, currency: string, bank: string, account: string, beneficiary: string, reason: string, docType?: string, docNumber?: string, debitKey?: string) => {
+    // El saldo puede salir de un riel distinto al de la moneda mostrada:
+    // COP tiene 3 billeteras separadas (COP / COP_BREB / COP_ACH). `debitKey`
+    // dice de cuál se debita; el registro guarda `currency` para el display.
+    const key = debitKey || currency;
+    if (!currentUser || getBalance(key) < amount) return;
+    const newBal = { ...currentUser.balances, [key]: getBalance(key) - amount };
     pendingWriteUntilRef.current = Date.now() + 10000;
     setCurrentUser(prev => prev ? { ...prev, balances: newBal } : prev);
     setUsers(prev => prev.map(u => u.id === currentUser.id ? { ...u, balances: newBal } : u));
@@ -1415,26 +1729,53 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   const performConversion = async (src: string, tgt: string, amtS: number, amtT: number, fee: number, coupon?: string): Promise<{ error?: string }> => {
     if (!currentUser) return { error: 'No autenticado' };
     if (getBalance(src) < amtS) return { error: 'Saldo insuficiente' };
+    const prevBalances = currentUser.balances;
     const newBal = { ...currentUser.balances, [src]: getBalance(src) - amtS, [tgt]: (currentUser.balances[tgt] || 0) + amtT };
     pendingWriteUntilRef.current = Date.now() + 10000;
     // Update local state immediately so UI reflects change without waiting for DB
     setCurrentUser(prev => prev ? { ...prev, balances: newBal } : prev);
     setUsers(prev => prev.map(u => u.id === currentUser.id ? { ...u, balances: newBal } : u));
-    // Fire DB writes in background — don't await (mobile networks can't be trusted)
-    saveUser({ ...currentUser, balances: newBal }).catch(() => {});
-    saveTx({ userId: currentUser.id, userName: currentUser.name, type: 'convert', initials: 'CV', title: `${src} a ${tgt}`, date: new Date().toLocaleDateString(), createdAt: new Date().toISOString(), amount: amtS, currency: src, status: 'Completado', fee, couponCode: coupon, targetAmount: amtT, targetCurrency: tgt }).catch(() => {});
-    // Credit conversion fee to admin balance (fire-and-forget)
-    if (fee > 0 && isSupabaseConfigured) {
-      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
-      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-      if (SURL) {
+
+    const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+    const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+    const creditFee = () => {
+      if (fee > 0 && isSupabaseConfigured && SURL) {
         fetch(`${SURL}/functions/v1/admin-data`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': `Bearer ${SKEY}` },
           body: JSON.stringify({ action: 'credit_conversion_fee', currency: src, amount: fee, fromUserId: currentUser.id, note: `Comisión conversión ${src}→${tgt}` }),
         }).catch(() => {});
       }
+    };
+
+    // ── Vía SEGURA: el SERVIDOR valida saldo y que el monto recibido cuadre
+    //    con la tasa real, y aplica los deltas (no acepta saldos absolutos del
+    //    cliente). Evita que alguien se auto-acredite saldo. Si el endpoint
+    //    aún no está desplegado (o hay red mala) se cae al camino legacy. ────
+    if (isSupabaseConfigured && SURL) {
+      try {
+        const token = getStoredToken();
+        const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
+          body: JSON.stringify({ action: 'apply_conversion', userId: currentUser.id, src, tgt, amtS, amtT, fee, coupon }),
+        }).then(x => x.json()).catch(() => null);
+        if (r?.success) { creditFee(); return {}; }
+        // Rechazo de negocio del servidor (tasa/saldo/parámetros) → revertir y avisar.
+        const HARD = ['Saldo insuficiente', 'El monto de la conversión no coincide con la tasa vigente.', 'Parámetros de conversión inválidos'];
+        if (r?.error && HARD.includes(String(r.error))) {
+          setCurrentUser(prev => prev ? { ...prev, balances: prevBalances } : prev);
+          setUsers(prev => prev.map(u => u.id === currentUser.id ? { ...u, balances: prevBalances } : u));
+          return { error: String(r.error) };
+        }
+        // Cualquier otra cosa (endpoint viejo / null) → camino legacy abajo.
+      } catch { /* red → legacy */ }
     }
+
+    // ── LEGACY (respaldo si apply_conversion no está desplegado) ──
+    saveUser({ ...currentUser, balances: newBal }).catch(() => {});
+    saveTx({ userId: currentUser.id, userName: currentUser.name, type: 'convert', initials: 'CV', title: `${src} a ${tgt}`, date: new Date().toLocaleDateString(), createdAt: new Date().toISOString(), amount: amtS, currency: src, status: 'Completado', fee, couponCode: coupon, targetAmount: amtT, targetCurrency: tgt }).catch(() => {});
+    creditFee();
     return {};
   };
 
@@ -1618,8 +1959,23 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     }
 
     // Look up recipient from local users state (populated by fetchData from Supabase)
-    const recipient = users.find(u => u.ownReferralCode?.toUpperCase() === recipientCode.toUpperCase() && u.id !== currentUser.id);
+    let recipient: any = users.find(u => u.ownReferralCode?.toUpperCase() === recipientCode.toUpperCase() && u.id !== currentUser.id);
+    if (!recipient) {
+      // Con RLS estricta el cliente ya no ve a otros usuarios: se resuelve el
+      // destinatario en el servidor (solo id + nombre). El RPC cuypay_transfer
+      // igual re-valida el destino por código, así que esto es solo para la UI.
+      try {
+        const SURL = SUPABASE_URL_FOR_FN; const SKEY = SUPABASE_ANON_FOR_FN; const token = getStoredToken();
+        const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
+          body: JSON.stringify({ action: 'lookup_recipient', code: recipientCode.toUpperCase() }),
+        }).then(x => x.json()).catch(() => null);
+        if (r?.found && r.id && r.id !== currentUser.id) recipient = { id: r.id, name: r.name, balances: {} };
+      } catch { /* red → cae al 'no encontrado' */ }
+    }
     if (!recipient) return { error: 'Usuario no encontrado' };
+    if (!recipient.balances) recipient.balances = {};
 
     const senderBal = currentUser.balances[currency] || 0;
     if (senderBal < amount) return { error: 'Saldo insuficiente' };
@@ -1665,7 +2021,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             amount: Number(t.amount), currency: t.currency, status: t.status,
             ...t.raw_data,
           }));
-          setTransactions(mapped.sort((a: any, b: any) => b.id - a.id));
+          setTransactions(mapped.sort(((a:any,b:any)=> (new Date(b.createdAt??b.created_at??b.date??0).getTime()||0) - (new Date(a.createdAt??a.created_at??a.date??0).getTime()||0))));
         }
       } catch { /* ignore */ }
     };
@@ -1779,15 +2135,31 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     return {};
   };
 
-  const sendPasswordReset = async (email: string) => {
+  const sendPasswordReset = async (email: string, captchaToken?: string) => {
     if (!isSupabaseConfigured) return;
-    await supabase.auth.resetPasswordForEmail(email);
+    // redirectTo: el enlace del correo debe regresar a ESTA app para que el
+    // usuario fije su nueva contraseña (si no, cae en el sitio por defecto).
+    await supabase.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin, ...(captchaToken ? { captchaToken } : {}) });
+  };
+
+  // Fijar la nueva contraseña tras abrir el enlace de recuperación.
+  const setNewPassword = async (newPassword: string): Promise<string | null> => {
+    if (!isSupabaseConfigured) return 'Sin conexión';
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (error) return error.message;
+    setIsPasswordRecovery(false);
+    return null;
   };
 
   const markNotificationsRead = () => {
     if (!currentUser) return;
     const updated = (currentUser.notifications || []).map((n: any) => ({ ...n, read: true }));
-    updateUserProfile(currentUser.id, { notifications: updated });
+    // Las notificaciones viven en raw_data. Persistir con updateUserRawData
+    // (escribe SOLO raw_data, confirma la fila y cae al edge si la RLS/candado
+    // de columnas sensibles bloquea) — con updateUserProfile/saveUser el
+    // candado rechazaba TODO el update si el saldo en memoria estaba viejo, y
+    // el "leído" no se guardaba: al recargar volvían a salir sin leer.
+    updateUserRawData(currentUser.id, { notifications: updated }).catch(() => {});
   };
 
   // Agrega varias notificaciones de una (dedup por id estable). Devuelve
@@ -1806,33 +2178,33 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       ...n,
     }));
     const updated = [...stamped, ...existing].slice(0, 50);
-    updateUserProfile(currentUser.id, { notifications: updated });
+    updateUserRawData(currentUser.id, { notifications: updated }).catch(() => {});
     return toAdd.length;
   };
 
   const deleteNotification = (id: string | number) => {
     if (!currentUser) return;
     const updated = (currentUser.notifications || []).filter((n: any) => String(n.id) !== String(id));
-    updateUserProfile(currentUser.id, { notifications: updated });
+    updateUserRawData(currentUser.id, { notifications: updated }).catch(() => {});
   };
 
   const clearNotifications = () => {
     if (!currentUser) return;
-    updateUserProfile(currentUser.id, { notifications: [] });
+    updateUserRawData(currentUser.id, { notifications: [] }).catch(() => {});
   };
 
   return (
     <DatabaseContext.Provider value={{
-      currentUser, isAuthLoading, users, transactions, registerUser, updateUserProfile, loginUser, loginWithGoogle, logoutUser,
+      currentUser, isAuthLoading, users, transactions, registerUser, updateUserProfile, updateUserRawData, loginUser, loginWithGoogle, logoutUser,
       getBalance, bumpLocalBalance, addLocalTx, getPersonalMovements, getUserNotifications, markNotificationsRead,
       mergeNotifications, deleteNotification, clearNotifications,
       requestDeposit, requestWithdrawal, performConversion, approveDeposit, rejectDeposit,
       completeWithdrawal, rejectWithdrawal, verifyUser, toggleUserBlock, isOnline, dataReady, refreshData: fetchData,
       bankingOptions, treasuryAccounts, getAllUsers, getAllTransactions, updateTxStatus, getAllPendingDeposits, getAllPendingWithdrawals,
       getTransactionHistory, getAdminTeam, addAdminUser, updateAdminUser, deleteAdminUser, deleteUser, registerInternalMovement,
-      updateBankList, restoreDatabase, sendPasswordReset, sendCuypayPayment,
+      updateBankList, restoreDatabase, sendPasswordReset, isPasswordRecovery, setNewPassword, sendCuypayPayment,
       mfaPending, completeMFALogin, cancelMFALogin,
-      enrollMFA, verifyMFAEnrollment, unenrollMFA, getMFAStatus,
+      enrollMFA, verifyMFAEnrollment, unenrollMFA, getMFAStatus, verifyMfaCode,
     }}>
       {children}
     </DatabaseContext.Provider>

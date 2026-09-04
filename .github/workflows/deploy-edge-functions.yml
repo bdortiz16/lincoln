@@ -43,6 +43,37 @@ jobs:
           fi
           echo "✅ Proyecto Lincoin: ${SUPABASE_PROJECT_REF:0:4}****"
 
+      # ── Diagnóstico del token (NO imprime el secreto) ─────────────────────
+      # Valida el token directo contra la API de administración de Supabase:
+      #   HTTP 200 + proyecto visible → token bueno (el 401 sería otra cosa)
+      #   HTTP 200 sin el proyecto    → token de OTRA cuenta de Supabase
+      #   HTTP 401                    → token revocado, vencido o mal pegado
+      - name: Diagnóstico del token
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+        run: |
+          T="$SUPABASE_ACCESS_TOKEN"
+          echo "longitud del token: ${#T}"
+          echo "prefijo: ${T:0:4} (debe ser sbp_)"
+          case "$T" in *' '*|*"$(printf '\t')"*) echo '⚠️ el token contiene ESPACIOS — bórralo y pégalo de nuevo';; esac
+          if printf %s "$T" | tr -d '\r\n' | cmp -s - <(printf %s "$T"); then :; else
+            echo '⚠️ el token contiene saltos de línea — bórralo y pégalo de nuevo'
+          fi
+          CODE=$(curl -s -o /tmp/projects.json -w '%{http_code}' \
+            https://api.supabase.com/v1/projects \
+            -H "Authorization: Bearer $T") || CODE=0
+          echo "API Supabase /v1/projects → HTTP $CODE"
+          if [ "$CODE" = "200" ]; then
+            if grep -q "$SUPABASE_PROJECT_REF" /tmp/projects.json; then
+              echo "✅ El token es VÁLIDO y SÍ ve el proyecto ${SUPABASE_PROJECT_REF:0:4}****"
+            else
+              echo "❌ El token es válido pero NO ve el proyecto → pertenece a OTRA cuenta de Supabase (¿Google vs correo?)"
+            fi
+          else
+            echo "❌ El token NO es válido para la API de Supabase (revocado, vencido o mal pegado)"
+          fi
+
       # ── Desplegar las edge functions a Lincoin ────────────────────────────
       # verify_jwt=false está configurado en supabase/config.toml; cada función
       # hace su propia autenticación. El deploy NO necesita los secrets de
@@ -53,7 +84,7 @@ jobs:
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
         run: |
           FAILED=0
-          FUNCTIONS="gasfree mouv-proxy didit-kyc admin-data get-system-config notify-transaction user-login admin-login delete-self fastforex-sync fx-snapshot notify-account-events notify-limit-increase send-compliance-email didit-aml-monitor crisp-proxy"
+          FUNCTIONS="gasfree mouv-proxy finity-proxy finity-webhook didit-kyc admin-data get-system-config notify-transaction user-login admin-login delete-self fastforex-sync fx-snapshot notify-account-events notify-limit-increase send-compliance-email didit-aml-monitor crisp-proxy email-otp"
           for fn in $FUNCTIONS; do
             echo "▶ Desplegando $fn…"
             if supabase functions deploy "$fn" \

@@ -1,16 +1,17 @@
 -- ============================================================
--- Security hardening for cuypay_transfer:
---   1. Validate amount is positive and non-zero (server-side)
---   2. Validate currency is in the allowed list
---   3. Server-side balance check (prevents client-side bypass)
---   4. Revoke execution from the anon role
+-- cuypay_transfer — endurecimiento de seguridad (P2P)
 --
--- NOTE: auth.uid() == p_sender_id check is intentionally omitted
--- because the RPC is called from a background async context where
--- the Supabase session may not be available at the moment of the
--- call. The client already validates that the sender is the
--- authenticated user before calling this function.
--- Run this in the Supabase SQL Editor.
+-- Corrige dos fallas del fix_p2p_security.sql anterior:
+--   1. IDOR: NO validaba que quien llama sea el DUEÑO de p_sender_id, así
+--      que cualquier usuario autenticado podía pasar el id de una víctima
+--      y debitarle su saldo. Ahora se exige auth.uid() = p_sender_id.
+--   2. Carrera de doble-gasto: el chequeo de saldo y el débito eran dos
+--      sentencias sin bloqueo → dos clics/llamadas concurrentes podían
+--      pasar ambos el check y debitar dos veces (saldo negativo, doble
+--      crédito al receptor). Ahora la fila del emisor se bloquea con
+--      FOR UPDATE, serializando las transferencias concurrentes.
+--
+-- Correr en el SQL Editor de Supabase.
 -- ============================================================
 
 CREATE OR REPLACE FUNCTION public.cuypay_transfer(
@@ -29,18 +30,25 @@ DECLARE
   v_recipient_name TEXT;
   v_sender_bal     NUMERIC;
 BEGIN
-  -- Amount must be a finite positive number
+  -- (1) SEGURIDAD: quien llama debe ser el DUEÑO de la cuenta que envía.
+  -- Sin esto, cualquier autenticado podía debitar la cuenta de otro (IDOR).
+  IF auth.uid() IS NULL OR auth.uid()::text <> p_sender_id THEN
+    RETURN jsonb_build_object('error', 'No autorizado');
+  END IF;
+
+  -- Monto positivo y finito.
   IF p_amount IS NULL OR p_amount <= 0 OR NOT isfinite(p_amount) THEN
     RETURN jsonb_build_object('error', 'Monto inválido');
   END IF;
 
-  -- Validate currency
+  -- Moneda permitida.
   IF p_currency NOT IN ('USD', 'COP', 'CLP', 'MXN', 'PEN') THEN
     RETURN jsonb_build_object('error', 'Moneda no soportada');
   END IF;
 
-  -- Look up recipient by ownReferralCode stored in raw_data
-  SELECT id, full_name
+  -- Buscar al receptor por su ownReferralCode. (id se castea a text porque la
+  -- columna es uuid y las variables/args son text.)
+  SELECT id::text, full_name
     INTO v_recipient_id, v_recipient_name
     FROM public.users
    WHERE raw_data->>'ownReferralCode' = upper(p_recipient_code)
@@ -54,33 +62,36 @@ BEGIN
     RETURN jsonb_build_object('error', 'No puedes enviarte dinero a ti mismo');
   END IF;
 
-  -- Verify sender balance (server-side — not trusting client state)
+  -- (2) Bloquear la fila del emisor: el chequeo de saldo y el débito quedan
+  -- serializados. Una segunda llamada concurrente espera aquí y ve el saldo
+  -- YA debitado, evitando el doble-gasto.
   SELECT COALESCE((balances->>p_currency)::NUMERIC, 0)
     INTO v_sender_bal
     FROM public.users
-   WHERE id = p_sender_id;
+   WHERE id::text = p_sender_id
+   FOR UPDATE;
 
   IF v_sender_bal < p_amount THEN
     RETURN jsonb_build_object('error', 'Saldo insuficiente');
   END IF;
 
-  -- Atomic debit on sender
+  -- Débito atómico del emisor.
   UPDATE public.users
      SET balances = jsonb_set(
            balances,
            ARRAY[p_currency],
            to_jsonb(COALESCE((balances->>p_currency)::NUMERIC, 0) - p_amount)
          )
-   WHERE id = p_sender_id;
+   WHERE id::text = p_sender_id;
 
-  -- Atomic credit on recipient
+  -- Crédito atómico del receptor.
   UPDATE public.users
      SET balances = jsonb_set(
            balances,
            ARRAY[p_currency],
            to_jsonb(COALESCE((balances->>p_currency)::NUMERIC, 0) + p_amount)
          )
-   WHERE id = v_recipient_id;
+   WHERE id::text = v_recipient_id;
 
   RETURN jsonb_build_object(
     'success',        true,
@@ -90,6 +101,6 @@ BEGIN
 END;
 $$;
 
--- Only authenticated users may call this — revoke from anon
+-- Solo usuarios autenticados; nunca anon.
 REVOKE EXECUTE ON FUNCTION public.cuypay_transfer FROM anon;
 GRANT  EXECUTE ON FUNCTION public.cuypay_transfer TO authenticated;

@@ -1,0 +1,11 @@
+# robots.txt — Lincoin
+# Permite el rastreo de todo el sitio público e indica el sitemap.
+
+User-agent: *
+Allow: /
+
+# Áreas privadas de la app (detrás de login): no aportan a la búsqueda.
+Disallow: /admin
+Disallow: /dashboard
+
+Sitemap: https://www.lincoin.me/sitemap.xml

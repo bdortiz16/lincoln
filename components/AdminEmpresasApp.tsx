@@ -8,6 +8,7 @@ import { setRatesDbClient } from './AdminPersonas/sections/RatesPanel';
 import { supabase } from '../lib/supabaseClient';
 import { AdminDashboard } from './AdminDashboard';
 import { Logo } from './Logo';
+import { TurnstileWidget, captchaEnabled } from './TurnstileWidget';
 import { Lock, LogOut, ShieldCheck } from 'lucide-react';
 
 // ─────────────────────────────────────────────
@@ -31,19 +32,31 @@ if (typeof window !== 'undefined' &&
 }
 
 const AdminEmpresasInner: React.FC = () => {
-    const { currentUser, isAuthLoading, loginUser, logoutUser } = useDatabase();
+    const { currentUser, isAuthLoading, loginUser, logoutUser, mfaPending, completeMFALogin, cancelMFALogin } = useDatabase();
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [mfaCode, setMfaCode] = useState('');
+    const [mfaError, setMfaError] = useState<string | null>(null);
+    const [verifying, setVerifying] = useState(false);
+    const [captchaToken, setCaptchaToken] = useState('');
+    const [captchaKey, setCaptchaKey] = useState(0);
 
     const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault();
         if (submitting) return;
+        if (captchaEnabled && !captchaToken) { setError('Completa la verificación anti-bot (CAPTCHA).'); return; }
         setSubmitting(true);
         setError(null);
         try {
-            const user = await loginUser(email.trim(), password);
+            const result = await loginUser(email.trim(), password, captchaToken || undefined);
+            // El token de CAPTCHA es de un solo uso — se resetea para el próximo intento.
+            setCaptchaToken(''); setCaptchaKey(k => k + 1);
+            // 2FA pendiente: la contraseña FUE correcta. La pantalla cambia al
+            // paso del código (vía mfaPending). No mostrar "credenciales".
+            if (result === 'MFA_REQUIRED') { setSubmitting(false); return; }
+            const user = result;
             if (!user) {
                 setError('Credenciales incorrectas.');
             } else if (user.role !== 'admin') {
@@ -55,6 +68,19 @@ const AdminEmpresasInner: React.FC = () => {
             setError('No se pudo iniciar sesión. Intenta de nuevo.');
         }
         setSubmitting(false);
+    };
+
+    const handleVerify2FA = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (mfaCode.length !== 6 || verifying) return;
+        setVerifying(true); setMfaError(null);
+        try {
+            const user = await completeMFALogin(mfaCode);
+            if (!user) setMfaError('Código incorrecto o vencido. Ingresa el código actual de tu app.');
+            else if (user.role !== 'admin') { setMfaError('Esta cuenta no tiene permisos de administrador.'); await logoutUser(); }
+            // Si es admin, currentUser se setea y el render cambia solo.
+        } catch { setMfaError('No se pudo verificar. Intenta de nuevo.'); }
+        setVerifying(false);
     };
 
     if (isAuthLoading) {
@@ -82,6 +108,29 @@ const AdminEmpresasInner: React.FC = () => {
                     </div>
                     <p className="text-xs text-slate-500 mb-5">Acceso exclusivo para administradores.</p>
 
+                    {mfaPending ? (
+                        <form onSubmit={handleVerify2FA} className="space-y-3">
+                            <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl p-2.5">
+                                <ShieldCheck size={16} className="text-[#16A34A]" />
+                                <p className="text-xs text-slate-600">Verificación en dos pasos. Ingresa el código de 6 dígitos de tu app de autenticación.</p>
+                            </div>
+                            <input
+                                value={mfaCode}
+                                onChange={e => setMfaCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                                autoFocus
+                                inputMode="numeric"
+                                placeholder="123 456"
+                                className="w-full px-3 py-3 rounded-xl border border-slate-200 text-center font-mono text-lg tracking-widest focus:border-[#4ADE80] outline-none"
+                            />
+                            {mfaError && <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-xl p-2.5">{mfaError}</p>}
+                            <button type="submit" disabled={verifying || mfaCode.length !== 6} style={{ color: '#FFFFFF' }} className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#152e52] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60 transition-colors">
+                                <Lock size={14} /> {verifying ? 'Verificando…' : 'Verificar código'}
+                            </button>
+                            <button type="button" onClick={() => { cancelMFALogin(); setMfaCode(''); setMfaError(null); setPassword(''); }} className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-800">
+                                Cancelar
+                            </button>
+                        </form>
+                    ) : (<>
                     {currentUser && currentUser.role !== 'admin' && (
                         <div className="mb-4 bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800">
                             Tu sesión actual ({currentUser.email}) no es de administrador.
@@ -99,7 +148,7 @@ const AdminEmpresasInner: React.FC = () => {
                                 autoComplete="username"
                                 required
                                 className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#4ADE80] outline-none"
-                                placeholder="admin@cuypay.com"
+                                placeholder="correo@empresa.com"
                             />
                         </div>
                         <div>
@@ -114,18 +163,20 @@ const AdminEmpresasInner: React.FC = () => {
                                 placeholder="••••••••"
                             />
                         </div>
+                        {captchaEnabled && <TurnstileWidget onToken={setCaptchaToken} resetKey={captchaKey} className="flex justify-center" />}
                         {error && (
                             <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-xl p-2.5">{error}</p>
                         )}
                         <button
                             type="submit"
-                            disabled={submitting}
+                            disabled={submitting || (captchaEnabled && !captchaToken)}
                             style={{ color: '#FFFFFF' }}
                             className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#152e52] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60 transition-colors"
                         >
                             <Lock size={14} /> {submitting ? 'Ingresando…' : 'Ingresar'}
                         </button>
                     </form>
+                    </>)}
                 </div>
                 <p className="text-center text-[10px] text-white/30 mt-4">
                     Lincoin · Panel de administración de empresas

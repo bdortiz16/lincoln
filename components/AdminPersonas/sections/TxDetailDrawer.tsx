@@ -739,7 +739,7 @@ const AdminReceiptUploader: React.FC<{ txId: string; profile: AdminProfile; onCo
 //   • Path relativo del bucket (receipts/abc.png ó abc.png)
 //   • Path con bucket explícito (receipts/abc.png)
 //
-// Si el href es relativo, el navegador lo resuelve contra cuypay.com y manda
+// Si el href es relativo, el navegador lo resuelve contra lincoin.me y manda
 // al user a la landing. Esto resuelve siempre a una URL absoluta del bucket
 // de Supabase Storage para que abra el archivo real.
 // ─────────────────────────────────────────────

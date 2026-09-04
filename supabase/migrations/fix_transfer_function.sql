@@ -1,9 +1,0 @@
-CREATE OR REPLACE FUNCTION public.cuypay_transfer(p_sender_id text, p_recipient_code text, p_amount numeric, p_currency text) RETURNS jsonb LANGUAGE sql SECURITY DEFINER SET search_path = public AS $$
-WITH r AS (SELECT id, full_name FROM public.users WHERE raw_data->>'ownReferralCode' = upper(p_recipient_code) AND id::text <> p_sender_id LIMIT 1), d AS (UPDATE public.users SET balances = jsonb_set(balances, ARRAY[p_currency], to_jsonb(COALESCE((balances->>p_currency)::numeric, 0) - p_amount)) WHERE id::text = p_sender_id AND (SELECT id FROM r) IS NOT NULL AND COALESCE((balances->>p_currency)::numeric, 0) >= p_amount RETURNING id), c AS (UPDATE public.users SET balances = jsonb_set(balances, ARRAY[p_currency], to_jsonb(COALESCE((balances->>p_currency)::numeric, 0) + p_amount)) WHERE id = (SELECT id FROM r) AND (SELECT id FROM d) IS NOT NULL RETURNING id) SELECT CASE WHEN (SELECT id FROM r) IS NULL THEN jsonb_build_object('error','no_recipient') WHEN (SELECT id FROM d) IS NULL THEN jsonb_build_object('error','no_funds') ELSE jsonb_build_object('success',true,'recipient_id',(SELECT id::text FROM r),'recipient_name',(SELECT full_name FROM r)) END
-$$;
-REVOKE EXECUTE ON FUNCTION public.cuypay_transfer FROM anon;
-GRANT EXECUTE ON FUNCTION public.cuypay_transfer TO authenticated;
-CREATE OR REPLACE FUNCTION public.cuypay_insert_rx(p_uid text, p_amount numeric, p_currency text, p_sender text) RETURNS void LANGUAGE sql SECURITY DEFINER SET search_path = public AS $$
-INSERT INTO public.transactions (user_id, type, amount, currency, status, raw_data) VALUES (p_uid::uuid,'pay_received',p_amount,p_currency,'Completado',jsonb_build_object('initials','PR','title','PAY de '||p_sender,'senderName',p_sender,'date',to_char(now(),'DD/MM/YYYY')))
-$$;
-GRANT EXECUTE ON FUNCTION public.cuypay_insert_rx TO authenticated;

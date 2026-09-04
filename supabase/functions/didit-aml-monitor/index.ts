@@ -1,7 +1,7 @@
 // ════════════════════════════════════════════════════════
 // didit-aml-monitor — recibe los eventos AML de Didit (screening
 // inicial + monitoreo continuo) y aplica la política de compliance
-// de CuyPay:
+// de Lincoin:
 //
 //   • AML con hits / rechazado en el SCREENING INICIAL
 //       → alerta HIGH en compliance_alerts

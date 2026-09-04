@@ -3,25 +3,28 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- Force fresh load — no browser caching -->
-    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
-    <meta http-equiv="Pragma" content="no-cache" />
-    <meta http-equiv="Expires" content="0" />
+    <!-- iOS: no convertir cifras (documentos, cuentas, referencias) en
+         links de teléfono azules subrayados -->
+    <meta name="format-detection" content="telephone=no" />
+    <!-- Revalidar el HTML en cada carga (despliegues siempre frescos) sin
+         decirle a Google "no guardes nada" (no-store perjudica el rastreo).
+         El caché real de assets con hash lo maneja vercel.json. -->
+    <meta http-equiv="Cache-Control" content="no-cache, must-revalidate" />
 
     <!-- SEO Primary -->
     <title>LINCOIN — Transferencias internacionales al mejor precio</title>
     <meta name="description" content="Envía, recibe y convierte divisas sin costo SWIFT. La mejor tasa de cambio para Colombia, Perú, Chile y México. Rápido, seguro y sin comisiones ocultas." />
     <meta name="keywords" content="transferencias internacionales, divisas, Colombia, Perú, Chile, México, envío de dinero, cambio de divisas, fintech" />
     <meta name="author" content="LINCOIN" />
-    <link rel="canonical" href="https://www.lincoin.com" />
+    <link rel="canonical" href="https://www.lincoin.me" />
 
     <!-- Open Graph (Facebook, WhatsApp, LinkedIn) -->
     <meta property="og:type" content="website" />
-    <meta property="og:url" content="https://www.lincoin.com" />
+    <meta property="og:url" content="https://www.lincoin.me" />
     <meta property="og:site_name" content="LINCOIN" />
     <meta property="og:title" content="LINCOIN — Transferencias internacionales al mejor precio" />
     <meta property="og:description" content="Envía y recibe dinero en Colombia, Perú, Chile y México sin costo SWIFT. La mejor tasa del mercado, al instante." />
-    <meta property="og:image" content="https://www.lincoin.com/og-image.svg" />
+    <meta property="og:image" content="https://www.lincoin.me/og-image.svg" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta property="og:image:type" content="image/svg+xml" />
@@ -32,10 +35,39 @@
     <meta name="twitter:site" content="@lincoin" />
     <meta name="twitter:title" content="LINCOIN — Transferencias internacionales al mejor precio" />
     <meta name="twitter:description" content="Envía y recibe dinero en Colombia, Perú, Chile y México sin costo SWIFT. La mejor tasa del mercado, al instante." />
-    <meta name="twitter:image" content="https://www.lincoin.com/og-image.svg" />
+    <meta name="twitter:image" content="https://www.lincoin.me/og-image.svg" />
 
-    <!-- Favicon -->
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Ctext x='16' y='78' font-family='Archivo,Arial,sans-serif' font-weight='800' font-size='82' fill='%23F4F4F2'%3EL%3C/text%3E%3Ccircle cx='72' cy='72' r='9' fill='%234ADE80'/%3E%3C/svg%3E" />
+    <!-- Datos estructurados (JSON-LD) — para que Google muestre un resultado
+         enriquecido con el nombre, logo y descripción de la marca. -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "Organization",
+      "name": "Lincoin",
+      "url": "https://www.lincoin.me",
+      "logo": "https://www.lincoin.me/icon-512.png",
+      "description": "Envía, recibe y convierte dinero en Latinoamérica sin costo SWIFT, con la mejor tasa de cambio para Colombia, Perú, Chile y México.",
+      "areaServed": ["CO"],
+      "sameAs": []
+    }
+    </script>
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      "name": "Lincoin",
+      "url": "https://www.lincoin.me"
+    }
+    </script>
+
+    <!-- Favicon — variante corta `L.` (public/favicon.svg, trazos puros;
+         ver CLAUDE.md). El mismo asset alimenta favicon, apple-touch-icon
+         y los iconos del manifest. -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
     <!-- Tailwind ahora se COMPILA en el build de Vite (tailwind.config.js
          + index.css). Nada de cdn.tailwindcss.com: los estilos viajan en
          el bundle y funcionan igual en redes corporativas filtradas. -->

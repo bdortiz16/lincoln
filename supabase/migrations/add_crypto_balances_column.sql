@@ -20,24 +20,9 @@ SET
 WHERE
   (balances ? 'USDT') OR (balances ? 'USDC') OR (balances ? 'BTC') OR (balances ? 'ETH');
 
--- 3. Re-create admin RPC functions to include the new column
-CREATE OR REPLACE FUNCTION public.cuypay_get_all_users()
-RETURNS SETOF public.users
-LANGUAGE sql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-  SELECT * FROM public.users;
-$$;
-
-CREATE OR REPLACE FUNCTION public.cuypay_get_all_transactions()
-RETURNS SETOF public.transactions
-LANGUAGE sql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-  SELECT * FROM public.transactions;
-$$;
-
-GRANT EXECUTE ON FUNCTION public.cuypay_get_all_users        TO anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.cuypay_get_all_transactions TO anon, authenticated;
+-- 3. (ELIMINADO por seguridad — pentest #5) Antes este archivo RE-CREABA los
+-- RPC cuypay_get_all_users/_transactions (SECURITY DEFINER) y los GRANTeaba a
+-- anon → dumpeaban TODA la base (incluye totpSecret/PII). En un replay por
+-- orden de nombre, este archivo ('a...') corría DESPUÉS del lock ('2026_...')
+-- y reabría el hueco. Se quitó: el panel admin lee vía la edge function
+-- admin-data (service-role), no por estos RPC.

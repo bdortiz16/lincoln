@@ -43,6 +43,9 @@ import {
   BarChart3,
   Handshake,
   TrendingUp,
+  Layers,
+  ShoppingBag,
+  GraduationCap,
   Construction,
   Ban,
   Share2,
@@ -346,6 +349,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
       sendCuypayPayment,
       enrollMFA,
       verifyMFAEnrollment,
+      verifyMfaCode,
       unenrollMFA,
       getMFAStatus,
       updateUserProfile,
@@ -376,6 +380,34 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
   const [mfaVerifyError, setMfaVerifyError] = useState('');
   const [mfaVerifyLoading, setMfaVerifyLoading] = useState(false);
   const [mfaDisableModalOpen, setMfaDisableModalOpen] = useState(false);
+  // Desactivar 2FA exige un CÓDIGO DE CORREO (que nadie lo apague sin acceso al
+  // correo). Se envía un OTP al correo del titular y hay que ingresarlo. El
+  // servidor lo verifica en mfa_disable; save_user ya no puede tocar el 2FA.
+  const [disableOtp, setDisableOtp] = useState<{ sent: boolean; code: string; sending: boolean; busy: boolean; error: string; to?: string }>({ sent: false, code: '', sending: false, busy: false, error: '' });
+  const myAuthHeader = (): string => {
+    const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+    try {
+      const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
+      if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) return `Bearer ${d.access_token}`; }
+    } catch { /* sin sesión */ }
+    return `Bearer ${SKEY}`;
+  };
+  const callEmailOtp = async (action: string, extra: Record<string, unknown> = {}) => {
+    const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+    const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+    try {
+      const r = await fetch(`${SURL}/functions/v1/email-otp`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${SKEY}` },
+        body: JSON.stringify({ action, userId: currentUser?.id, email: currentUser?.email, ...extra }),
+      });
+      return await r.json();
+    } catch { return { ok: false, error: 'network' }; }
+  };
+  const sendDisableOtp = async () => {
+    setDisableOtp(s => ({ ...s, sending: true, error: '' }));
+    const r = await callEmailOtp('send');
+    setDisableOtp(s => ({ ...s, sending: false, sent: r?.ok !== false, to: r?.to, error: r?.ok === false ? (r.message || 'No se pudo enviar el código.') : '' }));
+  };
 
   useEffect(() => {
     getMFAStatus().then(({ enrolled, factorId, totpSecret }) => {
@@ -410,13 +442,28 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
   };
 
   const handleDisableMFA = async () => {
-    if (!mfaFactorId) return;
-    await unenrollMFA(mfaFactorId);
+    if (!mfaFactorId || !currentUser) return;
+    // SEGURIDAD: el 2FA solo se apaga por la acción dedicada mfa_disable, que
+    // verifica el CÓDIGO DE CORREO en el SERVIDOR (nadie lo apaga sin acceso al
+    // correo). save_user ya NO puede tocar el 2FA, así que esta es la única vía.
+    if (!/^\d{6}$/.test(disableOtp.code.trim())) { setDisableOtp(s => ({ ...s, error: 'Ingresa el código de 6 dígitos que te llegó al correo.' })); return; }
+    setDisableOtp(s => ({ ...s, busy: true, error: '' }));
+    try {
+      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: myAuthHeader() },
+        body: JSON.stringify({ action: 'mfa_disable', userId: currentUser.id, emailCode: disableOtp.code.trim() }),
+      }).then(x => x.json()).catch(() => null);
+      if (!r?.success) { setDisableOtp(s => ({ ...s, busy: false, error: r?.error || 'No se pudo desactivar. Revisa el código.' })); return; }
+    } catch { setDisableOtp(s => ({ ...s, busy: false, error: 'Error de red. Intenta de nuevo.' })); return; }
+    await unenrollMFA(mfaFactorId).catch(() => {});
     setMfaEnrolled(false);
     setMfaFactorId(undefined);
     setMfaTotpSecret(undefined);
-    if (currentUser) updateUserProfile(currentUser.id, { raw_data: { ...(currentUser as any).raw_data, mfaEnabled: false, mfaFactorId: null, totpSecret: null } });
     setMfaDisableModalOpen(false);
+    setDisableOtp({ sent: false, code: '', sending: false, busy: false, error: '' });
     showToast('Verificación en 2 pasos desactivada.');
   };
 
@@ -797,7 +844,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
 
   const handleGeneratePayLink = () => {
     const id = Math.random().toString(36).substring(2, 10).toUpperCase();
-    setPayLinkUrl(`https://cuypay.com/pay/${id}`);
+    setPayLinkUrl(`${window.location.origin}/pay/${id}`);
     setPayLinkSecondsLeft(1800);
     setPayLinkStep(3);
   };
@@ -1018,9 +1065,33 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
       const upper = code.toUpperCase();
       setPayRecipientCode(upper);
       if (upper.length < 4) { setPayRecipientUser(null); setPayLookupStatus('idle'); return; }
+      // 1) Escaneo local (admins y antes de endurecer RLS).
       const found = getAllUsers().find((u: any) => u.ownReferralCode?.toUpperCase() === upper && u.id !== currentUser?.id);
-      if (found) { setPayRecipientUser(found); setPayLookupStatus('found'); }
-      else { setPayRecipientUser(null); setPayLookupStatus('not_found'); }
+      if (found) { setPayRecipientUser(found); setPayLookupStatus('found'); return; }
+      // 2) Con RLS estricta se resuelve en el servidor (solo id + nombre).
+      (async () => {
+        try {
+          const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+          const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+          if (!SURL) { setPayRecipientUser(null); setPayLookupStatus('not_found'); return; }
+          let auth = `Bearer ${SKEY}`;
+          try {
+            const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
+            if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) auth = `Bearer ${d.access_token}`; }
+          } catch { /* sin sesión */ }
+          const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: auth },
+            body: JSON.stringify({ action: 'lookup_recipient', code: upper }),
+          }).then(x => x.json()).catch(() => null);
+          if (r?.found && r.id && r.id !== currentUser?.id) {
+            setPayRecipientUser({ id: r.id, name: r.name, ownReferralCode: upper } as any);
+            setPayLookupStatus('found');
+          } else {
+            setPayRecipientUser(null); setPayLookupStatus('not_found');
+          }
+        } catch { setPayRecipientUser(null); setPayLookupStatus('not_found'); }
+      })();
   };
 
   const handlePaySubmit = () => {
@@ -1049,8 +1120,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
       if (payVerifyLoading || payVerifyCode.length !== 6 || !payRecipientUser) return;
       setPayVerifyLoading(true);
       setPayVerifyError('');
-      const { ok, error: mfaErr } = await verifyMFAEnrollment(mfaFactorId ?? 'local', payVerifyCode, mfaTotpSecret);
-      if (!ok) { setPayVerifyLoading(false); setPayVerifyError(mfaErr || 'Código incorrecto.'); setPayVerifyCode(''); return; }
+      const ok = await verifyMfaCode(payVerifyCode);
+      if (!ok) { setPayVerifyLoading(false); setPayVerifyError('Código incorrecto.'); setPayVerifyCode(''); return; }
       setShowPayVerify(false);
       setPayVerifyLoading(false);
       await executePay();
@@ -1541,7 +1612,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                               </div>
                               {mouvBal != null && (
                                   <span className="text-[9px] font-bold uppercase bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full">
-                                      ● Conectado a Mouv
+                                      ● Riel conectado
                                   </span>
                               )}
                           </div>
@@ -1550,7 +1621,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                           </p>
                           <p className="text-[11px] text-slate-500 mt-1">
                               {mouvBal != null
-                                  ? 'Saldo real de tu cuenta Mouv — es el que se usa para dispersar.'
+                                  ? 'Saldo real de tu cuenta de dispersión — es el que se usa para dispersar.'
                                   : mouvChecked
                                       ? 'Tu saldo interno Lincoin: cargas, envíos entre usuarios y conversiones.'
                                       : 'Saldo interno Lincoin · consultando Mouv…'}
@@ -1825,10 +1896,29 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-8 animate-in zoom-in-95">
                   <h3 className="text-lg font-bold text-slate-800 mb-2">Desactivar 2FA</h3>
-                  <p className="text-slate-500 text-sm mb-6">¿Estás seguro? No podrás hacer transferencias sin reactivarlo.</p>
+                  <p className="text-slate-500 text-sm mb-4">Por seguridad, para apagar la verificación en 2 pasos te enviamos un código a tu correo. Nadie puede desactivarla sin ese código.</p>
+                  {!disableOtp.sent ? (
+                      <button onClick={sendDisableOtp} disabled={disableOtp.sending}
+                          className="w-full h-11 bg-slate-800 text-white font-bold rounded-lg hover:bg-slate-900 transition-colors disabled:opacity-50 mb-3">
+                          {disableOtp.sending ? 'Enviando…' : '📧 Enviarme el código al correo'}
+                      </button>
+                  ) : (
+                      <div className="mb-3">
+                          <p className="text-xs text-slate-500 mb-2">Enviamos un código a {disableOtp.to || 'tu correo'}. Ingrésalo:</p>
+                          <input type="text" inputMode="numeric" maxLength={6} value={disableOtp.code}
+                              onChange={e => setDisableOtp(s => ({ ...s, code: e.target.value.replace(/\D/g, '').slice(0, 6), error: '' }))}
+                              className="w-full h-12 text-center text-xl font-bold tracking-[0.4em] border-2 border-slate-200 rounded-xl focus:border-slate-800 outline-none mb-2 bg-slate-50" placeholder="000000" autoFocus />
+                          <button onClick={sendDisableOtp} disabled={disableOtp.sending} className="text-xs text-slate-500 font-semibold hover:underline">
+                              {disableOtp.sending ? 'Reenviando…' : 'Reenviar código'}
+                          </button>
+                      </div>
+                  )}
+                  {disableOtp.error && <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg p-2 mb-3">{disableOtp.error}</p>}
                   <div className="flex gap-3">
-                      <button onClick={() => setMfaDisableModalOpen(false)} className="flex-1 h-11 border border-slate-200 text-slate-600 font-bold rounded-lg hover:bg-slate-50 transition-colors">Cancelar</button>
-                      <button onClick={handleDisableMFA} className="flex-1 h-11 bg-red-600 text-white font-bold rounded-lg hover:bg-red-700 transition-colors">Desactivar</button>
+                      <button onClick={() => { setMfaDisableModalOpen(false); setDisableOtp({ sent: false, code: '', sending: false, busy: false, error: '' }); }} className="flex-1 h-11 border border-slate-200 text-slate-600 font-bold rounded-lg hover:bg-slate-50 transition-colors">Cancelar</button>
+                      <button onClick={handleDisableMFA} disabled={!disableOtp.sent || disableOtp.code.length !== 6 || disableOtp.busy} className="flex-1 h-11 bg-red-600 text-white font-bold rounded-lg hover:bg-red-700 transition-colors disabled:opacity-50">
+                          {disableOtp.busy ? 'Verificando…' : 'Desactivar'}
+                      </button>
                   </div>
               </div>
           </div>
@@ -2225,12 +2315,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
   };
 
   const renderServicios = () => {
+    // Mismo catálogo que el dashboard personal: 4 servicios + Educación.
     const SERVICES = [
-      { icon: Users,        label: 'Nómina',              desc: 'Paga sueldos locales e internacionales en un clic.',            color: 'bg-slate-50 text-[#4ADE80]', action: undefined },
-      { icon: Plane,        label: 'Travel Corporativo',  desc: 'Vuelos, hoteles y autos para tu equipo al mejor precio.',      color: 'bg-slate-50 text-green-700', action: () => setActiveView('travel') },
-      { icon: CreditCard,   label: 'Tarjeta Virtual',     desc: 'Tarjeta corporativa virtual para pagos en línea.',             color: 'bg-violet-50 text-violet-700', action: undefined },
-      { icon: BarChart3,    label: 'API Empresarial',     desc: 'Integra Lincoin directamente en tu plataforma o ERP.',         color: 'bg-orange-50 text-orange-700', action: undefined },
-      { icon: ShieldCheck,  label: 'Seguros',             desc: 'SOAT, Todo Riesgo y seguros corporativos para tu flota.',     color: 'bg-rose-50 text-rose-700', action: () => setActiveView('seguros') },
+      { icon: ArrowLeftRight, label: 'Mesa OTC',    desc: 'Operaciones de alto volumen con tasa negociada.',    color: 'bg-slate-50 text-green-700', action: undefined },
+      { icon: TrendingUp,     label: 'Staking',     desc: 'Genera rendimientos con tu saldo digital.',          color: 'bg-green-50 text-green-700', action: undefined },
+      { icon: Layers,         label: 'Multiwallet', desc: 'Varias billeteras y monedas en una sola cuenta.',    color: 'bg-violet-50 text-violet-700', action: undefined },
+      { icon: ShoppingBag,    label: 'Comercio',    desc: 'Cobra a tus clientes con links y botones de pago.',  color: 'bg-amber-50 text-amber-700', action: undefined },
+      { icon: GraduationCap,  label: 'Educación',   desc: 'Paga matrículas y cursos en el exterior.',           color: 'bg-rose-50 text-rose-700', action: undefined },
     ];
     return (
       <div className="pt-6 space-y-6 animate-in fade-in duration-300">
@@ -2264,7 +2355,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
           <Handshake size={32} className="mx-auto mb-3 text-[#4ADE80]"/>
           <h3 className="font-bold text-lg mb-1">¿Necesitas un servicio personalizado?</h3>
           <p className="text-green-200 text-sm mb-4">Nuestro equipo diseña soluciones a medida para tu empresa.</p>
-          <a href="mailto:soporte@cuypay.com" className="inline-flex items-center gap-2 bg-[#4ADE80] text-[#0C0E0D] font-bold px-6 py-2.5 rounded-xl hover:bg-[#00b396] transition-colors text-sm">
+          <a href="mailto:soporte@lincoin.me" className="inline-flex items-center gap-2 bg-[#4ADE80] text-[#0C0E0D] font-bold px-6 py-2.5 rounded-xl hover:bg-[#00b396] transition-colors text-sm">
             Contactar a soporte
           </a>
         </div>
@@ -2312,7 +2403,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                           <p className="text-amber-700 text-xs">Este servicio no está habilitado por defecto. Contacta a nuestro equipo de soporte para activarlo en tu cuenta empresarial.</p>
                       </div>
                       <a
-                          href="mailto:soporte@cuypay.com"
+                          href="mailto:soporte@lincoin.me"
                           className="w-full bg-[#0C0E0D] text-white py-4 rounded-2xl font-bold text-base hover:bg-[#152e52] transition-colors flex items-center justify-center gap-2"
                       >
                           <Handshake size={20}/> Solicitar Acceso OTC
@@ -2853,7 +2944,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
         <div className="max-w-6xl mx-auto min-h-[calc(100vh-160px)]">
           {activeView === 'dashboard' && renderDashboard()}
           {activeView === 'movements' && renderMovements()}
-          {activeView === 'wallet-detail' && renderWalletDetail()}
+          {activeView === 'wallet-detail' && (selectedWalletCode ? renderWalletDetail() : renderDashboard())}
           {activeView === 'profile' && renderProfile()}
           {activeView === 'referrals' && renderReferrals()}
           {activeView === 'affiliates' && renderAffiliates()}

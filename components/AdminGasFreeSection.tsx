@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
-import { Zap, RefreshCw, Copy, Search, Landmark, Activity, Send, X } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import { Zap, RefreshCw, Copy, Search, Landmark, Activity, Send, X, Settings, Pin } from 'lucide-react';
 import { useDatabase } from '../context/DatabaseContext';
+import { RecaudadoraRotativaCard } from './RecaudadoraRotativaCard';
+import { AdminCustodyPanel, maskAddr, type AuditEntry } from './AdminCustodyPanel';
 
 // ─────────────────────────────────────────────
 // AdminGasFreeSection — Panel "GasFree USDT" del admin de Empresas.
@@ -14,12 +16,10 @@ import { useDatabase } from '../context/DatabaseContext';
 const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
 const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
 
-// La función ahora exige sesión de admin real (antes bastaba la llave
-// pública — cualquiera pudo haber movido fondos de la recaudadora con
-// solo esa key, ya visible en el bundle JS). Se manda el JWT real de la
-// sesión, o AdminBypass si es una sesión de administrador sin Supabase Auth.
+// Exige sesión de admin REAL: se manda el JWT de Supabase de la sesión (el
+// servidor exige role='admin'). Se eliminó el "AdminBypass": esa contraseña
+// compartida viajaba en el bundle JS público y cualquiera podía extraerla.
 function adminAuthHeader(): string {
-    const ADMIN_PASS = (import.meta.env.VITE_ADMIN_PASSWORD as string) || '';
     try {
         const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
         if (k) {
@@ -27,7 +27,7 @@ function adminAuthHeader(): string {
             if (d.access_token) return `Bearer ${d.access_token}`;
         }
     } catch { /* sin sesión supabase */ }
-    return ADMIN_PASS ? `AdminBypass ${ADMIN_PASS}` : `Bearer ${SKEY}`;
+    return `Bearer ${SKEY}`;
 }
 async function callGasfree(body: Record<string, unknown>): Promise<any> {
     const r = await fetch(`${SURL}/functions/v1/gasfree`, {
@@ -42,9 +42,11 @@ async function callGasfree(body: Record<string, unknown>): Promise<any> {
     try { return JSON.parse(txt); } catch { return { error: `Respuesta no válida (HTTP ${r.status}): ${txt.slice(0, 200)}` }; }
 }
 async function callMouvProxy(body: Record<string, unknown>): Promise<any> {
+    // Saldo/ping de la wallet compartida son solo-admin → hay que ir con el
+    // header de admin (AdminBypass o JWT admin), no con la anon key.
     const r = await fetch(`${SURL}/functions/v1/mouv-proxy`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${SKEY}` },
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: adminAuthHeader() },
         body: JSON.stringify(body),
     });
     return r.json();
@@ -81,6 +83,9 @@ export const AdminGasFreeSection: React.FC = () => {
     // Estado de la recaudadora GasFree
     const [rec, setRec] = useState<any>(null);
     const [recLoading, setRecLoading] = useState(false);
+    // Panel "Ajustes" de Tesorería: muestra la wallet dueña rotativa y sus
+    // períodos archivados SOLO bajo demanda (antes salía siempre y confundía).
+    const [showTreasuryAdjust, setShowTreasuryAdjust] = useState(false);
 
     // Saldos de la plataforma Mouv (USDt + Peso Mouv/COP)
     const [mouvBal, setMouvBal] = useState<{ usdt: number | null; cop: number | null; sandbox?: boolean; error?: string; raw?: any; status?: any; source?: string; needsPortalCreds?: boolean } | null>(null);
@@ -97,9 +102,9 @@ export const AdminGasFreeSection: React.FC = () => {
 
     // ── Recuperación de wallet (localizar índice de una dirección + barrer) ──
     const [recAddr, setRecAddr] = useState('');
-    const [recRange, setRecRange] = useState('25');
+    const [recRange, setRecRange] = useState('300');
     const [recBusy, setRecBusy] = useState(false);
-    const [recResult, setRecResult] = useState<{ found?: boolean; index?: number; mnemonic?: string; balanceUsdt?: number; gasFreeAddress?: string; scannedUpTo?: number; error?: string; swept?: number; traceId?: string } | null>(null);
+    const [recResult, setRecResult] = useState<{ found?: boolean; index?: number; mnemonic?: string; balanceUsdt?: number; gasFreeAddress?: string; scannedUpTo?: number; error?: string; swept?: number | null; traceId?: string; apiErrors?: number; mnemonicsTried?: string[]; reason?: string } | null>(null);
     const locateAddr = async () => {
         setRecBusy(true); setRecResult(null);
         try {
@@ -117,6 +122,123 @@ export const AdminGasFreeSection: React.FC = () => {
         } catch (e: any) { setRecResult((prev) => ({ ...(prev ?? {}), error: e?.message ?? 'Error' })); }
         setRecBusy(false);
     };
+    // Localizar + barrer en UN paso: para recuperar el saldo de una dirección
+    // (p. ej. TLf5…) sin tener que hacer los dos clics. Solo funciona si es una
+    // wallet nuestra (tenemos su llave); si es externa, lo dice sin mover nada.
+    const sweepAddr = async () => {
+        if (!confirm('¿Localizar esta dirección y BARRER su saldo a la recaudadora? Solo se moverá si es una wallet nuestra (tenemos su llave). Esto mueve fondos on-chain.')) return;
+        setRecBusy(true); setRecResult(null);
+        try {
+            const r = await callGasfree({ action: 'sweep_address', address: recAddr.trim(), extra: Number(recRange) || 300 });
+            setRecResult(r?.error ? { error: r.error } : r);
+        } catch (e: any) { setRecResult({ error: e?.message ?? 'Error' }); }
+        setRecBusy(false);
+    };
+    // Auditoría completa: escanea la dirección en AMBAS redes (mainnet + Nile) y
+    // muestra el saldo on-chain en cada una. Cierra la duda de "¿y si está en la
+    // otra red?" de una vez.
+    const [auditNet, setAuditNet] = useState<any>(null);
+    const auditAddr = async () => {
+        setRecBusy(true); setAuditNet(null); setRecResult(null);
+        try {
+            const r = await callGasfree({ action: 'audit_address', address: recAddr.trim(), extra: Number(recRange) || 300 });
+            setAuditNet(r?.error ? { error: r.error } : r);
+        } catch (e: any) { setAuditNet({ error: e?.message ?? 'Error' }); }
+        setRecBusy(false);
+    };
+
+    // ── Auto-escaneo: sube el rango SOLO (en bandas) hasta ubicar la dirección
+    // o hasta un tope, en AMBAS redes, sin que el admin tenga que reintentar. ──
+    const [autoRunning, setAutoRunning] = useState(false);
+    const [autoProgress, setAutoProgress] = useState<string>('');
+    const autoCancelRef = useRef(false);
+    const BAND = 800;                 // índices por tramo
+    const AUTO_CAP_ABOVE = 20000;     // tope de índices por encima del arranque
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const scanBand = async (net: 'tron' | 'nile', min: number, max: number) =>
+        callGasfree({ action: 'find_address', address: recAddr.trim(), net, minIndex: min, maxIndex: max });
+    const autoScan = async () => {
+        const addr = recAddr.trim();
+        if (!addr) return;
+        autoCancelRef.current = false;
+        setAutoRunning(true); setRecResult(null); setAuditNet(null); setRecBusy(true);
+        setAutoProgress('Arrancando escaneo en mainnet y Nile…');
+        try {
+            // Ronda 0: escaneo base (ancla en el contador HD, baja hasta 0) en ambas redes.
+            const baseExtra = Number(recRange) || 1000;
+            const [t0, n0] = await Promise.all([
+                callGasfree({ action: 'find_address', address: addr, net: 'tron', extra: baseExtra }),
+                callGasfree({ action: 'find_address', address: addr, net: 'nile', extra: baseExtra }),
+            ]);
+            const hit0 = (t0?.found && t0) || (n0?.found && n0);
+            if (hit0) { setRecResult(hit0); setAutoProgress(''); setAutoRunning(false); setRecBusy(false); return; }
+            const mnem = (t0?.mnemonicsTried ?? n0?.mnemonicsTried ?? []);
+            setAutoProgress(`Probando ${mnem.length} mnemónica(s): ${mnem.join(', ')}. Subiendo el rango…`);
+            // Punto de arranque para trepar: el índice más alto ya cubierto.
+            let from = Math.max(Number(t0?.scannedUpTo ?? 0), Number(n0?.scannedUpTo ?? 0));
+            const ceiling = from + AUTO_CAP_ABOVE;
+            while (from < ceiling) {
+                if (autoCancelRef.current) { setAutoProgress('Detenido por el usuario.'); break; }
+                const to = from + BAND;
+                setAutoProgress(`Escaneando índices ${from.toLocaleString()}–${to.toLocaleString()} en mainnet y Nile…`);
+                const [tb, nb] = await Promise.all([scanBand('tron', from, to), scanBand('nile', from, to)]);
+                const hit = (tb?.found && tb) || (nb?.found && nb);
+                if (hit) { setRecResult(hit); setAutoProgress(`✅ Ubicada en el índice ${hit.index} (${hit.net === 'tron' ? 'mainnet' : 'Nile'}).`); break; }
+                const apiErr = Number(tb?.apiErrors ?? 0) + Number(nb?.apiErrors ?? 0);
+                if (apiErr > 0) { setAutoProgress(`GasFree limitó (${apiErr} err.) en ${from.toLocaleString()}–${to.toLocaleString()}. Esperando y reintentando el mismo tramo…`); await sleep(4000); continue; }
+                from = to;
+                await sleep(300);
+            }
+            if (!autoCancelRef.current && from >= ceiling) {
+                setAutoProgress(`Auto-escaneo completo hasta el índice ${ceiling.toLocaleString()} en mainnet y Nile, con 0 errores de API. La dirección NO es nuestra en ninguna red — no sale de nuestra semilla en ningún índice. Es externa.`);
+            }
+        } catch (e: any) {
+            setAutoProgress(`Error en el auto-escaneo: ${e?.message ?? 'desconocido'}`);
+        }
+        setAutoRunning(false); setRecBusy(false);
+    };
+    const stopAuto = () => { autoCancelRef.current = true; };
+
+    // ── Buscar wallet en UNA semilla específica ──
+    const [seedSources, setSeedSources] = useState<string[] | null>(null);
+    const [seedPick, setSeedPick] = useState<string>('');
+    const [seedAddr, setSeedAddr] = useState('');
+    const [seedRange, setSeedRange] = useState('1000');
+    const [seedResult, setSeedResult] = useState<any>(null);
+    const [seedBusy, setSeedBusy] = useState(false);
+    const loadSeeds = async () => {
+        try {
+            const r = await callGasfree({ action: 'list_scan_mnemonics' });
+            const s = Array.isArray(r?.sources) ? r.sources : [];
+            setSeedSources(s);
+            if (s.length && !seedPick) setSeedPick(s[s.length - 1]); // por defecto la última agregada
+        } catch { setSeedSources([]); }
+    };
+    const searchInSeed = async () => {
+        if (!seedAddr.trim() || !seedPick) return;
+        setSeedBusy(true); setSeedResult(null);
+        try {
+            // Escaneo en AMBAS redes, pero SOLO en la semilla elegida.
+            const [tron, nile] = await Promise.all([
+                callGasfree({ action: 'find_address', address: seedAddr.trim(), net: 'tron', extra: Number(seedRange) || 1000, mnemonicSource: seedPick }),
+                callGasfree({ action: 'find_address', address: seedAddr.trim(), net: 'nile', extra: Number(seedRange) || 1000, mnemonicSource: seedPick }),
+            ]);
+            const hit = (tron?.found && tron) || (nile?.found && nile);
+            setSeedResult({ hit: hit || null, tron, nile });
+        } catch (e: any) { setSeedResult({ error: e?.message ?? 'Error' }); }
+        setSeedBusy(false);
+    };
+    const sweepSeedHit = async () => {
+        const hit = seedResult?.hit;
+        if (!hit || !(Number(hit.balanceUsdt ?? 0) > 0)) return;
+        if (!confirm(`¿Barrer ${Number(hit.balanceUsdt).toFixed(2)} USDT del índice ${hit.index} (${hit.mnemonic}) a la recaudadora?`)) return;
+        setSeedBusy(true);
+        try {
+            const r = await callGasfree({ action: 'sweep_index', index: hit.index, mnemonic: hit.mnemonic });
+            setSeedResult((p: any) => ({ ...(p ?? {}), swept: r?.error ? undefined : r.swept, sweepErr: r?.error }));
+        } catch (e: any) { setSeedResult((p: any) => ({ ...(p ?? {}), sweepErr: e?.message ?? 'Error' })); }
+        setSeedBusy(false);
+    };
     // Auditoría de wallets: detectar colisiones (mismo índice en correos distintos).
     const [auditBusy, setAuditBusy] = useState(false);
     const [audit, setAudit] = useState<{ considered?: number; uniqueIndexes?: number; noIndex?: number; collisions?: { index: number; emails: string[] }[]; error?: string } | null>(null);
@@ -127,6 +249,40 @@ export const AdminGasFreeSection: React.FC = () => {
             setAudit(r?.error ? { error: r.error } : r);
         } catch (e: any) { setAudit({ error: e?.message ?? 'Error' }); }
         setAuditBusy(false);
+    };
+    // ── Forense: cruce del archivo de wallets vs clientes + búsqueda de correo ──
+    const [forensicBusy, setForensicBusy] = useState(false);
+    const [forensic, setForensic] = useState<any>(null);
+    const runForensic = async () => {
+        setForensicBusy(true); setForensic(null);
+        try {
+            const r = await callGasfree({ action: 'wallet_forensics' });
+            setForensic(r?.error ? { error: r.error } : r);
+        } catch (e: any) { setForensic({ error: e?.message ?? 'Error' }); }
+        setForensicBusy(false);
+    };
+    const [provRaw, setProvRaw] = useState<any>(null);
+    const [provRawBusy, setProvRawBusy] = useState(false);
+    const loadProvRaw = async () => {
+        setProvRawBusy(true); setProvRaw(null);
+        try {
+            const r = await callGasfree({ action: 'provider_config_raw' });
+            setProvRaw(r?.error ? { error: r.error } : r);
+        } catch (e: any) { setProvRaw({ error: e?.message ?? 'Error' }); }
+        setProvRawBusy(false);
+    };
+    const [lookupEmail, setLookupEmail] = useState('');
+    const [lookupRes, setLookupRes] = useState<any>(null);
+    const [lookupBusy, setLookupBusy] = useState(false);
+    const lookupUser = async (email?: string) => {
+        const e = (email ?? lookupEmail).trim();
+        if (!e) return;
+        setLookupEmail(e); setLookupBusy(true); setLookupRes(null);
+        try {
+            const r = await callGasfree({ action: 'user_by_email', email: e });
+            setLookupRes(r?.error ? { error: r.error } : r);
+        } catch (err: any) { setLookupRes({ error: err?.message ?? 'Error' }); }
+        setLookupBusy(false);
     };
     // Reparación de colisión: reasignar a un usuario (por correo) una wallet nueva.
     const [fixEmail, setFixEmail] = useState('');
@@ -142,6 +298,23 @@ export const AdminGasFreeSection: React.FC = () => {
         setFixBusy(false);
     };
 
+    // Historial (log) de cambios de wallet — auditoría durable.
+    const [walletLog, setWalletLog] = useState<any[] | null>(null);
+    const [logBusy, setLogBusy] = useState(false);
+    const [logEmail, setLogEmail] = useState('');
+    const loadWalletLog = async () => {
+        setLogBusy(true);
+        try {
+            const r = await callGasfree({ action: 'wallet_log', ...(logEmail.trim() ? { email: logEmail.trim() } : {}) });
+            setWalletLog(Array.isArray(r?.entries) ? r.entries : []);
+        } catch { setWalletLog([]); }
+        setLogBusy(false);
+    };
+    const SOURCE_LABEL: Record<string, string> = {
+        first_assign: 'Primera asignación', reconcile_email: 'Reconciliación (mismo correo)',
+        admin_pin: 'Fijada por admin', admin_reset: 'Reasignada por admin', auto: 'Automático',
+    };
+
     // Por usuario: dirección GasFree + saldo
     const [rows, setRows] = useState<Record<string, { loading?: boolean; gasFreeAddress?: string; balance?: number; active?: boolean; error?: string; debug?: any }>>({});
     const [loadingAll, setLoadingAll] = useState(false);
@@ -149,7 +322,13 @@ export const AdminGasFreeSection: React.FC = () => {
     const [sweepingAll, setSweepingAll] = useState(false);
 
     const allUsers = getAllUsers();
-    const businesses = allUsers.filter((u: any) => u.role !== 'admin' && u.role !== 'personal');
+    // TODOS los clientes (en Lincoin son cuentas personales) — el filtro
+    // viejo de "solo empresas" dejaba la tabla de wallets vacía.
+    // Se excluyen las cuentas BLOQUEADAS y en LISTA NEGRA: no deben aparecer en
+    // la operación de wallets/tesorería (el servidor ya les rechaza todo). Siguen
+    // visibles en Clientes para poder revertir el bloqueo.
+    const outOfOp = (u: any) => u.blacklisted === true || u.raw_data?.blacklisted === true || u.isBlocked === true || u.raw_data?.isBlocked === true;
+    const businesses = allUsers.filter((u: any) => u.role !== 'admin' && !outOfOp(u));
     const filtered = businesses.filter((u: any) => {
         if (!q) return true;
         const s = q.toLowerCase();
@@ -215,6 +394,25 @@ export const AdminGasFreeSection: React.FC = () => {
         setLocating(null);
     };
 
+    // Fijar la wallet REAL del cliente: cuando el admin ve una wallet distinta
+    // (vacía) a la que el cliente usa/deposita. Se escanea el índice de esa
+    // dirección y se apunta a ella el usuario. No mueve fondos.
+    const [pinning, setPinning] = useState<string | null>(null);
+    const pinRealWallet = async (userId: string) => {
+        const address = window.prompt('Pega la wallet GasFree REAL que ve el cliente (la que tiene el USDT). El panel apuntará a esa. No mueve fondos.');
+        if (!address || !address.trim()) return;
+        setPinning(userId); setSweepMsg(null);
+        try {
+            const r = await callGasfree({ action: 'pin_address', userId, address: address.trim() });
+            if (r?.error) setSweepMsg(`❌ ${r.error}`);
+            else {
+                setSweepMsg(`📌 Wallet fijada (índice ${r.index}): ${r.gasFreeAddress} · saldo ${fmt(r.balanceUsdt ?? 0)} USDT. Dale "Actualizar saldo".`);
+                loadUser(userId);
+            }
+        } catch (e: any) { setSweepMsg(`❌ ${e?.message ?? 'Error'}`); }
+        setPinning(null);
+    };
+
     const sweepAll = async () => {
         if (!window.confirm('¿Barrer el USDT de todas las wallets GasFree de clientes hacia la recaudadora? (comisión en USDT por cada barrido)')) return;
         setSweepingAll(true); setSweepMsg(null);
@@ -233,7 +431,50 @@ export const AdminGasFreeSection: React.FC = () => {
         setSweepingAll(false);
     };
 
-    const mask = (a?: string) => a && a.length > 12 ? `${a.slice(0, 8)}…${a.slice(-6)}` : (a ?? '—');
+    // ── Modo discreto (ON por defecto): enmascara TODAS las direcciones de la
+    // página y oculta el QR. Desactivarlo queda registrado en la auditoría. ──
+    const [discreet, setDiscreet] = useState(true);
+    const [pageAudit, setPageAudit] = useState<AuditEntry[]>([]);
+    const addAudit = (text: string, sev: 'info' | 'warn' = 'info') =>
+        setPageAudit(p => [{ at: Date.now(), text, sev }, ...p].slice(0, 60));
+    const toggleDiscreet = () => {
+        const next = !discreet;
+        setDiscreet(next);
+        addAudit(next ? 'Activó el Modo discreto' : 'Desactivó el Modo discreto', next ? 'info' : 'warn');
+    };
+    // Con Modo discreto ON el enmascarado es más fuerte (solo 4 + 6 caracteres).
+    const mask = (a?: string) => discreet
+        ? maskAddr(a)
+        : (a && a.length > 12 ? `${a.slice(0, 8)}…${a.slice(-6)}` : (a ?? '—'));
+
+    // Latencia en vivo de los rieles (real: se mide el ida y vuelta).
+    const [netSvcs, setNetSvcs] = useState<{ name: string; latency: number | null; up: boolean }[]>([
+        { name: 'Red TRON', latency: null, up: true },
+        { name: 'Relay GasFree', latency: null, up: true },
+        { name: 'API Mouv', latency: null, up: true },
+        { name: 'Base de datos', latency: null, up: true },
+    ]);
+    useEffect(() => {
+        const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+        const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+        const targets = [
+            { name: 'Red TRON', url: `${SURL}/functions/v1/gasfree?action=ping` },
+            { name: 'Relay GasFree', url: `${SURL}/functions/v1/gasfree?action=ping` },
+            { name: 'API Mouv', url: `${SURL}/functions/v1/mouv-proxy` },
+            { name: 'Base de datos', url: `${SURL}/functions/v1/admin-data?action=ping` },
+        ];
+        let alive = true;
+        const run = async () => {
+            const out = await Promise.all(targets.map(async t => {
+                const t0 = performance.now();
+                try { await fetch(t.url, { headers: { apikey: SKEY } }); return { name: t.name, latency: Math.round(performance.now() - t0), up: true }; }
+                catch { return { name: t.name, latency: null, up: false }; }
+            }));
+            if (alive) setNetSvcs(out);
+        };
+        run(); const iv = setInterval(run, 8000);
+        return () => { alive = false; clearInterval(iv); };
+    }, []);
 
     // ── Tesorería: parámetro de alerta editable (ej. avisar cuando el
     // saldo de la recaudadora supere 10,000 USDT) ──
@@ -244,34 +485,77 @@ export const AdminGasFreeSection: React.FC = () => {
         const r = await callGasfree({ action: 'get_treasury_config' });
         if (!r?.error) { setTreasuryCfg(r); setTreasuryEdit({ alertThresholdUsdt: String(r.alertThresholdUsdt), notes: r.notes ?? '', alertProviderId: r.alertProviderId ?? '' }); }
     };
+    const [treasuryCfgMsg, setTreasuryCfgMsg] = useState<{ ok: boolean; text: string } | null>(null);
     const saveTreasuryCfg = async () => {
-        setTreasurySaving(true);
+        setTreasurySaving(true); setTreasuryCfgMsg(null);
         try {
             const r = await callGasfree({ action: 'set_treasury_config', config: { alertThresholdUsdt: Number(treasuryEdit.alertThresholdUsdt) || 0, notes: treasuryEdit.notes, alertProviderId: treasuryEdit.alertProviderId || null } });
-            if (!r?.error) setTreasuryCfg(r);
-        } finally { setTreasurySaving(false); }
+            if (r?.error) setTreasuryCfgMsg({ ok: false, text: `⚠ NO quedó guardado: ${r.error}. Reintenta.` });
+            else { setTreasuryCfg(r); setTreasuryCfgMsg({ ok: true, text: '✅ Parámetros de Tesorería guardados.' }); }
+        } catch (e: any) { setTreasuryCfgMsg({ ok: false, text: `⚠ NO quedó guardado (${String(e?.message ?? e)}). Reintenta.` }); }
+        finally { setTreasurySaving(false); }
     };
 
     // ── Proveedores: registro editable (a quién se paga con el USDT
     // acumulado en Tesorería) ──
     const [providers, setProvidersList] = useState<any[]>([]);
     const [providersLoaded, setProvidersLoaded] = useState(false);
+    // Solo los DOS partners reales de Lincoin — nada de texto libre: el
+    // "detalle" es la WALLET a la que Tesorería paga de verdad, así que se
+    // cierra a Finity/Mouv + dirección TRC-20 válida para que la plata no
+    // pueda irse a otro lado por un typo.
+    const PROVIDER_OPTIONS = ['Finity', 'Mouv'] as const;
+    const TRC20_RX = /^T[1-9A-HJ-NP-Za-km-z]{33}$/;
     const [newProvider, setNewProvider] = useState({ name: '', detail: '' });
+    const [providerErr, setProviderErr] = useState<string | null>(null);
     const loadProviders = async () => {
         const r = await callGasfree({ action: 'get_providers' });
         if (!r?.error) { setProvidersList(r.providers ?? []); setProvidersLoaded(true); }
     };
-    const saveProviders = async (list: any[]) => {
-        setProvidersList(list);
-        await callGasfree({ action: 'set_providers', providers: list });
+    // Guardado VERIFICADO: se espera la respuesta del servidor y se toma su
+    // lista como la verdad (releída de la base). Si falla, se muestra el
+    // error y se recarga lo que de verdad hay — NUNCA más un "agregado"
+    // fantasma que desaparece al recargar la página.
+    const [providerSaving, setProviderSaving] = useState(false);
+    const saveProviders = async (list: any[]): Promise<boolean> => {
+        // 2FA OBLIGATORIO: cambiar a dónde sale el dinero de tesorería exige el
+        // código de dos pasos. Si la cuenta admin no tiene 2FA activo, el servidor
+        // RECHAZA el cambio y pide activarlo primero (Seguridad → activar 2FA).
+        const otp = (typeof window !== 'undefined' ? window.prompt('Ingresa tu código de dos pasos (2FA) para cambiar la dirección del proveedor.\n\nSi tu cuenta NO tiene 2FA activo, primero actívalo en Seguridad — sin 2FA el servidor NO permite este cambio (es la protección contra que desvíen el dinero).') : '') ?? '';
+        setProviderSaving(true);
+        try {
+            const r = await callGasfree({ action: 'set_providers', providers: list, otp });
+            if (r?.error || !Array.isArray(r?.providers)) {
+                setProviderErr(`⚠ NO quedó guardado en el servidor: ${r?.error ?? 'respuesta inválida'}. Reintenta.`);
+                await loadProviders();
+                return false;
+            }
+            setProvidersList(r.providers);
+            return true;
+        } catch (e: any) {
+            setProviderErr(`⚠ NO quedó guardado (error de red: ${String(e?.message ?? e)}). Reintenta.`);
+            await loadProviders();
+            return false;
+        } finally { setProviderSaving(false); }
     };
-    const addProvider = () => {
-        if (!newProvider.name.trim()) return;
-        const next = [...providers, { id: `p_${Date.now()}`, name: newProvider.name.trim(), detail: newProvider.detail.trim() }];
-        setNewProvider({ name: '', detail: '' });
-        saveProviders(next);
+    const addProvider = async () => {
+        setProviderErr(null);
+        if (providerSaving) return;
+        if (!newProvider.name) { setProviderErr('Elige el proveedor: Finity o Mouv.'); return; }
+        const wallet = newProvider.detail.trim();
+        if (!TRC20_RX.test(wallet)) { setProviderErr('Wallet inválida: debe ser una dirección USDT TRC-20 (empieza con T, 34 caracteres).'); return; }
+        if (providers.some((p: any) => p.name === newProvider.name)) { setProviderErr(`${newProvider.name} ya está registrado. Elimínalo primero si quieres cambiar su wallet.`); return; }
+        const next = [...providers, { id: `p_${Date.now()}`, name: newProvider.name, detail: wallet }];
+        const ok = await saveProviders(next);
+        if (ok) {
+            setNewProvider({ name: '', detail: '' });
+            setProviderErr(null);
+        }
     };
-    const removeProvider = (id: string) => saveProviders(providers.filter(p => p.id !== id));
+    const removeProvider = async (id: string) => {
+        setProviderErr(null);
+        await saveProviders(providers.filter(p => p.id !== id));
+    };
     // A qué proveedor se le paga cuando el saldo de Tesorería supera el
     // umbral configurado — antes solo era una nota de texto libre, sin
     // ligar al registro real de Proveedores (puede haber varios inscritos).
@@ -290,9 +574,11 @@ export const AdminGasFreeSection: React.FC = () => {
         const amt = parseFloat(payAmount);
         if (!payTarget || isNaN(amt) || amt <= 0) return;
         if (!window.confirm(`¿Pagar ${fmt(amt)} USDT a ${payTarget.name} (${mask(payTarget.detail)})? Se cobra aparte la comisión GasFree vigente.`)) return;
+        // 2FA OBLIGATORIO server-side: sacar USDT de tesorería exige el código.
+        const otp = (typeof window !== 'undefined' ? window.prompt('Ingresa tu código de dos pasos (2FA) para pagar desde Tesorería.\n\nSi tu cuenta no tiene 2FA activo, actívalo en Seguridad — sin 2FA el servidor NO permite sacar dinero.') : '') ?? '';
         setPaying(true); setPayMsg(null);
         try {
-            const r = await callGasfree({ action: 'send', toAddress: payTarget.detail, amount: amt, providerName: payTarget.name });
+            const r = await callGasfree({ action: 'send', toAddress: payTarget.detail, amount: amt, providerName: payTarget.name, otp });
             if (r?.error) setPayMsg(`❌ ${r.error}`);
             else {
                 setPayMsg(`✅ Pagados ${fmt(amt)} USDT a ${payTarget.name} · comisión GasFree ${fmt(r.feeChargedUsdt)} USDT · traceId ${r.traceId}`);
@@ -308,6 +594,8 @@ export const AdminGasFreeSection: React.FC = () => {
     const [showMovements, setShowMovements] = useState(false);
     const [movements, setMovements] = useState<any[] | null>(null);
     const [movementsLoading, setMovementsLoading] = useState(false);
+    const [selectedMovement, setSelectedMovement] = useState<any | null>(null);
+    const [traceLookup, setTraceLookup] = useState<{ loading?: boolean; txid?: string | null; error?: string } | null>(null);
     const loadMovements = async () => {
         setMovementsLoading(true);
         try {
@@ -317,6 +605,52 @@ export const AdminGasFreeSection: React.FC = () => {
         setMovementsLoading(false);
     };
     const openMovements = () => { setShowMovements(true); loadMovements(); };
+
+    // Comprobante (PNG) de un movimiento de tesorería — para soporte / probarle
+    // al proveedor que el USDT salió. Incluye TxID, destino, estado y fecha.
+    const downloadTreasuryReceipt = (m: any, txid?: string | null) => {
+        try {
+            const W = 720, PAD = 48;
+            const rows: [string, string][] = [
+                ['Tipo', m.direction === 'in' ? 'Entrada (barrido de cliente)' : 'Salida (pago a proveedor)'],
+                [m.direction === 'in' ? 'Origen' : 'Proveedor', m.direction === 'in' ? (m.fromUserEmail ?? 'Barrido de cliente') : (m.providerName ?? 'Proveedor')],
+                ['Monto', `${fmt(m.amount)} USDT`],
+                ['Comisión GasFree', m.feeChargedUsdt != null ? `${fmt(m.feeChargedUsdt)} USDT` : '—'],
+                ['Estado', String(m.state ?? '—')],
+                ['TxID on-chain', String(txid ?? m.txHash ?? m.txId ?? m.traceId ?? '—')],
+                ...(m.toAddress ? [['Destino (dirección)', String(m.toAddress)] as [string, string]] : []),
+                ...(m.fromAddress ? [['Origen (wallet GasFree)', String(m.fromAddress)] as [string, string]] : []),
+                ['Fecha', m.at ? new Date(m.at).toLocaleString('es-CO') : '—'],
+            ];
+            const H = PAD * 2 + 120 + rows.length * 62 + 60;
+            const c = document.createElement('canvas'); c.width = W; c.height = H;
+            const x = c.getContext('2d'); if (!x) return;
+            x.fillStyle = '#0C0E0D'; x.fillRect(0, 0, W, H);
+            const F = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
+            // Wordmark Lincoin
+            x.font = `800 30px ${F}`; x.fillStyle = '#F4F4F2'; x.textBaseline = 'alphabetic';
+            x.fillText('Lincoin', PAD, PAD + 24);
+            const w = x.measureText('Lincoin').width; x.fillStyle = '#4ADE80'; x.fillText('.', PAD + w + 2, PAD + 24);
+            x.font = `600 13px ${F}`; x.fillStyle = '#878E88'; x.fillText('Comprobante de Tesorería', PAD, PAD + 48);
+            x.strokeStyle = 'rgba(255,255,255,0.10)'; x.beginPath(); x.moveTo(PAD, PAD + 78); x.lineTo(W - PAD, PAD + 78); x.stroke();
+            let y = PAD + 120;
+            for (const [k, v] of rows) {
+                x.font = `500 12px ${F}`; x.fillStyle = '#878E88'; x.fillText(k.toUpperCase(), PAD, y);
+                x.font = `700 15px ${F}`; x.fillStyle = '#F4F4F2';
+                // Envolver valores largos (direcciones/hash)
+                const maxW = W - PAD * 2; let val = v;
+                if (x.measureText(val).width > maxW) {
+                    // partir en dos líneas
+                    const mid = Math.ceil(val.length / 2);
+                    x.fillText(val.slice(0, mid), PAD, y + 22); x.fillText(val.slice(mid), PAD, y + 40); y += 62;
+                } else { x.fillText(val, PAD, y + 22); y += 62; }
+            }
+            x.font = `500 11px ${F}`; x.fillStyle = 'rgba(244,244,242,0.45)';
+            x.fillText('Movimiento interno de tesorería · Lincoin · lincoin.me', PAD, H - 30);
+            const url = c.toDataURL('image/png');
+            const a = document.createElement('a'); a.href = url; a.download = `Lincoin-tesoreria-${String(txid ?? m.id ?? '').slice(0, 12)}.png`; a.click();
+        } catch { /* noop */ }
+    };
 
     React.useEffect(() => { loadRec(); loadTreasuryCfg(); loadProviders(); loadMouvBalances(); /* eslint-disable-next-line */ }, []);
 
@@ -329,6 +663,24 @@ export const AdminGasFreeSection: React.FC = () => {
 
     return (
         <div className="space-y-6 animate-in fade-in duration-300">
+            {/* Dashboard de custodia — cabecera. NUNCA nombra la infraestructura
+                donde vive el secreto: al almacenamiento se le dice "Bóveda". */}
+            <AdminCustodyPanel
+                discreet={discreet}
+                onToggleDiscreet={toggleDiscreet}
+                treasuryAddress={(rec as any)?.gasFreeAddress ?? (rec as any)?.eoa ?? null}
+                treasuryBalance={Number((rec as any)?.balance ?? 0)}
+                mouvCop={mouvBal?.cop ?? null}
+                walletsCount={businesses.length}
+                providerLocked={providers.some((p: any) => p.locked)}
+                providerAssigned={!!treasuryCfg?.alertProviderId}
+                mfaCovered={allUsers.filter((u: any) => u.role === 'admin' && (u.mfaEnabled || u.raw_data?.mfaEnabled)).length}
+                mfaTotal={allUsers.filter((u: any) => u.role === 'admin').length}
+                alertThreshold={Number(treasuryCfg?.alertThresholdUsdt ?? 10000)}
+                audit={pageAudit}
+                onAudit={addAudit}
+                services={netSvcs}
+            />
             <div>
                 <h3 className="font-bold text-slate-800 text-lg flex items-center gap-2">
                     <Zap size={20} className="text-[#16A34A]" /> GasFree · Custodia USDT (TRON)
@@ -337,6 +689,13 @@ export const AdminGasFreeSection: React.FC = () => {
                     Cada cliente tiene su <b>wallet GasFree</b> (cajita USDT). Los depósitos y envíos <b>no usan TRX</b> — la comisión de red se paga en USDT.
                 </p>
             </div>
+
+            {/* La "Wallet recaudadora rotativa" (dirección EOA dueña + períodos
+                archivados) ya NO se muestra siempre: confundía con una segunda
+                dirección (la EOA) que NO es donde se deposita — el flujo
+                automático usa la CAJITA GasFree de la Tesorería. Ahora vive
+                detrás del botón "Ajustes" de la Tesorería (más abajo), para
+                consultarla/actualizarla manualmente cuando haga falta. */}
 
             {/* Tesorería (recaudadora): aquí llega el USDT de las conversiones de
                 clientes; desde aquí se pagan los envíos y a los proveedores.
@@ -360,6 +719,10 @@ export const AdminGasFreeSection: React.FC = () => {
                             <button onClick={loadRec} disabled={recLoading} className="flex items-center gap-2 px-3 py-1.5 text-xs font-bold bg-white/10 hover:bg-white/20 rounded-lg disabled:opacity-60 transition-colors">
                                 <RefreshCw size={13} className={recLoading ? 'animate-spin' : ''} /> {recLoading ? 'Consultando…' : rec?.gasFreeAddress ? 'Actualizar' : 'Generar wallet'}
                             </button>
+                            <button onClick={() => setShowTreasuryAdjust(v => !v)} className={`flex items-center gap-2 px-3 py-1.5 text-xs font-bold rounded-lg transition-colors ${showTreasuryAdjust ? 'bg-white/25' : 'bg-white/10 hover:bg-white/20'}`}
+                                title="Ver/actualizar manualmente la wallet dueña (rotativa) y sus períodos archivados">
+                                <Settings size={13} /> Ajustes
+                            </button>
                         </div>
                     </div>
 
@@ -375,15 +738,28 @@ export const AdminGasFreeSection: React.FC = () => {
                         <div className="text-xs font-semibold text-red-200 bg-red-500/10 border border-red-400/30 rounded-lg p-3 whitespace-pre-wrap">❌ {rec.error}</div>
                     ) : (
                         <>
-                            <div>
-                                <p className="text-4xl font-bold tracking-tight">
-                                    {fmt(rec.balance)} <span className="text-base font-normal text-green-200">USDT</span>
-                                </p>
-                                <button onClick={() => rec.gasFreeAddress && copy(rec.gasFreeAddress)} className="mt-1.5 inline-flex items-center gap-1.5 text-xs text-green-100/80 hover:text-white font-mono">
-                                    {rec.gasFreeAddress}
-                                    <Copy size={12} />
-                                    {copied === rec.gasFreeAddress && <span className="text-green-300 font-sans">copiado</span>}
-                                </button>
+                            <div className="flex items-start justify-between gap-4 flex-wrap">
+                                <div className="min-w-0">
+                                    <p className="text-4xl font-bold tracking-tight">
+                                        {fmt(rec.balance)} <span className="text-base font-normal text-green-200">USDT</span>
+                                    </p>
+                                    <button onClick={() => rec.gasFreeAddress && copy(rec.gasFreeAddress)} className="mt-1.5 inline-flex items-center gap-1.5 text-xs text-green-100/80 hover:text-white font-mono break-all text-left">
+                                        {rec.gasFreeAddress}
+                                        <Copy size={12} className="shrink-0" />
+                                        {copied === rec.gasFreeAddress && <span className="text-green-300 font-sans">copiado</span>}
+                                    </button>
+                                    <p className="text-[11px] text-green-100/70 mt-1 max-w-md">
+                                        <b className="text-white">Deposita AQUÍ</b> (USDT · TRC-20). Esta es la ÚNICA dirección del circuito automático: lo que llega sale solo hacia el proveedor y las comisiones GasFree se pagan de este mismo saldo.
+                                    </p>
+                                </div>
+                                {rec.gasFreeAddress && (
+                                    <div className="shrink-0 text-center">
+                                        <img
+                                            src={`https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${encodeURIComponent(rec.gasFreeAddress)}&color=0A0A0A&bgcolor=FFFFFF&margin=6`}
+                                            alt="QR Tesorería GasFree" className="w-[120px] h-[120px] rounded-lg bg-white p-1" />
+                                        <p className="text-[10px] text-green-100/70 mt-1 font-bold">Escanea para depositar</p>
+                                    </div>
+                                )}
                             </div>
                             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
                                 <WalletStat label="Red" value={rec.net === 'tron' ? 'Mainnet' : 'Nile testnet'} />
@@ -410,6 +786,17 @@ export const AdminGasFreeSection: React.FC = () => {
                     )}
                 </div>
             </div>
+
+            {/* Ajustes de Tesorería (MANUAL, bajo demanda): wallet dueña
+                rotativa + períodos archivados. NO es donde se deposita. */}
+            {showTreasuryAdjust && (
+                <div className="space-y-2">
+                    <p className="text-[11px] font-bold text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+                        ⚙️ Ajustes de Tesorería — esta es la wallet DUEÑA (rotativa) y sus períodos archivados, solo para consulta y actualización manual. <b>Aquí NO se deposita</b>: los depósitos van a la cajita GasFree de la Tesorería de arriba.
+                    </p>
+                    <RecaudadoraRotativaCard />
+                </div>
+            )}
 
             {/* Saldos en la plataforma Mouv (USDt + Peso Mouv/COP) */}
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
@@ -475,8 +862,56 @@ export const AdminGasFreeSection: React.FC = () => {
                     <button onClick={locateAddr} disabled={recBusy || !recAddr.trim()} className="px-3 py-2 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#152e52] disabled:opacity-60">
                         {recBusy ? 'Buscando…' : 'Localizar'}
                     </button>
+                    <button onClick={sweepAddr} disabled={recBusy || !recAddr.trim()} title="Localiza y barre el saldo a la recaudadora en un solo paso" className="px-3 py-2 text-xs font-bold rounded-lg bg-[#4ADE80] text-[#0C0E0D] hover:bg-[#26bda9] disabled:opacity-60">
+                        {recBusy ? '…' : 'Barrer a recaudadora'}
+                    </button>
+                    <button onClick={auditAddr} disabled={recBusy || !recAddr.trim()} title="Escanea la dirección en mainnet Y Nile, y muestra su saldo en cada red" className="px-3 py-2 text-xs font-bold rounded-lg border border-slate-500 text-slate-200 hover:bg-white/5 disabled:opacity-60">
+                        {recBusy ? '…' : 'Auditar (mainnet + Nile)'}
+                    </button>
+                    {autoRunning ? (
+                        <button onClick={stopAuto} className="px-3 py-2 text-xs font-bold rounded-lg bg-red-600 text-white hover:bg-red-700">
+                            Detener auto-escaneo
+                        </button>
+                    ) : (
+                        <button onClick={autoScan} disabled={recBusy || !recAddr.trim()} title="Sube el rango solo, en bandas, en ambas redes, hasta ubicarla o hasta el tope" className="px-3 py-2 text-xs font-bold rounded-lg bg-amber-500 text-[#0C0E0D] hover:bg-amber-600 disabled:opacity-60">
+                            Auto-ubicar (sube rango solo)
+                        </button>
+                    )}
                 </div>
-                <p className="text-[10px] text-slate-400 -mt-1">Sube el "rango" (ej. 300) si no la encuentra — escanea más índices.</p>
+                {(autoRunning || autoProgress) && (
+                    <div className="text-[11px] bg-black/30 border border-amber-500/40 rounded-lg p-2.5 flex items-start gap-2">
+                        {autoRunning && <span className="inline-block w-3 h-3 mt-0.5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin shrink-0" />}
+                        <span className="text-amber-200">{autoProgress || 'Escaneando…'}</span>
+                    </div>
+                )}
+                <p className="text-[10px] text-slate-400 -mt-1">"Barrer a recaudadora" localiza y barre en un paso — solo mueve fondos si la dirección es una wallet nuestra. "Auditar" la busca en LAS DOS redes (mainnet y Nile) y te dice en cuál está el saldo. Sube el "rango" (ej. 300–1000) si no la encuentra.</p>
+                {auditNet && (
+                    <div className="text-xs bg-white border border-slate-200 rounded-lg p-3 space-y-1.5">
+                        {auditNet.error ? (
+                            <p className="text-red-700 font-semibold">❌ {auditNet.error}</p>
+                        ) : (
+                            <>
+                                <p className={auditNet.ours ? 'text-green-700 font-bold' : 'text-slate-700 font-bold'}>{auditNet.ours ? '✅' : '⛔'} {auditNet.verdict}</p>
+                                <div className="grid grid-cols-2 gap-2 mt-1">
+                                    <div className="rounded-lg border border-slate-200 p-2">
+                                        <p className="text-[10px] uppercase tracking-wide text-slate-400 font-bold">Mainnet</p>
+                                        <p className="text-slate-800 font-bold">{auditNet.onchainUsdt?.mainnet == null ? '—' : `${Number(auditNet.onchainUsdt.mainnet).toFixed(2)} USDT`}</p>
+                                        <p className="text-[10px] text-slate-400">{auditNet.scan?.mainnet?.found ? `Nuestra · índice ${auditNet.scan.mainnet.index}` : auditNet.scan?.mainnet?.apiErrors > 0 ? `No concluyente (${auditNet.scan.mainnet.apiErrors} err. API)` : 'No es nuestra'}</p>
+                                    </div>
+                                    <div className="rounded-lg border border-slate-200 p-2">
+                                        <p className="text-[10px] uppercase tracking-wide text-slate-400 font-bold">Nile (testnet)</p>
+                                        <p className="text-slate-800 font-bold">{auditNet.onchainUsdt?.nile == null ? '—' : `${Number(auditNet.onchainUsdt.nile).toFixed(2)} USDT`}</p>
+                                        <p className="text-[10px] text-slate-400">{auditNet.scan?.nile?.found ? `Nuestra · índice ${auditNet.scan.nile.index}` : auditNet.scan?.nile?.apiErrors > 0 ? `No concluyente (${auditNet.scan.nile.apiErrors} err. API)` : 'No es nuestra'}</p>
+                                    </div>
+                                </div>
+                                <p className="text-[10px] text-slate-400">Servidor operando en: <b>{auditNet.deployNet === 'tron' ? 'mainnet' : 'Nile'}</b>. El saldo real (USDT que se ve en TronScan) está en mainnet.</p>
+                                {(auditNet.scan?.mainnet?.mnemonicsTried || auditNet.scan?.nile?.mnemonicsTried) && (
+                                    <p className="text-[10px] text-slate-400">Mnemónicas probadas: <b>{(auditNet.scan?.mainnet?.mnemonicsTried ?? auditNet.scan?.nile?.mnemonicsTried ?? []).join(', ')}</b> — si falta la que buscas, agrégala en la Bóveda y reintenta.</p>
+                                )}
+                            </>
+                        )}
+                    </div>
+                )}
                 {recResult && (
                     <div className="text-xs bg-white border border-slate-200 rounded-lg p-3 space-y-2">
                         {recResult.error ? (
@@ -490,12 +925,28 @@ export const AdminGasFreeSection: React.FC = () => {
                                         {recBusy ? 'Barriendo…' : `Barrer ${Number(recResult.balanceUsdt ?? 0).toFixed(2)} USDT a Tesorería`}
                                     </button>
                                 )}
-                                {recResult.swept != null && (
-                                    <p className="text-green-700 font-semibold">✅ Barrido {Number(recResult.swept).toFixed(2)} USDT · TxID {String(recResult.traceId ?? '').slice(0, 14)}…</p>
+                                {recResult.swept != null && Number(recResult.swept) > 0 && (
+                                    <p className="text-green-700 font-semibold">✅ Barrido {Number(recResult.swept).toFixed(2)} USDT a la recaudadora · TxID {String(recResult.traceId ?? '').slice(0, 14)}…</p>
+                                )}
+                                {recResult.swept === 0 && recResult.reason && (
+                                    <p className="text-slate-500">{recResult.reason}</p>
                                 )}
                             </>
                         ) : (
-                            <p className="text-slate-500">No se encontró esa dirección en los índices escaneados (hasta {recResult.scannedUpTo}). Verifica la dirección o aumenta el rango.</p>
+                            <div className="space-y-1.5">
+                                {Number(recResult.apiErrors ?? 0) > 0 ? (
+                                    <>
+                                        <p className="text-amber-700 font-bold">⚠ Resultado NO concluyente — GasFree limitó la búsqueda ({recResult.apiErrors} error(es) de API / 429).</p>
+                                        <p className="text-slate-500">La dirección pudo quedar sin revisar por el rate-limit. <b>Espera 1–2 minutos y vuelve a "Localizar"</b> con el mismo rango. Solo cuando salga 0 errores de API el "no encontrada" es real.</p>
+                                    </>
+                                ) : (
+                                    <>
+                                        <p className="text-slate-700 font-bold">No es una wallet nuestra.</p>
+                                        <p className="text-slate-500">Escaneada TODA la ruta HD hasta el índice <b>{recResult.scannedUpTo}</b> sin errores de API, probando {recResult.mnemonicsTried?.length ?? 1} mnemónica(s){recResult.mnemonicsTried?.length ? ` (${recResult.mnemonicsTried.join(', ')})` : ''}, y esta dirección no coincide con ninguna de nuestras wallets ni sus direcciones GasFree. <b>No tenemos la llave privada</b> → no se puede barrer desde aquí. Es una dirección externa: quien controle su llave es el único que puede mover ese saldo.</p>
+                                        <p className="text-slate-400 text-[11px]">Si crees que el índice es aún más alto, sube el rango (ej. 1000) y reintenta; pero con 0 errores de API el barrido de la ruta ya fue completo.</p>
+                                    </>
+                                )}
+                            </div>
                         )}
                     </div>
                 )}
@@ -541,7 +992,7 @@ export const AdminGasFreeSection: React.FC = () => {
                         <input
                             value={fixEmail}
                             onChange={(e) => setFixEmail(e.target.value)}
-                            placeholder="correo del usuario · ej. xatechgerencia@gmail.com"
+                            placeholder="correo del usuario · ej. usuario@correo.com"
                             className="flex-1 min-w-[240px] px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#4ADE80]"
                         />
                         <button onClick={reassignWallet} disabled={fixBusy || !fixEmail.trim()} className="px-3 py-2 text-xs font-bold rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-60">
@@ -562,6 +1013,204 @@ export const AdminGasFreeSection: React.FC = () => {
                         </div>
                     )}
                 </div>
+            </div>
+
+            {/* Buscar wallet en una SEMILLA específica (mnemónica) */}
+            <div className="rounded-xl border border-emerald-300 bg-emerald-50/40 p-4 space-y-3">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div>
+                        <p className="font-bold text-slate-800 text-sm">🌱 Buscar wallet en una semilla específica</p>
+                        <p className="text-[11px] text-slate-500">Escanea la dirección usando SOLO una de las mnemónicas cargadas (por si la wallet salió de una semilla vieja). En mainnet y Nile.</p>
+                    </div>
+                    <button onClick={loadSeeds} className="px-3 py-1.5 text-xs font-bold rounded-lg border border-slate-300 hover:bg-slate-50 text-slate-700">{seedSources ? 'Recargar semillas' : 'Cargar semillas'}</button>
+                </div>
+                {seedSources && (
+                    seedSources.length === 0 ? (
+                        <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2">No hay semillas cargadas. Agrega la semilla en la Bóveda con un alias nuevo — no reemplaces la principal.</p>
+                    ) : (
+                        <>
+                            <p className="text-[11px] text-slate-600">Semillas cargadas: <b>{seedSources.join(', ')}</b> {seedSources.length === 1 && <span className="text-amber-700">— solo hay 1. Si esperabas la vieja, agrégala con otro nombre y recarga.</span>}</p>
+                            <div className="flex items-end gap-2 flex-wrap">
+                                <div>
+                                    <label className="text-[10px] font-bold uppercase text-slate-500">Semilla</label>
+                                    <select value={seedPick} onChange={(e) => setSeedPick(e.target.value)} className="block mt-0.5 px-3 py-2 text-xs border border-slate-300 rounded-lg bg-white">
+                                        {seedSources.map((s) => <option key={s} value={s}>{s}</option>)}
+                                    </select>
+                                </div>
+                                <input value={seedAddr} onChange={(e) => setSeedAddr(e.target.value)} placeholder="Dirección USDT (TRC-20)" className="flex-1 min-w-[220px] px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#4ADE80]" />
+                                <input value={seedRange} onChange={(e) => setSeedRange(e.target.value.replace(/[^0-9]/g, ''))} title="Rango" className="w-20 px-2 py-2 text-xs border border-slate-300 rounded-lg" placeholder="rango" />
+                                <button onClick={searchInSeed} disabled={seedBusy || !seedAddr.trim() || !seedPick} className="px-3 py-2 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#152e52] disabled:opacity-60">{seedBusy ? 'Buscando…' : 'Buscar en esta semilla'}</button>
+                            </div>
+                        </>
+                    )
+                )}
+                {seedResult && (
+                    <div className="text-xs bg-white border border-slate-200 rounded-lg p-3 space-y-1.5">
+                        {seedResult.error ? <p className="text-red-700 font-semibold">❌ {seedResult.error}</p> : seedResult.hit ? (
+                            <>
+                                <p className="text-green-700 font-bold">✅ ¡Encontrada en la semilla "{seedResult.hit.mnemonic}"! Índice {seedResult.hit.index} ({seedResult.hit.net === 'tron' ? 'mainnet' : 'Nile'}) · saldo {Number(seedResult.hit.balanceUsdt ?? 0).toFixed(2)} USDT</p>
+                                <p className="text-[11px] font-mono text-slate-400 break-all">{seedResult.hit.isEoa ? seedResult.hit.eoa : seedResult.hit.gasFreeAddress}</p>
+                                {seedResult.hit.isEoa ? (
+                                    <div className="rounded-lg bg-blue-50 border border-blue-200 p-2.5 space-y-1">
+                                        <p className="text-blue-800 font-bold">💠 Es una wallet NORMAL/FRÍA (no GasFree). El barrido por GasFree no aplica — se recupera importando la llave.</p>
+                                        <p className="text-blue-800">Cómo recuperarla:</p>
+                                        <ol className="list-decimal ml-4 text-blue-800 space-y-0.5">
+                                            <li>Abre <b>TronLink</b> (o Trust Wallet) → Importar cuenta → <b>por frase secreta</b> (tu mnemónica <b>{seedResult.hit.mnemonic}</b>).</li>
+                                            <li>Elige la ruta de derivación <b className="font-mono">{seedResult.hit.derivationPath}</b> (o la cuenta #{seedResult.hit.index}).</li>
+                                            <li>Manda un poco de <b>TRX</b> a esa dirección para el gas y envía los {Number(seedResult.hit.balanceUsdt ?? 0).toFixed(2)} USDT a donde quieras.</li>
+                                        </ol>
+                                    </div>
+                                ) : (<>
+                                    {Number(seedResult.hit.balanceUsdt ?? 0) > 0 && seedResult.swept == null && (
+                                        <button onClick={sweepSeedHit} disabled={seedBusy} className="px-3 py-1.5 text-xs font-bold rounded-lg bg-[#4ADE80] text-[#0C0E0D] hover:bg-[#26bda9] disabled:opacity-60">{seedBusy ? 'Barriendo…' : `Barrer ${Number(seedResult.hit.balanceUsdt).toFixed(2)} USDT a la recaudadora`}</button>
+                                    )}
+                                    {seedResult.swept != null && <p className="text-green-700 font-semibold">✅ Barrido {Number(seedResult.swept).toFixed(2)} USDT · TxID {String(seedResult.hit.traceId ?? '').slice(0, 14)}…</p>}
+                                    {seedResult.sweepErr && <p className="text-red-700">❌ {seedResult.sweepErr}</p>}
+                                </>)}
+                            </>
+                        ) : (
+                            <p className="text-slate-600">No se encontró en la semilla "<b>{seedPick}</b>" (mainnet ni Nile). Errores de API: mainnet {seedResult.tron?.apiErrors ?? 0}, Nile {seedResult.nile?.apiErrors ?? 0}. {(Number(seedResult.tron?.apiErrors ?? 0) + Number(seedResult.nile?.apiErrors ?? 0)) > 0 ? 'Hubo rate-limit → reintenta en 1–2 min.' : 'Con 0 errores, esta semilla NO generó esa wallet.'}</p>
+                        )}
+                    </div>
+                )}
+            </div>
+
+            {/* Forense: correos con wallet que NO son clientes + búsqueda de correo */}
+            <div className="rounded-xl border border-red-200 bg-red-50/40 p-4 space-y-3">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div>
+                        <p className="font-bold text-slate-800 text-sm">🔎 Forense de cuentas y wallets</p>
+                        <p className="text-[11px] text-slate-500">Cruza el archivo de wallets contra los clientes reales y marca correos "fantasma" (con wallet pero que NO son clientes). Y busca de dónde salió un correo.</p>
+                    </div>
+                    <button onClick={runForensic} disabled={forensicBusy} className="px-3 py-1.5 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#152e52] disabled:opacity-60">
+                        {forensicBusy ? 'Cruzando…' : 'Cruzar wallets ↔ clientes'}
+                    </button>
+                </div>
+                {forensic && (
+                    <div className="text-xs bg-white border border-slate-200 rounded-lg p-3 space-y-2">
+                        {forensic.error ? <p className="text-red-700 font-semibold">❌ {forensic.error}</p> : (
+                            <>
+                                <p className="text-slate-600">Clientes actuales: <b>{forensic.totalUsers}</b> · registros de wallet: <b>{forensic.totalLogEntries}</b></p>
+                                <p className={forensic.ghosts?.length ? 'text-red-700 font-bold' : 'text-green-700 font-bold'}>{forensic.ghosts?.length ? `⚠ ${forensic.note}` : `✅ ${forensic.note}`}</p>
+                                {forensic.ghosts?.length > 0 && (
+                                    <div className="space-y-1.5 mt-1">
+                                        {forensic.ghosts.map((g: any) => (
+                                            <div key={g.email} className="rounded-lg border border-red-200 bg-red-50/50 p-2">
+                                                <div className="flex items-center justify-between gap-2 flex-wrap">
+                                                    <p className="font-bold text-slate-800 break-all">{g.email}</p>
+                                                    <button onClick={() => lookupUser(g.email)} className="text-[11px] font-bold text-blue-700 hover:underline shrink-0">¿De dónde salió?</button>
+                                                </div>
+                                                <p className="text-[11px] text-slate-500">{g.changes} cambio(s) de wallet{g.regens ? ` · ${g.regens} regeneración(es)` : ''} · último {g.lastAt ? new Date(g.lastAt).toLocaleString('es-CO') : '—'}</p>
+                                                {g.addresses?.length > 0 && <p className="text-[10px] font-mono text-slate-400 break-all">{g.addresses.slice(0, 4).join(' · ')}</p>}
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </>
+                        )}
+                    </div>
+                )}
+                <div className="pt-2 border-t border-red-200/70">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <p className="text-[11px] font-bold text-slate-600">🕐 ¿Cuándo se cambió la dirección del proveedor? (ancla para los logs)</p>
+                        <button onClick={loadProvRaw} disabled={provRawBusy} className="px-3 py-1.5 text-xs font-bold rounded-lg border border-slate-300 hover:bg-slate-50 text-slate-700 disabled:opacity-60">{provRawBusy ? 'Leyendo…' : 'Ver fecha del cambio'}</button>
+                    </div>
+                    {provRaw && (
+                        <div className="text-xs bg-white border border-slate-200 rounded-lg p-3 mt-2 space-y-1.5">
+                            {provRaw.error ? <p className="text-red-700 font-semibold">❌ {provRaw.error}</p> : (
+                                <>
+                                    {provRaw.row?.updated_at || provRaw.row?.created_at ? (
+                                        <p className="text-slate-800 font-bold">🕐 Última vez guardada: {new Date(provRaw.row.updated_at ?? provRaw.row.created_at).toLocaleString('es-CO')}</p>
+                                    ) : (
+                                        <p className="text-amber-700">La tabla no guarda fecha de modificación. Usa como ancla la hora del movimiento de tesorería que salió a la dirección externa (Tesorería → ese movimiento).</p>
+                                    )}
+                                    {Array.isArray(provRaw.auditChanges) && provRaw.auditChanges.length > 0 ? (
+                                        <div className="mt-1">
+                                            <p className="text-slate-600 font-semibold">Cambios registrados (desde que existe la auditoría):</p>
+                                            {provRaw.auditChanges.map((a: any, i: number) => (
+                                                <p key={i} className="text-[11px] text-slate-500">{a.metadata?.at ? new Date(a.metadata.at).toLocaleString('es-CO') : '—'} · por {a.metadata?.byEmail ?? 'sin sesión'} · IP {a.metadata?.ip ?? '—'}</p>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <p className="text-[11px] text-slate-400">Sin cambios en el audit (el cambio pasó ANTES de que existiera esta auditoría). La hora de arriba + los registros del servidor son la vía.</p>
+                                    )}
+                                </>
+                            )}
+                        </div>
+                    )}
+                </div>
+                <div className="pt-2 border-t border-red-200/70">
+                    <p className="text-[11px] font-bold text-slate-600 mb-1.5">🔍 Buscar de dónde salió un correo</p>
+                    <div className="flex items-end gap-2 flex-wrap">
+                        <input value={lookupEmail} onChange={(e) => setLookupEmail(e.target.value)} placeholder="correo · ej. xaloy46425@mapsguy.com" className="flex-1 min-w-[240px] px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#4ADE80]" />
+                        <button onClick={() => lookupUser()} disabled={lookupBusy || !lookupEmail.trim()} className="px-3 py-2 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#152e52] disabled:opacity-60">{lookupBusy ? 'Buscando…' : 'Buscar'}</button>
+                    </div>
+                    {lookupRes && (
+                        <div className="text-xs bg-white border border-slate-200 rounded-lg p-3 mt-2 space-y-1.5">
+                            {lookupRes.error ? <p className="text-red-700 font-semibold">❌ {lookupRes.error}</p> : lookupRes.found === 0 ? (
+                                <p className="text-amber-700 font-semibold">La cuenta ya NO existe en la base (fue borrada). Pero dejó rastro en el archivo de wallets — cuenta fantasma. Revisa los registros del servidor para ver cuándo se creó/borró y desde qué IP.</p>
+                            ) : (
+                                <>
+                                    <p className="text-slate-700 font-bold">Existe {lookupRes.found} cuenta(s) con ese correo:</p>
+                                    {lookupRes.users.map((u: any) => (
+                                        <div key={u.id} className="rounded-lg border border-slate-200 p-2">
+                                            <p className="text-slate-700"><b>Rol:</b> {u.role ?? '—'} · <b>KYC:</b> {u.kyc_status ?? '—'} · <b>Índice wallet:</b> {u.gasfreeIndex ?? '—'}</p>
+                                            <p className="text-slate-500">Creada: {u.created_at ? new Date(u.created_at).toLocaleString('es-CO') : '—'} · id {String(u.id).slice(0, 8)}…</p>
+                                            {u.signupSource && <p className="text-slate-500">Origen registro: {u.signupSource}</p>}
+                                            <p className="text-[11px] text-slate-400 mt-1">Si el rol no es "business" (o el que filtra Clientes), por eso no aparece en la lista — pero la cuenta SÍ existe. Compara "Creada" con tu actividad para saber si la creaste tú o alguien más.</p>
+                                        </div>
+                                    ))}
+                                </>
+                            )}
+                        </div>
+                    )}
+                </div>
+            </div>
+
+            {/* Historial (archivo) de cambios de wallet — auditoría durable */}
+            <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
+                <p className="font-bold text-slate-800 text-sm">🗄️ Archivo de wallets anteriores</p>
+                <p className="text-xs text-slate-500">Aquí quedan las wallets ANTERIORES de cada cliente: cada vez que una wallet cambia (primera asignación, pin/reset de admin, reconciliación) se guarda la dirección vieja y la nueva, con fecha y motivo. Las wallets NO cambian solas; si algo cambia, aparece acá para que puedas verlas.</p>
+                <div className="flex flex-wrap items-center gap-2">
+                    <input value={logEmail} onChange={e => setLogEmail(e.target.value)} placeholder="Filtrar por correo (opcional)"
+                        className="flex-1 min-w-[180px] px-3 py-2 text-xs rounded-lg border border-slate-200 outline-none focus:border-[#4ADE80]" />
+                    <button onClick={loadWalletLog} disabled={logBusy} className="px-3 py-2 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#152e52] disabled:opacity-60">
+                        {logBusy ? 'Cargando…' : 'Ver historial'}
+                    </button>
+                </div>
+                {walletLog && (walletLog.length === 0 ? (
+                    <p className="text-xs text-slate-400">Sin cambios registrados{logEmail.trim() ? ' para ese correo' : ''}.</p>
+                ) : (
+                    <div className="max-h-72 overflow-auto rounded-lg border border-slate-100">
+                        <table className="w-full text-[11px]">
+                            <thead className="bg-slate-50 text-slate-500 sticky top-0">
+                                <tr><th className="text-left px-2 py-1.5">Fecha</th><th className="text-left px-2 py-1.5">Correo</th><th className="text-left px-2 py-1.5">Wallet anterior → nueva</th><th className="text-left px-2 py-1.5">Motivo</th></tr>
+                            </thead>
+                            <tbody>
+                                {walletLog.map((e: any, i: number) => {
+                                    const short = (a: string) => a && a.length > 14 ? `${a.slice(0, 8)}…${a.slice(-6)}` : (a || '—');
+                                    const copy = (a?: string) => { if (a) navigator.clipboard?.writeText(a).catch(() => {}); };
+                                    return (
+                                    <tr key={i} className="border-t border-slate-100 align-top">
+                                        <td className="px-2 py-1.5 text-slate-500 whitespace-nowrap">{e.at ? new Date(e.at).toLocaleString('es-CO', { dateStyle: 'short', timeStyle: 'short' }) : '—'}</td>
+                                        <td className="px-2 py-1.5 text-slate-700 truncate max-w-[140px]">{e.email ?? e.userId?.slice(0, 8)}</td>
+                                        <td className="px-2 py-1.5 font-mono text-slate-800">
+                                            {e.oldAddress
+                                                ? <button title={`${e.oldAddress} (clic para copiar)`} onClick={() => copy(e.oldAddress)} className="text-slate-500 hover:text-slate-800 hover:underline">{short(e.oldAddress)}</button>
+                                                : <span className="text-slate-400">wallet #{e.oldIndex ?? '—'}</span>}
+                                            <span className="mx-1 text-slate-400">→</span>
+                                            {e.newAddress
+                                                ? <button title={`${e.newAddress} (clic para copiar)`} onClick={() => copy(e.newAddress)} className="font-bold text-slate-900 hover:underline">{short(e.newAddress)}</button>
+                                                : <b>wallet #{e.newIndex}</b>}
+                                        </td>
+                                        <td className="px-2 py-1.5"><span className={`px-1.5 py-0.5 rounded ${e.source === 'first_assign' ? 'bg-slate-100 text-slate-600' : e.source?.startsWith('admin') ? 'bg-indigo-50 text-indigo-700' : 'bg-amber-50 text-amber-700'}`}>{SOURCE_LABEL[e.source] ?? e.source}</span></td>
+                                    </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                ))}
             </div>
 
             {/* Parámetro editable: umbral de alerta de Tesorería */}
@@ -591,21 +1240,31 @@ export const AdminGasFreeSection: React.FC = () => {
                         {treasurySaving ? 'Guardando…' : 'Guardar'}
                     </button>
                 </div>
+                {treasuryCfgMsg && (
+                    <p className={`text-[11px] font-bold ${treasuryCfgMsg.ok ? 'text-green-700' : 'text-slate-600'}`}>{treasuryCfgMsg.text}</p>
+                )}
             </div>
 
             {/* Proveedores: a quién se paga con el USDT de Tesorería */}
             <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
                 <p className="font-bold text-slate-800 text-sm">🏢 Proveedores</p>
-                <p className="text-[11px] text-slate-400">Registro de a quién se le paga con el USDT acumulado en Tesorería (ej. proveedor de liquidez COP).</p>
+                <p className="text-[11px] text-slate-400">A quién se le paga el USDT acumulado en Tesorería. Solo los partners de Lincoin — <b>Finity</b> (ACH) y <b>Mouv</b> (Bre-B) — y únicamente su wallet USDT, para que la plata no pueda irse a otro lado.</p>
                 <div className="space-y-2">
                     {providers.map((p: any) => (
-                        <div key={p.id} className="flex items-center justify-between gap-2 bg-slate-50 rounded-lg px-3 py-2 text-sm">
-                            <div><span className="font-bold text-slate-800">{p.name}</span>{p.detail && <span className="text-slate-400"> · {mask(p.detail)}</span>}</div>
+                        <div key={p.id} className={`flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-sm ${p.locked ? 'bg-emerald-50 border border-emerald-200' : 'bg-slate-50'}`}>
+                            <div className="min-w-0">
+                                <span className="font-bold text-slate-800">{p.name}</span>
+                                {p.detail && <span className="text-slate-400"> · {mask(p.detail)}</span>}
+                                {p.locked && <span className="ml-2 text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-600 text-white">🔒 BÓVEDA</span>}
+                                {p.locked && <p className="text-[10px] text-emerald-700 mt-0.5">Fijada fuera del panel con doble aprobación. No editable ni visible completa desde aquí.</p>}
+                            </div>
                             <div className="flex items-center gap-3 shrink-0">
                                 <button onClick={() => { setPayTarget(p); setPayAmount(''); setPayMsg(null); }} className="inline-flex items-center gap-1 text-xs font-bold text-[#16A34A] hover:underline" title="Pagar a este proveedor desde Tesorería — manual, sin mínimo acumulado">
                                     <Send size={12} /> Pagar
                                 </button>
-                                <button onClick={() => removeProvider(p.id)} className="text-red-500 hover:underline text-xs font-bold">Eliminar</button>
+                                {p.locked
+                                    ? <span className="text-[11px] text-slate-400 font-semibold" title="Fijada en la Bóveda">Protegida</span>
+                                    : <button onClick={() => removeProvider(p.id)} className="text-red-500 hover:underline text-xs font-bold">Eliminar</button>}
                             </div>
                         </div>
                     ))}
@@ -613,15 +1272,36 @@ export const AdminGasFreeSection: React.FC = () => {
                 </div>
                 <div className="flex items-end gap-2 flex-wrap">
                     <div>
-                        <label className="text-[10px] font-bold uppercase text-slate-500">Nombre</label>
-                        <input value={newProvider.name} onChange={e => setNewProvider(p => ({ ...p, name: e.target.value }))} className="mt-1 w-44 px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#4ADE80]" placeholder="Proveedor X" />
+                        <label className="text-[10px] font-bold uppercase text-slate-500">Proveedor</label>
+                        <div className="mt-1 flex gap-1.5">
+                            {PROVIDER_OPTIONS.map(name => {
+                                const sel = newProvider.name === name;
+                                const taken = providers.some((p: any) => p.name === name);
+                                return (
+                                    <button key={name} type="button" onClick={() => { setNewProvider(p => ({ ...p, name })); setProviderErr(null); }}
+                                        disabled={taken}
+                                        className={`px-4 py-2 rounded-lg text-sm font-bold border transition-colors ${sel ? 'border-[#4ADE80] bg-green-50 text-[#16A34A]' : taken ? 'border-slate-200 text-slate-300 cursor-not-allowed' : 'border-slate-200 text-slate-600 hover:border-slate-300'}`}
+                                        title={taken ? `${name} ya está registrado` : undefined}>
+                                        {name}
+                                    </button>
+                                );
+                            })}
+                        </div>
                     </div>
-                    <div className="flex-1 min-w-[200px]">
-                        <label className="text-[10px] font-bold uppercase text-slate-500">Detalle (wallet, banco, nota)</label>
-                        <input value={newProvider.detail} onChange={e => setNewProvider(p => ({ ...p, detail: e.target.value }))} className="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#4ADE80]" placeholder="T... o datos bancarios" />
+                    <div className="flex-1 min-w-[240px]">
+                        <label className="text-[10px] font-bold uppercase text-slate-500">Wallet USDT (TRC-20) del proveedor</label>
+                        <input value={newProvider.detail} onChange={e => { setNewProvider(p => ({ ...p, detail: e.target.value.trim() })); setProviderErr(null); }}
+                            className="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 text-sm font-mono outline-none focus:border-[#4ADE80]" placeholder="T··· (34 caracteres)" />
                     </div>
-                    <button onClick={addProvider} style={{ color: '#FFFFFF' }} className="px-4 py-2 text-sm font-bold bg-[#16A34A] rounded-lg hover:bg-[#0f766e]">+ Agregar</button>
+                    <button onClick={addProvider} disabled={providerSaving} style={{ color: '#FFFFFF' }} className="px-4 py-2 text-sm font-bold bg-[#16A34A] rounded-lg hover:bg-[#0f766e] disabled:opacity-60">
+                        {providerSaving ? 'Guardando…' : '+ Agregar'}
+                    </button>
                 </div>
+                {providerErr && <p className="text-[11px] font-bold text-slate-500">⚠ {providerErr}</p>}
+                {!providerErr && providersLoaded && providers.length > 0 && (
+                    <p className="text-[11px] font-bold text-green-700">✅ {providers.length === 1 ? '1 proveedor guardado' : `${providers.length} proveedores guardados`} en el servidor (verificado).</p>
+                )}
+                <p className="text-[10px] text-slate-400">Verifica la wallet con el proveedor antes de guardarla — los pagos de Tesorería salen directo a esa dirección.</p>
             </div>
 
             {/* Acciones + buscador */}
@@ -728,13 +1408,16 @@ export const AdminGasFreeSection: React.FC = () => {
                                             <button onClick={() => locateFunds(u.id)} disabled={locating === u.id} className="inline-flex items-center gap-1 text-xs font-bold text-amber-600 hover:underline disabled:opacity-50" title="Buscar el USDT en mainnet y testnet">
                                                 <Search size={13} /> {locating === u.id ? 'Buscando…' : 'Localizar USDT'}
                                             </button>
+                                            <button onClick={() => pinRealWallet(u.id)} disabled={pinning === u.id} className="inline-flex items-center gap-1 text-xs font-bold text-indigo-600 hover:underline disabled:opacity-50" title="Fijar la wallet real que ve el cliente (si el panel muestra otra distinta)">
+                                                <Pin size={13} /> {pinning === u.id ? 'Fijando…' : 'Fijar wallet real'}
+                                            </button>
                                         </div>
                                     </td>
                                 </tr>
                             );
                         })}
                         {filtered.length === 0 && (
-                            <tr><td colSpan={5} className="px-4 py-10 text-center text-slate-400 text-sm">Sin clientes de empresa.</td></tr>
+                            <tr><td colSpan={5} className="px-4 py-10 text-center text-slate-400 text-sm">Sin clientes registrados todavía.</td></tr>
                         )}
                     </tbody>
                 </table>
@@ -808,7 +1491,7 @@ export const AdminGasFreeSection: React.FC = () => {
                                     </thead>
                                     <tbody>
                                         {movements.map((m: any) => (
-                                            <tr key={m.id} className="border-t border-slate-100">
+                                            <tr key={m.id} className="border-t border-slate-100 cursor-pointer hover:bg-slate-50" onClick={() => { setSelectedMovement(m); setTraceLookup(null); }} title="Ver detalle (TxID, destino, estado)">
                                                 <td className="px-4 py-2.5">
                                                     <span className={`inline-flex items-center gap-1 text-[10px] font-bold uppercase px-1.5 py-0.5 rounded-full mr-1.5 ${m.direction === 'in' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>
                                                         {m.direction === 'in' ? '↓ Entrada' : '↑ Salida'}
@@ -827,6 +1510,89 @@ export const AdminGasFreeSection: React.FC = () => {
                     </div>
                 </div>
             )}
+
+            {/* Detalle de un movimiento de tesorería: TxID/trace, destino, estado
+                y enlaces a TronScan para verificar en cadena (p. ej. por qué el
+                proveedor no registró el ingreso). */}
+            {selectedMovement && (() => {
+                const m = selectedMovement;
+                const isHash = (s: any) => typeof s === 'string' && /^[0-9a-fA-F]{64}$/.test(s.replace(/^0x/, ''));
+                const tronTx = (h: string) => `https://tronscan.org/#/transaction/${h.replace(/^0x/, '')}`;
+                const tronAddr = (a: string) => `https://tronscan.org/#/address/${a}`;
+                const copy = (t: string) => { navigator.clipboard.writeText(t).then(() => setCopied(t)).catch(() => {}); setTimeout(() => setCopied(null), 1500); };
+                const Row: React.FC<{ label: string; value?: string; href?: string }> = ({ label, value, href }) => (
+                    <div className="bg-slate-50 rounded-lg p-2.5">
+                        <p className="text-[9px] uppercase tracking-wider text-slate-400">{label}</p>
+                        <div className="text-sm font-bold font-mono text-slate-800 break-all flex items-center gap-2">
+                            <span className="min-w-0 break-all">{value ?? '—'}</span>
+                            {value && <button onClick={() => copy(value)} className="text-slate-400 hover:text-[#16A34A] shrink-0" title="Copiar"><Copy size={12} /></button>}
+                            {value && href && <a href={href} target="_blank" rel="noopener noreferrer" className="text-[#16A34A] hover:underline text-[11px] font-semibold shrink-0">TronScan ↗</a>}
+                            {value && copied === value && <span className="text-[10px] text-green-600 shrink-0">copiado</span>}
+                        </div>
+                    </div>
+                );
+                return (
+                    <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4" onClick={() => setSelectedMovement(null)}>
+                        <div className="bg-white rounded-2xl w-full max-w-md max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+                            <div className="flex justify-between items-center p-5 border-b border-slate-100">
+                                <div>
+                                    <h3 className="font-bold text-slate-800">{m.direction === 'in' ? '↓ Entrada (barrido)' : '↑ Salida (pago a proveedor)'}</h3>
+                                    <p className="text-xs text-slate-400 mt-0.5">{m.direction === 'in' ? (m.fromUserEmail ?? 'Barrido de cliente') : (m.providerName ?? 'Proveedor')} · {m.at ? new Date(m.at).toLocaleString('es-CO') : '—'}</p>
+                                </div>
+                                <button onClick={() => setSelectedMovement(null)} className="text-slate-400 hover:text-slate-600"><X size={20}/></button>
+                            </div>
+                            <div className="p-5 space-y-2.5">
+                                <div className="grid grid-cols-2 gap-2.5">
+                                    <Row label="Monto" value={`${fmt(m.amount)} USDT`} />
+                                    <Row label="Comisión GasFree" value={m.feeChargedUsdt != null ? `${fmt(m.feeChargedUsdt)} USDT` : '—'} />
+                                </div>
+                                {m.state && <Row label="Estado GasFree" value={String(m.state)} />}
+                                {/* TxID on-chain / Trace de GasFree: si es un hash de 64 hex, enlaza a la tx en TronScan. */}
+                                {m.txHash || m.txId ? (
+                                    <Row label="TxID (on-chain)" value={String(m.txHash ?? m.txId)} href={tronTx(String(m.txHash ?? m.txId))} />
+                                ) : m.traceId ? (
+                                    <Row label={isHash(m.traceId) ? 'TxID (on-chain)' : 'Trace GasFree (id de la operación)'} value={String(m.traceId)} href={isHash(m.traceId) ? tronTx(String(m.traceId)) : undefined} />
+                                ) : <Row label="TxID / Trace" value="—" />}
+                                {/* Si solo hay traceId (no hash), buscar el TxID on-chain real en GasFree. */}
+                                {m.traceId && !isHash(m.traceId) && !(m.txHash || m.txId) && (
+                                    traceLookup?.txid ? (
+                                        <Row label="TxID (on-chain)" value={String(traceLookup.txid)} href={tronTx(String(traceLookup.txid))} />
+                                    ) : (
+                                        <div>
+                                            <button
+                                                onClick={async () => {
+                                                    setTraceLookup({ loading: true });
+                                                    try {
+                                                        const r: any = await callGasfree({ action: 'treasury_txid', traceId: String(m.traceId ?? ''), toAddress: String(m.toAddress ?? ''), amount: Number(m.amount ?? 0) });
+                                                        const txid = r?.txid ?? null;
+                                                        setTraceLookup({ loading: false, txid, error: txid ? undefined : 'Aún no encontramos el hash on-chain (puede tardar unos segundos tras el envío). Verifica en el Destino en TronScan y reintenta.' });
+                                                    } catch (e: any) { setTraceLookup({ loading: false, error: String(e?.message ?? e) }); }
+                                                }}
+                                                disabled={traceLookup?.loading}
+                                                className="w-full text-sm font-semibold text-[#16A34A] border border-[#16A34A]/30 rounded-lg py-2 hover:bg-[#16A34A]/5 disabled:opacity-50"
+                                            >{traceLookup?.loading ? 'Buscando…' : 'Buscar TxID on-chain'}</button>
+                                            {traceLookup?.error && <p className="text-[11px] text-slate-400 mt-1.5">{traceLookup.error}</p>}
+                                        </div>
+                                    )
+                                )}
+                                {m.direction === 'out' && m.toAddress && (
+                                    <Row label="Destino (dirección del proveedor)" value={String(m.toAddress)} href={tronAddr(String(m.toAddress))} />
+                                )}
+                                {m.fromAddress && (
+                                    <Row label="Origen (wallet GasFree)" value={String(m.fromAddress)} href={tronAddr(String(m.fromAddress))} />
+                                )}
+                                <p className="text-[11px] text-slate-400 leading-relaxed pt-1">
+                                    Para verificar por qué el proveedor no registró el ingreso: abre el <b>Destino</b> en TronScan y revisa si la transferencia por <b>{fmt(m.amount)} USDT</b> llegó a esa dirección a la hora del movimiento. Si el TxID es un hash on-chain, ábrelo directo.
+                                </p>
+                                <button
+                                    onClick={() => downloadTreasuryReceipt(m, traceLookup?.txid ?? m.txHash ?? m.txId ?? m.traceId)}
+                                    className="w-full mt-1 text-sm font-bold bg-[#0C0E0D] text-white rounded-lg py-2.5 hover:bg-[#16A34A] transition-colors"
+                                >⬇ Descargar comprobante</button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
         </div>
     );
 };

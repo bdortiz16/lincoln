@@ -822,7 +822,7 @@ function buildSampleEmail(s: typeof EMAIL_SAMPLES[number], footerNote = ''): str
 <tr><td style="background:#0C0E0D;padding:16px 28px">
   <table width="100%"><tr>
     <td><p style="margin:0;font-size:10px;color:rgba(255,255,255,0.45)">&copy; 2026 Lincoin &middot; Todos los derechos reservados</p></td>
-    <td align="right"><span style="font-size:10px;color:#4ADE80;font-weight:600">cuypay.com</span></td>
+    <td align="right"><span style="font-size:10px;color:#4ADE80;font-weight:600">lincoin.me</span></td>
   </tr></table>
 </td></tr>
 </table></td></tr></table></body></html>`;
@@ -1036,7 +1036,7 @@ const EmailFormatCard: React.FC<{ profile: AdminProfile }> = ({ profile }) => {
                             onChange={e => setFooterNote(e.target.value)}
                             rows={4}
                             disabled={!canManage}
-                            placeholder="Ej: Lincoin S.A.S. · NIT 901.XXX.XXX-X · Los servicios se rigen por los Términos y Condiciones publicados en cuypay.com/terminos…"
+                            placeholder="Ej: Lincoin S.A.S. · NIT 901.XXX.XXX-X · Los servicios se rigen por los Términos y Condiciones publicados en lincoin.me/terminos…"
                             className="w-full px-3 py-2 rounded-lg border border-slate-200 text-xs leading-relaxed focus:border-green-500 outline-none resize-y disabled:opacity-60"
                         />
                         <div className="flex justify-end mt-2">
@@ -1316,7 +1316,7 @@ const QuickLinksCard: React.FC<{ profile: AdminProfile }> = ({ profile }) => {
             <div className="space-y-4">
                 {renderGroup('Enlaces rápidos', QUICK_LINKS, 'https://…')}
                 {renderGroup('Redes sociales', SOCIAL_LINKS, 'https://facebook.com/cuypay')}
-                {renderGroup('Contacto', CONTACT_LINKS, 'soporte@cuypay.com')}
+                {renderGroup('Contacto', CONTACT_LINKS, 'soporte@lincoin.me')}
             </div>
             <div className="flex justify-end mt-3">
                 <button

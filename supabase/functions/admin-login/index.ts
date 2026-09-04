@@ -29,10 +29,13 @@ Deno.serve(async (req) => {
       })
     }
 
-    // If ADMIN_EMAIL is configured, restrict to that email only
+    // If ADMIN_EMAIL is configured, restrict to that email only.
+    // Respuesta UNIFORME (401 invalid_credentials): NO devolver un código
+    // distinto (403/not_admin) para correos que no son el admin — eso
+    // permitiría enumerar / adivinar cuál es el correo admin probando emails.
     if (ADMIN_EMAIL && email.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
-      return new Response(JSON.stringify({ error: 'not_admin' }), {
-        status: 403, headers: { 'Content-Type': 'application/json', ...CORS },
+      return new Response(JSON.stringify({ error: 'invalid_credentials' }), {
+        status: 401, headers: { 'Content-Type': 'application/json', ...CORS },
       })
     }
 
@@ -42,16 +45,11 @@ Deno.serve(async (req) => {
       .eq('email', email)
       .single()
 
-    if (error || !user) {
-      return new Response(JSON.stringify({ error: 'not_found' }), {
-        status: 404, headers: { 'Content-Type': 'application/json', ...CORS },
-      })
-    }
-
-    if (user.role !== 'admin') {
-      // Not an admin — don't reveal info about non-admin accounts
-      return new Response(JSON.stringify({ error: 'not_admin' }), {
-        status: 403, headers: { 'Content-Type': 'application/json', ...CORS },
+    // Respuesta UNIFORME: no revelar si el correo existe ni si es admin
+    // (evita enumeración de cuentas / del correo admin).
+    if (error || !user || user.role !== 'admin') {
+      return new Response(JSON.stringify({ error: 'invalid_credentials' }), {
+        status: 401, headers: { 'Content-Type': 'application/json', ...CORS },
       })
     }
 
@@ -65,10 +63,13 @@ Deno.serve(async (req) => {
         })
       }
     } else {
-      // First login — store hash for future verification
-      await db.from('users').update({
-        raw_data: { ...(user.raw_data || {}), passwordHash: inputHash },
-      }).eq('id', user.id)
+      // SEGURIDAD (pentest H2): NO adoptar cualquier contraseña que llegue
+      // cuando la cuenta admin no tiene hash propio — eso permitiría tomarse
+      // la cuenta admin con solo su correo. El admin entra por su sesión real
+      // de Supabase (Authentication → Users). Se rechaza este respaldo.
+      return new Response(JSON.stringify({ error: 'invalid_credentials' }), {
+        status: 401, headers: { 'Content-Type': 'application/json', ...CORS },
+      })
     }
 
     // Return safe profile (no password hash)

@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!--
+    Variante corta `L.` de Lincoin — SOLO favicon/avatar (ver CLAUDE.md).
+    La L va en TRAZOS (path), no en <text>: los navegadores no cargan la
+    fuente Archivo al pintar un favicon y la letra salía rota/solapada
+    con el punto. Geometría: cap 34px (~55% del cuadro), baseline y=49;
+    punto de r=3 apoyado en la baseline, separado de la L por su ancho;
+    el bloque L+punto (x 16→48) se centra como unidad. Fondo full-bleed
+    sin borde ni esquinas propias (el navegador/SO redondea).
+  -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#121413"/>
+      <stop offset=".6" stop-color="#0C0E0D"/>
+      <stop offset="1" stop-color="#0A0B0A"/>
+    </linearGradient>
+    <radialGradient id="glow" cx=".85" cy=".1" r=".45">
+      <stop offset="0" stop-color="#4ADE80" stop-opacity=".18"/>
+      <stop offset="1" stop-color="#4ADE80" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="64" height="64" fill="url(#bg)"/>
+  <rect width="64" height="64" fill="url(#glow)"/>
+  <path d="M16 15 h9 v25 h11 v9 H16 Z" fill="#F4F4F2"/>
+  <circle cx="45" cy="46" r="3" fill="#4ADE80"/>
+</svg>

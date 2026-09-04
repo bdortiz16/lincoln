@@ -50,8 +50,10 @@ Deno.serve(async (req) => {
       .single()
 
     if (error || !user) {
-      return new Response(JSON.stringify({ error: 'not_found' }), {
-        status: 404, headers: { 'Content-Type': 'application/json', ...CORS },
+      // Respuesta UNIFORME con credenciales inválidas: no revelar si el correo
+      // existe (evita enumeración de cuentas).
+      return new Response(JSON.stringify({ error: 'invalid_credentials' }), {
+        status: 401, headers: { 'Content-Type': 'application/json', ...CORS },
       })
     }
 
@@ -76,11 +78,15 @@ Deno.serve(async (req) => {
         }).eq('id', user.id)
       }
     } else {
-      // No hash stored yet — compute and store PBKDF2 for future verifications
-      const newHash = await hashPasswordPBKDF2(password, user.email)
-      await db.from('users').update({
-        raw_data: { ...(user.raw_data || {}), passwordHash: newHash },
-      }).eq('id', user.id)
+      // SEGURIDAD (pentest H2): si la cuenta NO tiene contraseña propia
+      // guardada (p. ej. entró con Google, fue sembrada por el admin, o
+      // importada), este respaldo NO puede "adoptar" cualquier contraseña que
+      // llegue — eso permitía tomarse la cuenta de otro con solo su correo.
+      // Se rechaza; esas cuentas entran por su método real (Google) o por
+      // recuperación de contraseña, no por este camino.
+      return new Response(JSON.stringify({ error: 'invalid_credentials' }), {
+        status: 401, headers: { 'Content-Type': 'application/json', ...CORS },
+      })
     }
 
     // ── Sincronizar la sesión REAL de Supabase Auth ──────────────────

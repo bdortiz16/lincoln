@@ -80,8 +80,9 @@ import {
 import { Logo } from './Logo';
 import { RatesPanel } from './AdminPersonas/sections/RatesPanel';
 import { AdminGasFreeSection } from './AdminGasFreeSection';
+import { AdminMonitor } from './AdminMonitor';
 import { AdminOtcSection } from './AdminOtcSection';
-import { Zap, ArrowLeftRight } from 'lucide-react';
+import { Zap, ArrowLeftRight, Info, ChevronRight, Activity } from 'lucide-react';
 import { CollectionWalletCard } from './CollectionWalletCard';
 import type { AdminProfile } from './AdminPersonas/lib/adminAuth';
 import { FlagImg, flagUrl } from './FlagImg';
@@ -264,8 +265,17 @@ const DiditAdminPanel: React.FC<{ client: any; showToast: (m: string) => void }>
 };
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo'>('overview');
+  const [auditRows, setAuditRows] = useState<any[] | null>(null);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [adminLogins, setAdminLogins] = useState<{ admins: any[]; activity: any[] } | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  // Grupos colapsables del sidebar (estado persistido).
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() => {
+    try { const s = localStorage.getItem('lincoin_admin_groups'); if (s) return JSON.parse(s); } catch { /* */ }
+    return { operacion: true, finanzas: false, sistema: false };
+  });
+  const toggleGroup = (g: string) => setOpenGroups(p => { const n = { ...p, [g]: !p[g] }; try { localStorage.setItem('lincoin_admin_groups', JSON.stringify(n)); } catch { /* */ } return n; });
   const [ratesSaved, setRatesSaved] = useState(false);
   const [showPaletteChooser, setShowPaletteChooser] = useState(false);
   
@@ -293,13 +303,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     try {
       const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
       const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-      const ADMIN_PASS = (import.meta.env.VITE_ADMIN_PASSWORD as string) || '';
       let jwt: string | null = null;
       try {
         const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
         if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; }
       } catch { /* sin sesión supabase */ }
-      const authHeader = jwt ? `Bearer ${jwt}` : (ADMIN_PASS ? `AdminBypass ${ADMIN_PASS}` : `Bearer ${SKEY}`);
+      const authHeader = jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}`;
       const r = await fetch(`${SURL}/functions/v1/admin-data`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: authHeader },
@@ -319,8 +328,278 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const [showBlockInput, setShowBlockInput] = useState(false);
   const [blockReason, setBlockReason] = useState('');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  // Editar datos del cliente (nombre + tipo persona/empresa)
+  const [editClientOpen, setEditClientOpen] = useState(false);
+  const [editClientName, setEditClientName] = useState('');
+  const [editClientRole, setEditClientRole] = useState<'personal' | 'business'>('personal');
+  const [editClientSaving, setEditClientSaving] = useState(false);
+  const openEditClient = () => {
+    if (!selectedClient) return;
+    setEditClientName(selectedClient.name ?? '');
+    setEditClientRole(selectedClient.role === 'business' ? 'business' : 'personal');
+    setEditClientOpen(true); setShowBlockInput(false); setShowDeleteConfirm(false);
+  };
+  const saveEditClient = async () => {
+    if (!selectedClient || editClientSaving) return;
+    const name = editClientName.trim();
+    if (!name) { showToast('El nombre no puede quedar vacío.'); return; }
+    setEditClientSaving(true);
+    try {
+      await updateUserProfile(selectedClient.id, { name, role: editClientRole });
+      setSelectedClient({ ...selectedClient, name, role: editClientRole } as any);
+      showToast('Cliente actualizado.');
+      setEditClientOpen(false);
+    } catch { showToast('No se pudo actualizar. Intenta de nuevo.'); }
+    setEditClientSaving(false);
+  };
   const [deletingUser, setDeletingUser] = useState(false);
   
+  // Cargues Logic — acreditar saldo COP manualmente (temporal, mientras
+  // Mouv apifica el conversor: el pago llega por el grupo cerrado y aquí se
+  // refleja en el riel que corresponda: Saldo Lincoin / Bre-B / ACH).
+  const [carguesSearch, setCarguesSearch] = useState('');
+  const [carguesClient, setCarguesClient] = useState<User | null>(null);
+  const [carguesRail, setCarguesRail] = useState<'COP' | 'COP_BREB' | 'COP_ACH'>('COP');
+  const [carguesAmount, setCarguesAmount] = useState('');
+  const [carguesNote, setCarguesNote] = useState('');
+  const [carguesDir, setCarguesDir] = useState<'credit' | 'debit'>('credit');
+  const [carguesRecordOnly, setCarguesRecordOnly] = useState(false);
+  const [carguesBusy, setCarguesBusy] = useState(false);
+  const [carguesMsg, setCarguesMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [carguesConfirm, setCarguesConfirm] = useState<{ raw: number } | null>(null);
+  // "Cargar de todos modos" cuando el cargue excede lo disponible en la bolsa
+  // (protección contra sobre-acreditar más de lo que respalda el proveedor).
+  const [carguesOverride, setCarguesOverride] = useState(false);
+  // Saldo REAL de la wallet compartida de Mouv (lo que hay disponible para
+  // cargar a los clientes). Se lee del endpoint confirmado /wallets/balance.
+  const [mouvPool, setMouvPool] = useState<{ loading: boolean; total?: number | null; breb?: number | null; ach?: number | null; error?: string } | null>(null);
+  // Saldo COP de la tesorería Finity (respalda el riel ACH), análogo a Mouv.
+  const [finityPool, setFinityPool] = useState<{ loading: boolean; cop?: number | null; usdt?: number | null; error?: string } | null>(null);
+  // Resolver conversión trabada: el USDT llegó al proveedor pero el COP no se
+  // acreditó → se acredita a mano y se cierra el movimiento.
+  const [stuckRef, setStuckRef] = useState('');
+  const [stuckRail, setStuckRail] = useState<'COP' | 'COP_ACH' | 'COP_BREB'>('COP');
+  const [stuckPreview, setStuckPreview] = useState<any>(null);
+  const [stuckList, setStuckList] = useState<any[] | null>(null);
+  const [stuckBusy, setStuckBusy] = useState(false);
+  const [stuckMsg, setStuckMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const callGasfreeAdmin = async (bodyObj: Record<string, unknown>) => {
+    const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+    const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+    let jwt: string | null = null;
+    try {
+      const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
+      if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; }
+    } catch { /* sin sesión */ }
+    const authHeader = jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}`;
+    const r = await fetch(`${SURL}/functions/v1/gasfree`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: authHeader },
+      body: JSON.stringify(bodyObj),
+    });
+    return r.json();
+  };
+  const previewStuck = async () => {
+    if (!stuckRef.trim()) return;
+    setStuckBusy(true); setStuckMsg(null); setStuckPreview(null);
+    try {
+      const r = await callGasfreeAdmin({ action: 'admin_settle_convert', txId: stuckRef.trim(), preview: true });
+      if (r?.error) setStuckMsg({ ok: false, text: r.error });
+      else { setStuckPreview(r); setStuckRail((r.currency && ['COP','COP_ACH','COP_BREB'].includes(r.currency)) ? r.currency : 'COP'); }
+    } catch (e: any) { setStuckMsg({ ok: false, text: e?.message ?? 'Error' }); }
+    setStuckBusy(false);
+  };
+  const listStuck = async (userId: string) => {
+    setStuckBusy(true); setStuckMsg(null); setStuckPreview(null); setStuckList(null);
+    try {
+      const r = await callGasfreeAdmin({ action: 'admin_settle_convert', list: true, userId });
+      if (r?.error) setStuckMsg({ ok: false, text: r.error });
+      else setStuckList(Array.isArray(r?.items) ? r.items : []);
+    } catch (e: any) { setStuckMsg({ ok: false, text: e?.message ?? 'Error' }); }
+    setStuckBusy(false);
+  };
+  const settleStuck = async () => {
+    if (!stuckPreview?.txId) return;
+    if (!window.confirm(`¿Acreditar ${Number(stuckPreview.owedCop).toLocaleString('es-CO')} COP a ${stuckPreview.email ?? stuckPreview.userId} en ${stuckRail} y cerrar el movimiento?`)) return;
+    setStuckBusy(true); setStuckMsg(null);
+    try {
+      const r = await callGasfreeAdmin({ action: 'admin_settle_convert', txId: stuckPreview.txId, rail: stuckRail });
+      if (r?.error) setStuckMsg({ ok: false, text: r.error });
+      else if (r?.already) setStuckMsg({ ok: true, text: r.message ?? 'Ya estaba acreditada.' });
+      else setStuckMsg({ ok: true, text: `✅ Acreditados ${Number(r.credited).toLocaleString('es-CO')} COP en ${r.rail}. Movimiento cerrado.` });
+      setStuckPreview(null); setStuckRef('');
+    } catch (e: any) { setStuckMsg({ ok: false, text: e?.message ?? 'Error' }); }
+    setStuckBusy(false);
+  };
+  const loadMouvPool = async () => {
+    setMouvPool({ loading: true });
+    try {
+      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+      let jwt: string | null = null;
+      try {
+        const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
+        if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; }
+      } catch { /* sin sesión */ }
+      const authHeader = jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}`;
+      const r = await fetch(`${SURL}/functions/v1/mouv-proxy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: authHeader },
+        body: JSON.stringify({ action: 'treasury_balances' }),
+      });
+      const d = await r.json();
+      if (d?.error) setMouvPool({ loading: false, error: d.error });
+      else setMouvPool({ loading: false, total: d.total ?? d.cop ?? null, breb: d.breb ?? null, ach: d.ach ?? null });
+    } catch (e: any) {
+      setMouvPool({ loading: false, error: e?.message ?? 'Error de red' });
+    }
+  };
+
+  const loadFinityPool = async () => {
+    setFinityPool({ loading: true });
+    try {
+      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+      let jwt: string | null = null;
+      try {
+        const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
+        if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; }
+      } catch { /* sin sesión */ }
+      const authHeader = jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}`;
+      const r = await fetch(`${SURL}/functions/v1/finity-proxy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: authHeader },
+        body: JSON.stringify({ action: 'treasury_balances' }),
+      });
+      const d = await r.json();
+      if (d?.error) setFinityPool({ loading: false, error: d.error });
+      else setFinityPool({ loading: false, cop: d.cop ?? null, usdt: d.usdt ?? null, error: d.ok === false ? (d.error ?? 'Finity no respondió') : undefined });
+    } catch (e: any) {
+      setFinityPool({ loading: false, error: e?.message ?? 'Error de red' });
+    }
+  };
+
+  const loadAudit = async () => {
+    setAuditLoading(true);
+    try {
+      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+      let jwt: string | null = null;
+      try { const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token')); if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; } } catch { /* */ }
+      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}` },
+        body: JSON.stringify({ action: 'list_audit', limit: 300 }),
+      });
+      const d = await r.json();
+      setAuditRows(Array.isArray(d?.audit) ? d.audit : []);
+    } catch { setAuditRows([]); }
+    setAuditLoading(false);
+  };
+
+  const loadAdminLogins = async () => {
+    try {
+      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+      let jwt: string | null = null;
+      try { const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token')); if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; } } catch { /* */ }
+      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}` },
+        body: JSON.stringify({ action: 'admin_logins' }),
+      });
+      const d = await r.json();
+      setAdminLogins({ admins: Array.isArray(d?.admins) ? d.admins : [], activity: Array.isArray(d?.activity) ? d.activity : [] });
+    } catch { setAdminLogins({ admins: [], activity: [] }); }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'cargues' && !mouvPool) loadMouvPool();
+    if (activeTab === 'cargues' && !finityPool) loadFinityPool();
+    if (activeTab === 'auditoria') { loadAudit(); loadAdminLogins(); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
+
+  const railLabelOf = (r: string) => (r === 'COP' ? 'Saldo Lincoin' : r === 'COP_BREB' ? 'Bre-B' : 'ACH');
+
+  // Paso 1: validar y abrir la ventana de confirmación propia.
+  const requestCargue = () => {
+    if (!carguesClient) return;
+    const raw = parseFloat((carguesAmount || '').replace(/[^\d.]/g, ''));
+    if (!isFinite(raw) || raw <= 0) { setCarguesMsg({ ok: false, text: 'Ingresa un monto válido.' }); return; }
+    setCarguesMsg(null);
+    setCarguesOverride(false);
+    setCarguesConfirm({ raw });
+  };
+
+  // Paso 2: aplicar el cargue (lo llama el botón del modal).
+  const submitCargue = async () => {
+    if (!carguesClient || !carguesConfirm) return;
+    const raw = carguesConfirm.raw;
+    const delta = carguesDir === 'credit' ? raw : -raw;
+    const railLabel = railLabelOf(carguesRail);
+    setCarguesBusy(true); setCarguesMsg(null);
+    try {
+      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+      let jwt: string | null = null;
+      try {
+        const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
+        if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; }
+      } catch { /* sin sesión supabase */ }
+      const authHeader = jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}`;
+      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: authHeader },
+        body: JSON.stringify({ action: 'admin_credit_balance', userId: carguesClient.id, currency: carguesRail, amount: delta, note: carguesNote.trim() || undefined, ...(carguesRecordOnly ? { recordOnly: true } : {}) }),
+      });
+      const d = await r.json();
+      if (d?.success) {
+        setCarguesMsg({ ok: true, text: d.recordOnly
+          ? `✅ Movimiento registrado en el historial. El saldo NO cambió (${formatMoney(d.newBalance ?? 0, '')} COP).`
+          : d.feeCop > 0
+          ? `✅ ${railLabel} actualizado. Cargue ${formatMoney(d.grossCop ?? raw, '')} − comisión ${formatMoney(d.feeCop, '')} (${d.feePct}%) = ${formatMoney(d.netCop ?? 0, '')} acreditados. Nuevo saldo: ${formatMoney(d.newBalance ?? 0, '')} COP`
+          : `✅ ${railLabel} actualizado. Nuevo saldo: ${formatMoney(d.newBalance ?? 0, '')} COP` });
+        setCarguesAmount(''); setCarguesNote('');
+        showToast(`Cargue aplicado a ${carguesClient.name}`);
+        refreshData();
+      } else {
+        setCarguesMsg({ ok: false, text: `❌ ${d?.error || 'No se pudo aplicar el cargue.'}` });
+      }
+    } catch (e: any) {
+      setCarguesMsg({ ok: false, text: `❌ ${e?.message ?? 'Error de red'}` });
+    }
+    setCarguesBusy(false);
+    setCarguesConfirm(null);
+  };
+
+  // ── Solicitudes de movimiento a ACH (aprobación manual de Tesorería) ──
+  const [railMoveBusy, setRailMoveBusy] = useState<string | number | null>(null);
+  const railMoveAction = async (txId: string | number, action: 'approve' | 'reject') => {
+    if (railMoveBusy) return;
+    if (action === 'approve' && !window.confirm('¿Ya moviste el respaldo al proveedor? Aprobar acredita el saldo ACH del cliente.')) return;
+    if (action === 'reject' && !window.confirm('¿Rechazar la solicitud? El COP se reembolsa al Saldo Lincoin del cliente.')) return;
+    setRailMoveBusy(txId);
+    try {
+      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+      let jwt: string | null = null;
+      try {
+        const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
+        if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; }
+      } catch { /* sin sesión supabase */ }
+      const authHeader = jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}`;
+      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: authHeader },
+        body: JSON.stringify({ action: action === 'approve' ? 'approve_rail_move' : 'reject_rail_move', txId }),
+      });
+      const d = await r.json();
+      if (d?.success) { showToast(action === 'approve' ? '✅ Aprobado — saldo ACH acreditado al cliente.' : 'Solicitud rechazada — COP reembolsado.'); refreshData(); }
+      else showToast(`❌ ${d?.error || 'No se pudo aplicar.'}`, 5000, 'error');
+    } catch (e: any) { showToast(`❌ ${e?.message ?? 'Error de red'}`, 5000, 'error'); }
+    setRailMoveBusy(null);
+  };
+
   // Treasury Logic
   const [treasuryTab, setTreasuryTab] = useState<'deposits' | 'withdrawals' | 'history' | 'crypto'>('deposits');
   const [treasurySegment, setTreasurySegment] = useState<'all' | 'personal' | 'business'>('all');
@@ -336,13 +615,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     if (!tx || tx.proofUrl !== '__stored__') return;
     const SURL = (import.meta as any).env?.VITE_SUPABASE_URL as string || '';
     const SKEY = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY as string || '';
-    const ADMIN_PASS = (import.meta as any).env?.VITE_ADMIN_PASSWORD as string || '';
     let jwt: string | null = null;
     try {
       const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
       if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; }
     } catch { /* sin sesión supabase */ }
-    const authHeader = jwt ? `Bearer ${jwt}` : (ADMIN_PASS ? `AdminBypass ${ADMIN_PASS}` : `Bearer ${SKEY}`);
+    const authHeader = jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}`;
     fetch(`${SURL}/functions/v1/admin-data`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': authHeader },
@@ -431,7 +709,35 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       dataReady,
       refreshData,
       currentUser,
+      enrollMFA,
+      verifyMFAEnrollment,
   } = useDatabase();
+
+  // ── 2FA del propio admin (protege el cambio de proveedor de tesorería) ──
+  const [mfaEnroll, setMfaEnroll] = useState<{ qrCode: string; secret: string; factorId: string } | null>(null);
+  const [mfaCode, setMfaCode] = useState('');
+  const [mfaBusy, setMfaBusy] = useState(false);
+  const [mfaMsg, setMfaMsg] = useState<string | null>(null);
+  const adminMfaOn = !!((currentUser as any)?.mfaEnabled || (currentUser as any)?.raw_data?.mfaEnabled);
+  const startMfaEnroll = async () => {
+    setMfaBusy(true); setMfaMsg(null);
+    try {
+      const d = await enrollMFA();
+      if (!d) setMfaMsg('No se pudo iniciar la activación de 2FA. Reintenta.');
+      else { setMfaEnroll(d); setMfaCode(''); }
+    } catch (e: any) { setMfaMsg(e?.message ?? 'Error'); }
+    setMfaBusy(false);
+  };
+  const confirmMfaEnroll = async () => {
+    if (!mfaEnroll || mfaCode.length !== 6) return;
+    setMfaBusy(true); setMfaMsg(null);
+    try {
+      const { ok, error } = await verifyMFAEnrollment(mfaEnroll.factorId, mfaCode, mfaEnroll.secret);
+      if (ok) { setMfaMsg('✅ 2FA activado. Ahora el cambio de proveedor exige tu código.'); setMfaEnroll(null); setMfaCode(''); }
+      else setMfaMsg(error ?? 'Código incorrecto. Intenta de nuevo.');
+    } catch (e: any) { setMfaMsg(e?.message ?? 'Error'); }
+    setMfaBusy(false);
+  };
 
   // ── Este admin es SOLO de EMPRESAS ──
   // El producto PERSONAS vive en OTRA base de datos (proyecto Supabase
@@ -451,7 +757,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const allUsers = rawUsers.filter((u: any) => u.role !== 'admin');
   const adminTeam = getAdminTeam();
 
-  const pendingClientsCount = allUsers.filter(u => u.kycStatus === 'pending' || u.kycStatus === 'in_review').length;
+  // ── Panel de Fallos ──────────────────────────────────────────────────────
+  // Operaciones de dinero que FALLARON o fueron RECHAZADAS, con el error
+  // técnico real (para el admin). Al cliente solo se le muestra el mensaje
+  // amable ("la llave no es válida…"); el detalle vive aquí.
+  const failuresList = (getTransactionHistory() as any[])
+    .filter(t => ['Fallido', 'Rechazado'].includes(String(t.status)))
+    .sort((a, b) => new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime());
+  const failuresCount = failuresList.length;
+
+  // Una cuenta BLOQUEADA o en LISTA NEGRA no cuenta como pendiente: no hay nada
+  // que aprobarle (ya le negaste el acceso), y aparecer ahí solo ensucia la
+  // operación y el badge de "por aprobar".
+  const isBlacklisted = (u: any) => u?.blacklisted === true || u?.raw_data?.blacklisted === true;
+  const isBlockedUser = (u: any) => u?.isBlocked === true || u?.raw_data?.isBlocked === true || u?.is_blocked === true;
+  const outOfOperation = (u: any) => isBlacklisted(u) || isBlockedUser(u);
+  const pendingClientsCount = allUsers.filter(u => !outOfOperation(u) && (u.kycStatus === 'pending' || u.kycStatus === 'in_review')).length;
 
   const getUserVolume = (userId: string) => {
       const userTx = historyTransactions.filter(tx => tx.userId === userId && tx.status === 'Completado');
@@ -471,7 +792,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       pendingWithdrawals: pendingWithdrawals.length,
       totalVolume: `$ ${Math.round(historyTransactions.reduce((acc, tx) => {
           if (tx.status === 'Completado') {
-             const rate = getRate(tx.currency, 'USD'); 
+             const rate = getRate((tx.currency||'').split('_')[0], 'USD'); 
              return acc + (tx.amount * (rate || 0));
           }
           return acc;
@@ -577,6 +898,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     showToast('Cliente rechazado.');
   };
   const handleBlockUser = () => { if (!selectedClient) return; toggleUserBlock(selectedClient.id, !selectedClient.isBlocked, blockReason); showToast("Estado de bloqueo actualizado"); setSelectedClient(null); setShowBlockInput(false); setBlockReason(''); };
+  // LISTA NEGRA: bloqueo reforzado para cuentas maliciosas (hackeo/fraude).
+  // Además de bloquear, marca blacklisted → el SERVIDOR rechaza toda operación
+  // de dinero y la cuenta desaparece de las listas operativas (Cargues,
+  // GasFree, pendientes). Es reversible desde aquí mismo.
+  const handleBlacklistUser = async () => {
+    if (!selectedClient) return;
+    const isBl = !!(selectedClient as any).blacklisted;
+    if (!isBl && !window.confirm(`¿Enviar a LISTA NEGRA a ${selectedClient.email}?\n\nQuedará bloqueada, el servidor rechazará TODAS sus operaciones de dinero y desaparecerá de Cargues, GasFree y pendientes.`)) return;
+    await updateUserProfile(selectedClient.id, {
+      blacklisted: !isBl,
+      isBlocked: !isBl ? true : (selectedClient as any).isBlocked,
+      blockReason: !isBl ? (blockReason || 'Lista negra — actividad maliciosa') : (selectedClient as any).blockReason,
+      blacklistedAt: !isBl ? new Date().toISOString() : null,
+    });
+    showToast(!isBl ? '🚫 Cuenta enviada a lista negra' : 'Cuenta retirada de la lista negra');
+    setSelectedClient(null); setShowBlockInput(false); setBlockReason('');
+  };
   const handleDeleteUser = async () => {
     if (!selectedClient) return;
     setDeletingUser(true);
@@ -776,13 +1114,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const calculateFinancials = () => {
       const validTx = historyTransactions.filter(tx => tx.status === 'Completado');
       const volumeUSD = validTx.reduce((acc, tx) => {
-          const rate = getRate(tx.currency, 'USD');
+          const rate = getRate((tx.currency||'').split('_')[0], 'USD');
           return acc + (tx.amount * (rate || 0));
       }, 0);
       const grossRevenueUSD = volumeUSD * (systemConfig.globalFee / 100);
       const referralTx = validTx.filter(tx => tx.type === 'referral_payout' || tx.type === 'referral_commission');
       const referralCostUSD = referralTx.reduce((acc, tx) => {
-          const rate = getRate(tx.currency, 'USD');
+          const rate = getRate((tx.currency||'').split('_')[0], 'USD');
           return acc + (tx.amount * rate);
       }, 0);
       const netProfit = grossRevenueUSD - referralCostUSD;
@@ -803,63 +1141,138 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
 
   // --- RENDERERS ---
 
-  // NOTE: renderOverview updated to show connection status
-  const renderOverview = () => (
-      <div className="space-y-8 animate-in fade-in duration-300">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-              <StatCard title="Clientes Pendientes" value={stats.pendingClients} icon={UserCheck} color="bg-orange-500" onClick={() => setActiveTab('clients')} subValue="Requieren acción" loading={!dataReady} />
-              <StatCard title="Solicitudes Carga" value={stats.pendingDeposits} icon={ArrowRight} color="bg-[#4ADE80]" onClick={() => setActiveTab('treasury')} subValue="Pendientes" loading={!dataReady} />
-              <StatCard title="Solicitudes Retiro" value={stats.pendingWithdrawals} icon={LogOut} color="bg-red-500" onClick={() => setActiveTab('treasury')} subValue="Pendientes" loading={!dataReady} />
-              <StatCard title="Volumen Total" value={stats.totalVolume} icon={BarChart3} color="bg-green-600" subValue="Transado Histórico" loading={!dataReady} />
+  // Resumen general — diseño de marca (dark, KPIs con contexto, cola
+  // unificada de pendientes, estado del sistema y equipo admin).
+  const renderOverview = () => {
+      const now = new Date();
+      const ageStr = (d?: string) => {
+          if (!d) return '';
+          const ms = Date.now() - new Date(d).getTime();
+          const m = Math.floor(ms / 60000);
+          if (m < 1) return 'recién';
+          if (m < 60) return `hace ${m} min`;
+          const h = Math.floor(m / 60);
+          if (h < 24) return `hace ${h} h`;
+          return `hace ${Math.floor(h / 24)} d`;
+      };
+      const usdEq = (tx: any) => { const r = getRate((tx.currency || '').split('_')[0], 'USD') || 0; return Number(tx.amount || 0) * r; };
+      const fmtUsd = (n: number) => `$${Math.round(n).toLocaleString('es-CO')}`;
+      // Volumen del mes (completadas este mes, en USD eq.)
+      const monthVol = historyTransactions.filter(tx => {
+          const d = tx.createdAt ? new Date(tx.createdAt) : null;
+          return tx.status === 'Completado' && d && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+      }).reduce((s, tx) => s + usdEq(tx), 0);
+      const depSum = pendingDeposits.reduce((s, tx) => s + usdEq(tx), 0);
+      const witSum = pendingWithdrawals.reduce((s, tx) => s + usdEq(tx), 0);
+      const pendingClients = allUsers.filter(u => !outOfOperation(u) && (u.kycStatus === 'pending' || u.kycStatus === 'in_review'));
+      // Cola unificada, ordenada por antigüedad (más viejo primero).
+      const queue = [
+          ...pendingClients.map(u => ({ id: `kyc-${u.id}`, sig: (u.name || 'C').charAt(0).toUpperCase(), title: `KYC · ${u.name || 'Cliente'}`, meta: 'Verificación en revisión · falta aprobación manual', at: (u as any).createdAt, tab: 'clients' as const })),
+          ...pendingDeposits.map(tx => ({ id: `dep-${tx.id}`, sig: '↓', title: `Carga · ${fmtUsd(usdEq(tx))} USD eq.`, meta: `${tx.userName || tx.beneficiary || 'Cliente'} · falta acreditar`, at: tx.createdAt, tab: 'treasury' as const })),
+          ...pendingWithdrawals.map(tx => ({ id: `wit-${tx.id}`, sig: '↑', title: `Retiro · ${fmtUsd(usdEq(tx))} USD eq.`, meta: `${tx.bank || tx.beneficiary || 'Destino'} · falta aprobar`, at: tx.createdAt, tab: 'treasury' as const })),
+      ].sort((a, b) => new Date(a.at || 0).getTime() - new Date(b.at || 0).getTime());
+
+      const card: React.CSSProperties = { background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14 };
+      const secBtn: React.CSSProperties = { border: '1px solid rgba(255,255,255,0.11)', background: 'rgba(255,255,255,0.045)', borderRadius: 8, padding: '7px 13px', fontSize: 12, fontWeight: 600, color: '#F4F4F2' };
+      const oldest = queue[0]?.at ? ageStr(queue[0].at) : '';
+      const kpis: { label: string; value: string | number; sub: React.ReactNode; tab: string }[] = [
+          { label: 'Clientes por aprobar', value: pendingClients.length, sub: pendingClients.length ? `KYC en revisión · el más antiguo ${ageStr((pendingClients[0] as any)?.createdAt) || 'hoy'}` : 'Sin KYC en cola', tab: 'clients' },
+          { label: 'Cargas por acreditar', value: pendingDeposits.length, sub: pendingDeposits.length ? `${fmtUsd(depSum)} USD eq. esperando confirmación` : 'Nada por acreditar', tab: 'treasury' },
+          { label: 'Retiros por aprobar', value: pendingWithdrawals.length, sub: pendingWithdrawals.length ? `${fmtUsd(witSum)} USD eq. · requieren aprobación` : 'Nada por aprobar', tab: 'treasury' },
+          { label: 'Volumen del mes', value: fmtUsd(monthVol), sub: <span>{historyTransactions.filter(t => t.status === 'Completado').length} operaciones completadas</span>, tab: 'reports' },
+      ];
+      const services: { name: string; state: string; ok: boolean }[] = [
+          { name: 'Riel de conversión y retiros', state: apiStatus === 'error' ? 'Lento' : 'En línea', ok: apiStatus !== 'error' },
+          { name: 'Custodia GasFree (TRON)', state: 'En línea', ok: true },
+          { name: 'Bre-B · ACH Colombia', state: 'En línea', ok: true },
+          { name: 'Base de datos', state: isOnline ? 'En línea' : 'Desconectada', ok: isOnline },
+      ];
+      return (
+      <div className="animate-in fade-in duration-300" style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+          {/* KPIs */}
+          <div className="grid gap-3.5" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))' }}>
+              {kpis.map(k => (
+                  <button key={k.label} onClick={() => setActiveTab(k.tab as any)} className="text-left transition-colors" style={{ ...card, padding: '18px 20px', cursor: 'pointer' }}
+                      onMouseEnter={e => (e.currentTarget.style.borderColor = 'rgba(255,255,255,0.16)')} onMouseLeave={e => (e.currentTarget.style.borderColor = 'rgba(255,255,255,0.09)')}>
+                      <p style={{ fontSize: 12, color: '#878E88' }}>{k.label}</p>
+                      <p style={{ fontSize: 27, fontWeight: 800, letterSpacing: '-0.8px', color: '#F4F4F2', marginTop: 8 }}>{dataReady ? k.value : '—'}</p>
+                      <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 6, lineHeight: 1.4 }}>{k.sub}</p>
+                  </button>
+              ))}
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-              <div className="lg:col-span-2 bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-                  <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
-                      <Activity className="text-slate-400" size={20}/> Actividad del Sistema
-                  </h3>
-                  <div className="space-y-4">
-                      {activeAlerts.length > 0 ? activeAlerts.map(alert => (
-                          <div key={alert.id} className={`p-4 rounded-lg border flex items-start gap-3 ${alert.type === 'error' ? 'bg-red-50 border-red-100' : alert.type === 'warning' ? 'bg-orange-50 border-orange-100' : 'bg-slate-50 border-slate-200'}`}>
-                              {alert.type === 'error' ? <ShieldAlert className="text-red-500 shrink-0" size={20}/> : <AlertTriangle className="text-orange-500 shrink-0" size={20}/>}
-                              <div>
-                                  <h4 className={`text-sm font-bold ${alert.type === 'error' ? 'text-red-700' : 'text-orange-700'}`}>{alert.title}</h4>
-                                  <p className="text-xs text-slate-600 mt-1">{alert.description}</p>
-                                  {alert.action && <button onClick={() => setActiveTab(alert.action as any)} className="text-xs font-bold underline mt-2">Ver detalles</button>}
-                              </div>
+          <div className="grid gap-4" style={{ gridTemplateColumns: 'minmax(0,1fr)' }}>
+              <div className="grid gap-4 lg:grid-cols-[1fr_360px]">
+                  {/* Pendientes de acción */}
+                  <div style={card}>
+                      <div className="flex items-center justify-between" style={{ padding: '16px 22px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                          <span style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>Pendientes de acción</span>
+                          {queue.length > 0 && <button onClick={() => setActiveTab('treasury')} style={{ fontSize: 12.5, fontWeight: 600, color: '#878E88' }} className="hover:text-[#F4F4F2] transition-colors">Ver todo →</button>}
+                      </div>
+                      {queue.length === 0 ? (
+                          <div className="text-center" style={{ padding: '48px 20px', color: '#878E88' }}>
+                              <p style={{ fontSize: 13 }}>Nada pendiente.</p>
+                              <p style={{ fontSize: 12, marginTop: 4 }}>Las nuevas solicitudes aparecen aquí.</p>
                           </div>
-                      )) : (
-                          <div className="text-center py-8 text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">
-                              <CheckCircle size={32} className="mx-auto mb-2 text-green-500"/>
-                              <p className="font-medium text-slate-600">Todo operativo</p>
-                              <p className="text-xs">El sistema funciona correctamente.</p>
-                          </div>
-                      )}
-                  </div>
-              </div>
-
-              <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-                  <h3 className="font-bold text-slate-800 mb-4">Equipo Administrativo</h3>
-                  <div className="space-y-4">
-                      {adminTeam.map(admin => (
-                          <div key={admin.id} className="flex items-center justify-between">
-                              <div className="flex items-center gap-3">
-                                  <div className="w-8 h-8 bg-slate-100 rounded-full flex items-center justify-center font-bold text-slate-500 text-xs">
-                                      {admin?.name?.charAt(0) ?? "?"}
-                                  </div>
-                                  <div>
-                                      <p className="text-sm font-bold text-slate-700">{admin.name}</p>
-                                      <p className="text-[10px] text-slate-400">{admin.role}</p>
-                                  </div>
+                      ) : queue.slice(0, 8).map(item => (
+                          <div key={item.id} className="flex items-center hover:bg-white/[0.02] transition-colors" style={{ gap: 12, padding: '13px 22px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                              <span style={{ width: 32, height: 32, borderRadius: 9, flexShrink: 0, display: 'grid', placeItems: 'center', background: 'rgba(255,255,255,0.055)', fontSize: 12, fontWeight: 800, color: '#878E88' }}>{item.sig}</span>
+                              <div style={{ minWidth: 0, flex: 1 }}>
+                                  <p style={{ fontSize: 13.5, fontWeight: 600, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.title}</p>
+                                  <p style={{ fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.meta}</p>
                               </div>
-                              <span className="text-[10px] font-medium text-green-600 bg-green-50 px-2 py-0.5 rounded-full">Online</span>
+                              <span style={{ fontSize: 11, color: '#878E88', flexShrink: 0, whiteSpace: 'nowrap' }}>{ageStr(item.at)}</span>
+                              <button onClick={() => setActiveTab(item.tab as any)} style={secBtn} className="hover:bg-white/[0.09] transition-colors" >Revisar</button>
                           </div>
                       ))}
+                  </div>
+
+                  {/* Columna derecha */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                      {/* Estado del sistema */}
+                      <div style={{ ...card, padding: '18px 20px' }}>
+                          <div className="flex items-center justify-between" style={{ marginBottom: 14 }}>
+                              <span style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>Estado del sistema</span>
+                              <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 10, fontWeight: 700, padding: '3px 9px', borderRadius: 999 }}>● OPERATIVO</span>
+                          </div>
+                          {services.map((s, i) => (
+                              <div key={s.name} className="flex items-center justify-between" style={{ gap: 12, padding: '10px 0', borderTop: i > 0 ? '1px solid rgba(255,255,255,0.06)' : 'none' }}>
+                                  <span style={{ fontSize: 12.5, color: '#F4F4F2' }}>{s.name}</span>
+                                  <span style={{ fontSize: 12.5, fontWeight: 600, color: s.ok ? '#4ADE80' : 'rgba(244,244,242,0.7)' }}>{s.state}</span>
+                              </div>
+                          ))}
+                      </div>
+
+                      {/* Equipo admin */}
+                      <div style={{ ...card, padding: '18px 20px' }}>
+                          <div className="flex items-center justify-between" style={{ marginBottom: 12 }}>
+                              <span style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>Equipo admin</span>
+                              <button onClick={() => setActiveTab('team' as any)} style={{ fontSize: 12, fontWeight: 600, color: '#878E88' }} className="hover:text-[#F4F4F2] transition-colors">Gestionar</button>
+                          </div>
+                          {adminTeam.length === 0 ? (
+                              <p style={{ fontSize: 12.5, color: '#878E88', padding: '8px 0' }}>Sin miembros del equipo todavía.</p>
+                          ) : adminTeam.map(admin => (
+                              <div key={admin.id} className="flex items-center justify-between" style={{ gap: 12, padding: '9px 0' }}>
+                                  <div className="flex items-center" style={{ gap: 11, minWidth: 0 }}>
+                                      <span style={{ width: 32, height: 32, borderRadius: '50%', flexShrink: 0, display: 'grid', placeItems: 'center', background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', fontSize: 12, fontWeight: 800, color: '#878E88' }}>{(admin?.name ?? '?').charAt(0).toUpperCase()}</span>
+                                      <div style={{ minWidth: 0 }}>
+                                          <p style={{ fontSize: 13, fontWeight: 600, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{admin.name}</p>
+                                          <p style={{ fontSize: 11, color: '#878E88' }}>{admin.role || 'Administrador'}</p>
+                                      </div>
+                                  </div>
+                                  <span className="flex items-center" style={{ gap: 5, flexShrink: 0 }}>
+                                      <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#4ADE80' }} />
+                                      <span style={{ fontSize: 11, color: '#4ADE80' }}>En línea</span>
+                                  </span>
+                              </div>
+                          ))}
+                      </div>
                   </div>
               </div>
           </div>
       </div>
-  );
+      );
+  };
 
   // ... (keep the rest of renderClients, renderMarketing, renderTreasury, renderReports, renderConfig, renderBanks, renderRates, renderTeam, renderDesign, renderSecurity exactly as they were in previous file)
   // Re-including them for XML validity context if necessary, but skipping for brevity as they don't change logic, just structure. 
@@ -965,7 +1378,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                                           <p className="text-xs text-slate-500 truncate w-40">{client.email}</p>
                                       </div>
                                   </div>
-                                  {client.isBlocked && <span className="text-[10px] text-red-500 font-bold mt-1 block">BLOQUEADO</span>}
+                                  {isBlacklisted(client)
+                                    ? <span className="text-[10px] font-bold mt-1 inline-block px-1.5 py-0.5 rounded bg-[#0C0E0D] text-white">🚫 LISTA NEGRA</span>
+                                    : client.isBlocked && <span className="text-[10px] text-red-500 font-bold mt-1 block">BLOQUEADO</span>}
                               </div>
                           ))}
                       </div>
@@ -986,7 +1401,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                                           <span className="bg-slate-200 text-slate-600 px-2 py-0.5 rounded text-[10px] font-bold uppercase">{selectedClient.role}</span>
                                       </div>
                                   </div>
-                                  <div className="flex gap-2">
+                                  <div className="flex gap-2 flex-wrap justify-end">
+                                      <button onClick={openEditClient} className="bg-slate-800 text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-slate-900 transition-colors flex items-center gap-1">
+                                          <Edit2 size={14}/> Editar
+                                      </button>
                                       {selectedClient.kycStatus !== 'verified' && (
                                           <button onClick={handleApproveKYC} className="bg-green-600 text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-green-700 transition-colors flex items-center gap-1">
                                               <CheckCircle size={14}/> Aprobar
@@ -994,6 +1412,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                                       )}
                                       <button onClick={() => setShowBlockInput(!showBlockInput)} className="bg-red-100 text-red-700 border border-red-200 px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-red-200 transition-colors flex items-center gap-1">
                                           <Ban size={14}/> {selectedClient.isBlocked ? 'Desbloquear' : 'Bloquear'}
+                                      </button>
+                                      <button onClick={handleBlacklistUser} title="Bloqueo reforzado: el servidor rechaza TODAS sus operaciones y desaparece de las listas operativas" className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors flex items-center gap-1 ${(selectedClient as any).blacklisted ? 'bg-slate-200 text-slate-700 hover:bg-slate-300' : 'bg-[#0C0E0D] text-white hover:bg-black'}`}>
+                                          <Shield size={14}/> {(selectedClient as any).blacklisted ? 'Sacar de lista negra' : 'Lista negra'}
                                       </button>
                                       <button onClick={() => { setShowDeleteConfirm(true); setShowBlockInput(false); }} className="bg-red-600 text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-red-700 transition-colors flex items-center gap-1">
                                           <Trash2 size={14}/> Eliminar
@@ -1016,6 +1437,25 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                                   </div>
                               </div>
                               
+                              {editClientOpen && (
+                                  <div className="p-4 bg-slate-50 border-b border-slate-200 animate-in fade-in slide-in-from-top-2 space-y-3">
+                                      <div>
+                                          <label className="block text-[11px] font-bold uppercase text-slate-500 mb-1">Nombre {editClientRole === 'business' ? '/ Razón social' : 'completo'}</label>
+                                          <input value={editClientName} onChange={e => setEditClientName(e.target.value)} className="w-full h-10 px-3 rounded-lg border border-slate-300 text-sm text-slate-800 outline-none focus:border-slate-800" placeholder="Nombre del cliente" />
+                                      </div>
+                                      <div>
+                                          <label className="block text-[11px] font-bold uppercase text-slate-500 mb-1">Tipo de cuenta</label>
+                                          <div className="flex gap-2">
+                                              <button onClick={() => setEditClientRole('personal')} className={`flex-1 h-10 rounded-lg text-sm font-bold border transition-colors ${editClientRole === 'personal' ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-100'}`}>Persona</button>
+                                              <button onClick={() => setEditClientRole('business')} className={`flex-1 h-10 rounded-lg text-sm font-bold border transition-colors ${editClientRole === 'business' ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-100'}`}>Empresa</button>
+                                          </div>
+                                      </div>
+                                      <div className="flex gap-2">
+                                          <button onClick={() => setEditClientOpen(false)} className="flex-1 h-10 rounded-lg text-sm font-bold border border-slate-300 text-slate-600 hover:bg-slate-100">Cancelar</button>
+                                          <button onClick={saveEditClient} disabled={editClientSaving} className="flex-1 h-10 rounded-lg text-sm font-bold bg-[#0C0E0D] text-white hover:bg-slate-800 disabled:opacity-60">{editClientSaving ? 'Guardando…' : 'Guardar cambios'}</button>
+                                      </div>
+                                  </div>
+                              )}
                               {showBlockInput && (
                                   <div className="p-4 bg-red-50 border-b border-red-100 flex gap-2 animate-in fade-in slide-in-from-top-2">
                                       <input
@@ -1207,6 +1647,454 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       </div>
   );
 
+  const renderCargues = () => {
+      const q = carguesSearch.trim().toLowerCase();
+      const list = allUsers
+        .filter(u => !outOfOperation(u))   // bloqueadas / lista negra no se cargan
+        .filter(u => !q || (u.name ?? '').toLowerCase().includes(q) || (u.email ?? '').toLowerCase().includes(q))
+        .slice(0, 40);
+      const bal = (u: User | null, code: string) => Number((u?.balances as any)?.[code] ?? 0);
+      const railMeta: Record<string, { label: string; sub: string; icon: React.ElementType }> = {
+        COP:      { label: 'Saldo Lincoin', sub: 'Cuenta principal · COP', icon: Wallet },
+        COP_BREB: { label: 'Bre-B',         sub: 'Pagos inmediatos 24/7',  icon: Zap },
+        COP_ACH:  { label: 'ACH',           sub: 'Interbancario L–V',       icon: Landmark },
+      };
+
+      // ── Respaldo y utilidad por riel ──────────────────────────────
+      // Lo que Lincoin YA le debe a los clientes en cada riel (suma de sus
+      // saldos). La bolsa del proveedor (Mouv=Bre-B, Finity=ACH) debe cubrir
+      // eso; lo que sobra es la UTILIDAD que va quedando en pesos.
+      const obligOf = (code: string) => allUsers.reduce((s, u) => s + Number((u.balances as any)?.[code] ?? 0), 0);
+      const obligBreb = obligOf('COP_BREB');
+      const obligAch  = obligOf('COP_ACH');
+      const brebPool  = Number(mouvPool?.breb ?? mouvPool?.total ?? 0);
+      const achPool   = Number(finityPool?.cop ?? 0);
+      const freeBreb  = brebPool - obligBreb;   // disponible para cargar Bre-B (= utilidad Mouv)
+      const freeAch   = achPool - obligAch;     // disponible para cargar ACH   (= utilidad Finity)
+      // Disponible/utilidad del riel actualmente elegido (para el guard del cargue).
+      const poolReady = carguesRail === 'COP_BREB' ? (mouvPool && !mouvPool.loading && !mouvPool.error)
+                      : carguesRail === 'COP_ACH'  ? (finityPool && !finityPool.loading && !finityPool.error)
+                      : false;
+      const freeForRail = carguesRail === 'COP_BREB' ? freeBreb : carguesRail === 'COP_ACH' ? freeAch : Infinity;
+
+      // Guard anti sobre-acreditación: un cargue en Bre-B/ACH NO puede
+      // comprometer más de lo que la bolsa del proveedor tiene libre (si no,
+      // le prometes a un cliente COP que no está respaldado). El neto que se
+      // acredita (bruto − comisión) es lo que aumenta la deuda con clientes.
+      const cRaw = carguesConfirm?.raw ?? 0;
+      const cFee = (carguesRail === 'COP_BREB' && carguesDir === 'credit' && !carguesRecordOnly) ? Math.round(cRaw * 0.10 / 100) : 0;
+      const cNet = cRaw - cFee;
+      const guardActive = carguesDir === 'credit' && !carguesRecordOnly && (carguesRail === 'COP_BREB' || carguesRail === 'COP_ACH') && !!poolReady;
+      const cargueExceeds = guardActive && cNet > freeForRail + 0.5;
+      const cargueShortfall = cargueExceeds ? Math.round(cNet - freeForRail) : 0;
+
+      return (
+        <div className="space-y-6 animate-in fade-in duration-300">
+          {/* Aviso: proceso temporal */}
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start gap-3">
+            <Info size={18} className="text-amber-600 mt-0.5 flex-shrink-0" />
+            <div>
+              <p className="text-sm font-bold text-amber-800">Cargue manual de saldo (temporal)</p>
+              <p className="text-xs text-amber-700 mt-0.5 leading-relaxed">
+                Mientras Mouv apifica el conversor, el pago llega por el grupo cerrado y aquí reflejas el saldo del cliente
+                en el riel correspondiente. Elige el cliente, el riel (Saldo Lincoin, Bre-B o ACH) y el monto.
+                Cada cargue queda registrado en el historial del cliente.
+              </p>
+            </div>
+          </div>
+
+          {/* Saldo REAL disponible en Mouv (la bolsa desde donde se carga) */}
+          <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 16, padding: '18px 22px' }}>
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div className="flex items-center gap-3">
+                <div style={{ width: 40, height: 40, borderRadius: 11, background: 'rgba(74,222,128,0.12)', border: '1px solid rgba(74,222,128,0.30)', display: 'grid', placeItems: 'center' }}>
+                  <Wallet size={19} style={{ color: '#4ADE80' }} />
+                </div>
+                <div>
+                  <p style={{ fontSize: 12.5, color: '#878E88', fontWeight: 600 }}>Saldo disponible en Mouv</p>
+                  {mouvPool?.loading ? (
+                    <p style={{ fontSize: 22, fontWeight: 800, color: '#878E88', letterSpacing: '-0.6px' }}>Cargando…</p>
+                  ) : mouvPool?.error ? (
+                    <p style={{ fontSize: 13, color: '#F87171', fontWeight: 600, maxWidth: 520 }}>{mouvPool.error}</p>
+                  ) : (
+                    <p style={{ fontSize: 26, fontWeight: 800, color: '#F4F4F2', letterSpacing: '-1px' }}>
+                      {Math.round(Number(mouvPool?.total ?? 0)).toLocaleString('es-CO')} <span style={{ fontSize: 13, color: '#878E88', fontWeight: 600 }}>COP</span>
+                    </p>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-3 flex-wrap">
+                <div style={{ background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 11, padding: '9px 14px', minWidth: 130 }}>
+                  <div className="flex items-center gap-1.5" style={{ color: '#878E88', marginBottom: 2 }}><Zap size={12} /><span style={{ fontSize: 11, fontWeight: 600 }}>Wallet BreB</span></div>
+                  <p style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>{mouvPool?.breb != null ? Math.round(mouvPool.breb).toLocaleString('es-CO') : '—'}</p>
+                </div>
+                <div style={{ background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 11, padding: '9px 14px', minWidth: 130 }}>
+                  <div className="flex items-center gap-1.5" style={{ color: '#878E88', marginBottom: 2 }}><Landmark size={12} /><span style={{ fontSize: 11, fontWeight: 600 }}>Cuenta ACH</span></div>
+                  <p style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>{mouvPool?.ach != null ? Math.round(mouvPool.ach).toLocaleString('es-CO') : '—'}</p>
+                </div>
+                <button onClick={loadMouvPool} disabled={mouvPool?.loading} title="Actualizar saldo Mouv"
+                  style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', borderRadius: 10, padding: '9px 11px', cursor: 'pointer' }}>
+                  <RefreshCw size={15} className={mouvPool?.loading ? 'animate-spin' : ''} />
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Respaldo y utilidad por riel: bolsa del proveedor − comprometido
+              con clientes = disponible para cargar (= utilidad en pesos). */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {([
+              { rail: 'COP_BREB', label: 'Bre-B · Mouv', icon: Zap, pool: brebPool, oblig: obligBreb, free: freeBreb,
+                loading: mouvPool?.loading, error: mouvPool?.error, reload: loadMouvPool },
+              { rail: 'COP_ACH', label: 'ACH · Finity', icon: Landmark, pool: achPool, oblig: obligAch, free: freeAch,
+                loading: finityPool?.loading, error: finityPool?.error, reload: loadFinityPool },
+            ] as const).map(c => (
+              <div key={c.rail} style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 16, padding: '16px 18px' }}>
+                <div className="flex items-center justify-between" style={{ marginBottom: 12 }}>
+                  <div className="flex items-center gap-2" style={{ color: '#F4F4F2' }}>
+                    <c.icon size={15} style={{ color: '#4ADE80' }} />
+                    <span style={{ fontSize: 13.5, fontWeight: 700 }}>{c.label}</span>
+                  </div>
+                  <button onClick={c.reload} disabled={c.loading} title="Actualizar"
+                    style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', borderRadius: 9, padding: '6px 8px', cursor: 'pointer' }}>
+                    <RefreshCw size={13} className={c.loading ? 'animate-spin' : ''} />
+                  </button>
+                </div>
+                {c.error ? (
+                  <p style={{ fontSize: 12, color: '#F87171', fontWeight: 600 }}>{c.error}</p>
+                ) : c.loading ? (
+                  <p style={{ fontSize: 13, color: '#878E88' }}>Cargando…</p>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between" style={{ padding: '6px 0' }}>
+                      <span style={{ fontSize: 12.5, color: '#878E88' }}>Bolsa en {c.rail === 'COP_BREB' ? 'Mouv' : 'Finity'}</span>
+                      <span style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>{Math.round(c.pool).toLocaleString('es-CO')} COP</span>
+                    </div>
+                    <div className="flex items-center justify-between" style={{ padding: '6px 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                      <span style={{ fontSize: 12.5, color: '#878E88' }}>Comprometido con clientes</span>
+                      <span style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>− {Math.round(c.oblig).toLocaleString('es-CO')} COP</span>
+                    </div>
+                    <div className="flex items-center justify-between" style={{ padding: '9px 0 2px', borderTop: '1px solid rgba(255,255,255,0.10)', marginTop: 4 }}>
+                      <span style={{ fontSize: 12.5, fontWeight: 700, color: c.free < 0 ? '#F87171' : '#4ADE80' }}>
+                        {c.free < 0 ? '⚠ Faltante (sobre-cargado)' : 'Disponible · utilidad'}
+                      </span>
+                      <span style={{ fontSize: 16, fontWeight: 800, letterSpacing: '-0.4px', color: c.free < 0 ? '#F87171' : '#4ADE80' }}>
+                        {Math.round(c.free).toLocaleString('es-CO')} COP
+                      </span>
+                    </div>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {/* Resolver conversión trabada: el USDT llegó al proveedor pero el
+              COP no se acreditó (p. ej. llegó 4.990,50 y el sistema esperaba
+              4.992). Acredita el COP adeudado y cierra el movimiento. */}
+          <details style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 16 }}>
+            <summary style={{ padding: '14px 18px', cursor: 'pointer', color: '#F4F4F2', fontSize: 13.5, fontWeight: 700, listStyle: 'none' }}>
+              🛟 Resolver conversión trabada (acreditar COP y cerrar)
+            </summary>
+            <div style={{ padding: '0 18px 18px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5 }}>
+                Úsalo cuando el USDT ya llegó al proveedor pero el COP no se acreditó (el cliente quedó debitado sin su COP). Pega el <b style={{ color: '#F4F4F2' }}>ID del movimiento de Lincoin</b> — el que ve el cliente en sus Movimientos (ej. <span style={{ fontFamily: 'monospace' }}>TX-B385BF</span>). <b style={{ color: '#F5B44A' }}>NO</b> es el ID de Finity. O elige un cliente abajo y dale <b style={{ color: '#F4F4F2' }}>“Ver conversiones trabadas”</b>.
+              </p>
+              {carguesClient && (
+                <button onClick={() => listStuck(carguesClient.id)} disabled={stuckBusy}
+                  style={{ alignSelf: 'flex-start', background: 'rgba(74,222,128,0.10)', border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', borderRadius: 9, padding: '7px 12px', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>
+                  🔎 Ver conversiones trabadas de {carguesClient.name?.split(' ')[0] ?? 'este cliente'}
+                </button>
+              )}
+              {Array.isArray(stuckList) && stuckList.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {stuckList.map((s: any) => (
+                    <button key={s.txId} onClick={() => { setStuckPreview(s); setStuckRail((s.currency && ['COP','COP_ACH','COP_BREB'].includes(s.currency)) ? s.currency : 'COP'); setStuckList(null); }}
+                      className="flex items-center justify-between" style={{ textAlign: 'left', background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, padding: '10px 13px', cursor: 'pointer' }}>
+                      <span style={{ fontSize: 12, color: '#878E88', fontFamily: 'monospace' }}>{String(s.txId).slice(0, 8)}… · {s.status}</span>
+                      <span style={{ fontSize: 13, color: '#4ADE80', fontWeight: 800 }}>+ {Number(s.owedCop).toLocaleString('es-CO')} COP</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {Array.isArray(stuckList) && stuckList.length === 0 && (
+                <p style={{ fontSize: 12, color: '#878E88' }}>Este cliente no tiene conversiones trabadas.</p>
+              )}
+              <div className="flex flex-wrap items-center gap-2">
+                <input value={stuckRef} onChange={e => setStuckRef(e.target.value)} placeholder="ID de Lincoin (ej. TX-B385BF)"
+                  style={{ flex: 1, minWidth: 200, background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10, padding: '10px 12px', color: '#F4F4F2', fontSize: 13 }} />
+                <button onClick={previewStuck} disabled={stuckBusy || !stuckRef.trim()}
+                  style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 10, padding: '10px 16px', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>
+                  {stuckBusy ? 'Buscando…' : 'Buscar'}
+                </button>
+              </div>
+              {stuckPreview && (
+                <div style={{ background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div className="flex justify-between" style={{ fontSize: 12.5 }}><span style={{ color: '#878E88' }}>Cliente</span><span style={{ color: '#F4F4F2', fontWeight: 700 }}>{stuckPreview.name ?? stuckPreview.email ?? stuckPreview.userId}</span></div>
+                  <div className="flex justify-between" style={{ fontSize: 12.5 }}><span style={{ color: '#878E88' }}>Estado actual</span><span style={{ color: stuckPreview.status === 'Completado' ? '#4ADE80' : '#F5B44A', fontWeight: 700 }}>{stuckPreview.status}</span></div>
+                  <div className="flex justify-between" style={{ fontSize: 12.5 }}><span style={{ color: '#878E88' }}>COP a acreditar</span><span style={{ color: '#4ADE80', fontWeight: 800 }}>+ {Number(stuckPreview.owedCop).toLocaleString('es-CO')} COP</span></div>
+                  <div className="flex items-center justify-between" style={{ fontSize: 12.5, marginTop: 4 }}>
+                    <span style={{ color: '#878E88' }}>Acreditar en</span>
+                    <select value={stuckRail} onChange={e => setStuckRail(e.target.value as any)}
+                      style={{ background: '#121413', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 8, padding: '6px 10px', fontSize: 12.5 }}>
+                      <option value="COP">Saldo Lincoin (COP)</option>
+                      <option value="COP_ACH">ACH</option>
+                      <option value="COP_BREB">Bre-B</option>
+                    </select>
+                  </div>
+                  {stuckPreview.status === 'Completado' ? (
+                    <p style={{ fontSize: 12, color: '#4ADE80', fontWeight: 600 }}>Este movimiento ya está Completado — no se vuelve a acreditar.</p>
+                  ) : (
+                    <button onClick={settleStuck} disabled={stuckBusy}
+                      style={{ marginTop: 4, background: '#4ADE80', color: '#0A0C0B', border: 'none', borderRadius: 10, padding: '11px', fontWeight: 800, fontSize: 13.5, cursor: 'pointer' }}>
+                      {stuckBusy ? 'Acreditando…' : 'Acreditar y cerrar'}
+                    </button>
+                  )}
+                </div>
+              )}
+              {stuckMsg && (
+                <p style={{ fontSize: 12.5, fontWeight: 600, color: stuckMsg.ok ? '#4ADE80' : '#F87171' }}>{stuckMsg.text}</p>
+              )}
+            </div>
+          </details>
+
+          <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+            {/* Columna izquierda — buscar y elegir cliente */}
+            <div className="lg:col-span-2 bg-white rounded-xl border border-slate-200 shadow-sm p-4">
+              <p className="text-sm font-bold text-slate-800 mb-3">1 · Elegir cliente</p>
+              <div className="relative mb-3">
+                <Search className="absolute left-3 top-2.5 text-slate-400" size={16} />
+                <input
+                  type="text"
+                  placeholder="Buscar por nombre o correo..."
+                  value={carguesSearch}
+                  onChange={(e) => setCarguesSearch(e.target.value)}
+                  className="w-full pl-9 pr-4 py-2 border border-slate-200 rounded-lg text-sm focus:border-[#0C0E0D] outline-none"
+                />
+              </div>
+              <div className="space-y-1.5 max-h-[420px] overflow-y-auto">
+                {list.length === 0 && (
+                  <p className="text-xs text-slate-400 text-center py-6">Sin clientes que coincidan.</p>
+                )}
+                {list.map(u => {
+                  const active = carguesClient?.id === u.id;
+                  return (
+                    <button
+                      key={u.id}
+                      onClick={() => { setCarguesClient(u); setCarguesMsg(null); }}
+                      className="w-full text-left p-3 rounded-lg transition-colors flex items-center gap-3"
+                      style={{
+                        border: active ? '1.5px solid #4ADE80' : '1px solid rgba(255,255,255,0.10)',
+                        background: active ? 'rgba(74,222,128,0.10)' : 'transparent',
+                      }}
+                    >
+                      <div className="w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0" style={{ background: 'rgba(255,255,255,0.06)', color: '#F4F4F2' }}>
+                        {(u.name ?? 'U').slice(0, 2).toUpperCase()}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-semibold truncate" style={{ color: '#F4F4F2' }}>{u.name ?? 'Sin nombre'}</p>
+                        <p className="text-xs truncate" style={{ color: '#878E88' }}>{u.email}</p>
+                      </div>
+                      {active && <CheckCircle size={16} className="flex-shrink-0" style={{ color: '#4ADE80' }} />}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Columna derecha — form del cargue */}
+            <div className="lg:col-span-3 bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+              {!carguesClient ? (
+                <div className="h-full flex flex-col items-center justify-center text-center py-16 text-slate-400">
+                  <Wallet size={30} className="mb-3 opacity-40" />
+                  <p className="text-sm font-medium">Selecciona un cliente a la izquierda</p>
+                  <p className="text-xs mt-1">para aplicarle un cargue de saldo.</p>
+                </div>
+              ) : (
+                <>
+                  {/* Cabecera cliente + saldos actuales */}
+                  <div className="flex items-center gap-3 pb-4 border-b border-slate-100">
+                    <div className="w-11 h-11 rounded-full bg-[#0C0E0D] flex items-center justify-center text-sm font-bold text-white flex-shrink-0">
+                      {(carguesClient.name ?? 'U').slice(0, 2).toUpperCase()}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-base font-bold text-slate-800 truncate">{carguesClient.name}</p>
+                      <p className="text-xs text-slate-400 truncate">{carguesClient.email}</p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 py-4">
+                    {(['COP', 'COP_BREB', 'COP_ACH'] as const).map(code => {
+                      const M = railMeta[code];
+                      return (
+                        <div key={code} className="bg-slate-50 rounded-lg p-3 border border-slate-100">
+                          <div className="flex items-center gap-1.5 text-slate-500 mb-1"><M.icon size={13} /><span className="text-[11px] font-semibold">{M.label}</span></div>
+                          <p className="text-sm font-bold text-slate-800">{formatMoney(bal(carguesClient, code), '')}</p>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* 2 · Riel */}
+                  <p className="text-sm font-bold text-slate-800 mb-2 mt-1">2 · Riel destino</p>
+                  <div className="grid grid-cols-3 gap-2 mb-4">
+                    {(['COP', 'COP_BREB', 'COP_ACH'] as const).map(code => {
+                      const M = railMeta[code];
+                      const active = carguesRail === code;
+                      return (
+                        <button
+                          key={code}
+                          onClick={() => setCarguesRail(code)}
+                          className="p-3 rounded-lg text-left transition-colors"
+                          style={{
+                            border: active ? '1.5px solid #4ADE80' : '1px solid rgba(255,255,255,0.14)',
+                            background: active ? 'rgba(74,222,128,0.12)' : 'transparent',
+                          }}
+                        >
+                          <M.icon size={16} style={{ color: active ? '#4ADE80' : '#878E88' }} />
+                          <p className="text-xs font-bold mt-1.5" style={{ color: '#F4F4F2' }}>{M.label}</p>
+                          <p className="text-[10px] leading-tight mt-0.5" style={{ color: '#878E88' }}>{M.sub}</p>
+                          {active && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginTop: 6, fontSize: 10, fontWeight: 700, color: '#4ADE80' }}><CheckCircle size={11} /> Seleccionado</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* 3 · Dirección + monto */}
+                  <p className="text-sm font-bold text-slate-800 mb-2">3 · Movimiento</p>
+                  <div className="flex gap-2 p-1 bg-slate-100 rounded-lg mb-3">
+                    <button onClick={() => setCarguesDir('credit')} className={`flex-1 py-1.5 text-sm font-bold rounded transition-colors ${carguesDir === 'credit' ? 'bg-green-600 text-white' : 'text-slate-500'}`}>Acreditar (+)</button>
+                    <button onClick={() => setCarguesDir('debit')} className={`flex-1 py-1.5 text-sm font-bold rounded transition-colors ${carguesDir === 'debit' ? 'bg-red-500 text-white' : 'text-slate-500'}`}>Descontar (−)</button>
+                  </div>
+                  <label className="block text-xs font-semibold text-slate-500 mb-1">Monto (COP)</label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="0"
+                    value={carguesAmount ? Number(carguesAmount).toLocaleString('es-CO') : ''}
+                    onChange={(e) => setCarguesAmount(e.target.value.replace(/\D/g, ''))}
+                    className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-lg font-bold text-slate-800 focus:border-[#0C0E0D] outline-none mb-3"
+                  />
+                  <label className="block text-xs font-semibold text-slate-500 mb-1">Nota (opcional)</label>
+                  <input
+                    type="text"
+                    placeholder="Ref. Mouv, motivo del ajuste..."
+                    value={carguesNote}
+                    onChange={(e) => setCarguesNote(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm text-slate-800 focus:border-[#0C0E0D] outline-none mb-3"
+                  />
+                  {/* Registro histórico: crea el MOVIMIENTO sin tocar el saldo —
+                      para cuadrar cargues viejos que se acreditaron sin fila en
+                      transacciones (el resumen de Movimientos no los veía). */}
+                  <label className="flex items-center gap-2 mb-4 cursor-pointer select-none">
+                    <input type="checkbox" checked={carguesRecordOnly} onChange={e => setCarguesRecordOnly(e.target.checked)} style={{ width: 15, height: 15, accentColor: '#4ADE80' }} />
+                    <span className="text-xs text-slate-500">Solo registrar movimiento histórico (<b>no</b> modifica el saldo ni cobra comisión)</span>
+                  </label>
+
+                  {carguesMsg && (
+                    <div className={`text-xs font-medium rounded-lg p-3 mb-3 ${carguesMsg.ok ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
+                      {carguesMsg.text}
+                    </div>
+                  )}
+
+                  <button
+                    onClick={requestCargue}
+                    disabled={carguesBusy || !carguesAmount}
+                    className="w-full py-3 rounded-lg text-sm font-bold text-white bg-[#0C0E0D] hover:bg-[#152e52] disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+                  >
+                    {carguesBusy ? <><RefreshCw size={15} className="animate-spin" /> Aplicando…</> : <>{carguesDir === 'credit' ? 'Acreditar' : 'Descontar'} saldo</>}
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* Ventana de confirmación del cargue (tema Lincoin) */}
+          {carguesConfirm && carguesClient && (
+            <div className="fixed inset-0 z-[80] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.62)', backdropFilter: 'blur(3px)' }} onClick={() => !carguesBusy && setCarguesConfirm(null)}>
+              <div onClick={(e) => e.stopPropagation()} style={{ width: '100%', maxWidth: 420, background: '#121413', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, overflow: 'hidden', fontFamily: "'Archivo', system-ui, sans-serif", boxShadow: '0 24px 60px rgba(0,0,0,0.55)' }}>
+                <div style={{ padding: '22px 24px 4px' }}>
+                  <div style={{ width: 46, height: 46, borderRadius: 13, display: 'grid', placeItems: 'center', marginBottom: 14,
+                    background: carguesDir === 'credit' ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.12)',
+                    border: `1px solid ${carguesDir === 'credit' ? 'rgba(74,222,128,0.32)' : 'rgba(248,113,113,0.32)'}` }}>
+                    <Wallet size={21} style={{ color: carguesDir === 'credit' ? '#4ADE80' : '#F87171' }} />
+                  </div>
+                  <h3 style={{ fontSize: 18, fontWeight: 800, color: '#F4F4F2', letterSpacing: '-0.4px' }}>
+                    Confirmar {carguesDir === 'credit' ? 'cargue' : 'descuento'}
+                  </h3>
+                  <p style={{ fontSize: 13.5, color: '#878E88', marginTop: 4, lineHeight: 1.5 }}>
+                    Vas a {carguesDir === 'credit' ? 'acreditar' : 'descontar'} saldo en el riel <b style={{ color: '#F4F4F2' }}>{railLabelOf(carguesRail)}</b> de <b style={{ color: '#F4F4F2' }}>{carguesClient.name}</b>.
+                  </p>
+                </div>
+                {(() => {
+                  // Bre-B: al cliente se le cobra 0,10% POR RECIBIR el cargue —
+                  // el neto es lo que de verdad entra a su billetera Bre-B.
+                  const isBrebCredit = carguesRail === 'COP_BREB' && carguesDir === 'credit' && !carguesRecordOnly;
+                  const fee = isBrebCredit ? Math.round(carguesConfirm.raw * 0.10 / 100) : 0;
+                  const net = carguesConfirm.raw - fee;
+                  const deltaNet = carguesDir === 'credit' ? net : -carguesConfirm.raw;
+                  return (
+                <div style={{ margin: '16px 24px', padding: '16px 18px', background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 13 }}>
+                  <div className="flex items-center justify-between" style={{ marginBottom: 10 }}>
+                    <span style={{ fontSize: 12.5, color: '#878E88' }}>Monto{isBrebCredit ? ' del cargue' : ''}</span>
+                    <span style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.6px', color: carguesDir === 'credit' ? '#4ADE80' : '#F87171' }}>
+                      {carguesDir === 'credit' ? '+' : '−'} {carguesConfirm.raw.toLocaleString('es-CO')} <span style={{ fontSize: 12, color: '#878E88', fontWeight: 600 }}>COP</span>
+                    </span>
+                  </div>
+                  {isBrebCredit && (
+                    <>
+                      <div className="flex items-center justify-between" style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 10 }}>
+                        <span style={{ fontSize: 12.5, color: '#878E88' }}>Comisión por recepción Bre-B (0,10%)</span>
+                        <span style={{ fontSize: 13.5, fontWeight: 700, color: '#F87171' }}>− {fee.toLocaleString('es-CO')} COP</span>
+                      </div>
+                      <div className="flex items-center justify-between" style={{ marginTop: 8 }}>
+                        <span style={{ fontSize: 12.5, color: '#878E88' }}>Neto que se acredita</span>
+                        <span style={{ fontSize: 13.5, fontWeight: 800, color: '#F4F4F2' }}>{net.toLocaleString('es-CO')} COP</span>
+                      </div>
+                    </>
+                  )}
+                  <div className="flex items-center justify-between" style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 10, marginTop: isBrebCredit ? 10 : 0 }}>
+                    <span style={{ fontSize: 12.5, color: '#878E88' }}>Saldo {railLabelOf(carguesRail)} actual</span>
+                    <span style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>{Number((carguesClient.balances as any)?.[carguesRail] ?? 0).toLocaleString('es-CO')} COP</span>
+                  </div>
+                  <div className="flex items-center justify-between" style={{ marginTop: 8 }}>
+                    <span style={{ fontSize: 12.5, color: '#878E88' }}>Quedará en</span>
+                    <span style={{ fontSize: 13.5, fontWeight: 800, color: '#4ADE80' }}>
+                      {Math.max(0, Number((carguesClient.balances as any)?.[carguesRail] ?? 0) + deltaNet).toLocaleString('es-CO')} COP
+                    </span>
+                  </div>
+                  {carguesNote.trim() && <p style={{ fontSize: 12, color: '#878E88', marginTop: 12, fontStyle: 'italic' }}>“{carguesNote.trim()}”</p>}
+                </div>
+                  );
+                })()}
+                {cargueExceeds && (
+                  <div style={{ margin: '0 24px 12px', padding: '12px 14px', background: 'rgba(248,113,113,0.10)', border: '1px solid rgba(248,113,113,0.38)', borderRadius: 12 }}>
+                    <p style={{ fontSize: 12.5, color: '#F87171', fontWeight: 800 }}>⚠ Excede lo disponible en {carguesRail === 'COP_BREB' ? 'Mouv' : 'Finity'}</p>
+                    <p style={{ fontSize: 11.5, color: 'rgba(248,113,113,0.9)', lineHeight: 1.5, marginTop: 4 }}>
+                      Libre para cargar: <b>{Math.round(freeForRail).toLocaleString('es-CO')} COP</b>. Con este cargue quedarías corto en <b>{cargueShortfall.toLocaleString('es-CO')} COP</b> frente a lo que ya les debes a los clientes — estarías acreditando saldo que la bolsa no respalda.
+                    </p>
+                    <label className="flex items-center gap-2" style={{ marginTop: 8, cursor: 'pointer' }}>
+                      <input type="checkbox" checked={carguesOverride} onChange={e => setCarguesOverride(e.target.checked)} />
+                      <span style={{ fontSize: 12, color: '#F4F4F2', fontWeight: 600 }}>Entiendo el faltante — cargar de todos modos</span>
+                    </label>
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: 10, padding: '4px 24px 22px' }}>
+                  <button onClick={() => { setCarguesConfirm(null); setCarguesOverride(false); }} disabled={carguesBusy}
+                    style={{ flex: 1, padding: '12px', borderRadius: 11, fontSize: 14, fontWeight: 700, color: '#F4F4F2', background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', cursor: carguesBusy ? 'default' : 'pointer' }}>
+                    Cancelar
+                  </button>
+                  <button onClick={submitCargue} disabled={carguesBusy || (cargueExceeds && !carguesOverride)}
+                    style={{ flex: 1.4, padding: '12px', borderRadius: 11, fontSize: 14, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                      color: '#0A0C0B', background: (carguesBusy || (cargueExceeds && !carguesOverride)) ? 'rgba(74,222,128,0.4)' : '#4ADE80', border: 'none', cursor: (carguesBusy || (cargueExceeds && !carguesOverride)) ? 'not-allowed' : 'pointer' }}>
+                    {carguesBusy ? <><RefreshCw size={15} className="animate-spin" /> Aplicando…</> : <>Confirmar {carguesDir === 'credit' ? 'cargue' : 'descuento'}</>}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+  };
+
   const renderTreasury = () => {
       const CRYPTO_TYPES = ['otc_withdraw', 'otc_withdraw_request', 'otc_deposit', 'admin_hot_withdrawal', 'otc_convert_request'];
       const cryptoTxs = historyTransactions.filter(tx => CRYPTO_TYPES.includes(tx.type))
@@ -1256,9 +2144,38 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
           return acc + (Math.max(0, account.amount) * rateToUSD);
       }, 0);
 
+      const pendingRailMoves = (getAllTransactions() as any[]).filter(t => t.type === 'rail_move' && t.status === 'Pendiente');
       return (
       <div className="space-y-8 animate-in fade-in duration-300">
-          
+          {/* ── Solicitudes "Saldo Lincoin → ACH" (aprobación manual) ──
+              El cliente ya quedó debitado; antes de aprobar, mueve el
+              respaldo al proveedor y luego dale Aprobar (acredita su ACH). */}
+          {pendingRailMoves.length > 0 && (
+              <div className="bg-white rounded-xl border-2 border-amber-200 overflow-hidden">
+                  <div className="px-4 py-3 bg-amber-50 border-b border-amber-100 flex items-center justify-between gap-2 flex-wrap">
+                      <p className="text-sm font-bold text-amber-800">🏛 Movimientos a ACH pendientes de aprobación · {pendingRailMoves.length}</p>
+                      <p className="text-[11px] text-amber-700">Antes de aprobar: envía el respaldo al proveedor. Aprobar acredita el saldo ACH del cliente; Rechazar le reembolsa su Saldo Lincoin.</p>
+                  </div>
+                  {pendingRailMoves.map((t: any) => (
+                      <div key={t.id} className="flex items-center justify-between gap-3 px-4 py-3 border-b border-slate-100 flex-wrap">
+                          <div>
+                              <p className="font-bold text-slate-800 text-sm">{t.userName || t.raw_data?.userName || '—'}</p>
+                              <p className="text-xs text-slate-400">{t.createdAt ? new Date(t.createdAt).toLocaleString('es-CO', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : ''} · Saldo Lincoin → ACH</p>
+                          </div>
+                          <p className="font-black text-slate-800 tabular-nums">${Math.round(Number(t.amount ?? 0)).toLocaleString('es-CO')} COP</p>
+                          <div className="flex items-center gap-2">
+                              <button onClick={() => railMoveAction(t.id, 'reject')} disabled={railMoveBusy === t.id}
+                                  className="px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50 disabled:opacity-50">Rechazar</button>
+                              <button onClick={() => railMoveAction(t.id, 'approve')} disabled={railMoveBusy === t.id}
+                                  className="px-3 py-1.5 rounded-lg bg-[#16A34A] text-white text-xs font-bold hover:bg-[#0f766e] disabled:opacity-50">
+                                  {railMoveBusy === t.id ? 'Aplicando…' : 'Aprobar → ACH'}
+                              </button>
+                          </div>
+                      </div>
+                  ))}
+              </div>
+          )}
+
           <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
               <div>
                   <h2 className="text-2xl font-bold text-[#0C0E0D]">Tesoreria y Finanzas</h2>
@@ -1858,6 +2775,42 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
 
   const renderConfig = () => (
     <div className="space-y-6 animate-in fade-in duration-300">
+        {/* Países habilitados — modelo hub multi-país. Controla qué países ven
+            los clientes en Enviar/Beneficiarios (Activo), cuáles aparecen como
+            "Próximamente" en el inicio, y cuáles quedan ocultos. */}
+        <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+            <h3 className="font-bold text-slate-800 mb-2 flex items-center gap-2"><Landmark size={20}/> Países y monedas</h3>
+            <p className="text-xs text-slate-500 mb-5">Cada país opera su riel local contra USDT (nunca fiat→fiat directo). Activa un país solo cuando su riel esté conectado.</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {([
+                    { name: 'Colombia', rail: 'Bre-B · ACH · COP', def: 'on' },
+                    { name: 'Estados Unidos', rail: 'USDT (TRON) · USD', def: 'on' },
+                    { name: 'México', rail: 'SPEI · MXN', def: 'soon' },
+                    { name: 'Brasil', rail: 'Pix · BRL', def: 'soon' },
+                    { name: 'Perú', rail: 'CCI · PEN', def: 'off' },
+                    { name: 'Chile', rail: 'Transferencia · CLP', def: 'off' },
+                    { name: 'Venezuela', rail: 'Pago móvil · VES', def: 'off' },
+                ] as const).map(c => {
+                    const cs: Record<string, string> = { Colombia: 'on', 'Estados Unidos': 'on', 'México': 'soon', Brasil: 'soon', ...((systemConfig as any).countryStatus || {}) };
+                    const cur = cs[c.name] ?? c.def;
+                    const setStatus = (v: string) => updateSystemConfig({ countryStatus: { ...cs, [c.name]: v } } as any);
+                    return (
+                        <div key={c.name} className="flex items-center justify-between gap-3 border border-slate-200 rounded-xl px-4 py-3">
+                            <div className="min-w-0">
+                                <p className="font-bold text-slate-800 text-sm">{c.name}</p>
+                                <p className="text-[11px] text-slate-400">{c.rail}</p>
+                            </div>
+                            <select value={cur} onChange={e => setStatus(e.target.value)} className="border border-slate-200 rounded-lg text-xs font-bold p-2">
+                                <option value="on">Activo</option>
+                                <option value="soon">Próximamente</option>
+                                <option value="off">Oculto</option>
+                            </select>
+                        </div>
+                    );
+                })}
+            </div>
+        </div>
+
         <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
             <h3 className="font-bold text-slate-800 mb-6 flex items-center gap-2"><Settings size={20}/> Configuración General</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
@@ -2407,7 +3360,41 @@ const renderDesign = () => (
       const userTransactions = selectedSecurityUser ? historyTransactions.filter(tx => tx.userId === selectedSecurityUser.id).sort((a,b) => b.id - a.id) : [];
 
       return (
-          <div className="space-y-6 animate-in fade-in duration-300 flex h-[calc(100vh-140px)]">
+        <div className="space-y-6 animate-in fade-in duration-300">
+          {/* Tu propio 2FA — protege el cambio de proveedor de tesorería */}
+          <div className={`rounded-xl border p-4 ${adminMfaOn ? 'border-green-200 bg-green-50/50' : 'border-amber-300 bg-amber-50/60'}`}>
+            <div className="flex items-start justify-between gap-3 flex-wrap">
+              <div className="min-w-0">
+                <p className="font-bold text-slate-800 flex items-center gap-2"><Shield size={16} className={adminMfaOn ? 'text-green-600' : 'text-amber-600'} /> Tu verificación en dos pasos (2FA)</p>
+                <p className="text-xs text-slate-500 mt-0.5">{adminMfaOn ? 'Activo. El cambio de dirección de un proveedor exige tu código — nadie puede desviar el dinero sin él.' : 'NO está activo. Sin 2FA, el sistema BLOQUEA cambiar la dirección de un proveedor (protección). Actívalo para poder gestionarlos y para blindar tu cuenta.'}</p>
+              </div>
+              <span className={`text-xs font-bold px-3 py-1.5 rounded-full ${adminMfaOn ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>{adminMfaOn ? '✅ Activo' : '⚠ Inactivo'}</span>
+            </div>
+            {!adminMfaOn && !mfaEnroll && (
+              <button onClick={startMfaEnroll} disabled={mfaBusy} className="mt-3 px-4 py-2 text-sm font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#152e52] disabled:opacity-60">{mfaBusy ? 'Generando…' : 'Activar 2FA ahora'}</button>
+            )}
+            {mfaEnroll && (
+              <div className="mt-3 grid md:grid-cols-2 gap-4 items-start">
+                <div className="bg-white rounded-lg border border-slate-200 p-3 text-center">
+                  <p className="text-xs text-slate-500 mb-2">1. Escanea este QR con Google Authenticator / Authy</p>
+                  {mfaEnroll.qrCode ? <img src={mfaEnroll.qrCode} alt="QR 2FA" className="w-44 h-44 mx-auto" /> : <p className="text-xs text-slate-400">QR no disponible — usa la clave de abajo.</p>}
+                  <p className="text-[11px] text-slate-500 mt-2">o ingresa esta clave a mano:</p>
+                  <p className="text-[11px] font-mono break-all text-slate-700 bg-slate-50 rounded p-1.5 mt-1">{mfaEnroll.secret}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-slate-500 mb-2">2. Escribe el código de 6 dígitos que muestra la app</p>
+                  <input value={mfaCode} onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, '').slice(0, 6))} onKeyDown={(e) => { if (e.key === 'Enter') confirmMfaEnroll(); }} placeholder="123 456" inputMode="numeric" className="w-full px-3 py-3 rounded-lg border border-slate-300 outline-none focus:border-[#0C0E0D] font-mono text-lg tracking-widest text-center" />
+                  <div className="flex gap-2 mt-2">
+                    <button onClick={confirmMfaEnroll} disabled={mfaBusy || mfaCode.length !== 6} className="px-4 py-2 text-sm font-bold rounded-lg bg-[#4ADE80] text-[#0C0E0D] hover:bg-[#26bda9] disabled:opacity-60">{mfaBusy ? 'Verificando…' : 'Confirmar y activar'}</button>
+                    <button onClick={() => { setMfaEnroll(null); setMfaCode(''); setMfaMsg(null); }} className="px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100 rounded-lg">Cancelar</button>
+                  </div>
+                </div>
+              </div>
+            )}
+            {mfaMsg && <p className={`mt-2 text-xs font-semibold ${mfaMsg.startsWith('✅') ? 'text-green-700' : 'text-red-700'}`}>{mfaMsg}</p>}
+          </div>
+
+          <div className="flex h-[calc(100vh-260px)]">
               {/* Left Panel: User List */}
               <div className="w-1/3 bg-white border border-slate-200 rounded-xl flex flex-col overflow-hidden">
                   <div className="p-4 border-b border-slate-100 bg-slate-50">
@@ -2581,11 +3568,212 @@ const renderDesign = () => (
                   )}
               </div>
           </div>
+        </div>
       );
   };
 
+  const renderFallos = () => {
+    const railLabel = (cur: string): string => {
+      const c = String(cur ?? '');
+      if (c === 'COP_BREB') return 'Bre-B';
+      if (c === 'COP_ACH') return 'ACH';
+      if (c === 'COP') return 'Saldo Lincoin';
+      if (c.startsWith('USD')) return 'USDT';
+      return c || '—';
+    };
+    const errText = (t: any): string => {
+      const em = t.errorMessage ?? t.raw_data?.errorMessage;
+      if (em) return String(em);
+      const e = t.error ?? t.raw_data?.error;
+      let s = '';
+      try { s = typeof e === 'string' ? e : (e ? JSON.stringify(e) : ''); } catch { s = String(e ?? ''); }
+      const http = t.httpStatus ?? t.raw_data?.httpStatus;
+      return [http ? `HTTP ${http}` : '', s].filter(Boolean).join(' · ') || 'Sin detalle técnico';
+    };
+    const emailOf = (t: any): string => allUsers.find((u: any) => u.id === t.userId)?.email ?? t.userName ?? t.raw_data?.userName ?? t.userId ?? '—';
+    const fmtDate = (d: any) => { try { return new Date(d).toLocaleString('es-CO', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }); } catch { return '—'; } };
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div>
+            <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2"><AlertTriangle size={18} className="text-red-500" /> Fallos de operaciones</h2>
+            <p className="text-sm text-slate-500">Envíos/retiros que fallaron o fueron rechazados, con el error técnico real. Al cliente solo se le muestra un mensaje amable.</p>
+          </div>
+          <span className="text-xs font-bold px-3 py-1.5 rounded-full bg-red-50 text-red-700 border border-red-200">{failuresCount} {failuresCount === 1 ? 'fallo' : 'fallos'}</span>
+        </div>
+        {failuresList.length === 0 ? (
+          <div className="bg-white rounded-xl border border-slate-200 p-10 text-center">
+            <p className="text-slate-700 font-semibold">Sin fallos recientes</p>
+            <p className="text-slate-400 text-sm mt-1">Cuando una operación falle o sea rechazada, aparecerá aquí con su motivo técnico.</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {failuresList.map((t: any) => (
+              <div key={t.id} className="bg-white rounded-xl border border-slate-200 p-4">
+                <div className="flex items-start justify-between gap-3 flex-wrap">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{railLabel(t.currency)}</span>
+                      <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-200">{String(t.status).toUpperCase()}</span>
+                      <span className="text-xs text-slate-400">{fmtDate(t.createdAt)}</span>
+                    </div>
+                    <p className="text-sm font-bold text-slate-800 mt-1.5">{Number(t.amount).toLocaleString('es-CO')} <span className="text-slate-400 font-medium">{String(t.currency ?? '').split('_')[0]}</span></p>
+                    <p className="text-xs text-slate-500 mt-0.5">Cliente: <span className="font-semibold text-slate-700">{emailOf(t)}</span></p>
+                    {(t.beneficiary || t.account) && (
+                      <p className="text-xs text-slate-500">Beneficiario: <span className="font-semibold text-slate-700">{t.beneficiary ?? '—'}</span>{t.account ? ` · ${t.account}` : ''}</p>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => { navigator.clipboard.writeText(errText(t)).then(() => showToast('Error copiado')).catch(() => {}); }}
+                    className="text-xs font-semibold text-slate-500 hover:text-slate-800 flex items-center gap-1 shrink-0"
+                  ><Copy size={13} /> Copiar</button>
+                </div>
+                <div className="mt-2.5 rounded-lg bg-slate-900 text-slate-100 p-3 overflow-x-auto">
+                  <code className="text-[11px] leading-relaxed whitespace-pre-wrap break-words" style={{ fontFamily: 'ui-monospace, Menlo, monospace' }}>{errText(t)}</code>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderAuditoria = () => {
+    const fmtDate = (d: any) => { try { return new Date(d).toLocaleString('es-CO', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }); } catch { return '—'; } };
+    const actionLabel = (a: string): string => {
+      const s = String(a ?? '');
+      if (s === 'gasfree.set_providers') return 'Cambió la dirección de un proveedor de tesorería';
+      if (s === 'gasfree.set_treasury_config') return 'Modificó la configuración de tesorería';
+      return s || 'Acción';
+    };
+    const actorOf = (row: any): string => row?.metadata?.byEmail ?? row?.metadata?.byId ?? row?.user_id ?? 'Desconocido';
+    const whenOf = (row: any): any => row?.metadata?.at ?? row?.created_at ?? row?.createdAt;
+    const isProviderChange = (row: any) => String(row?.action) === 'gasfree.set_providers';
+    const providerDiff = (row: any) => {
+      const before: any[] = Array.isArray(row?.metadata?.before) ? row.metadata.before : [];
+      const after: any[] = Array.isArray(row?.metadata?.after) ? row.metadata.after : [];
+      const ids = Array.from(new Set([...before.map((p) => p.id), ...after.map((p) => p.id)]));
+      return ids.map((id) => {
+        const b = before.find((p) => p.id === id);
+        const a = after.find((p) => p.id === id);
+        return { id, name: a?.name ?? b?.name ?? id, from: b?.detail ?? '—', to: a?.detail ?? '—', changed: (b?.detail ?? '') !== (a?.detail ?? '') };
+      });
+    };
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div>
+            <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Shield size={18} className="text-slate-500" /> Auditoría</h2>
+            <p className="text-sm text-slate-500">Registro de cambios sensibles: quién cambió la dirección de un proveedor de tesorería y cuándo. Solo cubre cambios <span className="font-semibold">a partir de ahora</span>; los cambios anteriores a esta función no quedaron registrados.</p>
+          </div>
+          <button onClick={() => { loadAudit(); loadAdminLogins(); }} disabled={auditLoading} className="text-xs font-semibold text-slate-600 hover:text-slate-900 border border-slate-200 rounded-lg px-3 py-1.5 disabled:opacity-50">{auditLoading ? 'Cargando…' : 'Actualizar'}</button>
+        </div>
+
+        {/* Ingresos de admin — última vez de ingreso + actividad con IP */}
+        <div className="bg-white rounded-xl border border-slate-200 p-4">
+          <p className="font-bold text-slate-800 flex items-center gap-2 mb-2"><Shield size={16} className="text-slate-500" /> Ingresos de administrador</p>
+          {!adminLogins ? (
+            <p className="text-sm text-slate-400">Cargando…</p>
+          ) : (
+            <div className="space-y-3">
+              <div className="grid gap-2 sm:grid-cols-2">
+                {(adminLogins.admins ?? []).map((a: any) => (
+                  <div key={a.id} className="rounded-lg border border-slate-200 p-3">
+                    <p className="font-bold text-slate-800 text-sm break-all">{a.email}</p>
+                    <p className="text-xs text-slate-600 mt-1">Último ingreso: <span className="font-semibold">{a.last_sign_in_at ? new Date(a.last_sign_in_at).toLocaleString('es-CO') : '—'}</span></p>
+                    <p className="text-[11px] text-slate-400">Cuenta creada: {a.created_at ? new Date(a.created_at).toLocaleString('es-CO') : '—'}</p>
+                  </div>
+                ))}
+                {(adminLogins.admins ?? []).length === 0 && <p className="text-xs text-slate-400">No se pudo leer la fecha de ingreso desde Supabase Auth.</p>}
+              </div>
+              {(adminLogins.activity ?? []).length > 0 && (
+                <div>
+                  <p className="text-xs font-bold text-slate-600 mb-1.5">Actividad reciente con IP</p>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead><tr className="text-slate-400 text-left"><th className="py-1 pr-3">Fecha</th><th className="py-1 pr-3">Acción</th><th className="py-1 pr-3">Correo</th><th className="py-1 pr-3">IP</th></tr></thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {(adminLogins.activity ?? []).slice(0, 30).map((ev: any, i: number) => (
+                          <tr key={i} className={ev.hadSession === false ? 'bg-red-50' : ''}>
+                            <td className="py-1 pr-3 text-slate-500 whitespace-nowrap">{ev.at ? new Date(ev.at).toLocaleString('es-CO') : '—'}</td>
+                            <td className="py-1 pr-3 font-semibold text-slate-700">{ev.action === 'auth.admin_login' ? 'Ingreso' : ev.action}</td>
+                            <td className="py-1 pr-3 text-slate-600 break-all">{ev.byEmail ?? (ev.hadSession === false ? '⚠ sin sesión' : '—')}</td>
+                            <td className="py-1 pr-3 font-mono text-slate-700">{ev.ip ?? '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+              <p className="text-[11px] text-slate-400">"Último ingreso" viene de Supabase Auth (fecha única). La actividad con IP se registra de aquí en adelante — los ingresos anteriores no quedaron con IP.</p>
+            </div>
+          )}
+        </div>
+        {auditLoading && auditRows === null ? (
+          <div className="bg-white rounded-xl border border-slate-200 p-10 text-center text-slate-400 text-sm">Cargando registro…</div>
+        ) : (auditRows ?? []).length === 0 ? (
+          <div className="bg-white rounded-xl border border-slate-200 p-10 text-center">
+            <p className="text-slate-700 font-semibold">Sin registros de auditoría</p>
+            <p className="text-slate-400 text-sm mt-1">Cuando alguien cambie la dirección de un proveedor u otra configuración de tesorería, aparecerá aquí con el correo y la fecha.</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {(auditRows ?? []).map((row: any, i: number) => (
+              <div key={row.id ?? i} className="bg-white rounded-xl border border-slate-200 p-4">
+                <div className="flex items-start justify-between gap-3 flex-wrap">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {isProviderChange(row) && <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">Cambio de proveedor</span>}
+                      <span className="text-xs text-slate-400">{fmtDate(whenOf(row))}</span>
+                    </div>
+                    <p className="text-sm font-bold text-slate-800 mt-1.5">{actionLabel(row.action)}</p>
+                    <p className="text-xs text-slate-500 mt-0.5">Por: <span className="font-semibold text-slate-700">{actorOf(row)}</span></p>
+                    {row?.metadata?.hadSession === false && (
+                      <p className="text-[11px] font-bold text-red-600 mt-0.5">⚠ Sin sesión iniciada — posible AdminBypass (clave filtrada). La IP es la única huella.</p>
+                    )}
+                    {row?.metadata?.ip && (
+                      <p className="text-[11px] text-slate-500 mt-0.5">IP: <span className="font-mono text-slate-700">{row.metadata.ip}</span>{row?.metadata?.origin ? ` · ${row.metadata.origin}` : ''}</p>
+                    )}
+                    {row?.metadata?.userAgent && (
+                      <p className="text-[11px] text-slate-400 mt-0.5 break-all">Dispositivo: {String(row.metadata.userAgent).slice(0, 120)}</p>
+                    )}
+                  </div>
+                </div>
+                {isProviderChange(row) && (
+                  <div className="mt-2.5 space-y-2">
+                    {providerDiff(row).filter((d) => d.changed).length === 0 ? (
+                      <p className="text-xs text-slate-400">Sin cambios de dirección detectados en este registro.</p>
+                    ) : providerDiff(row).filter((d) => d.changed).map((d) => (
+                      <div key={d.id} className="rounded-lg border border-slate-200 p-3 bg-slate-50">
+                        <p className="text-xs font-bold text-slate-700 mb-1">{d.name}</p>
+                        <div className="text-[11px] leading-relaxed break-all" style={{ fontFamily: 'ui-monospace, Menlo, monospace' }}>
+                          <p className="text-red-600">− {d.from}</p>
+                          <p className="text-green-700">+ {d.to}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {!isProviderChange(row) && row.metadata && (
+                  <div className="mt-2.5 rounded-lg bg-slate-900 text-slate-100 p-3 overflow-x-auto">
+                    <code className="text-[11px] leading-relaxed whitespace-pre-wrap break-words" style={{ fontFamily: 'ui-monospace, Menlo, monospace' }}>{(() => { try { return JSON.stringify(row.metadata, null, 2); } catch { return String(row.metadata); } })()}</code>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const closeSidebar = () => setIsSidebarOpen(false);
-  const navTo = (tab: string) => { setActiveTab(tab); closeSidebar(); };
+  const navTo = (tab: string) => { setActiveTab(tab as any); closeSidebar(); };
+  // El Dashboard/Monitoreo usan el tema oscuro Lincoin (AdminMonitor trae su
+  // propio header); el resto de secciones mantienen su lienzo claro actual.
+  const isDark = activeTab === 'overview' || activeTab === 'monitoreo';
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] font-sans text-slate-900 flex">
@@ -2601,33 +3789,87 @@ const renderDesign = () => (
                   <X size={20}/>
                 </button>
             </div>
-            <div className="flex-1 overflow-y-auto py-6 px-4 space-y-1">
-                <AdminSidebarItem icon={BarChart3} label="Dashboard" active={activeTab === 'overview'} onClick={() => navTo('overview')} />
-                <AdminSidebarItem icon={Users} label="Clientes" active={activeTab === 'clients'} badge={pendingClientsCount > 0 ? pendingClientsCount : undefined} onClick={() => navTo('clients')} />
-                <AdminSidebarItem icon={Landmark} label="Tesorería" active={activeTab === 'treasury'} badge={pendingDeposits.length + pendingWithdrawals.length > 0 ? pendingDeposits.length + pendingWithdrawals.length : undefined} onClick={() => navTo('treasury')} />
-                <AdminSidebarItem icon={FileText} label="Reportes" active={activeTab === 'reports'} onClick={() => navTo('reports')} />
-                <AdminSidebarItem icon={Settings} label="Configuración" active={activeTab === 'config'} onClick={() => navTo('config')} />
-                <AdminSidebarItem icon={Palette} label="Diseño" active={activeTab === 'design'} onClick={() => navTo('design')} />
-                <AdminSidebarItem icon={Shield} label="Seguridad" active={activeTab === 'security'} onClick={() => navTo('security')} />
-                <AdminSidebarItem icon={Megaphone} label="Marketing" active={activeTab === 'marketing'} onClick={() => navTo('marketing')} />
-                <AdminSidebarItem icon={Building2} label="Bancos" active={activeTab === 'banks'} onClick={() => navTo('banks')} />
-                <AdminSidebarItem icon={TrendingUp} label="Tasas de Cambio" active={activeTab === 'rates'} onClick={() => navTo('rates')} />
-                <AdminSidebarItem icon={Zap} label="GasFree USDT" active={activeTab === 'gasfree'} onClick={() => navTo('gasfree')} />
-                <AdminSidebarItem icon={ArrowLeftRight} label="Contabilidad OTC" active={activeTab === 'otcConfig'} onClick={() => navTo('otcConfig')} />
-                <AdminSidebarItem icon={UserCheck} label="Equipo Admin" active={activeTab === 'team'} onClick={() => navTo('team')} />
+            <div className="flex-1 overflow-y-auto py-5 px-3 space-y-1">
+                {/* Dashboard — fijo arriba, resaltado en verde */}
+                <button
+                    onClick={() => navTo('overview')}
+                    className="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl font-semibold text-sm transition-colors hover:bg-white/5"
+                    style={activeTab === 'overview'
+                        ? { background: 'rgba(74,222,128,0.16)', color: '#4ADE80', boxShadow: 'inset 0 0 0 1px rgba(74,222,128,0.35)' }
+                        : { color: '#e2e8f0' }}
+                >
+                    <BarChart3 size={18} color={activeTab === 'overview' ? '#4ADE80' : '#e2e8f0'} /> Dashboard
+                </button>
+
+                {(() => {
+                    const operacionBadge = (pendingClientsCount || 0) + pendingDeposits.length + pendingWithdrawals.length + (failuresCount || 0);
+                    const groups: { key: string; title: string; badge?: number; items: React.ReactNode }[] = [
+                        { key: 'operacion', title: 'Operación', badge: operacionBadge, items: <>
+                            <AdminSidebarItem icon={Users} label="Clientes" active={activeTab === 'clients'} badge={pendingClientsCount > 0 ? pendingClientsCount : undefined} onClick={() => navTo('clients')} />
+                            <AdminSidebarItem icon={Landmark} label="Tesorería" active={activeTab === 'treasury'} badge={pendingDeposits.length + pendingWithdrawals.length > 0 ? pendingDeposits.length + pendingWithdrawals.length : undefined} onClick={() => navTo('treasury')} />
+                            <AdminSidebarItem icon={Wallet} label="Cargues" active={activeTab === 'cargues'} onClick={() => navTo('cargues')} />
+                            <AdminSidebarItem icon={AlertTriangle} label="Fallos" active={activeTab === 'fallos'} badge={failuresCount > 0 ? failuresCount : undefined} onClick={() => navTo('fallos')} />
+                            <AdminSidebarItem icon={Zap} label="GasFree USDT" active={activeTab === 'gasfree'} onClick={() => navTo('gasfree')} />
+                        </> },
+                        { key: 'finanzas', title: 'Finanzas', items: <>
+                            <AdminSidebarItem icon={FileText} label="Reportes" active={activeTab === 'reports'} onClick={() => navTo('reports')} />
+                            <AdminSidebarItem icon={Building2} label="Bancos" active={activeTab === 'banks'} onClick={() => navTo('banks')} />
+                            <AdminSidebarItem icon={TrendingUp} label="Tasas de Cambio" active={activeTab === 'rates'} onClick={() => navTo('rates')} />
+                            <AdminSidebarItem icon={ArrowLeftRight} label="Contabilidad OTC" active={activeTab === 'otcConfig'} onClick={() => navTo('otcConfig')} />
+                        </> },
+                        { key: 'sistema', title: 'Sistema', items: <>
+                            <AdminSidebarItem icon={Shield} label="Seguridad" active={activeTab === 'security'} onClick={() => navTo('security')} />
+                            <AdminSidebarItem icon={Shield} label="Auditoría" active={activeTab === 'auditoria'} onClick={() => navTo('auditoria')} />
+                            <AdminSidebarItem icon={Activity} label="Monitoreo" active={activeTab === 'monitoreo'} onClick={() => navTo('monitoreo')} />
+                            <AdminSidebarItem icon={UserCheck} label="Equipo Admin" active={activeTab === 'team'} onClick={() => navTo('team')} />
+                            <AdminSidebarItem icon={Megaphone} label="Marketing" active={activeTab === 'marketing'} onClick={() => navTo('marketing')} />
+                            <AdminSidebarItem icon={Palette} label="Diseño" active={activeTab === 'design'} onClick={() => navTo('design')} />
+                            <AdminSidebarItem icon={Settings} label="Configuración" active={activeTab === 'config'} onClick={() => navTo('config')} />
+                        </> },
+                    ];
+                    return groups.map(g => {
+                        const open = !!openGroups[g.key];
+                        return (
+                            <div key={g.key} className="pt-3">
+                                <button onClick={() => toggleGroup(g.key)} className="flex items-center justify-between w-full px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-500 hover:text-slate-300 transition-colors">
+                                    <span className="flex items-center gap-1.5">
+                                        <ChevronRight size={12} className={`transition-transform ${open ? 'rotate-90' : ''}`} /> {g.title}
+                                    </span>
+                                    {!open && g.badge ? <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-500/90 text-white">{g.badge}</span> : null}
+                                </button>
+                                {open && <div className="mt-1 space-y-1">{g.items}</div>}
+                            </div>
+                        );
+                    });
+                })()}
             </div>
-            <div className="p-4 border-t border-white/10">
-                <button onClick={onLogout} className="flex items-center gap-3 w-full px-4 py-3 text-slate-400 hover:text-white hover:bg-white/10 rounded-xl transition-colors font-medium text-sm">
+            <div className="p-3 border-t border-white/10 space-y-2">
+                <div className="flex items-center gap-2.5 px-2 py-2">
+                    <div className="w-8 h-8 rounded-full bg-white/10 grid place-items-center text-xs font-bold text-white shrink-0">{(currentUser?.email ?? 'A').charAt(0).toUpperCase()}</div>
+                    <div className="min-w-0 flex-1">
+                        <p className="text-xs font-semibold text-white truncate">{currentUser?.email ?? 'Administrador'}</p>
+                        <p className="text-[10px] flex items-center gap-1.5" style={{ color: !isOnline ? '#F87171' : dataReady ? '#4ADE80' : '#FBBF24' }}>
+                            <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: !isOnline ? '#F87171' : dataReady ? '#4ADE80' : '#FBBF24' }} />
+                            {!isOnline ? 'Sin conexión' : dataReady ? 'Conectado' : 'Conectando…'}
+                        </p>
+                    </div>
+                </div>
+                <button onClick={onLogout} className="flex items-center gap-3 w-full px-4 py-2.5 text-slate-400 hover:text-white hover:bg-white/10 rounded-xl transition-colors font-medium text-sm">
                     <LogOut size={18} /> Cerrar Sesión
                 </button>
             </div>
         </aside>
 
-        <main className="flex-1 flex flex-col h-screen overflow-hidden">
+        <main className={`flex-1 flex flex-col h-screen overflow-hidden ${isDark ? 'bg-[#070808]' : ''}`}>
+            {isDark ? (
+                <div className="lg:hidden flex items-center h-14 px-4 border-b border-white/10">
+                    <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="text-white/70"><Menu size={24}/></button>
+                </div>
+            ) : (
             <header className="h-20 bg-white border-b border-slate-200 flex items-center justify-between px-8">
                 <div className="flex items-center gap-4">
                     <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="lg:hidden text-slate-500"><Menu size={24}/></button>
-                    <h1 className="text-xl font-bold text-slate-800 capitalize">{activeTab === 'overview' ? 'Resumen General' : activeTab === 'design' ? 'Diseño y Apariencia' : activeTab}</h1>
+                    <h1 className="text-xl font-bold text-slate-800 capitalize">{activeTab === 'design' ? 'Diseño y Apariencia' : activeTab}</h1>
                 </div>
                 <div className="flex items-center gap-4">
                     <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold ${!isOnline ? 'bg-red-50 text-red-700' : dataReady ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700'}`}>
@@ -2636,12 +3878,15 @@ const renderDesign = () => (
                     </div>
                 </div>
             </header>
+            )}
 
-            <div className="flex-1 overflow-y-auto p-8">
-                {activeTab === 'overview' && renderOverview()}
+            <div className={`flex-1 overflow-y-auto ${isDark ? 'p-6' : 'p-8'}`}>
+                {activeTab === 'overview' && <AdminMonitor />}
+                {activeTab === 'monitoreo' && <AdminMonitor />}
                 {activeTab === 'clients' && renderClients()}
                 {activeTab === 'marketing' && renderMarketing()}
                 {activeTab === 'treasury' && renderTreasury()}
+                {activeTab === 'cargues' && renderCargues()}
                 {activeTab === 'reports' && renderReports()}
                 {activeTab === 'config' && renderConfig()}
                 {activeTab === 'design' && renderDesign()}
@@ -2651,6 +3896,8 @@ const renderDesign = () => (
                 {activeTab === 'security' && renderSecurity()}
                 {activeTab === 'gasfree' && <AdminGasFreeSection />}
                 {activeTab === 'otcConfig' && <AdminOtcSection />}
+                {activeTab === 'fallos' && renderFallos()}
+                {activeTab === 'auditoria' && renderAuditoria()}
             </div>
         </main>
 
