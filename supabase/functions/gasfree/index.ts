@@ -2498,12 +2498,55 @@ async function setTreasuryConfig(cfg: { alertThresholdUsdt?: number; notes?: str
 // ── Proveedores (registro editable: a quién se le paga con el USDT
 // acumulado en Tesorería — ej. un proveedor de liquidez COP) ──
 const PROVIDERS_KEY = 'gasfree_providers'
+
+// ── WALLETS DE PROVEEDOR FIJADAS POR SECRET (fuente de verdad) ──────────
+// La dirección a donde sale el USDT de tesorería es LO MÁS SENSIBLE del
+// sistema: cambiarla desvía todo el dinero. Por eso se define como SECRET de
+// Supabase y NO se puede tocar desde el panel — ni con la sesión de admin
+// robada, ni saltándose el 2FA. Para cambiarla hay que entrar a
+// Supabase → Edge Functions → Secrets (fuera del alcance de la app).
+//   PROVIDER_WALLET_FINITY   dirección USDT (TRC-20) de Finity
+//   PROVIDER_WALLET_MOUV     dirección USDT (TRC-20) de Mouv
+const ENV_PROVIDERS: { id: string; name: string; detail: string; locked: true }[] = (() => {
+  const out: { id: string; name: string; detail: string; locked: true }[] = []
+  const add = (id: string, name: string, v?: string) => {
+    const d = (v ?? '').trim()
+    // Solo se acepta una dirección TRON válida en formato base58 (T + 33).
+    if (/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(d)) out.push({ id, name, detail: d, locked: true })
+  }
+  add('env_finity', 'Finity', Deno.env.get('PROVIDER_WALLET_FINITY'))
+  add('env_mouv', 'Mouv', Deno.env.get('PROVIDER_WALLET_MOUV'))
+  return out
+})()
+const isLockedProvider = (p: any) =>
+  ENV_PROVIDERS.some(e => e.id === p?.id || String(e.name).toLowerCase() === String(p?.name ?? '').toLowerCase())
+
 async function getProviders() {
   const { data } = await db.from('system_config').select('value').eq('key', PROVIDERS_KEY).single()
-  return data?.value ? JSON.parse(data.value) : []
+  const stored: any[] = data?.value ? JSON.parse(data.value) : []
+  if (!ENV_PROVIDERS.length) return stored
+  // Los fijados por secret MANDAN: se anteponen y se descarta cualquier copia
+  // guardada en base con el mismo id/nombre (aunque alguien la haya alterado).
+  const rest = stored.filter(p => !isLockedProvider(p))
+  return [...ENV_PROVIDERS, ...rest]
 }
+
 async function setProviders(list: any[]) {
-  await saveSystemConfig(PROVIDERS_KEY, JSON.stringify(list))
+  const incoming: any[] = Array.isArray(list) ? list : []
+  if (ENV_PROVIDERS.length) {
+    // Intento de cambiar la dirección de un proveedor fijado → se RECHAZA.
+    for (const p of incoming) {
+      const locked = ENV_PROVIDERS.find(e => e.id === p?.id || String(e.name).toLowerCase() === String(p?.name ?? '').toLowerCase())
+      if (locked && String(p?.detail ?? '').trim() !== locked.detail) {
+        throw new Error(`La wallet de ${locked.name} está FIJADA en Supabase (secret PROVIDER_WALLET_${locked.name.toUpperCase()}) y no se puede cambiar desde el panel. Cámbiala en Supabase → Edge Functions → Secrets.`)
+      }
+    }
+    // Solo se persisten los proveedores NO fijados; los fijados se reinyectan
+    // siempre desde el secret, así que tampoco se pueden borrar desde el panel.
+    await saveSystemConfig(PROVIDERS_KEY, JSON.stringify(incoming.filter(p => !isLockedProvider(p))))
+    return await getProviders()
+  }
+  await saveSystemConfig(PROVIDERS_KEY, JSON.stringify(incoming))
   // Releer de la base: lo que se devuelve es lo que DE VERDAD quedó guardado.
   return await getProviders()
 }
@@ -2914,6 +2957,15 @@ Deno.serve(async (req) => {
       try { if (jwtS) { const { data } = await db.auth.getUser(jwtS); uidS = data?.user?.id ?? null } } catch { /* */ }
       const mfaErrS = await require2FAStrict(uidS, body.otp)
       if (mfaErrS) return err(mfaErrS, 403)
+      // DESTINO EN LISTA BLANCA: si hay wallets de proveedor fijadas por secret,
+      // la tesorería SOLO puede enviar a esas. Aunque roben la sesión de admin y
+      // el 2FA, no hay a dónde desviar el dinero — el destino vive en Supabase.
+      if (ENV_PROVIDERS.length) {
+        const dest = String(toAddress).trim()
+        if (!ENV_PROVIDERS.some(e => e.detail === dest)) {
+          return err(`Destino no permitido. La tesorería solo puede enviar a las wallets de proveedor fijadas en Supabase (${ENV_PROVIDERS.map(e => e.name).join(', ')}). Para usar otra dirección, defínela como secret PROVIDER_WALLET_… en Supabase.`, 403)
+        }
+      }
       await auditGasfree(req, 'gasfree.treasury_send', { toAddress: String(toAddress), amount: Number(amount), providerName: body.providerName ?? null })
       return ok(await payFromTreasury(String(toAddress), Number(amount), body.providerName ? String(body.providerName) : undefined))
     }

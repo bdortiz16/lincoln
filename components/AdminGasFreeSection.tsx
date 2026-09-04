@@ -1189,13 +1189,20 @@ export const AdminGasFreeSection: React.FC = () => {
                 <p className="text-[11px] text-slate-400">A quién se le paga el USDT acumulado en Tesorería. Solo los partners de Lincoin — <b>Finity</b> (ACH) y <b>Mouv</b> (Bre-B) — y únicamente su wallet USDT, para que la plata no pueda irse a otro lado.</p>
                 <div className="space-y-2">
                     {providers.map((p: any) => (
-                        <div key={p.id} className="flex items-center justify-between gap-2 bg-slate-50 rounded-lg px-3 py-2 text-sm">
-                            <div><span className="font-bold text-slate-800">{p.name}</span>{p.detail && <span className="text-slate-400"> · {mask(p.detail)}</span>}</div>
+                        <div key={p.id} className={`flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-sm ${p.locked ? 'bg-emerald-50 border border-emerald-200' : 'bg-slate-50'}`}>
+                            <div className="min-w-0">
+                                <span className="font-bold text-slate-800">{p.name}</span>
+                                {p.detail && <span className="text-slate-400"> · {mask(p.detail)}</span>}
+                                {p.locked && <span className="ml-2 text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-600 text-white">🔒 FIJADA EN SUPABASE</span>}
+                                {p.locked && <p className="text-[10px] text-emerald-700 mt-0.5">Solo se cambia en Supabase → Edge Functions → Secrets. No editable desde el panel.</p>}
+                            </div>
                             <div className="flex items-center gap-3 shrink-0">
                                 <button onClick={() => { setPayTarget(p); setPayAmount(''); setPayMsg(null); }} className="inline-flex items-center gap-1 text-xs font-bold text-[#16A34A] hover:underline" title="Pagar a este proveedor desde Tesorería — manual, sin mínimo acumulado">
                                     <Send size={12} /> Pagar
                                 </button>
-                                <button onClick={() => removeProvider(p.id)} className="text-red-500 hover:underline text-xs font-bold">Eliminar</button>
+                                {p.locked
+                                    ? <span className="text-[11px] text-slate-400 font-semibold" title="Fijada por secret de Supabase">Protegida</span>
+                                    : <button onClick={() => removeProvider(p.id)} className="text-red-500 hover:underline text-xs font-bold">Eliminar</button>}
                             </div>
                         </div>
                     ))}
