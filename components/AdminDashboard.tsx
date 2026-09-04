@@ -3762,8 +3762,14 @@ const renderDesign = () => (
             </div>
             <div className="flex-1 overflow-y-auto py-5 px-3 space-y-1">
                 {/* Dashboard — fijo arriba, resaltado en verde */}
-                <button onClick={() => navTo('overview')} className={`flex items-center gap-3 w-full px-3 py-2.5 rounded-xl font-semibold text-sm transition-colors ${activeTab === 'overview' ? 'bg-[#4ADE80]/12 text-[#4ADE80]' : 'text-slate-300 hover:bg-white/5'}`} style={activeTab === 'overview' ? { background: 'rgba(74,222,128,0.12)' } : undefined}>
-                    <BarChart3 size={18} /> Dashboard
+                <button
+                    onClick={() => navTo('overview')}
+                    className="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl font-semibold text-sm transition-colors hover:bg-white/5"
+                    style={activeTab === 'overview'
+                        ? { background: 'rgba(74,222,128,0.16)', color: '#4ADE80', boxShadow: 'inset 0 0 0 1px rgba(74,222,128,0.35)' }
+                        : { color: '#e2e8f0' }}
+                >
+                    <BarChart3 size={18} color={activeTab === 'overview' ? '#4ADE80' : '#e2e8f0'} /> Dashboard
                 </button>
 
                 {(() => {
