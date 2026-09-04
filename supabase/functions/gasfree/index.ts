@@ -1786,9 +1786,13 @@ async function myConvertSettle(
   // Resolver proveedor (Mouv) destino del hop 2.
   const providers = await getProviders()
   const tcfg = await getTreasuryConfig()
-  let prov = providers.find((p: any) => p.id === tcfg.alertProviderId)
-  if (!prov) prov = providers.find((p: any) => /mouv/i.test(String(p.name ?? '')))
-  if (!prov) prov = providers[0]
+  // Si hay wallets fijadas en la Bóveda, SOLO se consideran esas: así un
+  // proveedor viejo guardado en base (o apuntado por alertProviderId) nunca
+  // puede volverse el destino del hop 2.
+  const pool = providers.some((p: any) => p.locked) ? providers.filter((p: any) => p.locked) : providers
+  let prov = pool.find((p: any) => p.id === tcfg.alertProviderId)
+  if (!prov) prov = pool.find((p: any) => /mouv/i.test(String(p.name ?? '')))
+  if (!prov) prov = pool[0]
   const provAddr = String(prov?.detail ?? '').trim()
   const fee2 = (Number(token.transferFee ?? 0) + (recAcct.active ? 0 : Number(token.activateFee ?? 0))) / Math.pow(10, dec)
   const fwd = parseFloat((value - fee2).toFixed(dec))
@@ -2571,6 +2575,18 @@ async function getTreasuryMovements() {
 // vivo y se cobra aparte del monto (igual que cualquier envío GasFree).
 async function payFromTreasury(toAddress: string, amount: number, providerName?: string) {
   if (!(amount > 0)) throw new Error('Monto inválido')
+  // LISTA BLANCA EN LA RAÍZ: TODA salida de tesorería pasa por aquí — el pago
+  // manual, el hop 2 automático de la conversión y sus reintentos. Antes la
+  // verificación vivía solo en la acción `send`, así que el flujo automático
+  // podía pagar a un proveedor viejo guardado en base (elegido por
+  // alertProviderId) y saltarse la Bóveda. Con wallets fijadas, el destino
+  // SOLO puede ser una de ellas, venga de donde venga la llamada.
+  if (ENV_PROVIDERS.length) {
+    const dest = String(toAddress ?? '').trim()
+    if (!ENV_PROVIDERS.some(e => e.detail === dest)) {
+      throw new Error('Destino no permitido: la Tesorería solo puede pagar a wallets de partners verificadas en la Bóveda.')
+    }
+  }
   const rec = await recaudadora()
   const r = await sendCore(rec.pkHex, rec.eoa, toAddress, amount)
   await logTreasuryMovement({
