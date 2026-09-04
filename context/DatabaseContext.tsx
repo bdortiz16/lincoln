@@ -117,6 +117,7 @@ interface DatabaseContextType {
   setNewPassword: (newPassword: string) => Promise<string | null>;
   sendCuypayPayment: (recipientCode: string, amount: number, currency: string) => Promise<{ error?: string }>;
   mfaPending: boolean;
+  mfaErrorDetail: string | null;
   completeMFALogin: (code: string) => Promise<User | null>;
   cancelMFALogin: () => void;
   enrollMFA: () => Promise<{ qrCode: string; secret: string; factorId: string } | null>;
@@ -291,6 +292,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   // 'native' = MFA de Supabase Auth (challenge/verify). Decide cómo verificar
   // el código en completeMFALogin.
   const [pendingMFAMode, setPendingMFAMode] = useState<'custom' | 'native'>('native');
+  // Motivo real del fallo de verificación 2FA (para no mostrar siempre
+  // "código incorrecto" cuando en realidad falló otra cosa).
+  const [mfaErrorDetail, setMfaErrorDetail] = useState<string | null>(null);
   // Tracks when a local write is in progress so fetchData doesn't overwrite optimistic state
   const pendingWriteUntilRef = useRef<number>(0);
   // Ids de usuario que comparten el correo del usuario actual (por si hay
@@ -1344,7 +1348,18 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
           body: JSON.stringify({ action: 'mfa_verify', userId: pendingMFAProfile.id, code }),
         }).then(x => x.json()).catch(() => null);
-        if (!r?.ok) return null;
+        if (!r?.ok) {
+          // Diagnóstico: sin esto, un fallo de AUTORIZACIÓN o un secreto que no
+          // se pudo leer se mostraban igual que "código incorrecto", y no había
+          // forma de saber por qué no entra con un código válido.
+          const why = r?.error === 'no_secret'
+            ? 'La cuenta tiene el 2FA activo pero el servidor no pudo leer su secreto. Hay que reactivar el 2FA.'
+            : r?.error === 'No autorizado'
+              ? 'La sesión no autorizó la verificación. Vuelve a intentar el inicio de sesión.'
+              : r?.error ? `Verificación rechazada: ${r.error}` : null;
+          setMfaErrorDetail(why);
+          return null;
+        }
         const user = pendingMFAProfile;
         try { sessionStorage.setItem('mfa_ok', '1'); } catch { /* */ }
         setCurrentUser(user);
@@ -2203,7 +2218,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       bankingOptions, treasuryAccounts, getAllUsers, getAllTransactions, updateTxStatus, getAllPendingDeposits, getAllPendingWithdrawals,
       getTransactionHistory, getAdminTeam, addAdminUser, updateAdminUser, deleteAdminUser, deleteUser, registerInternalMovement,
       updateBankList, restoreDatabase, sendPasswordReset, isPasswordRecovery, setNewPassword, sendCuypayPayment,
-      mfaPending, completeMFALogin, cancelMFALogin,
+      mfaPending, mfaErrorDetail, completeMFALogin, cancelMFALogin,
       enrollMFA, verifyMFAEnrollment, unenrollMFA, getMFAStatus, verifyMfaCode,
     }}>
       {children}

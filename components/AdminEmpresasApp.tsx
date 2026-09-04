@@ -32,7 +32,7 @@ if (typeof window !== 'undefined' &&
 }
 
 const AdminEmpresasInner: React.FC = () => {
-    const { currentUser, isAuthLoading, loginUser, logoutUser, mfaPending, completeMFALogin, cancelMFALogin } = useDatabase();
+    const { currentUser, isAuthLoading, loginUser, logoutUser, mfaPending, mfaErrorDetail, completeMFALogin, cancelMFALogin } = useDatabase();
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [submitting, setSubmitting] = useState(false);
@@ -76,7 +76,7 @@ const AdminEmpresasInner: React.FC = () => {
         setVerifying(true); setMfaError(null);
         try {
             const user = await completeMFALogin(mfaCode);
-            if (!user) setMfaError('Código incorrecto o vencido. Ingresa el código actual de tu app.');
+            if (!user) setMfaError(mfaErrorDetail ?? 'Código incorrecto o vencido. Ingresa el código actual de tu app.');
             else if (user.role !== 'admin') { setMfaError('Esta cuenta no tiene permisos de administrador.'); await logoutUser(); }
             // Si es admin, currentUser se setea y el render cambia solo.
         } catch { setMfaError('No se pudo verificar. Intenta de nuevo.'); }
