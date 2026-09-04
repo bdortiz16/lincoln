@@ -3760,15 +3760,32 @@ const renderDesign = () => (
       if (c.startsWith('USD')) return 'USDT';
       return c || '—';
     };
-    const errText = (t: any): string => {
+    // El error del proveedor llega como objeto {step, httpStatus, path, body}.
+    // Mostrarlo como un JSON pegado y cortado obligaba a adivinar; se desglosa
+    // en QUÉ paso falló, con qué código HTTP y qué respondió el proveedor —
+    // que es lo único que permite distinguir "dato mal mapeado" de "el
+    // proveedor rechazó la operación".
+    const errParts = (t: any): { paso?: string; http?: string; cuerpo?: string; texto: string } => {
+      const raw = t.error ?? t.raw_data?.error;
+      let obj: any = raw;
+      if (typeof raw === 'string') { try { obj = JSON.parse(raw); } catch { obj = null; } }
       const em = t.errorMessage ?? t.raw_data?.errorMessage;
-      if (em) return String(em);
-      const e = t.error ?? t.raw_data?.error;
-      let s = '';
-      try { s = typeof e === 'string' ? e : (e ? JSON.stringify(e) : ''); } catch { s = String(e ?? ''); }
+      if (!obj && em) { try { obj = JSON.parse(String(em)); } catch { /* texto plano */ } }
+      const PASOS: Record<string, string> = { destino: 'Registrar la cuenta destino', retiro: 'Crear la orden de retiro' };
+      if (obj && typeof obj === 'object') {
+        let cuerpo = '';
+        try { cuerpo = obj.body ? JSON.stringify(obj.body, null, 1) : ''; } catch { cuerpo = String(obj.body ?? ''); }
+        return {
+          paso: obj.step ? (PASOS[String(obj.step)] ?? String(obj.step)) : undefined,
+          http: obj.httpStatus ? `HTTP ${obj.httpStatus}` : undefined,
+          cuerpo: cuerpo || undefined,
+          texto: em ? String(em) : JSON.stringify(obj),
+        };
+      }
       const http = t.httpStatus ?? t.raw_data?.httpStatus;
-      return [http ? `HTTP ${http}` : '', s].filter(Boolean).join(' · ') || 'Sin detalle técnico';
+      return { http: http ? `HTTP ${http}` : undefined, texto: em ? String(em) : 'Sin detalle técnico' };
     };
+    const errText = (t: any): string => errParts(t).texto;
     const emailOf = (t: any): string => allUsers.find((u: any) => u.id === t.userId)?.email ?? t.userName ?? t.raw_data?.userName ?? t.userId ?? '—';
     const fmtDate = (d: any) => { try { return new Date(d).toLocaleString('es-CO', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }); } catch { return '—'; } };
     return (
@@ -3807,9 +3824,27 @@ const renderDesign = () => (
                     className="text-xs font-semibold text-slate-500 hover:text-slate-800 flex items-center gap-1 shrink-0"
                   ><Copy size={13} /> Copiar</button>
                 </div>
-                <div className="mt-2.5 rounded-lg bg-slate-900 text-slate-100 p-3 overflow-x-auto">
-                  <code className="text-[11px] leading-relaxed whitespace-pre-wrap break-words" style={{ fontFamily: 'ui-monospace, Menlo, monospace' }}>{errText(t)}</code>
-                </div>
+                {(() => {
+                  const p = errParts(t);
+                  return (
+                    <div className="mt-2.5 rounded-lg p-3 overflow-x-auto" style={{ backgroundColor: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)' }}>
+                      {(p.paso || p.http) && (
+                        <div className="flex items-center gap-2 flex-wrap mb-2">
+                          {p.paso && <span className="text-[10px] font-bold px-2 py-0.5 rounded" style={{ backgroundColor: 'rgba(251,191,36,0.14)', color: '#FBBF24' }}>Falló al: {p.paso}</span>}
+                          {p.http && <span className="text-[10px] font-bold px-2 py-0.5 rounded" style={{ backgroundColor: 'rgba(248,113,113,0.14)', color: '#F87171' }}>{p.http}</span>}
+                        </div>
+                      )}
+                      <code className="text-[11px] leading-relaxed whitespace-pre-wrap break-words" style={{ fontFamily: 'ui-monospace, Menlo, monospace', color: '#F4F4F2' }}>
+                        {p.cuerpo ?? p.texto}
+                      </code>
+                      {p.cuerpo && (
+                        <p className="text-[10px] mt-2 mb-0" style={{ color: '#878E88' }}>
+                          Respuesta literal del proveedor. Si el paso es «Registrar la cuenta destino», el rechazo es por los datos del beneficiario, no por el monto ni por la bolsa.
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             ))}
           </div>
