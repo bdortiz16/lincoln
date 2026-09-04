@@ -983,12 +983,24 @@ export const AdminGasFreeSection: React.FC = () => {
                         {seedResult.error ? <p className="text-red-700 font-semibold">❌ {seedResult.error}</p> : seedResult.hit ? (
                             <>
                                 <p className="text-green-700 font-bold">✅ ¡Encontrada en la semilla "{seedResult.hit.mnemonic}"! Índice {seedResult.hit.index} ({seedResult.hit.net === 'tron' ? 'mainnet' : 'Nile'}) · saldo {Number(seedResult.hit.balanceUsdt ?? 0).toFixed(2)} USDT</p>
-                                <p className="text-[11px] font-mono text-slate-400 break-all">{seedResult.hit.gasFreeAddress}</p>
-                                {Number(seedResult.hit.balanceUsdt ?? 0) > 0 && seedResult.swept == null && (
-                                    <button onClick={sweepSeedHit} disabled={seedBusy} className="px-3 py-1.5 text-xs font-bold rounded-lg bg-[#4ADE80] text-[#0C0E0D] hover:bg-[#26bda9] disabled:opacity-60">{seedBusy ? 'Barriendo…' : `Barrer ${Number(seedResult.hit.balanceUsdt).toFixed(2)} USDT a la recaudadora`}</button>
-                                )}
-                                {seedResult.swept != null && <p className="text-green-700 font-semibold">✅ Barrido {Number(seedResult.swept).toFixed(2)} USDT · TxID {String(seedResult.hit.traceId ?? '').slice(0, 14)}…</p>}
-                                {seedResult.sweepErr && <p className="text-red-700">❌ {seedResult.sweepErr}</p>}
+                                <p className="text-[11px] font-mono text-slate-400 break-all">{seedResult.hit.isEoa ? seedResult.hit.eoa : seedResult.hit.gasFreeAddress}</p>
+                                {seedResult.hit.isEoa ? (
+                                    <div className="rounded-lg bg-blue-50 border border-blue-200 p-2.5 space-y-1">
+                                        <p className="text-blue-800 font-bold">💠 Es una wallet NORMAL/FRÍA (no GasFree). El barrido por GasFree no aplica — se recupera importando la llave.</p>
+                                        <p className="text-blue-800">Cómo recuperarla:</p>
+                                        <ol className="list-decimal ml-4 text-blue-800 space-y-0.5">
+                                            <li>Abre <b>TronLink</b> (o Trust Wallet) → Importar cuenta → <b>por frase secreta</b> (tu mnemónica <b>{seedResult.hit.mnemonic}</b>).</li>
+                                            <li>Elige la ruta de derivación <b className="font-mono">{seedResult.hit.derivationPath}</b> (o la cuenta #{seedResult.hit.index}).</li>
+                                            <li>Manda un poco de <b>TRX</b> a esa dirección para el gas y envía los {Number(seedResult.hit.balanceUsdt ?? 0).toFixed(2)} USDT a donde quieras.</li>
+                                        </ol>
+                                    </div>
+                                ) : (<>
+                                    {Number(seedResult.hit.balanceUsdt ?? 0) > 0 && seedResult.swept == null && (
+                                        <button onClick={sweepSeedHit} disabled={seedBusy} className="px-3 py-1.5 text-xs font-bold rounded-lg bg-[#4ADE80] text-[#0C0E0D] hover:bg-[#26bda9] disabled:opacity-60">{seedBusy ? 'Barriendo…' : `Barrer ${Number(seedResult.hit.balanceUsdt).toFixed(2)} USDT a la recaudadora`}</button>
+                                    )}
+                                    {seedResult.swept != null && <p className="text-green-700 font-semibold">✅ Barrido {Number(seedResult.swept).toFixed(2)} USDT · TxID {String(seedResult.hit.traceId ?? '').slice(0, 14)}…</p>}
+                                    {seedResult.sweepErr && <p className="text-red-700">❌ {seedResult.sweepErr}</p>}
+                                </>)}
                             </>
                         ) : (
                             <p className="text-slate-600">No se encontró en la semilla "<b>{seedPick}</b>" (mainnet ni Nile). Errores de API: mainnet {seedResult.tron?.apiErrors ?? 0}, Nile {seedResult.nile?.apiErrors ?? 0}. {(Number(seedResult.tron?.apiErrors ?? 0) + Number(seedResult.nile?.apiErrors ?? 0)) > 0 ? 'Hubo rate-limit → reintenta en 1–2 min.' : 'Con 0 errores, esta semilla NO generó esa wallet.'}</p>

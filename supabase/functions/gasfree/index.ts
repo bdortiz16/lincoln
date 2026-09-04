@@ -2582,8 +2582,19 @@ async function findAddress(target: string, extra = 25, net?: 'tron' | 'nile', ba
       }))
       const hit = results.find((r) => (r.eoa && r.eoa === t) || (r.gasFreeAddress && r.gasFreeAddress === t))
       if (hit) {
-        const bal = hit.gasFreeAddress ? await balOf(hit.gasFreeAddress) : 0
-        return { found: true, net: scanNet, index: hit.i, mnemonic: m.source, eoa: hit.eoa, gasFreeAddress: hit.gasFreeAddress, active: hit.active, balanceUsdt: bal }
+        // isEoa = el objetivo es la wallet NORMAL/FRÍA (la EOA), no su dirección
+        // GasFree. En ese caso el saldo está en la EOA misma (se lee ahí) y para
+        // moverlo se importa la llave en un wallet (con gas TRX) — el barrido por
+        // GasFree NO aplica. derivationPath ayuda a re-derivarla en TronLink.
+        const isEoa = hit.eoa === t
+        const balTarget = isEoa ? t : hit.gasFreeAddress
+        const bal = balTarget ? await balOf(balTarget) : 0
+        return {
+          found: true, net: scanNet, index: hit.i, mnemonic: m.source,
+          eoa: hit.eoa, gasFreeAddress: hit.gasFreeAddress, active: hit.active,
+          balanceUsdt: bal, isEoa, coldWallet: isEoa,
+          derivationPath: isEoa ? `m/44'/195'/0'/0/${hit.i}` : undefined,
+        }
       }
       await new Promise((r) => setTimeout(r, 120))   // respirar entre lotes
     }
