@@ -1117,6 +1117,10 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   const loginUser = async (email: string, pass?: string, captchaToken?: string): Promise<User | null | 'MFA_REQUIRED'> => {
     const isSeedAdminEmail = !!SEED_ADMIN_EMAIL && email === SEED_ADMIN_EMAIL;
+    // Cada login EXPLÍCITO vuelve a exigir 2FA: se borra la marca 'mfa_ok' (que
+    // solo debe durar mientras la sesión ya verificada se refresca). Sin esto,
+    // un logout+login en la MISMA pestaña se saltaba el 2FA.
+    try { sessionStorage.removeItem('mfa_ok'); } catch { /* */ }
     // Opciones de auth con el token del CAPTCHA (si Turnstile está activo).
     const authOpts = captchaToken ? { captchaToken } : undefined;
 
