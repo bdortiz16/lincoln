@@ -2862,6 +2862,15 @@ Deno.serve(async (req) => {
     }
     if (action === 'send') {
       if (!toAddress || !amount) return err('Faltan toAddress o amount', 400)
+      // 2FA ESTRICTO server-side: sacar USDT de tesorería a una dirección es
+      // mover dinero real. Aunque alguien evada el 2FA del login (que es del
+      // navegador), aquí NO pasa sin código TOTP válido. Fail-closed.
+      const jwtS = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
+      let uidS: string | null = null
+      try { if (jwtS) { const { data } = await db.auth.getUser(jwtS); uidS = data?.user?.id ?? null } } catch { /* */ }
+      const mfaErrS = await require2FAStrict(uidS, body.otp)
+      if (mfaErrS) return err(mfaErrS, 403)
+      await auditGasfree(req, 'gasfree.treasury_send', { toAddress: String(toAddress), amount: Number(amount), providerName: body.providerName ?? null })
       return ok(await payFromTreasury(String(toAddress), Number(amount), body.providerName ? String(body.providerName) : undefined))
     }
     // Recuperación: localizar el índice HD de una dirección (escaneo).

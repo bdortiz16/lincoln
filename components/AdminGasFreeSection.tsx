@@ -485,9 +485,11 @@ export const AdminGasFreeSection: React.FC = () => {
         const amt = parseFloat(payAmount);
         if (!payTarget || isNaN(amt) || amt <= 0) return;
         if (!window.confirm(`¿Pagar ${fmt(amt)} USDT a ${payTarget.name} (${mask(payTarget.detail)})? Se cobra aparte la comisión GasFree vigente.`)) return;
+        // 2FA OBLIGATORIO server-side: sacar USDT de tesorería exige el código.
+        const otp = (typeof window !== 'undefined' ? window.prompt('Ingresa tu código de dos pasos (2FA) para pagar desde Tesorería.\n\nSi tu cuenta no tiene 2FA activo, actívalo en Seguridad — sin 2FA el servidor NO permite sacar dinero.') : '') ?? '';
         setPaying(true); setPayMsg(null);
         try {
-            const r = await callGasfree({ action: 'send', toAddress: payTarget.detail, amount: amt, providerName: payTarget.name });
+            const r = await callGasfree({ action: 'send', toAddress: payTarget.detail, amount: amt, providerName: payTarget.name, otp });
             if (r?.error) setPayMsg(`❌ ${r.error}`);
             else {
                 setPayMsg(`✅ Pagados ${fmt(amt)} USDT a ${payTarget.name} · comisión GasFree ${fmt(r.feeChargedUsdt)} USDT · traceId ${r.traceId}`);
