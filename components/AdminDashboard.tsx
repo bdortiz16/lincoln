@@ -2096,6 +2096,37 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   };
 
   const renderTreasury = () => {
+      // ── Datos REALES para el panel de cabecera de Tesorería ──
+      const nowD = new Date();
+      const isEntrada = (t: any) => /carga|dep[óo]sito|load/i.test(String(t.title ?? t.type ?? ''));
+      let inflow = 0, outflow = 0, monthVolume = 0, monthOps = 0;
+      for (const t of historyTransactions) {
+        const d = new Date(t.date ?? t.createdAt ?? 0);
+        if (d.getMonth() !== nowD.getMonth() || d.getFullYear() !== nowD.getFullYear()) continue;
+        const amt = Math.abs(Number(t.amount) || 0);
+        monthVolume += amt; monthOps++;
+        if (isEntrada(t)) inflow += amt; else outflow += amt;
+      }
+      // Flujo diario de los últimos 14 días (entradas vs salidas).
+      const flow14 = new Array(14).fill(0).map(() => ({ in: 0, out: 0 }));
+      for (const t of historyTransactions) {
+        const d = new Date(t.date ?? t.createdAt ?? 0).getTime();
+        const daysAgo = Math.floor((Date.now() - d) / 86400000);
+        if (daysAgo < 0 || daysAgo > 13) continue;
+        const slot = flow14[13 - daysAgo];
+        const amt = Math.abs(Number(t.amount) || 0);
+        if (isEntrada(t)) slot.in += amt; else slot.out += amt;
+      }
+      // Retenidos por revisión: retiros > 3× el promedio histórico del cliente.
+      const byUser: Record<string, number[]> = {};
+      const rets = historyTransactions.filter(t => /retiro|withdraw|dispersi[óo]n/i.test(String(t.title ?? t.type ?? '')));
+      for (const w of rets) (byUser[w.userId] ??= []).push(Math.abs(Number(w.amount) || 0));
+      const heldForReview = rets.filter(w => {
+        const arr = byUser[w.userId] || []; if (arr.length < 3) return false;
+        const avg = arr.reduce((a, b) => a + b, 0) / arr.length;
+        return avg > 0 && Math.abs(Number(w.amount) || 0) > avg * 3;
+      }).length;
+
       const CRYPTO_TYPES = ['otc_withdraw', 'otc_withdraw_request', 'otc_deposit', 'admin_hot_withdrawal', 'otc_convert_request'];
       const cryptoTxs = historyTransactions.filter(tx => CRYPTO_TYPES.includes(tx.type))
         .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
@@ -2145,8 +2176,26 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       }, 0);
 
       const pendingRailMoves = (getAllTransactions() as any[]).filter(t => t.type === 'rail_move' && t.status === 'Pendiente');
+      const copBalance = treasuryAccounts.filter(a => a.currency === 'COP').reduce((s, a) => s + Number(a.amount || 0), 0);
+      const usdtBalance = treasuryAccounts.filter(a => a.currency === 'USD' || a.currency === 'USDT').reduce((s, a) => s + Number(a.amount || 0), 0);
       return (
       <div className="space-y-8 animate-in fade-in duration-300">
+          {/* Cabecera del dashboard de Tesorería. COP (Mouv · Bre-B) y USDT
+              (GasFree) son billeteras SEPARADAS — se eligen en el modal. */}
+          <AdminTreasuryPanel
+              pendingLoads={pendingDeposits.length}
+              pendingWithdrawals={pendingWithdrawals.length}
+              monthVolume={monthVolume}
+              monthOps={monthOps}
+              heldForReview={heldForReview}
+              inflow={inflow}
+              outflow={outflow}
+              flow14={flow14}
+              copBalance={copBalance}
+              usdtBalance={usdtBalance}
+              onPickWallet={(w) => { if (w === 'USDT') navTo('gasfree'); else setTreasuryTab('deposits'); }}
+              onRegisterMovement={() => setShowInternalMovementModal(true)}
+          />
           {/* ── Solicitudes "Saldo Lincoin → ACH" (aprobación manual) ──
               El cliente ya quedó debitado; antes de aprobar, mueve el
               respaldo al proveedor y luego dale Aprobar (acredita su ACH). */}
