@@ -596,6 +596,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // Al acreditarse muestra "Acreditado" y se oculta solo a los pocos segundos.
   const [depositCard, setDepositCard] = useState<{ amount: number; phase: 'recibido' | 'acreditado'; at: number } | null>(null);
   const depositCardTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Candado para no lanzar dos verificaciones de depósito a la vez. Estaba en
+  // uso pero nunca se declaró: forceVerifyDeposit reventaba con ReferenceError
+  // y la acreditación manual del depósito no se ejecutaba nunca.
+  const verifyDepositInFlight = useRef(false);
   const DEP_CARD_KEY = 'lincoinDepositCard';
   // Persiste el cuadro para que SOBREVIVA una recarga mientras se acredita.
   useEffect(() => {

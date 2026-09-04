@@ -81,6 +81,7 @@ import { Logo } from './Logo';
 import { RatesPanel } from './AdminPersonas/sections/RatesPanel';
 import { AdminGasFreeSection } from './AdminGasFreeSection';
 import { AdminMonitor } from './AdminMonitor';
+import { AdminTreasuryPanel } from './AdminTreasuryPanel';
 import { AdminOtcSection } from './AdminOtcSection';
 import { Zap, ArrowLeftRight, Info, ChevronRight, Activity } from 'lucide-react';
 import { CollectionWalletCard } from './CollectionWalletCard';

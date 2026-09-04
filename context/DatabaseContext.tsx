@@ -687,7 +687,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           localStorage.setItem('lincoin_tx_debug', JSON.stringify({
             at: new Date().toISOString(), userId: cu.id,
             edge: edgeDebug,
-            rpcErr: txRpc.error?.message ?? null, rpcCount: Array.isArray(txRpc.data) ? txRpc.data.length : null,
+            // 'txRpc' ya no existe (esa vía se reemplazó por el SELECT directo);
+            // referenciarlo lanzaba un ReferenceError que el catch de abajo se
+            // tragaba, así que el diagnóstico NUNCA se guardaba.
             directErr: directTx.error?.message ?? null, directCount: Array.isArray(directTx.data) ? directTx.data.length : null,
           }));
         } catch { /* quota */ }
