@@ -359,7 +359,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   // Mouv apifica el conversor: el pago llega por el grupo cerrado y aquí se
   // refleja en el riel que corresponda: Saldo Lincoin / Bre-B / ACH).
   const [carguesSearch, setCarguesSearch] = useState('');
-  const [carguesClient, setCarguesClient] = useState<User | null>(null);
+  // Se guarda el ID, no una copia del cliente: si se guardaba el objeto, la
+  // tarjeta seguía mostrando el saldo del momento en que se seleccionó y no se
+  // actualizaba tras un cargue (había que recargar la página). El objeto vivo
+  // se deriva de allUsers más abajo.
+  const [carguesClientId, setCarguesClientId] = useState<string | null>(null);
   const [carguesRail, setCarguesRail] = useState<'COP' | 'COP_BREB' | 'COP_ACH'>('COP');
   const [carguesAmount, setCarguesAmount] = useState('');
   const [carguesNote, setCarguesNote] = useState('');
@@ -784,6 +788,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const pendingWithdrawals = getAllPendingWithdrawals().filter(isBusinessTx);
   const historyTransactions = getTransactionHistory().filter(isBusinessTx);
   const allUsers = rawUsers.filter((u: any) => u.role !== 'admin');
+  // Cliente seleccionado en Cargues, SIEMPRE leído de la lista viva: cualquier
+  // refreshData() se refleja al instante en los saldos que se muestran.
+  const carguesClient: User | null = carguesClientId
+    ? (allUsers.find((u: any) => u.id === carguesClientId) ?? null)
+    : null;
   const adminTeam = getAdminTeam();
 
   // ── Panel de Fallos ──────────────────────────────────────────────────────
@@ -1917,7 +1926,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                   return (
                     <button
                       key={u.id}
-                      onClick={() => { setCarguesClient(u); setCarguesMsg(null); }}
+                      onClick={() => { setCarguesClientId(u.id); setCarguesMsg(null); }}
                       className="w-full text-left p-3 rounded-lg transition-colors flex items-center gap-3"
                       style={{
                         border: active ? '1.5px solid #4ADE80' : '1px solid rgba(255,255,255,0.10)',
