@@ -758,6 +758,20 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     return null;
   };
 
+  // Registra un INGRESO de admin (durable, con IP server-side) tras un login
+  // exitoso. Best-effort: nunca bloquea ni rompe el login si falla.
+  const logAdminLogin = (u: any) => {
+    try {
+      if (!u || u.role !== 'admin' || !SUPABASE_URL_FOR_FN) return;
+      const token = getStoredToken();
+      fetch(`${SUPABASE_URL_FOR_FN}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_FOR_FN, Authorization: token ? `Bearer ${token}` : `Bearer ${SUPABASE_ANON_FOR_FN}` },
+        body: JSON.stringify({ action: 'log_login' }),
+      }).catch(() => {});
+    } catch { /* nunca rompe el login */ }
+  };
+
   // PBKDF2 password hash using Web Crypto — fallback when Supabase Auth is misconfigured
   const hashPassword = async (password: string, salt: string): Promise<string> => {
     try {
@@ -1130,6 +1144,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
               return 'MFA_REQUIRED';
             }
             setCurrentUser(u);
+            logAdminLogin(u);
             return u;
           }
           // La cuenta existe pero todavía NO es admin en la tabla users → no
@@ -1329,6 +1344,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         setCurrentUser(user);
         setMfaPending(false);
         setPendingMFAProfile(null);
+        logAdminLogin(user);
         return user;
       } catch { return null; }
     }

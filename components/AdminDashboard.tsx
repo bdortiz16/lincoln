@@ -267,6 +267,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria'>('overview');
   const [auditRows, setAuditRows] = useState<any[] | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
+  const [adminLogins, setAdminLogins] = useState<{ admins: any[]; activity: any[] } | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [ratesSaved, setRatesSaved] = useState(false);
   const [showPaletteChooser, setShowPaletteChooser] = useState(false);
@@ -488,10 +489,26 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     setAuditLoading(false);
   };
 
+  const loadAdminLogins = async () => {
+    try {
+      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+      let jwt: string | null = null;
+      try { const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token')); if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; } } catch { /* */ }
+      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}` },
+        body: JSON.stringify({ action: 'admin_logins' }),
+      });
+      const d = await r.json();
+      setAdminLogins({ admins: Array.isArray(d?.admins) ? d.admins : [], activity: Array.isArray(d?.activity) ? d.activity : [] });
+    } catch { setAdminLogins({ admins: [], activity: [] }); }
+  };
+
   useEffect(() => {
     if (activeTab === 'cargues' && !mouvPool) loadMouvPool();
     if (activeTab === 'cargues' && !finityPool) loadFinityPool();
-    if (activeTab === 'auditoria') loadAudit();
+    if (activeTab === 'auditoria') { loadAudit(); loadAdminLogins(); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
 
@@ -3614,7 +3631,49 @@ const renderDesign = () => (
             <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Shield size={18} className="text-slate-500" /> Auditoría</h2>
             <p className="text-sm text-slate-500">Registro de cambios sensibles: quién cambió la dirección de un proveedor de tesorería y cuándo. Solo cubre cambios <span className="font-semibold">a partir de ahora</span>; los cambios anteriores a esta función no quedaron registrados.</p>
           </div>
-          <button onClick={loadAudit} disabled={auditLoading} className="text-xs font-semibold text-slate-600 hover:text-slate-900 border border-slate-200 rounded-lg px-3 py-1.5 disabled:opacity-50">{auditLoading ? 'Cargando…' : 'Actualizar'}</button>
+          <button onClick={() => { loadAudit(); loadAdminLogins(); }} disabled={auditLoading} className="text-xs font-semibold text-slate-600 hover:text-slate-900 border border-slate-200 rounded-lg px-3 py-1.5 disabled:opacity-50">{auditLoading ? 'Cargando…' : 'Actualizar'}</button>
+        </div>
+
+        {/* Ingresos de admin — última vez de ingreso + actividad con IP */}
+        <div className="bg-white rounded-xl border border-slate-200 p-4">
+          <p className="font-bold text-slate-800 flex items-center gap-2 mb-2"><Shield size={16} className="text-slate-500" /> Ingresos de administrador</p>
+          {!adminLogins ? (
+            <p className="text-sm text-slate-400">Cargando…</p>
+          ) : (
+            <div className="space-y-3">
+              <div className="grid gap-2 sm:grid-cols-2">
+                {(adminLogins.admins ?? []).map((a: any) => (
+                  <div key={a.id} className="rounded-lg border border-slate-200 p-3">
+                    <p className="font-bold text-slate-800 text-sm break-all">{a.email}</p>
+                    <p className="text-xs text-slate-600 mt-1">Último ingreso: <span className="font-semibold">{a.last_sign_in_at ? new Date(a.last_sign_in_at).toLocaleString('es-CO') : '—'}</span></p>
+                    <p className="text-[11px] text-slate-400">Cuenta creada: {a.created_at ? new Date(a.created_at).toLocaleString('es-CO') : '—'}</p>
+                  </div>
+                ))}
+                {(adminLogins.admins ?? []).length === 0 && <p className="text-xs text-slate-400">No se pudo leer la fecha de ingreso desde Supabase Auth.</p>}
+              </div>
+              {(adminLogins.activity ?? []).length > 0 && (
+                <div>
+                  <p className="text-xs font-bold text-slate-600 mb-1.5">Actividad reciente con IP</p>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead><tr className="text-slate-400 text-left"><th className="py-1 pr-3">Fecha</th><th className="py-1 pr-3">Acción</th><th className="py-1 pr-3">Correo</th><th className="py-1 pr-3">IP</th></tr></thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {(adminLogins.activity ?? []).slice(0, 30).map((ev: any, i: number) => (
+                          <tr key={i} className={ev.hadSession === false ? 'bg-red-50' : ''}>
+                            <td className="py-1 pr-3 text-slate-500 whitespace-nowrap">{ev.at ? new Date(ev.at).toLocaleString('es-CO') : '—'}</td>
+                            <td className="py-1 pr-3 font-semibold text-slate-700">{ev.action === 'auth.admin_login' ? 'Ingreso' : ev.action}</td>
+                            <td className="py-1 pr-3 text-slate-600 break-all">{ev.byEmail ?? (ev.hadSession === false ? '⚠ sin sesión' : '—')}</td>
+                            <td className="py-1 pr-3 font-mono text-slate-700">{ev.ip ?? '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+              <p className="text-[11px] text-slate-400">"Último ingreso" viene de Supabase Auth (fecha única). La actividad con IP se registra de aquí en adelante — los ingresos anteriores no quedaron con IP.</p>
+            </div>
+          )}
         </div>
         {auditLoading && auditRows === null ? (
           <div className="bg-white rounded-xl border border-slate-200 p-10 text-center text-slate-400 text-sm">Cargando registro…</div>

@@ -508,6 +508,40 @@ Deno.serve(async (req: Request) => {
       // ── Registro de AUDITORÍA (admin-only) — quién cambió qué y cuándo ──
       // Lee audit_log (cambios de proveedor de tesorería, payouts, etc.). Sirve
       // para investigar, p. ej., quién configuró la dirección de un proveedor.
+      // ── Ingresos de admin: última vez de ingreso + actividad con IP ──
+      // last_sign_in_at lo trae Supabase Auth (no requiere logging propio).
+      // La actividad con IP sale de audit_log (acciones sensibles + logins).
+      if (body.action === 'admin_logins') {
+        // Correos con rol admin en public.users.
+        const { data: adminRows } = await db.from('users').select('id, email, role, created_at').eq('role', 'admin')
+        const adminIds = new Set((adminRows ?? []).map((r: any) => r.id))
+        const adminEmails = new Set((adminRows ?? []).map((r: any) => String(r.email ?? '').toLowerCase()))
+        if (ADMIN_EMAIL) adminEmails.add(String(ADMIN_EMAIL).toLowerCase())
+        // Datos de Supabase Auth (last_sign_in_at, created_at).
+        const admins: any[] = []
+        try {
+          const { data: list } = await db.auth.admin.listUsers({ page: 1, perPage: 200 })
+          for (const u of (list?.users ?? [])) {
+            if (adminIds.has(u.id) || adminEmails.has(String(u.email ?? '').toLowerCase())) {
+              admins.push({ id: u.id, email: u.email, last_sign_in_at: (u as any).last_sign_in_at ?? null, created_at: u.created_at ?? null })
+            }
+          }
+        } catch (e) { /* si Auth admin falla, seguimos con lo de public.users */ }
+        // Actividad reciente con IP (logins + acciones sensibles).
+        const { data: acts } = await db.from('audit_log').select('*').order('created_at', { ascending: false }).limit(100)
+        const withIp = (acts ?? []).filter((a: any) => a?.metadata?.ip || a?.action === 'auth.admin_login')
+          .map((a: any) => ({ action: a.action, at: a.metadata?.at ?? a.created_at, byEmail: a.metadata?.byEmail ?? null, ip: a.metadata?.ip ?? null, userAgent: a.metadata?.userAgent ?? null, hadSession: a.metadata?.hadSession }))
+        return json({ ok: true, admins, activity: withIp })
+      }
+
+      // Registrar un INGRESO de admin (lo llama el front tras un login exitoso).
+      // Deja rastro DURABLE con IP y hora — Supabase solo guarda last_sign_in_at
+      // (una sola fecha) y sus logs caducan.
+      if (body.action === 'log_login') {
+        await auditAdmin(req, 'auth.admin_login', { note: 'ingreso al panel admin' })
+        return json({ ok: true })
+      }
+
       if (body.action === 'list_audit') {
         const limit = Math.min(Number(body.limit ?? 200) || 200, 500)
         let rows: any[] = []
