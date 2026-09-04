@@ -434,6 +434,8 @@ export const AdminGasFreeSection: React.FC = () => {
     // ── Modo discreto (ON por defecto): enmascara TODAS las direcciones de la
     // página y oculta el QR. Desactivarlo queda registrado en la auditoría. ──
     const [discreet, setDiscreet] = useState(true);
+    const [showTreasuryDetail, setShowTreasuryDetail] = useState(false);
+    const [showTools, setShowTools] = useState(false);
     const [pageAudit, setPageAudit] = useState<AuditEntry[]>([]);
     const addAudit = (text: string, sev: 'info' | 'warn' = 'info') =>
         setPageAudit(p => [{ at: Date.now(), text, sev }, ...p].slice(0, 60));
@@ -673,7 +675,8 @@ export const AdminGasFreeSection: React.FC = () => {
                 mouvCop={mouvBal?.cop ?? null}
                 walletsCount={businesses.length}
                 providerLocked={providers.some((p: any) => p.locked)}
-                providerAssigned={!!treasuryCfg?.alertProviderId}
+                providerAssigned={!!treasuryCfg?.alertProviderId || providers.some((p: any) => p.locked)}
+                onOpenTreasury={() => setShowTreasuryDetail(true)}
                 mfaCovered={allUsers.filter((u: any) => u.role === 'admin' && (u.mfaEnabled || u.raw_data?.mfaEnabled)).length}
                 mfaTotal={allUsers.filter((u: any) => u.role === 'admin').length}
                 alertThreshold={Number(treasuryCfg?.alertThresholdUsdt ?? 10000)}
@@ -701,8 +704,15 @@ export const AdminGasFreeSection: React.FC = () => {
                 clientes; desde aquí se pagan los envíos y a los proveedores.
                 Estilo billetera (igual al del cliente) — se carga sola al
                 entrar, sin tener que darle a "Actualizar" primero. */}
-            <div className="rounded-2xl overflow-hidden bg-gradient-to-br from-[#0C0E0D] to-[#0C0E0D] text-white shadow-xl relative">
+            {/* Se abre como VENTANA desde la tarjeta de Tesorería del panel de
+                arriba — antes salía duplicada e inline, mostrando la dirección
+                completa y el QR abiertos (anulaba el Modo discreto). */}
+            {showTreasuryDetail && (
+            <>
+            <div onClick={() => setShowTreasuryDetail(false)} className="fixed inset-0 z-[60] bg-black/70" />
+            <div className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-[61] w-[720px] max-w-[94vw] max-h-[88vh] overflow-y-auto rounded-2xl overflow-hidden bg-gradient-to-br from-[#0C0E0D] to-[#0C0E0D] text-white shadow-2xl ring-1 ring-white/10 relative">
                 <div className="absolute -right-10 -top-10 w-40 h-40 bg-white/5 rounded-full blur-3xl" />
+                <button onClick={() => setShowTreasuryDetail(false)} className="absolute top-4 right-4 z-20 text-white/50 hover:text-white p-1 rounded-lg"><X size={18} /></button>
                 <div className="relative z-10 p-5 space-y-4">
                     <div className="flex items-start justify-between gap-3 flex-wrap">
                         <div className="flex items-center gap-3">
@@ -743,8 +753,8 @@ export const AdminGasFreeSection: React.FC = () => {
                                     <p className="text-4xl font-bold tracking-tight">
                                         {fmt(rec.balance)} <span className="text-base font-normal text-green-200">USDT</span>
                                     </p>
-                                    <button onClick={() => rec.gasFreeAddress && copy(rec.gasFreeAddress)} className="mt-1.5 inline-flex items-center gap-1.5 text-xs text-green-100/80 hover:text-white font-mono break-all text-left">
-                                        {rec.gasFreeAddress}
+                                    <button onClick={() => { if (rec.gasFreeAddress) { copy(rec.gasFreeAddress); addAudit('Copió la dirección de Tesorería', 'warn'); } }} className="mt-1.5 inline-flex items-center gap-1.5 text-xs text-green-100/80 hover:text-white font-mono break-all text-left">
+                                        {discreet ? maskAddr(rec.gasFreeAddress) : rec.gasFreeAddress}
                                         <Copy size={12} className="shrink-0" />
                                         {copied === rec.gasFreeAddress && <span className="text-green-300 font-sans">copiado</span>}
                                     </button>
@@ -752,12 +762,20 @@ export const AdminGasFreeSection: React.FC = () => {
                                         <b className="text-white">Deposita AQUÍ</b> (USDT · TRC-20). Esta es la ÚNICA dirección del circuito automático: lo que llega sale solo hacia el proveedor y las comisiones GasFree se pagan de este mismo saldo.
                                     </p>
                                 </div>
-                                {rec.gasFreeAddress && (
+                                {/* El QR solo se muestra con el Modo discreto APAGADO —
+                                    si no, el enmascarado de la dirección no serviría. */}
+                                {rec.gasFreeAddress && !discreet && (
                                     <div className="shrink-0 text-center">
                                         <img
                                             src={`https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${encodeURIComponent(rec.gasFreeAddress)}&color=0A0A0A&bgcolor=FFFFFF&margin=6`}
                                             alt="QR Tesorería GasFree" className="w-[120px] h-[120px] rounded-lg bg-white p-1" />
                                         <p className="text-[10px] text-green-100/70 mt-1 font-bold">Escanea para depositar</p>
+                                    </div>
+                                )}
+                                {rec.gasFreeAddress && discreet && (
+                                    <div className="shrink-0 text-center w-[120px] h-[120px] rounded-lg bg-white/5 border border-white/10 flex flex-col items-center justify-center gap-1.5">
+                                        <span className="text-2xl">🔒</span>
+                                        <p className="text-[10px] text-green-100/60 font-bold px-2 leading-tight">QR oculto por Modo discreto</p>
                                     </div>
                                 )}
                             </div>
@@ -786,6 +804,8 @@ export const AdminGasFreeSection: React.FC = () => {
                     )}
                 </div>
             </div>
+            </>
+            )}
 
             {/* Ajustes de Tesorería (MANUAL, bajo demanda): wallet dueña
                 rotativa + períodos archivados. NO es donde se deposita. */}
@@ -839,6 +859,20 @@ export const AdminGasFreeSection: React.FC = () => {
                 )}
             </div>
 
+            {/* TODAS las herramientas de recuperación/forense detrás de UN solo
+                botón: la página queda limpia y solo se abren cuando se usan. */}
+            <button onClick={() => setShowTools(v => !v)}
+                className={`w-full flex items-center justify-between gap-3 rounded-xl border px-4 py-3 transition-colors ${showTools ? 'border-amber-300 bg-amber-50' : 'border-slate-200 bg-white hover:border-amber-300'}`}>
+                <span className="flex items-center gap-2.5 text-left">
+                    <span className="text-lg">🛟</span>
+                    <span>
+                        <span className="block font-bold text-slate-800 text-sm">Recuperar fondos</span>
+                        <span className="block text-[11px] text-slate-500">Localizar depósitos, buscar en semillas, auditar wallets, forense de cuentas e historial</span>
+                    </span>
+                </span>
+                <span className="text-xs font-bold text-slate-500 shrink-0">{showTools ? 'Cerrar ▲' : 'Abrir ▼'}</span>
+            </button>
+            {showTools && (<>
             {/* Recuperación de wallet: localizar el índice HD de una dirección
                 y barrer su USDT a Tesorería (para depósitos que llegaron a una
                 wallet cuyo índice se perdió). */}
@@ -1213,37 +1247,7 @@ export const AdminGasFreeSection: React.FC = () => {
                 ))}
             </div>
 
-            {/* Parámetro editable: umbral de alerta de Tesorería */}
-            <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
-                <p className="font-bold text-slate-800 text-sm">⚙️ Parámetro de Tesorería</p>
-                <p className="text-[11px] text-slate-400 -mt-1.5">Cuando el saldo supere este umbral, aquí queda claro a cuál proveedor inscrito se le debe pagar (si hay varios registrados abajo).</p>
-                <div className="flex items-end gap-3 flex-wrap">
-                    <div>
-                        <label className="text-[10px] font-bold uppercase text-slate-500">Alertar cuando el saldo supere (USDT)</label>
-                        <input value={treasuryEdit.alertThresholdUsdt} onChange={e => setTreasuryEdit(p => ({ ...p, alertThresholdUsdt: e.target.value.replace(/[^\d.]/g, '') }))}
-                            className="mt-1 w-40 px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#4ADE80]" placeholder="10000" />
-                    </div>
-                    <div>
-                        <label className="text-[10px] font-bold uppercase text-slate-500">Proveedor destino</label>
-                        <select value={treasuryEdit.alertProviderId} onChange={e => setTreasuryEdit(p => ({ ...p, alertProviderId: e.target.value }))}
-                            className="mt-1 w-48 px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#4ADE80] bg-white">
-                            <option value="">— Sin asignar —</option>
-                            {providers.map((p: any) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                        </select>
-                    </div>
-                    <div className="flex-1 min-w-[220px]">
-                        <label className="text-[10px] font-bold uppercase text-slate-500">Notas (opcional)</label>
-                        <input value={treasuryEdit.notes} onChange={e => setTreasuryEdit(p => ({ ...p, notes: e.target.value }))}
-                            className="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#4ADE80]" placeholder="Notas adicionales" />
-                    </div>
-                    <button onClick={saveTreasuryCfg} disabled={treasurySaving} style={{ color: '#FFFFFF' }} className="px-4 py-2 text-sm font-bold bg-[#0C0E0D] rounded-lg hover:bg-[#152e52] disabled:opacity-60">
-                        {treasurySaving ? 'Guardando…' : 'Guardar'}
-                    </button>
-                </div>
-                {treasuryCfgMsg && (
-                    <p className={`text-[11px] font-bold ${treasuryCfgMsg.ok ? 'text-green-700' : 'text-slate-600'}`}>{treasuryCfgMsg.text}</p>
-                )}
-            </div>
+            </>)}
 
             {/* Proveedores: a quién se paga con el USDT de Tesorería */}
             <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
