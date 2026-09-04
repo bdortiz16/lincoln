@@ -1352,8 +1352,10 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           // Diagnóstico: sin esto, un fallo de AUTORIZACIÓN o un secreto que no
           // se pudo leer se mostraban igual que "código incorrecto", y no había
           // forma de saber por qué no entra con un código válido.
-          const why = r?.error === 'no_secret'
-            ? 'La cuenta tiene el 2FA activo pero el servidor no pudo leer su secreto. Hay que reactivar el 2FA.'
+          const why = r?.error === 'secret_unreadable'
+            ? 'El 2FA está activo pero su secreto quedó ilegible para el servidor (se guardó con otra llave). Hay que desactivar y volver a activar el 2FA.'
+            : r?.error === 'no_secret'
+            ? 'La cuenta tiene el 2FA activo pero no hay ningún secreto guardado. Hay que reactivar el 2FA.'
             : r?.error === 'No autorizado'
               ? 'La sesión no autorizó la verificación. Vuelve a intentar el inicio de sesión.'
               : r?.error ? `Verificación rechazada: ${r.error}` : null;

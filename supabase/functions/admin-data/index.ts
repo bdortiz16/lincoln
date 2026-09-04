@@ -425,8 +425,14 @@ Deno.serve(async (req: Request) => {
         const { data: u } = await db.from('users').select('raw_data').eq('id', selfServiceBody.userId).single()
         const raw = ((u as any)?.raw_data ?? {}) as Record<string, any>
         let secret = ''
-        try { secret = raw.totpSecretEnc ? await decField(String(raw.totpSecretEnc)) : String(raw.totpSecret ?? '') } catch { secret = '' }
-        if (!secret) return json({ ok: false, error: 'no_secret' })
+        // Se distinguen dos fallos que antes se veían IGUAL que "código
+        // incorrecto": que no haya secreto guardado, y que sí lo haya pero el
+        // servidor no lo pueda descifrar (llave de cifrado distinta a la que
+        // se usó al activar el 2FA). Solo se informa el TIPO de fallo, nunca
+        // el secreto ni nada de la Bóveda.
+        let decErr = false
+        try { secret = raw.totpSecretEnc ? await decField(String(raw.totpSecretEnc)) : String(raw.totpSecret ?? '') } catch { decErr = true; secret = '' }
+        if (!secret) return json({ ok: false, error: decErr ? 'secret_unreadable' : 'no_secret' })
         const ok = await verifyTOTPServer(secret, code)
         return json({ ok })
       }
