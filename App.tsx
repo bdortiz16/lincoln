@@ -230,7 +230,7 @@ const App: React.FC = () => {
   const [showMarketingModal, setShowMarketingModal] = useState(false);
   const [showPersonalDownloadModal, setShowPersonalDownloadModal] = useState(false);
 
-  const { currentUser, isAuthLoading, logoutUser, isPasswordRecovery, setNewPassword } = useDatabase();
+  const { currentUser, isAuthLoading, logoutUser, isPasswordRecovery, setNewPassword, mfaPending } = useDatabase();
   const { config } = useSystemConfig();
   // Verificación por correo (2 pasos) tras el login. Se pasa una vez por
   // sesión; "recordar dispositivo" la evita por 30 días en este navegador.
@@ -404,6 +404,20 @@ const App: React.FC = () => {
 
   // View Routing
   const renderView = () => {
+      // 2FA pendiente (p. ej. tras volver del login con Google): se fuerza la
+      // pantalla de Login —que muestra el paso del código— sin importar en qué
+      // vista estemos. Antes, tras el redirect de Google caía en 'landing' y el
+      // 2FA no se montaba, así que había que darle "Ingresar" otra vez.
+      if (mfaPending) {
+        return (
+          <Login
+            userRole={userRole !== 'admin' ? userRole : 'business'}
+            onRegisterClick={() => navigateToRegister(userRole !== 'admin' ? userRole : 'business')}
+            onLoginSuccess={handleLoginSuccess}
+            onBack={navigateToLanding}
+          />
+        );
+      }
       switch (currentView) {
         case 'landing':
           return (
