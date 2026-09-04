@@ -719,6 +719,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const [mfaBusy, setMfaBusy] = useState(false);
   const [mfaMsg, setMfaMsg] = useState<string | null>(null);
   const [mfaBackupCodes, setMfaBackupCodes] = useState<string[] | null>(null);
+  const [mfaHealth, setMfaHealth] = useState<any>(null);
+  const [mfaHealthBusy, setMfaHealthBusy] = useState(false);
+
+  // Revisa TODAS las cuentas con 2FA y reporta cuáles tienen el secreto
+  // ilegible (llave distinta) o se quedaron sin códigos de respaldo. Sirve
+  // para enterarse ANTES de que alguien no pueda entrar.
+  const runMfaHealth = async () => {
+    setMfaHealthBusy(true);
+    try {
+      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+      let jwt: string | null = null;
+      try { const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token')); if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; } } catch { /* */ }
+      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}` },
+        body: JSON.stringify({ action: 'mfa_health' }),
+      });
+      setMfaHealth(await r.json());
+    } catch { setMfaHealth({ error: 'No se pudo revisar. Reintenta.' }); }
+    setMfaHealthBusy(false);
+  };
   const adminMfaOn = !!((currentUser as any)?.mfaEnabled || (currentUser as any)?.raw_data?.mfaEnabled);
   const startMfaEnroll = async () => {
     setMfaBusy(true); setMfaMsg(null);
@@ -3447,6 +3469,42 @@ const renderDesign = () => (
               </div>
             )}
             {mfaMsg && <p className={`mt-2 text-xs font-semibold ${mfaMsg.startsWith('✅') ? 'text-green-700' : 'text-red-700'}`}>{mfaMsg}</p>}
+
+            {/* Salud del 2FA de TODAS las cuentas (clientes incluidos). */}
+            <div className="mt-3">
+              <button onClick={runMfaHealth} disabled={mfaHealthBusy}
+                      className="px-3 py-2 text-xs font-bold rounded-lg disabled:opacity-60"
+                      style={{ backgroundColor: '#121413', color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.12)' }}>
+                {mfaHealthBusy ? 'Revisando…' : '🩺 Revisar salud del 2FA de todas las cuentas'}
+              </button>
+              {mfaHealth && (
+                <div className="mt-2 rounded-xl p-3" style={{ backgroundColor: '#121413', border: '1px solid rgba(255,255,255,0.10)' }}>
+                  {mfaHealth.error ? (
+                    <p className="text-xs" style={{ color: '#F87171' }}>{String(mfaHealth.error)}</p>
+                  ) : (
+                    <>
+                      <p className="text-sm font-bold" style={{ color: mfaHealth.unreadable > 0 ? '#F87171' : '#4ADE80' }}>
+                        {mfaHealth.unreadable > 0
+                          ? `⚠ ${mfaHealth.unreadable} de ${mfaHealth.total} cuentas con 2FA no pueden entrar`
+                          : `✅ Las ${mfaHealth.total} cuentas con 2FA están sanas`}
+                      </p>
+                      <p className="text-xs mt-1" style={{ color: '#878E88' }}>
+                        Cifradas con otra llave: <b style={{ color: '#F4F4F2' }}>{mfaHealth.keyMismatch ?? 0}</b> ·
+                        {' '}Sin códigos de respaldo: <b style={{ color: '#F4F4F2' }}>{mfaHealth.noBackup ?? 0}</b> ·
+                        {' '}En texto plano (legacy): <b style={{ color: '#F4F4F2' }}>{mfaHealth.legacyPlain ?? 0}</b>
+                      </p>
+                      {Array.isArray(mfaHealth.affected) && mfaHealth.affected.length > 0 && (
+                        <ul className="mt-2 space-y-1">
+                          {mfaHealth.affected.map((a: any) => (
+                            <li key={a.email} className="text-xs font-mono" style={{ color: '#FBBF24' }}>{a.email} — {a.motivo}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
 
             {/* Códigos de respaldo — se muestran UNA sola vez, al activar. */}
             {mfaBackupCodes && (
