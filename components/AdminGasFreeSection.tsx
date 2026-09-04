@@ -197,6 +197,47 @@ export const AdminGasFreeSection: React.FC = () => {
         setAutoRunning(false); setRecBusy(false);
     };
     const stopAuto = () => { autoCancelRef.current = true; };
+
+    // ── Buscar wallet en UNA semilla específica ──
+    const [seedSources, setSeedSources] = useState<string[] | null>(null);
+    const [seedPick, setSeedPick] = useState<string>('');
+    const [seedAddr, setSeedAddr] = useState('');
+    const [seedRange, setSeedRange] = useState('1000');
+    const [seedResult, setSeedResult] = useState<any>(null);
+    const [seedBusy, setSeedBusy] = useState(false);
+    const loadSeeds = async () => {
+        try {
+            const r = await callGasfree({ action: 'list_scan_mnemonics' });
+            const s = Array.isArray(r?.sources) ? r.sources : [];
+            setSeedSources(s);
+            if (s.length && !seedPick) setSeedPick(s[s.length - 1]); // por defecto la última agregada
+        } catch { setSeedSources([]); }
+    };
+    const searchInSeed = async () => {
+        if (!seedAddr.trim() || !seedPick) return;
+        setSeedBusy(true); setSeedResult(null);
+        try {
+            // Escaneo en AMBAS redes, pero SOLO en la semilla elegida.
+            const [tron, nile] = await Promise.all([
+                callGasfree({ action: 'find_address', address: seedAddr.trim(), net: 'tron', extra: Number(seedRange) || 1000, mnemonicSource: seedPick }),
+                callGasfree({ action: 'find_address', address: seedAddr.trim(), net: 'nile', extra: Number(seedRange) || 1000, mnemonicSource: seedPick }),
+            ]);
+            const hit = (tron?.found && tron) || (nile?.found && nile);
+            setSeedResult({ hit: hit || null, tron, nile });
+        } catch (e: any) { setSeedResult({ error: e?.message ?? 'Error' }); }
+        setSeedBusy(false);
+    };
+    const sweepSeedHit = async () => {
+        const hit = seedResult?.hit;
+        if (!hit || !(Number(hit.balanceUsdt ?? 0) > 0)) return;
+        if (!confirm(`¿Barrer ${Number(hit.balanceUsdt).toFixed(2)} USDT del índice ${hit.index} (${hit.mnemonic}) a la recaudadora?`)) return;
+        setSeedBusy(true);
+        try {
+            const r = await callGasfree({ action: 'sweep_index', index: hit.index, mnemonic: hit.mnemonic });
+            setSeedResult((p: any) => ({ ...(p ?? {}), swept: r?.error ? undefined : r.swept, sweepErr: r?.error }));
+        } catch (e: any) { setSeedResult((p: any) => ({ ...(p ?? {}), sweepErr: e?.message ?? 'Error' })); }
+        setSeedBusy(false);
+    };
     // Auditoría de wallets: detectar colisiones (mismo índice en correos distintos).
     const [auditBusy, setAuditBusy] = useState(false);
     const [audit, setAudit] = useState<{ considered?: number; uniqueIndexes?: number; noIndex?: number; collisions?: { index: number; emails: string[] }[]; error?: string } | null>(null);
@@ -906,6 +947,54 @@ export const AdminGasFreeSection: React.FC = () => {
                         </div>
                     )}
                 </div>
+            </div>
+
+            {/* Buscar wallet en una SEMILLA específica (mnemónica) */}
+            <div className="rounded-xl border border-emerald-300 bg-emerald-50/40 p-4 space-y-3">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div>
+                        <p className="font-bold text-slate-800 text-sm">🌱 Buscar wallet en una semilla específica</p>
+                        <p className="text-[11px] text-slate-500">Escanea la dirección usando SOLO una de las mnemónicas cargadas (por si la wallet salió de una semilla vieja). En mainnet y Nile.</p>
+                    </div>
+                    <button onClick={loadSeeds} className="px-3 py-1.5 text-xs font-bold rounded-lg border border-slate-300 hover:bg-slate-50 text-slate-700">{seedSources ? 'Recargar semillas' : 'Cargar semillas'}</button>
+                </div>
+                {seedSources && (
+                    seedSources.length === 0 ? (
+                        <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2">No hay semillas cargadas. Agrega la mnemónica como secret en Supabase (GASFREE_TRON_MNEMONIC_OLD o _2) — NO sobreescribas GASFREE_TRON_MNEMONIC.</p>
+                    ) : (
+                        <>
+                            <p className="text-[11px] text-slate-600">Semillas cargadas: <b>{seedSources.join(', ')}</b> {seedSources.length === 1 && <span className="text-amber-700">— solo hay 1. Si esperabas la vieja, agrégala con otro nombre y recarga.</span>}</p>
+                            <div className="flex items-end gap-2 flex-wrap">
+                                <div>
+                                    <label className="text-[10px] font-bold uppercase text-slate-500">Semilla</label>
+                                    <select value={seedPick} onChange={(e) => setSeedPick(e.target.value)} className="block mt-0.5 px-3 py-2 text-xs border border-slate-300 rounded-lg bg-white">
+                                        {seedSources.map((s) => <option key={s} value={s}>{s}</option>)}
+                                    </select>
+                                </div>
+                                <input value={seedAddr} onChange={(e) => setSeedAddr(e.target.value)} placeholder="Dirección USDT (TRC-20)" className="flex-1 min-w-[220px] px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#4ADE80]" />
+                                <input value={seedRange} onChange={(e) => setSeedRange(e.target.value.replace(/[^0-9]/g, ''))} title="Rango" className="w-20 px-2 py-2 text-xs border border-slate-300 rounded-lg" placeholder="rango" />
+                                <button onClick={searchInSeed} disabled={seedBusy || !seedAddr.trim() || !seedPick} className="px-3 py-2 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#152e52] disabled:opacity-60">{seedBusy ? 'Buscando…' : 'Buscar en esta semilla'}</button>
+                            </div>
+                        </>
+                    )
+                )}
+                {seedResult && (
+                    <div className="text-xs bg-white border border-slate-200 rounded-lg p-3 space-y-1.5">
+                        {seedResult.error ? <p className="text-red-700 font-semibold">❌ {seedResult.error}</p> : seedResult.hit ? (
+                            <>
+                                <p className="text-green-700 font-bold">✅ ¡Encontrada en la semilla "{seedResult.hit.mnemonic}"! Índice {seedResult.hit.index} ({seedResult.hit.net === 'tron' ? 'mainnet' : 'Nile'}) · saldo {Number(seedResult.hit.balanceUsdt ?? 0).toFixed(2)} USDT</p>
+                                <p className="text-[11px] font-mono text-slate-400 break-all">{seedResult.hit.gasFreeAddress}</p>
+                                {Number(seedResult.hit.balanceUsdt ?? 0) > 0 && seedResult.swept == null && (
+                                    <button onClick={sweepSeedHit} disabled={seedBusy} className="px-3 py-1.5 text-xs font-bold rounded-lg bg-[#4ADE80] text-[#0C0E0D] hover:bg-[#26bda9] disabled:opacity-60">{seedBusy ? 'Barriendo…' : `Barrer ${Number(seedResult.hit.balanceUsdt).toFixed(2)} USDT a la recaudadora`}</button>
+                                )}
+                                {seedResult.swept != null && <p className="text-green-700 font-semibold">✅ Barrido {Number(seedResult.swept).toFixed(2)} USDT · TxID {String(seedResult.hit.traceId ?? '').slice(0, 14)}…</p>}
+                                {seedResult.sweepErr && <p className="text-red-700">❌ {seedResult.sweepErr}</p>}
+                            </>
+                        ) : (
+                            <p className="text-slate-600">No se encontró en la semilla "<b>{seedPick}</b>" (mainnet ni Nile). Errores de API: mainnet {seedResult.tron?.apiErrors ?? 0}, Nile {seedResult.nile?.apiErrors ?? 0}. {(Number(seedResult.tron?.apiErrors ?? 0) + Number(seedResult.nile?.apiErrors ?? 0)) > 0 ? 'Hubo rate-limit → reintenta en 1–2 min.' : 'Con 0 errores, esta semilla NO generó esa wallet.'}</p>
+                        )}
+                    </div>
+                )}
             </div>
 
             {/* Forense: correos con wallet que NO son clientes + búsqueda de correo */}

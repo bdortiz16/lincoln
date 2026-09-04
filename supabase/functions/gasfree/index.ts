@@ -2528,7 +2528,7 @@ async function payFromTreasury(toAddress: string, amount: number, providerName?:
 // Escanea índices 0..top derivando cada wallet y comparando con `target`
 // (acepta la dirección GasFree o la EOA). Sirve para recuperar depósitos que
 // llegaron a una wallet cuyo índice se "perdió" por el bug de userIndex.
-async function findAddress(target: string, extra = 25, net?: 'tron' | 'nile', band?: { min?: number; max?: number }) {
+async function findAddress(target: string, extra = 25, net?: 'tron' | 'nile', band?: { min?: number; max?: number }, mnemonicSource?: string) {
   const t = String(target || '').trim()
   if (!t) throw new Error('Falta la dirección a localizar')
   // Red a escanear: la explícita si se pide, si no la del deploy. Cuando difiere
@@ -2547,7 +2547,9 @@ async function findAddress(target: string, extra = 25, net?: 'tron' | 'nile', ba
   }
   let dec = 6, tokenAddr = NET_USDT[scanNet]
   if (!useOther) { const { token } = await gfConfig(); dec = Number(token.decimal ?? 6); tokenAddr = token.tokenAddress }
-  const mnemos = SCAN_MNEMONICS.length ? SCAN_MNEMONICS : [{ source: 'primary', phrase: MNEMONIC }]
+  let mnemos = SCAN_MNEMONICS.length ? SCAN_MNEMONICS : [{ source: 'primary', phrase: MNEMONIC }]
+  // Filtro a UNA semilla específica (sección "buscar en esta semilla").
+  if (mnemonicSource) { const only = mnemos.filter((m) => m.source === mnemonicSource); if (only.length) mnemos = only }
   // La dirección GasFree se consulta a la API de GasFree. Un escaneo masivo la
   // LIMITA y, si los fallos se ignoran, se pierde la coincidencia y se reporta
   // "no encontrada" en falso. Por eso: lotes chicos, pausa entre lotes,
@@ -2881,7 +2883,15 @@ Deno.serve(async (req) => {
       const band = (body.minIndex != null || body.maxIndex != null)
         ? { min: body.minIndex != null ? Number(body.minIndex) : undefined, max: body.maxIndex != null ? Number(body.maxIndex) : undefined }
         : undefined
-      return ok(await findAddress(String(body.address), body.extra != null ? Number(body.extra) : 25, net, band))
+      const mnemonicSource = body.mnemonicSource ? String(body.mnemonicSource) : undefined
+      return ok(await findAddress(String(body.address), body.extra != null ? Number(body.extra) : 25, net, band, mnemonicSource))
+    }
+    // Lista las SEMILLAS cargadas (solo etiquetas — NUNCA las palabras). Sirve
+    // para la sección "buscar en una semilla específica" y para verificar que la
+    // mnemónica extra quedó cargada como secret sin exponer nada sensible.
+    if (action === 'list_scan_mnemonics') {
+      const sources = (SCAN_MNEMONICS.length ? SCAN_MNEMONICS : [{ source: 'primary' }]).map((m) => m.source)
+      return ok({ ok: true, sources, count: sources.length })
     }
     // AUDITORÍA COMPLETA: escanea la dirección en AMBAS redes (mainnet + Nile) y
     // reporta el saldo USDT on-chain de la dirección en cada red. Deja claro,
