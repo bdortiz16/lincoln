@@ -94,11 +94,15 @@ async function require2FA(userId: string, otp: unknown): Promise<string | null> 
 // negra. Devuelve un mensaje si está bloqueada, o null si puede operar.
 async function assertNotBlocked(userId: string): Promise<string | null> {
   try {
-    const { data } = await db.from('users').select('is_blocked, is_active, raw_data').eq('id', userId).maybeSingle()
+    const { data } = await db.from('users').select('is_blocked, raw_data').eq('id', userId).maybeSingle()
     if (!data) return null
     const raw = ((data as any).raw_data ?? {}) as Record<string, any>
     const blacklisted = raw.blacklisted === true
-    const blocked = (data as any).is_blocked === true || (data as any).is_active === false || raw.isBlocked === true
+    // OJO: NO se usa `is_active` como señal de bloqueo. Esa columna la maneja el
+    // módulo de Personas (otra app) y en Empresas nadie la pone en true, así que
+    // marcaba como bloqueadas cuentas legítimas y les cortaba los envíos COP.
+    // Solo cuentan las banderas que el admin de Empresas sí controla.
+    const blocked = (data as any).is_blocked === true || raw.isBlocked === true
     if (blacklisted) return 'Esta cuenta está en la lista negra y no puede realizar operaciones. Contacta a soporte.'
     if (blocked) return 'Esta cuenta está bloqueada y no puede realizar operaciones. Contacta a soporte.'
     return null
@@ -3139,7 +3143,7 @@ Deno.serve(async (req) => {
         const reasons: string[] = []
         if (raw.blacklisted === true) reasons.push('raw_data.blacklisted = true (LISTA NEGRA)')
         if (u.is_blocked === true) reasons.push('columna is_blocked = true')
-        if (u.is_active === false) reasons.push('columna is_active = false')
+        // is_active ya NO bloquea (la maneja Personas); se muestra solo informativo.
         if (raw.isBlocked === true) reasons.push('raw_data.isBlocked = true')
         return {
           id: u.id, email: u.email, role: u.role, kyc_status: u.kyc_status,

@@ -962,9 +962,12 @@ serve(async (req: Request) => {
     // GUARDIA DE BLOQUEO / LISTA NEGRA — una cuenta bloqueada (p. ej. por
     // hackeo) NO puede dispersar dinero aunque llame la API directo.
     {
-      const { data: bU } = await db.from('users').select('is_blocked, is_active, raw_data').eq('id', userId).maybeSingle()
+      // NO se usa `is_active`: esa columna la maneja el módulo de Personas y en
+      // Empresas nadie la pone en true, así que marcaba cuentas legítimas como
+      // bloqueadas y les cortaba las dispersiones COP.
+      const { data: bU } = await db.from('users').select('is_blocked, raw_data').eq('id', userId).maybeSingle()
       const bRaw = ((bU as any)?.raw_data ?? {}) as Record<string, any>
-      if (bU && (bRaw.blacklisted === true || (bU as any).is_blocked === true || (bU as any).is_active === false || bRaw.isBlocked === true)) {
+      if (bU && (bRaw.blacklisted === true || (bU as any).is_blocked === true || bRaw.isBlocked === true)) {
         return json(403, { error: 'blocked', message: bRaw.blacklisted === true ? 'Esta cuenta está en la lista negra y no puede realizar operaciones.' : 'Esta cuenta está bloqueada y no puede realizar operaciones. Contacta a soporte.' })
       }
     }
