@@ -40,8 +40,8 @@ const WalletsModal: React.FC<{
   onClose: () => void;
 }> = ({ copBalance, usdtBalance, onPick, onClose }) => {
   const activas = [
-    { key: 'COP' as WalletKind, flag: '🇨🇴', name: 'COP · Peso colombiano', sub: 'Mouv · dispersión Bre-B', bal: copBalance != null ? fmtCop(copBalance) : '—' },
-    { key: 'USDT' as WalletKind, flag: '🇺🇸', name: 'USD · Dólar digital (USDT)', sub: 'Tesorería GasFree · TRC-20', bal: usdtBalance != null ? `${usdtBalance.toLocaleString('es-CO')} USDT` : '—' },
+    { key: 'COP' as WalletKind, flag: '🇨🇴', name: 'COP · Peso colombiano', sub: 'Cargues · Mouv · dispersión Bre-B', bal: copBalance != null ? fmtCop(copBalance) : '—' },
+    { key: 'USDT' as WalletKind, flag: '🇺🇸', name: 'USD · Dólar digital (USDT)', sub: 'Custodia GasFree · TRC-20', bal: usdtBalance != null ? `${usdtBalance.toLocaleString('es-CO')} USDT` : '—' },
   ];
   const proximas = [
     { flag: '🇲🇽', name: 'MXN · Peso mexicano', sub: 'En integración' },

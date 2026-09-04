@@ -83,7 +83,7 @@ import { AdminGasFreeSection } from './AdminGasFreeSection';
 import { AdminMonitor } from './AdminMonitor';
 import { AdminTreasuryPanel } from './AdminTreasuryPanel';
 import { AdminOtcSection } from './AdminOtcSection';
-import { Zap, ArrowLeftRight, Info, ChevronRight, Activity } from 'lucide-react';
+import { Zap, ArrowLeftRight, ArrowLeft, Info, ChevronRight, Activity } from 'lucide-react';
 import { CollectionWalletCard } from './CollectionWalletCard';
 import type { AdminProfile } from './AdminPersonas/lib/adminAuth';
 import { FlagImg, flagUrl } from './FlagImg';
@@ -1720,6 +1720,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
 
       return (
         <div className="space-y-6 animate-in fade-in duration-300">
+          {/* Se entra por Tesorería → Billeteras → COP, así que el regreso
+              tiene que estar aquí: ya no hay ítem en el menú lateral. */}
+          <button onClick={() => navTo('treasury')}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-bold"
+            style={{ backgroundColor: '#121413', color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.12)' }}>
+            <ArrowLeft size={14} /> Tesorería · Billetera COP
+          </button>
           {/* Aviso: proceso temporal */}
           <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start gap-3">
             <Info size={18} className="text-amber-600 mt-0.5 flex-shrink-0" />
@@ -2245,7 +2252,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
               flow14={flow14}
               copBalance={copBalance}
               usdtBalance={usdtBalance}
-              onPickWallet={(w) => { if (w === 'USDT') navTo('gasfree'); else setTreasuryTab('deposits'); }}
+              onPickWallet={(w) => navTo(w === 'USDT' ? 'gasfree' : 'cargues')}
               onRegisterMovement={() => setShowInternalMovementModal(true)}
           />
           {/* ── Solicitudes "Saldo Lincoin → ACH" (aprobación manual) ──
@@ -3970,9 +3977,10 @@ const renderDesign = () => (
                         { key: 'operacion', title: 'Operación', badge: operacionBadge, items: <>
                             <AdminSidebarItem icon={Users} label="Clientes" active={activeTab === 'clients'} badge={pendingClientsCount > 0 ? pendingClientsCount : undefined} onClick={() => navTo('clients')} />
                             <AdminSidebarItem icon={Landmark} label="Tesorería" active={activeTab === 'treasury'} badge={pendingDeposits.length + pendingWithdrawals.length > 0 ? pendingDeposits.length + pendingWithdrawals.length : undefined} onClick={() => navTo('treasury')} />
-                            <AdminSidebarItem icon={Wallet} label="Cargues" active={activeTab === 'cargues'} onClick={() => navTo('cargues')} />
+                            {/* Cargues (COP) y GasFree (USDT) ya NO van sueltos aquí:
+                                se entra por Tesorería → Billeteras, que es donde se
+                                elige con qué moneda se opera. */}
                             <AdminSidebarItem icon={AlertTriangle} label="Fallos" active={activeTab === 'fallos'} badge={failuresCount > 0 ? failuresCount : undefined} onClick={() => navTo('fallos')} />
-                            <AdminSidebarItem icon={Zap} label="GasFree USDT" active={activeTab === 'gasfree'} onClick={() => navTo('gasfree')} />
                         </> },
                         { key: 'finanzas', title: 'Finanzas', items: <>
                             <AdminSidebarItem icon={FileText} label="Reportes" active={activeTab === 'reports'} onClick={() => navTo('reports')} />
@@ -4057,7 +4065,15 @@ const renderDesign = () => (
                 {activeTab === 'rates' && renderRates()}
                 {activeTab === 'team' && renderTeam()}
                 {activeTab === 'security' && renderSecurity()}
-                {activeTab === 'gasfree' && <AdminGasFreeSection />}
+                {activeTab === 'gasfree' && (<>
+                  {/* Igual que Cargues: se entra por Tesorería → Billeteras → USDT. */}
+                  <button onClick={() => navTo('treasury')}
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-bold mb-4"
+                    style={{ backgroundColor: '#121413', color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.12)' }}>
+                    <ArrowLeft size={14} /> Tesorería · Billetera USDT
+                  </button>
+                  <AdminGasFreeSection />
+                </>)}
                 {activeTab === 'otcConfig' && <AdminOtcSection />}
                 {activeTab === 'fallos' && renderFallos()}
                 {activeTab === 'auditoria' && renderAuditoria()}
