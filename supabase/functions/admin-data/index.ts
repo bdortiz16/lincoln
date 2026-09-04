@@ -30,9 +30,10 @@ function slimRawData(rd: unknown, limit = 2000): unknown {
 
 // ── Cifrado de campos sensibles a nivel de APLICACIÓN (además del AES-256
 //    en reposo de la base). AES-256-GCM con llave derivada de FIELD_ENC_KEY
-//    (secret del servidor, nunca en la base ni en el cliente). Prefijo
-//    'enc:v1:' distingue cifrado de texto plano legacy. Sin la llave, no
-//    cifra (no rompe) y descifrar plano devuelve el mismo texto.
+//    (secret del servidor, nunca en la base ni en el cliente). Formato actual:
+//    'enc:v2:<huella-de-llave>:<datos>'; se sigue leyendo 'enc:v1:' (sin
+//    huella) y el texto plano legacy. SIN llave NO se cifra ni se guarda: antes
+//    devolvía el texto plano en silencio, que es peor que fallar.
 const FIELD_ENC_KEY = Deno.env.get('FIELD_ENC_KEY') ?? ''
 let _encKeyPromise: Promise<CryptoKey> | null = null
 function fieldKey(): Promise<CryptoKey> {
@@ -42,19 +43,70 @@ function fieldKey(): Promise<CryptoKey> {
   }
   return _encKeyPromise
 }
+// Huella de la llave: 8 hex derivados de la MISMA llave, guardados junto al
+// dato cifrado. No revela nada (es un hash truncado) y permite saber al
+// instante si un dato quedó cifrado con una llave DISTINTA a la actual, en vez
+// de descubrirlo cuando alguien ya no puede entrar.
+let _keyFpPromise: Promise<string> | null = null
+function keyFp(): Promise<string> {
+  if (!_keyFpPromise) {
+    _keyFpPromise = crypto.subtle.digest('SHA-256', new TextEncoder().encode('fp:' + FIELD_ENC_KEY))
+      .then(raw => Array.from(new Uint8Array(raw).slice(0, 4)).map(b => b.toString(16).padStart(2, '0')).join(''))
+  }
+  return _keyFpPromise
+}
 async function encField(plain: string): Promise<string> {
-  if (!FIELD_ENC_KEY || !plain) return plain
+  if (!plain) return plain
+  // Sin llave NO se guarda nada: antes devolvía el texto plano en silencio, y
+  // eso escribía secretos en claro sin que nadie se enterara.
+  if (!FIELD_ENC_KEY) throw new Error('FIELD_ENC_KEY missing')
   const iv = crypto.getRandomValues(new Uint8Array(12))
   const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await fieldKey(), new TextEncoder().encode(plain)))
   const buf = new Uint8Array(iv.length + ct.length); buf.set(iv); buf.set(ct, iv.length)
-  return 'enc:v1:' + btoa(String.fromCharCode(...buf))
+  return `enc:v2:${await keyFp()}:` + btoa(String.fromCharCode(...buf))
 }
+class KeyMismatchError extends Error { constructor() { super('key_mismatch') } }
 async function decField(v: string): Promise<string> {
-  if (typeof v !== 'string' || !v.startsWith('enc:v1:')) return v   // texto plano legacy
+  if (typeof v !== 'string' || !v.startsWith('enc:v')) return v   // texto plano legacy
   if (!FIELD_ENC_KEY) throw new Error('FIELD_ENC_KEY missing')
-  const bytes = Uint8Array.from(atob(v.slice(7)), c => c.charCodeAt(0))
+  let payload: string
+  if (v.startsWith('enc:v2:')) {
+    const rest = v.slice(7)
+    const sep = rest.indexOf(':')
+    if (sep < 0) throw new Error('bad_ciphertext')
+    if (rest.slice(0, sep) !== await keyFp()) throw new KeyMismatchError()
+    payload = rest.slice(sep + 1)
+  } else if (v.startsWith('enc:v1:')) {
+    payload = v.slice(7)
+  } else {
+    throw new Error('bad_ciphertext')
+  }
+  const bytes = Uint8Array.from(atob(payload), c => c.charCodeAt(0))
   const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: bytes.slice(0, 12) }, await fieldKey(), bytes.slice(12))
   return new TextDecoder().decode(pt)
+}
+
+// ── Códigos de respaldo ───────────────────────────────────────────────────
+// Se guardan HASHEADOS (SHA-256), no cifrados. Un hash no depende de ninguna
+// llave, así que aunque FIELD_ENC_KEY cambie o se pierda, estos códigos
+// SIEMPRE siguen sirviendo para entrar. Es la red que faltaba: hasta ahora la
+// única vía de acceso dependía de una llave reversible.
+const BACKUP_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'   // sin O/0/I/1
+function normalizeBackup(c: string): string {
+  return String(c ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '')
+}
+async function hashBackup(code: string): Promise<string> {
+  const raw = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('lincoin-backup:' + normalizeBackup(code)))
+  return Array.from(new Uint8Array(raw)).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+function newBackupCodes(n = 8): string[] {
+  const out: string[] = []
+  for (let i = 0; i < n; i++) {
+    const bytes = crypto.getRandomValues(new Uint8Array(8))
+    const s = Array.from(bytes).map(b => BACKUP_ALPHABET[b % BACKUP_ALPHABET.length]).join('')
+    out.push(s.slice(0, 4) + '-' + s.slice(4))
+  }
+  return out
 }
 
 // TOTP nativo (SHA1/6/30, ventana ±2) — para verificar el 2FA en el servidor.
@@ -254,7 +306,7 @@ Deno.serve(async (req: Request) => {
           const { data: curRaw } = await db.from('users').select('raw_data').eq('id', selfServiceBody.user.id).maybeSingle()
           const dbRaw = (((curRaw as any)?.raw_data) ?? {}) as Record<string, any>
           const incoming = ((userRow as any).raw_data ?? {}) as Record<string, any>
-          const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'gasfreeCreditedTxs', 'gasfreeCreditedCount', 'mfaEnabled', 'mfaFactorId', 'totpSecret', 'totpSecretEnc', 'otp', 'subWallets']
+          const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'gasfreeCreditedTxs', 'gasfreeCreditedCount', 'mfaEnabled', 'mfaFactorId', 'totpSecret', 'totpSecretEnc', 'mfaBackupHashes', 'otp', 'subWallets']
           const merged: Record<string, any> = { ...dbRaw, ...incoming }
           for (const k of SERVER_OWNED) { if (k in dbRaw) merged[k] = dbRaw[k]; else delete merged[k] }
           // COLECCIONES del cliente (contactos, wallets, notificaciones): tienen
@@ -407,13 +459,19 @@ Deno.serve(async (req: Request) => {
         const factorId = String(selfServiceBody.factorId ?? 'local')
         const { data: u } = await db.from('users').select('raw_data').eq('id', selfServiceBody.userId).single()
         const raw = { ...((u as any)?.raw_data ?? {}) }
-        raw.totpSecretEnc = await encField(secret)
+        try { raw.totpSecretEnc = await encField(secret) }
+        catch { return json({ error: 'La Bóveda no está disponible para guardar el secreto. No se activó el 2FA.' }, 503) }
         raw.mfaEnabled = true
         raw.mfaFactorId = factorId
         delete raw.totpSecret   // nunca dejar el secreto en claro
+        // Códigos de respaldo: se entregan UNA sola vez al activar y solo se
+        // guarda su hash. Son la vía de entrada que NO depende de la llave de
+        // cifrado, así que una rotación de llave ya no deja a nadie afuera.
+        const codes = newBackupCodes()
+        raw.mfaBackupHashes = await Promise.all(codes.map(hashBackup))
         const { error } = await db.from('users').update({ raw_data: raw }).eq('id', selfServiceBody.userId)
         if (error) return json({ error: error.message }, 500)
-        return json({ success: true })
+        return json({ success: true, backupCodes: codes })
       }
 
       // ── 2FA: verificar un código contra el secreto CIFRADO (server-side).
@@ -424,17 +482,73 @@ Deno.serve(async (req: Request) => {
         const code = String(selfServiceBody.code ?? '')
         const { data: u } = await db.from('users').select('raw_data').eq('id', selfServiceBody.userId).single()
         const raw = ((u as any)?.raw_data ?? {}) as Record<string, any>
+
+        // ── Código de RESPALDO ────────────────────────────────────────────
+        // Se prueba primero porque no es de 6 dígitos y porque tiene que
+        // funcionar aunque el secreto TOTP esté ilegible — ese es justo el
+        // caso para el que existe. Es de un solo uso: al acertar se consume.
+        const hashes: string[] = Array.isArray(raw.mfaBackupHashes) ? raw.mfaBackupHashes : []
+        const normalized = normalizeBackup(code)
+        if (hashes.length && normalized.length === 8 && !/^\d{6}$/.test(code.trim())) {
+          const h = await hashBackup(code)
+          const idx = hashes.indexOf(h)
+          if (idx >= 0) {
+            const rest = hashes.filter((_, i) => i !== idx)
+            await db.from('users').update({ raw_data: { ...raw, mfaBackupHashes: rest } }).eq('id', selfServiceBody.userId)
+            await auditAdmin(req, 'mfa_backup_code_used', { userId: selfServiceBody.userId, remaining: rest.length })
+            return json({ ok: true, usedBackup: true, remaining: rest.length })
+          }
+          return json({ ok: false, error: 'backup_invalid' })
+        }
+
         let secret = ''
-        // Se distinguen dos fallos que antes se veían IGUAL que "código
+        // Se distinguen los fallos que antes se veían IGUAL que "código
         // incorrecto": que no haya secreto guardado, y que sí lo haya pero el
         // servidor no lo pueda descifrar (llave de cifrado distinta a la que
         // se usó al activar el 2FA). Solo se informa el TIPO de fallo, nunca
         // el secreto ni nada de la Bóveda.
-        let decErr = false
-        try { secret = raw.totpSecretEnc ? await decField(String(raw.totpSecretEnc)) : String(raw.totpSecret ?? '') } catch { decErr = true; secret = '' }
-        if (!secret) return json({ ok: false, error: decErr ? 'secret_unreadable' : 'no_secret' })
+        let decErr: 'none' | 'key' | 'other' = 'none'
+        try { secret = raw.totpSecretEnc ? await decField(String(raw.totpSecretEnc)) : String(raw.totpSecret ?? '') }
+        catch (e) { decErr = (e instanceof KeyMismatchError) ? 'key' : 'other'; secret = '' }
+        if (!secret) {
+          return json({
+            ok: false,
+            error: decErr === 'none' ? 'no_secret' : 'secret_unreadable',
+            keyMismatch: decErr === 'key',
+            hasBackupCodes: hashes.length > 0,
+          })
+        }
         const ok = await verifyTOTPServer(secret, code)
         return json({ ok })
+      }
+
+      // ── 2FA: SALUD — ¿algún secreto quedó ilegible? ──────────────────────
+      // Revisa todas las cuentas con 2FA activo e informa cuántas tienen el
+      // secreto ilegible (llave distinta) y cuántas se quedaron sin códigos de
+      // respaldo. Es lo que convierte "me quedé afuera" en un aviso ANTES de
+      // que pase. No devuelve ningún secreto: solo correos y conteos.
+      if (selfServiceBody.action === 'mfa_health') {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        const { data: rows } = await db.from('users').select('id, email, raw_data')
+        let total = 0, unreadable = 0, keyMismatch = 0, noBackup = 0, legacyPlain = 0
+        const affected: Array<{ email: string; motivo: string }> = []
+        for (const r of (rows ?? []) as any[]) {
+          const raw = r.raw_data ?? {}
+          if (!raw.mfaEnabled) continue
+          total++
+          const hashes: string[] = Array.isArray(raw.mfaBackupHashes) ? raw.mfaBackupHashes : []
+          if (!hashes.length) noBackup++
+          if (!raw.totpSecretEnc && raw.totpSecret) { legacyPlain++; continue }
+          try {
+            const s = raw.totpSecretEnc ? await decField(String(raw.totpSecretEnc)) : ''
+            if (!s) { unreadable++; affected.push({ email: r.email, motivo: 'sin secreto' }) }
+          } catch (e) {
+            unreadable++
+            if (e instanceof KeyMismatchError) keyMismatch++
+            affected.push({ email: r.email, motivo: e instanceof KeyMismatchError ? 'cifrado con otra llave' : 'ilegible' })
+          }
+        }
+        return json({ ok: true, total, unreadable, keyMismatch, noBackup, legacyPlain, affected: affected.slice(0, 25) })
       }
 
       // ── 2FA: DESACTIVAR — la ÚNICA vía para apagar el 2FA. Exige un CÓDIGO
@@ -460,6 +574,7 @@ Deno.serve(async (req: Request) => {
         delete raw.mfaFactorId
         delete raw.totpSecret
         delete raw.totpSecretEnc
+        delete raw.mfaBackupHashes   // los códigos viejos no sirven para el 2FA nuevo
         const { error } = await db.from('users').update({ raw_data: raw }).eq('id', selfServiceBody.userId)
         if (error) return json({ error: error.message }, 500)
         return json({ success: true })

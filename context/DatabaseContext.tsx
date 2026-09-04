@@ -121,7 +121,7 @@ interface DatabaseContextType {
   completeMFALogin: (code: string) => Promise<User | null>;
   cancelMFALogin: () => void;
   enrollMFA: () => Promise<{ qrCode: string; secret: string; factorId: string } | null>;
-  verifyMFAEnrollment: (factorId: string, code: string, secret?: string) => Promise<{ ok: boolean; error?: string }>;
+  verifyMFAEnrollment: (factorId: string, code: string, secret?: string) => Promise<{ ok: boolean; error?: string; backupCodes?: string[] }>;
   unenrollMFA: (factorId: string) => Promise<boolean>;
   getMFAStatus: () => Promise<{ enrolled: boolean; factorId?: string; totpSecret?: string }>;
   verifyMfaCode: (code: string) => Promise<boolean>;
@@ -858,7 +858,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       // BORRABA/CAMBIABA (la wallet "cambiaba sola", el 2FA "se deshabilitaba").
       // Siempre se dejan como están en la BASE; y si no pudimos leer la base,
       // se OMITE raw_data por completo para no pisar nada.
-      const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'gasfreeCreditedTxs', 'gasfreeCreditedCount', 'mfaEnabled', 'totpSecret', 'totpSecretEnc', 'otp', 'subWallets'];
+      const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'gasfreeCreditedTxs', 'gasfreeCreditedCount', 'mfaEnabled', 'totpSecret', 'totpSecretEnc', 'mfaBackupHashes', 'otp', 'subWallets'];
       // COLECCIONES del cliente que tienen su PROPIO escritor seguro
       // (updateUserRawData, merge dirigido): contactos, wallets inscritas,
       // notificaciones. saveUser NUNCA debe reescribirlas desde memoria — una
@@ -1379,7 +1379,11 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           // se pudo leer se mostraban igual que "código incorrecto", y no había
           // forma de saber por qué no entra con un código válido.
           const why = r?.error === 'secret_unreadable'
-            ? 'El 2FA está activo pero su secreto quedó ilegible para el servidor (se guardó con otra llave). Hay que desactivar y volver a activar el 2FA.'
+            ? (r?.hasBackupCodes
+                ? 'El 2FA está activo pero su secreto quedó ilegible para el servidor. Usa uno de tus códigos de respaldo para entrar.'
+                : 'El 2FA está activo pero su secreto quedó ilegible para el servidor (se guardó con otra llave). Hay que desactivar y volver a activar el 2FA.')
+            : r?.error === 'backup_invalid'
+            ? 'Ese código de respaldo no es válido o ya se usó. Cada código sirve una sola vez.'
             : r?.error === 'no_secret'
             ? 'La cuenta tiene el 2FA activo pero no hay ningún secreto guardado. Hay que reactivar el 2FA.'
             : r?.error === 'No autorizado'
@@ -1444,7 +1448,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     } catch { return null; }
   };
 
-  const verifyMFAEnrollment = async (factorId: string, code: string, secret?: string): Promise<{ ok: boolean; error?: string }> => {
+  const verifyMFAEnrollment = async (factorId: string, code: string, secret?: string): Promise<{ ok: boolean; error?: string; backupCodes?: string[] }> => {
     // If secret is provided, verify locally (no Supabase Auth required)
     if (secret) {
       const ok = verifyTOTP(secret, code);
@@ -1468,7 +1472,10 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
             body: JSON.stringify({ action: 'mfa_set', userId: currentUser.id, secret, factorId }),
           }).then(x => x.json()).catch(() => null);
-          if (r?.success) return { ok: true };
+          // Los códigos de respaldo se devuelven UNA sola vez: aquí. La tarjeta
+          // de Seguridad los muestra para que el titular los guarde. Después ya
+          // no se pueden volver a leer (en la base solo queda su hash).
+          if (r?.success) return { ok: true, backupCodes: r.backupCodes as string[] | undefined };
         } catch { /* cae al legacy */ }
         // LEGACY: guardar en texto plano (compat si mfa_set no existe aún).
         const persisted = await updateUserRawData(currentUser.id, { mfaEnabled: true, mfaFactorId: factorId, totpSecret: secret });

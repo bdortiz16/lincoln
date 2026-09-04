@@ -42,6 +42,7 @@ const AdminEmpresasInner: React.FC = () => {
     const [verifying, setVerifying] = useState(false);
     const [captchaToken, setCaptchaToken] = useState('');
     const [captchaKey, setCaptchaKey] = useState(0);
+    const [useBackup, setUseBackup] = useState(false);
 
     const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -70,9 +71,16 @@ const AdminEmpresasInner: React.FC = () => {
         setSubmitting(false);
     };
 
+    // Se acepta el código de 6 dígitos de la app O un código de respaldo
+    // (8 caracteres, formato XXXX-XXXX). El de respaldo existe justo para
+    // cuando la app o el secreto ya no sirven.
+    const codeReady = useBackup
+        ? mfaCode.replace(/[^A-Za-z0-9]/g, '').length === 8
+        : mfaCode.length === 6;
+
     const handleVerify2FA = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (mfaCode.length !== 6 || verifying) return;
+        if (!codeReady || verifying) return;
         setVerifying(true); setMfaError(null);
         try {
             const user = await completeMFALogin(mfaCode);
@@ -112,21 +120,28 @@ const AdminEmpresasInner: React.FC = () => {
                         <form onSubmit={handleVerify2FA} className="space-y-3">
                             <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl p-2.5">
                                 <ShieldCheck size={16} className="text-[#16A34A]" />
-                                <p className="text-xs text-slate-600">Verificación en dos pasos. Ingresa el código de 6 dígitos de tu app de autenticación.</p>
+                                <p className="text-xs text-slate-600">{useBackup
+                                    ? 'Ingresa uno de tus códigos de respaldo (formato XXXX-XXXX). Cada uno sirve una sola vez.'
+                                    : 'Verificación en dos pasos. Ingresa el código de 6 dígitos de tu app de autenticación.'}</p>
                             </div>
                             <input
                                 value={mfaCode}
-                                onChange={e => setMfaCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                                onChange={e => setMfaCode(useBackup
+                                    ? e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, '').slice(0, 9)
+                                    : e.target.value.replace(/\D/g, '').slice(0, 6))}
                                 autoFocus
-                                inputMode="numeric"
-                                placeholder="123 456"
+                                inputMode={useBackup ? 'text' : 'numeric'}
+                                placeholder={useBackup ? 'ABCD-2345' : '123 456'}
                                 className="w-full px-3 py-3 rounded-xl border border-slate-200 text-center font-mono text-lg tracking-widest focus:border-[#4ADE80] outline-none"
                             />
                             {mfaError && <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-xl p-2.5">{mfaError}</p>}
-                            <button type="submit" disabled={verifying || mfaCode.length !== 6} style={{ color: '#FFFFFF' }} className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#152e52] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60 transition-colors">
+                            <button type="submit" disabled={verifying || !codeReady} style={{ color: '#FFFFFF' }} className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#152e52] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60 transition-colors">
                                 <Lock size={14} /> {verifying ? 'Verificando…' : 'Verificar código'}
                             </button>
-                            <button type="button" onClick={() => { cancelMFALogin(); setMfaCode(''); setMfaError(null); setPassword(''); }} className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-800">
+                            <button type="button" onClick={() => { setUseBackup(v => !v); setMfaCode(''); setMfaError(null); }} className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-800 underline">
+                                {useBackup ? 'Volver al código de la app' : 'No tengo el código — usar un código de respaldo'}
+                            </button>
+                            <button type="button" onClick={() => { cancelMFALogin(); setMfaCode(''); setMfaError(null); setPassword(''); setUseBackup(false); }} className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-800">
                                 Cancelar
                             </button>
                         </form>

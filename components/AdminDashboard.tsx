@@ -718,6 +718,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const [mfaCode, setMfaCode] = useState('');
   const [mfaBusy, setMfaBusy] = useState(false);
   const [mfaMsg, setMfaMsg] = useState<string | null>(null);
+  const [mfaBackupCodes, setMfaBackupCodes] = useState<string[] | null>(null);
   const adminMfaOn = !!((currentUser as any)?.mfaEnabled || (currentUser as any)?.raw_data?.mfaEnabled);
   const startMfaEnroll = async () => {
     setMfaBusy(true); setMfaMsg(null);
@@ -732,8 +733,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     if (!mfaEnroll || mfaCode.length !== 6) return;
     setMfaBusy(true); setMfaMsg(null);
     try {
-      const { ok, error } = await verifyMFAEnrollment(mfaEnroll.factorId, mfaCode, mfaEnroll.secret);
-      if (ok) { setMfaMsg('✅ 2FA activado. Ahora el cambio de proveedor exige tu código.'); setMfaEnroll(null); setMfaCode(''); }
+      const { ok, error, backupCodes } = await verifyMFAEnrollment(mfaEnroll.factorId, mfaCode, mfaEnroll.secret);
+      if (ok) {
+        setMfaMsg('✅ 2FA activado. Ahora el cambio de proveedor exige tu código.');
+        setMfaEnroll(null); setMfaCode('');
+        // Se muestran una ÚNICA vez: en la base solo queda su hash.
+        if (backupCodes?.length) setMfaBackupCodes(backupCodes);
+      }
       else setMfaMsg(error ?? 'Código incorrecto. Intenta de nuevo.');
     } catch (e: any) { setMfaMsg(e?.message ?? 'Error'); }
     setMfaBusy(false);
@@ -3441,6 +3447,32 @@ const renderDesign = () => (
               </div>
             )}
             {mfaMsg && <p className={`mt-2 text-xs font-semibold ${mfaMsg.startsWith('✅') ? 'text-green-700' : 'text-red-700'}`}>{mfaMsg}</p>}
+
+            {/* Códigos de respaldo — se muestran UNA sola vez, al activar. */}
+            {mfaBackupCodes && (
+              <div className="mt-3 rounded-xl p-4" style={{ backgroundColor: '#121413', border: '1px solid rgba(74,222,128,0.25)' }}>
+                <p className="text-sm font-bold" style={{ color: '#F4F4F2' }}>Guarda estos códigos de respaldo</p>
+                <p className="text-xs mt-1" style={{ color: '#878E88' }}>
+                  Cada uno sirve <b style={{ color: '#F4F4F2' }}>una vez</b> para entrar si pierdes el teléfono o el 2FA deja de
+                  validar. Es la única vía que no depende de la app ni de la Bóveda.
+                  <b style={{ color: '#FBBF24' }}> No se vuelven a mostrar.</b>
+                </p>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3">
+                  {mfaBackupCodes.map(c => (
+                    <span key={c} className="font-mono text-sm text-center rounded-lg py-2"
+                          style={{ color: '#F4F4F2', backgroundColor: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', letterSpacing: '1px' }}>{c}</span>
+                  ))}
+                </div>
+                <div className="flex gap-2 mt-3 flex-wrap">
+                  <button onClick={() => { navigator.clipboard?.writeText(mfaBackupCodes.join('\n')); }}
+                          className="px-3 py-2 text-xs font-bold rounded-lg"
+                          style={{ backgroundColor: '#4ADE80', color: '#0C0E0D' }}>Copiar los 8</button>
+                  <button onClick={() => setMfaBackupCodes(null)}
+                          className="px-3 py-2 text-xs font-bold rounded-lg"
+                          style={{ backgroundColor: 'transparent', color: '#878E88', border: '1px solid rgba(255,255,255,0.12)' }}>Ya los guardé</button>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="flex h-[calc(100vh-260px)]">
