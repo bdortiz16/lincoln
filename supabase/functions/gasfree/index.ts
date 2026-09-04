@@ -3132,13 +3132,29 @@ Deno.serve(async (req) => {
       const email = String(body.email ?? '').trim().toLowerCase()
       if (!email) return err('Falta email', 400)
       const { data: rows } = await db.from('users').select('*').ilike('email', email)
-      const list = (rows ?? []).map((u: any) => ({
-        id: u.id, email: u.email, role: u.role, kyc_status: u.kyc_status,
-        created_at: u.created_at, full_name: u.full_name,
-        gasfreeIndex: (u.raw_data ?? {})?.gasfreeIndex ?? null,
-        signupSource: (u.raw_data ?? {})?.signupSource ?? (u.raw_data ?? {})?.source ?? null,
-        provider: (u.raw_data ?? {})?.provider ?? null,
-      }))
+      const list = (rows ?? []).map((u: any) => {
+        const raw = (u.raw_data ?? {}) as Record<string, any>
+        // Diagnóstico del BLOQUEO: qué bandera exactamente está frenando las
+        // operaciones de esta cuenta (sirve para descartar falsos positivos).
+        const reasons: string[] = []
+        if (raw.blacklisted === true) reasons.push('raw_data.blacklisted = true (LISTA NEGRA)')
+        if (u.is_blocked === true) reasons.push('columna is_blocked = true')
+        if (u.is_active === false) reasons.push('columna is_active = false')
+        if (raw.isBlocked === true) reasons.push('raw_data.isBlocked = true')
+        return {
+          id: u.id, email: u.email, role: u.role, kyc_status: u.kyc_status,
+          created_at: u.created_at, full_name: u.full_name,
+          gasfreeIndex: raw.gasfreeIndex ?? null,
+          signupSource: raw.signupSource ?? raw.source ?? null,
+          provider: raw.provider ?? null,
+          // Banderas crudas + veredicto
+          is_blocked: u.is_blocked ?? null, is_active: u.is_active ?? null,
+          rawIsBlocked: raw.isBlocked ?? null, blacklisted: raw.blacklisted ?? null,
+          blockReason: raw.blockReason ?? null,
+          isOperationBlocked: reasons.length > 0,
+          blockedBy: reasons,
+        }
+      })
       return ok({ ok: true, found: list.length, users: list })
     }
     // Auditoría: detectar wallets colisionadas y usuarios sin índice.

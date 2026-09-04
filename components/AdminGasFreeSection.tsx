@@ -1147,6 +1147,18 @@ export const AdminGasFreeSection: React.FC = () => {
                                     <p className="text-slate-700 font-bold">Existe {lookupRes.found} cuenta(s) con ese correo:</p>
                                     {lookupRes.users.map((u: any) => (
                                         <div key={u.id} className="rounded-lg border border-slate-200 p-2">
+                                            {/* Diagnóstico de bloqueo: por qué esta cuenta no puede operar */}
+                                            {u.isOperationBlocked ? (
+                                                <div className="mb-2 rounded-lg p-2" style={{ background: 'rgba(248,113,113,0.10)', border: '1px solid rgba(248,113,113,0.35)' }}>
+                                                    <p className="font-bold" style={{ color: '#F87171' }}>🚫 Esta cuenta NO puede operar</p>
+                                                    <ul className="mt-1 ml-4 list-disc" style={{ color: '#F87171' }}>
+                                                        {(u.blockedBy ?? []).map((r: string, i: number) => <li key={i} className="text-[11px]">{r}</li>)}
+                                                    </ul>
+                                                    {u.blockReason && <p className="text-[11px] mt-1" style={{ color: '#878E88' }}>Motivo guardado: {u.blockReason}</p>}
+                                                </div>
+                                            ) : (
+                                                <p className="mb-1 font-bold" style={{ color: '#4ADE80' }}>✅ Cuenta habilitada para operar</p>
+                                            )}
                                             <p className="text-slate-700"><b>Rol:</b> {u.role ?? '—'} · <b>KYC:</b> {u.kyc_status ?? '—'} · <b>Índice wallet:</b> {u.gasfreeIndex ?? '—'}</p>
                                             <p className="text-slate-500">Creada: {u.created_at ? new Date(u.created_at).toLocaleString('es-CO') : '—'} · id {String(u.id).slice(0, 8)}…</p>
                                             {u.signupSource && <p className="text-slate-500">Origen registro: {u.signupSource}</p>}
