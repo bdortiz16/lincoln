@@ -147,7 +147,10 @@ export const AdminMonitor: React.FC = () => {
   // ── Datos derivados REALES ──
   const admins = users.filter(u => u.role === 'admin');
   const mfaAdmins = admins.filter(u => (u as any).mfaEnabled || (u as any).raw_data?.mfaEnabled);
-  const clients = users.filter(u => u.role && u.role !== 'admin');
+  // Una cuenta bloqueada o en lista negra no cuenta como pendiente: ya se le
+  // negó el acceso, no hay nada que aprobarle.
+  const outOfOp = (u: any) => u?.blacklisted === true || u?.raw_data?.blacklisted === true || u?.isBlocked === true || u?.raw_data?.isBlocked === true;
+  const clients = users.filter(u => u.role && u.role !== 'admin' && !outOfOp(u));
   const pendingKyc = clients.filter(u => ['pending', 'in_review', 'in_progress'].includes(String(u.kycStatus)));
 
   const monthVol = useMemo(() => {

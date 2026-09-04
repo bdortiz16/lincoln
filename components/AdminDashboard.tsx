@@ -766,10 +766,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     .sort((a, b) => new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime());
   const failuresCount = failuresList.length;
 
-  // Las cuentas en LISTA NEGRA no cuentan como pendientes: no hay nada que
-  // aprobarles, y aparecer ahí solo ensucia la operación.
+  // Una cuenta BLOQUEADA o en LISTA NEGRA no cuenta como pendiente: no hay nada
+  // que aprobarle (ya le negaste el acceso), y aparecer ahí solo ensucia la
+  // operación y el badge de "por aprobar".
   const isBlacklisted = (u: any) => u?.blacklisted === true || u?.raw_data?.blacklisted === true;
-  const pendingClientsCount = allUsers.filter(u => !isBlacklisted(u) && (u.kycStatus === 'pending' || u.kycStatus === 'in_review')).length;
+  const isBlockedUser = (u: any) => u?.isBlocked === true || u?.raw_data?.isBlocked === true || u?.is_blocked === true;
+  const outOfOperation = (u: any) => isBlacklisted(u) || isBlockedUser(u);
+  const pendingClientsCount = allUsers.filter(u => !outOfOperation(u) && (u.kycStatus === 'pending' || u.kycStatus === 'in_review')).length;
 
   const getUserVolume = (userId: string) => {
       const userTx = historyTransactions.filter(tx => tx.userId === userId && tx.status === 'Completado');
@@ -1161,7 +1164,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       }).reduce((s, tx) => s + usdEq(tx), 0);
       const depSum = pendingDeposits.reduce((s, tx) => s + usdEq(tx), 0);
       const witSum = pendingWithdrawals.reduce((s, tx) => s + usdEq(tx), 0);
-      const pendingClients = allUsers.filter(u => !isBlacklisted(u) && (u.kycStatus === 'pending' || u.kycStatus === 'in_review'));
+      const pendingClients = allUsers.filter(u => !outOfOperation(u) && (u.kycStatus === 'pending' || u.kycStatus === 'in_review'));
       // Cola unificada, ordenada por antigüedad (más viejo primero).
       const queue = [
           ...pendingClients.map(u => ({ id: `kyc-${u.id}`, sig: (u.name || 'C').charAt(0).toUpperCase(), title: `KYC · ${u.name || 'Cliente'}`, meta: 'Verificación en revisión · falta aprobación manual', at: (u as any).createdAt, tab: 'clients' as const })),
@@ -1647,7 +1650,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const renderCargues = () => {
       const q = carguesSearch.trim().toLowerCase();
       const list = allUsers
-        .filter(u => !isBlacklisted(u))   // las cuentas en lista negra no se cargan
+        .filter(u => !outOfOperation(u))   // bloqueadas / lista negra no se cargan
         .filter(u => !q || (u.name ?? '').toLowerCase().includes(q) || (u.email ?? '').toLowerCase().includes(q))
         .slice(0, 40);
       const bal = (u: User | null, code: string) => Number((u?.balances as any)?.[code] ?? 0);
