@@ -671,14 +671,34 @@ Deno.serve(async (req: Request) => {
         // 200.000 intentos de media, cuestión de horas para un script. El
         // 2FA existe precisamente para el caso en que YA te robaron la
         // contraseña, así que dejarlo sin freno le quitaba casi todo el valor.
-        const sinceMfa = new Date(Date.now() - 15 * 60_000).toISOString()
-        const { data: recentMfa } = await db.from('audit_log').select('metadata')
-          .eq('action', 'auth.mfa_failed').gte('created_at', sinceMfa).limit(200)
-        const failsMfa = (recentMfa ?? []).filter((r: any) => r?.metadata?.userId === uidV).length
-        if (failsMfa >= 5) {
-          return json({ ok: false, error: 'too_many_attempts', message: 'Demasiados códigos incorrectos. Espera 15 minutos antes de volver a intentar.' }, 429)
+        //
+        // El conteo del CÓDIGO DE LA APP y el del CÓDIGO DE RESPALDO son
+        // SEPARADOS a propósito: el de respaldo es la vía de recuperación, y
+        // si quedara bloqueado por los fallos del otro dejaría de servir para
+        // lo único que existe. Su espacio es 32^8, así que aguanta un límite
+        // más holgado sin volverse adivinable.
+        const VENTANA_MIN = 15
+        const esRespaldo = !/^\d{6}$/.test(String(code ?? '').trim())
+        const sinceMfa = new Date(Date.now() - VENTANA_MIN * 60_000).toISOString()
+        const { data: recentMfa } = await db.from('audit_log').select('metadata, created_at')
+          .eq('action', 'auth.mfa_failed').gte('created_at', sinceMfa).limit(300)
+        const mios = (recentMfa ?? []).filter((r: any) => r?.metadata?.userId === uidV
+          && (r?.metadata?.tipo === 'respaldo') === esRespaldo)
+        const tope = esRespaldo ? 10 : 5
+        if (mios.length >= tope) {
+          // Cuánto falta de verdad, contado desde el fallo más viejo que
+          // todavía pesa — decir "espera 15 minutos" cuando faltan 2 es
+          // hacerle perder el tiempo a quien sí es el dueño de la cuenta.
+          const masViejo = mios.map((r: any) => new Date(r.created_at).getTime()).sort((a, b) => a - b)[0]
+          const faltan = Math.max(1, Math.ceil((masViejo + VENTANA_MIN * 60_000 - Date.now()) / 60_000))
+          return json({
+            ok: false, error: 'too_many_attempts', minutosRestantes: faltan,
+            message: esRespaldo
+              ? `Demasiados códigos de respaldo incorrectos. Vuelve a intentar en ${faltan} minuto${faltan === 1 ? '' : 's'}.`
+              : `Demasiados códigos incorrectos. Vuelve a intentar en ${faltan} minuto${faltan === 1 ? '' : 's'}, o entra con uno de tus códigos de respaldo.`,
+          }, 429)
         }
-        const noteMfaFail = async (motivo: string) => { await auditAdmin(req, 'auth.mfa_failed', { userId: uidV, motivo }) }
+        const noteMfaFail = async (motivo: string) => { await auditAdmin(req, 'auth.mfa_failed', { userId: uidV, motivo, tipo: esRespaldo ? 'respaldo' : 'app' }) }
 
         const { data: u } = await db.from('users').select('raw_data').eq('id', selfServiceBody.userId).single()
         const raw = ((u as any)?.raw_data ?? {}) as Record<string, any>
@@ -733,6 +753,9 @@ Deno.serve(async (req: Request) => {
           return json({ ok: false, error: 'code_reused', message: 'Ese código ya se usó. Espera al siguiente que muestre tu app.' })
         }
         await db.from('users').update({ raw_data: { ...raw, mfaLastCounter: counter } }).eq('id', uidV)
+        // Un acierto BORRA los fallos recientes: quien acaba de demostrar que
+        // es el dueño no debe arrastrar un contador que lo bloquee después.
+        try { await db.from('audit_log').delete().eq('action', 'auth.mfa_failed').gte('created_at', sinceMfa).contains('metadata', { userId: uidV }) } catch { /* el límite se vence solo */ }
         // Queda constancia de QUÉ sesión superó el 2FA: es lo que después
         // exigen las acciones sensibles.
         await rememberMfaSession(req, uidV)

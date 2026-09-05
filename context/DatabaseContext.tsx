@@ -1398,7 +1398,14 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           // Diagnóstico: sin esto, un fallo de AUTORIZACIÓN o un secreto que no
           // se pudo leer se mostraban igual que "código incorrecto", y no había
           // forma de saber por qué no entra con un código válido.
-          const why = r?.error === 'secret_unreadable'
+          // El servidor manda un mensaje YA redactado para los casos que el
+          // usuario puede resolver (límite de intentos, código repetido). Se
+          // usa tal cual: mostrar el código interno ("too_many_attempts") no
+          // le dice nada a quien está tratando de entrar.
+          const why = r?.message ? String(r.message)
+            : r?.error === 'code_reused'
+            ? 'Ese código ya se usó. Espera al siguiente que muestre tu app.'
+            : r?.error === 'secret_unreadable'
             ? (r?.hasBackupCodes
                 ? 'El 2FA está activo pero su secreto quedó ilegible para el servidor. Usa uno de tus códigos de respaldo para entrar.'
                 : 'El 2FA está activo pero su secreto quedó ilegible para el servidor (se guardó con otra llave). Hay que desactivar y volver a activar el 2FA.')
@@ -1411,8 +1418,13 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
               : r?.error ? `Verificación rechazada: ${r.error}` : null;
           setMfaErrorDetail(why);
           // Un código de 2FA rechazado también es un intento fallido: es la
-          // señal más clara de que alguien ya tiene la contraseña.
-          logFailedLogin(pendingMFAProfile.email ?? '', r?.error === 'backup_invalid' ? 'código de respaldo inválido' : 'código 2FA incorrecto');
+          // señal más clara de que alguien ya tiene la contraseña. PERO un
+          // rechazo por límite de intentos NO es un código malo — contarlo
+          // otra vez inflaba el conteo que bloquea la IP y castigaba dos
+          // veces por lo mismo.
+          if (r?.error !== 'too_many_attempts') {
+            logFailedLogin(pendingMFAProfile.email ?? '', r?.error === 'backup_invalid' ? 'código de respaldo inválido' : 'código 2FA incorrecto');
+          }
           return null;
         }
         const user = pendingMFAProfile;
