@@ -379,7 +379,10 @@ async function geoOf(ip: string | null): Promise<Geo | null> {
   try {
     const { data } = await db.from('system_config').select('value').eq('key', GEO_CACHE_KEY).single()
     const cache = data?.value ? JSON.parse(data.value) : {}
-    if (cache[ip]) return cache[ip]
+    // Se reconsulta si la entrada guardada NO trae el código de país: la caché
+    // se llenó antes de que ese campo existiera, y devolverla tal cual dejaba
+    // el país vacío — con la lista blanca encendida, eso dejaba a todos fuera.
+    if (cache[ip]?.countryCode) return cache[ip]
     const ctl = new AbortController()
     const t = setTimeout(() => ctl.abort(), 2500)
     const r = await fetch(`https://ipwho.is/${encodeURIComponent(ip)}`, { signal: ctl.signal }).then(x => x.json()).catch(() => null)
@@ -433,7 +436,16 @@ async function accessDenied(req: Request): Promise<string | null> {
   const geo = await geoOf(ip)
   const cc = String(geo?.countryCode ?? '').toUpperCase()
   if (cc && pol.countries.includes(cc)) return null
-  await auditAdmin(req, 'security.acceso_fuera_de_zona', { ip, pais: cc || 'desconocido', geo })
+  if (!cc) {
+    // No se pudo averiguar el país (el servicio de geolocalización no
+    // respondió, o la IP no está en su base). Se DEJA PASAR y se anota: una
+    // caída de un servicio ajeno no puede dejar al titular sin panel. El
+    // resto de candados —contraseña, los dos códigos, el bloqueo por
+    // intentos— siguen en pie.
+    await auditAdmin(req, 'security.acceso_sin_geo', { ip })
+    return null
+  }
+  await auditAdmin(req, 'security.acceso_fuera_de_zona', { ip, pais: cc, geo })
   // Mensaje deliberadamente parco: no se le dice desde dónde sí se podría.
   return 'Este acceso no está autorizado desde esta conexión.'
 }
@@ -663,6 +675,10 @@ Deno.serve(async (req: Request) => {
       // Reenviar el código del correo si no llegó.
       if (selfServiceBody.action === 'mfa_resend_email' && selfServiceBody.userId) {
         if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
+        { const den = await accessDenied(req); if (den) return json({ ok: false, error: 'access_denied', message: den }, 403) }
+        if (await adminLock(String(selfServiceBody.userId))) {
+          return json({ ok: false, error: 'account_locked', message: 'La cuenta está bloqueada por seguridad.' }, 423)
+        }
         const r = await fetch(`${SUPABASE_URL}/functions/v1/email-otp`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
