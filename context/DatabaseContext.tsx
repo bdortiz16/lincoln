@@ -1473,10 +1473,18 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           // de Seguridad los muestra para que el titular los guarde. Después ya
           // no se pueden volver a leer (en la base solo queda su hash).
           if (r?.success) return { ok: true, backupCodes: r.backupCodes as string[] | undefined };
-        } catch { /* cae al legacy */ }
-        // LEGACY: guardar en texto plano (compat si mfa_set no existe aún).
-        const persisted = await updateUserRawData(currentUser.id, { mfaEnabled: true, mfaFactorId: factorId, totpSecret: secret });
-        if (!persisted) return { ok: false, error: 'No pudimos guardar la verificación en dos pasos. Reintenta.' };
+          // Se ELIMINÓ el guardado "legacy" que caía aquí y escribía el
+          // secreto en TEXTO PLANO desde el navegador. Hacía dos daños: dejaba
+          // la llave del 2FA legible en la fila, y como la base ahora blinda
+          // esas claves contra escrituras del navegador, el guardado se
+          // descartaba en silencio y la pantalla decía "activado" con el 2FA
+          // apagado. Si el servidor no pudo guardarlo, se dice y no se activa.
+          setCurrentUser((prev: any) => prev ? { ...prev, mfaEnabled: false, mfaFactorId: undefined } : prev);
+          return { ok: false, error: r?.error ? String(r.error) : 'No pudimos guardar la verificación en dos pasos. No quedó activada — reintenta.' };
+        } catch {
+          setCurrentUser((prev: any) => prev ? { ...prev, mfaEnabled: false, mfaFactorId: undefined } : prev);
+          return { ok: false, error: 'No pudimos contactar al servidor para guardar el 2FA. No quedó activada — reintenta.' };
+        }
       }
       return { ok: true };
     }
