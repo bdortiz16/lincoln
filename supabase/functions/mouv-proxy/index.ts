@@ -430,23 +430,69 @@ async function finityPayoutAch(userId: string, recipient: Record<string, any>, a
   // 1) Cuenta destino en Finity (destination_id). Reusar si el contacto ya
   //    la trae; si no, registrarla ahora.
   let destId: string | null = recipient.finityId ?? null
+  // Solo dígitos: un número guardado con espacios, puntos o guiones se
+  // rechazaba en Finity y el fallo se veía como un error genérico.
+  const accDigits = String(recipient.accountNumber ?? '').replace(/\D/g, '')
   if (!destId) {
+    // El código de banco puede venir como nombre ('Nequi'), como nombre en
+    // otra caja ('NEQUI', 'nequi') o ya como código ('1507'). El mapa era
+    // sensible a mayúsculas y exacto: cualquier variante se enviaba tal cual
+    // como "código", y Finity la rechazaba.
+    const bankRaw = String(recipient.bankCode ?? '').trim()
+    const bankKey = Object.keys(BANK_CODES_CO).find(k => k.toLowerCase() === bankRaw.toLowerCase())
+    const bankCode = /^\d{3,5}$/.test(bankRaw) ? bankRaw : (bankKey ? BANK_CODES_CO[bankKey] : bankRaw)
+
+    // Tipo de documento en el formato que acepta Finity.
+    const docRaw = String(recipient.documentType ?? 'CC').toUpperCase().trim()
+    const docType = docRaw === 'PAS' || docRaw === 'PASAPORTE' ? 'CE' : (['CC', 'CE', 'NIT'].includes(docRaw) ? docRaw : 'CC')
+    const docNumber = String(recipient.documentNumber ?? '').replace(/\D/g, '')
+    const holder = String(recipient.holderName ?? '').trim()
+
+    // Validar ANTES de llamar: si falta un dato, decirlo con nombre propio en
+    // vez de mandar el hueco y traducir después un rechazo del proveedor.
+    const faltan = [
+      !accDigits && 'número de cuenta',
+      !bankCode && 'banco',
+      !holder && 'nombre del titular',
+      !docNumber && 'documento del titular',
+    ].filter(Boolean)
+    if (faltan.length) {
+      return { ok: false, feeCop: 0, error: { step: 'destino', httpStatus: null, path: null, body: { message: `Al contacto le faltan datos: ${faltan.join(', ')}. Edítalo y vuelve a intentar.` } } }
+    }
+
     const body = {
       data: {
         account: {
           geo: 'CO',
-          account_type: recipient.accountType === 'corriente' || recipient.accountType === 'CORRIENTE' || recipient.accountType === 'checking' ? 'checking' : 'savings',
-          account_number: String(recipient.accountNumber ?? ''),
-          financial_institution_code: BANK_CODES_CO[String(recipient.bankCode ?? '')] ?? String(recipient.bankCode ?? ''),
-          account_holder_fullname: String(recipient.holderName ?? ''),
-          account_holder_id_type: String(recipient.documentType ?? 'CC') === 'PAS' ? 'CE' : String(recipient.documentType ?? 'CC'),
-          account_holder_id_number: String(recipient.documentNumber ?? ''),
+          account_type: ['corriente', 'CORRIENTE', 'checking'].includes(String(recipient.accountType)) ? 'checking' : 'savings',
+          account_number: accDigits,
+          financial_institution_code: bankCode,
+          account_holder_fullname: holder,
+          account_holder_id_type: docType,
+          account_holder_id_number: docNumber,
         },
       },
     }
     const ea = await finityCall('create_external_account', userId, body)
     destId = ea?.data?.id ?? ea?.data?.external_account_id ?? ea?.data?.account_id ?? null
-    if (!ea?.ok || !destId) return { ok: false, feeCop: 0, error: { step: 'destino', httpStatus: ea?.status ?? null, path: ea?.path ?? null, body: ea?.data ?? null } }
+
+    // La cuenta YA estaba inscrita en Finity. Pasaba siempre que un intento
+    // anterior creó el destino y luego falló el retiro: el id no se guardaba
+    // (solo se persistía en el camino de éxito), así que el siguiente envío
+    // volvía a crearla y Finity la rechazaba por duplicada. Desde el panel de
+    // Finity sí funcionaba, porque allá el destino ya existe y ese paso no se
+    // repite. Se busca el existente y se reutiliza.
+    if (!ea?.ok || !destId) {
+      const list = await finityCall('external_accounts', userId)
+      const rows: any[] = list?.data?.data ?? list?.data?.results ?? (Array.isArray(list?.data) ? list.data : [])
+      const hit = rows.find((r: any) => {
+        const acc = String(r?.account_number ?? r?.account?.account_number ?? '').replace(/\D/g, '')
+        return acc && acc === accDigits
+      })
+      const foundId = hit?.id ?? hit?.external_account_id ?? null
+      if (foundId) destId = String(foundId)
+      else return { ok: false, feeCop: 0, error: { step: 'destino', httpStatus: ea?.status ?? null, path: ea?.path ?? null, body: ea?.data ?? null } }
+    }
   }
   // 2) Orden de retiro:
   //    POST /v0/withdrawal-orders { destination_id, amount, currency:'COP' }
@@ -1223,19 +1269,27 @@ serve(async (req: Request) => {
 
     // ── ACH vía FINITY ──
     const fin = await finityPayoutAch(userId, recipient, amount)
+
+    // ⚠️ EL id del destino se guarda PASE LO QUE PASE, no solo si el envío
+    // salió bien. Antes solo se persistía en el camino de éxito: si el destino
+    // se creaba y luego fallaba el retiro, ese id se perdía, el siguiente
+    // intento volvía a crear la MISMA cuenta y Finity la rechazaba por
+    // duplicada — el envío quedaba roto para siempre desde Lincoin, mientras
+    // que desde el panel de Finity funcionaba porque allá el destino ya existe.
+    if (fin.destinationId) {
+      try {
+        const accKey = String(recipient.accountNumber ?? '').replace(/\D/g, '')
+        const { data: u4 } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
+        const raw4 = (u4?.raw_data ?? {}) as Record<string, any>
+        const list = Array.isArray(raw4.mouvContacts) ? raw4.mouvContacts : []
+        const next = list.map((c: any) => String(c?.accountNumber ?? '').replace(/\D/g, '') === accKey ? { ...c, finityId: fin.destinationId } : c)
+        if (JSON.stringify(next) !== JSON.stringify(list)) await db.from('users').update({ raw_data: { ...raw4, mouvContacts: next } }).eq('id', userId)
+      } catch { /* best-effort — nunca bloquea la operación */ }
+    }
+
     if (fin.ok) {
       // El precio por transferencia (ACH_FEE_COP) ya se debitó junto al monto.
       const newBalance = afterDebit
-      // Guardar el finityId en el contacto del usuario (reuso en próximos envíos)
-      if (fin.destinationId) {
-        try {
-          const { data: u4 } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
-          const raw4 = (u4?.raw_data ?? {}) as Record<string, any>
-          const list = Array.isArray(raw4.mouvContacts) ? raw4.mouvContacts : []
-          const next = list.map((c: any) => String(c?.accountNumber ?? '') === String(recipient.accountNumber ?? '') ? { ...c, finityId: fin.destinationId } : c)
-          if (JSON.stringify(next) !== JSON.stringify(list)) await db.from('users').update({ raw_data: { ...raw4, mouvContacts: next } }).eq('id', userId)
-        } catch { /* best-effort */ }
-      }
       if (txId) await db.from('transactions').update({
         // Finity CONFIRMED = orden aceptada (aún no pagada) → Procesando.
         status: 'Procesando',
