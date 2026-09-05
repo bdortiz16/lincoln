@@ -1556,6 +1556,8 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     setPendingMFAProfile(profile);
     setPendingMFAMode(mode);
     setMfaPending(true);
+    setPasskeyPending(false);        // cada ingreso empieza en el primer paso
+    passkeyOptionsRef.current = null;
     setMfaError2(null);
     // El paso extra por correo es SOLO del panel de administración. Un cliente
     // con 2FA entra con el código de su app, como siempre: mostrarle un paso
@@ -1584,7 +1586,11 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       }
       // Correo validado. NO se entra todavía: sigue el código de la app, y
       // después la llave si la cuenta tiene una. Ninguno reemplaza al otro.
+      // El paso de la llave se apaga explícitamente: si quedó encendido de un
+      // intento anterior, la pantalla saltaría a la llave sin haber pedido el
+      // código de la app, y el servidor —con razón— la rechazaría.
       setEmailStepPending(false);
+      setPasskeyPending(false);
       setMfaError2(null);
       return null;
     } catch { setMfaError2('No se pudo verificar el código.'); return null; }
@@ -1620,6 +1626,14 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       }).then(x => x.json()).catch(() => null);
       if (!r?.ok) {
         if (r?.error === 'account_locked') setAccountLocked(true);
+        // El servidor dice que falta un paso anterior: la pantalla se
+        // devuelve sola al código de la app en vez de dejar al titular
+        // atascado en una llave que nunca va a servir todavía.
+        if (r?.error === 'email_step_missing') {
+          setPasskeyPending(false);
+          setMfaError2('Falta el código de tu app. Ingrésalo y después confirma con la llave.');
+          return null;
+        }
         setMfaError2(r?.message ?? 'La llave no se pudo verificar.');
         logFailedLogin(pendingMFAProfile.email ?? '', 'llave rechazada');
         return null;
