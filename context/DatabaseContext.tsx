@@ -714,8 +714,20 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       // Orden por FECHA (desc), no por id: los ids son uuid aleatorios, así que
       // sin esto "Movimientos recientes" mostraba cualquier orden y un depósito
       // nuevo podía no salir arriba (o parecer que "no está").
-      const finalTxs = (edgeTxs.length ? edgeTxs : rpcTxs)
-        .slice()
+      // ⚠️ Las dos fuentes se UNEN, no se eligen. Antes era `edgeTxs.length ?
+      // edgeTxs : rpcTxs`: la que trajera algo TAPABA por completo a la otra,
+      // y las dos ven cosas distintas —
+      //   · el SELECT directo trae solo user_id = el id del perfil;
+      //   · la edge resuelve además los ids HERMANOS (una misma persona puede
+      //     tener el perfil bajo un id y la sesión bajo otro), pero corta en
+      //     500 y depende de una petición que en 4G a veces no conecta.
+      // Con el o-uno-o-el-otro, un movimiento que solo veía una de las dos
+      // simplemente no existía para el cliente. Eso es lo que hacía que a unos
+      // usuarios "no se les actualizaran los movimientos" y a otros sí.
+      const porId = new Map<string, any>();
+      for (const t of rpcTxs) porId.set(String(t.id), t);
+      for (const t of edgeTxs) porId.set(String(t.id), t);   // la edge pisa: trae el estado más fresco
+      const finalTxs = Array.from(porId.values())
         .sort((a: any, b: any) => txTime(b) - txTime(a));
       if (finalTxs.length) {
         setTransactions(finalTxs);

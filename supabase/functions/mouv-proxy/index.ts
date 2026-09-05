@@ -1142,11 +1142,44 @@ serve(async (req: Request) => {
       ...(recipient.reference ? { reason: recipient.reference } : {}),
       recipient,
     }
-    const { data: txIns } = await db.from('transactions').insert({
+    // El ERROR de este insert NO se puede descartar. Antes se leía solo `data`
+    // y, si el insert fallaba, el código seguía adelante con txId = null: el
+    // dinero salía y el movimiento NO EXISTÍA en ninguna parte. Para el cliente
+    // eso se ve como "hice la transferencia y no me aparece" — sin rastro,
+    // porque nadie se enteró de que la fila nunca se escribió.
+    const filaTx = {
       user_id: userId, type: 'dispersion', amount, currency: railCol, status: 'Procesando',
       raw_data: { ...prettyBase, ...feeDetail, requestedAt: new Date().toISOString() },
-    }).select('id').maybeSingle()
-    const txId = (txIns as any)?.id ?? null
+    }
+    const { data: txIns, error: txInsErr } = await db.from('transactions').insert(filaTx).select('id').maybeSingle()
+    let txId = (txIns as any)?.id ?? null
+    if (txInsErr || !txId) {
+      // Un reintento inmediato: la causa más común es un tropiezo puntual.
+      const reintento = await db.from('transactions').insert(filaTx).select('id').maybeSingle()
+      txId = (reintento.data as any)?.id ?? null
+      if (!txId) {
+        // Queda constancia con TODO lo necesario para reconstruir la fila a
+        // mano. Es lo mínimo: el dinero va a salir igual, así que el registro
+        // no puede desaparecer en silencio.
+        await logAudit(userId, 'mouv.tx_insert_failed', {
+          motivo: txInsErr?.message ?? reintento.error?.message ?? 'insert sin id',
+          amount, railCol, recipient,
+        })
+      }
+    }
+
+    // Deja el movimiento en su estado final. Si la fila no llegó a crearse, la
+    // CREA ahora — el envío ya ocurrió, así que el registro tiene que existir
+    // sí o sí. Antes cada sitio hacía `if (txId) update(...)`: sin fila, el
+    // movimiento se perdía para siempre y el cliente no tenía cómo verlo.
+    const asentarTx = async (status: string, raw: Record<string, unknown>) => {
+      if (txId) { await db.from('transactions').update({ status, raw_data: raw }).eq('id', txId); return }
+      const { data: tardio } = await db.from('transactions')
+        .insert({ user_id: userId, type: 'dispersion', amount, currency: railCol, status, raw_data: raw })
+        .select('id').maybeSingle()
+      txId = (tardio as any)?.id ?? null
+      if (txId) await logAudit(userId, 'mouv.tx_insert_tardio', { txId, status })
+    }
 
     // 4) Llamar al PROVEEDOR del riel: BREB → Mouv · ACH → Finity
     if (rail === 'BREB') {
@@ -1162,17 +1195,14 @@ serve(async (req: Request) => {
       // DEVOLUCIÓN en el propio send evita marcar Completado (cae al reembolso).
       const sendState = pay.ok ? normalizeMouvState(pay.data) : { verdict: 'unknown' as MouvVerdict, state: '' }
       if (pay.ok && sendState.verdict !== 'returned') {
-        if (txId) await db.from('transactions').update({
-          status: 'Completado',
-          raw_data: {
+        await asentarTx('Completado', {
             ...prettyBase, ...feeDetail,
             ...(pay.targetName ? { beneficiary: pay.targetName } : {}),
             ...(pay.targetDocument ? { documentNumber: pay.targetDocument } : {}),
             providerRef: pay.providerRef ?? null,
             providerState: sendState.state || null,
             settledAt: new Date().toISOString(),
-          },
-        }).eq('id', txId)
+        })
         await logAudit(userId, `mouv.${action}.ok`, { amount, feeCop, rail, providerRef: pay.providerRef ?? null, providerState: sendState.state || null })
         await notifyTx(txId) // "tu envío Bre-B llegó a destino"
         return json(200, { ok: true, status: 'Completado', providerRef: pay.providerRef ?? null, providerState: sendState.state || null, feeCop, newBalance: afterDebit })
@@ -1189,10 +1219,7 @@ serve(async (req: Request) => {
         restored = Number((Number(bals2[railCol] ?? 0) + totalDebit).toFixed(2))
         await db.from('users').update({ balances: { ...bals2, [railCol]: restored } }).eq('id', userId)
       }
-      if (txId) await db.from('transactions').update({
-        status: 'Fallido',
-        raw_data: { ...prettyBase, ...feeDetail, error: pay.data ?? 'payout_failed', httpStatus: pay.status, refunded: true, failedAt: new Date().toISOString() },
-      }).eq('id', txId)
+      await asentarTx('Fallido', { ...prettyBase, ...feeDetail, error: pay.data ?? 'payout_failed', httpStatus: pay.status, refunded: true, failedAt: new Date().toISOString() })
       await logAudit(userId, `mouv.${action}.fail`, { amount, rail, status: pay.status, data: pay.data ?? null })
       await notifyTx(txId) // correo "no pudimos completar tu envío · saldo devuelto"
       // Mensaje LIMPIO para el cliente: si el proveedor manda un error
@@ -1284,16 +1311,13 @@ serve(async (req: Request) => {
     if (fin.ok) {
       // El precio por transferencia (ACH_FEE_COP) ya se debitó junto al monto.
       const newBalance = afterDebit
-      if (txId) await db.from('transactions').update({
-        // Finity CONFIRMED = orden aceptada (aún no pagada) → Procesando.
-        status: 'Procesando',
-        raw_data: {
-          ...prettyBase, feeProvider: 'finity', feeCop: fin.feeCop, costs: fin.costs ?? null,
-          providerRef: fin.providerRef ?? null, state: fin.state ?? null,
-          ...(fin.amountMismatch ? { amountMismatch: fin.amountMismatch, needsReview: true } : {}),
-          acceptedAt: new Date().toISOString(),
-        },
-      }).eq('id', txId)
+      // Finity CONFIRMED = orden aceptada (aún no pagada) → Procesando.
+      await asentarTx('Procesando', {
+        ...prettyBase, feeProvider: 'finity', feeCop: fin.feeCop, costs: fin.costs ?? null,
+        providerRef: fin.providerRef ?? null, state: fin.state ?? null,
+        ...(fin.amountMismatch ? { amountMismatch: fin.amountMismatch, needsReview: true } : {}),
+        acceptedAt: new Date().toISOString(),
+      })
       await logAudit(userId, `finity.${action}.ok`, { amount, feeCop: fin.feeCop, providerRef: fin.providerRef ?? null })
       await notifyTx(txId) // correo "recibimos tu envío · en proceso"
       return json(200, { ok: true, provider: 'finity', providerRef: fin.providerRef ?? null, feeCop: fin.feeCop, newBalance })
@@ -1313,11 +1337,8 @@ serve(async (req: Request) => {
     const finMsgRaw = (typeof finErr === 'string' ? finErr
       : (finErr?.message ?? finErr?.detail ?? finErr?.error?.message)) as string | undefined
     const detail = (() => { try { return JSON.stringify(fin.error ?? fin).slice(0, 350) } catch { return String(fin.error ?? 'sin detalle') } })()
-    if (txId) await db.from('transactions').update({
-      status: 'Fallido',
-      // errorMessage = detalle técnico para el Panel de Fallos del admin.
-      raw_data: { ...prettyBase, feeProvider: 'finity', error: fin.error ?? 'finity_failed', errorMessage: (finMsgRaw ?? detail) ?? null, refunded: true, failedAt: new Date().toISOString() },
-    }).eq('id', txId)
+    // errorMessage = detalle técnico para el Panel de Fallos del admin.
+    await asentarTx('Fallido', { ...prettyBase, feeProvider: 'finity', error: fin.error ?? 'finity_failed', errorMessage: (finMsgRaw ?? detail) ?? null, refunded: true, failedAt: new Date().toISOString() })
     await logAudit(userId, `finity.${action}.fail`, { amount, error: JSON.stringify(fin.error ?? {}).slice(0, 200) })
     await notifyTx(txId) // correo "no pudimos completar tu envío · saldo devuelto"
     // AL CLIENTE: mensaje LIMPIO. Solo se usa el texto de Finity si es HUMANO
