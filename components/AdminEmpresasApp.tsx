@@ -32,7 +32,7 @@ if (typeof window !== 'undefined' &&
 }
 
 const AdminEmpresasInner: React.FC = () => {
-    const { currentUser, isAuthLoading, loginUser, logoutUser, mfaPending, getMfaError, getLoginError, completeMFALogin, isPasswordRecovery, setNewPassword, cancelMFALogin, emailStepPending, completeEmailLogin, resendEmailCode } = useDatabase();
+    const { currentUser, isAuthLoading, loginUser, logoutUser, mfaPending, getMfaError, getLoginError, completeMFALogin, isPasswordRecovery, setNewPassword, cancelMFALogin, emailStepPending, completeEmailLogin, resendEmailCode, accountLocked } = useDatabase();
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [submitting, setSubmitting] = useState(false);
@@ -138,7 +138,22 @@ const AdminEmpresasInner: React.FC = () => {
                     </div>
                     <p className="text-xs text-slate-500 mb-5">Acceso exclusivo para administradores.</p>
 
-                    {isPasswordRecovery ? (
+                    {accountLocked ? (
+                        <div className="space-y-3">
+                            <div className="rounded-xl p-4" style={{ backgroundColor: 'rgba(248,113,113,0.10)', border: '1px solid rgba(248,113,113,0.32)' }}>
+                                <p className="text-sm font-bold mb-1" style={{ color: '#F87171' }}>Cuenta bloqueada</p>
+                                <p className="text-xs leading-relaxed" style={{ color: '#878E88' }}>
+                                    Se bloqueó por intentos fallidos. Enviamos al titular un correo con los datos
+                                    del intento y un enlace para reactivarla. También se bloqueó la conexión desde
+                                    donde se hicieron los intentos.
+                                </p>
+                            </div>
+                            <button type="button" onClick={() => { cancelMFALogin(); setMfaCode(''); setEmailCode(''); setMfaError(null); setPassword(''); setUseBackup(false); }}
+                                className="w-full py-3 rounded-xl text-sm font-bold" style={{ backgroundColor: '#121413', color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.12)' }}>
+                                Volver al inicio
+                            </button>
+                        </div>
+                    ) : isPasswordRecovery ? (
                         <form onSubmit={async (e) => {
                             e.preventDefault();
                             if (pwd1.length < 10) { setPwdMsg('Usa al menos 10 caracteres.'); return; }

@@ -293,6 +293,20 @@ async function lockAdminAndAlert(req: Request, userId: string, email: string, mo
   }, { onConflict: 'key' })
   await auditAdmin(req, 'security.admin_locked', { userId, motivo, ip })
 
+  // La IP desde donde se intentó queda bloqueada también: sin esto, quien
+  // esté probando sigue pudiendo operar contra el resto del sistema aunque la
+  // cuenta esté cerrada. Se desbloquea desde Monitoreo cuando haga falta.
+  if (ip) {
+    try {
+      const list = await blockedIps()
+      if (!list.some(b => b.ip === ip)) {
+        list.unshift({ ip, at: new Date().toISOString(), reason: `bloqueo de la cuenta de admin (${motivo})`, attempts: MAX_FALLOS_ADMIN, geo })
+        await saveBlockedIps(list)
+        await auditAdmin(req, 'auth.ip_blocked', { ip, porBloqueoDeCuenta: true })
+      }
+    } catch { /* el bloqueo de la cuenta no depende de esto */ }
+  }
+
   if (!RESEND_KEY) return
   const url = `${SUPABASE_URL}/functions/v1/admin-data?action=unlock&u=${encodeURIComponent(userId)}&t=${encodeURIComponent(token)}`
   const fila = (k: string, v: string) =>

@@ -123,6 +123,7 @@ interface DatabaseContextType {
   getMfaError: () => string | null;
   completeMFALogin: (code: string) => Promise<User | null>;
   emailStepPending: boolean;
+  accountLocked: boolean;
   completeEmailLogin: (code: string) => Promise<User | null>;
   resendEmailCode: () => Promise<boolean>;
   startEmailStep: (userId: string) => Promise<boolean>;
@@ -301,6 +302,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   const [mfaPending, setMfaPending] = useState(false);
   // Paso 2 del ingreso: código enviado al correo del titular.
   const [emailStepPending, setEmailStepPending] = useState(false);
+  // Cuenta bloqueada: la pantalla deja de pedir códigos. Seguir mostrando la
+  // casilla invita a insistir sobre algo que ya no puede funcionar.
+  const [accountLocked, setAccountLocked] = useState(false);
   const [pendingMFAProfile, setPendingMFAProfile] = useState<User | null>(null);
   // 'custom' = TOTP nuestro (raw_data.mfaEnabled, verifica vía mfa_verify);
   // 'native' = MFA de Supabase Auth (challenge/verify). Decide cómo verificar
@@ -1191,6 +1195,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     // un logout+login en la MISMA pestaña se saltaba el 2FA.
     try { sessionStorage.removeItem('mfa_ok'); } catch { /* */ }
     setLoginError(null);
+    setAccountLocked(false);
     // Opciones de auth con el token del CAPTCHA (si Turnstile está activo).
     const authOpts = captchaToken ? { captchaToken } : undefined;
 
@@ -1460,7 +1465,11 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
         body: JSON.stringify({ action: 'mfa_start_login', userId }),
       }).then(x => x.json()).catch(() => null);
-      if (!r?.ok) { setMfaError2(r?.message ?? 'No se pudo iniciar la verificación.'); return false; }
+      if (!r?.ok) {
+        if (r?.error === 'account_locked') setAccountLocked(true);
+        setMfaError2(r?.message ?? 'No se pudo iniciar la verificación.');
+        return false;
+      }
       return true;
     } catch { setMfaError2('No se pudo iniciar la verificación.'); return false; }
   };
@@ -1514,10 +1523,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   const completeEmailLogin = async (code: string): Promise<User | null> => {
     if (!pendingMFAProfile) return null;
-    // Igual que en el otro paso: en el segundo intento se intenta la captura,
-    // para que viaje junto al fallo que dispara el bloqueo.
-    let fotoIntento: string | null = null;
-    if (fallosLocalRef.current >= 1) fotoIntento = await tryCapturePhoto();
+    const fotoIntento: string | null = await tryCapturePhoto();
     try {
       const SURL = SUPABASE_URL_FOR_FN, SKEY = SUPABASE_ANON_FOR_FN, token = getStoredToken();
       const r = await fetch(`${SURL}/functions/v1/admin-data`, {
@@ -1525,7 +1531,12 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
         body: JSON.stringify({ action: 'mfa_verify_email', userId: pendingMFAProfile.id, code, foto: fotoIntento }),
       }).then(x => x.json()).catch(() => null);
-      if (!r?.ok) { fallosLocalRef.current += 1; setMfaError2(r?.message ?? 'Código incorrecto o vencido.'); return null; }
+      if (!r?.ok) {
+        if (r?.error === 'account_locked') setAccountLocked(true);
+        fallosLocalRef.current += 1;
+        setMfaError2(r?.message ?? 'Código incorrecto o vencido.');
+        return null;
+      }
       // Correo validado. Falta el código de la app: NO se entra todavía.
       setEmailStepPending(false);
       setMfaError2(null);
@@ -1551,10 +1562,10 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   const completeMFALogin = async (code: string): Promise<User | null> => {
     if (!pendingMFAProfile) return null;
-    // En el segundo intento se intenta la captura, para que viaje junto con
-    // el fallo que dispara el bloqueo.
-    let fotoIntento: string | null = null;
-    if (fallosLocalRef.current >= 1) fotoIntento = await tryCapturePhoto();
+    // Se intenta en CADA envío, no solo a partir del segundo: el conteo que
+    // dispara el bloqueo vive en el servidor e incluye intentos anteriores,
+    // así que el bloqueo puede saltar ya en el primero de esta pantalla.
+    const fotoIntento: string | null = await tryCapturePhoto();
     // 2FA CUSTOM: verifica el código contra el secreto CIFRADO en el servidor
     // (mfa_verify en admin-data descifra y valida). Es el esquema que activa la
     // tarjeta de Seguridad del admin y protege el cambio de proveedor.
@@ -1588,6 +1599,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             : r?.error === 'No autorizado'
               ? 'La sesión no autorizó la verificación. Vuelve a intentar el inicio de sesión.'
               : r?.error ? `Verificación rechazada: ${r.error}` : null;
+          if (r?.error === 'account_locked') setAccountLocked(true);
           fallosLocalRef.current += 1;
           setMfaError2(why);
           // Un código de 2FA rechazado también es un intento fallido: es la
@@ -1632,6 +1644,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     try { sessionStorage.removeItem('mfa_ok'); } catch { /* */ }
     setMfaPending(false);
     setEmailStepPending(false);
+    setAccountLocked(false);
     setPendingMFAProfile(null);
   };
 
@@ -2475,7 +2488,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       updateBankList, restoreDatabase, sendPasswordReset, isPasswordRecovery, setNewPassword, sendCuypayPayment,
       mfaPending, mfaErrorDetail, loginErrorDetail, completeMFALogin, cancelMFALogin,
       getLoginError: () => loginErrorRef.current, getMfaError: () => mfaErrorRef.current,
-      emailStepPending, completeEmailLogin, resendEmailCode, startEmailStep,
+      emailStepPending, completeEmailLogin, resendEmailCode, startEmailStep, accountLocked,
       enrollMFA, verifyMFAEnrollment, unenrollMFA, getMFAStatus, verifyMfaCode,
     }}>
       {children}
