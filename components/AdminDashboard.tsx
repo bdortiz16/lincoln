@@ -3667,7 +3667,7 @@ const renderDesign = () => (
 
           {/* Desde dónde se puede entrar al panel. Va junto al auditor porque
               es la defensa que sigue en pie aunque roben las credenciales. */}
-          <AdminAccessPolicy />
+          <AdminAccessPolicy userId={currentUser?.id} />
 
           {/* La llave física. Va después de la lista blanca porque son las dos
               caras del mismo candado: la lista filtra DESDE DÓNDE, la llave

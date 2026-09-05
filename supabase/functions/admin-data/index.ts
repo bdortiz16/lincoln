@@ -375,10 +375,19 @@ async function stepUpFalta(req: Request, userId: string): Promise<string[]> {
   const sid = sessionIdOf(req) ?? SIN_SESION
   const vigente = (t: unknown) => !!t && (Date.now() - Number(t) < STEP_UP_TTL_MS)
   const tienePasskey = (await passkeysDe(userId)).length > 0
+  // El código de la app solo se puede exigir si la cuenta TIENE 2FA activo.
+  // Pedirlo cuando no lo hay dejaba un candado imposible de abrir: la pantalla
+  // pedía un código que ninguna app estaba generando.
+  let tiene2fa = false
+  try {
+    const { data } = await db.from('users').select('raw_data').eq('id', userId).single()
+    tiene2fa = !!(data as any)?.raw_data?.mfaEnabled
+  } catch { /* si no se puede saber, no se exige */ }
   const est: StepUpSesion = (await leerStepUp(userId))[sid] ?? {}
   const falta: string[] = []
+  // El del correo es el piso: se pide siempre, haya o no 2FA y haya o no llave.
   if (!vigente(est.email)) falta.push('email')
-  if (!vigente(est.app)) falta.push('app')
+  if (tiene2fa && !vigente(est.app)) falta.push('app')
   if (tienePasskey && !vigente(est.passkey)) falta.push('passkey')
   return falta
 }
@@ -1945,6 +1954,25 @@ Deno.serve(async (req: Request) => {
         const p = body.policy ?? {}
         const ip = ipOf(req)
         const geo = await geoOf(ip)
+        // APAGAR o AFLOJAR el candado exige verificarse de nuevo: el código
+        // del correo siempre, y el de la app si la cuenta tiene 2FA activo.
+        // Apretarlo (encenderlo, agregar un país o una IP) no pide nada: lo
+        // que hay que dificultar es bajar la guardia, no subirla.
+        {
+          const actual = await accessPolicy()
+          const quita = (a: string[], b: string[]) => a.some(x => !b.includes(x))
+          const afloja = (actual.enabled && !p.enabled)
+            || quita(actual.countries, Array.isArray(p.countries) ? p.countries.map((c: any) => String(c).toUpperCase()) : [])
+            || quita(actual.ips, Array.isArray(p.ips) ? p.ips.map((i: any) => String(i)) : [])
+          if (afloja) {
+            // La LLAVE no se exige aquí: si el dispositivo se perdió, el
+            // titular tiene que poder seguir manejando su propio acceso.
+            const falta = (await stepUpFalta(req, String(auth.userId ?? ''))).filter(f => f !== 'passkey')
+            if (falta.length) {
+              return json({ error: 'Verifica tu identidad para bajar esta protección.', stepUp: true, falta }, 403)
+            }
+          }
+        }
         const pol: AccessPolicy = {
           enabled: !!p.enabled,
           countries: Array.isArray(p.countries) ? p.countries.map((c: any) => String(c).toUpperCase().slice(0, 2)).filter(Boolean).slice(0, 20) : [],

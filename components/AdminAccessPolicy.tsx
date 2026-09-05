@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Globe, Plus, X, ShieldCheck } from 'lucide-react';
+import { AdminStepUp } from './AdminStepUp';
 
 // ─────────────────────────────────────────────────────────────
 // AdminAccessPolicy — lista blanca de acceso al panel.
@@ -46,8 +47,11 @@ const PAISES: Array<[string, string]> = [
   ['AR', 'Argentina'], ['BR', 'Brasil'], ['EC', 'Ecuador'], ['US', 'Estados Unidos'], ['ES', 'España'],
 ];
 
-export const AdminAccessPolicy: React.FC = () => {
+export const AdminAccessPolicy: React.FC<{ userId?: string }> = ({ userId }) => {
   const [pol, setPol] = useState<{ enabled: boolean; countries: string[]; ips: string[] } | null>(null);
+  // Bajar la guardia —apagar el candado, quitar un país o una IP— exige
+  // verificarse de nuevo. Subirla no pide nada.
+  const [pidiendo, setPidiendo] = useState<null | (() => void)>(null);
   const [tuIp, setTuIp] = useState<string | null>(null);
   const [tuPais, setTuPais] = useState<string | null>(null);
   const [tuUbi, setTuUbi] = useState<string | null>(null);
@@ -66,10 +70,23 @@ export const AdminAccessPolicy: React.FC = () => {
     if (!next) return;
     setBusy(true); setMsg(null);
     const d = await call({ action: 'access_policy_set', policy: next }).catch(() => null);
+    if (d?.stepUp) { setBusy(false); setPidiendo(() => () => guardar(next)); return; }
     if (d?.ok) { setPol(d.policy); setMsg('Guardado.'); }
     else setMsg(d?.error ?? 'No se pudo guardar.');
     setBusy(false);
   };
+
+  if (pidiendo && userId) {
+    return (
+      <AdminStepUp
+        userId={userId}
+        motivo="Para bajar esta protección"
+        sinPasskey
+        onCancelar={() => { setPidiendo(null); cargar(); }}
+        onListo={() => { const seguir = pidiendo; setPidiendo(null); seguir(); }}
+      />
+    );
+  }
 
   if (!pol) {
     return (
