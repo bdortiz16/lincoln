@@ -311,6 +311,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   const loginErrorRef = useRef<string | null>(null);
   const mfaErrorRef = useRef<string | null>(null);
   const setLoginError = (v: string | null) => { loginErrorRef.current = v; setLoginErrorDetail(v); };
+  const setLoginError2 = (wrap: (t: string) => string, v: string) => setLoginError(wrap(v));
   const setMfaError2 = (v: string | null) => { mfaErrorRef.current = v; setMfaErrorDetail(v); };
   // Tracks when a local write is in progress so fetchData doesn't overwrite optimistic state
   const pendingWriteUntilRef = useRef<number>(0);
@@ -1238,8 +1239,14 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       // rechazado y una contraseña mala no se arreglan igual, y hasta ahora
       // los dos decían lo mismo.
       {
-        const m = String((error as any)?.message ?? '').toLowerCase();
-        setLoginError(
+        const cruda = String((error as any)?.message ?? 'sin mensaje');
+        const m = cruda.toLowerCase();
+        // Se ADJUNTA el error crudo de Supabase entre corchetes. Traducirlo a
+        // un texto amable ayuda a quien lo lee, pero esconder el original hace
+        // imposible diagnosticar: llevamos varias rondas sin poder distinguir
+        // "clave mala" de "cuenta inexistente" de "CAPTCHA rechazado".
+        const conCruda = (txt: string) => `${txt} [${cruda}]`;
+        setLoginError2(conCruda,
           m.includes('captcha')
             ? 'La verificación anti-bot (CAPTCHA) rechazó el intento. Recarga la página y vuelve a marcarla — el código del CAPTCHA sirve una sola vez.'
           : m.includes('email not confirmed') || m.includes('not confirmed')
@@ -1250,7 +1257,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             ? 'No hubo respuesta del servidor de autenticación. Revisa tu conexión.'
           : m.includes('rate') || m.includes('too many')
             ? 'Demasiados intentos. Espera unos minutos.'
-          : `No se pudo iniciar sesión: ${(error as any)?.message ?? 'error desconocido'}`
+          : 'No se pudo iniciar sesión.'
         );
       }
       // Any Supabase Auth error → fall back to DB lookup (covers 400 invalid creds, 500 server, timeout, site URL issues)
@@ -1325,7 +1332,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           if (storedHash) {
             const inputHash = await hashPassword(pass!, email);
             if (!inputHash || inputHash !== storedHash) {
-              setLoginError('Correo o contraseña incorrectos.');
+              setLoginError('Correo o contraseña incorrectos. [respaldo: hash local no coincide]');
               logFailedLogin(email, 'contraseña incorrecta'); return null;
             }
           } else {
@@ -1363,7 +1370,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         }
       }
       // Ninguna vía reconoció las credenciales → queda registrado con IP.
-      if (!loginErrorRef.current) setLoginError('Correo o contraseña incorrectos.');
+      if (!loginErrorRef.current) setLoginError('Correo o contraseña incorrectos. [ninguna vía reconoció las credenciales]');
       logFailedLogin(email, 'credenciales incorrectas');
       return null;
     }
