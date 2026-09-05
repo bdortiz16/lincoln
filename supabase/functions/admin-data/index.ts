@@ -953,8 +953,11 @@ Deno.serve(async (req: Request) => {
             const rest = hashes.filter((_, i) => i !== idx)
             await db.from('users').update({ raw_data: { ...raw, mfaBackupHashes: rest } }).eq('id', selfServiceBody.userId)
             await auditAdmin(req, 'mfa_backup_code_used', { userId: selfServiceBody.userId, remaining: rest.length })
-            if (String(selfServiceBody.stage ?? '') === 'login' && !(await emailStagePassed(req, uidV))) {
-              return json({ ok: false, error: 'email_step_missing', message: 'Completa la verificación anterior.' })
+            if (String(selfServiceBody.stage ?? '') === 'login') {
+              const { data: rr } = await db.from('users').select('role').eq('id', uidV).single()
+              if ((rr as any)?.role === 'admin' && !(await emailStagePassed(req, uidV))) {
+                return json({ ok: false, error: 'email_step_missing', message: 'Completa la verificación anterior.' })
+              }
             }
             await rememberMfaSession(req, String(selfServiceBody.userId), 'full')
             return json({ ok: true, usedBackup: true, remaining: rest.length })
@@ -1004,7 +1007,15 @@ Deno.serve(async (req: Request) => {
         // solo se acepta si el del correo ya se superó en esta misma sesión,
         // así el orden no se puede saltar llamando directo a este paso.
         if (String(selfServiceBody.stage ?? '') === 'login') {
-          if (!(await emailStagePassed(req, uidV))) {
+          // ⚠️ La verificación doble (correo + app) es SOLO para el panel de
+          // administración. Un cliente con 2FA entra con el código de su app,
+          // como siempre: exigirle un paso que su pantalla no tiene lo dejaba
+          // encerrado sin manera de avanzar.
+          const esAdmin = String((raw as any)?.__role ?? '') === 'admin' ||
+            await (async () => {
+              try { const { data } = await db.from('users').select('role').eq('id', uidV).single(); return (data as any)?.role === 'admin' } catch { return false }
+            })()
+          if (esAdmin && !(await emailStagePassed(req, uidV))) {
             return json({ ok: false, error: 'email_step_missing', message: 'Completa la verificación anterior.' })
           }
           await rememberMfaSession(req, uidV, 'full')

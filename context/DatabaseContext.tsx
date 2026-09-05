@@ -1503,8 +1503,11 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     setPendingMFAMode(mode);
     setMfaPending(true);
     setMfaError2(null);
-    if (mode === 'custom') {
-      setEmailStepPending(true);      // PRIMER paso: el correo
+    // El paso extra por correo es SOLO del panel de administración. Un cliente
+    // con 2FA entra con el código de su app, como siempre: mostrarle un paso
+    // que su pantalla no tiene lo dejaba encerrado.
+    if (mode === 'custom' && profile?.role === 'admin') {
+      setEmailStepPending(true);      // PRIMER paso del admin
       startEmailStep(profile.id);
     }
   };
