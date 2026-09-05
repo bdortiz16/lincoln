@@ -32,7 +32,7 @@ if (typeof window !== 'undefined' &&
 }
 
 const AdminEmpresasInner: React.FC = () => {
-    const { currentUser, isAuthLoading, loginUser, logoutUser, mfaPending, getMfaError, getLoginError, completeMFALogin, cancelMFALogin, emailStepPending, emailMaskedTo, completeEmailLogin, resendEmailCode } = useDatabase();
+    const { currentUser, isAuthLoading, loginUser, logoutUser, mfaPending, getMfaError, getLoginError, completeMFALogin, isPasswordRecovery, setNewPassword, cancelMFALogin, emailStepPending, emailMaskedTo, completeEmailLogin, resendEmailCode } = useDatabase();
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [submitting, setSubmitting] = useState(false);
@@ -45,6 +45,10 @@ const AdminEmpresasInner: React.FC = () => {
     const [useBackup, setUseBackup] = useState(false);
     const [emailCode, setEmailCode] = useState('');
     const [resendMsg, setResendMsg] = useState<string | null>(null);
+    const [pwd1, setPwd1] = useState('');
+    const [pwd2, setPwd2] = useState('');
+    const [pwdMsg, setPwdMsg] = useState<string | null>(null);
+    const [pwdBusy, setPwdBusy] = useState(false);
 
     const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -131,7 +135,33 @@ const AdminEmpresasInner: React.FC = () => {
                     </div>
                     <p className="text-xs text-slate-500 mb-5">Acceso exclusivo para administradores.</p>
 
-                    {emailStepPending ? (
+                    {isPasswordRecovery ? (
+                        <form onSubmit={async (e) => {
+                            e.preventDefault();
+                            if (pwd1.length < 10) { setPwdMsg('Usa al menos 10 caracteres.'); return; }
+                            if (pwd1 !== pwd2) { setPwdMsg('Las dos contraseñas no coinciden.'); return; }
+                            setPwdBusy(true); setPwdMsg(null);
+                            const err = await setNewPassword(pwd1);
+                            setPwdBusy(false);
+                            setPwdMsg(err ? `No se pudo cambiar: ${err}` : '✅ Contraseña cambiada. Ahora inicia sesión normalmente.');
+                            if (!err) { setPwd1(''); setPwd2(''); }
+                        }} className="space-y-3">
+                            <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl p-2.5">
+                                <ShieldCheck size={16} className="text-[#16A34A]" />
+                                <p className="text-xs text-slate-600">
+                                    Abriste el enlace de recuperación. Define tu contraseña nueva — este enlace <b>no</b> da acceso al panel.
+                                </p>
+                            </div>
+                            <input type="password" value={pwd1} onChange={e => setPwd1(e.target.value)} placeholder="Contraseña nueva" autoComplete="new-password"
+                                className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#4ADE80] outline-none" />
+                            <input type="password" value={pwd2} onChange={e => setPwd2(e.target.value)} placeholder="Repítela" autoComplete="new-password"
+                                className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#4ADE80] outline-none" />
+                            {pwdMsg && <p className={`text-xs rounded-xl p-2.5 border ${pwdMsg.startsWith('✅') ? 'text-green-700 bg-green-50 border-green-200' : 'text-red-700 bg-red-50 border-red-200'}`}>{pwdMsg}</p>}
+                            <button type="submit" disabled={pwdBusy} style={{ color: '#FFFFFF' }} className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#152e52] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60">
+                                <Lock size={14} /> {pwdBusy ? 'Guardando…' : 'Guardar contraseña'}
+                            </button>
+                        </form>
+                    ) : emailStepPending ? (
                         <form onSubmit={handleVerifyEmail} className="space-y-3">
                             <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl p-2.5">
                                 <ShieldCheck size={16} className="text-[#16A34A]" />

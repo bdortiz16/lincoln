@@ -265,7 +265,15 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   // Recuperación de contraseña: cuando el usuario abre el enlace del correo
   // de "olvidé mi contraseña", Supabase dispara PASSWORD_RECOVERY. La app
   // muestra una pantalla para fijar la nueva clave.
-  const [isPasswordRecovery, setIsPasswordRecovery] = useState(false);
+  const [isPasswordRecovery, setIsPasswordRecovery] = useState(() => {
+    // Se detecta desde la URL, no solo desde el evento: el orden en que
+    // Supabase dispara PASSWORD_RECOVERY y SIGNED_IN no está garantizado, y si
+    // llega primero el segundo la sesión de recuperación entraba al panel.
+    try { return /type=recovery/.test(window.location.hash || window.location.search); } catch { return false; }
+  });
+  // Ref para poder consultarlo dentro del listener sin depender del render.
+  const recoveryRef = useRef<boolean>(false);
+  useEffect(() => { recoveryRef.current = isPasswordRecovery; }, [isPasswordRecovery]);
   // Start online immediately if Supabase is configured — avoids a flash of "Modo Offline"
   // while the first fetchData() is still in flight.
   const [isOnline, setIsOnline] = useState(isSupabaseConfigured);
@@ -354,7 +362,16 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       try {
         // Enlace de recuperación de contraseña abierto → mostrar la pantalla
         // para fijar la nueva clave (no entrar directo al dashboard).
-        if (event === 'PASSWORD_RECOVERY') { setIsPasswordRecovery(true); return; }
+        if (event === 'PASSWORD_RECOVERY') { recoveryRef.current = true; setIsPasswordRecovery(true); return; }
+        // ⚠️ SEGURIDAD: el enlace de "recuperar contraseña" crea una sesión
+        // válida. Sin este corte, esa sesión entraba DIRECTO al panel — sin
+        // contraseña, sin 2FA y sin código de correo. Quien tuviera acceso al
+        // buzón entraba como admin. Una sesión de recuperación solo sirve para
+        // fijar la clave nueva; después hay que iniciar sesión de verdad.
+        if (recoveryRef.current && (event === 'SIGNED_IN' || event === 'INITIAL_SESSION')) {
+          setIsPasswordRecovery(true);
+          return;
+        }
         if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION' || event === 'TOKEN_REFRESHED') && session?.user) {
           // Cancel any pending sign-out
           if (signOutTimer) { clearTimeout(signOutTimer); signOutTimer = null; }
@@ -2351,6 +2368,12 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     const { error } = await supabase.auth.updateUser({ password: newPassword });
     if (error) return error.message;
     setIsPasswordRecovery(false);
+    recoveryRef.current = false;
+    // Se CIERRA la sesión de recuperación: obliga a iniciar sesión de verdad,
+    // con contraseña + 2FA + código de correo. Si se dejara abierta, el enlace
+    // del correo seguiría siendo una entrada al panel sin segundo factor.
+    try { await supabase.auth.signOut(); } catch { /* */ }
+    setCurrentUser(null);
     return null;
   };
 

@@ -784,6 +784,7 @@ Deno.serve(async (req: Request) => {
               }).then(x => x.json()).catch(() => null)
               if (sentB?.ok) return json({ ok: true, usedBackup: true, remaining: rest.length, needsEmailCode: true, to: sentB.to ?? null })
               await auditAdmin(req, 'auth.email_2fa_unavailable', { userId: uidV, motivo: sentB?.error ?? 'sin respuesta' })
+              return json({ ok: false, error: 'email_code_unavailable', message: 'No se pudo enviar el código a tu correo, así que el ingreso no se completó.' })
             }
             await rememberMfaSession(req, String(selfServiceBody.userId))
             return json({ ok: true, usedBackup: true, remaining: rest.length })
@@ -837,12 +838,14 @@ Deno.serve(async (req: Request) => {
             body: JSON.stringify({ action: 'send', userId: uidV }),
           }).then(r => r.json()).catch(() => null)
           if (sent?.ok) return json({ ok: true, needsEmailCode: true, to: sent.to ?? null, throttled: !!sent.throttled })
-          // Si el correo NO está configurado o falla, se entra con el código
-          // de la app en vez de dejar al titular afuera para siempre — pero se
-          // dice, y queda en auditoría, porque es una protección menos.
+          // El código de correo es OBLIGATORIO: si no se puede enviar, NO se
+          // abre la sesión. Antes se dejaba entrar solo con el código de la
+          // app para no encerrar al titular, pero eso convertía una falla de
+          // correo en una protección menos — y sin que nadie se enterara.
+          // La salida de emergencia es por SQL, documentada, no un atajo
+          // automático que un atacante podría provocar tumbando el correo.
           await auditAdmin(req, 'auth.email_2fa_unavailable', { userId: uidV, motivo: sent?.error ?? 'sin respuesta' })
-          await rememberMfaSession(req, uidV)
-          return json({ ok: true, needsEmailCode: false, emailUnavailable: true })
+          return json({ ok: false, error: 'email_code_unavailable', message: 'No se pudo enviar el código a tu correo, así que el ingreso no se completó. Revisa la configuración de envío de correo e intenta de nuevo.' })
         }
 
         // Queda constancia de QUÉ sesión superó el 2FA: es lo que después
