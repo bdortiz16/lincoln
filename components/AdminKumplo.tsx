@@ -216,8 +216,11 @@ export const AdminKumplo: React.FC = () => {
           <Campo etiqueta="Campo del id en la respuesta" ayuda="Ruta dentro del JSON. Ejemplo: data.id">
             <input style={inputStyle} value={cfg.campoId} onChange={e => setCfg({ ...cfg, campoId: e.target.value.trim() })} placeholder="data.id" />
           </Campo>
-          <Campo etiqueta="Campo del riesgo" ayuda="Ejemplo: data.risk.level. Si es un número 0–100 también sirve.">
-            <input style={inputStyle} value={cfg.campoRiesgo} onChange={e => setCfg({ ...cfg, campoRiesgo: e.target.value.trim() })} placeholder="data.risk.level" />
+          <Campo etiqueta="Campo del riesgo" ayuda="Kumplo: data.riesgo (bajo | medio | alto | desconocido).">
+            <input style={inputStyle} value={cfg.campoRiesgo} onChange={e => setCfg({ ...cfg, campoRiesgo: e.target.value.trim() })} placeholder="data.riesgo" />
+          </Campo>
+          <Campo etiqueta="Campo del veredicto" ayuda="Kumplo: data.operable. Es el que manda sobre el nivel de riesgo.">
+            <input style={inputStyle} value={cfg.campoOperable ?? ''} onChange={e => setCfg({ ...cfg, campoOperable: e.target.value.trim() })} placeholder="data.operable" />
           </Campo>
         </div>
 
@@ -238,10 +241,28 @@ export const AdminKumplo: React.FC = () => {
             placeholder="(vacío = todas las cuentas)" />
         </Campo>
 
-        <label style={{ display: 'flex', alignItems: 'center', gap: 9, color: C.text, fontSize: 12.5, margin: '4px 0 14px', cursor: 'pointer' }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 9, color: C.text, fontSize: 12.5, margin: '4px 0 9px', cursor: 'pointer' }}>
           <input type="checkbox" checked={!!cfg.bloquearEnAlto} onChange={e => setCfg({ ...cfg, bloquearEnAlto: e.target.checked })} />
-          Bloquear las transferencias cuando el riesgo sea alto
+          Aplicar el veredicto de Kumplo a las transferencias
         </label>
+
+        {/* Decisión de negocio, no técnica: Kumplo marca 'medio' como NO
+            operable (queda en revisión del Oficial). Dejar operar a quien está
+            en revisión es una postura legítima, pero tiene que ser una
+            elección consciente y no un descuido. */}
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 9, color: C.text, fontSize: 12.5, margin: '0 0 6px', cursor: 'pointer' }}>
+          <input type="checkbox" checked={!!cfg.soloBloquearAlto} onChange={e => setCfg({ ...cfg, soloBloquearAlto: e.target.checked })} style={{ marginTop: 2 }} />
+          <span>
+            Bloquear <b>solo</b> el riesgo alto
+            <span style={{ display: 'block', color: C.dim, fontSize: 11, marginTop: 2, lineHeight: 1.5 }}>
+              Kumplo marca el riesgo <b>medio</b> como «en revisión» y tampoco lo deja operar, igual que un
+              documento que no pudo validar. Con esta casilla marcada, esos dos casos sí operan y solo se
+              bloquea el riesgo alto.
+            </span>
+          </span>
+        </label>
+
+        <div style={{ marginBottom: 14 }} />
 
         <button onClick={() => guardar(cfg)} disabled={busy}
           style={{ background: 'rgba(74,222,128,0.12)', border: '1px solid rgba(74,222,128,0.32)', color: C.green, borderRadius: 10, padding: '10px 18px', fontSize: 13, fontWeight: 800, cursor: 'pointer', fontFamily: FONT, opacity: busy ? 0.6 : 1 }}>

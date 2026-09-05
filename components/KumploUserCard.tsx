@@ -41,11 +41,17 @@ const call = async (body: any) => {
   return r.json();
 };
 
-const TEXTO: Record<string, { color: string; titulo: string; cuerpo: string }> = {
-  bajo: { color: C.green, titulo: 'Riesgo bajo', cuerpo: 'Tu cuenta puede operar con normalidad.' },
-  medio: { color: C.amber, titulo: 'Riesgo medio', cuerpo: 'Puedes operar. Es posible que te pidamos documentación adicional más adelante.' },
-  alto: { color: C.red, titulo: 'Riesgo alto', cuerpo: 'No se pueden hacer transferencias desde esta cuenta. Comunícate con soporte para revisar tu caso.' },
-  desconocido: { color: C.sub, titulo: 'Sin resultado todavía', cuerpo: 'La consulta aún no ha devuelto un resultado.' },
+// El texto sale del ESTADO, no solo del nivel de riesgo: "riesgo medio" no le
+// dice nada a nadie, "tu cuenta está en revisión" sí. Y quien no puede operar
+// tiene que enterarse acá, no al intentar una transferencia.
+const TEXTO = (estado: string, riesgo: string, operable: boolean | undefined) => {
+  if (estado === 'procesando') return { color: C.sub, titulo: 'Verificación en curso', cuerpo: 'Estamos esperando el resultado. Suele tardar menos de un minuto.' };
+  if (riesgo === 'alto') return { color: C.red, titulo: 'Riesgo alto', cuerpo: 'No se pueden hacer transferencias desde esta cuenta. Comunícate con soporte para revisar tu caso.' };
+  if (riesgo === 'desconocido') return { color: C.amber, titulo: 'Documento sin validar', cuerpo: 'No pudimos validar tu documento. Revisa que el número esté correcto o comunícate con soporte.' };
+  if (operable === false) return { color: C.amber, titulo: 'En revisión', cuerpo: 'Tu cuenta está en revisión de cumplimiento. Mientras tanto no se pueden hacer transferencias.' };
+  if (riesgo === 'medio') return { color: C.amber, titulo: 'Riesgo medio', cuerpo: 'Puedes operar. Es posible que te pidamos documentación adicional más adelante.' };
+  if (riesgo === 'bajo') return { color: C.green, titulo: 'Verificación al día', cuerpo: 'Tu cuenta puede operar con normalidad.' };
+  return { color: C.sub, titulo: 'Sin resultado todavía', cuerpo: 'La consulta aún no ha devuelto un resultado.' };
 };
 
 export const KumploUserCard: React.FC<{ userId: string }> = ({ userId }) => {
@@ -64,8 +70,8 @@ export const KumploUserCard: React.FC<{ userId: string }> = ({ userId }) => {
   if (!data?.ok || !data.activo || !data.enLaPrueba) return null;
 
   const estado = data.estado ?? {};
-  const riesgo = String(estado.riesgo ?? 'desconocido');
-  const t = TEXTO[riesgo] ?? TEXTO.desconocido;
+  const riesgo = String(estado.riesgo ?? '');
+  const t = TEXTO(String(estado.estado ?? ''), riesgo, estado.operable);
 
   const vincular = async () => {
     if (!idManual.trim()) return;
@@ -98,9 +104,14 @@ export const KumploUserCard: React.FC<{ userId: string }> = ({ userId }) => {
         borderRadius: 12, padding: '13px 15px',
       }}>
         <p style={{ display: 'flex', alignItems: 'center', gap: 7, fontWeight: 800, fontSize: 14, margin: 0, color: t.color }}>
-          {riesgo === 'alto' ? <AlertTriangle size={15} /> : <ShieldCheck size={15} />} {t.titulo}
+          {estado.operable === false ? <AlertTriangle size={15} /> : <ShieldCheck size={15} />} {t.titulo}
         </p>
         <p style={{ color: C.sub, fontSize: 12.5, margin: '6px 0 0', lineHeight: 1.55 }}>{t.cuerpo}</p>
+        {estado.nombreCoincide === false && estado.nombreDocumento && (
+          <p style={{ color: C.amber, fontSize: 12, margin: '8px 0 0', lineHeight: 1.5 }}>
+            El nombre registrado no coincide con el del documento. Verifica tus datos.
+          </p>
+        )}
         {estado.at && (
           <p style={{ color: C.dim, fontSize: 11, margin: '8px 0 0' }}>
             Última revisión: {new Date(estado.at).toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' })}

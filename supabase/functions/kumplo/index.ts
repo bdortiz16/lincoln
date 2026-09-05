@@ -51,30 +51,39 @@ type Config = {
   // Rutas. Se les puede meter {id} y {documento}, que se reemplazan.
   rutaCrear: string           // POST — da de alta a la persona
   rutaAml: string             // POST — pide la consulta AML
-  rutaEstado: string          // GET  — vuelve a leer el estado de una persona
+  rutaEstado: string          // GET  — vuelve a leer el veredicto guardado
   // De dónde sacar el resultado en la respuesta de Kumplo.
   campoId: string             // p. ej. 'data.id'
-  campoRiesgo: string         // p. ej. 'data.risk.level'
+  campoRiesgo: string         // p. ej. 'data.riesgo'
+  campoOperable: string       // p. ej. 'data.operable' — el veredicto que manda
   valoresAlto: string[]       // qué valores significan ALTO
   valoresMedio: string[]
-  bloquearEnAlto: boolean     // si ALTO impide transferir
+  bloquearEnAlto: boolean     // si el veredicto negativo impide transferir
+  // Kumplo marca 'medio' como NO operable (queda en revisión del Oficial).
+  // Con esto en true se ignora eso y solo bloquea el riesgo ALTO.
+  soloBloquearAlto: boolean
   soloEstosUsuarios: string[] // ids; vacío = todos. La prueba empieza acotada.
 }
 
+// Los valores que entregó Kumplo en su especificación vienen ya puestos, para
+// no tener que transcribirlos a mano. Siguen siendo editables: el día que
+// cambien una ruta se corrige acá, no en el código.
 const CONFIG_POR_DEFECTO: Config = {
   activo: false,
-  baseUrl: '',
+  baseUrl: 'https://tqscdruogiaqpbntfywh.supabase.co/functions/v1/super-handler',
   empresaId: '',
   authHeader: 'Authorization',
   authPrefix: 'Bearer ',
-  rutaCrear: '',
-  rutaAml: '',
-  rutaEstado: '',
-  campoId: 'id',
-  campoRiesgo: 'risk_level',
-  valoresAlto: ['high', 'alto', 'critical', 'critico'],
-  valoresMedio: ['medium', 'medio', 'moderate'],
+  rutaCrear: '/partner/persona',
+  rutaAml: '/partner/aml',
+  rutaEstado: '/partner/estado?documento={documento}',
+  campoId: 'data.id',
+  campoRiesgo: 'data.riesgo',
+  campoOperable: 'data.operable',
+  valoresAlto: ['alto', 'high', 'critical', 'critico'],
+  valoresMedio: ['medio', 'medium', 'moderate'],
   bloquearEnAlto: true,
+  soloBloquearAlto: false,
   soloEstosUsuarios: [],
 }
 
@@ -134,8 +143,18 @@ async function quienLlama(req: Request): Promise<{ userId: string | null; esAdmi
 
 type EstadoKumplo = {
   id?: string
+  documento?: string
   riesgo?: 'bajo' | 'medio' | 'alto' | 'desconocido'
-  estado?: string
+  // El veredicto que Kumplo pide usar. Manda sobre 'riesgo': ellos ya
+  // resolvieron ahí lo que significa cada nivel, incluido que 'medio' queda
+  // en revisión del Oficial y no opera.
+  operable?: boolean
+  estado?: string             // aprobado | revision | bloqueado | procesando | …
+  motivo?: string
+  nombreDocumento?: string    // el nombre REAL del documento, según la fuente
+  nombreCoincide?: boolean
+  validado?: boolean
+  jobId?: string
   at?: string
   detalle?: string
   ultimaRespuesta?: unknown
@@ -158,6 +177,32 @@ async function auditar(accion: string, meta: unknown) {
   try { await db.from('audit_log').insert({ action: accion, metadata: meta as any }) } catch { /* la auditoría nunca frena la operación */ }
 }
 
+// El veredicto final, en un solo sitio. Kumplo dice explícitamente que lo que
+// hay que usar es 'operable': ahí ya resolvieron que 'medio' queda en revisión
+// del Oficial y no opera, y que un documento sin validar tampoco.
+//
+// 'soloBloquearAlto' existe porque esa decisión es de negocio, no técnica:
+// dejar operar a quien está en revisión es una postura legítima, pero tiene
+// que ser una elección consciente y no un descuido.
+function veredicto(e: EstadoKumplo, c: Config): { puede: boolean; riesgo: string; estado: string; motivo: string | null } {
+  const riesgo = String(e.riesgo ?? 'desconocido')
+  const estado = String(e.estado ?? '')
+  // Sin veredicto todavía (recién inscrito, o la consulta sigue procesando)
+  // NO se bloquea: es una prueba, y esperar no puede costarle una operación a
+  // un cliente legítimo.
+  if (!e.riesgo && e.operable === undefined) return { puede: true, riesgo, estado, motivo: null }
+  if (estado === 'procesando') return { puede: true, riesgo, estado, motivo: null }
+
+  const puede = c.soloBloquearAlto ? riesgo !== 'alto' : e.operable !== false
+  if (puede) return { puede: true, riesgo, estado, motivo: null }
+  const motivo = riesgo === 'alto'
+    ? 'Riesgo alto — no se puede transferir. Comunícate con soporte.'
+    : riesgo === 'desconocido'
+      ? 'No pudimos validar tu documento. Comunícate con soporte.'
+      : 'Tu cuenta está en revisión de cumplimiento. Comunícate con soporte.'
+  return { puede: false, riesgo, estado, motivo }
+}
+
 // ¿Esta persona entra en la prueba? La lista vacía significa "todos".
 function enLaPrueba(c: Config, userId: string): boolean {
   return c.soloEstosUsuarios.length === 0 || c.soloEstosUsuarios.includes(userId)
@@ -168,49 +213,112 @@ async function darDeAlta(c: Config, userId: string): Promise<EstadoKumplo> {
   const { data: u } = await db.from('users').select('email, name, document_number, phone, raw_data').eq('id', userId).single()
   const p: any = u ?? {}
   const raw = p.raw_data ?? {}
-  const documento = String(p.document_number ?? raw.documentNumber ?? raw.cedula ?? '')
+  const documento = String(p.document_number ?? raw.documentNumber ?? raw.cedula ?? '').trim()
+  if (!documento) {
+    return await guardarEstado(userId, { estado: 'sin_documento', detalle: 'La cuenta no tiene número de documento; Kumplo lo necesita para el alta.' })
+  }
 
+  // Nombres de campo EXACTOS de la especificación de Kumplo. No son un
+  // capricho: mandar 'tipo_documento' en vez de 'tipoDocumento' hace que la
+  // consulta salga con datos vacíos y devuelva "desconocido".
   const r = await llamarKumplo(c, c.rutaCrear, 'POST', {
-    empresa_id: c.empresaId || undefined,
-    referencia_externa: userId,          // para que Kumplo pueda devolver el vínculo
-    nombre: p.name ?? raw.fullName ?? '',
-    correo: p.email ?? '',
+    externalRef: userId,
+    nombre: String(p.name ?? raw.fullName ?? '').toUpperCase(),
     documento,
-    tipo_documento: raw.documentType ?? 'CC',
-    telefono: p.phone ?? raw.phone ?? '',
-    pais: raw.country ?? 'CO',
+    tipoDocumento: String(raw.documentType ?? 'CC').toUpperCase(),
+    correo: p.email ?? '',
+    telefono: String(p.phone ?? raw.phone ?? ''),
+    pais: raw.country ?? 'Colombia',
   })
   if (!r.ok) {
     await auditar('kumplo.alta_fallida', { userId, status: r.status, detalle: r.texto })
-    return await guardarEstado(userId, { estado: 'error_alta', detalle: `Kumplo respondió ${r.status}: ${r.texto}` })
+    return await guardarEstado(userId, { documento, estado: 'error_alta', detalle: `Kumplo respondió ${r.status}: ${r.texto}` })
   }
   const id = String(leerRuta(r.body, c.campoId) ?? '')
-  await auditar('kumplo.alta', { userId, kumploId: id })
-  return await guardarEstado(userId, { id: id || undefined, estado: id ? 'inscrito' : 'inscrito_sin_id', detalle: id ? '' : 'Kumplo no devolvió un id en el campo configurado.' })
+  const yaExistia = leerRuta(r.body, 'data.existe') === true
+  await auditar('kumplo.alta', { userId, kumploId: id, yaExistia })
+  return await guardarEstado(userId, {
+    id: id || undefined, documento,
+    estado: id ? (yaExistia ? 'ya_existia' : 'inscrito') : 'inscrito_sin_id',
+    detalle: id ? '' : `Kumplo no devolvió un id en el campo "${c.campoId}".`,
+  })
+}
+
+// Traduce una respuesta de Kumplo —de /partner/aml o de /partner/estado— al
+// estado que guarda Lincoin. Las dos traen el mismo formato.
+function interpretar(cuerpo: any, c: Config, documento: string): EstadoKumplo {
+  const d = cuerpo?.data ?? {}
+  const estado = String(d.estado ?? '').toLowerCase()
+  if (estado === 'procesando') {
+    return { documento, estado: 'procesando', jobId: d.jobId ? String(d.jobId) : undefined, detalle: 'Kumplo todavía está procesando la consulta.' }
+  }
+  const riesgo = normalizarRiesgo(leerRuta(cuerpo, c.campoRiesgo), c)
+  const operableBruto = leerRuta(cuerpo, c.campoOperable)
+  return {
+    documento,
+    riesgo,
+    // Si Kumplo no manda 'operable', se deduce del riesgo. No se asume que sí
+    // puede operar: un veredicto ausente no es un veredicto favorable.
+    operable: typeof operableBruto === 'boolean' ? operableBruto : (riesgo === 'bajo'),
+    estado: estado || 'consultado',
+    motivo: d.motivo ? String(d.motivo) : '',
+    nombreDocumento: d.nombreDocumento ? String(d.nombreDocumento) : undefined,
+    nombreCoincide: typeof d.nombreCoincide === 'boolean' ? d.nombreCoincide : undefined,
+    validado: typeof d.validado === 'boolean' ? d.validado : undefined,
+    id: d.id ? String(d.id) : undefined,
+    detalle: riesgo === 'desconocido' && estado !== 'procesando'
+      ? 'El documento no pudo ser validado por la fuente. Revisa el número.'
+      : '',
+    ultimaRespuesta: cuerpo,
+  }
 }
 
 async function consultarAml(c: Config, userId: string): Promise<EstadoKumplo> {
   const previo = await leerEstado(userId)
-  const id = previo.id
-  if (!id) return await guardarEstado(userId, { estado: 'sin_id', detalle: 'Todavía no hay id de Kumplo para esta persona.' })
+  const { data: u } = await db.from('users').select('name, document_number, raw_data').eq('id', userId).single()
+  const p: any = u ?? {}
+  const raw = p.raw_data ?? {}
+  const documento = String(previo.documento ?? p.document_number ?? raw.documentNumber ?? raw.cedula ?? '').trim()
+  if (!documento) {
+    return await guardarEstado(userId, { estado: 'sin_documento', detalle: 'La cuenta no tiene número de documento.' })
+  }
 
-  const ruta = c.rutaAml.replace('{id}', encodeURIComponent(id))
-  const r = await llamarKumplo(c, ruta, 'POST', { empresa_id: c.empresaId || undefined, usuario_id: id })
+  // La consulta va por DOCUMENTO, no por el id de Kumplo: así lo definieron.
+  const r = await llamarKumplo(c, c.rutaAml, 'POST', {
+    documento,
+    tipoDocumento: String(raw.documentType ?? 'CC').toUpperCase(),
+    nombre: String(p.name ?? raw.fullName ?? '').toUpperCase(),
+  })
   if (!r.ok) {
     await auditar('kumplo.aml_fallida', { userId, status: r.status, detalle: r.texto })
-    return await guardarEstado(userId, { estado: 'error_aml', detalle: `Kumplo respondió ${r.status}: ${r.texto}` })
+    return await guardarEstado(userId, { documento, estado: 'error_aml', detalle: `Kumplo respondió ${r.status}: ${r.texto}` })
   }
-  const bruto = leerRuta(r.body, c.campoRiesgo)
-  const riesgo = normalizarRiesgo(bruto, c)
-  await auditar('kumplo.aml', { userId, kumploId: id, riesgo, bruto })
-  return await guardarEstado(userId, {
-    riesgo,
-    estado: 'consultado',
-    detalle: riesgo === 'desconocido'
-      ? `Kumplo respondió, pero el campo "${c.campoRiesgo}" vino vacío. Revisa el mapeo.`
-      : '',
-    ultimaRespuesta: r.body,
-  })
+
+  let leido = interpretar(r.body, c, documento)
+
+  // La fuente de Kumplo es ASÍNCRONA. Ellos esperan hasta ~15 s por dentro;
+  // si aun así no terminó, se espera un poco y se relee UNA vez. Más que eso
+  // agotaría el tiempo de esta función — si sigue procesando se guarda así y
+  // la próxima revisión (o el botón del usuario) lo recoge.
+  if (leido.estado === 'procesando' && c.rutaEstado) {
+    await new Promise(res => setTimeout(res, 6000))
+    const rr = await llamarKumplo(c, c.rutaEstado.replace('{documento}', encodeURIComponent(documento)), 'GET')
+    if (rr.ok) leido = interpretar(rr.body, c, documento)
+  }
+
+  await auditar('kumplo.aml', { userId, documento, riesgo: leido.riesgo, operable: leido.operable, estado: leido.estado })
+  return await guardarEstado(userId, leido)
+}
+
+// Relee el último veredicto guardado en Kumplo, sin volver a lanzar la
+// consulta. Es lo que hay que usar cuando quedó 'procesando'.
+async function releerEstado(c: Config, userId: string): Promise<EstadoKumplo> {
+  const previo = await leerEstado(userId)
+  const documento = String(previo.documento ?? '').trim()
+  if (!documento || !c.rutaEstado) return previo
+  const r = await llamarKumplo(c, c.rutaEstado.replace('{documento}', encodeURIComponent(documento)), 'GET')
+  if (!r.ok) return await guardarEstado(userId, { detalle: `Kumplo respondió ${r.status}: ${r.texto}` })
+  return await guardarEstado(userId, interpretar(r.body, c, documento))
 }
 
 Deno.serve(async (req: Request) => {
@@ -302,7 +410,11 @@ Deno.serve(async (req: Request) => {
       if (!uid || (!yo.esAdmin && yo.userId !== uid)) return json({ error: 'No autorizado' }, 401)
       const c = await leerConfig()
       if (!c.activo) return json({ ok: false, motivo: 'La integración está apagada.' })
-      return json({ ok: true, estado: await consultarAml(c, uid) })
+      // Si quedó procesando, se RELEE en vez de relanzar: volver a pedir la
+      // consulta gasta una petición y no adelanta nada.
+      const prev = await leerEstado(uid)
+      const fin = prev.estado === 'procesando' ? await releerEstado(c, uid) : await consultarAml(c, uid)
+      return json({ ok: true, estado: fin })
     }
 
     // ── ¿Puede transferir? Lo pregunta el resto del sistema ───────────────
@@ -314,11 +426,7 @@ Deno.serve(async (req: Request) => {
       const c = await leerConfig()
       if (!c.activo || !c.bloquearEnAlto || !enLaPrueba(c, uid)) return json({ ok: true, puede: true })
       const e = await leerEstado(uid)
-      const puede = e.riesgo !== 'alto'
-      return json({
-        ok: true, puede, riesgo: e.riesgo ?? 'desconocido',
-        motivo: puede ? null : 'Riesgo alto — no se puede transferir. Comunícate con soporte.',
-      })
+      return json({ ok: true, ...veredicto(e, c) })
     }
 
     // ── Listado para el panel ────────────────────────────────────────────

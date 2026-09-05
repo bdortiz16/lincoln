@@ -1,6 +1,10 @@
 # Integración Lincoin ↔ Kumplo
 
-Qué pedirle a Kumplo para conectar las dos plataformas.
+**Kumplo ya respondió** (ver `INTEGRACION_LINCOIN.md`). El código está ajustado
+a su especificación y los valores vienen precargados en el panel. Lo único que
+falta del lado de Lincoin es poner `KUMPLO_API_KEY` en la Bóveda y encender.
+
+Este documento queda como registro de lo que se pidió y de cómo quedó armado.
 
 ## Qué queremos que pase
 
@@ -122,8 +126,40 @@ Va en la Bóveda como `KUMPLO_API_KEY`. Nunca se guarda en la base de datos ni s
 
 ---
 
+## Lo que respondió Kumplo, y cómo quedó aplicado
+
+| Punto | Respuesta de Kumplo | Cómo quedó en Lincoin |
+|---|---|---|
+| Credencial | `Authorization: Bearer <llave>`, sin vencimiento por ahora, una sola para prueba y producción | En la Bóveda como `KUMPLO_API_KEY` |
+| Dirección base | `https://tqscdruogiaqpbntfywh.supabase.co/functions/v1/super-handler` | Precargada |
+| Alta | `POST /partner/persona` con `externalRef`, `nombre`, `documento`, `tipoDocumento`, `correo`, `telefono`, `pais`. Si ya existe, devuelve el id con `existe: true` | Precargada. Se manda el id de Lincoin como `externalRef` para poder conciliar |
+| AML | `POST /partner/aml` **por documento**, no por id | Precargada |
+| Veredicto | **`data.operable`** — es el que pidieron usar | Es el que manda. `data.riesgo` se guarda para mostrarlo |
+| Asíncrono | Puede devolver `estado: "procesando"` con un `jobId` | Se reintenta una vez a los 6 s; si sigue, se guarda «en curso» y se relee después con `GET /partner/estado` |
+| Webhook | Pendiente para la siguiente fase | Mientras tanto se relee el estado |
+
+### Una decisión que hay que tomar: el riesgo MEDIO
+
+Kumplo marca **medio** como `operable: false` — la persona queda *en revisión
+del Oficial* y **no opera** hasta que la aprueben. Lo mismo con un documento
+que no pudieron validar (`desconocido`).
+
+Eso es más estricto de lo que se había planteado («bajo opera, alto bloquea»).
+Es defendible desde cumplimiento, pero es una decisión de negocio, así que está
+como una casilla en el panel:
+
+- **Sin marcar** (predeterminado): se respeta `operable`. Medio y documento sin
+  validar **no** transfieren.
+- **Marcada** («Bloquear solo el riesgo alto»): medio y sin validar sí operan;
+  solo se bloquea el alto.
+
+Si se deja sin marcar, hace falta definir **quién aprueba** una cuenta en
+revisión y en cuánto tiempo — si no, un cliente legítimo con un antecedente
+menor queda esperando sin que nadie lo esté mirando.
+
 ## Lo que falta, y conviene decidir pronto
 
-- **Monitoreo continuo.** Hoy la consulta se hace al inscribirse. Sin el webhook de Kumplo, alguien que aparezca en una lista después queda sin detectar. Es el punto 5 de arriba y es el que más valor agrega.
-- **Qué hacer con el riesgo medio.** Hoy opera igual que el bajo. Si quieren pedirle documentación adicional o ponerle un límite, hay que definir la regla.
-- **Quién levanta un bloqueo por riesgo alto**, y con qué evidencia. Hoy el bloqueo se levanta solo si Kumplo cambia el veredicto.
+- **Monitoreo continuo.** Kumplo lo dejó para la siguiente fase. Hoy la consulta se hace al inscribirse, así que alguien que aparezca en una lista después queda sin detectar hasta que se vuelva a consultar. Es lo que más valor agrega de aquí en adelante — conviene insistirles.
+- **Quién aprueba una cuenta en revisión** (riesgo medio), y en cuánto tiempo.
+- **Quién levanta un bloqueo por riesgo alto**, y con qué evidencia. Hoy se levanta solo si Kumplo cambia el veredicto.
+- **Documento obligatorio al registrarse.** Kumplo consulta por número de documento. Una cuenta de Lincoin sin documento no se puede dar de alta allá — hoy queda en «sin documento» y opera con normalidad.

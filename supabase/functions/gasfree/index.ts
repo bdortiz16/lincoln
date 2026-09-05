@@ -83,8 +83,25 @@ async function assertNotBlocked(userId: string): Promise<string | null> {
       if (cfg?.activo && cfg?.bloquearEnAlto !== false) {
         const soloEstos: string[] = Array.isArray(cfg.soloEstosUsuarios) ? cfg.soloEstosUsuarios : []
         const enLaPrueba = soloEstos.length === 0 || soloEstos.includes(userId)
-        if (enLaPrueba && String(raw.kumplo?.riesgo ?? '') === 'alto') {
-          return 'Riesgo alto — no se puede transferir. Comunícate con soporte para revisar tu caso.'
+        const k = raw.kumplo ?? {}
+        const riesgo = String(k.riesgo ?? '')
+        const hayVeredicto = !!k.riesgo || typeof k.operable === 'boolean'
+        // Kumplo pide usar 'operable': ahí ya resolvieron que 'medio' queda en
+        // revisión del Oficial y no opera, y que un documento sin validar
+        // tampoco. 'soloBloquearAlto' permite ignorar eso y bloquear solo el
+        // riesgo alto — es una decisión de negocio, y se toma en el panel.
+        //
+        // Sin veredicto todavía, o con la consulta aún procesando, NO se
+        // bloquea: esperar no puede costarle una operación a un cliente.
+        if (enLaPrueba && hayVeredicto && String(k.estado ?? '') !== 'procesando') {
+          const puede = cfg.soloBloquearAlto ? riesgo !== 'alto' : k.operable !== false
+          if (!puede) {
+            return riesgo === 'alto'
+              ? 'Riesgo alto — no se puede transferir. Comunícate con soporte para revisar tu caso.'
+              : riesgo === 'desconocido'
+                ? 'No pudimos validar tu documento. Comunícate con soporte.'
+                : 'Tu cuenta está en revisión de cumplimiento. Comunícate con soporte.'
+          }
         }
       }
     } catch { /* la prueba nunca frena una operación legítima */ }
