@@ -33,13 +33,19 @@ const tokenOf = () => {
   } catch { /* */ }
   return null;
 };
+// Distingue "el servidor dijo que no" de "el servidor no está". Antes las dos
+// cosas se veían igual —"No se pudo leer la configuración"— y la causa real
+// (la función sin desplegar) quedaba invisible.
 const call = async (body: any) => {
   const r = await fetch(`${SURL}/functions/v1/kumplo`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${tokenOf() ?? SKEY}` },
     body: JSON.stringify(body),
   });
-  return r.json();
+  const texto = await r.text().catch(() => '');
+  try { return JSON.parse(texto); } catch { /* respuesta no-JSON */ }
+  if (r.status === 404) return { error: 'El servicio de Kumplo todavía no está publicado. Espera a que termine el despliegue y recarga.' };
+  return { error: `El servidor respondió ${r.status}${texto ? `: ${texto.slice(0, 160)}` : ''}` };
 };
 
 const COLOR_RIESGO: Record<string, string> = {
