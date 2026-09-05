@@ -68,9 +68,33 @@ export const AdminIdleGuard: React.FC<{ userId: string; onCerrar: () => void }> 
   const [restan, setRestan] = useState<number | null>(null);   // ms, solo durante el aviso
   const ultimoLatido = useRef(0);
   const cerrado = useRef(false);
+  // Copia en memoria de la última señal. localStorage puede estar bloqueado
+  // (modo privado, ajustes del navegador) y devolver siempre 0: sin esta
+  // copia, "nunca hubo señal" se leía como "lleva una eternidad quieto" y
+  // cerraba la sesión al instante, que es el error contrario.
+  const vistoRef = useRef(0);
+
+  const ultimoVisto = () => Math.max(vistoRef.current, leerVisto());
+
+  const cerrar = () => {
+    if (cerrado.current) return;
+    cerrado.current = true;
+    try { localStorage.removeItem(CLAVE); } catch { /* */ }
+    onCerrar();
+  };
+
+  // ¿La sesión sigue viva? Si ya venció, la cierra. Se pregunta ANTES de
+  // marcar actividad: volver al computador después de una hora tiene que
+  // encontrar la sesión cerrada, no reabrirla con el primer movimiento.
+  const sigueViva = (): boolean => {
+    if (cerrado.current) return false;
+    if (Date.now() - ultimoVisto() >= LIMITE_MS) { cerrar(); return false; }
+    return true;
+  };
 
   const marcar = () => {
     const ahora = Date.now();
+    vistoRef.current = ahora;
     guardarVisto(ahora);
     setRestan(null);
     // Señal al servidor, como mucho una cada 5 minutos.
@@ -84,7 +108,7 @@ export const AdminIdleGuard: React.FC<{ userId: string; onCerrar: () => void }> 
         .then(r => r.json())
         // Si el servidor ya la dio por cerrada, la pantalla no puede seguir
         // abierta: manda el servidor, no el reloj del navegador.
-        .then(d => { if (d?.sesionInactiva && !cerrado.current) { cerrado.current = true; onCerrar(); } })
+        .then(d => { if (d?.sesionInactiva) cerrar(); })
         .catch(() => { /* la próxima llamada real vuelve a marcar */ });
     }
   };
@@ -95,34 +119,36 @@ export const AdminIdleGuard: React.FC<{ userId: string; onCerrar: () => void }> 
     // Al abrir: si la última señal es de hace más de media hora, la sesión ya
     // venció mientras la pestaña estaba cerrada.
     const previo = leerVisto();
-    if (previo && Date.now() - previo > LIMITE_MS) { cerrado.current = true; onCerrar(); return; }
+    if (previo && Date.now() - previo >= LIMITE_MS) { cerrar(); return; }
     marcar();
 
     const eventos = ['mousedown', 'keydown', 'wheel', 'touchstart', 'scroll'];
-    const alHaberActividad = () => { if (!cerrado.current) marcar(); };
+    // Primero se comprueba si venció, y SOLO si sigue viva se renueva. Al
+    // revés —que era como estaba— cualquier clic al volver resucitaba una
+    // sesión que ya debía estar cerrada, y el cierre no ocurría nunca.
+    const alHaberActividad = () => { if (sigueViva()) marcar(); };
     eventos.forEach(e => window.addEventListener(e, alHaberActividad, { passive: true }));
-    // Volver a la pestaña cuenta como actividad; irse, no.
-    const alVolver = () => { if (document.visibilityState === 'visible') alHaberActividad(); };
+
+    // Volver a la pestaña NO cuenta como actividad: solo dispara la
+    // comprobación. Este era el agujero — el navegador congela el reloj de
+    // las pestañas de fondo, así que al volver el temporizador todavía no
+    // había alcanzado a vencer, y esto lo reiniciaba antes de que pudiera.
+    const alVolver = () => { if (document.visibilityState === 'visible') sigueViva(); };
     document.addEventListener('visibilitychange', alVolver);
+    window.addEventListener('focus', alVolver);
+    window.addEventListener('pageshow', alVolver);
 
     const reloj = setInterval(() => {
-      if (cerrado.current) return;
-      const inactivo = Date.now() - leerVisto();
-      if (inactivo >= LIMITE_MS) {
-        cerrado.current = true;
-        clearInterval(reloj);
-        try { localStorage.removeItem(CLAVE); } catch { /* */ }
-        onCerrar();
-      } else if (inactivo >= LIMITE_MS - AVISO_MS) {
-        setRestan(LIMITE_MS - inactivo);
-      } else {
-        setRestan(null);
-      }
+      if (!sigueViva()) { clearInterval(reloj); return; }
+      const inactivo = Date.now() - ultimoVisto();
+      setRestan(inactivo >= LIMITE_MS - AVISO_MS ? LIMITE_MS - inactivo : null);
     }, 5_000);
 
     return () => {
       eventos.forEach(e => window.removeEventListener(e, alHaberActividad));
       document.removeEventListener('visibilitychange', alVolver);
+      window.removeEventListener('focus', alVolver);
+      window.removeEventListener('pageshow', alVolver);
       clearInterval(reloj);
     };
     /* eslint-disable-next-line react-hooks/exhaustive-deps */
@@ -152,7 +178,7 @@ export const AdminIdleGuard: React.FC<{ userId: string; onCerrar: () => void }> 
           {mm}:{ss}
         </p>
         <button
-          onClick={() => { ultimoLatido.current = 0; marcar(); }}
+          onClick={() => { if (sigueViva()) { ultimoLatido.current = 0; marcar(); } }}
           style={{
             width: '100%', marginTop: 12, background: 'rgba(74,222,128,0.12)',
             border: '1px solid rgba(74,222,128,0.32)', color: C.green, borderRadius: 10,
@@ -161,7 +187,7 @@ export const AdminIdleGuard: React.FC<{ userId: string; onCerrar: () => void }> 
           Sigo aquí
         </button>
         <button
-          onClick={() => { cerrado.current = true; try { localStorage.removeItem(CLAVE); } catch { /* */ } onCerrar(); }}
+          onClick={cerrar}
           style={{ width: '100%', marginTop: 8, background: 'none', border: 'none', color: C.sub, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: FONT }}>
           Cerrar sesión ahora
         </button>
