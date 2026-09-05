@@ -229,6 +229,56 @@ function computeAcct(input: any): { acct: Acct } | { error: string } {
   }
 }
 
+// ── Passkey (WebAuthn) ───────────────────────────────────────────────────
+// La llave vive dentro del dispositivo (Face ID, huella, o una llave USB) y
+// NUNCA sale de él: el navegador solo devuelve una firma. Por eso no se puede
+// fotografiar, ni copiar del portapapeles, ni escribir en una página falsa —
+// la firma está atada al dominio real, así que una copia de lincoin.me no
+// sirve. Es la única defensa que aguanta que el atacante tenga la contraseña,
+// el 2FA y los códigos de respaldo.
+//
+// Las credenciales se guardan en system_config (solo service_role), no en el
+// perfil: ni un admin autenticado las toca desde el navegador.
+const RP_ID = Deno.env.get('PASSKEY_RP_ID') ?? 'lincoin.me'
+const RP_NAME = 'Lincoin'
+const ORIGENES = (Deno.env.get('PASSKEY_ORIGINS') ?? 'https://lincoin.me,https://www.lincoin.me')
+  .split(',').map(o => o.trim()).filter(Boolean)
+
+function passkeyKey(userId: string) { return `passkeys_${userId}` }
+function challengeKey(userId: string) { return `passkey_challenge_${userId}` }
+
+type Passkey = { id: string; publicKey: string; counter: number; nombre: string; at: string }
+
+async function passkeysDe(userId: string): Promise<Passkey[]> {
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', passkeyKey(userId)).single()
+    return data?.value ? JSON.parse(data.value) : []
+  } catch { return [] }
+}
+async function guardarPasskeys(userId: string, list: Passkey[]) {
+  await db.from('system_config').upsert({ key: passkeyKey(userId), value: JSON.stringify(list.slice(0, 10)) }, { onConflict: 'key' })
+}
+
+// El desafío se guarda en la base porque las edge functions no comparten
+// memoria entre invocaciones: lo que se genera en una petición tiene que
+// poder comprobarse en la siguiente. Vive 5 minutos y es de un solo uso.
+async function guardarChallenge(userId: string, challenge: string) {
+  await db.from('system_config').upsert({
+    key: challengeKey(userId),
+    value: JSON.stringify({ challenge, exp: Date.now() + 5 * 60_000 }),
+  }, { onConflict: 'key' })
+}
+async function tomarChallenge(userId: string): Promise<string | null> {
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', challengeKey(userId)).single()
+    if (!data?.value) return null
+    const c = JSON.parse(data.value)
+    await db.from('system_config').delete().eq('key', challengeKey(userId))   // un solo uso
+    if (!c?.challenge || Date.now() > Number(c.exp ?? 0)) return null
+    return String(c.challenge)
+  } catch { return null }
+}
+
 // ── Bloqueo de la cuenta de admin tras intentos fallidos ─────────────────
 // A los 2 fallos la cuenta queda bloqueada y se avisa al titular por correo
 // con quién lo intentó (IP, ubicación aproximada, dispositivo, hora) y un
@@ -240,25 +290,60 @@ const MAX_FALLOS_ADMIN = 2
 
 function lockKey(userId: string) { return `admin_lock_${userId}` }
 
+// ── ¿Esta cuenta es la del panel? ────────────────────────────────────────
+// TODO lo que sigue —lista blanca de país/IP, bloqueo a los 2 fallos, foto,
+// correo de alerta— es blindaje del PANEL DE ADMINISTRACIÓN. Los clientes
+// comparten los mismos endpoints de 2FA, así que sin esta pregunta el
+// blindaje les caía encima a ellos: un cliente en México quedaba fuera por
+// la lista blanca, y a los dos códigos errados le salía "la cuenta se
+// bloqueó" aunque nada se hubiera bloqueado. Se pregunta una sola vez por
+// invocación y se recuerda.
+const cacheRol = new Map<string, boolean>()
+async function esAdminUid(userId: string): Promise<boolean> {
+  if (!userId) return false
+  const y = cacheRol.get(userId)
+  if (y !== undefined) return y
+  try {
+    const { data } = await db.from('users').select('role').eq('id', userId).single()
+    const r = (data as any)?.role === 'admin'
+    cacheRol.set(userId, r)
+    return r
+  } catch { return false }
+}
+
+// La lista blanca solo se aplica a la cuenta del panel. Para un cliente
+// siempre devuelve null: su 2FA no depende de desde qué país se conecte.
+async function accessDeniedAdmin(req: Request, userId: string): Promise<string | null> {
+  if (!(await esAdminUid(userId))) return null
+  return await accessDenied(req)
+}
+
 // Registra un fallo de verificación y BLOQUEA al llegar al tope. Es el único
 // sitio que cuenta: antes el conteo estaba repartido entre el paso del correo,
 // el de la app y el de respaldo, cada uno con su propia cuenta, y solo uno
 // disparaba el bloqueo — fallar cuatro veces el primero no bloqueaba nada.
-async function registerAdminFailure(req: Request, userId: string, motivo: string, tipo: string, foto?: string | null): Promise<number> {
+//
+// Devuelve si la cuenta QUEDÓ bloqueada de verdad, no si se llegó al número.
+// Antes devolvía solo el conteo y quien llamaba concluía "bloqueada" con
+// n >= 2 — para un cliente eso era mentira: nunca se escribía el bloqueo,
+// pero se le mostraba la pantalla de cuenta bloqueada.
+async function registerAdminFailure(
+  req: Request, userId: string, motivo: string, tipo: string, foto?: string | null,
+): Promise<{ fallos: number; bloqueada: boolean }> {
   await auditAdmin(req, 'auth.mfa_failed', { userId, motivo, tipo })
   try {
+    if (!(await esAdminUid(userId))) return { fallos: 0, bloqueada: false }
     const desde = new Date(Date.now() - 30 * 60_000).toISOString()
     const { data } = await db.from('audit_log').select('metadata')
       .eq('action', 'auth.mfa_failed').gte('created_at', desde).limit(300)
     const n = (data ?? []).filter((r: any) => r?.metadata?.userId === userId).length
     if (n >= MAX_FALLOS_ADMIN) {
-      const { data: uu } = await db.from('users').select('email, role').eq('id', userId).single()
-      if ((uu as any)?.role === 'admin') {
-        await lockAdminAndAlert(req, userId, String((uu as any).email), motivo, foto ?? null)
-      }
+      const { data: uu } = await db.from('users').select('email').eq('id', userId).single()
+      await lockAdminAndAlert(req, userId, String((uu as any)?.email ?? ''), motivo, foto ?? null)
+      return { fallos: n, bloqueada: !!(await adminLock(userId)) }
     }
-    return n
-  } catch { return 0 }
+    return { fallos: n, bloqueada: false }
+  } catch { return { fallos: 0, bloqueada: false } }
 }
 
 async function adminLock(userId: string): Promise<any | null> {
@@ -600,7 +685,16 @@ Deno.serve(async (req: Request) => {
           // se le podía inundar la auditoría a punta de peticiones. Pasado el
           // tope la IP ya está bloqueada y no hace falta seguir anotando.
           if (fails < 40) await auditAdmin(req, 'auth.failed_login', { email, reason })
-          if (fails >= 3) {
+          // El bloqueo automático de IP es SOLO para intentos contra la cuenta
+          // del panel. En Colombia media ciudad sale por la misma IP del
+          // operador: bloquearla porque un cliente escribió mal su código tres
+          // veces dejaba afuera a todos los demás detrás de esa IP.
+          let contraAdmin = false
+          try {
+            const { data: ue } = await db.from('users').select('role').eq('email', email).maybeSingle()
+            contraAdmin = (ue as any)?.role === 'admin'
+          } catch { /* si no se puede saber, no se bloquea */ }
+          if (contraAdmin && fails >= 3) {
             const list = await blockedIps()
             if (!list.some(b => b.ip === ip)) {
               list.unshift({ ip, at: new Date().toISOString(), reason: `${fails} intentos fallidos en 1 h`, attempts: fails, geo: await geoOf(ip) })
@@ -618,7 +712,7 @@ Deno.serve(async (req: Request) => {
       // la abre.
       if (selfServiceBody.action === 'mfa_verify_email' && selfServiceBody.userId) {
         if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
-        { const den = await accessDenied(req); if (den) return json({ ok: false, error: 'access_denied', message: den }, 403) }
+        { const den = await accessDeniedAdmin(req, String(selfServiceBody.userId)); if (den) return json({ ok: false, error: 'access_denied', message: den }, 403) }
         if (await adminLock(String(selfServiceBody.userId))) {
           return json({ ok: false, error: 'account_locked', message: 'La cuenta está bloqueada por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
         }
@@ -642,8 +736,8 @@ Deno.serve(async (req: Request) => {
           body: JSON.stringify({ action: 'verify', userId: uidE, code: codeE }),
         }).then(x => x.json()).catch(() => null)
         if (!r?.ok) {
-          const n = await registerAdminFailure(req, uidE, 'código incorrecto', 'correo', selfServiceBody.foto ?? null)
-          if (n >= MAX_FALLOS_ADMIN) {
+          const f = await registerAdminFailure(req, uidE, 'código incorrecto', 'correo', selfServiceBody.foto ?? null)
+          if (f.bloqueada) {
             return json({ ok: false, error: 'account_locked', message: 'La cuenta se bloqueó por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
           }
           return json({ ok: false, message: r?.message ?? 'Código incorrecto o vencido.' })
@@ -658,7 +752,7 @@ Deno.serve(async (req: Request) => {
       // mostrarlo le confirmaría el correo a quien no es el dueño.
       if (selfServiceBody.action === 'mfa_start_login' && selfServiceBody.userId) {
         if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
-        { const den = await accessDenied(req); if (den) return json({ ok: false, error: 'access_denied', message: den }, 403) }
+        { const den = await accessDeniedAdmin(req, String(selfServiceBody.userId)); if (den) return json({ ok: false, error: 'access_denied', message: den }, 403) }
         if (await adminLock(String(selfServiceBody.userId))) {
           return json({ ok: false, error: 'account_locked', message: 'La cuenta está bloqueada por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
         }
@@ -675,7 +769,7 @@ Deno.serve(async (req: Request) => {
       // Reenviar el código del correo si no llegó.
       if (selfServiceBody.action === 'mfa_resend_email' && selfServiceBody.userId) {
         if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
-        { const den = await accessDenied(req); if (den) return json({ ok: false, error: 'access_denied', message: den }, 403) }
+        { const den = await accessDeniedAdmin(req, String(selfServiceBody.userId)); if (den) return json({ ok: false, error: 'access_denied', message: den }, 403) }
         if (await adminLock(String(selfServiceBody.userId))) {
           return json({ ok: false, error: 'account_locked', message: 'La cuenta está bloqueada por seguridad.' }, 423)
         }
@@ -963,7 +1057,7 @@ Deno.serve(async (req: Request) => {
       // secreto en claro). Acepta legacy en texto plano.
       if (selfServiceBody.action === 'mfa_verify' && selfServiceBody.userId) {
         if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
-        { const den = await accessDenied(req); if (den) return json({ ok: false, error: 'access_denied', message: den }, 403) }
+        { const den = await accessDeniedAdmin(req, String(selfServiceBody.userId)); if (den) return json({ ok: false, error: 'access_denied', message: den }, 403) }
         if (await adminLock(String(selfServiceBody.userId))) {
           return json({ ok: false, error: 'account_locked', message: 'La cuenta está bloqueada por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
         }
@@ -1005,8 +1099,8 @@ Deno.serve(async (req: Request) => {
         }
         let bloqueada = false
         const noteMfaFail = async (motivo: string) => {
-          const n = await registerAdminFailure(req, uidV, motivo, esRespaldo ? 'respaldo' : 'app', selfServiceBody.foto ?? null)
-          bloqueada = n >= MAX_FALLOS_ADMIN
+          const f = await registerAdminFailure(req, uidV, motivo, esRespaldo ? 'respaldo' : 'app', selfServiceBody.foto ?? null)
+          bloqueada = f.bloqueada
         }
 
         const { data: u } = await db.from('users').select('raw_data').eq('id', selfServiceBody.userId).single()

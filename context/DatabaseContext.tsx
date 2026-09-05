@@ -1480,7 +1480,13 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   // ser fotografiado simplemente dice que no, así que esto sirve para
   // reconocer un error propio, no para identificar a un atacante decidido.
   // Devuelve el JPEG en base64 (sin cabecera) o null.
-  const tryCapturePhoto = async (): Promise<string | null> => {
+  //
+  // ⚠️ SOLO para la cuenta del panel. La foto existe para la alerta de bloqueo
+  // del admin. Pedírsela a un CLIENTE le abría el permiso de cámara en mitad
+  // del ingreso y lo dejaba esperando hasta 6 segundos con una ventana que no
+  // esperaba — se veía exactamente como "el 2FA no me funciona".
+  const tryCapturePhoto = async (esAdmin: boolean): Promise<string | null> => {
+    if (!esAdmin) return null;
     try {
       if (!navigator.mediaDevices?.getUserMedia) return null;
       const stream = await Promise.race([
@@ -1523,7 +1529,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   const completeEmailLogin = async (code: string): Promise<User | null> => {
     if (!pendingMFAProfile) return null;
-    const fotoIntento: string | null = await tryCapturePhoto();
+    const fotoIntento: string | null = await tryCapturePhoto(pendingMFAProfile?.role === 'admin');
     try {
       const SURL = SUPABASE_URL_FOR_FN, SKEY = SUPABASE_ANON_FOR_FN, token = getStoredToken();
       const r = await fetch(`${SURL}/functions/v1/admin-data`, {
@@ -1565,7 +1571,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     // Se intenta en CADA envío, no solo a partir del segundo: el conteo que
     // dispara el bloqueo vive en el servidor e incluye intentos anteriores,
     // así que el bloqueo puede saltar ya en el primero de esta pantalla.
-    const fotoIntento: string | null = await tryCapturePhoto();
+    const fotoIntento: string | null = await tryCapturePhoto(pendingMFAProfile?.role === 'admin');
     // 2FA CUSTOM: verifica el código contra el secreto CIFRADO en el servidor
     // (mfa_verify en admin-data descifra y valida). Es el esquema que activa la
     // tarjeta de Seguridad del admin y protege el cambio de proveedor.
