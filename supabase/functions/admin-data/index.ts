@@ -122,10 +122,13 @@ function sessionIdOf(req: Request): string | null {
   } catch { return null }
 }
 
-// stage 'email' = pasó el código del correo; 'full' = pasó los DOS factores.
-// Solo 'full' habilita la sesión: así el orden no se puede saltar mandando
-// directamente el segundo paso.
-async function rememberMfaSession(req: Request, userId: string, stage: 'email' | 'full' = 'full') {
+// Escalones del ingreso, en orden:
+//   'email' = pasó el código del correo
+//   'app'   = pasó además el código de la app, pero le falta la llave
+//   'full'  = pasó TODO lo que su cuenta exige
+// Solo 'full' habilita la sesión, así el orden no se puede saltar mandando
+// directamente el último paso.
+async function rememberMfaSession(req: Request, userId: string, stage: 'email' | 'app' | 'full' = 'full') {
   const sid = sessionIdOf(req)
   if (!sid) return
   try {
@@ -145,7 +148,20 @@ async function emailStagePassed(req: Request, userId: string): Promise<boolean> 
   try {
     const { data: u } = await db.from('users').select('raw_data').eq('id', userId).single()
     const list: any[] = Array.isArray((u as any)?.raw_data?.mfaSessions) ? (u as any).raw_data.mfaSessions : []
-    const hit = list.find((x: any) => x?.sid === sid && (x?.stage === 'email' || x?.stage === 'full'))
+    const hit = list.find((x: any) => x?.sid === sid && ['email', 'app', 'full'].includes(String(x?.stage)))
+    return !!hit && (Date.now() - new Date(hit.at).getTime() < 15 * 60_000)
+  } catch { return false }
+}
+
+// ¿Esta sesión ya pasó el código de la APP? Es lo que la llave exige tener
+// atrás: sin esto, quien tuviera la llave entraría saltándose el 2FA.
+async function appStagePassed(req: Request, userId: string): Promise<boolean> {
+  const sid = sessionIdOf(req)
+  if (!sid) return true   // token sin claim de sesión: no se puede distinguir
+  try {
+    const { data: u } = await db.from('users').select('raw_data').eq('id', userId).single()
+    const list: any[] = Array.isArray((u as any)?.raw_data?.mfaSessions) ? (u as any).raw_data.mfaSessions : []
+    const hit = list.find((x: any) => x?.sid === sid && ['app', 'full'].includes(String(x?.stage)))
     return !!hit && (Date.now() - new Date(hit.at).getTime() < 15 * 60_000)
   } catch { return false }
 }
@@ -890,7 +906,13 @@ Deno.serve(async (req: Request) => {
           headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
           body: JSON.stringify({ action: 'send', userId: String(selfServiceBody.userId) }),
         }).then(x => x.json()).catch(() => null)
-        if (r?.ok) return json({ ok: true, throttled: !!r.throttled })
+        // Cuántos pasos tiene este ingreso: 2 normalmente, 3 si la cuenta
+        // tiene llave. La pantalla lo necesita para no mentirle al titular
+        // diciendo "2 de 2" cuando todavía le falta uno.
+        if (r?.ok) {
+          const pasos = (await passkeysDe(String(selfServiceBody.userId))).length ? 3 : 2
+          return json({ ok: true, throttled: !!r.throttled, pasos })
+        }
         await auditAdmin(req, 'auth.email_2fa_unavailable', { userId: String(selfServiceBody.userId), motivo: r?.error ?? 'sin respuesta' })
         return json({ ok: false, error: 'email_code_unavailable', message: 'No se pudo iniciar la verificación. Intenta de nuevo.' })
       }
@@ -1254,8 +1276,14 @@ Deno.serve(async (req: Request) => {
                 return json({ ok: false, error: 'email_step_missing', message: 'Completa la verificación anterior.' })
               }
             }
-            await rememberMfaSession(req, String(selfServiceBody.userId), 'full')
             await marcarFactor(req, uidV, 'app')
+            // Si la cuenta tiene llave, el código de respaldo tampoco la
+            // reemplaza: la sesión queda a medio abrir hasta que firme.
+            if ((await passkeysDe(uidV)).length) {
+              await rememberMfaSession(req, uidV, 'app')
+              return json({ ok: true, usedBackup: true, remaining: rest.length, needsPasskey: true })
+            }
+            await rememberMfaSession(req, String(selfServiceBody.userId), 'full')
             return json({ ok: true, usedBackup: true, remaining: rest.length })
           }
           await noteMfaFail('código de respaldo inválido')
@@ -1314,8 +1342,16 @@ Deno.serve(async (req: Request) => {
           if (esAdmin && !(await emailStagePassed(req, uidV))) {
             return json({ ok: false, error: 'email_step_missing', message: 'Completa la verificación anterior.' })
           }
-          await rememberMfaSession(req, uidV, 'full')
           await marcarFactor(req, uidV, 'app')
+          // ── Tercer paso: la llave ────────────────────────────────────────
+          // Si la cuenta tiene una llave registrada, el código de la app NO
+          // termina el ingreso. La sesión queda en 'app' —que no habilita
+          // nada— hasta que el dispositivo firme.
+          if ((await passkeysDe(uidV)).length) {
+            await rememberMfaSession(req, uidV, 'app')
+            return json({ ok: true, needsPasskey: true })
+          }
+          await rememberMfaSession(req, uidV, 'full')
           await auditAdmin(req, 'auth.login_2fa_completo', { userId: uidV })
           return json({ ok: true })
         }
@@ -1519,10 +1555,13 @@ Deno.serve(async (req: Request) => {
           guardada.counter = Number(a.authenticationInfo?.newCounter ?? guardada.counter)
           await guardarPasskeys(uidP, lista)
 
-          // El código del correo NO se salta con la llave: sigue siendo el
-          // primer paso, y esto es el segundo.
-          if (String(selfServiceBody.stage ?? '') === 'login' && !(await emailStagePassed(req, uidP))) {
-            return json({ ok: false, error: 'email_step_missing', message: 'Completa la verificación anterior.' })
+          // La llave es el ÚLTIMO paso, no un atajo: exige que esta misma
+          // sesión ya haya pasado el código del correo Y el de la app. Sin
+          // esto, quien tuviera la llave entraría saltándose los otros dos.
+          if (String(selfServiceBody.stage ?? '') === 'login') {
+            if (!(await emailStagePassed(req, uidP)) || !(await appStagePassed(req, uidP))) {
+              return json({ ok: false, error: 'email_step_missing', message: 'Completa la verificación anterior.' })
+            }
           }
           try {
             const desdeP = new Date(Date.now() - 30 * 60_000).toISOString()

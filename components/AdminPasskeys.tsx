@@ -214,9 +214,12 @@ export const AdminPasskeys: React.FC<{ userId: string }> = ({ userId }) => {
       <p style={{ display: 'flex', gap: 7, alignItems: 'flex-start', marginTop: 14, paddingTop: 12, borderTop: `1px solid ${C.border}`, color: C.dim, fontSize: 11, lineHeight: 1.6 }}>
         <ShieldCheck size={13} style={{ flexShrink: 0, marginTop: 1 }} />
         <span>
-          Registra al menos <strong style={{ color: C.sub }}>dos</strong>: el teléfono y otra cosa —el computador o una llave USB—.
-          Si solo hay una y pierdes ese dispositivo, se entra con el código de la app o uno de respaldo, pero es mejor no depender de eso.
-          El código del correo se sigue pidiendo siempre, antes de la llave.
+          Con una llave registrada, el ingreso pide <strong style={{ color: C.sub }}>los tres</strong>: código del correo,
+          código de la app y la llave. La llave no reemplaza a nada — se suma.
+          Por eso registra al menos <strong style={{ color: C.sub }}>dos</strong>: el teléfono y otra cosa
+          —el computador o una llave USB—. Si solo hay una y pierdes ese dispositivo, no se entra.
+          Salida de emergencia por SQL:
+          <span style={{ fontFamily: 'ui-monospace, Menlo, monospace', color: C.sub }}> delete from system_config where key like 'passkeys_%';</span>
         </span>
       </p>
     </div>

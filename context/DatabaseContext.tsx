@@ -2,7 +2,7 @@ import React, { createContext, useState, useContext, ReactNode, useEffect, useCa
 import { useSystemConfig } from './SystemConfigContext';
 import { supabase, isSupabaseConfigured } from '../lib/supabaseClient';
 import { generateTOTPSecret, getTOTPQRCode, verifyTOTP } from '../lib/totp';
-import { soportaPasskey, firmarConPasskey, explicarErrorPasskey } from '../lib/webauthn';
+import { firmarConPasskey, explicarErrorPasskey } from '../lib/webauthn';
 
 // --- TYPES ---
 
@@ -126,8 +126,9 @@ interface DatabaseContextType {
   emailStepPending: boolean;
   accountLocked: boolean;
   passkeyPending: boolean;
+  /** 2 pasos, o 3 si la cuenta tiene una llave registrada. */
+  mfaPasos: number;
   loginConPasskey: () => Promise<User | null>;
-  saltarPasskey: () => void;
   completeEmailLogin: (code: string) => Promise<User | null>;
   resendEmailCode: () => Promise<boolean>;
   startEmailStep: (userId: string) => Promise<boolean>;
@@ -312,6 +313,10 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   // Paso de la llave física. Solo aparece si la cuenta tiene alguna registrada;
   // si no, el ingreso sigue con el código de la app, como siempre.
   const [passkeyPending, setPasskeyPending] = useState(false);
+  // Cuántos pasos tiene este ingreso. Lo dice el servidor al mandar el código
+  // del correo: decir "2 de 2" cuando todavía falta la llave es mentirle al
+  // titular sobre dónde está parado.
+  const [mfaPasos, setMfaPasos] = useState(2);
   const [pendingMFAProfile, setPendingMFAProfile] = useState<User | null>(null);
   // 'custom' = TOTP nuestro (raw_data.mfaEnabled, verifica vía mfa_verify);
   // 'native' = MFA de Supabase Auth (challenge/verify). Decide cómo verificar
@@ -1477,6 +1482,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         setMfaError2(r?.message ?? 'No se pudo iniciar la verificación.');
         return false;
       }
+      setMfaPasos(Number(r.pasos) === 3 ? 3 : 2);
       return true;
     } catch { setMfaError2('No se pudo iniciar la verificación.'); return false; }
   };
@@ -1550,23 +1556,10 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         setMfaError2(r?.message ?? 'Código incorrecto o vencido.');
         return null;
       }
-      // Correo validado. NO se entra todavía: falta el segundo factor.
-      // Si la cuenta tiene una llave física registrada, esa reemplaza al
-      // código de la app — es más fuerte y no se puede robar de lejos. El
-      // código de la app y los de respaldo siguen ahí como salida.
+      // Correo validado. NO se entra todavía: sigue el código de la app, y
+      // después la llave si la cuenta tiene una. Ninguno reemplaza al otro.
       setEmailStepPending(false);
       setMfaError2(null);
-      if (soportaPasskey()) {
-        const hay = await fetch(`${SURL}/functions/v1/admin-data`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
-          body: JSON.stringify({ action: 'passkey_auth_options', userId: pendingMFAProfile.id }),
-        }).then(x => x.json()).catch(() => null);
-        if (hay?.ok && hay.options) {
-          passkeyOptionsRef.current = hay.options;
-          setPasskeyPending(true);
-        }
-      }
       return null;
     } catch { setMfaError2('No se pudo verificar el código.'); return null; }
   };
@@ -1619,9 +1612,6 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     }
   };
 
-  // Pasar al código de la app. La llave puede quedarse en un teléfono que no
-  // está a mano; sin esta salida, perderlo sería quedarse sin panel.
-  const saltarPasskey = () => { passkeyOptionsRef.current = null; setPasskeyPending(false); setMfaError2(null); };
 
   const resendEmailCode = async (): Promise<boolean> => {
     if (!pendingMFAProfile) return false;
@@ -1691,6 +1681,15 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           }
           return null;
         }
+        // ── Falta la llave ──────────────────────────────────────────────
+        // El código de la app NO termina el ingreso si la cuenta tiene una
+        // llave registrada. El servidor deja la sesión a medio abrir y la
+        // pantalla pasa al último paso. No se entra todavía.
+        if (r.needsPasskey) {
+          setMfaError2(null);
+          setPasskeyPending(true);
+          return null;
+        }
         const user = pendingMFAProfile;
         try { sessionStorage.setItem('mfa_ok', '1'); } catch { /* */ }
         setCurrentUser(user);
@@ -1725,6 +1724,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     setEmailStepPending(false);
     setPasskeyPending(false);
     passkeyOptionsRef.current = null;
+    setMfaPasos(2);
     setAccountLocked(false);
     setPendingMFAProfile(null);
   };
@@ -2570,7 +2570,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       mfaPending, mfaErrorDetail, loginErrorDetail, completeMFALogin, cancelMFALogin,
       getLoginError: () => loginErrorRef.current, getMfaError: () => mfaErrorRef.current,
       emailStepPending, completeEmailLogin, resendEmailCode, startEmailStep, accountLocked,
-      passkeyPending, loginConPasskey, saltarPasskey,
+      passkeyPending, mfaPasos, loginConPasskey,
       enrollMFA, verifyMFAEnrollment, unenrollMFA, getMFAStatus, verifyMfaCode,
     }}>
       {children}
