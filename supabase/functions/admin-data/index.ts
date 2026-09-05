@@ -372,7 +372,7 @@ function ipChainOf(req: Request): Record<string, string | null> {
 // Geolocalización aproximada por IP. IMPORTANTE: una IP da CIUDAD/REGIÓN como
 // mucho — normalmente la del nodo del operador, no la del edificio. No es una
 // dirección exacta y no debe presentarse como tal.
-type Geo = { city?: string; region?: string; country?: string; org?: string; approx?: string }
+type Geo = { city?: string; region?: string; country?: string; countryCode?: string; org?: string; approx?: string }
 const GEO_CACHE_KEY = 'ip_geo_cache'
 async function geoOf(ip: string | null): Promise<Geo | null> {
   if (!ip || /^(10\.|127\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip)) return null
@@ -387,6 +387,7 @@ async function geoOf(ip: string | null): Promise<Geo | null> {
     if (!r?.success) return null
     const geo: Geo = {
       city: r.city ?? undefined, region: r.region ?? undefined, country: r.country ?? undefined,
+      countryCode: r.country_code ?? undefined,
       org: r.connection?.isp ?? undefined,
       approx: [r.city, r.region, r.country].filter(Boolean).join(', ') || undefined,
     }
@@ -397,6 +398,44 @@ async function geoOf(ip: string | null): Promise<Geo | null> {
     await db.from('system_config').upsert({ key: GEO_CACHE_KEY, value: JSON.stringify(cache) }, { onConflict: 'key' })
     return geo
   } catch { return null }
+}
+
+// ── Lista blanca de acceso al panel ──────────────────────────────────────
+// Solo deja entrar al panel desde los países o las IPs autorizadas. Es la
+// defensa que funciona AUNQUE el atacante tenga contraseña, 2FA y códigos de
+// respaldo: si no está en el sitio permitido, no llega ni a la pantalla del
+// código. Arranca DESACTIVADA a propósito — se enciende desde el panel, ya
+// viendo cuál es tu IP, para no encerrar a nadie por sorpresa.
+const ACCESS_POLICY_KEY = 'admin_access_policy'
+type AccessPolicy = { enabled: boolean; countries: string[]; ips: string[] }
+const DEFAULT_POLICY: AccessPolicy = { enabled: false, countries: ['CO'], ips: [] }
+
+async function accessPolicy(): Promise<AccessPolicy> {
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', ACCESS_POLICY_KEY).single()
+    if (!data?.value) return DEFAULT_POLICY
+    const p = JSON.parse(data.value)
+    return {
+      enabled: !!p.enabled,
+      countries: Array.isArray(p.countries) ? p.countries.map((c: any) => String(c).toUpperCase()) : [],
+      ips: Array.isArray(p.ips) ? p.ips.map((i: any) => String(i)) : [],
+    }
+  } catch { return DEFAULT_POLICY }
+}
+
+// Devuelve un mensaje si esta conexión NO puede entrar al panel; null si sí.
+async function accessDenied(req: Request): Promise<string | null> {
+  const pol = await accessPolicy()
+  if (!pol.enabled) return null
+  const ip = ipOf(req)
+  if (!ip) return null                       // sin IP no se castiga a nadie
+  if (pol.ips.includes(ip)) return null      // IP autorizada explícitamente
+  const geo = await geoOf(ip)
+  const cc = String(geo?.countryCode ?? '').toUpperCase()
+  if (cc && pol.countries.includes(cc)) return null
+  await auditAdmin(req, 'security.acceso_fuera_de_zona', { ip, pais: cc || 'desconocido', geo })
+  // Mensaje deliberadamente parco: no se le dice desde dónde sí se podría.
+  return 'Este acceso no está autorizado desde esta conexión.'
 }
 
 const BLOCKED_IPS_KEY = 'blocked_ips'
@@ -567,6 +606,7 @@ Deno.serve(async (req: Request) => {
       // la abre.
       if (selfServiceBody.action === 'mfa_verify_email' && selfServiceBody.userId) {
         if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
+        { const den = await accessDenied(req); if (den) return json({ ok: false, error: 'access_denied', message: den }, 403) }
         if (await adminLock(String(selfServiceBody.userId))) {
           return json({ ok: false, error: 'account_locked', message: 'La cuenta está bloqueada por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
         }
@@ -606,6 +646,7 @@ Deno.serve(async (req: Request) => {
       // mostrarlo le confirmaría el correo a quien no es el dueño.
       if (selfServiceBody.action === 'mfa_start_login' && selfServiceBody.userId) {
         if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
+        { const den = await accessDenied(req); if (den) return json({ ok: false, error: 'access_denied', message: den }, 403) }
         if (await adminLock(String(selfServiceBody.userId))) {
           return json({ ok: false, error: 'account_locked', message: 'La cuenta está bloqueada por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
         }
@@ -906,6 +947,7 @@ Deno.serve(async (req: Request) => {
       // secreto en claro). Acepta legacy en texto plano.
       if (selfServiceBody.action === 'mfa_verify' && selfServiceBody.userId) {
         if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
+        { const den = await accessDenied(req); if (den) return json({ ok: false, error: 'access_denied', message: den }, 403) }
         if (await adminLock(String(selfServiceBody.userId))) {
           return json({ ok: false, error: 'account_locked', message: 'La cuenta está bloqueada por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
         }
@@ -1157,6 +1199,9 @@ Deno.serve(async (req: Request) => {
     // el gate ahora que las acciones self-service ya tuvieron su chance.
     const auth = await verifyAdmin(req)
     if (!auth.ok) return json({ error: auth.error }, 401)
+    // La política de acceso también corta una sesión ya abierta: si la sesión
+    // se mueve a una conexión no autorizada, deja de servir.
+    { const den = await accessDenied(req); if (den) return json({ error: den, accessDenied: true }, 403) }
     // Una cuenta bloqueada no opera ni con la sesión ya abierta.
     if (auth.userId && await adminLock(auth.userId)) {
       return json({ error: 'La cuenta está bloqueada por seguridad. Revisa tu correo para desbloquearla.', locked: true }, 423)
@@ -1415,6 +1460,42 @@ Deno.serve(async (req: Request) => {
         f.sort((a, b) => orden.indexOf(a.sev) - orden.indexOf(b.sev))
         await auditAdmin(req, 'security.audit_run', { findings: f.length, score })
         return json({ ok: true, score, findings: f, posture, checkedAt: new Date().toISOString() })
+      }
+
+      // Política de acceso: leer. Incluye la IP y el país DESDE DONDE se está
+      // consultando, para poder encenderla sin quedar afuera por sorpresa.
+      if (body.action === 'access_policy_get') {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        const ip = ipOf(req)
+        const geo = await geoOf(ip)
+        return json({ ok: true, policy: await accessPolicy(), tuIp: ip, tuPais: geo?.countryCode ?? null, tuUbicacion: geo?.approx ?? null })
+      }
+
+      // Política de acceso: guardar. Es una acción sensible — exige que la
+      // sesión haya pasado el segundo factor.
+      if (body.action === 'access_policy_set') {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        const mfaErr = await requireMfaSession(req, auth.userId)
+        if (mfaErr) return json({ error: mfaErr, needs2fa: true }, 403)
+        const p = body.policy ?? {}
+        const ip = ipOf(req)
+        const geo = await geoOf(ip)
+        const pol: AccessPolicy = {
+          enabled: !!p.enabled,
+          countries: Array.isArray(p.countries) ? p.countries.map((c: any) => String(c).toUpperCase().slice(0, 2)).filter(Boolean).slice(0, 20) : [],
+          ips: Array.isArray(p.ips) ? p.ips.map((i: any) => String(i).trim()).filter(Boolean).slice(0, 50) : [],
+        }
+        // Red de seguridad: al ENCENDERLA, si la conexión actual no quedaría
+        // permitida, se agrega sola. Encender un candado desde afuera de la
+        // puerta es la forma más rápida de quedarse sin panel.
+        if (pol.enabled && ip) {
+          const cc = String(geo?.countryCode ?? '').toUpperCase()
+          const permitido = pol.ips.includes(ip) || (cc && pol.countries.includes(cc))
+          if (!permitido) pol.ips.unshift(ip)
+        }
+        await db.from('system_config').upsert({ key: ACCESS_POLICY_KEY, value: JSON.stringify(pol) }, { onConflict: 'key' })
+        await auditAdmin(req, 'security.access_policy_set', { ...pol })
+        return json({ ok: true, policy: pol })
       }
 
       // Desbloquear una IP (solo admin, queda auditado).
