@@ -84,6 +84,7 @@ import { AdminMonitor } from './AdminMonitor';
 import { AdminTreasuryPanel } from './AdminTreasuryPanel';
 import { AdminSecurityAgent } from './AdminSecurityAgent';
 import { AdminAccessPolicy } from './AdminAccessPolicy';
+import { AdminPasskeys } from './AdminPasskeys';
 import { AdminOtcSection } from './AdminOtcSection';
 import { Zap, ArrowLeftRight, ArrowLeft, Info, ChevronRight, Activity } from 'lucide-react';
 import { CollectionWalletCard } from './CollectionWalletCard';
@@ -3659,6 +3660,11 @@ const renderDesign = () => (
           {/* Desde dónde se puede entrar al panel. Va junto al auditor porque
               es la defensa que sigue en pie aunque roben las credenciales. */}
           <AdminAccessPolicy />
+
+          {/* La llave física. Va después de la lista blanca porque son las dos
+              caras del mismo candado: la lista filtra DESDE DÓNDE, la llave
+              prueba QUIÉN. */}
+          {currentUser?.id && <AdminPasskeys userId={currentUser.id} />}
 
           {/* Tu propio 2FA — protege el cambio de proveedor de tesorería */}
           <div className={`rounded-xl border p-4 ${adminMfaOn ? 'border-green-200 bg-green-50/50' : 'border-amber-300 bg-amber-50/60'}`}>

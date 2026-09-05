@@ -1,6 +1,16 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { FIELD_ENC_KEY, encField, decField, keyFp, KeyMismatchError } from '../_shared/field-crypto.ts'
 
+// La librería de passkeys se carga SOLO cuando se usa. Con un import normal,
+// un tropiezo del CDN al arrancar tumbaría la función entera —y con ella el
+// panel y el 2FA de todos los clientes— por una funcionalidad que casi nunca
+// se toca. Así, si falla, solo falla el passkey.
+let webauthnMod: any = null
+async function webauthn(): Promise<any> {
+  if (!webauthnMod) webauthnMod = await import('https://esm.sh/@simplewebauthn/server@13.3.3')
+  return webauthnMod
+}
+
 const SUPABASE_URL  = Deno.env.get('SUPABASE_URL')              ?? ''
 const SERVICE_KEY   = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
 const ADMIN_EMAIL   = Deno.env.get('ADMIN_EMAIL')               ?? 'admin@lincoin.com'
@@ -277,6 +287,21 @@ async function tomarChallenge(userId: string): Promise<string | null> {
     if (!c?.challenge || Date.now() > Number(c.exp ?? 0)) return null
     return String(c.challenge)
   } catch { return null }
+}
+
+// La llave pública es binaria; se guarda en base64url para que quepa en el
+// JSON de system_config y vuelva a salir idéntica.
+function bytesAB64u(b: Uint8Array): string {
+  let s = ''
+  for (const x of b) s += String.fromCharCode(x)
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+function b64uABytes(s: string): Uint8Array {
+  const t = s.replace(/-/g, '+').replace(/_/g, '/')
+  const bin = atob(t + '='.repeat((4 - (t.length % 4)) % 4))
+  const out = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+  return out
 }
 
 // ── Bloqueo de la cuenta de admin tras intentos fallidos ─────────────────
@@ -1193,6 +1218,173 @@ Deno.serve(async (req: Request) => {
         // exigen las acciones sensibles.
         await rememberMfaSession(req, uidV)
         return json({ ok: true })
+      }
+
+      // ── PASSKEY ─────────────────────────────────────────────────────────
+      // Una llave que vive DENTRO del dispositivo (Face ID, huella, o una
+      // llave USB) y nunca sale de él: el navegador solo devuelve una firma,
+      // atada al dominio real. No se puede fotografiar, ni copiar del
+      // portapapeles, ni robar con una página falsa — que es exactamente
+      // como se pierden una contraseña, un código de 6 dígitos y unos
+      // códigos de respaldo. Es la única capa que aguanta que el atacante
+      // tenga las tres cosas.
+      //
+      // Solo para la cuenta del panel, y solo desde una sesión que ya superó
+      // el 2FA: dar de alta una llave desde una sesión a medio verificar
+      // sería regalarle al intruso la puerta definitiva.
+      if (String(selfServiceBody.action ?? '').startsWith('passkey_') && selfServiceBody.userId) {
+        const uidP = String(selfServiceBody.userId)
+        const accion = String(selfServiceBody.action)
+        if (!(await verifySelfOrAdmin(req, uidP))) return json({ error: 'No autorizado' }, 401)
+        if (!(await esAdminUid(uidP))) return json({ error: 'No autorizado' }, 401)
+
+        let W: any
+        try { W = await webauthn() }
+        catch { return json({ ok: false, error: 'passkey_no_disponible', message: 'El servicio de llaves no está disponible en este momento. Entra con tu código.' }, 503) }
+
+        const publico = (l: Passkey[]) => l.map(p => ({ id: p.id, nombre: p.nombre, at: p.at }))
+
+        // ── Alta y administración: exigen sesión con 2FA superado ─────────
+        if (accion === 'passkey_list' || accion === 'passkey_register_options'
+          || accion === 'passkey_register_verify' || accion === 'passkey_delete') {
+          const mfaErr = await requireMfaSession(req, uidP)
+          if (mfaErr) return json({ ok: false, error: 'needs_2fa', message: mfaErr }, 403)
+
+          if (accion === 'passkey_list') {
+            return json({ ok: true, passkeys: publico(await passkeysDe(uidP)), rpId: RP_ID })
+          }
+
+          if (accion === 'passkey_delete') {
+            const id = String(selfServiceBody.passkeyId ?? '')
+            const list = (await passkeysDe(uidP)).filter(p => p.id !== id)
+            await guardarPasskeys(uidP, list)
+            await auditAdmin(req, 'security.passkey_eliminada', { userId: uidP, id: id.slice(0, 12) })
+            return json({ ok: true, passkeys: publico(list) })
+          }
+
+          if (accion === 'passkey_register_options') {
+            const { data: uu } = await db.from('users').select('email, name').eq('id', uidP).single()
+            const yaTiene = await passkeysDe(uidP)
+            const options = await W.generateRegistrationOptions({
+              rpName: RP_NAME,
+              rpID: RP_ID,
+              userID: new TextEncoder().encode(uidP),
+              userName: String((uu as any)?.email ?? 'admin'),
+              userDisplayName: String((uu as any)?.name ?? 'Lincoin'),
+              attestationType: 'none',
+              // Sin esto, registrar dos veces desde el mismo teléfono creaba
+              // una llave duplicada en vez de avisar que ya estaba.
+              excludeCredentials: yaTiene.map(p => ({ id: p.id })),
+              authenticatorSelection: { residentKey: 'preferred', userVerification: 'required' },
+            })
+            await guardarChallenge(uidP, options.challenge)
+            return json({ ok: true, options })
+          }
+
+          // passkey_register_verify
+          const challenge = await tomarChallenge(uidP)
+          if (!challenge) return json({ ok: false, message: 'La solicitud venció. Vuelve a intentarlo.' })
+          let v: any
+          try {
+            v = await W.verifyRegistrationResponse({
+              response: selfServiceBody.credential,
+              expectedChallenge: challenge,
+              expectedOrigin: ORIGENES,
+              expectedRPID: RP_ID,
+              requireUserVerification: true,
+            })
+          } catch (e) {
+            return json({ ok: false, message: `La llave no se pudo registrar: ${(e as Error).message}` })
+          }
+          const info: any = v?.registrationInfo
+          if (!v?.verified || !info) return json({ ok: false, message: 'La llave no se pudo verificar.' })
+          const c: any = info.credential ?? {}
+          const idNueva = String(c.id ?? (info.credentialID ? bytesAB64u(new Uint8Array(info.credentialID)) : ''))
+          const pubRaw = c.publicKey ?? info.credentialPublicKey
+          if (!idNueva || !pubRaw) return json({ ok: false, message: 'La llave no se pudo leer.' })
+          const nombre = String(selfServiceBody.nombre ?? '').trim().slice(0, 40) || 'Este dispositivo'
+          const lista = (await passkeysDe(uidP)).filter(p => p.id !== idNueva)
+          lista.unshift({
+            id: idNueva,
+            publicKey: bytesAB64u(new Uint8Array(pubRaw)),
+            counter: Number(c.counter ?? info.counter ?? 0),
+            nombre,
+            at: new Date().toISOString(),
+          })
+          await guardarPasskeys(uidP, lista)
+          await auditAdmin(req, 'security.passkey_registrada', { userId: uidP, nombre })
+          return json({ ok: true, passkeys: publico(lista) })
+        }
+
+        // ── Ingreso con la llave ──────────────────────────────────────────
+        if (accion === 'passkey_auth_options' || accion === 'passkey_auth_verify') {
+          { const den = await accessDeniedAdmin(req, uidP); if (den) return json({ ok: false, error: 'access_denied', message: den }, 403) }
+          if (await adminLock(uidP)) {
+            return json({ ok: false, error: 'account_locked', message: 'La cuenta está bloqueada por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
+          }
+          const lista = await passkeysDe(uidP)
+          if (!lista.length) return json({ ok: false, error: 'sin_passkey' })
+
+          if (accion === 'passkey_auth_options') {
+            const options = await W.generateAuthenticationOptions({
+              rpID: RP_ID,
+              allowCredentials: lista.map(p => ({ id: p.id })),
+              userVerification: 'required',
+            })
+            await guardarChallenge(uidP, options.challenge)
+            return json({ ok: true, options })
+          }
+
+          // passkey_auth_verify
+          const challenge = await tomarChallenge(uidP)
+          if (!challenge) return json({ ok: false, message: 'La solicitud venció. Vuelve a intentarlo.' })
+          const cred: any = selfServiceBody.credential
+          const guardada = lista.find(p => p.id === String(cred?.id ?? ''))
+          if (!guardada) {
+            const f = await registerAdminFailure(req, uidP, 'llave no registrada', 'passkey', null)
+            if (f.bloqueada) return json({ ok: false, error: 'account_locked', message: 'La cuenta se bloqueó por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
+            return json({ ok: false, message: 'Esa llave no está registrada en esta cuenta.' })
+          }
+          let a: any
+          try {
+            a = await W.verifyAuthenticationResponse({
+              response: cred,
+              expectedChallenge: challenge,
+              expectedOrigin: ORIGENES,
+              expectedRPID: RP_ID,
+              credential: { id: guardada.id, publicKey: b64uABytes(guardada.publicKey), counter: guardada.counter },
+              requireUserVerification: true,
+            })
+          } catch (e) {
+            const f = await registerAdminFailure(req, uidP, `firma rechazada: ${(e as Error).message}`, 'passkey', selfServiceBody.foto ?? null)
+            if (f.bloqueada) return json({ ok: false, error: 'account_locked', message: 'La cuenta se bloqueó por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
+            return json({ ok: false, message: 'La llave no se pudo verificar.' })
+          }
+          if (!a?.verified) {
+            const f = await registerAdminFailure(req, uidP, 'firma inválida', 'passkey', selfServiceBody.foto ?? null)
+            if (f.bloqueada) return json({ ok: false, error: 'account_locked', message: 'La cuenta se bloqueó por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
+            return json({ ok: false, message: 'La llave no se pudo verificar.' })
+          }
+          // El contador que lleva el propio dispositivo: si vuelve más bajo que
+          // el guardado, la librería lo rechaza. Es lo que delata una copia.
+          guardada.counter = Number(a.authenticationInfo?.newCounter ?? guardada.counter)
+          await guardarPasskeys(uidP, lista)
+
+          // El código del correo NO se salta con la llave: sigue siendo el
+          // primer paso, y esto es el segundo.
+          if (String(selfServiceBody.stage ?? '') === 'login' && !(await emailStagePassed(req, uidP))) {
+            return json({ ok: false, error: 'email_step_missing', message: 'Completa la verificación anterior.' })
+          }
+          try {
+            const desdeP = new Date(Date.now() - 30 * 60_000).toISOString()
+            await db.from('audit_log').delete().eq('action', 'auth.mfa_failed').gte('created_at', desdeP).contains('metadata', { userId: uidP })
+          } catch { /* el límite se vence solo */ }
+          await rememberMfaSession(req, uidP, 'full')
+          await auditAdmin(req, 'auth.login_passkey', { userId: uidP, llave: guardada.nombre })
+          return json({ ok: true })
+        }
+
+        return json({ error: 'Acción desconocida' }, 400)
       }
 
       // ── 2FA: SALUD — ¿algún secreto quedó ilegible? ──────────────────────

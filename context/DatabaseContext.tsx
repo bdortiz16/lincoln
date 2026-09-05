@@ -2,6 +2,7 @@ import React, { createContext, useState, useContext, ReactNode, useEffect, useCa
 import { useSystemConfig } from './SystemConfigContext';
 import { supabase, isSupabaseConfigured } from '../lib/supabaseClient';
 import { generateTOTPSecret, getTOTPQRCode, verifyTOTP } from '../lib/totp';
+import { soportaPasskey, firmarConPasskey, explicarErrorPasskey } from '../lib/webauthn';
 
 // --- TYPES ---
 
@@ -124,6 +125,9 @@ interface DatabaseContextType {
   completeMFALogin: (code: string) => Promise<User | null>;
   emailStepPending: boolean;
   accountLocked: boolean;
+  passkeyPending: boolean;
+  loginConPasskey: () => Promise<User | null>;
+  saltarPasskey: () => void;
   completeEmailLogin: (code: string) => Promise<User | null>;
   resendEmailCode: () => Promise<boolean>;
   startEmailStep: (userId: string) => Promise<boolean>;
@@ -305,6 +309,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   // Cuenta bloqueada: la pantalla deja de pedir códigos. Seguir mostrando la
   // casilla invita a insistir sobre algo que ya no puede funcionar.
   const [accountLocked, setAccountLocked] = useState(false);
+  // Paso de la llave física. Solo aparece si la cuenta tiene alguna registrada;
+  // si no, el ingreso sigue con el código de la app, como siempre.
+  const [passkeyPending, setPasskeyPending] = useState(false);
   const [pendingMFAProfile, setPendingMFAProfile] = useState<User | null>(null);
   // 'custom' = TOTP nuestro (raw_data.mfaEnabled, verifica vía mfa_verify);
   // 'native' = MFA de Supabase Auth (challenge/verify). Decide cómo verificar
@@ -1543,12 +1550,78 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         setMfaError2(r?.message ?? 'Código incorrecto o vencido.');
         return null;
       }
-      // Correo validado. Falta el código de la app: NO se entra todavía.
+      // Correo validado. NO se entra todavía: falta el segundo factor.
+      // Si la cuenta tiene una llave física registrada, esa reemplaza al
+      // código de la app — es más fuerte y no se puede robar de lejos. El
+      // código de la app y los de respaldo siguen ahí como salida.
       setEmailStepPending(false);
       setMfaError2(null);
+      if (soportaPasskey()) {
+        const hay = await fetch(`${SURL}/functions/v1/admin-data`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
+          body: JSON.stringify({ action: 'passkey_auth_options', userId: pendingMFAProfile.id }),
+        }).then(x => x.json()).catch(() => null);
+        if (hay?.ok && hay.options) {
+          passkeyOptionsRef.current = hay.options;
+          setPasskeyPending(true);
+        }
+      }
       return null;
     } catch { setMfaError2('No se pudo verificar el código.'); return null; }
   };
+
+  // Las opciones que ya pidió el servidor. Se guardan porque el desafío es de
+  // un solo uso: volver a pedirlas invalidaría el que se acaba de entregar.
+  const passkeyOptionsRef = useRef<any>(null);
+
+  // Entrar con la llave. Tiene que salir de un clic del usuario: los
+  // navegadores no dejan abrir el lector de huella sin que alguien lo pida.
+  const loginConPasskey = async (): Promise<User | null> => {
+    if (!pendingMFAProfile) return null;
+    setMfaError2(null);
+    try {
+      const SURL2 = SUPABASE_URL_FOR_FN, SKEY2 = SUPABASE_ANON_FOR_FN, token = getStoredToken();
+      let options = passkeyOptionsRef.current;
+      if (!options) {
+        const o = await fetch(`${SURL2}/functions/v1/admin-data`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SKEY2, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY2}` },
+          body: JSON.stringify({ action: 'passkey_auth_options', userId: pendingMFAProfile.id }),
+        }).then(x => x.json()).catch(() => null);
+        if (!o?.ok) { setMfaError2(o?.message ?? 'No hay ninguna llave registrada en esta cuenta.'); return null; }
+        options = o.options;
+      }
+      passkeyOptionsRef.current = null;   // el desafío se consume aquí
+      const credential = await firmarConPasskey(options);
+      const r = await fetch(`${SURL2}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY2, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY2}` },
+        body: JSON.stringify({ action: 'passkey_auth_verify', userId: pendingMFAProfile.id, credential, stage: 'login' }),
+      }).then(x => x.json()).catch(() => null);
+      if (!r?.ok) {
+        if (r?.error === 'account_locked') setAccountLocked(true);
+        setMfaError2(r?.message ?? 'La llave no se pudo verificar.');
+        logFailedLogin(pendingMFAProfile.email ?? '', 'llave rechazada');
+        return null;
+      }
+      const user = pendingMFAProfile;
+      try { sessionStorage.setItem('mfa_ok', '1'); } catch { /* */ }
+      setCurrentUser(user);
+      setPasskeyPending(false);
+      setMfaPending(false);
+      setPendingMFAProfile(null);
+      logAdminLogin(user);
+      return user;
+    } catch (e) {
+      setMfaError2(explicarErrorPasskey(e));
+      return null;
+    }
+  };
+
+  // Pasar al código de la app. La llave puede quedarse en un teléfono que no
+  // está a mano; sin esta salida, perderlo sería quedarse sin panel.
+  const saltarPasskey = () => { passkeyOptionsRef.current = null; setPasskeyPending(false); setMfaError2(null); };
 
   const resendEmailCode = async (): Promise<boolean> => {
     if (!pendingMFAProfile) return false;
@@ -1650,6 +1723,8 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     try { sessionStorage.removeItem('mfa_ok'); } catch { /* */ }
     setMfaPending(false);
     setEmailStepPending(false);
+    setPasskeyPending(false);
+    passkeyOptionsRef.current = null;
     setAccountLocked(false);
     setPendingMFAProfile(null);
   };
@@ -2495,6 +2570,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       mfaPending, mfaErrorDetail, loginErrorDetail, completeMFALogin, cancelMFALogin,
       getLoginError: () => loginErrorRef.current, getMfaError: () => mfaErrorRef.current,
       emailStepPending, completeEmailLogin, resendEmailCode, startEmailStep, accountLocked,
+      passkeyPending, loginConPasskey, saltarPasskey,
       enrollMFA, verifyMFAEnrollment, unenrollMFA, getMFAStatus, verifyMfaCode,
     }}>
       {children}

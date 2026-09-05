@@ -9,7 +9,7 @@ import { supabase } from '../lib/supabaseClient';
 import { AdminDashboard } from './AdminDashboard';
 import { Logo } from './Logo';
 import { TurnstileWidget, captchaEnabled } from './TurnstileWidget';
-import { Lock, LogOut, ShieldCheck } from 'lucide-react';
+import { Lock, LogOut, ShieldCheck, Fingerprint } from 'lucide-react';
 
 // ─────────────────────────────────────────────
 // AdminEmpresasApp — /admin-empresas (y /admin)
@@ -32,7 +32,7 @@ if (typeof window !== 'undefined' &&
 }
 
 const AdminEmpresasInner: React.FC = () => {
-    const { currentUser, isAuthLoading, loginUser, logoutUser, mfaPending, getMfaError, getLoginError, completeMFALogin, isPasswordRecovery, setNewPassword, cancelMFALogin, emailStepPending, completeEmailLogin, resendEmailCode, accountLocked } = useDatabase();
+    const { currentUser, isAuthLoading, loginUser, logoutUser, mfaPending, getMfaError, getLoginError, completeMFALogin, isPasswordRecovery, setNewPassword, cancelMFALogin, emailStepPending, completeEmailLogin, resendEmailCode, accountLocked, passkeyPending, loginConPasskey, saltarPasskey } = useDatabase();
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [submitting, setSubmitting] = useState(false);
@@ -97,6 +97,19 @@ const AdminEmpresasInner: React.FC = () => {
             if (err) setMfaError(err);
             setEmailCode('');
         } catch { setMfaError('No se pudo verificar. Intenta de nuevo.'); }
+        setVerifying(false);
+    };
+
+    // Paso 2 alterno: la llave del dispositivo. Sale de un clic a propósito —
+    // el navegador no abre el lector de huella sin que alguien lo pida.
+    const handlePasskey = async () => {
+        if (verifying) return;
+        setVerifying(true); setMfaError(null);
+        try {
+            const user = await loginConPasskey();
+            if (!user) setMfaError(getMfaError() ?? 'La llave no se pudo verificar.');
+            else if (user.role !== 'admin') { setMfaError('Esta cuenta no tiene permisos de administrador.'); await logoutUser(); }
+        } catch { setMfaError('No se pudo verificar la llave.'); }
         setVerifying(false);
     };
 
@@ -207,6 +220,25 @@ const AdminEmpresasInner: React.FC = () => {
                                 Cancelar
                             </button>
                         </form>
+                    ) : passkeyPending ? (
+                        <div className="space-y-3">
+                            <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl p-2.5">
+                                <ShieldCheck size={16} className="text-[#16A34A]" />
+                                <p className="text-xs text-slate-600">
+                                    Verificación 2 de 2. Confirma con tu llave.
+                                </p>
+                            </div>
+                            {mfaError && <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-xl p-2.5">{mfaError}</p>}
+                            <button type="button" onClick={handlePasskey} disabled={verifying} style={{ color: '#FFFFFF' }} className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#152e52] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60 transition-colors">
+                                <Fingerprint size={15} /> {verifying ? 'Esperando…' : 'Continuar'}
+                            </button>
+                            <button type="button" onClick={() => { saltarPasskey(); setMfaError(null); }} className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-800 underline">
+                                Usar un código
+                            </button>
+                            <button type="button" onClick={() => { cancelMFALogin(); setEmailCode(''); setMfaCode(''); setMfaError(null); setResendMsg(null); setPassword(''); setUseBackup(false); }} className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-800">
+                                Cancelar
+                            </button>
+                        </div>
                     ) : mfaPending ? (
                         <form onSubmit={handleVerify2FA} className="space-y-3">
                             <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl p-2.5">
