@@ -121,7 +121,10 @@ const AdminEmpresasInner: React.FC = () => {
         setVerifying(true); setMfaError(null);
         try {
             const user = await completeMFALogin(mfaCode);
-            if (!user) setMfaError(getMfaError() ?? 'Código incorrecto o vencido. Ingresa el código actual de tu app.');
+            // Sin usuario NO siempre es un fallo: con llave registrada, el
+            // código correcto avanza al tercer paso sin abrir la sesión. El
+            // contexto deja escrito un mensaje solo cuando de verdad falló.
+            if (!user) { const err = getMfaError(); if (err) setMfaError(err); else setMfaCode(''); }
             else if (user.role !== 'admin') { setMfaError('Esta cuenta no tiene permisos de administrador.'); await logoutUser(); }
             // Si es admin, currentUser se setea y el render cambia solo.
         } catch { setMfaError('No se pudo verificar. Intenta de nuevo.'); }

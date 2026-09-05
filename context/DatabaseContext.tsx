@@ -1670,7 +1670,13 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
               : r?.error ? `Verificación rechazada: ${r.error}` : null;
           if (r?.error === 'account_locked') setAccountLocked(true);
           fallosLocalRef.current += 1;
-          setMfaError2(why);
+          // SIEMPRE queda un mensaje escrito, aunque el servidor no mande
+          // ninguno (un código simplemente equivocado responde {ok:false} y
+          // nada más). Así la pantalla puede confiar en que "sin mensaje"
+          // significa "no hubo error", en vez de inventarse uno: por eso el
+          // paso de la llave mostraba "código incorrecto" después de un
+          // código que en realidad era correcto.
+          setMfaError2(why ?? 'Código incorrecto o vencido. Ingresa el código actual de tu app.');
           // Un código de 2FA rechazado también es un intento fallido: es la
           // señal más clara de que alguien ya tiene la contraseña. PERO un
           // rechazo por límite de intentos NO es un código malo — contarlo
