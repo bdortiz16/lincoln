@@ -23,74 +23,17 @@
 // ════════════════════════════════════════════════════════
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { FIELD_ENC_KEY, decField } from '../_shared/field-crypto.ts'
 import { ethers } from 'https://esm.sh/ethers@6.13.5'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
 const db = createClient(SUPABASE_URL, SERVICE_KEY)
 
-// 2FA server-side: re-valida el TOTP (SHA1/6/30, ventana ±2) antes de enviar,
-// con Web Crypto NATIVO (sin dependencias externas que puedan no cargar).
-function base32Decode(s: string): Uint8Array {
-  const alph = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
-  const clean = String(s ?? '').replace(/=+$/, '').toUpperCase().replace(/\s/g, '')
-  let bits = 0, value = 0; const out: number[] = []
-  for (const ch of clean) {
-    const idx = alph.indexOf(ch); if (idx < 0) continue
-    value = (value << 5) | idx; bits += 5
-    if (bits >= 8) { out.push((value >>> (bits - 8)) & 0xff); bits -= 8 }
-  }
-  return new Uint8Array(out)
-}
-async function verifyTOTPServer(secret: string, token: string): Promise<boolean> {
-  const code = String(token ?? '').replace(/\D/g, '')
-  if (code.length !== 6) return false
-  const key = base32Decode(secret)
-  if (!key.length) return false
-  const ck = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-1' }, false, ['sign'])
-  const step = 30, now = Math.floor(Date.now() / 1000)
-  for (let w = -2; w <= 2; w++) {
-    const counter = Math.floor(now / step) + w
-    const buf = new ArrayBuffer(8); const view = new DataView(buf)
-    view.setUint32(0, Math.floor(counter / 0x100000000)); view.setUint32(4, counter >>> 0)
-    const hmac = new Uint8Array(await crypto.subtle.sign('HMAC', ck, buf))
-    const offset = hmac[hmac.length - 1] & 0x0f
-    const bin = ((hmac[offset] & 0x7f) << 24) | (hmac[offset + 1] << 16) | (hmac[offset + 2] << 8) | hmac[offset + 3]
-    if ((bin % 1000000).toString().padStart(6, '0') === code) return true
-  }
-  return false
-}
-// Exige el código 2FA si el usuario lo tiene activo. Devuelve un mensaje de
-// error si falla, o null si pasa (o si no aplica).
-const FIELD_ENC_KEY = Deno.env.get('FIELD_ENC_KEY') ?? ''
-// Entiende los DOS formatos: 'enc:v1:<datos>' y 'enc:v2:<huella>:<datos>'.
-//
-// ⚠️ Esta función existe copiada en admin-data, gasfree y mouv-proxy. Cuando
-// admin-data pasó a escribir el formato v2 (con huella de llave), estas dos
-// copias se quedaron entendiendo solo v1: al toparse con un v2 devolvían el
-// TEXTO CIFRADO tal cual como si fuera el secreto, y la verificación del 2FA
-// fallaba siempre. Si alguna vez se cambia el formato, hay que cambiar las
-// TRES a la vez — o mejor, unificarlas en un módulo compartido.
-async function decField(v: string): Promise<string> {
-  if (typeof v !== 'string' || !v.startsWith('enc:v')) return v   // texto plano legacy
-  if (!FIELD_ENC_KEY) throw new Error('FIELD_ENC_KEY missing')
-  let payload: string
-  if (v.startsWith('enc:v2:')) {
-    const rest = v.slice(7)
-    const sep = rest.indexOf(':')
-    if (sep < 0) throw new Error('bad_ciphertext')
-    payload = rest.slice(sep + 1)   // la huella solo sirve para diagnosticar
-  } else if (v.startsWith('enc:v1:')) {
-    payload = v.slice(7)
-  } else {
-    throw new Error('bad_ciphertext')
-  }
-  const rawKey = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(FIELD_ENC_KEY)))
-  const ck = await crypto.subtle.importKey('raw', rawKey, { name: 'AES-GCM' }, false, ['decrypt'])
-  const bytes = Uint8Array.from(atob(payload), c => c.charCodeAt(0))
-  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: bytes.slice(0, 12) }, ck, bytes.slice(12))
-  return new TextDecoder().decode(pt)
-}
+// Cifrado de campos sensibles: la implementación vive en _shared para que
+// NO pueda volver a haber tres copias que se desincronicen (una quedó sin
+// entender el formato nuevo y el 2FA de los envíos falló con el código
+// correcto, sin que ningún build lo detectara).
 async function require2FA(userId: string, otp: unknown): Promise<string | null> {
   const { data } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
   const raw = ((data as any)?.raw_data ?? {}) as Record<string, any>

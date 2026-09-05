@@ -21,6 +21,7 @@
 // ─────────────────────────────────────────────
 import { serve } from 'https://deno.land/std@0.192.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { FIELD_ENC_KEY, decField } from '../_shared/field-crypto.ts'
 // Verificación TOTP en el SERVIDOR (2FA), con Web Crypto NATIVO (sin
 // dependencias externas que pudieran no cargar y tumbar el proxy). Mismo
 // algoritmo que el cliente: SHA1, 6 dígitos, período 30s, ventana ±2. Sin
@@ -36,37 +37,11 @@ function base32Decode(s: string): Uint8Array {
   }
   return new Uint8Array(out)
 }
-// Descifra un campo 'enc:v1:...' con la llave del servidor (FIELD_ENC_KEY).
-// Texto plano legacy pasa igual. Igual que en admin-data.
-const FIELD_ENC_KEY = Deno.env.get('FIELD_ENC_KEY') ?? ''
-// Entiende los DOS formatos: 'enc:v1:<datos>' y 'enc:v2:<huella>:<datos>'.
-//
-// ⚠️ Esta función existe copiada en admin-data, gasfree y mouv-proxy. Cuando
-// admin-data pasó a escribir el formato v2 (con huella de llave), estas dos
-// copias se quedaron entendiendo solo v1: al toparse con un v2 devolvían el
-// TEXTO CIFRADO tal cual como si fuera el secreto, y la verificación del 2FA
-// fallaba siempre. Si alguna vez se cambia el formato, hay que cambiar las
-// TRES a la vez — o mejor, unificarlas en un módulo compartido.
-async function decField(v: string): Promise<string> {
-  if (typeof v !== 'string' || !v.startsWith('enc:v')) return v   // texto plano legacy
-  if (!FIELD_ENC_KEY) throw new Error('FIELD_ENC_KEY missing')
-  let payload: string
-  if (v.startsWith('enc:v2:')) {
-    const rest = v.slice(7)
-    const sep = rest.indexOf(':')
-    if (sep < 0) throw new Error('bad_ciphertext')
-    payload = rest.slice(sep + 1)   // la huella solo sirve para diagnosticar
-  } else if (v.startsWith('enc:v1:')) {
-    payload = v.slice(7)
-  } else {
-    throw new Error('bad_ciphertext')
-  }
-  const rawKey = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(FIELD_ENC_KEY)))
-  const ck = await crypto.subtle.importKey('raw', rawKey, { name: 'AES-GCM' }, false, ['decrypt'])
-  const bytes = Uint8Array.from(atob(payload), c => c.charCodeAt(0))
-  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: bytes.slice(0, 12) }, ck, bytes.slice(12))
-  return new TextDecoder().decode(pt)
-}
+// Cifrado de campos sensibles: la implementación vive en _shared para que
+// NO pueda volver a haber tres copias que se desincronicen (una quedó sin
+// entender el formato nuevo y el 2FA de los envíos falló con el código
+// correcto, sin que ningún build lo detectara).
+
 async function verifyTOTPServer(secret: string, token: string): Promise<boolean> {
   const code = String(token ?? '').replace(/\D/g, '')
   if (code.length !== 6) return false

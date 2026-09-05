@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { FIELD_ENC_KEY, encField, decField, keyFp, KeyMismatchError } from '../_shared/field-crypto.ts'
 
 const SUPABASE_URL  = Deno.env.get('SUPABASE_URL')              ?? ''
 const SERVICE_KEY   = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -28,63 +29,8 @@ function slimRawData(rd: unknown, limit = 2000): unknown {
   return out
 }
 
-// ── Cifrado de campos sensibles a nivel de APLICACIÓN (además del AES-256
-//    en reposo de la base). AES-256-GCM con llave derivada de FIELD_ENC_KEY
-//    (secret del servidor, nunca en la base ni en el cliente). Formato actual:
-//    'enc:v2:<huella-de-llave>:<datos>'; se sigue leyendo 'enc:v1:' (sin
-//    huella) y el texto plano legacy. SIN llave NO se cifra ni se guarda: antes
-//    devolvía el texto plano en silencio, que es peor que fallar.
-const FIELD_ENC_KEY = Deno.env.get('FIELD_ENC_KEY') ?? ''
-let _encKeyPromise: Promise<CryptoKey> | null = null
-function fieldKey(): Promise<CryptoKey> {
-  if (!_encKeyPromise) {
-    _encKeyPromise = crypto.subtle.digest('SHA-256', new TextEncoder().encode(FIELD_ENC_KEY))
-      .then(raw => crypto.subtle.importKey('raw', new Uint8Array(raw), { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']))
-  }
-  return _encKeyPromise
-}
-// Huella de la llave: 8 hex derivados de la MISMA llave, guardados junto al
-// dato cifrado. No revela nada (es un hash truncado) y permite saber al
-// instante si un dato quedó cifrado con una llave DISTINTA a la actual, en vez
-// de descubrirlo cuando alguien ya no puede entrar.
-let _keyFpPromise: Promise<string> | null = null
-function keyFp(): Promise<string> {
-  if (!_keyFpPromise) {
-    _keyFpPromise = crypto.subtle.digest('SHA-256', new TextEncoder().encode('fp:' + FIELD_ENC_KEY))
-      .then(raw => Array.from(new Uint8Array(raw).slice(0, 4)).map(b => b.toString(16).padStart(2, '0')).join(''))
-  }
-  return _keyFpPromise
-}
-async function encField(plain: string): Promise<string> {
-  if (!plain) return plain
-  // Sin llave NO se guarda nada: antes devolvía el texto plano en silencio, y
-  // eso escribía secretos en claro sin que nadie se enterara.
-  if (!FIELD_ENC_KEY) throw new Error('FIELD_ENC_KEY missing')
-  const iv = crypto.getRandomValues(new Uint8Array(12))
-  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await fieldKey(), new TextEncoder().encode(plain)))
-  const buf = new Uint8Array(iv.length + ct.length); buf.set(iv); buf.set(ct, iv.length)
-  return `enc:v2:${await keyFp()}:` + btoa(String.fromCharCode(...buf))
-}
-class KeyMismatchError extends Error { constructor() { super('key_mismatch') } }
-async function decField(v: string): Promise<string> {
-  if (typeof v !== 'string' || !v.startsWith('enc:v')) return v   // texto plano legacy
-  if (!FIELD_ENC_KEY) throw new Error('FIELD_ENC_KEY missing')
-  let payload: string
-  if (v.startsWith('enc:v2:')) {
-    const rest = v.slice(7)
-    const sep = rest.indexOf(':')
-    if (sep < 0) throw new Error('bad_ciphertext')
-    if (rest.slice(0, sep) !== await keyFp()) throw new KeyMismatchError()
-    payload = rest.slice(sep + 1)
-  } else if (v.startsWith('enc:v1:')) {
-    payload = v.slice(7)
-  } else {
-    throw new Error('bad_ciphertext')
-  }
-  const bytes = Uint8Array.from(atob(payload), c => c.charCodeAt(0))
-  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: bytes.slice(0, 12) }, await fieldKey(), bytes.slice(12))
-  return new TextDecoder().decode(pt)
-}
+// Cifrado de campos sensibles: la implementación vive en _shared para que
+// NO pueda volver a haber tres copias que se desincronicen.
 
 // ── Códigos de respaldo ───────────────────────────────────────────────────
 // Se guardan HASHEADOS (SHA-256), no cifrados. Un hash no depende de ninguna
