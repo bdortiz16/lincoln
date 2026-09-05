@@ -119,6 +119,10 @@ interface DatabaseContextType {
   mfaPending: boolean;
   mfaErrorDetail: string | null;
   completeMFALogin: (code: string) => Promise<User | null>;
+  emailStepPending: boolean;
+  emailMaskedTo: string | null;
+  completeEmailLogin: (code: string) => Promise<User | null>;
+  resendEmailCode: () => Promise<boolean>;
   cancelMFALogin: () => void;
   enrollMFA: () => Promise<{ qrCode: string; secret: string; factorId: string } | null>;
   verifyMFAEnrollment: (factorId: string, code: string, secret?: string) => Promise<{ ok: boolean; error?: string; backupCodes?: string[] }>;
@@ -284,6 +288,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   })();
   const [isAuthLoading, setIsAuthLoading] = useState(hasStoredSession);
   const [mfaPending, setMfaPending] = useState(false);
+  // Paso 2 del ingreso: código enviado al correo del titular.
+  const [emailStepPending, setEmailStepPending] = useState(false);
+  const [emailMaskedTo, setEmailMaskedTo] = useState<string | null>(null);
   const [pendingMFAProfile, setPendingMFAProfile] = useState<User | null>(null);
   // 'custom' = TOTP nuestro (raw_data.mfaEnabled, verifica vía mfa_verify);
   // 'native' = MFA de Supabase Auth (challenge/verify). Decide cómo verificar
@@ -1381,6 +1388,41 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     return user;
   };
 
+  // Segundo paso del ingreso: el código que llega al correo.
+  const completeEmailLogin = async (code: string): Promise<User | null> => {
+    if (!pendingMFAProfile) return null;
+    try {
+      const SURL = SUPABASE_URL_FOR_FN, SKEY = SUPABASE_ANON_FOR_FN, token = getStoredToken();
+      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
+        body: JSON.stringify({ action: 'mfa_verify_email', userId: pendingMFAProfile.id, code }),
+      }).then(x => x.json()).catch(() => null);
+      if (!r?.ok) { setMfaErrorDetail(r?.message ?? 'Código de correo incorrecto o vencido.'); return null; }
+      const user = pendingMFAProfile;
+      try { sessionStorage.setItem('mfa_ok', '1'); } catch { /* */ }
+      setCurrentUser(user);
+      setMfaPending(false);
+      setEmailStepPending(false);
+      setPendingMFAProfile(null);
+      logAdminLogin(user);
+      return user;
+    } catch { setMfaErrorDetail('No se pudo verificar el código del correo.'); return null; }
+  };
+
+  const resendEmailCode = async (): Promise<boolean> => {
+    if (!pendingMFAProfile) return false;
+    try {
+      const SURL = SUPABASE_URL_FOR_FN, SKEY = SUPABASE_ANON_FOR_FN, token = getStoredToken();
+      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
+        body: JSON.stringify({ action: 'mfa_resend_email', userId: pendingMFAProfile.id }),
+      }).then(x => x.json()).catch(() => null);
+      return !!r?.ok;
+    } catch { return false; }
+  };
+
   const completeMFALogin = async (code: string): Promise<User | null> => {
     if (!pendingMFAProfile) return null;
     // 2FA CUSTOM: verifica el código contra el secreto CIFRADO en el servidor
@@ -1392,7 +1434,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         const r = await fetch(`${SURL}/functions/v1/admin-data`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
-          body: JSON.stringify({ action: 'mfa_verify', userId: pendingMFAProfile.id, code }),
+          body: JSON.stringify({ action: 'mfa_verify', userId: pendingMFAProfile.id, code, stage: 'login' }),
         }).then(x => x.json()).catch(() => null);
         if (!r?.ok) {
           // Diagnóstico: sin esto, un fallo de AUTORIZACIÓN o un secreto que no
@@ -1427,6 +1469,15 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           }
           return null;
         }
+        // El código de la app NO abre la sesión por sí solo: si el servidor
+        // mandó un código al correo, falta ese segundo paso. Son dos cosas
+        // distintas — una está en el teléfono, la otra en el buzón.
+        if (r?.needsEmailCode) {
+          setEmailStepPending(true);
+          setEmailMaskedTo(r?.to ?? null);
+          setMfaErrorDetail(null);
+          return null;
+        }
         const user = pendingMFAProfile;
         try { sessionStorage.setItem('mfa_ok', '1'); } catch { /* */ }
         setCurrentUser(user);
@@ -1458,6 +1509,8 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     if (isSupabaseConfigured) supabase.auth.signOut();
     try { sessionStorage.removeItem('mfa_ok'); } catch { /* */ }
     setMfaPending(false);
+    setEmailStepPending(false);
+    setEmailMaskedTo(null);
     setPendingMFAProfile(null);
   };
 
@@ -2294,6 +2347,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       getTransactionHistory, getAdminTeam, addAdminUser, updateAdminUser, deleteAdminUser, deleteUser, registerInternalMovement,
       updateBankList, restoreDatabase, sendPasswordReset, isPasswordRecovery, setNewPassword, sendCuypayPayment,
       mfaPending, mfaErrorDetail, completeMFALogin, cancelMFALogin,
+      emailStepPending, emailMaskedTo, completeEmailLogin, resendEmailCode,
       enrollMFA, verifyMFAEnrollment, unenrollMFA, getMFAStatus, verifyMfaCode,
     }}>
       {children}

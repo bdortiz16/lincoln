@@ -402,6 +402,50 @@ Deno.serve(async (req: Request) => {
         return json({ ok: true, blocked })
       }
 
+      // Segundo paso del ingreso: el código que llegó al correo. Solo aquí se
+      // marca la sesión como verificada — ni el código de la app por sí solo
+      // la abre.
+      if (selfServiceBody.action === 'mfa_verify_email' && selfServiceBody.userId) {
+        if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
+        const uidE = String(selfServiceBody.userId)
+        const codeE = String(selfServiceBody.code ?? '').replace(/\D/g, '')
+
+        const sinceE = new Date(Date.now() - 15 * 60_000).toISOString()
+        const { data: recE } = await db.from('audit_log').select('metadata, created_at')
+          .eq('action', 'auth.mfa_failed').gte('created_at', sinceE).limit(300)
+        const fallosE = (recE ?? []).filter((r: any) => r?.metadata?.userId === uidE && r?.metadata?.tipo === 'correo')
+        if (fallosE.length >= 5) {
+          const viejo = fallosE.map((r: any) => new Date(r.created_at).getTime()).sort((a, b) => a - b)[0]
+          const faltan = Math.max(1, Math.ceil((viejo + 15 * 60_000 - Date.now()) / 60_000))
+          return json({ ok: false, error: 'too_many_attempts', message: `Demasiados códigos de correo incorrectos. Vuelve a intentar en ${faltan} minuto${faltan === 1 ? '' : 's'}.` }, 429)
+        }
+
+        if (!/^\d{6}$/.test(codeE)) return json({ ok: false, message: 'El código del correo son 6 dígitos.' })
+        const r = await fetch(`${SUPABASE_URL}/functions/v1/email-otp`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+          body: JSON.stringify({ action: 'verify', userId: uidE, code: codeE }),
+        }).then(x => x.json()).catch(() => null)
+        if (!r?.ok) {
+          await auditAdmin(req, 'auth.mfa_failed', { userId: uidE, motivo: 'código de correo incorrecto', tipo: 'correo' })
+          return json({ ok: false, message: r?.message ?? 'Código de correo incorrecto o vencido.' })
+        }
+        await rememberMfaSession(req, uidE)
+        await auditAdmin(req, 'auth.login_2fa_completo', { userId: uidE })
+        return json({ ok: true })
+      }
+
+      // Reenviar el código del correo si no llegó.
+      if (selfServiceBody.action === 'mfa_resend_email' && selfServiceBody.userId) {
+        if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
+        const r = await fetch(`${SUPABASE_URL}/functions/v1/email-otp`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+          body: JSON.stringify({ action: 'send', userId: String(selfServiceBody.userId) }),
+        }).then(x => x.json()).catch(() => null)
+        return json({ ok: !!r?.ok, throttled: !!r?.throttled, message: r?.message ?? null })
+      }
+
       // ¿Esta SESIÓN ya superó el 2FA? Lo decide el servidor, no una marca
       // del navegador. La app guardaba 'mfa_ok' en sessionStorage y confiaba
       // en ella al restaurar: escribirla a mano en la consola abría el panel
@@ -732,6 +776,15 @@ Deno.serve(async (req: Request) => {
             const rest = hashes.filter((_, i) => i !== idx)
             await db.from('users').update({ raw_data: { ...raw, mfaBackupHashes: rest } }).eq('id', selfServiceBody.userId)
             await auditAdmin(req, 'mfa_backup_code_used', { userId: selfServiceBody.userId, remaining: rest.length })
+            if (String(selfServiceBody.stage ?? '') === 'login') {
+              const sentB = await fetch(`${SUPABASE_URL}/functions/v1/email-otp`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+                body: JSON.stringify({ action: 'send', userId: String(selfServiceBody.userId) }),
+              }).then(x => x.json()).catch(() => null)
+              if (sentB?.ok) return json({ ok: true, usedBackup: true, remaining: rest.length, needsEmailCode: true, to: sentB.to ?? null })
+              await auditAdmin(req, 'auth.email_2fa_unavailable', { userId: uidV, motivo: sentB?.error ?? 'sin respuesta' })
+            }
             await rememberMfaSession(req, String(selfServiceBody.userId))
             return json({ ok: true, usedBackup: true, remaining: rest.length })
           }
@@ -772,6 +825,26 @@ Deno.serve(async (req: Request) => {
         // Un acierto BORRA los fallos recientes: quien acaba de demostrar que
         // es el dueño no debe arrastrar un contador que lo bloquee después.
         try { await db.from('audit_log').delete().eq('action', 'auth.mfa_failed').gte('created_at', sinceMfa).contains('metadata', { userId: uidV }) } catch { /* el límite se vence solo */ }
+
+        // ── Segundo factor del INGRESO: código al correo ──────────────────
+        // El código de la app y el correo son cosas distintas: el primero está
+        // en el teléfono, el segundo en el buzón. Quien robe uno no tiene el
+        // otro. La sesión NO queda verificada hasta que pasen los dos.
+        if (String(selfServiceBody.stage ?? '') === 'login') {
+          const sent = await fetch(`${SUPABASE_URL}/functions/v1/email-otp`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+            body: JSON.stringify({ action: 'send', userId: uidV }),
+          }).then(r => r.json()).catch(() => null)
+          if (sent?.ok) return json({ ok: true, needsEmailCode: true, to: sent.to ?? null, throttled: !!sent.throttled })
+          // Si el correo NO está configurado o falla, se entra con el código
+          // de la app en vez de dejar al titular afuera para siempre — pero se
+          // dice, y queda en auditoría, porque es una protección menos.
+          await auditAdmin(req, 'auth.email_2fa_unavailable', { userId: uidV, motivo: sent?.error ?? 'sin respuesta' })
+          await rememberMfaSession(req, uidV)
+          return json({ ok: true, needsEmailCode: false, emailUnavailable: true })
+        }
+
         // Queda constancia de QUÉ sesión superó el 2FA: es lo que después
         // exigen las acciones sensibles.
         await rememberMfaSession(req, uidV)

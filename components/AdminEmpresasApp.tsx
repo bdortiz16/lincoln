@@ -32,7 +32,7 @@ if (typeof window !== 'undefined' &&
 }
 
 const AdminEmpresasInner: React.FC = () => {
-    const { currentUser, isAuthLoading, loginUser, logoutUser, mfaPending, mfaErrorDetail, completeMFALogin, cancelMFALogin } = useDatabase();
+    const { currentUser, isAuthLoading, loginUser, logoutUser, mfaPending, mfaErrorDetail, completeMFALogin, cancelMFALogin, emailStepPending, emailMaskedTo, completeEmailLogin, resendEmailCode } = useDatabase();
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [submitting, setSubmitting] = useState(false);
@@ -43,6 +43,8 @@ const AdminEmpresasInner: React.FC = () => {
     const [captchaToken, setCaptchaToken] = useState('');
     const [captchaKey, setCaptchaKey] = useState(0);
     const [useBackup, setUseBackup] = useState(false);
+    const [emailCode, setEmailCode] = useState('');
+    const [resendMsg, setResendMsg] = useState<string | null>(null);
 
     const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -77,6 +79,19 @@ const AdminEmpresasInner: React.FC = () => {
     const codeReady = useBackup
         ? mfaCode.replace(/[^A-Za-z0-9]/g, '').length === 8
         : mfaCode.length === 6;
+
+    // Paso 2: el código que llegó al correo.
+    const handleVerifyEmail = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (emailCode.length !== 6 || verifying) return;
+        setVerifying(true); setMfaError(null);
+        try {
+            const user = await completeEmailLogin(emailCode);
+            if (!user) setMfaError(mfaErrorDetail ?? 'Código de correo incorrecto o vencido.');
+            else if (user.role !== 'admin') { setMfaError('Esta cuenta no tiene permisos de administrador.'); await logoutUser(); }
+        } catch { setMfaError('No se pudo verificar. Intenta de nuevo.'); }
+        setVerifying(false);
+    };
 
     const handleVerify2FA = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -116,7 +131,35 @@ const AdminEmpresasInner: React.FC = () => {
                     </div>
                     <p className="text-xs text-slate-500 mb-5">Acceso exclusivo para administradores.</p>
 
-                    {mfaPending ? (
+                    {emailStepPending ? (
+                        <form onSubmit={handleVerifyEmail} className="space-y-3">
+                            <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl p-2.5">
+                                <ShieldCheck size={16} className="text-[#16A34A]" />
+                                <p className="text-xs text-slate-600">
+                                    Paso 2 de 2. Te enviamos un código a {emailMaskedTo ?? 'tu correo'}. Ingrésalo para terminar de entrar.
+                                </p>
+                            </div>
+                            <input
+                                value={emailCode}
+                                onChange={e => setEmailCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                                autoFocus
+                                inputMode="numeric"
+                                placeholder="123 456"
+                                className="w-full px-3 py-3 rounded-xl border border-slate-200 text-center font-mono text-lg tracking-widest focus:border-[#4ADE80] outline-none"
+                            />
+                            {mfaError && <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-xl p-2.5">{mfaError}</p>}
+                            {resendMsg && <p className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-xl p-2.5">{resendMsg}</p>}
+                            <button type="submit" disabled={verifying || emailCode.length !== 6} style={{ color: '#FFFFFF' }} className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#152e52] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60 transition-colors">
+                                <Lock size={14} /> {verifying ? 'Verificando…' : 'Entrar'}
+                            </button>
+                            <button type="button" onClick={async () => { setResendMsg('Enviando…'); const ok = await resendEmailCode(); setResendMsg(ok ? 'Te reenviamos el código. Revisa tu correo.' : 'No se pudo reenviar. Espera un momento.'); }} className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-800 underline">
+                                No me llegó — reenviar código
+                            </button>
+                            <button type="button" onClick={() => { cancelMFALogin(); setEmailCode(''); setMfaCode(''); setMfaError(null); setResendMsg(null); setPassword(''); setUseBackup(false); }} className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-800">
+                                Cancelar
+                            </button>
+                        </form>
+                    ) : mfaPending ? (
                         <form onSubmit={handleVerify2FA} className="space-y-3">
                             <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl p-2.5">
                                 <ShieldCheck size={16} className="text-[#16A34A]" />
