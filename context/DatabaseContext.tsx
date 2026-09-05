@@ -424,9 +424,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             // sesión del JWT. Si dice que no, se vuelve a pedir el código.
             if (mfaOn2 && mfaOk) mfaOk = await serverSaysMfaVerified((profile as any).id);
             if (mfaOn2 && !mfaOk && event !== 'TOKEN_REFRESHED') {
-              setPendingMFAProfile(mapSupabaseUser(profile));
-              setPendingMFAMode('custom');
-              setMfaPending(true);
+              beginMfaFlow(mapSupabaseUser(profile), 'custom');
               return;
             }
             setCurrentUser(mapSupabaseUser(profile));
@@ -457,9 +455,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
               let mfaOkE = false; try { mfaOkE = sessionStorage.getItem('mfa_ok') === '1'; } catch { /* */ }
               if (mfaOnE && mfaOkE) mfaOkE = await serverSaysMfaVerified((existingByEmail as any).id);
               if (mfaOnE && !mfaOkE && event !== 'TOKEN_REFRESHED') {
-                setPendingMFAProfile(mapSupabaseUser(existingByEmail));
-                setPendingMFAMode('custom');
-                setMfaPending(true);
+                beginMfaFlow(mapSupabaseUser(existingByEmail), 'custom');
                 return;
               }
               setCurrentUser(mapSupabaseUser(existingByEmail));
@@ -1218,11 +1214,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             // 2FA en el login del admin: si tiene el 2FA custom activo, NO se
             // entra directo — se pide el código de 6 dígitos antes de dar acceso.
             if ((u as any)?.mfaEnabled || (profile as any)?.raw_data?.mfaEnabled) {
-              setPendingMFAProfile(u);
-              setPendingMFAMode('custom');
-              setMfaPending(true);
-              setEmailStepPending(true);   // PRIMER paso: el correo
-              startEmailStep(u.id);
+              beginMfaFlow(u, 'custom');
               return 'MFA_REQUIRED';
             }
             setCurrentUser(u);
@@ -1311,9 +1303,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
                   if (authSynced) {
                     try { await supabase.auth.signInWithPassword({ email, password: pass! }); } catch { /* */ }
                   }
-                  setPendingMFAProfile(mapped);
-                  setPendingMFAMode('custom');
-                  setMfaPending(true);
+                  beginMfaFlow(mapped, 'custom');
                   return 'MFA_REQUIRED';
                 }
                 setCurrentUser(mapped);
@@ -1371,9 +1361,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           // autorizarse y el acceso queda denegado: es el comportamiento
           // correcto (fallar cerrado), no un atajo.
           if ((user as any)?.mfaEnabled || fbProfile.raw_data?.mfaEnabled) {
-            setPendingMFAProfile(user);
-            setPendingMFAMode('custom');
-            setMfaPending(true);
+            beginMfaFlow(user, 'custom');
             return 'MFA_REQUIRED';
           }
           setCurrentUser(user);
@@ -1442,11 +1430,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     // 2FA custom (TOTP nuestro): si la cuenta lo tiene activo, se pide el código
     // en el login antes de dar acceso. Cubre admin y clientes por igual.
     if ((user as any)?.mfaEnabled || (profile as any)?.raw_data?.mfaEnabled) {
-      setPendingMFAProfile(user);
-      setPendingMFAMode('custom');
-      setMfaPending(true);
-      setEmailStepPending(true);   // PRIMER paso: el correo
-      startEmailStep(user.id);
+      beginMfaFlow(user, 'custom');
       return 'MFA_REQUIRED';
     }
 
@@ -1457,9 +1441,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         mfaTimeout,
       ]) as any;
       if (aalData?.nextLevel === 'aal2' && aalData?.currentLevel !== 'aal2') {
-        setPendingMFAProfile(user);
-        setPendingMFAMode('native');
-        setMfaPending(true);
+        beginMfaFlow(user, 'native');
         return 'MFA_REQUIRED';
       }
     } catch { /* MFA not available, continue normally */ }
@@ -1481,6 +1463,21 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       if (!r?.ok) { setMfaError2(r?.message ?? 'No se pudo enviar el código al correo.'); return false; }
       return true;
     } catch { setMfaError2('No se pudo enviar el código al correo.'); return false; }
+  };
+
+  // Punto ÚNICO por el que pasa cualquier ingreso que exija segundo factor.
+  // Existe porque el arranque estaba repetido en cinco sitios y en dos se
+  // olvidó: la pantalla saltaba al código de la app sin haber mandado el del
+  // correo, y el servidor —con razón— lo rechazaba.
+  const beginMfaFlow = (profile: any, mode: 'custom' | 'native') => {
+    setPendingMFAProfile(profile);
+    setPendingMFAMode(mode);
+    setMfaPending(true);
+    setMfaError2(null);
+    if (mode === 'custom') {
+      setEmailStepPending(true);      // PRIMER paso: el correo
+      startEmailStep(profile.id);
+    }
   };
 
   const completeEmailLogin = async (code: string): Promise<User | null> => {
@@ -1591,7 +1588,6 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     try { sessionStorage.removeItem('mfa_ok'); } catch { /* */ }
     setMfaPending(false);
     setEmailStepPending(false);
-    setEmailMaskedTo(null);
     setPendingMFAProfile(null);
   };
 
