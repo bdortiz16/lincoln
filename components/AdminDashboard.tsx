@@ -82,6 +82,7 @@ import { RatesPanel } from './AdminPersonas/sections/RatesPanel';
 import { AdminGasFreeSection } from './AdminGasFreeSection';
 import { AdminMonitor } from './AdminMonitor';
 import { AdminTreasuryPanel } from './AdminTreasuryPanel';
+import { AdminSecurityAgent } from './AdminSecurityAgent';
 import { AdminOtcSection } from './AdminOtcSection';
 import { Zap, ArrowLeftRight, ArrowLeft, Info, ChevronRight, Activity } from 'lucide-react';
 import { CollectionWalletCard } from './CollectionWalletCard';
@@ -3478,6 +3479,10 @@ const renderDesign = () => (
 
       return (
         <div className="space-y-6 animate-in fade-in duration-300">
+          {/* Auditor: corre chequeos reales y lista lo que está flojo. Va
+              primero porque es lo que dice QUÉ hay que atender hoy. */}
+          <AdminSecurityAgent />
+
           {/* Tu propio 2FA — protege el cambio de proveedor de tesorería */}
           <div className={`rounded-xl border p-4 ${adminMfaOn ? 'border-green-200 bg-green-50/50' : 'border-amber-300 bg-amber-50/60'}`}>
             <div className="flex items-start justify-between gap-3 flex-wrap">

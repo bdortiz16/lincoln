@@ -899,6 +899,133 @@ Deno.serve(async (req: Request) => {
         return json({ ok: true })
       }
 
+      // ── AGENTE DE SEGURIDAD ───────────────────────────────────────────
+      // Corre chequeos REALES contra el estado vivo del sistema y devuelve
+      // hallazgos concretos, cada uno con severidad y cómo arreglarlo.
+      //
+      // No "protege" nada por sí mismo: encuentra lo que está flojo. La
+      // diferencia con una lista de buenas prácticas es que cada punto se
+      // verifica contra los datos, no se asume.
+      if (body.action === 'security_audit') {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        type Sev = 'critica' | 'alta' | 'media' | 'baja'
+        const f: Array<{ id: string; sev: Sev; title: string; detail: string; fix: string; count?: number }> = []
+        const add = (id: string, sev: Sev, title: string, detail: string, fix: string, count?: number) =>
+          f.push({ id, sev, title, detail, fix, count })
+
+        // 1) Defensas que viven en la base: ¿están PUESTAS o solo escritas?
+        let posture: any = null
+        try {
+          const { data } = await db.rpc('security_posture')
+          posture = data ?? null
+        } catch { /* la función aún no está instalada */ }
+        if (!posture) {
+          add('posture_missing', 'media', 'No se puede verificar el blindaje de la base',
+            'Falta instalar la función security_posture(), así que no hay forma de comprobar desde aquí si los triggers y la RLS están realmente aplicados.',
+            'Ejecuta supabase/migrations/2026_security_posture.sql en el SQL Editor.')
+        } else {
+          if (!posture.rawDataGuard) add('raw_guard', 'critica', 'El blindaje de raw_data NO está instalado',
+            'Sin ese trigger, un cliente puede escribir desde su navegador los campos que solo el servidor debería tocar: el contador de depósitos acreditados (acreditarse dinero que nunca entró), su propio 2FA y los códigos de respaldo.',
+            'Ejecuta supabase/migrations/2026_guard_raw_data_server_keys.sql en el SQL Editor.')
+          if (!posture.sensitiveColsGuard) add('cols_guard', 'critica', 'El candado de columnas sensibles NO está instalado',
+            'Sin él, un cliente podría cambiar su propio rol, su saldo o su estado de KYC con una escritura directa.',
+            'Ejecuta la sección guard_users_sensitive_cols del esquema en el SQL Editor.')
+          if (!posture.adjustBalancesRpc) add('adjust_rpc', 'alta', 'Falta la RPC atómica de saldos',
+            'Sin adjust_balances, los débitos caen al camino de respaldo leer-y-escribir, donde dos operaciones a la vez pueden duplicar fondos.',
+            'Instala la función adjust_balances del esquema.')
+          if (!posture.rlsUsers) add('rls_users', 'critica', 'La tabla de usuarios está SIN RLS',
+            'Cualquiera con la llave pública podría leer o escribir filas de otros clientes.',
+            'ALTER TABLE public.users ENABLE ROW LEVEL SECURITY, y revisa que existan sus políticas.')
+          if (!posture.rlsTransactions) add('rls_tx', 'critica', 'La tabla de movimientos está SIN RLS',
+            'Los movimientos de todos los clientes quedarían legibles por cualquiera con la llave pública.',
+            'ALTER TABLE public.transactions ENABLE ROW LEVEL SECURITY.')
+          if (posture.rlsSystemConfig === false) add('rls_syscfg', 'alta', 'system_config está SIN RLS',
+            'Ahí viven la wallet del proveedor, las IPs bloqueadas y los contadores de la Bóveda.',
+            'ALTER TABLE public.system_config ENABLE ROW LEVEL SECURITY (solo service_role debe leer/escribir).')
+        }
+
+        // 2) Llave de cifrado de campos: sin ella el 2FA no se puede guardar.
+        if (!FIELD_ENC_KEY) add('enc_key', 'alta', 'Falta la llave de cifrado de campos',
+          'Sin FIELD_ENC_KEY no se puede activar el 2FA de nadie (se rechaza antes que guardar un secreto en claro).',
+          'Define FIELD_ENC_KEY en la Bóveda. Una vez definida NO se cambia: rotarla deja ilegibles los 2FA existentes.')
+
+        // 3) Cuentas: admins sin 2FA, secretos ilegibles, correos duplicados,
+        //    filas de admin sin cuenta de acceso real.
+        const { data: allUsers } = await db.from('users').select('id, email, role, raw_data')
+        const rows = (allUsers ?? []) as any[]
+        const admins = rows.filter(u => u.role === 'admin')
+        const adminsNo2fa = admins.filter(u => !u?.raw_data?.mfaEnabled)
+        if (adminsNo2fa.length) add('admin_no_2fa', 'critica', `${adminsNo2fa.length} admin(s) sin 2FA`,
+          `Con solo la contraseña se entra al panel: ${adminsNo2fa.map(a => a.email).join(', ')}.`,
+          'Cada admin lo activa en Seguridad → Activar 2FA, y guarda sus códigos de respaldo.', adminsNo2fa.length)
+
+        const con2fa = rows.filter(u => u?.raw_data?.mfaEnabled)
+        let ilegibles = 0
+        for (const u of con2fa) {
+          const enc = u?.raw_data?.totpSecretEnc
+          if (!enc) { if (!u?.raw_data?.totpSecret) ilegibles++; continue }
+          try { if (!(await decField(String(enc)))) ilegibles++ } catch { ilegibles++ }
+        }
+        if (ilegibles) add('mfa_unreadable', 'critica', `${ilegibles} cuenta(s) con 2FA ilegible`,
+          'Tienen el 2FA activo pero el servidor no puede leer su secreto: por más que el código sea correcto, no van a poder entrar.',
+          'Desactiva y reactiva su 2FA. Revisa el detalle en el botón de salud del 2FA.', ilegibles)
+
+        const sinRespaldo = con2fa.filter(u => !Array.isArray(u?.raw_data?.mfaBackupHashes) || !u.raw_data.mfaBackupHashes.length)
+        if (sinRespaldo.length) add('no_backup_codes', 'media', `${sinRespaldo.length} cuenta(s) con 2FA y sin códigos de respaldo`,
+          'Si pierden el teléfono o el secreto queda ilegible, no tienen forma de entrar sin tocar la base a mano.',
+          'Que desactiven y reactiven el 2FA: al activarlo se entregan 8 códigos.', sinRespaldo.length)
+
+        const porCorreo: Record<string, number> = {}
+        for (const u of rows) { const e = String(u.email ?? '').toLowerCase(); if (e) porCorreo[e] = (porCorreo[e] ?? 0) + 1 }
+        const dupes = Object.entries(porCorreo).filter(([, n]) => n > 1)
+        if (dupes.length) add('dup_emails', 'alta', `${dupes.length} correo(s) con más de una cuenta`,
+          `Filas duplicadas hacen que el login lea una y el panel otra: ${dupes.map(([e, n]) => `${e} (${n})`).join(', ')}.`,
+          'Deja solo la fila que tiene cuenta de acceso real y borra la sobrante.', dupes.length)
+
+        // Filas con rol admin que NO tienen usuario de Auth: no pueden iniciar
+        // sesión, pero cuentan como admin en cualquier consulta por rol.
+        try {
+          const { data: list } = await db.auth.admin.listUsers({ page: 1, perPage: 200 })
+          const authIds = new Set((list?.users ?? []).map((u: any) => u.id))
+          const huerfanos = admins.filter(a => !authIds.has(a.id))
+          if (huerfanos.length) add('admin_orphan', 'alta', `${huerfanos.length} fila(s) de admin sin cuenta de acceso`,
+            `No pueden iniciar sesión pero pesan como admin en la base: ${huerfanos.map(a => a.email).join(', ')}. Suelen ser semillas de instalación que quedaron olvidadas.`,
+            'Bórralas si no operan, después de comprobar que no tienen movimientos.', huerfanos.length)
+        } catch { /* Auth admin no disponible */ }
+
+        const planos = rows.filter(u => u?.raw_data?.totpSecret)
+        if (planos.length) add('totp_plain', 'alta', `${planos.length} secreto(s) de 2FA en texto plano`,
+          'Quedaron de un esquema anterior. Quien lea esa fila puede generar sus códigos.',
+          'Que esas cuentas desactiven y reactiven el 2FA: al hacerlo se guarda cifrado.', planos.length)
+
+        // 4) Presión sobre el acceso: fallos e IPs bloqueadas.
+        const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0)
+        const { data: fails } = await db.from('audit_log').select('metadata, created_at')
+          .eq('action', 'auth.failed_login').gte('created_at', startOfDay.toISOString()).limit(400)
+        const nFails = (fails ?? []).length
+        if (nFails >= 20) add('login_pressure', 'media', `${nFails} intentos de ingreso fallidos hoy`,
+          'Un volumen así suele ser alguien probando contraseñas, no un despiste.',
+          'Revisa las IPs en Monitoreo y bloquea las que no reconozcas.', nFails)
+        const blocked = await blockedIps()
+        if (blocked.length) add('blocked_now', 'baja', `${blocked.length} IP(s) bloqueadas ahora`,
+          `Bloqueos activos: ${blocked.slice(0, 5).map(b => b.ip).join(', ')}.`,
+          'Si alguna es tuya (o de tu oficina), desbloquéala en Monitoreo.', blocked.length)
+
+        // 5) La wallet del proveedor debe estar fijada en la Bóveda.
+        const provFinity = (Deno.env.get('PROVIDER_WALLET_FINITY') ?? '').trim()
+        const provMouv = (Deno.env.get('PROVIDER_WALLET_MOUV') ?? '').trim()
+        if (!provFinity && !provMouv) add('provider_unlocked', 'critica', 'La wallet del proveedor NO está fijada en la Bóveda',
+          'Mientras no esté fijada, la dirección de destino se puede cambiar desde el panel — que es exactamente por donde se desvía el dinero.',
+          'Define PROVIDER_WALLET_FINITY (y PROVIDER_WALLET_MOUV) en la Bóveda. Quedan bloqueadas y solo se cambian desde ahí.')
+
+        const peso: Record<Sev, number> = { critica: 30, alta: 15, media: 6, baja: 2 }
+        const score = Math.max(0, 100 - f.reduce((s, x) => s + peso[x.sev], 0))
+        const orden: Sev[] = ['critica', 'alta', 'media', 'baja']
+        f.sort((a, b) => orden.indexOf(a.sev) - orden.indexOf(b.sev))
+        await auditAdmin(req, 'security.audit_run', { findings: f.length, score })
+        return json({ ok: true, score, findings: f, posture, checkedAt: new Date().toISOString() })
+      }
+
       // Desbloquear una IP (solo admin, queda auditado).
       if (body.action === 'unblock_ip' && body.ip) {
         if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
