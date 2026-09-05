@@ -1378,6 +1378,22 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     const isAdminEmail = data.user.email === SEED_ADMIN_EMAIL;
 
     if (!profile) {
+      // ⚠️ Antes se creaba un perfil NUEVO de una vez. Si ya existía una fila
+      // con ese correo pero con OTRO id (pasa al recrear la cuenta de acceso),
+      // quedaban DOS filas para la misma persona: el login leía una y el panel
+      // otra, y arreglarlo después chocaba contra la clave primaria. Primero se
+      // busca por CORREO y, si aparece, se reusa esa fila en vez de duplicarla.
+      try {
+        const { data: porCorreo } = await Promise.race([
+          supabase.from('users').select('*').eq('email', data.user.email!).maybeSingle(),
+          new Promise<{ data: null }>(resolve => setTimeout(() => resolve({ data: null }), 5000)),
+        ]) as any;
+        if (porCorreo) {
+          setLoginError(`Tu cuenta de acceso es nueva y todavía no está unida a tu perfil. Un administrador debe igualar el id del perfil (${String(porCorreo.id).slice(0, 8)}…) al de la cuenta (${String(data.user.id).slice(0, 8)}…).`);
+          await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
+          return null;
+        }
+      } catch { /* si la consulta falla, se sigue al alta normal */ }
       const id = data.user.id;
       const newProfile = {
         id,
