@@ -972,6 +972,18 @@ Deno.serve(async (req: Request) => {
           })
           if (incidents.length >= 20) break
         }
+        // Historial de cambios del 2FA: lo escribe el trigger trg_audit_mfa_change
+        // (migración 2026_lock_mfa_credentials.sql). Responde "¿cuándo se
+        // apagó y quién lo apagó?" sin tener que entrar a la base.
+        const mfaChanges = all.filter((r: any) => r.action === 'security.mfa_changed' || r.action === 'security.mfa_disabled')
+          .slice(0, 15).map((r: any) => ({
+            at: at(r),
+            cuenta: r?.metadata?.cuenta ?? r?.metadata?.byEmail ?? null,
+            antes: r?.metadata?.antes ?? null,
+            despues: r?.metadata?.despues ?? (r.action === 'security.mfa_disabled' ? 'false' : null),
+            porRol: r?.metadata?.rolDeLaSesion ?? null,
+            ip: r?.metadata?.ip ?? null,
+          }))
         const rot = all.find((r: any) => r.action === 'security.key_rotation')
         return json({
           ok: true,
@@ -980,6 +992,7 @@ Deno.serve(async (req: Request) => {
           blockedIps: await blockedIps(),
           access,
           incidents,
+          mfaChanges,
           keyRotation: rot ? { at: at(rot), byEmail: rot?.metadata?.byEmail ?? null, note: rot?.metadata?.note ?? null } : null,
         })
       }

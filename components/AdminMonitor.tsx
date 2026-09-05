@@ -491,6 +491,37 @@ export const AdminMonitor: React.FC = () => {
             La ubicación se deduce de la IP: llega a <b style={{ color: C.sub }}>ciudad o región</b>, y suele ser la del nodo
             del operador. No es una dirección exacta.
           </p>
+
+          {/* Cambios del 2FA — responde "cuándo se apagó y quién lo apagó". */}
+          <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${C.border}` }}>
+            <p style={{ ...label, marginBottom: 8 }}>Cambios del 2FA</p>
+            {sec == null ? (
+              <p style={{ color: C.dim, fontSize: 12 }}>Cargando…</p>
+            ) : (sec.mfaChanges ?? []).length === 0 ? (
+              <p style={{ color: C.dim, fontSize: 11.5, lineHeight: 1.5 }}>
+                Sin cambios registrados. El rastro empieza cuando se instala el trigger de auditoría del 2FA;
+                si acabas de instalarlo, el próximo cambio aparecerá aquí.
+              </p>
+            ) : sec.mfaChanges.map((m: any, i: number) => {
+              const apagado = String(m.despues) === 'false' || m.despues === 'ausente';
+              return (
+                <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '7px 0', borderTop: i ? `1px solid ${C.border}` : 'none' }}>
+                  <span style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: 0.4, whiteSpace: 'nowrap', borderRadius: 5, padding: '3px 7px', marginTop: 1,
+                                 color: apagado ? C.red : C.green,
+                                 background: apagado ? 'rgba(248,113,113,0.12)' : 'rgba(74,222,128,0.12)' }}>
+                    {apagado ? 'APAGADO' : 'ACTIVADO'}
+                  </span>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <p style={{ fontSize: 12, margin: 0, color: C.text }}>{m.cuenta ?? 'cuenta no identificada'}</p>
+                    <p style={{ ...num, fontFamily: 'ui-monospace, Menlo, monospace', color: C.dim, fontSize: 10.5, margin: 0 }}>
+                      {m.at ? new Date(m.at).toLocaleString('es-CO', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—'}
+                      {m.porRol ? ` · sesión ${m.porRol}` : ''}{m.ip ? ` · ${m.ip}` : ''}
+                    </p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
         <div style={{ ...cardStyle, padding: 16 }}>
           <p style={{ ...label, marginBottom: 10 }}>Retiros inusuales (&gt; 3× promedio)</p>
