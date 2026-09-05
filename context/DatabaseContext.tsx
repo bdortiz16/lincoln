@@ -822,6 +822,32 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     } catch { /* nunca rompe el login */ }
   };
 
+  // ── Aviso de ingreso, para TODAS las cuentas ───────────────────────────
+  // Apenas la sesión queda abierta de verdad —cliente o admin—, se le avisa
+  // al titular por correo desde dónde se abrió. No impide nada por sí solo;
+  // lo que hace es que un ingreso ajeno se note el mismo día, en vez de
+  // descubrirse semanas después revisando movimientos.
+  //
+  // Va en un efecto sobre currentUser y no repartido por cada camino de
+  // ingreso (contraseña, Google, 2FA, admin) porque esos son cinco sitios y
+  // ya me pasó olvidarme de dos. El servidor manda UNO POR SESIÓN, así que
+  // restaurar la sesión al recargar no vuelve a avisar: el id de sesión es
+  // el mismo. Entrar desde otro dispositivo sí genera aviso.
+  const avisoIngresoRef = useRef<string | null>(null);
+  useEffect(() => {
+    const uid = currentUser?.id;
+    if (!uid || !SUPABASE_URL_FOR_FN) return;
+    if (avisoIngresoRef.current === uid) return;
+    const token = getStoredToken();
+    if (!token) return;            // sin JWT el servidor no puede identificar la sesión
+    avisoIngresoRef.current = uid;
+    fetch(`${SUPABASE_URL_FOR_FN}/functions/v1/admin-data`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_FOR_FN, Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ action: 'notify_login', userId: uid }),
+    }).catch(() => { /* el aviso nunca puede estorbar el ingreso */ });
+  }, [currentUser?.id]);
+
   // ¿El SERVIDOR reconoce esta sesión como verificada con 2FA? La marca
   // 'mfa_ok' de sessionStorage se puede escribir a mano desde la consola del
   // navegador, así que sirve para evitar un parpadeo, no para decidir. Ante

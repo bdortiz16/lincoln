@@ -576,6 +576,103 @@ async function lockAdminAndAlert(req: Request, userId: string, email: string, mo
   } catch { /* el aviso nunca rompe el bloqueo */ }
 }
 
+// ── Aviso de ingreso ─────────────────────────────────────────────────────
+// Cada vez que alguien entra —titular de una cuenta de cliente o el admin—
+// le llega un correo con desde dónde se abrió. No impide nada por sí solo;
+// lo que hace es que un ingreso ajeno se note EL MISMO DÍA en vez de
+// descubrirse semanas después revisando movimientos. Es la diferencia entre
+// enterarse y no enterarse.
+//
+// Se manda UNA VEZ POR SESIÓN: un refresco de la página no vuelve a avisar,
+// pero entrar desde otro dispositivo sí.
+const AVISO_LOGIN_KEY = 'aviso_login'
+const AVISO_TTL_MS = 12 * 3600 * 1000
+
+// Traduce el user-agent a algo legible. No es exacto ni pretende serlo: el
+// titular necesita reconocer "mi iPhone" o "no es mío", no una ficha técnica.
+function dispositivoDe(ua: string): string {
+  const s = ua || ''
+  const so = /iPhone/i.test(s) ? 'iPhone'
+    : /iPad/i.test(s) ? 'iPad'
+    : /Android/i.test(s) ? 'Android'
+    : /Mac OS X|Macintosh/i.test(s) ? 'Mac'
+    : /Windows/i.test(s) ? 'Windows'
+    : /Linux/i.test(s) ? 'Linux' : 'dispositivo desconocido'
+  const nav = /Edg\//i.test(s) ? 'Edge'
+    : /OPR\/|Opera/i.test(s) ? 'Opera'
+    : /Chrome\//i.test(s) ? 'Chrome'
+    : /Firefox\//i.test(s) ? 'Firefox'
+    : /Safari\//i.test(s) ? 'Safari' : ''
+  return nav ? `${so} · ${nav}` : so
+}
+
+async function avisarIngreso(req: Request, userId: string): Promise<boolean> {
+  const sid = sessionIdOf(req) ?? SIN_SESION
+  try {
+    // Dedupe por sesión: recargar la página no puede llenarle el buzón a nadie.
+    const { data: prev } = await db.from('system_config').select('value').eq('key', AVISO_LOGIN_KEY).single()
+    const todo: Record<string, number> = prev?.value ? JSON.parse(prev.value) : {}
+    const clave = `${userId}:${sid}`
+    if (todo[clave] && Date.now() - Number(todo[clave]) < AVISO_TTL_MS) return false
+    const vivas: Record<string, number> = {}
+    for (const [k, t] of Object.entries(todo)) if (Date.now() - Number(t) < AVISO_TTL_MS) vivas[k] = Number(t)
+    vivas[clave] = Date.now()
+    await db.from('system_config').upsert({ key: AVISO_LOGIN_KEY, value: JSON.stringify(vivas) }, { onConflict: 'key' })
+
+    const { data: u } = await db.from('users').select('email, name, role, raw_data').eq('id', userId).single()
+    const correo = String((u as any)?.email ?? '')
+    if (!correo) return false
+
+    const ip = ipOf(req)
+    const geo = await geoOf(ip)
+    const ua = req.headers.get('user-agent') ?? ''
+    const esAdmin = (u as any)?.role === 'admin'
+    const cuando = new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota', dateStyle: 'full', timeStyle: 'short' })
+    await auditAdmin(req, 'auth.aviso_ingreso', { userId, ip, pais: geo?.countryCode ?? null })
+
+    if (!RESEND_KEY) return false
+    const fila = (k: string, v: string) =>
+      `<tr><td style="padding:7px 12px;color:#878E88;font-size:13px">${k}</td><td style="padding:7px 12px;color:#F4F4F2;font-size:13px;font-weight:600">${v}</td></tr>`
+    const nombre = String((u as any)?.name ?? '').split(' ')[0] || '';
+    const html = `
+      <div style="background:#0C0E0D;padding:28px;font-family:Archivo,system-ui,sans-serif">
+        <p style="font-size:20px;font-weight:800;color:#F4F4F2;margin:0 0 4px">Lincoin<span style="color:#4ADE80">.</span></p>
+        <p style="color:#F4F4F2;font-weight:800;font-size:16px;margin:18px 0 6px">
+          Se abrió tu cuenta${esAdmin ? ' de administración' : ''}
+        </p>
+        <p style="color:#878E88;font-size:13px;line-height:1.6;margin:0 0 16px">
+          ${nombre ? `Hola ${nombre}. ` : ''}Alguien acaba de entrar a tu cuenta de Lincoin.
+          Si fuiste tú, no tienes que hacer nada.
+        </p>
+        <table style="width:100%;background:#121413;border-radius:10px;border-collapse:collapse;margin-bottom:18px">
+          ${fila('Cuándo', cuando)}
+          ${fila('IP', ip ?? 'no registrada')}
+          ${fila('Ubicación aproximada', geo?.approx ?? 'no disponible')}
+          ${fila('Operador', geo?.org ?? '—')}
+          ${fila('Dispositivo', dispositivoDe(ua))}
+        </table>
+        <p style="color:#F87171;font-size:13px;line-height:1.6;margin:0">
+          <b>¿No fuiste tú?</b> Cambia tu contraseña ahora mismo${esAdmin ? '' : ' y escríbenos'}.
+          ${esAdmin ? 'Revisa las llaves y la lista de acceso en Seguridad.' : ''}
+        </p>
+        <p style="color:rgba(244,244,242,0.45);font-size:11px;margin:18px 0 0">
+          La ubicación se deduce de la IP: llega a ciudad o región, no es una dirección exacta.
+          Este aviso se manda una vez por dispositivo — recargar la página no vuelve a enviarlo.
+        </p>
+      </div>`
+    await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: `Lincoin <${FROM_EMAIL}>`, to: [correo],
+        subject: esAdmin ? 'Ingreso al panel de administración' : 'Nuevo ingreso a tu cuenta Lincoin',
+        html,
+      }),
+    })
+    return true
+  } catch { return false }   // el aviso NUNCA puede impedir un ingreso
+}
+
 // ── Seguridad de acceso: IP, geolocalización y bloqueo ────────────────────
 function ipOf(req: Request): string | null {
   const fwd = (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim()
@@ -1361,6 +1458,17 @@ Deno.serve(async (req: Request) => {
         await rememberMfaSession(req, uidV)
         await marcarFactor(req, uidV, 'app')
         return json({ ok: true })
+      }
+
+      // ── Aviso de ingreso ─────────────────────────────────────────────────
+      // Lo llama el navegador apenas la sesión queda abierta de verdad, tanto
+      // para un cliente como para el admin. El servidor decide si manda el
+      // correo (uno por sesión) y saca la IP y el dispositivo de ESTA
+      // petición — no de lo que diga la pantalla, que se puede falsear.
+      if (selfServiceBody.action === 'notify_login' && selfServiceBody.userId) {
+        const uidN = String(selfServiceBody.userId)
+        if (!(await verifySelfOrAdmin(req, uidN))) return json({ error: 'No autorizado' }, 401)
+        return json({ ok: true, enviado: await avisarIngreso(req, uidN) })
       }
 
       // ── Señal de vida ────────────────────────────────────────────────────
