@@ -39,12 +39,31 @@ function base32Decode(s: string): Uint8Array {
 // Descifra un campo 'enc:v1:...' con la llave del servidor (FIELD_ENC_KEY).
 // Texto plano legacy pasa igual. Igual que en admin-data.
 const FIELD_ENC_KEY = Deno.env.get('FIELD_ENC_KEY') ?? ''
+// Entiende los DOS formatos: 'enc:v1:<datos>' y 'enc:v2:<huella>:<datos>'.
+//
+// ⚠️ Esta función existe copiada en admin-data, gasfree y mouv-proxy. Cuando
+// admin-data pasó a escribir el formato v2 (con huella de llave), estas dos
+// copias se quedaron entendiendo solo v1: al toparse con un v2 devolvían el
+// TEXTO CIFRADO tal cual como si fuera el secreto, y la verificación del 2FA
+// fallaba siempre. Si alguna vez se cambia el formato, hay que cambiar las
+// TRES a la vez — o mejor, unificarlas en un módulo compartido.
 async function decField(v: string): Promise<string> {
-  if (typeof v !== 'string' || !v.startsWith('enc:v1:')) return v
+  if (typeof v !== 'string' || !v.startsWith('enc:v')) return v   // texto plano legacy
   if (!FIELD_ENC_KEY) throw new Error('FIELD_ENC_KEY missing')
+  let payload: string
+  if (v.startsWith('enc:v2:')) {
+    const rest = v.slice(7)
+    const sep = rest.indexOf(':')
+    if (sep < 0) throw new Error('bad_ciphertext')
+    payload = rest.slice(sep + 1)   // la huella solo sirve para diagnosticar
+  } else if (v.startsWith('enc:v1:')) {
+    payload = v.slice(7)
+  } else {
+    throw new Error('bad_ciphertext')
+  }
   const rawKey = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(FIELD_ENC_KEY)))
   const ck = await crypto.subtle.importKey('raw', rawKey, { name: 'AES-GCM' }, false, ['decrypt'])
-  const bytes = Uint8Array.from(atob(v.slice(7)), c => c.charCodeAt(0))
+  const bytes = Uint8Array.from(atob(payload), c => c.charCodeAt(0))
   const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: bytes.slice(0, 12) }, ck, bytes.slice(12))
   return new TextDecoder().decode(pt)
 }
