@@ -220,6 +220,22 @@ function ipOf(req: Request): string | null {
   return fwd || req.headers.get('cf-connecting-ip') || req.headers.get('x-real-ip') || null
 }
 
+// La CADENA COMPLETA de reenvío, no solo el primer salto. Hace falta para
+// distinguir la IP de quien realmente se conectó de la de un nodo de
+// infraestructura en medio: si entre el navegador y la función hay un proxy,
+// aquí se ve, y una IP europea en un acceso desde Colombia deja de ser un
+// misterio. Se guarda como texto plano, sin interpretar.
+function ipChainOf(req: Request): Record<string, string | null> {
+  return {
+    xForwardedFor: req.headers.get('x-forwarded-for'),
+    cfConnectingIp: req.headers.get('cf-connecting-ip'),
+    xRealIp: req.headers.get('x-real-ip'),
+    cfIpCountry: req.headers.get('cf-ipcountry'),
+    xVercelForwardedFor: req.headers.get('x-vercel-forwarded-for'),
+    forwarded: req.headers.get('forwarded'),
+  }
+}
+
 // Geolocalización aproximada por IP. IMPORTANTE: una IP da CIUDAD/REGIÓN como
 // mucho — normalmente la del nodo del operador, no la del edificio. No es una
 // dirección exacta y no debe presentarse como tal.
@@ -311,7 +327,7 @@ async function auditAdmin(req: Request, action: string, metadata: Record<string,
     // Ubicación aproximada por IP (ciudad/región), cacheada. Nunca bloquea:
     // si el servicio no responde, el evento se guarda igual sin geo.
     const geo = await geoOf(ip)
-    await db.from('audit_log').insert({ user_id: byId, action, metadata: { ...metadata, byEmail, ip, geo, userAgent, hadSession: !!byEmail, at: new Date().toISOString() } })
+    await db.from('audit_log').insert({ user_id: byId, action, metadata: { ...metadata, byEmail, ip, ipChain: ipChainOf(req), geo, userAgent, hadSession: !!byEmail, at: new Date().toISOString() } })
   } catch { /* best-effort — nunca romper la operación */ }
 }
 
