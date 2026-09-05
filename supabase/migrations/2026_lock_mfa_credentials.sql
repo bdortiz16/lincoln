@@ -49,7 +49,7 @@ DECLARE
   -- cuenta; nadie las escribe desde un navegador, admin incluido.
   credentials text[] := ARRAY[
     'mfaEnabled', 'mfaFactorId', 'totpSecret', 'totpSecretEnc',
-    'mfaBackupHashes', 'mfaSessions', 'otp'
+    'mfaBackupHashes', 'mfaSessions', 'mfaLastCounter', 'otp'
   ];
   oldraw jsonb := COALESCE(OLD.raw_data, '{}'::jsonb);
   newraw jsonb := COALESCE(NEW.raw_data, '{}'::jsonb);

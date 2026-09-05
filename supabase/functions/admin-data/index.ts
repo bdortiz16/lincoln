@@ -121,10 +121,14 @@ function base32Decode(s: string): Uint8Array {
   }
   return new Uint8Array(out)
 }
-async function verifyTOTPServer(secret: string, token: string): Promise<boolean> {
+// Devuelve el CONTADOR de la ventana que acertó, o -1 si ninguna. Se
+// necesita el número (no un booleano) para rechazar el mismo código usado
+// dos veces: un código sigue siendo válido ~2,5 min, y en ese rato alguien
+// que lo vio por encima del hombro o lo capturó podía reutilizarlo.
+async function verifyTOTPServer(secret: string, token: string): Promise<number> {
   const code = String(token ?? '').replace(/\D/g, '')
-  if (code.length !== 6) return false
-  const key = base32Decode(secret); if (!key.length) return false
+  if (code.length !== 6) return -1
+  const key = base32Decode(secret); if (!key.length) return -1
   const ck = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-1' }, false, ['sign'])
   const now = Math.floor(Date.now() / 1000)
   for (let w = -2; w <= 2; w++) {
@@ -134,9 +138,9 @@ async function verifyTOTPServer(secret: string, token: string): Promise<boolean>
     const hmac = new Uint8Array(await crypto.subtle.sign('HMAC', ck, b))
     const off = hmac[hmac.length - 1] & 0x0f
     const bin = ((hmac[off] & 0x7f) << 24) | (hmac[off + 1] << 16) | (hmac[off + 2] << 8) | hmac[off + 3]
-    if ((bin % 1000000).toString().padStart(6, '0') === code) return true
+    if ((bin % 1000000).toString().padStart(6, '0') === code) return counter
   }
-  return false
+  return -1
 }
 
 // ── 2FA REAL: verificada en el SERVIDOR, no solo en la pantalla ───────────
@@ -371,6 +375,17 @@ Deno.serve(async (req: Request) => {
         return json({ ok: true, blocked })
       }
 
+      // ¿Esta SESIÓN ya superó el 2FA? Lo decide el servidor, no una marca
+      // del navegador. La app guardaba 'mfa_ok' en sessionStorage y confiaba
+      // en ella al restaurar: escribirla a mano en la consola abría el panel
+      // sin código. Ahora esa marca solo sirve de pista y la respuesta buena
+      // sale de aquí — el id de sesión viaja firmado dentro del JWT.
+      if (selfServiceBody.action === 'mfa_session_ok' && selfServiceBody.userId) {
+        if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
+        const err = await requireMfaSession(req, String(selfServiceBody.userId))
+        return json({ ok: true, verified: !err })
+      }
+
       // Consulta previa al login: dice si esta IP está bloqueada. Sirve para
       // frenar el intento en la pantalla; el bloqueo DURO vive en las acciones
       // que mueven dinero, que es donde importa.
@@ -463,7 +478,7 @@ Deno.serve(async (req: Request) => {
           const { data: curRaw } = await db.from('users').select('raw_data').eq('id', selfServiceBody.user.id).maybeSingle()
           const dbRaw = (((curRaw as any)?.raw_data) ?? {}) as Record<string, any>
           const incoming = ((userRow as any).raw_data ?? {}) as Record<string, any>
-          const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'gasfreeCreditedTxs', 'gasfreeCreditedCount', 'mfaEnabled', 'mfaFactorId', 'totpSecret', 'totpSecretEnc', 'mfaBackupHashes', 'mfaSessions', 'otp', 'subWallets']
+          const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'gasfreeCreditedTxs', 'gasfreeCreditedCount', 'mfaEnabled', 'mfaFactorId', 'totpSecret', 'totpSecretEnc', 'mfaBackupHashes', 'mfaSessions', 'mfaLastCounter', 'otp', 'subWallets']
           const merged: Record<string, any> = { ...dbRaw, ...incoming }
           for (const k of SERVER_OWNED) { if (k in dbRaw) merged[k] = dbRaw[k]; else delete merged[k] }
           // COLECCIONES del cliente (contactos, wallets, notificaciones): tienen
@@ -637,6 +652,23 @@ Deno.serve(async (req: Request) => {
       if (selfServiceBody.action === 'mfa_verify' && selfServiceBody.userId) {
         if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
         const code = String(selfServiceBody.code ?? '')
+        const uidV = String(selfServiceBody.userId)
+
+        // ── Límite de intentos ────────────────────────────────────────────
+        // Sin esto, el código de 6 dígitos se podía probar sin freno. Con la
+        // ventana de ±2 hay 5 códigos válidos a la vez sobre un millón: unos
+        // 200.000 intentos de media, cuestión de horas para un script. El
+        // 2FA existe precisamente para el caso en que YA te robaron la
+        // contraseña, así que dejarlo sin freno le quitaba casi todo el valor.
+        const sinceMfa = new Date(Date.now() - 15 * 60_000).toISOString()
+        const { data: recentMfa } = await db.from('audit_log').select('metadata')
+          .eq('action', 'auth.mfa_failed').gte('created_at', sinceMfa).limit(200)
+        const failsMfa = (recentMfa ?? []).filter((r: any) => r?.metadata?.userId === uidV).length
+        if (failsMfa >= 5) {
+          return json({ ok: false, error: 'too_many_attempts', message: 'Demasiados códigos incorrectos. Espera 15 minutos antes de volver a intentar.' }, 429)
+        }
+        const noteMfaFail = async (motivo: string) => { await auditAdmin(req, 'auth.mfa_failed', { userId: uidV, motivo }) }
+
         const { data: u } = await db.from('users').select('raw_data').eq('id', selfServiceBody.userId).single()
         const raw = ((u as any)?.raw_data ?? {}) as Record<string, any>
 
@@ -656,6 +688,7 @@ Deno.serve(async (req: Request) => {
             await rememberMfaSession(req, String(selfServiceBody.userId))
             return json({ ok: true, usedBackup: true, remaining: rest.length })
           }
+          await noteMfaFail('código de respaldo inválido')
           return json({ ok: false, error: 'backup_invalid' })
         }
 
@@ -676,11 +709,23 @@ Deno.serve(async (req: Request) => {
             hasBackupCodes: hashes.length > 0,
           })
         }
-        const ok = await verifyTOTPServer(secret, code)
+        const counter = await verifyTOTPServer(secret, code)
+        if (counter < 0) {
+          await noteMfaFail('código incorrecto')
+          return json({ ok: false })
+        }
+        // Un código ya usado NO vale una segunda vez, aunque su ventana siga
+        // abierta. Es lo que cierra la reutilización del código capturado.
+        const lastCounter = Number(raw.mfaLastCounter ?? -1)
+        if (Number.isFinite(lastCounter) && counter <= lastCounter) {
+          await noteMfaFail('código ya utilizado')
+          return json({ ok: false, error: 'code_reused', message: 'Ese código ya se usó. Espera al siguiente que muestre tu app.' })
+        }
+        await db.from('users').update({ raw_data: { ...raw, mfaLastCounter: counter } }).eq('id', uidV)
         // Queda constancia de QUÉ sesión superó el 2FA: es lo que después
         // exigen las acciones sensibles.
-        if (ok) await rememberMfaSession(req, String(selfServiceBody.userId))
-        return json({ ok })
+        await rememberMfaSession(req, uidV)
+        return json({ ok: true })
       }
 
       // ── 2FA: SALUD — ¿algún secreto quedó ilegible? ──────────────────────

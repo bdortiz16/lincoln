@@ -383,6 +383,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             // pestaña pero NO una pestaña/navegador nuevo → ahí sí re-pide 2FA.
             const mfaOn2 = !!(profile as any)?.raw_data?.mfaEnabled;
             let mfaOk = false; try { mfaOk = sessionStorage.getItem('mfa_ok') === '1'; } catch { /* */ }
+            // La marca local no basta: la confirma el servidor contra la
+            // sesión del JWT. Si dice que no, se vuelve a pedir el código.
+            if (mfaOn2 && mfaOk) mfaOk = await serverSaysMfaVerified((profile as any).id);
             if (mfaOn2 && !mfaOk && event !== 'TOKEN_REFRESHED') {
               setPendingMFAProfile(mapSupabaseUser(profile));
               setPendingMFAMode('custom');
@@ -415,6 +418,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
               // por SQL; el trigger guard_users_sensitive_cols bloquea el cambio.
               const mfaOnE = !!(existingByEmail as any)?.raw_data?.mfaEnabled;
               let mfaOkE = false; try { mfaOkE = sessionStorage.getItem('mfa_ok') === '1'; } catch { /* */ }
+              if (mfaOnE && mfaOkE) mfaOkE = await serverSaysMfaVerified((existingByEmail as any).id);
               if (mfaOnE && !mfaOkE && event !== 'TOKEN_REFRESHED') {
                 setPendingMFAProfile(mapSupabaseUser(existingByEmail));
                 setPendingMFAMode('custom');
@@ -769,6 +773,28 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     } catch { /* nunca rompe el login */ }
   };
 
+  // ¿El SERVIDOR reconoce esta sesión como verificada con 2FA? La marca
+  // 'mfa_ok' de sessionStorage se puede escribir a mano desde la consola del
+  // navegador, así que sirve para evitar un parpadeo, no para decidir. Ante
+  // la duda (red caída, respuesta rara) se responde NO: se vuelve a pedir el
+  // código, que es el lado seguro del error.
+  const serverSaysMfaVerified = async (userId: string): Promise<boolean> => {
+    try {
+      if (!SUPABASE_URL_FOR_FN) return false;
+      const token = getStoredToken();
+      if (!token) return false;
+      const r = await Promise.race([
+        fetch(`${SUPABASE_URL_FOR_FN}/functions/v1/admin-data`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_FOR_FN, Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ action: 'mfa_session_ok', userId }),
+        }).then(x => x.json()),
+        new Promise<any>(resolve => setTimeout(() => resolve(null), 5000)),
+      ]);
+      return r?.ok === true && r?.verified === true;
+    } catch { return false; }
+  };
+
   // Deja constancia de un intento de ingreso FALLIDO. El servidor le pone la
   // IP y la ubicación aproximada, cuenta los fallos de esa IP y la bloquea al
   // tercero en una hora. Nunca rompe ni demora el login: es fire-and-forget.
@@ -865,7 +891,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       // BORRABA/CAMBIABA (la wallet "cambiaba sola", el 2FA "se deshabilitaba").
       // Siempre se dejan como están en la BASE; y si no pudimos leer la base,
       // se OMITE raw_data por completo para no pisar nada.
-      const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'gasfreeCreditedTxs', 'gasfreeCreditedCount', 'mfaEnabled', 'totpSecret', 'totpSecretEnc', 'mfaBackupHashes', 'mfaSessions', 'otp', 'subWallets'];
+      const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'gasfreeCreditedTxs', 'gasfreeCreditedCount', 'mfaEnabled', 'totpSecret', 'totpSecretEnc', 'mfaBackupHashes', 'mfaSessions', 'mfaLastCounter', 'otp', 'subWallets'];
       // COLECCIONES del cliente que tienen su PROPIO escritor seguro
       // (updateUserRawData, merge dirigido): contactos, wallets inscritas,
       // notificaciones. saveUser NUNCA debe reescribirlas desde memoria — una
