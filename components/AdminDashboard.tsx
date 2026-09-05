@@ -85,6 +85,7 @@ import { AdminTreasuryPanel } from './AdminTreasuryPanel';
 import { AdminSecurityAgent } from './AdminSecurityAgent';
 import { AdminAccessPolicy } from './AdminAccessPolicy';
 import { AdminPasskeys } from './AdminPasskeys';
+import { AdminStepUp } from './AdminStepUp';
 import { AdminOtcSection } from './AdminOtcSection';
 import { Zap, ArrowLeftRight, ArrowLeft, Info, ChevronRight, Activity } from 'lucide-react';
 import { CollectionWalletCard } from './CollectionWalletCard';
@@ -800,6 +801,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     setMfaHealthBusy(false);
   };
   const adminMfaOn = !!((currentUser as any)?.mfaEnabled || (currentUser as any)?.raw_data?.mfaEnabled);
+
+  // Tesorería no se abre solo con la sesión: exige volver a probar el correo y
+  // el código de la app (y la llave, si la cuenta tiene alguna). Se vuelve a
+  // pedir cada vez que se entra a la sección — salir y volver a entrar no es
+  // un rodeo válido.
+  const [tesoreriaOk, setTesoreriaOk] = useState(false);
+  useEffect(() => { if (activeTab !== 'treasury') setTesoreriaOk(false); }, [activeTab]);
   const startMfaEnroll = async () => {
     setMfaBusy(true); setMfaMsg(null);
     try {
@@ -4290,7 +4298,15 @@ const renderDesign = () => (
                 {activeTab === 'monitoreo' && <AdminMonitor />}
                 {activeTab === 'clients' && renderClients()}
                 {activeTab === 'marketing' && renderMarketing()}
-                {activeTab === 'treasury' && renderTreasury()}
+                {activeTab === 'treasury' && (tesoreriaOk ? renderTreasury() : (
+                  <div className="py-8">
+                    <AdminStepUp
+                      userId={currentUser?.id ?? ''}
+                      motivo="Para entrar a Tesorería"
+                      onListo={() => setTesoreriaOk(true)}
+                    />
+                  </div>
+                ))}
                 {activeTab === 'cargues' && renderCargues()}
                 {activeTab === 'reports' && renderReports()}
                 {activeTab === 'config' && renderConfig()}

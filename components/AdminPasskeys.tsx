@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { KeyRound, Plus, X, Fingerprint, ShieldCheck, AlertTriangle } from 'lucide-react';
 import { soportaPasskey, tienePasskeyDelDispositivo, crearPasskey, firmarConPasskey, explicarErrorPasskey } from '../lib/webauthn';
+import { AdminStepUp } from './AdminStepUp';
 
 // ─────────────────────────────────────────────────────────────
 // AdminPasskeys — las llaves físicas de la cuenta del panel.
@@ -50,6 +51,10 @@ export const AdminPasskeys: React.FC<{ userId: string }> = ({ userId }) => {
   const [busy, setBusy] = useState(false);
   const [nombre, setNombre] = useState('');
   const [hayLector, setHayLector] = useState<boolean | null>(null);
+  // Registrar o quitar una llave cambia la puerta de entrada. El servidor
+  // exige volver a probar el correo y el código de la app; cuando responde
+  // que falta, se muestra aquí mismo y se reintenta lo que se estaba haciendo.
+  const [pidiendo, setPidiendo] = useState<null | (() => void)>(null);
 
   const soportado = soportaPasskey();
 
@@ -71,6 +76,7 @@ export const AdminPasskeys: React.FC<{ userId: string }> = ({ userId }) => {
     setBusy(true); setMsg(null); setError(null);
     try {
       const o = await call({ action: 'passkey_register_options', userId });
+      if (o?.error === 'step_up') { setBusy(false); setPidiendo(() => registrar); return; }
       if (!o?.ok) throw new Error(o?.message ?? o?.error ?? 'No se pudo iniciar el registro.');
       const credential = await crearPasskey(o.options);
       const v = await call({
@@ -105,10 +111,24 @@ export const AdminPasskeys: React.FC<{ userId: string }> = ({ userId }) => {
   const borrar = async (id: string) => {
     setBusy(true); setMsg(null); setError(null);
     const d = await call({ action: 'passkey_delete', userId, passkeyId: id }).catch(() => null);
+    if (d?.error === 'step_up') { setBusy(false); setPidiendo(() => () => borrar(id)); return; }
     if (d?.ok) { setLlaves(d.passkeys ?? []); setMsg('Llave eliminada.'); }
     else setError(d?.message ?? 'No se pudo eliminar.');
     setBusy(false);
   };
+
+  // Mientras el servidor pide verificación, la tarjeta se reemplaza por ella.
+  if (pidiendo) {
+    return (
+      <AdminStepUp
+        userId={userId}
+        motivo="Para cambiar las llaves de tu cuenta"
+        sinPasskey
+        onCancelar={() => setPidiendo(null)}
+        onListo={() => { const seguir = pidiendo; setPidiendo(null); seguir(); }}
+      />
+    );
+  }
 
   return (
     <div style={{ fontFamily: FONT, color: C.text, background: C.card, border: `1px solid ${C.border2}`, borderRadius: 16, padding: 18 }}>

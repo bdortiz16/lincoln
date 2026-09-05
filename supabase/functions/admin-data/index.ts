@@ -289,6 +289,64 @@ async function tomarChallenge(userId: string): Promise<string | null> {
   } catch { return null }
 }
 
+// ── Verificación reforzada ───────────────────────────────────────────────
+// Que la sesión haya pasado el 2FA AL ENTRAR no alcanza para lo que mueve
+// dinero. Una sesión abierta hace horas —o robada— sigue siendo válida. Esto
+// exige volver a probar los factores AHORA, con vencimiento corto:
+//
+//   · el código del correo   (siempre)
+//   · el código de la app    (siempre)
+//   · la llave del dispositivo (solo si la cuenta tiene alguna registrada)
+//
+// Se anota por SESIÓN, no por cuenta: verificar en el computador no habilita
+// el teléfono. Vive en system_config y no en el perfil, para no pelear con
+// las escrituras de raw_data.
+const STEP_UP_TTL_MS = 30 * 60_000
+function stepUpKey(userId: string) { return `stepup_${userId}` }
+type StepUpSesion = { email?: number; app?: number; passkey?: number }
+
+async function leerStepUp(userId: string): Promise<Record<string, StepUpSesion>> {
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', stepUpKey(userId)).single()
+    return data?.value ? JSON.parse(data.value) : {}
+  } catch { return {} }
+}
+
+// Si el token no trae id de sesión (GoTrue antiguo), se anota bajo una clave
+// común en vez de descartar la marca. Queda más flojo —no distingue
+// dispositivos— pero no deja al titular dando vueltas verificando algo que
+// nunca se guarda, que es la única falla peor que la anterior.
+const SIN_SESION = '__sin_sesion__'
+
+async function marcarFactor(req: Request, userId: string, factor: 'email' | 'app' | 'passkey') {
+  const sid = sessionIdOf(req) ?? SIN_SESION
+  try {
+    const todo = await leerStepUp(userId)
+    const vivas: Record<string, StepUpSesion> = {}
+    // Se descartan las sesiones cuyos factores ya vencieron: sin esta poda la
+    // fila crecería sola con cada dispositivo que alguna vez entró.
+    for (const [s, v] of Object.entries(todo)) {
+      const ult = Math.max(Number(v?.email ?? 0), Number(v?.app ?? 0), Number(v?.passkey ?? 0))
+      if (Date.now() - ult < STEP_UP_TTL_MS) vivas[s] = v
+    }
+    vivas[sid] = { ...(vivas[sid] ?? {}), [factor]: Date.now() }
+    await db.from('system_config').upsert({ key: stepUpKey(userId), value: JSON.stringify(vivas) }, { onConflict: 'key' })
+  } catch { /* si no se puede anotar, la acción sensible vuelve a pedirlo */ }
+}
+
+// Qué factores le FALTAN a esta sesión para operar. Vacío = puede seguir.
+async function stepUpFalta(req: Request, userId: string): Promise<string[]> {
+  const sid = sessionIdOf(req) ?? SIN_SESION
+  const vigente = (t: unknown) => !!t && (Date.now() - Number(t) < STEP_UP_TTL_MS)
+  const tienePasskey = (await passkeysDe(userId)).length > 0
+  const est: StepUpSesion = (await leerStepUp(userId))[sid] ?? {}
+  const falta: string[] = []
+  if (!vigente(est.email)) falta.push('email')
+  if (!vigente(est.app)) falta.push('app')
+  if (tienePasskey && !vigente(est.passkey)) falta.push('passkey')
+  return falta
+}
+
 // La llave pública es binaria; se guarda en base64url para que quepa en el
 // JSON de system_config y vuelva a salir idéntica.
 function bytesAB64u(b: Uint8Array): string {
@@ -769,6 +827,7 @@ Deno.serve(async (req: Request) => {
         }
         // Primer paso superado. NO abre la sesión: falta el código de la app.
         await rememberMfaSession(req, uidE, 'email')
+        await marcarFactor(req, uidE, 'email')
         return json({ ok: true, needsAppCode: true })
       }
 
@@ -1151,6 +1210,7 @@ Deno.serve(async (req: Request) => {
               }
             }
             await rememberMfaSession(req, String(selfServiceBody.userId), 'full')
+            await marcarFactor(req, uidV, 'app')
             return json({ ok: true, usedBackup: true, remaining: rest.length })
           }
           await noteMfaFail('código de respaldo inválido')
@@ -1210,6 +1270,7 @@ Deno.serve(async (req: Request) => {
             return json({ ok: false, error: 'email_step_missing', message: 'Completa la verificación anterior.' })
           }
           await rememberMfaSession(req, uidV, 'full')
+          await marcarFactor(req, uidV, 'app')
           await auditAdmin(req, 'auth.login_2fa_completo', { userId: uidV })
           return json({ ok: true })
         }
@@ -1217,7 +1278,24 @@ Deno.serve(async (req: Request) => {
         // Queda constancia de QUÉ sesión superó el 2FA: es lo que después
         // exigen las acciones sensibles.
         await rememberMfaSession(req, uidV)
+        await marcarFactor(req, uidV, 'app')
         return json({ ok: true })
+      }
+
+      // ── ¿Qué le falta a esta sesión para operar? ─────────────────────────
+      // Lo consulta la pantalla antes de abrir Tesorería o de administrar las
+      // llaves. La respuesta la decide el servidor: la pantalla no puede
+      // darse por verificada sola.
+      if (selfServiceBody.action === 'step_up_status' && selfServiceBody.userId) {
+        const uidS = String(selfServiceBody.userId)
+        if (!(await verifySelfOrAdmin(req, uidS))) return json({ error: 'No autorizado' }, 401)
+        if (!(await esAdminUid(uidS))) return json({ error: 'No autorizado' }, 401)
+        return json({
+          ok: true,
+          falta: await stepUpFalta(req, uidS),
+          tienePasskey: (await passkeysDe(uidS)).length > 0,
+          minutos: Math.round(STEP_UP_TTL_MS / 60_000),
+        })
       }
 
       // ── PASSKEY ─────────────────────────────────────────────────────────
@@ -1249,6 +1327,20 @@ Deno.serve(async (req: Request) => {
           || accion === 'passkey_register_verify' || accion === 'passkey_delete') {
           const mfaErr = await requireMfaSession(req, uidP)
           if (mfaErr) return json({ ok: false, error: 'needs_2fa', message: mfaErr }, 403)
+
+          // Dar de alta o quitar una llave exige volver a probar el correo Y
+          // el código de la app, aquí y ahora. Una sesión abierta hace horas
+          // —o robada— no basta para cambiar la puerta de entrada.
+          //
+          // La LLAVE no se exige a propósito, aunque ya haya una registrada:
+          // esta pantalla es justo donde se sale de un dispositivo perdido.
+          // Exigirla convertiría perder el teléfono en perder el panel.
+          if (accion !== 'passkey_list') {
+            const falta = (await stepUpFalta(req, uidP)).filter(f => f !== 'passkey')
+            if (falta.length) {
+              return json({ ok: false, error: 'step_up', falta, message: 'Verifica tu identidad para administrar tus llaves.' }, 403)
+            }
+          }
 
           if (accion === 'passkey_list') {
             return json({ ok: true, passkeys: publico(await passkeysDe(uidP)), rpId: RP_ID })
@@ -1380,6 +1472,7 @@ Deno.serve(async (req: Request) => {
             await db.from('audit_log').delete().eq('action', 'auth.mfa_failed').gte('created_at', desdeP).contains('metadata', { userId: uidP })
           } catch { /* el límite se vence solo */ }
           await rememberMfaSession(req, uidP, 'full')
+          await marcarFactor(req, uidP, 'passkey')
           await auditAdmin(req, 'auth.login_passkey', { userId: uidP, llave: guardada.nombre })
           return json({ ok: true })
         }
@@ -1531,6 +1624,22 @@ Deno.serve(async (req: Request) => {
       if (SENSITIVE_ADMIN_ACTIONS.has(String(body.action))) {
         const mfaErr = await requireMfaSession(req, auth.userId)
         if (mfaErr) return json({ error: mfaErr, needs2fa: true }, 403)
+      }
+
+      // TESORERÍA: además del 2FA de la sesión, exige la verificación
+      // reforzada —correo + código de la app, y la llave si la cuenta tiene
+      // alguna— hecha hace menos de media hora. Es lo que impide que una
+      // sesión robada, ya abierta, mueva plata: el atacante tendría que
+      // volver a tener el correo, el teléfono y la llave física en el momento.
+      const TESORERIA_ACTIONS = new Set([
+        'admin_credit_balance', 'admin_credit_crypto', 'credit_conversion_fee',
+        'approve_rail_move', 'reject_rail_move',
+      ])
+      if (TESORERIA_ACTIONS.has(String(body.action))) {
+        const falta = await stepUpFalta(req, String(auth.userId ?? ''))
+        if (falta.length) {
+          return json({ error: 'Verifica tu identidad para operar en Tesorería.', stepUp: true, falta }, 403)
+        }
       }
 
       // ── Registro de AUDITORÍA (admin-only) — quién cambió qué y cuándo ──
