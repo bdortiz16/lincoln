@@ -118,6 +118,9 @@ interface DatabaseContextType {
   sendCuypayPayment: (recipientCode: string, amount: number, currency: string) => Promise<{ error?: string }>;
   mfaPending: boolean;
   mfaErrorDetail: string | null;
+  loginErrorDetail: string | null;
+  getLoginError: () => string | null;
+  getMfaError: () => string | null;
   completeMFALogin: (code: string) => Promise<User | null>;
   emailStepPending: boolean;
   emailMaskedTo: string | null;
@@ -299,6 +302,16 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   // Motivo real del fallo de verificación 2FA (para no mostrar siempre
   // "código incorrecto" cuando en realidad falló otra cosa).
   const [mfaErrorDetail, setMfaErrorDetail] = useState<string | null>(null);
+  // Motivo REAL del fallo de ingreso. "Credenciales incorrectas" se mostraba
+  // para todo — CAPTCHA rechazado, cuenta sin confirmar, red caída — y no
+  // había forma de saber qué arreglar.
+  const [loginErrorDetail, setLoginErrorDetail] = useState<string | null>(null);
+  // El ref se lee AL INSTANTE. Con solo estado, quien llama leía el valor del
+  // render anterior y el motivo salía un intento tarde — o no salía.
+  const loginErrorRef = useRef<string | null>(null);
+  const mfaErrorRef = useRef<string | null>(null);
+  const setLoginError = (v: string | null) => { loginErrorRef.current = v; setLoginErrorDetail(v); };
+  const setMfaError2 = (v: string | null) => { mfaErrorRef.current = v; setMfaErrorDetail(v); };
   // Tracks when a local write is in progress so fetchData doesn't overwrite optimistic state
   const pendingWriteUntilRef = useRef<number>(0);
   // Ids de usuario que comparten el correo del usuario actual (por si hay
@@ -1164,6 +1177,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     // solo debe durar mientras la sesión ya verificada se refresca). Sin esto,
     // un logout+login en la MISMA pestaña se saltaba el 2FA.
     try { sessionStorage.removeItem('mfa_ok'); } catch { /* */ }
+    setLoginError(null);
     // Opciones de auth con el token del CAPTCHA (si Turnstile está activo).
     const authOpts = captchaToken ? { captchaToken } : undefined;
 
@@ -1220,6 +1234,25 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       authTimeout,
     ]);
     if (error) {
+      // Traducir el motivo REAL antes de caer a los respaldos. Un CAPTCHA
+      // rechazado y una contraseña mala no se arreglan igual, y hasta ahora
+      // los dos decían lo mismo.
+      {
+        const m = String((error as any)?.message ?? '').toLowerCase();
+        setLoginError(
+          m.includes('captcha')
+            ? 'La verificación anti-bot (CAPTCHA) rechazó el intento. Recarga la página y vuelve a marcarla — el código del CAPTCHA sirve una sola vez.'
+          : m.includes('email not confirmed') || m.includes('not confirmed')
+            ? 'La cuenta existe pero el correo no está confirmado. Confírmalo en Authentication → Users.'
+          : m.includes('invalid login credentials')
+            ? 'Correo o contraseña incorrectos.'
+          : m.includes('timeout') || m.includes('fetch')
+            ? 'No hubo respuesta del servidor de autenticación. Revisa tu conexión.'
+          : m.includes('rate') || m.includes('too many')
+            ? 'Demasiados intentos. Espera unos minutos.'
+          : `No se pudo iniciar sesión: ${(error as any)?.message ?? 'error desconocido'}`
+        );
+      }
       // Any Supabase Auth error → fall back to DB lookup (covers 400 invalid creds, 500 server, timeout, site URL issues)
       {
         console.warn('[loginUser] Supabase Auth error, trying DB fallback:', error.message);
@@ -1398,7 +1431,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
         body: JSON.stringify({ action: 'mfa_verify_email', userId: pendingMFAProfile.id, code }),
       }).then(x => x.json()).catch(() => null);
-      if (!r?.ok) { setMfaErrorDetail(r?.message ?? 'Código de correo incorrecto o vencido.'); return null; }
+      if (!r?.ok) { setMfaError2(r?.message ?? 'Código de correo incorrecto o vencido.'); return null; }
       const user = pendingMFAProfile;
       try { sessionStorage.setItem('mfa_ok', '1'); } catch { /* */ }
       setCurrentUser(user);
@@ -1407,7 +1440,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       setPendingMFAProfile(null);
       logAdminLogin(user);
       return user;
-    } catch { setMfaErrorDetail('No se pudo verificar el código del correo.'); return null; }
+    } catch { setMfaError2('No se pudo verificar el código del correo.'); return null; }
   };
 
   const resendEmailCode = async (): Promise<boolean> => {
@@ -1458,7 +1491,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             : r?.error === 'No autorizado'
               ? 'La sesión no autorizó la verificación. Vuelve a intentar el inicio de sesión.'
               : r?.error ? `Verificación rechazada: ${r.error}` : null;
-          setMfaErrorDetail(why);
+          setMfaError2(why);
           // Un código de 2FA rechazado también es un intento fallido: es la
           // señal más clara de que alguien ya tiene la contraseña. PERO un
           // rechazo por límite de intentos NO es un código malo — contarlo
@@ -1475,7 +1508,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         if (r?.needsEmailCode) {
           setEmailStepPending(true);
           setEmailMaskedTo(r?.to ?? null);
-          setMfaErrorDetail(null);
+          setMfaError2(null);
           return null;
         }
         const user = pendingMFAProfile;
@@ -2346,7 +2379,8 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       bankingOptions, treasuryAccounts, getAllUsers, getAllTransactions, updateTxStatus, getAllPendingDeposits, getAllPendingWithdrawals,
       getTransactionHistory, getAdminTeam, addAdminUser, updateAdminUser, deleteAdminUser, deleteUser, registerInternalMovement,
       updateBankList, restoreDatabase, sendPasswordReset, isPasswordRecovery, setNewPassword, sendCuypayPayment,
-      mfaPending, mfaErrorDetail, completeMFALogin, cancelMFALogin,
+      mfaPending, mfaErrorDetail, loginErrorDetail, completeMFALogin, cancelMFALogin,
+      getLoginError: () => loginErrorRef.current, getMfaError: () => mfaErrorRef.current,
       emailStepPending, emailMaskedTo, completeEmailLogin, resendEmailCode,
       enrollMFA, verifyMFAEnrollment, unenrollMFA, getMFAStatus, verifyMfaCode,
     }}>

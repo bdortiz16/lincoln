@@ -32,7 +32,7 @@ if (typeof window !== 'undefined' &&
 }
 
 const AdminEmpresasInner: React.FC = () => {
-    const { currentUser, isAuthLoading, loginUser, logoutUser, mfaPending, mfaErrorDetail, completeMFALogin, cancelMFALogin, emailStepPending, emailMaskedTo, completeEmailLogin, resendEmailCode } = useDatabase();
+    const { currentUser, isAuthLoading, loginUser, logoutUser, mfaPending, getMfaError, getLoginError, completeMFALogin, cancelMFALogin, emailStepPending, emailMaskedTo, completeEmailLogin, resendEmailCode } = useDatabase();
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [submitting, setSubmitting] = useState(false);
@@ -61,7 +61,7 @@ const AdminEmpresasInner: React.FC = () => {
             if (result === 'MFA_REQUIRED') { setSubmitting(false); return; }
             const user = result;
             if (!user) {
-                setError('Credenciales incorrectas.');
+                setError(getLoginError() ?? 'Credenciales incorrectas.');
             } else if (user.role !== 'admin') {
                 setError('Esta cuenta no tiene permisos de administrador.');
                 await logoutUser();
@@ -87,7 +87,7 @@ const AdminEmpresasInner: React.FC = () => {
         setVerifying(true); setMfaError(null);
         try {
             const user = await completeEmailLogin(emailCode);
-            if (!user) setMfaError(mfaErrorDetail ?? 'Código de correo incorrecto o vencido.');
+            if (!user) setMfaError(getMfaError() ?? 'Código de correo incorrecto o vencido.');
             else if (user.role !== 'admin') { setMfaError('Esta cuenta no tiene permisos de administrador.'); await logoutUser(); }
         } catch { setMfaError('No se pudo verificar. Intenta de nuevo.'); }
         setVerifying(false);
@@ -99,7 +99,7 @@ const AdminEmpresasInner: React.FC = () => {
         setVerifying(true); setMfaError(null);
         try {
             const user = await completeMFALogin(mfaCode);
-            if (!user) setMfaError(mfaErrorDetail ?? 'Código incorrecto o vencido. Ingresa el código actual de tu app.');
+            if (!user) setMfaError(getMfaError() ?? 'Código incorrecto o vencido. Ingresa el código actual de tu app.');
             else if (user.role !== 'admin') { setMfaError('Esta cuenta no tiene permisos de administrador.'); await logoutUser(); }
             // Si es admin, currentUser se setea y el render cambia solo.
         } catch { setMfaError('No se pudo verificar. Intenta de nuevo.'); }
