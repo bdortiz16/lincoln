@@ -32,7 +32,7 @@ if (typeof window !== 'undefined' &&
 }
 
 const AdminEmpresasInner: React.FC = () => {
-    const { currentUser, isAuthLoading, loginUser, logoutUser, mfaPending, getMfaError, getLoginError, completeMFALogin, isPasswordRecovery, setNewPassword, cancelMFALogin, emailStepPending, emailMaskedTo, completeEmailLogin, resendEmailCode } = useDatabase();
+    const { currentUser, isAuthLoading, loginUser, logoutUser, mfaPending, getMfaError, getLoginError, completeMFALogin, isPasswordRecovery, setNewPassword, cancelMFALogin, emailStepPending, completeEmailLogin, resendEmailCode } = useDatabase();
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [submitting, setSubmitting] = useState(false);
@@ -90,9 +90,12 @@ const AdminEmpresasInner: React.FC = () => {
         if (emailCode.length !== 6 || verifying) return;
         setVerifying(true); setMfaError(null);
         try {
-            const user = await completeEmailLogin(emailCode);
-            if (!user) setMfaError(getMfaError() ?? 'Código de correo incorrecto o vencido.');
-            else if (user.role !== 'admin') { setMfaError('Esta cuenta no tiene permisos de administrador.'); await logoutUser(); }
+            await completeEmailLogin(emailCode);
+            // Si hubo error, el contexto lo deja escrito; si no, la pantalla
+            // avanza sola al paso del código de la app.
+            const err = getMfaError();
+            if (err) setMfaError(err);
+            setEmailCode('');
         } catch { setMfaError('No se pudo verificar. Intenta de nuevo.'); }
         setVerifying(false);
     };
@@ -166,7 +169,7 @@ const AdminEmpresasInner: React.FC = () => {
                             <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl p-2.5">
                                 <ShieldCheck size={16} className="text-[#16A34A]" />
                                 <p className="text-xs text-slate-600">
-                                    Paso 2 de 2. Te enviamos un código a {emailMaskedTo ?? 'tu correo'}. Ingrésalo para terminar de entrar.
+                                    Paso 1 de 2. Te enviamos un código de 6 dígitos a tu correo. Ingrésalo para continuar.
                                 </p>
                             </div>
                             <input
@@ -180,7 +183,7 @@ const AdminEmpresasInner: React.FC = () => {
                             {mfaError && <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-xl p-2.5">{mfaError}</p>}
                             {resendMsg && <p className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-xl p-2.5">{resendMsg}</p>}
                             <button type="submit" disabled={verifying || emailCode.length !== 6} style={{ color: '#FFFFFF' }} className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#152e52] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60 transition-colors">
-                                <Lock size={14} /> {verifying ? 'Verificando…' : 'Entrar'}
+                                <Lock size={14} /> {verifying ? 'Verificando…' : 'Continuar'}
                             </button>
                             <button type="button" onClick={async () => { setResendMsg('Enviando…'); const ok = await resendEmailCode(); setResendMsg(ok ? 'Te reenviamos el código. Revisa tu correo.' : 'No se pudo reenviar. Espera un momento.'); }} className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-800 underline">
                                 No me llegó — reenviar código
@@ -195,7 +198,7 @@ const AdminEmpresasInner: React.FC = () => {
                                 <ShieldCheck size={16} className="text-[#16A34A]" />
                                 <p className="text-xs text-slate-600">{useBackup
                                     ? 'Ingresa uno de tus códigos de respaldo (formato XXXX-XXXX). Cada uno sirve una sola vez.'
-                                    : 'Verificación en dos pasos. Ingresa el código de 6 dígitos de tu app de autenticación.'}</p>
+                                    : 'Paso 2 de 2. Ahora ingresa el código de 6 dígitos de tu app de autenticación.'}</p>
                             </div>
                             <input
                                 value={mfaCode}

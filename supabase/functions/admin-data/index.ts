@@ -112,7 +112,10 @@ function sessionIdOf(req: Request): string | null {
   } catch { return null }
 }
 
-async function rememberMfaSession(req: Request, userId: string) {
+// stage 'email' = pasó el código del correo; 'full' = pasó los DOS factores.
+// Solo 'full' habilita la sesión: así el orden no se puede saltar mandando
+// directamente el segundo paso.
+async function rememberMfaSession(req: Request, userId: string, stage: 'email' | 'full' = 'full') {
   const sid = sessionIdOf(req)
   if (!sid) return
   try {
@@ -120,9 +123,21 @@ async function rememberMfaSession(req: Request, userId: string) {
     const raw = { ...((u as any)?.raw_data ?? {}) }
     const list: any[] = Array.isArray(raw.mfaSessions) ? raw.mfaSessions : []
     const rest = list.filter((x: any) => x?.sid !== sid)
-    raw.mfaSessions = [{ sid, at: new Date().toISOString() }, ...rest].slice(0, 5)
+    raw.mfaSessions = [{ sid, at: new Date().toISOString(), stage }, ...rest].slice(0, 5)
     await db.from('users').update({ raw_data: raw }).eq('id', userId)
   } catch { /* si no se puede anotar, la acción sensible pedirá 2FA de nuevo */ }
+}
+
+// ¿Esta sesión ya superó el código del CORREO (primer paso)? Vale 15 minutos.
+async function emailStagePassed(req: Request, userId: string): Promise<boolean> {
+  const sid = sessionIdOf(req)
+  if (!sid) return true   // token sin claim de sesión: no se puede distinguir
+  try {
+    const { data: u } = await db.from('users').select('raw_data').eq('id', userId).single()
+    const list: any[] = Array.isArray((u as any)?.raw_data?.mfaSessions) ? (u as any).raw_data.mfaSessions : []
+    const hit = list.find((x: any) => x?.sid === sid && (x?.stage === 'email' || x?.stage === 'full'))
+    return !!hit && (Date.now() - new Date(hit.at).getTime() < 15 * 60_000)
+  } catch { return false }
 }
 
 // Devuelve un mensaje de error si la sesión que llama NO pasó por el 2FA.
@@ -140,7 +155,7 @@ async function requireMfaSession(req: Request, userId: string | undefined): Prom
     // bloquear aquí dejaría al admin sin panel. No es forjable de todos modos.
     if (!sid) return null
     const list: any[] = Array.isArray(raw.mfaSessions) ? raw.mfaSessions : []
-    const hit = list.find((x: any) => x?.sid === sid)
+    const hit = list.find((x: any) => x?.sid === sid && (x?.stage ?? 'full') === 'full')
     if (!hit) return 'Esta sesión no verificó el segundo factor. Vuelve a iniciar sesión e ingresa tu código.'
     if (Date.now() - new Date(hit.at).getTime() > MFA_SESSION_TTL_MS) {
       return 'La verificación en dos pasos de esta sesión venció. Vuelve a iniciar sesión.'
@@ -430,9 +445,24 @@ Deno.serve(async (req: Request) => {
           await auditAdmin(req, 'auth.mfa_failed', { userId: uidE, motivo: 'código de correo incorrecto', tipo: 'correo' })
           return json({ ok: false, message: r?.message ?? 'Código de correo incorrecto o vencido.' })
         }
-        await rememberMfaSession(req, uidE)
-        await auditAdmin(req, 'auth.login_2fa_completo', { userId: uidE })
-        return json({ ok: true })
+        // Primer paso superado. NO abre la sesión: falta el código de la app.
+        await rememberMfaSession(req, uidE, 'email')
+        return json({ ok: true, needsAppCode: true })
+      }
+
+      // Arranca el ingreso: manda el código al correo del titular. NO devuelve
+      // a qué dirección se envió — quien está entrando ya debería saberlo, y
+      // mostrarlo le confirmaría el correo a quien no es el dueño.
+      if (selfServiceBody.action === 'mfa_start_login' && selfServiceBody.userId) {
+        if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
+        const r = await fetch(`${SUPABASE_URL}/functions/v1/email-otp`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+          body: JSON.stringify({ action: 'send', userId: String(selfServiceBody.userId) }),
+        }).then(x => x.json()).catch(() => null)
+        if (r?.ok) return json({ ok: true, throttled: !!r.throttled })
+        await auditAdmin(req, 'auth.email_2fa_unavailable', { userId: String(selfServiceBody.userId), motivo: r?.error ?? 'sin respuesta' })
+        return json({ ok: false, error: 'email_code_unavailable', message: 'No se pudo enviar el código a tu correo, así que el ingreso no puede continuar.' })
       }
 
       // Reenviar el código del correo si no llegó.
@@ -776,17 +806,10 @@ Deno.serve(async (req: Request) => {
             const rest = hashes.filter((_, i) => i !== idx)
             await db.from('users').update({ raw_data: { ...raw, mfaBackupHashes: rest } }).eq('id', selfServiceBody.userId)
             await auditAdmin(req, 'mfa_backup_code_used', { userId: selfServiceBody.userId, remaining: rest.length })
-            if (String(selfServiceBody.stage ?? '') === 'login') {
-              const sentB = await fetch(`${SUPABASE_URL}/functions/v1/email-otp`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
-                body: JSON.stringify({ action: 'send', userId: String(selfServiceBody.userId) }),
-              }).then(x => x.json()).catch(() => null)
-              if (sentB?.ok) return json({ ok: true, usedBackup: true, remaining: rest.length, needsEmailCode: true, to: sentB.to ?? null })
-              await auditAdmin(req, 'auth.email_2fa_unavailable', { userId: uidV, motivo: sentB?.error ?? 'sin respuesta' })
-              return json({ ok: false, error: 'email_code_unavailable', message: 'No se pudo enviar el código a tu correo, así que el ingreso no se completó.' })
+            if (String(selfServiceBody.stage ?? '') === 'login' && !(await emailStagePassed(req, uidV))) {
+              return json({ ok: false, error: 'email_step_missing', message: 'Primero tienes que validar el código que te llega al correo.' })
             }
-            await rememberMfaSession(req, String(selfServiceBody.userId))
+            await rememberMfaSession(req, String(selfServiceBody.userId), 'full')
             return json({ ok: true, usedBackup: true, remaining: rest.length })
           }
           await noteMfaFail('código de respaldo inválido')
@@ -827,25 +850,17 @@ Deno.serve(async (req: Request) => {
         // es el dueño no debe arrastrar un contador que lo bloquee después.
         try { await db.from('audit_log').delete().eq('action', 'auth.mfa_failed').gte('created_at', sinceMfa).contains('metadata', { userId: uidV }) } catch { /* el límite se vence solo */ }
 
-        // ── Segundo factor del INGRESO: código al correo ──────────────────
-        // El código de la app y el correo son cosas distintas: el primero está
-        // en el teléfono, el segundo en el buzón. Quien robe uno no tiene el
-        // otro. La sesión NO queda verificada hasta que pasen los dos.
+        // ── Orden del ingreso: PRIMERO el correo, DESPUÉS la app ──────────
+        // El código del correo es el paso indispensable. Este es el segundo:
+        // solo se acepta si el del correo ya se superó en esta misma sesión,
+        // así el orden no se puede saltar llamando directo a este paso.
         if (String(selfServiceBody.stage ?? '') === 'login') {
-          const sent = await fetch(`${SUPABASE_URL}/functions/v1/email-otp`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
-            body: JSON.stringify({ action: 'send', userId: uidV }),
-          }).then(r => r.json()).catch(() => null)
-          if (sent?.ok) return json({ ok: true, needsEmailCode: true, to: sent.to ?? null, throttled: !!sent.throttled })
-          // El código de correo es OBLIGATORIO: si no se puede enviar, NO se
-          // abre la sesión. Antes se dejaba entrar solo con el código de la
-          // app para no encerrar al titular, pero eso convertía una falla de
-          // correo en una protección menos — y sin que nadie se enterara.
-          // La salida de emergencia es por SQL, documentada, no un atajo
-          // automático que un atacante podría provocar tumbando el correo.
-          await auditAdmin(req, 'auth.email_2fa_unavailable', { userId: uidV, motivo: sent?.error ?? 'sin respuesta' })
-          return json({ ok: false, error: 'email_code_unavailable', message: 'No se pudo enviar el código a tu correo, así que el ingreso no se completó. Revisa la configuración de envío de correo e intenta de nuevo.' })
+          if (!(await emailStagePassed(req, uidV))) {
+            return json({ ok: false, error: 'email_step_missing', message: 'Primero tienes que validar el código que te llega al correo.' })
+          }
+          await rememberMfaSession(req, uidV, 'full')
+          await auditAdmin(req, 'auth.login_2fa_completo', { userId: uidV })
+          return json({ ok: true })
         }
 
         // Queda constancia de QUÉ sesión superó el 2FA: es lo que después

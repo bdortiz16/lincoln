@@ -123,9 +123,9 @@ interface DatabaseContextType {
   getMfaError: () => string | null;
   completeMFALogin: (code: string) => Promise<User | null>;
   emailStepPending: boolean;
-  emailMaskedTo: string | null;
   completeEmailLogin: (code: string) => Promise<User | null>;
   resendEmailCode: () => Promise<boolean>;
+  startEmailStep: (userId: string) => Promise<boolean>;
   cancelMFALogin: () => void;
   enrollMFA: () => Promise<{ qrCode: string; secret: string; factorId: string } | null>;
   verifyMFAEnrollment: (factorId: string, code: string, secret?: string) => Promise<{ ok: boolean; error?: string; backupCodes?: string[] }>;
@@ -301,7 +301,6 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   const [mfaPending, setMfaPending] = useState(false);
   // Paso 2 del ingreso: código enviado al correo del titular.
   const [emailStepPending, setEmailStepPending] = useState(false);
-  const [emailMaskedTo, setEmailMaskedTo] = useState<string | null>(null);
   const [pendingMFAProfile, setPendingMFAProfile] = useState<User | null>(null);
   // 'custom' = TOTP nuestro (raw_data.mfaEnabled, verifica vía mfa_verify);
   // 'native' = MFA de Supabase Auth (challenge/verify). Decide cómo verificar
@@ -1222,6 +1221,8 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
               setPendingMFAProfile(u);
               setPendingMFAMode('custom');
               setMfaPending(true);
+              setEmailStepPending(true);   // PRIMER paso: el correo
+              startEmailStep(u.id);
               return 'MFA_REQUIRED';
             }
             setCurrentUser(u);
@@ -1444,6 +1445,8 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       setPendingMFAProfile(user);
       setPendingMFAMode('custom');
       setMfaPending(true);
+      setEmailStepPending(true);   // PRIMER paso: el correo
+      startEmailStep(user.id);
       return 'MFA_REQUIRED';
     }
 
@@ -1466,6 +1469,20 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   };
 
   // Segundo paso del ingreso: el código que llega al correo.
+  // Arranca el ingreso mandando el código al correo. Es el PRIMER paso.
+  const startEmailStep = async (userId: string): Promise<boolean> => {
+    try {
+      const SURL = SUPABASE_URL_FOR_FN, SKEY = SUPABASE_ANON_FOR_FN, token = getStoredToken();
+      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
+        body: JSON.stringify({ action: 'mfa_start_login', userId }),
+      }).then(x => x.json()).catch(() => null);
+      if (!r?.ok) { setMfaError2(r?.message ?? 'No se pudo enviar el código al correo.'); return false; }
+      return true;
+    } catch { setMfaError2('No se pudo enviar el código al correo.'); return false; }
+  };
+
   const completeEmailLogin = async (code: string): Promise<User | null> => {
     if (!pendingMFAProfile) return null;
     try {
@@ -1476,14 +1493,10 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         body: JSON.stringify({ action: 'mfa_verify_email', userId: pendingMFAProfile.id, code }),
       }).then(x => x.json()).catch(() => null);
       if (!r?.ok) { setMfaError2(r?.message ?? 'Código de correo incorrecto o vencido.'); return null; }
-      const user = pendingMFAProfile;
-      try { sessionStorage.setItem('mfa_ok', '1'); } catch { /* */ }
-      setCurrentUser(user);
-      setMfaPending(false);
+      // Correo validado. Falta el código de la app: NO se entra todavía.
       setEmailStepPending(false);
-      setPendingMFAProfile(null);
-      logAdminLogin(user);
-      return user;
+      setMfaError2(null);
+      return null;
     } catch { setMfaError2('No se pudo verificar el código del correo.'); return null; }
   };
 
@@ -1544,15 +1557,6 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           if (r?.error !== 'too_many_attempts') {
             logFailedLogin(pendingMFAProfile.email ?? '', r?.error === 'backup_invalid' ? 'código de respaldo inválido' : 'código 2FA incorrecto');
           }
-          return null;
-        }
-        // El código de la app NO abre la sesión por sí solo: si el servidor
-        // mandó un código al correo, falta ese segundo paso. Son dos cosas
-        // distintas — una está en el teléfono, la otra en el buzón.
-        if (r?.needsEmailCode) {
-          setEmailStepPending(true);
-          setEmailMaskedTo(r?.to ?? null);
-          setMfaError2(null);
           return null;
         }
         const user = pendingMFAProfile;
@@ -2431,7 +2435,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       updateBankList, restoreDatabase, sendPasswordReset, isPasswordRecovery, setNewPassword, sendCuypayPayment,
       mfaPending, mfaErrorDetail, loginErrorDetail, completeMFALogin, cancelMFALogin,
       getLoginError: () => loginErrorRef.current, getMfaError: () => mfaErrorRef.current,
-      emailStepPending, emailMaskedTo, completeEmailLogin, resendEmailCode,
+      emailStepPending, completeEmailLogin, resendEmailCode, startEmailStep,
       enrollMFA, verifyMFAEnrollment, unenrollMFA, getMFAStatus, verifyMfaCode,
     }}>
       {children}
