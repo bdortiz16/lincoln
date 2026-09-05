@@ -266,6 +266,16 @@ const DiditAdminPanel: React.FC<{ client: any; showToast: (m: string) => void }>
   );
 };
 
+// Nombre que se MUESTRA para cada pestaña. Sin esto la cabecera pintaba la
+// clave interna en inglés ("Clients", "Treasury"…).
+const TAB_TITLES: Record<string, string> = {
+  overview: 'Dashboard', clients: 'Clientes', treasury: 'Tesorería', cargues: 'Cargues',
+  team: 'Equipo Admin', reports: 'Reportes', marketing: 'Marketing', config: 'Configuración',
+  banks: 'Bancos', rates: 'Tasas de Cambio', security: 'Seguridad', design: 'Diseño y Apariencia',
+  gasfree: 'Custodia USDT', otcConfig: 'Contabilidad OTC', fallos: 'Fallos',
+  auditoria: 'Auditoría', monitoreo: 'Monitoreo',
+};
+
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo'>('overview');
   const [auditRows, setAuditRows] = useState<any[] | null>(null);
@@ -1379,35 +1389,36 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
 
       return (
           <div className="space-y-6 animate-in fade-in duration-300">
-              <div className="flex flex-wrap gap-3 items-center justify-between bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-                  <div className="flex gap-2">
+              {/* Barra de filtros. En el teléfono se apila: antes iba en una
+                  sola fila y el botón de "Liberar correo huérfano" se salía
+                  de la pantalla, cortado a la mitad. */}
+              <div className="bg-white p-3 sm:p-4 rounded-xl border border-slate-200 shadow-sm space-y-3">
+                  <div className="flex gap-2 flex-wrap">
                       {/* Solo empresas en este admin — personas van en /admin-personas */}
+                      <span style={{ color: '#FFFFFF' }} className="px-3 py-2 rounded-lg text-sm font-bold bg-[#0C0E0D] shadow-md">Empresas</span>
                       <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
-                          <span style={{ color: '#FFFFFF' }} className="px-4 py-2 rounded-lg text-sm font-bold bg-[#0C0E0D] shadow-md">Empresas</span>
-                      </div>
-                      <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
-                          <button onClick={() => setClientKycFilter('all')} className={`px-3 py-2 rounded-lg text-sm font-bold transition-all ${clientKycFilter === 'all' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>Todos</button>
-                          <button onClick={() => setClientKycFilter('pending')} className={`px-3 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-1 ${clientKycFilter === 'pending' ? 'bg-orange-500 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>
+                          <button onClick={() => setClientKycFilter('all')} className={`px-3 py-1.5 rounded-lg text-sm font-bold transition-all ${clientKycFilter === 'all' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>Todos</button>
+                          <button onClick={() => setClientKycFilter('pending')} className={`px-3 py-1.5 rounded-lg text-sm font-bold transition-all flex items-center gap-1 ${clientKycFilter === 'pending' ? 'bg-orange-500 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>
                               Pendientes {pendingClientsCount > 0 && <span className="bg-white text-orange-600 text-[10px] rounded-full px-1.5 font-bold">{pendingClientsCount}</span>}
                           </button>
                       </div>
                   </div>
-                  <div className="flex gap-2">
-                      <div className="relative w-48">
-                          <Search className="absolute left-3 top-2.5 text-slate-400" size={16} />
-                          <input
-                              type="text"
-                              placeholder="Buscar cliente..."
-                              value={clientSearch}
-                              onChange={(e) => setClientSearch(e.target.value)}
-                              className="w-full pl-9 pr-4 py-2 border border-slate-200 rounded-lg text-sm focus:border-[#0C0E0D] outline-none"
-                          />
-                      </div>
-                      <button onClick={handleRefreshClients} disabled={clientRefreshing} className="flex items-center gap-1 px-3 py-2 bg-[#0C0E0D] rounded-lg text-sm font-bold hover:bg-[#152e52] disabled:opacity-60 transition-colors">
+                  <div className="relative">
+                      <Search className="absolute left-3 top-2.5 text-slate-400" size={16} />
+                      <input
+                          type="text"
+                          placeholder="Buscar cliente..."
+                          value={clientSearch}
+                          onChange={(e) => setClientSearch(e.target.value)}
+                          className="w-full pl-9 pr-4 py-2 border border-slate-200 rounded-lg text-sm focus:border-[#0C0E0D] outline-none"
+                      />
+                  </div>
+                  <div className="flex gap-2 flex-wrap">
+                      <button onClick={handleRefreshClients} disabled={clientRefreshing} className="flex-1 sm:flex-none justify-center flex items-center gap-1.5 px-3 py-2 bg-[#0C0E0D] rounded-lg text-sm font-bold hover:bg-[#152e52] disabled:opacity-60 transition-colors" style={{ color: '#FFFFFF' }}>
                           <RefreshCw size={14} className={clientRefreshing ? 'animate-spin' : ''} /> Actualizar
                       </button>
-                      <button onClick={() => setShowOrphanTool(v => !v)} className="flex items-center gap-1 px-3 py-2 border border-slate-200 rounded-lg text-sm font-bold text-slate-600 hover:bg-slate-50 transition-colors">
-                          <Trash2 size={14} /> Liberar correo huérfano
+                      <button onClick={() => setShowOrphanTool(v => !v)} className="flex-1 sm:flex-none justify-center flex items-center gap-1.5 px-3 py-2 border border-slate-200 rounded-lg text-sm font-bold text-slate-600 hover:bg-slate-50 transition-colors">
+                          <Trash2 size={14} /> <span className="truncate">Liberar correo</span>
                       </button>
                   </div>
               </div>
@@ -1436,44 +1447,66 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                   </div>
               )}
 
-              <div className="flex gap-6 h-[600px]">
-                  {/* List */}
-                  <div className="w-1/3 bg-white border border-slate-200 rounded-xl overflow-hidden flex flex-col">
-                      <div className="p-4 border-b border-slate-100 bg-slate-50 text-xs font-bold text-slate-500 uppercase">
+              {/* En pantalla ancha: lista y detalle lado a lado. En el teléfono
+                  se ve UNA cosa a la vez — antes el detalle vacío ocupaba dos
+                  tercios diciendo "selecciona un cliente" mientras la lista
+                  quedaba espichada en una columna con los correos cortados. */}
+              <div className="flex flex-col lg:flex-row gap-4 lg:gap-6 lg:h-[600px]">
+                  {/* Lista */}
+                  <div className={`${selectedClient ? 'hidden lg:flex' : 'flex'} w-full lg:w-1/3 bg-white border border-slate-200 rounded-xl overflow-hidden flex-col max-h-[70vh] lg:max-h-none`}>
+                      <div className="p-3 sm:p-4 border-b border-slate-100 bg-slate-50 text-xs font-bold text-slate-500 uppercase">
                           Resultados ({filteredUsers.length})
                       </div>
                       <div className="flex-1 overflow-y-auto divide-y divide-slate-50">
+                          {filteredUsers.length === 0 && (
+                              <p className="p-6 text-center text-sm text-slate-400">Ningún cliente coincide con la búsqueda.</p>
+                          )}
                           {filteredUsers.map(client => (
-                              <div 
-                                  key={client.id} 
+                              <div
+                                  key={client.id}
                                   onClick={() => { setSelectedClient(client); setShowDeleteConfirm(false); setShowBlockInput(false); }}
-                                  className={`p-4 cursor-pointer hover:bg-slate-50 transition-colors ${selectedClient?.id === client.id ? 'bg-slate-50 border-l-4 border-[#0C0E0D]' : ''}`}
+                                  className={`p-3 sm:p-4 cursor-pointer hover:bg-slate-50 transition-colors ${selectedClient?.id === client.id ? 'bg-slate-50 lg:border-l-4 lg:border-[#0C0E0D]' : ''}`}
                               >
                                   <div className="flex items-center gap-3">
-                                      <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-white text-sm ${client.kycStatus === 'verified' ? 'bg-green-500' : client.kycStatus === 'rejected' ? 'bg-red-500' : 'bg-orange-400'}`}>
+                                      <div className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center font-bold text-white text-sm ${client.kycStatus === 'verified' ? 'bg-green-500' : client.kycStatus === 'rejected' ? 'bg-red-500' : 'bg-orange-400'}`}>
                                           {(client.name ?? client.email ?? '?').charAt(0).toUpperCase()}
                                       </div>
-                                      <div>
-                                          <p className="font-bold text-slate-800 text-sm truncate w-40">{client.name || client.email}</p>
-                                          <p className="text-xs text-slate-500 truncate w-40">{client.email}</p>
+                                      {/* min-w-0 es lo que permite que truncate funcione dentro de
+                                          un flex: antes iba con un ancho fijo (w-40) y el correo
+                                          se cortaba a la mitad en pantallas angostas. */}
+                                      <div className="min-w-0 flex-1">
+                                          <p className="font-bold text-slate-800 text-sm truncate">{client.name || client.email}</p>
+                                          <p className="text-xs text-slate-500 truncate">{client.email}</p>
+                                          {isBlacklisted(client)
+                                            ? <span className="text-[10px] font-bold mt-1 inline-block px-1.5 py-0.5 rounded bg-[#0C0E0D] text-white">🚫 LISTA NEGRA</span>
+                                            : client.isBlocked && <span className="text-[10px] text-red-500 font-bold mt-1 block">BLOQUEADO</span>}
                                       </div>
+                                      <ChevronRight size={16} className="text-slate-300 shrink-0 lg:hidden" />
                                   </div>
-                                  {isBlacklisted(client)
-                                    ? <span className="text-[10px] font-bold mt-1 inline-block px-1.5 py-0.5 rounded bg-[#0C0E0D] text-white">🚫 LISTA NEGRA</span>
-                                    : client.isBlocked && <span className="text-[10px] text-red-500 font-bold mt-1 block">BLOQUEADO</span>}
                               </div>
                           ))}
                       </div>
                   </div>
 
-                  {/* Detail */}
-                  <div className="flex-1 bg-white border border-slate-200 rounded-xl overflow-hidden flex flex-col">
+                  {/* Detalle */}
+                  <div className={`${selectedClient ? 'flex' : 'hidden lg:flex'} flex-1 min-w-0 bg-white border border-slate-200 rounded-xl overflow-hidden flex-col`}>
+                      {/* Regreso a la lista — solo en el teléfono, donde el
+                          detalle ocupa toda la pantalla. */}
+                      {selectedClient && (
+                          <button onClick={() => setSelectedClient(null)}
+                              className="lg:hidden flex items-center gap-2 px-4 py-3 border-b border-slate-100 text-sm font-bold text-slate-600 bg-slate-50">
+                              <ArrowLeft size={15} /> Todos los clientes
+                          </button>
+                      )}
                       {selectedClient ? (
                           <div className="flex flex-col h-full">
-                              <div className="p-6 border-b border-slate-100 flex justify-between items-start bg-slate-50">
-                                  <div>
-                                      <h2 className="text-xl font-bold text-slate-800">{selectedClient.name}</h2>
-                                      <p className="text-sm text-slate-500">{selectedClient.email}</p>
+                              {/* En el teléfono el nombre y los botones se apilan:
+                                  en una sola fila los botones empujaban el correo
+                                  y quedaba ilegible. */}
+                              <div className="p-4 sm:p-6 border-b border-slate-100 flex flex-col sm:flex-row sm:justify-between sm:items-start gap-3 bg-slate-50">
+                                  <div className="min-w-0">
+                                      <h2 className="text-lg sm:text-xl font-bold text-slate-800 break-words">{selectedClient.name}</h2>
+                                      <p className="text-sm text-slate-500 break-all">{selectedClient.email}</p>
                                       <div className="flex gap-2 mt-2">
                                           <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${selectedClient.kycStatus === 'verified' ? 'bg-green-100 text-green-700' : selectedClient.kycStatus === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-orange-100 text-orange-700'}`}>
                                               KYC: {selectedClient.kycStatus}
@@ -1481,7 +1514,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                                           <span className="bg-slate-200 text-slate-600 px-2 py-0.5 rounded text-[10px] font-bold uppercase">{selectedClient.role}</span>
                                       </div>
                                   </div>
-                                  <div className="flex gap-2 flex-wrap justify-end">
+                                  <div className="flex gap-2 flex-wrap sm:justify-end">
                                       <button onClick={openEditClient} className="bg-slate-800 text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-slate-900 transition-colors flex items-center gap-1">
                                           <Edit2 size={14}/> Editar
                                       </button>
@@ -4228,7 +4261,9 @@ const renderDesign = () => (
             <header className="h-20 bg-white border-b border-slate-200 flex items-center justify-between px-8">
                 <div className="flex items-center gap-4">
                     <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="lg:hidden text-slate-500"><Menu size={24}/></button>
-                    <h1 className="text-xl font-bold text-slate-800 capitalize">{activeTab === 'design' ? 'Diseño y Apariencia' : activeTab}</h1>
+                    {/* El título salía del nombre INTERNO de la pestaña ('clients',
+                        'treasury'…), por eso se leía en inglés en pantalla. */}
+                    <h1 className="text-lg sm:text-xl font-bold text-slate-800 truncate">{TAB_TITLES[activeTab] ?? activeTab}</h1>
                 </div>
                 <div className="flex items-center gap-4">
                     <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold ${!isOnline ? 'bg-red-50 text-red-700' : dataReady ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700'}`}>
