@@ -718,17 +718,30 @@ Deno.serve(async (req: Request) => {
       // en la lista SERVER_OWNED), así que esta es la única puerta.
       if (selfServiceBody.action === 'mfa_disable' && selfServiceBody.userId) {
         if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
-        const isAdmin = (await verifyAdmin(req)).ok
-        if (!isAdmin) {
-          const code = String(selfServiceBody.emailCode ?? '')
-          if (!/^\d{6}$/.test(code)) return json({ error: 'Falta el código de correo (6 dígitos).' }, 400)
-          const otpRes = await fetch(`${SUPABASE_URL}/functions/v1/email-otp`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
-            body: JSON.stringify({ action: 'verify', userId: selfServiceBody.userId, code }),
-          }).then(r => r.json()).catch(() => null)
-          if (!otpRes?.ok) return json({ error: 'Código de correo incorrecto o vencido.' }, 403)
-        }
+
+        // ⚠️ Apagar el 2FA es la operación que deja la cuenta con SOLO la
+        // contraseña. Antes el admin estaba EXENTO del código de correo, así
+        // que cualquier sesión suya —en cualquier dispositivo, con solo la
+        // contraseña— podía desactivarlo. Ahora se exigen las dos cosas, sin
+        // excepción por rol:
+        //
+        //   1) que ESTA sesión haya superado el 2FA (con el código de la app
+        //      o uno de respaldo). Un dispositivo nuevo que solo tiene la
+        //      contraseña no puede.
+        //   2) un código enviado al correo del titular.
+        //
+        // Quien roba la contraseña no tiene ni el teléfono ni el correo.
+        const mfaSessErr = await requireMfaSession(req, String(selfServiceBody.userId))
+        if (mfaSessErr) return json({ error: `Para desactivar el 2FA primero verifícalo en este dispositivo. ${mfaSessErr}`, needs2fa: true }, 403)
+
+        const code = String(selfServiceBody.emailCode ?? '')
+        if (!/^\d{6}$/.test(code)) return json({ error: 'Falta el código de correo (6 dígitos).' }, 400)
+        const otpRes = await fetch(`${SUPABASE_URL}/functions/v1/email-otp`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+          body: JSON.stringify({ action: 'verify', userId: selfServiceBody.userId, code }),
+        }).then(r => r.json()).catch(() => null)
+        if (!otpRes?.ok) return json({ error: 'Código de correo incorrecto o vencido.' }, 403)
         const { data: u } = await db.from('users').select('raw_data').eq('id', selfServiceBody.userId).single()
         const raw = { ...((u as any)?.raw_data ?? {}) }
         raw.mfaEnabled = false
@@ -738,6 +751,7 @@ Deno.serve(async (req: Request) => {
         delete raw.mfaBackupHashes   // los códigos viejos no sirven para el 2FA nuevo
         const { error } = await db.from('users').update({ raw_data: raw }).eq('id', selfServiceBody.userId)
         if (error) return json({ error: error.message }, 500)
+        await auditAdmin(req, 'security.mfa_disabled', { userId: selfServiceBody.userId })
         return json({ success: true })
       }
 
