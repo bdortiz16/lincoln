@@ -846,6 +846,18 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_FOR_FN, Authorization: `Bearer ${token}` },
       body: JSON.stringify({ action: 'notify_login', userId: uid }),
     }).catch(() => { /* el aviso nunca puede estorbar el ingreso */ });
+
+    // ── Alta en Kumplo + consulta AML ────────────────────────────────────
+    // Va acá y no en el registro porque al inscribirse todavía no siempre hay
+    // sesión abierta, y sin sesión el servidor no puede saber de quién se
+    // trata. Además así quedan cubiertas las cuentas que ya existían antes de
+    // la integración. El servidor decide: si está apagada, o si esta cuenta no
+    // entra en la prueba, no hace nada. Y si ya tiene id, no repite el alta.
+    fetch(`${SUPABASE_URL_FOR_FN}/functions/v1/kumplo`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_FOR_FN, Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ action: 'inscribir', userId: uid }),
+    }).catch(() => { /* una prueba de cumplimiento no puede romper el ingreso */ });
   }, [currentUser?.id]);
 
   // ¿El SERVIDOR reconoce esta sesión como verificada con 2FA? La marca
@@ -966,7 +978,11 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       // BORRABA/CAMBIABA (la wallet "cambiaba sola", el 2FA "se deshabilitaba").
       // Siempre se dejan como están en la BASE; y si no pudimos leer la base,
       // se OMITE raw_data por completo para no pisar nada.
-      const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'gasfreeCreditedTxs', 'gasfreeCreditedCount', 'mfaEnabled', 'totpSecret', 'totpSecretEnc', 'mfaBackupHashes', 'mfaSessions', 'mfaLastCounter', 'otp', 'subWallets'];
+      const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'gasfreeCreditedTxs', 'gasfreeCreditedCount', 'mfaEnabled', 'totpSecret', 'totpSecretEnc', 'mfaBackupHashes', 'mfaSessions', 'mfaLastCounter', 'otp', 'subWallets',
+        // 'kumplo' guarda el resultado AML. Si el cliente pudiera escribirlo,
+        // se pondría riesgo "bajo" a sí mismo y el control de lavado dejaría
+        // de existir: es un veredicto, no una preferencia.
+        'kumplo'];
       // COLECCIONES del cliente que tienen su PROPIO escritor seguro
       // (updateUserRawData, merge dirigido): contactos, wallets inscritas,
       // notificaciones. saveUser NUNCA debe reescribirlas desde memoria — una

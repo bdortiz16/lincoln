@@ -61,6 +61,7 @@ import {
   XCircle,
   Archive
 } from 'lucide-react';
+import { KumploUserCard } from './KumploUserCard';
 import { Logo } from './Logo';
 import { MouvSection, fetchMouvBalance, fetchMouvRateValue, fetchMouvUsdCopConfig, callMouv } from './OtcMigration';
 import { MouvDispersion } from './MouvDispersion';
@@ -3531,6 +3532,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               <h2 style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-0.8px', color: '#F4F4F2' }}>Ajustes</h2>
               <p style={{ fontSize: 14, color: '#878E88', marginTop: 3 }}>Tu cuenta, seguridad y notificaciones</p>
           </div>
+
+          {/* KUMPLO — expediente de cumplimiento. La tarjeta se esconde sola
+              si la integración está apagada o si esta cuenta no entra en la
+              prueba: una sección vacía solo genera preguntas. */}
+          {currentUser?.id && <KumploUserCard userId={currentUser.id} />}
 
           <div className="grid gap-4 lg:grid-cols-2" style={{ alignItems: 'start' }}>
               {/* ── COLUMNA IZQUIERDA ── */}

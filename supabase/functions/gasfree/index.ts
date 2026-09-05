@@ -67,6 +67,28 @@ async function assertNotBlocked(userId: string): Promise<string | null> {
     const blocked = (data as any).is_blocked === true || raw.isBlocked === true
     if (blacklisted) return 'Esta cuenta está en la lista negra y no puede realizar operaciones. Contacta a soporte.'
     if (blocked) return 'Esta cuenta está bloqueada y no puede realizar operaciones. Contacta a soporte.'
+
+    // ── Riesgo AML de Kumplo ──────────────────────────────────────────────
+    // Va acá, en el mismo sitio que el resto de bloqueos, porque esta función
+    // ya la llama TODA operación que mueve dinero. Ponerlo solo en la pantalla
+    // sería un letrero, no un control: la API se puede llamar directamente.
+    //
+    // Falla ABIERTO a propósito. Es una prueba: si la configuración está a
+    // medias, si Kumplo no ha respondido todavía, o si la lectura se cae, la
+    // cuenta opera. Un control de cumplimiento a medio conectar no puede
+    // dejar sin transferir a un cliente legítimo.
+    try {
+      const { data: cfgRow } = await db.from('system_config').select('value').eq('key', 'kumplo_config').maybeSingle()
+      const cfg = (cfgRow as any)?.value ? JSON.parse((cfgRow as any).value) : null
+      if (cfg?.activo && cfg?.bloquearEnAlto !== false) {
+        const soloEstos: string[] = Array.isArray(cfg.soloEstosUsuarios) ? cfg.soloEstosUsuarios : []
+        const enLaPrueba = soloEstos.length === 0 || soloEstos.includes(userId)
+        if (enLaPrueba && String(raw.kumplo?.riesgo ?? '') === 'alto') {
+          return 'Riesgo alto — no se puede transferir. Comunícate con soporte para revisar tu caso.'
+        }
+      }
+    } catch { /* la prueba nunca frena una operación legítima */ }
+
     return null
   } catch { return null }   // si la lectura falla, no se bloquea la operación legítima
 }

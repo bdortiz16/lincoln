@@ -87,8 +87,9 @@ import { AdminAccessPolicy } from './AdminAccessPolicy';
 import { AdminPasskeys } from './AdminPasskeys';
 import { AdminStepUp } from './AdminStepUp';
 import { AdminLoginAlerts } from './AdminLoginAlerts';
+import { AdminKumplo } from './AdminKumplo';
 import { AdminOtcSection } from './AdminOtcSection';
-import { Zap, ArrowLeftRight, ArrowLeft, Info, ChevronRight, Activity } from 'lucide-react';
+import { Zap, ArrowLeftRight, ArrowLeft, Info, ChevronRight, Activity, Link2 } from 'lucide-react';
 import { CollectionWalletCard } from './CollectionWalletCard';
 import type { AdminProfile } from './AdminPersonas/lib/adminAuth';
 import { FlagImg, flagUrl } from './FlagImg';
@@ -277,11 +278,11 @@ const TAB_TITLES: Record<string, string> = {
   team: 'Equipo Admin', reports: 'Reportes', marketing: 'Marketing', config: 'Configuración',
   banks: 'Bancos', rates: 'Tasas de Cambio', security: 'Seguridad', design: 'Diseño y Apariencia',
   gasfree: 'Custodia USDT', otcConfig: 'Contabilidad OTC', fallos: 'Fallos',
-  auditoria: 'Auditoría', monitoreo: 'Monitoreo',
+  auditoria: 'Auditoría', monitoreo: 'Monitoreo', kumplo: 'Kumplo',
 };
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo'>('overview');
   const [auditRows, setAuditRows] = useState<any[] | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
   const [adminLogins, setAdminLogins] = useState<{ admins: any[]; activity: any[] } | null>(null);
@@ -4239,6 +4240,7 @@ const renderDesign = () => (
                             <AdminSidebarItem icon={UserCheck} label="Equipo Admin" active={activeTab === 'team'} onClick={() => navTo('team')} />
                             <AdminSidebarItem icon={Megaphone} label="Marketing" active={activeTab === 'marketing'} onClick={() => navTo('marketing')} />
                             <AdminSidebarItem icon={Palette} label="Diseño" active={activeTab === 'design'} onClick={() => navTo('design')} />
+                            <AdminSidebarItem icon={Link2} label="Kumplo" active={activeTab === 'kumplo'} onClick={() => navTo('kumplo')} />
                             <AdminSidebarItem icon={Settings} label="Configuración" active={activeTab === 'config'} onClick={() => navTo('config')} />
                         </> },
                     ];
@@ -4319,6 +4321,7 @@ const renderDesign = () => (
                 {activeTab === 'rates' && renderRates()}
                 {activeTab === 'team' && renderTeam()}
                 {activeTab === 'security' && renderSecurity()}
+                {activeTab === 'kumplo' && <div className="animate-in fade-in duration-300"><AdminKumplo /></div>}
                 {activeTab === 'gasfree' && (<>
                   {/* Igual que Cargues: se entra por Tesorería → Billeteras → USDT. */}
                   <button onClick={() => navTo('treasury')}
