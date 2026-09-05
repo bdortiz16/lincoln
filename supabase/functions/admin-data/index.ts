@@ -203,6 +203,71 @@ async function requireMfaSession(req: Request, userId: string | undefined): Prom
   } catch { return null }
 }
 
+// Exige el código 2FA del admin para ESTA operación concreta (no basta con
+// que la sesión lo haya pasado al entrar). Se usa en el cargue: mueve dinero
+// real y queda con contabilidad, así que se confirma una por una.
+async function requireAdminOtp(adminUserId: string | undefined, code: unknown): Promise<string | null> {
+  if (!adminUserId) return 'No se pudo identificar al administrador.'
+  const otp = String(code ?? '').replace(/\D/g, '')
+  const { data: u } = await db.from('users').select('raw_data').eq('id', adminUserId).single()
+  const raw = ((u as any)?.raw_data ?? {}) as Record<string, any>
+  if (!raw.mfaEnabled) return 'Activa tu 2FA en Seguridad para poder hacer cargues. Sin segundo factor no se autoriza mover saldo.'
+  if (otp.length !== 6) return 'Falta tu código de 6 dígitos.'
+  let secret = ''
+  try { secret = raw.totpSecretEnc ? await decField(String(raw.totpSecretEnc)) : String(raw.totpSecret ?? '') } catch { secret = '' }
+  if (!secret) return 'No se pudo leer tu segundo factor. Reactiva el 2FA en Seguridad.'
+  const counter = await verifyTOTPServer(secret, otp)
+  if (counter < 0) return 'Código incorrecto o vencido.'
+  const last = Number(raw.mfaLastCounter ?? -1)
+  if (Number.isFinite(last) && counter <= last) return 'Ese código ya se usó. Espera al siguiente que muestre tu app.'
+  await db.from('users').update({ raw_data: { ...raw, mfaLastCounter: counter } }).eq('id', adminUserId)
+  return null
+}
+
+// ── Contabilidad de un cargue ─────────────────────────────────────────────
+// El COP que se le acredita al cliente NO se escribe a mano: se DERIVA de la
+// operación real, y el servidor rehace la cuenta (nunca confía en los números
+// que llegan de la pantalla).
+//
+//   usdtGross  → lo que envió el cliente
+//   usdtNet    → lo que llegó de verdad al proveedor
+//   feeUsdt    → la diferencia: el costo de red/proveedor
+//   sellRate   → a cómo se vendieron esos USDT (COP por USDT)
+//   clientRate → a cómo se le paga al cliente (COP por USDT)
+//   feeBearer  → quién asume el fee: 'lincoin' (se le paga al cliente sobre
+//                lo que envió) o 'cliente' (se le paga sobre lo que llegó)
+type Acct = {
+  usdtGross: number; usdtNet: number; feeUsdt: number
+  sellRate: number; clientRate: number; feeBearer: 'lincoin' | 'cliente'
+  revenueCop: number; copToClient: number; feeCostCop: number
+}
+function computeAcct(input: any): { acct: Acct } | { error: string } {
+  const n = (v: any) => { const x = Number(v); return Number.isFinite(x) ? x : NaN }
+  const usdtGross = n(input?.usdtGross)
+  const usdtNet = n(input?.usdtNet)
+  const sellRate = n(input?.sellRate)
+  const clientRate = n(input?.clientRate)
+  const feeBearer: 'lincoin' | 'cliente' = input?.feeBearer === 'cliente' ? 'cliente' : 'lincoin'
+  if (!(usdtGross > 0)) return { error: 'Falta cuántos USDT envió el cliente.' }
+  if (!(usdtNet > 0)) return { error: 'Falta cuántos USDT llegaron al proveedor.' }
+  if (usdtNet > usdtGross + 0.000001) return { error: 'Al proveedor no pueden llegar más USDT de los que envió el cliente.' }
+  if (!(sellRate > 0)) return { error: 'Falta la tasa a la que vendiste los USDT.' }
+  if (!(clientRate > 0)) return { error: 'Falta la tasa a la que le pagas al cliente.' }
+  const feeUsdt = Number((usdtGross - usdtNet).toFixed(6))
+  const baseCliente = feeBearer === 'lincoin' ? usdtGross : usdtNet
+  return {
+    acct: {
+      usdtGross, usdtNet, feeUsdt, sellRate, clientRate, feeBearer,
+      // Lo que ENTRA: solo se vendió lo que de verdad llegó.
+      revenueCop: Math.round(usdtNet * sellRate),
+      // Lo que se le paga al cliente, antes de la comisión del riel.
+      copToClient: Math.round(baseCliente * clientRate),
+      // El fee de red valorado a la tasa de venta: lo que costó en pesos.
+      feeCostCop: Math.round(feeUsdt * sellRate),
+    },
+  }
+}
+
 // ── Seguridad de acceso: IP, geolocalización y bloqueo ────────────────────
 function ipOf(req: Request): string | null {
   const fwd = (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim()
@@ -1257,7 +1322,31 @@ Deno.serve(async (req: Request) => {
         const { data: u } = await db.from('users').select('balances').eq('id', body.userId).single()
         if (!u) return json({ success: false, error: 'Usuario no encontrado' }, 404)
         const bals: Record<string, number> = (u?.balances as any) ?? {}
-        const delta: number = parseFloat(body.amount)
+        const recordOnlyEarly = body.recordOnly === true
+
+        // ── 2FA por operación ──────────────────────────────────────────
+        // No basta con que la sesión lo haya pasado al entrar: cada cargue
+        // mueve dinero real, así que se confirma uno por uno. El registro
+        // histórico (recordOnly) no toca saldo y queda fuera.
+        if (!recordOnlyEarly) {
+          const otpErr = await requireAdminOtp(auth.userId, body.otp)
+          if (otpErr) return json({ success: false, error: otpErr, needs2fa: true }, 403)
+        }
+
+        // ── Contabilidad ───────────────────────────────────────────────
+        // Si viene el detalle de la operación, el COP a acreditar lo DERIVA
+        // el servidor. Antes se escribía a mano y "lo que sobraba" se
+        // llamaba utilidad sin que nadie supiera de dónde salía.
+        let acct: Acct | null = null
+        let delta: number = parseFloat(body.amount)
+        if (body.acct && !recordOnlyEarly) {
+          const r = computeAcct(body.acct)
+          if ('error' in r) return json({ success: false, error: r.error }, 400)
+          acct = r.acct
+          // El monto lo manda la cuenta, no la pantalla: así el número que
+          // se acredita y el que queda en la contabilidad son el mismo.
+          delta = acct.copToClient
+        }
         if (!isFinite(delta) || delta === 0) return json({ success: false, error: 'Monto inválido' }, 400)
         const BREB_CARGUE_FEE_PCT = Number(Deno.env.get('BREB_CARGUE_FEE_PCT') ?? '0.10') || 0.10
         let feeCop = 0
@@ -1270,8 +1359,13 @@ Deno.serve(async (req: Request) => {
         // el saldo (para cuadrar cargues viejos que se acreditaron sin fila
         // en transacciones y el resumen de Movimientos no los veía). En modo
         // registro no se aplica comisión: se anota el monto tal cual.
-        const recordOnly = body.recordOnly === true
+        const recordOnly = recordOnlyEarly
         if (recordOnly) { feeCop = 0; credit = delta }
+
+        // Utilidad REAL: lo que entró por la venta menos lo que de verdad se
+        // le acreditó al cliente. El fee de red ya está descontado porque
+        // 'revenueCop' solo cuenta los USDT que llegaron.
+        const utilityCop = acct ? Math.round(acct.revenueCop - credit) : null
         // ATÓMICO: primero el movimiento — si el registro falla, NO se toca
         // el saldo (un cargue sin rastro en el historial es un descuadre).
         const { error: txInsErr } = await db.from('transactions').insert({
@@ -1287,6 +1381,9 @@ Deno.serve(async (req: Request) => {
             direction: delta > 0 ? 'credit' : 'debit',
             ...(recordOnly ? { recordOnly: true } : {}),
             ...(feeCop > 0 ? { grossCop: delta, feeCop, feePct: BREB_CARGUE_FEE_PCT, feeConcept: 'Comisión por recepción Bre-B' } : {}),
+            // Contabilidad de la operación: queda GUARDADA con el movimiento,
+            // así la utilidad es un dato del cargue y no una resta posterior.
+            ...(acct ? { acct: { ...acct, creditedCop: credit, feeCopBreb: feeCop, utilityCop } } : {}),
             note: body.note ?? (recordOnly ? 'Registro histórico (no afecta saldo)' : delta > 0
               ? (feeCop > 0 ? `Cargue Bre-B · comisión ${BREB_CARGUE_FEE_PCT}% por recepción` : 'Cargue manual (Mouv)')
               : 'Ajuste manual'),
@@ -1299,7 +1396,8 @@ Deno.serve(async (req: Request) => {
           newBal = parseFloat(Math.max(0, (bals[cur] ?? 0) + credit).toFixed(2))
           await db.from('users').update({ balances: { ...bals, [cur]: newBal } }).eq('id', body.userId)
         }
-        return json({ success: true, newBalance: newBal, recordOnly, grossCop: Math.abs(delta), feeCop, netCop: Math.abs(credit), feePct: feeCop > 0 ? BREB_CARGUE_FEE_PCT : 0 })
+        if (acct) await auditAdmin(req, 'admin.cargue_contable', { userId: body.userId, rail: cur, ...acct, creditedCop: credit, utilityCop })
+        return json({ success: true, newBalance: newBal, recordOnly, grossCop: Math.abs(delta), feeCop, netCop: Math.abs(credit), feePct: feeCop > 0 ? BREB_CARGUE_FEE_PCT : 0, acct: acct ? { ...acct, creditedCop: credit, feeCopBreb: feeCop, utilityCop } : null })
       }
 
       // ── Solicitudes "Mover Saldo Lincoin → ACH" (aprobación manual) ──

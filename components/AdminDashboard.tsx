@@ -376,6 +376,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   // "Cargar de todos modos" cuando el cargue excede lo disponible en la bolsa
   // (protección contra sobre-acreditar más de lo que respalda el proveedor).
   const [carguesOverride, setCarguesOverride] = useState(false);
+  // Contabilidad del cargue: el COP se DERIVA de la operación real en vez de
+  // escribirse a mano, y la utilidad queda como dato del movimiento.
+  const [acctOn, setAcctOn] = useState(true);
+  const [acctUsdtGross, setAcctUsdtGross] = useState('');
+  const [acctUsdtNet, setAcctUsdtNet] = useState('');
+  const [acctSellRate, setAcctSellRate] = useState('');
+  const [acctClientRate, setAcctClientRate] = useState('');
+  const [acctFeeBearer, setAcctFeeBearer] = useState<'lincoin' | 'cliente'>('lincoin');
+  const [cargueOtp, setCargueOtp] = useState('');
   // Saldo REAL de la wallet compartida de Mouv (lo que hay disponible para
   // cargar a los clientes). Se lee del endpoint confirmado /wallets/balance.
   const [mouvPool, setMouvPool] = useState<{ loading: boolean; total?: number | null; breb?: number | null; ach?: number | null; error?: string } | null>(null);
@@ -528,9 +537,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const railLabelOf = (r: string) => (r === 'COP' ? 'Saldo Lincoin' : r === 'COP_BREB' ? 'Bre-B' : 'ACH');
 
   // Paso 1: validar y abrir la ventana de confirmación propia.
+  // Cuenta de la operación. Se calcula igual que en el servidor solo para
+  // MOSTRARLA; la cifra que se acredita la vuelve a calcular el servidor.
+  const acctCalc = (() => {
+    const n = (v: string) => { const x = parseFloat(String(v).replace(/[^\d.]/g, '')); return Number.isFinite(x) ? x : 0; };
+    const usdtGross = n(acctUsdtGross), usdtNet = n(acctUsdtNet);
+    const sellRate = n(acctSellRate), clientRate = n(acctClientRate);
+    const listo = usdtGross > 0 && usdtNet > 0 && sellRate > 0 && clientRate > 0 && usdtNet <= usdtGross;
+    const feeUsdt = Math.max(0, Number((usdtGross - usdtNet).toFixed(6)));
+    const base = acctFeeBearer === 'lincoin' ? usdtGross : usdtNet;
+    const revenueCop = Math.round(usdtNet * sellRate);
+    const copToClient = Math.round(base * clientRate);
+    const feeCostCop = Math.round(feeUsdt * sellRate);
+    // La comisión Bre-B (0,10%) se descuenta de lo que recibe el cliente.
+    const feeBreb = carguesRail === 'COP_BREB' && carguesDir === 'credit' && !carguesRecordOnly
+      ? Math.round(copToClient * 0.10 / 100) : 0;
+    const creditedCop = copToClient - feeBreb;
+    return { listo, usdtGross, usdtNet, feeUsdt, sellRate, clientRate, revenueCop, copToClient, feeCostCop, feeBreb, creditedCop, utilityCop: revenueCop - creditedCop };
+  })();
+  const usandoAcct = acctOn && carguesDir === 'credit' && !carguesRecordOnly;
+
   const requestCargue = () => {
     if (!carguesClient) return;
-    const raw = parseFloat((carguesAmount || '').replace(/[^\d.]/g, ''));
+    if (usandoAcct && !acctCalc.listo) { setCarguesMsg({ ok: false, text: 'Completa los cuatro datos de la operación (USDT enviados, USDT recibidos y las dos tasas).' }); return; }
+    const raw = usandoAcct ? acctCalc.copToClient : parseFloat((carguesAmount || '').replace(/[^\d.]/g, ''));
     if (!isFinite(raw) || raw <= 0) { setCarguesMsg({ ok: false, text: 'Ingresa un monto válido.' }); return; }
     setCarguesMsg(null);
     setCarguesOverride(false);
@@ -556,7 +586,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       const r = await fetch(`${SURL}/functions/v1/admin-data`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: authHeader },
-        body: JSON.stringify({ action: 'admin_credit_balance', userId: carguesClient.id, currency: carguesRail, amount: delta, note: carguesNote.trim() || undefined, ...(carguesRecordOnly ? { recordOnly: true } : {}) }),
+        body: JSON.stringify({
+          action: 'admin_credit_balance', userId: carguesClient.id, currency: carguesRail,
+          amount: delta, note: carguesNote.trim() || undefined,
+          ...(carguesRecordOnly ? { recordOnly: true } : { otp: cargueOtp.trim() }),
+          ...(usandoAcct ? { acct: {
+            usdtGross: acctCalc.usdtGross, usdtNet: acctCalc.usdtNet,
+            sellRate: acctCalc.sellRate, clientRate: acctCalc.clientRate,
+            feeBearer: acctFeeBearer,
+          } } : {}),
+        }),
       });
       const d = await r.json();
       if (d?.success) {
@@ -565,7 +604,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
           : d.feeCop > 0
           ? `✅ ${railLabel} actualizado. Cargue ${formatMoney(d.grossCop ?? raw, '')} − comisión ${formatMoney(d.feeCop, '')} (${d.feePct}%) = ${formatMoney(d.netCop ?? 0, '')} acreditados. Nuevo saldo: ${formatMoney(d.newBalance ?? 0, '')} COP`
           : `✅ ${railLabel} actualizado. Nuevo saldo: ${formatMoney(d.newBalance ?? 0, '')} COP` });
-        setCarguesAmount(''); setCarguesNote('');
+        setCarguesAmount(''); setCarguesNote(''); setCargueOtp('');
+        setAcctUsdtGross(''); setAcctUsdtNet(''); setAcctSellRate(''); setAcctClientRate('');
         showToast(`Cargue aplicado a ${carguesClient.name}`);
         refreshData();
       } else {
@@ -2011,14 +2051,102 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                     <button onClick={() => setCarguesDir('credit')} className={`flex-1 py-1.5 text-sm font-bold rounded transition-colors ${carguesDir === 'credit' ? 'bg-green-600 text-white' : 'text-slate-500'}`}>Acreditar (+)</button>
                     <button onClick={() => setCarguesDir('debit')} className={`flex-1 py-1.5 text-sm font-bold rounded transition-colors ${carguesDir === 'debit' ? 'bg-red-500 text-white' : 'text-slate-500'}`}>Descontar (−)</button>
                   </div>
-                  <label className="block text-xs font-semibold text-slate-500 mb-1">Monto (COP)</label>
+                  {/* ── Contabilidad de la operación ──────────────────────
+                      El COP no se escribe a mano: sale de la operación real.
+                      Así la utilidad es un dato del cargue y no "lo que
+                      sobró" al final del día. */}
+                  {carguesDir === 'credit' && !carguesRecordOnly && (
+                    <div className="rounded-xl p-3 mb-3" style={{ backgroundColor: '#121413', border: '1px solid rgba(74,222,128,0.22)' }}>
+                      <label className="flex items-center gap-2 cursor-pointer select-none mb-2">
+                        <input type="checkbox" checked={acctOn} onChange={e => setAcctOn(e.target.checked)} style={{ width: 15, height: 15, accentColor: '#4ADE80' }} />
+                        <span className="text-xs font-bold" style={{ color: '#F4F4F2' }}>Calcular desde la operación (USDT y tasas)</span>
+                      </label>
+
+                      {acctOn ? (<>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-[10px] font-bold uppercase tracking-wide mb-1" style={{ color: '#878E88' }}>USDT que envió</label>
+                            <input inputMode="decimal" placeholder="50000" value={acctUsdtGross}
+                              onChange={e => setAcctUsdtGross(e.target.value.replace(/[^\d.]/g, ''))}
+                              className="w-full px-2.5 py-2 rounded-lg text-sm font-bold outline-none"
+                              style={{ backgroundColor: '#0C0E0D', color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.12)' }} />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-bold uppercase tracking-wide mb-1" style={{ color: '#878E88' }}>USDT que llegaron</label>
+                            <input inputMode="decimal" placeholder="49995" value={acctUsdtNet}
+                              onChange={e => setAcctUsdtNet(e.target.value.replace(/[^\d.]/g, ''))}
+                              className="w-full px-2.5 py-2 rounded-lg text-sm font-bold outline-none"
+                              style={{ backgroundColor: '#0C0E0D', color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.12)' }} />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-bold uppercase tracking-wide mb-1" style={{ color: '#878E88' }}>A cómo vendí (COP/USDT)</label>
+                            <input inputMode="decimal" placeholder="3900" value={acctSellRate}
+                              onChange={e => setAcctSellRate(e.target.value.replace(/[^\d.]/g, ''))}
+                              className="w-full px-2.5 py-2 rounded-lg text-sm font-bold outline-none"
+                              style={{ backgroundColor: '#0C0E0D', color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.12)' }} />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-bold uppercase tracking-wide mb-1" style={{ color: '#878E88' }}>A cómo le pago (COP/USDT)</label>
+                            <input inputMode="decimal" placeholder="3850" value={acctClientRate}
+                              onChange={e => setAcctClientRate(e.target.value.replace(/[^\d.]/g, ''))}
+                              className="w-full px-2.5 py-2 rounded-lg text-sm font-bold outline-none"
+                              style={{ backgroundColor: '#0C0E0D', color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.12)' }} />
+                          </div>
+                        </div>
+
+                        <div className="flex gap-1 p-1 rounded-lg mt-2" style={{ backgroundColor: '#0C0E0D' }}>
+                          {([['lincoin', 'El fee lo asumo yo'], ['cliente', 'El fee lo asume el cliente']] as const).map(([k, lbl]) => (
+                            <button key={k} onClick={() => setAcctFeeBearer(k)}
+                              className="flex-1 py-1.5 text-[11px] font-bold rounded transition-colors"
+                              style={acctFeeBearer === k ? { backgroundColor: '#4ADE80', color: '#0C0E0D' } : { color: '#878E88' }}>{lbl}</button>
+                          ))}
+                        </div>
+
+                        {acctCalc.listo ? (
+                          <div className="mt-2.5 rounded-lg p-2.5 space-y-1" style={{ backgroundColor: '#0C0E0D', border: '1px solid rgba(255,255,255,0.08)' }}>
+                            {[
+                              ['Entró por la venta', `${acctCalc.revenueCop.toLocaleString('es-CO')} COP`, '#F4F4F2', `${acctCalc.usdtNet.toLocaleString('es-CO')} USDT × ${acctCalc.sellRate.toLocaleString('es-CO')}`],
+                              ['Fee de red perdido', `${acctCalc.feeUsdt.toLocaleString('es-CO')} USDT`, '#FBBF24', `≈ ${acctCalc.feeCostCop.toLocaleString('es-CO')} COP a tu tasa de venta`],
+                              ['Se le acredita al cliente', `${acctCalc.creditedCop.toLocaleString('es-CO')} COP`, '#F4F4F2', acctCalc.feeBreb > 0 ? `${acctCalc.copToClient.toLocaleString('es-CO')} − ${acctCalc.feeBreb.toLocaleString('es-CO')} de comisión Bre-B` : `${(acctFeeBearer === 'lincoin' ? acctCalc.usdtGross : acctCalc.usdtNet).toLocaleString('es-CO')} USDT × ${acctCalc.clientRate.toLocaleString('es-CO')}`],
+                            ].map(([l, v, c, sub]: any) => (
+                              <div key={l} className="flex items-start justify-between gap-3">
+                                <div><p className="text-[11px] m-0" style={{ color: '#878E88' }}>{l}</p><p className="text-[10px] m-0" style={{ color: 'rgba(244,244,242,0.45)' }}>{sub}</p></div>
+                                <span className="text-xs font-bold whitespace-nowrap" style={{ color: c, fontVariantNumeric: 'tabular-nums' }}>{v}</span>
+                              </div>
+                            ))}
+                            <div className="flex items-center justify-between pt-1.5 mt-1" style={{ borderTop: '1px solid rgba(255,255,255,0.10)' }}>
+                              <span className="text-xs font-bold" style={{ color: '#F4F4F2' }}>Tu utilidad</span>
+                              <span className="text-base font-bold" style={{ color: acctCalc.utilityCop >= 0 ? '#4ADE80' : '#F87171', fontVariantNumeric: 'tabular-nums' }}>
+                                {acctCalc.utilityCop.toLocaleString('es-CO')} COP
+                              </span>
+                            </div>
+                            {acctCalc.utilityCop < 0 && (
+                              <p className="text-[10px] m-0 pt-1" style={{ color: '#F87171' }}>Estás pagando más de lo que recibiste: revisa las tasas antes de aplicar.</p>
+                            )}
+                          </div>
+                        ) : (
+                          <p className="text-[11px] mt-2 mb-0" style={{ color: 'rgba(244,244,242,0.45)' }}>Completa los cuatro datos para ver el cálculo.</p>
+                        )}
+                      </>) : (
+                        <p className="text-[11px] m-0" style={{ color: '#878E88' }}>Desactivado: se acredita el monto que escribas abajo y el cargue queda sin contabilidad.</p>
+                      )}
+                    </div>
+                  )}
+
+                  <label className="block text-xs font-semibold text-slate-500 mb-1">
+                    {usandoAcct ? 'Monto (COP) — calculado' : 'Monto (COP)'}
+                  </label>
                   <input
                     type="text"
                     inputMode="numeric"
                     placeholder="0"
-                    value={carguesAmount ? Number(carguesAmount).toLocaleString('es-CO') : ''}
+                    readOnly={usandoAcct}
+                    value={usandoAcct
+                      ? (acctCalc.listo ? acctCalc.copToClient.toLocaleString('es-CO') : '')
+                      : (carguesAmount ? Number(carguesAmount).toLocaleString('es-CO') : '')}
                     onChange={(e) => setCarguesAmount(e.target.value.replace(/\D/g, ''))}
                     className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-lg font-bold text-slate-800 focus:border-[#0C0E0D] outline-none mb-3"
+                    style={usandoAcct ? { opacity: 0.75, cursor: 'not-allowed' } : undefined}
                   />
                   <label className="block text-xs font-semibold text-slate-500 mb-1">Nota (opcional)</label>
                   <input
@@ -2042,9 +2170,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                     </div>
                   )}
 
+                  {!carguesRecordOnly && (
+                    <div className="rounded-xl p-3 mb-3" style={{ backgroundColor: '#121413', border: '1px solid rgba(255,255,255,0.12)' }}>
+                      <label className="block text-[10px] font-bold uppercase tracking-wide mb-1" style={{ color: '#878E88' }}>Tu código 2FA para autorizar este cargue</label>
+                      <input inputMode="numeric" placeholder="123 456" maxLength={6} value={cargueOtp}
+                        onChange={e => setCargueOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                        className="w-full px-3 py-2.5 rounded-lg text-center font-mono text-lg tracking-widest outline-none"
+                        style={{ backgroundColor: '#0C0E0D', color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.12)' }} />
+                      <p className="text-[10px] mt-1.5 mb-0" style={{ color: 'rgba(244,244,242,0.45)' }}>Se pide en cada cargue, no solo al entrar. Cada código sirve una sola vez.</p>
+                    </div>
+                  )}
+
                   <button
                     onClick={requestCargue}
-                    disabled={carguesBusy || !carguesAmount}
+                    disabled={carguesBusy || (usandoAcct ? !acctCalc.listo : !carguesAmount) || (!carguesRecordOnly && cargueOtp.length !== 6)}
                     className="w-full py-3 rounded-lg text-sm font-bold text-white bg-[#0C0E0D] hover:bg-[#152e52] disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
                   >
                     {carguesBusy ? <><RefreshCw size={15} className="animate-spin" /> Aplicando…</> : <>{carguesDir === 'credit' ? 'Acreditar' : 'Descontar'} saldo</>}
