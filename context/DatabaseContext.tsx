@@ -1324,7 +1324,10 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           const storedHash = fbProfile.raw_data?.passwordHash as string | undefined;
           if (storedHash) {
             const inputHash = await hashPassword(pass!, email);
-            if (!inputHash || inputHash !== storedHash) { logFailedLogin(email, 'contraseña incorrecta'); return null; }
+            if (!inputHash || inputHash !== storedHash) {
+              setLoginError('Correo o contraseña incorrectos.');
+              logFailedLogin(email, 'contraseña incorrecta'); return null;
+            }
           } else {
             // First fallback login — store hash for future use
             const hash = await hashPassword(pass!, email);
@@ -1360,10 +1363,11 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         }
       }
       // Ninguna vía reconoció las credenciales → queda registrado con IP.
+      if (!loginErrorRef.current) setLoginError('Correo o contraseña incorrectos.');
       logFailedLogin(email, 'credenciales incorrectas');
       return null;
     }
-    if (!data.user) return null;
+    if (!data.user) { setLoginError('El servidor aceptó la petición pero no devolvió la cuenta. Reintenta.'); return null; }
 
     const profileTimeout = new Promise<{ data: null }>(resolve => setTimeout(() => resolve({ data: null }), 6000));
     let { data: profile } = await Promise.race([
