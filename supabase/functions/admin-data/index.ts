@@ -334,6 +334,42 @@ async function marcarFactor(req: Request, userId: string, factor: 'email' | 'app
   } catch { /* si no se puede anotar, la acción sensible vuelve a pedirlo */ }
 }
 
+// ── Cierre por inactividad ───────────────────────────────────────────────
+// El panel se cierra solo a la media hora sin uso. El navegador lo hace por
+// su cuenta, pero eso es solo la pantalla: quien tenga el token guardado
+// podría seguir llamando la API con la sesión "cerrada". Por eso el corte
+// vive TAMBIÉN aquí, que es donde de verdad importa.
+//
+// Para no escribir en la base en cada petición, la marca de "visto" se
+// refresca cada 5 minutos como mucho. El navegador manda una señal cuando
+// hay actividad pero no llamadas —alguien leyendo una pantalla quieta— para
+// que estar trabajando no cuente como estar ausente.
+const IDLE_MAX_MS = 30 * 60_000
+const IDLE_WRITE_MS = 5 * 60_000
+function actividadKey(userId: string) { return `actividad_${userId}` }
+
+async function sesionInactiva(req: Request, userId: string): Promise<boolean> {
+  const sid = sessionIdOf(req) ?? SIN_SESION
+  const ahora = Date.now()
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', actividadKey(userId)).single()
+    const todo: Record<string, number> = data?.value ? JSON.parse(data.value) : {}
+    const visto = Number(todo[sid] ?? 0)
+    if (visto && ahora - visto > IDLE_MAX_MS) return true
+    if (!visto || ahora - visto > IDLE_WRITE_MS) {
+      const vivas: Record<string, number> = {}
+      for (const [s, t] of Object.entries(todo)) if (ahora - Number(t) < IDLE_MAX_MS) vivas[s] = Number(t)
+      vivas[sid] = ahora
+      await db.from('system_config').upsert({ key: actividadKey(userId), value: JSON.stringify(vivas) }, { onConflict: 'key' })
+    }
+    return false
+  } catch {
+    // Si no se puede leer la marca, NO se echa a nadie: dejar al titular sin
+    // panel por un fallo de la base es peor que media hora de más.
+    return false
+  }
+}
+
 // Qué factores le FALTAN a esta sesión para operar. Vacío = puede seguir.
 async function stepUpFalta(req: Request, userId: string): Promise<string[]> {
   const sid = sessionIdOf(req) ?? SIN_SESION
@@ -1282,6 +1318,18 @@ Deno.serve(async (req: Request) => {
         return json({ ok: true })
       }
 
+      // ── Señal de vida ────────────────────────────────────────────────────
+      // La manda el panel cuando hay actividad real pero no llamadas a la API
+      // —alguien leyendo una pantalla quieta—. Sin esto, estar trabajando en
+      // una pantalla que no consulta nada contaría como estar ausente.
+      if (selfServiceBody.action === 'touch_session' && selfServiceBody.userId) {
+        const uidT = String(selfServiceBody.userId)
+        if (!(await verifySelfOrAdmin(req, uidT))) return json({ error: 'No autorizado' }, 401)
+        if (!(await esAdminUid(uidT))) return json({ ok: true })   // el corte es solo del panel
+        const fuera = await sesionInactiva(req, uidT)
+        return json({ ok: !fuera, sesionInactiva: fuera })
+      }
+
       // ── ¿Qué le falta a esta sesión para operar? ─────────────────────────
       // Lo consulta la pantalla antes de abrir Tesorería o de administrar las
       // llaves. La respuesta la decide el servidor: la pantalla no puede
@@ -1597,6 +1645,12 @@ Deno.serve(async (req: Request) => {
     // La política de acceso también corta una sesión ya abierta: si la sesión
     // se mueve a una conexión no autorizada, deja de servir.
     { const den = await accessDenied(req); if (den) return json({ error: den, accessDenied: true }, 403) }
+    // Media hora sin usar el panel y la sesión deja de servir, aunque el token
+    // siga vigente. Un computador que quedó abierto no es una sesión válida.
+    if (await sesionInactiva(req, String(auth.userId ?? ''))) {
+      await auditAdmin(req, 'auth.sesion_cerrada_por_inactividad', { userId: auth.userId })
+      return json({ error: 'La sesión se cerró por inactividad. Vuelve a iniciar sesión.', sesionInactiva: true }, 403)
+    }
     // Una cuenta bloqueada no opera ni con la sesión ya abierta.
     if (auth.userId && await adminLock(auth.userId)) {
       return json({ error: 'La cuenta está bloqueada por seguridad. Revisa tu correo para desbloquearla.', locked: true }, 423)

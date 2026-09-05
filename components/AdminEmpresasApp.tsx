@@ -7,6 +7,7 @@ import { ToastProvider } from './AdminPersonas/lib/toast';
 import { setRatesDbClient } from './AdminPersonas/sections/RatesPanel';
 import { supabase } from '../lib/supabaseClient';
 import { AdminDashboard } from './AdminDashboard';
+import { AdminIdleGuard } from './AdminIdleGuard';
 import { Logo } from './Logo';
 import { TurnstileWidget, captchaEnabled } from './TurnstileWidget';
 import { Lock, LogOut, ShieldCheck, Fingerprint } from 'lucide-react';
@@ -135,7 +136,14 @@ const AdminEmpresasInner: React.FC = () => {
     }
 
     if (currentUser?.role === 'admin') {
-        return <AdminDashboard onLogout={async () => { await logoutUser(); }} />;
+        return (
+            <>
+                {/* Media hora sin uso y el panel se cierra solo. El corte de
+                    verdad está en el servidor; esto es la parte visible. */}
+                <AdminIdleGuard userId={currentUser.id} onCerrar={async () => { await logoutUser(); }} />
+                <AdminDashboard onLogout={async () => { await logoutUser(); }} />
+            </>
+        );
     }
 
     return (
