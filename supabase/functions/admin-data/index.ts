@@ -240,6 +240,27 @@ const MAX_FALLOS_ADMIN = 2
 
 function lockKey(userId: string) { return `admin_lock_${userId}` }
 
+// Registra un fallo de verificación y BLOQUEA al llegar al tope. Es el único
+// sitio que cuenta: antes el conteo estaba repartido entre el paso del correo,
+// el de la app y el de respaldo, cada uno con su propia cuenta, y solo uno
+// disparaba el bloqueo — fallar cuatro veces el primero no bloqueaba nada.
+async function registerAdminFailure(req: Request, userId: string, motivo: string, tipo: string, foto?: string | null): Promise<number> {
+  await auditAdmin(req, 'auth.mfa_failed', { userId, motivo, tipo })
+  try {
+    const desde = new Date(Date.now() - 30 * 60_000).toISOString()
+    const { data } = await db.from('audit_log').select('metadata')
+      .eq('action', 'auth.mfa_failed').gte('created_at', desde).limit(300)
+    const n = (data ?? []).filter((r: any) => r?.metadata?.userId === userId).length
+    if (n >= MAX_FALLOS_ADMIN) {
+      const { data: uu } = await db.from('users').select('email, role').eq('id', userId).single()
+      if ((uu as any)?.role === 'admin') {
+        await lockAdminAndAlert(req, userId, String((uu as any).email), motivo, foto ?? null)
+      }
+    }
+    return n
+  } catch { return 0 }
+}
+
 async function adminLock(userId: string): Promise<any | null> {
   try {
     const { data } = await db.from('system_config').select('value').eq('key', lockKey(userId)).single()
@@ -555,8 +576,11 @@ Deno.serve(async (req: Request) => {
           body: JSON.stringify({ action: 'verify', userId: uidE, code: codeE }),
         }).then(x => x.json()).catch(() => null)
         if (!r?.ok) {
-          await auditAdmin(req, 'auth.mfa_failed', { userId: uidE, motivo: 'código de correo incorrecto', tipo: 'correo' })
-          return json({ ok: false, message: r?.message ?? 'Código de correo incorrecto o vencido.' })
+          const n = await registerAdminFailure(req, uidE, 'código incorrecto', 'correo', selfServiceBody.foto ?? null)
+          if (n >= MAX_FALLOS_ADMIN) {
+            return json({ ok: false, error: 'account_locked', message: 'La cuenta se bloqueó por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
+          }
+          return json({ ok: false, message: r?.message ?? 'Código incorrecto o vencido.' })
         }
         // Primer paso superado. NO abre la sesión: falta el código de la app.
         await rememberMfaSession(req, uidE, 'email')
@@ -907,15 +931,10 @@ Deno.serve(async (req: Request) => {
               : `Demasiados códigos incorrectos. Vuelve a intentar en ${faltan} minuto${faltan === 1 ? '' : 's'}, o entra con uno de tus códigos de respaldo.`,
           }, 429)
         }
+        let bloqueada = false
         const noteMfaFail = async (motivo: string) => {
-          await auditAdmin(req, 'auth.mfa_failed', { userId: uidV, motivo, tipo: esRespaldo ? 'respaldo' : 'app' })
-          // A los 2 fallos la cuenta se BLOQUEA y se avisa al titular.
-          if (mios.length + 1 >= MAX_FALLOS_ADMIN) {
-            const { data: uu } = await db.from('users').select('email, role').eq('id', uidV).single()
-            if ((uu as any)?.role === 'admin') {
-              await lockAdminAndAlert(req, uidV, String((uu as any).email), motivo, selfServiceBody.foto ?? null)
-            }
-          }
+          const n = await registerAdminFailure(req, uidV, motivo, esRespaldo ? 'respaldo' : 'app', selfServiceBody.foto ?? null)
+          bloqueada = n >= MAX_FALLOS_ADMIN
         }
 
         const { data: u } = await db.from('users').select('raw_data').eq('id', selfServiceBody.userId).single()
@@ -941,6 +960,7 @@ Deno.serve(async (req: Request) => {
             return json({ ok: true, usedBackup: true, remaining: rest.length })
           }
           await noteMfaFail('código de respaldo inválido')
+          if (bloqueada) return json({ ok: false, error: 'account_locked', message: 'La cuenta se bloqueó por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
           return json({ ok: false, error: 'backup_invalid' })
         }
 
@@ -964,6 +984,7 @@ Deno.serve(async (req: Request) => {
         const counter = await verifyTOTPServer(secret, code)
         if (counter < 0) {
           await noteMfaFail('código incorrecto')
+          if (bloqueada) return json({ ok: false, error: 'account_locked', message: 'La cuenta se bloqueó por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
           return json({ ok: false })
         }
         // Un código ya usado NO vale una segunda vez, aunque su ventana siga

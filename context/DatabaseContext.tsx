@@ -1511,14 +1511,18 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   const completeEmailLogin = async (code: string): Promise<User | null> => {
     if (!pendingMFAProfile) return null;
+    // Igual que en el otro paso: en el segundo intento se intenta la captura,
+    // para que viaje junto al fallo que dispara el bloqueo.
+    let fotoIntento: string | null = null;
+    if (fallosLocalRef.current >= 1) fotoIntento = await tryCapturePhoto();
     try {
       const SURL = SUPABASE_URL_FOR_FN, SKEY = SUPABASE_ANON_FOR_FN, token = getStoredToken();
       const r = await fetch(`${SURL}/functions/v1/admin-data`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
-        body: JSON.stringify({ action: 'mfa_verify_email', userId: pendingMFAProfile.id, code }),
+        body: JSON.stringify({ action: 'mfa_verify_email', userId: pendingMFAProfile.id, code, foto: fotoIntento }),
       }).then(x => x.json()).catch(() => null);
-      if (!r?.ok) { setMfaError2(r?.message ?? 'Código incorrecto o vencido.'); return null; }
+      if (!r?.ok) { fallosLocalRef.current += 1; setMfaError2(r?.message ?? 'Código incorrecto o vencido.'); return null; }
       // Correo validado. Falta el código de la app: NO se entra todavía.
       setEmailStepPending(false);
       setMfaError2(null);
