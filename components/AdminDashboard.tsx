@@ -86,6 +86,7 @@ import { AdminSecurityAgent } from './AdminSecurityAgent';
 import { AdminAccessPolicy } from './AdminAccessPolicy';
 import { AdminPasskeys } from './AdminPasskeys';
 import { AdminStepUp } from './AdminStepUp';
+import { AdminLoginAlerts } from './AdminLoginAlerts';
 import { AdminOtcSection } from './AdminOtcSection';
 import { Zap, ArrowLeftRight, ArrowLeft, Info, ChevronRight, Activity } from 'lucide-react';
 import { CollectionWalletCard } from './CollectionWalletCard';
@@ -3673,6 +3674,9 @@ const renderDesign = () => (
               caras del mismo candado: la lista filtra DESDE DÓNDE, la llave
               prueba QUIÉN. */}
           {currentUser?.id && <AdminPasskeys userId={currentUser.id} />}
+
+          {/* El aviso por correo en cada ingreso, con su botón de prueba. */}
+          {currentUser?.id && <AdminLoginAlerts userId={currentUser.id} />}
 
           {/* Tu propio 2FA — protege el cambio de proveedor de tesorería */}
           <div className={`rounded-xl border p-4 ${adminMfaOn ? 'border-green-200 bg-green-50/50' : 'border-amber-300 bg-amber-50/60'}`}>

@@ -606,14 +606,18 @@ function dispositivoDe(ua: string): string {
   return nav ? `${so} · ${nav}` : so
 }
 
-async function avisarIngreso(req: Request, userId: string): Promise<boolean> {
+type ResultadoAviso = { ok: boolean; motivo: string; destino?: string }
+
+async function avisarIngreso(req: Request, userId: string, forzar = false): Promise<ResultadoAviso> {
   const sid = sessionIdOf(req) ?? SIN_SESION
   try {
     // Dedupe por sesión: recargar la página no puede llenarle el buzón a nadie.
     const { data: prev } = await db.from('system_config').select('value').eq('key', AVISO_LOGIN_KEY).single()
     const todo: Record<string, number> = prev?.value ? JSON.parse(prev.value) : {}
     const clave = `${userId}:${sid}`
-    if (todo[clave] && Date.now() - Number(todo[clave]) < AVISO_TTL_MS) return false
+    if (!forzar && todo[clave] && Date.now() - Number(todo[clave]) < AVISO_TTL_MS) {
+      return { ok: false, motivo: 'ya se avisó de esta sesión' }
+    }
     const vivas: Record<string, number> = {}
     for (const [k, t] of Object.entries(todo)) if (Date.now() - Number(t) < AVISO_TTL_MS) vivas[k] = Number(t)
     vivas[clave] = Date.now()
@@ -621,7 +625,7 @@ async function avisarIngreso(req: Request, userId: string): Promise<boolean> {
 
     const { data: u } = await db.from('users').select('email, name, role, raw_data').eq('id', userId).single()
     const correo = String((u as any)?.email ?? '')
-    if (!correo) return false
+    if (!correo) return { ok: false, motivo: 'la cuenta no tiene correo registrado' }
 
     const ip = ipOf(req)
     const geo = await geoOf(ip)
@@ -630,7 +634,7 @@ async function avisarIngreso(req: Request, userId: string): Promise<boolean> {
     const cuando = new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota', dateStyle: 'full', timeStyle: 'short' })
     await auditAdmin(req, 'auth.aviso_ingreso', { userId, ip, pais: geo?.countryCode ?? null })
 
-    if (!RESEND_KEY) return false
+    if (!RESEND_KEY) return { ok: false, motivo: 'falta la llave de envío de correo en la Bóveda', destino: correo }
     const fila = (k: string, v: string) =>
       `<tr><td style="padding:7px 12px;color:#878E88;font-size:13px">${k}</td><td style="padding:7px 12px;color:#F4F4F2;font-size:13px;font-weight:600">${v}</td></tr>`
     const nombre = String((u as any)?.name ?? '').split(' ')[0] || '';
@@ -660,7 +664,10 @@ async function avisarIngreso(req: Request, userId: string): Promise<boolean> {
           Este aviso se manda una vez por dispositivo — recargar la página no vuelve a enviarlo.
         </p>
       </div>`
-    await fetch('https://api.resend.com/emails', {
+    // La respuesta del proveedor SE MIRA. Antes se ignoraba, así que un
+    // rechazo —dominio sin verificar, destinatario no permitido, llave
+    // vencida— se veía exactamente igual que un envío correcto: nada.
+    const envio = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { Authorization: `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -669,8 +676,17 @@ async function avisarIngreso(req: Request, userId: string): Promise<boolean> {
         html,
       }),
     })
-    return true
-  } catch { return false }   // el aviso NUNCA puede impedir un ingreso
+    if (!envio.ok) {
+      const detalle = (await envio.text().catch(() => '')).slice(0, 300)
+      await auditAdmin(req, 'auth.aviso_ingreso_fallido', { userId, status: envio.status, detalle })
+      return { ok: false, motivo: `el proveedor rechazó el envío (${envio.status}): ${detalle}`, destino: correo }
+    }
+    return { ok: true, motivo: 'enviado', destino: correo }
+  } catch (e) {
+    // El aviso NUNCA puede impedir un ingreso, pero el motivo sí queda.
+    try { await auditAdmin(req, 'auth.aviso_ingreso_fallido', { userId, error: (e as Error)?.message }) } catch { /* */ }
+    return { ok: false, motivo: `error interno: ${(e as Error)?.message ?? 'desconocido'}` }
+  }
 }
 
 // ── Seguridad de acceso: IP, geolocalización y bloqueo ────────────────────
@@ -1468,7 +1484,11 @@ Deno.serve(async (req: Request) => {
       if (selfServiceBody.action === 'notify_login' && selfServiceBody.userId) {
         const uidN = String(selfServiceBody.userId)
         if (!(await verifySelfOrAdmin(req, uidN))) return json({ error: 'No autorizado' }, 401)
-        return json({ ok: true, enviado: await avisarIngreso(req, uidN) })
+        // 'forzar' lo usa el botón de prueba del panel: salta el dedupe para
+        // poder comprobar el envío sin tener que volver a entrar.
+        const forzar = !!selfServiceBody.forzar && (await esAdminUid(uidN))
+        const r = await avisarIngreso(req, uidN, forzar)
+        return json({ ok: true, enviado: r.ok, motivo: r.motivo, destino: r.destino ?? null })
       }
 
       // ── Señal de vida ────────────────────────────────────────────────────
