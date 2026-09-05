@@ -229,6 +229,89 @@ function computeAcct(input: any): { acct: Acct } | { error: string } {
   }
 }
 
+// ── Bloqueo de la cuenta de admin tras intentos fallidos ─────────────────
+// A los 2 fallos la cuenta queda bloqueada y se avisa al titular por correo
+// con quién lo intentó (IP, ubicación aproximada, dispositivo, hora) y un
+// enlace para desbloquearla. El estado vive en system_config, no en el perfil:
+// así ni siquiera un admin autenticado puede quitárselo desde el navegador.
+const RESEND_KEY = Deno.env.get('RESEND_API_KEY') ?? ''
+const FROM_EMAIL = Deno.env.get('FROM_EMAIL') ?? 'no-reply@lincoin.me'
+const MAX_FALLOS_ADMIN = 2
+
+function lockKey(userId: string) { return `admin_lock_${userId}` }
+
+async function adminLock(userId: string): Promise<any | null> {
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', lockKey(userId)).single()
+    return data?.value ? JSON.parse(data.value) : null
+  } catch { return null }
+}
+
+async function clearAdminLock(userId: string) {
+  try { await db.from('system_config').delete().eq('key', lockKey(userId)) } catch { /* */ }
+}
+
+async function sha256Hex(v: string): Promise<string> {
+  const raw = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(v))
+  return Array.from(new Uint8Array(raw)).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+// Bloquea y avisa. 'foto' es opcional: base64 sin cabecera (JPEG).
+async function lockAdminAndAlert(req: Request, userId: string, email: string, motivo: string, foto?: string | null) {
+  const yaBloqueada = await adminLock(userId)
+  if (yaBloqueada) return
+  const token = crypto.randomUUID() + crypto.randomUUID().replace(/-/g, '')
+  const ip = ipOf(req)
+  const geo = await geoOf(ip)
+  const ua = req.headers.get('user-agent') ?? 'desconocido'
+  const cuando = new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota', dateStyle: 'full', timeStyle: 'short' })
+
+  await db.from('system_config').upsert({
+    key: lockKey(userId),
+    value: JSON.stringify({ at: new Date().toISOString(), motivo, ip, geo, userAgent: ua, tokenHash: await sha256Hex(token) }),
+  }, { onConflict: 'key' })
+  await auditAdmin(req, 'security.admin_locked', { userId, motivo, ip })
+
+  if (!RESEND_KEY) return
+  const url = `${SUPABASE_URL}/functions/v1/admin-data?action=unlock&u=${encodeURIComponent(userId)}&t=${encodeURIComponent(token)}`
+  const fila = (k: string, v: string) =>
+    `<tr><td style="padding:7px 12px;color:#878E88;font-size:13px">${k}</td><td style="padding:7px 12px;color:#F4F4F2;font-size:13px;font-weight:600">${v}</td></tr>`
+  const html = `
+    <div style="background:#0C0E0D;padding:28px;font-family:Archivo,system-ui,sans-serif">
+      <p style="font-size:20px;font-weight:800;color:#F4F4F2;margin:0 0 4px">Lincoin<span style="color:#4ADE80">.</span></p>
+      <p style="color:#F87171;font-weight:800;font-size:16px;margin:18px 0 6px">Se bloqueó el acceso al panel</p>
+      <p style="color:#878E88;font-size:13px;line-height:1.6;margin:0 0 16px">
+        Hubo ${MAX_FALLOS_ADMIN} intentos fallidos de ingreso. La cuenta quedó bloqueada por seguridad.
+        Si fuiste tú, desbloquéala con el botón. Si no, <b style="color:#F4F4F2">no la desbloquees</b> y cambia la contraseña.
+      </p>
+      <table style="width:100%;background:#121413;border-radius:10px;border-collapse:collapse;margin-bottom:18px">
+        ${fila('Cuándo', cuando)}
+        ${fila('Motivo', motivo)}
+        ${fila('IP', ip ?? 'no registrada')}
+        ${fila('Ubicación aproximada', geo?.approx ?? 'no disponible')}
+        ${fila('Operador', geo?.org ?? '—')}
+        ${fila('Dispositivo', ua.slice(0, 90))}
+        ${fila('Imagen de cámara', foto ? 'adjunta a este correo' : 'no disponible')}
+      </table>
+      <a href="${url}" style="display:inline-block;background:#4ADE80;color:#0C0E0D;font-weight:800;font-size:14px;text-decoration:none;padding:13px 22px;border-radius:10px">Desbloquear mi cuenta</a>
+      <p style="color:rgba(244,244,242,0.45);font-size:11px;margin:18px 0 0">
+        El enlace sirve una sola vez. La ubicación se deduce de la IP: llega a ciudad o región, no es una dirección exacta.
+      </p>
+    </div>`
+  try {
+    await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: `Lincoin <${FROM_EMAIL}>`, to: [email],
+        subject: '⚠️ Se bloqueó el acceso a tu panel de Lincoin',
+        html,
+        ...(foto ? { attachments: [{ filename: 'intento-de-acceso.jpg', content: foto }] } : {}),
+      }),
+    })
+  } catch { /* el aviso nunca rompe el bloqueo */ }
+}
+
 // ── Seguridad de acceso: IP, geolocalización y bloqueo ────────────────────
 function ipOf(req: Request): string | null {
   const fwd = (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim()
@@ -373,6 +456,33 @@ Deno.serve(async (req: Request) => {
       return json({ ok: true, version: 'admin-data v4 (slim + ping)' })
     }
 
+    // Desbloqueo desde el correo. No lleva sesión a propósito: el titular
+    // está bloqueado justamente porque no puede entrar. La credencial es el
+    // token de un solo uso que se le envió, comparado por hash.
+    if (pingUrl.searchParams.get('action') === 'unlock') {
+      const uid = pingUrl.searchParams.get('u') ?? ''
+      const tok = pingUrl.searchParams.get('t') ?? ''
+      const pag = (titulo: string, texto: string, ok: boolean) => new Response(
+        `<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${titulo}</title></head>
+         <body style="margin:0;background:#0C0E0D;font-family:Archivo,system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh">
+           <div style="text-align:center;padding:28px;max-width:380px">
+             <p style="font-size:22px;font-weight:800;color:#F4F4F2;margin:0 0 18px">Lincoin<span style="color:#4ADE80">.</span></p>
+             <p style="font-size:17px;font-weight:800;color:${ok ? '#4ADE80' : '#F87171'};margin:0 0 8px">${titulo}</p>
+             <p style="font-size:13px;color:#878E88;line-height:1.6;margin:0">${texto}</p>
+           </div></body></html>`,
+        { status: ok ? 200 : 400, headers: { 'Content-Type': 'text/html; charset=utf-8', ...CORS } })
+      if (!uid || !tok) return pag('Enlace incompleto', 'Vuelve a abrir el enlace del correo.', false)
+      const lock = await adminLock(uid)
+      if (!lock) return pag('La cuenta ya está activa', 'No hay ningún bloqueo pendiente. Puedes iniciar sesión.', true)
+      if (lock.tokenHash !== await sha256Hex(tok)) {
+        await auditAdmin(req, 'security.unlock_token_invalido', { userId: uid })
+        return pag('Enlace inválido o ya usado', 'Cada enlace sirve una sola vez. Si necesitas otro, intenta iniciar sesión para generar uno nuevo.', false)
+      }
+      await clearAdminLock(uid)
+      await auditAdmin(req, 'security.admin_unlocked', { userId: uid })
+      return pag('Cuenta desbloqueada', 'Ya puedes iniciar sesión. Si no fuiste tú quien pidió esto, cambia la contraseña de inmediato.', true)
+    }
+
     // ⚠️ El body se parsea ANTES del gate de admin — 'delete_self' e
     // 'insert_transaction' son deliberadamente self-service (cualquier
     // usuario autenticado puede borrar SU PROPIA cuenta o insertar SU
@@ -422,6 +532,9 @@ Deno.serve(async (req: Request) => {
       // la abre.
       if (selfServiceBody.action === 'mfa_verify_email' && selfServiceBody.userId) {
         if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
+        if (await adminLock(String(selfServiceBody.userId))) {
+          return json({ ok: false, error: 'account_locked', message: 'La cuenta está bloqueada por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
+        }
         const uidE = String(selfServiceBody.userId)
         const codeE = String(selfServiceBody.code ?? '').replace(/\D/g, '')
 
@@ -432,10 +545,10 @@ Deno.serve(async (req: Request) => {
         if (fallosE.length >= 5) {
           const viejo = fallosE.map((r: any) => new Date(r.created_at).getTime()).sort((a, b) => a - b)[0]
           const faltan = Math.max(1, Math.ceil((viejo + 15 * 60_000 - Date.now()) / 60_000))
-          return json({ ok: false, error: 'too_many_attempts', message: `Demasiados códigos de correo incorrectos. Vuelve a intentar en ${faltan} minuto${faltan === 1 ? '' : 's'}.` }, 429)
+          return json({ ok: false, error: 'too_many_attempts', message: `Demasiados intentos. Vuelve a intentar en ${faltan} minuto${faltan === 1 ? '' : 's'}.` }, 429)
         }
 
-        if (!/^\d{6}$/.test(codeE)) return json({ ok: false, message: 'El código del correo son 6 dígitos.' })
+        if (!/^\d{6}$/.test(codeE)) return json({ ok: false, message: 'El código son 6 dígitos.' })
         const r = await fetch(`${SUPABASE_URL}/functions/v1/email-otp`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
@@ -455,6 +568,9 @@ Deno.serve(async (req: Request) => {
       // mostrarlo le confirmaría el correo a quien no es el dueño.
       if (selfServiceBody.action === 'mfa_start_login' && selfServiceBody.userId) {
         if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
+        if (await adminLock(String(selfServiceBody.userId))) {
+          return json({ ok: false, error: 'account_locked', message: 'La cuenta está bloqueada por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
+        }
         const r = await fetch(`${SUPABASE_URL}/functions/v1/email-otp`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
@@ -462,7 +578,7 @@ Deno.serve(async (req: Request) => {
         }).then(x => x.json()).catch(() => null)
         if (r?.ok) return json({ ok: true, throttled: !!r.throttled })
         await auditAdmin(req, 'auth.email_2fa_unavailable', { userId: String(selfServiceBody.userId), motivo: r?.error ?? 'sin respuesta' })
-        return json({ ok: false, error: 'email_code_unavailable', message: 'No se pudo enviar el código a tu correo, así que el ingreso no puede continuar.' })
+        return json({ ok: false, error: 'email_code_unavailable', message: 'No se pudo iniciar la verificación. Intenta de nuevo.' })
       }
 
       // Reenviar el código del correo si no llegó.
@@ -752,6 +868,9 @@ Deno.serve(async (req: Request) => {
       // secreto en claro). Acepta legacy en texto plano.
       if (selfServiceBody.action === 'mfa_verify' && selfServiceBody.userId) {
         if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
+        if (await adminLock(String(selfServiceBody.userId))) {
+          return json({ ok: false, error: 'account_locked', message: 'La cuenta está bloqueada por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
+        }
         const code = String(selfServiceBody.code ?? '')
         const uidV = String(selfServiceBody.userId)
 
@@ -788,7 +907,16 @@ Deno.serve(async (req: Request) => {
               : `Demasiados códigos incorrectos. Vuelve a intentar en ${faltan} minuto${faltan === 1 ? '' : 's'}, o entra con uno de tus códigos de respaldo.`,
           }, 429)
         }
-        const noteMfaFail = async (motivo: string) => { await auditAdmin(req, 'auth.mfa_failed', { userId: uidV, motivo, tipo: esRespaldo ? 'respaldo' : 'app' }) }
+        const noteMfaFail = async (motivo: string) => {
+          await auditAdmin(req, 'auth.mfa_failed', { userId: uidV, motivo, tipo: esRespaldo ? 'respaldo' : 'app' })
+          // A los 2 fallos la cuenta se BLOQUEA y se avisa al titular.
+          if (mios.length + 1 >= MAX_FALLOS_ADMIN) {
+            const { data: uu } = await db.from('users').select('email, role').eq('id', uidV).single()
+            if ((uu as any)?.role === 'admin') {
+              await lockAdminAndAlert(req, uidV, String((uu as any).email), motivo, selfServiceBody.foto ?? null)
+            }
+          }
+        }
 
         const { data: u } = await db.from('users').select('raw_data').eq('id', selfServiceBody.userId).single()
         const raw = ((u as any)?.raw_data ?? {}) as Record<string, any>
@@ -807,7 +935,7 @@ Deno.serve(async (req: Request) => {
             await db.from('users').update({ raw_data: { ...raw, mfaBackupHashes: rest } }).eq('id', selfServiceBody.userId)
             await auditAdmin(req, 'mfa_backup_code_used', { userId: selfServiceBody.userId, remaining: rest.length })
             if (String(selfServiceBody.stage ?? '') === 'login' && !(await emailStagePassed(req, uidV))) {
-              return json({ ok: false, error: 'email_step_missing', message: 'Primero tienes que validar el código que te llega al correo.' })
+              return json({ ok: false, error: 'email_step_missing', message: 'Completa la verificación anterior.' })
             }
             await rememberMfaSession(req, String(selfServiceBody.userId), 'full')
             return json({ ok: true, usedBackup: true, remaining: rest.length })
@@ -856,7 +984,7 @@ Deno.serve(async (req: Request) => {
         // así el orden no se puede saltar llamando directo a este paso.
         if (String(selfServiceBody.stage ?? '') === 'login') {
           if (!(await emailStagePassed(req, uidV))) {
-            return json({ ok: false, error: 'email_step_missing', message: 'Primero tienes que validar el código que te llega al correo.' })
+            return json({ ok: false, error: 'email_step_missing', message: 'Completa la verificación anterior.' })
           }
           await rememberMfaSession(req, uidV, 'full')
           await auditAdmin(req, 'auth.login_2fa_completo', { userId: uidV })
@@ -983,6 +1111,10 @@ Deno.serve(async (req: Request) => {
     // el gate ahora que las acciones self-service ya tuvieron su chance.
     const auth = await verifyAdmin(req)
     if (!auth.ok) return json({ error: auth.error }, 401)
+    // Una cuenta bloqueada no opera ni con la sesión ya abierta.
+    if (auth.userId && await adminLock(auth.userId)) {
+      return json({ error: 'La cuenta está bloqueada por seguridad. Revisa tu correo para desbloquearla.', locked: true }, 423)
+    }
 
     if (req.method === 'POST') {
       const body = selfServiceBody ?? {}

@@ -169,7 +169,7 @@ const AdminEmpresasInner: React.FC = () => {
                             <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl p-2.5">
                                 <ShieldCheck size={16} className="text-[#16A34A]" />
                                 <p className="text-xs text-slate-600">
-                                    Paso 1 de 2. Te enviamos un código de 6 dígitos a tu correo. Ingrésalo para continuar.
+                                    Verificación 1 de 2. Ingresa el código de 6 dígitos.
                                 </p>
                             </div>
                             <input
@@ -185,8 +185,8 @@ const AdminEmpresasInner: React.FC = () => {
                             <button type="submit" disabled={verifying || emailCode.length !== 6} style={{ color: '#FFFFFF' }} className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#152e52] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60 transition-colors">
                                 <Lock size={14} /> {verifying ? 'Verificando…' : 'Continuar'}
                             </button>
-                            <button type="button" onClick={async () => { setResendMsg('Enviando…'); const ok = await resendEmailCode(); setResendMsg(ok ? 'Te reenviamos el código. Revisa tu correo.' : 'No se pudo reenviar. Espera un momento.'); }} className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-800 underline">
-                                No me llegó — reenviar código
+                            <button type="button" onClick={async () => { setResendMsg('Enviando…'); const ok = await resendEmailCode(); setResendMsg(ok ? 'Código reenviado.' : 'No se pudo reenviar. Espera un momento.'); }} className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-800 underline">
+                                Reenviar código
                             </button>
                             <button type="button" onClick={() => { cancelMFALogin(); setEmailCode(''); setMfaCode(''); setMfaError(null); setResendMsg(null); setPassword(''); setUseBackup(false); }} className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-800">
                                 Cancelar
@@ -198,7 +198,7 @@ const AdminEmpresasInner: React.FC = () => {
                                 <ShieldCheck size={16} className="text-[#16A34A]" />
                                 <p className="text-xs text-slate-600">{useBackup
                                     ? 'Ingresa uno de tus códigos de respaldo (formato XXXX-XXXX). Cada uno sirve una sola vez.'
-                                    : 'Paso 2 de 2. Ahora ingresa el código de 6 dígitos de tu app de autenticación.'}</p>
+                                    : 'Verificación 2 de 2. Ingresa el código de 6 dígitos.'}</p>
                             </div>
                             <input
                                 value={mfaCode}
@@ -215,7 +215,7 @@ const AdminEmpresasInner: React.FC = () => {
                                 <Lock size={14} /> {verifying ? 'Verificando…' : 'Verificar código'}
                             </button>
                             <button type="button" onClick={() => { setUseBackup(v => !v); setMfaCode(''); setMfaError(null); }} className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-800 underline">
-                                {useBackup ? 'Volver al código de la app' : 'No tengo el código — usar un código de respaldo'}
+                                {useBackup ? 'Volver al código normal' : 'Usar un código de respaldo'}
                             </button>
                             <button type="button" onClick={() => { cancelMFALogin(); setMfaCode(''); setMfaError(null); setPassword(''); setUseBackup(false); }} className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-800">
                                 Cancelar

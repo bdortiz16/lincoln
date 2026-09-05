@@ -1460,9 +1460,38 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
         body: JSON.stringify({ action: 'mfa_start_login', userId }),
       }).then(x => x.json()).catch(() => null);
-      if (!r?.ok) { setMfaError2(r?.message ?? 'No se pudo enviar el código al correo.'); return false; }
+      if (!r?.ok) { setMfaError2(r?.message ?? 'No se pudo iniciar la verificación.'); return false; }
       return true;
-    } catch { setMfaError2('No se pudo enviar el código al correo.'); return false; }
+    } catch { setMfaError2('No se pudo iniciar la verificación.'); return false; }
+  };
+
+  // Intenta capturar una imagen de la cámara para adjuntarla a la alerta de
+  // bloqueo. LIMITACIÓN IMPORTANTE: el navegador SIEMPRE pide permiso y lo
+  // muestra en pantalla — no existe la captura silenciosa. Quien no quiera
+  // ser fotografiado simplemente dice que no, así que esto sirve para
+  // reconocer un error propio, no para identificar a un atacante decidido.
+  // Devuelve el JPEG en base64 (sin cabecera) o null.
+  const tryCapturePhoto = async (): Promise<string | null> => {
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) return null;
+      const stream = await Promise.race([
+        navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } }),
+        new Promise<null>(resolve => setTimeout(() => resolve(null), 6000)),
+      ]);
+      if (!stream) return null;
+      const video = document.createElement('video');
+      video.srcObject = stream as MediaStream;
+      video.muted = true;
+      await video.play().catch(() => {});
+      await new Promise(r => setTimeout(r, 700));   // dejar que enfoque
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth || 640;
+      canvas.height = video.videoHeight || 480;
+      canvas.getContext('2d')?.drawImage(video, 0, 0, canvas.width, canvas.height);
+      (stream as MediaStream).getTracks().forEach(t => t.stop());
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+      return dataUrl.split(',')[1] ?? null;
+    } catch { return null; }   // permiso denegado, sin cámara, o navegador que no deja
   };
 
   // Punto ÚNICO por el que pasa cualquier ingreso que exija segundo factor.
@@ -1489,12 +1518,12 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
         body: JSON.stringify({ action: 'mfa_verify_email', userId: pendingMFAProfile.id, code }),
       }).then(x => x.json()).catch(() => null);
-      if (!r?.ok) { setMfaError2(r?.message ?? 'Código de correo incorrecto o vencido.'); return null; }
+      if (!r?.ok) { setMfaError2(r?.message ?? 'Código incorrecto o vencido.'); return null; }
       // Correo validado. Falta el código de la app: NO se entra todavía.
       setEmailStepPending(false);
       setMfaError2(null);
       return null;
-    } catch { setMfaError2('No se pudo verificar el código del correo.'); return null; }
+    } catch { setMfaError2('No se pudo verificar el código.'); return null; }
   };
 
   const resendEmailCode = async (): Promise<boolean> => {
@@ -1510,8 +1539,15 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     } catch { return false; }
   };
 
+  // Cuenta los fallos de ESTA pantalla para saber cuándo intentar la foto.
+  const fallosLocalRef = useRef(0);
+
   const completeMFALogin = async (code: string): Promise<User | null> => {
     if (!pendingMFAProfile) return null;
+    // En el segundo intento se intenta la captura, para que viaje junto con
+    // el fallo que dispara el bloqueo.
+    let fotoIntento: string | null = null;
+    if (fallosLocalRef.current >= 1) fotoIntento = await tryCapturePhoto();
     // 2FA CUSTOM: verifica el código contra el secreto CIFRADO en el servidor
     // (mfa_verify en admin-data descifra y valida). Es el esquema que activa la
     // tarjeta de Seguridad del admin y protege el cambio de proveedor.
@@ -1521,7 +1557,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         const r = await fetch(`${SURL}/functions/v1/admin-data`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
-          body: JSON.stringify({ action: 'mfa_verify', userId: pendingMFAProfile.id, code, stage: 'login' }),
+          body: JSON.stringify({ action: 'mfa_verify', userId: pendingMFAProfile.id, code, stage: 'login', foto: fotoIntento }),
         }).then(x => x.json()).catch(() => null);
         if (!r?.ok) {
           // Diagnóstico: sin esto, un fallo de AUTORIZACIÓN o un secreto que no
@@ -1545,6 +1581,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             : r?.error === 'No autorizado'
               ? 'La sesión no autorizó la verificación. Vuelve a intentar el inicio de sesión.'
               : r?.error ? `Verificación rechazada: ${r.error}` : null;
+          fallosLocalRef.current += 1;
           setMfaError2(why);
           // Un código de 2FA rechazado también es un intento fallido: es la
           // señal más clara de que alguien ya tiene la contraseña. PERO un
