@@ -122,9 +122,11 @@ export const AdminKumplo: React.FC = () => {
               <Link2 size={17} color={cfg.activo ? C.green : C.sub} /> Kumplo
             </p>
             <p style={{ color: C.sub, fontSize: 12, margin: '4px 0 0', maxWidth: 600, lineHeight: 1.55 }}>
-              Kumplo lleva el expediente de cada persona y responde la consulta AML. Al inscribirse
-              alguien en Lincoin se da de alta allá y se pide la consulta. Si el riesgo sale
-              <b style={{ color: C.red }}> alto</b>, Lincoin no lo deja transferir.
+              Al inscribirse alguien en Lincoin —persona o empresa— se manda a Kumplo su nombre y
+              su documento, y queda <b style={{ color: C.sub }}>en verificación</b>. Kumplo lo consulta
+              contra TusDatos y devuelve el veredicto: verificada, en revisión, o
+              <b style={{ color: C.red }}> bloqueada</b>. Con el veredicto negativo, Lincoin no la deja
+              transferir. El usuario no configura nada.
             </p>
           </div>
           <button
@@ -174,18 +176,43 @@ export const AdminKumplo: React.FC = () => {
           </button>
         </div>
 
+        {/* Lo ÚNICO que hay que llenar. La conexión entre Lincoin y Kumplo es
+            de infraestructura: se arma una vez con este id y de ahí en adelante
+            cada persona se registra sola con lo que ya dio al inscribirse.
+            Estaba perdido entre los campos técnicos de abajo. */}
+        <div style={{ marginTop: 15, background: C.elev, border: `1px solid ${cfg.empresaId ? 'rgba(74,222,128,0.28)' : 'rgba(251,191,36,0.4)'}`, borderRadius: 12, padding: '13px 15px' }}>
+          <p style={{ fontSize: 11, fontWeight: 800, letterSpacing: 0.4, color: C.sub, margin: 0 }}>ID DE LA EMPRESA EN KUMPLO</p>
+          <p style={{ fontSize: 12, color: C.dim, margin: '4px 0 9px', lineHeight: 1.55 }}>
+            El código <b style={{ color: C.sub }}>EMP-…</b> o el uuid que Kumplo le dio a XATECH. Es lo único
+            que hay que configurar: con esto puesto, la conexión queda hecha y cada persona que se
+            inscriba en Lincoin se registra sola allá.
+          </p>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <input style={{ ...inputStyle, flex: 1, minWidth: 190, fontSize: 14 }}
+              value={cfg.empresaId} onChange={e => setCfg({ ...cfg, empresaId: e.target.value.trim() })}
+              placeholder="EMP-F73DE8" />
+            <button onClick={() => guardar(cfg)} disabled={busy || !cfg.empresaId}
+              style={{ background: 'rgba(74,222,128,0.12)', border: '1px solid rgba(74,222,128,0.32)', color: C.green, borderRadius: 9, padding: '9px 18px', fontSize: 13, fontWeight: 800, cursor: 'pointer', fontFamily: FONT, opacity: busy || !cfg.empresaId ? 0.5 : 1 }}>
+              Guardar
+            </button>
+          </div>
+        </div>
+
         {msg && (
           <p style={{ marginTop: 12, fontSize: 12.5, color: msg.ok ? C.green : C.red, lineHeight: 1.5, wordBreak: 'break-word' }}>{msg.texto}</p>
         )}
       </div>
 
-      {/* Datos que tiene que dar Kumplo */}
-      <div style={{ fontFamily: FONT, color: C.text, background: C.card, border: `1px solid ${C.border2}`, borderRadius: 16, padding: 18 }}>
-        <p style={{ fontWeight: 800, fontSize: 15, margin: '0 0 3px' }}>Lo que entrega Kumplo</p>
-        <p style={{ color: C.sub, fontSize: 12, margin: '0 0 15px', lineHeight: 1.55 }}>
-          Estos campos salen de la documentación de Kumplo. Nada de esto está escrito en el código:
-          si ellos cambian una ruta, se cambia acá.
-        </p>
+      {/* Ajustes técnicos: PLEGADOS. Ya vienen con los valores que entregó
+          Kumplo; solo se abren el día que ellos cambien algo. Tenerlos
+          desplegados hacía parecer que había que llenar diez cosas cuando
+          en realidad falta una. */}
+      <details style={{ fontFamily: FONT, color: C.text, background: C.card, border: `1px solid ${C.border2}`, borderRadius: 16 }}>
+        <summary style={{ cursor: 'pointer', listStyle: 'none', padding: '15px 18px', fontWeight: 800, fontSize: 14.5, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+          <span>Ajustes técnicos</span>
+          <span style={{ fontSize: 11.5, fontWeight: 600, color: C.dim }}>ya configurados · ábrelos solo si Kumplo cambia algo</span>
+        </summary>
+        <div style={{ padding: '0 18px 18px' }}>
 
         <Campo etiqueta="Dirección base" ayuda="La raíz de su API. Ejemplo: https://api.usekumplo.com/v1">
           <input style={inputStyle} value={cfg.baseUrl} onChange={e => setCfg({ ...cfg, baseUrl: e.target.value.trim() })} placeholder="https://api.usekumplo.com/v1" />
@@ -198,11 +225,7 @@ export const AdminKumplo: React.FC = () => {
           <Campo etiqueta="Prefijo" ayuda="Lo que va antes de la llave. Puede ir vacío.">
             <input style={inputStyle} value={cfg.authPrefix} onChange={e => setCfg({ ...cfg, authPrefix: e.target.value })} placeholder="Bearer " />
           </Campo>
-          <Campo etiqueta="Id de la empresa en Kumplo · obligatorio"
-            ayuda="El uuid o el código EMP-… de XATECH. Decide bajo qué cuenta de Kumplo caen las personas, y viaja en cada llamada.">
-            <input style={{ ...inputStyle, borderColor: cfg.empresaId ? C.border : 'rgba(251,191,36,0.4)' }}
-              value={cfg.empresaId} onChange={e => setCfg({ ...cfg, empresaId: e.target.value.trim() })} placeholder="EMP-F73DE8" />
-          </Campo>
+
         </div>
 
         <Campo etiqueta="Ruta para dar de alta a una persona" ayuda="POST. Ejemplo: /usuarios">
@@ -271,7 +294,8 @@ export const AdminKumplo: React.FC = () => {
           style={{ background: 'rgba(74,222,128,0.12)', border: '1px solid rgba(74,222,128,0.32)', color: C.green, borderRadius: 10, padding: '10px 18px', fontSize: 13, fontWeight: 800, cursor: 'pointer', fontFamily: FONT, opacity: busy ? 0.6 : 1 }}>
           {busy ? 'Guardando…' : 'Guardar'}
         </button>
-      </div>
+        </div>
+      </details>
 
       {/* Personas ya evaluadas */}
       <div style={{ fontFamily: FONT, color: C.text, background: C.card, border: `1px solid ${C.border2}`, borderRadius: 16, padding: 18 }}>

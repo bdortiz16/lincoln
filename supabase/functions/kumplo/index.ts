@@ -421,9 +421,14 @@ Deno.serve(async (req: Request) => {
     }
 
     // ── Vincular a mano un id que ya existe en Kumplo ─────────────────────
+    // SOLO ADMIN, como herramienta de soporte. El usuario no vincula nada: la
+    // conexión es de infraestructura, se arma una vez con el id de la empresa
+    // y cada persona se registra sola con lo que ya dio al inscribirse.
+    // Pedirle a un cliente un "id de Kumplo" era pedirle algo que nunca tiene.
     if (accion === 'vincular') {
-      const uid = String(body.userId ?? yo.userId ?? '')
-      if (!uid || (!yo.esAdmin && yo.userId !== uid)) return json({ error: 'No autorizado' }, 401)
+      if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      const uid = String(body.userId ?? '')
+      if (!uid) return json({ error: 'Falta la cuenta.' }, 400)
       const id = String(body.kumploId ?? '').trim()
       if (!id) return json({ error: 'Falta el id de Kumplo.' }, 400)
       await auditar('kumplo.vinculo_manual', { userId: uid, kumploId: id, por: yo.userId })

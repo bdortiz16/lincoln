@@ -51,12 +51,11 @@ const TEXTO = (estado: string, riesgo: string, operable: boolean | undefined) =>
   if (operable === false) return { color: C.amber, titulo: 'En revisión', cuerpo: 'Tu cuenta está en revisión de cumplimiento. Mientras tanto no se pueden hacer transferencias.' };
   if (riesgo === 'medio') return { color: C.amber, titulo: 'Riesgo medio', cuerpo: 'Puedes operar. Es posible que te pidamos documentación adicional más adelante.' };
   if (riesgo === 'bajo') return { color: C.green, titulo: 'Verificación al día', cuerpo: 'Tu cuenta puede operar con normalidad.' };
-  return { color: C.sub, titulo: 'Sin resultado todavía', cuerpo: 'La consulta aún no ha devuelto un resultado.' };
+  return { color: C.sub, titulo: 'Verificación en proceso', cuerpo: 'Estamos verificando tus datos. Puedes seguir usando tu cuenta mientras tanto.' };
 };
 
 export const KumploUserCard: React.FC<{ userId: string }> = ({ userId }) => {
   const [data, setData] = useState<any>(null);
-  const [idManual, setIdManual] = useState('');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -73,15 +72,6 @@ export const KumploUserCard: React.FC<{ userId: string }> = ({ userId }) => {
   const riesgo = String(estado.riesgo ?? '');
   const t = TEXTO(String(estado.estado ?? ''), riesgo, estado.operable);
 
-  const vincular = async () => {
-    if (!idManual.trim()) return;
-    setBusy(true); setMsg(null);
-    const d = await call({ action: 'vincular', userId, kumploId: idManual.trim() }).catch(() => null);
-    if (d?.ok) { setIdManual(''); setMsg('Cuenta vinculada.'); await cargar(); }
-    else setMsg(d?.error ?? 'No se pudo vincular.');
-    setBusy(false);
-  };
-
   const revisar = async () => {
     setBusy(true); setMsg(null);
     const d = await call({ action: 'aml', userId }).catch(() => null);
@@ -95,8 +85,8 @@ export const KumploUserCard: React.FC<{ userId: string }> = ({ userId }) => {
         <Link2 size={17} color={C.sub} /> Kumplo
       </p>
       <p style={{ color: C.sub, fontSize: 12, margin: '4px 0 0', lineHeight: 1.55 }}>
-        Kumplo es donde vive tu expediente de cumplimiento. Lincoin consulta ahí para verificar
-        que tu cuenta puede operar.
+        Acá se ve el estado de la verificación de tus datos. Se hace sola con la información que
+        diste al inscribirte — no tienes que conectar ni configurar nada.
       </p>
 
       <div style={{
@@ -119,32 +109,14 @@ export const KumploUserCard: React.FC<{ userId: string }> = ({ userId }) => {
         )}
       </div>
 
-      {estado.id ? (
-        <p style={{ color: C.dim, fontSize: 11.5, margin: '12px 0 0', fontFamily: 'ui-monospace, Menlo, monospace' }}>
-          Id en Kumplo: {estado.id}
-        </p>
-      ) : (
-        <div style={{ marginTop: 14 }}>
-          <p style={{ fontSize: 11, fontWeight: 800, letterSpacing: 0.4, color: C.sub, margin: '0 0 6px' }}>
-            ¿YA TIENES EXPEDIENTE EN KUMPLO?
-          </p>
-          <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
-            <input value={idManual} onChange={e => setIdManual(e.target.value)} placeholder="Pega tu id de Kumplo"
-              style={{ flex: 1, minWidth: 170, background: C.elev, border: `1px solid ${C.border}`, color: C.text, borderRadius: 9, padding: '9px 12px', fontSize: 12.5, outline: 'none', fontFamily: 'ui-monospace, Menlo, monospace' }} />
-            <button onClick={vincular} disabled={busy || !idManual.trim()}
-              style={{ background: 'rgba(74,222,128,0.12)', border: '1px solid rgba(74,222,128,0.32)', color: C.green, borderRadius: 9, padding: '9px 16px', fontSize: 12.5, fontWeight: 800, cursor: 'pointer', fontFamily: FONT, opacity: busy || !idManual.trim() ? 0.55 : 1 }}>
-              Vincular
-            </button>
-          </div>
-        </div>
-      )}
-
-      {estado.id && (
-        <button onClick={revisar} disabled={busy}
+      {/* El usuario NO vincula nada. La conexión entre Lincoin y Kumplo es de
+          infraestructura: se arma una vez con el id de la empresa y a partir de
+          ahí cada persona se registra sola con lo que ya dio al inscribirse.
+          Pedirle acá un "id de Kumplo" era pedirle algo que nunca va a tener. */}
+      <button onClick={revisar} disabled={busy}
           style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 12, background: 'transparent', border: `1px solid ${C.border2}`, color: C.text, borderRadius: 999, padding: '7px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: FONT, opacity: busy ? 0.55 : 1 }}>
-          <RefreshCw size={12} /> {busy ? 'Consultando…' : 'Volver a revisar'}
-        </button>
-      )}
+        <RefreshCw size={12} /> {busy ? 'Consultando…' : 'Volver a revisar'}
+      </button>
 
       {msg && <p style={{ marginTop: 11, fontSize: 12, color: C.sub }}>{msg}</p>}
     </div>
