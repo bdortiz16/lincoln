@@ -3589,9 +3589,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               <p style={{ fontSize: 14, color: '#878E88', marginTop: 3 }}>Tu cuenta, seguridad y notificaciones</p>
           </div>
 
-          {/* KUMPLO — expediente de cumplimiento. La tarjeta se esconde sola
-              si la integración está apagada o si esta cuenta no entra en la
-              prueba: una sección vacía solo genera preguntas. */}
+          {/* KUMPLO — acá el titular conecta su cuenta pegando el código de su
+              empresa y ve si la conexión quedó hecha. Va arriba de todo y
+              SIEMPRE se muestra: es una acción que el usuario viene a hacer,
+              no un dato que se consulta de vez en cuando. */}
           {currentUser?.id && <KumploUserCard userId={currentUser.id} />}
 
           <div className="grid gap-4 lg:grid-cols-2" style={{ alignItems: 'start' }}>

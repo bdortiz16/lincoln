@@ -14,6 +14,10 @@ import { ShieldCheck, Link2, AlertTriangle, RefreshCw, Loader2 } from 'lucide-re
 // cuenta queda EN VERIFICACIÓN, y vuelve el veredicto: verificada, en
 // revisión, o bloqueada.
 //
+// La sección SIEMPRE se ve. Antes se escondía cuando la integración estaba
+// apagada, y el efecto era el contrario al buscado: quien venía a conectar su
+// cuenta no encontraba dónde. Si algo no está listo se dice, no se oculta.
+//
 // Lo que se ve acá es informativo. El veredicto lo escribe el servidor y no
 // se puede cambiar desde el navegador.
 // ─────────────────────────────────────────────────────────────
@@ -68,21 +72,19 @@ export const KumploUserCard: React.FC<{ userId: string }> = ({ userId }) => {
 
   const cargar = async () => {
     const d = await call({ action: 'estado', userId });
-    setData(d?.ok ? d : { ok: false });
+    setData(d && typeof d === 'object' ? d : { ok: false });
   };
   useEffect(() => { if (userId) cargar(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [userId]);
 
-  // Si la integración está apagada o la cuenta no entra en la prueba, la
-  // sección no aparece: una sección muerta solo genera preguntas. La excepción
-  // es quien YA conectó — ese tiene que poder seguir viendo su estado y
-  // desconectarse aunque la integración se apague después.
-  if (!data?.ok) return null;
-  if ((!data.activo || !data.enLaPrueba) && !data.conectado) return null;
-
-  const estado = data.estado ?? {};
-  const conectado = !!data.conectado;
+  const cargando = data === null;
+  const legible = !!data?.ok;              // se pudo leer el estado
+  const conectado = !!data?.conectado;
+  const estado = data?.estado ?? {};
   const riesgo = String(estado.riesgo ?? '');
   const t = TEXTO(String(estado.estado ?? ''), riesgo, estado.operable);
+  // Conectado pero la verificación automática todavía no corre para esta
+  // cuenta. El vínculo queda guardado igual; hay que decirlo, no esconderlo.
+  const enEspera = legible && conectado && (!data.activo || !data.enLaPrueba);
 
   const conectar = async () => {
     if (!codigo.trim() || busy) return;
@@ -125,11 +127,13 @@ export const KumploUserCard: React.FC<{ userId: string }> = ({ userId }) => {
           color: conectado ? C.green : C.sub, borderRadius: 999,
           padding: '4px 12px', fontSize: 11, fontWeight: 800, whiteSpace: 'nowrap',
         }}>
-          {conectado ? '● Conectada' : '○ Sin conectar'}
+          {cargando ? '· Comprobando…' : conectado ? '● Conectada' : '○ Sin conectar'}
         </span>
       </div>
 
-      {!conectado ? (
+      {cargando ? (
+        <p style={{ color: C.sub, fontSize: 12.5, margin: '9px 0 0' }}>Comprobando el estado de la conexión…</p>
+      ) : !conectado ? (
         <>
           <p style={{ color: C.sub, fontSize: 12.5, margin: '7px 0 0', lineHeight: 1.6 }}>
             Conecta tu cuenta de <b style={{ color: C.text }}>Kumplo</b> para que tu verificación de
@@ -159,9 +163,19 @@ export const KumploUserCard: React.FC<{ userId: string }> = ({ userId }) => {
           <p style={{ color: C.dim, fontSize: 11, margin: '10px 0 0', lineHeight: 1.55 }}>
             ¿No tienes el código? Te lo entrega Kumplo cuando crea la cuenta de tu empresa.
           </p>
+          {!legible && (
+            <p style={{ color: C.amber, fontSize: 11.5, margin: '9px 0 0', lineHeight: 1.55 }}>
+              No pudimos leer el estado en este momento. Puedes intentar conectar igual; si falla, vuelve a probar en un rato.
+            </p>
+          )}
         </>
       ) : (
         <>
+          {enEspera && (
+            <p style={{ color: C.amber, fontSize: 12.5, margin: '9px 0 0', lineHeight: 1.55 }}>
+              Tu cuenta quedó vinculada. La verificación automática todavía no está habilitada para esta cuenta, así que el resultado puede tardar en aparecer.
+            </p>
+          )}
           <div style={{ marginTop: 13, background: C.elev, border: `1px solid ${t.color}33`, borderRadius: 12, padding: '13px 15px' }}>
             <p style={{ display: 'flex', alignItems: 'center', gap: 7, fontWeight: 800, fontSize: 14, margin: 0, color: t.color }}>
               {String(estado.estado ?? '') === 'procesando'
