@@ -714,7 +714,7 @@ function ipChainOf(req: Request): Record<string, string | null> {
 // Geolocalización aproximada por IP. IMPORTANTE: una IP da CIUDAD/REGIÓN como
 // mucho — normalmente la del nodo del operador, no la del edificio. No es una
 // dirección exacta y no debe presentarse como tal.
-type Geo = { city?: string; region?: string; country?: string; countryCode?: string; org?: string; approx?: string }
+type Geo = { city?: string; region?: string; country?: string; countryCode?: string; org?: string; approx?: string; lat?: number; lon?: number }
 const GEO_CACHE_KEY = 'ip_geo_cache'
 async function geoOf(ip: string | null): Promise<Geo | null> {
   if (!ip || /^(10\.|127\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip)) return null
@@ -724,7 +724,10 @@ async function geoOf(ip: string | null): Promise<Geo | null> {
     // Se reconsulta si la entrada guardada NO trae el código de país: la caché
     // se llenó antes de que ese campo existiera, y devolverla tal cual dejaba
     // el país vacío — con la lista blanca encendida, eso dejaba a todos fuera.
-    if (cache[ip]?.countryCode) return cache[ip]
+    // También se reconsulta si falta la coordenada: la caché vieja se llenó
+    // antes de que el mapa existiera, y sin lat/lon el punto no se puede
+    // dibujar en ninguna parte.
+    if (cache[ip]?.countryCode && typeof cache[ip]?.lat === 'number') return cache[ip]
     const ctl = new AbortController()
     const t = setTimeout(() => ctl.abort(), 2500)
     const r = await fetch(`https://ipwho.is/${encodeURIComponent(ip)}`, { signal: ctl.signal }).then(x => x.json()).catch(() => null)
@@ -735,6 +738,8 @@ async function geoOf(ip: string | null): Promise<Geo | null> {
       countryCode: r.country_code ?? undefined,
       org: r.connection?.isp ?? undefined,
       approx: [r.city, r.region, r.country].filter(Boolean).join(', ') || undefined,
+      lat: typeof r.latitude === 'number' ? r.latitude : undefined,
+      lon: typeof r.longitude === 'number' ? r.longitude : undefined,
     }
     // Caché acotada: evita pegarle al servicio por cada evento repetido.
     const keys = Object.keys(cache)
@@ -1994,6 +1999,87 @@ Deno.serve(async (req: Request) => {
         if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
         await auditAdmin(req, 'ops.incident', { service: String(body.service).slice(0, 60), kind: String(body.kind) === 'up' ? 'up' : 'down' })
         return json({ ok: true })
+      }
+
+      // ── Mapa de conexiones ───────────────────────────────────────────────
+      // Cada punto es una IP REAL sacada de la auditoría y de la lista de
+      // bloqueos, ubicada con la geolocalización que ya se venía usando.
+      // No hay puntos de ejemplo: un mapa de seguridad con conexiones
+      // inventadas enseña a ignorarlo, y el día que aparezca una de verdad
+      // se va a ver igual que el relleno.
+      if (body.action === 'command_map') {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        const dias = Math.min(Math.max(Number(body.dias ?? 30) || 30, 1), 90)
+        const desde = new Date(Date.now() - dias * 86400_000).toISOString()
+
+        const ADMIN = ['auth.admin_login', 'auth.login_2fa_completo', 'auth.login_passkey']
+        const CLIENTE = ['auth.aviso_ingreso']
+        const FALLO = ['auth.failed_login', 'auth.mfa_failed']
+        const { data: ev } = await db.from('audit_log')
+          .select('action, metadata, created_at, user_id')
+          .in('action', [...ADMIN, ...CLIENTE, ...FALLO])
+          .gte('created_at', desde).order('created_at', { ascending: false }).limit(1500)
+
+        type Punto = {
+          ip: string; tipo: 'admin' | 'usuario' | 'fallido' | 'bloqueada'
+          sesiones: number; primera: string; ultima: string
+          userId?: string | null; nombre?: string | null; correo?: string | null
+          ciudad?: string | null; pais?: string | null; isp?: string | null
+          lat?: number | null; lon?: number | null; motivo?: string | null
+        }
+        const porIp = new Map<string, Punto>()
+        const orden = { bloqueada: 3, admin: 2, usuario: 1, fallido: 0 } as const
+
+        for (const r of (ev ?? []) as any[]) {
+          const ip = String(r?.metadata?.ip ?? '')
+          if (!ip) continue
+          const tipo: Punto['tipo'] = ADMIN.includes(r.action) ? 'admin'
+            : CLIENTE.includes(r.action) ? 'usuario' : 'fallido'
+          const y = porIp.get(ip)
+          if (!y) {
+            porIp.set(ip, {
+              ip, tipo, sesiones: 1, primera: r.created_at, ultima: r.created_at,
+              userId: r.user_id ?? r?.metadata?.userId ?? null,
+            })
+          } else {
+            y.sesiones++
+            if (r.created_at < y.primera) y.primera = r.created_at
+            if (r.created_at > y.ultima) y.ultima = r.created_at
+            // Manda el tipo más relevante: una IP con ingresos de admin es de
+            // admin aunque también tenga fallos.
+            if (orden[tipo] > orden[y.tipo]) y.tipo = tipo
+          }
+        }
+
+        // Los bloqueos mandan sobre cualquier otro tipo.
+        for (const b of await blockedIps()) {
+          const y = porIp.get(b.ip)
+          if (y) { y.tipo = 'bloqueada'; y.motivo = b.reason ?? null }
+          else porIp.set(b.ip, { ip: b.ip, tipo: 'bloqueada', sesiones: b.attempts ?? 0, primera: b.at, ultima: b.at, motivo: b.reason ?? null })
+        }
+
+        // Nombre del titular, para que el punto diga QUIÉN y no solo un id.
+        const ids = [...new Set([...porIp.values()].map(p => p.userId).filter(Boolean))] as string[]
+        if (ids.length) {
+          const { data: us } = await db.from('users').select('id, name, email').in('id', ids.slice(0, 200))
+          const mapa = new Map((us ?? []).map((u: any) => [u.id, u]))
+          for (const p of porIp.values()) {
+            const u = p.userId ? mapa.get(p.userId) : null
+            if (u) { p.nombre = (u as any).name ?? null; p.correo = (u as any).email ?? null }
+          }
+        }
+
+        // Geolocalización: se limita a las más recientes para no encadenar
+        // cientos de consultas externas en una sola petición.
+        const lista = [...porIp.values()].sort((a, b) => String(b.ultima).localeCompare(String(a.ultima))).slice(0, 80)
+        for (const p of lista) {
+          const g = await geoOf(p.ip)
+          p.ciudad = g?.city ?? null; p.pais = g?.country ?? null
+          p.isp = g?.org ?? null
+          p.lat = typeof g?.lat === 'number' ? g.lat : null
+          p.lon = typeof g?.lon === 'number' ? g.lon : null
+        }
+        return json({ ok: true, puntos: lista, dias })
       }
 
       // ── Intentos de ingreso, día por día (14 días) ──────────────────────

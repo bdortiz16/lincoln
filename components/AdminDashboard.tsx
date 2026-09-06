@@ -82,8 +82,8 @@ import { RatesPanel } from './AdminPersonas/sections/RatesPanel';
 import { AdminGasFreeSection } from './AdminGasFreeSection';
 import { AdminMonitor } from './AdminMonitor';
 import { AdminTreasuryPanel } from './AdminTreasuryPanel';
-import { AdminSecurityAgent } from './AdminSecurityAgent';
 import { AdminSecurityCenter } from './AdminSecurityCenter';
+import { AdminCommandCenter } from './AdminCommandCenter';
 import { AdminAccessPolicy } from './AdminAccessPolicy';
 import { AdminPasskeys } from './AdminPasskeys';
 import { AdminStepUp } from './AdminStepUp';
@@ -280,11 +280,11 @@ const TAB_TITLES: Record<string, string> = {
   team: 'Equipo Admin', reports: 'Reportes', marketing: 'Marketing', config: 'Configuración',
   banks: 'Bancos', rates: 'Tasas de Cambio', security: 'Seguridad', design: 'Diseño y Apariencia',
   gasfree: 'Custodia USDT', otcConfig: 'Contabilidad OTC', fallos: 'Fallos',
-  auditoria: 'Auditoría', monitoreo: 'Monitoreo', kumplo: 'Kumplo',
+  auditoria: 'Auditoría', monitoreo: 'Monitoreo', kumplo: 'Kumplo', comando: 'Centro de Comando',
 };
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'comando'>('overview');
   const [auditRows, setAuditRows] = useState<any[] | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
   const [adminLogins, setAdminLogins] = useState<{ admins: any[]; activity: any[] } | null>(null);
@@ -3670,17 +3670,23 @@ const renderDesign = () => (
               sobre algo que nadie verificó. */}
           {currentUser?.id && <AdminSecurityCenter userId={currentUser.id} />}
 
-          {/* Los editores completos quedan debajo del tablero: el tablero
-              resume y deja hacer lo frecuente, acá se configura a fondo. */}
-          <AdminAccessPolicy userId={currentUser?.id} />
-
-          {/* La llave física. Va después de la lista blanca porque son las dos
-              caras del mismo candado: la lista filtra DESDE DÓNDE, la llave
-              prueba QUIÉN. */}
-          {currentUser?.id && <AdminPasskeys userId={currentUser.id} />}
-
-          {/* El aviso por correo en cada ingreso, con su botón de prueba. */}
-          {currentUser?.id && <AdminLoginAlerts userId={currentUser.id} />}
+          {/* Los editores completos van PLEGADOS. El tablero de arriba ya
+              muestra el acceso y las llaves; dejarlos también sueltos acá
+              hacía que la misma información apareciera dos veces y no
+              quedara claro cuál manda. Se abren cuando hay que configurar a
+              fondo — quitar un país, borrar una llave, probar el aviso—,
+              que no es lo de todos los días. */}
+          <details style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 16 }}>
+            <summary style={{ cursor: 'pointer', listStyle: 'none', padding: '14px 18px', fontFamily: 'Archivo, system-ui, sans-serif', fontWeight: 800, fontSize: 14, color: '#F4F4F2', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+              <span>Configuración avanzada</span>
+              <span style={{ fontSize: 11.5, fontWeight: 600, color: 'rgba(244,244,242,0.45)' }}>
+                acceso · llaves · aviso de ingreso · 2FA
+              </span>
+            </summary>
+            <div style={{ padding: '0 14px 14px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <AdminAccessPolicy userId={currentUser?.id} />
+              {currentUser?.id && <AdminPasskeys userId={currentUser.id} />}
+              {currentUser?.id && <AdminLoginAlerts userId={currentUser.id} />}
 
           {/* Tu propio 2FA — protege el cambio de proveedor de tesorería */}
           <div className={`rounded-xl border p-4 ${adminMfaOn ? 'border-green-200 bg-green-50/50' : 'border-amber-300 bg-amber-50/60'}`}>
@@ -3776,6 +3782,8 @@ const renderDesign = () => (
               </div>
             )}
           </div>
+            </div>
+          </details>
 
           <div className="flex h-[calc(100vh-260px)]">
               {/* Left Panel: User List */}
@@ -4191,7 +4199,7 @@ const renderDesign = () => (
   const navTo = (tab: string) => { setActiveTab(tab as any); closeSidebar(); };
   // El Dashboard/Monitoreo usan el tema oscuro Lincoin (AdminMonitor trae su
   // propio header); el resto de secciones mantienen su lienzo claro actual.
-  const isDark = activeTab === 'overview' || activeTab === 'monitoreo';
+  const isDark = activeTab === 'overview' || activeTab === 'monitoreo' || activeTab === 'comando' || activeTab === 'security';
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] font-sans text-slate-900 flex">
@@ -4237,6 +4245,7 @@ const renderDesign = () => (
                             <AdminSidebarItem icon={ArrowLeftRight} label="Contabilidad OTC" active={activeTab === 'otcConfig'} onClick={() => navTo('otcConfig')} />
                         </> },
                         { key: 'sistema', title: 'Sistema', items: <>
+                            <AdminSidebarItem icon={Globe} label="Centro de Comando" active={activeTab === 'comando'} onClick={() => navTo('comando')} />
                             <AdminSidebarItem icon={Shield} label="Seguridad" active={activeTab === 'security'} onClick={() => navTo('security')} />
                             <AdminSidebarItem icon={Shield} label="Auditoría" active={activeTab === 'auditoria'} onClick={() => navTo('auditoria')} />
                             <AdminSidebarItem icon={Activity} label="Monitoreo" active={activeTab === 'monitoreo'} onClick={() => navTo('monitoreo')} />
@@ -4331,6 +4340,7 @@ const renderDesign = () => (
                 {activeTab === 'banks' && renderBanks()}
                 {activeTab === 'rates' && renderRates()}
                 {activeTab === 'team' && renderTeam()}
+                {activeTab === 'comando' && <div className="animate-in fade-in duration-300"><AdminCommandCenter /></div>}
                 {activeTab === 'security' && renderSecurity()}
                 {activeTab === 'kumplo' && <div className="animate-in fade-in duration-300"><AdminKumplo /></div>}
                 {activeTab === 'gasfree' && (<>
