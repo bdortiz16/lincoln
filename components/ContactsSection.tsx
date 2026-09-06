@@ -259,6 +259,35 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     // el riel del país esté listo.
     const countryStatus: Record<string, string> = { Colombia: 'on', 'Estados Unidos': 'on', ...(((sysConfig as any)?.countryStatus) || {}) };
     const AVAILABLE_COUNTRIES = CONTACT_COUNTRIES.filter(c => countryStatus[c.name] === 'on');
+    // ── Cumplimiento (Kumplo) ────────────────────────────────────────────
+    // Esta verificación adicional —el documento del beneficiario contra las
+    // fuentes de Kumplo— existe SOLO para quien conectó su cuenta de Kumplo
+    // en Ajustes. A quien no la conectó no le aplica, y por eso no ve nada de
+    // esto: una insignia que nunca cambia de estado solo confunde.
+    const kumploRaw: any = (currentUser as any)?.raw_data?.kumplo ?? {};
+    const kumploConectado = !!kumploRaw.empresaId;
+    const kumploBenef: Record<string, any> = kumploRaw.beneficiarios ?? {};
+    // Sin ficha todavía = en verificación. Es la verdad: los datos ya salieron
+    // hacia Kumplo y el veredicto no ha vuelto.
+    const kumploDe = (c: Partial<MouvContact>) => {
+        if (!kumploConectado) return null;
+        const doc = String(c?.docNumber ?? '').replace(/\D/g, '');
+        if (!doc) return null;
+        return kumploBenef[doc] ?? { estado: 'procesando' };
+    };
+    const kumploPill = (c: Partial<MouvContact>) => {
+        const k = kumploDe(c);
+        if (!k) return null;
+        const base: React.CSSProperties = { fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' };
+        const pinta = (borde: string, color: string, texto: string, ayuda: string) =>
+            <span title={ayuda} style={{ ...base, border: `1px solid ${borde}`, color }}>{texto}</span>;
+        if (k.riesgo === 'alto') return pinta('rgba(248,113,113,0.32)', '#F87171', 'KUMPLO · NO OPERABLE', 'Kumplo marcó riesgo alto. No se puede transferir a esta persona.');
+        if (k.operable === false) return pinta('rgba(251,191,36,0.32)', '#FBBF24', 'KUMPLO · EN REVISIÓN', 'Kumplo dejó a esta persona en revisión de cumplimiento. Por ahora no se le puede transferir.');
+        if (String(k.estado ?? '') === 'procesando' || !k.at) return pinta('rgba(255,255,255,0.14)', '#878E88', 'KUMPLO · VERIFICANDO', 'Enviamos los datos a Kumplo y estamos esperando el resultado.');
+        if (k.operable === true) return pinta('rgba(74,222,128,0.3)', '#4ADE80', 'KUMPLO · OK', 'Kumplo verificó el documento. Se puede operar con esta persona.');
+        return pinta('rgba(255,255,255,0.14)', '#878E88', 'KUMPLO · SIN RESULTADO', 'Kumplo no devolvió un veredicto para este documento.');
+    };
+
     // Menú "···" abierto (id del contacto)
     const [menuFor, setMenuFor] = useState<string | null>(null);
     const [formOpen, setFormOpen] = useState(false);
@@ -1178,7 +1207,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                 <p style={{ fontSize: 13, fontWeight: 600, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.bankName}</p>
                                 <p style={{ fontSize: 11.5, color: '#878E88', fontFamily: 'ui-monospace, monospace' }}>{m.maskLine}</p>
                             </div>
-                            <div>{statusPill}</div>
+                            <div className="flex flex-col items-start gap-1">{statusPill}{kumploPill(c)}</div>
                             {actions}
                         </div>
                         {/* Tarjeta móvil */}
@@ -1196,6 +1225,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                 </button>
                                 <div className="flex flex-col items-end gap-1.5 shrink-0">
                                     {statusPill}
+                                    {kumploPill(c)}
                                     {actions}
                                 </div>
                             </div>
@@ -1321,6 +1351,40 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                             {st === 'rechazada' && detail.lastError && (
                                 <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 8, wordBreak: 'break-all' }}>Motivo: {String(detail.lastError).slice(0, 180)}</p>
                             )}
+                            {/* Cumplimiento: acá sí cabe explicar qué significa
+                                la insignia y desde cuándo. En la fila solo hay
+                                espacio para el estado. */}
+                            {(() => {
+                                const k = kumploDe(detail);
+                                if (!k) return null;
+                                const enCurso = String(k.estado ?? '') === 'procesando' || !k.at;
+                                const texto = k.riesgo === 'alto'
+                                    ? 'Kumplo marcó riesgo alto para este documento. No se puede transferir a esta persona.'
+                                    : k.operable === false
+                                        ? 'Kumplo dejó a esta persona en revisión de cumplimiento. Mientras siga así no se le puede transferir.'
+                                        : enCurso
+                                            ? 'Enviamos el nombre, el documento y la cuenta a Kumplo. Estamos esperando el resultado de la verificación.'
+                                            : k.operable === true
+                                                ? 'Kumplo verificó el documento. Se puede operar con esta persona.'
+                                                : 'Kumplo no devolvió un veredicto para este documento.';
+                                return (
+                                    <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                                        <div className="flex items-center justify-between gap-3" style={{ marginBottom: 7 }}>
+                                            <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88' }}>CUMPLIMIENTO</span>
+                                            {kumploPill(detail)}
+                                        </div>
+                                        <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.55 }}>{texto}</p>
+                                        {k.nombreCoincide === false && (
+                                            <p style={{ fontSize: 12, color: '#FBBF24', marginTop: 6, lineHeight: 1.5 }}>El nombre inscrito no coincide con el del documento.</p>
+                                        )}
+                                        {k.at && (
+                                            <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', marginTop: 6 }}>
+                                                Última revisión: {new Date(k.at).toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' })}
+                                            </p>
+                                        )}
+                                    </div>
+                                );
+                            })()}
                         </div>
 
                         {/* Botonera */}

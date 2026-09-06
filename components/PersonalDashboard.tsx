@@ -3520,26 +3520,38 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     if (!token) return;
 
     (async () => {
+      let mandado = false;
       for (const c of contactos) {
-        const doc = String(c?.documentNumber ?? '').replace(/\D/g, '');
-        const nombre = String(c?.holderName ?? c?.name ?? '').trim();
+        // Los nombres de campo son los de MouvContact (ContactsSection):
+        // docNumber / docType / name / kind. Escribirlos mal —y se
+        // escribieron mal— no da error en ningún lado: simplemente nunca se
+        // manda nada y el beneficiario se queda sin verificar para siempre.
+        const doc = String(c?.docNumber ?? '').replace(/\D/g, '');
+        const nombre = String(c?.name ?? '').trim();
         if (!doc || !nombre) continue;
         if (yaTiene[doc] || benefEnviadosRef.current.has(doc)) continue;
         benefEnviadosRef.current.add(doc);
-        await fetch(`${SUPABASE_URL_PD}/functions/v1/kumplo`, {
+        const breb = (c?.destKind ?? 'ach') === 'breb';
+        const r = await fetch(`${SUPABASE_URL_PD}/functions/v1/kumplo`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_PD, Authorization: `Bearer ${token}` },
           body: JSON.stringify({
             action: 'verificar_beneficiario', userId: uid,
             nombre, documento: doc,
-            tipoDocumento: String(c?.documentType ?? 'CC').toUpperCase(),
-            riel: (c?.destKind ?? 'ach') === 'breb' ? 'BREB' : 'ACH',
+            tipoDocumento: String(c?.docType ?? 'CC').toUpperCase(),
+            tipoPersona: c?.kind === 'empresa' ? 'empresa' : 'persona',
+            riel: breb ? 'BREB' : 'ACH',
             banco: c?.bank ?? null,
-            cuenta: c?.brebKey ?? c?.accountNumber ?? null,
+            tipoCuenta: breb ? null : (c?.accountType === 'checking' ? 'corriente' : 'ahorros'),
+            cuenta: breb ? (c?.brebKey ?? null) : (c?.accountNumber ?? null),
+            tipoLlave: breb ? (c?.brebKeyType ?? null) : null,
           }),
-        }).catch(() => { /* una prueba de cumplimiento no puede romper la pantalla */ });
+        }).catch(() => null);
+        if (r) mandado = true;
       }
-      refreshData?.();
+      // Solo se recarga si de verdad se mandó algo: refrescar por refrescar
+      // en cada render de la lista es tráfico que no le sirve a nadie.
+      if (mandado) refreshData?.();
     })();
     /* eslint-disable-next-line react-hooks/exhaustive-deps */
   }, [currentUser?.id, (currentUser as any)?.raw_data?.mouvContacts?.length]);

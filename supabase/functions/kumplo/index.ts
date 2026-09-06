@@ -502,6 +502,17 @@ Deno.serve(async (req: Request) => {
       const tipoDocumento = String(body.tipoDocumento ?? 'CC').toUpperCase()
       if (!documento || !nombre) return json({ error: 'Falta el nombre o el documento del beneficiario.' }, 400)
 
+      // El riel decide qué es "la cuenta": en ACH es el número de la cuenta
+      // bancaria con su tipo; en Bre-B es la llave y de qué clase es. Kumplo
+      // registra al beneficiario CON su cuenta, así que mandarle solo el
+      // documento dejaría el registro a medias.
+      const riel = String(body.riel ?? '').toUpperCase() === 'BREB' ? 'BREB' : 'ACH'
+      const tipoPersona = String(body.tipoPersona ?? 'persona').toLowerCase() === 'empresa' ? 'empresa' : 'persona'
+      const banco = String(body.banco ?? '').trim() || (riel === 'BREB' ? 'Bre-B' : '')
+      const cuenta = String(body.cuenta ?? '').trim()
+      const tipoCuenta = body.tipoCuenta ? String(body.tipoCuenta).trim() : null
+      const tipoLlave = body.tipoLlave ? String(body.tipoLlave).trim() : null
+
       const c = await leerConfig()
       if (!c.activo) return json({ ok: true, omitido: 'la integración está apagada' })
       if (!enLaPrueba(c, uid)) return json({ ok: true, omitido: 'esta cuenta no está en la prueba' })
@@ -515,11 +526,14 @@ Deno.serve(async (req: Request) => {
         empresa,
         externalRef: `${uid}:${documento}`,
         nombre, documento, tipoDocumento,
+        tipoPersona,
         pais: 'Colombia',
         datosBancarios: {
-          banco: String(body.banco ?? (String(body.riel ?? '').toUpperCase() === 'BREB' ? 'Bre-B' : 'ACH')),
-          cuenta: String(body.cuenta ?? ''),
-          riel: String(body.riel ?? '').toUpperCase() || undefined,
+          riel,
+          banco,
+          cuenta,
+          ...(tipoCuenta ? { tipoCuenta } : {}),
+          ...(tipoLlave ? { tipoLlave } : {}),
         },
       })
       if (!alta.ok) {
@@ -529,7 +543,7 @@ Deno.serve(async (req: Request) => {
       const idBenef = String(leerRuta(alta.body, c.campoId) ?? '')
 
       // 2) Consulta AML del beneficiario.
-      const aml = await llamarKumplo(c, c.rutaAml, 'POST', { empresa, documento, tipoDocumento, nombre })
+      const aml = await llamarKumplo(c, c.rutaAml, 'POST', { empresa, documento, tipoDocumento, nombre, tipoPersona })
       const leido = aml.ok ? interpretar(aml.body, c, documento)
         : { documento, estado: 'error_aml', detalle: `Kumplo respondió ${aml.status}: ${aml.texto}` } as EstadoKumplo
 
@@ -542,8 +556,9 @@ Deno.serve(async (req: Request) => {
       }
 
       const ficha = {
-        nombre, documento, tipoDocumento,
-        riel: String(body.riel ?? '').toUpperCase() || null,
+        nombre, documento, tipoDocumento, tipoPersona,
+        riel, banco: banco || null, cuenta: cuenta || null,
+        tipoCuenta, tipoLlave,
         id: idBenef || undefined,
         riesgo: fin.riesgo, operable: fin.operable, estado: fin.estado,
         motivo: fin.motivo ?? null,
