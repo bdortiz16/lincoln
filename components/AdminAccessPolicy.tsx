@@ -191,8 +191,9 @@ export const AdminAccessPolicy: React.FC<{ userId?: string }> = ({ userId }) => 
       <p style={{ display: 'flex', gap: 7, alignItems: 'flex-start', marginTop: 14, paddingTop: 12, borderTop: `1px solid ${C.border}`, color: C.dim, fontSize: 11, lineHeight: 1.55 }}>
         <ShieldCheck size={13} style={{ flexShrink: 0, marginTop: 1 }} />
         <span>
-          Si viajas, agrega la IP nueva ANTES de moverte, o quedarás fuera. Salida de emergencia por SQL:
-          <span style={{ fontFamily: 'ui-monospace, Menlo, monospace', color: C.sub }}> delete from system_config where key = 'admin_access_policy';</span>
+          Si viajas, agrega la IP nueva ANTES de moverte, o quedarás fuera.
+          La salida de emergencia está documentada en la <b style={{ color: C.sub }}>Bóveda</b> 🔒 — no se
+          muestra acá a propósito: un candado cuya llave está escrita al lado no es un candado.
         </span>
       </p>
     </div>

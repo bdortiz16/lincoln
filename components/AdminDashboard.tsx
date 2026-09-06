@@ -83,6 +83,7 @@ import { AdminGasFreeSection } from './AdminGasFreeSection';
 import { AdminMonitor } from './AdminMonitor';
 import { AdminTreasuryPanel } from './AdminTreasuryPanel';
 import { AdminSecurityAgent } from './AdminSecurityAgent';
+import { AdminSecurityCenter } from './AdminSecurityCenter';
 import { AdminAccessPolicy } from './AdminAccessPolicy';
 import { AdminPasskeys } from './AdminPasskeys';
 import { AdminStepUp } from './AdminStepUp';
@@ -3664,12 +3665,13 @@ const renderDesign = () => (
 
       return (
         <div className="space-y-6 animate-in fade-in duration-300">
-          {/* Auditor: corre chequeos reales y lista lo que está flojo. Va
-              primero porque es lo que dice QUÉ hay que atender hoy. */}
-          <AdminSecurityAgent />
+          {/* Centro de Seguridad: el tablero. Todo lo que muestra sale de
+              datos reales — un tablero con cifras de ejemplo da confianza
+              sobre algo que nadie verificó. */}
+          {currentUser?.id && <AdminSecurityCenter userId={currentUser.id} />}
 
-          {/* Desde dónde se puede entrar al panel. Va junto al auditor porque
-              es la defensa que sigue en pie aunque roben las credenciales. */}
+          {/* Los editores completos quedan debajo del tablero: el tablero
+              resume y deja hacer lo frecuente, acá se configura a fondo. */}
           <AdminAccessPolicy userId={currentUser?.id} />
 
           {/* La llave física. Va después de la lista blanca porque son las dos

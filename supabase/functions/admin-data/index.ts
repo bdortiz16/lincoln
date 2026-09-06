@@ -1737,7 +1737,18 @@ Deno.serve(async (req: Request) => {
             affected.push({ email: r.email, motivo: e instanceof KeyMismatchError ? 'cifrado con otra llave' : 'ilegible' })
           }
         }
-        return json({ ok: true, total, unreadable, keyMismatch, noBackup, legacyPlain, affected: affected.slice(0, 25) })
+        // Lista por cuenta para el tablero: no basta con el conteo, hay que
+        // poder ver CUÁL le falta el respaldo. Solo correo y estado — ningún
+        // secreto sale de acá.
+        const cuentas: Array<{ email: string; conRespaldo: boolean; problema: string | null }> = []
+        for (const r of (rows ?? []) as any[]) {
+          const raw = r.raw_data ?? {}
+          if (!raw.mfaEnabled) continue
+          const hashes: string[] = Array.isArray(raw.mfaBackupHashes) ? raw.mfaBackupHashes : []
+          const malo = affected.find(a => a.email === r.email)
+          cuentas.push({ email: String(r.email ?? ''), conRespaldo: hashes.length > 0, problema: malo ? malo.motivo : null })
+        }
+        return json({ ok: true, total, unreadable, keyMismatch, noBackup, legacyPlain, affected: affected.slice(0, 25), cuentas: cuentas.slice(0, 200) })
       }
 
       // ── 2FA: DESACTIVAR — la ÚNICA vía para apagar el 2FA. Exige un CÓDIGO
@@ -1983,6 +1994,33 @@ Deno.serve(async (req: Request) => {
         if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
         await auditAdmin(req, 'ops.incident', { service: String(body.service).slice(0, 60), kind: String(body.kind) === 'up' ? 'up' : 'down' })
         return json({ ok: true })
+      }
+
+      // ── Intentos de ingreso, día por día (14 días) ──────────────────────
+      // Lo que hace útil a esta gráfica no es el total: es ver el DÍA que se
+      // sale de la fila. Un pico de fallidos sobre una base plana es un
+      // intento de entrar; el mismo número repartido en dos semanas es gente
+      // que escribe mal su contraseña.
+      if (body.action === 'security_series') {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        const desde = new Date(Date.now() - 13 * 86400_000)
+        desde.setHours(0, 0, 0, 0)
+        const FALLOS = ['auth.failed_login', 'auth.mfa_failed']
+        const EXITOS = ['auth.admin_login', 'auth.login_2fa_completo', 'auth.login_passkey']
+        const { data } = await db.from('audit_log').select('action, created_at')
+          .in('action', [...FALLOS, ...EXITOS])
+          .gte('created_at', desde.toISOString()).limit(5000)
+        const dias: Record<string, { ok: number; fail: number }> = {}
+        for (let i = 0; i < 14; i++) {
+          dias[new Date(desde.getTime() + i * 86400_000).toISOString().slice(0, 10)] = { ok: 0, fail: 0 }
+        }
+        for (const r of (data ?? []) as any[]) {
+          const k = String(r.created_at ?? '').slice(0, 10)
+          if (!dias[k]) continue
+          if (FALLOS.includes(r.action)) dias[k].fail++
+          else dias[k].ok++
+        }
+        return json({ ok: true, serie: Object.entries(dias).map(([dia, v]) => ({ dia, ...v })) })
       }
 
       // ── AGENTE DE SEGURIDAD ───────────────────────────────────────────

@@ -218,8 +218,7 @@ export const AdminPasskeys: React.FC<{ userId: string }> = ({ userId }) => {
           código de la app y la llave. La llave no reemplaza a nada — se suma.
           Por eso registra al menos <strong style={{ color: C.sub }}>dos</strong>: el teléfono y otra cosa
           —el computador o una llave USB—. Si solo hay una y pierdes ese dispositivo, no se entra.
-          Salida de emergencia por SQL:
-          <span style={{ fontFamily: 'ui-monospace, Menlo, monospace', color: C.sub }}> delete from system_config where key like 'passkeys_%';</span>
+          La salida de emergencia está documentada en la <b style={{ color: C.sub }}>Bóveda</b> 🔒.
         </span>
       </p>
     </div>
