@@ -335,6 +335,23 @@ function isProjectAnonKey(jwt: string): boolean {
   }
 }
 
+// ¿Ese id de cobro o de retiro es de QUIEN pregunta? Tener sesión válida no
+// alcanza: sin esto, un cliente cualquiera podía consultar los montos y
+// destinos de los cobros y retiros de otro con solo cambiar el id.
+// Los llamantes internos (mouv-proxy conciliando) pasan sin restricción.
+async function esMiReferencia(caller: { userId?: string; internal?: boolean }, id: string): Promise<boolean> {
+  if (caller.internal) return true
+  const uid = String(caller.userId ?? '')
+  if (!uid || !id) return false
+  try {
+    const { data } = await db.from('transactions').select('id')
+      .eq('user_id', uid)
+      .or(`raw_data->>providerRef.eq.${id},raw_data->>reference.eq.${id}`)
+      .limit(1)
+    return !!(data && data.length)
+  } catch { return false }   // ante la duda, no se muestra
+}
+
 async function validCaller(req: Request, payload: Record<string, unknown>): Promise<{ ok: boolean; userId?: string; internal?: boolean; viaJwt?: boolean }> {
   const auth = req.headers.get('authorization') ?? ''
   const jwt = auth.replace(/^Bearer\s+/i, '')
@@ -476,7 +493,19 @@ Deno.serve(async (req) => {
     // body. Sin esto, cualquiera con la anon key + el UUID de una víctima podía
     // enumerar sus retiros (fuga) y forzar cambios de estado/reembolsos en su
     // cuenta (IDOR). Los reconciliadores mueven saldo → aquí adentro.
-    const NEEDS_IDENTITY = new Set(['external_accounts', 'create_external_account', 'delete_external_account', 'create_payment_link', 'reconcile_withdrawals', 'reconcile_payin'])
+    // 'email_event' entró acá porque era una PUERTA TRASERA a los correos:
+    // con la sola llave pública + el id de cualquier usuario se podía hacer
+    // que Lincoin le mandara a esa persona un correo con asunto, título y
+    // mensaje ELEGIDOS POR QUIEN LLAMA — y salía firmado desde nuestro
+    // dominio. Peor que el hueco de los webhooks: ahí el texto era nuestro,
+    // acá lo escribe el atacante. Además esta función reenvía a
+    // notify-transaction con el service key, o sea que autenticaba al
+    // atacante por él.
+    //
+    // 'payment_link_status' y 'withdrawal_status' consultaban a Finity por un
+    // id suelto, sin mirar de quién era: montos, destinos y estados de cobros
+    // y retiros ajenos, a la vista de cualquiera con la llave pública.
+    const NEEDS_IDENTITY = new Set(['external_accounts', 'create_external_account', 'delete_external_account', 'create_payment_link', 'reconcile_withdrawals', 'reconcile_payin', 'email_event', 'payment_link_status', 'withdrawal_status'])
     if (NEEDS_IDENTITY.has(action) && !(caller.viaJwt || caller.internal)) {
       return json(403, { error: 'forbidden', message: 'Vuelve a iniciar sesión para continuar.' })
     }
@@ -703,6 +732,7 @@ Deno.serve(async (req) => {
     if (action === 'withdrawal_status') {
       const id = String(payload.id ?? '')
       if (!id) return json(400, { error: 'missing_id' })
+      if (!(await esMiReferencia(caller, id))) return json(403, { error: 'forbidden', message: 'Operación restringida.' })
       const enc = encodeURIComponent(id)
       // El id de la dispersión ACH es un MOVEMENT id (mvm-…): en Finity vive bajo
       // /v0/movements/{id} (así lo muestra el portal: "Detalle del movimiento").
@@ -1029,6 +1059,7 @@ Deno.serve(async (req) => {
     if (action === 'payment_link_status') {
       const id = String(payload.id ?? payload.reference ?? '')
       if (!id) return json(400, { error: 'missing_id' })
+      if (!(await esMiReferencia(caller, id))) return json(403, { error: 'forbidden', message: 'Operación restringida.' })
       for (const p of [`/v0/payment-link/${id}`, `/v0/payment-link/status/${id}`, `/v0/payment-links/${id}`]) {
         const r = await finityFetch(p, { method: 'GET' })
         if (r.ok) return json(200, { ok: true, path: p, data: await r.json().catch(() => null) })

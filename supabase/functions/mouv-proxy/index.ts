@@ -896,12 +896,29 @@ serve(async (req: Request) => {
   // rutas candidatas y varias formas de body; la respuesta CRUDA vuelve
   // al admin para fijar la ruta correcta (igual que se hizo con Finity).
   if (action === 'payin_pse' || action === 'payin_status') {
+    // IDENTIDAD PROBADA. Antes bastaba la llave pública + el id de cualquier
+    // usuario: se podían crear recaudos a nombre ajeno y, sobre todo,
+    // consultar el estado de CUALQUIER referencia —montos y datos de cobros
+    // de otros—. Además 'payin_pse' prueba treinta rutas contra Mouv en cada
+    // llamada, así que dejarlo abierto era regalar un amplificador.
+    if (!(caller.viaJwt || caller.admin)) {
+      return json(403, { error: 'forbidden', message: 'Esta operación requiere una sesión válida.' })
+    }
     const userId = caller.userId ?? payload.userId ?? payload.user_id
     if (!userId) return json(400, { error: 'missing_user', message: 'Falta el usuario.' })
 
     if (action === 'payin_status') {
       const ref = String(payload.reference ?? payload.id ?? '')
       if (!ref) return json(400, { error: 'missing_ref' })
+      // Y que la referencia sea SUYA. Tener sesión no da derecho a mirar el
+      // cobro de otro con solo cambiar el número.
+      if (!caller.admin) {
+        const { data: mio } = await db.from('transactions').select('id')
+          .eq('user_id', String(userId))
+          .or(`raw_data->>reference.eq.${ref},raw_data->>providerRef.eq.${ref}`)
+          .limit(1)
+        if (!mio?.length) return json(403, { error: 'forbidden', message: 'Operación restringida.' })
+      }
       const paths = [`/collections/${ref}`, `/payin/${ref}`, `/pse/${ref}`, `/transfers/collect/${ref}`, `/collections/status/${ref}`]
       for (const p of paths) {
         const r = await mouvFetch(p, { method: 'GET' })
