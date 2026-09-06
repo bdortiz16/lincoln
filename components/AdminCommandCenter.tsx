@@ -104,6 +104,17 @@ export const AdminCommandCenter: React.FC = () => {
   const [confirmar, setConfirmar] = useState<null | { punto: Punto; accion: 'bloquear' | 'desbloquear' }>(null);
   const [cargando, setCargando] = useState(true);
 
+  // El diseño de "command center" —tarjetas flotando sobre el mapa— solo
+  // funciona con ancho de sobra. En un teléfono se apilan unas encima de
+  // otras y no se lee nada, que es exactamente lo que pasaba. En pantalla
+  // angosta se deja de flotar: el mapa arriba y las tarjetas en columna.
+  const [angosta, setAngosta] = useState(() => (typeof window !== 'undefined' ? window.innerWidth < 900 : false));
+  useEffect(() => {
+    const alCambiar = () => setAngosta(window.innerWidth < 900);
+    window.addEventListener('resize', alCambiar);
+    return () => window.removeEventListener('resize', alCambiar);
+  }, []);
+
   const svgRef = useRef<SVGSVGElement | null>(null);
   const gRef = useRef<SVGGElement | null>(null);
   const zoomRef = useRef<any>(null);
@@ -239,7 +250,7 @@ export const AdminCommandCenter: React.FC = () => {
   const rotulo: React.CSSProperties = { fontSize: 10, fontWeight: 800, letterSpacing: 0.6, color: C.sub, margin: 0, textTransform: 'uppercase' };
 
   return (
-    <div style={{ position: 'relative', background: C.base, borderRadius: 16, overflow: 'hidden', minHeight: 620, fontFamily: FONT }}>
+    <div style={{ position: 'relative', background: C.base, borderRadius: 16, overflow: 'hidden', minHeight: angosta ? 'auto' : 620, fontFamily: FONT }}>
 
       {/* ── Barra superior ── */}
       <div style={{
@@ -274,8 +285,8 @@ export const AdminCommandCenter: React.FC = () => {
       </div>
 
       {/* ── Mapa ── */}
-      <div style={{ position: 'relative' }}>
-        <svg ref={svgRef} viewBox={`0 0 ${ANCHO} ${ALTO}`} style={{ width: '100%', display: 'block', background: C.base, cursor: 'grab' }}>
+      <div style={{ position: 'relative', display: angosta ? 'flex' : 'block', flexDirection: 'column', gap: angosta ? 10 : 0, padding: angosta ? 10 : 0 }}>
+        <svg ref={svgRef} viewBox={`0 0 ${ANCHO} ${ALTO}`} style={{ width: '100%', display: 'block', background: C.base, cursor: 'grab', borderRadius: angosta ? 12 : 0, border: angosta ? `1px solid ${C.border}` : 'none', touchAction: 'none' }}>
           <g ref={gRef}>
             <path d={trazo(geoGraticule10() as any) ?? ''} fill="none" stroke="rgba(255,255,255,0.035)" strokeWidth={0.5} />
             {mundo?.features?.map((f: any, i: number) => (
@@ -305,7 +316,7 @@ export const AdminCommandCenter: React.FC = () => {
           </g>
         </svg>
 
-        {hover && (() => {
+        {hover && !angosta && (() => {
           const xy = proyeccion([hover.p.lon as number, hover.p.lat as number] as any);
           if (!xy) return null;
           return (
@@ -323,7 +334,9 @@ export const AdminCommandCenter: React.FC = () => {
         })()}
 
         {/* Buscador + leyenda con filtros */}
-        <div style={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 3, width: 'min(420px, 90%)' }}>
+        <div style={angosta
+          ? { order: -1, width: '100%' }
+          : { position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 3, width: 'min(420px, 90%)' }}>
           <div style={{ ...card, padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 8 }}>
             <Ico d={D.lupa} size={14} color={C.sub} />
             <input value={busca} onChange={e => setBusca(e.target.value)} placeholder="Buscar IP, usuario o ciudad…"
@@ -354,10 +367,12 @@ export const AdminCommandCenter: React.FC = () => {
         </div>
 
         {/* ── Tarjetas izquierda ── */}
-        <div style={{
-          position: 'absolute', top: 12, left: 12, zIndex: 2, width: 244,
-          display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 'calc(100% - 24px)', overflowY: 'auto',
-        }}>
+        <div style={angosta
+          ? { display: 'flex', flexDirection: 'column', gap: 10, width: '100%' }
+          : {
+            position: 'absolute', top: 12, left: 12, zIndex: 2, width: 244,
+            display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 'calc(100% - 24px)', overflowY: 'auto',
+          }}>
           <div style={card}>
             <p style={{ ...rotulo, display: 'flex', alignItems: 'center', gap: 6 }}>
               <span style={{ width: 6, height: 6, borderRadius: '50%', background: C.green }} /> Conexiones · 30 días
@@ -428,7 +443,9 @@ export const AdminCommandCenter: React.FC = () => {
 
         {/* ── Detalle ── */}
         {sel && (
-          <div style={{ ...card, position: 'absolute', top: 12, right: 12, zIndex: 4, width: 254, maxHeight: 'calc(100% - 24px)', overflowY: 'auto' }}>
+          <div style={angosta
+            ? { ...card, width: '100%', order: -1 }
+            : { ...card, position: 'absolute', top: 12, right: 12, zIndex: 4, width: 254, maxHeight: 'calc(100% - 24px)', overflowY: 'auto' }}>
             <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
               <span style={{ minWidth: 0 }}>
                 <p style={{ fontSize: 13.5, fontWeight: 800, margin: 0 }}>{sel.nombre ?? NOMBRE_TIPO[sel.tipo]}</p>
@@ -468,7 +485,9 @@ export const AdminCommandCenter: React.FC = () => {
         )}
 
         {/* ── Abajo derecha ── */}
-        <div style={{ position: 'absolute', bottom: 12, right: 12, zIndex: 2, width: 254, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={angosta
+          ? { display: 'flex', flexDirection: 'column', gap: 10, width: '100%' }
+          : { position: 'absolute', bottom: 12, right: 12, zIndex: 2, width: 254, display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={card}>
             <p style={{ ...rotulo, display: 'flex', alignItems: 'center', gap: 6 }}>
               <Ico d={D.candado} size={12} color={C.sub} /> IPs bloqueadas
