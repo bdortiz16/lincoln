@@ -111,7 +111,26 @@ Deno.serve(async (req) => {
       const code = String(Math.floor(100000 + Math.random() * 900000)) // 6 dígitos
       const codeHash = await sha256(code)
       const otp = { codeHash, expiresAt: Date.now() + 10 * 60 * 1000, attempts: 0, sentAt: Date.now() }
-      await db.from('users').update({ raw_data: { ...raw, otp } }).eq('id', user.id)
+
+      // ── UN SOLO CÓDIGO POR VEZ, AUNQUE LLEGUEN DOS PETICIONES JUNTAS ────
+      // El freno de 30 s de arriba mira `prev`, que se leyó al empezar. Dos
+      // peticiones simultáneas leían las dos el MISMO estado anterior, las dos
+      // pasaban el freno, las dos escribían y las dos mandaban correo. Llegaban
+      // dos códigos con un segundo de diferencia y solo servía el segundo —el
+      // que sobreescribió—, así que el titular probaba el primero y le decía
+      // "código incorrecto".
+      //
+      // La escritura ahora exige que el estado anterior SIGA siendo el que se
+      // leyó. Solo una puede cumplirlo: la otra no encuentra fila, no manda
+      // correo y responde como si estuviera frenada.
+      let claim = db.from('users').update({ raw_data: { ...raw, otp } }).eq('id', user.id)
+      claim = prev?.sentAt
+        ? claim.filter('raw_data->otp->>sentAt', 'eq', String(prev.sentAt))
+        : claim.is('raw_data->otp', null)
+      const { data: gane } = await claim.select('id')
+      if (!gane?.length) {
+        return json(200, { ok: true, throttled: true, message: 'Ya te enviamos un código. Revisa tu correo.' })
+      }
       const res = await fetch('https://api.resend.com/emails', {
         method: 'POST',
         headers: { Authorization: `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },

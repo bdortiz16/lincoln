@@ -1523,7 +1523,18 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   // Segundo paso del ingreso: el código que llega al correo.
   // Arranca el ingreso mandando el código al correo. Es el PRIMER paso.
+  // Un mismo ingreso puede pasar por más de un camino —el resultado del login
+  // y el aviso de sesión iniciada llegan por separado— y cada uno arrancaba su
+  // propio envío. Llegaban DOS códigos con segundos de diferencia y solo servía
+  // el último, así que el titular probaba el primero y le decía "incorrecto".
+  // Acá se recuerda a quién se le acaba de pedir: el segundo intento en menos
+  // de 25 s no vuelve a pedir nada.
+  const ultimoEnvioRef = useRef<{ uid: string; at: number } | null>(null);
+
   const startEmailStep = async (userId: string): Promise<boolean> => {
+    const ya = ultimoEnvioRef.current;
+    if (ya && ya.uid === userId && Date.now() - ya.at < 25_000) return true;
+    ultimoEnvioRef.current = { uid: userId, at: Date.now() };
     try {
       const SURL = SUPABASE_URL_FOR_FN, SKEY = SUPABASE_ANON_FOR_FN, token = getStoredToken();
       const r = await fetch(`${SURL}/functions/v1/admin-data`, {
