@@ -283,6 +283,18 @@ async function darDeAlta(c: Config, userId: string): Promise<EstadoKumplo> {
   })
 }
 
+// ¿Esta respuesta trae un VEREDICTO de verdad, o solo dice que la persona
+// existe? La diferencia importa: alguien ya registrado en Kumplo pero sin
+// consulta hecha no tiene ni 'operable' ni 'riesgo', e 'interpretar' —que no
+// asume que un veredicto ausente es favorable— lo dejaría como no operable
+// sin que nadie haya consultado nada. Eso sería bloquear a un inocente.
+function hayVeredicto(cuerpo: any, c: Config): boolean {
+  if (String(cuerpo?.data?.estado ?? '').toLowerCase() === 'procesando') return false
+  if (typeof leerRuta(cuerpo, c.campoOperable) === 'boolean') return true
+  const r = leerRuta(cuerpo, c.campoRiesgo)
+  return r !== undefined && r !== null && String(r).trim() !== ''
+}
+
 // Traduce una respuesta de Kumplo —de /partner/aml o de /partner/estado— al
 // estado que guarda Lincoin. Las dos traen el mismo formato.
 function interpretar(cuerpo: any, c: Config, documento: string): EstadoKumplo {
@@ -467,7 +479,12 @@ Deno.serve(async (req: Request) => {
 
       const previo = await leerEstado(uid)
       const conAlta = previo.id ? previo : await darDeAlta(c, uid)
-      if (!conAlta.id) return json({ ok: true, estado: conAlta })
+      // Un alta que no devuelve id casi siempre significa que la persona YA
+      // está en Kumplo. Lo que falta entonces no es inscribirla de nuevo, sino
+      // consultarla: se sigue igual. Solo se corta si no hay qué consultar.
+      if (!conAlta.id && (conAlta.estado === 'sin_documento' || conAlta.estado === 'sin_conectar')) {
+        return json({ ok: true, estado: conAlta })
+      }
       return json({ ok: true, estado: await consultarAml(c, uid) })
     }
 
@@ -521,28 +538,74 @@ Deno.serve(async (req: Request) => {
       const empresa = String(mio.empresaId ?? '').trim()
       if (!empresa) return json({ ok: false, error: 'sin_conectar', message: 'Conecta tu cuenta de Kumplo antes de inscribir beneficiarios.' })
 
-      // 1) Alta del beneficiario en Kumplo, con su cuenta bancaria.
-      const alta = await llamarKumplo(c, c.rutaCrear, 'POST', {
-        empresa,
-        externalRef: `${uid}:${documento}`,
-        nombre, documento, tipoDocumento,
-        tipoPersona,
-        pais: 'Colombia',
-        datosBancarios: {
-          riel,
-          banco,
-          cuenta,
-          ...(tipoCuenta ? { tipoCuenta } : {}),
-          ...(tipoLlave ? { tipoLlave } : {}),
-        },
-      })
-      if (!alta.ok) {
-        await auditar('kumplo.beneficiario_alta_fallida', { userId: uid, documento, status: alta.status, detalle: alta.texto })
-        return json({ ok: false, message: `Kumplo respondió ${alta.status}: ${alta.texto}` })
+      // 0) ¿Kumplo ya conoce este documento? Mucha gente ya está registrada
+      // allá. En ese caso no se vuelve a inscribir —sería crear un duplicado
+      // por nada— y hay dos caminos:
+      //   · ya le hicieron la consulta → se toma ese veredicto y listo.
+      //   · está registrado pero sin consultar → se lanza la consulta ahora.
+      // Con 'forzar' se salta el atajo y se consulta de nuevo aunque haya
+      // veredicto guardado: es lo que hace el botón de volver a revisar.
+      const forzar = body.forzar === true
+      let yaRegistrado = false
+      let idBenef = ''
+      let deCache: EstadoKumplo | null = null
+      if (c.rutaEstado) {
+        const pre = await llamarKumplo(c, rutaCon(c, c.rutaEstado, documento, empresa), 'GET')
+        if (pre.ok) {
+          yaRegistrado = true
+          idBenef = String(leerRuta(pre.body, c.campoId) ?? '')
+          if (hayVeredicto(pre.body, c) && !forzar) deCache = interpretar(pre.body, c, documento)
+        }
+        // 404 = no lo conocen todavía. Cualquier otro fallo (su lado caído, la
+        // credencial) no se interpreta como "no existe": se sigue el camino
+        // normal, que tolera que ya esté.
       }
-      const idBenef = String(leerRuta(alta.body, c.campoId) ?? '')
 
-      // 2) Consulta AML del beneficiario.
+      if (deCache) {
+        const fichaPrevia = {
+          nombre, documento, tipoDocumento, tipoPersona,
+          riel, banco: banco || null, cuenta: cuenta || null,
+          tipoCuenta, tipoLlave,
+          id: idBenef || undefined,
+          riesgo: deCache.riesgo, operable: deCache.operable, estado: deCache.estado,
+          motivo: deCache.motivo ?? null,
+          nombreDocumento: deCache.nombreDocumento ?? null,
+          nombreCoincide: deCache.nombreCoincide ?? null,
+          yaEstaba: true,
+          at: new Date().toISOString(),
+        }
+        await guardarBeneficiario(uid, documento, fichaPrevia)
+        await auditar('kumplo.beneficiario', { userId: uid, documento, riesgo: deCache.riesgo, operable: deCache.operable, yaEstaba: true })
+        return json({ ok: true, beneficiario: fichaPrevia, yaEstaba: true })
+      }
+
+      // 1) Alta del beneficiario en Kumplo, con su cuenta bancaria. Se salta
+      // si Kumplo ya lo tiene.
+      if (!yaRegistrado) {
+        const alta = await llamarKumplo(c, c.rutaCrear, 'POST', {
+          empresa,
+          externalRef: `${uid}:${documento}`,
+          nombre, documento, tipoDocumento,
+          tipoPersona,
+          pais: 'Colombia',
+          datosBancarios: {
+            riel,
+            banco,
+            cuenta,
+            ...(tipoCuenta ? { tipoCuenta } : {}),
+            ...(tipoLlave ? { tipoLlave } : {}),
+          },
+        })
+        if (alta.ok) idBenef = String(leerRuta(alta.body, c.campoId) ?? '')
+        else {
+          // No se corta acá. La causa más común de un alta rechazada es que la
+          // persona YA ESTÁ en Kumplo, y en ese caso lo que falta no es
+          // inscribirla otra vez sino consultarla. Queda auditado y se sigue.
+          await auditar('kumplo.beneficiario_alta_fallida', { userId: uid, documento, status: alta.status, detalle: alta.texto })
+        }
+      }
+
+      // 2) Consulta AML del beneficiario — se hace igual, esté o no registrado.
       const aml = await llamarKumplo(c, c.rutaAml, 'POST', { empresa, documento, tipoDocumento, nombre, tipoPersona })
       const leido = aml.ok ? interpretar(aml.body, c, documento)
         : { documento, estado: 'error_aml', detalle: `Kumplo respondió ${aml.status}: ${aml.texto}` } as EstadoKumplo
@@ -560,6 +623,7 @@ Deno.serve(async (req: Request) => {
         riel, banco: banco || null, cuenta: cuenta || null,
         tipoCuenta, tipoLlave,
         id: idBenef || undefined,
+        yaEstaba: yaRegistrado || undefined,
         riesgo: fin.riesgo, operable: fin.operable, estado: fin.estado,
         motivo: fin.motivo ?? null,
         nombreDocumento: fin.nombreDocumento ?? null,
@@ -592,7 +656,11 @@ Deno.serve(async (req: Request) => {
       if (!yaCon.empresaId) return json({ ok: true, omitido: 'la cuenta de Kumplo no está conectada' })
       const previo = yaCon
       const conAlta = previo.id ? previo : await darDeAlta(c, uid)
-      if (!conAlta.id) return json({ ok: false, estado: conAlta })
+      // Igual que al conectar: si el alta no dio id lo más probable es que ya
+      // estuviera registrada. Se consulta de todas formas.
+      if (!conAlta.id && (conAlta.estado === 'sin_documento' || conAlta.estado === 'sin_conectar')) {
+        return json({ ok: true, estado: conAlta })
+      }
       return json({ ok: true, estado: await consultarAml(c, uid) })
     }
 

@@ -43,6 +43,26 @@ async function callMouvProxy(action: string, userId: string, extra: Record<strin
     } catch (e: any) { return { ok: false, error: String(e?.message ?? e) }; }
 }
 
+// Llamador a la función de cumplimiento (Kumplo).
+async function callKumplo(cuerpo: Record<string, unknown>): Promise<any> {
+    const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+    const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+    let auth = `Bearer ${SKEY}`;
+    try {
+        const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
+        if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) auth = `Bearer ${d.access_token}`; }
+    } catch { /* sin sesión */ }
+    try {
+        const r = await fetch(`${SURL}/functions/v1/kumplo`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: auth },
+            body: JSON.stringify(cuerpo),
+            signal: AbortSignal.timeout(45000),
+        });
+        return await r.json();
+    } catch (e: any) { return { ok: false, error: String(e?.message ?? e) }; }
+}
+
 // ─────────────────────────────────────────────
 // ContactsSection — Contactos (cuentas bancarias destino) de EMPRESAS.
 //
@@ -250,7 +270,7 @@ const FilterChip: React.FC<{ active: boolean; onClick: () => void; children: Rea
 );
 
 export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: MouvContact) => void }> = ({ onBack, onSendTo }) => {
-    const { currentUser, updateUserRawData, transactions } = useDatabase();
+    const { currentUser, updateUserRawData, transactions, refreshData } = useDatabase();
     const { config: sysConfig } = useSystemConfig();
     // Menú "···" del modal de detalle
     const [detailMenu, setDetailMenu] = useState(false);
@@ -286,6 +306,27 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
         if (String(k.estado ?? '') === 'procesando' || !k.at) return pinta('rgba(255,255,255,0.14)', '#878E88', 'KUMPLO · VERIFICANDO', 'Enviamos los datos a Kumplo y estamos esperando el resultado.');
         if (k.operable === true) return pinta('rgba(74,222,128,0.3)', '#4ADE80', 'KUMPLO · OK', 'Kumplo verificó el documento. Se puede operar con esta persona.');
         return pinta('rgba(255,255,255,0.14)', '#878E88', 'KUMPLO · SIN RESULTADO', 'Kumplo no devolvió un veredicto para este documento.');
+    };
+
+    // Revisión manual del cumplimiento de un beneficiario (id del contacto).
+    const [revisando, setRevisando] = useState<string | null>(null);
+    const revisarCumplimiento = async (c: MouvContact) => {
+        if (!currentUser?.id || revisando) return;
+        setRevisando(c.id);
+        const breb = (c.destKind ?? 'ach') === 'breb';
+        await callKumplo({
+            action: 'verificar_beneficiario', userId: currentUser.id, forzar: true,
+            nombre: c.name, documento: String(c.docNumber ?? '').replace(/\D/g, ''),
+            tipoDocumento: String(c.docType ?? 'CC').toUpperCase(),
+            tipoPersona: c.kind === 'empresa' ? 'empresa' : 'persona',
+            riel: breb ? 'BREB' : 'ACH',
+            banco: c.bank ?? null,
+            tipoCuenta: breb ? null : (c.accountType === 'checking' ? 'corriente' : 'ahorros'),
+            cuenta: breb ? (c.brebKey ?? null) : (c.accountNumber ?? null),
+            tipoLlave: breb ? (c.brebKeyType ?? null) : null,
+        });
+        setRevisando(null);
+        await refreshData?.();
     };
 
     // Menú "···" abierto (id del contacto)
@@ -1377,11 +1418,24 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                         {k.nombreCoincide === false && (
                                             <p style={{ fontSize: 12, color: '#FBBF24', marginTop: 6, lineHeight: 1.5 }}>El nombre inscrito no coincide con el del documento.</p>
                                         )}
+                                        {k.yaEstaba && (
+                                            <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 6, lineHeight: 1.5 }}>
+                                                Esta persona ya estaba registrada en Kumplo. No se volvió a inscribir: se tomó la consulta que ya existía.
+                                            </p>
+                                        )}
                                         {k.at && (
                                             <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', marginTop: 6 }}>
                                                 Última revisión: {new Date(k.at).toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' })}
                                             </p>
                                         )}
+                                        <button onClick={() => revisarCumplimiento(detail)} disabled={revisando === detail.id}
+                                            style={{
+                                                marginTop: 10, background: 'transparent', border: '1px solid rgba(255,255,255,0.14)',
+                                                color: '#F4F4F2', borderRadius: 999, padding: '7px 14px', fontSize: 12, fontWeight: 700,
+                                                cursor: revisando === detail.id ? 'default' : 'pointer', opacity: revisando === detail.id ? 0.55 : 1,
+                                            }}>
+                                            {revisando === detail.id ? 'Consultando…' : 'Volver a revisar'}
+                                        </button>
                                     </div>
                                 );
                             })()}
