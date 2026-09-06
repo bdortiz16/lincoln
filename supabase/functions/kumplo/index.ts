@@ -121,11 +121,16 @@ async function llamarKumplo(c: Config, ruta: string, metodo: 'GET' | 'POST', cue
   const url = `${c.baseUrl.replace(/\/+$/, '')}/${String(ruta).replace(/^\/+/, '')}`
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (API_KEY) headers[c.authHeader || 'Authorization'] = `${c.authPrefix ?? ''}${API_KEY}`
-  const r = await fetch(url, { method: metodo, headers, ...(cuerpo ? { body: JSON.stringify(cuerpo) } : {}) })
-  const texto = await r.text().catch(() => '')
-  let cuerpoJson: any = null
-  try { cuerpoJson = texto ? JSON.parse(texto) : null } catch { /* respuesta no-JSON */ }
-  return { ok: r.ok, status: r.status, body: cuerpoJson, texto: texto.slice(0, 500), url }
+  try {
+    const r = await fetch(url, { method: metodo, headers, ...(cuerpo ? { body: JSON.stringify(cuerpo) } : {}) })
+    const texto = await r.text().catch(() => '')
+    let cuerpoJson: any = null
+    try { cuerpoJson = texto ? JSON.parse(texto) : null } catch { /* respuesta no-JSON */ }
+    return { ok: r.ok, status: r.status, body: cuerpoJson, texto: texto.slice(0, 500), url }
+  } catch (e) {
+    // status 0 = ni siquiera se pudo llegar. Distinto de "llegó y dijo que no".
+    return { ok: false, status: 0, body: null, texto: `no se pudo contactar: ${(e as Error)?.message ?? 'error de red'}`, url }
+  }
 }
 
 // Reemplaza los marcadores de una ruta: {documento} y {empresa}. Existen para
@@ -376,11 +381,35 @@ Deno.serve(async (req: Request) => {
       const c = await leerConfig()
       if (!c.baseUrl) return json({ ok: false, motivo: 'Falta la dirección base de Kumplo.' })
       if (!API_KEY) return json({ ok: false, motivo: 'Falta la credencial de Kumplo en la Bóveda.' })
-      const r = await llamarKumplo(c, c.rutaEstado || c.rutaCrear, 'GET')
-      return json({
-        ok: r.ok, status: r.status, url: r.url,
-        motivo: r.ok ? 'Kumplo respondió correctamente.' : `Kumplo respondió ${r.status}: ${r.texto}`,
-      })
+      if (!c.empresaId) return json({ ok: false, motivo: 'Falta el id de la empresa en Kumplo.' })
+
+      // Se consulta a propósito por un documento que NO existe. Lo que se está
+      // probando es si Kumplo contesta y si acepta la credencial — no si
+      // encuentra a alguien.
+      const r = await llamarKumplo(c, rutaCon(c, c.rutaEstado || c.rutaCrear, '0'), 'GET')
+
+      // 404 "persona no encontrada" es la respuesta ESPERADA de esta prueba:
+      // significa que se llegó, que la credencial pasó y que el endpoint
+      // funciona. Antes esto se reportaba como fallo y hacía pensar que la
+      // integración estaba rota cuando estaba perfecta.
+      if (r.status === 0) {
+        return json({ ok: false, status: 0, url: r.url, motivo: `No se pudo contactar a Kumplo. Revisa la dirección base. (${r.texto})` })
+      }
+      if (r.status === 401 || r.status === 403) {
+        return json({ ok: false, status: r.status, url: r.url, motivo: `Kumplo rechazó la credencial (${r.status}). Revisa la llave en la Bóveda y cómo la esperan (cabecera y prefijo).` })
+      }
+      if (r.ok || r.status === 404) {
+        return json({
+          ok: true, status: r.status, url: r.url,
+          motivo: r.status === 404
+            ? 'Conexión y credencial correctas. Kumplo respondió «persona no encontrada» porque la prueba consulta un documento inexistente a propósito — eso es exactamente lo que se esperaba.'
+            : 'Kumplo respondió correctamente.',
+        })
+      }
+      if (r.status >= 500) {
+        return json({ ok: false, status: r.status, url: r.url, motivo: `Se llegó a Kumplo pero respondió un error de su lado (${r.status}): ${r.texto}` })
+      }
+      return json({ ok: false, status: r.status, url: r.url, motivo: `Kumplo respondió ${r.status}: ${r.texto}` })
     }
 
     // ── Estado de una persona ────────────────────────────────────────────
