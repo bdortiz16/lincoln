@@ -993,6 +993,13 @@ Deno.serve(async (req: Request) => {
           body: JSON.stringify({ action: 'verify', userId: uidE, code: codeE }),
         }).then(x => x.json()).catch(() => null)
         if (!r?.ok) {
+          // Un código YA USADO, VENCIDO o inexistente NO es un código
+          // equivocado: es el mismo dueño tocando dos veces, o volviendo tarde.
+          // Contarlo como fallo llevaría a bloquear la cuenta del titular por
+          // un doble toque — el bloqueo existe para quien ADIVINA, no para
+          // quien acierta dos veces seguidas.
+          const inocente = ['used', 'no_code', 'expired'].includes(String(r?.error ?? ''))
+          if (inocente) return json({ ok: false, message: r?.message ?? 'Solicita un código nuevo.' })
           const f = await registerAdminFailure(req, uidE, 'código incorrecto', 'correo', selfServiceBody.foto ?? null)
           if (f.bloqueada) {
             return json({ ok: false, error: 'account_locked', message: 'La cuenta se bloqueó por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
@@ -1762,7 +1769,9 @@ Deno.serve(async (req: Request) => {
           headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
           body: JSON.stringify({ action: 'verify', userId: selfServiceBody.userId, code }),
         }).then(r => r.json()).catch(() => null)
-        if (!otpRes?.ok) return json({ error: 'Código de correo incorrecto o vencido.' }, 403)
+        // Se prefiere el mensaje del servidor de códigos: "ese código ya se
+        // usó" es una instrucción; "incorrecto o vencido" deja adivinando.
+        if (!otpRes?.ok) return json({ error: otpRes?.message ?? 'Código de correo incorrecto o vencido.' }, 403)
         const { data: u } = await db.from('users').select('raw_data').eq('id', selfServiceBody.userId).single()
         const raw = { ...((u as any)?.raw_data ?? {}) }
         raw.mfaEnabled = false

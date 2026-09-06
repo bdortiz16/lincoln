@@ -137,7 +137,15 @@ Deno.serve(async (req) => {
       const code = String(body.code ?? '').trim()
       if (!/^\d{6}$/.test(code)) return json(200, { ok: false, error: 'bad_code' })
       const otp = raw.otp
-      if (!otp?.codeHash) return json(200, { ok: false, error: 'no_code', message: 'Solicita un código nuevo.' })
+      // Sin hash guardado hay dos casos distintos, y conviene distinguirlos:
+      // nunca se pidió un código, o este YA SE USÓ. Decir "solicita uno nuevo"
+      // cuando el código acaba de funcionar en otra pestaña confunde al dueño
+      // de la cuenta y no le aclara nada a nadie más.
+      if (!otp?.codeHash) {
+        return otp?.usedAt
+          ? json(200, { ok: false, error: 'used', message: 'Ese código ya se usó. Pide uno nuevo.' })
+          : json(200, { ok: false, error: 'no_code', message: 'Solicita un código nuevo.' })
+      }
       if (Date.now() > Number(otp.expiresAt)) return json(200, { ok: false, error: 'expired', message: 'El código venció. Pide uno nuevo.' })
       if (Number(otp.attempts ?? 0) >= 5) return json(200, { ok: false, error: 'too_many', message: 'Demasiados intentos. Pide un código nuevo.' })
       const ok = (await sha256(code)) === otp.codeHash
@@ -145,9 +153,29 @@ Deno.serve(async (req) => {
         await db.from('users').update({ raw_data: { ...raw, otp: { ...otp, attempts: Number(otp.attempts ?? 0) + 1 } } }).eq('id', user.id)
         return json(200, { ok: false, error: 'invalid', message: 'Código incorrecto.' })
       }
-      // Éxito: se limpia el OTP.
-      const { otp: _drop, ...rest } = raw
-      await db.from('users').update({ raw_data: rest }).eq('id', user.id)
+
+      // ── CONSUMO DE UN SOLO USO, ATÓMICO ─────────────────────────────────
+      // El borrado por sí solo NO alcanzaba: entre leer el código y borrarlo
+      // hay una ventana, y dos peticiones con el MISMO código que llegan a la
+      // vez —un doble toque en "Continuar", o alguien reenviando la petición—
+      // leían las dos el código todavía puesto, las dos daban por buena la
+      // verificación, y las dos borraban. Un código, dos usos.
+      //
+      // Ahora el borrado lleva la condición de que el hash SIGA siendo el
+      // mismo. La base solo puede cumplirla una vez: la primera petición lo
+      // quita, y la segunda no encuentra fila que actualizar. Gana una sola,
+      // sin importar cuántas lleguen juntas.
+      //
+      // Se deja la marca 'usedAt' en vez de borrar el objeto entero, para
+      // poder responder "ese código ya se usó" en lugar de un genérico.
+      const { data: reclamado } = await db.from('users')
+        .update({ raw_data: { ...raw, otp: { usedAt: Date.now(), sentAt: otp.sentAt ?? null } } })
+        .eq('id', user.id)
+        .filter('raw_data->otp->>codeHash', 'eq', String(otp.codeHash))
+        .select('id')
+      if (!reclamado?.length) {
+        return json(200, { ok: false, error: 'used', message: 'Ese código ya se usó. Pide uno nuevo.' })
+      }
       return json(200, { ok: true, verified: true, userId: user.id })
     }
 
