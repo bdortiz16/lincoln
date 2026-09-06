@@ -62,6 +62,16 @@ import {
   Archive
 } from 'lucide-react';
 import { KumploUserCard } from './KumploUserCard';
+
+const SUPABASE_URL_PD = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+const SUPABASE_ANON_PD = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+const getStoredTokenPD = (): string | null => {
+  try {
+    const k = Object.keys(localStorage).find(x => x.startsWith('sb-') && x.endsWith('-auth-token'));
+    if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) return d.access_token as string; }
+  } catch { /* */ }
+  return null;
+};
 import { Logo } from './Logo';
 import { MouvSection, fetchMouvBalance, fetchMouvRateValue, fetchMouvUsdCopConfig, callMouv } from './OtcMigration';
 import { MouvDispersion } from './MouvDispersion';
@@ -3487,6 +3497,52 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       await sendPasswordReset(currentUser.email);
       showToast('Email de restablecimiento enviado a ' + currentUser.email);
   };
+
+  // ── Verificación de beneficiarios en Kumplo ─────────────────────────────
+  // Cuando se inscribe a quien va a recibir la plata, esos datos —nombre, tipo
+  // y número de documento, y el riel con su banco o llave— se mandan a Kumplo:
+  // registra al beneficiario con su cuenta y consulta el documento contra
+  // TusDatos. Vuelve si se puede operar con esa persona.
+  //
+  // Va en un efecto sobre la LISTA y no en cada formulario de alta porque los
+  // contactos se crean desde varios sitios, y bastaba olvidar uno para que un
+  // beneficiario quedara sin verificar. Acá se cubren todos: el que no tenga
+  // veredicto se manda, una sola vez.
+  const benefEnviadosRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const uid = currentUser?.id;
+    if (!uid) return;
+    const cuAny: any = currentUser;
+    const contactos: any[] = Array.isArray(cuAny?.raw_data?.mouvContacts) ? cuAny.raw_data.mouvContacts : [];
+    if (!contactos.length) return;
+    const yaTiene = cuAny?.raw_data?.kumplo?.beneficiarios ?? {};
+    const token = getStoredTokenPD();
+    if (!token) return;
+
+    (async () => {
+      for (const c of contactos) {
+        const doc = String(c?.documentNumber ?? '').replace(/\D/g, '');
+        const nombre = String(c?.holderName ?? c?.name ?? '').trim();
+        if (!doc || !nombre) continue;
+        if (yaTiene[doc] || benefEnviadosRef.current.has(doc)) continue;
+        benefEnviadosRef.current.add(doc);
+        await fetch(`${SUPABASE_URL_PD}/functions/v1/kumplo`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_PD, Authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            action: 'verificar_beneficiario', userId: uid,
+            nombre, documento: doc,
+            tipoDocumento: String(c?.documentType ?? 'CC').toUpperCase(),
+            riel: (c?.destKind ?? 'ach') === 'breb' ? 'BREB' : 'ACH',
+            banco: c?.bank ?? null,
+            cuenta: c?.brebKey ?? c?.accountNumber ?? null,
+          }),
+        }).catch(() => { /* una prueba de cumplimiento no puede romper la pantalla */ });
+      }
+      refreshData?.();
+    })();
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, [currentUser?.id, (currentUser as any)?.raw_data?.mouvContacts?.length]);
 
   const renderSettings = () => {
       const raw = (currentUser as any)?.raw_data ?? {};

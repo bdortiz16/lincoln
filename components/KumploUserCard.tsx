@@ -72,9 +72,12 @@ export const KumploUserCard: React.FC<{ userId: string }> = ({ userId }) => {
   };
   useEffect(() => { if (userId) cargar(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [userId]);
 
-  // Apagada o fuera de la prueba: no se muestra nada. Una sección muerta solo
-  // genera preguntas.
-  if (!data?.ok || !data.activo || !data.enLaPrueba) return null;
+  // Si la integración está apagada o la cuenta no entra en la prueba, la
+  // sección no aparece: una sección muerta solo genera preguntas. La excepción
+  // es quien YA conectó — ese tiene que poder seguir viendo su estado y
+  // desconectarse aunque la integración se apague después.
+  if (!data?.ok) return null;
+  if ((!data.activo || !data.enLaPrueba) && !data.conectado) return null;
 
   const estado = data.estado ?? {};
   const conectado = !!data.conectado;

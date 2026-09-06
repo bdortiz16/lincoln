@@ -1049,6 +1049,43 @@ serve(async (req: Request) => {
       }
     }
 
+    // ── El BENEFICIARIO también tiene que estar en regla ──────────────────
+    // No basta con que el titular pueda operar: la plata sale HACIA alguien, y
+    // ese alguien es el que hay que mirar para lavado de activos. Kumplo lo
+    // verificó al inscribirlo; acá se aplica el veredicto guardado.
+    //
+    // Falla ABIERTO: sin veredicto —beneficiario viejo, integración apagada,
+    // cuenta sin conectar— se deja pasar. Un control a medio conectar no puede
+    // frenar un envío legítimo. Solo corta con un "no operable" explícito.
+    {
+      const docDest = String((payload.recipient as any)?.documentNumber ?? '').replace(/\D/g, '')
+      if (docDest) {
+        try {
+          const { data: cfgRow } = await db.from('system_config').select('value').eq('key', 'kumplo_config').maybeSingle()
+          const cfg = (cfgRow as any)?.value ? JSON.parse((cfgRow as any).value) : null
+          if (cfg?.activo && cfg?.bloquearEnAlto !== false) {
+            const { data: uK } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
+            const b = ((uK as any)?.raw_data?.kumplo?.beneficiarios ?? {})[docDest]
+            const hayVeredicto = b && (b.riesgo || typeof b.operable === 'boolean')
+            if (hayVeredicto && String(b.estado ?? '') !== 'procesando') {
+              const puede = cfg.soloBloquearAlto ? b.riesgo !== 'alto' : b.operable !== false
+              if (!puede) {
+                await logAudit(userId, 'kumplo.envio_bloqueado', { documento: docDest, riesgo: b.riesgo, estado: b.estado })
+                return json(403, {
+                  error: 'beneficiario_no_operable',
+                  message: b.riesgo === 'alto'
+                    ? 'No se puede transferir a este beneficiario: la verificación de cumplimiento lo marcó como riesgo alto.'
+                    : b.riesgo === 'desconocido'
+                      ? 'No pudimos validar el documento de este beneficiario. Revísalo o comunícate con soporte.'
+                      : 'Este beneficiario está en revisión de cumplimiento. Todavía no se le puede transferir.',
+                })
+              }
+            }
+          }
+        } catch { /* la prueba nunca frena un envío legítimo */ }
+      }
+    }
+
     const amount = Number(payload.amount)
     if (!isFinite(amount) || amount <= 0) return json(400, { error: 'bad_amount', message: 'Monto inválido.' })
     if (Math.round(amount) !== amount) return json(400, { error: 'bad_amount', message: 'El monto debe ser en pesos enteros.' })

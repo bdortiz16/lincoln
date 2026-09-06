@@ -192,6 +192,18 @@ async function guardarEstado(userId: string, parche: EstadoKumplo) {
   return raw.kumplo as EstadoKumplo
 }
 
+// Los beneficiarios cuelgan de raw_data.kumplo, que ya es escritura solo del
+// servidor. Así no hace falta proteger otra clave: si el cliente pudiera
+// escribirla, se aprobaría solo a quien quisiera.
+async function guardarBeneficiario(userId: string, documento: string, ficha: unknown) {
+  const { data } = await db.from('users').select('raw_data').eq('id', userId).single()
+  const raw = { ...((data as any)?.raw_data ?? {}) }
+  const k = { ...(raw.kumplo ?? {}) }
+  k.beneficiarios = { ...(k.beneficiarios ?? {}), [documento]: ficha }
+  raw.kumplo = k
+  await db.from('users').update({ raw_data: raw }).eq('id', userId)
+}
+
 async function auditar(accion: string, meta: unknown) {
   try { await db.from('audit_log').insert({ action: accion, metadata: meta as any }) } catch { /* la auditoría nunca frena la operación */ }
 }
@@ -469,6 +481,87 @@ Deno.serve(async (req: Request) => {
       await db.from('users').update({ raw_data: raw }).eq('id', uid)
       await auditar('kumplo.desconectado', { userId: uid, por: yo.userId })
       return json({ ok: true, estado: {} })
+    }
+
+
+    // ── Verificar un BENEFICIARIO ─────────────────────────────────────────
+    // Cuando el titular inscribe a quien le va a enviar plata, esos datos
+    // —nombre, tipo y número de documento, y el banco o la llave— se mandan a
+    // Kumplo: registra al beneficiario con su cuenta bancaria y consulta el
+    // documento contra TusDatos. Vuelve si se puede operar con esa persona.
+    //
+    // El veredicto se guarda DENTRO de raw_data.kumplo, que ya es escritura
+    // solo del servidor. Si el cliente pudiera escribirlo, se aprobaría solo
+    // a los beneficiarios que quisiera y el control dejaría de existir.
+    if (accion === 'verificar_beneficiario') {
+      const uid = String(body.userId ?? yo.userId ?? '')
+      if (!uid || (!yo.esAdmin && yo.userId !== uid)) return json({ error: 'No autorizado' }, 401)
+
+      const documento = String(body.documento ?? '').replace(/\D/g, '').trim()
+      const nombre = String(body.nombre ?? '').trim().toUpperCase()
+      const tipoDocumento = String(body.tipoDocumento ?? 'CC').toUpperCase()
+      if (!documento || !nombre) return json({ error: 'Falta el nombre o el documento del beneficiario.' }, 400)
+
+      const c = await leerConfig()
+      if (!c.activo) return json({ ok: true, omitido: 'la integración está apagada' })
+      if (!enLaPrueba(c, uid)) return json({ ok: true, omitido: 'esta cuenta no está en la prueba' })
+
+      const mio = await leerEstado(uid)
+      const empresa = String(mio.empresaId ?? '').trim()
+      if (!empresa) return json({ ok: false, error: 'sin_conectar', message: 'Conecta tu cuenta de Kumplo antes de inscribir beneficiarios.' })
+
+      // 1) Alta del beneficiario en Kumplo, con su cuenta bancaria.
+      const alta = await llamarKumplo(c, c.rutaCrear, 'POST', {
+        empresa,
+        externalRef: `${uid}:${documento}`,
+        nombre, documento, tipoDocumento,
+        pais: 'Colombia',
+        datosBancarios: {
+          banco: String(body.banco ?? (String(body.riel ?? '').toUpperCase() === 'BREB' ? 'Bre-B' : 'ACH')),
+          cuenta: String(body.cuenta ?? ''),
+          riel: String(body.riel ?? '').toUpperCase() || undefined,
+        },
+      })
+      if (!alta.ok) {
+        await auditar('kumplo.beneficiario_alta_fallida', { userId: uid, documento, status: alta.status, detalle: alta.texto })
+        return json({ ok: false, message: `Kumplo respondió ${alta.status}: ${alta.texto}` })
+      }
+      const idBenef = String(leerRuta(alta.body, c.campoId) ?? '')
+
+      // 2) Consulta AML del beneficiario.
+      const aml = await llamarKumplo(c, c.rutaAml, 'POST', { empresa, documento, tipoDocumento, nombre })
+      const leido = aml.ok ? interpretar(aml.body, c, documento)
+        : { documento, estado: 'error_aml', detalle: `Kumplo respondió ${aml.status}: ${aml.texto}` } as EstadoKumplo
+
+      // 3) Reintento único si quedó procesando, igual que con el titular.
+      let fin = leido
+      if (fin.estado === 'procesando' && c.rutaEstado) {
+        await new Promise(res => setTimeout(res, 6000))
+        const rr = await llamarKumplo(c, rutaCon(c, c.rutaEstado, documento, empresa), 'GET')
+        if (rr.ok) fin = interpretar(rr.body, c, documento)
+      }
+
+      const ficha = {
+        nombre, documento, tipoDocumento,
+        riel: String(body.riel ?? '').toUpperCase() || null,
+        id: idBenef || undefined,
+        riesgo: fin.riesgo, operable: fin.operable, estado: fin.estado,
+        motivo: fin.motivo ?? null,
+        nombreDocumento: fin.nombreDocumento ?? null,
+        nombreCoincide: fin.nombreCoincide ?? null,
+        at: new Date().toISOString(),
+      }
+      await guardarBeneficiario(uid, documento, ficha)
+      await auditar('kumplo.beneficiario', { userId: uid, documento, riesgo: fin.riesgo, operable: fin.operable })
+      return json({ ok: true, beneficiario: ficha })
+    }
+
+    // Estado guardado de los beneficiarios de esta cuenta.
+    if (accion === 'beneficiarios') {
+      const uid = String(body.userId ?? yo.userId ?? '')
+      if (!uid || (!yo.esAdmin && yo.userId !== uid)) return json({ error: 'No autorizado' }, 401)
+      const e = await leerEstado(uid)
+      return json({ ok: true, beneficiarios: (e as any).beneficiarios ?? {} })
     }
 
     // ── Alta automática al inscribirse en Lincoin ─────────────────────────
