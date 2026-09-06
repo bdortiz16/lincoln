@@ -110,7 +110,7 @@ export const AdminKumplo: React.FC = () => {
     );
   }
 
-  const listo = !!cfg.baseUrl && !!cfg.rutaCrear && !!cfg.rutaAml && credencial === 'configurada';
+  const listo = !!cfg.baseUrl && !!cfg.rutaCrear && !!cfg.rutaAml && !!cfg.empresaId && credencial === 'configurada';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -151,6 +151,7 @@ export const AdminKumplo: React.FC = () => {
                 !cfg.baseUrl && 'la dirección base',
                 !cfg.rutaCrear && 'la ruta de alta',
                 !cfg.rutaAml && 'la ruta de consulta AML',
+                !cfg.empresaId && 'el id de la empresa en Kumplo',
                 credencial !== 'configurada' && 'la credencial en la Bóveda',
               ].filter(Boolean).join(', ')}. Sin eso no se puede encender —
               encender algo que no puede responder solo produce clientes bloqueados sin motivo.
@@ -197,18 +198,20 @@ export const AdminKumplo: React.FC = () => {
           <Campo etiqueta="Prefijo" ayuda="Lo que va antes de la llave. Puede ir vacío.">
             <input style={inputStyle} value={cfg.authPrefix} onChange={e => setCfg({ ...cfg, authPrefix: e.target.value })} placeholder="Bearer " />
           </Campo>
-          <Campo etiqueta="Id de la empresa en Kumplo" ayuda="El de XATECH SERVICES SAS.">
-            <input style={inputStyle} value={cfg.empresaId} onChange={e => setCfg({ ...cfg, empresaId: e.target.value.trim() })} placeholder="" />
+          <Campo etiqueta="Id de la empresa en Kumplo · obligatorio"
+            ayuda="El uuid o el código EMP-… de XATECH. Decide bajo qué cuenta de Kumplo caen las personas, y viaja en cada llamada.">
+            <input style={{ ...inputStyle, borderColor: cfg.empresaId ? C.border : 'rgba(251,191,36,0.4)' }}
+              value={cfg.empresaId} onChange={e => setCfg({ ...cfg, empresaId: e.target.value.trim() })} placeholder="EMP-F73DE8" />
           </Campo>
         </div>
 
         <Campo etiqueta="Ruta para dar de alta a una persona" ayuda="POST. Ejemplo: /usuarios">
           <input style={inputStyle} value={cfg.rutaCrear} onChange={e => setCfg({ ...cfg, rutaCrear: e.target.value.trim() })} placeholder="/usuarios" />
         </Campo>
-        <Campo etiqueta="Ruta de la consulta AML" ayuda="POST. Puedes escribir {id} y se reemplaza por el id de la persona en Kumplo. Ejemplo: /usuarios/{id}/aml">
+        <Campo etiqueta="Ruta de la consulta AML" ayuda="POST. Kumplo la consulta por documento, no por id.">
           <input style={inputStyle} value={cfg.rutaAml} onChange={e => setCfg({ ...cfg, rutaAml: e.target.value.trim() })} placeholder="/usuarios/{id}/aml" />
         </Campo>
-        <Campo etiqueta="Ruta para releer el estado (opcional)" ayuda="GET. Se usa para la prueba de conexión.">
+        <Campo etiqueta="Ruta para releer el estado (opcional)" ayuda="GET. Acepta los marcadores {documento} y {empresa}, por si los piden en la URL.">
           <input style={inputStyle} value={cfg.rutaEstado} onChange={e => setCfg({ ...cfg, rutaEstado: e.target.value.trim() })} placeholder="/usuarios/{id}" />
         </Campo>
 

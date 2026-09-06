@@ -128,6 +128,15 @@ async function llamarKumplo(c: Config, ruta: string, metodo: 'GET' | 'POST', cue
   return { ok: r.ok, status: r.status, body: cuerpoJson, texto: texto.slice(0, 500), url }
 }
 
+// Reemplaza los marcadores de una ruta: {documento} y {empresa}. Existen para
+// que, si Kumplo pide alguno en la URL en vez de en el cuerpo, se resuelva
+// desde el panel sin tocar código.
+function rutaCon(c: Config, ruta: string, documento: string): string {
+  return String(ruta)
+    .replace('{documento}', encodeURIComponent(documento))
+    .replace('{empresa}', encodeURIComponent(c.empresaId ?? ''))
+}
+
 // ── Identidad de quien llama ──────────────────────────────────────────────
 async function quienLlama(req: Request): Promise<{ userId: string | null; esAdmin: boolean }> {
   const jwt = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
@@ -222,6 +231,10 @@ async function darDeAlta(c: Config, userId: string): Promise<EstadoKumplo> {
   // capricho: mandar 'tipo_documento' en vez de 'tipoDocumento' hace que la
   // consulta salga con datos vacíos y devuelva "desconocido".
   const r = await llamarKumplo(c, c.rutaCrear, 'POST', {
+    // 'empresa' decide bajo QUÉ cuenta de Kumplo cae la persona. Va en cada
+    // llamada, no en la configuración de la credencial: una sola llave sirve
+    // para varias empresas. Sin esto, el alta cae en el vacío.
+    empresa: c.empresaId || undefined,
     externalRef: userId,
     nombre: String(p.name ?? raw.fullName ?? '').toUpperCase(),
     documento,
@@ -285,6 +298,7 @@ async function consultarAml(c: Config, userId: string): Promise<EstadoKumplo> {
 
   // La consulta va por DOCUMENTO, no por el id de Kumplo: así lo definieron.
   const r = await llamarKumplo(c, c.rutaAml, 'POST', {
+    empresa: c.empresaId || undefined,
     documento,
     tipoDocumento: String(raw.documentType ?? 'CC').toUpperCase(),
     nombre: String(p.name ?? raw.fullName ?? '').toUpperCase(),
@@ -302,7 +316,7 @@ async function consultarAml(c: Config, userId: string): Promise<EstadoKumplo> {
   // la próxima revisión (o el botón del usuario) lo recoge.
   if (leido.estado === 'procesando' && c.rutaEstado) {
     await new Promise(res => setTimeout(res, 6000))
-    const rr = await llamarKumplo(c, c.rutaEstado.replace('{documento}', encodeURIComponent(documento)), 'GET')
+    const rr = await llamarKumplo(c, rutaCon(c, c.rutaEstado, documento), 'GET')
     if (rr.ok) leido = interpretar(rr.body, c, documento)
   }
 
@@ -316,7 +330,7 @@ async function releerEstado(c: Config, userId: string): Promise<EstadoKumplo> {
   const previo = await leerEstado(userId)
   const documento = String(previo.documento ?? '').trim()
   if (!documento || !c.rutaEstado) return previo
-  const r = await llamarKumplo(c, c.rutaEstado.replace('{documento}', encodeURIComponent(documento)), 'GET')
+  const r = await llamarKumplo(c, rutaCon(c, c.rutaEstado, documento), 'GET')
   if (!r.ok) return await guardarEstado(userId, { detalle: `Kumplo respondió ${r.status}: ${r.texto}` })
   return await guardarEstado(userId, interpretar(r.body, c, documento))
 }
@@ -342,11 +356,12 @@ Deno.serve(async (req: Request) => {
       const c: Config = { ...actual, ...(body.config ?? {}) }
       // No se puede encender sin lo mínimo para funcionar: encender algo que
       // no puede responder solo produce clientes bloqueados sin motivo.
-      if (c.activo && (!c.baseUrl || !c.rutaCrear || !c.rutaAml || !API_KEY)) {
+      if (c.activo && (!c.baseUrl || !c.rutaCrear || !c.rutaAml || !API_KEY || !c.empresaId)) {
         return json({
-          error: 'Faltan datos para encender: dirección base, ruta de alta, ruta AML y la credencial en la Bóveda.',
+          error: 'Faltan datos para encender: dirección base, ruta de alta, ruta AML, el id de la empresa en Kumplo y la credencial en la Bóveda.',
           faltan: {
-            baseUrl: !c.baseUrl, rutaCrear: !c.rutaCrear, rutaAml: !c.rutaAml, credencial: !API_KEY,
+            baseUrl: !c.baseUrl, rutaCrear: !c.rutaCrear, rutaAml: !c.rutaAml,
+            credencial: !API_KEY, empresaId: !c.empresaId,
           },
         }, 400)
       }

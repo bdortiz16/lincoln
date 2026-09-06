@@ -2,7 +2,10 @@
 
 **Kumplo ya respondió** (ver `INTEGRACION_LINCOIN.md`). El código está ajustado
 a su especificación y los valores vienen precargados en el panel. Lo único que
-falta del lado de Lincoin es poner `KUMPLO_API_KEY` en la Bóveda y encender.
+falta del lado de Lincoin son dos cosas: poner `KUMPLO_API_KEY` en la Bóveda y
+escribir el **id de la empresa** (`EMP-…` o el uuid) en el panel. Sin ese id no
+se deja encender: viaja en cada llamada y decide bajo qué cuenta de Kumplo caen
+las personas.
 
 Este documento queda como registro de lo que se pidió y de cómo quedó armado.
 
@@ -132,8 +135,9 @@ Va en la Bóveda como `KUMPLO_API_KEY`. Nunca se guarda en la base de datos ni s
 |---|---|---|
 | Credencial | `Authorization: Bearer <llave>`, sin vencimiento por ahora, una sola para prueba y producción | En la Bóveda como `KUMPLO_API_KEY` |
 | Dirección base | `https://tqscdruogiaqpbntfywh.supabase.co/functions/v1/super-handler` | Precargada |
-| Alta | `POST /partner/persona` con `externalRef`, `nombre`, `documento`, `tipoDocumento`, `correo`, `telefono`, `pais`. Si ya existe, devuelve el id con `existe: true` | Precargada. Se manda el id de Lincoin como `externalRef` para poder conciliar |
+| Alta | `POST /partner/persona` con `empresa`, `externalRef`, `nombre`, `documento`, `tipoDocumento`, `correo`, `telefono`, `pais`. Si ya existe, devuelve el id con `existe: true` | Precargada. Se manda el id de Lincoin como `externalRef` para poder conciliar |
 | AML | `POST /partner/aml` **por documento**, no por id | Precargada |
+| **`empresa`** | El uuid o el código `EMP-…` de XATECH. Va en **cada llamada**, no en la credencial: así una sola API Key sirve para varias empresas | Campo **obligatorio** en el panel. Sin él no se deja encender la integración — las llamadas caerían en el vacío |
 | Veredicto | **`data.operable`** — es el que pidieron usar | Es el que manda. `data.riesgo` se guarda para mostrarlo |
 | Asíncrono | Puede devolver `estado: "procesando"` con un `jobId` | Se reintenta una vez a los 6 s; si sigue, se guarda «en curso» y se relee después con `GET /partner/estado` |
 | Webhook | Pendiente para la siguiente fase | Mientras tanto se relee el estado |
