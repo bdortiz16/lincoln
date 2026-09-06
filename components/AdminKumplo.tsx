@@ -176,26 +176,22 @@ export const AdminKumplo: React.FC = () => {
           </button>
         </div>
 
-        {/* Lo ÚNICO que hay que llenar. La conexión entre Lincoin y Kumplo es
-            de infraestructura: se arma una vez con este id y de ahí en adelante
-            cada persona se registra sola con lo que ya dio al inscribirse.
-            Estaba perdido entre los campos técnicos de abajo. */}
-        <div style={{ marginTop: 15, background: C.elev, border: `1px solid ${cfg.empresaId ? 'rgba(74,222,128,0.28)' : 'rgba(251,191,36,0.4)'}`, borderRadius: 12, padding: '13px 15px' }}>
-          <p style={{ fontSize: 11, fontWeight: 800, letterSpacing: 0.4, color: C.sub, margin: 0 }}>ID DE LA EMPRESA EN KUMPLO</p>
-          <p style={{ fontSize: 12, color: C.dim, margin: '4px 0 9px', lineHeight: 1.55 }}>
-            El código <b style={{ color: C.sub }}>EMP-…</b> o el uuid que Kumplo le dio a XATECH. Es lo único
-            que hay que configurar: con esto puesto, la conexión queda hecha y cada persona que se
-            inscriba en Lincoin se registra sola allá.
+        {/* El id de la empresa NO se pone acá. Cada negocio tiene su propia
+            cuenta en Kumplo, así que lo conecta el titular desde su
+            Configuración → Kumplo. Lo que se arma en este panel es la
+            infraestructura, que es una sola para todos. */}
+        <div style={{ marginTop: 15, background: C.elev, border: `1px solid ${C.border}`, borderRadius: 12, padding: '13px 15px' }}>
+          <p style={{ fontSize: 11, fontWeight: 800, letterSpacing: 0.4, color: C.sub, margin: 0 }}>CÓMO SE CONECTA CADA CUENTA</p>
+          <p style={{ fontSize: 12.5, color: C.dim, margin: '6px 0 0', lineHeight: 1.6 }}>
+            Cada negocio tiene su propia cuenta en Kumplo, con su código <b style={{ color: C.sub }}>EMP-…</b>.
+            Lo pega <b style={{ color: C.sub }}>el titular</b> en su <b style={{ color: C.sub }}>Configuración → Kumplo</b>,
+            no se configura desde acá. Apenas lo conecta, Lincoin le manda a Kumplo su nombre y su
+            documento, la cuenta queda en verificación y vuelve el veredicto.
           </p>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <input style={{ ...inputStyle, flex: 1, minWidth: 190, fontSize: 14 }}
-              value={cfg.empresaId} onChange={e => setCfg({ ...cfg, empresaId: e.target.value.trim() })}
-              placeholder="EMP-F73DE8" />
-            <button onClick={() => guardar(cfg)} disabled={busy || !cfg.empresaId}
-              style={{ background: 'rgba(74,222,128,0.12)', border: '1px solid rgba(74,222,128,0.32)', color: C.green, borderRadius: 9, padding: '9px 18px', fontSize: 13, fontWeight: 800, cursor: 'pointer', fontFamily: FONT, opacity: busy || !cfg.empresaId ? 0.5 : 1 }}>
-              Guardar
-            </button>
-          </div>
+          <p style={{ fontSize: 12.5, color: C.dim, margin: '9px 0 0', lineHeight: 1.6 }}>
+            Lo de este panel es la infraestructura: la credencial y las rutas. Una sola para todos —
+            por eso Kumplo pide el id de la empresa en cada llamada.
+          </p>
         </div>
 
         {msg && (

@@ -136,10 +136,10 @@ async function llamarKumplo(c: Config, ruta: string, metodo: 'GET' | 'POST', cue
 // Reemplaza los marcadores de una ruta: {documento} y {empresa}. Existen para
 // que, si Kumplo pide alguno en la URL en vez de en el cuerpo, se resuelva
 // desde el panel sin tocar código.
-function rutaCon(c: Config, ruta: string, documento: string): string {
+function rutaCon(_c: Config, ruta: string, documento: string, empresa = ''): string {
   return String(ruta)
     .replace('{documento}', encodeURIComponent(documento))
-    .replace('{empresa}', encodeURIComponent(c.empresaId ?? ''))
+    .replace('{empresa}', encodeURIComponent(empresa))
 }
 
 // ── Identidad de quien llama ──────────────────────────────────────────────
@@ -157,6 +157,11 @@ async function quienLlama(req: Request): Promise<{ userId: string | null; esAdmi
 
 type EstadoKumplo = {
   id?: string
+  // El id de la empresa EN KUMPLO, de ESTE titular. Va por cuenta, no global:
+  // cada negocio en Lincoin tiene su propia cuenta en Kumplo, y es el titular
+  // quien la conecta pegando su código. La credencial sí es una sola —esa es
+  // la infraestructura— y por eso Kumplo la manda en cada llamada.
+  empresaId?: string
   documento?: string
   riesgo?: 'bajo' | 'medio' | 'alto' | 'desconocido'
   // El veredicto que Kumplo pide usar. Manda sobre 'riesgo': ellos ya
@@ -231,6 +236,10 @@ async function darDeAlta(c: Config, userId: string): Promise<EstadoKumplo> {
   if (!documento) {
     return await guardarEstado(userId, { estado: 'sin_documento', detalle: 'La cuenta no tiene número de documento; Kumplo lo necesita para el alta.' })
   }
+  const empresa = String((raw.kumplo ?? {}).empresaId ?? '').trim()
+  if (!empresa) {
+    return await guardarEstado(userId, { estado: 'sin_conectar', detalle: 'Falta conectar la cuenta de Kumplo.' })
+  }
 
   // Nombres de campo EXACTOS de la especificación de Kumplo. No son un
   // capricho: mandar 'tipo_documento' en vez de 'tipoDocumento' hace que la
@@ -239,7 +248,7 @@ async function darDeAlta(c: Config, userId: string): Promise<EstadoKumplo> {
     // 'empresa' decide bajo QUÉ cuenta de Kumplo cae la persona. Va en cada
     // llamada, no en la configuración de la credencial: una sola llave sirve
     // para varias empresas. Sin esto, el alta cae en el vacío.
-    empresa: c.empresaId || undefined,
+    empresa,
     externalRef: userId,
     nombre: String(p.name ?? raw.fullName ?? '').toUpperCase(),
     documento,
@@ -300,10 +309,14 @@ async function consultarAml(c: Config, userId: string): Promise<EstadoKumplo> {
   if (!documento) {
     return await guardarEstado(userId, { estado: 'sin_documento', detalle: 'La cuenta no tiene número de documento.' })
   }
+  const empresa = String(previo.empresaId ?? '').trim()
+  if (!empresa) {
+    return await guardarEstado(userId, { estado: 'sin_conectar', detalle: 'Falta conectar la cuenta de Kumplo.' })
+  }
 
   // La consulta va por DOCUMENTO, no por el id de Kumplo: así lo definieron.
   const r = await llamarKumplo(c, c.rutaAml, 'POST', {
-    empresa: c.empresaId || undefined,
+    empresa,
     documento,
     tipoDocumento: String(raw.documentType ?? 'CC').toUpperCase(),
     nombre: String(p.name ?? raw.fullName ?? '').toUpperCase(),
@@ -321,7 +334,7 @@ async function consultarAml(c: Config, userId: string): Promise<EstadoKumplo> {
   // la próxima revisión (o el botón del usuario) lo recoge.
   if (leido.estado === 'procesando' && c.rutaEstado) {
     await new Promise(res => setTimeout(res, 6000))
-    const rr = await llamarKumplo(c, rutaCon(c, c.rutaEstado, documento), 'GET')
+    const rr = await llamarKumplo(c, rutaCon(c, c.rutaEstado, documento, empresa), 'GET')
     if (rr.ok) leido = interpretar(rr.body, c, documento)
   }
 
@@ -335,7 +348,7 @@ async function releerEstado(c: Config, userId: string): Promise<EstadoKumplo> {
   const previo = await leerEstado(userId)
   const documento = String(previo.documento ?? '').trim()
   if (!documento || !c.rutaEstado) return previo
-  const r = await llamarKumplo(c, rutaCon(c, c.rutaEstado, documento), 'GET')
+  const r = await llamarKumplo(c, rutaCon(c, c.rutaEstado, documento, String(previo.empresaId ?? '')), 'GET')
   if (!r.ok) return await guardarEstado(userId, { detalle: `Kumplo respondió ${r.status}: ${r.texto}` })
   return await guardarEstado(userId, interpretar(r.body, c, documento))
 }
@@ -361,13 +374,13 @@ Deno.serve(async (req: Request) => {
       const c: Config = { ...actual, ...(body.config ?? {}) }
       // No se puede encender sin lo mínimo para funcionar: encender algo que
       // no puede responder solo produce clientes bloqueados sin motivo.
-      if (c.activo && (!c.baseUrl || !c.rutaCrear || !c.rutaAml || !API_KEY || !c.empresaId)) {
+      // El id de la empresa NO se pide acá: lo pone cada titular en su propia
+      // configuración, porque cada negocio tiene su cuenta en Kumplo. Lo que
+      // se arma en este panel es la infraestructura, que es una sola.
+      if (c.activo && (!c.baseUrl || !c.rutaCrear || !c.rutaAml || !API_KEY)) {
         return json({
-          error: 'Faltan datos para encender: dirección base, ruta de alta, ruta AML, el id de la empresa en Kumplo y la credencial en la Bóveda.',
-          faltan: {
-            baseUrl: !c.baseUrl, rutaCrear: !c.rutaCrear, rutaAml: !c.rutaAml,
-            credencial: !API_KEY, empresaId: !c.empresaId,
-          },
+          error: 'Faltan datos para encender: dirección base, ruta de alta, ruta AML y la credencial en la Bóveda.',
+          faltan: { baseUrl: !c.baseUrl, rutaCrear: !c.rutaCrear, rutaAml: !c.rutaAml, credencial: !API_KEY },
         }, 400)
       }
       await guardarConfig(c)
@@ -381,7 +394,6 @@ Deno.serve(async (req: Request) => {
       const c = await leerConfig()
       if (!c.baseUrl) return json({ ok: false, motivo: 'Falta la dirección base de Kumplo.' })
       if (!API_KEY) return json({ ok: false, motivo: 'Falta la credencial de Kumplo en la Bóveda.' })
-      if (!c.empresaId) return json({ ok: false, motivo: 'Falta el id de la empresa en Kumplo.' })
 
       // Se consulta a propósito por un documento que NO existe. Lo que se está
       // probando es si Kumplo contesta y si acepta la credencial — no si
@@ -417,27 +429,46 @@ Deno.serve(async (req: Request) => {
       const uid = String(body.userId ?? yo.userId ?? '')
       if (!uid || (!yo.esAdmin && yo.userId !== uid)) return json({ error: 'No autorizado' }, 401)
       const c = await leerConfig()
-      return json({ ok: true, activo: c.activo, enLaPrueba: enLaPrueba(c, uid), estado: await leerEstado(uid) })
+      const e = await leerEstado(uid)
+      return json({ ok: true, activo: c.activo, enLaPrueba: enLaPrueba(c, uid), conectado: !!e.empresaId, estado: e })
     }
 
-    // ── Vincular a mano un id que ya existe en Kumplo ─────────────────────
-    // SOLO ADMIN, como herramienta de soporte. El usuario no vincula nada: la
-    // conexión es de infraestructura, se arma una vez con el id de la empresa
-    // y cada persona se registra sola con lo que ya dio al inscribirse.
-    // Pedirle a un cliente un "id de Kumplo" era pedirle algo que nunca tiene.
-    if (accion === 'vincular') {
-      if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
-      const uid = String(body.userId ?? '')
-      if (!uid) return json({ error: 'Falta la cuenta.' }, 400)
-      const id = String(body.kumploId ?? '').trim()
-      if (!id) return json({ error: 'Falta el id de Kumplo.' }, 400)
-      await auditar('kumplo.vinculo_manual', { userId: uid, kumploId: id, por: yo.userId })
-      // Se vincula y se consulta de una vez: un vínculo sin consulta no
-      // aporta nada, y dejarlo a medias invita a olvidarlo.
+    // ── El titular CONECTA su cuenta de Kumplo ────────────────────────────
+    // Esta es la única acción que ejecuta el usuario, y es la que arma el
+    // vínculo: pega el código EMP-… que Kumplo le dio a SU negocio. La
+    // credencial y las rutas son infraestructura nuestra —una sola para
+    // todos—; el id de la empresa es de cada quien, por eso Kumplo lo pide
+    // en cada llamada.
+    //
+    // Al conectar se dispara de una vez el alta y la consulta: dejarlo
+    // conectado pero sin consultar sería quedarse a mitad de camino.
+    if (accion === 'conectar') {
+      const uid = String(body.userId ?? yo.userId ?? '')
+      if (!uid || (!yo.esAdmin && yo.userId !== uid)) return json({ error: 'No autorizado' }, 401)
+      const empresaId = String(body.empresaId ?? '').trim()
+      if (!empresaId) return json({ error: 'Falta el id de tu empresa en Kumplo.' }, 400)
+
       const c = await leerConfig()
-      await guardarEstado(uid, { id, estado: 'vinculado' })
-      const fin = c.activo ? await consultarAml(c, uid) : await leerEstado(uid)
-      return json({ ok: true, estado: fin })
+      await guardarEstado(uid, { empresaId, estado: 'conectado' })
+      await auditar('kumplo.conectado', { userId: uid, empresaId, por: yo.userId })
+      if (!c.activo) return json({ ok: true, estado: await leerEstado(uid), omitido: 'la integración está apagada' })
+
+      const previo = await leerEstado(uid)
+      const conAlta = previo.id ? previo : await darDeAlta(c, uid)
+      if (!conAlta.id) return json({ ok: true, estado: conAlta })
+      return json({ ok: true, estado: await consultarAml(c, uid) })
+    }
+
+    // Desconectar: quita el vínculo y el veredicto. Solo el titular o el admin.
+    if (accion === 'desconectar') {
+      const uid = String(body.userId ?? yo.userId ?? '')
+      if (!uid || (!yo.esAdmin && yo.userId !== uid)) return json({ error: 'No autorizado' }, 401)
+      const { data } = await db.from('users').select('raw_data').eq('id', uid).single()
+      const raw = { ...((data as any)?.raw_data ?? {}) }
+      delete raw.kumplo
+      await db.from('users').update({ raw_data: raw }).eq('id', uid)
+      await auditar('kumplo.desconectado', { userId: uid, por: yo.userId })
+      return json({ ok: true, estado: {} })
     }
 
     // ── Alta automática al inscribirse en Lincoin ─────────────────────────
@@ -447,7 +478,11 @@ Deno.serve(async (req: Request) => {
       const c = await leerConfig()
       if (!c.activo) return json({ ok: true, omitido: 'la integración está apagada' })
       if (!enLaPrueba(c, uid)) return json({ ok: true, omitido: 'esta cuenta no está en la prueba' })
-      const previo = await leerEstado(uid)
+      const yaCon = await leerEstado(uid)
+      // Sin cuenta de Kumplo conectada no hay a dónde registrar a nadie. No es
+      // un error: es que el titular todavía no la conectó.
+      if (!yaCon.empresaId) return json({ ok: true, omitido: 'la cuenta de Kumplo no está conectada' })
+      const previo = yaCon
       const conAlta = previo.id ? previo : await darDeAlta(c, uid)
       if (!conAlta.id) return json({ ok: false, estado: conAlta })
       return json({ ok: true, estado: await consultarAml(c, uid) })
@@ -484,7 +519,7 @@ Deno.serve(async (req: Request) => {
       const { data } = await db.from('users').select('id, name, email, raw_data').limit(500)
       const filas = ((data ?? []) as any[])
         .map(u => ({ id: u.id, nombre: u.name, correo: u.email, kumplo: u.raw_data?.kumplo ?? null }))
-        .filter(f => f.kumplo)
+        .filter(f => f.kumplo && (f.kumplo.empresaId || f.kumplo.riesgo))
       return json({ ok: true, filas })
     }
 
