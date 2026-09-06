@@ -2195,6 +2195,80 @@ Deno.serve(async (req: Request) => {
         return json({ ok: true })
       }
 
+      // ── Conciliación: envíos que salieron pero no dejaron movimiento ─────
+      // El vigilante de lo que ya pasó una vez. Cada dispersión deja DOS
+      // rastros: la fila en 'transactions' —lo que ve el cliente— y una
+      // entrada en la auditoría. Si el envío ocurrió pero la fila no se
+      // escribió, el cliente ve un hueco y nadie más se entera.
+      //
+      // Acá se cruzan los dos rastros y se listan los envíos sin movimiento.
+      // Con reparar:true se reconstruye la fila desde la auditoría.
+      if (body.action === 'conciliar_movimientos') {
+        const dias = Math.min(Math.max(Number(body.dias ?? 30) || 30, 1), 180)
+        const desde = new Date(Date.now() - dias * 86400_000).toISOString()
+
+        const { data: eventos } = await db.from('audit_log')
+          .select('id, user_id, action, metadata, created_at')
+          .in('action', ['mouv.payout_breb.ok', 'mouv.payout_ach.ok', 'finity.payout_ach.ok', 'mouv.tx_insert_failed'])
+          .gte('created_at', desde).order('created_at', { ascending: false }).limit(1000)
+
+        const { data: txs } = await db.from('transactions')
+          .select('id, user_id, amount, currency, created_at, raw_data')
+          .eq('type', 'dispersion').gte('created_at', desde).limit(3000)
+
+        const porRef = new Set<string>()
+        const porUsuarioMonto = new Set<string>()
+        for (const t of (txs ?? []) as any[]) {
+          const ref = String(t?.raw_data?.providerRef ?? '')
+          if (ref) porRef.add(ref)
+          // Clave de respaldo para los envíos sin referencia del proveedor:
+          // usuario + monto + día. No es perfecta —dos envíos idénticos el
+          // mismo día colisionan— pero se prefiere no reportar de más.
+          porUsuarioMonto.add(`${t.user_id}|${Math.round(Number(t.amount ?? 0))}|${String(t.created_at ?? '').slice(0, 10)}`)
+        }
+
+        const huerfanos: any[] = []
+        for (const e of (eventos ?? []) as any[]) {
+          const m = (e.metadata ?? {}) as any
+          const ref = String(m.providerRef ?? '')
+          const monto = Math.round(Number(m.amount ?? 0))
+          const dia = String(e.created_at ?? '').slice(0, 10)
+          if (ref && porRef.has(ref)) continue
+          if (!ref && porUsuarioMonto.has(`${e.user_id}|${monto}|${dia}`)) continue
+          huerfanos.push({
+            auditId: e.id, userId: e.user_id, accion: e.action, at: e.created_at,
+            amount: monto, providerRef: ref || null,
+            railCol: m.railCol ?? (String(e.action).includes('breb') ? 'COP_BREB' : 'COP_ACH'),
+            recipient: m.recipient ?? null, motivo: m.motivo ?? null,
+          })
+        }
+
+        if (!body.reparar) {
+          return json({ ok: true, dias, revisados: (eventos ?? []).length, huerfanos: huerfanos.slice(0, 100), total: huerfanos.length })
+        }
+
+        // Reparar: se crea la fila que falta, marcada como reconstruida para
+        // que nadie la confunda con un registro de primera mano.
+        let creados = 0
+        for (const h of huerfanos.slice(0, 200)) {
+          if (!h.userId || !h.amount) continue
+          const { error } = await db.from('transactions').insert({
+            user_id: h.userId, type: 'dispersion', amount: h.amount, currency: h.railCol,
+            status: String(h.accion).endsWith('.ok') ? 'Completado' : 'Procesando',
+            created_at: h.at,
+            raw_data: {
+              source: 'conciliacion', title: h.railCol === 'COP_BREB' ? 'Dispersión Bre-B' : 'Dispersión ACH',
+              providerRef: h.providerRef, recipient: h.recipient,
+              beneficiary: h.recipient?.holderName ?? null,
+              reconstruido: true, desdeAuditoria: h.auditId, reconstruidoAt: new Date().toISOString(),
+            },
+          })
+          if (!error) creados++
+        }
+        await auditAdmin(req, 'conciliacion.movimientos_reconstruidos', { creados, de: huerfanos.length, dias })
+        return json({ ok: true, dias, creados, total: huerfanos.length })
+      }
+
       if (body.action === 'list_audit') {
         const limit = Math.min(Number(body.limit ?? 200) || 200, 500)
         let rows: any[] = []

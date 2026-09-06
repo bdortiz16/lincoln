@@ -88,6 +88,7 @@ import { AdminPasskeys } from './AdminPasskeys';
 import { AdminStepUp } from './AdminStepUp';
 import { AdminLoginAlerts } from './AdminLoginAlerts';
 import { AdminKumplo } from './AdminKumplo';
+import { AdminReconcile } from './AdminReconcile';
 import { AdminOtcSection } from './AdminOtcSection';
 import { Zap, ArrowLeftRight, ArrowLeft, Info, ChevronRight, Activity, Link2 } from 'lucide-react';
 import { CollectionWalletCard } from './CollectionWalletCard';
@@ -4301,7 +4302,15 @@ const renderDesign = () => (
 
             <div className={`flex-1 overflow-y-auto ${isDark ? 'p-6' : 'p-8'}`}>
                 {activeTab === 'overview' && <AdminMonitor />}
-                {activeTab === 'monitoreo' && <AdminMonitor />}
+                {activeTab === 'monitoreo' && (
+                  <div className="space-y-4">
+                    {/* Cruza los envíos contra los movimientos que ve el
+                        cliente. Va primero: si algo salió sin dejar registro,
+                        es lo que hay que atender antes que nada. */}
+                    <AdminReconcile />
+                    <AdminMonitor />
+                  </div>
+                )}
                 {activeTab === 'clients' && renderClients()}
                 {activeTab === 'marketing' && renderMarketing()}
                 {activeTab === 'treasury' && (tesoreriaOk ? renderTreasury() : (
