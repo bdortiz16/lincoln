@@ -117,15 +117,15 @@ export const KumploUserCard: React.FC<{ userId: string }> = ({ userId }) => {
   };
 
   return (
-    <div style={{ fontFamily: FONT, color: C.text, background: C.card, border: `1px solid ${C.border2}`, borderRadius: 16, padding: 18 }}>
+    <div style={{ fontFamily: FONT, color: C.text, background: C.card, border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, padding: '20px 22px' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
-        <p style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 800, fontSize: 16, margin: 0 }}>
-          <Link2 size={17} color={conectado ? C.green : C.sub} /> Kumplo
+        <p style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 10.5, fontWeight: 700, letterSpacing: '1.8px', color: C.sub, margin: 0 }}>
+          <Link2 size={13} color={conectado ? C.green : C.sub} /> KUMPLO
         </p>
         <span style={{
           border: `1px solid ${conectado ? 'rgba(74,222,128,0.32)' : C.border2}`,
           color: conectado ? C.green : C.sub, borderRadius: 999,
-          padding: '4px 12px', fontSize: 11, fontWeight: 800, whiteSpace: 'nowrap',
+          padding: '4px 9px', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.4px', whiteSpace: 'nowrap',
         }}>
           {cargando ? '· Comprobando…' : conectado ? '● Conectada' : '○ Sin conectar'}
         </span>
@@ -135,25 +135,23 @@ export const KumploUserCard: React.FC<{ userId: string }> = ({ userId }) => {
         <p style={{ color: C.sub, fontSize: 12.5, margin: '9px 0 0' }}>Comprobando el estado de la conexión…</p>
       ) : !conectado ? (
         <>
-          <p style={{ color: C.sub, fontSize: 12.5, margin: '7px 0 0', lineHeight: 1.6 }}>
-            Conecta tu cuenta de <b style={{ color: C.text }}>Kumplo</b> para que tu verificación de
-            cumplimiento quede al día. Pega el código que Kumplo le dio a tu empresa — empieza por
-            <b style={{ color: C.text }}> EMP-</b>. Con eso queda listo: del resto nos encargamos nosotros.
+          <p style={{ color: C.sub, fontSize: 12, margin: '12px 0 0', lineHeight: 1.55 }}>
+            Pega el código que Kumplo le dio a tu empresa. Del resto nos encargamos nosotros.
           </p>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 13 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 11 }}>
             <input
               value={codigo}
               onChange={e => setCodigo(e.target.value.trim())}
               onKeyDown={e => { if (e.key === 'Enter') conectar(); }}
               placeholder="EMP-XXXXXX"
               style={{
-                flex: 1, minWidth: 180, background: C.elev, border: `1px solid ${C.border}`, color: C.text,
-                borderRadius: 10, padding: '11px 13px', fontSize: 14, outline: 'none', fontFamily: MONO,
+                flex: 1, minWidth: 150, background: C.elev, border: `1px solid ${C.border}`, color: C.text,
+                borderRadius: 9, padding: '9px 12px', fontSize: 13, outline: 'none', fontFamily: MONO,
               }} />
             <button onClick={conectar} disabled={busy || !codigo.trim()}
               style={{
                 background: 'rgba(74,222,128,0.12)', border: '1px solid rgba(74,222,128,0.32)',
-                color: C.green, borderRadius: 10, padding: '11px 20px', fontSize: 13.5, fontWeight: 800,
+                color: C.green, borderRadius: 9, padding: '9px 18px', fontSize: 12.5, fontWeight: 700,
                 cursor: busy || !codigo.trim() ? 'default' : 'pointer', fontFamily: FONT,
                 opacity: busy || !codigo.trim() ? 0.5 : 1, whiteSpace: 'nowrap',
               }}>

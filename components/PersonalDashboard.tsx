@@ -3589,12 +3589,6 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               <p style={{ fontSize: 14, color: '#878E88', marginTop: 3 }}>Tu cuenta, seguridad y notificaciones</p>
           </div>
 
-          {/* KUMPLO — acá el titular conecta su cuenta pegando el código de su
-              empresa y ve si la conexión quedó hecha. Va arriba de todo y
-              SIEMPRE se muestra: es una acción que el usuario viene a hacer,
-              no un dato que se consulta de vez en cuando. */}
-          {currentUser?.id && <KumploUserCard userId={currentUser.id} />}
-
           <div className="grid gap-4 lg:grid-cols-2" style={{ alignItems: 'start' }}>
               {/* ── COLUMNA IZQUIERDA ── */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -3650,6 +3644,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           </div>
                       </div>
                   </div>
+
+                  {/* KUMPLO — acá el titular conecta su cuenta pegando el
+                      código de su empresa y ve si la conexión quedó hecha.
+                      Va en la columna, entre Seguridad y Límites: es una
+                      sección más de Ajustes, no un anuncio. */}
+                  {currentUser?.id && <KumploUserCard userId={currentUser.id} />}
 
                   {/* LÍMITES */}
                   <div style={card}>
