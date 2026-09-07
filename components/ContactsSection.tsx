@@ -295,18 +295,30 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
         if (!doc) return null;
         return kumploBenef[doc] ?? { estado: 'procesando' };
     };
-    const kumploPill = (c: Partial<MouvContact>) => {
+    // 'corto' para la columna AML, donde el encabezado ya dice de qué se trata
+    // y repetir "KUMPLO ·" en cada fila solo gasta ancho.
+    const kumploPill = (c: Partial<MouvContact>, corto = false) => {
         const k = kumploDe(c);
         if (!k) return null;
-        const base: React.CSSProperties = { fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' };
+        const base: React.CSSProperties = { fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap', display: 'inline-block' };
         const pinta = (borde: string, color: string, texto: string, ayuda: string) =>
-            <span title={ayuda} style={{ ...base, border: `1px solid ${borde}`, color }}>{texto}</span>;
-        if (k.riesgo === 'alto') return pinta('rgba(248,113,113,0.32)', '#F87171', 'KUMPLO · NO OPERABLE', 'Kumplo marcó riesgo alto. No se puede transferir a esta persona.');
-        if (k.operable === false) return pinta('rgba(251,191,36,0.32)', '#FBBF24', 'KUMPLO · EN REVISIÓN', 'Kumplo dejó a esta persona en revisión de cumplimiento. Por ahora no se le puede transferir.');
-        if (String(k.estado ?? '') === 'procesando' || !k.at) return pinta('rgba(255,255,255,0.14)', '#878E88', 'KUMPLO · VERIFICANDO', 'Enviamos los datos a Kumplo y estamos esperando el resultado.');
-        if (k.operable === true) return pinta('rgba(74,222,128,0.3)', '#4ADE80', 'KUMPLO · OK', 'Kumplo verificó el documento. Se puede operar con esta persona.');
-        return pinta('rgba(255,255,255,0.14)', '#878E88', 'KUMPLO · SIN RESULTADO', 'Kumplo no devolvió un veredicto para este documento.');
+            <span title={ayuda} style={{ ...base, border: `1px solid ${borde}`, color }}>{corto ? texto : `KUMPLO · ${texto}`}</span>;
+        if (k.riesgo === 'alto') return pinta('rgba(248,113,113,0.32)', '#F87171', 'NO OPERABLE', 'Riesgo alto. No se puede transferir a esta persona.');
+        if (k.operable === false) return pinta('rgba(251,191,36,0.32)', '#FBBF24', 'EN REVISIÓN', 'En revisión de cumplimiento. Por ahora no se le puede transferir.');
+        if (String(k.estado ?? '') === 'procesando' || !k.at) return pinta('rgba(255,255,255,0.14)', '#878E88', 'VERIFICANDO', 'Enviamos los datos a Kumplo y estamos esperando el resultado.');
+        if (k.operable === true) return pinta('rgba(74,222,128,0.3)', '#4ADE80', 'APROBADO', 'Documento verificado. Se puede operar con esta persona.');
+        return pinta('rgba(255,255,255,0.14)', '#878E88', 'SIN RESULTADO', 'Kumplo no devolvió un veredicto para este documento.');
     };
+
+    // La columna AML solo existe si el titular conectó su cuenta de Kumplo.
+    // A quien no la conectó esa verificación no le aplica, y una columna
+    // vacía en todas las filas es peor que no tenerla.
+    const COLS = kumploConectado
+        ? 'minmax(140px,1fr) 132px 126px 158px 112px 84px'
+        : 'minmax(140px,1fr) 150px 170px 118px 88px';
+    const CABECERAS = kumploConectado
+        ? ['BENEFICIARIO', 'PAÍS Y RIEL', 'AML', 'BANCO Y CUENTA', 'ESTADO', 'ACCIONES']
+        : ['BENEFICIARIO', 'PAÍS Y RIEL', 'BANCO Y CUENTA', 'ESTADO', 'ACCIONES'];
 
     // Revisión manual del cumplimiento de un beneficiario (id del contacto).
     const [revisando, setRevisando] = useState<string | null>(null);
@@ -1212,9 +1224,9 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
             {/* Tabla de beneficiarios (diseño Beneficiarios) */}
             <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, overflow: 'hidden' }}>
                 {/* Encabezados — solo desktop */}
-                <div className="hidden lg:grid" style={{ gridTemplateColumns: 'minmax(140px,1fr) 150px 170px 118px 88px', padding: '9px 22px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-                    {['BENEFICIARIO', 'PAÍS Y RIEL', 'BANCO Y CUENTA', 'ESTADO', 'ACCIONES'].map((h, i) => (
-                        <span key={h} style={{ color: '#878E88', fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', textAlign: i === 4 ? 'right' : 'left' }}>{h}</span>
+                <div className="hidden lg:grid" style={{ gridTemplateColumns: COLS, padding: '9px 22px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                    {CABECERAS.map((h, i) => (
+                        <span key={h} style={{ color: '#878E88', fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', textAlign: i === CABECERAS.length - 1 ? 'right' : 'left' }}>{h}</span>
                     ))}
                 </div>
                 {contacts.length === 0 && (
@@ -1267,7 +1279,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                     return (
                     <div key={c.id}>
                         {/* Fila desktop */}
-                        <div className="hidden lg:grid items-center hover:bg-white/[0.02] transition-colors" style={{ gridTemplateColumns: 'minmax(140px,1fr) 150px 170px 118px 88px', padding: '14px 22px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                        <div className="hidden lg:grid items-center hover:bg-white/[0.02] transition-colors" style={{ gridTemplateColumns: COLS, padding: '14px 22px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
                             <button onClick={() => setDetail(c)} className="flex items-center gap-3 min-w-0 text-left cursor-pointer">
                                 {avatar}
                                 <div className="min-w-0">
@@ -1282,11 +1294,19 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                     <p style={{ fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.railLine}</p>
                                 </div>
                             </div>
+                            {/* AML — el veredicto de cumplimiento, en su propia
+                                columna. Va pegado al país porque se lee junto
+                                con quién es la persona, no con su banco. */}
+                            {kumploConectado && (
+                                <div className="min-w-0">
+                                    {kumploPill(c, true) ?? <span style={{ fontSize: 12, color: 'rgba(244,244,242,0.45)' }}>—</span>}
+                                </div>
+                            )}
                             <div className="min-w-0">
                                 <p style={{ fontSize: 13, fontWeight: 600, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.bankName}</p>
                                 <p style={{ fontSize: 11.5, color: '#878E88', fontFamily: 'ui-monospace, monospace' }}>{m.maskLine}</p>
                             </div>
-                            <div className="flex flex-col items-start gap-1">{statusPill}{kumploPill(c)}</div>
+                            <div>{statusPill}</div>
                             {actions}
                         </div>
                         {/* Tarjeta móvil */}
