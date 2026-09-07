@@ -723,6 +723,69 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     // aprobación que no va a llegar nunca, porque nadie está mirando esa
     // cuenta. Hay que decir que falló y dejar reintentar.
     const sinRegistro = (c: MouvContact) => isFinityAch(c) && !(c.finityId ?? c.mouvId);
+
+    // ── ¿Llegó al banco? ─────────────────────────────────────────────────
+    // "En validación" no dice si el banco tiene la cuenta o si nunca la
+    // recibió, y son dos problemas distintos. Esto lo pregunta y lo dice.
+    // Si el banco ya la resolvió, además destraba el contacto acá.
+    const [diag, setDiag] = useState<{ id: string; ok: boolean; texto: string } | null>(null);
+    const [consultando, setConsultando] = useState<string | null>(null);
+    const filasDe = (d: any): any[] => Array.isArray(d) ? d
+        : Array.isArray(d?.data) ? d.data
+        : Array.isArray(d?.items) ? d.items
+        : Array.isArray(d?.accounts) ? d.accounts
+        : Array.isArray(d?.external_accounts) ? d.external_accounts
+        : Array.isArray(d?.results) ? d.results : [];
+    const consultarBanco = async (c: MouvContact) => {
+        if (!currentUser?.id || consultando) return;
+        setConsultando(c.id); setDiag(null);
+        const r = await callFinity('external_accounts', currentUser.id);
+        setConsultando(null);
+        if (!r?.ok) {
+            setDiag({ id: c.id, ok: false, texto: `No se pudo consultar al banco (respondió ${r?.status ?? '—'}). Reintenta en un momento.` });
+            return;
+        }
+        const rows = filasDe(r?.data);
+        const cid = c.finityId ?? c.mouvId;
+        const cD = String(c.accountNumber ?? '').replace(/\D/g, '');
+        const row = rows.find((x: any) => {
+            const rid = String(x.id ?? x.external_account_id ?? x.account_id ?? '');
+            if (cid && rid && rid === cid) return true;
+            const acc = String(x.account_number ?? x.accountNumber ?? x.number ?? x.account ?? '');
+            const aD = acc.replace(/\D/g, '');
+            if (!aD || !cD) return false;
+            if (aD === cD) return true;
+            return /[*·•]/.test(acc) && aD.length >= 4 && cD.endsWith(aD.slice(-4));
+        });
+        if (!row) {
+            setDiag({
+                id: c.id, ok: false,
+                texto: `El banco tiene ${rows.length} cuenta${rows.length === 1 ? '' : 's'} registrada${rows.length === 1 ? '' : 's'} y ninguna coincide con esta. La cuenta no llegó a registrarse allá — usa "Reintentar registro".`,
+            });
+            return;
+        }
+        const crudo = String(row.verification_status ?? row.status ?? row.estado ?? row.state ?? '—');
+        const st = normalizeStatus(crudo);
+        const fid = row.id ?? row.external_account_id ?? row.account_id ?? null;
+        // Si el banco ya la resolvió, se actualiza acá mismo: quedarse mostrando
+        // "en validación" cuando el banco ya contestó es el error que trajo
+        // esta consulta en primer lugar.
+        if ((st && st !== contactStatus(c)) || (fid && String(fid) !== (c.mouvId ?? ''))) {
+            const upd = bankContacts.map(x => x.id === c.id
+                ? { ...x, status: st ?? contactStatus(x), mouvId: fid ? String(fid) : x.mouvId, finityId: fid ? String(fid) : (x.finityId ?? x.mouvId) }
+                : x);
+            await persistBanks(upd);
+            setDetail(d => d && d.id === c.id ? { ...d, status: st ?? d.status, mouvId: fid ? String(fid) : d.mouvId, finityId: fid ? String(fid) : (d.finityId ?? d.mouvId) } : d);
+        }
+        setDiag({
+            id: c.id, ok: true,
+            texto: st === 'aprobada'
+                ? 'El banco la tiene y está aprobada. Ya puedes transferirle.'
+                : st === 'rechazada'
+                    ? `El banco la tiene y la rechazó (estado: "${crudo}").`
+                    : `El banco sí la tiene y sigue en verificación de su lado (estado: "${crudo}"). Hay que esperar a que él la resuelva.`,
+        });
+    };
     const [reintentando, setReintentando] = useState<string | null>(null);
     const reintentarRegistro = async (c: MouvContact) => {
         if (!currentUser?.id || reintentando) return;
@@ -1487,6 +1550,23 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                         }}>
                                         {reintentando === detail.id ? 'Enviando…' : 'Reintentar registro'}
                                     </button>
+                                </div>
+                            )}
+                            {/* "En validación" no dice si el banco tiene la
+                                cuenta o si nunca la recibió. Esto lo pregunta. */}
+                            {isFinityAch(detail) && st !== 'aprobada' && !faltaRegistro && (
+                                <div style={{ marginTop: 12 }}>
+                                    <button onClick={() => consultarBanco(detail)} disabled={consultando === detail.id}
+                                        style={{
+                                            background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2',
+                                            borderRadius: 999, padding: '7px 14px', fontSize: 12, fontWeight: 700,
+                                            cursor: consultando === detail.id ? 'default' : 'pointer', opacity: consultando === detail.id ? 0.55 : 1,
+                                        }}>
+                                        {consultando === detail.id ? 'Consultando…' : '¿Llegó al banco?'}
+                                    </button>
+                                    {diag?.id === detail.id && (
+                                        <p style={{ fontSize: 12, color: diag.ok ? '#878E88' : '#FBBF24', marginTop: 8, lineHeight: 1.55 }}>{diag.texto}</p>
+                                    )}
                                 </div>
                             )}
                             {/* El motivo se muestra SIEMPRE que exista, no solo

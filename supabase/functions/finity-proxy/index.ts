@@ -647,7 +647,16 @@ Deno.serve(async (req) => {
         body: JSON.stringify(payload.data ?? {}),
       })
       const data = await res.json().catch(() => null)
-      await logAudit(caller.userId!, 'finity.external_account.create', { status: res.status, path, data: payload.data })
+      // Se audita también LA RESPUESTA, no solo lo enviado. Sin esto, una
+      // cuenta que se quedaba "en validación" no se podía diagnosticar: había
+      // registro de lo que se mandó y ninguno de lo que contestó el banco.
+      const idCreado = (data as any)?.id ?? (data as any)?.external_account_id ?? (data as any)?.account_id ?? (data as any)?.account?.id ?? null
+      await logAudit(caller.userId!, 'finity.external_account.create', {
+        status: res.status, path, ok: res.ok,
+        enviado: payload.data,
+        idCreado,
+        respuesta: JSON.stringify(data ?? {}).slice(0, 600),
+      })
       return json(200, { ok: res.ok, status: res.status, path, data })
     }
 
