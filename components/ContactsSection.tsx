@@ -687,6 +687,39 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     // fallidas). Solo actualiza estados — NUNCA borra contactos.
     useEffect(() => { syncStatuses(true); }, [currentUser?.id]);
 
+    // ── Cuentas que NUNCA llegaron al banco ──────────────────────────────
+    // Una cuenta ACH sin id de Finity no está "en validación": no se inscribió.
+    // Mostrar las dos igual es el peor de los casos — el usuario espera una
+    // aprobación que no va a llegar nunca, porque nadie está mirando esa
+    // cuenta. Hay que decir que falló y dejar reintentar.
+    const sinRegistro = (c: MouvContact) => isFinityAch(c) && !(c.finityId ?? c.mouvId);
+    const [reintentando, setReintentando] = useState<string | null>(null);
+    const reintentarRegistro = async (c: MouvContact) => {
+        if (!currentUser?.id || reintentando) return;
+        setReintentando(c.id);
+        try {
+            const rr = await callFinity('create_external_account', currentUser.id, { data: buildMouvAccountBody(c) });
+            const dd = (rr?.data ?? {}) as any;
+            const fid = dd.id ?? dd.external_account_id ?? dd.account_id ?? dd?.account?.id ?? null;
+            if (rr?.ok && fid) {
+                const upd = bankContacts.map(x => x.id === c.id
+                    ? { ...x, mouvId: String(fid), finityId: String(fid), status: 'en_proceso' as ContactStatus, lastError: null }
+                    : x);
+                await persistBanks(upd);
+                setDetail(d => d && d.id === c.id ? { ...d, mouvId: String(fid), finityId: String(fid), status: 'en_proceso', lastError: null } : d);
+                setNotice({ ok: true, text: `Cuenta enviada al banco. Quedó en validación.` });
+            } else {
+                const err = `[${new Date().toLocaleTimeString('es-CO')}] HTTP ${rr?.status ?? '—'}: ${JSON.stringify(rr?.data ?? rr).slice(0, 260)}`;
+                await persistBanks(bankContacts.map(x => x.id === c.id ? { ...x, lastError: err } : x));
+                setDetail(d => d && d.id === c.id ? { ...d, lastError: err } : d);
+                setNotice({ ok: false, text: `El banco rechazó el registro. ${String(rr?.data?.message ?? rr?.data?.error ?? '')}`.trim() });
+            }
+        } catch (e: any) {
+            setNotice({ ok: false, text: `No se pudo contactar al banco: ${String(e?.message ?? e)}` });
+        }
+        setReintentando(null);
+    };
+
     const removeContact = async (id: string) => {
         if (!window.confirm('¿Eliminar este contacto?')) return;
         const target = contacts.find(c => c.id === id);
@@ -1176,7 +1209,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
             {/* Tabla de beneficiarios (diseño Beneficiarios) */}
             <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, overflow: 'hidden' }}>
                 {/* Encabezados — solo desktop */}
-                <div className="hidden lg:grid" style={{ gridTemplateColumns: '1fr 180px 190px 120px 90px', padding: '9px 22px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                <div className="hidden lg:grid" style={{ gridTemplateColumns: 'minmax(140px,1fr) 150px 170px 118px 88px', padding: '9px 22px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
                     {['BENEFICIARIO', 'PAÍS Y RIEL', 'BANCO Y CUENTA', 'ESTADO', 'ACCIONES'].map((h, i) => (
                         <span key={h} style={{ color: '#878E88', fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', textAlign: i === 4 ? 'right' : 'left' }}>{h}</span>
                     ))}
@@ -1203,7 +1236,9 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                         ? <span className="inline-flex items-center gap-1" style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}><CheckCircle size={10} /> VERIFICADO</span>
                         : st === 'rechazada'
                             ? <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }} title={c.lastError ?? undefined}>RECHAZADO</span>
-                            : <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}>EN VALIDACIÓN</span>;
+                            : sinRegistro(c)
+                                ? <span style={{ border: '1px solid rgba(251,191,36,0.32)', color: '#FBBF24', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }} title={c.lastError ?? 'La cuenta no llegó a registrarse con el banco.'}>SIN REGISTRAR</span>
+                                : <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}>EN VALIDACIÓN</span>;
                     const avatar = (
                         <div style={{ width: 38, height: 38, borderRadius: '50%', background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', border: '1px solid rgba(255,255,255,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                             <span style={{ color: '#878E88', fontWeight: 800, fontSize: 13 }}>{initialsOf(c.name)}</span>
@@ -1229,7 +1264,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                     return (
                     <div key={c.id}>
                         {/* Fila desktop */}
-                        <div className="hidden lg:grid items-center hover:bg-white/[0.02] transition-colors" style={{ gridTemplateColumns: '1fr 180px 190px 120px 90px', padding: '14px 22px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                        <div className="hidden lg:grid items-center hover:bg-white/[0.02] transition-colors" style={{ gridTemplateColumns: 'minmax(140px,1fr) 150px 170px 118px 88px', padding: '14px 22px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
                             <button onClick={() => setDetail(c)} className="flex items-center gap-3 min-w-0 text-left cursor-pointer">
                                 {avatar}
                                 <div className="min-w-0">
@@ -1309,9 +1344,12 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                 const lastTx = [...myTx].sort((a, b) => txTimeOf(b) - txTimeOf(a))[0];
                 const totalSent = myTx.reduce((s, t) => s + (Number(t.amount) || 0), 0);
                 const fmtDate = (d?: string) => d ? new Date(d).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+                const faltaRegistro = sinRegistro(detail);
                 const statusPill = st === 'aprobada'
                     ? <span className="inline-flex items-center gap-1" style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.7px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}><CheckCircle size={10} /> VERIFICADO</span>
-                    : <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.7px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}>{st === 'rechazada' ? 'RECHAZADO' : 'EN VALIDACIÓN'}</span>;
+                    : (st !== 'rechazada' && faltaRegistro)
+                        ? <span style={{ border: '1px solid rgba(251,191,36,0.32)', color: '#FBBF24', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.7px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}>SIN REGISTRAR</span>
+                        : <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.7px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}>{st === 'rechazada' ? 'RECHAZADO' : 'EN VALIDACIÓN'}</span>;
                 const rows: { l: string; v: React.ReactNode; mono?: boolean; copy?: boolean }[] = isWallet ? [
                     { l: 'Riel', v: `${detail.walletCoin ?? 'USDT'} · ${detail.walletNetwork === 'BEP-20' ? 'BNB Chain (BEP-20)' : 'TRON (TRC-20)'}` },
                     { l: 'Dirección', v: detail.accountNumber, mono: true, copy: true },
@@ -1389,8 +1427,32 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                     </div>
                                 ))}
                             </div>
-                            {st === 'rechazada' && detail.lastError && (
-                                <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 8, wordBreak: 'break-all' }}>Motivo: {String(detail.lastError).slice(0, 180)}</p>
+                            {/* La cuenta nunca llegó al banco. Antes esto se veía
+                                igual que "en validación" y el usuario esperaba
+                                una aprobación que no iba a llegar: nadie estaba
+                                mirando esa cuenta. */}
+                            {faltaRegistro && (
+                                <div style={{ marginTop: 14, background: '#121413', border: '1px solid rgba(251,191,36,0.28)', borderRadius: 12, padding: '13px 15px' }}>
+                                    <p style={{ fontSize: 13.5, fontWeight: 700, color: '#FBBF24' }}>La cuenta no llegó al banco</p>
+                                    <p style={{ fontSize: 12, color: '#878E88', marginTop: 5, lineHeight: 1.55 }}>
+                                        El registro con el banco no se completó, así que no está en validación: no hay nadie revisándola.
+                                        Reintenta el registro; si vuelve a fallar, revisa que el número de cuenta y el documento estén correctos.
+                                    </p>
+                                    <button onClick={() => reintentarRegistro(detail)} disabled={reintentando === detail.id}
+                                        style={{
+                                            marginTop: 11, background: 'rgba(74,222,128,0.12)', border: '1px solid rgba(74,222,128,0.32)',
+                                            color: '#4ADE80', borderRadius: 9, padding: '8px 16px', fontSize: 12.5, fontWeight: 700,
+                                            cursor: reintentando === detail.id ? 'default' : 'pointer', opacity: reintentando === detail.id ? 0.55 : 1,
+                                        }}>
+                                        {reintentando === detail.id ? 'Enviando…' : 'Reintentar registro'}
+                                    </button>
+                                </div>
+                            )}
+                            {/* El motivo se muestra SIEMPRE que exista, no solo
+                                si quedó rechazada: el caso que más costó
+                                diagnosticar es justamente el que no se veía. */}
+                            {detail.lastError && (
+                                <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 8, wordBreak: 'break-word' }}>Motivo: {String(detail.lastError).slice(0, 240)}</p>
                             )}
                             {/* Cumplimiento: acá sí cabe explicar qué significa
                                 la insignia y desde cuándo. En la fila solo hay
