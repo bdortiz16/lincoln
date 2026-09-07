@@ -717,107 +717,12 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     // fallidas). Solo actualiza estados — NUNCA borra contactos.
     useEffect(() => { syncStatuses(true); }, [currentUser?.id]);
 
-    // ── Cuentas que NUNCA llegaron al banco ──────────────────────────────
-    // Una cuenta ACH sin id de Finity no está "en validación": no se inscribió.
-    // Mostrar las dos igual es el peor de los casos — el usuario espera una
-    // aprobación que no va a llegar nunca, porque nadie está mirando esa
-    // cuenta. Hay que decir que falló y dejar reintentar.
-    // SIN REGISTRAR solo cuando hay PRUEBA de que el registro falló: el intento
-    // dejó un error y la cuenta no tiene id del banco. Que falte el id, por sí
-    // solo, no alcanza — el banco puede tenerla y habernos devuelto la
-    // respuesta en otro formato. Ante la duda se dice EN VALIDACIÓN, que es lo
-    // que dice el banco. Inventar un estado peor que el real es peor que
-    // esperar.
-    const sinRegistro = (c: MouvContact) => isFinityAch(c) && !(c.finityId ?? c.mouvId) && !!c.lastError;
-
-    // ── ¿Llegó al banco? ─────────────────────────────────────────────────
-    // "En validación" no dice si el banco tiene la cuenta o si nunca la
-    // recibió, y son dos problemas distintos. Esto lo pregunta y lo dice.
-    // Si el banco ya la resolvió, además destraba el contacto acá.
-    const [diag, setDiag] = useState<{ id: string; ok: boolean; texto: string; noEsta?: boolean } | null>(null);
-    const [consultando, setConsultando] = useState<string | null>(null);
-    const filasDe = (d: any): any[] => Array.isArray(d) ? d
-        : Array.isArray(d?.data) ? d.data
-        : Array.isArray(d?.items) ? d.items
-        : Array.isArray(d?.accounts) ? d.accounts
-        : Array.isArray(d?.external_accounts) ? d.external_accounts
-        : Array.isArray(d?.results) ? d.results : [];
-    const consultarBanco = async (c: MouvContact) => {
-        if (!currentUser?.id || consultando) return;
-        setConsultando(c.id); setDiag(null);
-        const r = await callFinity('external_accounts', currentUser.id);
-        setConsultando(null);
-        if (!r?.ok) {
-            setDiag({ id: c.id, ok: false, texto: `No se pudo consultar al banco (respondió ${r?.status ?? '—'}). Reintenta en un momento.` });
-            return;
-        }
-        const rows = filasDe(r?.data);
-        const cid = c.finityId ?? c.mouvId;
-        const cD = String(c.accountNumber ?? '').replace(/\D/g, '');
-        const row = rows.find((x: any) => {
-            const rid = String(x.id ?? x.external_account_id ?? x.account_id ?? '');
-            if (cid && rid && rid === cid) return true;
-            const acc = String(x.account_number ?? x.accountNumber ?? x.number ?? x.account ?? '');
-            const aD = acc.replace(/\D/g, '');
-            if (!aD || !cD) return false;
-            if (aD === cD) return true;
-            return /[*·•]/.test(acc) && aD.length >= 4 && cD.endsWith(aD.slice(-4));
-        });
-        if (!row) {
-            setDiag({
-                id: c.id, ok: false, noEsta: true,
-                texto: `El banco tiene ${rows.length} cuenta${rows.length === 1 ? '' : 's'} registrada${rows.length === 1 ? '' : 's'} y ninguna coincide con esta: no llegó a registrarse allá.`,
-            });
-            return;
-        }
-        const crudo = String(row.verification_status ?? row.status ?? row.estado ?? row.state ?? '—');
-        const st = normalizeStatus(crudo);
-        const fid = row.id ?? row.external_account_id ?? row.account_id ?? null;
-        // Si el banco ya la resolvió, se actualiza acá mismo: quedarse mostrando
-        // "en validación" cuando el banco ya contestó es el error que trajo
-        // esta consulta en primer lugar.
-        if ((st && st !== contactStatus(c)) || (fid && String(fid) !== (c.mouvId ?? ''))) {
-            const upd = bankContacts.map(x => x.id === c.id
-                ? { ...x, status: st ?? contactStatus(x), mouvId: fid ? String(fid) : x.mouvId, finityId: fid ? String(fid) : (x.finityId ?? x.mouvId) }
-                : x);
-            await persistBanks(upd);
-            setDetail(d => d && d.id === c.id ? { ...d, status: st ?? d.status, mouvId: fid ? String(fid) : d.mouvId, finityId: fid ? String(fid) : (d.finityId ?? d.mouvId) } : d);
-        }
-        setDiag({
-            id: c.id, ok: true,
-            texto: st === 'aprobada'
-                ? 'El banco la tiene y está aprobada. Ya puedes transferirle.'
-                : st === 'rechazada'
-                    ? `El banco la tiene y la rechazó (estado: "${crudo}").`
-                    : `El banco sí la tiene y sigue en verificación de su lado (estado: "${crudo}"). Hay que esperar a que él la resuelva.`,
-        });
-    };
-    const [reintentando, setReintentando] = useState<string | null>(null);
-    const reintentarRegistro = async (c: MouvContact) => {
-        if (!currentUser?.id || reintentando) return;
-        setReintentando(c.id);
-        try {
-            const rr = await callFinity('create_external_account', currentUser.id, { data: buildMouvAccountBody(c) });
-            const dd = (rr?.data ?? {}) as any;
-            const fid = dd.id ?? dd.external_account_id ?? dd.account_id ?? dd?.account?.id ?? null;
-            if (rr?.ok && fid) {
-                const upd = bankContacts.map(x => x.id === c.id
-                    ? { ...x, mouvId: String(fid), finityId: String(fid), status: 'en_proceso' as ContactStatus, lastError: null }
-                    : x);
-                await persistBanks(upd);
-                setDetail(d => d && d.id === c.id ? { ...d, mouvId: String(fid), finityId: String(fid), status: 'en_proceso', lastError: null } : d);
-                setNotice({ ok: true, text: `Cuenta enviada al banco. Quedó en validación.` });
-            } else {
-                const err = `[${new Date().toLocaleTimeString('es-CO')}] HTTP ${rr?.status ?? '—'}: ${JSON.stringify(rr?.data ?? rr).slice(0, 260)}`;
-                await persistBanks(bankContacts.map(x => x.id === c.id ? { ...x, lastError: err } : x));
-                setDetail(d => d && d.id === c.id ? { ...d, lastError: err } : d);
-                setNotice({ ok: false, text: `El banco rechazó el registro. ${String(rr?.data?.message ?? rr?.data?.error ?? '')}`.trim() });
-            }
-        } catch (e: any) {
-            setNotice({ ok: false, text: `No se pudo contactar al banco: ${String(e?.message ?? e)}` });
-        }
-        setReintentando(null);
-    };
+    // El registro con el banco se reintenta SOLO: la sincronización al entrar
+    // vuelve a inscribir las cuentas ACH que quedaron sin id. Eso es trabajo
+    // nuestro y no se le cuenta al cliente — para él la cuenta está EN
+    // VALIDACIÓN hasta que el banco la resuelva, que es lo que el banco mismo
+    // dice. Los reintentos y sus errores quedan en la Auditoría, que es donde
+    // sirven: quien los tiene que leer es quien puede hacer algo con ellos.
 
     const removeContact = async (id: string) => {
         if (!window.confirm('¿Eliminar este contacto?')) return;
@@ -1338,9 +1243,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                         ? <span className="inline-flex items-center gap-1" style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}><CheckCircle size={10} /> VERIFICADO</span>
                         : st === 'rechazada'
                             ? <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }} title={c.lastError ?? undefined}>RECHAZADO</span>
-                            : sinRegistro(c)
-                                ? <span style={{ border: '1px solid rgba(251,191,36,0.32)', color: '#FBBF24', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }} title={c.lastError ?? 'La cuenta no llegó a registrarse con el banco.'}>SIN REGISTRAR</span>
-                                : <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}>EN VALIDACIÓN</span>;
+                            : <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}>EN VALIDACIÓN</span>;
                     const avatar = (
                         <div style={{ width: 38, height: 38, borderRadius: '50%', background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', border: '1px solid rgba(255,255,255,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                             <span style={{ color: '#878E88', fontWeight: 800, fontSize: 13 }}>{initialsOf(c.name)}</span>
@@ -1454,12 +1357,9 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                 const lastTx = [...myTx].sort((a, b) => txTimeOf(b) - txTimeOf(a))[0];
                 const totalSent = myTx.reduce((s, t) => s + (Number(t.amount) || 0), 0);
                 const fmtDate = (d?: string) => d ? new Date(d).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
-                const faltaRegistro = sinRegistro(detail);
                 const statusPill = st === 'aprobada'
                     ? <span className="inline-flex items-center gap-1" style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.7px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}><CheckCircle size={10} /> VERIFICADO</span>
-                    : (st !== 'rechazada' && faltaRegistro)
-                        ? <span style={{ border: '1px solid rgba(251,191,36,0.32)', color: '#FBBF24', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.7px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}>SIN REGISTRAR</span>
-                        : <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.7px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}>{st === 'rechazada' ? 'RECHAZADO' : 'EN VALIDACIÓN'}</span>;
+                    : <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.7px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}>{st === 'rechazada' ? 'RECHAZADO' : 'EN VALIDACIÓN'}</span>;
                 const rows: { l: string; v: React.ReactNode; mono?: boolean; copy?: boolean }[] = isWallet ? [
                     { l: 'Riel', v: `${detail.walletCoin ?? 'USDT'} · ${detail.walletNetwork === 'BEP-20' ? 'BNB Chain (BEP-20)' : 'TRON (TRC-20)'}` },
                     { l: 'Dirección', v: detail.accountNumber, mono: true, copy: true },
@@ -1537,48 +1437,12 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                     </div>
                                 ))}
                             </div>
-                            {/* La cuenta nunca llegó al banco. Antes esto se veía
-                                igual que "en validación" y el usuario esperaba
-                                una aprobación que no iba a llegar: nadie estaba
-                                mirando esa cuenta. */}
-                            {(faltaRegistro || (diag?.id === detail.id && diag.noEsta)) && (
-                                <div style={{ marginTop: 14, background: '#121413', border: '1px solid rgba(251,191,36,0.28)', borderRadius: 12, padding: '13px 15px' }}>
-                                    <p style={{ fontSize: 13.5, fontWeight: 700, color: '#FBBF24' }}>La cuenta no llegó al banco</p>
-                                    <p style={{ fontSize: 12, color: '#878E88', marginTop: 5, lineHeight: 1.55 }}>
-                                        El registro con el banco no se completó, así que no está en validación: no hay nadie revisándola.
-                                        Reintenta el registro; si vuelve a fallar, revisa que el número de cuenta y el documento estén correctos.
-                                    </p>
-                                    <button onClick={() => reintentarRegistro(detail)} disabled={reintentando === detail.id}
-                                        style={{
-                                            marginTop: 11, background: 'rgba(74,222,128,0.12)', border: '1px solid rgba(74,222,128,0.32)',
-                                            color: '#4ADE80', borderRadius: 9, padding: '8px 16px', fontSize: 12.5, fontWeight: 700,
-                                            cursor: reintentando === detail.id ? 'default' : 'pointer', opacity: reintentando === detail.id ? 0.55 : 1,
-                                        }}>
-                                        {reintentando === detail.id ? 'Enviando…' : 'Reintentar registro'}
-                                    </button>
-                                </div>
-                            )}
-                            {/* "En validación" no dice si el banco tiene la
-                                cuenta o si nunca la recibió. Esto lo pregunta. */}
-                            {isFinityAch(detail) && st !== 'aprobada' && !faltaRegistro && (
-                                <div style={{ marginTop: 12 }}>
-                                    <button onClick={() => consultarBanco(detail)} disabled={consultando === detail.id}
-                                        style={{
-                                            background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2',
-                                            borderRadius: 999, padding: '7px 14px', fontSize: 12, fontWeight: 700,
-                                            cursor: consultando === detail.id ? 'default' : 'pointer', opacity: consultando === detail.id ? 0.55 : 1,
-                                        }}>
-                                        {consultando === detail.id ? 'Consultando…' : '¿Llegó al banco?'}
-                                    </button>
-                                    {diag?.id === detail.id && (
-                                        <p style={{ fontSize: 12, color: diag.ok ? '#878E88' : '#FBBF24', marginTop: 8, lineHeight: 1.55 }}>{diag.texto}</p>
-                                    )}
-                                </div>
-                            )}
-                            {/* El motivo se muestra SIEMPRE que exista, no solo
-                                si quedó rechazada: el caso que más costó
-                                diagnosticar es justamente el que no se veía. */}
-                            {detail.lastError && (
+                            {/* El motivo técnico solo se muestra si el banco
+                                rechazó la cuenta: ahí hay algo que corregir.
+                                Mientras está en validación no se le cuenta al
+                                cliente cómo va el registro por dentro — para él
+                                el estado es el del banco, y es en validación. */}
+                            {st === 'rechazada' && detail.lastError && (
                                 <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 8, wordBreak: 'break-word' }}>Motivo: {String(detail.lastError).slice(0, 240)}</p>
                             )}
                             {/* Cumplimiento: acá sí cabe explicar qué significa
