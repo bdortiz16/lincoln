@@ -284,9 +284,27 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     // fuentes de Kumplo— existe SOLO para quien conectó su cuenta de Kumplo
     // en Ajustes. A quien no la conectó no le aplica, y por eso no ve nada de
     // esto: una insignia que nunca cambia de estado solo confunde.
+    // El estado se le pregunta al SERVIDOR, no se deduce del raw_data que
+    // tenga el navegador: 'kumplo' es una clave que solo escribe el servidor y
+    // no siempre viaja fresca al cliente. Deducirla de ahí hacía que la
+    // columna no apareciera aunque la cuenta estuviera conectada.
     const kumploRaw: any = (currentUser as any)?.raw_data?.kumplo ?? {};
-    const kumploConectado = !!kumploRaw.empresaId;
-    const kumploBenef: Record<string, any> = kumploRaw.beneficiarios ?? {};
+    const [kumploSrv, setKumploSrv] = useState<{ conectado: boolean; benef: Record<string, any> } | null>(null);
+    useEffect(() => {
+        const uid = currentUser?.id;
+        if (!uid) return;
+        (async () => {
+            const e = await callKumplo({ action: 'estado', userId: uid });
+            if (!e?.ok) { setKumploSrv({ conectado: false, benef: {} }); return; }
+            const b = e.conectado ? await callKumplo({ action: 'beneficiarios', userId: uid }) : null;
+            setKumploSrv({ conectado: !!e.conectado, benef: b?.beneficiarios ?? {} });
+        })();
+        /* eslint-disable-next-line react-hooks/exhaustive-deps */
+    }, [currentUser?.id]);
+    // Mientras llega la respuesta se usa lo que haya en memoria, para no
+    // parpadear; apenas contesta el servidor, manda el servidor.
+    const kumploConectado = kumploSrv ? kumploSrv.conectado : !!kumploRaw.empresaId;
+    const kumploBenef: Record<string, any> = kumploSrv ? kumploSrv.benef : (kumploRaw.beneficiarios ?? {});
     // Sin ficha todavía = en verificación. Es la verdad: los datos ya salieron
     // hacia Kumplo y el veredicto no ha vuelto.
     const kumploDe = (c: Partial<MouvContact>) => {
@@ -314,10 +332,10 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     // A quien no la conectó esa verificación no le aplica, y una columna
     // vacía en todas las filas es peor que no tenerla.
     const COLS = kumploConectado
-        ? 'minmax(140px,1fr) 132px 126px 158px 112px 84px'
+        ? 'minmax(140px,1fr) 126px 132px 158px 112px 84px'
         : 'minmax(140px,1fr) 150px 170px 118px 88px';
     const CABECERAS = kumploConectado
-        ? ['BENEFICIARIO', 'PAÍS Y RIEL', 'AML', 'BANCO Y CUENTA', 'ESTADO', 'ACCIONES']
+        ? ['BENEFICIARIO', 'AML', 'PAÍS Y RIEL', 'BANCO Y CUENTA', 'ESTADO', 'ACCIONES']
         : ['BENEFICIARIO', 'PAÍS Y RIEL', 'BANCO Y CUENTA', 'ESTADO', 'ACCIONES'];
 
     // Revisión manual del cumplimiento de un beneficiario (id del contacto).
@@ -1287,6 +1305,14 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                     <p style={{ fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.meta}</p>
                                 </div>
                             </button>
+                            {/* AML — el veredicto de cumplimiento, pegado al
+                                nombre: se lee junto con QUIÉN es la persona,
+                                no con su banco. */}
+                            {kumploConectado && (
+                                <div className="min-w-0">
+                                    {kumploPill(c, true) ?? <span style={{ fontSize: 12, color: 'rgba(244,244,242,0.45)' }}>—</span>}
+                                </div>
+                            )}
                             <div className="flex items-center gap-2 min-w-0">
                                 {flagEl}
                                 <div className="min-w-0">
@@ -1294,14 +1320,6 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                     <p style={{ fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.railLine}</p>
                                 </div>
                             </div>
-                            {/* AML — el veredicto de cumplimiento, en su propia
-                                columna. Va pegado al país porque se lee junto
-                                con quién es la persona, no con su banco. */}
-                            {kumploConectado && (
-                                <div className="min-w-0">
-                                    {kumploPill(c, true) ?? <span style={{ fontSize: 12, color: 'rgba(244,244,242,0.45)' }}>—</span>}
-                                </div>
-                            )}
                             <div className="min-w-0">
                                 <p style={{ fontSize: 13, fontWeight: 600, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.bankName}</p>
                                 <p style={{ fontSize: 11.5, color: '#878E88', fontFamily: 'ui-monospace, monospace' }}>{m.maskLine}</p>
