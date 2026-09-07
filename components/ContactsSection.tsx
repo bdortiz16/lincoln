@@ -783,6 +783,9 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
         'Venezuela':'linear-gradient(180deg,#FFCC00 0 33%,#00247D 33% 66%,#CF142B 66%)',
         'Ecuador': 'linear-gradient(180deg,#FFD100 0 50%,#0072CE 50% 75%,#EF3340 75%)',
         'Argentina':'linear-gradient(180deg,#74ACDF 0 33%,#FFFFFF 33% 66%,#74ACDF 66%)',
+        // Trece franjas y el cantón azul arriba a la izquierda. Sin estrellas:
+        // a 15 px no se distinguen y solo ensucian el círculo.
+        'Estados Unidos': 'linear-gradient(#3C3B6E 0 0) 0 0/50% 54% no-repeat, repeating-linear-gradient(180deg,#B22234 0 15.38%,#FFFFFF 15.38% 30.76%)',
     };
     // Riel y moneda por país (paso 1 del modal) — config, no hardcode en UI.
     const COUNTRY_RAILS: Record<string, string> = {
