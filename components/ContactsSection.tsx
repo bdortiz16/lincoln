@@ -722,13 +722,19 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     // Mostrar las dos igual es el peor de los casos — el usuario espera una
     // aprobación que no va a llegar nunca, porque nadie está mirando esa
     // cuenta. Hay que decir que falló y dejar reintentar.
-    const sinRegistro = (c: MouvContact) => isFinityAch(c) && !(c.finityId ?? c.mouvId);
+    // SIN REGISTRAR solo cuando hay PRUEBA de que el registro falló: el intento
+    // dejó un error y la cuenta no tiene id del banco. Que falte el id, por sí
+    // solo, no alcanza — el banco puede tenerla y habernos devuelto la
+    // respuesta en otro formato. Ante la duda se dice EN VALIDACIÓN, que es lo
+    // que dice el banco. Inventar un estado peor que el real es peor que
+    // esperar.
+    const sinRegistro = (c: MouvContact) => isFinityAch(c) && !(c.finityId ?? c.mouvId) && !!c.lastError;
 
     // ── ¿Llegó al banco? ─────────────────────────────────────────────────
     // "En validación" no dice si el banco tiene la cuenta o si nunca la
     // recibió, y son dos problemas distintos. Esto lo pregunta y lo dice.
     // Si el banco ya la resolvió, además destraba el contacto acá.
-    const [diag, setDiag] = useState<{ id: string; ok: boolean; texto: string } | null>(null);
+    const [diag, setDiag] = useState<{ id: string; ok: boolean; texto: string; noEsta?: boolean } | null>(null);
     const [consultando, setConsultando] = useState<string | null>(null);
     const filasDe = (d: any): any[] => Array.isArray(d) ? d
         : Array.isArray(d?.data) ? d.data
@@ -759,8 +765,8 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
         });
         if (!row) {
             setDiag({
-                id: c.id, ok: false,
-                texto: `El banco tiene ${rows.length} cuenta${rows.length === 1 ? '' : 's'} registrada${rows.length === 1 ? '' : 's'} y ninguna coincide con esta. La cuenta no llegó a registrarse allá — usa "Reintentar registro".`,
+                id: c.id, ok: false, noEsta: true,
+                texto: `El banco tiene ${rows.length} cuenta${rows.length === 1 ? '' : 's'} registrada${rows.length === 1 ? '' : 's'} y ninguna coincide con esta: no llegó a registrarse allá.`,
             });
             return;
         }
@@ -1535,7 +1541,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                 igual que "en validación" y el usuario esperaba
                                 una aprobación que no iba a llegar: nadie estaba
                                 mirando esa cuenta. */}
-                            {faltaRegistro && (
+                            {(faltaRegistro || (diag?.id === detail.id && diag.noEsta)) && (
                                 <div style={{ marginTop: 14, background: '#121413', border: '1px solid rgba(251,191,36,0.28)', borderRadius: 12, padding: '13px 15px' }}>
                                     <p style={{ fontSize: 13.5, fontWeight: 700, color: '#FBBF24' }}>La cuenta no llegó al banco</p>
                                     <p style={{ fontSize: 12, color: '#878E88', marginTop: 5, lineHeight: 1.55 }}>
