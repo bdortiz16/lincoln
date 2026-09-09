@@ -488,6 +488,53 @@ async function finityPayoutAch(userId: string, recipient: Record<string, any>, a
       else return { ok: false, feeCop: 0, error: { step: 'destino', httpStatus: ea?.status ?? null, path: ea?.path ?? null, body: ea?.data ?? null } }
     }
   }
+  // 1.b) La cuenta destino tiene que estar APROBADA por el banco. El estado
+  //      que muestra Lincoin no sirve como control: vive en los contactos del
+  //      usuario, que el propio cliente puede escribir. El único que manda es
+  //      el proveedor, así que se le pregunta a él antes de mover plata.
+  //
+  //      Se miran TODOS los campos de estado y gana el más restrictivo: una
+  //      cuenta puede venir "active" (el registro existe) y a la vez en
+  //      revisión (el banco no la aprueba todavía). Son cosas distintas.
+  //
+  //      FALLA ABIERTO a propósito: si no se puede consultar la lista, o la
+  //      cuenta no aparece, el envío sigue. Un control que no logra verificar
+  //      no puede frenar una transferencia legítima — y si de verdad no está
+  //      aprobada, el proveedor la rechaza y el saldo se devuelve.
+  try {
+    const lista = await finityCall('external_accounts', userId)
+    const filas: any[] = lista?.data?.data ?? lista?.data?.results ?? (Array.isArray(lista?.data) ? lista.data : [])
+    const fila = filas.find((r: any) => {
+      const rid = String(r?.id ?? r?.external_account_id ?? r?.account_id ?? '')
+      if (destId && rid && rid === destId) return true
+      const acc = String(r?.account_number ?? r?.account?.account_number ?? '').replace(/\D/g, '')
+      return !!acc && acc === accDigits
+    })
+    if (fila) {
+      const textos = [fila.verification_status, fila.estado, fila.state, fila.status]
+        .filter((v: unknown) => v !== undefined && v !== null && String(v).trim() !== '')
+        .map((v: unknown) => String(v).toLowerCase())
+      const rechazada = textos.some(s => /rechaz|reject|denied|declin|fail/.test(s))
+      const enRevision = textos.some(s => /proces|pend|review|revis|created|unconfirmed/.test(s))
+      if (rechazada || enRevision) {
+        await logAudit(userId, 'finity.payout.destino_no_aprobado', {
+          destinationId: destId, cuenta: accDigits, estadoProveedor: textos.join(' · '),
+        })
+        return {
+          ok: false, feeCop: 0,
+          error: {
+            step: 'destino', httpStatus: null, path: null,
+            body: {
+              message: rechazada
+                ? 'El banco rechazó esta cuenta destino. Revisa los datos del beneficiario e inscríbela de nuevo.'
+                : 'El banco todavía está validando esta cuenta destino. Podrás transferirle apenas la apruebe.',
+            },
+          },
+        }
+      }
+    }
+  } catch { /* no se pudo verificar: sigue, el proveedor tiene la última palabra */ }
+
   // 2) Orden de retiro:
   //    POST /v0/withdrawal-orders { destination_id, amount, currency:'COP' }
   //    ⚠️ amount va en PESOS ENTEROS — NO en centavos. VERIFICADO CONTRA

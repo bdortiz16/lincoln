@@ -106,6 +106,10 @@ export interface MouvContact {
     // Última respuesta de Mouv al intentar inscribir (null = ok). Visible
     // en el detalle para diagnosticar rechazos de campos/validación.
     lastError?: string | null;
+    // El estado TAL CUAL lo dijo el proveedor, sin traducir. Sirve para
+    // rastrear una discrepancia entre lo que muestra su portal y lo que
+    // muestra Lincoin, sin tener que adivinar qué campo se leyó.
+    providerStatus?: string;
     // Tipo de destino Colombia (modelo Mouv): 'ach' = cuenta bancaria
     // (default, retrocompatible con contactos viejos) · 'breb' = llave Bre-B.
     destKind?: 'ach' | 'breb';
@@ -185,6 +189,35 @@ const normalizeStatus = (v: unknown): ContactStatus | null => {
     if (/proces|pend|review|revis|created|unconfirmed/.test(s)) return 'en_proceso';
     return null;
 };
+
+// Estado de una fila del proveedor. Mira TODOS los campos de estado y se queda
+// con el MÁS RESTRICTIVO — no con el primero que aparezca.
+//
+// Esto no es un detalle: una cuenta puede venir con status "active" (el
+// registro existe y está vivo) y a la vez verification_status "in_review" (el
+// banco todavía no la aprueba). Son cosas distintas. Leyendo el primer campo
+// que no fuera nulo, "active" ganaba y la cuenta se marcaba VERIFICADA en
+// Lincoin mientras el banco la tenía en revisión — con el botón de enviar
+// habilitado hacia una cuenta que el banco aún no acepta.
+//
+// Ante señales que se contradicen, manda la peor. Aprobar de más deja salir
+// plata; aprobar de menos solo hace esperar.
+const estadoDeFila = (row: any): ContactStatus | null => {
+    const sts = [row?.verification_status, row?.estado, row?.state, row?.status]
+        .map(normalizeStatus)
+        .filter(Boolean) as ContactStatus[];
+    if (sts.includes('rechazada')) return 'rechazada';
+    if (sts.includes('en_proceso')) return 'en_proceso';
+    if (sts.includes('aprobada')) return 'aprobada';
+    return null;
+};
+
+// Lo que dijo el proveedor, tal cual, para poder rastrear una discrepancia sin
+// tener que adivinar qué campo se leyó.
+const estadoCrudo = (row: any): string =>
+    [row?.verification_status, row?.estado, row?.state, row?.status]
+        .filter(v => v !== undefined && v !== null && String(v).trim() !== '')
+        .map(v => String(v)).join(' · ') || '—';
 
 const BANKS_CO = [
     'Bancolombia', 'Banco de Bogotá', 'Davivienda', 'BBVA Colombia',
@@ -558,7 +591,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                     // tiempo y el envío rebotaba. La cuenta SIEMPRE arranca
                     // en validación; la aprobación real llega por la
                     // sincronización con la LISTA del proveedor.
-                    const st0 = normalizeStatus(dd.verification_status ?? dd.status ?? dd.estado ?? dd.state);
+                    const st0 = estadoDeFila(dd);
                     status = st0 === 'rechazada' ? 'rechazada' : 'en_proceso';
                 } else {
                     lastError = `[registro bancario] HTTP ${rr?.status ?? '—'}: ${JSON.stringify(rr?.data ?? rr).slice(0, 260)}`;
@@ -623,7 +656,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                     const fid = dd.id ?? dd.external_account_id ?? dd.account_id ?? dd?.account?.id ?? null;
                     if (rr?.ok && fid) {
                         retried = retried.map(x => x.id === c.id
-                            ? { ...x, mouvId: String(fid), finityId: String(fid), status: normalizeStatus(dd.verification_status ?? dd.status ?? dd.estado ?? dd.state) ?? 'en_proceso', lastError: null }
+                            ? { ...x, mouvId: String(fid), finityId: String(fid), status: estadoDeFila(dd) === 'rechazada' ? 'rechazada' : 'en_proceso', lastError: null }
                             : x);
                     } else {
                         // Guardar el rechazo de Finity — visible en el detalle del contacto
@@ -677,12 +710,13 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                         return /[*·•]/.test(acc) && accDigits.length >= 4 && cDigits.endsWith(accDigits.slice(-4));
                     });
                     if (!row) return c;
-                    const st = normalizeStatus(row.verification_status ?? row.status ?? row.estado ?? row.state);
+                    const st = estadoDeFila(row);
+                    const crudo = estadoCrudo(row);
                     const fid = row.id ?? row.external_account_id ?? row.account_id ?? c.mouvId;
-                    if ((st && st !== contactStatus(c)) || (fid && fid !== c.mouvId)) {
+                    if ((st && st !== contactStatus(c)) || (fid && fid !== c.mouvId) || crudo !== (c as any).providerStatus) {
                         changed = true;
                         const wasApproved = contactStatus(c) === 'aprobada';
-                        const updated = { ...c, status: st ?? contactStatus(c), mouvId: fid ? String(fid) : c.mouvId, finityId: fid ? String(fid) : (c.finityId ?? c.mouvId) };
+                        const updated = { ...c, status: st ?? contactStatus(c), providerStatus: crudo, mouvId: fid ? String(fid) : c.mouvId, finityId: fid ? String(fid) : (c.finityId ?? c.mouvId) };
                         if (st === 'aprobada' && !wasApproved) newlyApproved.push(updated);
                         return updated;
                     }
