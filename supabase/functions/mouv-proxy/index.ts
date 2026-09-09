@@ -515,7 +515,11 @@ async function finityPayoutAch(userId: string, recipient: Record<string, any>, a
         .filter((v: unknown) => v !== undefined && v !== null && String(v).trim() !== '')
         .map((v: unknown) => String(v).toLowerCase())
       const rechazada = textos.some(s => /rechaz|reject|denied|declin|fail/.test(s))
-      const enRevision = textos.some(s => /proces|pend|review|revis|created|unconfirmed/.test(s))
+      // Aprobada SOLO con una palabra que lo diga. "active" o "enabled"
+      // describen el registro, no el veredicto: una cuenta en revisión también
+      // es un registro activo.
+      const aprobada = textos.some(s => /aprob|approv|verified/.test(s))
+      const enRevision = !rechazada && !aprobada && textos.length > 0
       if (rechazada || enRevision) {
         await logAudit(userId, 'finity.payout.destino_no_aprobado', {
           destinationId: destId, cuenta: accDigits, estadoProveedor: textos.join(' · '),

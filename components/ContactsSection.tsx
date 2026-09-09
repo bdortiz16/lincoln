@@ -202,14 +202,27 @@ const normalizeStatus = (v: unknown): ContactStatus | null => {
 //
 // Ante señales que se contradicen, manda la peor. Aprobar de más deja salir
 // plata; aprobar de menos solo hace esperar.
+// Y una cuenta bancaria SOLO se aprueba con una palabra que signifique
+// aprobación de verdad: "aprobada", "approved", "verified". "active",
+// "enabled" o "complete" describen el registro, no el veredicto del banco —
+// una cuenta en revisión también es un registro activo. Confiar en esas
+// palabras es lo que hacía que una cuenta que Finity tenía en revisión
+// apareciera VERIFICADA en Lincoin.
+//
+// Si el proveedor no dice explícitamente que aprobó, la cuenta se queda en
+// validación. Esperar de más solo demora un envío; aprobar de más lo deja
+// salir hacia una cuenta que el banco no acepta.
+const APRUEBA = /aprob|approv|verified/;
 const estadoDeFila = (row: any): ContactStatus | null => {
-    const sts = [row?.verification_status, row?.estado, row?.state, row?.status]
-        .map(normalizeStatus)
-        .filter(Boolean) as ContactStatus[];
-    if (sts.includes('rechazada')) return 'rechazada';
-    if (sts.includes('en_proceso')) return 'en_proceso';
-    if (sts.includes('aprobada')) return 'aprobada';
-    return null;
+    const textos = [row?.verification_status, row?.estado, row?.state, row?.status]
+        .filter(v => v !== undefined && v !== null && String(v).trim() !== '')
+        .map(v => String(v).toLowerCase());
+    if (textos.some(s => /rechaz|reject|denied|declin|fail/.test(s))) return 'rechazada';
+    if (textos.some(s => /proces|pend|review|revis|created|unconfirmed/.test(s))) return 'en_proceso';
+    if (textos.some(s => APRUEBA.test(s))) return 'aprobada';
+    // Solo "active" y compañía: el registro existe, pero nadie dijo que esté
+    // aprobado. No alcanza.
+    return textos.length ? 'en_proceso' : null;
 };
 
 // Lo que dijo el proveedor, tal cual, para poder rastrear una discrepancia sin

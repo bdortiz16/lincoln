@@ -638,7 +638,34 @@ Deno.serve(async (req) => {
 
     if (action === 'external_accounts') {
       const { res, path } = await finityTry('externalAccounts')
-      return json(200, { ok: res.ok, status: res.status, path, data: await res.json().catch(() => null) })
+      const data = await res.json().catch(() => null)
+      // Se audita un RESUMEN de los estados que devuelve el proveedor: qué
+      // campos trae cada cuenta y con qué valor. Sin esto no se puede resolver
+      // una discrepancia entre su portal y Lincoin más que adivinando qué
+      // campo mirar — que fue exactamente el problema con una cuenta que allá
+      // estaba en revisión y acá salía aprobada.
+      try {
+        const d: any = data
+        const filas: any[] = Array.isArray(d) ? d : (d?.data ?? d?.results ?? d?.items ?? d?.accounts ?? [])
+        if (Array.isArray(filas) && filas.length) {
+          await logAudit(caller.userId!, 'finity.external_accounts.estados', {
+            total: filas.length,
+            // Solo las claves que suenan a estado, para no volcar datos
+            // bancarios en la auditoría.
+            campos: Array.from(new Set(filas.flatMap((r: any) =>
+              Object.keys(r ?? {}).filter(k => /status|estado|state|verif/i.test(k))))),
+            muestra: filas.slice(0, 12).map((r: any) => ({
+              id: r?.id ?? r?.external_account_id ?? null,
+              cuenta: String(r?.account_number ?? r?.account?.account_number ?? '').slice(-4),
+              verification_status: r?.verification_status ?? null,
+              status: r?.status ?? null,
+              estado: r?.estado ?? null,
+              state: r?.state ?? null,
+            })),
+          })
+        }
+      } catch { /* la auditoría nunca puede tumbar la consulta */ }
+      return json(200, { ok: res.ok, status: res.status, path, data })
     }
 
     if (action === 'create_external_account') {
