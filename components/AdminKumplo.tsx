@@ -95,6 +95,17 @@ export const AdminKumplo: React.FC = () => {
     setBusy(false);
   };
 
+  // Diagnóstico: recorre la cadena y dice en qué eslabón se corta. Existe
+  // porque "sigue verificando" no distinguía entre «Kumplo no ha contestado»
+  // y «ni siquiera lo estamos llamando», y son problemas opuestos.
+  const [diag, setDiag] = useState<any>(null);
+  const diagnosticar = async () => {
+    setBusy(true); setMsg(null); setDiag(null);
+    const d = await call({ action: 'diagnostico' }).catch(() => null);
+    setDiag(d ?? { ok: false });
+    setBusy(false);
+  };
+
   const verListado = async () => {
     setBusy(true);
     const d = await call({ action: 'listado' }).catch(() => null);
@@ -110,7 +121,12 @@ export const AdminKumplo: React.FC = () => {
     );
   }
 
-  const listo = !!cfg.baseUrl && !!cfg.rutaCrear && !!cfg.rutaAml && !!cfg.empresaId && credencial === 'configurada';
+  // El id de la empresa YA NO va acá: lo conecta cada titular desde su
+  // Configuración. Pero seguía exigiéndose para poder encender la integración,
+  // y como el campo global quedó vacío para siempre, el interruptor no se
+  // dejaba activar nunca. Se veía apagado sin explicación posible de arreglar
+  // desde este panel, y por eso las consultas jamás salían hacia Kumplo.
+  const listo = !!cfg.baseUrl && !!cfg.rutaCrear && !!cfg.rutaAml && credencial === 'configurada';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -153,7 +169,6 @@ export const AdminKumplo: React.FC = () => {
                 !cfg.baseUrl && 'la dirección base',
                 !cfg.rutaCrear && 'la ruta de alta',
                 !cfg.rutaAml && 'la ruta de consulta AML',
-                !cfg.empresaId && 'el id de la empresa en Kumplo',
                 credencial !== 'configurada' && 'la credencial en la Bóveda',
               ].filter(Boolean).join(', ')}. Sin eso no se puede encender —
               encender algo que no puede responder solo produce clientes bloqueados sin motivo.
@@ -174,7 +189,50 @@ export const AdminKumplo: React.FC = () => {
             style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'transparent', border: `1px solid ${C.border2}`, color: C.text, borderRadius: 999, padding: '6px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: FONT, opacity: busy || !cfg.baseUrl ? 0.55 : 1 }}>
             <Plug size={13} /> Probar la conexión
           </button>
+          <button onClick={diagnosticar} disabled={busy}
+            style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'transparent', border: `1px solid ${C.border2}`, color: C.text, borderRadius: 999, padding: '6px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: FONT, opacity: busy ? 0.55 : 1 }}>
+            Diagnosticar
+          </button>
         </div>
+
+        {/* Dónde se corta la cadena. Sin esto, «sigue verificando» no
+            distinguía entre que Kumplo no hubiera contestado y que ni
+            siquiera lo estuviéramos llamando — y son problemas opuestos. */}
+        {diag && (
+          <div style={{ marginTop: 14, background: C.elev, border: `1px solid ${diag.corte ? 'rgba(251,191,36,0.3)' : 'rgba(74,222,128,0.24)'}`, borderRadius: 12, padding: '13px 15px' }}>
+            <p style={{ fontSize: 11, fontWeight: 800, letterSpacing: 0.4, color: C.sub, margin: 0 }}>DIAGNÓSTICO</p>
+            {(diag.pasos ?? []).map((p: any) => (
+              <div key={p.paso} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 8 }}>
+                <span style={{ color: p.ok ? C.green : '#FBBF24', fontSize: 12, fontWeight: 800, lineHeight: 1.5 }}>{p.ok ? '✓' : '×'}</span>
+                <div>
+                  <p style={{ fontSize: 12.5, fontWeight: 700, color: C.text, margin: 0 }}>{p.paso}</p>
+                  <p style={{ fontSize: 11.5, color: C.dim, margin: '2px 0 0', lineHeight: 1.5 }}>{p.detalle}</p>
+                </div>
+              </div>
+            ))}
+            {diag.corte && (
+              <p style={{ fontSize: 12.5, color: '#FBBF24', margin: '11px 0 0', lineHeight: 1.55 }}>
+                La cadena se corta acá: <b>{diag.corte}</b> — por eso los beneficiarios se quedan verificando.
+              </p>
+            )}
+            {diag.prueba && (
+              <div style={{ marginTop: 12, paddingTop: 11, borderTop: `1px solid ${C.border}` }}>
+                <p style={{ fontSize: 11, fontWeight: 800, letterSpacing: 0.4, color: C.sub, margin: 0 }}>LLAMADA REAL A KUMPLO</p>
+                {diag.prueba.motivo
+                  ? <p style={{ fontSize: 12, color: C.dim, margin: '6px 0 0' }}>{diag.prueba.motivo}</p>
+                  : (['alta', 'aml'] as const).map(k => (
+                    <div key={k} style={{ marginTop: 8 }}>
+                      <p style={{ fontSize: 12, color: C.text, margin: 0, fontWeight: 700 }}>
+                        {k === 'alta' ? 'Alta de la persona' : 'Consulta AML'} · HTTP {diag.prueba[k].status}
+                      </p>
+                      <p style={{ fontSize: 10.5, color: C.dim, margin: '2px 0 0', fontFamily: 'ui-monospace, Menlo, monospace', wordBreak: 'break-all' }}>{diag.prueba[k].url}</p>
+                      <pre style={{ margin: '5px 0 0', fontSize: 10.5, color: C.sub, background: '#0A0B0A', border: `1px solid ${C.border}`, borderRadius: 8, padding: 9, whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxHeight: 160, overflow: 'auto' }}>{diag.prueba[k].respuesta}</pre>
+                    </div>
+                  ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* El id de la empresa NO se pone acá. Cada negocio tiene su propia
             cuenta en Kumplo, así que lo conecta el titular desde su

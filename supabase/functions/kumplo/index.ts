@@ -521,6 +521,69 @@ Deno.serve(async (req: Request) => {
     }
 
     // Prueba de conexión: pega contra la dirección base y cuenta qué pasó.
+    // ── Diagnóstico de la cadena completa ────────────────────────────────
+    // Hay tres puntos donde la verificación se detiene y devuelve "listo" sin
+    // haber hecho nada: la integración apagada, la cuenta fuera de la prueba,
+    // o sin conectar. Callados se ven igual que "todavía no llega el
+    // resultado", y eso es lo que hizo perder horas: los beneficiarios se
+    // quedaban en «verificando» y no había forma de saber que ni siquiera se
+    // estaba llamando a Kumplo.
+    //
+    // Esto recorre la cadena y dice en cuál eslabón se corta. Si todo está en
+    // orden, MANDA UNA CONSULTA REAL con el documento que se le pase y
+    // devuelve lo que Kumplo contestó, sin interpretar.
+    if (accion === 'diagnostico') {
+      const uid = String(body.userId ?? yo.userId ?? '')
+      if (!uid || (!yo.esAdmin && yo.userId !== uid)) return json({ error: 'No autorizado' }, 401)
+      const c = await leerConfig()
+      const mio = await leerEstado(uid)
+      const empresa = String(mio.empresaId ?? '').trim()
+
+      const { data: fila } = await db.from('users').select('raw_data').eq('id', uid).single()
+      const raw: any = (fila as any)?.raw_data ?? {}
+      const contactos: any[] = Array.isArray(raw.mouvContacts) ? raw.mouvContacts : []
+      const hechos: Record<string, any> = (raw.kumplo ?? {}).beneficiarios ?? {}
+
+      const pasos: { paso: string; ok: boolean; detalle: string }[] = [
+        { paso: 'Credencial en la Bóveda', ok: !!API_KEY, detalle: API_KEY ? 'Puesta.' : 'FALTA. Sin ella no se puede llamar a Kumplo.' },
+        { paso: 'Dirección y rutas', ok: !!(c.baseUrl && c.rutaCrear && c.rutaAml), detalle: `base=${c.baseUrl || '—'} · alta=${c.rutaCrear || '—'} · aml=${c.rutaAml || '—'}` },
+        { paso: 'Integración encendida', ok: !!c.activo, detalle: c.activo ? 'Encendida.' : 'APAGADA. No se llama a Kumplo aunque todo lo demás esté bien.' },
+        { paso: 'Cuenta dentro de la prueba', ok: enLaPrueba(c, uid), detalle: enLaPrueba(c, uid) ? 'Incluida.' : 'FUERA. La lista «Cuentas en la prueba» no incluye esta cuenta, así que se omite en silencio.' },
+        { paso: 'Cuenta de Kumplo conectada', ok: !!empresa, detalle: empresa ? `Empresa ${empresa}.` : 'SIN CONECTAR. Falta pegar el código de la empresa en Ajustes.' },
+        { paso: 'Beneficiarios', ok: contactos.length > 0, detalle: `${contactos.length} inscritos · ${Object.keys(hechos).length} con veredicto guardado.` },
+      ]
+      const corte = pasos.find(p => !p.ok)
+
+      // Si la cadena está entera, se llama de verdad. Un diagnóstico que no
+      // prueba nada solo repite lo que ya está en la configuración.
+      let prueba: any = null
+      if (!corte) {
+        const doc = String(body.documento ?? contactos.find((x: any) => String(x?.docNumber ?? '').replace(/\D/g, ''))?.docNumber ?? '').replace(/\D/g, '')
+        const nom = String(body.nombre ?? contactos.find((x: any) => String(x?.docNumber ?? '').replace(/\D/g, '') === doc)?.name ?? '').toUpperCase()
+        if (doc && nom) {
+          const alta = await llamarKumplo(c, c.rutaCrear, 'POST', {
+            empresa, externalRef: `${uid}:${doc}`, nombre: nom, documento: doc,
+            tipoDocumento: 'CC', tipoPersona: 'persona', pais: 'Colombia',
+          })
+          const aml = await llamarKumplo(c, c.rutaAml, 'POST', { empresa, documento: doc, tipoDocumento: 'CC', nombre: nom, tipoPersona: 'persona' })
+          prueba = {
+            documento: doc, nombre: nom,
+            alta: { url: alta.url, status: alta.status, ok: alta.ok, respuesta: JSON.stringify(alta.body ?? alta.texto ?? '').slice(0, 900) },
+            aml: { url: aml.url, status: aml.status, ok: aml.ok, respuesta: JSON.stringify(aml.body ?? aml.texto ?? '').slice(0, 900) },
+          }
+          await auditar('kumplo.diagnostico', { userId: uid, documento: doc, altaStatus: alta.status, amlStatus: aml.status })
+        } else {
+          prueba = { motivo: 'No hay ningún beneficiario con documento para probar. Pasa un documento.' }
+        }
+      }
+
+      return json({
+        ok: true, pasos,
+        corte: corte ? `${corte.paso}: ${corte.detalle}` : null,
+        prueba,
+      })
+    }
+
     if (accion === 'probar') {
       if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
       const c = await leerConfig()
