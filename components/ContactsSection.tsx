@@ -788,12 +788,25 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
         });
         if (!faltan) return;
         let vueltas = 0;
+        let vivo = true;
+        // Cada vuelta le pide al SERVIDOR que procese un lote de los que
+        // faltan y después relee. El navegador no encadena una consulta por
+        // beneficiario: con sesenta contactos eso son minutos de llamadas que
+        // se cortan apenas la persona cambia de pantalla, y ningún veredicto
+        // alcanza a guardarse.
+        const vuelta = async () => {
+            if (!vivo) return;
+            await callKumplo({ action: 'verificar_pendientes', userId: uid, limite: 4 });
+            if (!vivo) return;
+            await leerKumplo(uid);
+        };
+        vuelta();
         const t = setInterval(() => {
             vueltas += 1;
-            if (vueltas > 10) { clearInterval(t); return; }
-            leerKumplo(uid);
+            if (vueltas > 25) { clearInterval(t); return; }
+            vuelta();
         }, 15000);
-        return () => clearInterval(t);
+        return () => { vivo = false; clearInterval(t); };
         /* eslint-disable-next-line react-hooks/exhaustive-deps */
     }, [currentUser?.id, kumploConectado, kumploBenef, bankContacts.length, leerKumplo]);
 

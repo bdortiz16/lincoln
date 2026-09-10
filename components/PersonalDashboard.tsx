@@ -3499,62 +3499,13 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   };
 
   // ── Verificación de beneficiarios en Kumplo ─────────────────────────────
-  // Cuando se inscribe a quien va a recibir la plata, esos datos —nombre, tipo
-  // y número de documento, y el riel con su banco o llave— se mandan a Kumplo:
-  // registra al beneficiario con su cuenta y consulta el documento contra
-  // TusDatos. Vuelve si se puede operar con esa persona.
-  //
-  // Va en un efecto sobre la LISTA y no en cada formulario de alta porque los
-  // contactos se crean desde varios sitios, y bastaba olvidar uno para que un
-  // beneficiario quedara sin verificar. Acá se cubren todos: el que no tenga
-  // veredicto se manda, una sola vez.
-  const benefEnviadosRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    const uid = currentUser?.id;
-    if (!uid) return;
-    const cuAny: any = currentUser;
-    const contactos: any[] = Array.isArray(cuAny?.raw_data?.mouvContacts) ? cuAny.raw_data.mouvContacts : [];
-    if (!contactos.length) return;
-    const yaTiene = cuAny?.raw_data?.kumplo?.beneficiarios ?? {};
-    const token = getStoredTokenPD();
-    if (!token) return;
-
-    (async () => {
-      let mandado = false;
-      for (const c of contactos) {
-        // Los nombres de campo son los de MouvContact (ContactsSection):
-        // docNumber / docType / name / kind. Escribirlos mal —y se
-        // escribieron mal— no da error en ningún lado: simplemente nunca se
-        // manda nada y el beneficiario se queda sin verificar para siempre.
-        const doc = String(c?.docNumber ?? '').replace(/\D/g, '');
-        const nombre = String(c?.name ?? '').trim();
-        if (!doc || !nombre) continue;
-        if (yaTiene[doc] || benefEnviadosRef.current.has(doc)) continue;
-        benefEnviadosRef.current.add(doc);
-        const breb = (c?.destKind ?? 'ach') === 'breb';
-        const r = await fetch(`${SUPABASE_URL_PD}/functions/v1/kumplo`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_PD, Authorization: `Bearer ${token}` },
-          body: JSON.stringify({
-            action: 'verificar_beneficiario', userId: uid,
-            nombre, documento: doc,
-            tipoDocumento: String(c?.docType ?? 'CC').toUpperCase(),
-            tipoPersona: c?.kind === 'empresa' ? 'empresa' : 'persona',
-            riel: breb ? 'BREB' : 'ACH',
-            banco: c?.bank ?? null,
-            tipoCuenta: breb ? null : (c?.accountType === 'checking' ? 'corriente' : 'ahorros'),
-            cuenta: breb ? (c?.brebKey ?? null) : (c?.accountNumber ?? null),
-            tipoLlave: breb ? (c?.brebKeyType ?? null) : null,
-          }),
-        }).catch(() => null);
-        if (r) mandado = true;
-      }
-      // Solo se recarga si de verdad se mandó algo: refrescar por refrescar
-      // en cada render de la lista es tráfico que no le sirve a nadie.
-      if (mandado) refreshData?.();
-    })();
-    /* eslint-disable-next-line react-hooks/exhaustive-deps */
-  }, [currentUser?.id, (currentUser as any)?.raw_data?.mouvContacts?.length]);
+  // La dispara el SERVIDOR por lotes, desde la sección de Beneficiarios
+  // (acción 'verificar_pendientes'). Acá vivía un bucle que recorría los
+  // contactos y esperaba una respuesta por cada uno: con sesenta contactos
+  // eran minutos de llamadas encadenadas desde el navegador, que se cortaban
+  // apenas la persona cambiaba de pantalla. Los veredictos no alcanzaban a
+  // guardarse y todos los beneficiarios se quedaban «verificando» para
+  // siempre.
 
   const renderSettings = () => {
       const raw = (currentUser as any)?.raw_data ?? {};

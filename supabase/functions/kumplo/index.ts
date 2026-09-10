@@ -377,6 +377,114 @@ async function releerEstado(c: Config, userId: string): Promise<EstadoKumplo> {
   return await guardarEstado(userId, interpretar(r.body, c, documento))
 }
 
+// ── Verificar UN beneficiario ─────────────────────────────────────────────
+// Es el mismo trabajo lo pida el cliente por uno solo o lo haga el servidor
+// por lotes, así que vive en un solo sitio: si el flujo cambia, cambia para
+// los dos. 'esperar' es la única diferencia — cuando alguien está mirando la
+// pantalla vale la pena aguardar los 6 s del reintento; en un lote no, porque
+// esos segundos multiplicados agotan el tiempo de la función y se pierde todo
+// lo hecho. Lo que quede procesando se recoge en la siguiente vuelta.
+async function verificarUno(
+  c: Config, uid: string, empresa: string, d: any, forzar: boolean, esperar: boolean,
+): Promise<{ ok: boolean; ficha?: any; error?: string; message?: string; http?: number }> {
+  const documento = String(d.documento ?? '').replace(/\D/g, '').trim()
+  const nombre = String(d.nombre ?? '').trim().toUpperCase()
+  const tipoDocumento = String(d.tipoDocumento ?? 'CC').toUpperCase()
+  if (!documento || !nombre) return { ok: false, error: 'faltan_datos', message: 'Falta el nombre o el documento del beneficiario.', http: 400 }
+
+  // El riel decide qué es "la cuenta": en ACH es el número de la cuenta
+  // bancaria con su tipo; en Bre-B es la llave y de qué clase es. Kumplo
+  // registra al beneficiario CON su cuenta, así que mandarle solo el
+  // documento dejaría el registro a medias.
+  const riel = String(d.riel ?? '').toUpperCase() === 'BREB' ? 'BREB' : 'ACH'
+  const tipoPersona = String(d.tipoPersona ?? 'persona').toLowerCase() === 'empresa' ? 'empresa' : 'persona'
+  const banco = String(d.banco ?? '').trim() || (riel === 'BREB' ? 'Bre-B' : '')
+  const cuenta = String(d.cuenta ?? '').trim()
+  const tipoCuenta = d.tipoCuenta ? String(d.tipoCuenta).trim() : null
+  const tipoLlave = d.tipoLlave ? String(d.tipoLlave).trim() : null
+
+  const base = { nombre, documento, tipoDocumento, tipoPersona, riel, banco: banco || null, cuenta: cuenta || null, tipoCuenta, tipoLlave }
+
+  // 0) ¿Kumplo ya conoce este documento? Mucha gente ya está registrada allá.
+  // En ese caso no se vuelve a inscribir —sería un duplicado por nada— y hay
+  // dos caminos: si ya le hicieron la consulta se toma ese veredicto; si está
+  // registrado pero sin consultar, se lanza la consulta ahora.
+  let yaRegistrado = false
+  let idBenef = ''
+  let deCache: EstadoKumplo | null = null
+  if (c.rutaEstado) {
+    const pre = await llamarKumplo(c, rutaCon(c, c.rutaEstado, documento, empresa), 'GET')
+    if (pre.ok) {
+      yaRegistrado = true
+      idBenef = String(leerRuta(pre.body, c.campoId) ?? '')
+      if (hayVeredicto(pre.body, c) && !forzar) deCache = interpretar(pre.body, c, documento)
+    }
+    // 404 = no lo conocen todavía. Cualquier otro fallo (su lado caído, la
+    // credencial) no se interpreta como "no existe".
+  }
+
+  if (deCache) {
+    const ficha = {
+      ...base, id: idBenef || undefined,
+      riesgo: deCache.riesgo, operable: deCache.operable, estado: deCache.estado,
+      motivo: deCache.motivo ?? null,
+      nombreDocumento: deCache.nombreDocumento ?? null,
+      nombreCoincide: deCache.nombreCoincide ?? null,
+      yaEstaba: true,
+      respuesta: JSON.stringify((deCache as any).ultimaRespuesta ?? '').slice(0, 700),
+      at: new Date().toISOString(),
+    }
+    await guardarBeneficiario(uid, documento, ficha)
+    await auditar('kumplo.beneficiario', { userId: uid, documento, riesgo: deCache.riesgo, operable: deCache.operable, yaEstaba: true })
+    return { ok: true, ficha }
+  }
+
+  // 1) Alta con su cuenta bancaria. Se salta si Kumplo ya lo tiene.
+  if (!yaRegistrado) {
+    const alta = await llamarKumplo(c, c.rutaCrear, 'POST', {
+      empresa, externalRef: `${uid}:${documento}`,
+      nombre, documento, tipoDocumento, tipoPersona, pais: 'Colombia',
+      datosBancarios: { riel, banco, cuenta, ...(tipoCuenta ? { tipoCuenta } : {}), ...(tipoLlave ? { tipoLlave } : {}) },
+    })
+    if (alta.ok) idBenef = String(leerRuta(alta.body, c.campoId) ?? '')
+    // Un alta rechazada no corta el proceso: la causa más común es que la
+    // persona ya esté, y entonces lo que falta es consultarla.
+    else await auditar('kumplo.beneficiario_alta_fallida', { userId: uid, documento, status: alta.status, detalle: alta.texto })
+  }
+
+  // 2) Consulta AML — se hace igual, esté o no registrado.
+  const aml = await llamarKumplo(c, c.rutaAml, 'POST', { empresa, documento, tipoDocumento, nombre, tipoPersona })
+  await auditar('kumplo.beneficiario_respuesta', {
+    userId: uid, documento, status: aml.status, ok: aml.ok,
+    respuesta: JSON.stringify(aml.body ?? aml.texto ?? '').slice(0, 900),
+  })
+  const leido = aml.ok ? interpretar(aml.body, c, documento)
+    : { documento, estado: 'error_aml', detalle: `Kumplo respondió ${aml.status}: ${aml.texto}` } as EstadoKumplo
+
+  // 3) Reintento único si quedó procesando — solo cuando hay alguien esperando.
+  let fin = leido
+  if (esperar && fin.estado === 'procesando' && c.rutaEstado) {
+    await new Promise(res => setTimeout(res, 6000))
+    const rr = await llamarKumplo(c, rutaCon(c, c.rutaEstado, documento, empresa), 'GET')
+    if (rr.ok) fin = interpretar(rr.body, c, documento)
+  }
+
+  const ficha = {
+    ...base, id: idBenef || undefined,
+    yaEstaba: yaRegistrado || undefined,
+    riesgo: fin.riesgo, operable: fin.operable, estado: fin.estado,
+    motivo: fin.motivo ?? null,
+    nombreDocumento: fin.nombreDocumento ?? null,
+    nombreCoincide: fin.nombreCoincide ?? null,
+    detalle: fin.detalle || null,
+    respuesta: JSON.stringify((fin as any).ultimaRespuesta ?? aml.body ?? '').slice(0, 700),
+    at: new Date().toISOString(),
+  }
+  await guardarBeneficiario(uid, documento, ficha)
+  await auditar('kumplo.beneficiario', { userId: uid, documento, riesgo: fin.riesgo, operable: fin.operable })
+  return { ok: true, ficha }
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
   try {
@@ -513,139 +621,72 @@ Deno.serve(async (req: Request) => {
     if (accion === 'verificar_beneficiario') {
       const uid = String(body.userId ?? yo.userId ?? '')
       if (!uid || (!yo.esAdmin && yo.userId !== uid)) return json({ error: 'No autorizado' }, 401)
-
-      const documento = String(body.documento ?? '').replace(/\D/g, '').trim()
-      const nombre = String(body.nombre ?? '').trim().toUpperCase()
-      const tipoDocumento = String(body.tipoDocumento ?? 'CC').toUpperCase()
-      if (!documento || !nombre) return json({ error: 'Falta el nombre o el documento del beneficiario.' }, 400)
-
-      // El riel decide qué es "la cuenta": en ACH es el número de la cuenta
-      // bancaria con su tipo; en Bre-B es la llave y de qué clase es. Kumplo
-      // registra al beneficiario CON su cuenta, así que mandarle solo el
-      // documento dejaría el registro a medias.
-      const riel = String(body.riel ?? '').toUpperCase() === 'BREB' ? 'BREB' : 'ACH'
-      const tipoPersona = String(body.tipoPersona ?? 'persona').toLowerCase() === 'empresa' ? 'empresa' : 'persona'
-      const banco = String(body.banco ?? '').trim() || (riel === 'BREB' ? 'Bre-B' : '')
-      const cuenta = String(body.cuenta ?? '').trim()
-      const tipoCuenta = body.tipoCuenta ? String(body.tipoCuenta).trim() : null
-      const tipoLlave = body.tipoLlave ? String(body.tipoLlave).trim() : null
-
       const c = await leerConfig()
       if (!c.activo) return json({ ok: true, omitido: 'la integración está apagada' })
       if (!enLaPrueba(c, uid)) return json({ ok: true, omitido: 'esta cuenta no está en la prueba' })
-
       const mio = await leerEstado(uid)
       const empresa = String(mio.empresaId ?? '').trim()
       if (!empresa) return json({ ok: false, error: 'sin_conectar', message: 'Conecta tu cuenta de Kumplo antes de inscribir beneficiarios.' })
+      const r = await verificarUno(c, uid, empresa, body, body.forzar === true, true)
+      if (!r.ok) return json(r, r.http ?? 200)
+      return json({ ok: true, beneficiario: r.ficha, yaEstaba: r.ficha?.yaEstaba })
+    }
 
-      // 0) ¿Kumplo ya conoce este documento? Mucha gente ya está registrada
-      // allá. En ese caso no se vuelve a inscribir —sería crear un duplicado
-      // por nada— y hay dos caminos:
-      //   · ya le hicieron la consulta → se toma ese veredicto y listo.
-      //   · está registrado pero sin consultar → se lanza la consulta ahora.
-      // Con 'forzar' se salta el atajo y se consulta de nuevo aunque haya
-      // veredicto guardado: es lo que hace el botón de volver a revisar.
-      const forzar = body.forzar === true
-      let yaRegistrado = false
-      let idBenef = ''
-      let deCache: EstadoKumplo | null = null
-      if (c.rutaEstado) {
-        const pre = await llamarKumplo(c, rutaCon(c, c.rutaEstado, documento, empresa), 'GET')
-        if (pre.ok) {
-          yaRegistrado = true
-          idBenef = String(leerRuta(pre.body, c.campoId) ?? '')
-          if (hayVeredicto(pre.body, c) && !forzar) deCache = interpretar(pre.body, c, documento)
-        }
-        // 404 = no lo conocen todavía. Cualquier otro fallo (su lado caído, la
-        // credencial) no se interpreta como "no existe": se sigue el camino
-        // normal, que tolera que ya esté.
-      }
+    // ── Verificar a los que FALTAN, por lotes ─────────────────────────────
+    // Los beneficiarios ya inscritos —y pueden ser decenas— también hay que
+    // consultarlos. Hacerlo desde el navegador, uno por uno y esperando cada
+    // respuesta, no funciona: son minutos de llamadas encadenadas que se
+    // cortan apenas la persona cambia de pantalla, y los veredictos nunca
+    // llegan a guardarse. Acá el servidor lee la lista de contactos, toma los
+    // que no tienen veredicto y procesa un LOTE. El cliente vuelve a llamar
+    // hasta que no quede ninguno.
+    if (accion === 'verificar_pendientes') {
+      const uid = String(body.userId ?? yo.userId ?? '')
+      if (!uid || (!yo.esAdmin && yo.userId !== uid)) return json({ error: 'No autorizado' }, 401)
+      const c = await leerConfig()
+      if (!c.activo) return json({ ok: true, omitido: 'la integración está apagada', pendientes: 0 })
+      if (!enLaPrueba(c, uid)) return json({ ok: true, omitido: 'esta cuenta no está en la prueba', pendientes: 0 })
+      const mio = await leerEstado(uid)
+      const empresa = String(mio.empresaId ?? '').trim()
+      if (!empresa) return json({ ok: true, omitido: 'la cuenta de Kumplo no está conectada', pendientes: 0 })
 
-      if (deCache) {
-        const fichaPrevia = {
-          nombre, documento, tipoDocumento, tipoPersona,
-          riel, banco: banco || null, cuenta: cuenta || null,
-          tipoCuenta, tipoLlave,
-          id: idBenef || undefined,
-          riesgo: deCache.riesgo, operable: deCache.operable, estado: deCache.estado,
-          motivo: deCache.motivo ?? null,
-          nombreDocumento: deCache.nombreDocumento ?? null,
-          nombreCoincide: deCache.nombreCoincide ?? null,
-          yaEstaba: true,
-          at: new Date().toISOString(),
-        }
-        await guardarBeneficiario(uid, documento, fichaPrevia)
-        await auditar('kumplo.beneficiario', { userId: uid, documento, riesgo: deCache.riesgo, operable: deCache.operable, yaEstaba: true })
-        return json({ ok: true, beneficiario: fichaPrevia, yaEstaba: true })
-      }
+      const { data: fila } = await db.from('users').select('raw_data').eq('id', uid).single()
+      const raw: any = (fila as any)?.raw_data ?? {}
+      const contactos: any[] = Array.isArray(raw.mouvContacts) ? raw.mouvContacts : []
+      const hechos: Record<string, any> = (raw.kumplo ?? {}).beneficiarios ?? {}
 
-      // 1) Alta del beneficiario en Kumplo, con su cuenta bancaria. Se salta
-      // si Kumplo ya lo tiene.
-      if (!yaRegistrado) {
-        const alta = await llamarKumplo(c, c.rutaCrear, 'POST', {
-          empresa,
-          externalRef: `${uid}:${documento}`,
-          nombre, documento, tipoDocumento,
-          tipoPersona,
-          pais: 'Colombia',
-          datosBancarios: {
-            riel,
-            banco,
-            cuenta,
-            ...(tipoCuenta ? { tipoCuenta } : {}),
-            ...(tipoLlave ? { tipoLlave } : {}),
-          },
-        })
-        if (alta.ok) idBenef = String(leerRuta(alta.body, c.campoId) ?? '')
-        else {
-          // No se corta acá. La causa más común de un alta rechazada es que la
-          // persona YA ESTÁ en Kumplo, y en ese caso lo que falta no es
-          // inscribirla otra vez sino consultarla. Queda auditado y se sigue.
-          await auditar('kumplo.beneficiario_alta_fallida', { userId: uid, documento, status: alta.status, detalle: alta.texto })
-        }
-      }
-
-      // 2) Consulta AML del beneficiario — se hace igual, esté o no registrado.
-      const aml = await llamarKumplo(c, c.rutaAml, 'POST', { empresa, documento, tipoDocumento, nombre, tipoPersona })
-      // Se guarda la respuesta TAL CUAL, recortada. Sin esto, cuando Kumplo
-      // devuelve algo que no esperábamos, el veredicto queda en "sin
-      // resultado" y no hay forma de saber qué mandaron sin volver a
-      // consultar a ciegas.
-      await auditar('kumplo.beneficiario_respuesta', {
-        userId: uid, documento, status: aml.status, ok: aml.ok,
-        respuesta: JSON.stringify(aml.body ?? aml.texto ?? '').slice(0, 900),
+      // Un documento puede repetirse entre contactos (misma persona, dos
+      // cuentas): se consulta UNA vez.
+      const vistos = new Set<string>()
+      const faltan = contactos.filter((x: any) => {
+        const doc = String(x?.docNumber ?? '').replace(/\D/g, '')
+        const nom = String(x?.name ?? '').trim()
+        if (!doc || !nom || hechos[doc] || vistos.has(doc)) return false
+        vistos.add(doc)
+        return true
       })
-      const leido = aml.ok ? interpretar(aml.body, c, documento)
-        : { documento, estado: 'error_aml', detalle: `Kumplo respondió ${aml.status}: ${aml.texto}` } as EstadoKumplo
 
-      // 3) Reintento único si quedó procesando, igual que con el titular.
-      let fin = leido
-      if (fin.estado === 'procesando' && c.rutaEstado) {
-        await new Promise(res => setTimeout(res, 6000))
-        const rr = await llamarKumplo(c, rutaCon(c, c.rutaEstado, documento, empresa), 'GET')
-        if (rr.ok) fin = interpretar(rr.body, c, documento)
+      // Lote chico a propósito: cada consulta son varias llamadas a Kumplo y
+      // esta función tiene un tiempo límite. Más vale volver que quedarse a
+      // medias y perder lo hecho.
+      const LOTE = Math.min(Math.max(Number(body.limite ?? 4) || 4, 1), 8)
+      const tanda = faltan.slice(0, LOTE)
+      let hechosAhora = 0
+      for (const x of tanda) {
+        const breb = String(x?.destKind ?? 'ach') === 'breb'
+        const r = await verificarUno(c, uid, empresa, {
+          documento: x?.docNumber, nombre: x?.name,
+          tipoDocumento: x?.docType ?? 'CC',
+          tipoPersona: x?.kind === 'empresa' ? 'empresa' : 'persona',
+          riel: breb ? 'BREB' : 'ACH',
+          banco: x?.bank ?? null,
+          tipoCuenta: breb ? null : (x?.accountType === 'checking' ? 'corriente' : 'ahorros'),
+          cuenta: breb ? (x?.brebKey ?? null) : (x?.accountNumber ?? null),
+          tipoLlave: breb ? (x?.brebKeyType ?? null) : null,
+        }, false, false)
+        if (r.ok) hechosAhora += 1
       }
-
-      const ficha = {
-        nombre, documento, tipoDocumento, tipoPersona,
-        riel, banco: banco || null, cuenta: cuenta || null,
-        tipoCuenta, tipoLlave,
-        id: idBenef || undefined,
-        yaEstaba: yaRegistrado || undefined,
-        riesgo: fin.riesgo, operable: fin.operable, estado: fin.estado,
-        motivo: fin.motivo ?? null,
-        nombreDocumento: fin.nombreDocumento ?? null,
-        nombreCoincide: fin.nombreCoincide ?? null,
-        detalle: fin.detalle || null,
-        // La respuesta de Kumplo, recortada. Queda GUARDADA con el
-        // beneficiario: para revisar un caso no hay que volver a consultar ni
-        // ir a buscar en la auditoría de ese día.
-        respuesta: JSON.stringify((fin as any).ultimaRespuesta ?? aml.body ?? '').slice(0, 700),
-        at: new Date().toISOString(),
-      }
-      await guardarBeneficiario(uid, documento, ficha)
-      await auditar('kumplo.beneficiario', { userId: uid, documento, riesgo: fin.riesgo, operable: fin.operable })
-      return json({ ok: true, beneficiario: ficha })
+      return json({ ok: true, procesados: hechosAhora, pendientes: Math.max(0, faltan.length - hechosAhora) })
     }
 
     // Estado guardado de los beneficiarios de esta cuenta.
