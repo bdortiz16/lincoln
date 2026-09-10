@@ -607,6 +607,14 @@ Deno.serve(async (req: Request) => {
 
       // 2) Consulta AML del beneficiario — se hace igual, esté o no registrado.
       const aml = await llamarKumplo(c, c.rutaAml, 'POST', { empresa, documento, tipoDocumento, nombre, tipoPersona })
+      // Se guarda la respuesta TAL CUAL, recortada. Sin esto, cuando Kumplo
+      // devuelve algo que no esperábamos, el veredicto queda en "sin
+      // resultado" y no hay forma de saber qué mandaron sin volver a
+      // consultar a ciegas.
+      await auditar('kumplo.beneficiario_respuesta', {
+        userId: uid, documento, status: aml.status, ok: aml.ok,
+        respuesta: JSON.stringify(aml.body ?? aml.texto ?? '').slice(0, 900),
+      })
       const leido = aml.ok ? interpretar(aml.body, c, documento)
         : { documento, estado: 'error_aml', detalle: `Kumplo respondió ${aml.status}: ${aml.texto}` } as EstadoKumplo
 
@@ -628,6 +636,11 @@ Deno.serve(async (req: Request) => {
         motivo: fin.motivo ?? null,
         nombreDocumento: fin.nombreDocumento ?? null,
         nombreCoincide: fin.nombreCoincide ?? null,
+        detalle: fin.detalle || null,
+        // La respuesta de Kumplo, recortada. Queda GUARDADA con el
+        // beneficiario: para revisar un caso no hay que volver a consultar ni
+        // ir a buscar en la auditoría de ese día.
+        respuesta: JSON.stringify((fin as any).ultimaRespuesta ?? aml.body ?? '').slice(0, 700),
         at: new Date().toISOString(),
       }
       await guardarBeneficiario(uid, documento, ficha)

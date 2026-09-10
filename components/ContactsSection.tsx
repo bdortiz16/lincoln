@@ -336,19 +336,25 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     // columna no apareciera aunque la cuenta estuviera conectada.
     const kumploRaw: any = (currentUser as any)?.raw_data?.kumplo ?? {};
     const [kumploSrv, setKumploSrv] = useState<{ conectado: boolean; benef: Record<string, any> } | null>(null);
+
+    // Una consulta que falla NO desconecta la sección. Antes cualquier
+    // tropiezo de red devolvía conectado:false y la columna AML desaparecía a
+    // los pocos segundos de haber aparecido — se veía como si el AML fuera
+    // algo momentáneo. Solo una respuesta explícita del servidor cambia el
+    // estado; si no llega, se queda lo último que sí supimos.
+    const leerKumplo = React.useCallback(async (uid: string) => {
+        const e = await callKumplo({ action: 'estado', userId: uid });
+        if (!e?.ok) return;
+        const b = e.conectado ? await callKumplo({ action: 'beneficiarios', userId: uid }) : null;
+        setKumploSrv({ conectado: !!e.conectado, benef: b?.beneficiarios ?? {} });
+    }, []);
+
     useEffect(() => {
         const uid = currentUser?.id;
         if (!uid) return;
-        (async () => {
-            const e = await callKumplo({ action: 'estado', userId: uid });
-            if (!e?.ok) { setKumploSrv({ conectado: false, benef: {} }); return; }
-            const b = e.conectado ? await callKumplo({ action: 'beneficiarios', userId: uid }) : null;
-            setKumploSrv({ conectado: !!e.conectado, benef: b?.beneficiarios ?? {} });
-        })();
-        /* eslint-disable-next-line react-hooks/exhaustive-deps */
-    }, [currentUser?.id]);
-    // Mientras llega la respuesta se usa lo que haya en memoria, para no
-    // parpadear; apenas contesta el servidor, manda el servidor.
+        leerKumplo(uid);
+    }, [currentUser?.id, leerKumplo]);
+
     const kumploConectado = kumploSrv ? kumploSrv.conectado : !!kumploRaw.empresaId;
     const kumploBenef: Record<string, any> = kumploSrv ? kumploSrv.benef : (kumploRaw.beneficiarios ?? {});
     // Sin ficha todavía = en verificación. Es la verdad: los datos ya salieron
@@ -763,6 +769,33 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     // las cuentas ACH que quedaron en verificación (y reintenta inscripciones
     // fallidas). Solo actualiza estados — NUNCA borra contactos.
     useEffect(() => { syncStatuses(true); }, [currentUser?.id]);
+
+    // ── El AML llega después ─────────────────────────────────────────────
+    // La consulta a Kumplo tarda: al entrar, un beneficiario recién inscrito
+    // todavía no tiene veredicto. Sin esto la columna se quedaba en
+    // "VERIFICANDO" hasta recargar la página a mano, y parecía que el
+    // resultado nunca llegaba. Se vuelve a preguntar cada 15 s mientras
+    // FALTE algún veredicto, y se para: ni deja la pantalla colgada ni
+    // consulta para siempre.
+    useEffect(() => {
+        const uid = currentUser?.id;
+        if (!uid || !kumploConectado) return;
+        const faltan = bankContacts.some(c => {
+            const doc = String(c.docNumber ?? '').replace(/\D/g, '');
+            if (!doc) return false;
+            const k = kumploBenef[doc];
+            return !k || String(k.estado ?? '') === 'procesando' || !k.at;
+        });
+        if (!faltan) return;
+        let vueltas = 0;
+        const t = setInterval(() => {
+            vueltas += 1;
+            if (vueltas > 10) { clearInterval(t); return; }
+            leerKumplo(uid);
+        }, 15000);
+        return () => clearInterval(t);
+        /* eslint-disable-next-line react-hooks/exhaustive-deps */
+    }, [currentUser?.id, kumploConectado, kumploBenef, bankContacts.length, leerKumplo]);
 
     // El registro con el banco se reintenta SOLO: la sincronización al entrar
     // vuelve a inscribir las cuentas ACH que quedaron sin id. Eso es trabajo
@@ -1523,10 +1556,37 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                                 Esta persona ya estaba registrada en Kumplo. No se volvió a inscribir: se tomó la consulta que ya existía.
                                             </p>
                                         )}
+                                        {/* El nivel, con nombre propio. Es lo que
+                                            se pidió ver: bajo, medio o alto. */}
+                                        {k.riesgo && (
+                                            <div className="flex items-center justify-between gap-3" style={{ padding: '10px 0 0' }}>
+                                                <span style={{ fontSize: 12.5, color: '#878E88' }}>Nivel de riesgo</span>
+                                                <span style={{
+                                                    fontSize: 13, fontWeight: 700,
+                                                    color: k.riesgo === 'alto' ? '#F87171' : k.riesgo === 'medio' ? '#FBBF24' : k.riesgo === 'bajo' ? '#4ADE80' : '#878E88',
+                                                }}>
+                                                    {k.riesgo === 'alto' ? 'Alto' : k.riesgo === 'medio' ? 'Medio' : k.riesgo === 'bajo' ? 'Bajo' : 'Sin determinar'}
+                                                </span>
+                                            </div>
+                                        )}
                                         {k.at && (
                                             <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', marginTop: 6 }}>
                                                 Última revisión: {new Date(k.at).toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' })}
                                             </p>
+                                        )}
+                                        {/* La respuesta cruda, solo para el
+                                            administrador. Al cliente no le sirve
+                                            un JSON, pero para probar la conexión
+                                            hay que poder ver qué llegó. */}
+                                        {(currentUser as any)?.role === 'admin' && k.respuesta && (
+                                            <details style={{ marginTop: 9 }}>
+                                                <summary style={{ fontSize: 11, color: '#878E88', cursor: 'pointer' }}>Respuesta de Kumplo</summary>
+                                                <pre style={{
+                                                    marginTop: 6, fontSize: 10.5, color: '#878E88', background: '#0A0B0A',
+                                                    border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, padding: 10,
+                                                    whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxHeight: 200, overflow: 'auto',
+                                                }}>{String(k.respuesta)}</pre>
+                                            </details>
                                         )}
                                         <button onClick={() => revisarCumplimiento(detail)} disabled={revisando === detail.id}
                                             style={{
