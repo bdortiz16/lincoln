@@ -804,8 +804,25 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     // dice. Los reintentos y sus errores quedan en la Auditoría, que es donde
     // sirven: quien los tiene que leer es quien puede hacer algo con ellos.
 
+    // ── Confirmación ─────────────────────────────────────────────────────
+    // El confirm del navegador es del sistema operativo, no de Lincoin: rompe
+    // la pantalla, no dice a QUIÉN se va a borrar y en iOS aparece pegado
+    // arriba, encima de otra fila. Para una acción que no se deshace, la
+    // ventana tiene que decir el nombre y verse como el resto del producto.
+    const [confirmar, setConfirmar] = useState<{ titulo: string; cuerpo: string; onOk: () => void } | null>(null);
+    useEffect(() => {
+        if (!confirmar) return;
+        const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setConfirmar(null); };
+        window.addEventListener('keydown', esc);
+        return () => window.removeEventListener('keydown', esc);
+    }, [confirmar]);
+    const pedirEliminar = (c: MouvContact) => setConfirmar({
+        titulo: `¿Eliminar a ${prettyName(c.name)}?`,
+        cuerpo: 'Se quita de tu lista y se des-inscribe la cuenta. Para volver a transferirle tendrás que inscribirla otra vez y esperar la validación del banco.',
+        onOk: () => { setDetail(null); removeContact(c.id); },
+    });
+
     const removeContact = async (id: string) => {
-        if (!window.confirm('¿Eliminar este contacto?')) return;
         const target = contacts.find(c => c.id === id);
         const isWallet = walletContacts.some(c => c.id === id);
         // 1) Quitar de la lista local del usuario (cada tipo de SU lista).
@@ -1341,7 +1358,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                             {menuFor === c.id && (
                                 <div style={{ position: 'absolute', right: 0, top: '110%', zIndex: 20, background: '#121413', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10, overflow: 'hidden', minWidth: 150, boxShadow: '0 12px 30px rgba(0,0,0,0.5)' }}>
                                     <button onClick={() => { setMenuFor(null); setDetail(c); }} className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '10px 14px', fontSize: 12.5, color: '#F4F4F2' }}>Ver detalle</button>
-                                    <button onClick={() => { setMenuFor(null); removeContact(c.id); }} className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '10px 14px', fontSize: 12.5, color: '#F87171', borderTop: '1px solid rgba(255,255,255,0.07)' }}>Eliminar</button>
+                                    <button onClick={() => { setMenuFor(null); pedirEliminar(c); }} className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '10px 14px', fontSize: 12.5, color: '#F87171', borderTop: '1px solid rgba(255,255,255,0.07)' }}>Eliminar</button>
                                 </div>
                             )}
                         </div>
@@ -1606,7 +1623,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                             <button onClick={() => setDetailMenu(v => !v)} style={{ width: 44, height: 44, borderRadius: 10, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#878E88', fontWeight: 700, fontSize: 16, flexShrink: 0 }} className="hover:bg-white/[0.09] transition-colors">···</button>
                             {detailMenu && (
                                 <div style={{ position: 'absolute', left: 24, bottom: 72, zIndex: 20, background: '#121413', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10, overflow: 'hidden', minWidth: 200, boxShadow: '0 12px 30px rgba(0,0,0,0.5)' }}>
-                                    <button onClick={() => { setDetailMenu(false); const id = detail.id; const name = prettyName(detail.name); if (window.confirm(`¿Eliminar a ${name}? Tendrás que inscribirlo y validarlo de nuevo.`)) { setDetail(null); removeContact(id); } }}
+                                    <button onClick={() => { setDetailMenu(false); pedirEliminar(detail); }}
                                         className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '11px 14px', fontSize: 12.5, color: '#F4F4F2' }}>Eliminar beneficiario</button>
                                 </div>
                             )}
@@ -1626,6 +1643,38 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                 </div>
                 );
             })()}
+
+            {/* Confirmación de una acción que no se deshace. Va por encima del
+                detalle (z-60) porque se abre desde ahí. Cerrar por fuera o con
+                Escape equivale a cancelar: para borrar hay que decir que sí. */}
+            {confirmar && (
+                <div className="fixed inset-0 z-[60] p-4" style={{ background: 'rgba(4,5,4,0.78)', display: 'grid', placeItems: 'center' }}
+                    onClick={() => setConfirmar(null)}>
+                    <div onClick={e => e.stopPropagation()} role="alertdialog" aria-modal="true"
+                        className="w-full animate-in zoom-in-95 duration-200"
+                        style={{ maxWidth: 400, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, overflow: 'hidden', fontFamily: "'Archivo', system-ui, sans-serif" }}>
+                        <div style={{ padding: '24px 24px 20px' }}>
+                            <div style={{ width: 42, height: 42, borderRadius: 12, background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.24)', display: 'grid', placeItems: 'center', marginBottom: 14 }}>
+                                <Trash2 size={18} color="#F87171" />
+                            </div>
+                            <p style={{ fontSize: 18, fontWeight: 800, letterSpacing: '-0.4px', color: '#F4F4F2', lineHeight: 1.3 }}>{confirmar.titulo}</p>
+                            <p style={{ fontSize: 13, color: '#878E88', marginTop: 8, lineHeight: 1.6 }}>{confirmar.cuerpo}</p>
+                        </div>
+                        <div className="flex items-center" style={{ gap: 9, padding: '0 24px 22px' }}>
+                            <button onClick={() => setConfirmar(null)}
+                                className="hover:bg-white/[0.09] transition-colors"
+                                style={{ flex: 1, height: 44, borderRadius: 10, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontSize: 13.5, fontWeight: 600 }}>
+                                Cancelar
+                            </button>
+                            <button onClick={() => { const fn = confirmar.onOk; setConfirmar(null); fn(); }}
+                                className="transition-colors"
+                                style={{ flex: 1, height: 44, borderRadius: 10, background: 'rgba(248,113,113,0.12)', border: '1px solid rgba(248,113,113,0.34)', color: '#F87171', fontSize: 13.5, fontWeight: 700 }}>
+                                Eliminar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };
