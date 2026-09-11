@@ -1117,7 +1117,19 @@ serve(async (req: Request) => {
           if (cfg?.activo && cfg?.bloquearEnAlto !== false) {
             const { data: uK } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
             const b = ((uK as any)?.raw_data?.kumplo?.beneficiarios ?? {})[docDest]
-            const hayVeredicto = b && (b.riesgo || typeof b.operable === 'boolean')
+            // Un veredicto DE VERDAD: o Kumplo dijo operable sí/no, o dio un
+            // nivel de riesgo real. 'desconocido' NO es un veredicto — es
+            // justamente que no pudieron determinarlo, y antes contaba como
+            // uno: bastaba que el campo existiera para que el envío se
+            // bloqueara diciendo que la persona estaba restringida por
+            // cumplimiento sin que nadie la hubiera juzgado.
+            // Y tampoco se confía en un 'operable' guardado junto a un riesgo
+            // 'desconocido': esas fichas las escribió la versión que deducía el
+            // veredicto, y ese false no lo dijo Kumplo. Se vuelven a consultar.
+            const hayVeredicto = !!b && String(b.riesgo ?? '') !== 'desconocido' && (
+              typeof b.operable === 'boolean' ||
+              ['bajo', 'medio', 'alto'].includes(String(b.riesgo ?? ''))
+            )
             if (hayVeredicto && String(b.estado ?? '') !== 'procesando') {
               const puede = cfg.soloBloquearAlto ? b.riesgo !== 'alto' : b.operable !== false
               if (!puede) {

@@ -374,8 +374,12 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
         const pinta = (borde: string, color: string, texto: string, ayuda: string) =>
             <span title={ayuda} style={{ ...base, border: `1px solid ${borde}`, color }}>{corto ? texto : `KUMPLO · ${texto}`}</span>;
         if (k.riesgo === 'alto') return pinta('rgba(248,113,113,0.32)', '#F87171', 'NO OPERABLE', 'Riesgo alto. No se puede transferir a esta persona.');
-        if (k.operable === false) return pinta('rgba(251,191,36,0.32)', '#FBBF24', 'EN REVISIÓN', 'En revisión de cumplimiento. Por ahora no se le puede transferir.');
         if (String(k.estado ?? '') === 'procesando' || !k.at) return pinta('rgba(255,255,255,0.14)', '#878E88', 'VERIFICANDO', 'Enviamos los datos a Kumplo y estamos esperando el resultado.');
+        // 'desconocido' no es un veredicto en contra: es que no pudieron
+        // validar el documento. No bloquea, y decir "en revisión" haría creer
+        // que hay una decisión tomada cuando no la hay.
+        if (k.riesgo === 'desconocido') return pinta('rgba(255,255,255,0.14)', '#878E88', 'SIN VALIDAR', 'No se pudo validar el documento. Revisa que el número esté correcto.');
+        if (k.operable === false) return pinta('rgba(251,191,36,0.32)', '#FBBF24', 'EN REVISIÓN', 'En revisión de cumplimiento. Por ahora no se le puede transferir.');
         if (k.operable === true) return pinta('rgba(74,222,128,0.3)', '#4ADE80', 'APROBADO', 'Documento verificado. Se puede operar con esta persona.');
         return pinta('rgba(255,255,255,0.14)', '#878E88', 'SIN RESULTADO', 'Kumplo no devolvió un veredicto para este documento.');
     };

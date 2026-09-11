@@ -85,7 +85,13 @@ async function assertNotBlocked(userId: string): Promise<string | null> {
         const enLaPrueba = soloEstos.length === 0 || soloEstos.includes(userId)
         const k = raw.kumplo ?? {}
         const riesgo = String(k.riesgo ?? '')
-        const hayVeredicto = !!k.riesgo || typeof k.operable === 'boolean'
+        // Un veredicto DE VERDAD. 'desconocido' no lo es: significa que no
+        // pudieron determinarlo, y tratarlo como veredicto bloquea a alguien
+        // a quien nadie juzgó.
+        const hayVeredicto = String(k.riesgo ?? '') !== 'desconocido' && (
+          typeof k.operable === 'boolean'
+          || ['bajo', 'medio', 'alto'].includes(String(k.riesgo ?? ''))
+        )
         // Kumplo pide usar 'operable': ahí ya resolvieron que 'medio' queda en
         // revisión del Oficial y no opera, y que un documento sin validar
         // tampoco. 'soloBloquearAlto' permite ignorar eso y bloquear solo el

@@ -308,9 +308,20 @@ function interpretar(cuerpo: any, c: Config, documento: string): EstadoKumplo {
   return {
     documento,
     riesgo,
-    // Si Kumplo no manda 'operable', se deduce del riesgo. No se asume que sí
-    // puede operar: un veredicto ausente no es un veredicto favorable.
-    operable: typeof operableBruto === 'boolean' ? operableBruto : (riesgo === 'bajo'),
+    // Si Kumplo no manda 'operable', se deduce SOLO cuando hay un riesgo
+    // explícito. Antes se deducía siempre como (riesgo === 'bajo'), y eso
+    // convertía "no sabemos" en "no puede operar": una respuesta que no traía
+    // ni veredicto ni riesgo reconocible quedaba como operable:false, y el
+    // envío se bloqueaba diciendo que la persona estaba restringida por
+    // cumplimiento cuando nadie la había juzgado.
+    //
+    // Un veredicto ausente no es favorable, pero tampoco es condenatorio: es
+    // ausente. Queda 'undefined' y quien decide bloquear lo trata como lo que
+    // es — falta de información, no una acusación.
+    operable: typeof operableBruto === 'boolean' ? operableBruto
+      : riesgo === 'alto' ? false
+        : riesgo === 'bajo' ? true
+          : undefined,
     estado: estado || 'consultado',
     motivo: d.motivo ? String(d.motivo) : '',
     nombreDocumento: d.nombreDocumento ? String(d.nombreDocumento) : undefined,
