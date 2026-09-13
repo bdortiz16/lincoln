@@ -112,7 +112,7 @@ export const AdminTusdatos: React.FC = () => {
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
           <div style={{ minWidth: 0 }}>
             <p style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 800, fontSize: 16, margin: 0 }}>
-              <ShieldCheck size={17} color={cfg.activo ? C.green : C.sub} /> Antecedentes
+              <ShieldCheck size={17} color={cfg.activo ? C.green : C.sub} /> TusDatos
             </p>
             <p style={{ color: C.sub, fontSize: 12, margin: '4px 0 0', maxWidth: 620, lineHeight: 1.55 }}>
               Al inscribir a un beneficiario, Lincoin consulta sus antecedentes contra las fuentes
