@@ -386,8 +386,20 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
         const k = amlDe(c);
         if (!k) return null;
         const base: React.CSSProperties = { fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap', display: 'inline-block' };
-        const pinta = (borde: string, color: string, texto: string, ayuda: string) =>
-            <span title={ayuda} style={{ ...base, border: `1px solid ${borde}`, color }}>{corto ? texto : `AML · ${texto}`}</span>;
+        // 'RIESGO MEDIO' queda en revisión, no bloqueado: son cosas distintas
+        // y decirle bloqueado a algo que espera una decisión manda a levantar
+        // un candado que no existe.
+        const palabraEstado = k.operable === false
+            ? (String(k.categoria ?? '') === 'medio' ? 'EN REVISIÓN' : 'BLOQUEADO')
+            : null;
+        const pinta = (borde: string, color: string, texto: string, ayuda: string) => (
+            <span title={ayuda} style={{ display: 'inline-block' }}>
+                <span style={{ ...base, border: `1px solid ${borde}`, color }}>{corto ? texto : `AML · ${texto}`}</span>
+                {corto && palabraEstado && (
+                    <span style={{ display: 'block', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', color, marginTop: 3, paddingLeft: 2 }}>{palabraEstado}</span>
+                )}
+            </span>
+        );
         const cat = String(k.categoria ?? '');
         const est = String(k.estado ?? '');
         if (est === 'procesando' || !est) return pinta('rgba(255,255,255,0.14)', '#878E88', 'CONSULTANDO', 'Estamos consultando los antecedentes de esta persona. Suele tardar alrededor de un minuto.');
@@ -398,13 +410,17 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
         // puede mentir — si el panel está en modo observación y el riesgo alto
         // no frena nada, no dice que bloquea.
         const frena = k.operable === false;
-        const conEstado = (t: string) => frena ? `${t} · BLOQUEADO` : t;
+        // En la COLUMNA el motivo y el estado van en dos renglones: una
+        // insignia de veintinueve caracteres no cabe en ninguna columna
+        // razonable y terminaba invadiendo la de al lado. En el detalle, donde
+        // sí hay ancho, va todo en una línea.
+        const conEstado = (t: string) => (corto || !frena) ? t : `${t} · ${String(k.categoria ?? '') === 'medio' ? 'EN REVISIÓN' : 'BLOQUEADO'}`;
         // La identidad va ANTES que los antecedentes: si el nombre no es el
         // del documento, saber que otra persona está limpia no sirve de nada.
         if (k.nombreCoincide === false) return pinta('rgba(248,113,113,0.32)', '#F87171', conEstado('NOMBRE INCORRECTO'), `El nombre inscrito no corresponde al documento. Según la Registraduría es ${k.nombreReal ?? 'otra persona'}.`);
         if (k.documentoVigente === false) return pinta('rgba(248,113,113,0.32)', '#F87171', conEstado('DOCUMENTO NO VIGENTE'), `El documento no está vigente${k.estadoDocumento ? `: ${k.estadoDocumento}` : ''}.`);
         if (cat === 'alto') return pinta('rgba(248,113,113,0.32)', '#F87171', conEstado('RIESGO ALTO'), 'Hallazgos de riesgo alto. No se puede transferir a esta persona.');
-        if (cat === 'medio') return pinta('rgba(251,191,36,0.32)', '#FBBF24', frena ? 'RIESGO MEDIO · EN REVISIÓN' : 'RIESGO MEDIO', 'Hallazgos de riesgo medio. Queda en revisión de cumplimiento.');
+        if (cat === 'medio') return pinta('rgba(251,191,36,0.32)', '#FBBF24', conEstado('RIESGO MEDIO'), 'Hallazgos de riesgo medio. Queda en revisión de cumplimiento.');
         // Un documento que la Registraduría no validó no se puede categorizar:
         // no se sabe de quién son esos antecedentes. No bloquea, pero se dice.
         if (cat === 'sin_validar') return pinta('rgba(255,255,255,0.14)', '#878E88', 'SIN VALIDAR', 'No se pudo validar el documento. Revisa que el número esté correcto.');
@@ -417,8 +433,8 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     // A quien no la conectó esa verificación no le aplica, y una columna
     // vacía en todas las filas es peor que no tenerla.
     const COLS = amlActivo
-        ? 'minmax(140px,1fr) 172px 126px 150px 108px 80px'
-        : 'minmax(140px,1fr) 150px 170px 118px 88px';
+        ? 'minmax(190px,1.2fr) 132px 146px minmax(150px,1fr) 106px 78px'
+        : 'minmax(190px,1.2fr) 146px minmax(150px,1fr) 110px 82px';
     const CABECERAS = amlActivo
         ? ['BENEFICIARIO', 'AML', 'PAÍS Y RIEL', 'BANCO Y CUENTA', 'ESTADO', 'ACCIONES']
         : ['BENEFICIARIO', 'PAÍS Y RIEL', 'BANCO Y CUENTA', 'ESTADO', 'ACCIONES'];
