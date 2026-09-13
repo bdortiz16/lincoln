@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { BookUser, Plus, X, Trash2, CheckCircle, AlertTriangle, Landmark, Wallet, Search, SlidersHorizontal, Zap, Copy, Send } from 'lucide-react';
 import { useDatabase } from '../context/DatabaseContext';
 import { useSystemConfig } from '../context/SystemConfigContext';
@@ -539,6 +539,29 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     };
     // Contacto abierto en el modal de detalle (clic sobre la fila)
     const [detail, setDetail] = useState<MouvContact | null>(null);
+
+    // Al abrir la ficha, si la consulta ya terminó pero el detalle de los
+    // hallazgos no quedó guardado —consultas anteriores a que se empezara a
+    // guardar—, se trae del reporte. Leer un reporte que YA existe no gasta un
+    // crédito: el crédito se gastó al lanzar la consulta.
+    const detalleTraidoRef = useRef<Set<string>>(new Set());
+    useEffect(() => {
+        const uid = currentUser?.id;
+        if (!uid || !detail) return;
+        const doc = String(detail.docNumber ?? '').replace(/\D/g, '');
+        if (!doc || detalleTraidoRef.current.has(doc)) return;
+        const k = amlBenef[doc];
+        if (!k || k.estado !== 'finalizado' || !k.reportId) return;
+        if (Array.isArray(k.hallazgos) && k.hallazgos.length) return;
+        if (((k.altos ?? 0) + (k.medios ?? 0)) === 0) return;
+        detalleTraidoRef.current.add(doc);
+        (async () => {
+            const r = await callTusdatos({ action: 'hallazgos', userId: uid, documento: doc });
+            if (r?.ok) await leerTusdatos(uid);
+        })();
+        /* eslint-disable-next-line react-hooks/exhaustive-deps */
+    }, [detail?.id, currentUser?.id]);
+
 
     // Buscador + filtros de la lista
     const [search, setSearch] = useState('');
@@ -1752,7 +1775,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                             en vez de dejar el hueco sin explicar. */}
                                         {est === 'finalizado' && (k.altos ?? 0) + (k.medios ?? 0) > 0 && !(Array.isArray(k.hallazgos) && k.hallazgos.length) && (
                                             <p style={{ fontSize: 11.5, color: 'rgba(244,244,242,0.45)', marginTop: 7, lineHeight: 1.5 }}>
-                                                El detalle de estos hallazgos no quedó guardado en esta consulta. Vuelve a consultar para verlo, o ábrelo en el reporte completo.
+                                                Trayendo el detalle del reporte…
                                             </p>
                                         )}
                                         {k.at && (
@@ -1773,14 +1796,26 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                                 {pdfCargando ? 'Abriendo…' : 'Ver el reporte'}
                                             </button>
                                         )}
-                                        <button onClick={() => revisarCumplimiento(detail)} disabled={revisando === detail.id}
-                                            style={{
-                                                marginTop: 10, background: 'transparent', border: '1px solid rgba(255,255,255,0.14)',
-                                                color: '#F4F4F2', borderRadius: 999, padding: '7px 14px', fontSize: 12, fontWeight: 700,
-                                                cursor: revisando === detail.id ? 'default' : 'pointer', opacity: revisando === detail.id ? 0.55 : 1,
-                                            }}>
-                                            {revisando === detail.id ? 'Consultando…' : 'Volver a consultar'}
-                                        </button>
+                                        {/* Volver a consultar solo cuando la consulta
+                                            NO salió bien. Si ya hay resultado, otra
+                                            consulta gasta un crédito para devolver lo
+                                            mismo: lo que cambia el veredicto es el
+                                            monitoreo de TusDatos, que avisa solo. */}
+                                        {(est !== 'finalizado' || !k.reportId) && (
+                                            <button onClick={() => revisarCumplimiento(detail)} disabled={revisando === detail.id}
+                                                style={{
+                                                    marginTop: 10, background: 'transparent', border: '1px solid rgba(255,255,255,0.14)',
+                                                    color: '#F4F4F2', borderRadius: 999, padding: '7px 14px', fontSize: 12, fontWeight: 700,
+                                                    cursor: revisando === detail.id ? 'default' : 'pointer', opacity: revisando === detail.id ? 0.55 : 1,
+                                                }}>
+                                                {revisando === detail.id ? 'Consultando…' : 'Volver a consultar'}
+                                            </button>
+                                        )}
+                                        {est === 'finalizado' && k.reportId && (
+                                            <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', marginTop: 9, lineHeight: 1.5 }}>
+                                                Si algo cambia en las listas, TusDatos nos avisa y la consulta se repite sola.
+                                            </p>
+                                        )}
                                     </div>
                                 );
                             })()}

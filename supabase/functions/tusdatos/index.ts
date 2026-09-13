@@ -452,10 +452,17 @@ async function detalle(c: Config, reportId: string) {
     fuente: String(x?.fuente ?? x?.codigo_fuente ?? '').slice(0, 60),
   })).filter(x => x.texto || x.codigo)
 
-  // Solo altos y medios, y con tope. Son los que justifican un bloqueo o una
-  // revisión; guardar los bajos de ochenta beneficiarios engorda la fila sin
-  // que nadie los lea. El conteo de bajos sí queda.
-  const hallazgos = [...lista(d.altos, 'alto'), ...lista(d.medios, 'medio')].slice(0, 14)
+  // Solo altos y medios: son los que justifican un bloqueo o una revisión.
+  // Guardar los bajos de ochenta beneficiarios engorda la fila sin que nadie
+  // los lea; el conteo de bajos sí queda.
+  //
+  // Los ALTOS van completos, sin tope: son la razón del bloqueo y esconder
+  // uno es esconder justo lo que hay que leer. Los medios se recortan —con
+  // treinta "registra como demandado en proceso penal 007" el detalle deja de
+  // informar y empieza a estorbar; el listado entero está en el reporte.
+  const altos = lista(d.altos, 'alto')
+  const medios = lista(d.medios, 'medio')
+  const hallazgos = [...altos.slice(0, 25), ...medios.slice(0, Math.max(0, 30 - Math.min(altos.length, 25)))]
 
   return {
     altos: Array.isArray(d.altos) ? d.altos.length : 0,
@@ -1250,6 +1257,37 @@ Deno.serve(async (req: Request) => {
       }
       await auditar('tusdatos.recalculo_nombres', { por: yo.userId, revisados, liberados })
       return json({ ok: true, revisados, liberados })
+    }
+
+    // ── Traer el detalle de los hallazgos de un reporte YA HECHO ─────────
+    // Leer un reporte que ya existe NO gasta un crédito: el crédito se gastó
+    // al lanzar la consulta. Por eso las fichas viejas —consultadas antes de
+    // que se empezara a guardar el detalle— pueden completarse sin volver a
+    // consultarle nada a nadie.
+    //
+    // Se guarda lo traído, así la próxima vez sale de la ficha y no hace
+    // falta volver a pedirlo.
+    if (accion === 'hallazgos') {
+      const uid = String(body.userId ?? yo.userId ?? '')
+      if (!uid || (!yo.esAdmin && yo.userId !== uid)) return json({ error: 'No autorizado' }, 401)
+      const doc = String(body.documento ?? '').replace(/\D/g, '')
+      const raw = await leerRaw(uid)
+      const td = raw?.tusdatos ?? {}
+      const esBenef = !!(td.beneficiarios ?? {})[doc]
+      const f = esBenef ? td.beneficiarios[doc] : (String(td.documento ?? '') === doc ? td : null)
+      if (!f) return json({ ok: false, motivo: 'No hay consulta guardada para ese documento.' })
+      if (Array.isArray(f.hallazgos) && f.hallazgos.length) return json({ ok: true, hallazgos: f.hallazgos, deCache: true })
+      if (!f.reportId) return json({ ok: false, motivo: 'Esta consulta no dejó un reporte del que leer el detalle.' })
+
+      const c = await leerConfig()
+      const det = await detalle(c, String(f.reportId))
+      if (!det) return json({ ok: false, motivo: 'No se pudo leer el reporte en este momento.' })
+      const parche = {
+        hallazgos: det.hallazgos, altos: det.altos, medios: det.medios, bajos: det.bajos,
+        codigos: det.codigos, fuentesConError: det.fuentesConError,
+      } as any
+      if (esBenef) await guardarBeneficiario(uid, doc, parche); else await guardarTitular(uid, parche)
+      return json({ ok: true, hallazgos: det.hallazgos, altos: det.altos, medios: det.medios, bajos: det.bajos })
     }
 
     // ── Consulta manual ──────────────────────────────────────────────────
