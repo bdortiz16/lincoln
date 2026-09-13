@@ -442,8 +442,29 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
         setRevisando(null);
     };
 
-    // Menú "···" abierto (id del contacto)
-    const [menuFor, setMenuFor] = useState<string | null>(null);
+    // Menú "···" abierto: el id del contacto Y la posición del botón.
+    // El menú se dibuja en posición FIJA, no dentro de la fila. La tarjeta de
+    // la tabla recorta lo que se sale (overflow: hidden, que es lo que le da
+    // las esquinas redondeadas), así que un menú absoluto dentro de la fila
+    // quedaba cortado a la mitad — y en la última fila no se veía en absoluto.
+    const [menuFor, setMenuFor] = useState<{ id: string; x: number; y: number; arriba: boolean } | null>(null);
+    const abrirMenu = (id: string, e: React.MouseEvent<HTMLButtonElement>) => {
+        if (menuFor?.id === id) { setMenuFor(null); return; }
+        const r = e.currentTarget.getBoundingClientRect();
+        // Si no cabe abajo, se abre hacia arriba. Un menú que se sale de la
+        // pantalla obliga a hacer scroll a ciegas para alcanzarlo.
+        const arriba = window.innerHeight - r.bottom < 110;
+        setMenuFor({ id, x: r.right, y: arriba ? r.top : r.bottom, arriba });
+    };
+    // Cerrarlo al hacer scroll: queda anclado a un punto de la pantalla, y si
+    // la lista se mueve el menú se despega de su fila.
+    useEffect(() => {
+        if (!menuFor) return;
+        const cerrar = () => setMenuFor(null);
+        window.addEventListener('scroll', cerrar, true);
+        window.addEventListener('resize', cerrar);
+        return () => { window.removeEventListener('scroll', cerrar, true); window.removeEventListener('resize', cerrar); };
+    }, [menuFor]);
     const [formOpen, setFormOpen] = useState(false);
     // Paso 0: ¿banco o wallet? → banco: país → datos · wallet: datos wallet
     const [formStep, setFormStep] = useState<'type' | 'country' | 'data' | 'wallet'>('type');
@@ -1404,13 +1425,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                             <button onClick={() => onSendTo?.(c)} disabled={!onSendTo || st !== 'aprobada'}
                                 style={{ fontSize: 12.5, fontWeight: 600, color: (!onSendTo || st !== 'aprobada') ? '#878E88' : '#F4F4F2', cursor: (!onSendTo || st !== 'aprobada') ? 'not-allowed' : 'pointer' }}
                                 className="hover:text-[#4ADE80] transition-colors">Enviar</button>
-                            <button onClick={() => setMenuFor(menuFor === c.id ? null : c.id)} style={{ color: '#878E88', fontWeight: 700, fontSize: 14, padding: '2px 6px', borderRadius: 6 }} className="hover:bg-white/[0.06] transition-colors">···</button>
-                            {menuFor === c.id && (
-                                <div style={{ position: 'absolute', right: 0, top: '110%', zIndex: 20, background: '#121413', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10, overflow: 'hidden', minWidth: 150, boxShadow: '0 12px 30px rgba(0,0,0,0.5)' }}>
-                                    <button onClick={() => { setMenuFor(null); setDetail(c); }} className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '10px 14px', fontSize: 12.5, color: '#F4F4F2' }}>Ver detalle</button>
-                                    <button onClick={() => { setMenuFor(null); pedirEliminar(c); }} className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '10px 14px', fontSize: 12.5, color: '#F87171', borderTop: '1px solid rgba(255,255,255,0.07)' }}>Eliminar</button>
-                                </div>
-                            )}
+                            <button onClick={e => abrirMenu(c.id, e)} style={{ color: '#878E88', fontWeight: 700, fontSize: 14, padding: '2px 6px', borderRadius: 6 }} className="hover:bg-white/[0.06] transition-colors">···</button>
                         </div>
                     );
                     return (
@@ -1698,6 +1713,30 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                         </div>
                     </div>
                 </div>
+                );
+            })()}
+
+            {/* El menú de la fila, dibujado al nivel de la página y anclado a
+                la posición del botón. Acá no lo recorta nadie. */}
+            {menuFor && (() => {
+                const c = filteredContacts.find(x => x.id === menuFor.id);
+                if (!c) return null;
+                return (
+                    <>
+                        {/* Capa invisible para cerrarlo al tocar fuera, sin
+                            oscurecer la pantalla: es un menú, no un diálogo. */}
+                        <div onClick={() => setMenuFor(null)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
+                        <div style={{
+                            position: 'fixed', left: menuFor.x, top: menuFor.y, zIndex: 41,
+                            transform: `translate(-100%, ${menuFor.arriba ? '-100%' : '0'}) translateY(${menuFor.arriba ? '-6px' : '6px'})`,
+                            background: '#121413', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10,
+                            overflow: 'hidden', minWidth: 160, boxShadow: '0 12px 30px rgba(0,0,0,0.5)',
+                            fontFamily: "'Archivo', system-ui, sans-serif",
+                        }}>
+                            <button onClick={() => { setMenuFor(null); setDetail(c); }} className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '10px 14px', fontSize: 12.5, color: '#F4F4F2' }}>Ver detalle</button>
+                            <button onClick={() => { setMenuFor(null); pedirEliminar(c); }} className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '10px 14px', fontSize: 12.5, color: '#F87171', borderTop: '1px solid rgba(255,255,255,0.07)' }}>Eliminar</button>
+                        </div>
+                    </>
                 );
             })()}
 
