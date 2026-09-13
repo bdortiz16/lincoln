@@ -381,59 +381,93 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
         if (!doc) return null;
         return amlBenef[doc] ?? { estado: 'procesando' };
     };
-    // 'corto' para la columna AML, donde el encabezado ya dice de qué se trata.
+    // 'corto' es la COLUMNA; largo es la ficha, donde hay ancho de sobra.
+    //
+    // En la columna la insignia lleva EL ESTADO y el motivo va debajo en
+    // texto pequeño. Al revés se veía mal y, peor, se leía peor: con el
+    // motivo dentro de la insignia cada fila tenía un ancho distinto y no
+    // había forma de barrer la columna de un vistazo. Con el estado arriba,
+    // todos los bloqueados se ven iguales y saltan solos.
     const kumploPill = (c: Partial<MouvContact>, corto = false) => {
         const k = amlDe(c);
         if (!k) return null;
-        const base: React.CSSProperties = { fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap', display: 'inline-block' };
-        // 'RIESGO MEDIO' queda en revisión, no bloqueado: son cosas distintas
-        // y decirle bloqueado a algo que espera una decisión manda a levantar
-        // un candado que no existe.
-        const palabraEstado = k.operable === false
-            ? (String(k.categoria ?? '') === 'medio' ? 'EN REVISIÓN' : 'BLOQUEADO')
-            : null;
-        const pinta = (borde: string, color: string, texto: string, ayuda: string) => (
+        const base: React.CSSProperties = {
+            fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px',
+            padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap', display: 'inline-block',
+        };
+        const ROJO = { b: 'rgba(248,113,113,0.32)', c: '#F87171' };
+        const AMBAR = { b: 'rgba(251,191,36,0.32)', c: '#FBBF24' };
+        const GRIS = { b: 'rgba(255,255,255,0.14)', c: '#878E88' };
+        const VERDE = { b: 'rgba(74,222,128,0.3)', c: '#4ADE80' };
+
+        const cat = String(k.categoria ?? '');
+        const est = String(k.estado ?? '');
+
+        // Cada caso: el estado que va en la insignia, el motivo que va debajo,
+        // y la explicación completa para la ficha y para el tooltip.
+        let tono = GRIS, estado = '', motivo = '', ayuda = '';
+        if (est === 'procesando' || !est) {
+            estado = 'CONSULTANDO';
+            ayuda = 'Estamos consultando los antecedentes de esta persona. Suele tardar alrededor de un minuto.';
+        } else if (est === 'sin_autorizacion') {
+            estado = 'SIN AUTORIZAR';
+            ayuda = 'El titular del documento no autoriza la consulta de su información. No impide transferirle.';
+        } else if (est !== 'finalizado') {
+            estado = 'SIN RESULTADO';
+            ayuda = 'La consulta no pudo completarse. No impide transferirle; se vuelve a intentar.';
+        } else if (k.nombreCoincide === false) {
+            // La identidad va ANTES que los antecedentes: si el nombre no es el
+            // del documento, saber que otra persona está limpia no sirve de nada.
+            tono = ROJO; estado = k.operable === false ? 'BLOQUEADO' : 'REVISAR'; motivo = 'Nombre incorrecto';
+            ayuda = `El nombre inscrito no corresponde al documento. Según la Registraduría es ${k.nombreReal ?? 'otra persona'}.`;
+        } else if (k.documentoVigente === false) {
+            tono = ROJO; estado = k.operable === false ? 'BLOQUEADO' : 'REVISAR'; motivo = 'Documento no vigente';
+            ayuda = `El documento no está vigente${k.estadoDocumento ? `: ${k.estadoDocumento}` : ''}.`;
+        } else if (cat === 'alto') {
+            tono = ROJO; estado = k.operable === false ? 'BLOQUEADO' : 'RIESGO ALTO'; motivo = 'Riesgo alto';
+            ayuda = 'Hallazgos de riesgo alto. No se puede transferir a esta persona.';
+        } else if (cat === 'medio') {
+            tono = AMBAR; estado = k.operable === false ? 'EN REVISIÓN' : 'RIESGO MEDIO'; motivo = 'Riesgo medio';
+            ayuda = 'Hallazgos de riesgo medio. Queda en revisión de cumplimiento.';
+        } else if (cat === 'sin_validar') {
+            // Un documento que la Registraduría no validó no se puede
+            // categorizar: no se sabe de quién son esos antecedentes.
+            estado = 'SIN VALIDAR';
+            ayuda = 'No se pudo validar el documento. Revisa que el número esté correcto.';
+        } else if (cat === 'bajo') {
+            tono = VERDE; estado = 'RIESGO BAJO';
+            ayuda = 'Hallazgos menores. Se puede operar con esta persona.';
+        } else if (cat === 'ninguno' || cat === 'informativo') {
+            tono = VERDE; estado = 'SIN HALLAZGOS';
+            ayuda = 'No se encontraron antecedentes. Se puede operar con esta persona.';
+        } else {
+            estado = 'SIN RESULTADO';
+            ayuda = 'La consulta terminó sin una categoría. No impide transferirle.';
+        }
+
+        // En la ficha va todo en una línea: hay ancho y se lee de corrido.
+        if (!corto) {
+            return (
+                <span title={ayuda} style={{ ...base, border: `1px solid ${tono.b}`, color: tono.c }}>
+                    AML · {motivo ? `${motivo.toUpperCase()} · ${estado}` : estado}
+                </span>
+            );
+        }
+        return (
             <span title={ayuda} style={{ display: 'inline-block' }}>
-                <span style={{ ...base, border: `1px solid ${borde}`, color }}>{corto ? texto : `AML · ${texto}`}</span>
-                {corto && palabraEstado && (
-                    <span style={{ display: 'block', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', color, marginTop: 3, paddingLeft: 2 }}>{palabraEstado}</span>
+                <span style={{ ...base, border: `1px solid ${tono.b}`, color: tono.c }}>{estado}</span>
+                {motivo && (
+                    <span style={{ display: 'block', fontSize: 10.5, color: '#878E88', marginTop: 4, paddingLeft: 2, lineHeight: 1.3 }}>{motivo}</span>
                 )}
             </span>
         );
-        const cat = String(k.categoria ?? '');
-        const est = String(k.estado ?? '');
-        if (est === 'procesando' || !est) return pinta('rgba(255,255,255,0.14)', '#878E88', 'CONSULTANDO', 'Estamos consultando los antecedentes de esta persona. Suele tardar alrededor de un minuto.');
-        if (est === 'sin_autorizacion') return pinta('rgba(255,255,255,0.14)', '#878E88', 'SIN AUTORIZAR', 'El titular del documento no autoriza la consulta de su información. No impide transferirle.');
-        if (est !== 'finalizado') return pinta('rgba(255,255,255,0.14)', '#878E88', 'SIN RESULTADO', 'La consulta no pudo completarse. No impide transferirle; se vuelve a intentar.');
-        // El "· BLOQUEADO" no se escribe a mano por cada caso: se añade cuando
-        // el veredicto guardado dice que NO se puede operar. Así la insignia no
-        // puede mentir — si el panel está en modo observación y el riesgo alto
-        // no frena nada, no dice que bloquea.
-        const frena = k.operable === false;
-        // En la COLUMNA el motivo y el estado van en dos renglones: una
-        // insignia de veintinueve caracteres no cabe en ninguna columna
-        // razonable y terminaba invadiendo la de al lado. En el detalle, donde
-        // sí hay ancho, va todo en una línea.
-        const conEstado = (t: string) => (corto || !frena) ? t : `${t} · ${String(k.categoria ?? '') === 'medio' ? 'EN REVISIÓN' : 'BLOQUEADO'}`;
-        // La identidad va ANTES que los antecedentes: si el nombre no es el
-        // del documento, saber que otra persona está limpia no sirve de nada.
-        if (k.nombreCoincide === false) return pinta('rgba(248,113,113,0.32)', '#F87171', conEstado('NOMBRE INCORRECTO'), `El nombre inscrito no corresponde al documento. Según la Registraduría es ${k.nombreReal ?? 'otra persona'}.`);
-        if (k.documentoVigente === false) return pinta('rgba(248,113,113,0.32)', '#F87171', conEstado('DOCUMENTO NO VIGENTE'), `El documento no está vigente${k.estadoDocumento ? `: ${k.estadoDocumento}` : ''}.`);
-        if (cat === 'alto') return pinta('rgba(248,113,113,0.32)', '#F87171', conEstado('RIESGO ALTO'), 'Hallazgos de riesgo alto. No se puede transferir a esta persona.');
-        if (cat === 'medio') return pinta('rgba(251,191,36,0.32)', '#FBBF24', conEstado('RIESGO MEDIO'), 'Hallazgos de riesgo medio. Queda en revisión de cumplimiento.');
-        // Un documento que la Registraduría no validó no se puede categorizar:
-        // no se sabe de quién son esos antecedentes. No bloquea, pero se dice.
-        if (cat === 'sin_validar') return pinta('rgba(255,255,255,0.14)', '#878E88', 'SIN VALIDAR', 'No se pudo validar el documento. Revisa que el número esté correcto.');
-        if (cat === 'bajo') return pinta('rgba(74,222,128,0.3)', '#4ADE80', 'RIESGO BAJO', 'Hallazgos menores. Se puede operar con esta persona.');
-        if (cat === 'ninguno' || cat === 'informativo') return pinta('rgba(74,222,128,0.3)', '#4ADE80', 'SIN HALLAZGOS', 'No se encontraron antecedentes. Se puede operar con esta persona.');
-        return pinta('rgba(255,255,255,0.14)', '#878E88', 'SIN RESULTADO', 'La consulta terminó sin una categoría. No impide transferirle.');
     };
 
     // La columna AML solo existe si el titular conectó su cuenta de Kumplo.
     // A quien no la conectó esa verificación no le aplica, y una columna
     // vacía en todas las filas es peor que no tenerla.
     const COLS = amlActivo
-        ? 'minmax(190px,1.2fr) 132px 146px minmax(150px,1fr) 106px 78px'
+        ? 'minmax(190px,1.2fr) 128px 146px minmax(150px,1fr) 106px 78px'
         : 'minmax(190px,1.2fr) 146px minmax(150px,1fr) 110px 82px';
     const CABECERAS = amlActivo
         ? ['BENEFICIARIO', 'AML', 'PAÍS Y RIEL', 'BANCO Y CUENTA', 'ESTADO', 'ACCIONES']
