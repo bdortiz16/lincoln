@@ -235,6 +235,9 @@ export const AdminTusdatos: React.FC = () => {
   const ultimas: any[] = d.ultimas ?? [];
   const mes = d.mes ?? {};
   const ultima = ultimas[0]?.at ?? null;
+  // No se deja encender sin con qué llamar: una integración encendida que no
+  // puede responder deja clientes esperando un veredicto que nunca llega.
+  const puedeEncender = !!cfg.baseUrl && d.credencial !== 'falta';
 
   return (
     <div style={{ fontFamily: FONT, color: C.text }}>
@@ -272,6 +275,43 @@ export const AdminTusdatos: React.FC = () => {
       <div style={{ display: 'grid', gridTemplateColumns: angosta ? '1fr' : '1fr 380px', gap: 14, alignItems: 'start' }}>
         {/* ══ Columna izquierda ══ */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14, minWidth: 0 }}>
+
+          {/* 0. El interruptor. Va PRIMERO y solo: es la decisión de la que
+              cuelga todo lo demás, y no tiene nada que ver con Kumplo — son
+              dos integraciones distintas, cada una se enciende por su lado. */}
+          <Tarjeta style={{ borderColor: cfg.activo ? 'rgba(74,222,128,0.22)' : C.b1 }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
+              <div style={{ minWidth: 0, maxWidth: 560 }}>
+                <p style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>Verificación de antecedentes</p>
+                <p style={{ fontSize: 12.5, color: C.sub, margin: '5px 0 0', lineHeight: 1.6 }}>
+                  {cfg.activo
+                    ? 'Encendida. Al inscribir un beneficiario se consulta su documento y vuelve la categoría: bajo, medio o alto.'
+                    : 'Apagada. No se consulta a nadie y ningún envío se frena por antecedentes. Lo que ya esté consultado se conserva.'}
+                </p>
+                {!puedeEncender && !cfg.activo && (
+                  <p style={{ fontSize: 11.5, color: C.tenue, margin: '8px 0 0', lineHeight: 1.55 }}>
+                    Falta {[!cfg.baseUrl && 'la dirección base', d.credencial === 'falta' && 'la credencial en la Bóveda'].filter(Boolean).join(' y ')}.
+                    Encender algo que no puede responder solo produce clientes bloqueados sin motivo.
+                  </p>
+                )}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+                <span style={{ fontSize: 12.5, fontWeight: 700, color: cfg.activo ? C.green : C.sub }}>
+                  {cfg.activo ? 'Activa' : 'Apagada'}
+                </span>
+                <Toggle
+                  on={!!cfg.activo}
+                  label="Verificación de antecedentes"
+                  onClick={() => {
+                    if (!cfg.activo && !puedeEncender) {
+                      setMsg({ ok: false, texto: 'No se puede encender sin la dirección base y la credencial en la Bóveda.' });
+                      return;
+                    }
+                    guardar({ ...cfg, activo: !cfg.activo });
+                  }} />
+              </div>
+            </div>
+          </Tarjeta>
 
           {/* 1. Estado de la conexión */}
           <Tarjeta>
