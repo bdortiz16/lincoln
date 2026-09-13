@@ -142,8 +142,8 @@ const CAT: Record<string, { t: string; ok: boolean }> = {
   bajo: { t: 'BAJO', ok: true },
   ninguno: { t: 'SIN HALLAZGOS', ok: true },
   informativo: { t: 'INFORMATIVO', ok: true },
-  medio: { t: 'MEDIO · EN REVISIÓN', ok: false },
-  alto: { t: 'ALTO · BLOQUEADO', ok: false },
+  medio: { t: 'RIESGO MEDIO · EN REVISIÓN', ok: false },
+  alto: { t: 'RIESGO ALTO · BLOQUEADO', ok: false },
   sin_validar: { t: 'SIN VALIDAR', ok: false },
 };
 
@@ -539,10 +539,12 @@ export const AdminTusdatos: React.FC = () => {
             {ultimas.length === 0 ? (
               <p style={{ fontSize: 12.5, color: C.sub, padding: '0 17px 18px', margin: 0 }}>Todavía no se ha consultado a nadie.</p>
             ) : ultimas.map(u => {
+              const bloq = u.operable === false;
               const cat = u.estado !== 'finalizado'
                 ? { t: 'PENDIENTE', ok: false }
-                : u.nombreCoincide === false ? { t: 'IDENTIDAD NO CORRESPONDE', ok: false }
-                  : CAT[String(u.categoria ?? '')] ?? { t: 'SIN RESULTADO', ok: false };
+                : u.nombreCoincide === false ? { t: bloq ? 'NOMBRE INCORRECTO · BLOQUEADO' : 'NOMBRE INCORRECTO', ok: false }
+                  : u.documentoVigente === false ? { t: bloq ? 'DOCUMENTO NO VIGENTE · BLOQUEADO' : 'DOCUMENTO NO VIGENTE', ok: false }
+                    : CAT[String(u.categoria ?? '')] ?? { t: 'SIN RESULTADO', ok: false };
               return (
                 <div key={`${u.userId}:${u.documento}`} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '11px 17px', borderTop: `1px solid ${C.b1}` }}>
                   <div style={{ minWidth: 0, flex: 1 }}>

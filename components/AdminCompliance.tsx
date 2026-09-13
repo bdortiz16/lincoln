@@ -51,7 +51,7 @@ const call = async (body: any) => {
 // Cada alerta con su nombre en claro y su peso visual. El rojo se reserva
 // para lo que de verdad frena una operación.
 const ALERTA: Record<string, { texto: string; color: string; borde: string; explica: string }> = {
-  nombre_no_coincide: { texto: 'IDENTIDAD NO CORRESPONDE', color: C.red, borde: 'rgba(248,113,113,0.32)', explica: 'El nombre inscrito no es el del documento. No se sabe a quién se le estaría transfiriendo.' },
+  nombre_no_coincide: { texto: 'NOMBRE INCORRECTO', color: C.red, borde: 'rgba(248,113,113,0.32)', explica: 'El nombre inscrito no es el del documento. No se sabe a quién se le estaría transfiriendo.' },
   documento_no_vigente: { texto: 'DOCUMENTO NO VIGENTE', color: C.red, borde: 'rgba(248,113,113,0.32)', explica: 'La cédula está cancelada. Revisa el motivo: muerte y suplantación son las señales más graves.' },
   riesgo_alto: { texto: 'RIESGO ALTO', color: C.red, borde: 'rgba(248,113,113,0.32)', explica: 'Hallazgos de riesgo alto en las fuentes consultadas.' },
   riesgo_medio: { texto: 'RIESGO MEDIO', color: C.amber, borde: 'rgba(251,191,36,0.32)', explica: 'Hallazgos de riesgo medio. Requiere una decisión: aprobar o dejar bloqueado.' },
@@ -202,7 +202,10 @@ export const AdminCompliance: React.FC = () => {
                     </p>
                   </div>
                   <span style={{ border: `1px solid ${a.borde}`, color: a.color, borderRadius: 999, padding: '4px 10px', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>
-                    {a.texto}
+                    {/* El "· BLOQUEADO" sale del veredicto guardado, no de la
+                        etiqueta: si el panel está en modo observación y el
+                        riesgo alto no frena nada, la insignia no lo dice. */}
+                    {a.texto}{c.operable === false ? ' · BLOQUEADO' : ''}
                   </span>
                 </div>
               </button>

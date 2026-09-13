@@ -393,12 +393,18 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
         if (est === 'procesando' || !est) return pinta('rgba(255,255,255,0.14)', '#878E88', 'CONSULTANDO', 'Estamos consultando los antecedentes de esta persona. Suele tardar alrededor de un minuto.');
         if (est === 'sin_autorizacion') return pinta('rgba(255,255,255,0.14)', '#878E88', 'SIN AUTORIZAR', 'El titular del documento no autoriza la consulta de su información. No impide transferirle.');
         if (est !== 'finalizado') return pinta('rgba(255,255,255,0.14)', '#878E88', 'SIN RESULTADO', 'La consulta no pudo completarse. No impide transferirle; se vuelve a intentar.');
+        // El "· BLOQUEADO" no se escribe a mano por cada caso: se añade cuando
+        // el veredicto guardado dice que NO se puede operar. Así la insignia no
+        // puede mentir — si el panel está en modo observación y el riesgo alto
+        // no frena nada, no dice que bloquea.
+        const frena = k.operable === false;
+        const conEstado = (t: string) => frena ? `${t} · BLOQUEADO` : t;
         // La identidad va ANTES que los antecedentes: si el nombre no es el
         // del documento, saber que otra persona está limpia no sirve de nada.
-        if (k.nombreCoincide === false) return pinta('rgba(248,113,113,0.32)', '#F87171', 'BLOQUEADO', `El nombre inscrito no corresponde al documento. Según la Registraduría es ${k.nombreReal ?? 'otra persona'}.`);
-        if (k.documentoVigente === false) return pinta('rgba(248,113,113,0.32)', '#F87171', 'BLOQUEADO', `El documento no está vigente${k.estadoDocumento ? `: ${k.estadoDocumento}` : ''}.`);
-        if (cat === 'alto') return pinta('rgba(248,113,113,0.32)', '#F87171', 'RIESGO ALTO', 'Hallazgos de riesgo alto. No se puede transferir a esta persona.');
-        if (cat === 'medio') return pinta('rgba(251,191,36,0.32)', '#FBBF24', 'RIESGO MEDIO', 'Hallazgos de riesgo medio. Queda en revisión de cumplimiento.');
+        if (k.nombreCoincide === false) return pinta('rgba(248,113,113,0.32)', '#F87171', conEstado('NOMBRE INCORRECTO'), `El nombre inscrito no corresponde al documento. Según la Registraduría es ${k.nombreReal ?? 'otra persona'}.`);
+        if (k.documentoVigente === false) return pinta('rgba(248,113,113,0.32)', '#F87171', conEstado('DOCUMENTO NO VIGENTE'), `El documento no está vigente${k.estadoDocumento ? `: ${k.estadoDocumento}` : ''}.`);
+        if (cat === 'alto') return pinta('rgba(248,113,113,0.32)', '#F87171', conEstado('RIESGO ALTO'), 'Hallazgos de riesgo alto. No se puede transferir a esta persona.');
+        if (cat === 'medio') return pinta('rgba(251,191,36,0.32)', '#FBBF24', frena ? 'RIESGO MEDIO · EN REVISIÓN' : 'RIESGO MEDIO', 'Hallazgos de riesgo medio. Queda en revisión de cumplimiento.');
         // Un documento que la Registraduría no validó no se puede categorizar:
         // no se sabe de quién son esos antecedentes. No bloquea, pero se dice.
         if (cat === 'sin_validar') return pinta('rgba(255,255,255,0.14)', '#878E88', 'SIN VALIDAR', 'No se pudo validar el documento. Revisa que el número esté correcto.');
@@ -411,7 +417,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     // A quien no la conectó esa verificación no le aplica, y una columna
     // vacía en todas las filas es peor que no tenerla.
     const COLS = amlActivo
-        ? 'minmax(140px,1fr) 126px 132px 158px 112px 84px'
+        ? 'minmax(140px,1fr) 172px 126px 150px 108px 80px'
         : 'minmax(140px,1fr) 150px 170px 118px 88px';
     const CABECERAS = amlActivo
         ? ['BENEFICIARIO', 'AML', 'PAÍS Y RIEL', 'BANCO Y CUENTA', 'ESTADO', 'ACCIONES']
