@@ -44,7 +44,13 @@ async function callMouvProxy(action: string, userId: string, extra: Record<strin
 }
 
 // Llamador a la función de cumplimiento (Kumplo).
+async function callTusdatos(cuerpo: Record<string, unknown>): Promise<any> {
+    return llamarFuncion('tusdatos', cuerpo);
+}
 async function callKumplo(cuerpo: Record<string, unknown>): Promise<any> {
+    return llamarFuncion('kumplo', cuerpo);
+}
+async function llamarFuncion(nombre: string, cuerpo: Record<string, unknown>): Promise<any> {
     const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
     const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
     let auth = `Bearer ${SKEY}`;
@@ -53,7 +59,7 @@ async function callKumplo(cuerpo: Record<string, unknown>): Promise<any> {
         if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) auth = `Bearer ${d.access_token}`; }
     } catch { /* sin sesión */ }
     try {
-        const r = await fetch(`${SURL}/functions/v1/kumplo`, {
+        const r = await fetch(`${SURL}/functions/v1/${nombre}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: auth },
             body: JSON.stringify(cuerpo),
@@ -325,94 +331,111 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     // el riel del país esté listo.
     const countryStatus: Record<string, string> = { Colombia: 'on', 'Estados Unidos': 'on', ...(((sysConfig as any)?.countryStatus) || {}) };
     const AVAILABLE_COUNTRIES = CONTACT_COUNTRIES.filter(c => countryStatus[c.name] === 'on');
-    // ── Cumplimiento (Kumplo) ────────────────────────────────────────────
-    // Esta verificación adicional —el documento del beneficiario contra las
-    // fuentes de Kumplo— existe SOLO para quien conectó su cuenta de Kumplo
-    // en Ajustes. A quien no la conectó no le aplica, y por eso no ve nada de
-    // esto: una insignia que nunca cambia de estado solo confunde.
-    // El estado se le pregunta al SERVIDOR, no se deduce del raw_data que
-    // tenga el navegador: 'kumplo' es una clave que solo escribe el servidor y
-    // no siempre viaja fresca al cliente. Deducirla de ahí hacía que la
-    // columna no apareciera aunque la cuenta estuviera conectada.
-    const kumploRaw: any = (currentUser as any)?.raw_data?.kumplo ?? {};
-    const [kumploSrv, setKumploSrv] = useState<{ conectado: boolean; benef: Record<string, any> } | null>(null);
+    // ── Antecedentes (TusDatos) ──────────────────────────────────────────
+    // La consulta la hacemos NOSOTROS, directo contra TusDatos, y de ahí sale
+    // la categoría: bajo, medio o alto. Antes se le pedía el veredicto a
+    // Kumplo y Kumplo consultaba; ese camino nunca devolvió nada y desde acá
+    // no había forma de saber de qué lado estaba el problema. Ahora el
+    // resultado es nuestro, y a Kumplo se le envía.
+    //
+    // El estado se le pregunta al SERVIDOR: 'tusdatos' es una clave que solo
+    // escribe el servidor y no siempre viaja fresca al navegador.
+    const tdRaw: any = (currentUser as any)?.raw_data?.tusdatos ?? {};
+    const [tdSrv, setTdSrv] = useState<{ activo: boolean; benef: Record<string, any> } | null>(null);
 
-    // Una consulta que falla NO desconecta la sección. Antes cualquier
-    // tropiezo de red devolvía conectado:false y la columna AML desaparecía a
-    // los pocos segundos de haber aparecido — se veía como si el AML fuera
-    // algo momentáneo. Solo una respuesta explícita del servidor cambia el
-    // estado; si no llega, se queda lo último que sí supimos.
-    const leerKumplo = React.useCallback(async (uid: string) => {
-        const e = await callKumplo({ action: 'estado', userId: uid });
+    // Una consulta que falla NO apaga la sección: solo una respuesta explícita
+    // del servidor cambia el estado. Si no llega, se queda lo último que sí
+    // supimos — antes cualquier tropiezo de red hacía desaparecer la columna.
+    const leerTusdatos = React.useCallback(async (uid: string) => {
+        const e = await callTusdatos({ action: 'estado', userId: uid });
         if (!e?.ok) return;
-        const b = e.conectado ? await callKumplo({ action: 'beneficiarios', userId: uid }) : null;
-        setKumploSrv({ conectado: !!e.conectado, benef: b?.beneficiarios ?? {} });
+        setTdSrv({ activo: !!e.activo && !!e.enLaPrueba, benef: e.beneficiarios ?? {} });
     }, []);
 
     useEffect(() => {
         const uid = currentUser?.id;
         if (!uid) return;
-        leerKumplo(uid);
-    }, [currentUser?.id, leerKumplo]);
+        leerTusdatos(uid);
+    }, [currentUser?.id, leerTusdatos]);
 
-    const kumploConectado = kumploSrv ? kumploSrv.conectado : !!kumploRaw.empresaId;
-    const kumploBenef: Record<string, any> = kumploSrv ? kumploSrv.benef : (kumploRaw.beneficiarios ?? {});
-    // Sin ficha todavía = en verificación. Es la verdad: los datos ya salieron
-    // hacia Kumplo y el veredicto no ha vuelto.
-    const kumploDe = (c: Partial<MouvContact>) => {
-        if (!kumploConectado) return null;
+    const amlActivo = tdSrv ? tdSrv.activo : Object.keys(tdRaw.beneficiarios ?? {}).length > 0;
+    const amlBenef: Record<string, any> = tdSrv ? tdSrv.benef : (tdRaw.beneficiarios ?? {});
+    // Sin ficha todavía = consulta en curso. Es la verdad: el documento ya
+    // salió hacia TusDatos y el resultado no ha vuelto.
+    const amlDe = (c: Partial<MouvContact>) => {
+        if (!amlActivo) return null;
         const doc = String(c?.docNumber ?? '').replace(/\D/g, '');
         if (!doc) return null;
-        return kumploBenef[doc] ?? { estado: 'procesando' };
+        return amlBenef[doc] ?? { estado: 'procesando' };
     };
-    // 'corto' para la columna AML, donde el encabezado ya dice de qué se trata
-    // y repetir "KUMPLO ·" en cada fila solo gasta ancho.
+    // 'corto' para la columna AML, donde el encabezado ya dice de qué se trata.
     const kumploPill = (c: Partial<MouvContact>, corto = false) => {
-        const k = kumploDe(c);
+        const k = amlDe(c);
         if (!k) return null;
         const base: React.CSSProperties = { fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap', display: 'inline-block' };
         const pinta = (borde: string, color: string, texto: string, ayuda: string) =>
-            <span title={ayuda} style={{ ...base, border: `1px solid ${borde}`, color }}>{corto ? texto : `KUMPLO · ${texto}`}</span>;
-        if (k.riesgo === 'alto') return pinta('rgba(248,113,113,0.32)', '#F87171', 'NO OPERABLE', 'Riesgo alto. No se puede transferir a esta persona.');
-        if (String(k.estado ?? '') === 'procesando' || !k.at) return pinta('rgba(255,255,255,0.14)', '#878E88', 'VERIFICANDO', 'Enviamos los datos a Kumplo y estamos esperando el resultado.');
-        // 'desconocido' no es un veredicto en contra: es que no pudieron
-        // validar el documento. No bloquea, y decir "en revisión" haría creer
-        // que hay una decisión tomada cuando no la hay.
-        if (k.riesgo === 'desconocido') return pinta('rgba(255,255,255,0.14)', '#878E88', 'SIN VALIDAR', 'No se pudo validar el documento. Revisa que el número esté correcto.');
-        if (k.operable === false) return pinta('rgba(251,191,36,0.32)', '#FBBF24', 'EN REVISIÓN', 'En revisión de cumplimiento. Por ahora no se le puede transferir.');
-        if (k.operable === true) return pinta('rgba(74,222,128,0.3)', '#4ADE80', 'APROBADO', 'Documento verificado. Se puede operar con esta persona.');
-        return pinta('rgba(255,255,255,0.14)', '#878E88', 'SIN RESULTADO', 'Kumplo no devolvió un veredicto para este documento.');
+            <span title={ayuda} style={{ ...base, border: `1px solid ${borde}`, color }}>{corto ? texto : `AML · ${texto}`}</span>;
+        const cat = String(k.categoria ?? '');
+        const est = String(k.estado ?? '');
+        if (est === 'procesando' || !est) return pinta('rgba(255,255,255,0.14)', '#878E88', 'CONSULTANDO', 'Estamos consultando los antecedentes de esta persona. Suele tardar alrededor de un minuto.');
+        if (est === 'sin_autorizacion') return pinta('rgba(255,255,255,0.14)', '#878E88', 'SIN AUTORIZAR', 'El titular del documento no autoriza la consulta de su información. No impide transferirle.');
+        if (est !== 'finalizado') return pinta('rgba(255,255,255,0.14)', '#878E88', 'SIN RESULTADO', 'La consulta no pudo completarse. No impide transferirle; se vuelve a intentar.');
+        if (cat === 'alto') return pinta('rgba(248,113,113,0.32)', '#F87171', 'RIESGO ALTO', 'Hallazgos de riesgo alto. No se puede transferir a esta persona.');
+        if (cat === 'medio') return pinta('rgba(251,191,36,0.32)', '#FBBF24', 'RIESGO MEDIO', 'Hallazgos de riesgo medio. Queda en revisión de cumplimiento.');
+        // Un documento que la Registraduría no validó no se puede categorizar:
+        // no se sabe de quién son esos antecedentes. No bloquea, pero se dice.
+        if (cat === 'sin_validar') return pinta('rgba(255,255,255,0.14)', '#878E88', 'SIN VALIDAR', 'No se pudo validar el documento. Revisa que el número esté correcto.');
+        if (cat === 'bajo') return pinta('rgba(74,222,128,0.3)', '#4ADE80', 'RIESGO BAJO', 'Hallazgos menores. Se puede operar con esta persona.');
+        if (cat === 'ninguno' || cat === 'informativo') return pinta('rgba(74,222,128,0.3)', '#4ADE80', 'SIN HALLAZGOS', 'No se encontraron antecedentes. Se puede operar con esta persona.');
+        return pinta('rgba(255,255,255,0.14)', '#878E88', 'SIN RESULTADO', 'La consulta terminó sin una categoría. No impide transferirle.');
     };
 
     // La columna AML solo existe si el titular conectó su cuenta de Kumplo.
     // A quien no la conectó esa verificación no le aplica, y una columna
     // vacía en todas las filas es peor que no tenerla.
-    const COLS = kumploConectado
+    const COLS = amlActivo
         ? 'minmax(140px,1fr) 126px 132px 158px 112px 84px'
         : 'minmax(140px,1fr) 150px 170px 118px 88px';
-    const CABECERAS = kumploConectado
+    const CABECERAS = amlActivo
         ? ['BENEFICIARIO', 'AML', 'PAÍS Y RIEL', 'BANCO Y CUENTA', 'ESTADO', 'ACCIONES']
         : ['BENEFICIARIO', 'PAÍS Y RIEL', 'BANCO Y CUENTA', 'ESTADO', 'ACCIONES'];
+
+    // El PDF del reporte. TusDatos lo sirve autenticado, así que no se puede
+    // abrir con un enlace: viene por el servidor y se abre desde la memoria
+    // del navegador. La credencial no sale de la Bóveda.
+    const [pdfCargando, setPdfCargando] = useState(false);
+    const verPdf = async (reportId: string) => {
+        if (!currentUser?.id || pdfCargando) return;
+        setPdfCargando(true);
+        const r = await callTusdatos({ action: 'pdf', userId: currentUser.id, reportId });
+        setPdfCargando(false);
+        if (!r?.ok) { setNotice({ ok: false, text: r?.motivo ?? 'No se pudo abrir el reporte.' }); return; }
+        try {
+            const bin = atob(r.pdf);
+            const buf = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+            const url = URL.createObjectURL(new Blob([buf], { type: 'application/pdf' }));
+            window.open(url, '_blank');
+            setTimeout(() => URL.revokeObjectURL(url), 60000);
+        } catch { setNotice({ ok: false, text: 'No se pudo abrir el reporte.' }); }
+    };
 
     // Revisión manual del cumplimiento de un beneficiario (id del contacto).
     const [revisando, setRevisando] = useState<string | null>(null);
     const revisarCumplimiento = async (c: MouvContact) => {
         if (!currentUser?.id || revisando) return;
         setRevisando(c.id);
-        const breb = (c.destKind ?? 'ach') === 'breb';
-        await callKumplo({
-            action: 'verificar_beneficiario', userId: currentUser.id, forzar: true,
+        // Se lanza y se recoge: la consulta tarda cerca de un minuto, así que
+        // el primer intento de recoger casi nunca la encuentra lista. El
+        // webhook la cierra después, o la siguiente vuelta del reloj.
+        await callTusdatos({
+            action: 'verificar_beneficiario', userId: currentUser.id,
             nombre: c.name, documento: String(c.docNumber ?? '').replace(/\D/g, ''),
             tipoDocumento: String(c.docType ?? 'CC').toUpperCase(),
-            tipoPersona: c.kind === 'empresa' ? 'empresa' : 'persona',
-            riel: breb ? 'BREB' : 'ACH',
-            banco: c.bank ?? null,
-            tipoCuenta: breb ? null : (c.accountType === 'checking' ? 'corriente' : 'ahorros'),
-            cuenta: breb ? (c.brebKey ?? null) : (c.accountNumber ?? null),
-            tipoLlave: breb ? (c.brebKeyType ?? null) : null,
         });
+        await callTusdatos({ action: 'recoger_pendientes', userId: currentUser.id });
+        await leerTusdatos(currentUser.id);
         setRevisando(null);
-        await refreshData?.();
     };
 
     // Menú "···" abierto (id del contacto)
@@ -783,12 +806,12 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     // consulta para siempre.
     useEffect(() => {
         const uid = currentUser?.id;
-        if (!uid || !kumploConectado) return;
+        if (!uid || !amlActivo) return;
         const faltan = bankContacts.some(c => {
             const doc = String(c.docNumber ?? '').replace(/\D/g, '');
             if (!doc) return false;
-            const k = kumploBenef[doc];
-            return !k || String(k.estado ?? '') === 'procesando' || !k.at;
+            const k = amlBenef[doc];
+            return !k || String(k.estado ?? '') === 'procesando';
         });
         if (!faltan) return;
         let vueltas = 0;
@@ -798,11 +821,17 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
         // beneficiario: con sesenta contactos eso son minutos de llamadas que
         // se cortan apenas la persona cambia de pantalla, y ningún veredicto
         // alcanza a guardarse.
+        // Dos cosas por vuelta: LANZAR las consultas que faltan y RECOGER las
+        // que ya terminaron. El webhook de TusDatos es el camino principal
+        // para recoger; esto es el respaldo, porque un aviso perdido dejaría a
+        // alguien «consultando» para siempre.
         const vuelta = async () => {
             if (!vivo) return;
-            await callKumplo({ action: 'verificar_pendientes', userId: uid, limite: 4 });
+            await callTusdatos({ action: 'verificar_pendientes', userId: uid, limite: 4 });
             if (!vivo) return;
-            await leerKumplo(uid);
+            await callTusdatos({ action: 'recoger_pendientes', userId: uid });
+            if (!vivo) return;
+            await leerTusdatos(uid);
         };
         vuelta();
         const t = setInterval(() => {
@@ -812,7 +841,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
         }, 15000);
         return () => { vivo = false; clearInterval(t); };
         /* eslint-disable-next-line react-hooks/exhaustive-deps */
-    }, [currentUser?.id, kumploConectado, kumploBenef, bankContacts.length, leerKumplo]);
+    }, [currentUser?.id, amlActivo, amlBenef, bankContacts.length, leerTusdatos]);
 
     // El registro con el banco se reintenta SOLO: la sincronización al entrar
     // vuelve a inscribir las cuentas ACH que quedaron sin id. Eso es trabajo
@@ -1394,7 +1423,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                             {/* AML — el veredicto de cumplimiento, pegado al
                                 nombre: se lee junto con QUIÉN es la persona,
                                 no con su banco. */}
-                            {kumploConectado && (
+                            {amlActivo && (
                                 <div className="min-w-0">
                                     {kumploPill(c, true) ?? <span style={{ fontSize: 12, color: 'rgba(244,244,242,0.45)' }}>—</span>}
                                 </div>
@@ -1563,64 +1592,55 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                 la insignia y desde cuándo. En la fila solo hay
                                 espacio para el estado. */}
                             {(() => {
-                                const k = kumploDe(detail);
+                                const k = amlDe(detail);
                                 if (!k) return null;
-                                const enCurso = String(k.estado ?? '') === 'procesando' || !k.at;
-                                const texto = k.riesgo === 'alto'
-                                    ? 'Kumplo marcó riesgo alto para este documento. No se puede transferir a esta persona.'
-                                    : k.operable === false
-                                        ? 'Kumplo dejó a esta persona en revisión de cumplimiento. Mientras siga así no se le puede transferir.'
-                                        : enCurso
-                                            ? 'Enviamos el nombre, el documento y la cuenta a Kumplo. Estamos esperando el resultado de la verificación.'
-                                            : k.operable === true
-                                                ? 'Kumplo verificó el documento. Se puede operar con esta persona.'
-                                                : 'Kumplo no devolvió un veredicto para este documento.';
+                                const est = String(k.estado ?? '');
+                                const cat = String(k.categoria ?? '');
+                                const texto =
+                                    est === 'procesando' || !est ? 'Estamos consultando los antecedentes de esta persona contra las fuentes oficiales. Suele tardar alrededor de un minuto.'
+                                    : est === 'sin_autorizacion' ? 'El titular del documento no autoriza la consulta de su información, un derecho que le ampara la ley de protección de datos. Esto no impide transferirle.'
+                                    : est !== 'finalizado' ? 'La consulta no pudo completarse. Se vuelve a intentar; mientras tanto no impide transferirle.'
+                                    : cat === 'alto' ? 'La consulta encontró hallazgos de riesgo alto. No se puede transferir a esta persona.'
+                                    : cat === 'medio' ? 'La consulta encontró hallazgos de riesgo medio. Queda en revisión de cumplimiento y por ahora no se le puede transferir.'
+                                    : cat === 'sin_validar' ? 'No se pudo validar el documento contra la Registraduría, así que no se sabe de quién son los antecedentes. Revisa que el número esté correcto. No impide transferirle.'
+                                    : cat === 'bajo' ? 'La consulta encontró hallazgos menores. Se puede operar con esta persona.'
+                                    : cat === 'ninguno' || cat === 'informativo' ? 'No se encontraron antecedentes. Se puede operar con esta persona.'
+                                    : 'La consulta terminó sin una categoría. No impide transferirle.';
+                                const conteo = (k.altos ?? 0) + (k.medios ?? 0) + (k.bajos ?? 0);
                                 return (
                                     <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
                                         <div className="flex items-center justify-between gap-3" style={{ marginBottom: 7 }}>
-                                            <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88' }}>CUMPLIMIENTO</span>
+                                            <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88' }}>ANTECEDENTES</span>
                                             {kumploPill(detail)}
                                         </div>
                                         <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.55 }}>{texto}</p>
-                                        {k.nombreCoincide === false && (
-                                            <p style={{ fontSize: 12, color: '#FBBF24', marginTop: 6, lineHeight: 1.5 }}>El nombre inscrito no coincide con el del documento.</p>
-                                        )}
-                                        {k.yaEstaba && (
+                                        {k.nombre && (
                                             <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 6, lineHeight: 1.5 }}>
-                                                Esta persona ya estaba registrada en Kumplo. No se volvió a inscribir: se tomó la consulta que ya existía.
+                                                Nombre en el documento: <b style={{ color: '#F4F4F2' }}>{String(k.nombre)}</b>
                                             </p>
                                         )}
-                                        {/* El nivel, con nombre propio. Es lo que
-                                            se pidió ver: bajo, medio o alto. */}
-                                        {k.riesgo && (
-                                            <div className="flex items-center justify-between gap-3" style={{ padding: '10px 0 0' }}>
-                                                <span style={{ fontSize: 12.5, color: '#878E88' }}>Nivel de riesgo</span>
-                                                <span style={{
-                                                    fontSize: 13, fontWeight: 700,
-                                                    color: k.riesgo === 'alto' ? '#F87171' : k.riesgo === 'medio' ? '#FBBF24' : k.riesgo === 'bajo' ? '#4ADE80' : '#878E88',
-                                                }}>
-                                                    {k.riesgo === 'alto' ? 'Alto' : k.riesgo === 'medio' ? 'Medio' : k.riesgo === 'bajo' ? 'Bajo' : 'Sin determinar'}
-                                                </span>
-                                            </div>
+                                        {est === 'finalizado' && conteo > 0 && (
+                                            <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 6, lineHeight: 1.5 }}>
+                                                Hallazgos: {k.altos ?? 0} alto{(k.altos ?? 0) === 1 ? '' : 's'} · {k.medios ?? 0} medio{(k.medios ?? 0) === 1 ? '' : 's'} · {k.bajos ?? 0} bajo{(k.bajos ?? 0) === 1 ? '' : 's'}
+                                            </p>
                                         )}
                                         {k.at && (
                                             <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', marginTop: 6 }}>
-                                                Última revisión: {new Date(k.at).toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' })}
+                                                Última consulta: {new Date(k.at).toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' })}
                                             </p>
                                         )}
-                                        {/* La respuesta cruda, solo para el
-                                            administrador. Al cliente no le sirve
-                                            un JSON, pero para probar la conexión
-                                            hay que poder ver qué llegó. */}
-                                        {(currentUser as any)?.role === 'admin' && k.respuesta && (
-                                            <details style={{ marginTop: 9 }}>
-                                                <summary style={{ fontSize: 11, color: '#878E88', cursor: 'pointer' }}>Respuesta de Kumplo</summary>
-                                                <pre style={{
-                                                    marginTop: 6, fontSize: 10.5, color: '#878E88', background: '#0A0B0A',
-                                                    border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, padding: 10,
-                                                    whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxHeight: 200, overflow: 'auto',
-                                                }}>{String(k.respuesta)}</pre>
-                                            </details>
+                                        {/* El reporte completo es para el admin.
+                                            Al cliente no le sirve un listado de
+                                            fuentes; a quien revisa un caso, sí. */}
+                                        {(currentUser as any)?.role === 'admin' && k.reportId && (
+                                            <button onClick={() => verPdf(String(k.reportId))} disabled={pdfCargando}
+                                                style={{
+                                                    marginTop: 10, marginRight: 8, background: 'transparent', border: '1px solid rgba(255,255,255,0.14)',
+                                                    color: '#F4F4F2', borderRadius: 999, padding: '7px 14px', fontSize: 12, fontWeight: 700,
+                                                    cursor: pdfCargando ? 'default' : 'pointer', opacity: pdfCargando ? 0.55 : 1,
+                                                }}>
+                                                {pdfCargando ? 'Abriendo…' : 'Ver el reporte'}
+                                            </button>
                                         )}
                                         <button onClick={() => revisarCumplimiento(detail)} disabled={revisando === detail.id}
                                             style={{
@@ -1628,7 +1648,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                                 color: '#F4F4F2', borderRadius: 999, padding: '7px 14px', fontSize: 12, fontWeight: 700,
                                                 cursor: revisando === detail.id ? 'default' : 'pointer', opacity: revisando === detail.id ? 0.55 : 1,
                                             }}>
-                                            {revisando === detail.id ? 'Consultando…' : 'Volver a revisar'}
+                                            {revisando === detail.id ? 'Consultando…' : 'Volver a consultar'}
                                         </button>
                                     </div>
                                 );

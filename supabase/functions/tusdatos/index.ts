@@ -1,0 +1,697 @@
+// ════════════════════════════════════════════════════════
+// tusdatos — la consulta de antecedentes, hecha por nosotros.
+//
+// QUÉ HACE
+//   1. Lanza la consulta de un documento en TusDatos (/api/launch).
+//   2. La consulta es ASÍNCRONA: devuelve un jobid y tarda ~1 minuto. El
+//      resultado se recoge por su webhook (individualCompleted) o releyendo
+//      /api/results/{jobid}.
+//   3. Traduce el resultado a la categoría que usa Lincoin —bajo, medio,
+//      alto— y la guarda en el perfil.
+//   4. Con el veredicto negativo, Lincoin deja de permitir la transferencia.
+//
+// POR QUÉ LA HACEMOS NOSOTROS
+//   Antes se le pedía el veredicto a Kumplo y Kumplo consultaba TusDatos.
+//   Ese camino nunca devolvió el resultado, y desde acá no había forma de
+//   saber si el problema era nuestro o suyo. Consultando directo, el
+//   resultado es nuestro: lo vemos, lo guardamos y respondemos por él. A
+//   Kumplo se le ENVÍA el detalle y el PDF para que su expediente quede
+//   completo — al revés de como estaba.
+//
+// LO QUE TUSDATOS DEVUELVE Y CÓMO SE LEE
+//   /api/results/{jobid} → { estado, id, nombre, validado, hallazgo,
+//   hallazgos: 'Alto'|'Medio'|'Bajo'|…, error, errores, results }
+//   'hallazgos' es la categoría ya calculada según la categorización que la
+//   empresa configuró en su panel. Es la que mandamos usar: replicar ese
+//   cálculo acá sería mantener dos criterios que se van a separar.
+//
+// UN VEREDICTO AUSENTE NO ES UN VEREDICTO EN CONTRA
+//   Si la consulta falla, queda a medias, o el documento no se pudo validar,
+//   NO se bloquea a nadie. Solo corta una categoría explícita. Esta regla ya
+//   costó caro una vez: un 'desconocido' convertido en 'no puede operar'
+//   rechazó a un cliente legítimo diciéndole que estaba restringido.
+//
+// LAS CREDENCIALES VIVEN EN LA BÓVEDA
+//   TUSDATOS_USER + TUSDATOS_PASSWORD (Basic), o TUSDATOS_TOKEN (Bearer).
+//   Nunca se guardan en la base ni se devuelven al panel.
+//
+// ARRANCA APAGADO.
+// ════════════════════════════════════════════════════════
+
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
+const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+const TD_USER = Deno.env.get('TUSDATOS_USER') ?? ''
+const TD_PASS = Deno.env.get('TUSDATOS_PASSWORD') ?? ''
+const TD_TOKEN = Deno.env.get('TUSDATOS_TOKEN') ?? ''
+// Secreto con el que TusDatos firma sus webhooks hacia nosotros (BearerAuth).
+const TD_WEBHOOK = Deno.env.get('TUSDATOS_WEBHOOK_SECRET') ?? ''
+// Credencial para ENVIARLE el resultado a Kumplo.
+const KUMPLO_KEY = Deno.env.get('KUMPLO_API_KEY') ?? ''
+
+const db = createClient(SUPABASE_URL, SERVICE_KEY)
+
+const CORS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+}
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { ...CORS, 'Content-Type': 'application/json' } })
+
+const CONFIG_KEY = 'tusdatos_config'
+
+type Config = {
+  activo: boolean
+  // Pruebas: http://docs.tusdatos.co — respuestas estáticas, no gasta créditos.
+  // Producción: https://dash-board.tusdatos.co — gasta créditos del plan.
+  baseUrl: string
+  // 'medio' bloquea salvo que esto esté en true.
+  soloBloquearAlto: boolean
+  bloquear: boolean
+  // Ids de cuentas en la prueba. Vacío = todas.
+  soloEstosUsuarios: string[]
+  // Cada /api/launch en producción GASTA UN CRÉDITO. Con esto se evita
+  // relanzar un documento consultado hace poco.
+  horasCache: number
+  // Enviar el resultado y el PDF a Kumplo cuando la consulta termina.
+  enviarAKumplo: boolean
+  kumploBaseUrl: string
+  kumploRutaResultado: string
+}
+
+const CONFIG_POR_DEFECTO: Config = {
+  activo: false,
+  baseUrl: 'https://dash-board.tusdatos.co',
+  soloBloquearAlto: false,
+  bloquear: true,
+  soloEstosUsuarios: [],
+  horasCache: 6,
+  enviarAKumplo: false,
+  kumploBaseUrl: 'https://tqscdruogiaqpbntfywh.supabase.co/functions/v1/super-handler',
+  kumploRutaResultado: '/partner/aml-externo',
+}
+
+async function leerConfig(): Promise<Config> {
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', CONFIG_KEY).single()
+    if (!data?.value) return CONFIG_POR_DEFECTO
+    return { ...CONFIG_POR_DEFECTO, ...JSON.parse(data.value) }
+  } catch { return CONFIG_POR_DEFECTO }
+}
+
+async function guardarConfig(c: Config) {
+  await db.from('system_config').upsert({ key: CONFIG_KEY, value: JSON.stringify(c) }, { onConflict: 'key' })
+}
+
+function hayCredencial(): boolean {
+  return !!TD_TOKEN || (!!TD_USER && !!TD_PASS)
+}
+
+// Basic o Bearer, según lo que haya en la Bóveda. TusDatos acepta los dos y
+// el token es preferible: no viaja la contraseña en cada petición.
+function cabeceraAuth(): string {
+  if (TD_TOKEN) return `Bearer ${TD_TOKEN}`
+  return `Basic ${btoa(`${TD_USER}:${TD_PASS}`)}`
+}
+
+async function llamarTD(c: Config, ruta: string, metodo: 'GET' | 'POST', cuerpo?: unknown) {
+  const url = `${c.baseUrl.replace(/\/+$/, '')}${ruta.startsWith('/') ? '' : '/'}${ruta}`
+  try {
+    const r = await fetch(url, {
+      method: metodo,
+      headers: {
+        Authorization: cabeceraAuth(),
+        ...(cuerpo ? { 'Content-Type': 'application/json' } : {}),
+      },
+      ...(cuerpo ? { body: JSON.stringify(cuerpo) } : {}),
+    })
+    const texto = await r.text()
+    let body: any = null
+    try { body = JSON.parse(texto) } catch { /* puede no ser JSON */ }
+    return { ok: r.ok, status: r.status, body, texto: texto.slice(0, 600), url }
+  } catch (e) {
+    // Status 0 = no se llegó. Se distingue a propósito de un rechazo de ellos.
+    return { ok: false, status: 0, body: null, texto: `no se pudo contactar: ${(e as Error)?.message ?? 'error de red'}`, url }
+  }
+}
+
+async function auditar(action: string, metadata: Record<string, unknown>) {
+  try { await db.from('audit_log').insert({ action, metadata }) } catch { /* nunca frena la consulta */ }
+}
+
+// ── Identidad de quien llama ──────────────────────────────────────────────
+async function quienLlama(req: Request): Promise<{ userId: string | null; esAdmin: boolean }> {
+  const jwt = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
+  if (!jwt) return { userId: null, esAdmin: false }
+  if (SERVICE_KEY && jwt === SERVICE_KEY) return { userId: null, esAdmin: true }
+  try {
+    const { data: { user } } = await db.auth.getUser(jwt)
+    if (!user) return { userId: null, esAdmin: false }
+    const { data } = await db.from('users').select('role').eq('id', user.id).single()
+    return { userId: user.id, esAdmin: (data as any)?.role === 'admin' }
+  } catch { return { userId: null, esAdmin: false } }
+}
+
+function enLaPrueba(c: Config, userId: string): boolean {
+  return !c.soloEstosUsuarios?.length || c.soloEstosUsuarios.includes(userId)
+}
+
+// ── El expediente guardado ───────────────────────────────────────────────
+type Ficha = {
+  documento?: string
+  tipoDocumento?: string
+  nombre?: string
+  // Lo que devuelve TusDatos
+  jobid?: string
+  reportId?: string
+  validado?: boolean
+  hallazgo?: boolean
+  categoria?: 'alto' | 'medio' | 'bajo' | 'informativo' | 'ninguno' | 'sin_validar'
+  // El veredicto de Lincoin. undefined = todavía no hay.
+  operable?: boolean
+  estado?: string             // procesando | finalizado | error | sin_documento
+  detalle?: string
+  // Conteo por severidad, del reporte JSON.
+  altos?: number
+  medios?: number
+  bajos?: number
+  // Códigos estables de los hallazgos (no el texto, que puede cambiar).
+  codigos?: string[]
+  fuentesConError?: string[]
+  pdfUrl?: string
+  enviadoAKumplo?: boolean
+  at?: string
+}
+
+async function leerRaw(userId: string): Promise<any> {
+  const { data } = await db.from('users').select('raw_data').eq('id', userId).single()
+  return (data as any)?.raw_data ?? {}
+}
+
+async function guardarTitular(userId: string, parche: Ficha): Promise<Ficha> {
+  const raw = { ...(await leerRaw(userId)) }
+  const prev = raw.tusdatos ?? {}
+  raw.tusdatos = { ...prev, ...parche, beneficiarios: prev.beneficiarios ?? {}, at: new Date().toISOString() }
+  await db.from('users').update({ raw_data: raw }).eq('id', userId)
+  return raw.tusdatos as Ficha
+}
+
+async function guardarBeneficiario(userId: string, documento: string, ficha: Ficha) {
+  const raw = { ...(await leerRaw(userId)) }
+  const td = { ...(raw.tusdatos ?? {}) }
+  td.beneficiarios = { ...(td.beneficiarios ?? {}), [documento]: { ...(td.beneficiarios?.[documento] ?? {}), ...ficha } }
+  raw.tusdatos = td
+  await db.from('users').update({ raw_data: raw }).eq('id', userId)
+}
+
+// ── Traducir el resultado de TusDatos a nuestra categoría ────────────────
+// 'hallazgos' ya viene calculado por TusDatos según la categorización que la
+// empresa configuró en su panel. Se usa esa y no una propia: dos criterios
+// para lo mismo terminan separándose y nadie sabe cuál manda.
+function categoriaDe(res: any): Ficha['categoria'] {
+  const h = String(res?.hallazgos ?? '').trim().toLowerCase()
+  if (h.startsWith('alto')) return 'alto'
+  if (h.startsWith('medio')) return 'medio'
+  if (h.startsWith('bajo')) return 'bajo'
+  if (h.startsWith('info')) return 'informativo'
+  // Sin hallazgos: TusDatos manda cadena vacía o 'ninguno'. Que no haya nada
+  // que reportar ES un resultado, y favorable.
+  if (res?.hallazgo === false) return 'ninguno'
+  return undefined
+}
+
+// El veredicto. Solo se niega con una categoría explícita — nunca por falta
+// de información.
+function operableDe(cat: Ficha['categoria'], c: Config): boolean | undefined {
+  if (cat === 'alto') return false
+  if (cat === 'medio') return c.soloBloquearAlto ? true : false
+  if (cat === 'bajo' || cat === 'ninguno' || cat === 'informativo') return true
+  return undefined
+}
+
+// ── Lanzar la consulta ───────────────────────────────────────────────────
+// Cada lanzamiento en producción GASTA UN CRÉDITO, así que no se relanza un
+// documento consultado hace poco: TusDatos ya devuelve lo previo sin cobrar
+// cuando force es false, pero ni siquiera vale la pena preguntar.
+async function lanzar(c: Config, d: { documento: string; tipoDocumento: string; nombre?: string; fechaExpedicion?: string; referencia: string }) {
+  const tipo = (d.tipoDocumento || 'CC').toUpperCase()
+  const cuerpo: Record<string, unknown> = {
+    doc: /^\d+$/.test(d.documento) ? Number(d.documento) : d.documento,
+    typedoc: tipo,
+    force: false,
+    webhook_reference: d.referencia.slice(0, 250),
+  }
+  // El nombre es obligatorio para pasaporte e internacional, y para NOMBRE el
+  // documento ES el nombre.
+  if (d.nombre && (tipo === 'PP' || tipo === 'INT' || tipo === 'NOMBRE')) cuerpo.name = d.nombre
+  // La fecha de expedición es obligatoria en CE y PPT; en CC habilita fuentes
+  // adicionales y permite validar que coincida con el documento.
+  if (d.fechaExpedicion) cuerpo.fechaE = d.fechaExpedicion
+  return await llamarTD(c, '/api/launch', 'POST', cuerpo)
+}
+
+// ── Recoger el resultado ─────────────────────────────────────────────────
+// 200 = finalizado · 207 = procesando · 404 = el job expiró (2 h) · 500 = falló.
+async function recoger(c: Config, jobid: string): Promise<{ estado: string; res: any; status: number }> {
+  const r = await llamarTD(c, `/api/results/${encodeURIComponent(jobid)}`, 'GET')
+  if (r.status === 207) return { estado: 'procesando', res: r.body, status: 207 }
+  if (r.status === 404) return { estado: 'expirado', res: r.body, status: 404 }
+  if (!r.ok) return { estado: 'error', res: r.body ?? { detalle: r.texto }, status: r.status }
+  return { estado: String(r.body?.estado ?? 'finalizado'), res: r.body, status: r.status }
+}
+
+// El reporte JSON trae el detalle por severidad y los CÓDIGOS de cada
+// hallazgo. Se guardan los códigos y no el texto: TusDatos avisa que el texto
+// puede cambiar sin aviso y el código es estable.
+async function detalle(c: Config, reportId: string) {
+  const r = await llamarTD(c, `/api/report_json/${encodeURIComponent(reportId)}`, 'GET')
+  if (!r.ok || !r.body) return null
+  const d = r.body?.dict_hallazgos ?? {}
+  const codigos = (arr: any): string[] => Array.isArray(arr) ? arr.map((x: any) => String(x?.codigo ?? '')).filter(Boolean) : []
+  return {
+    altos: Array.isArray(d.altos) ? d.altos.length : 0,
+    medios: Array.isArray(d.medios) ? d.medios.length : 0,
+    bajos: Array.isArray(d.bajos) ? d.bajos.length : 0,
+    codigos: [...codigos(d.altos), ...codigos(d.medios), ...codigos(d.bajos)].slice(0, 60),
+    fuentesConError: Array.isArray(r.body?.errores) ? r.body.errores.map((x: any) => String(x)).slice(0, 30) : [],
+    crudo: r.body,
+  }
+}
+
+// ── Enviarle a Kumplo el resultado y el PDF ──────────────────────────────
+// Al revés de como estaba: la consulta la hacemos nosotros y el expediente de
+// Kumplo se alimenta de ella. El PDF va por URL y no incrustado — TusDatos lo
+// sirve autenticado y mandar megas en base64 por esta función es pedir un
+// tiempo de espera agotado.
+async function enviarAKumplo(c: Config, ficha: Ficha, empresaId: string, crudo: unknown) {
+  if (!c.enviarAKumplo || !KUMPLO_KEY || !c.kumploBaseUrl || !c.kumploRutaResultado) return { ok: false, motivo: 'envío a Kumplo apagado o sin configurar' }
+  const url = `${c.kumploBaseUrl.replace(/\/+$/, '')}${c.kumploRutaResultado.startsWith('/') ? '' : '/'}${c.kumploRutaResultado}`
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${KUMPLO_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        empresa: empresaId,
+        fuente: 'tusdatos',
+        documento: ficha.documento,
+        tipoDocumento: ficha.tipoDocumento,
+        nombre: ficha.nombre,
+        categoria: ficha.categoria,
+        operable: ficha.operable,
+        validado: ficha.validado,
+        hallazgos: { altos: ficha.altos ?? 0, medios: ficha.medios ?? 0, bajos: ficha.bajos ?? 0, codigos: ficha.codigos ?? [] },
+        reportId: ficha.reportId,
+        pdfUrl: ficha.pdfUrl,
+        consultadoEn: ficha.at,
+        detalle: crudo,
+      }),
+    })
+    const t = await r.text()
+    return { ok: r.ok, status: r.status, respuesta: t.slice(0, 400) }
+  } catch (e) {
+    return { ok: false, status: 0, respuesta: String((e as Error)?.message ?? e) }
+  }
+}
+
+// ── Cerrar una consulta: recoger, traducir, guardar, avisar a Kumplo ─────
+async function cerrar(c: Config, userId: string, jobid: string, doc: string, esBeneficiario: boolean): Promise<Ficha> {
+  const { estado, res } = await recoger(c, jobid)
+
+  if (estado === 'procesando') {
+    const parche: Ficha = { documento: doc, jobid, estado: 'procesando' }
+    if (esBeneficiario) await guardarBeneficiario(userId, doc, parche); else await guardarTitular(userId, parche)
+    return parche
+  }
+  if (estado !== 'finalizado') {
+    // Un job expirado o fallido NO es un veredicto: se anota y se deja sin
+    // operable, para que nadie quede bloqueado por un problema técnico.
+    const parche: Ficha = { documento: doc, jobid, estado: estado === 'expirado' ? 'expirado' : 'error', detalle: String(res?.estado ?? ''), at: new Date().toISOString() }
+    if (esBeneficiario) await guardarBeneficiario(userId, doc, parche); else await guardarTitular(userId, parche)
+    await auditar('tusdatos.consulta_fallida', { userId, documento: doc, jobid, estado })
+    return parche
+  }
+
+  const reportId = String(res?.id ?? '')
+  const validado = res?.validado === true
+  let cat = categoriaDe(res)
+  // Un documento que la Registraduría no validó no se puede categorizar: no
+  // se sabe de quién son los antecedentes. No bloquea, pero se marca.
+  if (!validado && !cat) cat = 'sin_validar'
+
+  const det = reportId ? await detalle(c, reportId) : null
+  const ficha: Ficha = {
+    documento: doc,
+    tipoDocumento: String(res?.typedoc ?? 'CC'),
+    nombre: res?.nombre ? String(res.nombre) : undefined,
+    jobid, reportId: reportId || undefined,
+    validado,
+    hallazgo: res?.hallazgo === true,
+    categoria: cat,
+    operable: operableDe(cat, c),
+    estado: 'finalizado',
+    altos: det?.altos ?? 0,
+    medios: det?.medios ?? 0,
+    bajos: det?.bajos ?? 0,
+    codigos: det?.codigos ?? [],
+    fuentesConError: det?.fuentesConError ?? [],
+    pdfUrl: reportId ? `${c.baseUrl.replace(/\/+$/, '')}/api/v2/report_pdf/${reportId}` : undefined,
+    at: new Date().toISOString(),
+  }
+
+  if (esBeneficiario) await guardarBeneficiario(userId, doc, ficha); else await guardarTitular(userId, ficha)
+  await auditar('tusdatos.consulta', { userId, documento: doc, categoria: cat, operable: ficha.operable, validado, reportId })
+
+  // Y se le manda a Kumplo, que es lo que se invirtió: el expediente de allá
+  // se alimenta de nuestra consulta.
+  if (c.enviarAKumplo) {
+    const raw = await leerRaw(userId)
+    const empresaId = String(raw?.kumplo?.empresaId ?? '')
+    if (empresaId) {
+      const env = await enviarAKumplo(c, ficha, empresaId, det?.crudo ?? res)
+      await auditar('tusdatos.enviado_a_kumplo', { userId, documento: doc, ok: env.ok, status: (env as any).status ?? null, respuesta: (env as any).respuesta ?? env.motivo })
+      if (env.ok) {
+        if (esBeneficiario) await guardarBeneficiario(userId, doc, { enviadoAKumplo: true })
+        else await guardarTitular(userId, { enviadoAKumplo: true })
+      }
+    }
+  }
+  return ficha
+}
+
+// Lanza y, si alcanza, recoge. Si no, queda 'procesando' y lo recoge el
+// webhook o la siguiente vuelta.
+async function consultar(
+  c: Config, userId: string, d: { documento: string; tipoDocumento: string; nombre?: string; fechaExpedicion?: string },
+  esBeneficiario: boolean,
+): Promise<{ ok: boolean; ficha?: Ficha; error?: string; message?: string }> {
+  const doc = String(d.documento ?? '').replace(/[.,\s]/g, '').trim()
+  if (!doc) return { ok: false, error: 'sin_documento', message: 'Falta el número de documento.' }
+
+  const r = await lanzar(c, { ...d, documento: doc, referencia: `${userId}:${doc}` })
+
+  // 403 = el titular no autorizó la consulta de su información. No es un
+  // fallo nuestro ni un veredicto en contra: es un derecho suyo.
+  if (r.status === 403) {
+    const ficha: Ficha = { documento: doc, estado: 'sin_autorizacion', detalle: 'El titular no autoriza la consulta de su información.', at: new Date().toISOString() }
+    if (esBeneficiario) await guardarBeneficiario(userId, doc, ficha); else await guardarTitular(userId, ficha)
+    await auditar('tusdatos.sin_autorizacion', { userId, documento: doc })
+    return { ok: true, ficha }
+  }
+  if (!r.ok) {
+    await auditar('tusdatos.launch_fallido', { userId, documento: doc, status: r.status, detalle: r.texto })
+    return { ok: false, error: 'launch_fallido', message: `TusDatos respondió ${r.status}: ${r.texto}` }
+  }
+
+  const jobid = String(r.body?.jobid ?? '')
+  if (!jobid) return { ok: false, error: 'sin_jobid', message: 'TusDatos no devolvió un jobid.' }
+
+  const inicial: Ficha = {
+    documento: doc, tipoDocumento: (d.tipoDocumento || 'CC').toUpperCase(),
+    nombre: r.body?.nombre ? String(r.body.nombre) : d.nombre,
+    jobid, validado: r.body?.validado === true, estado: 'procesando', at: new Date().toISOString(),
+  }
+  if (esBeneficiario) await guardarBeneficiario(userId, doc, inicial); else await guardarTitular(userId, inicial)
+
+  return { ok: true, ficha: inicial }
+}
+
+Deno.serve(async (req: Request) => {
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
+  try {
+    const url = new URL(req.url)
+
+    // ── Webhook de TusDatos ───────────────────────────────────────────────
+    // Nos avisan cuando una consulta individual termina, en vez de tener que
+    // preguntar cada pocos segundos. Y el monitoreo continuo —que es lo que
+    // de verdad importa a mediano plazo— avisa cuando alguien que salió
+    // limpio aparece después en una lista.
+    //
+    // Se valida el secreto SIEMPRE. Un webhook abierto deja que cualquiera
+    // nos escriba un veredicto, que es justo lo contrario del control.
+    if (url.pathname.endsWith('/webhook')) {
+      const auth = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
+      if (!TD_WEBHOOK || auth !== TD_WEBHOOK) {
+        await auditar('tusdatos.webhook_rechazado', { motivo: 'credencial inválida' })
+        return json({ error: 'no autorizado' }, 401)
+      }
+      const cuerpo = await req.json().catch(() => ({} as any))
+      const evento = String(cuerpo?.event_name ?? '')
+      await auditar('tusdatos.webhook', { evento, cuerpo: JSON.stringify(cuerpo).slice(0, 900) })
+
+      const c = await leerConfig()
+
+      // La consulta individual terminó. La referencia que mandamos al lanzar
+      // —userId:documento— es la que nos dice a quién pertenece.
+      if (evento === 'individualCompleted') {
+        const ref = String(cuerpo?.webhook_reference ?? '')
+        const [uid, doc] = ref.split(':')
+        if (uid && doc) {
+          const raw = await leerRaw(uid)
+          const esBenef = !!raw?.tusdatos?.beneficiarios?.[doc]
+          const jobid = String((esBenef ? raw.tusdatos.beneficiarios[doc] : raw?.tusdatos)?.jobid ?? '')
+          if (jobid) await cerrar(c, uid, jobid, doc, esBenef)
+        }
+        return json({ ok: true })
+      }
+
+      // Monitoreo continuo: alguien cambió de estado en listas o PEPs. Se
+      // marca para revisión; el veredicto nuevo lo da una consulta fresca.
+      if (evento === 'pepsMonitoring') {
+        const d = cuerpo?.data?.data ?? {}
+        const doc = String(d?.doc ?? '').replace(/\D/g, '')
+        if (doc) {
+          await auditar('tusdatos.monitoreo_alerta', {
+            documento: doc, nombre: String(d?.nombre ?? ''),
+            hallazgos: JSON.stringify(d?.hallazgos ?? []).slice(0, 600),
+          })
+        }
+        return json({ ok: true })
+      }
+
+      return json({ ok: true, ignorado: evento })
+    }
+
+    const body = await req.json().catch(() => ({} as any))
+    const accion = String(body.action ?? '')
+    const yo = await quienLlama(req)
+
+    // ── Configuración (solo admin) ───────────────────────────────────────
+    if (accion === 'config_get') {
+      if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      return json({ ok: true, config: await leerConfig(), credencial: hayCredencial() ? 'configurada' : 'falta', webhook: TD_WEBHOOK ? 'configurado' : 'falta' })
+    }
+
+    if (accion === 'config_set') {
+      if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      const c = { ...(await leerConfig()), ...(body.config ?? {}) } as Config
+      if (c.activo && (!c.baseUrl || !hayCredencial())) {
+        return json({ error: 'Faltan datos para encender: la dirección base y las credenciales en la Bóveda.' }, 400)
+      }
+      await guardarConfig(c)
+      await auditar('tusdatos.config', { activo: c.activo, baseUrl: c.baseUrl, por: yo.userId })
+      return json({ ok: true, config: c, credencial: hayCredencial() ? 'configurada' : 'falta' })
+    }
+
+    // Probar: consulta el plan. Es la llamada más barata que confirma que la
+    // credencial pasa y que se llega — no gasta créditos de consulta.
+    if (accion === 'probar') {
+      if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      const c = await leerConfig()
+      if (!hayCredencial()) return json({ ok: false, motivo: 'Faltan las credenciales de TusDatos en la Bóveda.' })
+      const r = await llamarTD(c, '/api/plans?exclude=checks', 'GET')
+      if (r.status === 0) return json({ ok: false, status: 0, url: r.url, motivo: `No se pudo contactar a TusDatos. Revisa la dirección base. (${r.texto})` })
+      if (r.status === 401 || r.status === 403) return json({ ok: false, status: r.status, url: r.url, motivo: `TusDatos rechazó la credencial (${r.status}). Revisa el usuario y la contraseña, o el token, en la Bóveda.` })
+      if (r.ok) {
+        const saldo = r.body?.amount
+        return json({ ok: true, status: r.status, url: r.url, motivo: `Conexión y credencial correctas.${typeof saldo === 'number' ? ` Consultas disponibles en el plan: ${saldo}.` : ''}`, plan: r.body })
+      }
+      return json({ ok: false, status: r.status, url: r.url, motivo: `TusDatos respondió ${r.status}: ${r.texto}` })
+    }
+
+    // ── Consultar al TITULAR ─────────────────────────────────────────────
+    if (accion === 'verificar') {
+      const uid = String(body.userId ?? yo.userId ?? '')
+      if (!uid || (!yo.esAdmin && yo.userId !== uid)) return json({ error: 'No autorizado' }, 401)
+      const c = await leerConfig()
+      if (!c.activo) return json({ ok: true, omitido: 'la integración está apagada' })
+      if (!enLaPrueba(c, uid)) return json({ ok: true, omitido: 'esta cuenta no está en la prueba' })
+
+      const raw = await leerRaw(uid)
+      const doc = String(body.documento ?? raw?.documentNumber ?? raw?.cedula ?? '').replace(/\D/g, '')
+      if (!doc) {
+        const { data: u } = await db.from('users').select('document_number, name').eq('id', uid).single()
+        const doc2 = String((u as any)?.document_number ?? '').replace(/\D/g, '')
+        if (!doc2) return json({ ok: true, estado: await guardarTitular(uid, { estado: 'sin_documento', detalle: 'La cuenta no tiene número de documento.' }) })
+        const r = await consultar(c, uid, { documento: doc2, tipoDocumento: String(raw?.documentType ?? 'CC'), nombre: String((u as any)?.name ?? ''), fechaExpedicion: body.fechaExpedicion }, false)
+        return json(r.ok ? { ok: true, ficha: r.ficha } : r, r.ok ? 200 : 200)
+      }
+      const r = await consultar(c, uid, { documento: doc, tipoDocumento: String(body.tipoDocumento ?? raw?.documentType ?? 'CC'), nombre: body.nombre, fechaExpedicion: body.fechaExpedicion }, false)
+      return json(r.ok ? { ok: true, ficha: r.ficha } : r)
+    }
+
+    // ── Consultar un BENEFICIARIO ────────────────────────────────────────
+    if (accion === 'verificar_beneficiario') {
+      const uid = String(body.userId ?? yo.userId ?? '')
+      if (!uid || (!yo.esAdmin && yo.userId !== uid)) return json({ error: 'No autorizado' }, 401)
+      const c = await leerConfig()
+      if (!c.activo) return json({ ok: true, omitido: 'la integración está apagada' })
+      if (!enLaPrueba(c, uid)) return json({ ok: true, omitido: 'esta cuenta no está en la prueba' })
+      const r = await consultar(c, uid, {
+        documento: String(body.documento ?? ''),
+        tipoDocumento: String(body.tipoDocumento ?? 'CC'),
+        nombre: body.nombre ? String(body.nombre) : undefined,
+        fechaExpedicion: body.fechaExpedicion ? String(body.fechaExpedicion) : undefined,
+      }, true)
+      return json(r.ok ? { ok: true, beneficiario: r.ficha } : r)
+    }
+
+    // ── Recoger resultados que quedaron procesando ───────────────────────
+    // El webhook es el camino principal; esto es el respaldo, por si un envío
+    // se pierde. Sin respaldo, una consulta perdida deja a alguien en
+    // «verificando» para siempre.
+    if (accion === 'recoger_pendientes') {
+      const uid = String(body.userId ?? yo.userId ?? '')
+      if (!uid || (!yo.esAdmin && yo.userId !== uid)) return json({ error: 'No autorizado' }, 401)
+      const c = await leerConfig()
+      if (!c.activo) return json({ ok: true, omitido: 'la integración está apagada', pendientes: 0 })
+
+      const raw = await leerRaw(uid)
+      const td = raw?.tusdatos ?? {}
+      let cerrados = 0
+      if (td.jobid && td.estado === 'procesando') {
+        const f = await cerrar(c, uid, td.jobid, String(td.documento ?? ''), false)
+        if (f.estado === 'finalizado') cerrados += 1
+      }
+      const benefs: Record<string, any> = td.beneficiarios ?? {}
+      for (const [doc, f] of Object.entries(benefs)) {
+        if ((f as any)?.estado !== 'procesando' || !(f as any)?.jobid) continue
+        const r = await cerrar(c, uid, String((f as any).jobid), doc, true)
+        if (r.estado === 'finalizado') cerrados += 1
+        if (cerrados >= 6) break   // el resto en la siguiente vuelta
+      }
+      const despues = (await leerRaw(uid))?.tusdatos ?? {}
+      const pend = Object.values(despues.beneficiarios ?? {}).filter((x: any) => x?.estado === 'procesando').length
+        + (despues.estado === 'procesando' ? 1 : 0)
+      return json({ ok: true, cerrados, pendientes: pend })
+    }
+
+    // ── Lanzar las que FALTAN, por lotes ─────────────────────────────────
+    if (accion === 'verificar_pendientes') {
+      const uid = String(body.userId ?? yo.userId ?? '')
+      if (!uid || (!yo.esAdmin && yo.userId !== uid)) return json({ error: 'No autorizado' }, 401)
+      const c = await leerConfig()
+      if (!c.activo) return json({ ok: true, omitido: 'la integración está apagada', pendientes: 0 })
+      if (!enLaPrueba(c, uid)) return json({ ok: true, omitido: 'esta cuenta no está en la prueba', pendientes: 0 })
+
+      const raw = await leerRaw(uid)
+      const contactos: any[] = Array.isArray(raw.mouvContacts) ? raw.mouvContacts : []
+      const hechos: Record<string, any> = (raw.tusdatos ?? {}).beneficiarios ?? {}
+
+      const vistos = new Set<string>()
+      const faltan = contactos.filter((x: any) => {
+        const doc = String(x?.docNumber ?? '').replace(/\D/g, '')
+        if (!doc || hechos[doc] || vistos.has(doc)) return false
+        vistos.add(doc)
+        return true
+      })
+
+      // CADA LANZAMIENTO GASTA UN CRÉDITO del plan. El lote va chico a
+      // propósito: si algo está mal configurado, se pierden cuatro consultas,
+      // no sesenta.
+      const LOTE = Math.min(Math.max(Number(body.limite ?? 4) || 4, 1), 8)
+      let lanzados = 0
+      for (const x of faltan.slice(0, LOTE)) {
+        const r = await consultar(c, uid, {
+          documento: String(x?.docNumber ?? ''),
+          tipoDocumento: String(x?.docType ?? 'CC'),
+          nombre: String(x?.name ?? ''),
+        }, true)
+        if (r.ok) lanzados += 1
+      }
+      // Y de paso se recogen las que ya hayan terminado.
+      return json({ ok: true, lanzados, pendientes: Math.max(0, faltan.length - lanzados) })
+    }
+
+    // ── Lo guardado ──────────────────────────────────────────────────────
+    if (accion === 'estado') {
+      const uid = String(body.userId ?? yo.userId ?? '')
+      if (!uid || (!yo.esAdmin && yo.userId !== uid)) return json({ error: 'No autorizado' }, 401)
+      const c = await leerConfig()
+      const raw = await leerRaw(uid)
+      const td = raw?.tusdatos ?? {}
+      return json({
+        ok: true, activo: c.activo, enLaPrueba: enLaPrueba(c, uid),
+        titular: { ...td, beneficiarios: undefined },
+        beneficiarios: td.beneficiarios ?? {},
+      })
+    }
+
+    // ── El PDF del reporte ───────────────────────────────────────────────
+    // Se devuelve en base64 porque TusDatos lo sirve autenticado: un enlace
+    // directo no abriría desde el navegador sin la credencial, y la
+    // credencial no sale de acá.
+    if (accion === 'pdf') {
+      const uid = String(body.userId ?? yo.userId ?? '')
+      if (!uid || (!yo.esAdmin && yo.userId !== uid)) return json({ error: 'No autorizado' }, 401)
+      const reportId = String(body.reportId ?? '').trim()
+      if (!reportId) return json({ error: 'Falta el id del reporte.' }, 400)
+      const c = await leerConfig()
+      const r = await fetch(`${c.baseUrl.replace(/\/+$/, '')}/api/v2/report_pdf/${encodeURIComponent(reportId)}`, {
+        headers: { Authorization: cabeceraAuth() },
+      })
+      // 202 = todavía se está armando. Ellos piden reintentar a los 10 s.
+      if (r.status === 202) return json({ ok: false, enProceso: true, motivo: 'El PDF todavía se está generando. Vuelve a intentar en unos segundos.' })
+      if (!r.ok) return json({ ok: false, motivo: `TusDatos respondió ${r.status} al pedir el PDF.` })
+      const buf = new Uint8Array(await r.arrayBuffer())
+      let bin = ''
+      for (let i = 0; i < buf.length; i += 8192) bin += String.fromCharCode(...buf.subarray(i, i + 8192))
+      return json({ ok: true, pdf: btoa(bin), nombre: `antecedentes-${reportId}.pdf` })
+    }
+
+    // ── Reenviar a Kumplo a mano ─────────────────────────────────────────
+    if (accion === 'enviar_kumplo') {
+      const uid = String(body.userId ?? yo.userId ?? '')
+      if (!uid || (!yo.esAdmin && yo.userId !== uid)) return json({ error: 'No autorizado' }, 401)
+      const c = await leerConfig()
+      const raw = await leerRaw(uid)
+      const empresaId = String(raw?.kumplo?.empresaId ?? '')
+      if (!empresaId) return json({ ok: false, motivo: 'Esta cuenta no tiene conectada su empresa de Kumplo.' })
+      const doc = String(body.documento ?? '').replace(/\D/g, '')
+      const ficha: Ficha = doc ? (raw?.tusdatos?.beneficiarios ?? {})[doc] : raw?.tusdatos
+      if (!ficha?.reportId) return json({ ok: false, motivo: 'Todavía no hay un reporte para enviar.' })
+      const env = await enviarAKumplo(c, ficha, empresaId, null)
+      await auditar('tusdatos.enviado_a_kumplo', { userId: uid, documento: doc || ficha.documento, ok: env.ok, manual: true })
+      return json(env)
+    }
+
+    // ── Diagnóstico ──────────────────────────────────────────────────────
+    if (accion === 'diagnostico') {
+      const uid = String(body.userId ?? yo.userId ?? '')
+      if (!uid || (!yo.esAdmin && yo.userId !== uid)) return json({ error: 'No autorizado' }, 401)
+      const c = await leerConfig()
+      const raw = await leerRaw(uid)
+      const contactos: any[] = Array.isArray(raw.mouvContacts) ? raw.mouvContacts : []
+      const hechos = (raw.tusdatos ?? {}).beneficiarios ?? {}
+      const pasos = [
+        { paso: 'Credenciales en la Bóveda', ok: hayCredencial(), detalle: hayCredencial() ? (TD_TOKEN ? 'Token puesto.' : 'Usuario y contraseña puestos.') : 'FALTAN. Sin ellas no se puede consultar.' },
+        { paso: 'Dirección base', ok: !!c.baseUrl, detalle: `${c.baseUrl || '—'} ${c.baseUrl.includes('docs.tusdatos') ? '(ambiente de PRUEBAS: respuestas estáticas, no gasta créditos)' : '(producción: gasta créditos)'}` },
+        { paso: 'Integración encendida', ok: !!c.activo, detalle: c.activo ? 'Encendida.' : 'APAGADA. No se consulta a nadie.' },
+        { paso: 'Cuenta dentro de la prueba', ok: enLaPrueba(c, uid), detalle: enLaPrueba(c, uid) ? 'Incluida.' : 'FUERA. La lista de cuentas no la incluye.' },
+        { paso: 'Webhook configurado', ok: !!TD_WEBHOOK, detalle: TD_WEBHOOK ? 'Secreto puesto. Los resultados llegan solos.' : 'Sin secreto: los resultados hay que ir a buscarlos.' },
+        { paso: 'Beneficiarios', ok: contactos.length > 0, detalle: `${contactos.length} inscritos · ${Object.keys(hechos).length} con resultado.` },
+      ]
+      const corte = pasos.find(p => !p.ok)
+      let plan: any = null
+      if (hayCredencial() && c.baseUrl) {
+        const r = await llamarTD(c, '/api/plans?exclude=checks', 'GET')
+        plan = { status: r.status, ok: r.ok, respuesta: JSON.stringify(r.body ?? r.texto).slice(0, 400) }
+      }
+      return json({ ok: true, pasos, corte: corte ? `${corte.paso}: ${corte.detalle}` : null, plan })
+    }
+
+    return json({ error: `Acción desconocida: ${accion}` }, 400)
+  } catch (e) {
+    return json({ error: String((e as Error)?.message ?? e) }, 500)
+  }
+})

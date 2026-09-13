@@ -994,7 +994,11 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         // 'kumplo' guarda el resultado AML. Si el cliente pudiera escribirlo,
         // se pondría riesgo "bajo" a sí mismo y el control de lavado dejaría
         // de existir: es un veredicto, no una preferencia.
-        'kumplo'];
+        'kumplo',
+        // 'tusdatos' es la consulta de antecedentes que hacemos nosotros y el
+        // veredicto de cada beneficiario. Es lo que decide si una
+        // transferencia sale: por eso lo escribe solo el servidor.
+        'tusdatos'];
       // COLECCIONES del cliente que tienen su PROPIO escritor seguro
       // (updateUserRawData, merge dirigido): contactos, wallets inscritas,
       // notificaciones. saveUser NUNCA debe reescribirlas desde memoria — una

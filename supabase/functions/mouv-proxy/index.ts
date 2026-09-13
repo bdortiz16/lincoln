@@ -1110,7 +1110,33 @@ serve(async (req: Request) => {
     // frenar un envío legítimo. Solo corta con un "no operable" explícito.
     {
       const docDest = String((payload.recipient as any)?.documentNumber ?? '').replace(/\D/g, '')
+      // La consulta de antecedentes la hacemos NOSOTROS (TusDatos). Este es
+      // el control que manda; el de Kumplo queda debajo como respaldo para
+      // los veredictos que ya estaban guardados de antes.
       if (docDest) {
+        try {
+          const { data: tdRow } = await db.from('system_config').select('value').eq('key', 'tusdatos_config').maybeSingle()
+          const tdCfg = (tdRow as any)?.value ? JSON.parse((tdRow as any).value) : null
+          if (tdCfg?.activo && tdCfg?.bloquear !== false) {
+            const { data: uT } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
+            const f = ((uT as any)?.raw_data?.tusdatos?.beneficiarios ?? {})[docDest]
+            // Solo una categoría EXPLÍCITA bloquea. Sin resultado, con la
+            // consulta en curso, con el documento sin validar o con el
+            // titular sin autorizar, se deja pasar: un control que no pudo
+            // concluir no puede acusar a nadie.
+            const cat = String(f?.categoria ?? '')
+            const bloquea = f?.estado === 'finalizado' && (cat === 'alto' || (cat === 'medio' && tdCfg?.soloBloquearAlto !== true))
+            if (bloquea) {
+              await logAudit(userId, 'tusdatos.envio_bloqueado', { documento: docDest, categoria: cat, reportId: f?.reportId ?? null })
+              return json(403, {
+                error: 'beneficiario_no_operable',
+                message: cat === 'alto'
+                  ? 'No se puede transferir a este beneficiario: la verificación de antecedentes lo marcó como riesgo alto.'
+                  : 'Este beneficiario está en revisión de cumplimiento. Todavía no se le puede transferir.',
+              })
+            }
+          }
+        } catch { /* la verificación nunca frena un envío legítimo */ }
         try {
           const { data: cfgRow } = await db.from('system_config').select('value').eq('key', 'kumplo_config').maybeSingle()
           const cfg = (cfgRow as any)?.value ? JSON.parse((cfgRow as any).value) : null

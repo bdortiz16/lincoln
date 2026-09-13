@@ -89,6 +89,7 @@ import { AdminPasskeys } from './AdminPasskeys';
 import { AdminStepUp } from './AdminStepUp';
 import { AdminLoginAlerts } from './AdminLoginAlerts';
 import { AdminKumplo } from './AdminKumplo';
+import { AdminTusdatos } from './AdminTusdatos';
 import { AdminReconcile } from './AdminReconcile';
 import { AdminOtcSection } from './AdminOtcSection';
 import { Zap, ArrowLeftRight, ArrowLeft, Info, ChevronRight, Activity, Link2 } from 'lucide-react';
@@ -4342,7 +4343,15 @@ const renderDesign = () => (
                 {activeTab === 'team' && renderTeam()}
                 {activeTab === 'comando' && <div className="animate-in fade-in duration-300"><AdminCommandCenter /></div>}
                 {activeTab === 'security' && renderSecurity()}
-                {activeTab === 'kumplo' && <div className="animate-in fade-in duration-300"><AdminKumplo /></div>}
+                {activeTab === 'kumplo' && (
+                  <div className="animate-in fade-in duration-300" style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+                    {/* La consulta de antecedentes va ARRIBA: es la que decide
+                        si una transferencia sale. Kumplo queda debajo, como el
+                        expediente que se alimenta de ella. */}
+                    <AdminTusdatos />
+                    <AdminKumplo />
+                  </div>
+                )}
                 {activeTab === 'gasfree' && (<>
                   {/* Igual que Cargues: se entra por Tesorería → Billeteras → USDT. */}
                   <button onClick={() => navTo('treasury')}
