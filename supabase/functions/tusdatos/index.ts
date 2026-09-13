@@ -186,6 +186,9 @@ type Ficha = {
   nombreInscrito?: string
   nombreReal?: string
   nombreCoincide?: boolean
+  // Cuántas veces se ha vuelto a lanzar, y si la pidió un admin a mano.
+  reintentos?: number
+  manual?: boolean
   // Estado del documento en la Registraduría. Una cédula cancelada por
   // muerte o por suplantación no es un detalle: es la señal más fuerte de
   // que quien recibe no es quien dice ser.
@@ -520,6 +523,83 @@ async function consultar(
   return { ok: true, ficha: inicial }
 }
 
+// ── Estado del PROVEEDOR (status.tusdatos.co) ────────────────────────────
+// Es distinto de nuestro healthcheck: uno dice si NOSOTROS llegamos con
+// nuestra credencial; este dice si las fuentes oficiales están arriba. Una
+// credencial perfecta y la Registraduría caída dan consultas incompletas, y
+// sin esta pantalla eso se ve como "la integración falla".
+//
+// Se consulta DESDE EL SERVIDOR y se guarda: el navegador no puede por CORS,
+// y preguntar en cada carga del panel sería golpearles la página.
+const STATUS_KEY = 'tusdatos_status'
+const STATUS_TTL_MS = 5 * 60_000
+
+// Las páginas de estado suelen ser Statuspage o Instatus, y cada una expone
+// su resumen en una ruta distinta. Se prueban en orden en vez de fijar una:
+// si cambian de proveedor, esto sigue funcionando.
+const RUTAS_STATUS = [
+  'https://status.tusdatos.co/api/v2/summary.json',
+  'https://status.tusdatos.co/summary.json',
+  'https://status.tusdatos.co/api/v2/status.json',
+]
+
+function interpretarStatus(b: any): { global: string; componentes: any[] } | null {
+  if (!b || typeof b !== 'object') return null
+  // Statuspage: { status: { indicator, description }, components: [...] }
+  // Instatus:   { page: {...}, activeIncidents, components: [...] }
+  const ind = String(b?.status?.indicator ?? b?.page?.status ?? '').toLowerCase()
+  const comps = Array.isArray(b?.components) ? b.components : []
+  const norm = (s: string) => {
+    const x = String(s ?? '').toLowerCase()
+    if (/operational|up|none|operativo/.test(x)) return 'operativo'
+    if (/major|critical|outage|down/.test(x)) return 'caido'
+    if (/minor|degraded|partial|maintenance/.test(x)) return 'degradado'
+    return 'desconocido'
+  }
+  const componentes = comps.map((c: any) => ({
+    nombre: String(c?.name ?? '—'),
+    estado: norm(c?.status),
+    grupo: c?.group === true,
+    padre: c?.group_id ?? null,
+    id: String(c?.id ?? ''),
+  }))
+  let global = norm(ind)
+  if (global === 'desconocido' && componentes.length) {
+    global = componentes.some((c: any) => c.estado === 'caido') ? 'caido'
+      : componentes.some((c: any) => c.estado === 'degradado') ? 'degradado' : 'operativo'
+  }
+  return { global, componentes }
+}
+
+async function leerStatusProveedor(forzar = false) {
+  let guardado: any = null
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', STATUS_KEY).single()
+    if (data?.value) guardado = JSON.parse(data.value)
+  } catch { /* primera vez */ }
+
+  const fresco = guardado?.at && (Date.now() - new Date(guardado.at).getTime()) < STATUS_TTL_MS
+  if (fresco && !forzar) return { ...guardado, deCache: true }
+
+  for (const url of RUTAS_STATUS) {
+    try {
+      const r = await fetch(url, { headers: { accept: 'application/json' } })
+      if (!r.ok) continue
+      const b = await r.json().catch(() => null)
+      const leido = interpretarStatus(b)
+      if (!leido) continue
+      const nuevo = { ...leido, url, at: new Date().toISOString(), alcanzado: true }
+      await db.from('system_config').upsert({ key: STATUS_KEY, value: JSON.stringify(nuevo) }, { onConflict: 'key' })
+      return nuevo
+    } catch { /* siguiente ruta */ }
+  }
+
+  // No se pudo. Se devuelve lo ÚLTIMO QUE SÍ SUPIMOS, marcado como viejo. Un
+  // "operativo" inventado sería peor que decir desde cuándo no hay datos.
+  if (guardado) return { ...guardado, alcanzado: false, deCache: true }
+  return { global: 'desconocido', componentes: [], at: null, alcanzado: false }
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
   try {
@@ -849,6 +929,154 @@ Deno.serve(async (req: Request) => {
         // lo que hay que mirar, no para el archivo.
         enOrden: enOrden.slice(0, 120),
       })
+    }
+
+    // ── Todo lo que el panel necesita, en UNA llamada ────────────────────
+    // Repartido en seis peticiones, el panel se dibuja por pedazos y cada
+    // tarjeta aparece cuando le toca. Una sola respuesta se pinta entera.
+    if (accion === 'panel') {
+      if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      const c = await leerConfig()
+
+      // Ping propio, con la latencia medida. Es NUESTRO healthcheck: dice si
+      // llegamos con nuestra credencial, no si las fuentes están arriba.
+      let conexion: any = { ok: false, latencia: null, motivo: 'Sin credenciales en la Bóveda.' }
+      if (hayCredencial() && c.baseUrl) {
+        const t0 = Date.now()
+        const r = await llamarTD(c, '/api/plans?exclude=checks', 'GET')
+        conexion = {
+          ok: r.ok, status: r.status, latencia: Date.now() - t0,
+          plan: r.body ?? null,
+          motivo: r.ok ? 'Operativa'
+            : r.status === 0 ? 'No se pudo contactar a TusDatos.'
+              : r.status === 401 || r.status === 403 ? 'Credencial rechazada.'
+                : `Respondió ${r.status}.`,
+        }
+      }
+
+      const proveedor = await leerStatusProveedor(body.forzarProveedor === true)
+
+      // Las consultas guardadas, de todas las cuentas. Es la materia prima de
+      // la cola, del historial y de las cifras del mes.
+      const { data: filas } = await db
+        .from('users').select('id, name, email, raw_data')
+        .not('raw_data->tusdatos', 'is', null).limit(2000)
+
+      const consultas: any[] = []
+      for (const u of (filas ?? []) as any[]) {
+        const td = u.raw_data?.tusdatos ?? {}
+        const benefs: Record<string, any> = td.beneficiarios ?? {}
+        const entradas: [string, any][] = [
+          ...(td.documento ? [[String(td.documento), { ...td, beneficiarios: undefined, esTitular: true }] as [string, any]] : []),
+          ...Object.entries(benefs),
+        ]
+        for (const [doc, f] of entradas) {
+          if (!f || typeof f !== 'object') continue
+          consultas.push({
+            userId: u.id, titular: u.name ?? u.email ?? u.id, esTitular: !!f.esTitular,
+            documento: doc, tipoDocumento: f.tipoDocumento ?? 'CC',
+            nombre: f.nombreInscrito ?? f.nombreReal ?? f.nombre ?? null,
+            categoria: f.categoria ?? null, estado: f.estado ?? null,
+            operable: f.operable ?? null, nombreCoincide: f.nombreCoincide ?? null,
+            documentoVigente: f.documentoVigente ?? null,
+            fuentesConError: Array.isArray(f.fuentesConError) ? f.fuentesConError : [],
+            reintentos: Number(f.reintentos ?? 0),
+            reportId: f.reportId ?? null, jobid: f.jobid ?? null,
+            manual: !!f.manual, at: f.at ?? null,
+          })
+        }
+      }
+      consultas.sort((a, b) => String(b.at ?? '').localeCompare(String(a.at ?? '')))
+
+      // La cola: lo que está esperando. Dos casos distintos y ambos cuentan —
+      // la consulta que sigue corriendo, y la que terminó pero con fuentes
+      // caídas, o sea con el resultado incompleto. Aprobar o rechazar con
+      // datos parciales es peor que esperar.
+      const cola = consultas.filter(x =>
+        x.estado === 'procesando' || (x.estado === 'finalizado' && x.fuentesConError.length > 0))
+
+      const hoy = new Date(); hoy.setHours(0, 0, 0, 0)
+      const desde30 = Date.now() - 30 * 24 * 3600_000
+      const delMes = consultas.filter(x => x.at && new Date(x.at).getTime() >= desde30)
+      const deHoy = consultas.filter(x => x.at && new Date(x.at).getTime() >= hoy.getTime())
+      const finalizadas30 = delMes.filter(x => x.estado === 'finalizado')
+      const bajo30 = finalizadas30.filter(x => x.categoria === 'bajo' || x.categoria === 'ninguno' || x.categoria === 'informativo').length
+
+      return json({
+        ok: true,
+        conexion,
+        credencial: hayCredencial() ? (TD_TOKEN ? 'token' : 'usuario') : 'falta',
+        webhook: TD_WEBHOOK ? 'configurado' : 'falta',
+        entorno: String(c.baseUrl ?? '').includes('docs.tusdatos') ? 'pruebas' : 'produccion',
+        config: c,
+        proveedor,
+        consultasHoy: deHoy.length,
+        cupo: typeof conexion?.plan?.amount === 'number' ? conexion.plan.amount : null,
+        cola: cola.slice(0, 40),
+        ultimas: consultas.slice(0, 12),
+        mes: {
+          consultas: delMes.length,
+          bajoPct: finalizadas30.length ? Math.round((bajo30 / finalizadas30.length) * 1000) / 10 : null,
+          enRevision: delMes.filter(x => x.categoria === 'medio' || x.nombreCoincide === false).length,
+          bloqueadas: delMes.filter(x => x.operable === false).length,
+        },
+      })
+    }
+
+    // ── Consulta manual ──────────────────────────────────────────────────
+    // Un documento suelto, sin inscribir beneficiario. Queda marcada como
+    // manual y con quién la hizo: una consulta a una persona gasta un crédito
+    // y toca datos suyos, así que tiene que quedar claro quién la pidió.
+    if (accion === 'consulta_manual') {
+      if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      const c = await leerConfig()
+      if (!c.activo) return json({ ok: false, motivo: 'La integración está apagada.' })
+      if (!hayCredencial()) return json({ ok: false, motivo: 'Faltan las credenciales en la Bóveda.' })
+      const uid = String(body.userId ?? yo.userId ?? '')
+      const r = await consultar(c, uid, {
+        documento: String(body.documento ?? ''),
+        tipoDocumento: String(body.tipoDocumento ?? 'CC'),
+        nombre: body.nombre ? String(body.nombre) : undefined,
+        fechaExpedicion: body.fechaExpedicion ? String(body.fechaExpedicion) : undefined,
+      }, true)
+      if (!r.ok) return json({ ok: false, motivo: r.message ?? 'No se pudo lanzar la consulta.' })
+      const doc = String(body.documento ?? '').replace(/\D/g, '')
+      await guardarBeneficiario(uid, doc, { manual: true } as any)
+      await auditar('tusdatos.consulta_manual', { por: yo.userId, documento: doc })
+      // Se espera un poco y se recoge: para una consulta a mano vale la pena,
+      // porque hay alguien mirando la pantalla.
+      await new Promise(res => setTimeout(res, 8000))
+      const fin = await cerrar(c, uid, String(r.ficha?.jobid ?? ''), doc, true)
+      return json({ ok: true, ficha: fin })
+    }
+
+    // ── Reintentar una consulta ──────────────────────────────────────────
+    if (accion === 'reintentar') {
+      if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      const c = await leerConfig()
+      const uid = String(body.userId ?? '')
+      const doc = String(body.documento ?? '').replace(/\D/g, '')
+      if (!uid || !doc) return json({ error: 'Falta el cliente o el documento.' }, 400)
+      const raw = await leerRaw(uid)
+      const f = (raw?.tusdatos?.beneficiarios ?? {})[doc] ?? (String(raw?.tusdatos?.documento ?? '') === doc ? raw.tusdatos : null)
+      const esBenef = !!(raw?.tusdatos?.beneficiarios ?? {})[doc]
+
+      // Si todavía hay un job vivo, se relee en vez de relanzar: relanzar
+      // gasta un crédito y no adelanta nada.
+      if (f?.jobid && f?.estado === 'procesando') {
+        const fin = await cerrar(c, uid, String(f.jobid), doc, esBenef)
+        return json({ ok: true, ficha: fin, releido: true })
+      }
+      const r = await consultar(c, uid, {
+        documento: doc, tipoDocumento: String(f?.tipoDocumento ?? 'CC'),
+        nombre: f?.nombreInscrito ?? f?.nombre ?? undefined,
+      }, esBenef)
+      if (r.ok) {
+        const previos = Number(f?.reintentos ?? 0) + 1
+        if (esBenef) await guardarBeneficiario(uid, doc, { reintentos: previos } as any)
+        await auditar('tusdatos.reintento', { por: yo.userId, userId: uid, documento: doc, intento: previos })
+      }
+      return json(r.ok ? { ok: true, ficha: r.ficha } : { ok: false, motivo: r.message })
     }
 
     // ── Diagnóstico ──────────────────────────────────────────────────────
