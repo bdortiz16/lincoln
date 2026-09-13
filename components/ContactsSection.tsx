@@ -842,9 +842,17 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     // resultado nunca llegaba. Se vuelve a preguntar cada 15 s mientras
     // FALTE algún veredicto, y se para: ni deja la pantalla colgada ni
     // consulta para siempre.
+    // OJO con las dependencias: 'amlBenef' es un objeto nuevo en cada render
+    // cuando todavía no hay datos, así que ponerlo acá reiniciaba el reloj en
+    // cada pintada y el tick de 15 s no llegaba a dispararse nunca. Se depende
+    // de la CANTIDAD, que es estable.
+    const amlHechos = Object.keys(amlBenef).length;
     useEffect(() => {
         const uid = currentUser?.id;
-        if (!uid || !amlActivo) return;
+        // Se dispara solo si la verificación CORRE para esta cuenta. Con
+        // resultados guardados pero la integración apagada, la columna se
+        // sigue viendo pero no hay nada que lanzar.
+        if (!uid || !amlCorre) return;
         const faltan = bankContacts.some(c => {
             const doc = String(c.docNumber ?? '').replace(/\D/g, '');
             if (!doc) return false;
@@ -879,7 +887,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
         }, 15000);
         return () => { vivo = false; clearInterval(t); };
         /* eslint-disable-next-line react-hooks/exhaustive-deps */
-    }, [currentUser?.id, amlActivo, amlBenef, bankContacts.length, leerTusdatos]);
+    }, [currentUser?.id, amlCorre, amlHechos, bankContacts.length, leerTusdatos]);
 
     // El registro con el banco se reintenta SOLO: la sincronización al entrar
     // vuelve a inscribir las cuentas ACH que quedaron sin id. Eso es trabajo

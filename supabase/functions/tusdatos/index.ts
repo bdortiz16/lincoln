@@ -157,6 +157,50 @@ function enLaPrueba(c: Config, userId: string): boolean {
   return !c.soloEstosUsuarios?.length || c.soloEstosUsuarios.includes(userId)
 }
 
+// ── Verificación reforzada para BAJAR una protección ─────────────────────
+// Apagar la verificación de antecedentes deja pasar envíos que hoy se
+// frenan. Encenderla no le hace daño a nadie; apagarla sí, y por eso solo
+// esa dirección pide confirmar la identidad.
+//
+// Se reutiliza el mismo mecanismo del panel (admin-data): la marca vive en
+// system_config bajo stepup_<uid> y la escribe quien verifica el código del
+// correo. Un segundo mecanismo paralelo se desincroniza y termina siendo un
+// candado que se abre solo.
+const STEP_UP_TTL_MS = 30 * 60_000
+function sessionIdOf(req: Request): string | null {
+  try {
+    const jwt = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
+    const part = jwt.split('.')[1]
+    if (!part) return null
+    const pad = part.replace(/-/g, '+').replace(/_/g, '/')
+    return JSON.parse(atob(pad + '='.repeat((4 - pad.length % 4) % 4)))?.session_id ?? null
+  } catch { return null }
+}
+const SIN_SESION = '__sin_sesion__'
+
+// Qué factores faltan. El del correo es el piso y se pide siempre; el de la
+// app solo si la cuenta TIENE 2FA activo — exigir un código que ninguna app
+// está generando sería un candado imposible de abrir.
+async function faltaVerificar(req: Request, userId: string): Promise<string[]> {
+  const sid = sessionIdOf(req) ?? SIN_SESION
+  const vigente = (t: unknown) => !!t && (Date.now() - Number(t) < STEP_UP_TTL_MS)
+  let est: any = {}
+  let tiene2fa = false
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', `stepup_${userId}`).single()
+    const todo = data?.value ? JSON.parse(data.value) : {}
+    est = todo[sid] ?? todo[SIN_SESION] ?? {}
+  } catch { /* sin marca: se pide todo */ }
+  try {
+    const { data } = await db.from('users').select('raw_data').eq('id', userId).single()
+    tiene2fa = !!(data as any)?.raw_data?.mfaEnabled
+  } catch { /* si no se puede saber, no se exige */ }
+  const falta: string[] = []
+  if (!vigente(est.email)) falta.push('email')
+  if (tiene2fa && !vigente(est.app)) falta.push('app')
+  return falta
+}
+
 // ── El expediente guardado ───────────────────────────────────────────────
 type Ficha = {
   documento?: string
@@ -668,12 +712,42 @@ Deno.serve(async (req: Request) => {
 
     if (accion === 'config_set') {
       if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
-      const c = { ...(await leerConfig()), ...(body.config ?? {}) } as Config
+      const previa = await leerConfig()
+      const c = { ...previa, ...(body.config ?? {}) } as Config
       if (c.activo && (!c.baseUrl || !hayCredencial())) {
         return json({ error: 'Faltan datos para encender: la dirección base y las credenciales en la Bóveda.' }, 400)
       }
+
+      // BAJAR una protección pide confirmar la identidad; subirla no. Cuentan
+      // como bajarla: apagar la verificación, dejar de frenar los envíos, o
+      // pasar a bloquear solo el riesgo alto — las tres dejan pasar cosas que
+      // antes se frenaban. Un panel abierto un minuto en un escritorio ajeno
+      // alcanza para apagar el control de lavado de activos.
+      const aflojando =
+        (previa.activo && c.activo === false) ||
+        (previa.bloquear !== false && c.bloquear === false) ||
+        (!previa.soloBloquearAlto && c.soloBloquearAlto === true)
+
+      if (aflojando && yo.userId) {
+        const falta = await faltaVerificar(req, yo.userId)
+        if (falta.length) {
+          await auditar('tusdatos.config_bloqueada', { por: yo.userId, falta })
+          return json({
+            error: 'verificacion_requerida', falta,
+            message: falta.includes('email') && falta.includes('app')
+              ? 'Para bajar esta protección hay que confirmar el código del correo y el de la app.'
+              : falta.includes('app')
+                ? 'Para bajar esta protección hay que confirmar el código de la app.'
+                : 'Para bajar esta protección hay que confirmar el código que llega al correo.',
+          }, 403)
+        }
+      }
+
       await guardarConfig(c)
-      await auditar('tusdatos.config', { activo: c.activo, baseUrl: c.baseUrl, por: yo.userId })
+      await auditar('tusdatos.config', {
+        activo: c.activo, bloquear: c.bloquear, soloBloquearAlto: c.soloBloquearAlto,
+        aflojando, baseUrl: c.baseUrl, por: yo.userId,
+      })
       return json({ ok: true, config: c, credencial: hayCredencial() ? 'configurada' : 'falta' })
     }
 

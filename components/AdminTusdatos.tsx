@@ -1,4 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { useDatabase } from '../context/DatabaseContext';
+import { AdminStepUp } from './AdminStepUp';
 
 // ─────────────────────────────────────────────────────────────
 // AdminTusdatos — centro de control de la verificación de antecedentes.
@@ -146,7 +148,12 @@ const CAT: Record<string, { t: string; ok: boolean }> = {
 };
 
 export const AdminTusdatos: React.FC = () => {
+  const { currentUser } = useDatabase() as any;
   const [d, setD] = useState<any>(null);
+  // Cambio que el servidor no deja aplicar sin confirmar la identidad. Se
+  // guarda tal cual para reintentarlo apenas se verifique: si no, la persona
+  // verifica y después tiene que acordarse de qué estaba haciendo.
+  const [porVerificar, setPorVerificar] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const [probando, setProbando] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; texto: string } | null>(null);
@@ -184,8 +191,15 @@ export const AdminTusdatos: React.FC = () => {
   const guardar = async (next: any) => {
     setMsg(null);
     const r = await call({ action: 'config_set', config: next }).catch(() => null);
-    if (r?.ok) { setD((x: any) => ({ ...x, config: r.config })); setMsg({ ok: true, texto: 'Guardado. El cambio queda en el registro de auditoría.' }); }
-    else setMsg({ ok: false, texto: r?.error ?? 'No se pudo guardar.' });
+    if (r?.ok) {
+      setD((x: any) => ({ ...x, config: r.config }));
+      setMsg({ ok: true, texto: 'Guardado. El cambio queda en el registro de auditoría.' });
+      return;
+    }
+    // El servidor pide confirmar la identidad para bajar una protección. No
+    // es un error: es el control haciendo su trabajo.
+    if (r?.error === 'verificacion_requerida') { setPorVerificar(next); return; }
+    setMsg({ ok: false, texto: r?.message ?? r?.error ?? 'No se pudo guardar.' });
   };
 
   const probar = async () => {
@@ -682,6 +696,25 @@ export const AdminTusdatos: React.FC = () => {
                 {mBusy ? 'Consultando…' : 'Consultar'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Verificación para bajar una protección. Apagar la verificación de
+          antecedentes deja pasar envíos que hoy se frenan: un panel abierto
+          un minuto en un escritorio ajeno no puede alcanzar para eso. */}
+      {porVerificar && currentUser?.id && (
+        <div className="fixed inset-0 z-[60] p-4" style={{ background: 'rgba(4,5,4,0.8)', display: 'grid', placeItems: 'center', overflowY: 'auto' }}>
+          <div style={{ maxWidth: 440, width: '100%' }}>
+            <AdminStepUp
+              userId={currentUser.id}
+              motivo={porVerificar.activo === false
+                ? 'para apagar la verificación de antecedentes'
+                : 'para bajar esta protección'}
+              sinPasskey
+              onListo={() => { const n = porVerificar; setPorVerificar(null); guardar(n); }}
+              onCancelar={() => { setPorVerificar(null); setMsg({ ok: false, texto: 'No se cambió nada: hace falta confirmar la identidad.' }); }}
+            />
           </div>
         </div>
       )}
