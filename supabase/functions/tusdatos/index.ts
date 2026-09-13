@@ -181,7 +181,75 @@ type Ficha = {
   fuentesConError?: string[]
   pdfUrl?: string
   enviadoAKumplo?: boolean
+  // ── Identidad ──────────────────────────────────────────────────────────
+  // Lo que el titular ESCRIBIÓ al inscribir, y lo que dice el documento.
+  nombreInscrito?: string
+  nombreReal?: string
+  nombreCoincide?: boolean
+  // Estado del documento en la Registraduría. Una cédula cancelada por
+  // muerte o por suplantación no es un detalle: es la señal más fuerte de
+  // que quien recibe no es quien dice ser.
+  documentoVigente?: boolean
+  estadoDocumento?: string
+  // Por qué quedó bloqueado, en una línea. Vacío = no está bloqueado.
+  bloqueo?: string
   at?: string
+}
+
+// ── ¿El nombre inscrito es el del documento? ─────────────────────────────
+// No se comparan las cadenas tal cual: nadie escribe los cuatro nombres
+// completos y con tildes. La regla es que TODO lo que la persona escribió
+// tiene que estar en el nombre real —puede faltar un segundo nombre, no
+// sobrar un apellido— y que coincidan al menos dos partes, para que un
+// "Juan" suelto no valide a cualquier Juan.
+function normalizar(s: string): string[] {
+  return String(s ?? '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toUpperCase().replace(/[^A-Z\s]/g, ' ')
+    .split(/\s+/).filter(x => x.length > 1)
+}
+
+function nombreCoincide(inscrito: string, real: string): boolean | undefined {
+  const a = normalizar(inscrito)
+  const b = normalizar(real)
+  // Sin uno de los dos no hay nada que comparar, y no se inventa un veredicto.
+  if (!a.length || !b.length) return undefined
+  const sobran = a.filter(t => !b.includes(t))
+  const comunes = a.filter(t => b.includes(t))
+  return sobran.length === 0 && comunes.length >= 2
+}
+
+// Códigos de la Registraduría que significan que la cédula NO está vigente.
+// 21 muerte · 22 doble cedulación · 23 suplantación · 24 menor de edad ·
+// 25/28 extranjería · 26 mala elaboración · 27 reasignación · 51-56 canceladas.
+const ESTADO_DOC: Record<string, string> = {
+  '0': 'Vigente', '1': 'Vigente',
+  '12': 'Vigente con pérdida o suspensión de derechos políticos',
+  '14': 'Vigente con interdicción judicial',
+  '21': 'Cancelada por muerte', '22': 'Cancelada por doble cedulación',
+  '23': 'Cancelada por suplantación', '24': 'Cancelada por menor de edad',
+  '25': 'Cancelada por extranjería', '26': 'Cancelada por mala elaboración',
+  '27': 'Cancelada por reasignación o cambio de sexo',
+  '28': 'Cancelada por extranjería sin carta de naturaleza',
+  '88': 'Pendiente — solicitud en reproceso', '99': 'Pendiente — en proceso de expedición',
+}
+
+// Validación exprés de la cédula. Es inmediata (no como la de antecedentes,
+// que tarda un minuto) y dice si el documento está vigente. Lo que NO
+// devuelve es el nombre real —a propósito, para no exponer datos del
+// ciudadano—; ese sale de la consulta de antecedentes.
+async function validarCedula(c: Config, documento: string) {
+  const r = await llamarTD(c, '/api/v1/identity/validations', 'POST', {
+    country: 'CO',
+    document_data: { document_number: /^\d+$/.test(documento) ? Number(documento) : documento },
+  })
+  if (!r.ok || !r.body) return null
+  const code = String(r.body?.data?.status_code ?? '')
+  return {
+    vigente: r.body?.document_status === true,
+    estado: String(r.body?.data?.status ?? ESTADO_DOC[code] ?? '') || (code ? `Código ${code}` : ''),
+    codigo: code,
+  }
 }
 
 async function leerRaw(userId: string): Promise<any> {
@@ -340,15 +408,46 @@ async function cerrar(c: Config, userId: string, jobid: string, doc: string, esB
   if (!validado && !cat) cat = 'sin_validar'
 
   const det = reportId ? await detalle(c, reportId) : null
+
+  // ── La identidad, antes que los antecedentes ───────────────────────────
+  // De nada sirve saber que "Juan Pérez" está limpio si la cédula que
+  // escribieron es de otra persona. Se compara lo inscrito contra el nombre
+  // que devuelve la Registraduría, y se mira si el documento está vigente.
+  const previa = esBeneficiario
+    ? ((await leerRaw(userId))?.tusdatos?.beneficiarios ?? {})[doc]
+    : (await leerRaw(userId))?.tusdatos
+  const inscrito = String(previa?.nombreInscrito ?? previa?.nombre ?? '')
+  const real = res?.nombre ? String(res.nombre) : ''
+  const coincide = nombreCoincide(inscrito, real)
+
+  const cedula = String(res?.typedoc ?? 'CC').toUpperCase() === 'CC' ? await validarCedula(c, doc) : null
+
+  // Qué bloquea, y por qué. Se escribe el motivo: "bloqueado" sin razón
+  // obliga a adivinar, y quien revisa el caso necesita saber qué mirar.
+  const motivo =
+    coincide === false ? `El nombre inscrito no corresponde al documento. Según la Registraduría es ${real}.`
+      : cedula && cedula.vigente === false ? `El documento no está vigente: ${cedula.estado}.`
+        : cat === 'alto' ? 'Hallazgos de riesgo alto.'
+          : cat === 'medio' && !c.soloBloquearAlto ? 'Hallazgos de riesgo medio, en revisión de cumplimiento.'
+            : ''
+
   const ficha: Ficha = {
     documento: doc,
     tipoDocumento: String(res?.typedoc ?? 'CC'),
-    nombre: res?.nombre ? String(res.nombre) : undefined,
+    nombre: real || undefined,
+    nombreInscrito: inscrito || undefined,
+    nombreReal: real || undefined,
+    nombreCoincide: coincide,
+    documentoVigente: cedula ? cedula.vigente : undefined,
+    estadoDocumento: cedula?.estado || undefined,
+    bloqueo: motivo || undefined,
     jobid, reportId: reportId || undefined,
     validado,
     hallazgo: res?.hallazgo === true,
     categoria: cat,
-    operable: operableDe(cat, c),
+    // Un nombre que no corresponde, o un documento cancelado, pesan más que
+    // la categoría: no se sabe a quién se le está transfiriendo.
+    operable: (coincide === false || cedula?.vigente === false) ? false : operableDe(cat, c),
     estado: 'finalizado',
     altos: det?.altos ?? 0,
     medios: det?.medios ?? 0,
@@ -409,6 +508,11 @@ async function consultar(
   const inicial: Ficha = {
     documento: doc, tipoDocumento: (d.tipoDocumento || 'CC').toUpperCase(),
     nombre: r.body?.nombre ? String(r.body.nombre) : d.nombre,
+    // Se guarda lo que ESCRIBIÓ el titular, separado de lo que diga el
+    // documento. Sin guardarlo, al llegar el resultado ya no hay contra qué
+    // comparar: el nombre real habría pisado al inscrito y la validación de
+    // identidad se volvería una comparación de algo consigo mismo.
+    nombreInscrito: d.nombre ? String(d.nombre) : undefined,
     jobid, validado: r.body?.validado === true, estado: 'procesando', at: new Date().toISOString(),
   }
   if (esBeneficiario) await guardarBeneficiario(userId, doc, inicial); else await guardarTitular(userId, inicial)
@@ -663,6 +767,88 @@ Deno.serve(async (req: Request) => {
       const env = await enviarAKumplo(c, ficha, empresaId, null)
       await auditar('tusdatos.enviado_a_kumplo', { userId: uid, documento: doc || ficha.documento, ok: env.ok, manual: true })
       return json(env)
+    }
+
+    // ── Compliance: los casos que hay que mirar ──────────────────────────
+    // Un veredicto guardado en el perfil de cada usuario no sirve de nada si
+    // nadie lo ve. Acá se juntan TODOS los beneficiarios de TODAS las
+    // cuentas y se separan los que piden atención de los que están en orden.
+    //
+    // El orden importa: primero lo que ya está bloqueando una operación,
+    // después lo que está a la espera. Una bandeja donde lo urgente aparece
+    // mezclado con lo rutinario se deja de revisar en una semana.
+    if (accion === 'compliance') {
+      if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      const { data: filas } = await db
+        .from('users')
+        .select('id, name, email, raw_data')
+        .not('raw_data->tusdatos', 'is', null)
+        .limit(2000)
+
+      const casos: any[] = []
+      for (const u of (filas ?? []) as any[]) {
+        const td = u.raw_data?.tusdatos ?? {}
+        const benefs: Record<string, any> = td.beneficiarios ?? {}
+        // El titular también se revisa: no solo a quien recibe.
+        const todos: [string, any][] = [
+          ...(td.documento ? [[String(td.documento), { ...td, beneficiarios: undefined, esTitular: true }] as [string, any]] : []),
+          ...Object.entries(benefs),
+        ]
+        for (const [doc, f] of todos) {
+          if (!f || typeof f !== 'object') continue
+          const cat = String(f.categoria ?? '')
+          const est = String(f.estado ?? '')
+          // Qué merece la atención de un humano.
+          const alerta =
+            f.nombreCoincide === false ? 'nombre_no_coincide'
+              : f.documentoVigente === false ? 'documento_no_vigente'
+                : cat === 'alto' ? 'riesgo_alto'
+                  : cat === 'medio' ? 'riesgo_medio'
+                    : cat === 'sin_validar' ? 'sin_validar'
+                      : est === 'sin_autorizacion' ? 'sin_autorizacion'
+                        : est === 'procesando' ? 'en_curso'
+                          : est !== 'finalizado' && est ? 'consulta_fallida'
+                            : null
+          casos.push({
+            userId: u.id, titular: u.name ?? u.email ?? u.id, esTitular: !!f.esTitular,
+            documento: doc, tipoDocumento: f.tipoDocumento ?? 'CC',
+            nombreInscrito: f.nombreInscrito ?? null, nombreReal: f.nombreReal ?? f.nombre ?? null,
+            nombreCoincide: f.nombreCoincide ?? null,
+            documentoVigente: f.documentoVigente ?? null, estadoDocumento: f.estadoDocumento ?? null,
+            categoria: cat || null, estado: est || null, operable: f.operable ?? null,
+            bloqueo: f.bloqueo ?? null,
+            altos: f.altos ?? 0, medios: f.medios ?? 0, bajos: f.bajos ?? 0,
+            reportId: f.reportId ?? null, enviadoAKumplo: !!f.enviadoAKumplo,
+            at: f.at ?? null, alerta,
+          })
+        }
+      }
+
+      const peso: Record<string, number> = {
+        nombre_no_coincide: 0, documento_no_vigente: 1, riesgo_alto: 2, riesgo_medio: 3,
+        sin_validar: 4, consulta_fallida: 5, sin_autorizacion: 6, en_curso: 7,
+      }
+      const conAlerta = casos.filter(x => x.alerta).sort((a, b) =>
+        (peso[a.alerta] ?? 9) - (peso[b.alerta] ?? 9) || String(b.at ?? '').localeCompare(String(a.at ?? '')))
+      const enOrden = casos.filter(x => !x.alerta)
+
+      return json({
+        ok: true,
+        resumen: {
+          total: casos.length,
+          bloqueados: casos.filter(x => x.operable === false).length,
+          nombreNoCoincide: casos.filter(x => x.nombreCoincide === false).length,
+          documentoNoVigente: casos.filter(x => x.documentoVigente === false).length,
+          alto: casos.filter(x => x.categoria === 'alto').length,
+          medio: casos.filter(x => x.categoria === 'medio').length,
+          enCurso: casos.filter(x => x.estado === 'procesando').length,
+          enOrden: enOrden.length,
+        },
+        casos: conAlerta.slice(0, 300),
+        // Los que están en orden van aparte y recortados: la bandeja es para
+        // lo que hay que mirar, no para el archivo.
+        enOrden: enOrden.slice(0, 120),
+      })
     }
 
     // ── Diagnóstico ──────────────────────────────────────────────────────

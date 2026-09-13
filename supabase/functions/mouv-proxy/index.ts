@@ -1125,14 +1125,28 @@ serve(async (req: Request) => {
             // titular sin autorizar, se deja pasar: un control que no pudo
             // concluir no puede acusar a nadie.
             const cat = String(f?.categoria ?? '')
-            const bloquea = f?.estado === 'finalizado' && (cat === 'alto' || (cat === 'medio' && tdCfg?.soloBloquearAlto !== true))
+            // La identidad pesa más que los antecedentes: si el nombre
+            // inscrito no es el del documento, o la cédula no está vigente,
+            // no se sabe A QUIÉN se le está transfiriendo. Saber que otra
+            // persona está limpia no sirve de nada.
+            const identidadMal = f?.estado === 'finalizado' && (f?.nombreCoincide === false || f?.documentoVigente === false)
+            const bloquea = identidadMal
+              || (f?.estado === 'finalizado' && (cat === 'alto' || (cat === 'medio' && tdCfg?.soloBloquearAlto !== true)))
             if (bloquea) {
-              await logAudit(userId, 'tusdatos.envio_bloqueado', { documento: docDest, categoria: cat, reportId: f?.reportId ?? null })
+              await logAudit(userId, 'tusdatos.envio_bloqueado', {
+                documento: docDest, categoria: cat, motivo: f?.bloqueo ?? null,
+                nombreCoincide: f?.nombreCoincide ?? null, documentoVigente: f?.documentoVigente ?? null,
+                reportId: f?.reportId ?? null,
+              })
               return json(403, {
                 error: 'beneficiario_no_operable',
-                message: cat === 'alto'
-                  ? 'No se puede transferir a este beneficiario: la verificación de antecedentes lo marcó como riesgo alto.'
-                  : 'Este beneficiario está en revisión de cumplimiento. Todavía no se le puede transferir.',
+                message: f?.nombreCoincide === false
+                  ? `El nombre inscrito no corresponde a ese documento. Según la Registraduría la cédula pertenece a ${f?.nombreReal ?? 'otra persona'}. Corrige el beneficiario e inténtalo de nuevo.`
+                  : f?.documentoVigente === false
+                    ? `El documento de este beneficiario no está vigente${f?.estadoDocumento ? `: ${f.estadoDocumento}` : ''}. No se le puede transferir.`
+                    : cat === 'alto'
+                      ? 'No se puede transferir a este beneficiario: la verificación de antecedentes lo marcó como riesgo alto.'
+                      : 'Este beneficiario está en revisión de cumplimiento. Todavía no se le puede transferir.',
               })
             }
           }

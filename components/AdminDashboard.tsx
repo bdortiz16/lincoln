@@ -90,6 +90,7 @@ import { AdminStepUp } from './AdminStepUp';
 import { AdminLoginAlerts } from './AdminLoginAlerts';
 import { AdminKumplo } from './AdminKumplo';
 import { AdminTusdatos } from './AdminTusdatos';
+import { AdminCompliance } from './AdminCompliance';
 import { AdminReconcile } from './AdminReconcile';
 import { AdminOtcSection } from './AdminOtcSection';
 import { Zap, ArrowLeftRight, ArrowLeft, Info, ChevronRight, Activity, Link2 } from 'lucide-react';
@@ -285,7 +286,7 @@ const TAB_TITLES: Record<string, string> = {
 };
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'comando'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'compliance' | 'comando'>('overview');
   const [auditRows, setAuditRows] = useState<any[] | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
   const [adminLogins, setAdminLogins] = useState<{ admins: any[]; activity: any[] } | null>(null);
@@ -4253,6 +4254,7 @@ const renderDesign = () => (
                             <AdminSidebarItem icon={UserCheck} label="Equipo Admin" active={activeTab === 'team'} onClick={() => navTo('team')} />
                             <AdminSidebarItem icon={Megaphone} label="Marketing" active={activeTab === 'marketing'} onClick={() => navTo('marketing')} />
                             <AdminSidebarItem icon={Palette} label="Diseño" active={activeTab === 'design'} onClick={() => navTo('design')} />
+                            <AdminSidebarItem icon={ShieldAlert} label="Compliance" active={activeTab === 'compliance'} onClick={() => navTo('compliance')} />
                             <AdminSidebarItem icon={Link2} label="Kumplo" active={activeTab === 'kumplo'} onClick={() => navTo('kumplo')} />
                             <AdminSidebarItem icon={Settings} label="Configuración" active={activeTab === 'config'} onClick={() => navTo('config')} />
                         </> },
@@ -4343,6 +4345,7 @@ const renderDesign = () => (
                 {activeTab === 'team' && renderTeam()}
                 {activeTab === 'comando' && <div className="animate-in fade-in duration-300"><AdminCommandCenter /></div>}
                 {activeTab === 'security' && renderSecurity()}
+                {activeTab === 'compliance' && <div className="animate-in fade-in duration-300"><AdminCompliance /></div>}
                 {activeTab === 'kumplo' && (
                   <div className="animate-in fade-in duration-300" style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
                     {/* La consulta de antecedentes va ARRIBA: es la que decide

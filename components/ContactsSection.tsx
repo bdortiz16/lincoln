@@ -380,6 +380,10 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
         if (est === 'procesando' || !est) return pinta('rgba(255,255,255,0.14)', '#878E88', 'CONSULTANDO', 'Estamos consultando los antecedentes de esta persona. Suele tardar alrededor de un minuto.');
         if (est === 'sin_autorizacion') return pinta('rgba(255,255,255,0.14)', '#878E88', 'SIN AUTORIZAR', 'El titular del documento no autoriza la consulta de su información. No impide transferirle.');
         if (est !== 'finalizado') return pinta('rgba(255,255,255,0.14)', '#878E88', 'SIN RESULTADO', 'La consulta no pudo completarse. No impide transferirle; se vuelve a intentar.');
+        // La identidad va ANTES que los antecedentes: si el nombre no es el
+        // del documento, saber que otra persona está limpia no sirve de nada.
+        if (k.nombreCoincide === false) return pinta('rgba(248,113,113,0.32)', '#F87171', 'BLOQUEADO', `El nombre inscrito no corresponde al documento. Según la Registraduría es ${k.nombreReal ?? 'otra persona'}.`);
+        if (k.documentoVigente === false) return pinta('rgba(248,113,113,0.32)', '#F87171', 'BLOQUEADO', `El documento no está vigente${k.estadoDocumento ? `: ${k.estadoDocumento}` : ''}.`);
         if (cat === 'alto') return pinta('rgba(248,113,113,0.32)', '#F87171', 'RIESGO ALTO', 'Hallazgos de riesgo alto. No se puede transferir a esta persona.');
         if (cat === 'medio') return pinta('rgba(251,191,36,0.32)', '#FBBF24', 'RIESGO MEDIO', 'Hallazgos de riesgo medio. Queda en revisión de cumplimiento.');
         // Un documento que la Registraduría no validó no se puede categorizar:
@@ -1600,6 +1604,8 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                     est === 'procesando' || !est ? 'Estamos consultando los antecedentes de esta persona contra las fuentes oficiales. Suele tardar alrededor de un minuto.'
                                     : est === 'sin_autorizacion' ? 'El titular del documento no autoriza la consulta de su información, un derecho que le ampara la ley de protección de datos. Esto no impide transferirle.'
                                     : est !== 'finalizado' ? 'La consulta no pudo completarse. Se vuelve a intentar; mientras tanto no impide transferirle.'
+                                    : k.nombreCoincide === false ? `El nombre inscrito no corresponde a ese documento. Según la Registraduría la cédula pertenece a ${k.nombreReal ?? 'otra persona'}. No se le puede transferir hasta corregirlo.`
+                                    : k.documentoVigente === false ? `El documento no está vigente${k.estadoDocumento ? `: ${k.estadoDocumento}` : ''}. No se le puede transferir.`
                                     : cat === 'alto' ? 'La consulta encontró hallazgos de riesgo alto. No se puede transferir a esta persona.'
                                     : cat === 'medio' ? 'La consulta encontró hallazgos de riesgo medio. Queda en revisión de cumplimiento y por ahora no se le puede transferir.'
                                     : cat === 'sin_validar' ? 'No se pudo validar el documento contra la Registraduría, así que no se sabe de quién son los antecedentes. Revisa que el número esté correcto. No impide transferirle.'
@@ -1614,11 +1620,25 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                             {kumploPill(detail)}
                                         </div>
                                         <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.55 }}>{texto}</p>
-                                        {k.nombre && (
+                                        {/* Lo inscrito y lo que dice el documento,
+                                            uno al lado del otro. Es el contraste
+                                            que hace evidente el problema. */}
+                                        {k.nombreCoincide === false ? (
+                                            <div style={{ marginTop: 10, background: '#121413', border: '1px solid rgba(248,113,113,0.24)', borderRadius: 10, padding: '11px 13px', display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                                                <div>
+                                                    <p style={{ fontSize: 10, color: '#878E88', margin: 0, letterSpacing: '1px' }}>SE INSCRIBIÓ COMO</p>
+                                                    <p style={{ fontSize: 13, color: '#F4F4F2', fontWeight: 700, margin: '3px 0 0' }}>{String(k.nombreInscrito ?? detail.name)}</p>
+                                                </div>
+                                                <div>
+                                                    <p style={{ fontSize: 10, color: '#878E88', margin: 0, letterSpacing: '1px' }}>DICE EL DOCUMENTO</p>
+                                                    <p style={{ fontSize: 13, color: '#F87171', fontWeight: 700, margin: '3px 0 0' }}>{String(k.nombreReal ?? '—')}</p>
+                                                </div>
+                                            </div>
+                                        ) : k.nombre ? (
                                             <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 6, lineHeight: 1.5 }}>
                                                 Nombre en el documento: <b style={{ color: '#F4F4F2' }}>{String(k.nombre)}</b>
                                             </p>
-                                        )}
+                                        ) : null}
                                         {est === 'finalizado' && conteo > 0 && (
                                             <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 6, lineHeight: 1.5 }}>
                                                 Hallazgos: {k.altos ?? 0} alto{(k.altos ?? 0) === 1 ? '' : 's'} · {k.medios ?? 0} medio{(k.medios ?? 0) === 1 ? '' : 's'} · {k.bajos ?? 0} bajo{(k.bajos ?? 0) === 1 ? '' : 's'}
