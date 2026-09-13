@@ -1387,6 +1387,13 @@ serve(async (req: Request) => {
         friendly = `Ya hiciste un envío a este mismo beneficiario hace poco. Por seguridad, espera ${mins} minuto${mins === 1 ? '' : 's'} antes de repetir un pago al mismo destino. Tu saldo fue devuelto.`
       } else if (isKeyProblem) {
         friendly = `La llave Bre-B del beneficiario no es válida o no está activa. Pídele que te confirme su llave Bre-B exacta (celular, correo, cédula o alias) y vuelve a intentarlo. Tu saldo fue devuelto.`
+      } else if (provMsg && /cumplimiento|compliance|restringid|sarlaft|listas?\s+restrictiv|lavado/i.test(provMsg)) {
+        // Cuando el rechazo es por CUMPLIMIENTO, decir de quién viene. Este
+        // mensaje llega tal cual del operador del riel y se mostraba sin
+        // firma, así que se leía como si lo hubiera decidido Lincoin —
+        // exactamente el mismo texto que usaría nuestra propia verificación.
+        // Costó horas de buscar el bloqueo en el lado equivocado.
+        friendly = `El operador del envío rechazó esta transferencia por una restricción de cumplimiento de su lado: «${provMsg}» No es una restricción de Lincoin. Comunícate con soporte para revisarlo. Tu saldo fue devuelto.`
       } else if (provMsg && !/[{}\[\]]|http\s*\d|status\s*code|errors?\b|\bpath\b|brebkey/i.test(provMsg)) {
         // Solo se muestra el mensaje del proveedor si es TEXTO HUMANO (sin JSON,
         // códigos ni jerga). Si trae basura técnica, se usa el genérico limpio.
@@ -1397,8 +1404,18 @@ serve(async (req: Request) => {
         // y en el audit_log para el Panel de Fallos del admin.
         friendly = `No pudimos completar el envío en este momento. Tu saldo fue devuelto — puedes intentarlo de nuevo en unos minutos.`
       }
+      // Queda anotado QUIÉN rechazó. Un fallo por cumplimiento del proveedor y
+      // uno de nuestra propia verificación se investigan en sitios distintos;
+      // sin esta marca los dos se ven igual en el Panel de Fallos.
+      const porCumplimientoDelProveedor = !!provMsg && /cumplimiento|compliance|restringid|sarlaft|listas?\s+restrictiv|lavado/i.test(provMsg)
+      if (porCumplimientoDelProveedor) {
+        await logAudit(userId, 'mouv.rechazo_cumplimiento_proveedor', {
+          rail, documento: String((payload.recipient as any)?.documentNumber ?? '').replace(/\D/g, ''),
+          httpStatus: pay.status, mensaje: String(provMsg).slice(0, 300),
+        })
+      }
       // Guardar el motivo legible en la tx para que el comprobante del fallo lo muestre.
-      if (txId) { try { await db.from('transactions').update({ raw_data: { ...prettyBase, ...feeDetail, error: pay.data ?? 'payout_failed', errorMessage: provMsg ?? techHint ?? null, httpStatus: pay.status, refunded: true, failedAt: new Date().toISOString() } }).eq('id', txId) } catch { /* best-effort */ } }
+      if (txId) { try { await db.from('transactions').update({ raw_data: { ...prettyBase, ...feeDetail, error: pay.data ?? 'payout_failed', errorMessage: provMsg ?? techHint ?? null, bloqueoDelProveedor: porCumplimientoDelProveedor || undefined, httpStatus: pay.status, refunded: true, failedAt: new Date().toISOString() } }).eq('id', txId) } catch { /* best-effort */ } }
       // NOTA: no se devuelven `data`/`detail` técnicos al cliente. El detalle
       // real vive en la tx (errorMessage/error/httpStatus) y en el audit_log.
       return json(200, { error: 'payout_failed', code: provCode, retryAfterSeconds, refunded: true, newBalance: restored,
