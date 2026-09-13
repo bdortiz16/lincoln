@@ -341,7 +341,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     // El estado se le pregunta al SERVIDOR: 'tusdatos' es una clave que solo
     // escribe el servidor y no siempre viaja fresca al navegador.
     const tdRaw: any = (currentUser as any)?.raw_data?.tusdatos ?? {};
-    const [tdSrv, setTdSrv] = useState<{ activo: boolean; benef: Record<string, any> } | null>(null);
+    const [tdSrv, setTdSrv] = useState<{ activo: boolean; enLaPrueba: boolean; benef: Record<string, any> } | null>(null);
 
     // Una consulta que falla NO apaga la sección: solo una respuesta explícita
     // del servidor cambia el estado. Si no llega, se queda lo último que sí
@@ -349,7 +349,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     const leerTusdatos = React.useCallback(async (uid: string) => {
         const e = await callTusdatos({ action: 'estado', userId: uid });
         if (!e?.ok) return;
-        setTdSrv({ activo: !!e.activo && !!e.enLaPrueba, benef: e.beneficiarios ?? {} });
+        setTdSrv({ activo: !!e.activo, enLaPrueba: !!e.enLaPrueba, benef: e.beneficiarios ?? {} });
     }, []);
 
     useEffect(() => {
@@ -358,8 +358,21 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
         leerTusdatos(uid);
     }, [currentUser?.id, leerTusdatos]);
 
-    const amlActivo = tdSrv ? tdSrv.activo : Object.keys(tdRaw.beneficiarios ?? {}).length > 0;
     const amlBenef: Record<string, any> = tdSrv ? tdSrv.benef : (tdRaw.beneficiarios ?? {});
+    // La columna aparece si la verificación corre para esta cuenta O si ya hay
+    // resultados guardados. Lo segundo importa: apagar la integración no debe
+    // hacer desaparecer veredictos que ya se consultaron y ya están frenando
+    // envíos — quedaría un bloqueo sin explicación a la vista.
+    const amlCorre = !!tdSrv?.activo && !!tdSrv?.enLaPrueba;
+    const amlActivo = amlCorre || Object.keys(amlBenef).length > 0;
+    // Por qué NO está corriendo. Solo lo ve el administrador: al cliente no le
+    // sirve, pero sin esto la columna simplemente no aparecía y no había forma
+    // de saber si estaba apagada, si esta cuenta quedó fuera, o si algo se
+    // rompió. Ese silencio ya costó varias vueltas.
+    const amlMotivo = !tdSrv ? null
+        : !tdSrv.activo ? 'La verificación de antecedentes está apagada. Enciéndela en Admin → TusDatos.'
+            : !tdSrv.enLaPrueba ? 'Esta cuenta no está en la lista de «Cuentas en la prueba» de Admin → TusDatos, así que se omite.'
+                : null;
     // Sin ficha todavía = consulta en curso. Es la verdad: el documento ya
     // salió hacia TusDatos y el resultado no ha vuelto.
     const amlDe = (c: Partial<MouvContact>) => {
@@ -1036,6 +1049,22 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                     <Plus size={15} strokeWidth={2.5} /> Inscribir beneficiario
                 </button>
             </div>
+
+            {/* Por qué no se ve la columna AML. SOLO para el administrador: al
+                cliente no le sirve saberlo, pero sin esto la columna
+                simplemente no aparecía y no había manera de distinguir
+                «apagada» de «rota». */}
+            {(currentUser as any)?.role === 'admin' && amlMotivo && (
+                <div style={{
+                    display: 'flex', alignItems: 'flex-start', gap: 9, marginTop: 14,
+                    background: '#0C0E0D', border: '1px solid rgba(251,191,36,0.26)', borderRadius: 12, padding: '12px 15px',
+                }}>
+                    <AlertTriangle size={15} color="#FBBF24" style={{ flexShrink: 0, marginTop: 1 }} />
+                    <p style={{ fontSize: 12.5, color: '#878E88', margin: 0, lineHeight: 1.55 }}>
+                        <b style={{ color: '#FBBF24' }}>No se está consultando el AML.</b> {amlMotivo}
+                    </p>
+                </div>
+            )}
 
             {notice && (
                 <div className={`rounded-xl border p-3 text-sm font-medium ${notice.ok ? 'bg-green-50 border-green-200 text-green-800' : 'bg-amber-50 border-amber-200 text-amber-800'}`}>
