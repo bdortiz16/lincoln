@@ -1624,11 +1624,21 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                     { l: 'Documento del titular', v: `${detail.docType ?? ''} ${detail.docNumber ?? ''}`.trim() || '—' },
                 ];
                 return (
-                <div className="fixed inset-0 z-50 p-4" style={{ background: 'rgba(4,5,4,0.72)', display: 'grid', placeItems: 'center' }} onClick={() => { setDetail(null); setDetailMenu(false); }}>
+                <div className="fixed inset-0 z-50 p-4" style={{ background: 'rgba(4,5,4,0.72)', display: 'grid', placeItems: 'center', overflowY: 'auto' }} onClick={() => { setDetail(null); setDetailMenu(false); }}>
+                    {/* Más ancha que un diálogo normal porque acá se lee texto
+                        largo —los hallazgos de antecedentes— y a 480 px cada
+                        uno se partía en tres renglones. Y con alto máximo: en
+                        una pantalla baja, una ficha con muchos hallazgos se
+                        salía por arriba y por abajo, y los botones quedaban
+                        fuera de alcance. */}
                     <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" className="w-full animate-in zoom-in-95 duration-300"
-                        style={{ maxWidth: 480, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, overflow: 'hidden', fontFamily: "'Archivo', system-ui, sans-serif" }}>
+                        style={{
+                            maxWidth: 640, maxHeight: 'calc(100vh - 40px)', display: 'flex', flexDirection: 'column',
+                            background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18,
+                            overflow: 'hidden', fontFamily: "'Archivo', system-ui, sans-serif",
+                        }}>
                         {/* Cabecera: quién es */}
-                        <div style={{ padding: '22px 24px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                        <div style={{ padding: '22px 24px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)', flexShrink: 0 }}>
                             <div className="flex items-start justify-between gap-3">
                                 <div className="flex items-center gap-3 min-w-0">
                                     <div style={{ width: 46, height: 46, borderRadius: '50%', background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', border: '1px solid rgba(255,255,255,0.12)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
@@ -1655,7 +1665,12 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                             </div>
                         </div>
 
-                        <div style={{ padding: '16px 24px 6px' }}>
+                        {/* Solo el CUERPO desplaza. La cabecera —quién es— y la
+                            botonera —qué se puede hacer— se quedan a la vista:
+                            si desplazaran con el resto, en una ficha larga uno
+                            se pierde de con quién está y tiene que bajar hasta
+                            el final para encontrar los botones. */}
+                        <div style={{ padding: '16px 24px 6px', overflowY: 'auto', flex: 1, minHeight: 0 }}>
                             {/* CUENTA DE DESTINO */}
                             <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88' }}>CUENTA DE DESTINO</p>
                             <div>
@@ -1870,7 +1885,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                         </div>
 
                         {/* Botonera */}
-                        <div className="flex items-center" style={{ gap: 9, padding: '16px 24px 22px', borderTop: '1px solid rgba(255,255,255,0.08)', marginTop: 10, position: 'relative' }}>
+                        <div className="flex items-center" style={{ gap: 9, padding: '16px 24px 22px', borderTop: '1px solid rgba(255,255,255,0.08)', position: 'relative', flexShrink: 0, background: '#0C0E0D' }}>
                             <button onClick={() => setDetailMenu(v => !v)} style={{ width: 44, height: 44, borderRadius: 10, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#878E88', fontWeight: 700, fontSize: 16, flexShrink: 0 }} className="hover:bg-white/[0.09] transition-colors">···</button>
                             {detailMenu && (
                                 <div style={{ position: 'absolute', left: 24, bottom: 72, zIndex: 20, background: '#121413', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10, overflow: 'hidden', minWidth: 200, boxShadow: '0 12px 30px rgba(0,0,0,0.5)' }}>
