@@ -91,6 +91,7 @@ import { AdminLoginAlerts } from './AdminLoginAlerts';
 import { AdminKumplo } from './AdminKumplo';
 import { AdminTusdatos } from './AdminTusdatos';
 import { AdminCompliance } from './AdminCompliance';
+import { AdminClientes } from './AdminClientes';
 import { AdminReconcile } from './AdminReconcile';
 import { AdminOtcSection } from './AdminOtcSection';
 import { Zap, ArrowLeftRight, ArrowLeft, Info, ChevronRight, Activity, Link2 } from 'lucide-react';
@@ -1386,328 +1387,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   
   // NOTE: For the sake of the XML response, I will output the *entire* file content including the unchanged renderers to ensure the user can just copy-paste without errors.
   
-  const renderClients = () => {
-      // No se filtra por rol: esta base es SOLO de Empresas (el personal vive
-      // en otra base). Antes se exigía role === 'business' y las cuentas que
-      // quedaron como 'personal' (registro por Google con pista vieja, cuentas
-      // previas al arreglo) no salían en "Empresas" → RESULTADOS (0). allUsers
-      // ya excluye a los admins/equipo, así que aquí van todos los clientes.
-      const filteredUsers = allUsers.filter(u =>
-          (clientKycFilter === 'all' || u.kycStatus === 'pending' || u.kycStatus === 'in_review') &&
-          ((u.name ?? '').toLowerCase().includes(clientSearch.toLowerCase()) || (u.email ?? '').toLowerCase().includes(clientSearch.toLowerCase()))
-      );
-
-      const handleRefreshClients = async () => {
-        setClientRefreshing(true);
-        await refreshData();
-        setClientRefreshing(false);
-      };
-
-      return (
-          <div className="space-y-6 animate-in fade-in duration-300">
-              {/* Barra de filtros. En el teléfono se apila: antes iba en una
-                  sola fila y el botón de "Liberar correo huérfano" se salía
-                  de la pantalla, cortado a la mitad. */}
-              <div className="bg-white p-3 sm:p-4 rounded-xl border border-slate-200 shadow-sm space-y-3">
-                  <div className="flex gap-2 flex-wrap">
-                      {/* Solo empresas en este admin — personas van en /admin-personas */}
-                      <span style={{ color: '#FFFFFF' }} className="px-3 py-2 rounded-lg text-sm font-bold bg-[#0C0E0D] shadow-md">Empresas</span>
-                      <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
-                          <button onClick={() => setClientKycFilter('all')} className={`px-3 py-1.5 rounded-lg text-sm font-bold transition-all ${clientKycFilter === 'all' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>Todos</button>
-                          <button onClick={() => setClientKycFilter('pending')} className={`px-3 py-1.5 rounded-lg text-sm font-bold transition-all flex items-center gap-1 ${clientKycFilter === 'pending' ? 'bg-orange-500 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>
-                              Pendientes {pendingClientsCount > 0 && <span className="bg-white text-orange-600 text-[10px] rounded-full px-1.5 font-bold">{pendingClientsCount}</span>}
-                          </button>
-                      </div>
-                  </div>
-                  <div className="relative">
-                      <Search className="absolute left-3 top-2.5 text-slate-400" size={16} />
-                      <input
-                          type="text"
-                          placeholder="Buscar cliente..."
-                          value={clientSearch}
-                          onChange={(e) => setClientSearch(e.target.value)}
-                          className="w-full pl-9 pr-4 py-2 border border-slate-200 rounded-lg text-sm focus:border-[#0C0E0D] outline-none"
-                      />
-                  </div>
-                  <div className="flex gap-2 flex-wrap">
-                      <button onClick={handleRefreshClients} disabled={clientRefreshing} className="flex-1 sm:flex-none justify-center flex items-center gap-1.5 px-3 py-2 bg-[#0C0E0D] rounded-lg text-sm font-bold hover:bg-[#152e52] disabled:opacity-60 transition-colors" style={{ color: '#FFFFFF' }}>
-                          <RefreshCw size={14} className={clientRefreshing ? 'animate-spin' : ''} /> Actualizar
-                      </button>
-                      <button onClick={() => setShowOrphanTool(v => !v)} className="flex-1 sm:flex-none justify-center flex items-center gap-1.5 px-3 py-2 border border-slate-200 rounded-lg text-sm font-bold text-slate-600 hover:bg-slate-50 transition-colors">
-                          <Trash2 size={14} /> <span className="truncate">Liberar correo</span>
-                      </button>
-                  </div>
-              </div>
-
-              {showOrphanTool && (
-                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 space-y-2">
-                      <p className="text-sm font-bold text-amber-800">Liberar correo huérfano</p>
-                      <p className="text-xs text-amber-700">
-                          Úsalo cuando alguien eliminó su cuenta pero un registro nuevo con el <b>mismo correo</b> nunca se crea
-                          (ej. pasar de Personal a Empresa) — pasa cuando el perfil se borró pero la cuenta de acceso
-                          quedó "atascada" con ese correo. Esto borra cualquier rastro que quede de ese correo, permanentemente.
-                      </p>
-                      <div className="flex gap-2 flex-wrap items-center">
-                          <input
-                              type="email"
-                              value={orphanEmail}
-                              onChange={e => setOrphanEmail(e.target.value)}
-                              placeholder="correo@empresa.com"
-                              className="flex-1 min-w-[220px] px-3 py-2 rounded-lg border border-amber-300 text-sm outline-none focus:border-amber-500"
-                          />
-                          <button onClick={freeOrphanEmail} disabled={orphanBusy || !orphanEmail.trim()} style={{ color: '#FFFFFF' }} className="px-4 py-2 text-sm font-bold bg-amber-600 rounded-lg hover:bg-amber-700 disabled:opacity-50">
-                              {orphanBusy ? 'Liberando…' : 'Liberar correo'}
-                          </button>
-                      </div>
-                      {orphanMsg && <p className="text-xs font-semibold text-slate-700">{orphanMsg}</p>}
-                  </div>
-              )}
-
-              {/* En pantalla ancha: lista y detalle lado a lado. En el teléfono
-                  se ve UNA cosa a la vez — antes el detalle vacío ocupaba dos
-                  tercios diciendo "selecciona un cliente" mientras la lista
-                  quedaba espichada en una columna con los correos cortados. */}
-              <div className="flex flex-col lg:flex-row gap-4 lg:gap-6 lg:h-[600px]">
-                  {/* Lista */}
-                  <div className={`${selectedClient ? 'hidden lg:flex' : 'flex'} w-full lg:w-1/3 bg-white border border-slate-200 rounded-xl overflow-hidden flex-col max-h-[70vh] lg:max-h-none`}>
-                      <div className="p-3 sm:p-4 border-b border-slate-100 bg-slate-50 text-xs font-bold text-slate-500 uppercase">
-                          Resultados ({filteredUsers.length})
-                      </div>
-                      <div className="flex-1 overflow-y-auto divide-y divide-slate-50">
-                          {filteredUsers.length === 0 && (
-                              <p className="p-6 text-center text-sm text-slate-400">Ningún cliente coincide con la búsqueda.</p>
-                          )}
-                          {filteredUsers.map(client => (
-                              <div
-                                  key={client.id}
-                                  onClick={() => { setSelectedClient(client); setShowDeleteConfirm(false); setShowBlockInput(false); }}
-                                  className={`p-3 sm:p-4 cursor-pointer hover:bg-slate-50 transition-colors ${selectedClient?.id === client.id ? 'bg-slate-50 lg:border-l-4 lg:border-[#0C0E0D]' : ''}`}
-                              >
-                                  <div className="flex items-center gap-3">
-                                      <div className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center font-bold text-white text-sm ${client.kycStatus === 'verified' ? 'bg-green-500' : client.kycStatus === 'rejected' ? 'bg-red-500' : 'bg-orange-400'}`}>
-                                          {(client.name ?? client.email ?? '?').charAt(0).toUpperCase()}
-                                      </div>
-                                      {/* min-w-0 es lo que permite que truncate funcione dentro de
-                                          un flex: antes iba con un ancho fijo (w-40) y el correo
-                                          se cortaba a la mitad en pantallas angostas. */}
-                                      <div className="min-w-0 flex-1">
-                                          <p className="font-bold text-slate-800 text-sm truncate">{client.name || client.email}</p>
-                                          <p className="text-xs text-slate-500 truncate">{client.email}</p>
-                                          {isBlacklisted(client)
-                                            ? <span className="text-[10px] font-bold mt-1 inline-block px-1.5 py-0.5 rounded bg-[#0C0E0D] text-white">🚫 LISTA NEGRA</span>
-                                            : client.isBlocked && <span className="text-[10px] text-red-500 font-bold mt-1 block">BLOQUEADO</span>}
-                                      </div>
-                                      <ChevronRight size={16} className="text-slate-300 shrink-0 lg:hidden" />
-                                  </div>
-                              </div>
-                          ))}
-                      </div>
-                  </div>
-
-                  {/* Detalle */}
-                  <div className={`${selectedClient ? 'flex' : 'hidden lg:flex'} flex-1 min-w-0 bg-white border border-slate-200 rounded-xl overflow-hidden flex-col`}>
-                      {/* Regreso a la lista — solo en el teléfono, donde el
-                          detalle ocupa toda la pantalla. */}
-                      {selectedClient && (
-                          <button onClick={() => setSelectedClient(null)}
-                              className="lg:hidden flex items-center gap-2 px-4 py-3 border-b border-slate-100 text-sm font-bold text-slate-600 bg-slate-50">
-                              <ArrowLeft size={15} /> Todos los clientes
-                          </button>
-                      )}
-                      {selectedClient ? (
-                          <div className="flex flex-col h-full">
-                              {/* En el teléfono el nombre y los botones se apilan:
-                                  en una sola fila los botones empujaban el correo
-                                  y quedaba ilegible. */}
-                              <div className="p-4 sm:p-6 border-b border-slate-100 flex flex-col sm:flex-row sm:justify-between sm:items-start gap-3 bg-slate-50">
-                                  <div className="min-w-0">
-                                      <h2 className="text-lg sm:text-xl font-bold text-slate-800 break-words">{selectedClient.name}</h2>
-                                      <p className="text-sm text-slate-500 break-all">{selectedClient.email}</p>
-                                      <div className="flex gap-2 mt-2">
-                                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${selectedClient.kycStatus === 'verified' ? 'bg-green-100 text-green-700' : selectedClient.kycStatus === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-orange-100 text-orange-700'}`}>
-                                              KYC: {selectedClient.kycStatus}
-                                          </span>
-                                          <span className="bg-slate-200 text-slate-600 px-2 py-0.5 rounded text-[10px] font-bold uppercase">{selectedClient.role}</span>
-                                      </div>
-                                  </div>
-                                  <div className="flex gap-2 flex-wrap sm:justify-end">
-                                      <button onClick={openEditClient} className="bg-slate-800 text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-slate-900 transition-colors flex items-center gap-1">
-                                          <Edit2 size={14}/> Editar
-                                      </button>
-                                      {selectedClient.kycStatus !== 'verified' && (
-                                          <button onClick={handleApproveKYC} className="bg-green-600 text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-green-700 transition-colors flex items-center gap-1">
-                                              <CheckCircle size={14}/> Aprobar
-                                          </button>
-                                      )}
-                                      <button onClick={() => setShowBlockInput(!showBlockInput)} className="bg-red-100 text-red-700 border border-red-200 px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-red-200 transition-colors flex items-center gap-1">
-                                          <Ban size={14}/> {selectedClient.isBlocked ? 'Desbloquear' : 'Bloquear'}
-                                      </button>
-                                      <button onClick={handleBlacklistUser} title="Bloqueo reforzado: el servidor rechaza TODAS sus operaciones y desaparece de las listas operativas" className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors flex items-center gap-1 ${(selectedClient as any).blacklisted ? 'bg-slate-200 text-slate-700 hover:bg-slate-300' : 'bg-[#0C0E0D] text-white hover:bg-black'}`}>
-                                          <Shield size={14}/> {(selectedClient as any).blacklisted ? 'Sacar de lista negra' : 'Lista negra'}
-                                      </button>
-                                      <button onClick={() => { setShowDeleteConfirm(true); setShowBlockInput(false); }} className="bg-red-600 text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-red-700 transition-colors flex items-center gap-1">
-                                          <Trash2 size={14}/> Eliminar
-                                      </button>
-                                      <button onClick={() => handleSyncCrypto(selectedClient.id, selectedClient.name)} className="bg-[#4ADE80] text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-[#22C55E] transition-colors flex items-center gap-1">
-                                          <RefreshCw size={14}/> Sincronizar Cripto
-                                      </button>
-                                      {selectedClient.role === 'business' && (
-                                          <button
-                                              onClick={() => {
-                                                  updateUserProfile(selectedClient.id, { otcEnabled: !selectedClient.otcEnabled });
-                                                  setSelectedClient({ ...selectedClient, otcEnabled: !selectedClient.otcEnabled });
-                                                  showToast(selectedClient.otcEnabled ? 'OTC desactivado' : 'OTC activado');
-                                              }}
-                                              className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors flex items-center gap-1 ${selectedClient.otcEnabled ? 'bg-emerald-100 text-emerald-700 border-emerald-200 hover:bg-emerald-200' : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'}`}
-                                          >
-                                              <TrendingUp size={14}/> OTC {selectedClient.otcEnabled ? 'ON' : 'OFF'}
-                                          </button>
-                                      )}
-                                  </div>
-                              </div>
-                              
-                              {editClientOpen && (
-                                  <div className="p-4 bg-slate-50 border-b border-slate-200 animate-in fade-in slide-in-from-top-2 space-y-3">
-                                      <div>
-                                          <label className="block text-[11px] font-bold uppercase text-slate-500 mb-1">Nombre {editClientRole === 'business' ? '/ Razón social' : 'completo'}</label>
-                                          <input value={editClientName} onChange={e => setEditClientName(e.target.value)} className="w-full h-10 px-3 rounded-lg border border-slate-300 text-sm text-slate-800 outline-none focus:border-slate-800" placeholder="Nombre del cliente" />
-                                      </div>
-                                      <div>
-                                          <label className="block text-[11px] font-bold uppercase text-slate-500 mb-1">Tipo de cuenta</label>
-                                          <div className="flex gap-2">
-                                              <button onClick={() => setEditClientRole('personal')} className={`flex-1 h-10 rounded-lg text-sm font-bold border transition-colors ${editClientRole === 'personal' ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-100'}`}>Persona</button>
-                                              <button onClick={() => setEditClientRole('business')} className={`flex-1 h-10 rounded-lg text-sm font-bold border transition-colors ${editClientRole === 'business' ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-100'}`}>Empresa</button>
-                                          </div>
-                                      </div>
-                                      <div className="flex gap-2">
-                                          <button onClick={() => setEditClientOpen(false)} className="flex-1 h-10 rounded-lg text-sm font-bold border border-slate-300 text-slate-600 hover:bg-slate-100">Cancelar</button>
-                                          <button onClick={saveEditClient} disabled={editClientSaving} className="flex-1 h-10 rounded-lg text-sm font-bold bg-[#0C0E0D] text-white hover:bg-slate-800 disabled:opacity-60">{editClientSaving ? 'Guardando…' : 'Guardar cambios'}</button>
-                                      </div>
-                                  </div>
-                              )}
-                              {showBlockInput && (
-                                  <div className="p-4 bg-red-50 border-b border-red-100 flex gap-2 animate-in fade-in slide-in-from-top-2">
-                                      <input
-                                          type="text"
-                                          value={blockReason}
-                                          onChange={(e) => setBlockReason(e.target.value)}
-                                          placeholder="Motivo del bloqueo / desbloqueo..."
-                                          className="flex-1 border border-red-200 rounded px-3 text-sm focus:outline-none focus:border-red-400"
-                                      />
-                                      <button onClick={handleBlockUser} className="bg-red-600 text-white px-4 py-2 rounded text-xs font-bold hover:bg-red-700">Confirmar</button>
-                                  </div>
-                              )}
-
-                              {showDeleteConfirm && (
-                                  <div className="p-4 bg-red-50 border-b border-red-200 animate-in fade-in slide-in-from-top-2">
-                                      <p className="text-sm font-bold text-red-800 mb-1">⚠️ Eliminar cuenta permanentemente</p>
-                                      <p className="text-xs text-red-700 mb-3">Se eliminarán el perfil, todas las transacciones y el acceso de <span className="font-bold">{selectedClient.email}</span>. Esta acción no se puede deshacer.</p>
-                                      <div className="flex gap-2">
-                                          <button onClick={handleDeleteUser} disabled={deletingUser} className="bg-red-600 text-white px-4 py-2 rounded text-xs font-bold hover:bg-red-700 disabled:opacity-60 flex items-center gap-1">
-                                              {deletingUser ? <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin inline-block"/> : <Trash2 size={12}/>}
-                                              {deletingUser ? 'Eliminando...' : 'Sí, eliminar'}
-                                          </button>
-                                          <button onClick={() => setShowDeleteConfirm(false)} className="px-4 py-2 rounded text-xs font-bold text-slate-600 bg-white border border-slate-200 hover:bg-slate-50">Cancelar</button>
-                                      </div>
-                                  </div>
-                              )}
-
-                              <div className="flex-1 overflow-y-auto p-6 space-y-6">
-                                  {/* Info Grid */}
-                                  <div className="grid grid-cols-2 gap-4">
-                                      <div className="p-3 border border-slate-100 rounded-lg">
-                                          <p className="text-xs text-slate-400 font-bold uppercase">ID Cliente</p>
-                                          <p className="text-sm font-mono text-slate-700">{selectedClient.id}</p>
-                                      </div>
-                                      <div className="p-3 border border-slate-100 rounded-lg">
-                                          <p className="text-xs text-slate-400 font-bold uppercase">País</p>
-                                          <p className="text-sm font-bold text-slate-700">{selectedClient.country || selectedClient.companyCountry || 'N/A'}</p>
-                                      </div>
-                                      <div className="p-3 border border-slate-100 rounded-lg">
-                                          <p className="text-xs text-slate-400 font-bold uppercase">NIT / Documento</p>
-                                          <p className="text-sm font-bold text-slate-700">{selectedClient.taxId || selectedClient.docNumber || 'N/A'}</p>
-                                      </div>
-                                      <div className="p-3 border border-slate-100 rounded-lg">
-                                          <p className="text-xs text-slate-400 font-bold uppercase">Tipo ID</p>
-                                          <p className="text-sm font-bold text-slate-700">{selectedClient.taxIdType || selectedClient.docType || 'N/A'}</p>
-                                      </div>
-                                  </div>
-
-                                  {/* Didit Verification Result */}
-                                  <DiditAdminPanel client={selectedClient} showToast={showToast} />
-
-                                  {/* Business KYC Data */}
-                                  {selectedClient.role === 'business' && (
-                                      <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
-                                          <h3 className="font-bold text-[#0C0E0D] text-sm flex items-center gap-2">
-                                              <Building2 size={16}/> Datos KYC Empresa
-                                          </h3>
-                                          <div className="grid grid-cols-2 gap-3">
-                                              {[
-                                                  { label: 'Razón Social', val: selectedClient.companyName || selectedClient.name },
-                                                  { label: 'Ciudad', val: selectedClient.companyCity },
-                                                  { label: 'Dirección', val: selectedClient.companyAddress || selectedClient.address },
-                                                  { label: 'Rep. Legal', val: selectedClient.repLegalName || `${selectedClient.repFirstName ?? ''} ${selectedClient.repLastName ?? ''}`.trim() },
-                                                  { label: 'Doc. Rep', val: selectedClient.repDocNumber },
-                                                  { label: 'Tipo Doc. Rep', val: selectedClient.repDocType },
-                                                  { label: 'Nacionalidad Rep', val: selectedClient.repNationality },
-                                                  { label: 'PEP', val: selectedClient.isPep ? 'Sí' : 'No' },
-                                              ].map(({ label, val }) => (
-                                                  <div key={label} className="bg-white rounded-lg p-2 border border-slate-200">
-                                                      <p className="text-[10px] font-bold text-[#4ADE80] uppercase">{label}</p>
-                                                      <p className="text-sm text-slate-700 font-medium">{val || 'N/A'}</p>
-                                                  </div>
-                                              ))}
-                                          </div>
-                                      </div>
-                                  )}
-
-                                  {/* Documents */}
-                                  <div>
-                                      <h3 className="font-bold text-slate-800 mb-3 flex items-center gap-2"><FileText size={16}/> Documentación</h3>
-                                      {selectedClient.documents ? (
-                                          <div className="grid grid-cols-2 gap-4">
-                                              {Object.entries(selectedClient.documents).map(([key, val]) => (
-                                                  <div key={key} className="border border-slate-200 rounded-lg p-2">
-                                                      <p className="text-xs font-bold text-slate-500 uppercase mb-2">{key}</p>
-                                                      {typeof val === 'string' && val.startsWith('data:image') ? (
-                                                          <img src={val} alt={key} className="w-full h-32 object-cover rounded bg-slate-100 cursor-pointer hover:opacity-90" onClick={() => {const w = window.open(""); w?.document.write(`<img src="${val}"/>`)}}/>
-                                                      ) : (
-                                                          <a href={val as string} download className="text-[#4ADE80] text-xs underline truncate block">{val ? 'Descargar Archivo' : 'Sin archivo'}</a>
-                                                      )}
-                                                  </div>
-                                              ))}
-                                          </div>
-                                      ) : (
-                                          <div className="p-4 bg-slate-50 rounded text-center text-slate-400 text-sm">No hay documentos cargados.</div>
-                                      )}
-                                  </div>
-
-                                  {/* Balances */}
-                                  <div>
-                                      <h3 className="font-bold text-slate-800 mb-3 flex items-center gap-2"><Wallet size={16}/> Balances</h3>
-                                      <div className="flex gap-2 flex-wrap">
-                                          {Object.entries(selectedClient.balances).map(([curr, amount]) => (
-                                              <div key={curr} className="px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg">
-                                                  <span className="text-xs font-bold text-slate-400 block">{curr}</span>
-                                                  <span className="font-bold text-slate-800">${formatMoney(amount as number, curr)}</span>
-                                              </div>
-                                          ))}
-                                      </div>
-                                  </div>
-                              </div>
-                          </div>
-                      ) : (
-                          <div className="flex-1 flex flex-col items-center justify-center text-slate-300">
-                              <UserCheck size={64} className="mb-4 opacity-50"/>
-                              <p className="text-lg font-medium text-slate-400">Selecciona un cliente para ver detalles</p>
-                          </div>
-                      )}
-                  </div>
-              </div>
-          </div>
-      );
-  };
+  // La vista de clientes vive ahora en components/AdminClientes.tsx
+  // (maestro-detalle). Acá quedaba una segunda lista con sus propios
+  // botones; dos pantallas para lo mismo se separan en cuanto una cambia.
 
   const renderMarketing = () => (
       <div className="space-y-6 animate-in fade-in duration-300">
@@ -4326,7 +4008,38 @@ const renderDesign = () => (
                     <AdminMonitor />
                   </div>
                 )}
-                {activeTab === 'clients' && renderClients()}
+                {activeTab === 'clients' && (
+                  <div className="animate-in fade-in duration-300">
+                    {/* La herramienta de correo huérfano vive acá y no dentro de
+                        la vista de clientes: usa el estado del panel y duplicarla
+                        seria tener dos copias de algo que borra cuentas. */}
+                    {showOrphanTool && (
+                      <div style={{ background: '#0C0E0D', border: '1px solid rgba(251,191,36,0.28)', borderRadius: 14, padding: '15px 17px', marginBottom: 16, fontFamily: 'Archivo, system-ui, sans-serif' }}>
+                        <div className="flex items-start justify-between gap-3 flex-wrap">
+                          <div style={{ maxWidth: 640 }}>
+                            <p style={{ fontSize: 13.5, fontWeight: 700, color: '#FBBF24', margin: 0 }}>Liberar correo huérfano</p>
+                            <p style={{ fontSize: 12, color: '#878E88', margin: '5px 0 0', lineHeight: 1.55 }}>
+                              Para cuando alguien eliminó su cuenta y un registro nuevo con el <b style={{ color: '#F4F4F2' }}>mismo correo</b> nunca llega a crearse
+                              — el perfil se borró pero la cuenta de acceso quedó atascada con ese correo. Borra cualquier rastro que quede, de forma permanente.
+                            </p>
+                          </div>
+                          <button onClick={() => setShowOrphanTool(false)} style={{ background: 'transparent', border: 'none', color: '#878E88', cursor: 'pointer', fontSize: 18, lineHeight: 1 }}>×</button>
+                        </div>
+                        <div className="flex gap-2 flex-wrap items-center" style={{ marginTop: 13 }}>
+                          <input type="email" value={orphanEmail} onChange={e => setOrphanEmail(e.target.value)}
+                            placeholder="correo@empresa.com"
+                            style={{ flex: 1, minWidth: 220, height: 40, background: '#121413', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 9, padding: '0 13px', color: '#F4F4F2', fontSize: 13, outline: 'none', fontFamily: 'inherit' }} />
+                          <button onClick={freeOrphanEmail} disabled={orphanBusy || !orphanEmail.trim()}
+                            style={{ height: 40, padding: '0 16px', borderRadius: 9, background: 'transparent', border: '1px solid rgba(248,113,113,0.34)', color: '#F87171', fontSize: 12.5, fontWeight: 700, cursor: orphanBusy || !orphanEmail.trim() ? 'not-allowed' : 'pointer', opacity: orphanBusy || !orphanEmail.trim() ? 0.5 : 1, fontFamily: 'inherit' }}>
+                            {orphanBusy ? 'Liberando…' : 'Liberar correo'}
+                          </button>
+                        </div>
+                        {orphanMsg && <p style={{ fontSize: 12, color: '#878E88', margin: '9px 0 0' }}>{orphanMsg}</p>}
+                      </div>
+                    )}
+                    <AdminClientes showToast={showToast} onSincronizarCripto={handleSyncCrypto} onLiberarCorreo={() => setShowOrphanTool(v => !v)} />
+                  </div>
+                )}
                 {activeTab === 'marketing' && renderMarketing()}
                 {activeTab === 'treasury' && (tesoreriaOk ? renderTreasury() : (
                   <div className="py-8">
