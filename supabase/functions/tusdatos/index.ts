@@ -244,26 +244,78 @@ type Ficha = {
 }
 
 // ── ¿El nombre inscrito es el del documento? ─────────────────────────────
-// No se comparan las cadenas tal cual: nadie escribe los cuatro nombres
-// completos y con tildes. La regla es que TODO lo que la persona escribió
-// tiene que estar en el nombre real —puede faltar un segundo nombre, no
-// sobrar un apellido— y que coincidan al menos dos partes, para que un
-// "Juan" suelto no valide a cualquier Juan.
+// Lo que se busca es detectar OTRA PERSONA, no castigar la ortografía. Un
+// bloqueo por escribir "SAS" en vez de "S.A.S", o "Jhon" en vez de "John",
+// no protege de nada: frena a un cliente legítimo y enseña a ignorar la
+// alerta. Por eso la comparación tolera lo que una persona escribe mal de
+// verdad y sigue siendo estricta con lo que importa.
+//
+// Qué se ignora a propósito:
+//   · Tildes, puntos y signos — "S.A.S" y "SAS" son la misma cosa.
+//   · Las formas jurídicas (SAS, LTDA, SA…) y las palabras de unión, que
+//     aparecen o no según quién escriba y no identifican a nadie.
+//   · Una letra de diferencia en palabras de cuatro o más — JHON/JOHN,
+//     GONZALES/GONZALEZ.
+
+// Formas jurídicas y palabras de relleno. No identifican a nadie: dos
+// empresas distintas pueden ser ambas "SAS".
+const RELLENO = new Set([
+  'SAS', 'SA', 'SAC', 'LTDA', 'LTD', 'SCA', 'EU', 'BIC', 'ESAL', 'CIA', 'INC', 'CORP',
+  'DE', 'DEL', 'LA', 'LAS', 'LOS', 'EL', 'Y', 'EN', 'SUCESION', 'SUC',
+])
+
 function normalizar(s: string): string[] {
   return String(s ?? '')
-    .normalize('NFD').replace(/[̀-ͯ]/g, '')
-    .toUpperCase().replace(/[^A-Z\s]/g, ' ')
-    .split(/\s+/).filter(x => x.length > 1)
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    // Los puntos se BORRAN, no se convierten en espacio: así "S.A.S" queda
+    // "SAS" y no tres letras sueltas que el filtro de longitud descartaba —
+    // por eso "panorama sas" no coincidía con "Panorama S.A.S".
+    .replace(/[.'`´]/g, '')
+    .replace(/[^A-Z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(x => x.length > 1 && !RELLENO.has(x))
 }
+
+// Distancia de edición, cortada en 2: más allá no hace falta saber cuánto.
+// Cuenta el INTERCAMBIO de dos letras seguidas como UN error, no como dos.
+// Es el error de tecleo más común —JHON por JOHN, ORITZ por ORTIZ— y sin
+// esto quedaba a distancia 2 y bloqueaba a alguien por escribir rápido.
+function distancia(a: string, b: string): number {
+  if (Math.abs(a.length - b.length) > 1) return 2
+  const m = a.length, n = b.length
+  const d: number[][] = Array.from({ length: m + 1 }, (_, i) =>
+    Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)))
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const costo = a[i - 1] === b[j - 1] ? 0 : 1
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + costo)
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1)
+      }
+    }
+    if (Math.min(...d[i]) > 1) return 2
+  }
+  return d[m][n]
+}
+
+// Una parte del nombre "está" si aparece igual, o con una letra de
+// diferencia cuando es larga. En palabras cortas no se tolera: con tres
+// letras, un error de uno ya es otra palabra.
+const estaEn = (t: string, lista: string[]) =>
+  lista.includes(t) || (t.length >= 4 && lista.some(x => distancia(t, x) <= 1))
 
 function nombreCoincide(inscrito: string, real: string): boolean | undefined {
   const a = normalizar(inscrito)
   const b = normalizar(real)
   // Sin uno de los dos no hay nada que comparar, y no se inventa un veredicto.
   if (!a.length || !b.length) return undefined
-  const sobran = a.filter(t => !b.includes(t))
-  const comunes = a.filter(t => b.includes(t))
-  return sobran.length === 0 && comunes.length >= 2
+  const sobran = a.filter(t => !estaEn(t, b))
+  const comunes = a.filter(t => estaEn(t, b))
+  // Dos partes en común, salvo que el nombre real tenga una sola —una
+  // empresa suele quedar en una palabra después de quitarle la forma
+  // jurídica, y exigirle dos sería imposible de cumplir.
+  return sobran.length === 0 && comunes.length >= Math.min(2, b.length)
 }
 
 // Códigos de la Registraduría que significan que la cédula NO está vigente.
@@ -683,16 +735,40 @@ Deno.serve(async (req: Request) => {
         return json({ ok: true })
       }
 
-      // Monitoreo continuo: alguien cambió de estado en listas o PEPs. Se
-      // marca para revisión; el veredicto nuevo lo da una consulta fresca.
+      // Monitoreo continuo: alguien que salió limpio apareció en una lista.
+      // ESTA es la única razón para volver a consultar a alguien ya
+      // consultado. Sin esto habría dos malos caminos: no volver a mirar
+      // nunca —y quedarse con un veredicto viejo— o consultar cada tanto por
+      // si acaso, gastando un crédito por persona cada vez.
+      //
+      // Se relanza para TODA cuenta que tenga a esa persona inscrita: el
+      // mismo beneficiario puede estar en varias.
       if (evento === 'pepsMonitoring') {
-        const d = cuerpo?.data?.data ?? {}
-        const doc = String(d?.doc ?? '').replace(/\D/g, '')
-        if (doc) {
-          await auditar('tusdatos.monitoreo_alerta', {
-            documento: doc, nombre: String(d?.nombre ?? ''),
-            hallazgos: JSON.stringify(d?.hallazgos ?? []).slice(0, 600),
-          })
+        const dd = cuerpo?.data?.data ?? {}
+        const doc = String(dd?.doc ?? '').replace(/\D/g, '')
+        await auditar('tusdatos.monitoreo_alerta', {
+          documento: doc, nombre: String(dd?.nombre ?? ''),
+          hallazgos: JSON.stringify(dd?.hallazgos ?? []).slice(0, 600),
+        })
+        if (doc && c.activo) {
+          const { data: filas } = await db
+            .from('users').select('id, raw_data').not('raw_data->tusdatos', 'is', null).limit(2000)
+          let relanzadas = 0
+          for (const u of (filas ?? []) as any[]) {
+            const td = u.raw_data?.tusdatos ?? {}
+            const esBenef = !!(td.beneficiarios ?? {})[doc]
+            const esTitular = String(td.documento ?? '') === doc
+            if (!esBenef && !esTitular) continue
+            const f = esBenef ? td.beneficiarios[doc] : td
+            const r = await consultar(c, u.id, {
+              documento: doc,
+              tipoDocumento: String(f?.tipoDocumento ?? 'CC'),
+              nombre: f?.nombreInscrito ?? f?.nombre ?? undefined,
+            }, esBenef)
+            if (r.ok) relanzadas += 1
+            if (relanzadas >= 10) break   // el resto, en la siguiente alerta
+          }
+          await auditar('tusdatos.monitoreo_relanzado', { documento: doc, cuentas: relanzadas })
         }
         return json({ ok: true })
       }
@@ -1095,6 +1171,61 @@ Deno.serve(async (req: Request) => {
           bloqueadas: delMes.filter(x => x.operable === false).length,
         },
       })
+    }
+
+    // ── Volver a juzgar lo YA CONSULTADO, sin consultar de nuevo ─────────
+    // La regla que compara el nombre inscrito con el del documento se hizo
+    // más tolerante: ahora perdona tildes, la forma jurídica (S.A.S vs SAS),
+    // una letra de más o de menos y dos letras intercambiadas. Pero los
+    // veredictos ya guardados se calcularon con la regla vieja y siguen
+    // bloqueando a gente que solo escribió distinto.
+    //
+    // Esto los vuelve a juzgar con los datos que YA ESTÁN guardados. No llama
+    // a TusDatos y no gasta un solo crédito: el nombre real ya lo tenemos.
+    if (accion === 'recalcular_nombres') {
+      if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      const c = await leerConfig()
+      const { data: filas } = await db
+        .from('users').select('id, raw_data').not('raw_data->tusdatos', 'is', null).limit(2000)
+
+      let revisados = 0, liberados = 0
+      for (const u of (filas ?? []) as any[]) {
+        const raw = { ...(u.raw_data ?? {}) }
+        const td = { ...(raw.tusdatos ?? {}) }
+        const benefs = { ...(td.beneficiarios ?? {}) }
+        let cambio = false
+
+        const rejuzgar = (f: any) => {
+          if (!f || f.estado !== 'finalizado') return f
+          const inscrito = String(f.nombreInscrito ?? '')
+          const real = String(f.nombreReal ?? f.nombre ?? '')
+          if (!inscrito || !real) return f
+          revisados += 1
+          const nuevo = nombreCoincide(inscrito, real)
+          if (nuevo === f.nombreCoincide) return f
+          cambio = true
+          if (nuevo !== false) liberados += 1
+          const motivo =
+            nuevo === false ? `El nombre inscrito no corresponde a ese documento. Según la Registraduría es ${real}.`
+              : f.documentoVigente === false ? `El documento no está vigente: ${f.estadoDocumento ?? ''}.`
+                : f.categoria === 'alto' ? 'Hallazgos de riesgo alto.'
+                  : f.categoria === 'medio' && !c.soloBloquearAlto ? 'Hallazgos de riesgo medio, en revisión de cumplimiento.'
+                    : ''
+          return {
+            ...f, nombreCoincide: nuevo, bloqueo: motivo || undefined,
+            operable: (nuevo === false || f.documentoVigente === false) ? false : operableDe(f.categoria, c),
+          }
+        }
+
+        for (const [doc, f] of Object.entries(benefs)) benefs[doc] = rejuzgar(f)
+        const titular = rejuzgar({ ...td, beneficiarios: undefined })
+        if (cambio) {
+          raw.tusdatos = { ...td, ...titular, beneficiarios: benefs }
+          await db.from('users').update({ raw_data: raw }).eq('id', u.id)
+        }
+      }
+      await auditar('tusdatos.recalculo_nombres', { por: yo.userId, revisados, liberados })
+      return json({ ok: true, revisados, liberados })
     }
 
     // ── Consulta manual ──────────────────────────────────────────────────

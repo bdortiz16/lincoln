@@ -210,6 +210,18 @@ export const AdminTusdatos: React.FC = () => {
     cargar();
   };
 
+  // Vuelve a juzgar los nombres ya consultados con la regla nueva. Gratis:
+  // el nombre real ya está guardado, no hay que volver a preguntarle a nadie.
+  const recalcular = async () => {
+    setBusy(true); setMsg(null);
+    const r = await call({ action: 'recalcular_nombres' }).catch(() => null);
+    setBusy(false);
+    setMsg(r?.ok
+      ? { ok: true, texto: `Se revisaron ${r.revisados} nombres. ${r.liberados > 0 ? `${r.liberados} dejaron de estar bloqueados por no coincidir.` : 'Ninguno cambió de veredicto.'}` }
+      : { ok: false, texto: r?.error ?? 'No se pudo recalcular.' });
+    cargar();
+  };
+
   const diagnosticar = async () => {
     setBusy(true); setMsg(null);
     setDiag(await call({ action: 'diagnostico' }).catch(() => null) ?? { ok: false });
@@ -607,6 +619,14 @@ export const AdminTusdatos: React.FC = () => {
                 {tecnica ? 'Cerrar ajustes' : 'Ajustes avanzados'}
               </button>
               <button onClick={diagnosticar} disabled={busy} style={{ ...btnSec, padding: '7px 13px', fontSize: 12, opacity: busy ? 0.6 : 1 }}>Diagnóstico</button>
+              {/* La regla que compara nombres se hizo más tolerante. Los
+                  veredictos ya guardados se calcularon con la anterior y
+                  siguen bloqueando a gente que solo escribió distinto. Esto
+                  los vuelve a juzgar con lo que ya está guardado — no llama a
+                  TusDatos y no gasta un solo crédito. */}
+              <button onClick={recalcular} disabled={busy} style={{ ...btnSec, padding: '7px 13px', fontSize: 12, opacity: busy ? 0.6 : 1 }}>
+                Revisar los nombres otra vez
+              </button>
             </div>
 
             {tecnica && (
