@@ -539,6 +539,10 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     };
     // Contacto abierto en el modal de detalle (clic sobre la fila)
     const [detail, setDetail] = useState<MouvContact | null>(null);
+    // Los hallazgos van PLEGADOS. Treinta y cinco renglones empujan el resto
+    // de la ficha fuera de la pantalla y esconden lo que de verdad importa:
+    // el veredicto y los botones.
+    const [verHallazgos, setVerHallazgos] = useState(false);
 
     // Al abrir la ficha, si la consulta ya terminó pero el detalle de los
     // hallazgos no quedó guardado —consultas anteriores a que se empezara a
@@ -548,6 +552,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     useEffect(() => {
         const uid = currentUser?.id;
         if (!uid || !detail) return;
+        setVerHallazgos(false);
         const doc = String(detail.docNumber ?? '').replace(/\D/g, '');
         if (!doc || detalleTraidoRef.current.has(doc)) return;
         const k = amlBenef[doc];
@@ -1745,30 +1750,73 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                             el motivo no deja decidir nada: quien
                                             revisa el caso necesita leer qué
                                             encontraron y en qué fuente. */}
-                                        {Array.isArray(k.hallazgos) && k.hallazgos.length > 0 && (
-                                            <div style={{ marginTop: 9, background: '#121413', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 10, padding: '11px 12px' }}>
-                                                <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1px', color: '#878E88', margin: 0 }}>QUÉ SE ENCONTRÓ</p>
-                                                {k.hallazgos.map((h: any, i: number) => (
-                                                    <div key={h.codigo || i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 8 }}>
-                                                        <span style={{
-                                                            flexShrink: 0, marginTop: 1, fontSize: 8.5, fontWeight: 700, letterSpacing: '0.5px',
-                                                            border: `1px solid ${h.nivel === 'alto' ? 'rgba(248,113,113,0.32)' : 'rgba(251,191,36,0.32)'}`,
-                                                            color: h.nivel === 'alto' ? '#F87171' : '#FBBF24',
-                                                            borderRadius: 999, padding: '2px 7px',
-                                                        }}>{h.nivel === 'alto' ? 'ALTO' : 'MEDIO'}</span>
-                                                        <div style={{ minWidth: 0 }}>
-                                                            <p style={{ fontSize: 12, color: '#F4F4F2', margin: 0, lineHeight: 1.45 }}>{h.texto || h.codigo}</p>
-                                                            {h.fuente && <p style={{ fontSize: 10.5, color: 'rgba(244,244,242,0.45)', margin: '1px 0 0' }}>{h.fuente}</p>}
-                                                        </div>
+                                        {Array.isArray(k.hallazgos) && k.hallazgos.length > 0 && (() => {
+                                            // Los hallazgos vienen con MUCHA repetición:
+                                            // "proceso civil", "proceso civil 002",
+                                            // "proceso civil 003"… son el mismo tipo de
+                                            // hallazgo numerado. Listarlos uno por uno
+                                            // llena la pantalla sin decir nada nuevo, así
+                                            // que se agrupan y se cuenta cuántos hay.
+                                            const limpiar = (t: string) => String(t).replace(/\s*\d{1,3}\s*$/, '').trim();
+                                            const grupos: any[] = [];
+                                            const porClave = new Map<string, any>();
+                                            for (const h of k.hallazgos) {
+                                                const texto = limpiar(h.texto || h.codigo);
+                                                const c = `${h.nivel}|${texto}`;
+                                                if (porClave.has(c)) { porClave.get(c).n += 1; continue; }
+                                                const g = { ...h, texto, n: 1 };
+                                                porClave.set(c, g); grupos.push(g);
+                                            }
+                                            const altos = grupos.filter(g => g.nivel === 'alto');
+                                            const total = (k.altos ?? 0) + (k.medios ?? 0);
+                                            // Plegado se muestran solo los ALTOS: son la
+                                            // razón del bloqueo y es lo que hay que leer.
+                                            // Los medios quedan detrás del botón.
+                                            const visibles = verHallazgos ? grupos : altos;
+                                            const ocultos = grupos.length - altos.length;
+                                            return (
+                                                <div style={{ marginTop: 9, background: '#121413', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 10, padding: '11px 12px' }}>
+                                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                                                        <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1px', color: '#878E88', margin: 0 }}>QUÉ SE ENCONTRÓ</p>
+                                                        {ocultos > 0 && (
+                                                            <button onClick={() => setVerHallazgos(v => !v)}
+                                                                style={{ background: 'transparent', border: 'none', color: '#878E88', fontSize: 11.5, fontWeight: 700, cursor: 'pointer', fontFamily: "'Archivo', system-ui, sans-serif", padding: 0 }}>
+                                                                {verHallazgos ? 'Ocultar' : `Ver detalle · ${grupos.length}`}
+                                                            </button>
+                                                        )}
                                                     </div>
-                                                ))}
-                                                {(k.altos ?? 0) + (k.medios ?? 0) > k.hallazgos.length && (
-                                                    <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', margin: '9px 0 0' }}>
-                                                        y {(k.altos ?? 0) + (k.medios ?? 0) - k.hallazgos.length} más — están todos en el reporte completo.
-                                                    </p>
-                                                )}
-                                            </div>
-                                        )}
+                                                    <div style={{ maxHeight: verHallazgos ? 240 : undefined, overflowY: verHallazgos ? 'auto' : undefined }}>
+                                                        {visibles.map((h: any, i: number) => (
+                                                            <div key={`${h.codigo}-${i}`} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 8 }}>
+                                                                <span style={{
+                                                                    flexShrink: 0, marginTop: 1, fontSize: 8.5, fontWeight: 700, letterSpacing: '0.5px',
+                                                                    border: `1px solid ${h.nivel === 'alto' ? 'rgba(248,113,113,0.32)' : 'rgba(251,191,36,0.32)'}`,
+                                                                    color: h.nivel === 'alto' ? '#F87171' : '#FBBF24',
+                                                                    borderRadius: 999, padding: '2px 7px',
+                                                                }}>{h.nivel === 'alto' ? 'ALTO' : 'MEDIO'}</span>
+                                                                <div style={{ minWidth: 0, flex: 1 }}>
+                                                                    <p style={{ fontSize: 12, color: '#F4F4F2', margin: 0, lineHeight: 1.45 }}>
+                                                                        {h.texto}
+                                                                        {h.n > 1 && <span style={{ color: '#878E88', fontWeight: 700 }}> ×{h.n}</span>}
+                                                                    </p>
+                                                                    {h.fuente && <p style={{ fontSize: 10.5, color: 'rgba(244,244,242,0.45)', margin: '1px 0 0' }}>{h.fuente}</p>}
+                                                                </div>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                    {!verHallazgos && ocultos > 0 && (
+                                                        <p style={{ fontSize: 11.5, color: 'rgba(244,244,242,0.45)', margin: '9px 0 0', lineHeight: 1.5 }}>
+                                                            {altos.length > 0 ? 'Y ' : ''}{ocultos} tipo{ocultos === 1 ? '' : 's'} de hallazgo de riesgo medio.
+                                                        </p>
+                                                    )}
+                                                    {verHallazgos && total > k.hallazgos.length && (
+                                                        <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', margin: '9px 0 0' }}>
+                                                            El reporte completo trae {total} en total.
+                                                        </p>
+                                                    )}
+                                                </div>
+                                            );
+                                        })()}
                                         {/* Sin detalle guardado pero con hallazgos
                                             contados: la consulta es anterior a que
                                             se empezara a guardar el porqué. Se dice,

@@ -67,6 +67,7 @@ export const AdminCompliance: React.FC = () => {
   const [msg, setMsg] = useState<{ ok: boolean; texto: string } | null>(null);
   const [filtro, setFiltro] = useState<string>('todo');
   const [abierto, setAbierto] = useState<string | null>(null);
+  const [verTodo, setVerTodo] = useState<string | null>(null);
 
   const cargar = async () => {
     setBusy(true);
@@ -235,24 +236,61 @@ export const AdminCompliance: React.FC = () => {
 
                   {/* El porqué, no solo el cuánto. Es lo que hace falta para
                       decidir si se aprueba o se deja bloqueado. */}
-                  {Array.isArray(c.hallazgos) && c.hallazgos.length > 0 && (
-                    <div style={{ marginTop: 11, background: C.elev, border: `1px solid ${C.border}`, borderRadius: 11, padding: '12px 13px' }}>
-                      <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1px', color: C.sub, margin: 0 }}>QUÉ SE ENCONTRÓ</p>
-                      {c.hallazgos.map((h: any, i: number) => (
-                        <div key={h.codigo || i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 8 }}>
-                          <span style={{
-                            flexShrink: 0, marginTop: 1, fontSize: 8.5, fontWeight: 700, letterSpacing: '0.5px',
-                            border: `1px solid ${h.nivel === 'alto' ? 'rgba(248,113,113,0.32)' : 'rgba(251,191,36,0.32)'}`,
-                            color: h.nivel === 'alto' ? C.red : C.amber, borderRadius: 999, padding: '2px 7px',
-                          }}>{h.nivel === 'alto' ? 'ALTO' : 'MEDIO'}</span>
-                          <div style={{ minWidth: 0 }}>
-                            <p style={{ fontSize: 12, color: C.text, margin: 0, lineHeight: 1.45 }}>{h.texto || h.codigo}</p>
-                            {h.fuente && <p style={{ fontSize: 10.5, color: C.dim, margin: '1px 0 0' }}>{h.fuente}</p>}
-                          </div>
+                  {Array.isArray(c.hallazgos) && c.hallazgos.length > 0 && (() => {
+                    // Mismo criterio que en la ficha del beneficiario: los
+                    // hallazgos vienen numerados ("proceso civil 002", "003"…)
+                    // y listarlos uno por uno llena la pantalla sin decir nada
+                    // nuevo. Se agrupan, y plegado solo se ven los ALTOS.
+                    const limpiar = (t: string) => String(t).replace(/\s*\d{1,3}\s*$/, '').trim();
+                    const grupos: any[] = [];
+                    const porClave = new Map<string, any>();
+                    for (const h of c.hallazgos) {
+                      const texto = limpiar(h.texto || h.codigo);
+                      const cl = `${h.nivel}|${texto}`;
+                      if (porClave.has(cl)) { porClave.get(cl).n += 1; continue; }
+                      const g = { ...h, texto, n: 1 };
+                      porClave.set(cl, g); grupos.push(g);
+                    }
+                    const altos = grupos.filter(g => g.nivel === 'alto');
+                    const abiertos = verTodo === id;
+                    const visibles = abiertos ? grupos : altos;
+                    const ocultos = grupos.length - altos.length;
+                    return (
+                      <div style={{ marginTop: 11, background: C.elev, border: `1px solid ${C.border}`, borderRadius: 11, padding: '12px 13px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                          <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1px', color: C.sub, margin: 0 }}>QUÉ SE ENCONTRÓ</p>
+                          {ocultos > 0 && (
+                            <button onClick={() => setVerTodo(abiertos ? null : id)}
+                              style={{ background: 'transparent', border: 'none', color: C.sub, fontSize: 11.5, fontWeight: 700, cursor: 'pointer', fontFamily: FONT, padding: 0 }}>
+                              {abiertos ? 'Ocultar' : `Ver detalle · ${grupos.length}`}
+                            </button>
+                          )}
                         </div>
-                      ))}
-                    </div>
-                  )}
+                        <div style={{ maxHeight: abiertos ? 240 : undefined, overflowY: abiertos ? 'auto' : undefined }}>
+                          {visibles.map((h: any, i: number) => (
+                            <div key={`${h.codigo}-${i}`} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 8 }}>
+                              <span style={{
+                                flexShrink: 0, marginTop: 1, fontSize: 8.5, fontWeight: 700, letterSpacing: '0.5px',
+                                border: `1px solid ${h.nivel === 'alto' ? 'rgba(248,113,113,0.32)' : 'rgba(251,191,36,0.32)'}`,
+                                color: h.nivel === 'alto' ? C.red : C.amber, borderRadius: 999, padding: '2px 7px',
+                              }}>{h.nivel === 'alto' ? 'ALTO' : 'MEDIO'}</span>
+                              <div style={{ minWidth: 0, flex: 1 }}>
+                                <p style={{ fontSize: 12, color: C.text, margin: 0, lineHeight: 1.45 }}>
+                                  {h.texto}{h.n > 1 && <span style={{ color: C.sub, fontWeight: 700 }}> ×{h.n}</span>}
+                                </p>
+                                {h.fuente && <p style={{ fontSize: 10.5, color: C.dim, margin: '1px 0 0' }}>{h.fuente}</p>}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        {!abiertos && ocultos > 0 && (
+                          <p style={{ fontSize: 11.5, color: C.dim, margin: '9px 0 0', lineHeight: 1.5 }}>
+                            {altos.length > 0 ? 'Y ' : ''}{ocultos} tipo{ocultos === 1 ? '' : 's'} de hallazgo de riesgo medio.
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 8, marginTop: 12 }}>
                     {[
