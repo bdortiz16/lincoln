@@ -230,6 +230,27 @@ export const AdminCompliance: React.FC = () => {
                     </p>
                   )}
 
+                  {/* El porqué, no solo el cuánto. Es lo que hace falta para
+                      decidir si se aprueba o se deja bloqueado. */}
+                  {Array.isArray(c.hallazgos) && c.hallazgos.length > 0 && (
+                    <div style={{ marginTop: 11, background: C.elev, border: `1px solid ${C.border}`, borderRadius: 11, padding: '12px 13px' }}>
+                      <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1px', color: C.sub, margin: 0 }}>QUÉ SE ENCONTRÓ</p>
+                      {c.hallazgos.map((h: any, i: number) => (
+                        <div key={h.codigo || i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 8 }}>
+                          <span style={{
+                            flexShrink: 0, marginTop: 1, fontSize: 8.5, fontWeight: 700, letterSpacing: '0.5px',
+                            border: `1px solid ${h.nivel === 'alto' ? 'rgba(248,113,113,0.32)' : 'rgba(251,191,36,0.32)'}`,
+                            color: h.nivel === 'alto' ? C.red : C.amber, borderRadius: 999, padding: '2px 7px',
+                          }}>{h.nivel === 'alto' ? 'ALTO' : 'MEDIO'}</span>
+                          <div style={{ minWidth: 0 }}>
+                            <p style={{ fontSize: 12, color: C.text, margin: 0, lineHeight: 1.45 }}>{h.texto || h.codigo}</p>
+                            {h.fuente && <p style={{ fontSize: 10.5, color: C.dim, margin: '1px 0 0' }}>{h.fuente}</p>}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 8, marginTop: 12 }}>
                     {[
                       { l: 'Categoría', v: c.categoria ?? '—' },

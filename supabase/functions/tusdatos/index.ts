@@ -222,6 +222,9 @@ type Ficha = {
   bajos?: number
   // Códigos estables de los hallazgos (no el texto, que puede cambiar).
   codigos?: string[]
+  // El detalle de los hallazgos que pesan: nivel, código estable, texto y
+  // fuente. Sin esto, "riesgo alto" es una etiqueta sin sustento.
+  hallazgos?: { nivel: string; codigo: string; texto: string; fuente: string }[]
   fuentesConError?: string[]
   pdfUrl?: string
   enviadoAKumplo?: boolean
@@ -436,11 +439,30 @@ async function detalle(c: Config, reportId: string) {
   if (!r.ok || !r.body) return null
   const d = r.body?.dict_hallazgos ?? {}
   const codigos = (arr: any): string[] => Array.isArray(arr) ? arr.map((x: any) => String(x?.codigo ?? '')).filter(Boolean) : []
+
+  // El QUÉ, no solo el cuánto. "Riesgo alto" sin el motivo no deja decidir
+  // nada: quien revisa el caso necesita leer el hallazgo. Se guarda el
+  // CÓDIGO —que TusDatos garantiza estable— junto al texto, porque el texto
+  // puede cambiar sin aviso y entonces el código es lo único que permite
+  // reconocer el mismo hallazgo más adelante.
+  const lista = (arr: any, nivel: string) => (Array.isArray(arr) ? arr : []).map((x: any) => ({
+    nivel,
+    codigo: String(x?.codigo ?? ''),
+    texto: String(x?.hallazgo ?? x?.descripcion ?? '').slice(0, 200),
+    fuente: String(x?.fuente ?? x?.codigo_fuente ?? '').slice(0, 60),
+  })).filter(x => x.texto || x.codigo)
+
+  // Solo altos y medios, y con tope. Son los que justifican un bloqueo o una
+  // revisión; guardar los bajos de ochenta beneficiarios engorda la fila sin
+  // que nadie los lea. El conteo de bajos sí queda.
+  const hallazgos = [...lista(d.altos, 'alto'), ...lista(d.medios, 'medio')].slice(0, 14)
+
   return {
     altos: Array.isArray(d.altos) ? d.altos.length : 0,
     medios: Array.isArray(d.medios) ? d.medios.length : 0,
     bajos: Array.isArray(d.bajos) ? d.bajos.length : 0,
     codigos: [...codigos(d.altos), ...codigos(d.medios), ...codigos(d.bajos)].slice(0, 60),
+    hallazgos,
     fuentesConError: Array.isArray(r.body?.errores) ? r.body.errores.map((x: any) => String(x)).slice(0, 30) : [],
     crudo: r.body,
   }
@@ -552,6 +574,7 @@ async function cerrar(c: Config, userId: string, jobid: string, doc: string, esB
     medios: det?.medios ?? 0,
     bajos: det?.bajos ?? 0,
     codigos: det?.codigos ?? [],
+    hallazgos: det?.hallazgos ?? [],
     fuentesConError: det?.fuentesConError ?? [],
     pdfUrl: reportId ? `${c.baseUrl.replace(/\/+$/, '')}/api/v2/report_pdf/${reportId}` : undefined,
     at: new Date().toISOString(),
@@ -1048,6 +1071,7 @@ Deno.serve(async (req: Request) => {
             categoria: cat || null, estado: est || null, operable: f.operable ?? null,
             bloqueo: f.bloqueo ?? null,
             altos: f.altos ?? 0, medios: f.medios ?? 0, bajos: f.bajos ?? 0,
+            hallazgos: Array.isArray(f.hallazgos) ? f.hallazgos : [],
             reportId: f.reportId ?? null, enviadoAKumplo: !!f.enviadoAKumplo,
             at: f.at ?? null, alerta,
           })

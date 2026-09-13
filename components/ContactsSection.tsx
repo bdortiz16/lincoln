@@ -1692,8 +1692,45 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                             </p>
                                         ) : null}
                                         {est === 'finalizado' && conteo > 0 && (
-                                            <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 6, lineHeight: 1.5 }}>
+                                            <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 8, lineHeight: 1.5 }}>
                                                 Hallazgos: {k.altos ?? 0} alto{(k.altos ?? 0) === 1 ? '' : 's'} · {k.medios ?? 0} medio{(k.medios ?? 0) === 1 ? '' : 's'} · {k.bajos ?? 0} bajo{(k.bajos ?? 0) === 1 ? '' : 's'}
+                                            </p>
+                                        )}
+                                        {/* EL PORQUÉ. Una etiqueta de riesgo sin
+                                            el motivo no deja decidir nada: quien
+                                            revisa el caso necesita leer qué
+                                            encontraron y en qué fuente. */}
+                                        {Array.isArray(k.hallazgos) && k.hallazgos.length > 0 && (
+                                            <div style={{ marginTop: 9, background: '#121413', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 10, padding: '11px 12px' }}>
+                                                <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1px', color: '#878E88', margin: 0 }}>QUÉ SE ENCONTRÓ</p>
+                                                {k.hallazgos.map((h: any, i: number) => (
+                                                    <div key={h.codigo || i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 8 }}>
+                                                        <span style={{
+                                                            flexShrink: 0, marginTop: 1, fontSize: 8.5, fontWeight: 700, letterSpacing: '0.5px',
+                                                            border: `1px solid ${h.nivel === 'alto' ? 'rgba(248,113,113,0.32)' : 'rgba(251,191,36,0.32)'}`,
+                                                            color: h.nivel === 'alto' ? '#F87171' : '#FBBF24',
+                                                            borderRadius: 999, padding: '2px 7px',
+                                                        }}>{h.nivel === 'alto' ? 'ALTO' : 'MEDIO'}</span>
+                                                        <div style={{ minWidth: 0 }}>
+                                                            <p style={{ fontSize: 12, color: '#F4F4F2', margin: 0, lineHeight: 1.45 }}>{h.texto || h.codigo}</p>
+                                                            {h.fuente && <p style={{ fontSize: 10.5, color: 'rgba(244,244,242,0.45)', margin: '1px 0 0' }}>{h.fuente}</p>}
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                                {(k.altos ?? 0) + (k.medios ?? 0) > k.hallazgos.length && (
+                                                    <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', margin: '9px 0 0' }}>
+                                                        y {(k.altos ?? 0) + (k.medios ?? 0) - k.hallazgos.length} más — están todos en el reporte completo.
+                                                    </p>
+                                                )}
+                                            </div>
+                                        )}
+                                        {/* Sin detalle guardado pero con hallazgos
+                                            contados: la consulta es anterior a que
+                                            se empezara a guardar el porqué. Se dice,
+                                            en vez de dejar el hueco sin explicar. */}
+                                        {est === 'finalizado' && (k.altos ?? 0) + (k.medios ?? 0) > 0 && !(Array.isArray(k.hallazgos) && k.hallazgos.length) && (
+                                            <p style={{ fontSize: 11.5, color: 'rgba(244,244,242,0.45)', marginTop: 7, lineHeight: 1.5 }}>
+                                                El detalle de estos hallazgos no quedó guardado en esta consulta. Vuelve a consultar para verlo, o ábrelo en el reporte completo.
                                             </p>
                                         )}
                                         {k.at && (
