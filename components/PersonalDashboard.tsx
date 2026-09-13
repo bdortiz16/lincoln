@@ -5706,6 +5706,31 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           const list = myContacts.filter((c: any) => !q || `${c.name} ${c.bank} ${c.docNumber} ${c.accountNumber} ${c.brebKey ?? ''}`.toLowerCase().includes(q));
                           const goContacts = () => { setIsSendModalOpen(false); setActiveView('contactos'); };
                           const maskAcc = (a: string) => (a?.length > 4 ? `···${a.slice(-4)}` : a);
+                          // El veredicto de antecedentes de cada beneficiario.
+                          // El bloqueo real vive en el servidor y ahí se corta
+                          // el envío igual; pero dejar elegir a alguien que va a
+                          // rebotar es hacerle recorrer tres pasos y cobrarle el
+                          // viaje para nada. Se dice acá, antes de empezar.
+                          const amlBenefs: Record<string, any> = ((currentUser as any)?.raw_data?.tusdatos?.beneficiarios) ?? {};
+                          const amlDe = (c: any) => {
+                              const doc = String(c?.docNumber ?? '').replace(/\D/g, '');
+                              return doc ? amlBenefs[doc] : null;
+                          };
+                          // Solo un veredicto EXPLÍCITO frena. Sin consulta, en
+                          // curso o sin resultado, se deja pasar: el servidor
+                          // tiene la última palabra y no se acusa a nadie por
+                          // falta de información.
+                          const amlFrena = (c: any) => amlDe(c)?.operable === false;
+                          const amlEtiqueta = (c: any): { t: string; mal: boolean } | null => {
+                              const k = amlDe(c);
+                              if (!k || k.estado !== 'finalizado') return null;
+                              const frena = k.operable === false;
+                              if (k.nombreCoincide === false) return { t: frena ? 'NOMBRE INCORRECTO · BLOQUEADO' : 'NOMBRE INCORRECTO', mal: true };
+                              if (k.documentoVigente === false) return { t: frena ? 'DOCUMENTO NO VIGENTE · BLOQUEADO' : 'DOCUMENTO NO VIGENTE', mal: true };
+                              if (k.categoria === 'alto') return { t: frena ? 'RIESGO ALTO · BLOQUEADO' : 'RIESGO ALTO', mal: true };
+                              if (k.categoria === 'medio') return { t: frena ? 'RIESGO MEDIO · EN REVISIÓN' : 'RIESGO MEDIO', mal: true };
+                              return null;
+                          };
                           const initials = (n: string) => { const p = String(n || '').trim().split(/\s+/); return ((p[0]?.[0] ?? '') + (p[1]?.[0] ?? '')).toUpperCase() || '·'; };
                           const pickContact = (c: any) => {
                               setSendForm({
@@ -5734,7 +5759,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   <div className="space-y-2" style={{ maxHeight: 300, overflowY: 'auto' }}>
                                       {list.map((c: any) => {
                                           const st = contactStatus(c);
-                                          const selectable = st === 'aprobada';
+                                          const aml = amlEtiqueta(c);
+                                          const selectable = st === 'aprobada' && !amlFrena(c);
                                           const sel = sendContact?.id === c.id;
                                           const railLine = c.destKind === 'breb'
                                               ? `Bre-B · ${maskAcc(c.brebKey ?? c.accountNumber)}`
@@ -5752,9 +5778,15 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                                       <span style={{ display: 'block', fontSize: 13.5, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.name}</span>
                                                       <span style={{ display: 'block', fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{railLine}{c.bank && !String(c.bank).startsWith('Bre-B') ? ` · ${c.bank}` : ''}</span>
                                                   </span>
-                                                  {selectable
-                                                      ? <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 9, fontWeight: 700, letterSpacing: '0.5px', padding: '3px 8px', borderRadius: 999, whiteSpace: 'nowrap', flexShrink: 0 }}>VERIFICADA</span>
-                                                      : <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 999, whiteSpace: 'nowrap', flexShrink: 0 }}>{st === 'rechazada' ? 'RECHAZADA' : 'EN VALIDACIÓN'}</span>}
+                                                  {/* El motivo de antecedentes manda sobre el del
+                                                      banco: de nada sirve saber que la cuenta está
+                                                      verificada si no se le puede transferir a esa
+                                                      persona. */}
+                                                  {aml
+                                                      ? <span style={{ border: `1px solid ${aml.t.includes('MEDIO') ? 'rgba(251,191,36,0.32)' : 'rgba(248,113,113,0.32)'}`, color: aml.t.includes('MEDIO') ? '#FBBF24' : '#F87171', fontSize: 9, fontWeight: 700, letterSpacing: '0.5px', padding: '3px 8px', borderRadius: 999, whiteSpace: 'nowrap', flexShrink: 0 }}>{aml.t}</span>
+                                                      : selectable
+                                                          ? <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 9, fontWeight: 700, letterSpacing: '0.5px', padding: '3px 8px', borderRadius: 999, whiteSpace: 'nowrap', flexShrink: 0 }}>VERIFICADA</span>
+                                                          : <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 999, whiteSpace: 'nowrap', flexShrink: 0 }}>{st === 'rechazada' ? 'RECHAZADA' : 'EN VALIDACIÓN'}</span>}
                                               </button>
                                           );
                                       })}
