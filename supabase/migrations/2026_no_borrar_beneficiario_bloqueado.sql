@@ -17,11 +17,23 @@
 -- la lista. No falla la operacion -- el resto de los cambios del usuario se
 -- guardan igual -- simplemente esa ficha no se va.
 --
--- Un veredicto es bloqueante cuando la consulta TERMINO y ademas:
---   - operable = false        (el servidor dijo que no se puede operar), o
---   - categoria = 'alto'      (hallazgos de riesgo alto), o
---   - nombreCoincide = false  (el nombre no es el del documento), o
---   - documentoVigente = false
+-- NO poder enviar y NO poder borrar son cosas distintas.
+--
+-- Un nombre que no corresponde al documento casi siempre es un error de
+-- digitacion. Eso se corrige borrando e inscribiendo de nuevo con el nombre
+-- bueno, asi que ahi SI se puede borrar -- trabarlo solo deja una ficha muerta
+-- en la lista que nadie puede arreglar. (Enviarle sigue prohibido, eso lo
+-- resuelve la compuerta de mouv-proxy.)
+--
+-- Lo que queda grabado es el hallazgo sobre la PERSONA, con la consulta ya
+-- TERMINADA:
+--   - categoria = 'alto'       (hallazgos de riesgo alto), o
+--   - documentoVigente = false (una cedula cancelada por muerte recibiendo
+--                               plata no es un dedazo)
+--
+-- Se mira la CATEGORIA, no lo que muestre la pantalla: un beneficiario con el
+-- nombre mal escrito Y riesgo alto tampoco se puede borrar, aunque la insignia
+-- diga "nombre incorrecto" (la identidad se muestra primero).
 --
 -- Una consulta a medias NO bloquea el borrado: la ausencia de resultado no es
 -- una condena, y no se le va a impedir a alguien limpiar su lista porque una
@@ -104,9 +116,7 @@ BEGIN
     -- Consulta a medias: no bloquea el borrado.
     CONTINUE WHEN COALESCE(v ->> 'estado', '') <> 'finalizado';
 
-    IF (v ->> 'operable') = 'false'
-       OR COALESCE(v ->> 'categoria', '') = 'alto'
-       OR (v ->> 'nombreCoincide') = 'false'
+    IF COALESCE(v ->> 'categoria', '') = 'alto'
        OR (v ->> 'documentoVigente') = 'false' THEN
       repuestos := repuestos || jsonb_build_array(item);
     END IF;

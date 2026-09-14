@@ -372,7 +372,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     // no es operable, riesgo alto, el nombre no es el del documento, o el
     // documento no está vigente. Sin ficha o con la consulta a medias no se
     // frena nada — la ausencia de resultado no es una condena.
-    const amlVeredictoMalo = (c: Partial<MouvContact>) => {
+    const amlFrena = (c: Partial<MouvContact>) => {
         const k = amlDe(c);
         if (!k || String(k.estado ?? '') !== 'finalizado') return false;
         return k.operable === false
@@ -380,12 +380,27 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
             || k.nombreCoincide === false
             || k.documentoVigente === false;
     };
-    const amlFrena = amlVeredictoMalo;
-    // Y lo mismo define qué es EVIDENCIA: a estos no se les puede borrar. Si
-    // alguien inscribe a una persona sancionada y, al ver el bloqueo, borra la
-    // ficha, desaparece el rastro de que lo intentó — y ese rastro es
-    // justamente lo que hay que conservar.
-    const amlEsEvidencia = amlVeredictoMalo;
+    // No poder ENVIAR y no poder BORRAR son cosas distintas.
+    //
+    // Un nombre que no corresponde al documento casi siempre es un error de
+    // digitación: se escribió "Yadian lopez garcia" donde la cédula dice otra
+    // cosa. Eso se corrige borrando e inscribiendo de nuevo con el nombre
+    // bueno, así que ahí SÍ se puede borrar — trabarlo solo deja una ficha
+    // muerta en la lista que nadie puede arreglar.
+    //
+    // Un hallazgo sobre la PERSONA es otra cosa: riesgo alto, o un documento
+    // que no está vigente (una cédula cancelada por muerte recibiendo plata no
+    // es un dedazo). Eso queda grabado: si alguien lo inscribe y al ver el
+    // bloqueo borra la ficha, desaparece el rastro de que lo intentó.
+    //
+    // Nota: se mira la CATEGORÍA, no la etiqueta. Un beneficiario con el nombre
+    // mal escrito Y riesgo alto no se puede borrar, aunque la insignia diga
+    // "nombre incorrecto" (la identidad se muestra primero).
+    const amlEsEvidencia = (c: Partial<MouvContact>) => {
+        const k = amlDe(c);
+        if (!k || String(k.estado ?? '') !== 'finalizado') return false;
+        return String(k.categoria ?? '') === 'alto' || k.documentoVigente === false;
+    };
     // 'corto' es la COLUMNA; largo es la ficha, donde hay ancho de sobra.
     //
     // En la columna la insignia lleva EL ESTADO y el motivo va debajo en
@@ -1951,8 +1966,15 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                             Este beneficiario no se puede eliminar: el resultado de cumplimiento queda registrado.
                                         </div>
                                     ) : (
-                                        <button onClick={() => { setDetailMenu(false); pedirEliminar(detail); }}
-                                            className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '11px 14px', fontSize: 12.5, color: '#F4F4F2' }}>Eliminar beneficiario</button>
+                                        <>
+                                            <button onClick={() => { setDetailMenu(false); pedirEliminar(detail); }}
+                                                className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '11px 14px', fontSize: 12.5, color: '#F4F4F2' }}>Eliminar beneficiario</button>
+                                            {amlDe(detail)?.nombreCoincide === false && (
+                                                <div style={{ padding: '0 14px 11px', fontSize: 11, color: '#878E88', lineHeight: 1.4 }}>
+                                                    Elimínalo e inscríbelo otra vez con el nombre que aparece en el documento.
+                                                </div>
+                                            )}
+                                        </>
                                     )}
                                 </div>
                             )}
