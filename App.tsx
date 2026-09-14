@@ -14,6 +14,7 @@ import { AdminDashboard } from './components/AdminDashboard';
 import { ToastProvider } from './components/AdminPersonas/lib/toast';
 import { StaticPage } from './components/StaticPage'; // New Import
 import { EmailOtpGate, isOtpRemembered } from './components/EmailOtpGate';
+import { IdleGuard } from './components/IdleGuard';
 import { LogoConcepts } from './components/LogoConcepts';
 import { useDatabase } from './context/DatabaseContext';
 import { useSystemConfig } from './context/SystemConfigContext';
@@ -237,42 +238,28 @@ const App: React.FC = () => {
   const [otpPassed, setOtpPassed] = useState(false);
   useEffect(() => { setOtpPassed(false); }, [currentUser?.id]);
   const needsEmailOtp = !!currentUser && currentUser.role !== 'admin' && !otpPassed && !isOtpRemembered(currentUser.id);
-  const [inactivityWarning, setInactivityWarning] = useState(false);
-  const inactivityTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const warningTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Inactividad. El reloj y el aviso viven en IdleGuard: acá solo se dice
+  // cuánto se espera y qué hacer cuando se acaba.
+  //
+  // Lo que había eran dos setTimeout en memoria, y por eso la sesión no se
+  // cerraba nunca: el navegador congela los temporizadores de las pestañas de
+  // fondo (en el móvil basta con bloquear la pantalla), así que el que iba a
+  // cerrar a los cinco minutos no llegaba a disparar; y si se cerraba la
+  // pestaña, desaparecía — al volver, la sesión se restauraba como si nada.
+  const INACTIVE_LOGOUT_MS = 5 * 60 * 1000;
+  const INACTIVE_WARNING_MS = 60 * 1000;   // avisa cuando falta 1 minuto
 
-  const INACTIVE_LOGOUT_MS = 5 * 60 * 1000;   // 5 minutes
-  const INACTIVE_WARNING_MS = 4 * 60 * 1000;   // warn at 4 minutes
-
-  const resetInactivityTimer = useCallback(() => {
-    if (!currentUser) return;
-    setInactivityWarning(false);
-    if (inactivityTimer.current) clearTimeout(inactivityTimer.current);
-    if (warningTimer.current) clearTimeout(warningTimer.current);
-    warningTimer.current = setTimeout(() => setInactivityWarning(true), INACTIVE_WARNING_MS);
-    inactivityTimer.current = setTimeout(() => {
-      logoutUser();
-      setCurrentView('landing');
-      setInactivityWarning(false);
-    }, INACTIVE_LOGOUT_MS);
-  }, [currentUser, logoutUser]);
-
-  useEffect(() => {
-    if (!currentUser) {
-      if (inactivityTimer.current) clearTimeout(inactivityTimer.current);
-      if (warningTimer.current) clearTimeout(warningTimer.current);
-      setInactivityWarning(false);
-      return;
-    }
-    const events = ['mousemove', 'keydown', 'click', 'scroll', 'touchstart'];
-    events.forEach(e => window.addEventListener(e, resetInactivityTimer, { passive: true }));
-    resetInactivityTimer();
-    return () => {
-      events.forEach(e => window.removeEventListener(e, resetInactivityTimer));
-      if (inactivityTimer.current) clearTimeout(inactivityTimer.current);
-      if (warningTimer.current) clearTimeout(warningTimer.current);
-    };
-  }, [currentUser, resetInactivityTimer]);
+  const cerrarPorInactividad = useCallback(async () => {
+    // Se ESPERA a que la sesión quede cerrada antes de cambiar de vista. Si se
+    // hacen las dos cosas a la vez, por un momento hay usuario y la vista es
+    // 'landing', que es justo la condición del splash: se veía "Verificando
+    // sesión" en el momento en que la sesión se estaba cerrando — lo contrario
+    // de lo que pasaba.
+    await logoutUser();
+    // Y se va al LOGIN, no a la portada: si la sesión venció hay que volver a
+    // entrar con correo y contraseña (o Google), y eso se pide acá.
+    setCurrentView('login');
+  }, [logoutUser]);
 
   // Restore Session Logic with Enhanced KYC Routing
   useEffect(() => {
@@ -537,14 +524,13 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* INACTIVITY WARNING BANNER */}
-        {inactivityWarning && currentUser && (
-          <div className="fixed bottom-0 left-0 right-0 z-[200] bg-amber-500 text-white text-sm text-center py-3 px-4 flex items-center justify-center gap-3 shadow-lg">
-            <span>⚠️ Tu sesión se cerrará en 1 minuto por inactividad.</span>
-            <button onClick={resetInactivityTimer} className="bg-white text-amber-600 font-bold px-3 py-1 rounded-lg text-xs hover:bg-amber-50 transition-colors">
-              Continuar sesión
-            </button>
-          </div>
+        {/* Cierre por inactividad. Solo con sesión abierta. */}
+        {currentUser && (
+          <IdleGuard
+            limiteMs={INACTIVE_LOGOUT_MS}
+            avisoMs={INACTIVE_WARNING_MS}
+            onCerrar={cerrarPorInactividad}
+          />
         )}
 
         {/* OFFLINE MODE BANNER — shown when VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY are not set */}
