@@ -5,7 +5,6 @@ import {
   ArrowUpRight,
   History,
   Info,
-  Home,
   Send,
   RefreshCw,
   CreditCard,
@@ -24,7 +23,6 @@ import {
   Copy,
   User,
   ArrowLeft,
-  Gift,
   ArrowRight,
   ShieldCheck,
   Lock,
@@ -73,6 +71,7 @@ const getStoredTokenPD = (): string | null => {
   return null;
 };
 import { Logo } from './Logo';
+import { SidebarEmpresas } from './SidebarEmpresas';
 import { MouvSection, fetchMouvBalance, fetchMouvRateValue, fetchMouvUsdCopConfig, callMouv } from './OtcMigration';
 import { MouvDispersion } from './MouvDispersion';
 import { achEta, achEtaShort } from './achEta';
@@ -170,39 +169,6 @@ const DOC_TYPES: Record<string, { label: string; value: string }[]> = {
     { label: 'Pasaporte', value: 'PAS' },
   ],
 };
-
-const SidebarItem: React.FC<{
-  icon: React.ElementType;
-  label: string;
-  active?: boolean;
-  badge?: boolean;
-  onClick: () => void;
-  small?: boolean;
-}> = ({ icon: Icon, label, active, badge, onClick, small }) => (
-  <button
-    onClick={onClick}
-    className={`
-      w-full flex items-center justify-between px-4 py-3.5 mb-1 rounded-xl transition-all duration-200 group
-      ${active
-        ? 'bg-[#0C0E0D] font-bold shadow-lg shadow-green-900/10'
-        : small
-          ? 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
-          : 'text-slate-700 hover:bg-slate-50 hover:text-[#0C0E0D] hover:shadow-sm font-medium'}
-      ${small ? 'text-xs' : 'text-sm'}
-    `}
-  >
-    <div className="flex items-center gap-3">
-      {/* Trazo fino 1.6 (handoff): iconos de línea elegantes, monocromos */}
-      <Icon size={small ? 15 : 19} strokeWidth={1.6} className={active ? 'text-[#4ADE80]' : 'text-slate-500 group-hover:text-[#0C0E0D]'} />
-      {/* color explícito: el label del item activo se perdía (navy sobre navy
-          según el orden de clases) — blanco fijo cuando está activo */}
-      <span style={active ? { color: '#FFFFFF' } : undefined}>{label}</span>
-    </div>
-    {badge && (
-      <span className={`w-2 h-2 rounded-full ${active ? 'bg-[#4ADE80]' : 'bg-red-500'}`}></span>
-    )}
-  </button>
-);
 
 // Sonido de notificación — dos tonos suaves (ding) vía Web Audio, sin
 // archivos externos. Se reutiliza un único AudioContext. Los navegadores
@@ -4319,7 +4285,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   };
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] font-sans text-slate-900 flex">
+    // El caparazón venía del tema claro (#F8FAFC) y quedaba escondido detrás
+    // de la barra blanca. Con la barra oscura el borde claro se vería, así que
+    // el fondo pasa al negro Lincoin, que es el que ya usa el contenido.
+    <div className="min-h-screen bg-[#070808] font-sans text-[#F4F4F2] flex">
       {/* Toast */}
       {toastMessage && (
           <div className={`fixed top-6 right-6 z-[70] px-6 py-3 rounded-lg shadow-xl flex items-center gap-3 animate-in slide-in-from-top-4 fade-in max-w-md ${toastType === 'error' ? 'bg-red-600 text-white' : 'bg-[#0C0E0D] text-white'}`}>
@@ -4328,62 +4297,26 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           </div>
       )}
 
-      {/* Backdrop móvil: al tocar fuera de la barra, se cierra el menú. Va
-          debajo del sidebar (z-30) y encima del contenido; solo en móvil. */}
-      {isMobileMenuOpen && (
-        <div
-          className="fixed inset-0 z-[25] bg-black/50 lg:hidden"
-          onClick={() => setIsMobileMenuOpen(false)}
-          aria-hidden="true"
-        />
-      )}
-
-      {/* Sidebar - COLLAPSIBLE ON MOBILE */}
-      <aside className={`
-          fixed inset-y-0 left-0 z-30 w-64 bg-white border-r border-slate-200 transform transition-transform duration-300 lg:translate-x-0
-          ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}
-          lg:static flex flex-col
-      `}>
-          <div className="h-20 flex items-center px-6 border-b border-slate-50">
-              {/* Cuentas de empresa: etiqueta BUSINESS bajo el logo (como en el
-                  antiguo panel de empresas) */}
-              <Logo business={currentUser?.role === 'business'} />
-          </div>
-
-          <div className="flex-1 overflow-y-auto py-6 px-4 space-y-1">
-              <SidebarItem icon={Home} label="Inicio" active={activeView === 'dashboard'} onClick={() => {setActiveView('dashboard'); setIsMobileMenuOpen(false);}} />
-              <SidebarItem icon={Send} label="Enviar Dinero" active={false} onClick={() => { openSendMoney(); }} />
-              <SidebarItem icon={ArrowLeftRight} label="Convertir" active={false} onClick={() => { if(!handleActionRestricted()) setIsConvertModalOpen(true); }} />
-              <SidebarItem icon={History} label="Movimientos" active={activeView === 'movements'} onClick={() => {setActiveView('movements'); setIsMobileMenuOpen(false);}} />
-              <SidebarItem icon={Users} label="Beneficiarios" active={activeView === 'contactos'} onClick={() => {setActiveView('contactos'); setIsMobileMenuOpen(false);}} />
-              
-              <div className="pt-6 pb-2 pl-4 text-xs font-bold text-slate-500 uppercase tracking-widest">Descubre</div>
-              <SidebarItem
-                  icon={Gift}
-                  label="Invita y Gana"
-                  active={activeView === 'referrals'} 
-                  onClick={() => {setActiveView('referrals'); setIsMobileMenuOpen(false);}} 
-                  badge={true}
-              />
-              <SidebarItem 
-                  icon={Megaphone} 
-                  label="Aliados LINCOIN" 
-                  active={activeView === 'affiliates'} 
-                  onClick={() => {setActiveView('affiliates'); setIsMobileMenuOpen(false);}} 
-              />
-          </div>
-
-          <div className="p-4 border-t border-slate-50">
-              <button onClick={onLogout} className="flex items-center gap-3 w-full px-4 py-3 text-slate-600 hover:text-red-600 hover:bg-red-50 rounded-xl transition-colors font-medium text-sm">
-                  <LogOut size={18} /> Cerrar Sesión
-              </button>
-          </div>
-      </aside>
+      {/* Barra lateral. El backdrop móvil y el drawer viven adentro. */}
+      <SidebarEmpresas
+          activeView={activeView}
+          nombre={currentUser?.companyName || currentUser?.name || ''}
+          esEmpresa={currentUser?.role === 'business'}
+          kycVerificado={isKycVerified}
+          novedadReferidos={true}
+          irA={(v) => setActiveView(v as any)}
+          onEnviar={() => { openSendMoney(); }}
+          onConvertir={() => { if (!handleActionRestricted()) setIsConvertModalOpen(true); }}
+          onPerfil={() => setActiveView('profile')}
+          onLogout={onLogout}
+          abiertaMovil={isMobileMenuOpen}
+          cerrarMovil={() => setIsMobileMenuOpen(false)}
+      />
 
       <main className="flex-1 lg:pt-0 pt-16 h-screen overflow-y-auto p-4 md:p-8 lg:p-10">
-          <header className="lg:hidden fixed top-0 left-0 right-0 h-16 bg-white border-b border-slate-200 flex items-center justify-between px-4 z-20">
-              <Logo collapsed />
-              <button onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)} className="p-2 text-slate-600">
+          <header className="lg:hidden fixed top-0 left-0 right-0 h-16 flex items-center justify-between px-4 z-20" style={{ background: '#0A0C0B', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+              <span style={{ fontFamily: 'Archivo, system-ui, sans-serif', fontWeight: 800, fontSize: 18, letterSpacing: '-0.5px', color: '#F4F4F2' }}>Lincoin<span style={{ color: '#4ADE80' }}>.</span></span>
+              <button onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)} className="p-2" style={{ color: '#878E88' }} aria-label="Menú">
                   <span className="sr-only">Menu</span>
                   <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
               </button>
