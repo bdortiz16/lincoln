@@ -1696,7 +1696,12 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                     { l: 'Documento del titular', v: `${detail.docType ?? ''} ${detail.docNumber ?? ''}`.trim() || '—' },
                 ];
                 return (
-                <div className="fixed inset-0 z-50 p-4" style={{ background: 'rgba(4,5,4,0.72)', display: 'grid', placeItems: 'center', overflowY: 'auto' }} onClick={() => { setDetail(null); setDetailMenu(false); }}>
+                // El overlay NO desplaza: el que desplaza es el cuerpo de la
+                // ficha. Con overflow acá y el diálogo centrado, en cuanto la
+                // ficha superaba el alto de la pantalla se le comía la parte
+                // de ARRIBA —el nombre quedaba cortado contra la barra del
+                // navegador y no había forma de subir a verlo.
+                <div className="fixed inset-0 z-50 p-3 sm:p-4" style={{ background: 'rgba(4,5,4,0.72)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }} onClick={() => { setDetail(null); setDetailMenu(false); }}>
                     {/* Más ancha que un diálogo normal porque acá se lee texto
                         largo —los hallazgos de antecedentes— y a 480 px cada
                         uno se partía en tres renglones. Y con alto máximo: en
@@ -1705,35 +1710,45 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                         fuera de alcance. */}
                     <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" className="w-full animate-in zoom-in-95 duration-300"
                         style={{
-                            maxWidth: 640, maxHeight: 'calc(100vh - 40px)', display: 'flex', flexDirection: 'column',
+                            // dvh, no vh: en el móvil la barra del navegador
+                            // entra y sale, y con vh la ficha quedaba más alta
+                            // que la pantalla visible.
+                            maxWidth: 640, maxHeight: 'calc(100dvh - 24px)', display: 'flex', flexDirection: 'column',
                             background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18,
                             overflow: 'hidden', fontFamily: "'Archivo', system-ui, sans-serif",
                         }}>
                         {/* Cabecera: quién es */}
-                        <div style={{ padding: '22px 24px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)', flexShrink: 0 }}>
-                            <div className="flex items-start justify-between gap-3">
-                                <div className="flex items-center gap-3 min-w-0">
-                                    <div style={{ width: 46, height: 46, borderRadius: '50%', background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', border: '1px solid rgba(255,255,255,0.12)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
-                                        <span style={{ color: '#878E88', fontWeight: 800, fontSize: 15 }}>{initialsOf(detail.name)}</span>
-                                    </div>
-                                    <div className="min-w-0">
-                                        <p style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.3px', color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{prettyName(detail.name)}</p>
-                                        <div className="flex items-center gap-1.5" style={{ marginTop: 3 }}>
-                                            {isWallet
-                                                ? <span style={{ width: 15, height: 15, borderRadius: '50%', background: '#26A17B', color: '#fff', fontWeight: 800, fontSize: 8, display: 'grid', placeItems: 'center', flexShrink: 0 }}>₮</span>
-                                                : <span style={{ width: 15, height: 15, borderRadius: '50%', display: 'block', flexShrink: 0, background: FLAG_BG[m.country ?? ''] ?? '#2E3330' }} />}
-                                            <span style={{ fontSize: 12.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                                {isWallet ? `USDT · ${detail.walletNetwork ?? 'TRC-20'} · Wallet` : `${m.country} · ${isBreb ? 'Bre-B' : 'ACH'} · ${detail.kind === 'empresa' ? 'Empresa' : 'Persona'}`}
-                                            </span>
-                                        </div>
+                        {/* El nombre y la X en su propia fila: antes las
+                            insignias le robaban el ancho y un nombre normal se
+                            cortaba en "Yadian lopez gar…". Las insignias van
+                            debajo, donde caben enteras y pueden envolver. */}
+                        <div style={{ padding: '18px 20px 15px', borderBottom: '1px solid rgba(255,255,255,0.08)', flexShrink: 0 }}>
+                            <div className="flex items-center gap-3">
+                                <div style={{ width: 42, height: 42, borderRadius: '50%', background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', border: '1px solid rgba(255,255,255,0.12)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                                    <span style={{ color: '#878E88', fontWeight: 800, fontSize: 14 }}>{initialsOf(detail.name)}</span>
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                    <p style={{ fontSize: 16.5, fontWeight: 700, letterSpacing: '-0.3px', color: '#F4F4F2', lineHeight: 1.25, overflowWrap: 'anywhere' }}>{prettyName(detail.name)}</p>
+                                    <div className="flex items-center gap-1.5" style={{ marginTop: 3 }}>
+                                        {isWallet
+                                            ? <span style={{ width: 14, height: 14, borderRadius: '50%', background: '#26A17B', color: '#fff', fontWeight: 800, fontSize: 8, display: 'grid', placeItems: 'center', flexShrink: 0 }}>₮</span>
+                                            : <span style={{ width: 14, height: 14, borderRadius: '50%', display: 'block', flexShrink: 0, background: FLAG_BG[m.country ?? ''] ?? '#2E3330' }} />}
+                                        <span style={{ fontSize: 12, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                            {isWallet ? `USDT · ${detail.walletNetwork ?? 'TRC-20'} · Wallet` : `${m.country} · ${isBreb ? 'Bre-B' : 'ACH'} · ${detail.kind === 'empresa' ? 'Empresa' : 'Persona'}`}
+                                        </span>
                                     </div>
                                 </div>
-                                <div className="flex items-center gap-2 shrink-0">
-                                    {statusPill}
-                                    <button onClick={() => { setDetail(null); setDetailMenu(false); }} style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', display: 'grid', placeItems: 'center' }}>
-                                        <X size={13} style={{ color: '#878E88' }} strokeWidth={1.7} />
-                                    </button>
-                                </div>
+                                <button onClick={() => { setDetail(null); setDetailMenu(false); }} aria-label="Cerrar" style={{ width: 34, height: 34, borderRadius: 9, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                                    <X size={14} style={{ color: '#878E88' }} strokeWidth={1.7} />
+                                </button>
+                            </div>
+                            {/* El AML primero: es el que decide si el envío
+                                sale. "VERIFICADO" habla de la CUENTA en el
+                                banco, y al ir primero parecía desmentir el
+                                bloqueo que venía justo debajo. */}
+                            <div className="flex flex-wrap items-center" style={{ gap: 6, marginTop: 11 }}>
+                                {kumploPill(detail)}
+                                {statusPill}
                             </div>
                         </div>
 
@@ -1759,28 +1774,6 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                 ))}
                             </div>
 
-                            {/* ACTIVIDAD */}
-                            <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88', marginTop: 14 }}>ACTIVIDAD</p>
-                            <div>
-                                {[
-                                    { l: 'Inscrito', v: fmtDate(detail.createdAt) },
-                                    { l: 'Último envío', v: lastTx ? `${fmtDate(lastTx.createdAt ?? lastTx.date)} · ${Math.round(Number(lastTx.amount) || 0).toLocaleString('es-CO')} COP` : 'Sin envíos aún' },
-                                    ...(myTx.length > 0 ? [{ l: 'Total enviado', v: `${myTx.length} envío${myTx.length === 1 ? '' : 's'} · ${Math.round(totalSent).toLocaleString('es-CO')} COP` }] : []),
-                                ].map((r, i) => (
-                                    <div key={r.l} className="flex items-center justify-between gap-3" style={{ padding: '11px 0', borderTop: i === 0 ? 'none' : '1px solid rgba(255,255,255,0.06)' }}>
-                                        <span style={{ fontSize: 12.5, color: '#878E88' }}>{r.l}</span>
-                                        <span style={{ fontSize: 13, fontWeight: 600, color: '#F4F4F2' }}>{r.v}</span>
-                                    </div>
-                                ))}
-                            </div>
-                            {/* El motivo técnico solo se muestra si el banco
-                                rechazó la cuenta: ahí hay algo que corregir.
-                                Mientras está en validación no se le cuenta al
-                                cliente cómo va el registro por dentro — para él
-                                el estado es el del banco, y es en validación. */}
-                            {st === 'rechazada' && detail.lastError && (
-                                <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 8, wordBreak: 'break-word' }}>Motivo: {String(detail.lastError).slice(0, 240)}</p>
-                            )}
                             {/* Cumplimiento: acá sí cabe explicar qué significa
                                 la insignia y desde cuándo. En la fila solo hay
                                 espacio para el estado. */}
@@ -1803,11 +1796,11 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                     : 'La consulta terminó sin una categoría. No impide transferirle.';
                                 const conteo = (k.altos ?? 0) + (k.medios ?? 0) + (k.bajos ?? 0);
                                 return (
-                                    <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
-                                        <div className="flex items-center justify-between gap-3" style={{ marginBottom: 7 }}>
-                                            <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88' }}>ANTECEDENTES</span>
-                                            {kumploPill(detail)}
-                                        </div>
+                                    <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                                        {/* La insignia ya está en la cabecera, a
+                                            la vista aunque se baje. Repetirla acá
+                                            era decir dos veces lo mismo. */}
+                                        <span style={{ display: 'block', fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88', marginBottom: 7 }}>ANTECEDENTES</span>
                                         <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.55 }}>{texto}</p>
                                         {/* Lo inscrito y lo que dice el documento,
                                             uno al lado del otro. Es el contraste
@@ -1954,6 +1947,28 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                     </div>
                                 );
                             })()}
+                            {/* ACTIVIDAD */}
+                            <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88', marginTop: 14 }}>ACTIVIDAD</p>
+                            <div>
+                                {[
+                                    { l: 'Inscrito', v: fmtDate(detail.createdAt) },
+                                    { l: 'Último envío', v: lastTx ? `${fmtDate(lastTx.createdAt ?? lastTx.date)} · ${Math.round(Number(lastTx.amount) || 0).toLocaleString('es-CO')} COP` : 'Sin envíos aún' },
+                                    ...(myTx.length > 0 ? [{ l: 'Total enviado', v: `${myTx.length} envío${myTx.length === 1 ? '' : 's'} · ${Math.round(totalSent).toLocaleString('es-CO')} COP` }] : []),
+                                ].map((r, i) => (
+                                    <div key={r.l} className="flex items-center justify-between gap-3" style={{ padding: '11px 0', borderTop: i === 0 ? 'none' : '1px solid rgba(255,255,255,0.06)' }}>
+                                        <span style={{ fontSize: 12.5, color: '#878E88' }}>{r.l}</span>
+                                        <span style={{ fontSize: 13, fontWeight: 600, color: '#F4F4F2' }}>{r.v}</span>
+                                    </div>
+                                ))}
+                            </div>
+                            {/* El motivo técnico solo se muestra si el banco
+                                rechazó la cuenta: ahí hay algo que corregir.
+                                Mientras está en validación no se le cuenta al
+                                cliente cómo va el registro por dentro — para él
+                                el estado es el del banco, y es en validación. */}
+                            {st === 'rechazada' && detail.lastError && (
+                                <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 8, wordBreak: 'break-word' }}>Motivo: {String(detail.lastError).slice(0, 240)}</p>
+                            )}
                         </div>
 
                         {/* Botonera */}
@@ -1985,10 +2000,16 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                             <button
                                 onClick={() => { if (onSendTo && st === 'aprobada' && !amlFrena(detail)) { const c = detail; setDetail(null); setDetailMenu(false); onSendTo(c); } }}
                                 disabled={!onSendTo || st !== 'aprobada' || amlFrena(detail)}
-                                title={amlFrena(detail) ? 'Bloqueado por cumplimiento. No se puede transferir a esta persona.' : undefined}
-                                className="lincoin-btn-white flex items-center justify-center gap-2 transition-colors"
-                                style={{ flex: 1.4, height: 44, borderRadius: 10, fontSize: 13.5, fontWeight: 700, border: 'none', opacity: (!onSendTo || st !== 'aprobada' || amlFrena(detail)) ? 0.45 : 1, cursor: (!onSendTo || st !== 'aprobada' || amlFrena(detail)) ? 'not-allowed' : 'pointer' }}>
-                                <Send size={14} /> Enviar dinero
+                                className={amlFrena(detail) ? 'flex items-center justify-center gap-2' : 'lincoin-btn-white flex items-center justify-center gap-2 transition-colors'}
+                                style={amlFrena(detail)
+                                    // Un botón blanco a media opacidad se sigue
+                                    // leyendo como "dale, toca acá". Si está
+                                    // bloqueado, que lo diga.
+                                    ? { flex: 1.4, height: 44, borderRadius: 10, fontSize: 13, fontWeight: 700, cursor: 'not-allowed', background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.28)', color: '#F87171' }
+                                    : { flex: 1.4, height: 44, borderRadius: 10, fontSize: 13.5, fontWeight: 700, border: 'none', opacity: (!onSendTo || st !== 'aprobada') ? 0.45 : 1, cursor: (!onSendTo || st !== 'aprobada') ? 'not-allowed' : 'pointer' }}>
+                                {amlFrena(detail)
+                                    ? <>Bloqueado</>
+                                    : <><Send size={14} /> Enviar dinero</>}
                             </button>
                         </div>
                     </div>
