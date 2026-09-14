@@ -72,6 +72,7 @@ const getStoredTokenPD = (): string | null => {
 };
 import { Logo } from './Logo';
 import { SidebarEmpresas } from './SidebarEmpresas';
+import { llamarFuncion } from '../lib/edge';
 import { MouvSection, fetchMouvBalance, fetchMouvRateValue, fetchMouvUsdCopConfig, callMouv } from './OtcMigration';
 import { MouvDispersion } from './MouvDispersion';
 import { achEta, achEtaShort } from './achEta';
@@ -555,18 +556,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     if (!uid || !isSendModalOpen) return;
     let vivo = true;
     (async () => {
-      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
-      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-      try {
-        const r = await fetch(`${SURL}/functions/v1/tusdatos`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${SKEY}` },
-          body: JSON.stringify({ action: 'estado', userId: uid }),
-        });
-        const e = await r.json();
-        // Solo una respuesta explícita cambia el estado: si la consulta falla
-        // se conserva lo último que sí supimos.
-        if (vivo && e?.ok) setAmlSrv(e.beneficiarios ?? {});
-      } catch { /* se queda lo anterior */ }
+      const e = await llamarFuncion('tusdatos', { action: 'estado', userId: uid });
+      // Solo una respuesta explícita cambia el estado: si la consulta falla
+      // se conserva lo último que sí supimos.
+      if (vivo && e?.ok) setAmlSrv(e.beneficiarios ?? {});
     })();
     return () => { vivo = false; };
   }, [currentUser?.id, isSendModalOpen]);
@@ -5695,16 +5688,37 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               return k.operable === false || k.categoria === 'alto'
                                   || k.nombreCoincide === false || k.documentoVigente === false;
                           };
-                          const amlEtiqueta = (c: any): { t: string; mal: boolean } | null => {
+                          // El resultado de antecedentes de cada beneficiario,
+                          // con el mismo lenguaje que la lista de
+                          // beneficiarios. Se muestra SIEMPRE que haya
+                          // veredicto, no solo cuando es malo: antes un
+                          // beneficiario de riesgo bajo y uno sin consultar se
+                          // veían idénticos, los dos con "VERIFICADA" en verde
+                          // —que además habla del banco, no del AML.
+                          type Aml = { t: string; tono: 'rojo' | 'ambar' | 'verde' | 'gris' } | null;
+                          const amlEtiqueta = (c: any): Aml => {
                               const k = amlDe(c);
-                              if (!k || k.estado !== 'finalizado') return null;
+                              if (!k) return null;
+                              const est = String(k.estado ?? '');
+                              if (est === 'procesando' || !est) return { t: 'AML · CONSULTANDO', tono: 'gris' };
+                              if (est !== 'finalizado') return { t: 'AML · SIN RESULTADO', tono: 'gris' };
                               const frena = amlFrena(c);
-                              if (k.nombreCoincide === false) return { t: frena ? 'NOMBRE INCORRECTO · BLOQUEADO' : 'NOMBRE INCORRECTO', mal: true };
-                              if (k.documentoVigente === false) return { t: frena ? 'DOCUMENTO NO VIGENTE · BLOQUEADO' : 'DOCUMENTO NO VIGENTE', mal: true };
-                              if (k.categoria === 'alto') return { t: frena ? 'RIESGO ALTO · BLOQUEADO' : 'RIESGO ALTO', mal: true };
-                              if (k.categoria === 'medio') return { t: frena ? 'RIESGO MEDIO · EN REVISIÓN' : 'RIESGO MEDIO', mal: true };
-                              return null;
+                              const fin = (s: string) => frena ? `${s} · BLOQUEADO` : s;
+                              if (k.nombreCoincide === false) return { t: `AML · ${fin('NOMBRE INCORRECTO')}`, tono: 'rojo' };
+                              if (k.documentoVigente === false) return { t: `AML · ${fin('DOCUMENTO NO VIGENTE')}`, tono: 'rojo' };
+                              if (k.categoria === 'alto') return { t: `AML · ${fin('RIESGO ALTO')}`, tono: 'rojo' };
+                              if (k.categoria === 'medio') return { t: `AML · ${frena ? 'RIESGO MEDIO · EN REVISIÓN' : 'RIESGO MEDIO'}`, tono: 'ambar' };
+                              if (k.categoria === 'bajo') return { t: 'AML · RIESGO BAJO', tono: 'verde' };
+                              if (k.categoria === 'ninguno' || k.categoria === 'informativo') return { t: 'AML · SIN HALLAZGOS', tono: 'verde' };
+                              if (k.categoria === 'sin_validar') return { t: 'AML · SIN VALIDAR', tono: 'gris' };
+                              return { t: 'AML · SIN RESULTADO', tono: 'gris' };
                           };
+                          const AML_TONO = {
+                              rojo: { b: 'rgba(248,113,113,0.32)', c: '#F87171' },
+                              ambar: { b: 'rgba(251,191,36,0.32)', c: '#FBBF24' },
+                              verde: { b: 'rgba(74,222,128,0.3)', c: '#4ADE80' },
+                              gris: { b: 'rgba(255,255,255,0.14)', c: '#878E88' },
+                          } as const;
                           const initials = (n: string) => { const p = String(n || '').trim().split(/\s+/); return ((p[0]?.[0] ?? '') + (p[1]?.[0] ?? '')).toUpperCase() || '·'; };
                           const pickContact = (c: any) => {
                               setSendForm({
@@ -5752,15 +5766,19 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                                       <span style={{ display: 'block', fontSize: 13.5, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.name}</span>
                                                       <span style={{ display: 'block', fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{railLine}{c.bank && !String(c.bank).startsWith('Bre-B') ? ` · ${c.bank}` : ''}</span>
                                                   </span>
-                                                  {/* El motivo de antecedentes manda sobre el del
-                                                      banco: de nada sirve saber que la cuenta está
-                                                      verificada si no se le puede transferir a esa
-                                                      persona. */}
-                                                  {aml
-                                                      ? <span style={{ border: `1px solid ${aml.t.includes('MEDIO') ? 'rgba(251,191,36,0.32)' : 'rgba(248,113,113,0.32)'}`, color: aml.t.includes('MEDIO') ? '#FBBF24' : '#F87171', fontSize: 9, fontWeight: 700, letterSpacing: '0.5px', padding: '3px 8px', borderRadius: 999, whiteSpace: 'nowrap', flexShrink: 0 }}>{aml.t}</span>
-                                                      : selectable
-                                                          ? <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 9, fontWeight: 700, letterSpacing: '0.5px', padding: '3px 8px', borderRadius: 999, whiteSpace: 'nowrap', flexShrink: 0 }}>VERIFICADA</span>
-                                                          : <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 999, whiteSpace: 'nowrap', flexShrink: 0 }}>{st === 'rechazada' ? 'RECHAZADA' : 'EN VALIDACIÓN'}</span>}
+                                                  {/* Dos cosas distintas que antes competían por el
+                                                      mismo espacio: el estado de la CUENTA (banco) y
+                                                      el de la PERSONA (antecedentes). Van una debajo
+                                                      de la otra, y el AML abajo porque es el que
+                                                      decide si el envío sale. */}
+                                                  <span className="flex flex-col items-end shrink-0" style={{ gap: 4 }}>
+                                                      {st === 'aprobada'
+                                                          ? <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 9, fontWeight: 700, letterSpacing: '0.5px', padding: '3px 8px', borderRadius: 999, whiteSpace: 'nowrap' }}>VERIFICADA</span>
+                                                          : <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 999, whiteSpace: 'nowrap' }}>{st === 'rechazada' ? 'RECHAZADA' : 'EN VALIDACIÓN'}</span>}
+                                                      {aml && (
+                                                          <span style={{ border: `1px solid ${AML_TONO[aml.tono].b}`, color: AML_TONO[aml.tono].c, fontSize: 9, fontWeight: 700, letterSpacing: '0.5px', padding: '3px 8px', borderRadius: 999, whiteSpace: 'nowrap' }}>{aml.t}</span>
+                                                      )}
+                                                  </span>
                                               </button>
                                           );
                                       })}

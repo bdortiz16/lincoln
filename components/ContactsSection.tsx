@@ -3,6 +3,7 @@ import { BookUser, Plus, X, Trash2, CheckCircle, AlertTriangle, Landmark, Wallet
 import { useDatabase } from '../context/DatabaseContext';
 import { useSystemConfig } from '../context/SystemConfigContext';
 import { supabase } from '../lib/supabaseClient';
+import { llamarFuncion } from '../lib/edge';
 import { FlagImg } from './FlagImg';
 import { callFinity } from './FinitySection';
 
@@ -49,24 +50,6 @@ async function callTusdatos(cuerpo: Record<string, unknown>): Promise<any> {
 }
 async function callKumplo(cuerpo: Record<string, unknown>): Promise<any> {
     return llamarFuncion('kumplo', cuerpo);
-}
-async function llamarFuncion(nombre: string, cuerpo: Record<string, unknown>): Promise<any> {
-    const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
-    const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-    let auth = `Bearer ${SKEY}`;
-    try {
-        const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
-        if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) auth = `Bearer ${d.access_token}`; }
-    } catch { /* sin sesión */ }
-    try {
-        const r = await fetch(`${SURL}/functions/v1/${nombre}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: auth },
-            body: JSON.stringify(cuerpo),
-            signal: AbortSignal.timeout(45000),
-        });
-        return await r.json();
-    } catch (e: any) { return { ok: false, error: String(e?.message ?? e) }; }
 }
 
 // ─────────────────────────────────────────────
