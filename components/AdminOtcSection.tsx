@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { ArrowLeftRight, Search, Power, Pencil, Check, X, ArrowDownToLine, ArrowUpFromLine, Users, Landmark, RefreshCw, Zap } from 'lucide-react';
 import { useDatabase } from '../context/DatabaseContext';
 import { callFinity, extractRate } from './FinitySection';
+import { llamarFuncion } from '../lib/edge';
 
 // ─────────────────────────────────────────────
 // AdminOtcSection — Panel "Contabilidad OTC" del admin de Empresas.
@@ -67,18 +68,50 @@ export const AdminOtcSection: React.FC = () => {
     const [baseRate, setBaseRate] = useState<number | null>(null);
     const [rateLoading, setRateLoading] = useState(false);
     const [rateErr, setRateErr] = useState<string | null>(null);
+    // La tasa del PROVEEDOR, sin el ajuste de Lincoin. El servidor solo la
+    // manda al admin: al cliente le llega la tasa ya ajustada, que es la que
+    // se le aplica.
+    const [rateProveedor, setRateProveedor] = useState<number | null>(null);
     const loadBaseRate = async () => {
         if (!currentUser?.id || rateLoading) return;
         setRateLoading(true); setRateErr(null);
         try {
             const r = await callFinity('rates', currentUser.id, { query: { from: 'USD', to: 'COP' } });
             const v = extractRate(r?.data);
+            const bruta = Number(r?.rateBruta);
+            setRateProveedor(Number.isFinite(bruta) && bruta > 0 ? bruta : null);
             if (v != null && isFinite(v) && v > 0) setBaseRate(v);
             else setRateErr(`Finity no devolvió tasa (${r?.status ?? '—'}).`);
         } catch (e: any) { setRateErr(String(e?.message ?? e)); }
         setRateLoading(false);
     };
     useEffect(() => { if (partner === 'finity') loadBaseRate(); }, [partner, currentUser?.id]);
+
+    // ── Ajuste de la tasa: los "puntos" que se le bajan al proveedor ──
+    const [ajuste, setAjuste] = useState<{ finityCop: number; mouvCop: number } | null>(null);
+    const [ajusteEdit, setAjusteEdit] = useState<string>('');
+    const [ajusteBusy, setAjusteBusy] = useState(false);
+    const [ajusteMsg, setAjusteMsg] = useState<{ ok: boolean; text: string } | null>(null);
+    const cargarAjuste = async () => {
+        const r = await llamarFuncion('admin-data', { action: 'otc_ajuste_get' });
+        if (r?.ok && r.ajuste) {
+            setAjuste({ finityCop: Number(r.ajuste.finityCop) || 0, mouvCop: Number(r.ajuste.mouvCop) || 0 });
+            setAjusteEdit(String(Number(r.ajuste.finityCop) || 0));
+        }
+    };
+    useEffect(() => { if (partner === 'finity') cargarAjuste(); }, [partner]);
+    const guardarAjuste = async () => {
+        if (ajusteBusy) return;
+        const n = Number(String(ajusteEdit).replace(',', '.'));
+        if (!Number.isFinite(n) || n < 0) { setAjusteMsg({ ok: false, text: 'Escribe un número de pesos, 0 o más.' }); return; }
+        setAjusteBusy(true); setAjusteMsg(null);
+        const r = await llamarFuncion('admin-data', { action: 'otc_ajuste_set', finityCop: n, mouvCop: ajuste?.mouvCop ?? 0 });
+        setAjusteBusy(false);
+        if (!r?.ok) { setAjusteMsg({ ok: false, text: r?.error ?? 'No se pudo guardar.' }); return; }
+        setAjuste({ finityCop: Number(r.ajuste.finityCop) || 0, mouvCop: Number(r.ajuste.mouvCop) || 0 });
+        setAjusteMsg({ ok: true, text: 'Ajuste guardado. Ya aplica para todos.' });
+        loadBaseRate();
+    };
 
     const clientRateOf = (feePct: number): number | null =>
         baseRate != null ? baseRate * (1 - feePct / 100) : null;
@@ -259,7 +292,89 @@ export const AdminOtcSection: React.FC = () => {
                         ) : (
                             <p className="text-sm font-bold text-slate-400 py-1">{rateLoading ? 'Consultando…' : (rateErr ?? '—')}</p>
                         )}
-                        <p className="text-[9px] text-slate-500">Tasa base (sin comisión) — aplica para todos</p>
+                        {/* Esta tarjeta muestra la tasa YA con los puntos
+                            bajados — es la que ve el cliente. La del proveedor,
+                            sin tocar, está en la tarjeta de abajo. */}
+                        <p className="text-[9px] text-slate-500">
+                            {ajuste && ajuste.finityCop > 0
+                                ? `Con ${ajuste.finityCop} COP bajados — sin comisión del cliente`
+                                : 'Tasa base (sin comisión) — aplica para todos'}
+                        </p>
+                    </div>
+                </div>
+
+                {/* ── Tasas de los proveedores y los puntos que se les bajan ── */}
+                <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, padding: '18px 20px', fontFamily: "'Archivo', system-ui, sans-serif" }}>
+                    <p style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2', margin: 0 }}>Tasas de los proveedores</p>
+                    <p style={{ fontSize: 12, color: '#878E88', margin: '4px 0 0', lineHeight: 1.5, maxWidth: 620 }}>
+                        Los puntos que le bajes a la tasa del proveedor son el margen de Lincoin. Se aplican
+                        en el servidor: el cliente ve la tasa ya bajada y recibe según esa misma tasa.
+                    </p>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2" style={{ gap: 12, marginTop: 14 }}>
+                        {/* FINITY */}
+                        <div style={{ background: '#121413', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 12, padding: '14px 16px' }}>
+                            <div className="flex items-center justify-between" style={{ gap: 8 }}>
+                                <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '1.2px', color: '#878E88' }}>FINITY · ACH</span>
+                                <button onClick={loadBaseRate} title="Actualizar" style={{ color: '#878E88' }} className="hover:text-[#F4F4F2] transition-colors">
+                                    <RefreshCw size={12} className={rateLoading ? 'animate-spin' : ''} />
+                                </button>
+                            </div>
+                            <div style={{ marginTop: 10 }}>
+                                <p style={{ fontSize: 11.5, color: '#878E88', margin: 0 }}>Tasa del proveedor</p>
+                                <p style={{ fontSize: 19, fontWeight: 800, color: '#F4F4F2', margin: '2px 0 0' }}>
+                                    {rateProveedor != null ? rateProveedor.toLocaleString('es-CO', { maximumFractionDigits: 2 }) : (rateLoading ? '…' : '—')}
+                                </p>
+                            </div>
+                            <div className="flex items-end" style={{ gap: 8, marginTop: 12 }}>
+                                <label style={{ flex: 1 }}>
+                                    <span style={{ display: 'block', fontSize: 11.5, color: '#878E88', marginBottom: 4 }}>Puntos que se le bajan (COP por dólar)</span>
+                                    <input value={ajusteEdit} onChange={e => { setAjusteEdit(e.target.value.replace(/[^\d.,]/g, '')); setAjusteMsg(null); }}
+                                        inputMode="decimal" placeholder="0"
+                                        style={{ width: '100%', height: 38, padding: '0 11px', borderRadius: 9, background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', fontSize: 14, fontWeight: 700, outline: 'none' }} />
+                                </label>
+                                <button onClick={guardarAjuste} disabled={ajusteBusy}
+                                    className="hover:bg-white/[0.09] transition-colors"
+                                    style={{ height: 38, padding: '0 16px', borderRadius: 9, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', fontSize: 13, fontWeight: 700, opacity: ajusteBusy ? 0.6 : 1 }}>
+                                    {ajusteBusy ? 'Guardando…' : 'Guardar'}
+                                </button>
+                            </div>
+                            {/* El resultado, a la vista antes de guardar: es la
+                                diferencia entre bajar 5 pesos y bajar 500. */}
+                            {rateProveedor != null && (
+                                <p style={{ fontSize: 12, color: '#878E88', marginTop: 10, lineHeight: 1.5 }}>
+                                    Queda en{' '}
+                                    <b style={{ color: '#4ADE80' }}>
+                                        {Math.max(0, rateProveedor - (Number(String(ajusteEdit).replace(',', '.')) || 0)).toLocaleString('es-CO', { maximumFractionDigits: 2 })} COP
+                                    </b>
+                                    {' '}por dólar. Es la tasa de referencia que ve el cliente.
+                                </p>
+                            )}
+                            {ajusteMsg && (
+                                <p style={{ fontSize: 11.5, marginTop: 8, color: ajusteMsg.ok ? '#4ADE80' : '#F87171', lineHeight: 1.45 }}>{ajusteMsg.text}</p>
+                            )}
+                            {ajuste && (
+                                <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', marginTop: 6 }}>Guardado hoy: {ajuste.finityCop} COP por dólar.</p>
+                            )}
+                        </div>
+
+                        {/* MOUV — se dice lo que hay, no lo que gustaría que hubiera. */}
+                        <div style={{ background: '#121413', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 12, padding: '14px 16px' }}>
+                            <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '1.2px', color: '#878E88' }}>MOUV · BRE-B</span>
+                            <div style={{ marginTop: 10 }}>
+                                <p style={{ fontSize: 11.5, color: '#878E88', margin: 0 }}>Tasa del proveedor</p>
+                                <p style={{ fontSize: 19, fontWeight: 800, color: '#878E88', margin: '2px 0 0' }}>Sin tasa</p>
+                            </div>
+                            <p style={{ fontSize: 12, color: '#878E88', marginTop: 12, lineHeight: 1.55 }}>
+                                Mouv no entrega tasa de cambio: su integración hoy solo mueve pesos (Bre-B y
+                                recaudo), y sus comisiones son fijas en COP, no una tasa. Toda la conversión
+                                USD→COP —la que ve el cliente— sale de Finity.
+                            </p>
+                            <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', marginTop: 8, lineHeight: 1.5 }}>
+                                Cuando Mouv apifique su mesa, el campo de puntos aparece acá. No lo pongo
+                                todavía porque no tendría sobre qué aplicarse.
+                            </p>
+                        </div>
                     </div>
                 </div>
 

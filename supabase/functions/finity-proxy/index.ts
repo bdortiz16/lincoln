@@ -436,6 +436,47 @@ function extractBalances(d: any): { usdt: number | null; cop: number | null } {
 
 // Extrae la tasa numérica de la respuesta de Finity (mismo criterio que el
 // cliente). Para el snapshot programado de la gráfica.
+// ── Ajuste de la tasa (los "puntos" que se le bajan) ──────────────────────
+//
+// La tasa del proveedor llega tal cual. Lo que Lincoin cobra por encima se
+// expresa restándole PESOS a esa tasa: si Finity da 3.097,75 y el ajuste es 5,
+// la tasa que se usa —y la que se muestra— es 3.092,75. Esos 5 pesos por dólar
+// son el margen.
+//
+// Se aplica ACÁ, donde nace la tasa, y no en la pantalla: así el cliente nunca
+// ve una tasa distinta de la que se le va a aplicar, y no hay dos números que
+// puedan quedar desalineados. El cálculo real del abono hace lo mismo en
+// gasfree, leyendo esta misma clave.
+const AJUSTE_KEY = 'otc_rate_ajuste'
+
+type AjusteTasa = { finityCop: number; mouvCop: number }
+
+async function leerAjuste(db: any): Promise<AjusteTasa> {
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', AJUSTE_KEY).maybeSingle()
+    const v = data?.value ? JSON.parse(data.value) : null
+    const n = (x: any) => { const k = Number(x); return Number.isFinite(k) && k >= 0 ? k : 0 }
+    return { finityCop: n(v?.finityCop), mouvCop: n(v?.mouvCop) }
+  } catch { return { finityCop: 0, mouvCop: 0 } }
+}
+
+async function esAdmin(db: any, userId?: string): Promise<boolean> {
+  if (!userId) return false
+  try {
+    const { data } = await db.from('users').select('role').eq('id', userId).maybeSingle()
+    return String(data?.role ?? '') === 'admin'
+  } catch { return false }
+}
+
+// Nunca deja la tasa en cero o negativa: un ajuste mal escrito (500 en vez de
+// 5) no puede convertir una conversión en un regalo. Si el ajuste se comiera
+// la tasa, no se aplica y se sigue con la del proveedor.
+export function aplicarAjuste(rate: number, ajusteCop: number): number {
+  if (!(rate > 0) || !(ajusteCop > 0)) return rate
+  const r = rate - ajusteCop
+  return r > 0 ? r : rate
+}
+
 function extractRate(d: any): number | null {
   if (d == null) return null
   const cand = d.rate ?? d.value ?? d.price ?? d.cop ?? d.exchange_rate ?? d.exchangeRate
@@ -942,7 +983,23 @@ Deno.serve(async (req) => {
     if (action === 'rates') {
       const qs = payload.query ? `?${new URLSearchParams(payload.query as Record<string, string>)}` : ''
       const { res, path } = await finityTry('rates', {}, qs)
-      return json(200, { ok: res.ok, status: res.status, path, base: FINITY_BASE, sandbox: FINITY_BASE !== PROD_BASE, data: await res.json().catch(() => null) })
+      const data = await res.json().catch(() => null)
+      // La tasa sale de acá YA ajustada: el cliente no ve una y se le aplica
+      // otra. `rateBruta` solo viaja para el admin, que necesita ver contra
+      // qué está ajustando; al cliente no le corresponde el margen.
+      const aj = await leerAjuste(db)
+      const bruta = extractRate(data)
+      const neta = bruta != null ? aplicarAjuste(bruta, aj.finityCop) : null
+      const salida = (bruta != null && neta != null && neta !== bruta && data && typeof data === 'object')
+        ? { ...data, rate: neta, value: neta }
+        : data
+      return json(200, {
+        ok: res.ok, status: res.status, path, base: FINITY_BASE,
+        sandbox: FINITY_BASE !== PROD_BASE,
+        data: salida,
+        ajusteCop: aj.finityCop,
+        ...(await esAdmin(db, caller.userId) ? { rateBruta: bruta } : {}),
+      })
     }
 
     // ── Snapshot programado de la tasa USD→COP (para la gráfica). Pensado

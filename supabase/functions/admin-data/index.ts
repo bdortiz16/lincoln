@@ -2238,6 +2238,46 @@ Deno.serve(async (req: Request) => {
 
       // Política de acceso: leer. Incluye la IP y el país DESDE DONDE se está
       // consultando, para poder encenderla sin quedar afuera por sorpresa.
+      // ── Ajuste de la tasa OTC: los "puntos" que se le bajan al proveedor ──
+      // Se guarda en pesos por dólar. Si Finity da 3.097,75 y el ajuste es 5,
+      // la tasa que se muestra Y con la que se abona es 3.092,75; esos 5 pesos
+      // por dólar son el margen de Lincoin.
+      if (body.action === 'otc_ajuste_get') {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        const { data } = await db.from('system_config').select('value').eq('key', 'otc_rate_ajuste').maybeSingle()
+        let v: any = null
+        try { v = (data as any)?.value ? JSON.parse((data as any).value) : null } catch { v = null }
+        const n = (x: any) => { const k = Number(x); return Number.isFinite(k) && k >= 0 ? k : 0 }
+        return json({ ok: true, ajuste: { finityCop: n(v?.finityCop), mouvCop: n(v?.mouvCop), at: v?.at ?? null, por: v?.por ?? null } })
+      }
+
+      // Guardar el ajuste. Cambia cuánto recibe cada cliente por cada dólar
+      // que convierte, así que es una acción sensible: exige el segundo factor
+      // de la sesión, igual que el resto de lo que toca dinero.
+      if (body.action === 'otc_ajuste_set') {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        const mfaErr = await requireMfaSession(req, auth.userId)
+        if (mfaErr) return json({ error: mfaErr, needs2fa: true }, 403)
+        // Tope duro. Un dedazo acá —500 en vez de 5— le quitaría a cada
+        // cliente 500 pesos por dólar sin que nadie lo note hasta el reclamo.
+        const TOPE = 200
+        const lee = (x: any) => {
+          const n = Number(String(x ?? '').replace(',', '.'))
+          if (!Number.isFinite(n) || n < 0) return 0
+          return Math.min(n, TOPE)
+        }
+        const finityCop = lee(body.finityCop)
+        const mouvCop = lee(body.mouvCop)
+        if (Number(body.finityCop) > TOPE || Number(body.mouvCop) > TOPE) {
+          return json({ error: `El ajuste no puede pasar de ${TOPE} pesos por dólar.` }, 400)
+        }
+        const valor = { finityCop, mouvCop, at: new Date().toISOString(), por: String(auth.userId ?? '') }
+        const { error } = await db.from('system_config').upsert({ key: 'otc_rate_ajuste', value: JSON.stringify(valor) }, { onConflict: 'key' })
+        if (error) return json({ error: error.message }, 500)
+        await auditAdmin(req, 'otc.ajuste_tasa', { finityCop, mouvCop })
+        return json({ ok: true, ajuste: valor })
+      }
+
       if (body.action === 'access_policy_get') {
         if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
         const ip = ipOf(req)

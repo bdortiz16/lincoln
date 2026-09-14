@@ -49,6 +49,19 @@ async function require2FA(userId: string, otp: unknown): Promise<string | null> 
   return null
 }
 
+// ── Ajuste de la tasa (los "puntos" que Lincoin le baja al proveedor) ──────
+// Misma clave que lee finity-proxy al servir la tasa. Se lee acá otra vez —y
+// no se confía en lo que mande el navegador— porque este es el número con el
+// que se abona plata de verdad.
+async function leerAjusteTasa(): Promise<number> {
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', 'otc_rate_ajuste').maybeSingle()
+    const v = (data as any)?.value ? JSON.parse((data as any).value) : null
+    const n = Number(v?.finityCop)
+    return Number.isFinite(n) && n >= 0 ? n : 0
+  } catch { return 0 }
+}
+
 // ── GUARDIA DE BLOQUEO / LISTA NEGRA ──────────────────────────────
 // Antes el bloqueo solo existía en la interfaz: un usuario bloqueado (p. ej.
 // por hackeo) podía seguir moviendo dinero llamando la API directo. Ahora el
@@ -2271,7 +2284,15 @@ async function autoConvert(txId: string, uid: string) {
           await db.from('transactions').update({ raw_data: { ...rd, lastConvertError: lastErr, lastConvertAt: new Date().toISOString() } }).eq('id', txId)
           await sleepMs(15000); continue
         }
-        const finityRate = Number(done.exchangeRate ?? rd.mouvRate ?? 0)
+        // Los "puntos" que Lincoin le baja a la tasa del proveedor. Es el
+        // MISMO ajuste que ya se aplicó a la tasa que vio el cliente
+        // (finity-proxy, acción 'rates'), leído de la misma clave: lo que se
+        // muestra y lo que se abona tienen que salir del mismo número.
+        const ajusteCop = await leerAjusteTasa()
+        const rateBruta = Number(done.exchangeRate ?? rd.mouvRate ?? 0)
+        const finityRate = (rateBruta > 0 && ajusteCop > 0 && rateBruta - ajusteCop > 0)
+          ? rateBruta - ajusteCop
+          : rateBruta
         const feePct = Number(rd.feePct ?? 0)
         const creditUsd = Number(rd.creditUsd ?? 0) || Math.max(0, Number(rd.fromAmount ?? 0) - 4)
         const grossCop = finityRate > 0 ? creditUsd * finityRate : Number(done.to_amount ?? 0)
