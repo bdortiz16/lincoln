@@ -133,7 +133,7 @@ export const AdminCompliance: React.FC = () => {
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
           <div>
             <p style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 800, fontSize: 16, margin: 0 }}>
-              <ShieldAlert size={17} color={r.bloqueados > 0 ? C.red : C.green} /> Compliance
+              <ShieldAlert size={17} color={r.bloqueados > 0 ? C.red : C.green} /> Cumplimiento
             </p>
             <p style={{ color: C.sub, fontSize: 12, margin: '4px 0 0', maxWidth: 620, lineHeight: 1.55 }}>
               Todo lo que se inscribe pasa por acá. Primero se valida que el nombre corresponda al

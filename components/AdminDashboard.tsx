@@ -934,7 +934,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
           const limit = systemConfig.volumeLimit || 10000;
           let usersOverLimit = 0;
           allUsers.forEach(u => { const { totalUSD } = getUserVolume(u.id); if (totalUSD > limit) usersOverLimit++; });
-          if (usersOverLimit > 0) newAlerts.push({ id: 'volume-risk', type: 'warning', title: 'Límite de Volumen Excedido', description: `${usersOverLimit} clientes superaron el límite de $${limit.toLocaleString()}. Revisar Compliance.`, action: 'clients' });
+          if (usersOverLimit > 0) newAlerts.push({ id: 'volume-risk', type: 'warning', title: 'Límite de Volumen Excedido', description: `${usersOverLimit} clientes superaron el límite de $${limit.toLocaleString()}. Revisar Cumplimiento.`, action: 'clients' });
 
           setActiveAlerts(newAlerts);
       };
@@ -1417,7 +1417,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                           placeholder="20"
                       />
                   </div>
-                  <button onClick={handleAddCoupon} className="bg-[#0C0E0D] px-6 py-2 rounded-lg font-bold text-sm hover:bg-[#152e52] h-[38px] flex items-center gap-2">
+                  <button onClick={handleAddCoupon} className="bg-[#0C0E0D] px-6 py-2 rounded-lg font-bold text-sm hover:bg-[#161A17] h-[38px] flex items-center gap-2">
                       <Plus size={16}/> Crear
                   </button>
               </div>
@@ -1915,7 +1915,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                   <button
                     onClick={requestCargue}
                     disabled={carguesBusy || (usandoAcct ? !acctCalc.listo : !carguesAmount) || (!carguesRecordOnly && cargueOtp.length !== 6)}
-                    className="w-full py-3 rounded-lg text-sm font-bold text-white bg-[#0C0E0D] hover:bg-[#152e52] disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+                    className="w-full py-3 rounded-lg text-sm font-bold text-white bg-[#0C0E0D] hover:bg-[#161A17] disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
                   >
                     {carguesBusy ? <><RefreshCw size={15} className="animate-spin" /> Aplicando…</> : <>{carguesDir === 'credit' ? 'Acreditar' : 'Descontar'} saldo</>}
                   </button>
@@ -2175,7 +2175,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
               </div>
               <button 
                   onClick={() => setShowInternalMovementModal(true)}
-                  className="bg-[#0C0E0D] hover:bg-[#152e52] px-5 py-2.5 rounded-xl font-bold text-sm shadow-lg flex items-center gap-2 transition-all"
+                  className="bg-[#0C0E0D] hover:bg-[#161A17] px-5 py-2.5 rounded-xl font-bold text-sm shadow-lg flex items-center gap-2 transition-all"
               >
                   <RefreshCw size={16} /> Registrar Movimiento
               </button>
@@ -2706,7 +2706,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                               <p className="text-slate-500 text-sm mb-8 px-4">
                                   Descarga un archivo JSON encriptado con toda la información de usuarios, historial, configuración y tesorería.
                               </p>
-                              <button onClick={downloadDatabase} className="w-full bg-[#0C0E0D] py-3 rounded-xl font-bold hover:bg-[#152e52] transition-colors flex items-center justify-center gap-2">
+                              <button onClick={downloadDatabase} className="w-full bg-[#0C0E0D] py-3 rounded-xl font-bold hover:bg-[#161A17] transition-colors flex items-center justify-center gap-2">
                                   <Download size={18}/> Descargar Base de Datos
                               </button>
                           </div>
@@ -2752,7 +2752,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
             className="flex-1 border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-[#0C0E0D]/20"
           />
           <button onClick={handleSave}
-            className={`px-5 py-2.5 rounded-xl font-bold text-sm transition-all flex items-center gap-2 ${saved ? 'bg-green-600' : 'bg-[#0C0E0D] hover:bg-[#152e52]'}`}>
+            className={`px-5 py-2.5 rounded-xl font-bold text-sm transition-all flex items-center gap-2 ${saved ? 'bg-green-600' : 'bg-[#0C0E0D] hover:bg-[#161A17]'}`}>
             {saved ? <><CheckCircle size={15}/> Guardado</> : <><Save size={15}/> Guardar</>}
           </button>
         </div>
@@ -2887,7 +2887,7 @@ const renderBanks = () => (
                     </div>
                 </div>
                 <div className="flex items-end">
-                    <button onClick={() => { setEditingBank(null); setBankForm({ id: '', name: '', type: 'bank', accountNumber: '', accountType: '', beneficiary: '', taxId: '', taxIdType: '', logoColor: 'bg-slate-100 text-slate-500', logoText: '', qrImageUrl: '' }); setShowBankModal(true); }} className="bg-[#0C0E0D] px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 h-10 shadow-lg hover:bg-[#152e52] transition-colors">
+                    <button onClick={() => { setEditingBank(null); setBankForm({ id: '', name: '', type: 'bank', accountNumber: '', accountType: '', beneficiary: '', taxId: '', taxIdType: '', logoColor: 'bg-slate-100 text-slate-500', logoText: '', qrImageUrl: '' }); setShowBankModal(true); }} className="bg-[#0C0E0D] px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 h-10 shadow-lg hover:bg-[#161A17] transition-colors">
                         <Plus size={16}/> Agregar Cuenta
                     </button>
                 </div>
@@ -3038,7 +3038,7 @@ const renderBanks = () => (
                             </div>
                         </div>
 
-                        <button onClick={handleBankSave} className="w-full h-12 bg-[#0C0E0D] font-bold rounded-lg hover:bg-[#152e52] shadow-lg mt-4">
+                        <button onClick={handleBankSave} className="w-full h-12 bg-[#0C0E0D] font-bold rounded-lg hover:bg-[#161A17] shadow-lg mt-4">
                             Guardar Cuenta
                         </button>
                     </div>
@@ -3382,7 +3382,7 @@ const renderDesign = () => (
               <span className={`text-xs font-bold px-3 py-1.5 rounded-full ${adminMfaOn ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>{adminMfaOn ? '✅ Activo' : '⚠ Inactivo'}</span>
             </div>
             {!adminMfaOn && !mfaEnroll && (
-              <button onClick={startMfaEnroll} disabled={mfaBusy} className="mt-3 px-4 py-2 text-sm font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#152e52] disabled:opacity-60">{mfaBusy ? 'Generando…' : 'Activar 2FA ahora'}</button>
+              <button onClick={startMfaEnroll} disabled={mfaBusy} className="mt-3 px-4 py-2 text-sm font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#161A17] disabled:opacity-60">{mfaBusy ? 'Generando…' : 'Activar 2FA ahora'}</button>
             )}
             {mfaEnroll && (
               <div className="mt-3 grid md:grid-cols-2 gap-4 items-start">
@@ -3937,7 +3937,7 @@ const renderDesign = () => (
                             <AdminSidebarItem icon={Megaphone} label="Marketing" active={activeTab === 'marketing'} onClick={() => navTo('marketing')} />
                             <AdminSidebarItem icon={Palette} label="Diseño" active={activeTab === 'design'} onClick={() => navTo('design')} />
                             <AdminSidebarItem icon={UserCheck} label="TusDatos" active={activeTab === 'tusdatos'} onClick={() => navTo('tusdatos')} />
-                            <AdminSidebarItem icon={ShieldAlert} label="Compliance" active={activeTab === 'compliance'} onClick={() => navTo('compliance')} />
+                            <AdminSidebarItem icon={ShieldAlert} label="Cumplimiento" active={activeTab === 'compliance'} onClick={() => navTo('compliance')} />
                             <AdminSidebarItem icon={Link2} label="Kumplo" active={activeTab === 'kumplo'} onClick={() => navTo('kumplo')} />
                             <AdminSidebarItem icon={Settings} label="Configuración" active={activeTab === 'config'} onClick={() => navTo('config')} />
                         </> },

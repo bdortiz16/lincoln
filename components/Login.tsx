@@ -168,7 +168,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
           <button
             onClick={handleVerify2FA}
             disabled={mfaCode.length !== 6 || mfaLoading}
-            className="w-full h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg disabled:opacity-50 transition-colors mb-4 shadow-lg shadow-green-900/20"
+            className="w-full h-12 bg-[#0C0E0D] hover:bg-[#161A17] font-bold rounded-lg disabled:opacity-50 transition-colors mb-4 shadow-lg shadow-green-900/20"
           >
             {mfaLoading ? 'Verificando...' : 'Verificar'}
           </button>
@@ -196,12 +196,12 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
         Volver al inicio
       </button>
 
-      <div className="mb-8 scale-125 cursor-pointer hover:scale-[1.4] transition-transform duration-300 anim-fade-in" onClick={onBack} title="Volver a la página principal">
-        <Logo collapsed />
+      <div className="mb-8 cursor-pointer anim-fade-in" onClick={onBack} title="Volver a la página principal">
+        <Logo />
       </div>
 
       <h1 className="text-2xl font-bold text-[#0C0E0D] text-center mb-10 anim-fade-up">
-        ¡Te damos la bienvenida a LINCOIN{userRole === 'business' ? <><br />empresas!</> : '!'}
+        ¡Te damos la bienvenida a Lincoin{userRole === 'business' ? <><br />empresas!</> : '!'}
       </h1>
 
       {config.maintenanceMode && (
@@ -261,7 +261,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
         <button
           onClick={handleLogin}
           disabled={isLoading || (captchaEnabled && !captchaToken)}
-          className="btn-shine w-full h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg transition-all duration-200 shadow-lg shadow-green-900/20 disabled:opacity-70 hover:shadow-xl hover:shadow-green-500/30 hover:-translate-y-0.5 active:scale-[0.98] active:translate-y-0"
+          className="btn-shine w-full h-12 bg-[#0C0E0D] hover:bg-[#161A17] font-bold rounded-lg transition-all duration-200 shadow-lg shadow-green-900/20 disabled:opacity-70 hover:shadow-xl hover:shadow-green-500/30 hover:-translate-y-0.5 active:scale-[0.98] active:translate-y-0"
         >
           {isLoading ? 'Iniciando sesión...' : 'Iniciar sesión'}
         </button>
@@ -324,7 +324,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
                     placeholder="tu@email.com"
                   />
                 </div>
-                <button onClick={handleForgotPassword} className="w-full h-12 bg-[#0C0E0D] font-bold rounded-lg hover:bg-[#152e52] transition-colors">
+                <button onClick={handleForgotPassword} className="w-full h-12 bg-[#0C0E0D] font-bold rounded-lg hover:bg-[#161A17] transition-colors">
                   Enviar Instrucciones
                 </button>
               </>

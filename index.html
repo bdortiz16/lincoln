@@ -71,7 +71,6 @@
     <!-- Tailwind ahora se COMPILA en el build de Vite (tailwind.config.js
          + index.css). Nada de cdn.tailwindcss.com: los estilos viajan en
          el bundle y funcionan igual en redes corporativas filtradas. -->
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <!-- reCAPTCHA v3 — desactivado hasta registrar una llave válida para el
          dominio de Lincoin. Si se quiere activar: crear site key en
@@ -79,7 +78,7 @@
          cargar el script con esa llave (o setearla en el admin → recaptchaSiteKey). -->
     <style>
       body {
-        font-family: 'Inter', sans-serif;
+        font-family: 'Archivo', system-ui, sans-serif;
         background-color: #070808;
         color: #F4F4F2;
       }
@@ -93,7 +92,7 @@
       /* Custom scrollbar for sidebar */
       .sidebar-scroll::-webkit-scrollbar { width: 6px; }
       .sidebar-scroll::-webkit-scrollbar-track { background: transparent; }
-      .sidebar-scroll::-webkit-scrollbar-thumb { background-color: #cbd5e1; border-radius: 20px; }
+      .sidebar-scroll::-webkit-scrollbar-thumb { background-color: rgba(255,255,255,0.12); border-radius: 20px; }
 
       /* ── Scroll reveal ── */
       .reveal {

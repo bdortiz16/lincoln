@@ -84,7 +84,7 @@ export const PersonalOnboardingWizard: React.FC<PersonalOnboardingProps> = ({ on
                             <button
                                 onClick={startDidit}
                                 disabled={loading}
-                                className="w-full py-4 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] disabled:opacity-50 transition-colors flex items-center justify-center gap-3 text-base"
+                                className="w-full py-4 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#161A17] disabled:opacity-50 transition-colors flex items-center justify-center gap-3 text-base"
                             >
                                 {loading
                                     ? <><RefreshCw size={20} className="animate-spin"/> Iniciando verificación...</>
@@ -115,7 +115,7 @@ export const PersonalOnboardingWizard: React.FC<PersonalOnboardingProps> = ({ on
                             <div className="space-y-3">
                                 <button
                                     onClick={onFinish}
-                                    className="w-full py-3 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] transition-colors"
+                                    className="w-full py-3 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#161A17] transition-colors"
                                 >
                                     Entrar a mi cuenta
                                 </button>

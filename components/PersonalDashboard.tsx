@@ -2245,7 +2245,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                     <h3 className="text-[#0C0E0D] font-bold text-sm">Verificación en progreso</h3>
                     <p className="text-[#4ADE80] text-xs mt-1">Abriste Lincoin pero aún no terminaste. Completa el proceso para activar tu cuenta.</p>
                   </div>
-                  <button onClick={startDiditKyc} disabled={kycLoading} className="shrink-0 px-4 py-2 bg-[#0C0E0D] hover:bg-[#152e52] text-xs font-bold rounded-lg disabled:opacity-50 flex items-center gap-2 transition-colors">
+                  <button onClick={startDiditKyc} disabled={kycLoading} className="shrink-0 px-4 py-2 bg-[#0C0E0D] hover:bg-[#161A17] text-xs font-bold rounded-lg disabled:opacity-50 flex items-center gap-2 transition-colors">
                     {kycLoading ? <><RefreshCw size={14} className="animate-spin"/> Cargando...</> : <><ShieldCheck size={14}/> Continuar verificación</>}
                   </button>
                 </div>
@@ -3779,7 +3779,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           <p className="text-slate-500 max-w-lg mx-auto mb-8">
               ¿Eres influencer, creador de contenido o tienes una comunidad? Únete a nuestro programa de afiliados y obtén beneficios exclusivos.
           </p>
-          <button className="bg-[#0C0E0D] px-8 py-3 rounded-xl font-bold hover:bg-[#152e52] transition-colors">
+          <button className="bg-[#0C0E0D] px-8 py-3 rounded-xl font-bold hover:bg-[#161A17] transition-colors">
               Aplicar al Programa
           </button>
       </div>
@@ -4533,7 +4533,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   </div>
                   <div className="p-4 border-t border-slate-100 flex gap-3">
                       <button onClick={() => setIsWalletOrderModalOpen(false)} className="flex-1 h-11 border border-slate-200 rounded-xl text-slate-600 text-sm font-bold hover:bg-slate-50 transition-colors">Cancelar</button>
-                      <button onClick={saveWalletOrder} className="flex-1 h-11 bg-[#0C0E0D] hover:bg-[#152e52] text-sm font-bold rounded-xl transition-colors">Guardar</button>
+                      <button onClick={saveWalletOrder} className="flex-1 h-11 bg-[#0C0E0D] hover:bg-[#161A17] text-sm font-bold rounded-xl transition-colors">Guardar</button>
                   </div>
               </div>
           </div>
@@ -4574,7 +4574,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   <button
                       onClick={handleVerifyMFAEnrollment}
                       disabled={mfaVerifyCode.length !== 6 || mfaVerifyLoading}
-                      className="w-full h-12 bg-[#0C0E0D] font-bold rounded-xl disabled:opacity-50 hover:bg-[#152e52] transition-colors"
+                      className="w-full h-12 bg-[#0C0E0D] font-bold rounded-xl disabled:opacity-50 hover:bg-[#161A17] transition-colors"
                   >
                       {mfaVerifyLoading ? 'Verificando...' : 'Confirmar activación'}
                   </button>
@@ -4591,7 +4591,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
                   {!disableOtp.sent ? (
                       <button onClick={sendDisableOtp} disabled={disableOtp.sending}
-                          className="w-full h-11 bg-[#0C0E0D] text-white font-bold rounded-lg hover:bg-[#152e52] transition-colors disabled:opacity-60 mb-4">
+                          className="w-full h-11 bg-[#0C0E0D] text-white font-bold rounded-lg hover:bg-[#161A17] transition-colors disabled:opacity-60 mb-4">
                           {disableOtp.sending ? 'Enviando…' : '📧 Enviarme el código al correo'}
                       </button>
                   ) : (
@@ -4767,7 +4767,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   onClick={() => setPayLinkStep(2)}
                                   disabled={!payLinkAmount || Number(payLinkAmount) <= 0}
                                   style={{ color: '#FFFFFF' }}
-                                  className="w-full py-3.5 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                  className="w-full py-3.5 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#161A17] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                               >
                                   Continuar
                               </button>
@@ -4881,8 +4881,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
                               <div className="flex gap-3">
                                   <button
-                                      onClick={() => { if (navigator.share) { navigator.share({ title: 'Link de pago LINCOIN', url: payLinkUrl }); } else { navigator.clipboard?.writeText(payLinkUrl); showToast('Link copiado'); } }}
-                                      className="flex-1 py-3 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] transition-colors flex items-center justify-center gap-2"
+                                      onClick={() => { if (navigator.share) { navigator.share({ title: 'Link de pago Lincoin', url: payLinkUrl }); } else { navigator.clipboard?.writeText(payLinkUrl); showToast('Link copiado'); } }}
+                                      className="flex-1 py-3 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#161A17] transition-colors flex items-center justify-center gap-2"
                                   >
                                       <Share2 size={16}/> Compartir
                                   </button>
@@ -5326,7 +5326,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       </span>
                                   </div>
                               </div>
-                              <button onClick={handleAmountConfirm} style={{ color: '#FFFFFF' }} className="w-full py-4 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-transform active:scale-95">Continuar</button>
+                              <button onClick={handleAmountConfirm} style={{ color: '#FFFFFF' }} className="w-full py-4 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#161A17] shadow-lg transition-transform active:scale-95">Continuar</button>
                           </div>
                       )}
                       {loadStep === 4 && (
@@ -5372,7 +5372,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       )}
                                   </div>
                               </div>
-                              <button onClick={handleLoadSubmit} style={{ color: '#FFFFFF' }} className="w-full py-4 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-transform active:scale-95">
+                              <button onClick={handleLoadSubmit} style={{ color: '#FFFFFF' }} className="w-full py-4 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#161A17] shadow-lg transition-transform active:scale-95">
                                   Notificar Transferencia
                               </button>
                           </div>
@@ -6042,7 +6042,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               ) : (
                                   <div className="flex gap-3">
                                       <button onClick={() => setSendStep(3)} disabled={isSending} className="flex-1 py-3 border border-slate-300 text-slate-600 font-bold rounded-xl hover:bg-slate-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">Corregir</button>
-                                      <button onClick={requestSendConfirm} disabled={isSending} style={{ color: '#FFFFFF' }} className="flex-1 py-3 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed">{isSending ? <><Loader2 className="animate-spin" size={18} /> Procesando… no cierres</> : <><Send size={18}/> Confirmar</>}</button>
+                                      <button onClick={requestSendConfirm} disabled={isSending} style={{ color: '#FFFFFF' }} className="flex-1 py-3 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#161A17] shadow-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed">{isSending ? <><Loader2 className="animate-spin" size={18} /> Procesando… no cierres</> : <><Send size={18}/> Confirmar</>}</button>
                                   </div>
                               )}
                               {isSending && sendForm.destinationCurrency === 'COP' && (
@@ -6300,7 +6300,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   </div>
                               )}
                               <p className="text-sm text-slate-500 mb-6">Un agente se comunicará al <strong>{cashForm.phone || 'número registrado'}</strong> para coordinar el punto de entrega.</p>
-                              <button onClick={closeSendModal} style={{ color: '#FFFFFF' }} className="w-full bg-[#0C0E0D] font-bold py-3 rounded-xl hover:bg-[#152e52] transition-colors">Finalizar</button>
+                              <button onClick={closeSendModal} style={{ color: '#FFFFFF' }} className="w-full bg-[#0C0E0D] font-bold py-3 rounded-xl hover:bg-[#161A17] transition-colors">Finalizar</button>
                           </div>
                       )}
                   </div>

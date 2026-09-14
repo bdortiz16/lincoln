@@ -512,7 +512,7 @@ export const AdminTusdatos: React.FC = () => {
               },
               {
                 k: 'soloBloquearAlto', on: !!cfg.soloBloquearAlto, l: 'Bloquear solo el riesgo alto',
-                s: 'Sin marcar, el riesgo medio queda en revisión manual: lo aprueba Compliance.',
+                s: 'Sin marcar, el riesgo medio queda en revisión manual: lo aprueba Cumplimiento.',
               },
               {
                 k: 'enviarAKumplo', on: !!cfg.enviarAKumplo, l: 'Enviar el resultado y el PDF a Kumplo',
@@ -596,7 +596,7 @@ export const AdminTusdatos: React.FC = () => {
               );
             })}
             <p style={{ fontSize: 11, color: C.dim, margin: '10px 0 0', lineHeight: 1.5 }}>
-              Al correo del administrador y al canal de Compliance.
+              Al correo del administrador y al canal de Cumplimiento.
             </p>
           </Tarjeta>
 

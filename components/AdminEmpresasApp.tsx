@@ -200,7 +200,7 @@ const AdminEmpresasInner: React.FC = () => {
                             <input type="password" value={pwd2} onChange={e => setPwd2(e.target.value)} placeholder="Repítela" autoComplete="new-password"
                                 className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#4ADE80] outline-none" />
                             {pwdMsg && <p className={`text-xs rounded-xl p-2.5 border ${pwdMsg.startsWith('✅') ? 'text-green-700 bg-green-50 border-green-200' : 'text-red-700 bg-red-50 border-red-200'}`}>{pwdMsg}</p>}
-                            <button type="submit" disabled={pwdBusy} style={{ color: '#FFFFFF' }} className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#152e52] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60">
+                            <button type="submit" disabled={pwdBusy} style={{ color: '#FFFFFF' }} className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#161A17] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60">
                                 <Lock size={14} /> {pwdBusy ? 'Guardando…' : 'Guardar contraseña'}
                             </button>
                         </form>
@@ -222,7 +222,7 @@ const AdminEmpresasInner: React.FC = () => {
                             />
                             {mfaError && <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-xl p-2.5">{mfaError}</p>}
                             {resendMsg && <p className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-xl p-2.5">{resendMsg}</p>}
-                            <button type="submit" disabled={verifying || emailCode.length !== 6} style={{ color: '#FFFFFF' }} className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#152e52] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60 transition-colors">
+                            <button type="submit" disabled={verifying || emailCode.length !== 6} style={{ color: '#FFFFFF' }} className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#161A17] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60 transition-colors">
                                 <Lock size={14} /> {verifying ? 'Verificando…' : 'Continuar'}
                             </button>
                             <button type="button" onClick={async () => { setResendMsg('Enviando…'); const ok = await resendEmailCode(); setResendMsg(ok ? 'Código reenviado.' : 'No se pudo reenviar. Espera un momento.'); }} className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-800 underline">
@@ -241,7 +241,7 @@ const AdminEmpresasInner: React.FC = () => {
                                 </p>
                             </div>
                             {mfaError && <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-xl p-2.5">{mfaError}</p>}
-                            <button type="button" onClick={handlePasskey} disabled={verifying} style={{ color: '#FFFFFF' }} className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#152e52] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60 transition-colors">
+                            <button type="button" onClick={handlePasskey} disabled={verifying} style={{ color: '#FFFFFF' }} className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#161A17] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60 transition-colors">
                                 <Fingerprint size={15} /> {verifying ? 'Esperando…' : 'Continuar'}
                             </button>
                             <button type="button" onClick={() => { cancelMFALogin(); setEmailCode(''); setMfaCode(''); setMfaError(null); setResendMsg(null); setPassword(''); setUseBackup(false); }} className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-800">
@@ -267,7 +267,7 @@ const AdminEmpresasInner: React.FC = () => {
                                 className="w-full px-3 py-3 rounded-xl border border-slate-200 text-center font-mono text-lg tracking-widest focus:border-[#4ADE80] outline-none"
                             />
                             {mfaError && <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-xl p-2.5">{mfaError}</p>}
-                            <button type="submit" disabled={verifying || !codeReady} style={{ color: '#FFFFFF' }} className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#152e52] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60 transition-colors">
+                            <button type="submit" disabled={verifying || !codeReady} style={{ color: '#FFFFFF' }} className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#161A17] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60 transition-colors">
                                 <Lock size={14} /> {verifying ? 'Verificando…' : 'Verificar código'}
                             </button>
                             <button type="button" onClick={() => { setUseBackup(v => !v); setMfaCode(''); setMfaError(null); }} className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-800 underline">
@@ -318,7 +318,7 @@ const AdminEmpresasInner: React.FC = () => {
                             type="submit"
                             disabled={submitting || (captchaEnabled && !captchaToken)}
                             style={{ color: '#FFFFFF' }}
-                            className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#152e52] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60 transition-colors"
+                            className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#161A17] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60 transition-colors"
                         >
                             <Lock size={14} /> {submitting ? 'Ingresando…' : 'Ingresar'}
                         </button>

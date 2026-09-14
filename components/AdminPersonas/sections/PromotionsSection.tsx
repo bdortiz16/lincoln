@@ -313,7 +313,7 @@ function renderHtml(subject: string, body: string): string {
       <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 1px 2px rgba(15,23,42,.04)">
         <tr><td style="background:#0C0E0D;padding:20px 28px;text-align:left">
           <span style="display:inline-block;width:36px;height:36px;border-radius:10px;background:#4ADE80;line-height:36px;text-align:center;color:#0C0E0D;font-weight:800;font-family:-apple-system,sans-serif">C</span>
-          <span style="display:inline-block;margin-left:10px;color:#ffffff;font-weight:800;letter-spacing:1px;font-size:14px;vertical-align:6px">LINCOIN</span>
+          <span style="display:inline-block;margin-left:10px;color:#ffffff;font-weight:800;letter-spacing:1px;font-size:14px;vertical-align:6px">Lincoin</span>
         </td></tr>
         <tr><td style="padding:28px">
           <h1 style="margin:0 0 16px;font-size:20px;color:#0C0E0D">${safeSubject}</h1>

@@ -281,7 +281,7 @@ const DiditKycButton: React.FC<{ userId?: string; kycStatus?: string; showToast:
       <button
         onClick={startVerification}
         disabled={loading}
-        className="w-full py-3 px-6 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] disabled:opacity-50 transition-colors flex items-center justify-center gap-2 text-sm"
+        className="w-full py-3 px-6 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#161A17] disabled:opacity-50 transition-colors flex items-center justify-center gap-2 text-sm"
       >
         {loading ? (
           <><span className="animate-spin">⏳</span> Iniciando verificación...</>
@@ -1281,7 +1281,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   <button 
                     onClick={() => { if(!handleActionRestricted()) { setLoadStep(1); setIsLoadModalOpen(true); } }} 
                     disabled={isBlocked || !isKycVerified} 
-                    className={`px-5 py-2.5 rounded-xl font-bold text-sm flex items-center gap-2 transition-colors shadow-lg ${isBlocked || !isKycVerified ? 'bg-slate-400 cursor-not-allowed opacity-70' : 'bg-[#0C0E0D] hover:bg-[#152e52] shadow-green-900/20'}`}
+                    className={`px-5 py-2.5 rounded-xl font-bold text-sm flex items-center gap-2 transition-colors shadow-lg ${isBlocked || !isKycVerified ? 'bg-slate-400 cursor-not-allowed opacity-70' : 'bg-[#0C0E0D] hover:bg-[#161A17] shadow-green-900/20'}`}
                   >
                       <Plus size={18} /> Fondear Cuenta
                   </button>
@@ -1804,7 +1804,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                               <button onClick={() => setMfaDisableModalOpen(true)} className="px-3 py-1.5 text-xs font-bold border border-red-200 text-red-600 rounded-lg hover:bg-red-50 transition-colors">Desactivar</button>
                           </div>
                       ) : (
-                          <button onClick={handleOpenMFAEnroll} className="px-4 py-2 text-sm font-bold bg-[#0C0E0D] rounded-lg hover:bg-[#152e52] transition-colors">Activar</button>
+                          <button onClick={handleOpenMFAEnroll} className="px-4 py-2 text-sm font-bold bg-[#0C0E0D] rounded-lg hover:bg-[#161A17] transition-colors">Activar</button>
                       )}
                   </div>
               </div>
@@ -1884,7 +1884,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   </div>
                   {mfaVerifyError && <p className="text-red-500 text-sm text-center mb-3">{mfaVerifyError}</p>}
                   <input type="text" inputMode="numeric" maxLength={6} value={mfaVerifyCode} onChange={(e) => setMfaVerifyCode(e.target.value.replace(/\D/g, ''))} className="w-full h-14 text-center text-2xl font-bold tracking-[0.4em] border-2 border-slate-200 rounded-xl focus:border-[#0C0E0D] outline-none mb-4 bg-slate-50" placeholder="000000" autoFocus onKeyDown={(e) => e.key === 'Enter' && handleVerifyMFAEnrollment()} />
-                  <button onClick={handleVerifyMFAEnrollment} disabled={mfaVerifyCode.length !== 6 || mfaVerifyLoading} className="w-full h-12 bg-[#0C0E0D] font-bold rounded-xl disabled:opacity-50 hover:bg-[#152e52] transition-colors">
+                  <button onClick={handleVerifyMFAEnrollment} disabled={mfaVerifyCode.length !== 6 || mfaVerifyLoading} className="w-full h-12 bg-[#0C0E0D] font-bold rounded-xl disabled:opacity-50 hover:bg-[#161A17] transition-colors">
                       {mfaVerifyLoading ? 'Verificando...' : 'Confirmar activación'}
                   </button>
               </div>
@@ -2031,7 +2031,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
           <p className="text-slate-500 max-w-lg mx-auto mb-8">
               Si eres contador, abogado o asesor financiero, únete a nuestro programa de partners y gestiona las finanzas de tus clientes con beneficios exclusivos.
           </p>
-          <button className="bg-[#0C0E0D] px-8 py-3 rounded-xl font-bold hover:bg-[#152e52] transition-colors">
+          <button className="bg-[#0C0E0D] px-8 py-3 rounded-xl font-bold hover:bg-[#161A17] transition-colors">
               Contactar para Alianza
           </button>
       </div>
@@ -2167,7 +2167,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
             </div>
             <h3 className="font-bold text-slate-800">¡Solicitud recibida!</h3>
             <p className="text-slate-500 text-sm">Nuestro equipo de seguros te enviará la cotización en menos de 2 horas. El pago se realiza desde tu saldo Lincoin.</p>
-            <button onClick={() => setSegSolicitado(false)} className="mt-2 px-6 py-2.5 bg-[#0C0E0D] rounded-xl font-bold text-sm hover:bg-[#152e52] transition-colors">
+            <button onClick={() => setSegSolicitado(false)} className="mt-2 px-6 py-2.5 bg-[#0C0E0D] rounded-xl font-bold text-sm hover:bg-[#161A17] transition-colors">
               Nueva cotización
             </button>
           </div>
@@ -2305,7 +2305,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
             <h3 className="font-bold text-slate-800">¡Casi listo!</h3>
             <p className="text-slate-500 text-sm">Nuestro equipo de travel corporativo revisará tu solicitud y te enviará las mejores opciones en menos de 2 horas hábiles.</p>
             <p className="text-xs text-slate-400">El pago se realizará directamente desde tu saldo Lincoin.</p>
-            <button onClick={() => setTravelSearched(false)} className="mt-2 px-6 py-2.5 bg-[#0C0E0D] rounded-xl font-bold text-sm hover:bg-[#152e52] transition-colors">
+            <button onClick={() => setTravelSearched(false)} className="mt-2 px-6 py-2.5 bg-[#0C0E0D] rounded-xl font-bold text-sm hover:bg-[#161A17] transition-colors">
               Nueva búsqueda
             </button>
           </div>
@@ -2404,7 +2404,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                       </div>
                       <a
                           href="mailto:soporte@lincoin.me"
-                          className="w-full bg-[#0C0E0D] text-white py-4 rounded-2xl font-bold text-base hover:bg-[#152e52] transition-colors flex items-center justify-center gap-2"
+                          className="w-full bg-[#0C0E0D] text-white py-4 rounded-2xl font-bold text-base hover:bg-[#161A17] transition-colors flex items-center justify-center gap-2"
                       >
                           <Handshake size={20}/> Solicitar Acceso OTC
                       </a>
@@ -2653,7 +2653,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                       <button
                           disabled={parsedAmt <= 0 || parsedAmt > walletBal || !otcWithdrawAddress.trim() || otcWithdrawSending}
                           onClick={handleOtcWithdraw}
-                          className="w-full bg-[#0C0E0D] py-4 rounded-2xl font-bold text-base disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#152e52] active:scale-[0.98] transition-all duration-150 flex items-center justify-center gap-2 shadow-lg shadow-slate-900/10"
+                          className="w-full bg-[#0C0E0D] py-4 rounded-2xl font-bold text-base disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#161A17] active:scale-[0.98] transition-all duration-150 flex items-center justify-center gap-2 shadow-lg shadow-slate-900/10"
                       >
                           {otcWithdrawSending ? <Loader2 size={18} className="animate-spin"/> : <Send size={18}/>}
                           {otcWithdrawSending ? 'Procesando en blockchain...' : `Retirar ${otcCoin}`}
@@ -2903,7 +2903,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
           </div>
           {/* Footer */}
           <div className="px-6 pt-2 pb-8">
-            <button type="button" onClick={() => setSelectedTx(null)} className="w-full h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-xl transition-colors text-sm">
+            <button type="button" onClick={() => setSelectedTx(null)} className="w-full h-12 bg-[#0C0E0D] hover:bg-[#161A17] font-bold rounded-xl transition-colors text-sm">
               Listo
             </button>
           </div>
@@ -3020,7 +3020,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   </div>
                   <div className="p-4 border-t border-slate-100 flex gap-3">
                       <button onClick={() => setIsWalletOrderModalOpen(false)} className="flex-1 h-11 border border-slate-200 rounded-xl text-slate-600 text-sm font-bold hover:bg-slate-50 transition-colors">Cancelar</button>
-                      <button onClick={saveWalletOrder} className="flex-1 h-11 bg-[#0C0E0D] hover:bg-[#152e52] text-sm font-bold rounded-xl transition-colors">Guardar</button>
+                      <button onClick={saveWalletOrder} className="flex-1 h-11 bg-[#0C0E0D] hover:bg-[#161A17] text-sm font-bold rounded-xl transition-colors">Guardar</button>
                   </div>
               </div>
           </div>
@@ -3089,7 +3089,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                           </div>
                       </div>
 
-                      <button onClick={() => { showToast("Datos copiados al portapapeles"); setIsReceiveModalOpen(false); }} className="w-full py-4 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-transform active:scale-95 flex items-center justify-center gap-2">
+                      <button onClick={() => { showToast("Datos copiados al portapapeles"); setIsReceiveModalOpen(false); }} className="w-full py-4 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#161A17] shadow-lg transition-transform active:scale-95 flex items-center justify-center gap-2">
                           <Copy size={18}/> Copiar Datos Completos
                       </button>
                   </div>
@@ -3156,7 +3156,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                       </span>
                                   </div>
                               </div>
-                              <button onClick={handleAmountConfirm} className="w-full py-4 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-transform active:scale-95">Continuar</button>
+                              <button onClick={handleAmountConfirm} className="w-full py-4 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#161A17] shadow-lg transition-transform active:scale-95">Continuar</button>
                           </div>
                       )}
                       {loadStep === 4 && (
@@ -3202,7 +3202,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                       )}
                                   </div>
                               </div>
-                              <button onClick={handleLoadSubmit} className="w-full py-4 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-transform active:scale-95">
+                              <button onClick={handleLoadSubmit} className="w-full py-4 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#161A17] shadow-lg transition-transform active:scale-95">
                                   Notificar Transferencia
                               </button>
                           </div>
@@ -3307,7 +3307,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                   <div><label className="block text-xs font-bold text-slate-500 uppercase mb-1">Número ID</label><input type="text" className="w-full h-11 px-3 border border-slate-300 rounded-lg"/></div>
                               </div>
                               <div><label className="block text-xs font-bold text-slate-500 uppercase mb-1">Cuenta</label><input type="text" value={sendForm.accountNumber} onChange={(e)=>setSendForm({...sendForm, accountNumber: e.target.value})} className="w-full h-11 px-3 border border-slate-300 rounded-lg"/></div>
-                              <button onClick={() => setSendStep(3)} className="w-full h-12 bg-[#0C0E0D] font-bold rounded-lg hover:bg-[#152e52] mt-4 flex items-center justify-center gap-2 shadow-lg">Revisar Datos</button>
+                              <button onClick={() => setSendStep(3)} className="w-full h-12 bg-[#0C0E0D] font-bold rounded-lg hover:bg-[#161A17] mt-4 flex items-center justify-center gap-2 shadow-lg">Revisar Datos</button>
                           </div>
                       )}
                       {/* STEP 3 BANK: Confirm */}
@@ -3324,7 +3324,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                               </div>
                               <div className="flex gap-3">
                                   <button onClick={() => setSendStep(2)} className="flex-1 py-3 border border-slate-300 text-slate-600 font-bold rounded-xl hover:bg-slate-50 transition-colors">Corregir</button>
-                                  <button onClick={handleSendSubmit} className="flex-1 py-3 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-colors flex items-center justify-center gap-2">{isSending ? <Loader2 className="animate-spin" /> : <><Send size={18}/> Confirmar</>}</button>
+                                  <button onClick={handleSendSubmit} className="flex-1 py-3 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#161A17] shadow-lg transition-colors flex items-center justify-center gap-2">{isSending ? <Loader2 className="animate-spin" /> : <><Send size={18}/> Confirmar</>}</button>
                               </div>
                           </div>
                       )}
@@ -3417,7 +3417,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                               {sendMode === 'cash' && (
                                   <p className="text-sm text-slate-500 mb-4">Un agente se comunicará al <strong>{cashForm.phone || 'número registrado'}</strong> para coordinar el punto de entrega.</p>
                               )}
-                              <button onClick={closeSendModal} className="w-full bg-[#0C0E0D] font-bold py-3 rounded-xl hover:bg-[#152e52] transition-colors">Finalizar</button>
+                              <button onClick={closeSendModal} className="w-full bg-[#0C0E0D] font-bold py-3 rounded-xl hover:bg-[#161A17] transition-colors">Finalizar</button>
                           </div>
                       )}
                   </div>
@@ -3455,7 +3455,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                       {/* Divider Icon */}
                       <div className="flex justify-center -my-6 relative z-10 pointer-events-none">
                           <div className="bg-white border border-slate-200 rounded-full p-1.5 shadow-sm text-slate-400">
-                              <div className="font-serif font-bold text-xs">$</div> 
+                              <div className="font-extrabold text-xs">$</div> 
                           </div>
                       </div>
 
@@ -3489,7 +3489,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                     className="flex-1 border border-slate-300 rounded-lg px-3 py-1.5 text-xs uppercase focus:border-[#0C0E0D] outline-none" 
                                     placeholder="CÓDIGO"
                                   />
-                                  <button onClick={handleApplyCoupon} className="bg-[#0C0E0D] px-3 py-1.5 rounded-lg font-bold text-xs hover:bg-[#152e52]">Aplicar</button>
+                                  <button onClick={handleApplyCoupon} className="bg-[#0C0E0D] px-3 py-1.5 rounded-lg font-bold text-xs hover:bg-[#161A17]">Aplicar</button>
                                   <button onClick={() => setShowCouponInput(false)} className="text-slate-400 hover:text-slate-600"><X size={16}/></button>
                               </div>
                           )}
@@ -3548,7 +3548,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                       <button
                           onClick={handleConvertSubmit}
                           disabled={isConverting}
-                          className="w-full h-12 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg text-sm transition-transform active:scale-95 flex justify-center items-center gap-2"
+                          className="w-full h-12 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#161A17] shadow-lg text-sm transition-transform active:scale-95 flex justify-center items-center gap-2"
                       >
                           {isConverting ? <Loader2 className="animate-spin" /> : 'Confirmar Operación'}
                       </button>
@@ -3582,7 +3582,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   <button
                       onClick={handlePayVerifyAndSend}
                       disabled={payVerifyCode.length !== 6 || payVerifyLoading}
-                      className="w-full h-12 bg-[#0C0E0D] font-bold rounded-xl disabled:opacity-50 hover:bg-[#152e52] transition-colors flex items-center justify-center gap-2"
+                      className="w-full h-12 bg-[#0C0E0D] font-bold rounded-xl disabled:opacity-50 hover:bg-[#161A17] transition-colors flex items-center justify-center gap-2"
                   >
                       {payVerifyLoading ? <><Loader2 size={18} className="animate-spin"/> Verificando...</> : 'Confirmar pago'}
                   </button>
@@ -3639,7 +3639,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                   </div>
                               </div>
                               <button onClick={() => setPayLinkStep(2)} disabled={!payLinkAmount || Number(payLinkAmount) <= 0}
-                                  className="w-full py-3.5 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                                  className="w-full py-3.5 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#161A17] transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
                                   Continuar
                               </button>
                           </div>
@@ -3713,8 +3713,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                   <div className="flex justify-between"><span className="text-slate-500">Monto</span><span className="font-bold text-[#0C0E0D]">{Number(payLinkAmount).toLocaleString()} {PAY_LINK_COUNTRIES.find(c => c.code === payLinkCountry)?.currency}</span></div>
                               </div>
                               <div className="flex gap-3">
-                                  <button onClick={() => { if (navigator.share) { navigator.share({ title: 'Link de pago LINCOIN', url: payLinkUrl }); } else { navigator.clipboard?.writeText(payLinkUrl); showToast('Link copiado'); } }}
-                                      className="flex-1 py-3 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] transition-colors flex items-center justify-center gap-2">
+                                  <button onClick={() => { if (navigator.share) { navigator.share({ title: 'Link de pago Lincoin', url: payLinkUrl }); } else { navigator.clipboard?.writeText(payLinkUrl); showToast('Link copiado'); } }}
+                                      className="flex-1 py-3 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#161A17] transition-colors flex items-center justify-center gap-2">
                                       <Share2 size={16}/> Compartir
                                   </button>
                                   <button onClick={closePayLink} className="flex-1 py-3 bg-slate-100 text-slate-700 font-bold rounded-xl hover:bg-slate-200 transition-colors">

@@ -852,7 +852,7 @@ export const AdminGasFreeSection: React.FC = () => {
                         className="w-20 px-2 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#4ADE80]"
                         placeholder="rango"
                     />
-                    <button onClick={locateAddr} disabled={recBusy || !recAddr.trim()} className="px-3 py-2 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#152e52] disabled:opacity-60">
+                    <button onClick={locateAddr} disabled={recBusy || !recAddr.trim()} className="px-3 py-2 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#161A17] disabled:opacity-60">
                         {recBusy ? 'Buscando…' : 'Localizar'}
                     </button>
                     <button onClick={sweepAddr} disabled={recBusy || !recAddr.trim()} title="Localiza y barre el saldo a la recaudadora en un solo paso" className="px-3 py-2 text-xs font-bold rounded-lg bg-[#4ADE80] text-[#0C0E0D] hover:bg-[#26bda9] disabled:opacity-60">
@@ -1032,7 +1032,7 @@ export const AdminGasFreeSection: React.FC = () => {
                                 </div>
                                 <input value={seedAddr} onChange={(e) => setSeedAddr(e.target.value)} placeholder="Dirección USDT (TRC-20)" className="flex-1 min-w-[220px] px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#4ADE80]" />
                                 <input value={seedRange} onChange={(e) => setSeedRange(e.target.value.replace(/[^0-9]/g, ''))} title="Rango" className="w-20 px-2 py-2 text-xs border border-slate-300 rounded-lg" placeholder="rango" />
-                                <button onClick={searchInSeed} disabled={seedBusy || !seedAddr.trim() || !seedPick} className="px-3 py-2 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#152e52] disabled:opacity-60">{seedBusy ? 'Buscando…' : 'Buscar en esta semilla'}</button>
+                                <button onClick={searchInSeed} disabled={seedBusy || !seedAddr.trim() || !seedPick} className="px-3 py-2 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#161A17] disabled:opacity-60">{seedBusy ? 'Buscando…' : 'Buscar en esta semilla'}</button>
                             </div>
                         </>
                     )
@@ -1075,7 +1075,7 @@ export const AdminGasFreeSection: React.FC = () => {
                         <p className="font-bold text-slate-800 text-sm">🔎 Forense de cuentas y wallets</p>
                         <p className="text-[11px] text-slate-500">Cruza el archivo de wallets contra los clientes reales y marca correos "fantasma" (con wallet pero que NO son clientes). Y busca de dónde salió un correo.</p>
                     </div>
-                    <button onClick={runForensic} disabled={forensicBusy} className="px-3 py-1.5 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#152e52] disabled:opacity-60">
+                    <button onClick={runForensic} disabled={forensicBusy} className="px-3 py-1.5 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#161A17] disabled:opacity-60">
                         {forensicBusy ? 'Cruzando…' : 'Cruzar wallets ↔ clientes'}
                     </button>
                 </div>
@@ -1136,7 +1136,7 @@ export const AdminGasFreeSection: React.FC = () => {
                     <p className="text-[11px] font-bold text-slate-600 mb-1.5">🔍 Buscar de dónde salió un correo</p>
                     <div className="flex items-end gap-2 flex-wrap">
                         <input value={lookupEmail} onChange={(e) => setLookupEmail(e.target.value)} placeholder="correo · ej. xaloy46425@mapsguy.com" className="flex-1 min-w-[240px] px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#4ADE80]" />
-                        <button onClick={() => lookupUser()} disabled={lookupBusy || !lookupEmail.trim()} className="px-3 py-2 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#152e52] disabled:opacity-60">{lookupBusy ? 'Buscando…' : 'Buscar'}</button>
+                        <button onClick={() => lookupUser()} disabled={lookupBusy || !lookupEmail.trim()} className="px-3 py-2 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#161A17] disabled:opacity-60">{lookupBusy ? 'Buscando…' : 'Buscar'}</button>
                     </div>
                     {lookupRes && (
                         <div className="text-xs bg-white border border-slate-200 rounded-lg p-3 mt-2 space-y-1.5">
@@ -1179,7 +1179,7 @@ export const AdminGasFreeSection: React.FC = () => {
                 <div className="flex flex-wrap items-center gap-2">
                     <input value={logEmail} onChange={e => setLogEmail(e.target.value)} placeholder="Filtrar por correo (opcional)"
                         className="flex-1 min-w-[180px] px-3 py-2 text-xs rounded-lg border border-slate-200 outline-none focus:border-[#4ADE80]" />
-                    <button onClick={loadWalletLog} disabled={logBusy} className="px-3 py-2 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#152e52] disabled:opacity-60">
+                    <button onClick={loadWalletLog} disabled={logBusy} className="px-3 py-2 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#161A17] disabled:opacity-60">
                         {logBusy ? 'Cargando…' : 'Ver historial'}
                     </button>
                 </div>
@@ -1312,7 +1312,7 @@ export const AdminGasFreeSection: React.FC = () => {
                 <button onClick={loadAll} disabled={loadingAll || filtered.length === 0} className="flex items-center gap-2 px-3 py-2 text-sm font-semibold border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-60">
                     <RefreshCw size={14} className={loadingAll ? 'animate-spin' : ''} /> {loadingAll ? 'Cargando…' : 'Cargar wallets (todos)'}
                 </button>
-                <button onClick={sweepAll} disabled={sweepingAll} style={{ color: '#FFFFFF' }} className="flex items-center gap-2 px-3 py-2 text-sm font-bold bg-[#0C0E0D] rounded-lg hover:bg-[#152e52] disabled:opacity-60">
+                <button onClick={sweepAll} disabled={sweepingAll} style={{ color: '#FFFFFF' }} className="flex items-center gap-2 px-3 py-2 text-sm font-bold bg-[#0C0E0D] rounded-lg hover:bg-[#161A17] disabled:opacity-60">
                     <Landmark size={14} className={sweepingAll ? 'animate-pulse' : ''} /> {sweepingAll ? 'Barriendo…' : 'Barrer todo a recaudadora'}
                 </button>
             </div>
@@ -1456,7 +1456,7 @@ export const AdminGasFreeSection: React.FC = () => {
                             )}
                         </div>
                         <div className="px-5 pb-5">
-                            <button onClick={doPayProvider} disabled={paying || !payAmount} style={{ color: '#FFFFFF' }} className="w-full h-11 bg-[#0C0E0D] hover:bg-[#152e52] rounded-xl font-bold text-sm disabled:opacity-50 flex items-center justify-center gap-2">
+                            <button onClick={doPayProvider} disabled={paying || !payAmount} style={{ color: '#FFFFFF' }} className="w-full h-11 bg-[#0C0E0D] hover:bg-[#161A17] rounded-xl font-bold text-sm disabled:opacity-50 flex items-center justify-center gap-2">
                                 <Send size={15} /> {paying ? 'Pagando…' : 'Confirmar pago'}
                             </button>
                         </div>

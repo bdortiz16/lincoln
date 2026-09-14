@@ -227,7 +227,7 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
             /* PERSONAL FORM */
             <div className="space-y-6 max-w-lg mx-auto lg:mx-0 w-full animate-in fade-in duration-500">
                 <h1 className="text-2xl font-bold text-[#0C0E0D] text-center lg:text-left mb-4">
-                  Regístrate a LINCOIN Personas
+                  Regístrate a Lincoin Personas
                 </h1>
 
                 {/* Google OAuth */}
@@ -341,7 +341,7 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
             /* BUSINESS FORM */
             <div className="space-y-5 max-w-lg mx-auto lg:mx-0 w-full animate-in fade-in duration-500">
                 <h1 className="text-2xl font-bold text-[#0C0E0D] text-center lg:text-left mb-4">
-                  Registra tu cuenta LINCOIN Empresas
+                  Registra tu cuenta Lincoin Empresas
                 </h1>
 
                 {/* Google OAuth */}
@@ -453,7 +453,7 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
                 <button
                     onClick={handleSubmit}
                     disabled={cooldown > 0 || loading || (captchaEnabled && !captchaToken)}
-                    className="w-full h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg transition-colors shadow-lg shadow-green-900/20 mt-4 disabled:opacity-60 disabled:cursor-not-allowed"
+                    className="w-full h-12 bg-[#0C0E0D] hover:bg-[#161A17] font-bold rounded-lg transition-colors shadow-lg shadow-green-900/20 mt-4 disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                     {loading ? 'Registrando...' : cooldown > 0 ? `Espera ${cooldown}s...` : 'Registrarse'}
                 </button>
