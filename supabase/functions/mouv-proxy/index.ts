@@ -1109,7 +1109,22 @@ serve(async (req: Request) => {
     // cuenta sin conectar— se deja pasar. Un control a medio conectar no puede
     // frenar un envío legítimo. Solo corta con un "no operable" explícito.
     {
-      const docDest = String((payload.recipient as any)?.documentNumber ?? '').replace(/\D/g, '')
+      // El documento del destinatario. En ACH viene siempre en el cuerpo; en
+      // Bre-B NO es obligatorio (basta la llave), y sin documento este control
+      // entero se saltaba — los envíos Bre-B salían sin mirar antecedentes.
+      // Cuando falta, se busca en el beneficiario inscrito que corresponde a
+      // esa llave, que es de donde salió el envío.
+      let docDest = String((payload.recipient as any)?.documentNumber ?? '').replace(/\D/g, '')
+      const { data: uRaw } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
+      const rawU = (uRaw as any)?.raw_data ?? {}
+      if (!docDest && rail === 'BREB') {
+        const llave = String((payload.recipient as any)?.key ?? '').trim().toLowerCase()
+        const lista: any[] = Array.isArray(rawU?.mouvContacts) ? rawU.mouvContacts : []
+        const hit = llave
+          ? lista.find(c => String(c?.brebKey ?? c?.accountNumber ?? '').trim().toLowerCase() === llave)
+          : null
+        docDest = String(hit?.docNumber ?? '').replace(/\D/g, '')
+      }
       // La consulta de antecedentes la hacemos NOSOTROS (TusDatos). Este es
       // el control que manda; el de Kumplo queda debajo como respaldo para
       // los veredictos que ya estaban guardados de antes.
@@ -1117,21 +1132,30 @@ serve(async (req: Request) => {
         try {
           const { data: tdRow } = await db.from('system_config').select('value').eq('key', 'tusdatos_config').maybeSingle()
           const tdCfg = (tdRow as any)?.value ? JSON.parse((tdRow as any).value) : null
-          if (tdCfg?.activo && tdCfg?.bloquear !== false) {
-            const { data: uT } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
-            const f = ((uT as any)?.raw_data?.tusdatos?.beneficiarios ?? {})[docDest]
+          if (tdCfg?.activo) {
+            const f = (rawU?.tusdatos?.beneficiarios ?? {})[docDest]
             // Solo una categoría EXPLÍCITA bloquea. Sin resultado, con la
             // consulta en curso, con el documento sin validar o con el
             // titular sin autorizar, se deja pasar: un control que no pudo
             // concluir no puede acusar a nadie.
             const cat = String(f?.categoria ?? '')
+            const cerrado = f?.estado === 'finalizado'
             // La identidad pesa más que los antecedentes: si el nombre
             // inscrito no es el del documento, o la cédula no está vigente,
             // no se sabe A QUIÉN se le está transfiriendo. Saber que otra
             // persona está limpia no sirve de nada.
-            const identidadMal = f?.estado === 'finalizado' && (f?.nombreCoincide === false || f?.documentoVigente === false)
-            const bloquea = identidadMal
-              || (f?.estado === 'finalizado' && (cat === 'alto' || (cat === 'medio' && tdCfg?.soloBloquearAlto !== true)))
+            const identidadMal = cerrado && (f?.nombreCoincide === false || f?.documentoVigente === false)
+            // Riesgo alto y fallas de identidad cortan SIEMPRE. "Impedir la
+            // transferencia" (bloquear) es para el caso ambiguo —el riesgo
+            // medio—, no para dejar salir plata hacia un riesgo alto. Antes lo
+            // apagaba todo: la insignia decía BLOQUEADO y el envío salía igual.
+            const duro = identidadMal || (cerrado && cat === 'alto')
+            // Y se respeta el veredicto GUARDADO: si el servidor ya dijo que
+            // no es operable, eso manda. Es lo mismo que lee la pantalla para
+            // pintar BLOQUEADO, así que insignia y envío no se contradicen.
+            const noOperable = cerrado && f?.operable === false
+            const medio = cerrado && cat === 'medio' && tdCfg?.soloBloquearAlto !== true && tdCfg?.bloquear !== false
+            const bloquea = duro || noOperable || medio
             if (bloquea) {
               await logAudit(userId, 'tusdatos.envio_bloqueado', {
                 documento: docDest, categoria: cat, motivo: f?.bloqueo ?? null,
@@ -1150,13 +1174,17 @@ serve(async (req: Request) => {
               })
             }
           }
-        } catch { /* la verificación nunca frena un envío legítimo */ }
+        } catch (e) {
+          // Sigue fallando ABIERTO —un tropiezo de la base no puede frenar un
+          // envío legítimo— pero ya no en silencio: antes esto equivalía a "sin
+          // control AML" y no quedaba rastro de que hubiera pasado.
+          await logAudit(userId, 'tusdatos.gate_error', { documento: docDest, error: String((e as any)?.message ?? e) })
+        }
         try {
           const { data: cfgRow } = await db.from('system_config').select('value').eq('key', 'kumplo_config').maybeSingle()
           const cfg = (cfgRow as any)?.value ? JSON.parse((cfgRow as any).value) : null
           if (cfg?.activo && cfg?.bloquearEnAlto !== false) {
-            const { data: uK } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
-            const b = ((uK as any)?.raw_data?.kumplo?.beneficiarios ?? {})[docDest]
+            const b = (rawU?.kumplo?.beneficiarios ?? {})[docDest]
             // Un veredicto DE VERDAD: o Kumplo dijo operable sí/no, o dio un
             // nivel de riesgo real. 'desconocido' NO es un veredicto — es
             // justamente que no pudieron determinarlo, y antes contaba como

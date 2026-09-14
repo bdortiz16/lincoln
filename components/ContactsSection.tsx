@@ -381,19 +381,15 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
         if (!doc) return null;
         return amlBenef[doc] ?? { estado: 'procesando' };
     };
-    // ¿El cumplimiento frena los envíos a esta persona? Solo con un veredicto
-    // EXPLÍCITO de "no operable". Sin ficha, o con la consulta a medias, no se
-    // frena nada: la ausencia de resultado no es una condena.
-    const amlFrena = (c: Partial<MouvContact>) => amlDe(c)?.operable === false;
-    // ¿Este beneficiario es EVIDENCIA de cumplimiento? Lo es cuando algo salió
-    // mal de verdad: riesgo alto, un nombre que no corresponde al documento, o
-    // un documento que no está vigente.
+    // El veredicto que frena. UN SOLO criterio, el mismo que aplica el
+    // servidor en mouv-proxy, para que la insignia y el envío no se
+    // contradigan: antes la fila decía BLOQUEADO y el envío salía igual.
     //
-    // A estos no se les puede borrar. Si alguien inscribe a una persona
-    // sancionada y, al ver el bloqueo, borra la ficha, desaparece el rastro de
-    // que lo intentó — y ese rastro es justamente lo que hay que conservar.
-    // Queda en la lista, marcado, y se puede reportar.
-    const amlEsEvidencia = (c: Partial<MouvContact>) => {
+    // Frena con la consulta TERMINADA y alguna de estas: el servidor dijo que
+    // no es operable, riesgo alto, el nombre no es el del documento, o el
+    // documento no está vigente. Sin ficha o con la consulta a medias no se
+    // frena nada — la ausencia de resultado no es una condena.
+    const amlVeredictoMalo = (c: Partial<MouvContact>) => {
         const k = amlDe(c);
         if (!k || String(k.estado ?? '') !== 'finalizado') return false;
         return k.operable === false
@@ -401,6 +397,12 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
             || k.nombreCoincide === false
             || k.documentoVigente === false;
     };
+    const amlFrena = amlVeredictoMalo;
+    // Y lo mismo define qué es EVIDENCIA: a estos no se les puede borrar. Si
+    // alguien inscribe a una persona sancionada y, al ver el bloqueo, borra la
+    // ficha, desaparece el rastro de que lo intentó — y ese rastro es
+    // justamente lo que hay que conservar.
+    const amlEsEvidencia = amlVeredictoMalo;
     // 'corto' es la COLUMNA; largo es la ficha, donde hay ancho de sobra.
     //
     // En la columna la insignia lleva EL ESTADO y el motivo va debajo en

@@ -541,6 +541,36 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
   const isKycVerified = currentUser?.kycStatus === 'verified';
   const isInReview = currentUser?.kycStatus === 'in_review';
+
+  // Veredictos de antecedentes, preguntados AL SERVIDOR.
+  //
+  // El selector de beneficiarios los leía de currentUser.raw_data.tusdatos.
+  // Esa clave solo la escribe el servidor y no siempre viaja fresca al
+  // navegador: cuando llegaba vacía, un beneficiario bloqueado se podía
+  // elegir y se pintaba VERIFICADA en verde. La lista de beneficiarios ya le
+  // pregunta al servidor por esto mismo; acá faltaba.
+  const [amlSrv, setAmlSrv] = useState<Record<string, any> | null>(null);
+  useEffect(() => {
+    const uid = currentUser?.id;
+    if (!uid || !isSendModalOpen) return;
+    let vivo = true;
+    (async () => {
+      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+      try {
+        const r = await fetch(`${SURL}/functions/v1/tusdatos`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${SKEY}` },
+          body: JSON.stringify({ action: 'estado', userId: uid }),
+        });
+        const e = await r.json();
+        // Solo una respuesta explícita cambia el estado: si la consulta falla
+        // se conserva lo último que sí supimos.
+        if (vivo && e?.ok) setAmlSrv(e.beneficiarios ?? {});
+      } catch { /* se queda lo anterior */ }
+    })();
+    return () => { vivo = false; };
+  }, [currentUser?.id, isSendModalOpen]);
+
   // Lincoin web = producto EMPRESAS: aquí TODA cuenta es empresa y su
   // verificación es KYB (los clientes personales solo existen en la app
   // móvil). Por eso el copy de verificación se muestra siempre como KYB,
@@ -5644,7 +5674,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           // el envío igual; pero dejar elegir a alguien que va a
                           // rebotar es hacerle recorrer tres pasos y cobrarle el
                           // viaje para nada. Se dice acá, antes de empezar.
-                          const amlBenefs: Record<string, any> = ((currentUser as any)?.raw_data?.tusdatos?.beneficiarios) ?? {};
+                          // Lo del servidor manda; la copia local es el respaldo
+                          // mientras la consulta viaja.
+                          const amlBenefs: Record<string, any> = amlSrv ?? ((currentUser as any)?.raw_data?.tusdatos?.beneficiarios) ?? {};
                           const amlDe = (c: any) => {
                               const doc = String(c?.docNumber ?? '').replace(/\D/g, '');
                               return doc ? amlBenefs[doc] : null;
@@ -5653,11 +5685,20 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           // curso o sin resultado, se deja pasar: el servidor
                           // tiene la última palabra y no se acusa a nadie por
                           // falta de información.
-                          const amlFrena = (c: any) => amlDe(c)?.operable === false;
+                          // Mismo criterio que la lista de beneficiarios y que
+                          // el servidor: riesgo alto y fallas de identidad
+                          // frenan siempre, no solo cuando quedó guardado un
+                          // 'operable: false'.
+                          const amlFrena = (c: any) => {
+                              const k = amlDe(c);
+                              if (!k || k.estado !== 'finalizado') return false;
+                              return k.operable === false || k.categoria === 'alto'
+                                  || k.nombreCoincide === false || k.documentoVigente === false;
+                          };
                           const amlEtiqueta = (c: any): { t: string; mal: boolean } | null => {
                               const k = amlDe(c);
                               if (!k || k.estado !== 'finalizado') return null;
-                              const frena = k.operable === false;
+                              const frena = amlFrena(c);
                               if (k.nombreCoincide === false) return { t: frena ? 'NOMBRE INCORRECTO · BLOQUEADO' : 'NOMBRE INCORRECTO', mal: true };
                               if (k.documentoVigente === false) return { t: frena ? 'DOCUMENTO NO VIGENTE · BLOQUEADO' : 'DOCUMENTO NO VIGENTE', mal: true };
                               if (k.categoria === 'alto') return { t: frena ? 'RIESGO ALTO · BLOQUEADO' : 'RIESGO ALTO', mal: true };
