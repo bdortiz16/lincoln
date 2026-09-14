@@ -46,11 +46,19 @@ Deno.serve(async (req) => {
   const url = new URL(req.url)
 
   if (req.method === 'GET') {
-    return json({ ok: true, service: 'didit-aml-monitor', secured: !!WEBHOOK_KEY })
+    // Ya no se publica si está protegida o no: eso le decía al atacante
+    // exactamente dónde empujar.
+    return json({ ok: true, service: 'didit-aml-monitor' })
   }
 
-  // Shared secret opcional
-  if (WEBHOOK_KEY && url.searchParams.get('key') !== WEBHOOK_KEY) {
+  // Falla CERRADO. El guardia era `if (WEBHOOK_KEY && ...)`: sin la variable
+  // puesta quedaba abierto, y este endpoint BLOQUEA CUENTAS de forma
+  // permanente a partir de un userId que viene en el cuerpo. Sin secreto,
+  // cualquiera podía bloquear a quien quisiera.
+  if (!WEBHOOK_KEY) {
+    return json({ error: 'not_configured', message: 'Falta WEBHOOK_KEY.' }, 503)
+  }
+  if (url.searchParams.get('key') !== WEBHOOK_KEY) {
     return json({ error: 'bad key' }, 401)
   }
 

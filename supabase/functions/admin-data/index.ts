@@ -1160,7 +1160,15 @@ Deno.serve(async (req: Request) => {
           const { data: curRaw } = await db.from('users').select('raw_data').eq('id', selfServiceBody.user.id).maybeSingle()
           const dbRaw = (((curRaw as any)?.raw_data) ?? {}) as Record<string, any>
           const incoming = ((userRow as any).raw_data ?? {}) as Record<string, any>
-          const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'gasfreeCreditedTxs', 'gasfreeCreditedCount', 'mfaEnabled', 'mfaFactorId', 'totpSecret', 'totpSecretEnc', 'mfaBackupHashes', 'mfaSessions', 'mfaLastCounter', 'otp', 'subWallets']
+          // Claves que SOLO escribe el servidor. Faltaban 'tusdatos' y
+          // 'kumplo', que son el veredicto AML: como este upsert corre con
+          // service role, rodeaba el candado que las protege en la base
+          // (ese trigger deja pasar al service role a propósito). Un cliente
+          // podía mandarse a sí mismo un 'operable: true' y el gate de
+          // dispersión, que lee justo ese objeto, lo dejaba pasar.
+          // Igual con los límites y las banderas de bloqueo: quien está
+          // bloqueado no puede desbloquearse guardando su propio perfil.
+          const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'gasfreeCreditedTxs', 'gasfreeCreditedCount', 'mfaEnabled', 'mfaFactorId', 'totpSecret', 'totpSecretEnc', 'mfaBackupHashes', 'mfaSessions', 'mfaLastCounter', 'otp', 'subWallets', 'tusdatos', 'kumplo', 'blacklisted', 'isBlocked', 'complianceHold', 'limits', 'otcConfig']
           const merged: Record<string, any> = { ...dbRaw, ...incoming }
           for (const k of SERVER_OWNED) { if (k in dbRaw) merged[k] = dbRaw[k]; else delete merged[k] }
           // COLECCIONES del cliente (contactos, wallets, notificaciones): tienen

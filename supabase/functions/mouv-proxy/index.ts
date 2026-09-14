@@ -736,6 +736,13 @@ serve(async (req: Request) => {
   //    beneficiario. Cualquier usuario autenticado puede consultar (es su
   //    propio beneficiario). Es de solo LECTURA — no mueve dinero.
   if (action === 'resolve_breb_key') {
+    // Devuelve NOMBRE COMPLETO, DOCUMENTO y banco del titular de la llave.
+    // Exigía solo `caller.ok`, que se concede con un user_id cualquiera que
+    // exista en la tabla, sin sesión real: con la llave pública y un uuid se
+    // podía enumerar nombre+cédula+banco de cualquier colombiano con llave
+    // Bre-B, fuera cliente o no. Ahora exige sesión PROBADA y propia.
+    const duenoBreb = requireOwner(caller, payload)
+    if (!duenoBreb) return json(403, { error: 'forbidden', message: 'Esta consulta requiere una sesión válida. Vuelve a iniciar sesión.' })
     const rawKey = String((payload as any).keyValue ?? (payload as any).key ?? '').trim()
     if (!rawKey) return json(400, { error: 'missing_key', message: 'Falta la llave.' })
     const rr = await mouvResolveBrebKey(rawKey, String((payload as any).keyType ?? ''))

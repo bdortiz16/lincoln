@@ -190,17 +190,11 @@
       /* Number counter glow */
       .stat-glow { text-shadow: 0 0 20px rgba(45,212,191,.4); }
     </style>
-  <script type="importmap">
-{
-  "imports": {
-    "react": "https://esm.sh/react@^19.2.3",
-    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
-    "react/": "https://esm.sh/react@^19.2.3/",
-    "lucide-react": "https://esm.sh/lucide-react@^0.561.0",
-    "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@2"
-  }
-}
-</script>
+    <!-- Acá había un importmap que apuntaba react, react-dom, lucide-react y
+         supabase-js a esm.sh. El bundle no lo usa (Vite resuelve todo en el
+         build), pero seguía publicado: cualquier import dinámico de un
+         especificador suelto habría cargado código de un tercero con acceso
+         total a la página, token de sesión incluido. -->
 </head>
   <body>
     <div id="root"></div>

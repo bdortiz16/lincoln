@@ -495,7 +495,9 @@ const App: React.FC = () => {
       }
   };
 
-  if (window.location.pathname === '/logos') return <LogoConcepts />;
+  // Página de bocetos de marca. Solo en desarrollo: es material de trabajo
+  // interno, no algo que deba servirse en el dominio de una fintech.
+  if (import.meta.env.DEV && window.location.pathname === '/logos') return <LogoConcepts />;
 
   // Show branded splash while auth loads OR while transitioning from landing → dashboard
   if (isAuthLoading || (currentUser && currentView === 'landing')) {

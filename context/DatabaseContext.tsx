@@ -1402,46 +1402,20 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           }
         }
 
-        // Fallback: direct DB query (works if RLS allows anon reads)
-        const dbTimeout = new Promise<{ data: null; error: any }>(resolve =>
-          setTimeout(() => resolve({ data: null, error: 'db_timeout' }), 5000)
-        );
-        const { data: fbProfile } = await Promise.race([
-          supabase.from('users').select('*').eq('email', email).single(),
-          dbTimeout,
-        ]) as any;
-        if (fbProfile) {
-          const storedHash = fbProfile.raw_data?.passwordHash as string | undefined;
-          if (storedHash) {
-            const inputHash = await hashPassword(pass!, email);
-            if (!inputHash || inputHash !== storedHash) {
-              setLoginError('Correo o contraseña incorrectos. [respaldo: hash local no coincide]');
-              logFailedLogin(email, 'contraseña incorrecta'); return null;
-            }
-          } else {
-            // First fallback login — store hash for future use
-            const hash = await hashPassword(pass!, email);
-            if (hash) {
-              try {
-                await supabase.from('users').update({
-                  raw_data: { ...(fbProfile.raw_data || {}), passwordHash: hash },
-                }).eq('id', fbProfile.id);
-              } catch {}
-            }
-          }
-          const user = mapSupabaseUser(fbProfile);
-          // ⚠️ SEGURIDAD: igual que arriba — una cuenta con 2FA activo jamás
-          // entra por el respaldo directo a la base. Aquí no hay sesión de
-          // Auth (justo falló), así que la verificación del código no podrá
-          // autorizarse y el acceso queda denegado: es el comportamiento
-          // correcto (fallar cerrado), no un atajo.
-          if ((user as any)?.mfaEnabled || fbProfile.raw_data?.mfaEnabled) {
-            beginMfaFlow(user, 'custom');
-            return 'MFA_REQUIRED';
-          }
-          setCurrentUser(user);
-          return user;
-        }
+        // Acá había un CAMINO DE RESPALDO que autenticaba en el NAVEGADOR:
+        // leía la fila del usuario por correo, sacaba raw_data.passwordHash,
+        // calculaba el hash de lo tecleado y, si coincidía, hacía
+        // setCurrentUser SIN sesión de Auth. Tres problemas, cada uno grave:
+        //
+        //   · La decisión de "esta contraseña es correcta" vivía en el
+        //     cliente. Quien controla el navegador controla esa comparación.
+        //   · Para funcionar necesitaba que la base dejara leer la fila de
+        //     cualquier correo — es decir, repartía hashes de contraseña.
+        //   · Si no había hash guardado, lo ESCRIBÍA. El respaldo se
+        //     alimentaba solo.
+        //
+        // Si el servidor de login no contesta, no se entra. Es lo correcto:
+        // un fallo de autenticación no puede tener una puerta de atrás.
         // Not found in Supabase DB — user may have been created in offline/localStorage mode
         const localUsers = lsGetUsers();
         const localMatch = localUsers.find(u => u.email === email && u.password === pass);
@@ -1988,6 +1962,20 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         .filter(k => k.startsWith('sb-') && k.endsWith('-auth-token'))
         .forEach(k => localStorage.removeItem(k));
     } catch { /* localStorage no disponible */ }
+    // Cachés con DATOS DE PERSONAS: listas de clientes, movimientos,
+    // documentos. Sobrevivían al cierre de sesión, así que quedaban en el
+    // navegador de un equipo compartido para el siguiente que entrara. Se
+    // borran acá, junto con el token.
+    try {
+      Object.keys(localStorage)
+        .filter(k =>
+          k === 'cuypay_admin_users' || k === 'cuypay_admin_tx' || k === 'lincoin_tx_debug'
+          || k.startsWith('cuypay_tx_') || k.startsWith('lincoin_otp_ok_')
+          || k.startsWith('cuypay.admin.'))
+        .forEach(k => localStorage.removeItem(k));
+      localStorage.removeItem('lincoin_visto');
+      localStorage.removeItem('lincoin_admin_visto');
+    } catch { /* localStorage no disponible */ }
     setCurrentUser(null);
     setIsAuthLoading(false);
     // NO bloquear la UI esperando la red: el cierre local ya ocurrió arriba
@@ -1996,7 +1984,13 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     // no se quede "Cerrando…" cuando la red está lenta.
     if (isSupabaseConfigured) {
       Promise.race([
-        supabase.auth.signOut({ scope: 'local' }),
+        // 'global', no 'local'. Con 'local' solo se borraba el navegador: el
+        // access token y el refresh token seguían VÁLIDOS hasta vencer, así
+        // que un token robado servía igual después de "cerrar sesión" — y el
+        // cierre por inactividad tampoco acortaba esa ventana. 'global'
+        // invalida la sesión en el servidor, que es lo que la gente cree que
+        // pasa al salir.
+        supabase.auth.signOut({ scope: 'global' }),
         new Promise<void>(res => setTimeout(res, 1500)),
       ]).catch(() => { /* señal de red flaky: el estado local ya está limpio */ });
     }
@@ -2515,24 +2509,16 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       }
     }
 
-    // RPC timed out or not deployed — fallback: direct writes for sender only.
-    // Recipient cannot receive without the SECURITY DEFINER function.
-    const withWriteTimeout = (p: Promise<any>) =>
-      Promise.race([p, new Promise<{ data: null; error: Error }>((_, rej) => setTimeout(() => rej(new Error('write_timeout')), 8000))]);
-    const [balRes, txRes] = await Promise.allSettled([
-      withWriteTimeout(supabase.from('users').update({ balances: senderNewBal }).eq('id', snapSenderId)),
-      withWriteTimeout(supabase.from('transactions').insert({
-        user_id: snapSenderId,
-        type: 'pay_sent', amount, currency, status: 'Completado',
-        raw_data: { initials: 'PA', title: `PAY a ${snapRecipientName}`, recipientName: snapRecipientName, date: now, createdAt: new Date().toISOString(), userName: snapSenderName },
-      })),
-    ]);
-    const balErr = balRes.status === 'fulfilled' ? (balRes.value as any)?.error : balRes.reason;
-    const txErr = txRes.status === 'fulfilled' ? (txRes.value as any)?.error : txRes.reason;
-    if (balErr) console.error('[pay] balance update failed:', balErr?.message || balErr);
-    if (txErr) console.error('[pay] tx insert failed:', txErr?.message || txErr);
-    try { await Promise.race([refreshAll(), new Promise<void>((_, rej) => setTimeout(() => rej(), 5000))]); } catch { /* ignore refresh timeout */ }
-    return {};
+    // Acá había un respaldo que, si el RPC daba timeout o no estaba
+    // desplegado, ESCRIBÍA LOS SALDOS DIRECTO desde el navegador:
+    // supabase.from('users').update({ balances: ... }). Con importes
+    // calculados en el cliente y la validación de fondos también en el
+    // cliente. Quien controla el navegador controla las dos cosas.
+    //
+    // Mover dinero es exclusivamente del servidor. Si el RPC no responde, el
+    // pago no ocurre y se dice: es mejor que el usuario reintente a que el
+    // saldo lo escriba la pantalla.
+    return { error: 'No pudimos completar el pago en este momento. Tu saldo no se movió. Reintenta en un minuto.' };
   };
 
   const deleteUser = async (id: string): Promise<{ error?: string }> => {

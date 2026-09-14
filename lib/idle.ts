@@ -37,7 +37,11 @@ export const leerVisto = (clave: string): number => {
     const d = JSON.parse(localStorage.getItem(clave) || '{}');
     if (!d?.t) return 0;
     if (String(d.s ?? '') !== sesionActual()) return 0;   // es de otra sesión: no cuenta
-    return Number(d.t);
+    // Nunca se acepta una marca en el FUTURO. Es localStorage: cualquiera
+    // puede escribir a mano { t: Date.now() + un año } y la sesión no vencería
+    // jamás. Con el tope, adelantar el reloj no compra nada.
+    const t = Number(d.t);
+    return Number.isFinite(t) ? Math.min(t, Date.now()) : 0;
   } catch { return 0; }
 };
 

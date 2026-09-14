@@ -189,7 +189,13 @@ async function faltaVerificar(req: Request, userId: string): Promise<string[]> {
   try {
     const { data } = await db.from('system_config').select('value').eq('key', `stepup_${userId}`).single()
     const todo = data?.value ? JSON.parse(data.value) : {}
-    est = todo[sid] ?? todo[SIN_SESION] ?? {}
+    // Solo la marca de ESTA sesión. Antes caía a la clave comodín
+    // __sin_sesion__, así que una marca dejada por un token viejo o sin
+    // session_id habilitaba el paso reforzado de CUALQUIER otra sesión de la
+    // misma cuenta durante media hora — incluida una recién abierta en otro
+    // aparato con solo la contraseña. admin-data nunca tuvo ese respaldo;
+    // se coló al copiar el bloque acá.
+    est = todo[sid] ?? {}
   } catch { /* sin marca: se pide todo */ }
   try {
     const { data } = await db.from('users').select('raw_data').eq('id', userId).single()

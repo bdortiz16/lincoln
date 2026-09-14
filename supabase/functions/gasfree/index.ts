@@ -34,6 +34,47 @@ const db = createClient(SUPABASE_URL, SERVICE_KEY)
 // NO pueda volver a haber tres copias que se desincronicen (una quedó sin
 // entender el formato nuevo y el 2FA de los envíos falló con el código
 // correcto, sin que ningún build lo detectara).
+// ── TOTP ───────────────────────────────────────────────────────────────────
+// Estas dos funciones NO EXISTÍAN en este archivo, y require2FA/require2FAStrict
+// las llamaban igual. En Deno eso no es un aviso al compilar: es un
+// ReferenceError EN EJECUCIÓN, justo en la rama que verifica el segundo
+// factor. O sea que la comprobación de 2FA de los envíos y los barridos no
+// verificaba nada — reventaba. El error caía en el catch de arriba y salía
+// como "no pudimos verificar tu código", que parecía un código malo.
+//
+// Copia de la implementación de mouv-proxy. Ventana de ±2 pasos (±60 s) por
+// el desfase de reloj del teléfono.
+function base32Decode(s: string): Uint8Array {
+  const alph = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
+  const clean = String(s ?? '').replace(/=+$/, '').toUpperCase().replace(/\s/g, '')
+  let bits = 0, value = 0; const out: number[] = []
+  for (const ch of clean) {
+    const idx = alph.indexOf(ch); if (idx < 0) continue
+    value = (value << 5) | idx; bits += 5
+    if (bits >= 8) { out.push((value >>> (bits - 8)) & 0xff); bits -= 8 }
+  }
+  return new Uint8Array(out)
+}
+
+async function verifyTOTPServer(secret: string, token: string): Promise<boolean> {
+  const code = String(token ?? '').replace(/\D/g, '')
+  if (code.length !== 6) return false
+  const key = base32Decode(secret)
+  if (!key.length) return false
+  const ck = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-1' }, false, ['sign'])
+  const step = 30, now = Math.floor(Date.now() / 1000)
+  for (let w = -2; w <= 2; w++) {
+    const counter = Math.floor(now / step) + w
+    const buf = new ArrayBuffer(8); const view = new DataView(buf)
+    view.setUint32(0, Math.floor(counter / 0x100000000)); view.setUint32(4, counter >>> 0)
+    const hmac = new Uint8Array(await crypto.subtle.sign('HMAC', ck, buf))
+    const offset = hmac[hmac.length - 1] & 0x0f
+    const bin = ((hmac[offset] & 0x7f) << 24) | (hmac[offset + 1] << 16) | (hmac[offset + 2] << 8) | hmac[offset + 3]
+    if ((bin % 1000000).toString().padStart(6, '0') === code) return true
+  }
+  return false
+}
+
 async function require2FA(userId: string, otp: unknown): Promise<string | null> {
   const { data } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
   const raw = ((data as any)?.raw_data ?? {}) as Record<string, any>
@@ -2884,6 +2925,15 @@ Deno.serve(async (req) => {
     if (action === 'my_convert_release') {
       if (!userId || !body.txId) return err('Faltan userId o txId', 400)
       if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
+      // Comprobar que la conversión ES DE QUIEN LLAMA. Se verificaba la
+      // sesión pero luego se pasaba solo el txId: con el id de una conversión
+      // ajena se podía soltar su reclamo a destiempo y hacer que el
+      // navegador de la víctima y el autopiloto convirtieran a la vez.
+      // my_convert_status sí lo comprobaba; a estas dos se les olvidó.
+      {
+        const { data: dueno } = await db.from('transactions').select('user_id').eq('id', String(body.txId)).maybeSingle()
+        if (!dueno || (dueno as any).user_id !== userId) return err('Movimiento no encontrado', 404)
+      }
       await releaseConvertClaim(String(body.txId))
       return ok({ ok: true })
     }

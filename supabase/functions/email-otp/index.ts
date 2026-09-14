@@ -169,7 +169,20 @@ Deno.serve(async (req) => {
       if (Number(otp.attempts ?? 0) >= 5) return json(200, { ok: false, error: 'too_many', message: 'Demasiados intentos. Pide un código nuevo.' })
       const ok = (await sha256(code)) === otp.codeHash
       if (!ok) {
-        await db.from('users').update({ raw_data: { ...raw, otp: { ...otp, attempts: Number(otp.attempts ?? 0) + 1 } } }).eq('id', user.id)
+        // El incremento va CONDICIONADO al valor que se acaba de leer. Antes
+        // era leer-sumar-escribir a secas: con peticiones en paralelo todas
+        // leían el mismo 'attempts' y todas escribían el mismo número, así
+        // que el contador nunca subía y el tope de 5 intentos no existía —
+        // se podía probar el millón de códigos dentro de la ventana. Si otra
+        // petición ya lo movió, esta escritura no aplica y el intento cuenta
+        // igual (el suyo sí subió).
+        // El código siempre se emite con attempts: 0 (arriba), así que el
+        // campo existe y basta comparar por igualdad.
+        const previo = Number(otp.attempts ?? 0)
+        await db.from('users')
+          .update({ raw_data: { ...raw, otp: { ...otp, attempts: previo + 1 } } })
+          .eq('id', user.id)
+          .eq('raw_data->otp->>attempts', String(previo))
         return json(200, { ok: false, error: 'invalid', message: 'Código incorrecto.' })
       }
 
