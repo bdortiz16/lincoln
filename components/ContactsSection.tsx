@@ -381,6 +381,26 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
         if (!doc) return null;
         return amlBenef[doc] ?? { estado: 'procesando' };
     };
+    // ¿El cumplimiento frena los envíos a esta persona? Solo con un veredicto
+    // EXPLÍCITO de "no operable". Sin ficha, o con la consulta a medias, no se
+    // frena nada: la ausencia de resultado no es una condena.
+    const amlFrena = (c: Partial<MouvContact>) => amlDe(c)?.operable === false;
+    // ¿Este beneficiario es EVIDENCIA de cumplimiento? Lo es cuando algo salió
+    // mal de verdad: riesgo alto, un nombre que no corresponde al documento, o
+    // un documento que no está vigente.
+    //
+    // A estos no se les puede borrar. Si alguien inscribe a una persona
+    // sancionada y, al ver el bloqueo, borra la ficha, desaparece el rastro de
+    // que lo intentó — y ese rastro es justamente lo que hay que conservar.
+    // Queda en la lista, marcado, y se puede reportar.
+    const amlEsEvidencia = (c: Partial<MouvContact>) => {
+        const k = amlDe(c);
+        if (!k || String(k.estado ?? '') !== 'finalizado') return false;
+        return k.operable === false
+            || String(k.categoria ?? '') === 'alto'
+            || k.nombreCoincide === false
+            || k.documentoVigente === false;
+    };
     // 'corto' es la COLUMNA; largo es la ficha, donde hay ancho de sobra.
     //
     // En la columna la insignia lleva EL ESTADO y el motivo va debajo en
@@ -447,9 +467,14 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
 
         // En la ficha va todo en una línea: hay ancho y se lee de corrido.
         if (!corto) {
+            // Cuando el motivo y el estado dicen lo mismo (riesgo medio que no
+            // llega a bloquear) salía "AML · RIESGO MEDIO · RIESGO MEDIO".
+            const cola = motivo && motivo.toUpperCase() !== estado
+                ? `${motivo.toUpperCase()} · ${estado}`
+                : estado;
             return (
                 <span title={ayuda} style={{ ...base, border: `1px solid ${tono.b}`, color: tono.c }}>
-                    AML · {motivo ? `${motivo.toUpperCase()} · ${estado}` : estado}
+                    AML · {cola}
                 </span>
             );
         }
@@ -1000,6 +1025,13 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
 
     const removeContact = async (id: string) => {
         const target = contacts.find(c => c.id === id);
+        // Cinturón: los botones ya no ofrecen borrar a quien es evidencia de
+        // cumplimiento, pero esta función también se llama desde otros lados.
+        // Un registro que motivó un bloqueo no se borra desde la interfaz.
+        if (target && amlEsEvidencia(target)) {
+            setNotice({ ok: false, text: 'Este beneficiario no se puede eliminar: el resultado de cumplimiento queda registrado.' });
+            return;
+        }
         const isWallet = walletContacts.some(c => c.id === id);
         // 1) Quitar de la lista local del usuario (cada tipo de SU lista).
         const removedOk = isWallet
@@ -1541,10 +1573,16 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                     const flagEl = m.isWallet
                         ? <span style={{ width: 22, height: 22, borderRadius: '50%', background: '#26A17B', color: '#fff', fontWeight: 800, fontSize: 10, display: 'grid', placeItems: 'center', flexShrink: 0 }}>₮</span>
                         : <span style={{ width: 22, height: 22, borderRadius: '50%', flexShrink: 0, display: 'block', background: FLAG_BG[m.country ?? ''] ?? '#2E3330' }} />;
+                    // "Enviar" no puede estar disponible para alguien a quien el
+                    // cumplimiento ya bloqueó: el servidor rechaza el envío de
+                    // todos modos, y ofrecerlo solo lleva a un error al final.
+                    const frenado = amlFrena(c);
+                    const puedeEnviar = !!onSendTo && st === 'aprobada' && !frenado;
                     const actions = (
                         <div className="flex items-center justify-end gap-2" style={{ position: 'relative' }}>
-                            <button onClick={() => onSendTo?.(c)} disabled={!onSendTo || st !== 'aprobada'}
-                                style={{ fontSize: 12.5, fontWeight: 600, color: (!onSendTo || st !== 'aprobada') ? '#878E88' : '#F4F4F2', cursor: (!onSendTo || st !== 'aprobada') ? 'not-allowed' : 'pointer' }}
+                            <button onClick={() => onSendTo?.(c)} disabled={!puedeEnviar}
+                                title={frenado ? 'Bloqueado por cumplimiento. No se puede transferir a esta persona.' : undefined}
+                                style={{ fontSize: 12.5, fontWeight: 600, color: puedeEnviar ? '#F4F4F2' : '#878E88', cursor: puedeEnviar ? 'pointer' : 'not-allowed' }}
                                 className="hover:text-[#4ADE80] transition-colors">Enviar</button>
                             <button onClick={e => abrirMenu(c.id, e)} style={{ color: '#878E88', fontWeight: 700, fontSize: 14, padding: '2px 6px', borderRadius: 6 }} className="hover:bg-white/[0.06] transition-colors">···</button>
                         </div>
@@ -1922,9 +1960,15 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                         <div className="flex items-center" style={{ gap: 9, padding: '16px 24px 22px', borderTop: '1px solid rgba(255,255,255,0.08)', position: 'relative', flexShrink: 0, background: '#0C0E0D' }}>
                             <button onClick={() => setDetailMenu(v => !v)} style={{ width: 44, height: 44, borderRadius: 10, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#878E88', fontWeight: 700, fontSize: 16, flexShrink: 0 }} className="hover:bg-white/[0.09] transition-colors">···</button>
                             {detailMenu && (
-                                <div style={{ position: 'absolute', left: 24, bottom: 72, zIndex: 20, background: '#121413', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10, overflow: 'hidden', minWidth: 200, boxShadow: '0 12px 30px rgba(0,0,0,0.5)' }}>
-                                    <button onClick={() => { setDetailMenu(false); pedirEliminar(detail); }}
-                                        className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '11px 14px', fontSize: 12.5, color: '#F4F4F2' }}>Eliminar beneficiario</button>
+                                <div style={{ position: 'absolute', left: 24, bottom: 72, zIndex: 20, background: '#121413', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10, overflow: 'hidden', minWidth: 200, maxWidth: 260, boxShadow: '0 12px 30px rgba(0,0,0,0.5)' }}>
+                                    {amlEsEvidencia(detail) ? (
+                                        <div style={{ padding: '11px 14px', fontSize: 11.5, color: '#878E88', lineHeight: 1.45 }}>
+                                            Este beneficiario no se puede eliminar: el resultado de cumplimiento queda registrado.
+                                        </div>
+                                    ) : (
+                                        <button onClick={() => { setDetailMenu(false); pedirEliminar(detail); }}
+                                            className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '11px 14px', fontSize: 12.5, color: '#F4F4F2' }}>Eliminar beneficiario</button>
+                                    )}
                                 </div>
                             )}
                             <button onClick={copyKey} className="flex items-center justify-center gap-2 hover:bg-white/[0.09] transition-colors"
@@ -1932,10 +1976,11 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                 <Copy size={14} /> {isBreb ? 'Copiar llave' : isWallet ? 'Copiar dirección' : 'Copiar cuenta'}
                             </button>
                             <button
-                                onClick={() => { if (onSendTo && st === 'aprobada') { const c = detail; setDetail(null); setDetailMenu(false); onSendTo(c); } }}
-                                disabled={!onSendTo || st !== 'aprobada'}
+                                onClick={() => { if (onSendTo && st === 'aprobada' && !amlFrena(detail)) { const c = detail; setDetail(null); setDetailMenu(false); onSendTo(c); } }}
+                                disabled={!onSendTo || st !== 'aprobada' || amlFrena(detail)}
+                                title={amlFrena(detail) ? 'Bloqueado por cumplimiento. No se puede transferir a esta persona.' : undefined}
                                 className="lincoin-btn-white flex items-center justify-center gap-2 transition-colors"
-                                style={{ flex: 1.4, height: 44, borderRadius: 10, fontSize: 13.5, fontWeight: 700, border: 'none', opacity: (!onSendTo || st !== 'aprobada') ? 0.45 : 1, cursor: (!onSendTo || st !== 'aprobada') ? 'not-allowed' : 'pointer' }}>
+                                style={{ flex: 1.4, height: 44, borderRadius: 10, fontSize: 13.5, fontWeight: 700, border: 'none', opacity: (!onSendTo || st !== 'aprobada' || amlFrena(detail)) ? 0.45 : 1, cursor: (!onSendTo || st !== 'aprobada' || amlFrena(detail)) ? 'not-allowed' : 'pointer' }}>
                                 <Send size={14} /> Enviar dinero
                             </button>
                         </div>
@@ -1962,7 +2007,13 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                             fontFamily: "'Archivo', system-ui, sans-serif",
                         }}>
                             <button onClick={() => { setMenuFor(null); setDetail(c); }} className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '10px 14px', fontSize: 12.5, color: '#F4F4F2' }}>Ver detalle</button>
-                            <button onClick={() => { setMenuFor(null); pedirEliminar(c); }} className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '10px 14px', fontSize: 12.5, color: '#F87171', borderTop: '1px solid rgba(255,255,255,0.07)' }}>Eliminar</button>
+                            {amlEsEvidencia(c) ? (
+                                <div style={{ padding: '10px 14px', fontSize: 11.5, color: '#878E88', borderTop: '1px solid rgba(255,255,255,0.07)', lineHeight: 1.45, maxWidth: 230 }}>
+                                    No se puede eliminar: queda registrado por cumplimiento.
+                                </div>
+                            ) : (
+                                <button onClick={() => { setMenuFor(null); pedirEliminar(c); }} className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '10px 14px', fontSize: 12.5, color: '#F87171', borderTop: '1px solid rgba(255,255,255,0.07)' }}>Eliminar</button>
+                            )}
                         </div>
                     </>
                 );
