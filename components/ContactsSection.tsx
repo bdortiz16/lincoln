@@ -580,14 +580,55 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
         try {
             const r: any = await callMouvProxy('resolve_breb_key', currentUser!.id, { keyValue: key, keyType: form.brebKeyType });
             if (r?.ok && r?.found) {
-                setForm(fm => ({
-                    ...fm,
-                    name: fm.name.trim() ? fm.name : (r.fullName ?? fm.name),
-                    docNumber: fm.docNumber.trim() ? fm.docNumber : (r.idValue ?? fm.docNumber),
-                    bank: r.bank ?? fm.bank,
-                }));
-                setBrebLookup({ loading: false, found: true, bank: r.bank ?? null, msg: r.fullName ? `Titular: ${r.fullName}` : 'Llave verificada' });
-            } else if (r?.found === false) {
+                // TODO junto o nada, y atado a LA LLAVE QUE SE CONSULTÓ.
+                //
+                // Antes esto era la fábrica de beneficiarios mezclados: el
+                // nombre y el documento se negaban a pisar lo que ya hubiera
+                // ("no le borro lo que escribió"), pero el banco SIEMPRE se
+                // reemplazaba. Así que consultar una llave, corregirla por otra
+                // y guardar dejaba inscrito el nombre y la cédula del PRIMER
+                // titular con la llave del SEGUNDO. Eso es exactamente lo que
+                // se vio en producción, y desde ahí toda la app lo repetía sin
+                // contradecirse: pantalla, comprobante y control de
+                // antecedentes, todos sobre la cédula equivocada.
+                //
+                // Ahora los tres campos vienen del MISMO titular. Si el usuario
+                // ya había escrito un nombre o un documento distinto, no se le
+                // pisa en silencio: se le dice y decide él.
+                setForm(fm => {
+                    // La respuesta llegó tarde y la llave ya es otra: se
+                    // descarta. Sin esto, una consulta lenta aterrizaba sobre
+                    // el formulario siguiente.
+                    if (fm.brebKey.trim() !== key) return fm;
+                    const real = String(r.fullName ?? '').trim();
+                    const doc = String(r.idValue ?? '').trim();
+                    const escritoNombre = fm.name.trim();
+                    const escritoDoc = fm.docNumber.trim();
+                    const chocaN = !!real && !!escritoNombre && escritoNombre.toLowerCase() !== real.toLowerCase();
+                    const chocaD = !!doc && !!escritoDoc && escritoDoc.replace(/\D/g, '') !== doc.replace(/\D/g, '');
+                    if (chocaN || chocaD) return { ...fm, bank: fm.bank };   // no se toca nada: manda el aviso
+                    return {
+                        ...fm,
+                        name: real || fm.name,
+                        docNumber: doc || fm.docNumber,
+                        docType: doc ? (fm.docType || 'CC') : fm.docType,
+                        bank: r.bank ?? fm.bank,
+                    };
+                });
+                const realN = String(r.fullName ?? '').trim();
+                const realD = String(r.idValue ?? '').trim();
+                const chocaAviso =
+                    (!!realN && !!form.name.trim() && form.name.trim().toLowerCase() !== realN.toLowerCase())
+                    || (!!realD && !!form.docNumber.trim() && form.docNumber.trim().replace(/\D/g, '') !== realD.replace(/\D/g, ''));
+                setBrebLookup({
+                    loading: false, found: true, bank: r.bank ?? null,
+                    msg: chocaAviso
+                        ? `Esta llave es de ${realN || 'otra persona'}${realD ? ` (${realD})` : ''}, no de lo que escribiste. Borra el nombre y el documento para que se llenen solos, o revisa la llave.`
+                        : (realN ? `Titular: ${realN}` : 'Llave verificada'),
+                });
+                return;
+            }
+            if (r?.found === false) {
                 setBrebLookup({ loading: false, found: false, msg: 'La llave no existe o no está activa.' });
             } else {
                 setBrebLookup({ loading: false, msg: 'No se pudo consultar la llave ahora. Puedes escribir el nombre manualmente.' });

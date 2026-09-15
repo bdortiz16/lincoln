@@ -1136,10 +1136,33 @@ serve(async (req: Request) => {
       {
         const lista: any[] = Array.isArray(rawU?.mouvContacts) ? rawU.mouvContacts : []
         const soloDig = (v: unknown) => String(v ?? '').replace(/\D/g, '')
-        const norm = (v: unknown) => String(v ?? '').trim().toLowerCase()
-        const hit = rail === 'BREB'
-          ? lista.find(c => norm(c?.brebKey ?? c?.accountNumber) === norm((payload.recipient as any)?.key))
-          : lista.find(c => soloDig(c?.accountNumber) === soloDig((payload.recipient as any)?.accountNumber))
+        // Las llaves de celular viajan en varios formatos (3001234567,
+        // +573001234567, 57 300 123 4567) y Mouv las empareja todas. Si acá no
+        // se emparejan igual, el contacto no se encuentra, no hay corte y el
+        // control corre sobre el documento que mandó el navegador.
+        const normLlave = (v: unknown) => {
+          const t = String(v ?? '').trim().toLowerCase()
+          const d = t.replace(/\D/g, '')
+          if (d && d.length >= 10 && /^[+\d\s().-]+$/.test(t)) return d.replace(/^57(?=\d{10}$)/, '')
+          return t
+        }
+        const esBreb = (c: any) => (c?.destKind ?? 'ach') === 'breb'
+        // Se filtra POR RIEL. Sin esto, la búsqueda ACH recorría también los
+        // Bre-B —cuyo accountNumber es la llave— y una llave de celular podía
+        // emparejar con el número de cuenta de otra persona: 409 falso sobre un
+        // envío legítimo, o el control sobre la cédula equivocada.
+        const cands = rail === 'BREB'
+          ? lista.filter(c => esBreb(c) && normLlave(c?.brebKey ?? c?.accountNumber) === normLlave((payload.recipient as any)?.key))
+          : lista.filter(c => !esBreb(c) && soloDig(c?.accountNumber) === soloDig((payload.recipient as any)?.accountNumber))
+        // Dos contactos distintos para el mismo destino: no se adivina cuál.
+        if (cands.length > 1 && new Set(cands.map(c => soloDig(c?.docNumber))).size > 1) {
+          await logAudit(userId, 'mouv.destino_ambiguo', { rail, cuantos: cands.length })
+          return json(409, {
+            error: 'destino_ambiguo',
+            message: 'Tienes dos beneficiarios distintos con ese mismo destino. Borra el que no uses y vuelve a intentar.',
+          })
+        }
+        const hit = cands[0]
         const docInscrito = soloDig(hit?.docNumber)
         if (docInscrito) {
           if (docDest && docDest !== docInscrito) {
@@ -1152,6 +1175,30 @@ serve(async (req: Request) => {
             })
           }
           docDest = docInscrito
+        }
+
+        // ── EL TITULAR REAL DE LA LLAVE ──────────────────────────────────
+        // Este es el único dato de toda la cadena que no sale del navegador ni
+        // del raw_data del propio usuario: se lo pregunta al proveedor. Si el
+        // documento del titular de la llave no es el que se verificó, la plata
+        // iría a una persona con los antecedentes consultados de otra — que es
+        // justo el incidente que hubo. Se comprueba ACÁ, antes de debitar;
+        // antes esta resolución ocurría dentro del payout, con el saldo ya
+        // descontado y sin comparar nada.
+        if (rail === 'BREB' && docDest) {
+          try {
+            const rrPrev = await mouvResolveBrebKey(String((payload.recipient as any)?.key ?? ''), String((payload.recipient as any)?.keyType ?? ''))
+            const docReal = soloDig(rrPrev?.idValue)
+            if (rrPrev?.found && docReal && docReal !== docDest) {
+              await logAudit(userId, 'mouv.titular_llave_no_coincide', {
+                docVerificado: docDest, docTitular: docReal, titular: rrPrev.fullName ?? null,
+              })
+              return json(409, {
+                error: 'titular_no_coincide',
+                message: `Esa llave Bre-B no pertenece al beneficiario que tienes inscrito${rrPrev.fullName ? `, sino a ${rrPrev.fullName}` : ''}. Corrige el beneficiario antes de enviar.`,
+              })
+            }
+          } catch { /* si el proveedor no contesta, decide la compuerta de abajo */ }
         }
       }
       // La consulta de antecedentes la hacemos NOSOTROS (TusDatos). Este es

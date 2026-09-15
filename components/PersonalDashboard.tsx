@@ -5729,7 +5729,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           const myContacts = all.filter((c: any) => c.accountKind !== 'wallet' && (c.country ?? 'Colombia') === 'Colombia' && ((c.destKind ?? 'ach') === railKind));
                           const q = contactSearch.trim().toLowerCase();
                           const list = myContacts.filter((c: any) => !q || `${c.name} ${c.bank} ${c.docNumber} ${c.accountNumber} ${c.brebKey ?? ''}`.toLowerCase().includes(q));
-                          const goContacts = () => { setIsSendModalOpen(false); setActiveView('contactos'); };
+                          const goContacts = () => { closeSendModal(); setActiveView('contactos'); };
                           const maskAcc = (a: string) => (a?.length > 4 ? `···${a.slice(-4)}` : a);
                           // El veredicto de antecedentes de cada beneficiario.
                           // El bloqueo real vive en el servidor y ahí se corta
@@ -5888,7 +5888,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           const q = contactSearch.trim().toLowerCase();
                           const list = myWalletsList.filter((c: any) =>
                               !q || `${c.name} ${c.walletCoin} ${c.walletNetwork} ${c.accountNumber}`.toLowerCase().includes(q));
-                          const goContacts = () => { setIsSendModalOpen(false); setActiveView('contactos'); };
+                          const goContacts = () => { closeSendModal(); setActiveView('contactos'); };
                           const maskAddr = (a: string) => (a?.length > 10 ? `${a.slice(0, 6)}…${a.slice(-6)}` : a);
                           return (
                               <div className="space-y-4">
@@ -5928,6 +5928,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                                           accountNumber: c.accountNumber,
                                                           beneficiaryType: 'personal',
                                                       });
+                                                      // También el contacto: si no, sobrevive el
+                                                      // beneficiario bancario elegido antes y
+                                                      // `destinatario` sigue describiéndolo a él.
+                                                      setSendContact(c);
                                                       setMouvDestId(null);
                                                       setSendStep(4);
                                                   }}
@@ -6280,14 +6284,19 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           const isBrebS = (sendResult?.rail ?? sendSourceRail) === 'COP_BREB';
                           const amt = getRawAmount(sendForm.amount);
                           const isWalletSend = sendMode === 'wallet' || sendResult?.rail === 'USDT';
-                          const name = (sendForm.beneficiaryName || sendContact?.name || (isWalletSend ? 'Wallet externa' : 'Destinatario')).trim();
+                          // El comprobante es lo que el cliente guarda como soporte:
+                          // tiene que decir lo mismo que la confirmación y que el
+                          // pago. Salía de `sendForm` con `sendContact` de respaldo,
+                          // o sea la misma mezcla de dos fuentes.
+                          const dR = destinatario;
+                          const name = (dR.name || (isWalletSend ? 'Wallet externa' : 'Destinatario')).trim();
                           const initials = name.split(/\s+/).filter(Boolean).map(w => w[0]).slice(0, 2).join('').toUpperCase() || 'LN';
-                          const acctRaw = String((isBrebS ? (sendContact?.brebKey ?? sendForm.accountNumber) : sendForm.accountNumber) ?? '');
+                          const acctRaw = String((isBrebS ? (dR.brebKey ?? dR.accountNumber) : dR.accountNumber) ?? '');
                           const last4 = acctRaw.slice(-4);
                           const methodLine = isWalletSend ? `Wallet ···${last4} · TRC-20`
                               : !isCop ? `Cuenta ···${last4}`
                               : isBrebS ? `Llave ···${last4} · Bre-B`
-                              : `${sendContact?.bank ?? sendForm.bankName ?? 'Banco'} ···${last4} · ACH`;
+                              : `${dR.bank ?? 'Banco'} ···${last4} · ACH`;
                           const subOk = isWalletSend
                               ? 'Tu envío ya salió de tu billetera. Te avisamos cuando la red lo confirme.'
                               : !isCop
@@ -6386,12 +6395,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                               beneficiary: name,
                                               bank: sendContact?.bank || sendForm.bankName || (isBrebS ? 'Bre-B' : 'ACH'),
                                               account: acctRaw,
-                                              documentType: sendForm.documentType,
-                                              documentNumber: sendForm.documentNumber,
+                                              documentType: dR.docType,
+                                              documentNumber: dR.docNumber,
                                               providerRef: sendResult?.providerRef || '',
                                               reason: sendForm.reason,
                                               feeCop,
-                                              recipient: { holderName: name, key: isBrebS ? acctRaw : undefined, accountNumber: !isBrebS ? acctRaw : undefined, keyType: sendContact?.brebKeyType, documentType: sendForm.documentType, documentNumber: sendForm.documentNumber, accountType: sendContact?.accountType },
+                                              recipient: { holderName: name, key: isBrebS ? acctRaw : undefined, accountNumber: !isBrebS ? acctRaw : undefined, keyType: dR.brebKeyType, documentType: dR.docType, documentNumber: dR.docNumber, accountType: dR.accountType },
                                           };
                                           closeSendModal();
                                           setSelectedTx(receiptTx as any);
