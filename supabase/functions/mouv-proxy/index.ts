@@ -1124,13 +1124,35 @@ serve(async (req: Request) => {
       let docDest = String((payload.recipient as any)?.documentNumber ?? '').replace(/\D/g, '')
       const { data: uRaw } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
       const rawU = (uRaw as any)?.raw_data ?? {}
-      if (!docDest && rail === 'BREB') {
-        const llave = String((payload.recipient as any)?.key ?? '').trim().toLowerCase()
+      // El documento SALE DEL BENEFICIARIO INSCRITO, no de lo que mande el
+      // navegador. Con el documento del cuerpo, una pantalla desincronizada
+      // —o alguien llamando la API a mano— podía pagar a la llave de una
+      // persona declarando la cédula de otra: el control de antecedentes se
+      // hacía sobre el documento equivocado y la plata salía igual.
+      //
+      // Se busca el contacto por llave (Bre-B) o por número de cuenta (ACH).
+      // Si existe, manda su documento. Si además el cuerpo trae uno distinto,
+      // se corta: algo no cuadra y no es momento de adivinar.
+      {
         const lista: any[] = Array.isArray(rawU?.mouvContacts) ? rawU.mouvContacts : []
-        const hit = llave
-          ? lista.find(c => String(c?.brebKey ?? c?.accountNumber ?? '').trim().toLowerCase() === llave)
-          : null
-        docDest = String(hit?.docNumber ?? '').replace(/\D/g, '')
+        const soloDig = (v: unknown) => String(v ?? '').replace(/\D/g, '')
+        const norm = (v: unknown) => String(v ?? '').trim().toLowerCase()
+        const hit = rail === 'BREB'
+          ? lista.find(c => norm(c?.brebKey ?? c?.accountNumber) === norm((payload.recipient as any)?.key))
+          : lista.find(c => soloDig(c?.accountNumber) === soloDig((payload.recipient as any)?.accountNumber))
+        const docInscrito = soloDig(hit?.docNumber)
+        if (docInscrito) {
+          if (docDest && docDest !== docInscrito) {
+            await logAudit(userId, 'mouv.destinatario_incoherente', {
+              rail, docEnviado: docDest, docInscrito, beneficiario: hit?.name ?? null,
+            })
+            return json(409, {
+              error: 'destinatario_incoherente',
+              message: 'Los datos del beneficiario no coinciden con los que tienes inscritos. Vuelve a elegirlo en la lista e inténtalo de nuevo.',
+            })
+          }
+          docDest = docInscrito
+        }
       }
       // La consulta de antecedentes la hacemos NOSOTROS (TusDatos). Este es
       // el control que manda; el de Kumplo queda debajo como respaldo para

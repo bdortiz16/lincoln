@@ -442,6 +442,52 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // Contacto elegido para el envío COP (trae destKind/brebKey/banco para la
   // dispersión REAL inline de Mouv).
   const [sendContact, setSendContact] = useState<any>(null);
+
+  // ── Quién recibe la plata: UNA sola fuente ────────────────────────────
+  //
+  // Había dos objetos describiendo a la misma persona: `sendContact` (el
+  // beneficiario inscrito, de donde salía la llave Bre-B y el banco) y
+  // `sendForm` (el formulario, de donde salían el nombre y el documento).
+  // Se podían desincronizar, y cuando pasó el resultado fue el peor posible:
+  // la pantalla de confirmación mostró la llave de una persona con el nombre
+  // y la cédula de otra, y el envío habría salido así — a la llave de una,
+  // con la cédula de otra, y con el control de antecedentes hecho sobre el
+  // documento equivocado.
+  //
+  // Con un beneficiario inscrito, TODO sale de él. El formulario solo manda
+  // cuando no hay inscrito (destinos escritos a mano).
+  //
+  // `coherente` es la red de seguridad: si por cualquier camino los dos
+  // objetos discrepan en llave, cuenta o documento, no se envía. Preferimos
+  // hacer volver al usuario al selector que mandarle la plata a quien no es.
+  const destinatario = React.useMemo(() => {
+    const c = sendContact;
+    if (!c) {
+      return {
+        name: sendForm.beneficiaryName, docType: sendForm.documentType, docNumber: sendForm.documentNumber,
+        bank: sendForm.bankName, accountType: sendForm.accountType, accountNumber: sendForm.accountNumber,
+        brebKey: undefined as string | undefined, brebKeyType: undefined as string | undefined,
+        esInscrito: false, coherente: true,
+      };
+    }
+    const mismo = (a: unknown, b: unknown) => {
+      const x = String(a ?? '').trim().toLowerCase();
+      const y = String(b ?? '').trim().toLowerCase();
+      return !x || !y || x === y;   // si el formulario no lo trae, no contradice
+    };
+    const llave = c.brebKey ?? c.accountNumber;
+    const coherente =
+      mismo(sendForm.documentNumber, c.docNumber)
+      && mismo(sendForm.beneficiaryName, c.name)
+      && (c.destKind === 'breb' ? true : mismo(sendForm.accountNumber, c.accountNumber));
+    return {
+      name: c.name, docType: c.docType, docNumber: c.docNumber,
+      bank: c.bank, accountType: c.accountType, accountNumber: c.accountNumber,
+      brebKey: llave, brebKeyType: c.brebKeyType,
+      esInscrito: true, coherente,
+    };
+  }, [sendContact, sendForm.beneficiaryName, sendForm.documentType, sendForm.documentNumber, sendForm.bankName, sendForm.accountType, sendForm.accountNumber]);
+
   // Método elegido en el paso 2 del flujo (diseño Flujo Enviar): lista radio.
   const [sendMethodSel, setSendMethodSel] = useState<'breb' | 'ach' | 'pay' | 'cash' | null>(null);
   // Cotización de la comisión del proveedor para el paso Confirmar:
@@ -1811,9 +1857,22 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               showToast(`Saldo insuficiente en ${isBreb ? 'Bre-B' : 'ACH'}: necesitas ${(amount + feeCop).toLocaleString('es-CO')} COP (monto + comisión ${feeCop.toLocaleString('es-CO')}).`, 7000, 'error');
               return;
           }
+          // UNA SOLA FUENTE. Antes la llave salía de sendContact y el nombre y
+          // el documento de sendForm: dos objetos distintos describiendo a la
+          // MISMA persona. Si se desincronizaban —y se desincronizaban— el
+          // dinero salía hacia la llave de uno con la cédula de otro, y el
+          // control de antecedentes se había hecho sobre el documento
+          // equivocado. Si hay beneficiario inscrito, TODO sale de él.
+          const d = destinatario;
+          if (sendContact && !d.coherente) {
+              sendingRef.current = false; setIsSending(false);
+              showToast('Los datos del beneficiario no coinciden. Vuelve a elegirlo en la lista antes de enviar.', 8000, 'error');
+              setSendStep(3);
+              return;
+          }
           const recipient = isBreb
-              ? { keyType: sendContact?.brebKeyType ?? 'celular', key: sendContact?.brebKey ?? sendContact?.accountNumber ?? sendForm.accountNumber, holderName: sendForm.beneficiaryName, documentNumber: sendForm.documentNumber, reference: sendForm.reason }
-              : { bankCode: sendContact?.bank ?? sendForm.bankName, accountType: (sendContact?.accountType === 'checking' ? 'corriente' : 'ahorros'), accountNumber: sendForm.accountNumber, documentType: sendForm.documentType, documentNumber: sendForm.documentNumber, holderName: sendForm.beneficiaryName, reference: sendForm.reason, ...(sendContact?.finityId ? { finityId: sendContact.finityId } : {}) };
+              ? { keyType: d.brebKeyType ?? 'celular', key: d.brebKey ?? d.accountNumber, holderName: d.name, documentNumber: d.docNumber, reference: sendForm.reason }
+              : { bankCode: d.bank, accountType: (d.accountType === 'checking' ? 'corriente' : 'ahorros'), accountNumber: d.accountNumber, documentType: d.docType, documentNumber: d.docNumber, holderName: d.name, reference: sendForm.reason, ...(sendContact?.finityId ? { finityId: sendContact.finityId } : {}) };
           try {
               const r = await Promise.race([
                   callMouvProxy({ action: isBreb ? 'payout_breb' : 'payout_ach', userId: currentUser.id, amount, recipient, otp: sentOtpRef.current }),
@@ -1928,7 +1987,17 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       setPayRecipientCode('');
       setPayRecipientUser(null);
       setPayLookupStatus('idle');
-      setSendForm({ ...sendForm, amount: '', beneficiaryName: '', accountNumber: '', reason: 'Envío de dinero', bankName: '' });
+      // Se limpia TODO lo del destinatario. Antes se dejaban documentType y
+      // documentNumber del envío anterior: un residuo de la persona a la que
+      // se le acababa de pagar, esperando a mezclarse con el siguiente
+      // beneficiario. Solo sobreviven país y moneda, que son preferencias.
+      setSendForm({
+        ...sendForm,
+        amount: '', reason: 'Envío de dinero',
+        beneficiaryName: '', beneficiaryType: 'personal',
+        documentType: '', documentNumber: '',
+        bankName: '', accountType: '', accountNumber: '',
+      });
       setCashForm({ recipientName: '', docType: 'CC', docNumber: '', phone: '', city: '' });
       setCashReference('');
       setMouvDestId(null);
@@ -5938,9 +6007,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           const isBrebM = (sendContact?.destKind ?? (sendSourceRail === 'COP_BREB' ? 'breb' : 'ach')) === 'breb';
                           const railLbl = isBrebM ? 'Bre-B' : 'ACH';
                           const initials = (n: string) => { const p = String(n || '').trim().split(/\s+/); return ((p[0]?.[0] ?? '') + (p[1]?.[0] ?? '')).toUpperCase() || '·'; };
+                          // Todo de `destinatario`: con un beneficiario inscrito, la
+                          // pantalla no puede mostrar la llave de uno y el nombre de otro.
+                          const d = destinatario;
                           const destLine = isBrebM
-                              ? `Bre-B · ${sendContact?.brebKey ? `···${String(sendContact.brebKey).slice(-4)}` : ''}${sendForm.bankName && !String(sendForm.bankName).startsWith('Bre-B') ? ` · ${sendForm.bankName}` : ''}`
-                              : `${sendForm.bankName} · ${sendForm.accountType === 'checking' ? 'Corriente' : 'Ahorros'} ···${String(sendForm.accountNumber || '').slice(-4)}`;
+                              ? `Bre-B · ${d.brebKey ? `···${String(d.brebKey).slice(-4)}` : ''}${d.bank && !String(d.bank).startsWith('Bre-B') ? ` · ${d.bank}` : ''}`
+                              : `${d.bank} · ${d.accountType === 'checking' ? 'Corriente' : 'Ahorros'} ···${String(d.accountNumber || '').slice(-4)}`;
                           return (
                           <div className="space-y-4">
                               {/* Destinatario + Editar — con los datos COMPLETOS que
@@ -5949,10 +6021,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               <div style={{ padding: '13px 15px', borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.025)' }}>
                                   <div className="flex items-center gap-3">
                                       <span style={{ width: 38, height: 38, borderRadius: '50%', background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', border: '1px solid rgba(255,255,255,0.12)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
-                                          <span style={{ color: '#878E88', fontWeight: 800, fontSize: 13 }}>{initials(sendForm.beneficiaryName)}</span>
+                                          <span style={{ color: '#878E88', fontWeight: 800, fontSize: 13 }}>{initials(d.name)}</span>
                                       </span>
                                       <div className="flex-1 min-w-0">
-                                          <p style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{sendForm.beneficiaryName}</p>
+                                          <p style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.name}</p>
                                           <p style={{ fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{destLine}</p>
                                       </div>
                                       <button onClick={() => setSendStep(3)} style={{ fontSize: 12.5, fontWeight: 600, color: '#F4F4F2', textDecoration: 'underline', flexShrink: 0 }}>Editar</button>
@@ -5961,25 +6033,25 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       {isBrebM ? (
                                           <>
                                               <div className="flex items-center justify-between gap-3">
-                                                  <span style={{ fontSize: 11.5, color: '#878E88' }}>Llave Bre-B{sendContact?.brebKeyType ? ` (${sendContact.brebKeyType})` : ''}</span>
-                                                  <span style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2', fontFamily: 'monospace', wordBreak: 'break-all', textAlign: 'right' }}>{sendContact?.brebKey ?? sendForm.accountNumber ?? '—'}</span>
+                                                  <span style={{ fontSize: 11.5, color: '#878E88' }}>Llave Bre-B{d.brebKeyType ? ` (${d.brebKeyType})` : ''}</span>
+                                                  <span style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2', fontFamily: 'monospace', wordBreak: 'break-all', textAlign: 'right' }}>{d.brebKey ?? '—'}</span>
                                               </div>
                                           </>
                                       ) : (
                                           <>
                                               <div className="flex items-center justify-between gap-3">
                                                   <span style={{ fontSize: 11.5, color: '#878E88' }}>Banco</span>
-                                                  <span style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2' }}>{sendForm.bankName || '—'} · {sendForm.accountType === 'checking' ? 'Corriente' : 'Ahorros'}</span>
+                                                  <span style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2' }}>{d.bank || '—'} · {d.accountType === 'checking' ? 'Corriente' : 'Ahorros'}</span>
                                               </div>
                                               <div className="flex items-center justify-between gap-3">
                                                   <span style={{ fontSize: 11.5, color: '#878E88' }}>Cuenta</span>
-                                                  <span style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2', fontFamily: 'monospace' }}>{sendForm.accountNumber || '—'}</span>
+                                                  <span style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2', fontFamily: 'monospace' }}>{d.accountNumber || '—'}</span>
                                               </div>
                                           </>
                                       )}
                                       <div className="flex items-center justify-between gap-3">
                                           <span style={{ fontSize: 11.5, color: '#878E88' }}>Documento</span>
-                                          <span style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2', fontFamily: 'monospace' }}>{(sendForm.documentType || sendContact?.docType || 'CC')} {sendForm.documentNumber || sendContact?.docNumber || '—'}</span>
+                                          <span style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2', fontFamily: 'monospace' }}>{(d.docType || 'CC')} {d.docNumber || '—'}</span>
                                       </div>
                                   </div>
                               </div>
