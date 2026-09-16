@@ -13,7 +13,7 @@ import { PersonalDashboard } from './components/PersonalDashboard';
 import { AdminDashboard } from './components/AdminDashboard';
 import { ToastProvider } from './components/AdminPersonas/lib/toast';
 import { StaticPage } from './components/StaticPage'; // New Import
-import { EmailOtpGate, isOtpRemembered } from './components/EmailOtpGate';
+import { EmailOtpGate, deviceId } from './components/EmailOtpGate';
 import { IdleGuard } from './components/IdleGuard';
 import { LogoConcepts } from './components/LogoConcepts';
 import { useDatabase } from './context/DatabaseContext';
@@ -235,9 +235,42 @@ const App: React.FC = () => {
   const { config } = useSystemConfig();
   // Verificación por correo (2 pasos) tras el login. Se pasa una vez por
   // sesión; "recordar dispositivo" la evita por 30 días en este navegador.
+  // ¿Hay que pedir el código del correo? Lo decide el SERVIDOR, que lleva la
+  // lista de dispositivos de confianza. Antes lo decidía una fecha guardada en
+  // el navegador, y bastaba con que algo limpiara el almacenamiento para que
+  // el código se pidiera otra vez en cada ingreso.
+  //
+  // 'null' = todavía no se sabe. Mientras no se sepa NO se muestra la puerta:
+  // enseñarla y quitarla medio segundo después es peor que esperar, y además
+  // dispararía el envío de un código que no hacía falta.
   const [otpPassed, setOtpPassed] = useState(false);
-  useEffect(() => { setOtpPassed(false); }, [currentUser?.id]);
-  const needsEmailOtp = !!currentUser && currentUser.role !== 'admin' && !otpPassed && !isOtpRemembered(currentUser.id);
+  const [deviceTrusted, setDeviceTrusted] = useState<boolean | null>(null);
+  useEffect(() => {
+    setOtpPassed(false);
+    const uid = currentUser?.id;
+    if (!uid || currentUser?.role === 'admin') { setDeviceTrusted(true); return; }
+    let vivo = true;
+    setDeviceTrusted(null);
+    (async () => {
+      try {
+        const SURL = (import.meta as any).env?.VITE_SUPABASE_URL || '';
+        const SKEY = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '';
+        const r = await fetch(`${SURL}/functions/v1/email-otp`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${SKEY}` },
+          body: JSON.stringify({ action: 'is_trusted', userId: uid, email: currentUser?.email, deviceId: deviceId() }),
+        });
+        const d = await r.json();
+        if (vivo) setDeviceTrusted(!!d?.trusted);
+      } catch {
+        // Sin respuesta se PIDE el código. Es el lado seguro: no saber si el
+        // dispositivo es de confianza no es lo mismo que saber que lo es.
+        if (vivo) setDeviceTrusted(false);
+      }
+    })();
+    return () => { vivo = false; };
+  }, [currentUser?.id, currentUser?.role, currentUser?.email]);
+  const needsEmailOtp = !!currentUser && currentUser.role !== 'admin' && !otpPassed && deviceTrusted === false;
   // Inactividad. El reloj y el aviso viven en IdleGuard: acá solo se dice
   // cuánto se espera y qué hacer cuando se acaba.
   //
@@ -500,7 +533,7 @@ const App: React.FC = () => {
   if (import.meta.env.DEV && window.location.pathname === '/logos') return <LogoConcepts />;
 
   // Show branded splash while auth loads OR while transitioning from landing → dashboard
-  if (isAuthLoading || (currentUser && currentView === 'landing')) {
+  if (isAuthLoading || (currentUser && currentView === 'landing') || (!!currentUser && currentUser.role !== 'admin' && deviceTrusted === null)) {
     return <SplashScreen />;
   }
 

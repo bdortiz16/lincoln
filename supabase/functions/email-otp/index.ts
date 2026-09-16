@@ -208,7 +208,41 @@ Deno.serve(async (req) => {
       if (!reclamado?.length) {
         return json(200, { ok: false, error: 'used', message: 'Ese código ya se usó. Pide uno nuevo.' })
       }
+      // ── DISPOSITIVO DE CONFIANZA ────────────────────────────────────
+      // "Confiar en este dispositivo 30 días" vivía SOLO en el navegador: una
+      // fecha en localStorage. Cualquier cosa que limpie el almacenamiento la
+      // borraba y el código volvía a pedirse en cada ingreso; y al revés,
+      // escribiendo esa fecha a mano se saltaba el paso.
+      //
+      // Ahora la confianza la guarda el SERVIDOR. El navegador solo conserva
+      // un identificador de dispositivo sin valor por sí mismo: si no está en
+      // la lista del servidor, no abre nada.
+      const dev = String(body.deviceId ?? '').trim().slice(0, 64)
+      if (body.trust === true && /^[A-Za-z0-9_-]{16,64}$/.test(dev)) {
+        const previos: any[] = Array.isArray(raw.trustedDevices) ? raw.trustedDevices : []
+        const vivos = previos.filter(d => d && d.id !== dev && Number(d.exp ?? 0) > Date.now())
+        const nuevo = {
+          id: dev,
+          exp: Date.now() + 30 * 86400_000,
+          desde: new Date().toISOString(),
+          agente: deviceFromUA(req.headers.get('user-agent') ?? ''),
+        }
+        // Tope de 10: una cuenta con veinte dispositivos "de confianza" no
+        // tiene ninguno. Se quedan los más recientes.
+        const lista = [nuevo, ...vivos].slice(0, 10)
+        await db.from('users').update({ raw_data: { ...raw, otp: { usedAt: Date.now() }, trustedDevices: lista } }).eq('id', user.id)
+      }
       return json(200, { ok: true, verified: true, userId: user.id })
+    }
+
+    // ¿Este dispositivo ya pasó el código? Lo decide el servidor, no el
+    // navegador. Se responde solo sí o no: nada que un cliente pueda fingir.
+    if (action === 'is_trusted') {
+      const dev = String(body.deviceId ?? '').trim().slice(0, 64)
+      if (!/^[A-Za-z0-9_-]{16,64}$/.test(dev)) return json(200, { ok: true, trusted: false })
+      const lista: any[] = Array.isArray(raw.trustedDevices) ? raw.trustedDevices : []
+      const hit = lista.find(d => d && d.id === dev && Number(d.exp ?? 0) > Date.now())
+      return json(200, { ok: true, trusted: !!hit, hasta: hit?.exp ?? null })
     }
 
     return json(400, { error: 'bad_action' })
