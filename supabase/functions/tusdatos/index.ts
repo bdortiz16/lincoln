@@ -1045,9 +1045,12 @@ Deno.serve(async (req: Request) => {
     // mezclado con lo rutinario se deja de revisar en una semana.
     if (accion === 'compliance') {
       if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      // Se traen los datos que IDENTIFICAN a la empresa que consultó, no solo
+      // su nombre: un reporte a la UIAF necesita la razón social, el NIT y el
+      // tipo de cuenta de quien reporta, no un id interno.
       const { data: filas } = await db
         .from('users')
-        .select('id, name, email, raw_data')
+        .select('id, name, email, company_name, role, country, created_at, raw_data')
         .not('raw_data->tusdatos', 'is', null)
         .limit(2000)
 
@@ -1077,6 +1080,20 @@ Deno.serve(async (req: Request) => {
                             : null
           casos.push({
             userId: u.id, titular: u.name ?? u.email ?? u.id, esTitular: !!f.esTitular,
+            // ── QUIÉN CONSULTÓ ─────────────────────────────────────────
+            // La consulta la dispara la cuenta que inscribe al beneficiario,
+            // y los veredictos viven bajo esa cuenta. Para un ROS hay que
+            // poder nombrarla: razón social, NIT y correo, no un uuid.
+            cliente: {
+              id: u.id,
+              nombre: u.company_name ?? u.name ?? u.email ?? u.id,
+              email: u.email ?? null,
+              tipo: u.role === 'business' ? 'empresa' : 'personal',
+              documento: u.raw_data?.documentNumber ?? u.raw_data?.nit ?? u.raw_data?.taxId ?? null,
+              tipoDocumento: u.raw_data?.documentType ?? (u.role === 'business' ? 'NIT' : 'CC'),
+              pais: u.country ?? u.raw_data?.country ?? null,
+              desde: u.created_at ?? null,
+            },
             documento: doc, tipoDocumento: f.tipoDocumento ?? 'CC',
             nombreInscrito: f.nombreInscrito ?? null, nombreReal: f.nombreReal ?? f.nombre ?? null,
             nombreCoincide: f.nombreCoincide ?? null,
@@ -1087,6 +1104,7 @@ Deno.serve(async (req: Request) => {
             hallazgos: Array.isArray(f.hallazgos) ? f.hallazgos : [],
             reportId: f.reportId ?? null, enviadoAKumplo: !!f.enviadoAKumplo,
             at: f.at ?? null, alerta,
+            decisionManual: f.decisionManual ?? null,
           })
         }
       }
@@ -1099,8 +1117,16 @@ Deno.serve(async (req: Request) => {
         (peso[a.alerta] ?? 9) - (peso[b.alerta] ?? 9) || String(b.at ?? '').localeCompare(String(a.at ?? '')))
       const enOrden = casos.filter(x => !x.alerta)
 
+      const cfgReglas = await leerConfig()
       return json({
         ok: true,
+        // Con qué reglas está corriendo la bandeja. Se muestran, no se
+        // cambian desde acá: bajarlas exige código al correo y eso vive en
+        // Admin → TusDatos.
+        reglas: {
+          activo: cfgReglas.activo, bloquear: cfgReglas.bloquear,
+          soloBloquearAlto: cfgReglas.soloBloquearAlto,
+        },
         resumen: {
           total: casos.length,
           bloqueados: casos.filter(x => x.operable === false).length,
@@ -1115,6 +1141,25 @@ Deno.serve(async (req: Request) => {
         // Los que están en orden van aparte y recortados: la bandeja es para
         // lo que hay que mirar, no para el archivo.
         enOrden: enOrden.slice(0, 120),
+        // Concentración por cliente. Una empresa que inscribe a varias
+        // personas de riesgo alto no es mala suerte: es el patrón que se
+        // reporta. Se cuenta sobre TODOS los casos, no sobre la página.
+        porCliente: (() => {
+          const m = new Map<string, any>()
+          for (const c of casos) {
+            const k = c.cliente.id
+            const e = m.get(k) ?? { ...c.cliente, inscritos: 0, altos: 0, bloqueados: 0, nombreNoCoincide: 0 }
+            e.inscritos++
+            if (c.categoria === 'alto') e.altos++
+            if (c.operable === false) e.bloqueados++
+            if (c.nombreCoincide === false) e.nombreNoCoincide++
+            m.set(k, e)
+          }
+          return [...m.values()]
+            .filter(e => e.altos > 0 || e.bloqueados > 0)
+            .sort((a, b) => (b.altos - a.altos) || (b.bloqueados - a.bloqueados))
+            .slice(0, 50)
+        })(),
       })
     }
 
@@ -1324,6 +1369,56 @@ Deno.serve(async (req: Request) => {
     }
 
     // ── Reintentar una consulta ──────────────────────────────────────────
+    // ── Decisión humana sobre un caso ──────────────────────────────────
+    // Aprobar o mantener bloqueado a alguien que el sistema marcó. Queda
+    // guardado EN LA FICHA (quién, cuándo, por qué) y en auditoría: una
+    // decisión de cumplimiento sin autor no sirve para responderle a nadie.
+    if (accion === 'decidir') {
+      if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      const uid = String(body.userId ?? '')
+      const doc = String(body.documento ?? '').replace(/\D/g, '')
+      const fallo = String(body.decision ?? '')   // 'aprobar' | 'mantener'
+      const motivo = String(body.motivo ?? '').slice(0, 500)
+      if (!uid || !doc || !['aprobar', 'mantener'].includes(fallo)) {
+        return json({ error: 'Faltan datos de la decisión.' }, 400)
+      }
+      if (!motivo.trim()) return json({ error: 'Escribe por qué tomas esta decisión.' }, 400)
+
+      const { data: fila } = await db.from('users').select('raw_data').eq('id', uid).maybeSingle()
+      const raw = ((fila as any)?.raw_data ?? {}) as Record<string, any>
+      const td = raw.tusdatos ?? {}
+      const benefs = { ...(td.beneficiarios ?? {}) }
+      const previa = benefs[doc]
+      if (!previa) return json({ error: 'Ese beneficiario no tiene consulta guardada.' }, 404)
+
+      const decision = {
+        por: yo.userId ?? null, decision: fallo, motivo,
+        at: new Date().toISOString(),
+        // Se guarda CONTRA QUÉ se decidió: si mañana el veredicto cambia, se
+        // puede saber qué tenía a la vista quien decidió.
+        categoriaEntonces: previa.categoria ?? null,
+        operableEntonces: previa.operable ?? null,
+      }
+      benefs[doc] = {
+        ...previa,
+        operable: fallo === 'aprobar' ? true : false,
+        decisionManual: decision,
+        historialDecisiones: [...(Array.isArray(previa.historialDecisiones) ? previa.historialDecisiones : []), decision].slice(-20),
+      }
+      const { error } = await db.from('users')
+        .update({ raw_data: { ...raw, tusdatos: { ...td, beneficiarios: benefs } } })
+        .eq('id', uid)
+      if (error) return json({ error: error.message }, 500)
+
+      await auditar('tusdatos.decision_cumplimiento', {
+        adminId: yo.userId, clienteId: uid, documento: doc,
+        decision: fallo, motivo,
+        categoria: previa.categoria ?? null, nombreCoincide: previa.nombreCoincide ?? null,
+        reportId: previa.reportId ?? null,
+      })
+      return json({ ok: true, decision })
+    }
+
     if (accion === 'reintentar') {
       if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
       const c = await leerConfig()
