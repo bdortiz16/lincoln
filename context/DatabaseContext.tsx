@@ -1968,9 +1968,16 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     // borran acá, junto con el token.
     try {
       Object.keys(localStorage)
+        // OJO con lo que se borra acá. 'lincoin_otp_ok_<uid>' NO va en esta
+        // lista: es "confiar en este dispositivo por 30 días", y su razón de
+        // ser es justamente sobrevivir al cierre de sesión. Al meterlo en la
+        // purga, cada salida —incluidas las automáticas por inactividad, que
+        // ahora sí ocurren— borraba la confianza y el código por correo se
+        // pedía en cada ingreso. No es una credencial: sin el JWT no abre
+        // nada, solo evita repetir el segundo paso en un aparato conocido.
         .filter(k =>
           k === 'cuypay_admin_users' || k === 'cuypay_admin_tx' || k === 'lincoin_tx_debug'
-          || k.startsWith('cuypay_tx_') || k.startsWith('lincoin_otp_ok_')
+          || k.startsWith('cuypay_tx_')
           || k.startsWith('cuypay.admin.'))
         .forEach(k => localStorage.removeItem(k));
       localStorage.removeItem('lincoin_visto');
