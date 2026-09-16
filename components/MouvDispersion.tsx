@@ -159,8 +159,8 @@ export const MouvDispersion: React.FC<Props> = ({ userId, rail, balance, authHea
           <div className="grid gap-4">
             <div>
               <label style={labelStyle}>Banco</label>
-              <input list="mouv-banks" value={bank} onChange={e => setBank(e.target.value)} placeholder="Selecciona o escribe el banco" style={inputStyle} />
-              <datalist id="mouv-banks">{COLOMBIAN_BANKS.map(b => <option key={b} value={b} />)}</datalist>
+              <input list="bancos-co" value={bank} onChange={e => setBank(e.target.value)} placeholder="Selecciona o escribe el banco" style={inputStyle} />
+              <datalist id="bancos-co">{COLOMBIAN_BANKS.map(b => <option key={b} value={b} />)}</datalist>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>

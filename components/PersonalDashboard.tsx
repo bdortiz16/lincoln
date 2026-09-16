@@ -342,13 +342,17 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               refreshData?.();
           } else if (r?.ok && !r?.link) {
               // El cobro se creó pero el confirm no devolvió la URL del link.
-              setPseResult({ ok: false, message: `El cobro se creó (ref ${String(r.reference || '').slice(-8)}) pero el proveedor no devolvió el enlace.`, detail: r?.confirmResponse ? JSON.stringify(r.confirmResponse).slice(0, 300) : undefined });
+              // Sin `detail`: era la respuesta CRUDA del proveedor volcada en
+              // pantalla en monoespaciada — su dominio, sus códigos, sus campos.
+              // Al cliente no le dice nada y nos delata. El detalle ya queda en
+              // la transacción y en la auditoría, que es donde el equipo lo mira.
+              setPseResult({ ok: false, message: `El cobro se creó (ref ${String(r.reference || '').slice(-8)}) pero no se devolvió el enlace. Escríbenos a soporte con esa referencia.` });
               refreshData?.();
           } else {
-              setPseResult({ ok: false, message: r?.message || 'No se pudo generar el link de cobro.', detail: r?.data ? JSON.stringify(r.data).slice(0, 300) : undefined });
+              setPseResult({ ok: false, message: r?.message || 'No se pudo generar el link de cobro.' });
           }
       } catch (e: any) {
-          setPseResult({ ok: false, message: 'Error de red al generar el link.', detail: String(e?.message ?? e).slice(0, 200) });
+          setPseResult({ ok: false, message: 'No pudimos generar el link de cobro. Revisa tu conexión e inténtalo de nuevo.' });
       }
       setPseBusy(false);
   };

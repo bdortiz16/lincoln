@@ -494,7 +494,7 @@ Deno.serve(async (req) => {
 
   try {
     if (!FINITY_ID || !FINITY_SECRET) {
-      return json(200, { error: 'finity_not_configured', message: 'Faltan los secrets FINITY_CLIENT_ID / FINITY_CLIENT_SECRET.' })
+      return json(200, { error: 'finity_not_configured', message: 'El servicio de cobros no está disponible en este momento. Escríbenos a soporte@lincoin.me.' })
     }
 
     const payload = await req.json().catch(() => ({}))
@@ -1212,13 +1212,18 @@ Deno.serve(async (req) => {
     const msg = String((e as Error)?.message ?? e)
     console.error('[finity] exception:', msg)
     if (msg.startsWith('finity_auth_failed')) {
+      // El detalle —nombre del proveedor, su dominio, el código HTTP— se
+      // queda en el log de arriba, que solo ve el equipo. Lo que viaja al
+      // navegador lo lee el cliente en la mesa OTC, y ahí nombrar al
+      // proveedor y su dominio es regalarlo.
       return json(200, {
         error: 'finity_auth_failed',
-        base: FINITY_BASE,
-        message: `Finity no entregó token contra ${FINITY_BASE} → ${msg.replace('finity_auth_failed:', 'HTTP ')}`,
+        message: 'No pudimos conectar con la red de pagos en este momento. Intenta de nuevo en unos minutos.',
       })
     }
-    return json(500, { error: 'internal', message: msg })
+    // Igual con las excepciones sueltas: el mensaje crudo puede traer la URL
+    // del proveedor o su respuesta literal.
+    return json(500, { error: 'internal', message: 'No pudimos completar la operación. Intenta de nuevo o escríbenos a soporte@lincoin.me.' })
   }
 })
 

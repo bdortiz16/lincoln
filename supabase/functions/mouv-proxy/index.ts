@@ -627,7 +627,7 @@ serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
 
   if (!MOUV_API_KEY) {
-    return json(200, { error: 'mouv_not_configured', message: 'Falta el secret MOUV_API_KEY en la edge function.' })
+    return json(200, { error: 'mouv_not_configured', message: 'El servicio de envíos no está disponible en este momento. Intenta más tarde o escríbenos a soporte@lincoin.me.' })
   }
 
   const payload = await req.json().catch(() => ({}))
@@ -729,7 +729,7 @@ serve(async (req: Request) => {
   }
 
   const caller = await validCaller(req, payload)
-  if (!caller.ok) return json(401, { error: 'unauthorized', message: 'unauthorized (mouv-proxy v1)' })
+  if (!caller.ok) return json(401, { error: 'unauthorized', message: 'Tu sesión expiró. Vuelve a iniciar sesión.' })
 
   // ── Consultar una llave Bre-B (directorio Mouv): devuelve el TITULAR
   //    (nombre, documento) y su BANCO para autollenar la inscripción de
