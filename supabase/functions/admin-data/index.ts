@@ -2032,6 +2032,7 @@ Deno.serve(async (req: Request) => {
           ip: string; tipo: 'admin' | 'usuario' | 'fallido' | 'bloqueada'
           sesiones: number; primera: string; ultima: string
           userId?: string | null; nombre?: string | null; correo?: string | null
+          rol?: 'admin' | 'empresa' | 'personal' | null
           ciudad?: string | null; pais?: string | null; isp?: string | null
           lat?: number | null; lon?: number | null; motivo?: string | null
         }
@@ -2048,8 +2049,16 @@ Deno.serve(async (req: Request) => {
             porIp.set(ip, {
               ip, tipo, sesiones: 1, primera: r.created_at, ultima: r.created_at,
               userId: r.user_id ?? r?.metadata?.userId ?? null,
+              // El correo del evento. Es el respaldo cuando el registro no
+              // quedó con user_id (una sesión que no se pudo resolver, un
+              // intento fallido): sin esto el punto se queda sin nombre y el
+              // mapa muestra "Admins" para todo, que es lo que no deja saber
+              // si la IP es del equipo o de una empresa.
+              correo: r?.metadata?.byEmail ?? r?.metadata?.email ?? null,
             })
           } else {
+            if (!y.correo) y.correo = r?.metadata?.byEmail ?? r?.metadata?.email ?? null
+            if (!y.userId) y.userId = r.user_id ?? r?.metadata?.userId ?? null
             y.sesiones++
             if (r.created_at < y.primera) y.primera = r.created_at
             if (r.created_at > y.ultima) y.ultima = r.created_at
@@ -2069,11 +2078,37 @@ Deno.serve(async (req: Request) => {
         // Nombre del titular, para que el punto diga QUIÉN y no solo un id.
         const ids = [...new Set([...porIp.values()].map(p => p.userId).filter(Boolean))] as string[]
         if (ids.length) {
-          const { data: us } = await db.from('users').select('id, name, email').in('id', ids.slice(0, 200))
+          // Se trae también el ROL y la razón social: en el mapa, "Admins" a
+          // secas no deja saber si esa IP es del equipo o de una empresa
+          // cliente, que es justo lo que hay que distinguir de un vistazo.
+          const { data: us } = await db.from('users').select('id, name, email, company_name, role').in('id', ids.slice(0, 200))
           const mapa = new Map((us ?? []).map((u: any) => [u.id, u]))
           for (const p of porIp.values()) {
             const u = p.userId ? mapa.get(p.userId) : null
-            if (u) { p.nombre = (u as any).name ?? null; p.correo = (u as any).email ?? null }
+            if (u) {
+              const x = u as any
+              p.nombre = x.company_name ?? x.name ?? null
+              p.correo = x.email ?? p.correo ?? null
+              p.rol = x.role === 'admin' ? 'admin' : x.role === 'business' ? 'empresa' : 'personal'
+            }
+          }
+        }
+        // Los que quedaron sin id pero con correo: se resuelven por correo.
+        // Es el caso de los ingresos que no alcanzaron a asociar la sesión.
+        {
+          const correos = [...new Set([...porIp.values()].filter(p => !p.nombre && p.correo).map(p => String(p.correo)))]
+          if (correos.length) {
+            const { data: us2 } = await db.from('users').select('id, name, email, company_name, role').in('email', correos.slice(0, 200))
+            const porCorreo = new Map((us2 ?? []).map((u: any) => [String(u.email).toLowerCase(), u]))
+            for (const p of porIp.values()) {
+              if (p.nombre || !p.correo) continue
+              const x = porCorreo.get(String(p.correo).toLowerCase()) as any
+              if (x) {
+                p.nombre = x.company_name ?? x.name ?? null
+                p.userId = p.userId ?? x.id
+                p.rol = x.role === 'admin' ? 'admin' : x.role === 'business' ? 'empresa' : 'personal'
+              }
+            }
           }
         }
 

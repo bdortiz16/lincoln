@@ -61,6 +61,24 @@ type Tipo = 'admin' | 'usuario' | 'fallido' | 'bloqueada';
 const COLOR: Record<Tipo, string> = { admin: C.green, usuario: '#E9EDE9', fallido: C.amber, bloqueada: C.red };
 const NOMBRE_TIPO: Record<Tipo, string> = { admin: 'Admins', usuario: 'Usuarios', fallido: 'Intentos fallidos', bloqueada: 'Bloqueadas' };
 
+// Cómo se llama QUIEN está detrás de una IP, y de qué tipo de cuenta es.
+//
+// Antes cada fila decía "Admins" —el plural del tipo de evento— y con eso no
+// se podía saber si esa IP era del equipo o de una empresa cliente, que es
+// precisamente lo que hay que distinguir en un mapa de accesos. El nombre y
+// el correo ya venían del servidor; nadie los usaba salvo como respaldo.
+const quien = (p: { nombre?: string | null; correo?: string | null; tipo: Tipo }) =>
+  p.nombre ?? p.correo ?? (p.tipo === 'fallido' ? 'Sin identificar' : NOMBRE_TIPO[p.tipo]);
+
+// La etiqueta dice DE QUIÉN es la cuenta (admin / empresa / persona), y solo
+// cae al tipo de evento cuando no se pudo resolver a nadie.
+const ROL_TEXTO: Record<string, string> = { admin: 'ADMIN', empresa: 'EMPRESA', personal: 'PERSONAL' };
+const etiqueta = (p: { rol?: string | null; tipo: Tipo }) =>
+  (p.rol && ROL_TEXTO[p.rol]) ? ROL_TEXTO[p.rol]
+    : p.tipo === 'fallido' ? 'INTENTO FALLIDO'
+      : p.tipo === 'bloqueada' ? 'BLOQUEADA'
+        : NOMBRE_TIPO[p.tipo].toUpperCase();
+
 // Iconos de línea propios — nada de emojis en la interfaz.
 const Ico: React.FC<{ d: string; size?: number; color?: string }> = ({ d, size = 14, color = 'currentColor' }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={1.3}
@@ -81,7 +99,8 @@ const D = {
 
 type Punto = {
   ip: string; tipo: Tipo; sesiones: number; primera: string; ultima: string;
-  nombre?: string | null; correo?: string | null; ciudad?: string | null; pais?: string | null;
+  nombre?: string | null; correo?: string | null; rol?: 'admin' | 'empresa' | 'personal' | null;
+  ciudad?: string | null; pais?: string | null;
   isp?: string | null; lat?: number | null; lon?: number | null; motivo?: string | null;
 };
 
@@ -325,7 +344,7 @@ export const AdminCommandCenter: React.FC = () => {
               transform: 'translate(12px, -50%)', pointerEvents: 'none', zIndex: 4,
               background: C.panel, border: `1px solid ${C.border2}`, borderRadius: 9, padding: '7px 10px',
             }}>
-              <p style={{ fontSize: 11.5, fontWeight: 700, margin: 0, color: C.text }}>{hover.p.nombre ?? NOMBRE_TIPO[hover.p.tipo]}</p>
+              <p style={{ fontSize: 11.5, fontWeight: 700, margin: 0, color: C.text }}>{quien(hover.p)} <span style={{ fontSize: 8.5, color: C.dim, fontWeight: 700 }}>{etiqueta(hover.p)}</span></p>
               <p style={{ fontSize: 10.5, margin: '2px 0 0', color: C.sub, fontFamily: MONO }}>
                 {ocultarIp(hover.p.ip, discreto)} · {hover.p.ciudad ?? '—'}
               </p>
@@ -410,8 +429,13 @@ export const AdminCommandCenter: React.FC = () => {
                   style={{ display: 'flex', alignItems: 'center', gap: 7, background: 'transparent', border: 'none', padding: '3px 0', cursor: 'pointer', textAlign: 'left', width: '100%' }}>
                   <span style={{ width: 6, height: 6, borderRadius: '50%', background: COLOR[p.tipo], flexShrink: 0 }} />
                   <span style={{ minWidth: 0, flex: 1 }}>
-                    <span style={{ display: 'block', fontSize: 11.5, fontWeight: 700, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {p.nombre ?? NOMBRE_TIPO[p.tipo]}
+                    <span style={{ display: 'flex', alignItems: 'baseline', gap: 6, minWidth: 0 }}>
+                      <span style={{ fontSize: 11.5, fontWeight: 700, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {quien(p)}
+                      </span>
+                      <span style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: '0.5px', color: C.dim, flexShrink: 0 }}>
+                        {etiqueta(p)}
+                      </span>
                     </span>
                     <span style={{ display: 'block', fontSize: 10, color: C.dim, fontFamily: MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {ocultarIp(p.ip, discreto)} · {p.ciudad ?? '—'}
@@ -448,8 +472,11 @@ export const AdminCommandCenter: React.FC = () => {
             : { ...card, position: 'absolute', top: 12, right: 12, zIndex: 4, width: 254, maxHeight: 'calc(100% - 24px)', overflowY: 'auto' }}>
             <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
               <span style={{ minWidth: 0 }}>
-                <p style={{ fontSize: 13.5, fontWeight: 800, margin: 0 }}>{sel.nombre ?? NOMBRE_TIPO[sel.tipo]}</p>
-                <p style={{ fontSize: 10.5, color: COLOR[sel.tipo], margin: '2px 0 0', fontWeight: 700 }}>{NOMBRE_TIPO[sel.tipo].toUpperCase()}</p>
+                <p style={{ fontSize: 13.5, fontWeight: 800, margin: 0, overflowWrap: 'anywhere' }}>{quien(sel)}</p>
+                <p style={{ fontSize: 10.5, color: COLOR[sel.tipo], margin: '2px 0 0', fontWeight: 700 }}>{etiqueta(sel)}</p>
+                {sel.correo && sel.nombre && (
+                  <p style={{ fontSize: 10.5, color: C.dim, margin: '2px 0 0', overflowWrap: 'anywhere' }}>{sel.correo}</p>
+                )}
               </span>
               <button onClick={() => setSel(null)} style={{ background: 'none', border: 'none', color: C.dim, cursor: 'pointer', display: 'flex' }}>
                 <Ico d={D.cerrar} size={14} />
