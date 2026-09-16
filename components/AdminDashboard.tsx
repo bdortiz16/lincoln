@@ -278,12 +278,26 @@ const DiditAdminPanel: React.FC<{ client: any; showToast: (m: string) => void }>
 
 // Nombre que se MUESTRA para cada pestaña. Sin esto la cabecera pintaba la
 // clave interna en inglés ("Clients", "Treasury"…).
+// Las dos secciones que agrupan varias pantallas. El orden es el de las
+// pestañas: primero la pantalla que da el panorama, después el detalle.
+const GRUPO_SEG = ['security', 'comando', 'monitoreo', 'auditoria', 'team'];
+const GRUPO_CUMP = ['compliance', 'tusdatos', 'kumplo'];
+
 const TAB_TITLES: Record<string, string> = {
   overview: 'Dashboard', clients: 'Clientes', treasury: 'Tesorería', cargues: 'Cargues',
   team: 'Equipo Admin', reports: 'Reportes', marketing: 'Marketing', config: 'Configuración',
   banks: 'Bancos', rates: 'Tasas de Cambio', security: 'Seguridad', design: 'Diseño y Apariencia',
   gasfree: 'Custodia USDT', otcConfig: 'Contabilidad OTC', fallos: 'Fallos',
   auditoria: 'Auditoría', monitoreo: 'Monitoreo', kumplo: 'Kumplo', comando: 'Centro de Comando',
+  tusdatos: 'TusDatos', compliance: 'Cumplimiento',
+};
+
+// Cómo se llama cada pestaña DENTRO de su sección. La primera no puede
+// repetir el nombre de la sección ("Seguridad › Seguridad" no dice nada):
+// se nombra por lo que realmente muestra.
+const SUBTAB_TITLES: Record<string, string> = {
+  security: 'Cuentas y accesos',
+  compliance: 'Bandeja de casos',
 };
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
@@ -3929,16 +3943,13 @@ const renderDesign = () => (
                             <AdminSidebarItem icon={ArrowLeftRight} label="Contabilidad OTC" active={activeTab === 'otcConfig'} onClick={() => navTo('otcConfig')} />
                         </> },
                         { key: 'sistema', title: 'Sistema', items: <>
-                            <AdminSidebarItem icon={Globe} label="Centro de Comando" active={activeTab === 'comando'} onClick={() => navTo('comando')} />
-                            <AdminSidebarItem icon={Shield} label="Seguridad" active={activeTab === 'security'} onClick={() => navTo('security')} />
-                            <AdminSidebarItem icon={Shield} label="Auditoría" active={activeTab === 'auditoria'} onClick={() => navTo('auditoria')} />
-                            <AdminSidebarItem icon={Activity} label="Monitoreo" active={activeTab === 'monitoreo'} onClick={() => navTo('monitoreo')} />
-                            <AdminSidebarItem icon={UserCheck} label="Equipo Admin" active={activeTab === 'team'} onClick={() => navTo('team')} />
+                            {/* Seguridad y Cumplimiento son una entrada cada
+                                una: adentro llevan sus pestañas. Antes eran
+                                siete renglones sueltos. */}
+                            <AdminSidebarItem icon={Shield} label="Seguridad" active={GRUPO_SEG.includes(activeTab)} onClick={() => navTo('security')} />
+                            <AdminSidebarItem icon={ShieldAlert} label="Cumplimiento" active={GRUPO_CUMP.includes(activeTab)} onClick={() => navTo('compliance')} />
                             <AdminSidebarItem icon={Megaphone} label="Marketing" active={activeTab === 'marketing'} onClick={() => navTo('marketing')} />
                             <AdminSidebarItem icon={Palette} label="Diseño" active={activeTab === 'design'} onClick={() => navTo('design')} />
-                            <AdminSidebarItem icon={UserCheck} label="TusDatos" active={activeTab === 'tusdatos'} onClick={() => navTo('tusdatos')} />
-                            <AdminSidebarItem icon={ShieldAlert} label="Cumplimiento" active={activeTab === 'compliance'} onClick={() => navTo('compliance')} />
-                            <AdminSidebarItem icon={Link2} label="Kumplo" active={activeTab === 'kumplo'} onClick={() => navTo('kumplo')} />
                             <AdminSidebarItem icon={Settings} label="Configuración" active={activeTab === 'config'} onClick={() => navTo('config')} />
                         </> },
                     ];
@@ -3998,6 +4009,39 @@ const renderDesign = () => (
             )}
 
             <div className={`flex-1 overflow-y-auto ${isDark ? 'p-6' : 'p-8'}`}>
+                {/* ── Pestañas de las dos secciones agrupadas ──────────────
+                    La barra lateral tenía catorce entradas sueltas en Sistema
+                    y cuatro de ellas eran la misma cosa —quién entra, qué hace
+                    y quién puede— mientras TusDatos y Kumplo son las dos
+                    mitades del mismo control. Se agrupan bajo Seguridad y
+                    Cumplimiento, que es como se piensan.
+
+                    Cada subpantalla CONSERVA su propia clave de vista, así que
+                    los enlaces directos que alguien ya tenga guardados siguen
+                    funcionando y entran con su pestaña marcada. */}
+                {(GRUPO_SEG.includes(activeTab) || GRUPO_CUMP.includes(activeTab)) && (() => {
+                    const tabs = GRUPO_SEG.includes(activeTab) ? GRUPO_SEG : GRUPO_CUMP;
+                    return (
+                        <div className="flex flex-wrap gap-1.5 mb-5">
+                            {tabs.map(t => {
+                                const on = activeTab === t;
+                                return (
+                                    <button key={t} onClick={() => navTo(t)}
+                                        className="transition-colors"
+                                        style={{
+                                            fontSize: 12.5, fontWeight: on ? 700 : 600,
+                                            padding: '7px 13px', borderRadius: 9,
+                                            color: on ? '#F4F4F2' : '#878E88',
+                                            background: on ? 'rgba(255,255,255,0.08)' : 'transparent',
+                                            border: `1px solid ${on ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.08)'}`,
+                                        }}>
+                                        {SUBTAB_TITLES[t] ?? TAB_TITLES[t] ?? t}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    );
+                })()}
                 {activeTab === 'overview' && <AdminMonitor />}
                 {activeTab === 'monitoreo' && (
                   <div className="space-y-4">
