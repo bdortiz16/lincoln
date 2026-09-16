@@ -4154,7 +4154,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       c.closePath();
     };
     const buildReceiptCanvas = () => {
-      const scale = 3, W = 380, PAD = 26, maxW = W - PAD * 2;
+      // PAD_TOP aparte del lateral: el comprobante se ve casi siempre dentro
+      // de otra cosa —el visor de fotos del teléfono, WhatsApp— y ahí la barra
+      // de estado o el encabezado de la app se come la franja de arriba. Con
+      // el mismo margen que los lados, el logo quedaba pegado al borde y se
+      // veía tapado. Se le da aire de sobra arriba y abajo.
+      const scale = 3, W = 380, PAD = 26, PAD_TOP = 58, PAD_BOTTOM = 40, maxW = W - PAD * 2;
       const F_VALUE = `600 14px ${FONT}`, F_LABEL = `700 10px ${FONT}`;
       const mctx = document.createElement('canvas').getContext('2d')!;
       const wrap = (text: string, font: string) => {
@@ -4176,10 +4181,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       const footNote = 'Este comprobante es un soporte de la operación realizada a través de Lincoin. No constituye una factura ni un extracto bancario. Lincoin no es un banco; la confianza opera sobre infraestructura de Circle, Fireblocks y SEPA/SWIFT.';
       const footLines = wrap(footNote, F_FOOT);
       // Medir alto
-      let H = PAD + 30 + 22 + 16 + 84 + 20;
+      let H = PAD_TOP + 30 + 22 + 16 + 84 + 20;
       for (const r of rows) H += 16 + r.lines.length * 18 + 14;
       // Pie: espacio + "Comprobante Lincoin" + nota + web + margen inferior
-      H += 20 + 16 + 12 + footLines.length * 13 + 20 + PAD;
+      H += 20 + 16 + 12 + footLines.length * 13 + 20 + PAD_BOTTOM;
 
       const canvas = document.createElement('canvas');
       canvas.width = W * scale; canvas.height = H * scale;
@@ -4188,9 +4193,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       // Fondo oscuro Lincoin
       ctx.fillStyle = '#0C0E0D'; ctx.fillRect(0, 0, W, H);
 
-      let y = PAD + 24;
+      let y = PAD_TOP + 24;
       // Logo: wordmark tipográfico "Lincoin" + punto verde (NUNCA ícono/cubo
       // ni el nombre viejo — reglas de marca en CLAUDE.md).
+      // La línea base se fija a mano: el valor por defecto varía entre
+      // navegadores y de él depende cuánto aire queda por encima de la "L".
+      ctx.textBaseline = 'alphabetic';
       ctx.font = `800 26px Archivo, ${FONT}`;
       const wWord = ctx.measureText('Lincoin').width, wDot = ctx.measureText('.').width;
       const gx = (W - (wWord + wDot)) / 2;
