@@ -15,7 +15,23 @@ import React, { useEffect, useRef, useState } from 'react';
 // nada: quien decide si este dispositivo ya pasó el código es el SERVIDOR,
 // que lleva la lista. Si el identificador se pierde, se vuelve a pedir el
 // código una vez y se registra otro — que es lo correcto.
+//
+// RESPALDO LOCAL: se conserva la marca de antes (una fecha por usuario) y se
+// usa SOLO cuando el servidor todavía no conoce esta función — o sea, cuando
+// la versión desplegada es anterior a este cambio. Sin ese respaldo, el
+// navegador nuevo contra el servidor viejo pide el código en CADA ingreso:
+// pregunta por el dispositivo, recibe "acción desconocida", y por diseño ante
+// la duda se pide el código. El arreglo terminaba empeorando el síntoma.
+// Cuando el servidor esté al día, manda él y esto deja de usarse.
 const DEVICE_KEY = 'lincoin_device';
+const LEGACY_KEY = (userId: string) => `lincoin_otp_ok_${userId}`;
+export function recuerdoLocal(userId?: string): boolean {
+  if (!userId) return false;
+  try { return Number(localStorage.getItem(LEGACY_KEY(userId))) > Date.now(); } catch { return false; }
+}
+function guardarRecuerdoLocal(userId: string) {
+  try { localStorage.setItem(LEGACY_KEY(userId), String(Date.now() + 30 * 864e5)); } catch { /* sin almacenamiento */ }
+}
 export function deviceId(): string {
   try {
     let v = localStorage.getItem(DEVICE_KEY);
@@ -85,6 +101,8 @@ export const EmailOtpGate: React.FC<Props> = ({ userId, email, onVerified, onLog
     const r = await call('verify', { code, trust: remember, deviceId: deviceId() });
     setVerifying(false);
     if (r?.ok) {
+      // También la marca local, por si el servidor aún no guarda dispositivos.
+      if (remember) guardarRecuerdoLocal(userId);
       onVerified();
     } else {
       setErr(r?.message || 'Código incorrecto.');

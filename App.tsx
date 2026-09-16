@@ -13,7 +13,7 @@ import { PersonalDashboard } from './components/PersonalDashboard';
 import { AdminDashboard } from './components/AdminDashboard';
 import { ToastProvider } from './components/AdminPersonas/lib/toast';
 import { StaticPage } from './components/StaticPage'; // New Import
-import { EmailOtpGate, deviceId } from './components/EmailOtpGate';
+import { EmailOtpGate, deviceId, recuerdoLocal } from './components/EmailOtpGate';
 import { IdleGuard } from './components/IdleGuard';
 import { LogoConcepts } from './components/LogoConcepts';
 import { useDatabase } from './context/DatabaseContext';
@@ -261,11 +261,18 @@ const App: React.FC = () => {
           body: JSON.stringify({ action: 'is_trusted', userId: uid, email: currentUser?.email, deviceId: deviceId() }),
         });
         const d = await r.json();
-        if (vivo) setDeviceTrusted(!!d?.trusted);
+        if (!vivo) return;
+        // Si el servidor NO conoce esta acción, la versión desplegada es
+        // anterior a este cambio: entonces manda la marca local de siempre.
+        // Sin esto, el navegador nuevo contra el servidor viejo pedía el
+        // código en cada ingreso — el arreglo empeoraba el problema.
+        if (d?.error === 'bad_action' || !r.ok) { setDeviceTrusted(recuerdoLocal(uid)); return; }
+        setDeviceTrusted(!!d?.trusted);
       } catch {
-        // Sin respuesta se PIDE el código. Es el lado seguro: no saber si el
-        // dispositivo es de confianza no es lo mismo que saber que lo es.
-        if (vivo) setDeviceTrusted(false);
+        // Sin respuesta, el respaldo local. Si tampoco hay marca, se pide el
+        // código: no saber si el dispositivo es de confianza no es lo mismo
+        // que saber que lo es.
+        if (vivo) setDeviceTrusted(recuerdoLocal(uid));
       }
     })();
     return () => { vivo = false; };
