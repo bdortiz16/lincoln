@@ -606,6 +606,18 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       // Solo una respuesta explícita cambia el estado: si la consulta falla
       // se conserva lo último que sí supimos.
       if (vivo && e?.ok) setAmlSrv(e.beneficiarios ?? {});
+
+      // Y se arrancan las consultas que falten. Ahora que un beneficiario sin
+      // resultado NO se puede elegir, quedarse esperando una consulta que
+      // nadie lanzó dejaría la cuenta sin poder enviar. Abrir el envío es
+      // justo el momento de pedirlas.
+      const p = await llamarFuncion('tusdatos', { action: 'verificar_pendientes', userId: uid, limite: 4 });
+      if (!vivo || !p?.ok) return;
+      // Recoger lo que ya haya vuelto y refrescar, para no dejar la pantalla
+      // diciendo "espera" cuando el resultado ya llegó.
+      await llamarFuncion('tusdatos', { action: 'recoger_pendientes', userId: uid });
+      const e2 = await llamarFuncion('tusdatos', { action: 'estado', userId: uid });
+      if (vivo && e2?.ok) setAmlSrv(e2.beneficiarios ?? {});
     })();
     return () => { vivo = false; };
   }, [currentUser?.id, isSendModalOpen]);
@@ -5753,9 +5765,18 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           // 'operable: false'.
                           const amlFrena = (c: any) => {
                               const k = amlDe(c);
-                              if (!k || k.estado !== 'finalizado') return false;
+                              if (!k) return false;
+                              // SIN RESULTADO NO SE ENVÍA. Mientras la consulta
+                              // corre no se deja elegir: si el veredicto llega
+                              // negativo con la plata ya enviada, el control no
+                              // sirvió de nada. Tarda cerca de un minuto.
+                              if (k.estado !== 'finalizado') return true;
                               return k.operable === false || k.categoria === 'alto'
                                   || k.nombreCoincide === false || k.documentoVigente === false;
+                          };
+                          const amlEsperando = (c: any) => {
+                              const k = amlDe(c);
+                              return !!k && k.estado !== 'finalizado';
                           };
                           // El resultado de antecedentes de cada beneficiario,
                           // con el mismo lenguaje que la lista de
@@ -5769,8 +5790,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               const k = amlDe(c);
                               if (!k) return null;
                               const est = String(k.estado ?? '');
-                              if (est === 'procesando' || !est) return { t: 'AML · CONSULTANDO', tono: 'gris' };
-                              if (est !== 'finalizado') return { t: 'AML · SIN RESULTADO', tono: 'gris' };
+                              // Mientras no haya resultado no se puede enviar, así
+                              // que la etiqueta lo dice: "consultando" a secas
+                              // parecía un detalle informativo y no la razón por
+                              // la que la fila está deshabilitada.
+                              if (est === 'procesando' || !est) return { t: 'AML · CONSULTANDO · ESPERA', tono: 'gris' };
+                              if (est !== 'finalizado') return { t: 'AML · SIN RESULTADO · ESPERA', tono: 'gris' };
                               const frena = amlFrena(c);
                               const fin = (s: string) => frena ? `${s} · BLOQUEADO` : s;
                               if (k.nombreCoincide === false) return { t: `AML · ${fin('NOMBRE INCORRECTO')}`, tono: 'rojo' };

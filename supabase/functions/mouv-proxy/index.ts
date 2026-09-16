@@ -1210,12 +1210,41 @@ serve(async (req: Request) => {
           const tdCfg = (tdRow as any)?.value ? JSON.parse((tdRow as any).value) : null
           if (tdCfg?.activo) {
             const f = (rawU?.tusdatos?.beneficiarios ?? {})[docDest]
-            // Solo una categoría EXPLÍCITA bloquea. Sin resultado, con la
-            // consulta en curso, con el documento sin validar o con el
-            // titular sin autorizar, se deja pasar: un control que no pudo
-            // concluir no puede acusar a nadie.
             const cat = String(f?.categoria ?? '')
             const cerrado = f?.estado === 'finalizado'
+
+            // ── SIN RESULTADO NO SALE PLATA ──────────────────────────────
+            //
+            // Antes, mientras la consulta corría se dejaba pasar: "un control
+            // que no pudo concluir no puede acusar a nadie". Para no ACUSAR
+            // es cierto, pero no para dejar SALIR el dinero — si el veredicto
+            // llega negativo un minuto después, ya se fue. El control existe
+            // para decidir antes, no para enterarse después.
+            //
+            // Solo aplica a las cuentas que el AML realmente cubre: si la
+            // cuenta está fuera de la lista de prueba no se le va a consultar
+            // nada nunca, y esperar un resultado que no va a llegar dejaría
+            // la operación parada sin ganar nada.
+            //
+            // 'sin_autorizacion' NO espera: el titular está en su derecho de
+            // no autorizar la consulta y eso no se resuelve esperando.
+            {
+              const soloEstos: string[] = Array.isArray(tdCfg?.soloEstosUsuarios) ? tdCfg.soloEstosUsuarios : []
+              const cubierta = soloEstos.length === 0 || soloEstos.includes(userId)
+              const estadoF = String(f?.estado ?? '')
+              const esperando = cubierta && estadoF !== 'finalizado' && estadoF !== 'sin_autorizacion'
+              if (esperando) {
+                await logAudit(userId, 'tusdatos.envio_en_espera', {
+                  documento: docDest, estado: estadoF || 'sin_consulta',
+                })
+                return json(409, {
+                  error: 'aml_pendiente',
+                  message: estadoF === 'procesando' || !estadoF
+                    ? 'Estamos verificando los antecedentes de este beneficiario. Suele tardar cerca de un minuto; inténtalo de nuevo en un momento.'
+                    : 'La verificación de antecedentes de este beneficiario no ha terminado. Se está reintentando; inténtalo de nuevo en unos minutos.',
+                })
+              }
+            }
             // La identidad pesa más que los antecedentes: si el nombre
             // inscrito no es el del documento, o la cédula no está vigente,
             // no se sabe A QUIÉN se le está transfiriendo. Saber que otra

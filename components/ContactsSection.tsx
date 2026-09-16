@@ -374,11 +374,30 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     // frena nada — la ausencia de resultado no es una condena.
     const amlFrena = (c: Partial<MouvContact>) => {
         const k = amlDe(c);
-        if (!k || String(k.estado ?? '') !== 'finalizado') return false;
+        if (!k) return false;
+        const est = String(k.estado ?? '');
+        // SIN RESULTADO NO SE ENVÍA.
+        //
+        // Antes esto dejaba pasar mientras la consulta estuviera en curso, con
+        // el argumento de que "la ausencia de resultado no es una condena".
+        // Para no acusar a nadie es cierto — pero dejar salir la plata
+        // mientras el control corre es peor: si el resultado llega negativo,
+        // ya se fue. El control existe para decidir ANTES.
+        //
+        // La consulta tarda cerca de un minuto. Se espera.
+        if (est !== 'finalizado') return true;
         return k.operable === false
             || String(k.categoria ?? '') === 'alto'
             || k.nombreCoincide === false
             || k.documentoVigente === false;
+    };
+    // Por qué está frenado, para decirlo en la interfaz: esperar un resultado
+    // no es lo mismo que estar bloqueado, y la persona tiene que poder
+    // distinguirlo — en un caso espera, en el otro no hay nada que esperar.
+    const amlEsperando = (c: Partial<MouvContact>) => {
+        const k = amlDe(c);
+        if (!k) return false;
+        return String(k.estado ?? '') !== 'finalizado';
     };
     // No poder ENVIAR y no poder BORRAR son cosas distintas.
     //
@@ -1622,7 +1641,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                     const actions = (
                         <div className="flex items-center justify-end gap-2" style={{ position: 'relative' }}>
                             <button onClick={() => onSendTo?.(c)} disabled={!puedeEnviar}
-                                title={frenado ? 'Bloqueado por cumplimiento. No se puede transferir a esta persona.' : undefined}
+                                title={frenado ? (amlEsperando(c) ? 'Esperando el resultado de antecedentes. Suele tardar cerca de un minuto.' : 'Bloqueado por cumplimiento. No se puede transferir a esta persona.') : undefined}
                                 style={{ fontSize: 12.5, fontWeight: 600, color: puedeEnviar ? '#F4F4F2' : '#878E88', cursor: puedeEnviar ? 'pointer' : 'not-allowed' }}
                                 className="hover:text-[#4ADE80] transition-colors">Enviar</button>
                             <button onClick={e => abrirMenu(c.id, e)} style={{ color: '#878E88', fontWeight: 700, fontSize: 14, padding: '2px 6px', borderRadius: 6 }} className="hover:bg-white/[0.06] transition-colors">···</button>
@@ -2045,11 +2064,15 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                 style={amlFrena(detail)
                                     // Un botón blanco a media opacidad se sigue
                                     // leyendo como "dale, toca acá". Si está
-                                    // bloqueado, que lo diga.
-                                    ? { flex: 1.4, height: 44, borderRadius: 10, fontSize: 13, fontWeight: 700, cursor: 'not-allowed', background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.28)', color: '#F87171' }
+                                    // frenado, que lo diga — y esperar un
+                                    // resultado no es lo mismo que estar
+                                    // bloqueado: uno se resuelve solo.
+                                    ? (amlEsperando(detail)
+                                        ? { flex: 1.4, height: 44, borderRadius: 10, fontSize: 13, fontWeight: 700, cursor: 'not-allowed', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.14)', color: '#878E88' }
+                                        : { flex: 1.4, height: 44, borderRadius: 10, fontSize: 13, fontWeight: 700, cursor: 'not-allowed', background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.28)', color: '#F87171' })
                                     : { flex: 1.4, height: 44, borderRadius: 10, fontSize: 13.5, fontWeight: 700, border: 'none', opacity: (!onSendTo || st !== 'aprobada') ? 0.45 : 1, cursor: (!onSendTo || st !== 'aprobada') ? 'not-allowed' : 'pointer' }}>
                                 {amlFrena(detail)
-                                    ? <>Bloqueado</>
+                                    ? <>{amlEsperando(detail) ? 'Esperando antecedentes…' : 'Bloqueado'}</>
                                     : <><Send size={14} /> Enviar dinero</>}
                             </button>
                         </div>
