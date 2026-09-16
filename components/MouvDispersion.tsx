@@ -92,7 +92,7 @@ export const MouvDispersion: React.FC<Props> = ({ userId, rail, balance, authHea
         setAmount(''); setKeyValue(''); setAccountNumber(''); setDocNumber(''); setHolderName(''); setReference('');
         onDone?.();
       } else if (d?.error === 'not_implemented') {
-        setResult({ kind: 'pending', text: d.message || 'La dispersión con Mouv aún no está activa. Tu saldo no fue afectado.' });
+        setResult({ kind: 'pending', text: d.message || 'La dispersión por este riel aún no está activa. Tu saldo no fue afectado.' });
       } else {
         setResult({ kind: 'error', text: d?.message || 'No se pudo completar la dispersión.' });
         if (d?.refunded) onDone?.();

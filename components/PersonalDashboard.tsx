@@ -4059,9 +4059,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     const providerOpRef: string = String(
       tx.providerRef ?? rawData.providerRef ?? rawData.providerTraceId ?? ''
     ).trim();
-    const providerRefLabel: string = tx.currency === 'COP_BREB'
-      ? 'Referencia Mouv'
-      : (tx.currency === 'COP_ACH' || isMouvConvert) ? 'Referencia Finity' : 'Referencia de operación';
+    // La etiqueta NO nombra al proveedor. Al cliente le sirve para reclamar y
+    // para cruzar la operación con su banco; quién nos presta el riel es un
+    // asunto nuestro, y ponerlo en un comprobante que el cliente reenvía es
+    // regalarlo. El número es el mismo.
+    const providerRefLabel: string = 'Referencia de la operación';
 
     // Documento con tipo (CC 1005237062) — usado por dispersión y genéricos.
     // Las dispersiones Bre-B guardan el número (resolve-key) pero no siempre

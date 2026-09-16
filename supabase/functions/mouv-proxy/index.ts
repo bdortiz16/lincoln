@@ -1038,7 +1038,10 @@ serve(async (req: Request) => {
         candidates: exists })
     }
     return json(200, { ok: false, error: 'payin_not_supported',
-      message: `Ninguna ruta de recaudo respondió (todas 404). Mouv quizá no tiene recaudo PSE por API en esta cuenta, o la ruta es distinta. Probé ${paths.length} rutas.`,
+      // El detalle técnico queda en `tried`, para el equipo. El mensaje que
+      // lee el cliente no nombra al proveedor ni le cuenta cuántas rutas se
+      // probaron: eso no le sirve y revela con quién operamos.
+      message: 'El recaudo por PSE no está disponible en este momento. Intenta más tarde o comunícate con soporte.',
       tried })
   }
 

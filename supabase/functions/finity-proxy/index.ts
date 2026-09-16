@@ -738,7 +738,7 @@ Deno.serve(async (req) => {
     if (action === 'delete_external_account') {
       const eaId = String(payload.finityId ?? '').trim()
       const accDigits = String(payload.accountNumber ?? '').replace(/\D/g, '')
-      if (!eaId && !accDigits) return json(200, { ok: false, error: 'missing_ref', message: 'Falta finityId o número de cuenta.' })
+      if (!eaId && !accDigits) return json(200, { ok: false, error: 'missing_ref', message: 'Falta la referencia de la cuenta o su número.' })
 
       // Guard cross-usuario: ¿alguien más (o el mismo, en otro contacto) sigue
       // teniendo esta cuenta inscrita? Se comparan finityId e igual número.

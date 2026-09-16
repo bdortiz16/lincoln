@@ -1624,7 +1624,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                   ? 'Saldo real de tu cuenta de dispersión — es el que se usa para dispersar.'
                                   : mouvChecked
                                       ? 'Tu saldo interno Lincoin: cargas, envíos entre usuarios y conversiones.'
-                                      : 'Saldo interno Lincoin · consultando Mouv…'}
+                                      : 'Saldo interno Lincoin · consultando…'}
                           </p>
                       </div>
 
