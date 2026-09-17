@@ -460,6 +460,11 @@ function leerComportamiento(bruto: any): Record<string, any> | null {
   return { recibido, enviado }
 }
 
+// Auditar no puede hacer fallar la operacion que audita.
+async function logAuditKyt(userId: string | null, action: string, metadata: Record<string, unknown>) {
+  try { await db.from('audit_log').insert({ user_id: userId, action, metadata }) } catch { /* no bloquea */ }
+}
+
 // ── Consulta PAGADA + guardado en el padrón ───────────────────────
 // La usan la consulta del cliente y la ronda de monitoreo. Una sola
 // implementación a propósito: dos copias de esto se habrían separado, y una de
@@ -1030,6 +1035,125 @@ Deno.serve(async (req) => {
         reporte: f.report_url ?? null,
         consultadoAt: f.consultado_at,
         delPadron: reusar,
+      })
+    }
+
+    // ── RASTREO DE RUTAS ──────────────────────────────────────────
+    // LO MAS IMPORTANTE DE ESTA HERRAMIENTA. Saber que una direccion tiene una
+    // ruta hacia una entidad senalada -- aunque sea a dos saltos -- es lo que
+    // permite anticipar que un exchange le va a congelar los fondos. Llega
+    // antes que el bloqueo, que es cuando todavia se puede hacer algo.
+    //
+    // DOS NIVELES, y la diferencia importa:
+    //
+    //   · Las rutas que vienen con el veredicto (risk_detail) dicen A CUANTOS
+    //     SALTOS esta la entidad senalada y POR CUANTO volumen, pero no por
+    //     donde se pasa. Son gratis: llegan con el puntaje.
+    //
+    //   · El intermediario hay que RECORRERLO. Se piden las contrapartes de la
+    //     direccion y, por cada una, las suyas, buscando las marcadas como
+    //     maliciosas (type 2). Cada paso es una consulta PAGADA, asi que el
+    //     recorrido tiene presupuesto y lo dispara el cliente a proposito --
+    //     nunca solo.
+    if (accion === 'rutas') {
+      if (!yo.userId && !yo.esAdmin) return json({ error: 'no_autorizado' }, 401)
+      const coin = canonCoin(body.coin)
+      const dir = normDir(body.address)
+      if (!coin || !dir) return json({ ok: false, error: 'faltan_datos' })
+      if (!formatoValido(coin, dir)) return json({ ok: false, error: 'formato_red' })
+
+      // Presupuesto: cuantas contrapartes se expanden. Cada una es una consulta
+      // pagada. 10 por defecto; el tope evita que una direccion con cientos de
+      // contrapartes se coma el plan en un clic.
+      const presupuesto = Math.max(1, Math.min(25, Number(body.presupuesto) || 10))
+
+      const rInv = await llamarMT(c, c.rutaInvestigacion, { coin, address: dir, type: 'all', page: '1' })
+      const inv = rInv.ok ? leerInvestigacion(rInv.data) : null
+      if (!inv) {
+        return json({
+          ok: false, error: 'sin_investigacion',
+          fuente: fuenteDe(rInv, inv),
+          mensaje: 'No pudimos obtener las contrapartes de esta dirección, así que no se pueden rastrear rutas.',
+        })
+      }
+
+      const vecinos = [...(inv.entradas ?? []), ...(inv.salidas ?? [])]
+        .filter((x: any) => x.direccion)
+      // Las que YA son maliciosas son rutas DIRECTAS: un salto, sin intermediario.
+      const directas = vecinos.filter((x: any) => x.tipoNum === 2).map((x: any) => ({
+        contaminante: x.direccion, etiquetaContaminante: x.etiqueta,
+        intermediario: null, saltos: 1,
+        flujo: x.flujo === 'entrada' ? 'entrante' : 'saliente',
+        monto: x.monto, txs: x.hashes?.length ?? null, hashes: x.hashes ?? [],
+      }))
+
+      // Se expanden las que NO son maliciosas, de mayor monto a menor: si hay
+      // presupuesto para diez, conviene gastarlo donde hay mas plata en juego.
+      const candidatos = vecinos
+        .filter((x: any) => x.tipoNum !== 2)
+        .sort((a: any, b: any) => (b.monto ?? 0) - (a.monto ?? 0))
+        .slice(0, presupuesto)
+
+      const indirectas: any[] = []
+      let expandidos = 0
+      let fallos = 0
+      for (const v of candidatos) {
+        const r2 = await llamarMT(c, c.rutaInvestigacion, { coin, address: v.direccion, type: 'all', page: '1' })
+        if (!r2.ok) { fallos++; continue }
+        expandidos++
+        const inv2 = leerInvestigacion(r2.data)
+        for (const m of (inv2?.maliciosas ?? [])) {
+          indirectas.push({
+            contaminante: m.direccion, etiquetaContaminante: m.etiqueta,
+            intermediario: v.direccion, etiquetaIntermediario: v.etiqueta,
+            saltos: 2,
+            flujo: v.flujo === 'entrada' ? 'entrante' : 'saliente',
+            // El monto que se muestra es el del tramo que TOCA a la direccion
+            // analizada, no el del tramo entre el intermediario y la lista: lo
+            // segundo no es plata de este titular y ponerlo exagera su
+            // exposicion.
+            monto: v.monto, montoTramoFinal: m.monto,
+            txs: v.hashes?.length ?? null, hashes: v.hashes ?? [],
+          })
+        }
+      }
+
+      // Agrupado por contaminante, como en un reporte de exposicion: lo que se
+      // mira primero es CUANTOS caminos llevan a la misma entidad senalada.
+      const porContaminante: Record<string, any> = {}
+      for (const r of [...directas, ...indirectas]) {
+        const k = String(r.contaminante ?? 'desconocido')
+        if (!porContaminante[k]) {
+          porContaminante[k] = {
+            contaminante: r.contaminante, etiqueta: r.etiquetaContaminante,
+            caminos: 0, montoTotal: 0, saltoMinimo: 99, intermediarios: new Set<string>(),
+          }
+        }
+        const g = porContaminante[k]
+        g.caminos += 1
+        g.montoTotal += Number(r.monto ?? 0)
+        g.saltoMinimo = Math.min(g.saltoMinimo, r.saltos)
+        if (r.intermediario) g.intermediarios.add(r.intermediario)
+      }
+      const resumen = Object.values(porContaminante).map((g: any) => ({
+        contaminante: g.contaminante, etiqueta: g.etiqueta,
+        caminos: g.caminos, montoTotal: g.montoTotal || null,
+        saltoMinimo: g.saltoMinimo === 99 ? null : g.saltoMinimo,
+        intermediarios: Array.from(g.intermediarios),
+      })).sort((a: any, b: any) => (b.montoTotal ?? 0) - (a.montoTotal ?? 0))
+
+      await logAuditKyt(yo.userId, 'kyt.rutas', { coin, address: dir, expandidos, directas: directas.length, indirectas: indirectas.length })
+
+      return json({
+        ok: true, coin, address: dir,
+        rutas: [...directas, ...indirectas].sort((a, b) => a.saltos - b.saltos || (b.monto ?? 0) - (a.monto ?? 0)),
+        resumen,
+        contrapartesRevisadas: vecinos.length,
+        expandidos, fallos, presupuesto,
+        // Se dice explicitamente hasta donde se miro. Una lista vacia despues
+        // de expandir diez de doscientas contrapartes NO significa "no hay
+        // rutas": significa "no hay en lo que miramos".
+        completo: candidatos.length >= vecinos.filter((x: any) => x.tipoNum !== 2).length,
       })
     }
 

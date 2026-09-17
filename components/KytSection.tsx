@@ -220,6 +220,8 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
   const [verHistorial, setVerHistorial] = useState(false);
   const [alertas, setAlertas] = useState<any[]>([]);
   const [reporte, setReporte] = useState<any | null>(null);
+  const [rutas, setRutas] = useState<any | null>(null);
+  const [rastreando, setRastreando] = useState(false);
   const [armando, setArmando] = useState(false);
 
   const cargarLista = useCallback(async () => {
@@ -256,7 +258,7 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
       setRes({ ok: false, error: 'formato_red', mensaje: `Esa dirección no tiene el formato de ${nombreRed(coin)}. Revisá la red que elegiste.` });
       return;
     }
-    setBusy(true); setRes(null);
+    setBusy(true); setRes(null); setRutas(null);
     try {
       const r = await llamarFuncion('kyt', { action: 'consultar', coin, address: a }, 45000);
       setRes(r ?? { ok: false, error: 'sin_respuesta', mensaje: 'No obtuvimos respuesta. Probá de nuevo.' });
@@ -475,7 +477,9 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
                   setArmando(true);
                   const r = await llamarFuncion('kyt', { action: 'reporte', coin: res.coin, address: res.address }, 60000).catch(() => null);
                   setArmando(false);
-                  if (r?.ok) setReporte(r);
+                  // Si ya se rastrearon rutas, van al reporte: es el dato
+                  // mas caro de obtener y seria absurdo dejarlo fuera.
+                  if (r?.ok) setReporte({ ...r, rutas });
                   else alert(r?.mensaje ?? 'No pudimos armar el reporte. Probá de nuevo.');
                 }}
                 disabled={armando}
@@ -499,6 +503,96 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
               )}
             </div>
           </div>
+
+          {/* ── RUTAS ──
+              Lo más importante de la pantalla, y por eso va arriba de todo lo
+              demás. Que una dirección tenga un camino hacia una entidad
+              señalada —aunque sea a dos saltos— es lo que permite anticipar
+              que un exchange le va a congelar los fondos. Llega antes que el
+              bloqueo, que es cuando todavía se puede hacer algo.
+
+              Estas rutas vienen CON el veredicto: dicen a cuántos saltos y por
+              cuánto volumen. El intermediario hay que rastrearlo aparte porque
+              cada paso del recorrido es una consulta pagada. */}
+          {Array.isArray(res.exposicion?.items) && res.exposicion.items.length > 0 ? (
+            <div style={{ marginBottom: 14, border: `1px solid ${ROJO.b}`, background: ROJO.f, borderRadius: 12, overflow: 'hidden' }}>
+              <div className="flex items-center justify-between flex-wrap" style={{ gap: 10, padding: '12px 15px', borderBottom: `1px solid ${C.bdSoft}` }}>
+                <p style={{ fontSize: 13, fontWeight: 800, color: ROJO.c, margin: 0 }}>
+                  {res.exposicion.items.length} {res.exposicion.items.length === 1 ? 'ruta hacia una entidad señalada' : 'rutas hacia entidades señaladas'}
+                </p>
+                <button
+                  onClick={async () => {
+                    setRastreando(true);
+                    const r = await llamarFuncion('kyt', { action: 'rutas', coin: res.coin, address: res.address }, 90000).catch(() => null);
+                    setRastreando(false);
+                    if (r?.ok) setRutas(r);
+                    else alert(r?.mensaje ?? 'No pudimos rastrear las rutas.');
+                  }}
+                  disabled={rastreando}
+                  style={{ fontFamily: FONT, fontSize: 12, fontWeight: 700, color: C.text, background: 'rgba(255,255,255,0.06)', border: `1px solid ${C.bdHard}`, borderRadius: 8, padding: '7px 12px', cursor: rastreando ? 'default' : 'pointer', opacity: rastreando ? 0.5 : 1 }}
+                >
+                  {rastreando ? 'Rastreando…' : 'Rastrear intermediarios'}
+                </button>
+              </div>
+              {res.exposicion.items.map((it: any, i: number) => (
+                <div key={i} style={{ padding: '11px 15px', borderTop: i ? `1px solid ${C.bdSoft}` : 'none' }}>
+                  {/* El camino dibujado: se lee de un vistazo cuán cerca está. */}
+                  <p style={{ fontFamily: MONO, fontSize: 11.5, color: C.sub, margin: 0 }}>
+                    esta dirección
+                    {it.saltos && it.saltos > 1 ? ` → ${it.saltos - 1} ${it.saltos - 1 === 1 ? 'intermediario' : 'intermediarios'}` : ''}
+                    {' → '}
+                    <span style={{ color: ROJO.c, fontWeight: 700 }}>{it.entidad ?? 'entidad señalada'}</span>
+                  </p>
+                  <p style={{ fontSize: 12, color: C.text, margin: '5px 0 0' }}>
+                    {it.tipoEs ?? 'tipo no informado'}
+                    {it.saltos != null ? ` · ${it.saltos} ${it.saltos === 1 ? 'salto' : 'saltos'}` : ''}
+                    {it.volumen != null ? ` · ${Number(it.volumen).toLocaleString('es-CO', { maximumFractionDigits: 2 })} de volumen vinculado` : ''}
+                    {it.exposicion === 'direct' ? ' · exposición directa' : ''}
+                  </p>
+                </div>
+              ))}
+              <p style={{ fontSize: 11.5, color: C.sub, margin: 0, padding: '11px 15px', borderTop: `1px solid ${C.bdSoft}`, lineHeight: 1.55 }}>
+                Una ruta contaminada no significa que el titular haya hecho algo: puede venir de
+                operaciones ajenas. Pero sí es lo que suele llevar a que un exchange congele
+                fondos, así que conviene saberlo antes de operar.
+              </p>
+            </div>
+          ) : (
+            <div style={{ marginBottom: 14, border: `1px solid ${C.bdSoft}`, borderRadius: 12, padding: '12px 15px' }}>
+              <p style={{ fontSize: 12.5, color: C.sub, margin: 0, lineHeight: 1.6 }}>
+                <b style={{ color: C.text, fontWeight: 700 }}>Sin rutas hacia entidades señaladas</b> en la
+                información disponible. No es una garantía: una ruta puede aparecer después.
+              </p>
+            </div>
+          )}
+
+          {/* Rutas rastreadas: acá sí aparece el intermediario. */}
+          {rutas && (
+            <div style={{ marginBottom: 14, border: `1px solid ${C.bdHard}`, borderRadius: 12, overflow: 'hidden' }}>
+              <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1.4px', color: C.sub, margin: 0, padding: '11px 15px', borderBottom: `1px solid ${C.bdSoft}` }}>
+                RUTAS RASTREADAS · {rutas.expandidos} de {rutas.contrapartesRevisadas} contrapartes revisadas
+              </p>
+              {rutas.rutas.length === 0 ? (
+                <p style={{ fontSize: 12.5, color: C.sub, margin: 0, padding: '13px 15px', lineHeight: 1.6 }}>
+                  No se encontraron rutas hacia entidades señaladas entre las contrapartes revisadas.
+                  {!rutas.completo && ' Quedaron contrapartes sin revisar: esto no descarta que existan otras rutas.'}
+                </p>
+              ) : rutas.rutas.map((r: any, i: number) => (
+                <div key={i} style={{ padding: '11px 15px', borderTop: i ? `1px solid ${C.bdSoft}` : 'none' }}>
+                  <p style={{ fontFamily: MONO, fontSize: 11, color: C.sub, margin: 0, wordBreak: 'break-all', lineHeight: 1.6 }}>
+                    {enmascarar(rutas.address)}
+                    {r.intermediario ? <> {'→'} <span style={{ color: C.text }}>{enmascarar(r.intermediario)}</span></> : null}
+                    {' → '}
+                    <span style={{ color: ROJO.c, fontWeight: 700 }}>{enmascarar(r.contaminante)}</span>
+                  </p>
+                  <p style={{ fontSize: 12, color: C.text, margin: '5px 0 0' }}>
+                    {r.etiquetaContaminante ?? 'contraparte señalada'} · {r.saltos} {r.saltos === 1 ? 'salto' : 'saltos'} · flujo {r.flujo}
+                    {r.monto != null ? ` · ${Number(r.monto).toLocaleString('es-CO', { maximumFractionDigits: 2 })}` : ''}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
             {/* EL POR QUÉ, con la estructura real del proveedor.

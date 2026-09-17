@@ -170,8 +170,83 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
           </div>
         </div>
 
-        {/* 1. Por qué */}
-        <Seccion n={1} titulo="Por qué tiene este nivel de riesgo">
+        {/* 1. RUTAS — primero, porque es lo que se mira.
+            Saber que existe un camino hacia una entidad señalada, y a cuántos
+            saltos, es lo que permite anticipar un congelamiento de fondos. Va
+            antes que el puntaje explicado: el puntaje resume, la ruta explica. */}
+        <Seccion n={1} titulo="Rutas hacia entidades señaladas">
+          {ex && Array.isArray(ex.items) && ex.items.length ? (
+            <>
+              <p style={{ fontSize: 11, margin: '0 0 8px', lineHeight: 1.65 }}>
+                Se detectaron <b>{ex.items.length}</b> {ex.items.length === 1 ? 'ruta' : 'rutas'} desde
+                esta dirección hacia entidades señaladas
+                {ex.saltoMinimo != null && ex.saltoMinimo < 99
+                  ? `, la más cercana a ${ex.saltoMinimo} ${ex.saltoMinimo === 1 ? 'salto' : 'saltos'}`
+                  : ''}
+                {ex.directas > 0 ? `, incluyendo ${ex.directas} de exposición directa` : ''}.
+              </p>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead><tr>
+                  <th style={th}>RUTA OBSERVADA</th><th style={th}>ENTIDAD SEÑALADA</th>
+                  <th style={th}>TIPO</th><th style={th}>DISTANCIA</th><th style={th}>VOLUMEN</th>
+                </tr></thead>
+                <tbody>
+                  {ex.items.map((it: any, i: number) => (
+                    <tr key={i}>
+                      <td style={{ ...td, fontSize: 9.5 }}>
+                        Analizada{it.saltos > 1 ? ` → ${it.saltos - 1} interm.` : ''} → <b>Señalada</b>
+                      </td>
+                      <td style={{ ...td, color: T.rojo, fontWeight: 700 }}>{it.entidad ?? '—'}</td>
+                      <td style={td}>{it.tipoEs ?? '—'}</td>
+                      <td style={td}>{it.saltos != null ? `${it.saltos} ${it.saltos === 1 ? 'salto' : 'saltos'}` : '—'}</td>
+                      <td style={td}>{num(it.volumen) ?? '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {d.rutas?.rutas?.length > 0 && (
+                <>
+                  <p style={{ fontSize: 11, fontWeight: 700, margin: '14px 0 6px' }}>
+                    Rutas rastreadas con intermediario
+                  </p>
+                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead><tr>
+                      <th style={th}>INTERMEDIARIO</th><th style={th}>CONTAMINANTE</th>
+                      <th style={th}>FLUJO</th><th style={th}>SALTOS</th><th style={th}>MONTO</th>
+                    </tr></thead>
+                    <tbody>
+                      {d.rutas.rutas.map((r: any, i: number) => (
+                        <tr key={i}>
+                          <td style={{ ...td, fontFamily: MONO, fontSize: 9, wordBreak: 'break-all' }}>{r.intermediario ?? 'directo'}</td>
+                          <td style={{ ...td, fontFamily: MONO, fontSize: 9, color: T.rojo, wordBreak: 'break-all' }}>{r.contaminante ?? '—'}</td>
+                          <td style={td}>{r.flujo ?? '—'}</td>
+                          <td style={td}>{r.saltos ?? '—'}</td>
+                          <td style={td}>{num(r.monto) ?? '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {d.rutas.completo === false && (
+                    <p style={{ fontSize: 9.5, color: T.tenue, margin: '6px 0 0', lineHeight: 1.55 }}>
+                      Se revisaron {d.rutas.expandidos} de {d.rutas.contrapartesRevisadas} contrapartes.
+                      La ausencia de más rutas en esta tabla no descarta que existan otras.
+                    </p>
+                  )}
+                </>
+              )}
+            </>
+          ) : (
+            <p style={{ fontSize: 11, margin: 0, lineHeight: 1.65 }}>
+              No se detectaron rutas desde esta dirección hacia entidades señaladas en la
+              información disponible. <b>Esto no constituye una garantía</b>: una ruta puede
+              aparecer después, y la ausencia de vínculos reportados no equivale a ausencia de
+              exposición.
+            </p>
+          )}
+        </Seccion>
+
+        {/* 2. Por qué */}
+        <Seccion n={2} titulo="Por qué tiene este nivel de riesgo">
           {motivos.length
             ? <ul style={{ margin: 0, paddingLeft: 17 }}>
                 {motivos.slice(0, 12).map((m, i) => (
@@ -187,7 +262,7 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
         </Seccion>
 
         {/* 2. Actividad */}
-        <Seccion n={2} titulo="Actividad de la dirección">
+        <Seccion n={3} titulo="Actividad de la dirección">
           {ac ? (
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead><tr>
@@ -208,7 +283,7 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
         </Seccion>
 
         {/* 3. Exposición */}
-        <Seccion n={3} titulo="Exposición a entidades de riesgo">
+        <Seccion n={4} titulo="Detalle de la exposición">
           {ex && Array.isArray(ex.items) && ex.items.length ? (
             <>
               <p style={{ fontSize: 11, margin: '0 0 8px', lineHeight: 1.6 }}>
@@ -245,7 +320,7 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
         </Seccion>
 
         {/* 4. Contrapartes señaladas */}
-        <Seccion n={4} titulo="Contrapartes señaladas">
+        <Seccion n={5} titulo="Contrapartes señaladas">
           {inv && Array.isArray(inv.maliciosas) && inv.maliciosas.length ? (
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead><tr>
@@ -272,7 +347,7 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
         </Seccion>
 
         {/* 5. Principales contrapartes */}
-        <Seccion n={5} titulo="Principales contrapartes por volumen">
+        <Seccion n={6} titulo="Principales contrapartes por volumen">
           {cp?.noSoportada
             ? <SinDato>
                 El proveedor no analiza contrapartes para este tipo de dirección (billeteras
@@ -295,7 +370,7 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
         </Seccion>
 
         {/* 6. Comportamiento */}
-        <Seccion n={6} titulo="En qué usa su volumen">
+        <Seccion n={7} titulo="En qué usa su volumen">
           {co ? (
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead><tr><th style={th}>FLUJO</th><th style={th}>TIPO DE OPERACIÓN</th><th style={th}>OPERACIONES</th><th style={th}>PROPORCIÓN</th></tr></thead>
@@ -315,7 +390,7 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
         </Seccion>
 
         {/* 7. Perfil */}
-        <Seccion n={7} titulo="Plataformas y eventos asociados">
+        <Seccion n={8} titulo="Plataformas y eventos asociados">
           {pf ? (
             <div style={{ fontSize: 11, lineHeight: 1.7 }}>
               {pf.primeraFuente && <p style={{ margin: '0 0 4px' }}><b>Origen del gas:</b> {pf.primeraFuente}</p>}
