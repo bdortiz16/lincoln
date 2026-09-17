@@ -76,13 +76,14 @@ CREATE INDEX IF NOT EXISTS risk_registry_categoria_idx   ON public.risk_registry
 ALTER TABLE public.risk_registry ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON public.risk_registry FROM anon, authenticated;
 
-DO $$
+DO $limpia_pol$
 DECLARE p record;
 BEGIN
   FOR p IN SELECT policyname FROM pg_policies WHERE schemaname = 'public' AND tablename = 'risk_registry' LOOP
     EXECUTE format('DROP POLICY IF EXISTS %I ON public.risk_registry', p.policyname);
   END LOOP;
-END $$;
+END;
+$limpia_pol$;
 
 NOTIFY pgrst, 'reload schema';
 

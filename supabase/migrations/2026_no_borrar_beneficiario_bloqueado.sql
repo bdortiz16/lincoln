@@ -2,45 +2,41 @@
 -- Un beneficiario bloqueado por cumplimiento NO se borra
 -- ============================================================================
 --
--- El problema: la lista de beneficiarios vive en raw_data.mouvContacts y la
--- escribe el navegador (es la lista del usuario, tiene que poder editarla).
--- Borrar uno es mandar la lista sin esa fila.
+-- La lista de beneficiarios vive en raw_data.mouvContacts y la escribe el
+-- navegador (es la lista del usuario, tiene que poder editarla). Borrar uno es
+-- mandar la lista sin esa fila.
 --
 -- Eso significaba que quien inscribia a una persona sancionada podia, al ver
--- el bloqueo en rojo, borrar la ficha y dejar la lista limpia. El veredicto
--- de TusDatos si quedaba guardado -- raw_data.tusdatos esta protegida por
--- guard_raw_data_server_keys -- pero se perdia la prueba de a quien se le
--- habia intentado transferir, que es justamente lo que hay que conservar.
+-- el bloqueo en rojo, borrar la ficha y dejar la lista limpia. El veredicto de
+-- TusDatos si quedaba guardado, pero se perdia la prueba de a quien se le
+-- habia intentado transferir, que es lo que hay que conservar.
 --
--- Este trigger lo impide: si una entrada de mouvContacts desaparece y su
--- documento tiene un veredicto bloqueante guardado, la entrada se devuelve a
--- la lista. No falla la operacion -- el resto de los cambios del usuario se
--- guardan igual -- simplemente esa ficha no se va.
+-- Este trigger lo impide: si una entrada desaparece y su documento tiene un
+-- hallazgo grave guardado, la entrada se devuelve a la lista. No falla la
+-- operacion -- el resto de los cambios del usuario se guardan igual --
+-- simplemente esa ficha no se va.
 --
--- NO poder enviar y NO poder borrar son cosas distintas.
---
--- Un nombre que no corresponde al documento casi siempre es un error de
--- digitacion. Eso se corrige borrando e inscribiendo de nuevo con el nombre
--- bueno, asi que ahi SI se puede borrar -- trabarlo solo deja una ficha muerta
--- en la lista que nadie puede arreglar. (Enviarle sigue prohibido, eso lo
--- resuelve la compuerta de mouv-proxy.)
---
--- Lo que queda grabado es el hallazgo sobre la PERSONA, con la consulta ya
--- TERMINADA:
---   - categoria = 'alto'       (hallazgos de riesgo alto), o
---   - documentoVigente = false (una cedula cancelada por muerte recibiendo
---                               plata no es un dedazo)
+-- NO poder enviar y NO poder borrar son cosas distintas. Un nombre que no
+-- corresponde al documento casi siempre es un error de digitacion, y eso se
+-- corrige borrando e inscribiendo de nuevo con el nombre bueno: ahi SI se
+-- puede borrar. Lo que queda grabado es el hallazgo sobre la PERSONA:
+-- categoria alta, o un documento que no esta vigente (una cedula cancelada
+-- por muerte recibiendo plata no es un dedazo).
 --
 -- Se mira la CATEGORIA, no lo que muestre la pantalla: un beneficiario con el
--- nombre mal escrito Y riesgo alto tampoco se puede borrar, aunque la insignia
--- diga "nombre incorrecto" (la identidad se muestra primero).
+-- nombre mal escrito Y riesgo alto tampoco se puede borrar.
 --
 -- Una consulta a medias NO bloquea el borrado: la ausencia de resultado no es
--- una condena, y no se le va a impedir a alguien limpiar su lista porque una
--- consulta se quedo colgada.
+-- una condena, y no se le va a trabar la lista a alguien porque una consulta
+-- se quedo colgada.
 --
--- El service_role (edge functions) y los admins pasan sin restriccion: hay
--- que poder corregir un caso desde el panel.
+-- El service_role (edge functions) y los admins pasan sin restriccion: hay que
+-- poder corregir un caso desde el panel.
+--
+-- NOTA PARA EL EDITOR DE SUPABASE: los comentarios de este archivo no llevan
+-- comillas simples a proposito. El editor cuenta comillas para partir el
+-- script en sentencias, y una comilla suelta dentro de un comentario lo hace
+-- cortar en el sitio equivocado.
 -- ============================================================================
 
 CREATE OR REPLACE FUNCTION public.guard_beneficiario_bloqueado()
@@ -48,17 +44,18 @@ RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public, pg_temp
-AS $$
+AS $guard_benef$
 DECLARE
   is_privileged boolean := FALSE;
-  oldraw  jsonb := COALESCE(OLD.raw_data, '{}'::jsonb);
-  newraw  jsonb := COALESCE(NEW.raw_data, '{}'::jsonb);
-  fichas  jsonb;
-  vieja   jsonb;
-  nueva   jsonb;
-  item    jsonb;
-  doc     text;
-  v       jsonb;
+  oldraw    jsonb := COALESCE(OLD.raw_data, '{}'::jsonb);
+  newraw    jsonb := COALESCE(NEW.raw_data, '{}'::jsonb);
+  fichas    jsonb;
+  vieja     jsonb;
+  nueva     jsonb;
+  item      jsonb;
+  doc       text;
+  v         jsonb;
+  sigue     boolean;
   repuestos jsonb := '[]'::jsonb;
 BEGIN
   -- Via libre para el servidor y los administradores.
@@ -79,11 +76,14 @@ BEGIN
   vieja := COALESCE(oldraw -> 'mouvContacts', '[]'::jsonb);
   nueva := COALESCE(newraw -> 'mouvContacts', '[]'::jsonb);
 
-  -- Nada que cuidar: la lista no cambio, o no es una lista, o no hay fichas
-  -- de antecedentes guardadas.
-  IF vieja IS NOT DISTINCT FROM nueva
-     OR jsonb_typeof(vieja) <> 'array'
-     OR jsonb_typeof(nueva) <> 'array' THEN
+  -- Si la lista NUEVA no es un arreglo (llego null, un objeto o una cadena),
+  -- se trata como lista vacia: borrar todo mandando basura no puede ser la
+  -- forma de saltarse la guardia.
+  IF jsonb_typeof(nueva) <> 'array' THEN
+    nueva := '[]'::jsonb;
+  END IF;
+
+  IF vieja IS NOT DISTINCT FROM nueva OR jsonb_typeof(vieja) <> 'array' THEN
     RETURN NEW;
   END IF;
 
@@ -94,27 +94,39 @@ BEGIN
 
   -- Por cada beneficiario que YA NO esta en la lista nueva, mirar su veredicto.
   FOR item IN SELECT value FROM jsonb_array_elements(vieja) LOOP
-    CONTINUE WHEN item IS NULL OR jsonb_typeof(item) <> 'object';
+    IF item IS NULL OR jsonb_typeof(item) <> 'object' THEN
+      CONTINUE;
+    END IF;
 
-    -- Sigue en la lista -> no se borro. Se compara por id; las fichas viejas
-    -- que no tienen id se comparan por documento + numero de cuenta.
-    CONTINUE WHEN EXISTS (
+    -- Sigue en la lista? Se compara por id; las fichas viejas sin id se
+    -- comparan por documento mas numero de cuenta.
+    SELECT EXISTS (
       SELECT 1 FROM jsonb_array_elements(nueva) n
       WHERE (item ->> 'id' IS NOT NULL AND n ->> 'id' = item ->> 'id')
          OR (item ->> 'id' IS NULL
              AND COALESCE(n ->> 'docNumber', '') = COALESCE(item ->> 'docNumber', '')
              AND COALESCE(n ->> 'accountNumber', '') = COALESCE(item ->> 'accountNumber', ''))
-    );
+    ) INTO sigue;
+
+    IF sigue THEN
+      CONTINUE;
+    END IF;
 
     -- Solo digitos, igual que lo hace el resto del sistema.
     doc := regexp_replace(COALESCE(item ->> 'docNumber', ''), '[^0-9]', '', 'g');
-    CONTINUE WHEN doc = '';
+    IF doc = '' THEN
+      CONTINUE;
+    END IF;
 
     v := fichas -> doc;
-    CONTINUE WHEN v IS NULL OR jsonb_typeof(v) <> 'object';
+    IF v IS NULL OR jsonb_typeof(v) <> 'object' THEN
+      CONTINUE;
+    END IF;
 
     -- Consulta a medias: no bloquea el borrado.
-    CONTINUE WHEN COALESCE(v ->> 'estado', '') <> 'finalizado';
+    IF COALESCE(v ->> 'estado', '') <> 'finalizado' THEN
+      CONTINUE;
+    END IF;
 
     IF COALESCE(v ->> 'categoria', '') = 'alto'
        OR (v ->> 'documentoVigente') = 'false' THEN
@@ -128,7 +140,7 @@ BEGIN
 
   RETURN NEW;
 END;
-$$;
+$guard_benef$;
 
 REVOKE ALL ON FUNCTION public.guard_beneficiario_bloqueado() FROM PUBLIC;
 
@@ -140,7 +152,9 @@ CREATE TRIGGER trg_guard_beneficiario_bloqueado
 
 NOTIFY pgrst, 'reload schema';
 
--- Comprobacion: las dos columnas deben decir true.
+-- ============================================================================
+-- COMPROBACION: las dos columnas deben decir true.
+-- ============================================================================
 SELECT
   EXISTS (
     SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace

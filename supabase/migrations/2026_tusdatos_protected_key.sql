@@ -1,7 +1,7 @@
 -- ════════════════════════════════════════════════════════════════════
 -- 2026_tusdatos_protected_key.sql
 --
--- Agrega 'tusdatos' a las claves de raw_data que SOLO el servidor escribe.
+-- Agrega "tusdatos" a las claves de raw_data que SOLO el servidor escribe.
 --
 -- Ahí vive el veredicto AML (riesgo bajo/medio/alto) y el id de la persona en
 -- Kumplo. Si un cliente pudiera escribirlo por PATCH directo a su propio
@@ -28,33 +28,33 @@ RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
-AS $$
+AS $guard_raw$
 DECLARE
   is_privileged boolean;
   k text;
   -- Claves de raw_data que SOLO el servidor puede cambiar.
-  -- OJO: 'gasfreeCreditedTxs' y 'gasfreeCreditedCount' son el ledger de
+  -- OJO: "gasfreeCreditedTxs" y "gasfreeCreditedCount" son el ledger de
   -- deduplicación de depósitos USDT del esquema NUEVO (por-TxID). Sin
   -- protegerlos, un cliente podía resetearlos por PATCH directo a su propio
   -- raw_data y re-acreditar depósitos ya acreditados (minteo repetible) —
-  -- el mismo agujero que 'gasfreeCredited' cerró para el esquema viejo.
+  -- el mismo agujero que "gasfreeCredited" cerró para el esquema viejo.
   protected text[] := ARRAY[
     'gasfreeCredited', 'gasfreeCreditedTxs', 'gasfreeCreditedCount',
     'gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress',
     'gasfreeEoa', 'gasfreeAddresses', 'subWallets',
     'mfaEnabled', 'mfaFactorId', 'totpSecret', 'totpSecretEnc', 'otp',
-    -- 'mfaBackupHashes' son los códigos de respaldo del 2FA (hasheados). Si el
+    -- "mfaBackupHashes" son los códigos de respaldo del 2FA (hasheados). Si el
     -- cliente pudiera escribirlos, plantaría sus propios códigos y entraría a
     -- cualquier cuenta sin el TOTP: es una credencial, no una preferencia.
     'mfaBackupHashes',
-    -- 'mfaSessions' marca QUE sesion supero el 2FA. Si el cliente pudiera
+    -- "mfaSessions" marca QUE sesion supero el 2FA. Si el cliente pudiera
     -- escribirla, se anotaria a si mismo como verificado y el segundo factor
     -- del servidor dejaria de valer.
     'mfaSessions',
-    -- 'kumplo' guarda el veredicto AML y el id de la persona en Kumplo.
+    -- "kumplo" guarda el veredicto AML y el id de la persona en Kumplo.
     -- Escribirlo desde el cliente seria ponerse "riesgo bajo" uno mismo.
     'kumplo',
-    -- 'tusdatos' guarda la consulta de antecedentes que hacemos nosotros: la
+    -- "tusdatos" guarda la consulta de antecedentes que hacemos nosotros: la
     -- categoria (bajo/medio/alto), el id del reporte y el veredicto de cada
     -- beneficiario. Es LO QUE DECIDE si una transferencia sale. Si el cliente
     -- pudiera escribirla, se aprobaria a si mismo y a quien quisiera, y el
@@ -97,7 +97,7 @@ BEGIN
 
   RETURN NEW;
 END;
-$$;
+$guard_raw$;
 
 DROP TRIGGER IF EXISTS trg_guard_raw_data_server_keys ON public.users;
 CREATE TRIGGER trg_guard_raw_data_server_keys
