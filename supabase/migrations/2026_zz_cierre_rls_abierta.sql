@@ -236,7 +236,7 @@ SELECT
     SELECT 1 FROM pg_trigger WHERE tgname = 'trg_guard_users_insert' AND NOT tgisinternal
   ) AS insert_protegido,
   position('Solo un administrador' in pg_get_functiondef(
-    (SELECT oid FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    (SELECT p.oid FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
      WHERE p.proname = 'apply_limit_increase' AND n.nspname = 'public' LIMIT 1))) > 0 AS topes_protegidos,
   NOT EXISTS (
     SELECT 1 FROM information_schema.role_table_grants
