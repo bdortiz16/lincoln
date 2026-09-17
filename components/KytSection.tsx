@@ -36,15 +36,20 @@ const C = {
 };
 const ANILLO = '0 0 0 2px rgba(74,222,128,0.5)';
 
-// Sin rojos ni amarillos, por marca. Riesgo bajo = verde; riesgo alto o cambio
-// de riesgo = blanco con borde marcado. Suena raro hasta que se ve: el blanco
-// fuerte sobre negro llama MÁS la atención que un rojo, y no mete un color de
-// alarma en una paleta que no lo tiene.
+// El diseño pedía "sin rojos ni amarillos" y riesgo alto en blanco. Se cambió
+// a pedido, y con razón: el resto de la app YA marca riesgo alto en #F87171 —
+// la lista de beneficiarios, el AML del envío. Que KYT fuera la única pantalla
+// donde riesgo alto se ve en blanco obligaba a reaprender el código de color
+// justo donde hay que decidir si se opera con una contraparte señalada.
+// Son los mismos tonos de ContactsSection, a propósito.
+const ROJO  = { c: '#F87171', b: 'rgba(248,113,113,0.42)', f: 'rgba(248,113,113,0.08)' };
+const AMBAR = { c: '#FBBF24', b: 'rgba(251,191,36,0.42)',  f: 'rgba(251,191,36,0.07)' };
+const VERDE = { c: '#4ADE80', b: 'rgba(74,222,128,0.5)',   f: 'transparent' };
+const NEUTRO = { c: '#878E88', b: 'rgba(255,255,255,0.22)', f: 'transparent' };
+
 const esBajo = (cat?: string) => cat === 'bajo';
 const tono = (cat?: string) =>
-  esBajo(cat)
-    ? { c: C.green, b: 'rgba(74,222,128,0.5)' }
-    : { c: C.text, b: 'rgba(255,255,255,0.3)' };
+  cat === 'alto' ? ROJO : cat === 'medio' ? AMBAR : cat === 'bajo' ? VERDE : NEUTRO;
 
 const REDES = [
   { v: 'TRX', t: 'TRON' },
@@ -96,7 +101,7 @@ const Puntaje: React.FC<{ n: number | null; cat?: string; size?: number }> = ({ 
   return (
     <div style={{
       width: size, height: size, borderRadius: '50%', flexShrink: 0,
-      border: `2px solid ${t.b}`, display: 'grid', placeItems: 'center',
+      border: `2px solid ${t.b}`, background: t.f, display: 'grid', placeItems: 'center',
     }}>
       <span style={{ fontSize: size * 0.36, fontWeight: 800, color: t.c, fontVariantNumeric: 'tabular-nums' }}>
         {n == null ? '–' : n}
@@ -343,6 +348,23 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
               >
                 <Eye size={15} strokeWidth={1.5} /> {yaGuardada ? 'Ya la monitoreás' : 'Guardar y monitorear'}
               </button>
+              {res.delPadron && (
+                // Una ficha vieja puede no traer lo que hoy mostramos. Antes no
+                // había forma de pedir una consulta fresca y la pantalla se
+                // quedaba a medias sin explicación.
+                <button
+                  onClick={async () => {
+                    setBusy(true);
+                    const r = await llamarFuncion('kyt', { action: 'consultar', coin: res.coin, address: res.address, force: true }, 45000).catch(() => null);
+                    if (r) setRes(r);
+                    setBusy(false);
+                  }}
+                  className="transition-colors hover:text-[#F4F4F2]"
+                  style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, color: C.sub, background: 'none', border: 'none', padding: 0, cursor: 'pointer', whiteSpace: 'nowrap' }}
+                >
+                  Consultar de nuevo
+                </button>
+              )}
               {res.reporte && (
                 <a href={res.reporte} target="_blank" rel="noopener noreferrer"
                   className="transition-colors hover:text-[#F4F4F2]"
@@ -354,24 +376,38 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
-            <Mini label="HALLAZGOS">
-              {textos(res.hallazgos).length
-                ? textos(res.hallazgos).join(' · ')
-                : esBajo(res.categoria)
-                  ? 'Sin señalamientos de sanciones, mixers ni mercados ilícitos.'
-                  : 'El proveedor no detalló los hallazgos.'}
+            {/* EL POR QUÉ, con la estructura real del proveedor.
+                `detail_list` es la descripción del riesgo en texto y
+                `hacking_event` el incidente asociado; antes se leía risk_detail
+                buscando label/name —claves que esa lista no tiene— así que con
+                un 85/100 en pantalla la tarjeta decía que no había hallazgos.
+                Un puntaje alto sin el por qué es inservible: es exactamente lo
+                que hay que poder explicar después. */}
+            <Mini label="POR QUÉ">
+              {(() => {
+                const motivos = textos(res.detalle);
+                if (res.hackingEvent) motivos.unshift(`Incidente: ${res.hackingEvent}`);
+                if (motivos.length) return motivos.slice(0, 8).join(' · ');
+                if (esBajo(res.categoria)) return 'Sin señalamientos de sanciones, mixers ni mercados ilícitos.';
+                return res.nivel
+                  ? <>Clasificada como <b style={{ fontWeight: 700 }}>{res.nivel}</b> por el proveedor, sin desglose de motivos.</>
+                  : <span style={{ color: C.sub }}>El proveedor no detalló los hallazgos.</span>;
+              })()}
             </Mini>
-            <Mini label="EXPOSICIÓN INDIRECTA">
-              {res.exposicion && typeof res.exposicion.pctRiesgo === 'number'
+            <Mini label="EXPOSICIÓN">
+              {res.exposicion
                 ? <>
-                    {res.exposicion.pctRiesgo}{' % del volumen proviene de fuentes riesgosas'}
-                    {Array.isArray(res.exposicion.categorias) && res.exposicion.categorias.length
-                      ? ` (${res.exposicion.categorias.map((x: any) => x.tipo).slice(0, 3).join(', ')}).`
-                      : '.'}
+                    {res.exposicion.pctIndirecto != null
+                      ? `${res.exposicion.pctIndirecto} % del volumen es exposición indirecta`
+                      : `${res.exposicion.indirectas} ${res.exposicion.indirectas === 1 ? 'vínculo indirecto' : 'vínculos indirectos'}`}
+                    {res.exposicion.directas > 0
+                      ? ` · ${res.exposicion.directas} ${res.exposicion.directas === 1 ? 'directa' : 'directas'}`
+                      : ''}
+                    {res.exposicion.saltoMinimo != null && res.exposicion.saltoMinimo < 99
+                      ? ` · a ${res.exposicion.saltoMinimo} ${res.exposicion.saltoMinimo === 1 ? 'salto' : 'saltos'}`
+                      : ''}
                   </>
-                // No se pone "0 %" cuando no hay dato: sería afirmar que no hay
-                // exposición, que es distinto de no saberlo.
-                : <span style={{ color: C.sub }}>El proveedor no devolvió el desglose de contrapartes.</span>}
+                : <span style={{ color: C.sub }}>El proveedor no devolvió vínculos con entidades de riesgo.</span>}
             </Mini>
             <Mini label="ACTIVIDAD">
               {res.actividad
@@ -383,6 +419,56 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
                 : <span style={{ color: C.sub }}>El proveedor no devolvió la actividad de la dirección.</span>}
             </Mini>
           </div>
+
+          {/* ── El detalle entidad por entidad ──
+              Esto es lo que de verdad explica un puntaje alto: CON QUIÉN está
+              vinculada, de qué tipo, si es directa o a través de intermediarios,
+              a cuántos saltos y por cuánto volumen. Va como filas y no como
+              chips porque son cinco datos por vínculo, no una etiqueta. */}
+          {Array.isArray(res.exposicion?.items) && res.exposicion.items.length > 0 && (
+            <div style={{ marginTop: 12, border: `1px solid ${C.bdSoft}`, borderRadius: 11, overflow: 'hidden' }}>
+              <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1.4px', color: C.sub, margin: 0, padding: '11px 15px', borderBottom: `1px solid ${C.bdSoft}` }}>
+                VÍNCULOS DETECTADOS
+              </p>
+              {res.exposicion.items.map((it: any, i: number) => (
+                <div key={i} className="flex items-center justify-between flex-wrap"
+                  style={{ gap: 10, padding: '11px 15px', borderTop: i ? `1px solid ${C.bdSoft}` : 'none' }}>
+                  <div style={{ minWidth: 0 }}>
+                    <p style={{ fontSize: 13, fontWeight: 700, margin: 0 }}>{it.entidad ?? 'Entidad sin nombre'}</p>
+                    <p style={{ fontSize: 11.5, color: C.sub, margin: '3px 0 0' }}>
+                      {it.tipoEs ?? 'tipo no informado'}
+                      {it.exposicion ? ` · exposición ${it.exposicion === 'direct' ? 'directa' : 'indirecta'}` : ''}
+                      {it.saltos != null ? ` · ${it.saltos} ${it.saltos === 1 ? 'salto' : 'saltos'}` : ''}
+                    </p>
+                  </div>
+                  <div className="flex items-center" style={{ gap: 10, flexShrink: 0 }}>
+                    {it.volumen != null && (
+                      <span style={{ fontFamily: MONO, fontSize: 12, color: C.sub }}>
+                        {Number(it.volumen).toLocaleString('es-CO', { maximumFractionDigits: 2 })}
+                      </span>
+                    )}
+                    <Pill
+                      texto={it.exposicion === 'direct' ? 'DIRECTA' : 'INDIRECTA'}
+                      cat={it.exposicion === 'direct' ? 'alto' : 'medio'}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Plataformas y eventos (address_trace): el puntaje dice cuánto,
+              esto dice con quién. */}
+          {res.perfil && (Array.isArray(res.perfil.plataformas) || Array.isArray(res.perfil.eventos)) && (
+            <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 10 }}>
+              {!!res.perfil.eventos?.length && (
+                <Mini label="EVENTOS ASOCIADOS">{res.perfil.eventos.slice(0, 6).join(' · ')}</Mini>
+              )}
+              {!!res.perfil.plataformas?.length && (
+                <Mini label="PLATAFORMAS CON LAS QUE OPERÓ">{res.perfil.plataformas.slice(0, 8).join(' · ')}</Mini>
+              )}
+            </div>
+          )}
         </div>
       )}
 

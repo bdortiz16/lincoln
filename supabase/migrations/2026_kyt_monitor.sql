@@ -36,6 +36,11 @@
 -- veredicto para no volver a pagarlos en cada vista.
 ALTER TABLE public.kyt_registry ADD COLUMN IF NOT EXISTS actividad  jsonb;
 ALTER TABLE public.kyt_registry ADD COLUMN IF NOT EXISTS exposicion jsonb;
+-- perfil: plataformas con las que interactuo y eventos maliciosos (address_trace).
+-- hacking_event: el incidente de seguridad asociado, que lo devuelve el propio
+-- endpoint de riesgo y no se estaba leyendo.
+ALTER TABLE public.kyt_registry ADD COLUMN IF NOT EXISTS perfil        jsonb;
+ALTER TABLE public.kyt_registry ADD COLUMN IF NOT EXISTS hacking_event text;
 
 
 -- ── Direcciones que vigila cada empresa ─────────────────────────────────────

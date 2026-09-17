@@ -53,7 +53,7 @@ type Config = {
   rutaRiesgo: string
   rutaEtiquetas: string
   rutaResumen: string
-  rutaComportamiento: string
+  rutaPerfil: string
   topeMonitoreadas: number
   // Cada cuantas horas se vuelve a consultar una direccion monitoreada.
   horasMonitoreo: number
@@ -75,7 +75,7 @@ const CONFIG_POR_DEFECTO: Config = {
   rutaRiesgo: '/v3/risk_score',
   rutaEtiquetas: '/v1/address_labels',
   rutaResumen: '/v1/address_overview',
-  rutaComportamiento: '/v1/address_action',
+  rutaPerfil: '/v1/address_trace',
   topeMonitoreadas: 50,
   horasMonitoreo: 24,
   diasVigencia: 7,
@@ -160,13 +160,63 @@ function leerVeredicto(bruto: any): {
   const score = Number.isFinite(Number(scoreRaw)) ? Number(scoreRaw) : null
   const level = typeof levelRaw === 'string' && levelRaw.trim() ? levelRaw.trim() : null
   const arr = (v: any): any[] => (Array.isArray(v) ? v : [])
+  const hack = typeof d?.hacking_event === 'string' ? d.hacking_event.trim() : ''
   return {
     hay: score !== null || level !== null,
     score,
     level,
+    // risk_detail son OBJETOS con forma propia: { entity, risk_type,
+    // exposure_type, hop_num, volume }. Se guardan tal cual y se interpretan
+    // donde toca -- antes se los leia buscando label/name/type, claves que esa
+    // lista no tiene, asi que con un 85/100 en pantalla la tarjeta de hallazgos
+    // salia vacia.
     riskDetail: arr(d?.risk_detail ?? d?.riskDetail),
+    // detail_list ES la descripcion del riesgo en texto. Es el "por que".
     detailList: arr(d?.detail_list ?? d?.detailList),
+    hackingEvent: hack || null,
     reportUrl: typeof d?.risk_report_url === 'string' ? d.risk_report_url : (typeof d?.report_url === 'string' ? d.report_url : null),
+  }
+}
+
+// ── Exposicion, calculada de risk_detail ──────────────────────────
+// Sale del MISMO endpoint de riesgo, no de address_action: risk_detail ya trae
+// exposure_type (direct | indirect), volume, hop_num y la entidad. Pedirselo a
+// address_action era gastar una llamada que nunca iba a devolver esto.
+const TIPO_ES: Record<string, string> = {
+  sanctioned_entity: 'entidad sancionada',
+  illicit_activity: 'actividad ilicita',
+  mixer: 'mixer',
+  gambling: 'apuestas',
+  risk_exchange: 'exchange de riesgo',
+  bridge: 'puente entre cadenas',
+}
+function exposicionDe(riskDetail: any[]): Record<string, any> | null {
+  const items = (Array.isArray(riskDetail) ? riskDetail : [])
+    .filter(x => x && typeof x === 'object')
+    .map(x => ({
+      entidad: String(x.entity ?? '').trim() || null,
+      tipo: String(x.risk_type ?? '').trim() || null,
+      tipoEs: TIPO_ES[String(x.risk_type ?? '')] ?? (String(x.risk_type ?? '').replace(/_/g, ' ') || null),
+      exposicion: String(x.exposure_type ?? '').trim().toLowerCase() || null,
+      saltos: Number.isFinite(Number(x.hop_num)) ? Number(x.hop_num) : null,
+      volumen: Number.isFinite(Number(x.volume)) ? Number(x.volume) : null,
+    }))
+  if (!items.length) return null
+  const directas = items.filter(i => i.exposicion === 'direct')
+  const indirectas = items.filter(i => i.exposicion === 'indirect')
+  const suma = (a: any[]) => a.reduce((t, i) => t + (i.volumen ?? 0), 0)
+  const total = suma(items)
+  const volIndirecto = suma(indirectas)
+  return {
+    items: items.slice(0, 20),
+    directas: directas.length,
+    indirectas: indirectas.length,
+    volumenTotal: total || null,
+    volumenIndirecto: volIndirecto || null,
+    // El porcentaje SOLO si hay volumenes: sin ellos no se puede calcular y
+    // poner 0 seria afirmar que no hay exposicion.
+    pctIndirecto: total > 0 ? Math.round((volIndirecto / total) * 1000) / 10 : null,
+    saltoMinimo: indirectas.length ? Math.min(...indirectas.map(i => i.saltos ?? 99)) : null,
   }
 }
 
@@ -245,35 +295,6 @@ function leerActividad(bruto: any): Record<string, any> | null {
   return Object.values(out).some(v => v !== null) ? out : null
 }
 
-// ── Exposición indirecta (address_action) ─────────────────────────
-// El proveedor devuelve la proporción de volumen por tipo de contraparte. La
-// exposición "riesgosa" es la suma de las categorías que lo son; el resto
-// (exchanges con KYC, DeFi conocido) no cuenta.
-const RIESGOSAS = /MIXER|TORNADO|GAMBL|DARK|SANCTION|SCAM|PHISH|RANSOM|STOLEN|HACK|ILLEGAL|FRAUD|NO[_ ]?KYC|UNLICEN/i
-function leerExposicion(bruto: any): Record<string, any> | null {
-  const d = desenvolver(bruto)
-  if (!d || typeof d !== 'object') return null
-  const fuente = d.action_list ?? d.actions ?? d.list ?? d.platforms ?? null
-  if (!Array.isArray(fuente) || !fuente.length) return null
-  const partes: { tipo: string; pct: number }[] = []
-  for (const it of fuente) {
-    const tipo = String(it?.type ?? it?.name ?? it?.platform ?? it?.label ?? '').trim()
-    const pctRaw = it?.percent ?? it?.percentage ?? it?.ratio ?? it?.proportion
-    let pct = Number(pctRaw)
-    if (!Number.isFinite(pct)) continue
-    if (pct > 0 && pct <= 1) pct = pct * 100   // viene como proporción
-    if (tipo) partes.push({ tipo, pct })
-  }
-  if (!partes.length) return null
-  const riesgosas = partes.filter(x => RIESGOSAS.test(x.tipo))
-  const pctRiesgo = riesgosas.reduce((a, x) => a + x.pct, 0)
-  return {
-    pctRiesgo: Math.round(pctRiesgo * 10) / 10,
-    categorias: riesgosas.slice(0, 6),
-    todas: partes.slice(0, 12),
-  }
-}
-
 // ── Consulta PAGADA + guardado en el padrón ───────────────────────
 // La usan la consulta del cliente y la ronda de monitoreo. Una sola
 // implementación a propósito: dos copias de esto se habrían separado, y una de
@@ -299,10 +320,10 @@ async function evaluarYGuardar(
 
   // Los tres enriquecimientos son OPCIONALES: si fallan, el veredicto vale
   // igual. Se piden en paralelo para no encadenar tres esperas.
-  const [eEtq, eRes, eAct] = await Promise.all([
+  const [eEtq, eRes, ePerfil] = await Promise.all([
     llamarMT(c, c.rutaEtiquetas, { coin, address: dir }).catch(() => null),
     llamarMT(c, c.rutaResumen, { coin, address: dir }).catch(() => null),
-    llamarMT(c, c.rutaComportamiento, { coin, address: dir }).catch(() => null),
+    llamarMT(c, c.rutaPerfil, { coin, address: dir }).catch(() => null),
   ])
   let etiquetas: any[] = []
   if (eEtq?.ok) {
@@ -311,7 +332,10 @@ async function evaluarYGuardar(
     etiquetas = Array.isArray(l) ? l : (l ? [l] : [])
   }
   const actividad = eRes?.ok ? leerActividad(eRes.data) : null
-  const exposicion = eAct?.ok ? leerExposicion(eAct.data) : null
+  // De risk_detail, que ya vino con el veredicto.
+  const exposicion = exposicionDe(v.riskDetail)
+  // Perfil: plataformas con las que interactuo y eventos maliciosos asociados.
+  const perfil = ePerfil?.ok ? leerPerfil(ePerfil.data) : null
 
   const ahora = new Date().toISOString()
   await db.from('kyt_registry').upsert({
@@ -319,7 +343,7 @@ async function evaluarYGuardar(
     risk_score: v.score, risk_level: v.level,
     risk_detail: v.riskDetail, detail_list: v.detailList,
     labels: etiquetas, report_url: v.reportUrl,
-    actividad, exposicion,
+    actividad, exposicion, perfil, hacking_event: v.hackingEvent,
     estado: 'finalizado',
     respuesta_cruda: r.data ?? null,
     consultado_at: ahora, actualizado_at: ahora,
@@ -331,6 +355,7 @@ async function evaluarYGuardar(
   return {
     hay: true, score: v.score, level: v.level,
     hallazgos: v.riskDetail, detalle: v.detailList, etiquetas,
+    hackingEvent: v.hackingEvent, perfil,
     reporte: v.reportUrl, actividad, exposicion,
     status: r.status, crudo: r.data ?? null,
   }
@@ -479,7 +504,11 @@ Deno.serve(async (req) => {
       const vigenteHasta = ficha?.consultado_at
         ? new Date(ficha.consultado_at).getTime() + c.diasVigencia * 86400_000
         : 0
-      const sirve = !!ficha && ficha.estado === 'finalizado' && Date.now() < vigenteHasta
+      // `force` saltea el padron y paga una consulta nueva. Hace falta porque
+      // una ficha vieja puede no tener los datos que hoy mostramos (actividad,
+      // exposicion) y reutilizarla deja la pantalla a medias sin explicacion.
+      const force = body.force === true
+      const sirve = !force && !!ficha && ficha.estado === 'finalizado' && Date.now() < vigenteHasta
 
       if (sirve) {
         await db.from('kyt_registry').update({
@@ -500,6 +529,8 @@ Deno.serve(async (req) => {
           detalle: ficha.detail_list ?? [],
           actividad: ficha.actividad ?? null,
           exposicion: ficha.exposicion ?? null,
+          perfil: ficha.perfil ?? null,
+          hackingEvent: ficha.hacking_event ?? null,
           reporte: ficha.report_url,
           estado: 'finalizado',
           delPadron: true,
