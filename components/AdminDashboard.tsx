@@ -885,7 +885,27 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const failuresList = (getTransactionHistory() as any[])
     .filter(t => ['Fallido', 'Rechazado'].includes(String(t.status)))
     .sort((a, b) => new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime());
-  const failuresCount = failuresList.length;
+
+  // Dispersiones ACEPTADAS por el proveedor pero NUNCA confirmadas.
+  //
+  // Antes no hacía falta mirarlas porque el servidor las marcaba Completado a
+  // ciegas — y así fue como un cliente pagó por un envío que el proveedor
+  // había rechazado. Ahora se quedan en Procesando, que es la verdad, pero una
+  // verdad que nadie ve es igual de inútil: si nadie las revisa, el cliente
+  // espera y no se entera nadie. Por eso salen acá y cuentan en el badge.
+  //
+  // Bre-B liquida en segundos; pasados 15 minutos sin confirmación ya no es
+  // "en curso", es algo que alguien tiene que cotejar contra la consola del
+  // proveedor.
+  const sinConfirmarList = (getTransactionHistory() as any[])
+    .filter(t => {
+      if (String(t.type) !== 'dispersion' || String(t.status) !== 'Procesando') return false;
+      const ts = new Date(t.createdAt ?? 0).getTime();
+      return Number.isFinite(ts) && Date.now() - ts >= 15 * 60 * 1000;
+    })
+    .sort((a, b) => new Date(a.createdAt ?? 0).getTime() - new Date(b.createdAt ?? 0).getTime());
+
+  const failuresCount = failuresList.length + sinConfirmarList.length;
 
   // Una cuenta BLOQUEADA o en LISTA NEGRA no cuenta como pendiente: no hay nada
   // que aprobarle (ya le negaste el acceso), y aparecer ahí solo ensucia la
@@ -3706,8 +3726,48 @@ const renderDesign = () => (
             <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2"><AlertTriangle size={18} className="text-red-500" /> Fallos de operaciones</h2>
             <p className="text-sm text-slate-500">Envíos/retiros que fallaron o fueron rechazados, con el error técnico real. Al cliente solo se le muestra un mensaje amable.</p>
           </div>
-          <span className="text-xs font-bold px-3 py-1.5 rounded-full bg-red-50 text-red-700 border border-red-200">{failuresCount} {failuresCount === 1 ? 'fallo' : 'fallos'}</span>
+          <span className="text-xs font-bold px-3 py-1.5 rounded-full bg-red-50 text-red-700 border border-red-200">{failuresCount} {failuresCount === 1 ? 'caso' : 'casos'}</span>
         </div>
+
+        {/* Va ARRIBA de los fallos a propósito: en un fallo la plata ya volvió
+            al cliente y el caso está cerrado. Acá la plata salió de la cuenta y
+            no se sabe si llegó — es lo único de esta pantalla donde el dinero
+            de alguien está en el aire. */}
+        {sinConfirmarList.length > 0 && (
+          <div className="bg-amber-50 rounded-xl border border-amber-200 p-4">
+            <h3 className="text-sm font-bold text-amber-900 flex items-center gap-2">
+              <AlertTriangle size={16} /> Sin confirmar con el proveedor ({sinConfirmarList.length})
+            </h3>
+            <p className="text-xs text-amber-800 mt-1 leading-relaxed">
+              El proveedor aceptó estos envíos pero nunca confirmó que se pagaran, y el saldo del
+              cliente ya está debitado. Cotéjalos en la consola del proveedor por su referencia:
+              si están rechazados, hay que devolver el dinero; si se pagaron, se confirman.
+              No se marcan solos — afirmar un pago sin confirmación es justo lo que hay que evitar.
+            </p>
+            <div className="mt-3 space-y-2">
+              {sinConfirmarList.map((t: any) => (
+                <div key={t.id} className="bg-white rounded-lg border border-amber-200 p-3">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{railLabel(t.currency)}</span>
+                    <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200">SIN CONFIRMAR</span>
+                    <span className="text-xs text-slate-400">{fmtDate(t.createdAt)}</span>
+                  </div>
+                  <p className="text-sm font-bold text-slate-800 mt-1.5">
+                    {Number(t.amount).toLocaleString('es-CO')} <span className="text-slate-400 font-medium">{String(t.currency ?? '').split('_')[0]}</span>
+                  </p>
+                  <p className="text-xs text-slate-500 mt-0.5">Cliente: <span className="font-semibold text-slate-700">{emailOf(t)}</span></p>
+                  <p className="text-xs text-slate-500">Beneficiario: <span className="font-semibold text-slate-700">{t.beneficiary ?? '—'}</span>{t.account ? ` · ${t.account}` : ''}</p>
+                  {(t.providerRef ?? t.raw_data?.providerRef) && (
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Referencia: <span className="font-semibold text-slate-700 font-mono">{t.providerRef ?? t.raw_data?.providerRef}</span>
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {failuresList.length === 0 ? (
           <div className="bg-white rounded-xl border border-slate-200 p-10 text-center">
             <p className="text-slate-700 font-semibold">Sin fallos recientes</p>
