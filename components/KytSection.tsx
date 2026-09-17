@@ -504,67 +504,101 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
             </div>
           </div>
 
-          {/* ── RUTAS ──
-              Lo más importante de la pantalla, y por eso va arriba de todo lo
-              demás. Que una dirección tenga un camino hacia una entidad
-              señalada —aunque sea a dos saltos— es lo que permite anticipar
-              que un exchange le va a congelar los fondos. Llega antes que el
-              bloqueo, que es cuando todavía se puede hacer algo.
+          {/* ── LO QUE SE MIRA PRIMERO ──
+              El orden importa y me costó un error: la dirección puede estar
+              señalada ELLA MISMA, y eso es más grave que tener una ruta hacia
+              alguien señalado. `risk_detail` describe exposición HACIA OTRAS
+              entidades, así que una dirección que ES la maliciosa viene sin
+              rutas — y el bloque de rutas decía "sin rutas hacia entidades
+              señaladas", que junto a "Suspected Malicious Address" se lee como
+              tranquilizador. Dos frases ciertas que juntas mienten.
 
-              Estas rutas vienen CON el veredicto: dicen a cuántos saltos y por
-              cuánto volumen. El intermediario hay que rastrearlo aparte porque
-              cada paso del recorrido es una consulta pagada. */}
-          {Array.isArray(res.exposicion?.items) && res.exposicion.items.length > 0 ? (
-            <div style={{ marginBottom: 14, border: `1px solid ${ROJO.b}`, background: ROJO.f, borderRadius: 12, overflow: 'hidden' }}>
-              <div className="flex items-center justify-between flex-wrap" style={{ gap: 10, padding: '12px 15px', borderBottom: `1px solid ${C.bdSoft}` }}>
-                <p style={{ fontSize: 13, fontWeight: 800, color: ROJO.c, margin: 0 }}>
-                  {res.exposicion.items.length} {res.exposicion.items.length === 1 ? 'ruta hacia una entidad señalada' : 'rutas hacia entidades señaladas'}
-                </p>
-                <button
-                  onClick={async () => {
-                    setRastreando(true);
-                    const r = await llamarFuncion('kyt', { action: 'rutas', coin: res.coin, address: res.address }, 90000).catch(() => null);
-                    setRastreando(false);
-                    if (r?.ok) setRutas(r);
-                    else alert(r?.mensaje ?? 'No pudimos rastrear las rutas.');
-                  }}
-                  disabled={rastreando}
-                  style={{ fontFamily: FONT, fontSize: 12, fontWeight: 700, color: C.text, background: 'rgba(255,255,255,0.06)', border: `1px solid ${C.bdHard}`, borderRadius: 8, padding: '7px 12px', cursor: rastreando ? 'default' : 'pointer', opacity: rastreando ? 0.5 : 1 }}
-                >
-                  {rastreando ? 'Rastreando…' : 'Rastrear intermediarios'}
-                </button>
-              </div>
-              {res.exposicion.items.map((it: any, i: number) => (
-                <div key={i} style={{ padding: '11px 15px', borderTop: i ? `1px solid ${C.bdSoft}` : 'none' }}>
-                  {/* El camino dibujado: se lee de un vistazo cuán cerca está. */}
-                  <p style={{ fontFamily: MONO, fontSize: 11.5, color: C.sub, margin: 0 }}>
-                    esta dirección
-                    {it.saltos && it.saltos > 1 ? ` → ${it.saltos - 1} ${it.saltos - 1 === 1 ? 'intermediario' : 'intermediarios'}` : ''}
-                    {' → '}
-                    <span style={{ color: ROJO.c, fontWeight: 700 }}>{it.entidad ?? 'entidad señalada'}</span>
-                  </p>
-                  <p style={{ fontSize: 12, color: C.text, margin: '5px 0 0' }}>
-                    {it.tipoEs ?? 'tipo no informado'}
-                    {it.saltos != null ? ` · ${it.saltos} ${it.saltos === 1 ? 'salto' : 'saltos'}` : ''}
-                    {it.volumen != null ? ` · ${Number(it.volumen).toLocaleString('es-CO', { maximumFractionDigits: 2 })} de volumen vinculado` : ''}
-                    {it.exposicion === 'direct' ? ' · exposición directa' : ''}
-                  </p>
-                </div>
-              ))}
-              <p style={{ fontSize: 11.5, color: C.sub, margin: 0, padding: '11px 15px', borderTop: `1px solid ${C.bdSoft}`, lineHeight: 1.55 }}>
-                Una ruta contaminada no significa que el titular haya hecho algo: puede venir de
-                operaciones ajenas. Pero sí es lo que suele llevar a que un exchange congele
-                fondos, así que conviene saberlo antes de operar.
-              </p>
-            </div>
-          ) : (
-            <div style={{ marginBottom: 14, border: `1px solid ${C.bdSoft}`, borderRadius: 12, padding: '12px 15px' }}>
-              <p style={{ fontSize: 12.5, color: C.sub, margin: 0, lineHeight: 1.6 }}>
-                <b style={{ color: C.text, fontWeight: 700 }}>Sin rutas hacia entidades señaladas</b> en la
-                información disponible. No es una garantía: una ruta puede aparecer después.
-              </p>
-            </div>
-          )}
+              Ahora manda el señalamiento directo, y el aviso de "sin rutas"
+              SOLO aparece cuando la dirección tampoco está señalada. */}
+          {(() => {
+            const motivos = Array.from(new Set([...textos(res.detalle), ...textos(res.hallazgos)]));
+            if (res.hackingEvent) motivos.unshift(`Incidente: ${res.hackingEvent}`);
+            const senalada = motivos.length > 0 || res.categoria === 'alto' || res.categoria === 'medio';
+            const conRutas = Array.isArray(res.exposicion?.items) && res.exposicion.items.length > 0;
+
+            return (
+              <>
+                {senalada && (
+                  <div style={{ marginBottom: 14, border: `1px solid ${tono(res.categoria).b}`, background: tono(res.categoria).f, borderRadius: 12, padding: '14px 16px' }}>
+                    <p style={{ fontSize: 13.5, fontWeight: 800, color: tono(res.categoria).c, margin: 0 }}>
+                      Esta dirección está señalada directamente
+                    </p>
+                    <p style={{ fontSize: 12.5, color: C.text, margin: '7px 0 0', lineHeight: 1.6 }}>
+                      {motivos.length ? motivos.slice(0, 8).join(' · ') : `Clasificada como ${res.nivel ?? 'de riesgo'} por el proveedor.`}
+                    </p>
+                    <p style={{ fontSize: 11.5, color: C.sub, margin: '9px 0 0', lineHeight: 1.55 }}>
+                      No se trata de estar cerca de alguien señalado: el señalamiento es sobre esta
+                      dirección. Operar con ella expone los fondos a congelamiento.
+                    </p>
+                  </div>
+                )}
+
+                {conRutas ? (
+                  <div style={{ marginBottom: 14, border: `1px solid ${ROJO.b}`, background: ROJO.f, borderRadius: 12, overflow: 'hidden' }}>
+                    <div className="flex items-center justify-between flex-wrap" style={{ gap: 10, padding: '12px 15px', borderBottom: `1px solid ${C.bdSoft}` }}>
+                      <p style={{ fontSize: 13, fontWeight: 800, color: ROJO.c, margin: 0 }}>
+                        {res.exposicion.items.length} {res.exposicion.items.length === 1 ? 'ruta hacia una entidad señalada' : 'rutas hacia entidades señaladas'}
+                      </p>
+                      <button
+                        onClick={async () => {
+                          setRastreando(true);
+                          const r = await llamarFuncion('kyt', { action: 'rutas', coin: res.coin, address: res.address }, 90000).catch(() => null);
+                          setRastreando(false);
+                          if (r?.ok) setRutas(r); else alert(r?.mensaje ?? 'No pudimos rastrear las rutas.');
+                        }}
+                        disabled={rastreando}
+                        style={{ fontFamily: FONT, fontSize: 12, fontWeight: 700, color: C.text, background: 'rgba(255,255,255,0.06)', border: `1px solid ${C.bdHard}`, borderRadius: 8, padding: '7px 12px', cursor: rastreando ? 'default' : 'pointer', opacity: rastreando ? 0.5 : 1 }}>
+                        {rastreando ? 'Rastreando…' : 'Rastrear intermediarios'}
+                      </button>
+                    </div>
+                    {res.exposicion.items.map((it: any, i: number) => (
+                      <div key={i} style={{ padding: '11px 15px', borderTop: i ? `1px solid ${C.bdSoft}` : 'none' }}>
+                        <p style={{ fontFamily: MONO, fontSize: 11.5, color: C.sub, margin: 0 }}>
+                          esta dirección
+                          {it.saltos && it.saltos > 1 ? ` → ${it.saltos - 1} ${it.saltos - 1 === 1 ? 'intermediario' : 'intermediarios'}` : ''}
+                          {' → '}
+                          <span style={{ color: ROJO.c, fontWeight: 700 }}>{it.entidad ?? 'entidad señalada'}</span>
+                        </p>
+                        <p style={{ fontSize: 12, color: C.text, margin: '5px 0 0' }}>
+                          {it.tipoEs ?? 'tipo no informado'}
+                          {it.saltos != null ? ` · ${it.saltos} ${it.saltos === 1 ? 'salto' : 'saltos'}` : ''}
+                          {it.volumen != null ? ` · ${Number(it.volumen).toLocaleString('es-CO', { maximumFractionDigits: 2 })} de volumen vinculado` : ''}
+                          {it.exposicion === 'direct' ? ' · exposición directa' : ''}
+                        </p>
+                      </div>
+                    ))}
+                    <p style={{ fontSize: 11.5, color: C.sub, margin: 0, padding: '11px 15px', borderTop: `1px solid ${C.bdSoft}`, lineHeight: 1.55 }}>
+                      Una ruta contaminada no significa que el titular haya hecho algo: puede venir de
+                      operaciones ajenas. Pero sí es lo que suele llevar a que un exchange congele fondos.
+                    </p>
+                  </div>
+                ) : senalada ? (
+                  // Señalada pero sin rutas: NO se dice "sin rutas" a secas. Se
+                  // explica por qué no las hay, que es lo que evita leerlo como
+                  // un atenuante del señalamiento.
+                  <div style={{ marginBottom: 14, border: `1px solid ${C.bdSoft}`, borderRadius: 12, padding: '12px 15px' }}>
+                    <p style={{ fontSize: 12.5, color: C.sub, margin: 0, lineHeight: 1.6 }}>
+                      El proveedor no reportó rutas hacia terceros señalados. En una dirección que ya
+                      está señalada ella misma, eso es habitual y <b style={{ color: C.text }}>no la
+                      hace menos riesgosa</b>: el hallazgo es sobre ella, no sobre su entorno.
+                    </p>
+                  </div>
+                ) : (
+                  <div style={{ marginBottom: 14, border: `1px solid ${C.bdSoft}`, borderRadius: 12, padding: '12px 15px' }}>
+                    <p style={{ fontSize: 12.5, color: C.sub, margin: 0, lineHeight: 1.6 }}>
+                      <b style={{ color: C.text, fontWeight: 700 }}>Sin señalamientos ni rutas hacia entidades señaladas</b> en
+                      la información disponible. No es una garantía: puede aparecer después.
+                    </p>
+                  </div>
+                )}
+              </>
+            );
+          })()}
 
           {/* Rutas rastreadas: acá sí aparece el intermediario. */}
           {rutas && (

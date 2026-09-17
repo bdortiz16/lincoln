@@ -156,6 +156,11 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
             <div style={{ padding: '11px 14px', background: T.fondo, borderRight: `1px solid ${T.linea}`, textAlign: 'center', minWidth: 132 }}>
               <p style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.7px', color: T.suave, margin: '0 0 4px' }}>NIVEL DE RIESGO</p>
               <p style={{ fontSize: 15, fontWeight: 800, color: b.c, margin: 0 }}>{b.t}</p>
+              {(motivos.length > 0) && (
+                <p style={{ fontSize: 9, fontWeight: 700, color: b.c, margin: '2px 0 0', letterSpacing: '0.4px' }}>
+                  SEÑALADA DIRECTAMENTE
+                </p>
+              )}
               <p style={{ fontSize: 10.5, color: T.suave, margin: '3px 0 0' }}>
                 {d.puntaje == null ? 'sin puntaje' : `Puntaje ${d.puntaje} / 100`}
                 {d.nivel ? ` · ${d.nivel}` : ''}
@@ -235,6 +240,17 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
                 </>
               )}
             </>
+          ) : motivos.length || d.categoria === 'alto' || d.categoria === 'medio' ? (
+            // Señalada ella misma y sin rutas. Decir "no se detectaron rutas" a
+            // secas, debajo de "dirección maliciosa", se lee como un atenuante.
+            // Son dos frases ciertas que juntas mienten, y en un documento que
+            // alguien archiva como respaldo eso es peor que en una pantalla.
+            <p style={{ fontSize: 11, margin: 0, lineHeight: 1.65 }}>
+              El proveedor no reportó rutas hacia terceros señalados.{' '}
+              <b>Esta dirección está señalada ella misma</b>, y en ese caso la ausencia de rutas
+              hacia terceros es habitual: el hallazgo recae sobre la dirección analizada, no sobre
+              su entorno. Ver la sección 2.
+            </p>
           ) : (
             <p style={{ fontSize: 11, margin: 0, lineHeight: 1.65 }}>
               No se detectaron rutas desde esta dirección hacia entidades señaladas en la
