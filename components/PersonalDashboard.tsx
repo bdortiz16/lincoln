@@ -25,6 +25,7 @@ import {
   ArrowLeft,
   ArrowRight,
   ShieldCheck,
+  ScanSearch,
   Lock,
   LayoutGrid,
   Share2,
@@ -78,6 +79,7 @@ import { MouvDispersion } from './MouvDispersion';
 import { achEta, achEtaShort } from './achEta';
 import { ContactsSection, contactStatus } from './ContactsSection';
 import { WalletsGasfreeSection } from './WalletsGasfreeSection';
+import { KytSection } from './KytSection';
 import { supabase } from '../lib/supabaseClient';
 import { FlagImg, FlagSelect, flagUrl } from './FlagImg';
 import { useExchangeRates } from '../context/ExchangeRateContext';
@@ -247,7 +249,7 @@ const PATH_VIEWS: Record<string, string> = Object.fromEntries(
 );
 
 export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }) => {
-  const [activeView, setActiveView] = useState<'dashboard' | 'movements' | 'wallet-detail' | 'profile' | 'notifications' | 'referrals' | 'affiliates' | 'settings' | 'servicios' | 'mouv' | 'contactos' | 'walletsGasfree'>(() => {
+  const [activeView, setActiveView] = useState<'dashboard' | 'movements' | 'wallet-detail' | 'profile' | 'notifications' | 'referrals' | 'affiliates' | 'settings' | 'servicios' | 'mouv' | 'contactos' | 'walletsGasfree' | 'kyt'>(() => {
     // Vista inicial según la URL (deep-link / recarga en /movimientos, etc.).
     // /billetera necesita una billetera seleccionada, que NO sobrevive a la
     // recarga (no va en la URL) → si se recarga ahí, se abre Inicio (donde
@@ -2185,11 +2187,14 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           </div>
           {/* Fila de accesos rápidos: los 4 servicios como iconos (icono
               arriba, nombre abajo) en 4 columnas. */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginTop: 10 }}>
+          {/* Cinco columnas desde que entró KYT. Los iconos son de 46px, así
+              que cinco caben en el ancho del panel también en móvil. */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 6, marginTop: 10 }}>
             {([
               { Icon: ArrowLeftRight, t: 'Mesa OTC',    go: () => { setOtcRail(null); setMouvMode('converter'); setActiveView('mouv'); } },
-              { Icon: TrendingUp,     t: 'Staking',     go: null },
+              { Icon: ScanSearch,     t: 'KYT',         go: () => setActiveView('kyt') },
               { Icon: Layers,         t: 'Multiwallet', go: () => setActiveView('walletsGasfree') },
+              { Icon: TrendingUp,     t: 'Staking',     go: null },
               { Icon: ShoppingBag,    t: 'Comercio',    go: null },
             ] as const).map(({ Icon, t, go }) => (
               <button key={t} onClick={go ?? undefined} disabled={!go} className="flex flex-col items-center text-center transition-colors hover:bg-white/[0.03]" style={{ gap: 7, padding: '10px 4px', borderRadius: 12, cursor: go ? 'pointer' : 'default', opacity: go ? 1 : 0.5 }}>
@@ -3898,6 +3903,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     const SERVICES = [
       { icon: ArrowLeftRight, label: 'Mesa OTC',   desc: 'Operaciones de alto volumen con tasa negociada.',            color: 'bg-slate-50 text-green-700',
         onClick: () => { setOtcRail(null); setMouvMode('converter'); setActiveView('mouv'); } },
+      { icon: ScanSearch,     label: 'KYT',        desc: 'Consulta si una dirección cripto está señalada antes de operar con ella.', color: 'bg-slate-50 text-green-700',
+        onClick: () => setActiveView('kyt') },
       { icon: TrendingUp,     label: 'Staking',    desc: 'Genera rendimientos con tu saldo digital.',                  color: 'bg-green-50 text-green-700' },
       { icon: Layers,         label: 'Multiwallet', desc: 'Varias billeteras USDT con nombre — ideal para estudios y negocios.', color: 'bg-violet-50 text-violet-700',
         onClick: () => setActiveView('walletsGasfree') },
@@ -4449,6 +4456,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           {activeView === 'affiliates' && renderAffiliates()}
           {activeView === 'settings' && renderSettings()}
       {activeView === 'servicios' && renderServicios()}
+      {activeView === 'kyt' && <KytSection onBack={() => setActiveView('servicios')} />}
       {activeView === 'walletsGasfree' && currentUser?.id && (
           <WalletsGasfreeSection
               userId={currentUser.id}
