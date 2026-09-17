@@ -76,6 +76,17 @@ CREATE INDEX IF NOT EXISTS risk_registry_categoria_idx   ON public.risk_registry
 ALTER TABLE public.risk_registry ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON public.risk_registry FROM anon, authenticated;
 
+-- Y EL PERMISO PARA EL SERVIDOR, QUE HAY QUE DARLO EXPLICITAMENTE.
+--
+-- El service_role se salta la RLS, pero NO se salta los permisos de tabla. Y
+-- las edge functions no hablan con Postgres directo: pasan por PostgREST, que
+-- arma su cache de esquema solo con las tablas que algun rol puede tocar. Sin
+-- este grant la tabla queda fuera de la cache y la respuesta no es "no tienes
+-- permiso" sino "Could not find the table public.risk_registry in the schema
+-- cache" -- que se lee como si la migracion no se hubiera corrido, cuando la
+-- tabla esta ahi.
+GRANT ALL ON public.risk_registry TO service_role;
+
 DO $limpia_pol$
 DECLARE p record;
 BEGIN

@@ -70,8 +70,15 @@ export const AdminLincoinRisk: React.FC = () => {
     return (
       <div style={{ fontFamily: FONT, background: C.card, border: `1px solid ${C.border2}`, borderRadius: 16, padding: 18, color: C.sub, fontSize: 13, lineHeight: 1.6 }}>
         {d.error}
+        {/* El mensaje "no se encuentra la tabla" tiene DOS causas distintas y
+            antes las juntaba en una sola pista, que mandaba a correr otra vez
+            una migración ya corrida. Si la tabla no tiene ningún permiso —ni
+            siquiera para el servidor— queda fuera de la caché de esquema y la
+            respuesta dice que no existe, aunque exista. */}
         <p style={{ marginTop: 8, color: C.dim, fontSize: 12 }}>
-          Si dice que la tabla no existe, falta correr la migración del padrón.
+          Si dice que no encuentra la tabla, puede ser que falte correr la migración
+          del padrón — o que la tabla exista pero sin permiso para el servidor, que
+          se lee igual. Comprobalo antes de volver a correr nada.
         </p>
       </div>
     );
