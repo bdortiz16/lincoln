@@ -683,16 +683,39 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       //    Se REINTENTA hasta 3 veces con timeout: en 4G la petición a veces
       //    no conecta y sin reintento los movimientos quedaban vacíos aunque
       //    existan. ────────────────────────────────────────────────────────
+      // ── SE PINTA LO QUE YA HAY, Y LA EDGE SE SUMA DESPUÉS ────────────────
+      // Antes esto era secuencial y bloqueante: el SELECT directo ya tenía los
+      // movimientos, pero no se mostraba NADA hasta que terminara también la
+      // lectura por la edge — hasta 3 intentos de 12 s con esperas en medio,
+      // casi 38 segundos en el peor caso. En una red mala la cuenta se veía
+      // vacía todo ese rato con los datos ya en memoria. Eso era la demora.
+      const rpcTxs = txData?.length ? mapTx(txData) : [];
+      const pintar = (lista: any[]) => {
+        if (!lista.length) return;
+        const orden = lista.slice().sort((a: any, b: any) => txTime(b) - txTime(a));
+        setTransactions(orden);
+        // Caché local por usuario: la próxima vez los movimientos se ven al
+        // instante aunque la red falle (se refrescan en segundo plano).
+        if (cu?.id) { try { localStorage.setItem(`cuypay_tx_${cu.id}`, JSON.stringify(orden.slice(0, 200))); } catch { /* quota */ } }
+      };
+      pintar(rpcTxs);
+
       let edgeTxs: any[] = [];
       let edgeDebug: any = null;
       if (cu?.id) {
         const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
         const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
         const tok = getStoredToken();
-        for (let attempt = 0; attempt < 3 && edgeTxs.length === 0; attempt++) {
+        // Si ya hay movimientos en pantalla, se intenta UNA vez y con menos
+        // espera: la edge aporta los ids hermanos y el estado más fresco, no lo
+        // básico. Los reintentos largos solo valen cuando no hay nada que
+        // mostrar — ahí sí conviene insistir antes que dejar la cuenta vacía.
+        const intentos = rpcTxs.length ? 1 : 3;
+        const msLimite = rpcTxs.length ? 6000 : 12000;
+        for (let attempt = 0; attempt < intentos && edgeTxs.length === 0; attempt++) {
           try {
             const ctl = new AbortController();
-            const t = setTimeout(() => ctl.abort(), 12000);
+            const t = setTimeout(() => ctl.abort(), msLimite);
             const r = await fetch(`${SURL}/functions/v1/gasfree`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${tok ?? SKEY}` },
@@ -704,13 +727,12 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             if (Array.isArray(r?.ids) && r.ids.length) emailUserIdsRef.current = r.ids;
             if (Array.isArray(r?.transactions) && r.transactions.length) { edgeTxs = mapTx(r.transactions); break; }
           } catch { /* reintenta */ }
-          if (edgeTxs.length === 0 && attempt < 2) await new Promise(res => setTimeout(res, 800));
+          if (edgeTxs.length === 0 && attempt < intentos - 1) await new Promise(res => setTimeout(res, 800));
         }
       }
 
       // Se usa la fuente que SÍ trajo datos (edge preferida, si no el RPC/SELECT).
       // Solo se escribe si hay algo — así una lectura vacía nunca borra la lista.
-      const rpcTxs = txData?.length ? mapTx(txData) : [];
       // Orden por FECHA (desc), no por id: los ids son uuid aleatorios, así que
       // sin esto "Movimientos recientes" mostraba cualquier orden y un depósito
       // nuevo podía no salir arriba (o parecer que "no está").
@@ -730,10 +752,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       const finalTxs = Array.from(porId.values())
         .sort((a: any, b: any) => txTime(b) - txTime(a));
       if (finalTxs.length) {
-        setTransactions(finalTxs);
-        // Caché local por usuario: la próxima vez los movimientos se ven al
-        // instante aunque la red falle (se refrescan en segundo plano).
-        if (cu?.id) { try { localStorage.setItem(`cuypay_tx_${cu.id}`, JSON.stringify(finalTxs.slice(0, 200))); } catch { /* quota */ } }
+        // Segundo pintado: ahora con lo que aportó la edge unido a lo del
+        // SELECT. Si la edge no trajo nada, esto repinta lo mismo y no se nota.
+        pintar(finalTxs);
       } else if (cu?.id) {
         // Diagnóstico visible: si TODAS las fuentes vinieron vacías, guardar
         // el porqué para mostrarlo en la pantalla de Movimientos (en móvil no
