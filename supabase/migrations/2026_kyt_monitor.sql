@@ -52,6 +52,11 @@ ALTER TABLE public.kyt_registry ADD COLUMN IF NOT EXISTS comportamiento jsonb;
 -- tapa por igual un limite de plan, una ruta inexistente y una respuesta con
 -- forma distinta a la esperada.
 ALTER TABLE public.kyt_registry ADD COLUMN IF NOT EXISTS fuentes jsonb;
+-- Rutas rastreadas (con intermediario) y cuando se rastrearon. Se cachean
+-- porque el recorrido del grafo es la parte MAS cara del expediente: una
+-- consulta pagada por cada contraparte que se expande.
+ALTER TABLE public.kyt_registry ADD COLUMN IF NOT EXISTS rutas    jsonb;
+ALTER TABLE public.kyt_registry ADD COLUMN IF NOT EXISTS rutas_at timestamptz;
 
 
 -- ── Direcciones que vigila cada empresa ─────────────────────────────────────

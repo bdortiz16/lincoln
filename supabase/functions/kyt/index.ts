@@ -58,6 +58,7 @@ type Config = {
   rutaInvestigacion: string
   rutaComportamiento: string
   topeMonitoreadas: number
+  presupuestoRutas: number
   // Cada cuantas horas se vuelve a consultar una direccion monitoreada.
   horasMonitoreo: number
   // Cuántos días vale un resultado del padrón antes de volver a pagar.
@@ -83,6 +84,7 @@ const CONFIG_POR_DEFECTO: Config = {
   rutaInvestigacion: '/v1/transactions_investigation',
   rutaComportamiento: '/v1/address_action',
   topeMonitoreadas: 50,
+  presupuestoRutas: 10,
   horasMonitoreo: 24,
   diasVigencia: 7,
   topeDiarioPorCliente: 25,
@@ -1015,6 +1017,71 @@ Deno.serve(async (req) => {
 
       const f = await padronBuscar(coin, dir)
       if (!f) return json({ ok: false, error: 'sin_resultado' })
+
+      // Las rutas con intermediario van en el reporte, asi que se rastrean acá
+      // mismo. Es caro -- cada contraparte expandida es una consulta pagada --
+      // pero un reporte sin la seccion de rutas indirectas no sirve para lo que
+      // se usa. Presupuesto acotado y reutilizando lo ya cacheado.
+      let trazado: any = f.rutas ?? null
+      const rutasVigentes = trazado && f.rutas_at
+        && Date.now() - new Date(f.rutas_at).getTime() < c.diasVigencia * 86400_000
+      if (!rutasVigentes && body.sinRutas !== true) {
+        const rInv2 = await llamarMT(c, c.rutaInvestigacion, { coin, address: dir, type: 'all', page: '1' })
+        const inv2 = rInv2.ok ? leerInvestigacion(rInv2.data) : null
+        if (inv2) {
+          const vecinos = [...(inv2.entradas ?? []), ...(inv2.salidas ?? [])].filter((x: any) => x.direccion)
+          const directas = vecinos.filter((x: any) => x.tipoNum === 2).map((x: any) => ({
+            contaminante: x.direccion, etiquetaContaminante: x.etiqueta, intermediario: null,
+            saltos: 1, flujo: x.flujo, monto: x.monto, txs: x.hashes?.length ?? 1, hashes: x.hashes ?? [],
+          }))
+          const cand = vecinos.filter((x: any) => x.tipoNum !== 2)
+            .sort((a2: any, b2: any) => (b2.monto ?? 0) - (a2.monto ?? 0))
+            .slice(0, Math.max(1, Math.min(25, Number(c.presupuestoRutas) || 10)))
+          const indirectas: any[] = []
+          let expandidos = 0
+          for (const v of cand) {
+            const r2 = await llamarMT(c, c.rutaInvestigacion, { coin, address: v.direccion, type: 'all', page: '1' })
+            if (!r2.ok) continue
+            expandidos++
+            for (const m of (leerInvestigacion(r2.data)?.maliciosas ?? [])) {
+              indirectas.push({
+                contaminante: m.direccion, etiquetaContaminante: m.etiqueta,
+                intermediario: v.direccion, etiquetaIntermediario: v.etiqueta,
+                saltos: 2, flujo: v.flujo, monto: v.monto, montoTramoFinal: m.monto,
+                txs: v.hashes?.length ?? 1, hashes: v.hashes ?? [],
+              })
+            }
+          }
+          const todas = [...directas, ...indirectas]
+          // Ranking por contaminante: cuantos caminos llevan a la misma entidad
+          // y por cuanto monto. Es lo que se mira para priorizar.
+          const porC: Record<string, any> = {}
+          for (const r of todas) {
+            const k = String(r.contaminante ?? '?')
+            porC[k] = porC[k] ?? { contaminante: r.contaminante, etiqueta: r.etiquetaContaminante, evidencias: 0, monto: 0, saltoMinimo: 99, flujos: new Set<string>() }
+            porC[k].evidencias += 1
+            porC[k].monto += Number(r.monto ?? 0)
+            porC[k].saltoMinimo = Math.min(porC[k].saltoMinimo, r.saltos)
+            if (r.flujo) porC[k].flujos.add(r.flujo)
+          }
+          const ranking = Object.values(porC).map((g: any) => ({
+            contaminante: g.contaminante, etiqueta: g.etiqueta,
+            evidencias: g.evidencias, monto: g.monto || null,
+            saltoMinimo: g.saltoMinimo === 99 ? null : g.saltoMinimo,
+            flujoDominante: g.flujos.has('salida') ? 'salida' : (g.flujos.has('entrada') ? 'entrada' : null),
+          })).sort((x: any, y: any) => (y.monto ?? 0) - (x.monto ?? 0))
+
+          trazado = {
+            rutas: todas, ranking,
+            contrapartesRevisadas: vecinos.length, expandidos,
+            completo: cand.length >= vecinos.filter((x: any) => x.tipoNum !== 2).length,
+            entrantesSenaladas: directas.filter((x: any) => x.flujo === 'entrada').length,
+            salientesSenaladas: directas.filter((x: any) => x.flujo === 'salida').length,
+          }
+          await db.from('kyt_registry').update({ rutas: trazado, rutas_at: new Date().toISOString() })
+            .eq('coin', coin).eq('address_lower', dir.toLowerCase())
+        }
+      }
       return json({
         ok: true,
         generadoAt: new Date().toISOString(),
@@ -1032,6 +1099,7 @@ Deno.serve(async (req) => {
         investigacion: f.investigacion ?? null,
         comportamiento: f.comportamiento ?? null,
         fuentes: f.fuentes ?? null,
+        rutas: trazado,
         reporte: f.report_url ?? null,
         consultadoAt: f.consultado_at,
         delPadron: reusar,
