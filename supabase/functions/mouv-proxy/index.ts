@@ -920,28 +920,116 @@ serve(async (req: Request) => {
         out.push({ id: tx.id, result: 'completed' })
         continue
       }
-      // 3) No se pudo confirmar el estado (Mouv no expone un estado consultable
-      //    confiable —doc bloqueada—) o sigue pendiente. Bre-B se completa en
-      //    SEGUNDOS: si una dispersión lleva 'Procesando' más que la gracia, se
-      //    marca Completado (optimista) para no dejarla atascada. La devolución,
-      //    si ocurre, la atrapa el webhook de Mouv o un estado 'returned' futuro
-      //    (que revierte a Rechazado + reembolso). Overridable por secret.
+      // 3) NO se pudo confirmar el estado. Y no se confirma seguido: la doc de
+      //    Mouv está bloqueada para este backend, así que mouvTransferStatus
+      //    ADIVINA la ruta entre seis candidatas. Cuando las seis dan 404, el
+      //    veredicto es 'unknown' — que significa "no sé", no "salió bien".
+      //
+      //    ACÁ HABÍA UN AUTO-COMPLETADO OPTIMISTA: a los 2 minutos se marcaba
+      //    Completado "para no dejarla atascada". Eso afirmaba el éxito a
+      //    partir de la AUSENCIA de información, y el 16 de septiembre le
+      //    cobró a un cliente 2.900.000 COP por una dispersión que Mouv había
+      //    RECHAZADO: el comprobante decía Completado, el saldo estaba
+      //    debitado, y la plata nunca salió.
+      //
+      //    Es el mismo principio que rige el AML de esta app, en el otro
+      //    sentido: sin resultado no sale plata; sin resultado tampoco se
+      //    declara que salió. Una operación sin confirmar se queda en
+      //    Procesando, que es la verdad, y se marca para revisión humana. Que
+      //    algo quede "atascado" es un problema de operación; decirle a un
+      //    cliente que su plata llegó cuando no llegó es otra cosa.
       if (tx.status === 'Procesando') {
-        const graceMin = Number(Deno.env.get('BREB_AUTOCOMPLETE_MIN') ?? '2') || 2
-        const ageMs = Date.now() - new Date(tx.created_at).getTime()
-        if (ageMs >= graceMin * 60 * 1000) {
-          const { data: done } = await db.from('transactions').update({
-            status: 'Completado',
-            raw_data: { ...rd, settledAt: new Date().toISOString(), autoCompleted: true, reconciledAt: new Date().toISOString() },
-          }).eq('id', tx.id).eq('status', 'Procesando').select('id')
-          if (done?.length) { await notifyTx(tx.id); out.push({ id: tx.id, result: 'auto_completed' }); continue }
-        }
-        out.push({ id: tx.id, result: 'still_processing', providerState: st.state || null })
+        const ageMin = Math.round((Date.now() - new Date(tx.created_at).getTime()) / 60000)
+        // Bre-B liquida en segundos. Pasado un rato sin confirmar, deja de ser
+        // "en curso" y pasa a ser algo que alguien tiene que mirar contra la
+        // consola del proveedor.
+        const revisar = ageMin >= 15
+        await db.from('transactions').update({
+          raw_data: {
+            ...rd,
+            providerState: st.state || null,
+            sinConfirmarDesde: rd.sinConfirmarDesde ?? new Date().toISOString(),
+            ultimaRevision: new Date().toISOString(),
+            revisionManual: revisar || undefined,
+          },
+        }).eq('id', tx.id).eq('status', 'Procesando')
+        out.push({
+          id: tx.id,
+          result: revisar ? 'sin_confirmar_revisar' : 'still_processing',
+          minutos: ageMin,
+          providerState: st.state || null,
+        })
+      } else if (rd.autoCompleted) {
+        // Quedó Completado por el auto-completado viejo: NUNCA lo confirmó el
+        // proveedor. Se marca para revisión, pero no se revierte sola — puede
+        // haber salido de verdad, y un reembolso indebido es igual de malo.
+        // Lo resuelve un humano contra la consola, con force_return.
+        await db.from('transactions').update({
+          raw_data: { ...rd, revisionManual: true, ultimaRevision: new Date().toISOString(), providerState: st.state || null },
+        }).eq('id', tx.id)
+        out.push({ id: tx.id, result: 'completado_sin_confirmar', providerState: st.state || null })
       } else {
         out.push({ id: tx.id, result: 'still_completed' })
       }
     }
     return json(200, { ok: true, checked: (rows ?? []).length, results: out })
+  }
+
+  // ── DEVOLUCIÓN MANUAL DE UNA DISPERSIÓN ───────────────────────────
+  // Para cuando el proveedor RECHAZÓ un envío y acá quedó Completado. Pasa
+  // cuando el estado no se puede consultar (la ruta de Mouv está adivinada) y
+  // el rechazo solo se ve en su consola: ahí no hay automatismo posible, lo
+  // tiene que decir una persona que miró las dos pantallas.
+  //
+  // Hace lo mismo que la rama de devolución confirmada: marca Rechazado y
+  // reintegra monto + comisión al riel. Idempotente por el mismo flag y el
+  // mismo CAS, así que dos clics no reembolsan dos veces.
+  //
+  // SOLO ADMIN CON JWT. Reintegra saldo: un uid en el body no alcanza.
+  if (action === 'force_return') {
+    if (!caller.admin || !caller.viaJwt) return json(403, { error: 'forbidden' })
+    const txId = payload?.txId ?? payload?.tx_id
+    if (txId == null) return json(400, { error: 'missing_tx' })
+
+    const { data: tx } = await db.from('transactions')
+      .select('id, user_id, amount, currency, status, type, raw_data')
+      .eq('id', txId).maybeSingle()
+    if (!tx) return json(404, { error: 'not_found' })
+    if (tx.type !== 'dispersion') return json(400, { error: 'not_a_dispersion', type: tx.type })
+
+    const rd = (tx.raw_data ?? {}) as Record<string, any>
+    if (rd.refunded) return json(200, { ok: true, already: 'refunded', refundCop: rd.refundCop ?? null })
+
+    const refund = Number(tx.amount ?? 0) + Number(rd.feeCop ?? 0)
+    if (!(refund > 0)) return json(400, { error: 'bad_amount', refund })
+    const railCol = String(tx.currency ?? 'COP_BREB')
+    const motivo = String(payload?.reason ?? '').trim().slice(0, 300)
+    if (!motivo) return json(400, { error: 'missing_reason', message: 'Hay que decir por qué se devuelve.' })
+
+    // CAS: se reclama el reembolso ANTES de tocar el saldo. Si otra ejecución
+    // ya lo reclamó, `claimed` viene vacío y no se acredita de nuevo.
+    const { data: claimed } = await db.from('transactions').update({
+      status: 'Rechazado',
+      raw_data: {
+        ...rd,
+        refunded: true,
+        refundCop: refund,
+        returnedAt: new Date().toISOString(),
+        returnedBy: caller.userId,
+        returnReason: motivo,
+        manualReturn: true,
+      },
+    }).eq('id', tx.id).filter('raw_data->>refunded', 'is', null).select('id')
+    if (!claimed?.length) return json(200, { ok: true, already: 'refund_already_claimed' })
+
+    await creditBalanceAtomic(tx.user_id, railCol, refund)
+    await logAudit(tx.user_id, 'mouv.force_return', {
+      txId: tx.id, refund, rail: railCol, reason: motivo,
+      admin: caller.userId, providerRef: rd.providerRef ?? null,
+      eraAutoCompletada: rd.autoCompleted === true,
+    })
+    await notifyTx(tx.id)
+    return json(200, { ok: true, refunded: true, refundCop: refund, rail: railCol })
   }
 
   // ── RECAUDO PSE (pay-in por link) ─────────────────────────────────
