@@ -107,141 +107,21 @@ DROP POLICY IF EXISTS "users_all" ON public.users;
 DROP POLICY IF EXISTS "tx_all" ON public.transactions;
 
 
--- ─── 4. Aprobar un aumento de topes es cosa de administradores ──────────────
--- El trigger no puede confiar en que la RLS de la tabla lo proteja: es
--- SECURITY DEFINER y escribe en users. Lo comprueba el mismo.
-CREATE OR REPLACE FUNCTION public.apply_limit_increase()
-RETURNS trigger
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public, pg_temp
-AS $apply_limit$
-DECLARE
-  v_amount numeric;
-  privilegiado boolean := false;
-BEGIN
-  IF NEW.status = 'approved'
-     AND COALESCE(OLD.status, '') IS DISTINCT FROM 'approved' THEN
-
-    -- El servidor (edge functions) y los admins pueden aprobar. Nadie mas.
-    BEGIN
-      IF auth.role() = 'service_role' THEN privilegiado := true; END IF;
-    EXCEPTION WHEN OTHERS THEN NULL; END;
-
-    IF NOT privilegiado THEN
-      BEGIN
-        IF public.is_any_admin() THEN privilegiado := true; END IF;
-      EXCEPTION WHEN OTHERS THEN NULL; END;
-    END IF;
-
-    IF NOT privilegiado THEN
-      RAISE EXCEPTION 'Solo un administrador puede aprobar un aumento de limites.';
-    END IF;
-
-    BEGIN
-      v_amount := NULLIF(trim(NEW.requested_amount::text), '')::numeric;
-    EXCEPTION WHEN OTHERS THEN
-      v_amount := NULL;   -- monto ilegible: no aplicar nada, pero no romper el Aprobar
-    END;
-
-    IF v_amount IS NOT NULL AND v_amount > 0 THEN
-      UPDATE public.users
-      SET custom_monthly_limit = v_amount,
-          custom_daily_limit   = GREATEST(COALESCE(custom_daily_limit, 0)::numeric, ROUND(v_amount * 0.2)),
-          limits_currency      = COALESCE(limits_currency, 'USD'),
-          is_custom_monthly    = true,
-          is_custom_daily      = true
-      WHERE id = (NEW.user_id::text)::uuid;
-    END IF;
-  END IF;
-  RETURN NEW;
-END;
-$apply_limit$;
-
--- El trigger que la dispara puede no existir en este proyecto: la verificacion
--- devolvio NULL, que significa que la funcion no estaba creada, no que estuviera
--- sin proteger. Se crea aca, pero SOLO si la tabla existe -- si no, un CREATE
--- TRIGGER contra una tabla ausente aborta el script entero y revierte todo lo
--- demas, que es exactamente lo que hay que evitar.
-DO $trg_topes$
-BEGIN
-  IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'limit_increase_requests') THEN
-    EXECUTE 'DROP TRIGGER IF EXISTS trg_apply_limit_increase ON public.limit_increase_requests';
-    EXECUTE 'CREATE TRIGGER trg_apply_limit_increase AFTER UPDATE OF status ON public.limit_increase_requests FOR EACH ROW EXECUTE FUNCTION public.apply_limit_increase()';
-  END IF;
-END;
-$trg_topes$;
-
-
--- ─── 5. Nadie se crea admin al registrarse ──────────────────────────────────
+-- ─── 4 y 5. Aprobar topes, y que nadie se cree admin al registrarse ────────
 --
--- El perfil de public.users lo INSERTA el navegador, y la politica solo exige
--- que el id sea el suyo. Los guardias que protegen rol, saldos y raw_data son
--- todos BEFORE UPDATE, asi que en el INSERT no corre ninguno: bastaba mandar
--- la fila a mano con rol de admin para tener el panel entero.
+-- ESAS DOS FUNCIONES SE MUDARON A 2026_zz3_guardias_sin_columnas_fijas.sql.
 --
--- Esto no bloquea el registro (romperlo dejaria sin entrar a todo el mundo):
--- deja pasar el INSERT pero le quita lo que no le corresponde.
-CREATE OR REPLACE FUNCTION public.guard_users_insert()
-RETURNS trigger
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public, pg_temp
-AS $guard_insert$
-DECLARE
-  privilegiado boolean := false;
-  raw jsonb := COALESCE(NEW.raw_data, '{}'::jsonb);
-  k text;
-  -- Las mismas claves que protege guard_raw_data_server_keys en el UPDATE.
-  protegidas text[] := ARRAY['kumplo', 'tusdatos', 'gasfreeCredited', 'mfaBackupHashes'];
-BEGIN
-  BEGIN
-    IF auth.role() = 'service_role' THEN privilegiado := true; END IF;
-  EXCEPTION WHEN OTHERS THEN NULL; END;
-
-  IF NOT privilegiado THEN
-    BEGIN
-      IF public.is_any_admin() THEN privilegiado := true; END IF;
-    EXCEPTION WHEN OTHERS THEN NULL; END;
-  END IF;
-
-  IF privilegiado THEN
-    RETURN NEW;
-  END IF;
-
-  -- Un perfil recien creado no es admin, no tiene saldo y no trae veredicto
-  -- de cumplimiento. Todo eso lo escribe el servidor despues.
-  IF COALESCE(NEW.role, '') NOT IN ('business', 'personal', '') THEN
-    NEW.role := 'business';
-  END IF;
-  NEW.admin_role := NULL;
-  NEW.balances := '{}'::jsonb;
-  NEW.crypto_balances := '{}'::jsonb;
-  NEW.is_blocked := false;
-  NEW.custom_monthly_limit := NULL;
-  NEW.custom_daily_limit := NULL;
-  NEW.is_custom_monthly := false;
-  NEW.is_custom_daily := false;
-  NEW.kyc_status := 'pending';
-
-  FOREACH k IN ARRAY protegidas LOOP
-    raw := raw - k;
-  END LOOP;
-  raw := raw - 'blacklisted' - 'isBlocked' - 'otcConfig';
-  NEW.raw_data := raw;
-
-  RETURN NEW;
-END;
-$guard_insert$;
-
-REVOKE ALL ON FUNCTION public.guard_users_insert() FROM PUBLIC;
-
-DROP TRIGGER IF EXISTS trg_guard_users_insert ON public.users;
-CREATE TRIGGER trg_guard_users_insert
-  BEFORE INSERT ON public.users
-  FOR EACH ROW
-  EXECUTE FUNCTION public.guard_users_insert();
-
+-- La version que vivia aca nombraba columnas de public.users a ciegas
+-- (admin_role, is_custom_monthly, limits_currency...) tomadas de
+-- _lincoin_full_schema.sql, que es una reconstruccion best-effort y no la base
+-- real. PL/pgSQL compila el cuerpo de una funcion la primera vez que corre, no
+-- al crearla: el script decia Success, el trigger quedaba puesto, y el fallo
+-- aparecia despues en cada INSERT con "record new has no field admin_role".
+-- El guardia que debia impedir que alguien se registrara como admin impedia
+-- que se registrara nadie.
+--
+-- En 2026_zz3 ninguna de las dos nombra una columna a ciegas. Correr ESE
+-- archivo despues de este.
 
 NOTIFY pgrst, 'reload schema';
 
