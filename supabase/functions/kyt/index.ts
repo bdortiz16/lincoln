@@ -54,6 +54,9 @@ type Config = {
   rutaEtiquetas: string
   rutaResumen: string
   rutaPerfil: string
+  rutaContrapartes: string
+  rutaInvestigacion: string
+  rutaComportamiento: string
   topeMonitoreadas: number
   // Cada cuantas horas se vuelve a consultar una direccion monitoreada.
   horasMonitoreo: number
@@ -76,6 +79,9 @@ const CONFIG_POR_DEFECTO: Config = {
   rutaEtiquetas: '/v1/address_labels',
   rutaResumen: '/v1/address_overview',
   rutaPerfil: '/v1/address_trace',
+  rutaContrapartes: '/v1/address_counterparty',
+  rutaInvestigacion: '/v1/transactions_investigation',
+  rutaComportamiento: '/v1/address_action',
   topeMonitoreadas: 50,
   horasMonitoreo: 24,
   diasVigencia: 7,
@@ -324,6 +330,104 @@ function leerActividad(bruto: any): Record<string, any> | null {
   // Devolver un objeto de nulos haría que la pantalla muestre guiones como si
   // fueran datos.
   return Object.values(out).some(v => v !== null) ? out : null
+}
+
+// ── Perfil de la direccion (address_trace) ────────────────────────
+// Campos REALES de la documentacion: use_platform, malicious_event,
+// relation_info y first_address. Antes se leian platform_list y
+// malicious_event_list -- nombres que invente -- asi que el perfil venia
+// siempre vacio, y no se notaba porque la tarjeta simplemente no aparecia.
+function leerPerfil(bruto: any): Record<string, any> | null {
+  const d = desenvolver(bruto)
+  if (!d || typeof d !== 'object') return null
+  const nombres = (v: any): string[] => {
+    if (!v) return []
+    const arr = Array.isArray(v) ? v : (Array.isArray(v.list) ? v.list : [])
+    return arr
+      .map((x: any) => typeof x === 'string' ? x : String(x?.name ?? x?.platform ?? x?.label ?? ''))
+      .map((t: string) => t.trim()).filter(Boolean).slice(0, 20)
+  }
+  const up = d.use_platform ?? {}
+  const plataformas = {
+    exchange: nombres(up.exchange), dex: nombres(up.dex),
+    mixer: nombres(up.mixer), nft: nombres(up.nft),
+  }
+  const me = d.malicious_event ?? {}
+  const eventos = {
+    phishing: nombres(me.phishing), ransom: nombres(me.ransom),
+    stealing: nombres(me.stealing), laundering: nombres(me.laundering),
+  }
+  const ri = d.relation_info ?? {}
+  const relaciones = { wallet: nombres(ri.wallet), ens: nombres(ri.ens), twitter: nombres(ri.twitter) }
+  const primera = typeof d.first_address === 'string' ? d.first_address
+    : (d.first_address?.label ?? d.first_address?.address ?? null)
+  const algo = Object.values(plataformas).some(a => a.length)
+    || Object.values(eventos).some(a => a.length)
+    || Object.values(relaciones).some(a => a.length) || !!primera
+  return algo ? { plataformas, eventos, relaciones, primeraFuente: primera } : null
+}
+
+// ── Contrapartes (address_counterparty) ───────────────────────────
+// No soporta hot wallets: devuelve UnsupportedAddressType. Eso NO es un error
+// nuestro y se informa como tal, no como "sin datos".
+function leerContrapartes(bruto: any): Record<string, any> | null {
+  const d = desenvolver(bruto)
+  let crudo = ''
+  try { crudo = JSON.stringify(bruto ?? '') } catch { crudo = '' }
+  if (/UnsupportedAddressType/i.test(crudo)) return { noSoportada: true, items: [] }
+  const lista = d?.address_counterparty_list
+  if (!Array.isArray(lista) || !lista.length) return null
+  return {
+    noSoportada: false,
+    items: lista.slice(0, 25).map((x: any) => ({
+      nombre: String(x?.name ?? '').trim() || null,
+      montoUsd: Number.isFinite(Number(x?.amount)) ? Number(x.amount) : null,
+      pct: Number.isFinite(Number(x?.percent)) ? Number(x.percent) : null,
+    })),
+  }
+}
+
+// ── Investigacion de transacciones (transactions_investigation) ───
+// Cada contraparte trae `type`: 1 normal, 2 MALICIOSA, 3 entidad, 4 contrato.
+// El tipo 2 es lo que importa: contrapartes senaladas, con monto y hashes. Es
+// el "ranking de posibles contaminadores".
+const TIPO_CONTRAPARTE: Record<string, string> = { '1': 'normal', '2': 'maliciosa', '3': 'entidad', '4': 'contrato' }
+function leerInvestigacion(bruto: any): Record<string, any> | null {
+  const d = desenvolver(bruto)
+  if (!d || typeof d !== 'object') return null
+  const mapa = (arr: any, flujo: 'entrada' | 'salida') => (Array.isArray(arr) ? arr : []).map((x: any) => ({
+    direccion: String(x?.address ?? '').trim() || null,
+    tipo: TIPO_CONTRAPARTE[String(x?.type ?? '')] ?? null,
+    tipoNum: Number(x?.type) || null,
+    etiqueta: String(x?.label ?? '').trim() || null,
+    monto: Number.isFinite(Number(x?.amount)) ? Number(x.amount) : null,
+    hashes: Array.isArray(x?.tx_hash_list) ? x.tx_hash_list.slice(0, 5) : [],
+    flujo,
+  }))
+  const entradas = mapa(d.in, 'entrada')
+  const salidas = mapa(d.out, 'salida')
+  if (!entradas.length && !salidas.length) return null
+  const maliciosas = [...entradas, ...salidas].filter(x => x.tipoNum === 2)
+    .sort((a, b) => (b.monto ?? 0) - (a.monto ?? 0))
+  return { entradas: entradas.slice(0, 40), salidas: salidas.slice(0, 40), maliciosas: maliciosas.slice(0, 25), paginas: Number(d.total_pages) || 1 }
+}
+
+// ── Comportamiento (address_action) ───────────────────────────────
+// received_txs / spent_txs con action, count y proportion. NO es exposicion a
+// riesgo -- eso sale de risk_detail -- es en que usa la direccion su volumen.
+function leerComportamiento(bruto: any): Record<string, any> | null {
+  const d = desenvolver(bruto)
+  if (!d || typeof d !== 'object') return null
+  const mapa = (arr: any) => (Array.isArray(arr) ? arr : []).map((x: any) => ({
+    accion: String(x?.action ?? '').trim() || null,
+    veces: Number(x?.count) || null,
+    pct: Number.isFinite(Number(x?.proportion))
+      ? (Number(x.proportion) <= 1 ? Number(x.proportion) * 100 : Number(x.proportion)) : null,
+  })).filter((x: any) => x.accion).slice(0, 12)
+  const recibido = mapa(d.received_txs)
+  const enviado = mapa(d.spent_txs)
+  if (!recibido.length && !enviado.length) return null
+  return { recibido, enviado }
 }
 
 // ── Consulta PAGADA + guardado en el padrón ───────────────────────
@@ -804,6 +908,90 @@ Deno.serve(async (req) => {
         }
       }
       return json({ ok: true, revisadas: out.length, resultados: out })
+    }
+
+    // ── EXPEDIENTE COMPLETO PARA EL REPORTE ───────────────────────
+    // Junta TODO lo que el proveedor sabe de una direccion: veredicto,
+    // vinculos, contrapartes, flujos entrantes y salientes con las senaladas,
+    // comportamiento, perfil y actividad. Es lo que se imprime.
+    //
+    // Se guarda en el padron. Un expediente son varias llamadas pagadas: sin
+    // cachearlo, cada vez que alguien reimprime el mismo reporte se vuelve a
+    // pagar por un dato que no cambio.
+    if (accion === 'reporte') {
+      if (!yo.userId && !yo.esAdmin) return json({ error: 'no_autorizado' }, 401)
+      if (!c.activo) return json({ ok: false, error: 'inactivo' })
+      const coin = canonCoin(body.coin)
+      const dir = normDir(body.address)
+      if (!coin || !dir) return json({ ok: false, error: 'faltan_datos' })
+      if (!formatoValido(coin, dir)) {
+        return json({ ok: false, error: 'formato_red', mensaje: `Esa dirección no tiene el formato de ${coin}.` })
+      }
+
+      const quien = { userId: yo.userId, email: null as string | null, empresa: null as string | null }
+      if (yo.userId) {
+        const { data: u } = await db.from('users').select('email, company_name').eq('id', yo.userId).maybeSingle()
+        quien.email = (u as any)?.email ?? null
+        quien.empresa = (u as any)?.company_name ?? null
+      }
+
+      const ficha = await padronBuscar(coin, dir)
+      const vigenteHasta = ficha?.consultado_at
+        ? new Date(ficha.consultado_at).getTime() + c.diasVigencia * 86400_000 : 0
+      const completo = !!ficha && ficha.estado === 'finalizado'
+        && ficha.contrapartes !== null && ficha.investigacion !== null
+      const reusar = body.force !== true && completo && Date.now() < vigenteHasta
+
+      if (!reusar) {
+        // El veredicto y sus enriquecimientos base.
+        const ev = await evaluarYGuardar(c, coin, dir, quien, ficha)
+        if (!ev.hay) {
+          return json({
+            ok: false, error: ev.error === 'sin_credencial' ? 'sin_credencial' : 'sin_resultado',
+            mensaje: ev.error === 'sin_credencial'
+              ? 'El servicio no está configurado todavía.'
+              : 'No pudimos obtener un resultado para esa dirección. No significa que esté limpia: significa que no sabemos.',
+          })
+        }
+        // Las tres piezas extra del expediente, en paralelo. Ninguna es
+        // indispensable: si una falla, el reporte sale sin esa seccion y lo
+        // dice, en vez de no salir.
+        const [eCp, eInv, eAct] = await Promise.all([
+          llamarMT(c, c.rutaContrapartes, { coin, address: dir }).catch(() => null),
+          llamarMT(c, c.rutaInvestigacion, { coin, address: dir, type: 'all', page: '1' }).catch(() => null),
+          llamarMT(c, c.rutaComportamiento, { coin, address: dir }).catch(() => null),
+        ])
+        const contrapartes = eCp ? leerContrapartes(eCp.data) : null
+        const investigacion = eInv?.ok ? leerInvestigacion(eInv.data) : null
+        const comportamiento = eAct?.ok ? leerComportamiento(eAct.data) : null
+        await db.from('kyt_registry').update({
+          contrapartes, investigacion, comportamiento,
+          actualizado_at: new Date().toISOString(),
+        }).eq('coin', coin).eq('address_lower', dir.toLowerCase())
+      }
+
+      const f = await padronBuscar(coin, dir)
+      if (!f) return json({ ok: false, error: 'sin_resultado' })
+      return json({
+        ok: true,
+        generadoAt: new Date().toISOString(),
+        empresa: quien.empresa, correo: quien.email,
+        coin, address: f.address,
+        categoria: clasificar(c, f.risk_score, f.risk_level),
+        puntaje: f.risk_score, nivel: f.risk_level,
+        hackingEvent: f.hacking_event ?? null,
+        detalle: f.detail_list ?? [],
+        etiquetas: f.labels ?? [],
+        exposicion: f.exposicion ?? null,
+        actividad: f.actividad ?? null,
+        perfil: f.perfil ?? null,
+        contrapartes: f.contrapartes ?? null,
+        investigacion: f.investigacion ?? null,
+        comportamiento: f.comportamiento ?? null,
+        reporte: f.report_url ?? null,
+        consultadoAt: f.consultado_at,
+        delPadron: reusar,
+      })
     }
 
     // ── Padrón completo (admin) ───────────────────────────────────

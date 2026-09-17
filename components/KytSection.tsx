@@ -18,8 +18,9 @@
 //  pantalla vacía: se opera con él.
 // ══════════════════════════════════════════════════════════════════
 import React, { useCallback, useEffect, useState } from 'react';
-import { ArrowLeft, Eye, EyeOff, ExternalLink, Loader2, ShieldQuestion, History, X } from 'lucide-react';
+import { ArrowLeft, Eye, EyeOff, ExternalLink, FileText, Loader2, ShieldQuestion, History, X } from 'lucide-react';
 import { llamarFuncion } from '../lib/edge';
+import { KytReporte } from './KytReporte';
 
 const FONT = 'Archivo, system-ui, sans-serif';
 const MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace';
@@ -218,6 +219,8 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
   const [guardando, setGuardando] = useState(false);
   const [verHistorial, setVerHistorial] = useState(false);
   const [alertas, setAlertas] = useState<any[]>([]);
+  const [reporte, setReporte] = useState<any | null>(null);
+  const [armando, setArmando] = useState(false);
 
   const cargarLista = useCallback(async () => {
     const r = await llamarFuncion('kyt', { action: 'lista' }, 20000).catch(() => null);
@@ -467,6 +470,26 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
                   Consultar de nuevo
                 </button>
               )}
+              <button
+                onClick={async () => {
+                  setArmando(true);
+                  const r = await llamarFuncion('kyt', { action: 'reporte', coin: res.coin, address: res.address }, 60000).catch(() => null);
+                  setArmando(false);
+                  if (r?.ok) setReporte(r);
+                  else alert(r?.mensaje ?? 'No pudimos armar el reporte. Probá de nuevo.');
+                }}
+                disabled={armando}
+                className="transition-colors"
+                style={{
+                  fontFamily: FONT, fontSize: 12.5, fontWeight: 700, color: C.text,
+                  background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.bdHard}`,
+                  borderRadius: 9, padding: '10px 15px', cursor: armando ? 'default' : 'pointer',
+                  opacity: armando ? 0.5 : 1, display: 'inline-flex', alignItems: 'center', gap: 7,
+                }}
+                onFocus={e => { e.currentTarget.style.boxShadow = ANILLO; }} onBlur={e => { e.currentTarget.style.boxShadow = 'none'; }}
+              >
+                <FileText size={15} strokeWidth={1.5} /> {armando ? 'Armando…' : 'Reporte AML'}
+              </button>
               {res.reporte && (
                 <a href={res.reporte} target="_blank" rel="noopener noreferrer"
                   className="transition-colors hover:text-[#F4F4F2]"
@@ -682,6 +705,8 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
           </div>
         </div>
       )}
+
+      {reporte && <KytReporte d={reporte} onClose={() => setReporte(null)} />}
 
       {/* ── Historial de alertas ── */}
       {verHistorial && (

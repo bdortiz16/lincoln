@@ -231,3 +231,20 @@ button[class~="bg-[#4ADE80]"] {
   .lincoin-code-ok,
   .lincoin-code-wait { animation: none !important; }
 }
+
+/* ── Impresión del reporte AML ────────────────────────────────────────────
+   Al imprimir se oculta TODA la app y queda solo la hoja del reporte. Sin
+   esto el navegador imprime el dashboard entero de fondo. */
+@media print {
+  body > *:not(.lincoin-print-root) { display: none !important; }
+  .lincoin-print-root { position: static !important; inset: auto !important;
+    background: #FFFFFF !important; overflow: visible !important; }
+  .no-imprimir { display: none !important; }
+  #lincoin-reporte { max-width: none !important; margin: 0 !important;
+    padding: 0 !important; box-shadow: none !important; }
+  /* Los fondos de las cabeceras de tabla y las bandas de color SÍ se imprimen:
+     sin ellos las tablas pierden la separación y el nivel de riesgo deja de
+     verse de un golpe, que es lo único que algunos van a mirar. */
+  * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+  @page { margin: 14mm 12mm; }
+}

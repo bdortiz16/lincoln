@@ -41,6 +41,12 @@ ALTER TABLE public.kyt_registry ADD COLUMN IF NOT EXISTS exposicion jsonb;
 -- endpoint de riesgo y no se estaba leyendo.
 ALTER TABLE public.kyt_registry ADD COLUMN IF NOT EXISTS perfil        jsonb;
 ALTER TABLE public.kyt_registry ADD COLUMN IF NOT EXISTS hacking_event text;
+-- Piezas del expediente que se imprime. Se cachean porque son llamadas
+-- pagadas: sin esto, reimprimir el mismo reporte vuelve a pagar por un dato
+-- que no cambio.
+ALTER TABLE public.kyt_registry ADD COLUMN IF NOT EXISTS contrapartes   jsonb;
+ALTER TABLE public.kyt_registry ADD COLUMN IF NOT EXISTS investigacion  jsonb;
+ALTER TABLE public.kyt_registry ADD COLUMN IF NOT EXISTS comportamiento jsonb;
 
 
 -- ── Direcciones que vigila cada empresa ─────────────────────────────────────
