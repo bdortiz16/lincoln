@@ -102,11 +102,21 @@ Deno.serve(async (req) => {
       || req.headers.get('x-real-ip') || ''
 
     if (action === 'send') {
-      if (!RESEND_KEY) return json(200, { ok: false, error: 'email_not_configured', message: 'Falta RESEND_API_KEY.' })
+      // Todo lo que impide que salga un correo se REGISTRA. Hoy no se
+      // registraba nada: cuando no llegaba el código no había forma de saber
+      // si era la llave, el proveedor o una condición de acá adentro, y se
+      // terminaba adivinando. Los registros van con el correo enmascarado.
+      const quien = maskEmail(String(user.email ?? ''))
+      if (!RESEND_KEY) {
+        console.error(`[otp] ${quien}: falta RESEND_API_KEY en el entorno`)
+        return json(200, { ok: false, error: 'email_not_configured', message: 'Falta RESEND_API_KEY.' })
+      }
       // Rate-limit suave: no reenviar si se emitió hace < 30 s.
       const prev = raw.otp
       if (prev?.sentAt && Date.now() - Number(prev.sentAt) < 30000) {
-        return json(200, { ok: true, throttled: true, message: 'Ya te enviamos un código. Revisa tu correo.' })
+        const hace = Math.round((Date.now() - Number(prev.sentAt)) / 1000)
+        console.log(`[otp] ${quien}: frenado, el anterior salio hace ${hace}s`)
+        return json(200, { ok: true, throttled: true, esperaSegundos: 30 - hace, message: 'Ya te enviamos un código. Revisa tu correo.' })
       }
       const code = String(Math.floor(100000 + Math.random() * 900000)) // 6 dígitos
       const codeHash = await sha256(code)
@@ -140,9 +150,15 @@ Deno.serve(async (req) => {
       } else {
         claim = claim.is('raw_data->otp', null)
       }
-      const { data: gane } = await claim.select('id')
+      const { data: gane, error: errClaim } = await claim.select('id')
+      // Este NO es el freno de 30 s, aunque antes respondía lo mismo. Que los
+      // dos casos dijeran "ya te enviamos un código" fue justo lo que escondió
+      // durante horas una cuenta que no podía emitir ninguno. Se distinguen.
       if (!gane?.length) {
-        return json(200, { ok: true, throttled: true, message: 'Ya te enviamos un código. Revisa tu correo.' })
+        console.error(`[otp] ${quien}: no se pudo reclamar el turno` +
+          ` · otp guardado=${JSON.stringify(prev ?? null).slice(0, 120)}` +
+          (errClaim ? ` · error=${errClaim.message}` : ''))
+        return json(200, { ok: false, error: 'claim_failed', message: 'No pudimos emitir el código. Probá de nuevo en un momento.' })
       }
       const res = await fetch('https://api.resend.com/emails', {
         method: 'POST',
@@ -160,9 +176,21 @@ Deno.serve(async (req) => {
       })
       if (!res.ok) {
         const t = await res.text().catch(() => '')
-        return json(200, { ok: false, error: 'send_failed', status: res.status, detail: t.slice(0, 200) })
+        console.error(`[otp] ${quien}: Resend rechazo el envio · HTTP ${res.status} · ${t.slice(0, 300)}`)
+        // El turno ya se reclamó arriba, así que quedó guardado un código que
+        // el titular NUNCA recibió: el próximo intento caería en el freno de
+        // 30 s y le diría "revisa tu correo" — un correo que no existe. Se
+        // deshace la marca de envío. Queda `failedAt` en vez de borrar el
+        // objeto: sin `sentAt`, el próximo intento vuelve a reclamar turno de
+        // inmediato, y además queda el rastro de que hubo un fallo.
+        await db.from('users')
+          .update({ raw_data: { ...raw, otp: { failedAt: Date.now() } } })
+          .eq('id', user.id)
+          .filter('raw_data->otp->>sentAt', 'eq', String(otp.sentAt))
+        return json(200, { ok: false, error: 'send_failed', status: res.status, detail: t.slice(0, 200), message: 'El proveedor de correo rechazó el envío.' })
       }
-      return json(200, { ok: true, sent: true, to: maskEmail(String(user.email ?? '')) })
+      console.log(`[otp] ${quien}: enviado`)
+      return json(200, { ok: true, sent: true, to: quien })
     }
 
     if (action === 'verify') {
