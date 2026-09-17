@@ -91,6 +91,7 @@ import { AdminLoginAlerts } from './AdminLoginAlerts';
 import { AdminKumplo } from './AdminKumplo';
 import { AdminTusdatos } from './AdminTusdatos';
 import { AdminCompliance } from './AdminCompliance';
+import { AdminLincoinRisk } from './AdminLincoinRisk';
 import { AdminClientes } from './AdminClientes';
 import { AdminReconcile } from './AdminReconcile';
 import { AdminOtcSection } from './AdminOtcSection';
@@ -281,7 +282,7 @@ const DiditAdminPanel: React.FC<{ client: any; showToast: (m: string) => void }>
 // Las dos secciones que agrupan varias pantallas. El orden es el de las
 // pestañas: primero la pantalla que da el panorama, después el detalle.
 const GRUPO_SEG = ['security', 'comando', 'monitoreo', 'auditoria', 'team'];
-const GRUPO_CUMP = ['compliance', 'tusdatos', 'kumplo'];
+const GRUPO_CUMP = ['compliance', 'risk', 'tusdatos', 'kumplo'];
 
 const TAB_TITLES: Record<string, string> = {
   overview: 'Dashboard', clients: 'Clientes', treasury: 'Tesorería', cargues: 'Cargues',
@@ -289,7 +290,7 @@ const TAB_TITLES: Record<string, string> = {
   banks: 'Bancos', rates: 'Tasas de Cambio', security: 'Seguridad', design: 'Diseño y Apariencia',
   gasfree: 'Custodia USDT', otcConfig: 'Contabilidad OTC', fallos: 'Fallos',
   auditoria: 'Auditoría', monitoreo: 'Monitoreo', kumplo: 'Kumplo', comando: 'Centro de Comando',
-  tusdatos: 'TusDatos', compliance: 'Cumplimiento',
+  tusdatos: 'TusDatos', compliance: 'Cumplimiento', risk: 'Lincoin Risk',
 };
 
 // Cómo se llama cada pestaña DENTRO de su sección. La primera no puede
@@ -4106,6 +4107,7 @@ const renderDesign = () => (
                 {activeTab === 'tusdatos' && <div className="animate-in fade-in duration-300"><AdminTusdatos /></div>}
                 {activeTab === 'compliance' && <div className="animate-in fade-in duration-300"><AdminCompliance /></div>}
                 {activeTab === 'kumplo' && <div className="animate-in fade-in duration-300"><AdminKumplo /></div>}
+                {activeTab === 'risk' && <div className="animate-in fade-in duration-300"><AdminLincoinRisk /></div>}
                 {activeTab === 'gasfree' && (<>
                   {/* Igual que Cargues: se entra por Tesorería → Billeteras → USDT. */}
                   <button onClick={() => navTo('treasury')}

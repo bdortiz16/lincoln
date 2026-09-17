@@ -74,6 +74,8 @@ type Config = {
   // Cada /api/launch en producción GASTA UN CRÉDITO. Con esto se evita
   // relanzar un documento consultado hace poco.
   horasCache: number
+  riskActivo: boolean       // usar el padrón Lincoin Risk antes de pagar
+  riskDiasVigencia: number  // cuántos días vale un resultado del padrón
   // Enviar el resultado y el PDF a Kumplo cuando la consulta termina.
   enviarAKumplo: boolean
   kumploBaseUrl: string
@@ -87,6 +89,11 @@ const CONFIG_POR_DEFECTO: Config = {
   bloquear: true,
   soloEstosUsuarios: [],
   horasCache: 6,
+  // El padrón entra encendido: no usarlo es pagar dos veces por el mismo dato.
+  riskActivo: true,
+  // 90 días. Un dato de hace un año no sirve para decidir hoy, y el monitoreo
+  // de TusDatos solo cubre a quien está inscrito allá.
+  riskDiasVigencia: 90,
   enviarAKumplo: false,
   kumploBaseUrl: 'https://tqscdruogiaqpbntfywh.supabase.co/functions/v1/super-handler',
   kumploRutaResultado: '/partner/aml-externo',
@@ -242,6 +249,7 @@ type Ficha = {
   // Cuántas veces se ha vuelto a lanzar, y si la pidió un admin a mano.
   reintentos?: number
   manual?: boolean
+  deLincoinRisk?: boolean   // se reusó del padrón; no gastó crédito
   // Estado del documento en la Registraduría. Una cédula cancelada por
   // muerte o por suplantación no es un detalle: es la señal más fuerte de
   // que quien recibe no es quien dice ser.
@@ -366,6 +374,7 @@ async function leerRaw(userId: string): Promise<any> {
 }
 
 async function guardarTitular(userId: string, parche: Ficha): Promise<Ficha> {
+  if (!userId) return parche   // consulta del monitoreo: no es de nadie
   const raw = { ...(await leerRaw(userId)) }
   const prev = raw.tusdatos ?? {}
   raw.tusdatos = { ...prev, ...parche, beneficiarios: prev.beneficiarios ?? {}, at: new Date().toISOString() }
@@ -374,11 +383,142 @@ async function guardarTitular(userId: string, parche: Ficha): Promise<Ficha> {
 }
 
 async function guardarBeneficiario(userId: string, documento: string, ficha: Ficha) {
+  // El monitoreo cierra consultas SIN cuenta: el resultado va al padrón y de
+  // ahí baja a todas. Sin esta guarda se haría un update contra un id vacío.
+  if (!userId) return
   const raw = { ...(await leerRaw(userId)) }
   const td = { ...(raw.tusdatos ?? {}) }
   td.beneficiarios = { ...(td.beneficiarios ?? {}), [documento]: { ...(td.beneficiarios?.[documento] ?? {}), ...ficha } }
   raw.tusdatos = td
   await db.from('users').update({ raw_data: raw }).eq('id', userId)
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// LINCOIN RISK — el padrón central de consultas
+// ═════════════════════════════════════════════════════════════════════════
+//
+// Cada consulta cuesta 1.400 COP. El veredicto vivía dentro de raw_data de
+// quien lo pidió, así que dos empresas que inscriben a la misma persona
+// pagaban dos veces por el mismo dato.
+//
+// El padrón guarda UNA fila por documento, compartida. Antes de gastar un
+// crédito se mira acá.
+//
+// Se guardan los ANTECEDENTES —que son de la persona y no cambian según quién
+// pregunte— y el nombre REAL del documento. NO se guarda si el nombre que
+// escribió el cliente coincide: eso es de cada inscripción y se sigue
+// calculando por beneficiario, contra el nombre real de acá.
+//
+// La vigencia es lo que hace esto defendible: un dato de hace un año no sirve
+// para decidir hoy. Pasado el plazo se vuelve a consultar y se paga.
+
+const RISK_TIPO = (t?: string) => String(t ?? 'CC').toUpperCase().trim() || 'CC'
+const RISK_DOC = (d?: string) => String(d ?? '').replace(/\D/g, '')
+
+// Lo que el padrón tiene sobre un documento, si sigue vigente.
+async function riskBuscar(tipoDoc: string, documento: string, diasVigencia: number): Promise<any | null> {
+  const doc = RISK_DOC(documento)
+  if (!doc) return null
+  try {
+    const { data } = await db.from('risk_registry')
+      .select('*').eq('doc_type', RISK_TIPO(tipoDoc)).eq('doc_number', doc).maybeSingle()
+    if (!data) return null
+    // Solo sirve un veredicto TERMINADO: una consulta a medias no ahorra nada,
+    // hay que esperarla o relanzarla igual.
+    if (String((data as any).estado ?? '') !== 'finalizado') return null
+    const at = new Date(String((data as any).actualizado_at ?? (data as any).consultado_at ?? 0)).getTime()
+    if (!Number.isFinite(at)) return null
+    if (Date.now() - at > diasVigencia * 86400_000) return null
+    return data
+  } catch { return null }   // sin padrón, se consulta como siempre
+}
+
+// Guardar lo que costó un crédito, para que no haya que volver a pagarlo.
+async function riskGuardar(tipoDoc: string, documento: string, f: Ficha, empresaId: string, fuente = 'tusdatos') {
+  const doc = RISK_DOC(documento)
+  if (!doc || f.estado !== 'finalizado') return
+  try {
+    const { data: previo } = await db.from('risk_registry')
+      .select('veces_consultado, veces_reutilizado, empresas')
+      .eq('doc_type', RISK_TIPO(tipoDoc)).eq('doc_number', doc).maybeSingle()
+    const empresas: string[] = Array.isArray((previo as any)?.empresas) ? (previo as any).empresas : []
+    if (empresaId && !empresas.includes(empresaId)) empresas.push(empresaId)
+    await db.from('risk_registry').upsert({
+      doc_type: RISK_TIPO(tipoDoc), doc_number: doc,
+      nombre_real: f.nombre ?? f.nombreReal ?? null,
+      documento_vigente: f.documentoVigente ?? null,
+      estado_documento: f.estadoDocumento ?? null,
+      categoria: f.categoria ?? null,
+      operable: f.operable ?? null,
+      estado: f.estado ?? null,
+      altos: f.altos ?? 0, medios: f.medios ?? 0, bajos: f.bajos ?? 0,
+      hallazgos: f.hallazgos ?? [], codigos: f.codigos ?? [],
+      fuentes_con_error: f.fuentesConError ?? [],
+      report_id: f.reportId ?? null, job_id: f.jobid ?? null,
+      consultado_at: new Date().toISOString(),
+      actualizado_at: new Date().toISOString(),
+      fuente,
+      veces_consultado: Number((previo as any)?.veces_consultado ?? 0) + 1,
+      veces_reutilizado: Number((previo as any)?.veces_reutilizado ?? 0),
+      empresas: empresas.slice(0, 200),
+    }, { onConflict: 'doc_type,doc_number' })
+  } catch { /* que el padrón falle no puede tumbar la consulta */ }
+}
+
+// Anotar que una empresa se AHORRÓ la consulta. Sirve para dos cosas: medir
+// cuánto se ahorra de verdad, y saber quién usó cada ficha — un reporte a la
+// UIAF tiene que poder nombrar al reportante aunque el dato se haya reusado.
+async function riskAnotarUso(tipoDoc: string, documento: string, empresaId: string) {
+  const doc = RISK_DOC(documento)
+  if (!doc) return
+  try {
+    const { data: previo } = await db.from('risk_registry')
+      .select('veces_reutilizado, empresas')
+      .eq('doc_type', RISK_TIPO(tipoDoc)).eq('doc_number', doc).maybeSingle()
+    if (!previo) return
+    const empresas: string[] = Array.isArray((previo as any).empresas) ? (previo as any).empresas : []
+    if (empresaId && !empresas.includes(empresaId)) empresas.push(empresaId)
+    await db.from('risk_registry')
+      .update({ veces_reutilizado: Number((previo as any).veces_reutilizado ?? 0) + 1, empresas: empresas.slice(0, 200) })
+      .eq('doc_type', RISK_TIPO(tipoDoc)).eq('doc_number', doc)
+  } catch { /* contar no es crítico */ }
+}
+
+// Una alerta de monitoreo cambia el padrón Y baja a todas las cuentas que
+// tengan a esa persona inscrita. Antes cada cuenta se enteraba por su lado, o
+// no se enteraba: el veredicto viejo se quedaba ahí diciendo que estaba limpia.
+async function riskPropagar(tipoDoc: string, documento: string, cambios: Partial<Ficha>): Promise<number> {
+  const doc = RISK_DOC(documento)
+  if (!doc) return 0
+  let tocadas = 0
+  try {
+    await db.from('risk_registry').update({
+      categoria: cambios.categoria ?? null,
+      operable: cambios.operable ?? null,
+      altos: cambios.altos ?? 0, medios: cambios.medios ?? 0, bajos: cambios.bajos ?? 0,
+      hallazgos: cambios.hallazgos ?? [],
+      report_id: cambios.reportId ?? null,
+      actualizado_at: new Date().toISOString(),
+      fuente: 'monitoreo',
+    }).eq('doc_type', RISK_TIPO(tipoDoc)).eq('doc_number', doc)
+
+    // A todas las cuentas que lo tengan inscrito.
+    const { data: filas } = await db.from('users')
+      .select('id, raw_data').not('raw_data->tusdatos->beneficiarios', 'is', null).limit(2000)
+    for (const u of (filas ?? []) as any[]) {
+      const benefs = u.raw_data?.tusdatos?.beneficiarios ?? {}
+      const f = benefs[doc]
+      if (!f) continue
+      const raw = { ...u.raw_data }
+      raw.tusdatos = {
+        ...raw.tusdatos,
+        beneficiarios: { ...benefs, [doc]: { ...f, ...cambios, fuente: 'monitoreo', at: new Date().toISOString() } },
+      }
+      await db.from('users').update({ raw_data: raw }).eq('id', u.id)
+      tocadas++
+    }
+  } catch { /* se registra abajo en auditoría */ }
+  return tocadas
 }
 
 // ── Traducir el resultado de TusDatos a nuestra categoría ────────────────
@@ -410,12 +550,15 @@ function operableDe(cat: Ficha['categoria'], c: Config): boolean | undefined {
 // Cada lanzamiento en producción GASTA UN CRÉDITO, así que no se relanza un
 // documento consultado hace poco: TusDatos ya devuelve lo previo sin cobrar
 // cuando force es false, pero ni siquiera vale la pena preguntar.
-async function lanzar(c: Config, d: { documento: string; tipoDocumento: string; nombre?: string; fechaExpedicion?: string; referencia: string }) {
+async function lanzar(c: Config, d: { documento: string; tipoDocumento: string; nombre?: string; fechaExpedicion?: string; referencia: string; force?: boolean }) {
   const tipo = (d.tipoDocumento || 'CC').toUpperCase()
   const cuerpo: Record<string, unknown> = {
     doc: /^\d+$/.test(d.documento) ? Number(d.documento) : d.documento,
     typedoc: tipo,
-    force: false,
+    // `force` solo en el monitoreo: sin él TusDatos devuelve lo que ya tenía
+    // guardado, que es justo lo que NO sirve cuando el aviso es que algo
+    // cambió. En el resto de los casos va en false, que no cobra.
+    force: d.force === true,
     webhook_reference: d.referencia.slice(0, 250),
   }
   // El nombre es obligatorio para pasaporte e internacional, y para NOMBRE el
@@ -594,6 +737,8 @@ async function cerrar(c: Config, userId: string, jobid: string, doc: string, esB
   }
 
   if (esBeneficiario) await guardarBeneficiario(userId, doc, ficha); else await guardarTitular(userId, ficha)
+  // Al padrón: este crédito ya se pagó, que no lo pague nadie más.
+  await riskGuardar(ficha.tipoDocumento ?? 'CC', doc, ficha, userId)
   await auditar('tusdatos.consulta', { userId, documento: doc, categoria: cat, operable: ficha.operable, validado, reportId })
 
   // Y se le manda a Kumplo, que es lo que se invirtió: el expediente de allá
@@ -621,6 +766,54 @@ async function consultar(
 ): Promise<{ ok: boolean; ficha?: Ficha; error?: string; message?: string }> {
   const doc = String(d.documento ?? '').replace(/[.,\s]/g, '').trim()
   if (!doc) return { ok: false, error: 'sin_documento', message: 'Falta el número de documento.' }
+
+  // ── LINCOIN RISK primero ────────────────────────────────────────────────
+  // Si otra cuenta ya pagó por esta persona y el dato sigue vigente, se reusa.
+  // Es el mismo documento: los antecedentes no cambian según quién pregunte.
+  //
+  // Lo que NO se reusa es la comparación del nombre: esa es de esta
+  // inscripción. Se recalcula acá contra el nombre real del padrón, así que
+  // si esta cuenta lo escribió mal, se bloquea igual aunque la otra lo
+  // hubiera escrito bien.
+  if (c.riskActivo !== false) {
+    const previo = await riskBuscar(d.tipoDocumento, doc, c.riskDiasVigencia ?? 90)
+    if (previo) {
+      const nombreReal = (previo as any).nombre_real ?? undefined
+      const coincide = d.nombre ? nombreCoincide(String(d.nombre), String(nombreReal ?? '')) : undefined
+      const ficha: Ficha = {
+        documento: doc, tipoDocumento: RISK_TIPO(d.tipoDocumento),
+        nombre: nombreReal, nombreReal, nombreInscrito: d.nombre ? String(d.nombre) : undefined,
+        nombreCoincide: coincide,
+        documentoVigente: (previo as any).documento_vigente ?? undefined,
+        estadoDocumento: (previo as any).estado_documento ?? undefined,
+        categoria: (previo as any).categoria ?? undefined,
+        estado: 'finalizado',
+        altos: (previo as any).altos ?? 0, medios: (previo as any).medios ?? 0, bajos: (previo as any).bajos ?? 0,
+        hallazgos: (previo as any).hallazgos ?? [], codigos: (previo as any).codigos ?? [],
+        reportId: (previo as any).report_id ?? undefined,
+        // El veredicto se recalcula con la configuración de HOY y con la
+        // identidad de ESTA inscripción — no se copia el `operable` guardado,
+        // que se decidió con otra configuración y otro nombre.
+        operable: (coincide === false || (previo as any).documento_vigente === false)
+          ? false
+          : operableDe((previo as any).categoria ?? undefined, c),
+        bloqueo: coincide === false
+          ? `El nombre inscrito no corresponde al documento. Según la Registraduría es ${nombreReal ?? 'otra persona'}.`
+          : ((previo as any).documento_vigente === false
+            ? `El documento no está vigente${(previo as any).estado_documento ? `: ${(previo as any).estado_documento}` : ''}.`
+            : undefined),
+        deLincoinRisk: true,
+        at: new Date().toISOString(),
+      }
+      if (esBeneficiario) await guardarBeneficiario(userId, doc, ficha); else await guardarTitular(userId, ficha)
+      await riskAnotarUso(d.tipoDocumento, doc, userId)
+      await auditar('tusdatos.reutilizado_lincoin_risk', {
+        userId, documento: doc, categoria: ficha.categoria ?? null,
+        consultadoEl: (previo as any).consultado_at ?? null, ahorroCop: 1400,
+      })
+      return { ok: true, ficha }
+    }
+  }
 
   const r = await lanzar(c, { ...d, documento: doc, referencia: `${userId}:${doc}` })
 
@@ -779,32 +972,52 @@ Deno.serve(async (req: Request) => {
       //
       // Se relanza para TODA cuenta que tenga a esa persona inscrita: el
       // mismo beneficiario puede estar en varias.
-      if (evento === 'pepsMonitoring') {
+      // El evento se llama 'listAndPepsMonitoring'; se acepta también el
+      // nombre corto por si la integración lo manda distinto. Antes solo se
+      // comparaba con 'pepsMonitoring', así que la alerta caía en el saco de
+      // los ignorados y el veredicto viejo se quedaba diciendo que la persona
+      // estaba limpia.
+      if (evento === 'listAndPepsMonitoring' || evento === 'pepsMonitoring') {
         const dd = cuerpo?.data?.data ?? {}
         const doc = String(dd?.doc ?? '').replace(/\D/g, '')
         await auditar('tusdatos.monitoreo_alerta', {
           documento: doc, nombre: String(dd?.nombre ?? ''),
           hallazgos: JSON.stringify(dd?.hallazgos ?? []).slice(0, 600),
         })
+        // UNA consulta forzada, y de ahí baja a todas las cuentas.
+        //
+        // Antes esto relanzaba hasta DIEZ consultas, una por cada cuenta que
+        // tuviera a la persona inscrita — diez créditos por la misma alerta —
+        // y encima ninguna traía datos nuevos, porque se lanzaban sin `force`
+        // y TusDatos devolvía el resultado viejo. Se pagaba diez veces por no
+        // enterarse.
+        //
+        // Ahora se paga UNA, con `force`, se guarda en el padrón, y desde el
+        // padrón se actualiza a todas las cuentas. Sin tope de diez: si diez
+        // empresas le pagan a la misma persona, las diez tienen que enterarse.
         if (doc && c.activo) {
-          const { data: filas } = await db
-            .from('users').select('id, raw_data').not('raw_data->tusdatos', 'is', null).limit(2000)
-          let relanzadas = 0
-          for (const u of (filas ?? []) as any[]) {
-            const td = u.raw_data?.tusdatos ?? {}
-            const esBenef = !!(td.beneficiarios ?? {})[doc]
-            const esTitular = String(td.documento ?? '') === doc
-            if (!esBenef && !esTitular) continue
-            const f = esBenef ? td.beneficiarios[doc] : td
-            const r = await consultar(c, u.id, {
-              documento: doc,
-              tipoDocumento: String(f?.tipoDocumento ?? 'CC'),
-              nombre: f?.nombreInscrito ?? f?.nombre ?? undefined,
-            }, esBenef)
-            if (r.ok) relanzadas += 1
-            if (relanzadas >= 10) break   // el resto, en la siguiente alerta
+          const tipoDoc = String(dd?.typedoc ?? 'CC')
+          const r = await lanzar(c, { documento: doc, tipoDocumento: tipoDoc, referencia: `monitoreo:${doc}`, force: true })
+          const jobid = String(r.body?.jobid ?? '')
+          let propagadas = 0
+          if (r.ok && jobid) {
+            // Se espera el resultado: la consulta tarda cerca de un minuto y
+            // el webhook puede aguantarlo. Si no vuelve a tiempo, el job queda
+            // lanzado y lo recoge la cola de pendientes.
+            const nueva = await cerrar(c, '', jobid, doc, true)
+            if (nueva.estado === 'finalizado') {
+              await riskGuardar(tipoDoc, doc, nueva, '', 'monitoreo')
+              propagadas = await riskPropagar(tipoDoc, doc, {
+                categoria: nueva.categoria, operable: nueva.operable,
+                altos: nueva.altos, medios: nueva.medios, bajos: nueva.bajos,
+                hallazgos: nueva.hallazgos, reportId: nueva.reportId,
+              })
+            }
           }
-          await auditar('tusdatos.monitoreo_relanzado', { documento: doc, cuentas: relanzadas })
+          await auditar('tusdatos.monitoreo_actualizado', {
+            documento: doc, creditos: 1, cuentasActualizadas: propagadas,
+            lanzado: r.ok, jobid: jobid || null,
+          })
         }
         return json({ ok: true })
       }
@@ -1043,6 +1256,53 @@ Deno.serve(async (req: Request) => {
     // El orden importa: primero lo que ya está bloqueando una operación,
     // después lo que está a la espera. Una bandeja donde lo urgente aparece
     // mezclado con lo rutinario se deja de revisar en una semana.
+    // ── LINCOIN RISK: el padrón ──────────────────────────────────────────
+    if (accion === 'risk') {
+      if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      const q = String(body.q ?? '').replace(/\D/g, '')
+      let sel = db.from('risk_registry').select('*').order('actualizado_at', { ascending: false }).limit(300)
+      if (q) sel = sel.ilike('doc_number', `%${q}%`)
+      const { data: filas, error } = await sel
+      if (error) return json({ error: error.message }, 500)
+
+      const lista = (filas ?? []) as any[]
+      // Los totales se calculan sobre TODO el padrón, no sobre la página.
+      const { count: total } = await db.from('risk_registry').select('*', { count: 'exact', head: true })
+      const { data: sumas } = await db.from('risk_registry').select('veces_consultado, veces_reutilizado, categoria').limit(20000)
+      const todo = (sumas ?? []) as any[]
+      const reutilizadas = todo.reduce((a, r) => a + Number(r.veces_reutilizado ?? 0), 0)
+      const pagadas = todo.reduce((a, r) => a + Number(r.veces_consultado ?? 0), 0)
+      const COSTO = 1400
+
+      return json({
+        ok: true,
+        config: { activo: (await leerConfig()).riskActivo !== false, dias: (await leerConfig()).riskDiasVigencia ?? 90 },
+        resumen: {
+          personas: total ?? lista.length,
+          consultasPagadas: pagadas,
+          consultasAhorradas: reutilizadas,
+          ahorroCop: reutilizadas * COSTO,
+          gastoCop: pagadas * COSTO,
+          costoUnitario: COSTO,
+          alto: todo.filter(r => r.categoria === 'alto').length,
+          medio: todo.filter(r => r.categoria === 'medio').length,
+          limpios: todo.filter(r => r.categoria === 'bajo' || r.categoria === 'ninguno' || r.categoria === 'informativo').length,
+        },
+        personas: lista.map(r => ({
+          tipoDocumento: r.doc_type, documento: r.doc_number,
+          nombreReal: r.nombre_real, documentoVigente: r.documento_vigente,
+          estadoDocumento: r.estado_documento,
+          categoria: r.categoria, operable: r.operable, estado: r.estado,
+          altos: r.altos, medios: r.medios, bajos: r.bajos,
+          hallazgos: Array.isArray(r.hallazgos) ? r.hallazgos : [],
+          reportId: r.report_id,
+          consultadoAt: r.consultado_at, actualizadoAt: r.actualizado_at, fuente: r.fuente,
+          vecesConsultado: r.veces_consultado, vecesReutilizado: r.veces_reutilizado,
+          empresas: Array.isArray(r.empresas) ? r.empresas.length : 0,
+        })),
+      })
+    }
+
     if (accion === 'compliance') {
       if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
       // Se traen los datos que IDENTIFICAN a la empresa que consultó, no solo
