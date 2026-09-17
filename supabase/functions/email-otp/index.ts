@@ -123,10 +123,23 @@ Deno.serve(async (req) => {
       // La escritura ahora exige que el estado anterior SIGA siendo el que se
       // leyó. Solo una puede cumplirlo: la otra no encuentra fila, no manda
       // correo y responde como si estuviera frenada.
+      //
+      // Los TRES estados posibles, cada uno con su condición. Antes eran dos,
+      // y el tercero —un otp guardado SIN sentAt— no encajaba en ninguna: la
+      // condición exigía que raw_data->otp fuera null, y no lo era, así que
+      // no coincidía ninguna fila y la cuenta se quedaba SIN PODER RECIBIR
+      // CÓDIGOS PARA SIEMPRE, respondiendo "ya te enviamos uno" sin enviar
+      // nada. La rama de abajo es además lo que DESTRABA a las cuentas que ya
+      // quedaron así: en el próximo intento coinciden y vuelven a funcionar
+      // solas, sin tocar la base a mano.
       let claim = db.from('users').update({ raw_data: { ...raw, otp } }).eq('id', user.id)
-      claim = prev?.sentAt
-        ? claim.filter('raw_data->otp->>sentAt', 'eq', String(prev.sentAt))
-        : claim.is('raw_data->otp', null)
+      if (prev?.sentAt) {
+        claim = claim.filter('raw_data->otp->>sentAt', 'eq', String(prev.sentAt))
+      } else if (prev) {
+        claim = claim.is('raw_data->otp->>sentAt', null)
+      } else {
+        claim = claim.is('raw_data->otp', null)
+      }
       const { data: gane } = await claim.select('id')
       if (!gane?.length) {
         return json(200, { ok: true, throttled: true, message: 'Ya te enviamos un código. Revisa tu correo.' })
@@ -200,25 +213,32 @@ Deno.serve(async (req) => {
       //
       // Se deja la marca 'usedAt' en vez de borrar el objeto entero, para
       // poder responder "ese código ya se usó" en lugar de un genérico.
-      const { data: reclamado } = await db.from('users')
-        .update({ raw_data: { ...raw, otp: { usedAt: Date.now(), sentAt: otp.sentAt ?? null } } })
-        .eq('id', user.id)
-        .filter('raw_data->otp->>codeHash', 'eq', String(otp.codeHash))
-        .select('id')
-      if (!reclamado?.length) {
-        return json(200, { ok: false, error: 'used', message: 'Ese código ya se usó. Pide uno nuevo.' })
-      }
-      // ── DISPOSITIVO DE CONFIANZA ────────────────────────────────────
+      //
+      // ── DISPOSITIVO DE CONFIANZA, EN LA MISMA ESCRITURA ─────────────────
       // "Confiar en este dispositivo 30 días" vivía SOLO en el navegador: una
       // fecha en localStorage. Cualquier cosa que limpie el almacenamiento la
       // borraba y el código volvía a pedirse en cada ingreso; y al revés,
-      // escribiendo esa fecha a mano se saltaba el paso.
+      // escribiendo esa fecha a mano se saltaba el paso. Ahora la confianza la
+      // guarda el SERVIDOR: el navegador solo conserva un identificador sin
+      // valor por sí mismo, que si no está en la lista de acá no abre nada.
       //
-      // Ahora la confianza la guarda el SERVIDOR. El navegador solo conserva
-      // un identificador de dispositivo sin valor por sí mismo: si no está en
-      // la lista del servidor, no abre nada.
+      // VA EN ESTA MISMA ESCRITURA, no en una segunda. Cuando era una segunda
+      // pasaban dos cosas, las dos malas: partía de `raw`, que se leyó al
+      // ENTRAR a la petición, así que pisaba lo que acababa de dejar el
+      // reclamo de acá arriba; y al reconstruir el objeto otp se le quedaba
+      // fuera `sentAt`. Sin `sentAt`, el envío del código no encontraba fila
+      // que reclamar y la cuenta quedaba SIN PODER RECIBIR CÓDIGOS, mientras
+      // respondía "ya te enviamos uno". Marcar "confiar en este dispositivo"
+      // era lo que dejaba la cuenta inservible. Una sola escritura no puede
+      // pisarse a sí misma.
       const dev = String(body.deviceId ?? '').trim().slice(0, 64)
-      if (body.trust === true && /^[A-Za-z0-9_-]{16,64}$/.test(dev)) {
+      const confiar = body.trust === true && /^[A-Za-z0-9_-]{16,64}$/.test(dev)
+
+      const rawNuevo: Record<string, any> = {
+        ...raw,
+        otp: { usedAt: Date.now(), sentAt: otp.sentAt ?? null },
+      }
+      if (confiar) {
         const previos: any[] = Array.isArray(raw.trustedDevices) ? raw.trustedDevices : []
         const vivos = previos.filter(d => d && d.id !== dev && Number(d.exp ?? 0) > Date.now())
         const nuevo = {
@@ -229,8 +249,16 @@ Deno.serve(async (req) => {
         }
         // Tope de 10: una cuenta con veinte dispositivos "de confianza" no
         // tiene ninguno. Se quedan los más recientes.
-        const lista = [nuevo, ...vivos].slice(0, 10)
-        await db.from('users').update({ raw_data: { ...raw, otp: { usedAt: Date.now() }, trustedDevices: lista } }).eq('id', user.id)
+        rawNuevo.trustedDevices = [nuevo, ...vivos].slice(0, 10)
+      }
+
+      const { data: reclamado } = await db.from('users')
+        .update({ raw_data: rawNuevo })
+        .eq('id', user.id)
+        .filter('raw_data->otp->>codeHash', 'eq', String(otp.codeHash))
+        .select('id')
+      if (!reclamado?.length) {
+        return json(200, { ok: false, error: 'used', message: 'Ese código ya se usó. Pide uno nuevo.' })
       }
       return json(200, { ok: true, verified: true, userId: user.id })
     }
