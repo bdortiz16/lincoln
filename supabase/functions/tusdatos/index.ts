@@ -1263,7 +1263,20 @@ Deno.serve(async (req: Request) => {
       let sel = db.from('risk_registry').select('*').order('actualizado_at', { ascending: false }).limit(300)
       if (q) sel = sel.ilike('doc_number', `%${q}%`)
       const { data: filas, error } = await sel
-      if (error) return json({ error: error.message }, 500)
+      if (error) {
+        // Cuando el padrón no responde hay DOS causas que se leen igual: la
+        // tabla no existe, o existe en OTRA base. Perseguimos la caché de
+        // PostgREST un buen rato antes de caer en que el servidor podía estar
+        // mirando un proyecto distinto de aquel donde se corrió la migración
+        // — y eso no se podía ver desde ninguna pantalla.
+        //
+        // Se devuelven las CUATRO primeras letras del proyecto, nada más: es
+        // lo justo para comparar contra el que se tiene abierto en el editor
+        // de SQL, y no dice nada que no esté ya en el JavaScript que descarga
+        // cualquiera.
+        const base = (SUPABASE_URL.match(/^https:\/\/([^.]+)\./)?.[1] ?? '').slice(0, 4)
+        return json({ error: error.message, base }, 500)
+      }
 
       const lista = (filas ?? []) as any[]
       // Los totales se calculan sobre TODO el padrón, no sobre la página.

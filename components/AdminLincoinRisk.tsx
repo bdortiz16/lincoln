@@ -70,15 +70,23 @@ export const AdminLincoinRisk: React.FC = () => {
     return (
       <div style={{ fontFamily: FONT, background: C.card, border: `1px solid ${C.border2}`, borderRadius: 16, padding: 18, color: C.sub, fontSize: 13, lineHeight: 1.6 }}>
         {d.error}
-        {/* El mensaje "no se encuentra la tabla" tiene DOS causas distintas y
-            antes las juntaba en una sola pista, que mandaba a correr otra vez
-            una migración ya corrida. Si la tabla no tiene ningún permiso —ni
-            siquiera para el servidor— queda fuera de la caché de esquema y la
-            respuesta dice que no existe, aunque exista. */}
+        {/* "No se encuentra la tabla" tiene TRES causas que se leen igual: la
+            migración no se corrió, la tabla no tiene permiso para el servidor,
+            o el servidor está mirando OTRA base. La tercera es la que costó
+            más de encontrar, porque no se veía desde ninguna pantalla: por eso
+            ahora el servidor dice a qué base le preguntó. */}
+        {d.base ? (
+          <p style={{ marginTop: 10, color: C.sub, fontSize: 12 }}>
+            El servidor le preguntó a la base{' '}
+            <b style={{ color: C.text, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{d.base}…</b>{' '}
+            — comprobá que sea la misma donde corriste la migración.
+          </p>
+        ) : null}
         <p style={{ marginTop: 8, color: C.dim, fontSize: 12 }}>
-          Si dice que no encuentra la tabla, puede ser que falte correr la migración
-          del padrón — o que la tabla exista pero sin permiso para el servidor, que
-          se lee igual. Comprobalo antes de volver a correr nada.
+          Si dice que no encuentra la tabla: puede faltar la migración del padrón,
+          puede que la tabla exista sin permiso para el servidor, o puede que el
+          servidor esté consultando otra base. Las tres se leen igual. Comprobalo
+          antes de volver a correr nada.
         </p>
       </div>
     );
