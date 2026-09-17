@@ -29,3 +29,21 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# ── Agent Skills instaladas (npx skills add) ──────────────────────────────
+# Se quedan FUERA del repo a proposito. Son instrucciones y scripts de Python
+# de terceros que el agente ejecuta con permisos completos, y el paquete de
+# MistTrack incluye pay.py, que firma transferencias de USDC (EIP-3009 y
+# Solana). En el repo donde viven los caminos del dinero, traer eso adentro es
+# una decision que se toma a proposito, no un efecto secundario de instalar
+# una herramienta de desarrollo.
+#
+# Cada quien las instala en su maquina:
+#   npx skills add slowmist/misttrack-skills --skill misttrack-skills
+#
+# SI algun dia se adoptan para todo el equipo, lo correcto es commitear
+# skills-lock.json (fija la version, hace reproducible la instalacion) y
+# seguir ignorando el contenido descargado.
+.agents/
+.claude/skills/
+skills-lock.json
