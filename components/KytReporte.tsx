@@ -268,7 +268,7 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
                 Se revisaron {(inv.entradas?.length ?? 0) + (inv.salidas?.length ?? 0)} contrapartes
                 y <b>ninguna está señalada</b> como maliciosa en la información disponible.
               </p>
-            : <SinDato>El proveedor no devolvió la investigación de contrapartes para esta dirección.</SinDato>}
+            : <SinDato fuente={d.fuentes?.investigacion}>El proveedor no devolvió la investigación de contrapartes para esta dirección.</SinDato>}
         </Seccion>
 
         {/* 5. Principales contrapartes */}
@@ -291,7 +291,7 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
                   ))}
                 </tbody>
               </table>
-            ) : <SinDato>El proveedor no devolvió contrapartes para esta dirección.</SinDato>}
+            ) : <SinDato fuente={d.fuentes?.contrapartes}>El proveedor no devolvió contrapartes para esta dirección.</SinDato>}
         </Seccion>
 
         {/* 6. Comportamiento */}
@@ -311,7 +311,7 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
                 ))}
               </tbody>
             </table>
-          ) : <SinDato>El proveedor no devolvió el análisis de comportamiento.</SinDato>}
+          ) : <SinDato fuente={d.fuentes?.comportamiento}>El proveedor no devolvió el análisis de comportamiento.</SinDato>}
         </Seccion>
 
         {/* 7. Perfil */}

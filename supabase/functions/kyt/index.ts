@@ -149,6 +149,36 @@ function desenvolver(d: any): any {
   return d
 }
 
+// El MOTIVO que manda el proveedor cuando dice que no. Se perdia: desenvolver()
+// devuelve null con success:false y el `msg` se tiraba, asi que un "tu plan no
+// incluye esta consulta" y un "no hay datos" llegaban a la pantalla como la
+// misma frase -- "el proveedor no devolvio X" -- y no habia forma de saber cual
+// de las dos era. Es el mismo agujero que tenian los correos del OTP.
+function motivoProveedor(d: any): string | null {
+  if (!d) return null
+  if (typeof d === 'string') return d.slice(0, 200) || null
+  if (typeof d === 'object') {
+    const m = d.msg ?? d.message ?? d.error ?? d.detail ?? null
+    if (typeof m === 'string' && m.trim()) return m.trim().slice(0, 200)
+    if (d.success === false) return 'el proveedor respondió sin datos'
+  }
+  return null
+}
+
+// Resultado de UNA fuente del expediente: que paso, con el motivo del
+// proveedor y si nuestro parser saco algo. Va al reporte para que cada seccion
+// vacia pueda decir POR QUE esta vacia.
+type Fuente = { ok: boolean; status: number; motivo: string | null; conDatos: boolean }
+function fuenteDe(r: { ok: boolean; status: number; data: any; error?: string } | null, parsed: any): Fuente {
+  if (!r) return { ok: false, status: 0, motivo: 'no se pudo llamar al proveedor', conDatos: false }
+  return {
+    ok: r.ok,
+    status: r.status,
+    motivo: r.error ?? motivoProveedor(r.data),
+    conDatos: parsed != null,
+  }
+}
+
 // Un veredicto SOLO si hay un puntaje o un nivel legible. Si el proveedor
 // respondió 200 con un cuerpo que no trae ninguno de los dos, no hay veredicto
 // — y eso se dice, no se inventa.
@@ -964,8 +994,16 @@ Deno.serve(async (req) => {
         const contrapartes = eCp ? leerContrapartes(eCp.data) : null
         const investigacion = eInv?.ok ? leerInvestigacion(eInv.data) : null
         const comportamiento = eAct?.ok ? leerComportamiento(eAct.data) : null
+        // Se guarda POR QUE quedo vacia cada fuente. Sin esto, "el proveedor no
+        // devolvio X" tapaba por igual un 403 de plan, un 404 de ruta y una
+        // respuesta con forma distinta a la que espera el parser.
+        const fuentes = {
+          contrapartes: fuenteDe(eCp, contrapartes),
+          investigacion: fuenteDe(eInv, investigacion),
+          comportamiento: fuenteDe(eAct, comportamiento),
+        }
         await db.from('kyt_registry').update({
-          contrapartes, investigacion, comportamiento,
+          contrapartes, investigacion, comportamiento, fuentes,
           actualizado_at: new Date().toISOString(),
         }).eq('coin', coin).eq('address_lower', dir.toLowerCase())
       }
@@ -988,10 +1026,60 @@ Deno.serve(async (req) => {
         contrapartes: f.contrapartes ?? null,
         investigacion: f.investigacion ?? null,
         comportamiento: f.comportamiento ?? null,
+        fuentes: f.fuentes ?? null,
         reporte: f.report_url ?? null,
         consultadoAt: f.consultado_at,
         delPadron: reusar,
       })
+    }
+
+    // ── DIAGNOSTICO (admin) ───────────────────────────────────────
+    // Llama TODOS los endpoints para una direccion y devuelve el cuerpo crudo
+    // de cada uno, el estado HTTP y si nuestro parser saco algo.
+    //
+    // Existe porque hoy no se podia distinguir entre tres cosas que se veian
+    // iguales: que el plan no incluya el endpoint, que la ruta no exista, y que
+    // la respuesta tenga una forma distinta de la que el parser espera. Las
+    // tres llegaban a la pantalla como "el proveedor no devolvio X", y me
+    // llevaron a inventar nombres de campo dos veces.
+    if (accion === 'diagnostico') {
+      if (!yo.esAdmin) return json({ error: 'no_autorizado' }, 401)
+      const coin = canonCoin(body.coin)
+      const dir = normDir(body.address)
+      if (!coin || !dir) return json({ ok: false, error: 'faltan_datos' })
+
+      const rutas: [string, string, (d: any) => any][] = [
+        ['riesgo', c.rutaRiesgo, (d) => leerVeredicto(d)],
+        ['actividad', c.rutaResumen, leerActividad],
+        ['etiquetas', c.rutaEtiquetas, (d) => desenvolver(d)],
+        ['perfil', c.rutaPerfil, leerPerfil],
+        ['contrapartes', c.rutaContrapartes, leerContrapartes],
+        ['investigacion', c.rutaInvestigacion, leerInvestigacion],
+        ['comportamiento', c.rutaComportamiento, leerComportamiento],
+      ]
+      const out: Record<string, any> = {}
+      for (const [nombre, ruta, parser] of rutas) {
+        const extra = nombre === 'investigacion' ? { type: 'all', page: '1' } : {}
+        const r = await llamarMT(c, ruta, { coin, address: dir, ...extra })
+        let parsed: any = null
+        let errParser: string | null = null
+        try { parsed = parser(r.data) } catch (e) { errParser = (e as Error)?.message ?? 'parser' }
+        let crudo = ''
+        try { crudo = typeof r.data === 'string' ? r.data : JSON.stringify(r.data) } catch { crudo = '(ilegible)' }
+        out[nombre] = {
+          ruta,
+          httpStatus: r.status,
+          ok: r.ok,
+          errorRed: r.error ?? null,
+          motivoProveedor: motivoProveedor(r.data),
+          parserSacoDatos: parsed != null,
+          errorParser: errParser,
+          // El cuerpo crudo, recortado. Es lo unico que permite corregir un
+          // nombre de campo sin volver a adivinar.
+          crudo: crudo.slice(0, 1800),
+        }
+      }
+      return json({ ok: true, coin, address: dir, credencial: !!MT_KEY, fuentes: out })
     }
 
     // ── Padrón completo (admin) ───────────────────────────────────

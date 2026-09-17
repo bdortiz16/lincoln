@@ -47,6 +47,11 @@ ALTER TABLE public.kyt_registry ADD COLUMN IF NOT EXISTS hacking_event text;
 ALTER TABLE public.kyt_registry ADD COLUMN IF NOT EXISTS contrapartes   jsonb;
 ALTER TABLE public.kyt_registry ADD COLUMN IF NOT EXISTS investigacion  jsonb;
 ALTER TABLE public.kyt_registry ADD COLUMN IF NOT EXISTS comportamiento jsonb;
+-- Por que quedo vacia cada fuente del expediente: estado HTTP, motivo del
+-- proveedor y si el parser saco algo. Sin esto, "el proveedor no devolvio X"
+-- tapa por igual un limite de plan, una ruta inexistente y una respuesta con
+-- forma distinta a la esperada.
+ALTER TABLE public.kyt_registry ADD COLUMN IF NOT EXISTS fuentes jsonb;
 
 
 -- ── Direcciones que vigila cada empresa ─────────────────────────────────────
