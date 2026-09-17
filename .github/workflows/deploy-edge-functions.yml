@@ -4,6 +4,13 @@ on:
   push:
     branches:
       - main
+      # La rama de trabajo TIENE que estar acá. Al quitarla, los push dejaron
+      # de desplegar en silencio: no falla nada, simplemente no corre. Se
+      # acumularon diecisiete commits, diez de ellos de edge functions, y los
+      # controles de AML quedaron escritos pero no corriendo — se veían en la
+      # pantalla y el servidor seguía dejando pasar la plata. Un control que
+      # se cree puesto y no lo está es peor que no tenerlo.
+      - claude/busy-fermi-h8to5p
   workflow_dispatch:
 
 # El token solo necesita leer el repositorio para hacer checkout.
