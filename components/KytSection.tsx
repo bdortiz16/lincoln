@@ -1,104 +1,163 @@
 // ══════════════════════════════════════════════════════════════════
-//  KYT — consulta el riesgo de una dirección cripto antes de operar con ella.
+//  KYT · Verificación de direcciones — Lincoin Empresas
 //
-//  Solo informa. No bloquea nada: es una herramienta de consulta, y meterla
-//  en el camino de los retiros es una decisión aparte.
+//  Consulta puntual + direcciones guardadas con monitoreo. Una consulta sirve
+//  para el momento en que se hace: el riesgo de una dirección cambia, y la que
+//  hoy está limpia mañana aparece con exposición a un mixer. Por eso lo que
+//  importa se guarda y se vuelve a consultar.
 //
-//  La regla que manda esta pantalla: SIN RESULTADO NO ES LIMPIA. Cuando el
-//  proveedor no responde se dice eso mismo, con esas palabras, en vez de un
-//  verde tranquilizador. En este proyecto ya nos costó plata confundir "no sé"
-//  con "todo bien".
+//  SOLO INFORMA. No bloquea ninguna operación.
+//
+//  SIN RESULTADO NO ES LIMPIA. Si el proveedor no responde, la pantalla lo dice
+//  con esas palabras y pide tratar la dirección como no verificada. Nunca se
+//  convierte la ausencia de información en un verde tranquilizador.
+//
+//  NADA DE DATOS DE EJEMPLO. El diseño traía un "8 / 100" y unas direcciones de
+//  muestra; acá no se dibuja ningún número que el proveedor no haya devuelto.
+//  Un puntaje inventado en una pantalla de cumplimiento es peor que una
+//  pantalla vacía: se opera con él.
 // ══════════════════════════════════════════════════════════════════
-import React, { useEffect, useState } from 'react';
-import { ArrowLeft, Search, ShieldCheck, ShieldAlert, ShieldQuestion, ExternalLink, Copy, Check, Loader2 } from 'lucide-react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { ArrowLeft, Eye, EyeOff, ExternalLink, Loader2, ShieldQuestion, History, X } from 'lucide-react';
 import { llamarFuncion } from '../lib/edge';
 
 const FONT = 'Archivo, system-ui, sans-serif';
+const MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace';
 
 const C = {
-  bg: '#070808',
   card: '#0C0E0D',
-  raised: '#121413',
   text: '#F4F4F2',
   sub: '#878E88',
   dim: 'rgba(244,244,242,0.45)',
-  border: 'rgba(255,255,255,0.09)',
-  border2: 'rgba(255,255,255,0.06)',
+  bd: 'rgba(255,255,255,0.09)',
+  bdSoft: 'rgba(255,255,255,0.07)',
+  bdHard: 'rgba(255,255,255,0.14)',
   green: '#4ADE80',
 };
+const ANILLO = '0 0 0 2px rgba(74,222,128,0.5)';
 
-// Los mismos tonos que usa la lista de beneficiarios para el AML, para que
-// "riesgo alto" se vea igual en toda la app y no haya que reaprenderlo.
-const ROJO  = { b: 'rgba(248,113,113,0.32)', c: '#F87171' };
-const AMBAR = { b: 'rgba(251,191,36,0.32)',  c: '#FBBF24' };
-const GRIS  = { b: 'rgba(255,255,255,0.14)', c: '#878E88' };
-const VERDE = { b: 'rgba(74,222,128,0.3)',   c: '#4ADE80' };
+// Sin rojos ni amarillos, por marca. Riesgo bajo = verde; riesgo alto o cambio
+// de riesgo = blanco con borde marcado. Suena raro hasta que se ve: el blanco
+// fuerte sobre negro llama MÁS la atención que un rojo, y no mete un color de
+// alarma en una paleta que no lo tiene.
+const esBajo = (cat?: string) => cat === 'bajo';
+const tono = (cat?: string) =>
+  esBajo(cat)
+    ? { c: C.green, b: 'rgba(74,222,128,0.5)' }
+    : { c: C.text, b: 'rgba(255,255,255,0.3)' };
 
-// Respaldo si el proveedor no contesta la lista de cadenas. No se hardcodea
-// como fuente de verdad: la lista real se le pide a MistTrack al abrir, porque
-// una lista escrita a mano se desactualiza en silencio.
-const CADENAS_RESPALDO = [
-  { v: 'ETH', t: 'Ethereum' }, { v: 'TRX', t: 'TRON' }, { v: 'BSC', t: 'BNB Smart Chain' },
-  { v: 'BTC', t: 'Bitcoin' }, { v: 'MATIC', t: 'Polygon' }, { v: 'SOL', t: 'Solana' },
-  { v: 'ARB', t: 'Arbitrum' }, { v: 'OP', t: 'Optimism' }, { v: 'BASE', t: 'Base' },
-  { v: 'AVAX', t: 'Avalanche' }, { v: 'TON', t: 'Toncoin' },
+const REDES = [
+  { v: 'TRX', t: 'TRON' },
+  { v: 'ETH', t: 'ETHEREUM' },
+  { v: 'MATIC', t: 'POLYGON' },
 ];
 
-type Resultado = {
-  ok: boolean;
-  error?: string;
-  mensaje?: string;
-  address?: string;
-  coin?: string;
-  categoria?: 'alto' | 'medio' | 'bajo' | 'sin_dato';
-  puntaje?: number | null;
-  nivel?: string | null;
-  hallazgos?: any[];
-  etiquetas?: any[];
-  reporte?: string | null;
-  estado?: string;
-  delPadron?: boolean;
-  consultadoAt?: string;
+const EVM = /^0x[0-9a-fA-F]{40}$/;
+const formatoOk = (coin: string, dir: string) => {
+  if (coin === 'TRX') return /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(dir);
+  return EVM.test(dir);
 };
 
+const enmascarar = (a?: string) => {
+  const s = String(a ?? '');
+  return s.length > 14 ? `${s.slice(0, 6)}…${s.slice(-4)}` : s;
+};
+
+const hora = (t?: string | null) => {
+  if (!t) return '—';
+  try {
+    const d = new Date(t);
+    const hoy = new Date().toDateString() === d.toDateString();
+    const hm = d.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', hour12: false });
+    return hoy ? `hoy ${hm}` : `${d.toLocaleDateString('es-CO', { day: '2-digit', month: 'short' })} ${hm}`;
+  } catch { return '—'; }
+};
+
+const hace = (t?: string | null) => {
+  if (!t) return '—';
+  const ms = Date.now() - new Date(t).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return '—';
+  const h = Math.floor(ms / 3600_000);
+  if (h < 1) return `hace ${Math.max(1, Math.floor(ms / 60_000))} min`;
+  if (h < 24) return `hace ${h} h`;
+  return `hace ${Math.floor(h / 24)} d`;
+};
+
+const textos = (arr: any[] | undefined, max = 30): string[] =>
+  (Array.isArray(arr) ? arr : [])
+    .map(x => typeof x === 'string' ? x : (x?.label ?? x?.name ?? x?.type ?? x?.title ?? ''))
+    .map(s => String(s).trim())
+    .filter(Boolean)
+    .slice(0, max);
+
+// ── Círculo del puntaje ───────────────────────────────────────────
+const Puntaje: React.FC<{ n: number | null; cat?: string; size?: number }> = ({ n, cat, size = 44 }) => {
+  const t = tono(cat);
+  return (
+    <div style={{
+      width: size, height: size, borderRadius: '50%', flexShrink: 0,
+      border: `2px solid ${t.b}`, display: 'grid', placeItems: 'center',
+    }}>
+      <span style={{ fontSize: size * 0.36, fontWeight: 800, color: t.c, fontVariantNumeric: 'tabular-nums' }}>
+        {n == null ? '–' : n}
+      </span>
+    </div>
+  );
+};
+
+const Pill: React.FC<{ texto: string; cat?: string }> = ({ texto, cat }) => {
+  const t = tono(cat);
+  return (
+    <span style={{
+      fontSize: 10, fontWeight: 700, letterSpacing: '1px', whiteSpace: 'nowrap',
+      color: t.c, border: `1px solid ${t.b}`, borderRadius: 999, padding: '3px 9px',
+    }}>{texto}</span>
+  );
+};
+
+const Mini: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
+  <div style={{ background: 'rgba(255,255,255,0.03)', borderRadius: 11, padding: '13px 15px' }}>
+    <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1.4px', color: C.sub, margin: '0 0 6px' }}>{label}</p>
+    <p style={{ fontSize: 12.5, color: C.text, margin: 0, lineHeight: 1.55 }}>{children}</p>
+  </div>
+);
+
+type Res = any;
+type Fila = any;
+
 export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
-  const [cadenas, setCadenas] = useState<{ v: string; t: string }[]>(CADENAS_RESPALDO);
-  const [coin, setCoin] = useState('ETH');
+  const [coin, setCoin] = useState('TRX');
   const [dir, setDir] = useState('');
   const [busy, setBusy] = useState(false);
-  const [res, setRes] = useState<Resultado | null>(null);
-  const [copiado, setCopiado] = useState(false);
+  const [res, setRes] = useState<Res | null>(null);
 
-  // Las cadenas las manda el proveedor. Si la llamada falla se queda el
-  // respaldo — que el selector no sirva sería peor que una lista algo vieja.
-  useEffect(() => {
-    let vivo = true;
-    llamarFuncion('kyt', { action: 'cadenas' }, 20000)
-      .then(r => {
-        if (!vivo || !r?.ok || !Array.isArray(r.cadenas) || !r.cadenas.length) return;
-        const norm = r.cadenas
-          .map((x: any) => {
-            if (typeof x === 'string') return { v: x.toUpperCase(), t: x };
-            const v = String(x?.coin ?? x?.symbol ?? x?.value ?? '').toUpperCase();
-            return v ? { v, t: String(x?.name ?? x?.label ?? v) } : null;
-          })
-          .filter(Boolean) as { v: string; t: string }[];
-        if (norm.length) {
-          setCadenas(norm);
-          if (!norm.some(n => n.v === coin)) setCoin(norm[0].v);
-        }
-      })
-      .catch(() => { /* se queda el respaldo */ });
-    return () => { vivo = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  const [lista, setLista] = useState<Fila[]>([]);
+  const [meta, setMeta] = useState<{ tope: number; horas: number; ultimaRonda: string | null }>({ tope: 50, horas: 24, ultimaRonda: null });
+  const [filtro, setFiltro] = useState<'todas' | 'cambio' | 'orden'>('todas');
+  const [aliasPara, setAliasPara] = useState<null | { coin: string; address: string }>(null);
+  const [alias, setAlias] = useState('');
+  const [guardando, setGuardando] = useState(false);
+  const [verHistorial, setVerHistorial] = useState(false);
+  const [alertas, setAlertas] = useState<any[]>([]);
+
+  const cargarLista = useCallback(async () => {
+    const r = await llamarFuncion('kyt', { action: 'lista' }, 20000).catch(() => null);
+    if (r?.ok) {
+      setLista(Array.isArray(r.direcciones) ? r.direcciones : []);
+      setMeta({ tope: r.tope ?? 50, horas: r.horas ?? 24, ultimaRonda: r.ultimaRonda ?? null });
+    }
   }, []);
+  useEffect(() => { cargarLista(); }, [cargarLista]);
 
   const consultar = async () => {
     const a = dir.trim();
-    if (a.length < 20) { setRes({ ok: false, error: 'corta', mensaje: 'Esa no parece una dirección válida.' }); return; }
+    if (!formatoOk(coin, a)) {
+      setRes({ ok: false, error: 'formato_red', mensaje: `Esa dirección no tiene el formato de ${REDES.find(r => r.v === coin)?.t ?? coin}. Revisá la red que elegiste.` });
+      return;
+    }
     setBusy(true); setRes(null);
     try {
-      const r = await llamarFuncion('kyt', { action: 'consultar', coin, address: a }, 40000);
+      const r = await llamarFuncion('kyt', { action: 'consultar', coin, address: a }, 45000);
       setRes(r ?? { ok: false, error: 'sin_respuesta', mensaje: 'No obtuvimos respuesta. Probá de nuevo.' });
     } catch {
       setRes({ ok: false, error: 'red', mensaje: 'No obtuvimos respuesta. Probá de nuevo.' });
@@ -106,128 +165,142 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
     setBusy(false);
   };
 
-  const tono = (cat?: string) =>
-    cat === 'alto' ? ROJO : cat === 'medio' ? AMBAR : cat === 'bajo' ? VERDE : GRIS;
-
-  const titulo = (cat?: string) =>
-    cat === 'alto' ? 'Dirección señalada' :
-    cat === 'medio' ? 'Hallazgos de riesgo medio' :
-    cat === 'bajo' ? 'Sin hallazgos relevantes' : 'Sin clasificar';
-
-  const explica = (cat?: string) =>
-    cat === 'alto' ? 'Esta dirección tiene hallazgos graves. Antes de recibir o enviar fondos a ella, revisá el reporte.'
-    : cat === 'medio' ? 'Hay hallazgos que conviene mirar antes de operar con esta dirección.'
-    : cat === 'bajo' ? 'La consulta no encontró hallazgos relevantes. No es una garantía: es el estado de hoy.'
-    : 'El proveedor respondió sin una clasificación utilizable.';
-
-  const copiar = () => {
-    try {
-      navigator.clipboard.writeText(res?.address ?? dir);
-      setCopiado(true);
-      setTimeout(() => setCopiado(false), 1600);
-    } catch { /* sin portapapeles */ }
+  const guardar = async () => {
+    if (!aliasPara) return;
+    setGuardando(true);
+    const r = await llamarFuncion('kyt', { action: 'guardar', coin: aliasPara.coin, address: aliasPara.address, alias }, 20000).catch(() => null);
+    setGuardando(false);
+    if (r?.ok) { setAliasPara(null); setAlias(''); cargarLista(); }
+    else alert(r?.mensaje ?? 'No se pudo guardar. Probá de nuevo.');
   };
 
-  const lista = (arr: any[] | undefined): string[] =>
-    (Array.isArray(arr) ? arr : [])
-      .map(x => typeof x === 'string' ? x : (x?.label ?? x?.name ?? x?.type ?? x?.title ?? (() => { try { return JSON.stringify(x); } catch { return ''; } })()))
-      .map(s => String(s).trim())
-      .filter(Boolean)
-      .slice(0, 40);
+  const quitar = async (id: string) => {
+    setLista(l => l.filter(x => x.id !== id));   // se va de la vista al instante
+    await llamarFuncion('kyt', { action: 'quitar', id }, 15000).catch(() => null);
+    cargarLista();
+  };
+
+  const abrirHistorial = async () => {
+    setVerHistorial(true);
+    const r = await llamarFuncion('kyt', { action: 'alertas' }, 20000).catch(() => null);
+    setAlertas(Array.isArray(r?.alertas) ? r.alertas : []);
+  };
+
+  const yaGuardada = res?.ok && lista.some(
+    (x: Fila) => x.coin === res.coin && String(x.address).toLowerCase() === String(res.address).toLowerCase()
+  );
+
+  const conCambio = lista.filter(x => x.subio);
+  const visibles = filtro === 'cambio' ? conCambio : filtro === 'orden' ? lista.filter(x => !x.subio) : lista;
+
+  const nivelTexto = (cat?: string, n?: number | null) => {
+    const t = cat === 'alto' ? 'Riesgo alto' : cat === 'medio' ? 'Riesgo medio' : cat === 'bajo' ? 'Riesgo bajo' : 'Sin clasificar';
+    return n == null ? t : `${t} · ${n} / 100`;
+  };
+
+  const btnFiltro = (k: typeof filtro, t: string) => (
+    <button
+      key={k}
+      onClick={() => setFiltro(k)}
+      style={{
+        fontFamily: FONT, fontSize: 12.5, fontWeight: 700,
+        color: filtro === k ? C.text : C.sub,
+        background: filtro === k ? 'rgba(255,255,255,0.08)' : 'transparent',
+        border: `1px solid ${filtro === k ? C.bdHard : 'transparent'}`,
+        borderRadius: 9, padding: '7px 13px', cursor: 'pointer', whiteSpace: 'nowrap',
+      }}
+      onFocus={e => { e.currentTarget.style.boxShadow = ANILLO; }}
+      onBlur={e => { e.currentTarget.style.boxShadow = 'none'; }}
+    >{t}</button>
+  );
 
   return (
-    <div style={{ fontFamily: FONT, color: C.text }} className="pt-6 space-y-5 animate-in fade-in duration-300">
-      {onBack && (
-        <button onClick={onBack} className="flex items-center gap-2 font-bold text-sm transition-colors hover:text-[#F4F4F2]" style={{ color: C.sub }}>
-          <ArrowLeft size={18} /> Servicios
-        </button>
-      )}
-
-      <div>
-        <h1 style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-0.8px' }}>KYT</h1>
-        <p style={{ color: C.sub, fontSize: 14, marginTop: 5, maxWidth: 620, lineHeight: 1.6 }}>
-          Consultá una dirección antes de operar con ella. Te decimos si está señalada por
-          actividad ilícita, con qué puntaje y por qué. <span style={{ color: C.dim }}>No bloquea
-          nada — es información para que decidas.</span>
-        </p>
+    <div style={{ fontFamily: FONT, color: C.text, padding: '34px 44px 60px', maxWidth: 1080 }} className="animate-in fade-in duration-300">
+      {/* ── Encabezado ── */}
+      <div className="flex items-center" style={{ gap: 14, marginBottom: 8 }}>
+        {onBack && (
+          <button onClick={onBack} className="transition-colors hover:text-[#F4F4F2]"
+            style={{ fontSize: 13.5, fontWeight: 600, color: C.sub, background: 'none', border: 'none', padding: 0, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            onFocus={e => { e.currentTarget.style.boxShadow = ANILLO; }} onBlur={e => { e.currentTarget.style.boxShadow = 'none'; }}>
+            <ArrowLeft size={16} strokeWidth={1.6} /> Servicios
+          </button>
+        )}
+        <h1 style={{ fontSize: 24, fontWeight: 800, letterSpacing: '-0.5px', margin: 0 }}>Verificación de direcciones (KYT)</h1>
       </div>
+      <p style={{ fontSize: 13.5, color: C.sub, margin: '0 0 24px', maxWidth: 640, lineHeight: 1.6 }}>
+        Consultá una dirección antes de operar con ella. Te decimos si está señalada por actividad
+        ilícita, con qué puntaje y por qué. No bloquea nada — es información para que decidas.
+      </p>
 
-      {/* ── Formulario ── */}
-      <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 16, padding: 18 }}>
-        <div className="flex flex-col md:flex-row" style={{ gap: 10 }}>
-          <div style={{ flex: '0 0 auto' }}>
-            <label style={{ display: 'block', fontSize: 11.5, fontWeight: 700, color: C.sub, marginBottom: 6 }}>RED</label>
-            <select
-              value={coin}
-              onChange={e => setCoin(e.target.value)}
-              style={{
-                fontFamily: FONT, fontSize: 14, fontWeight: 600, color: C.text,
-                background: C.raised, border: `1px solid ${C.border}`, borderRadius: 11,
-                padding: '11px 12px', minWidth: 170, outline: 'none',
-              }}
-            >
-              {cadenas.map(c2 => <option key={c2.v} value={c2.v} style={{ background: C.raised }}>{c2.t}</option>)}
-            </select>
+      {/* ── Consulta ── */}
+      <div style={{ background: C.card, border: `1px solid ${C.bdSoft}`, borderRadius: 14, padding: '22px 24px', marginBottom: 14 }}>
+        <div className="flex flex-wrap items-end" style={{ gap: 14 }}>
+          <div>
+            <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: C.sub, margin: '0 0 7px' }}>RED</p>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {REDES.map(r => (
+                <button key={r.v} onClick={() => setCoin(r.v)}
+                  style={{
+                    fontFamily: FONT, fontSize: 12.5, fontWeight: 700,
+                    color: coin === r.v ? C.text : C.sub,
+                    background: coin === r.v ? 'rgba(255,255,255,0.09)' : 'transparent',
+                    border: `1px solid ${coin === r.v ? 'rgba(255,255,255,0.2)' : C.bd}`,
+                    borderRadius: 9, padding: '11px 15px', cursor: 'pointer',
+                  }}
+                  onFocus={e => { e.currentTarget.style.boxShadow = ANILLO; }} onBlur={e => { e.currentTarget.style.boxShadow = 'none'; }}>
+                  {r.t}
+                </button>
+              ))}
+            </div>
           </div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <label style={{ display: 'block', fontSize: 11.5, fontWeight: 700, color: C.sub, marginBottom: 6 }}>DIRECCIÓN</label>
+          <div style={{ flex: 1, minWidth: 260 }}>
+            <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: C.sub, margin: '0 0 7px' }}>DIRECCIÓN</p>
             <input
-              value={dir}
-              onChange={e => setDir(e.target.value)}
+              value={dir} onChange={e => setDir(e.target.value)} spellCheck={false}
               onKeyDown={e => { if (e.key === 'Enter' && !busy) consultar(); }}
               placeholder="Pegá la dirección de la billetera"
-              spellCheck={false}
               style={{
-                width: '100%', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                fontSize: 13.5, color: C.text, background: C.raised,
-                border: `1px solid ${C.border}`, borderRadius: 11, padding: '11px 12px', outline: 'none',
+                width: '100%', fontFamily: MONO, fontSize: 13.5, color: C.text,
+                background: 'rgba(255,255,255,0.035)', border: `1px solid ${C.bd}`,
+                borderRadius: 9, padding: '12px 13px', outline: 'none',
               }}
+              onFocus={e => { e.currentTarget.style.boxShadow = ANILLO; }} onBlur={e => { e.currentTarget.style.boxShadow = 'none'; }}
             />
           </div>
-          <div style={{ flex: '0 0 auto', display: 'flex', alignItems: 'flex-end' }}>
-            <button
-              onClick={consultar}
-              disabled={busy || dir.trim().length < 20}
-              className="transition-opacity"
-              style={{
-                fontFamily: FONT, fontSize: 14, fontWeight: 800,
-                background: C.green, color: '#0C0E0D',
-                border: 'none', borderRadius: 11, padding: '12px 20px',
-                cursor: busy || dir.trim().length < 20 ? 'default' : 'pointer',
-                opacity: busy || dir.trim().length < 20 ? 0.45 : 1,
-                display: 'inline-flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap',
-              }}
-            >
-              {busy ? <Loader2 size={16} className="animate-spin" /> : <Search size={16} />}
-              {busy ? 'Consultando…' : 'Consultar'}
-            </button>
-          </div>
+          <button onClick={consultar} disabled={busy || !dir.trim()}
+            style={{
+              fontFamily: FONT, fontSize: 13.5, fontWeight: 700,
+              background: C.text, color: '#0A0A0A', border: 'none', borderRadius: 9,
+              padding: '12px 22px', cursor: busy || !dir.trim() ? 'default' : 'pointer',
+              opacity: busy || !dir.trim() ? 0.45 : 1,
+              display: 'inline-flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap',
+            }}
+            onFocus={e => { e.currentTarget.style.boxShadow = ANILLO; }} onBlur={e => { e.currentTarget.style.boxShadow = 'none'; }}>
+            {busy && <Loader2 size={15} className="animate-spin" />}
+            {busy ? 'Consultando' : 'Consultar'}
+          </button>
         </div>
-        <p style={{ fontSize: 11.5, color: C.dim, marginTop: 10, lineHeight: 1.5 }}>
-          La dirección tiene que ser de la red que elegiste. La misma cadena de caracteres en
-          otra red es otra dirección y otro riesgo.
+        <p style={{ fontSize: 12, color: C.sub, margin: '12px 0 0', lineHeight: 1.55 }}>
+          La dirección tiene que ser de la red que elegiste. La misma cadena de caracteres en otra
+          red es otra dirección y otro riesgo.
         </p>
       </div>
 
       {/* ── Resultado ── */}
       {res && !res.ok && (
-        <div style={{ background: C.card, border: `1px solid ${GRIS.b}`, borderRadius: 16, padding: 18 }}>
+        <div style={{ background: C.card, border: `1px solid ${C.bdHard}`, borderRadius: 14, padding: '20px 24px', marginBottom: 14 }}>
           <div className="flex items-start" style={{ gap: 12 }}>
-            <ShieldQuestion size={20} style={{ color: GRIS.c, flexShrink: 0, marginTop: 1 }} />
+            <ShieldQuestion size={19} strokeWidth={1.5} style={{ color: C.sub, flexShrink: 0, marginTop: 2 }} />
             <div>
-              <p style={{ fontSize: 15, fontWeight: 800 }}>
+              <p style={{ fontSize: 15, fontWeight: 700, margin: 0 }}>
                 {res.error === 'sin_credencial' ? 'El servicio no está habilitado todavía'
                   : res.error === 'tope_diario' ? 'Llegaste al tope de consultas de hoy'
+                  : res.error === 'formato_red' ? 'La dirección no coincide con la red'
                   : 'Sin resultado'}
               </p>
-              <p style={{ fontSize: 13, color: C.sub, marginTop: 5, lineHeight: 1.6 }}>
-                {res.mensaje ?? 'No pudimos obtener un resultado.'}
-              </p>
+              <p style={{ fontSize: 13, color: C.sub, margin: '5px 0 0', lineHeight: 1.6 }}>{res.mensaje}</p>
               {res.error === 'sin_resultado' && (
-                // Lo más importante de esta pantalla. La ausencia de respuesta
-                // no es una respuesta favorable, y decirlo en voz alta evita
-                // que alguien opere creyendo que ya verificó.
-                <p style={{ fontSize: 12.5, color: ROJO.c, marginTop: 9, fontWeight: 600, lineHeight: 1.55 }}>
+                <p style={{ fontSize: 12.5, color: C.text, margin: '9px 0 0', fontWeight: 600, lineHeight: 1.55 }}>
                   Que no haya resultado no significa que la dirección esté limpia. Significa que no
                   sabemos. Tratala como no verificada.
                 </p>
@@ -238,97 +311,216 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
       )}
 
       {res && res.ok && (
-        <div style={{ background: C.card, border: `1px solid ${tono(res.categoria).b}`, borderRadius: 16, overflow: 'hidden' }}>
-          <div style={{ padding: 18, borderBottom: `1px solid ${C.border2}` }}>
-            <div className="flex items-start justify-between flex-wrap" style={{ gap: 12 }}>
-              <div className="flex items-start" style={{ gap: 12, minWidth: 0 }}>
-                {res.categoria === 'bajo'
-                  ? <ShieldCheck size={22} style={{ color: tono(res.categoria).c, flexShrink: 0, marginTop: 1 }} />
-                  : <ShieldAlert size={22} style={{ color: tono(res.categoria).c, flexShrink: 0, marginTop: 1 }} />}
-                <div style={{ minWidth: 0 }}>
-                  <p style={{ fontSize: 17, fontWeight: 800, letterSpacing: '-0.3px' }}>{titulo(res.categoria)}</p>
-                  <p style={{ fontSize: 13, color: C.sub, marginTop: 4, lineHeight: 1.6, maxWidth: 560 }}>{explica(res.categoria)}</p>
-                </div>
+        <div style={{ background: C.card, border: `1px solid ${C.bdSoft}`, borderRadius: 14, padding: '20px 24px', marginBottom: 30 }}>
+          <div className="flex items-start justify-between flex-wrap" style={{ gap: 16, marginBottom: 16 }}>
+            <div className="flex items-center" style={{ gap: 14, minWidth: 0 }}>
+              <Puntaje n={res.puntaje ?? null} cat={res.categoria} />
+              <div style={{ minWidth: 0 }}>
+                <p style={{ fontSize: 15, fontWeight: 700, margin: 0 }}>{nivelTexto(res.categoria, res.puntaje)}</p>
+                <p style={{ fontFamily: MONO, fontSize: 12, color: C.sub, margin: '4px 0 0' }}>
+                  {enmascarar(res.address)} · {REDES.find(r => r.v === res.coin)?.t ?? res.coin} · consultada {hora(res.consultadoAt)}
+                  {res.delPadron ? ' · de una consulta reciente' : ''}
+                </p>
               </div>
-              {res.puntaje != null && (
-                <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                  <p style={{ fontSize: 26, fontWeight: 800, color: tono(res.categoria).c, lineHeight: 1 }}>{res.puntaje}</p>
-                  <p style={{ fontSize: 10.5, color: C.dim, fontWeight: 700, marginTop: 3 }}>PUNTAJE / 100</p>
-                </div>
-              )}
             </div>
-          </div>
-
-          <div style={{ padding: 18, display: 'grid', gap: 14 }}>
-            <div>
-              <p style={{ fontSize: 11, fontWeight: 700, color: C.dim, marginBottom: 5 }}>DIRECCIÓN CONSULTADA</p>
-              <div className="flex items-center" style={{ gap: 8 }}>
-                <span style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 13, wordBreak: 'break-all' }}>
-                  {res.address}
-                </span>
-                <button onClick={copiar} style={{ color: C.sub, flexShrink: 0 }} className="hover:text-[#F4F4F2] transition-colors">
-                  {copiado ? <Check size={15} style={{ color: C.green }} /> : <Copy size={15} />}
-                </button>
-              </div>
-              <p style={{ fontSize: 11.5, color: C.dim, marginTop: 5 }}>
-                {res.coin}{res.nivel ? ` · ${res.nivel}` : ''}
-              </p>
-            </div>
-
-            {lista(res.hallazgos).length > 0 && (
-              <div>
-                <p style={{ fontSize: 11, fontWeight: 700, color: C.dim, marginBottom: 7 }}>HALLAZGOS</p>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                  {lista(res.hallazgos).map((h, i) => (
-                    <span key={i} style={{
-                      fontSize: 12, fontWeight: 600, color: tono(res.categoria).c,
-                      background: 'rgba(255,255,255,0.04)', border: `1px solid ${tono(res.categoria).b}`,
-                      borderRadius: 8, padding: '5px 9px',
-                    }}>{h}</span>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {lista(res.etiquetas).length > 0 && (
-              <div>
-                <p style={{ fontSize: 11, fontWeight: 700, color: C.dim, marginBottom: 7 }}>ETIQUETAS DE LA DIRECCIÓN</p>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                  {lista(res.etiquetas).map((t, i) => (
-                    <span key={i} style={{
-                      fontSize: 12, fontWeight: 600, color: C.sub,
-                      background: 'rgba(255,255,255,0.04)', border: `1px solid ${C.border}`,
-                      borderRadius: 8, padding: '5px 9px',
-                    }}>{t}</span>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <div className="flex items-center justify-between flex-wrap" style={{ gap: 10, paddingTop: 4 }}>
-              <p style={{ fontSize: 11.5, color: C.dim, lineHeight: 1.5 }}>
-                {res.delPadron
-                  ? 'Resultado de una consulta reciente sobre esta misma dirección.'
-                  : 'Consulta hecha ahora.'}
-                {res.consultadoAt ? ` · ${new Date(res.consultadoAt).toLocaleString('es-CO', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}` : ''}
-              </p>
+            <div className="flex items-center" style={{ gap: 14, flexShrink: 0 }}>
+              <button
+                onClick={() => { if (!yaGuardada) { setAlias(''); setAliasPara({ coin: res.coin, address: res.address }); } }}
+                disabled={!!yaGuardada}
+                className="transition-colors"
+                style={{
+                  fontFamily: FONT, fontSize: 12.5, fontWeight: 700,
+                  color: yaGuardada ? C.green : C.text,
+                  background: 'rgba(255,255,255,0.05)',
+                  border: `1px solid ${yaGuardada ? 'rgba(74,222,128,0.4)' : C.bdHard}`,
+                  borderRadius: 9, padding: '10px 15px',
+                  cursor: yaGuardada ? 'default' : 'pointer',
+                  display: 'inline-flex', alignItems: 'center', gap: 7,
+                }}
+                onMouseEnter={e => { if (!yaGuardada) e.currentTarget.style.borderColor = 'rgba(74,222,128,0.5)'; }}
+                onMouseLeave={e => { if (!yaGuardada) e.currentTarget.style.borderColor = C.bdHard; }}
+                onFocus={e => { e.currentTarget.style.boxShadow = ANILLO; }} onBlur={e => { e.currentTarget.style.boxShadow = 'none'; }}
+              >
+                <Eye size={15} strokeWidth={1.5} /> {yaGuardada ? 'Ya la monitoreás' : 'Guardar y monitorear'}
+              </button>
               {res.reporte && (
                 <a href={res.reporte} target="_blank" rel="noopener noreferrer"
-                   className="inline-flex items-center transition-colors hover:text-[#F4F4F2]"
-                   style={{ gap: 6, fontSize: 12.5, fontWeight: 700, color: C.green }}>
-                  Ver reporte completo <ExternalLink size={13} />
+                  className="transition-colors hover:text-[#F4F4F2]"
+                  style={{ fontSize: 12.5, fontWeight: 700, color: C.sub, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  Ver reporte completo <ExternalLink size={12} />
                 </a>
               )}
             </div>
           </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
+            <Mini label="HALLAZGOS">
+              {textos(res.hallazgos).length
+                ? textos(res.hallazgos).join(' · ')
+                : esBajo(res.categoria)
+                  ? 'Sin señalamientos de sanciones, mixers ni mercados ilícitos.'
+                  : 'El proveedor no detalló los hallazgos.'}
+            </Mini>
+            <Mini label="EXPOSICIÓN INDIRECTA">
+              {res.exposicion && typeof res.exposicion.pctRiesgo === 'number'
+                ? <>
+                    {res.exposicion.pctRiesgo}{' % del volumen proviene de fuentes riesgosas'}
+                    {Array.isArray(res.exposicion.categorias) && res.exposicion.categorias.length
+                      ? ` (${res.exposicion.categorias.map((x: any) => x.tipo).slice(0, 3).join(', ')}).`
+                      : '.'}
+                  </>
+                // No se pone "0 %" cuando no hay dato: sería afirmar que no hay
+                // exposición, que es distinto de no saberlo.
+                : <span style={{ color: C.sub }}>El proveedor no devolvió el desglose de contrapartes.</span>}
+            </Mini>
+            <Mini label="ACTIVIDAD">
+              {res.actividad
+                ? [
+                    res.actividad.primera ? `Activa desde ${new Date(res.actividad.primera).getFullYear()}` : null,
+                    res.actividad.txs != null ? `${Number(res.actividad.txs).toLocaleString('es-CO')} transacciones` : null,
+                    res.actividad.ultima ? `último mov. ${hace(res.actividad.ultima)}` : null,
+                  ].filter(Boolean).join(' · ')
+                : <span style={{ color: C.sub }}>El proveedor no devolvió la actividad de la dirección.</span>}
+            </Mini>
+          </div>
         </div>
       )}
 
-      <p style={{ fontSize: 11.5, color: C.dim, lineHeight: 1.6, maxWidth: 620 }}>
-        El resultado refleja la información disponible hoy sobre la dirección y puede cambiar.
-        Una dirección sin hallazgos no es una garantía, y esta consulta no reemplaza tus propios
-        controles.
+      {/* ── Direcciones monitoreadas ── */}
+      <div className="flex items-baseline flex-wrap" style={{ gap: 12, marginBottom: 12 }}>
+        <h2 style={{ fontSize: 16, fontWeight: 800, margin: 0 }}>Direcciones monitoreadas</h2>
+        <p style={{ fontSize: 12.5, color: C.sub, margin: 0 }}>
+          Se re-consultan cada {meta.horas} h. Si el riesgo cambia, te avisamos por correo y acá.
+        </p>
+      </div>
+
+      <div style={{ background: C.card, border: `1px solid ${C.bdSoft}`, borderRadius: 14, overflow: 'hidden' }}>
+        <div className="flex items-center justify-between flex-wrap" style={{ gap: 12, padding: '14px 18px', borderBottom: `1px solid ${C.bdSoft}` }}>
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+            {btnFiltro('todas', 'Todas')}
+            {btnFiltro('cambio', 'Con cambio de riesgo')}
+            {btnFiltro('orden', 'En orden')}
+          </div>
+          <span className="flex items-center" style={{ gap: 7, fontSize: 12, color: C.sub, whiteSpace: 'nowrap' }}>
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: C.green, display: 'inline-block' }} />
+            Última ronda de monitoreo: {hora(meta.ultimaRonda)}
+          </span>
+        </div>
+
+        {visibles.length === 0 ? (
+          <div style={{ padding: '34px 18px', textAlign: 'center' }}>
+            <p style={{ fontSize: 13.5, fontWeight: 700, margin: 0 }}>
+              {lista.length === 0 ? 'Todavía no monitoreás ninguna dirección' : 'Nada en este filtro'}
+            </p>
+            <p style={{ fontSize: 12.5, color: C.sub, margin: '5px 0 0' }}>
+              {lista.length === 0
+                ? 'Consultá una dirección y guardala para que la revisemos cada día.'
+                : 'Cambiá el filtro para ver el resto.'}
+            </p>
+          </div>
+        ) : visibles.map((f: Fila) => (
+          <div key={f.id} className="flex items-center flex-wrap"
+            style={{ gap: 14, padding: '15px 18px', borderBottom: `1px solid ${C.bdSoft}` }}>
+            <Puntaje n={f.puntaje ?? null} cat={f.categoria} size={34} />
+            <div style={{ minWidth: 170, flex: '1 1 210px' }}>
+              <div className="flex items-center flex-wrap" style={{ gap: 8 }}>
+                <span style={{ fontSize: 13.5, fontWeight: 700 }}>{f.alias || enmascarar(f.address)}</span>
+                <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.8px', color: C.sub, border: `1px solid ${C.bd}`, borderRadius: 999, padding: '2px 8px' }}>
+                  {REDES.find(r => r.v === f.coin)?.t ?? f.coin}
+                </span>
+              </div>
+              <p style={{ fontFamily: MONO, fontSize: 11.5, color: C.sub, margin: '4px 0 0' }}>
+                {enmascarar(f.address)} · revisada {hora(f.revisadoAt)}
+              </p>
+            </div>
+            <p style={{ flex: '1 1 240px', fontSize: 12.5, margin: 0, lineHeight: 1.55, color: f.subio ? C.text : C.sub }}>
+              {f.subio
+                ? `Subió de ${f.puntajeInicial ?? '–'} a ${f.puntaje ?? '–'}: ${f.motivo ?? 'cambió la clasificación'} ${hace(f.subioAt)}.${f.avisoEnviado ? ' Aviso enviado por correo.' : ''}`
+                : 'Sin cambios desde que la guardaste.'}
+            </p>
+            <Pill texto={f.subio ? 'RIESGO SUBIÓ' : 'EN ORDEN'} cat={f.subio ? 'alto' : 'bajo'} />
+            <button onClick={() => quitar(f.id)}
+              className="transition-colors hover:text-[#F4F4F2]"
+              style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, color: C.sub, background: 'none', border: 'none', padding: 0, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}
+              onFocus={e => { e.currentTarget.style.boxShadow = ANILLO; }} onBlur={e => { e.currentTarget.style.boxShadow = 'none'; }}>
+              <EyeOff size={14} strokeWidth={1.5} /> Dejar de monitorear
+            </button>
+          </div>
+        ))}
+
+        <div className="flex items-center justify-between flex-wrap" style={{ gap: 10, padding: '13px 18px' }}>
+          <span style={{ fontSize: 12, color: C.sub }}>
+            {lista.length} de {meta.tope} direcciones monitoreadas · {conCambio.length} con cambio de riesgo
+          </span>
+          <button onClick={abrirHistorial}
+            className="transition-colors hover:text-[#F4F4F2]"
+            style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, color: C.sub, background: 'none', border: 'none', padding: 0, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            onFocus={e => { e.currentTarget.style.boxShadow = ANILLO; }} onBlur={e => { e.currentTarget.style.boxShadow = 'none'; }}>
+            <History size={14} strokeWidth={1.5} /> Ver historial de alertas
+          </button>
+        </div>
+      </div>
+
+      <p style={{ fontSize: 12, color: C.sub, margin: '20px 0 0', maxWidth: 680, lineHeight: 1.6 }}>
+        El resultado refleja la información disponible hoy sobre la dirección y puede cambiar. Una
+        dirección sin hallazgos no es una garantía, y esta consulta no reemplaza tus propios controles.
       </p>
+
+      {/* ── Modal del alias ── */}
+      {aliasPara && (
+        <div className="fixed inset-0 flex items-center justify-center" style={{ zIndex: 80, background: 'rgba(4,5,5,0.72)', backdropFilter: 'blur(4px)', padding: 16 }}>
+          <div style={{ width: '100%', maxWidth: 400, background: C.card, border: `1px solid ${C.bdHard}`, borderRadius: 16, padding: 24, fontFamily: FONT }}>
+            <div className="flex items-start justify-between" style={{ gap: 12 }}>
+              <div>
+                <h3 style={{ fontSize: 16.5, fontWeight: 800, margin: 0 }}>Guardar y monitorear</h3>
+                <p style={{ fontFamily: MONO, fontSize: 11.5, color: C.sub, margin: '5px 0 0' }}>{enmascarar(aliasPara.address)}</p>
+              </div>
+              <button onClick={() => setAliasPara(null)} style={{ color: C.sub, background: 'none', border: 'none', cursor: 'pointer', padding: 2 }}><X size={18} /></button>
+            </div>
+            <p style={{ fontSize: 12.5, color: C.sub, margin: '14px 0 10px', lineHeight: 1.6 }}>
+              Ponele un nombre para reconocerla. La vamos a re-consultar cada {meta.horas} h y te
+              avisamos si el riesgo cambia.
+            </p>
+            <input
+              value={alias} onChange={e => setAlias(e.target.value)} autoFocus
+              onKeyDown={e => { if (e.key === 'Enter' && !guardando) guardar(); }}
+              placeholder="Proveedor Shenzhen"
+              style={{ width: '100%', fontFamily: FONT, fontSize: 14, color: C.text, background: 'rgba(255,255,255,0.035)', border: `1px solid ${C.bd}`, borderRadius: 9, padding: '11px 13px', outline: 'none' }}
+            />
+            <button onClick={guardar} disabled={guardando}
+              style={{ width: '100%', marginTop: 16, fontFamily: FONT, fontSize: 13.5, fontWeight: 700, background: C.text, color: '#0A0A0A', border: 'none', borderRadius: 9, padding: '12px 0', cursor: guardando ? 'default' : 'pointer', opacity: guardando ? 0.5 : 1 }}>
+              {guardando ? 'Guardando…' : 'Guardar y monitorear'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Historial de alertas ── */}
+      {verHistorial && (
+        <div className="fixed inset-0 flex items-center justify-center" style={{ zIndex: 80, background: 'rgba(4,5,5,0.72)', backdropFilter: 'blur(4px)', padding: 16 }}>
+          <div style={{ width: '100%', maxWidth: 560, maxHeight: '80vh', overflow: 'auto', background: C.card, border: `1px solid ${C.bdHard}`, borderRadius: 16, padding: 24, fontFamily: FONT }}>
+            <div className="flex items-start justify-between" style={{ gap: 12, marginBottom: 14 }}>
+              <h3 style={{ fontSize: 16.5, fontWeight: 800, margin: 0 }}>Historial de alertas</h3>
+              <button onClick={() => setVerHistorial(false)} style={{ color: C.sub, background: 'none', border: 'none', cursor: 'pointer', padding: 2 }}><X size={18} /></button>
+            </div>
+            {alertas.length === 0 ? (
+              <p style={{ fontSize: 13, color: C.sub, margin: 0 }}>No hay alertas registradas. Aparecen acá cuando una dirección monitoreada cambia de banda de riesgo.</p>
+            ) : alertas.map(a => (
+              <div key={a.id} style={{ padding: '12px 0', borderTop: `1px solid ${C.bdSoft}` }}>
+                <div className="flex items-center justify-between flex-wrap" style={{ gap: 8 }}>
+                  <span style={{ fontSize: 13.5, fontWeight: 700 }}>{a.alias || enmascarar(a.address)}</span>
+                  <span style={{ fontSize: 11.5, color: C.sub }}>{hora(a.created_at)}</span>
+                </div>
+                <p style={{ fontSize: 12.5, color: C.sub, margin: '4px 0 0', lineHeight: 1.55 }}>
+                  {a.score_antes ?? '–'} → <span style={{ color: C.text, fontWeight: 700 }}>{a.score_despues ?? '–'}</span>
+                  {a.motivo ? ` · ${a.motivo}` : ''}
+                  {a.aviso_enviado ? ' · aviso enviado' : ''}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

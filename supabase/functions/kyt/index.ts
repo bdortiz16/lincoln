@@ -31,6 +31,8 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
 const MT_KEY       = Deno.env.get('MISTTRACK_API_KEY') ?? ''
+const RESEND_KEY   = Deno.env.get('RESEND_API_KEY') ?? ''
+const FROM_EMAIL   = Deno.env.get('OTP_FROM_EMAIL') ?? Deno.env.get('FROM_EMAIL') ?? 'no-reply@lincoin.me'
 
 const db = createClient(SUPABASE_URL, SERVICE_KEY)
 
@@ -50,6 +52,11 @@ type Config = {
   rutaEstado: string
   rutaRiesgo: string
   rutaEtiquetas: string
+  rutaResumen: string
+  rutaComportamiento: string
+  topeMonitoreadas: number
+  // Cada cuantas horas se vuelve a consultar una direccion monitoreada.
+  horasMonitoreo: number
   // Cuántos días vale un resultado del padrón antes de volver a pagar.
   diasVigencia: number
   // Tope de consultas por cuenta por día. 0 = sin tope. Existe porque cada
@@ -67,6 +74,10 @@ const CONFIG_POR_DEFECTO: Config = {
   rutaEstado: '/v1/status',
   rutaRiesgo: '/v3/risk_score',
   rutaEtiquetas: '/v1/address_labels',
+  rutaResumen: '/v1/address_overview',
+  rutaComportamiento: '/v1/address_action',
+  topeMonitoreadas: 50,
+  horasMonitoreo: 24,
   diasVigencia: 7,
   topeDiarioPorCliente: 25,
   puntajeAlto: 70,
@@ -194,6 +205,203 @@ function anotarEmpresa(previas: any, quien: { userId: string | null; email?: str
   return [...lista, { ...quien, veces: 1, primeraAt: new Date().toISOString(), ultimaAt: new Date().toISOString() }].slice(0, 200)
 }
 
+// ── Validación del formato según la red ───────────────────────────
+// Se comprueba ANTES de llamar al proveedor. Una dirección de Ethereum
+// consultada como TRON es una consulta pagada que no sirve para nada, y el
+// cliente recibe un "sin resultado" que parece un problema nuestro.
+const FORMATOS: Record<string, RegExp> = {
+  TRX: /^T[1-9A-HJ-NP-Za-km-z]{33}$/,
+  BTC: /^(bc1[0-9a-z]{11,71}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})$/,
+  SOL: /^[1-9A-HJ-NP-Za-km-z]{32,44}$/,
+}
+// Las cadenas EVM comparten formato. Se listan por nombre para poder decirle
+// al cliente cuál eligió, no para distinguir el formato.
+const EVM = new Set(['ETH', 'BSC', 'MATIC', 'POLYGON', 'ARB', 'OP', 'BASE', 'AVAX', 'ZKSYNC', 'MERLIN', 'HASHKEY', 'IOTEX'])
+function formatoValido(coin: string, dir: string): boolean {
+  const c = coin.toUpperCase()
+  if (EVM.has(c)) return /^0x[0-9a-fA-F]{40}$/.test(dir)
+  const re = FORMATOS[c]
+  // Red que no conocemos: NO se rechaza. Preferimos gastar una consulta antes
+  // que bloquear una red que el proveedor sí soporta y nosotros no listamos.
+  return re ? re.test(dir) : dir.length >= 20 && dir.length <= 120
+}
+
+// ── Actividad de la dirección (address_overview) ──────────────────
+function leerActividad(bruto: any): Record<string, any> | null {
+  const d = desenvolver(bruto)
+  if (!d || typeof d !== 'object') return null
+  const n = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : null)
+  const out = {
+    txs: n(d.txs_count ?? d.txCount ?? d.transactions_count ?? d.tx_count),
+    primera: d.first_seen ?? d.firstSeen ?? d.first_tx_time ?? null,
+    ultima: d.last_seen ?? d.lastSeen ?? d.last_tx_time ?? null,
+    recibido: n(d.total_received ?? d.totalReceived),
+    enviado: n(d.total_spent ?? d.totalSpent ?? d.total_sent),
+    saldo: n(d.balance),
+  }
+  // Si no trajo NADA utilizable, es null y la tarjeta dirá que no hay dato.
+  // Devolver un objeto de nulos haría que la pantalla muestre guiones como si
+  // fueran datos.
+  return Object.values(out).some(v => v !== null) ? out : null
+}
+
+// ── Exposición indirecta (address_action) ─────────────────────────
+// El proveedor devuelve la proporción de volumen por tipo de contraparte. La
+// exposición "riesgosa" es la suma de las categorías que lo son; el resto
+// (exchanges con KYC, DeFi conocido) no cuenta.
+const RIESGOSAS = /MIXER|TORNADO|GAMBL|DARK|SANCTION|SCAM|PHISH|RANSOM|STOLEN|HACK|ILLEGAL|FRAUD|NO[_ ]?KYC|UNLICEN/i
+function leerExposicion(bruto: any): Record<string, any> | null {
+  const d = desenvolver(bruto)
+  if (!d || typeof d !== 'object') return null
+  const fuente = d.action_list ?? d.actions ?? d.list ?? d.platforms ?? null
+  if (!Array.isArray(fuente) || !fuente.length) return null
+  const partes: { tipo: string; pct: number }[] = []
+  for (const it of fuente) {
+    const tipo = String(it?.type ?? it?.name ?? it?.platform ?? it?.label ?? '').trim()
+    const pctRaw = it?.percent ?? it?.percentage ?? it?.ratio ?? it?.proportion
+    let pct = Number(pctRaw)
+    if (!Number.isFinite(pct)) continue
+    if (pct > 0 && pct <= 1) pct = pct * 100   // viene como proporción
+    if (tipo) partes.push({ tipo, pct })
+  }
+  if (!partes.length) return null
+  const riesgosas = partes.filter(x => RIESGOSAS.test(x.tipo))
+  const pctRiesgo = riesgosas.reduce((a, x) => a + x.pct, 0)
+  return {
+    pctRiesgo: Math.round(pctRiesgo * 10) / 10,
+    categorias: riesgosas.slice(0, 6),
+    todas: partes.slice(0, 12),
+  }
+}
+
+// ── Consulta PAGADA + guardado en el padrón ───────────────────────
+// La usan la consulta del cliente y la ronda de monitoreo. Una sola
+// implementación a propósito: dos copias de esto se habrían separado, y una de
+// las dos habría acabado interpretando el veredicto distinto que la otra.
+async function evaluarYGuardar(
+  c: Config, coin: string, dir: string,
+  quien: { userId: string | null; email?: string | null; empresa?: string | null },
+  ficha: any,
+): Promise<{ hay: boolean; score: number | null; level: string | null; hallazgos: any[]; detalle: any[]; etiquetas: any[]; reporte: string | null; actividad: any; exposicion: any; status: number; crudo: any; error?: string }> {
+  const r = await llamarMT(c, c.rutaRiesgo, { coin, address: dir })
+  const v = leerVeredicto(r.data)
+
+  if (!r.ok || !v.hay) {
+    await db.from('kyt_registry').upsert({
+      coin, address_lower: dir.toLowerCase(), address: dir,
+      estado: 'sin_resultado',
+      respuesta_cruda: { status: r.status, error: r.error ?? null, data: r.data ?? null },
+      actualizado_at: new Date().toISOString(),
+      empresas: anotarEmpresa(ficha?.empresas, quien),
+    }, { onConflict: 'coin,address_lower' })
+    return { hay: false, score: null, level: null, hallazgos: [], detalle: [], etiquetas: [], reporte: null, actividad: null, exposicion: null, status: r.status, crudo: r.data ?? r.error ?? null, error: r.error }
+  }
+
+  // Los tres enriquecimientos son OPCIONALES: si fallan, el veredicto vale
+  // igual. Se piden en paralelo para no encadenar tres esperas.
+  const [eEtq, eRes, eAct] = await Promise.all([
+    llamarMT(c, c.rutaEtiquetas, { coin, address: dir }).catch(() => null),
+    llamarMT(c, c.rutaResumen, { coin, address: dir }).catch(() => null),
+    llamarMT(c, c.rutaComportamiento, { coin, address: dir }).catch(() => null),
+  ])
+  let etiquetas: any[] = []
+  if (eEtq?.ok) {
+    const d = desenvolver(eEtq.data)
+    const l = d?.label_list ?? d?.labels ?? d?.label ?? []
+    etiquetas = Array.isArray(l) ? l : (l ? [l] : [])
+  }
+  const actividad = eRes?.ok ? leerActividad(eRes.data) : null
+  const exposicion = eAct?.ok ? leerExposicion(eAct.data) : null
+
+  const ahora = new Date().toISOString()
+  await db.from('kyt_registry').upsert({
+    coin, address_lower: dir.toLowerCase(), address: dir,
+    risk_score: v.score, risk_level: v.level,
+    risk_detail: v.riskDetail, detail_list: v.detailList,
+    labels: etiquetas, report_url: v.reportUrl,
+    actividad, exposicion,
+    estado: 'finalizado',
+    respuesta_cruda: r.data ?? null,
+    consultado_at: ahora, actualizado_at: ahora,
+    veces_consultado: Number(ficha?.veces_consultado ?? 0) + 1,
+    veces_reutilizado: Number(ficha?.veces_reutilizado ?? 0),
+    empresas: anotarEmpresa(ficha?.empresas, quien),
+  }, { onConflict: 'coin,address_lower' })
+
+  return {
+    hay: true, score: v.score, level: v.level,
+    hallazgos: v.riskDetail, detalle: v.detailList, etiquetas,
+    reporte: v.reportUrl, actividad, exposicion,
+    status: r.status, crudo: r.data ?? null,
+  }
+}
+
+// ── Correo de alerta de cambio de riesgo ──────────────────────────
+// La pantalla le promete al cliente que le avisamos por correo. Si esto no
+// existiera, esa frase seria falsa -- y una promesa de aviso que no se cumple
+// es peor que no prometer nada: el cliente deja de revisar porque cree que le
+// van a avisar.
+//
+// Devuelve si se envio, para no marcar aviso_enviado cuando no salio.
+async function avisarPorCorreo(userId: string, datos: {
+  alias: string | null; address: string; coin: string;
+  antes: number | null; despues: number | null; motivo: string | null;
+}): Promise<boolean> {
+  if (!RESEND_KEY) return false
+  const { data: u } = await db.from('users').select('email, full_name, company_name').eq('id', userId).maybeSingle()
+  const to = (u as any)?.email
+  if (!to) return false
+  const nombre = String((u as any)?.company_name ?? (u as any)?.full_name ?? '').split(' ')[0] ?? ''
+  const corta = datos.address.length > 14 ? `${datos.address.slice(0, 6)}…${datos.address.slice(-4)}` : datos.address
+  const etiqueta = datos.alias || corta
+
+  const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head>
+<body style="margin:0;padding:0;background:#F0EFEB">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F0EFEB"><tr><td align="center" style="padding:28px 14px">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#FFFFFF;border:1px solid rgba(21,24,26,0.08);border-radius:14px">
+<tr><td style="padding:28px">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+    <td style="font-family:'Archivo',Arial,sans-serif;font-size:22px;font-weight:800;color:#15181A">Lincoin<span style="color:#22A35C">.</span></td>
+    <td align="right" style="font-family:Arial,sans-serif;font-size:11px;color:#9B9F9B">Verificacion de direcciones</td>
+  </tr></table>
+  <p style="font-family:'Archivo',Arial,sans-serif;font-size:19px;font-weight:800;color:#15181A;margin:26px 0 10px">Cambio de riesgo en una direccion que monitoreas</p>
+  <p style="font-family:Arial,sans-serif;font-size:13.5px;color:#5C625E;line-height:1.6;margin:0 0 18px">Hola${nombre ? `, ${nombre}` : ''}. La direccion <b style="color:#15181A">${etiqueta}</b> que tenes guardada en KYT cambio de clasificacion de riesgo.</p>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-family:Arial,sans-serif;font-size:12.5px">
+    <tr><td style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#5C625E">Direccion</td><td align="right" style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#15181A;font-weight:700;font-family:monospace">${corta}</td></tr>
+    <tr><td style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#5C625E">Red</td><td align="right" style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#15181A;font-weight:700">${datos.coin}</td></tr>
+    <tr><td style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#5C625E">Puntaje</td><td align="right" style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#15181A;font-weight:700">${datos.antes ?? '-'} a ${datos.despues ?? '-'} / 100</td></tr>
+    ${datos.motivo ? `<tr><td style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#5C625E">Motivo</td><td align="right" style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#15181A;font-weight:700">${datos.motivo}</td></tr>` : ''}
+  </table>
+  <p style="font-family:Arial,sans-serif;font-size:12.5px;color:#5C625E;line-height:1.6;margin:20px 0 0">Esto no bloquea ninguna operacion: es informacion para que decidas. Podes ver el detalle en Servicios, KYT.</p>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:26px;border-top:1px solid rgba(21,24,26,0.06)"><tr><td style="padding-top:18px">
+    <p style="font-family:Arial,sans-serif;font-size:10.5px;color:#9B9F9B;line-height:1.6;margin:0">Recibiste este correo porque guardaste esta direccion para monitoreo en tu cuenta Lincoin. Lincoin no es un banco. El resultado refleja la informacion disponible hoy y puede cambiar.</p>
+  </td></tr></table>
+</td></tr></table>
+</td></tr></table>
+</body></html>`
+
+  try {
+    const r = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: `Lincoin <${FROM_EMAIL}>`, to: [to],
+        subject: `Cambio de riesgo en ${etiqueta}`,
+        html,
+      }),
+    })
+    if (!r.ok) {
+      const t = await r.text().catch(() => '')
+      console.error(`[kyt] Resend rechazo el aviso - HTTP ${r.status} - ${t.slice(0, 200)}`)
+      return false
+    }
+    return true
+  } catch (e) {
+    console.error('[kyt] fallo el aviso por correo:', (e as Error)?.message)
+    return false
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
   try {
@@ -218,6 +426,8 @@ Deno.serve(async (req) => {
       nueva.topeDiarioPorCliente = Math.max(0, Math.min(10000, Number(nueva.topeDiarioPorCliente) || 0))
       nueva.puntajeAlto = Math.max(1, Math.min(100, Number(nueva.puntajeAlto) || 70))
       nueva.puntajeMedio = Math.max(1, Math.min(nueva.puntajeAlto, Number(nueva.puntajeMedio) || 40))
+      nueva.topeMonitoreadas = Math.max(1, Math.min(2000, Number(nueva.topeMonitoreadas) || 50))
+      nueva.horasMonitoreo = Math.max(1, Math.min(720, Number(nueva.horasMonitoreo) || 24))
       await guardarConfig(nueva)
       return json({ ok: true, config: nueva })
     }
@@ -243,6 +453,12 @@ Deno.serve(async (req) => {
       if (!coin) return json({ ok: false, error: 'falta_cadena', mensaje: 'Elegí la red de la dirección.' })
       if (dir.length < 20 || dir.length > 120) {
         return json({ ok: false, error: 'direccion_invalida', mensaje: 'Esa no parece una dirección válida.' })
+      }
+      // Se valida el formato ANTES de gastar una consulta: una dirección de
+      // Ethereum preguntada como TRON es un crédito perdido y un "sin
+      // resultado" que parece un problema nuestro.
+      if (!formatoValido(coin, dir)) {
+        return json({ ok: false, error: 'formato_red', mensaje: `Esa dirección no tiene el formato de ${coin}. Revisá la red que elegiste.` })
       }
 
       const quien = {
@@ -282,6 +498,8 @@ Deno.serve(async (req) => {
           hallazgos: ficha.risk_detail ?? [],
           etiquetas: ficha.labels ?? [],
           detalle: ficha.detail_list ?? [],
+          actividad: ficha.actividad ?? null,
+          exposicion: ficha.exposicion ?? null,
           reporte: ficha.report_url,
           estado: 'finalizado',
           delPadron: true,
@@ -302,80 +520,221 @@ Deno.serve(async (req) => {
         }
       }
 
-      // 3) Se paga la consulta.
-      const r = await llamarMT(c, c.rutaRiesgo, { coin, address: dir })
-      const v = leerVeredicto(r.data)
+      // 3) Se paga la consulta. La misma función que usa la ronda de
+      //    monitoreo, para que las dos interpreten el veredicto igual.
+      const ev = await evaluarYGuardar(c, coin, dir, quien, ficha)
 
-      if (!r.ok || !v.hay) {
-        // NO HAY VEREDICTO. Se guarda que no lo hubo —para no repetir el gasto
-        // a ciegas y para que el admin vea qué respondió el proveedor— pero no
-        // se devuelve nada que se pueda leer como "está limpia".
-        await db.from('kyt_registry').upsert({
-          coin, address_lower: dir.toLowerCase(), address: dir,
-          estado: 'sin_resultado',
-          respuesta_cruda: { status: r.status, error: r.error ?? null, data: r.data ?? null },
-          actualizado_at: new Date().toISOString(),
-          empresas: anotarEmpresa(ficha?.empresas, quien),
-        }, { onConflict: 'coin,address_lower' })
-
+      if (!ev.hay) {
+        // NO HAY VEREDICTO. Se devolvió ya guardado como 'sin_resultado' para
+        // no repetir el gasto a ciegas, pero no se devuelve nada que se pueda
+        // leer como "está limpia".
         return json({
           ok: false,
-          error: r.error === 'sin_credencial' ? 'sin_credencial' : 'sin_resultado',
+          error: ev.error === 'sin_credencial' ? 'sin_credencial' : 'sin_resultado',
           estado: 'sin_resultado',
-          mensaje: r.error === 'sin_credencial'
+          mensaje: ev.error === 'sin_credencial'
             ? 'El servicio no está configurado todavía.'
             : 'No pudimos obtener un resultado para esa dirección. No significa que esté limpia: significa que no sabemos.',
-          status: yo.esAdmin ? r.status : undefined,
-          detalle: yo.esAdmin ? (r.data ?? r.error ?? null) : undefined,
+          status: yo.esAdmin ? ev.status : undefined,
+          detalle: yo.esAdmin ? ev.crudo : undefined,
         })
       }
 
-      // Etiquetas: es una segunda llamada y NO es indispensable. Si falla, el
-      // veredicto igual vale — se muestra sin etiquetas, no se pierde todo.
-      let etiquetas: any[] = []
-      try {
-        const e = await llamarMT(c, c.rutaEtiquetas, { coin, address: dir })
-        if (e.ok) {
-          const d = desenvolver(e.data)
-          const l = d?.label_list ?? d?.labels ?? d?.label ?? []
-          etiquetas = Array.isArray(l) ? l : (l ? [l] : [])
-        }
-      } catch { /* el veredicto no depende de esto */ }
-
-      const ahora = new Date().toISOString()
-      await db.from('kyt_registry').upsert({
-        coin, address_lower: dir.toLowerCase(), address: dir,
-        risk_score: v.score, risk_level: v.level,
-        risk_detail: v.riskDetail, detail_list: v.detailList,
-        labels: etiquetas, report_url: v.reportUrl,
-        estado: 'finalizado',
-        respuesta_cruda: r.data ?? null,
-        consultado_at: ahora, actualizado_at: ahora,
-        veces_consultado: Number(ficha?.veces_consultado ?? 0) + 1,
-        veces_reutilizado: Number(ficha?.veces_reutilizado ?? 0),
-        empresas: anotarEmpresa(ficha?.empresas, quien),
-      }, { onConflict: 'coin,address_lower' })
-
-      // Se audita la consulta PAGADA: es lo que cuenta para el tope diario y
-      // para saber en qué se gastó el plan.
       try {
         await db.from('audit_log').insert({
           user_id: yo.userId, action: 'kyt.consulta_pagada',
-          metadata: { coin, address: dir, score: v.score, level: v.level, empresa: quien.empresa },
+          metadata: { coin, address: dir, score: ev.score, level: ev.level, empresa: quien.empresa },
         })
       } catch { /* que no se pierda la consulta por no poder auditar */ }
 
       return json({
         ok: true,
         address: dir, coin,
-        categoria: clasificar(c, v.score, v.level),
-        puntaje: v.score, nivel: v.level,
-        hallazgos: v.riskDetail, etiquetas, detalle: v.detailList,
-        reporte: v.reportUrl,
+        categoria: clasificar(c, ev.score, ev.level),
+        puntaje: ev.score, nivel: ev.level,
+        hallazgos: ev.hallazgos, etiquetas: ev.etiquetas, detalle: ev.detalle,
+        actividad: ev.actividad, exposicion: ev.exposicion,
+        reporte: ev.reporte,
         estado: 'finalizado',
         delPadron: false,
-        consultadoAt: ahora,
+        consultadoAt: new Date().toISOString(),
       })
+    }
+
+    // ── GUARDAR Y MONITOREAR ──────────────────────────────────────
+    if (accion === 'guardar') {
+      if (!yo.userId) return json({ error: 'no_autorizado' }, 401)
+      const coin = String(body.coin ?? '').trim().toUpperCase()
+      const dir = normDir(body.address)
+      const alias = String(body.alias ?? '').trim().slice(0, 80)
+      if (!coin || !dir) return json({ ok: false, error: 'faltan_datos' })
+
+      // El tope cuenta solo las ACTIVAS: si dejaste de monitorear una, ese
+      // lugar se libera.
+      const { count } = await db.from('kyt_watchlist')
+        .select('*', { count: 'exact', head: true })
+        .eq('user_id', yo.userId).eq('activo', true)
+      const yaEsta = await db.from('kyt_watchlist')
+        .select('id').eq('user_id', yo.userId).eq('coin', coin)
+        .eq('address_lower', dir.toLowerCase()).maybeSingle()
+      if (!yaEsta.data && (count ?? 0) >= c.topeMonitoreadas) {
+        return json({ ok: false, error: 'tope', mensaje: `Llegaste al tope de ${c.topeMonitoreadas} direcciones monitoreadas. Dejá de monitorear alguna para agregar otra.` })
+      }
+
+      // El punto de partida sale del padrón, que es donde vive el veredicto.
+      const ficha2 = await padronBuscar(coin, dir)
+      const banda = clasificar(c, ficha2?.risk_score ?? null, ficha2?.risk_level ?? null)
+      const ahora = new Date().toISOString()
+
+      // Se reactiva si estaba dada de baja, y se reinicia la referencia: al
+      // volver a guardarla, el "subió desde que la guardaste" se cuenta desde
+      // AHORA, no desde la primera vez.
+      const { error: errUp } = await db.from('kyt_watchlist').upsert({
+        user_id: yo.userId, coin,
+        address_lower: dir.toLowerCase(), address: dir,
+        alias: alias || null,
+        score_inicial: ficha2?.risk_score ?? null,
+        nivel_inicial: ficha2?.risk_level ?? null,
+        banda_inicial: banda,
+        score_actual: ficha2?.risk_score ?? null,
+        nivel_actual: ficha2?.risk_level ?? null,
+        banda_actual: banda,
+        revisado_at: ficha2?.consultado_at ?? ahora,
+        subio: false, subio_at: null, motivo_cambio: null, aviso_enviado: false,
+        activo: true,
+      }, { onConflict: 'user_id,coin,address_lower' })
+      if (errUp) return json({ ok: false, error: 'no_guardado', mensaje: errUp.message }, 500)
+      return json({ ok: true, guardada: true })
+    }
+
+    if (accion === 'quitar') {
+      if (!yo.userId) return json({ error: 'no_autorizado' }, 401)
+      const id = String(body.id ?? '')
+      if (!id) return json({ ok: false, error: 'falta_id' })
+      // Se da de baja, NO se borra: el historial de alertas apunta a esta fila
+      // y borrarla dejaría alertas sin contexto. Un registro de cumplimiento
+      // que se puede borrar no es un registro.
+      await db.from('kyt_watchlist').update({ activo: false })
+        .eq('id', id).eq('user_id', yo.userId)
+      return json({ ok: true })
+    }
+
+    if (accion === 'lista') {
+      if (!yo.userId) return json({ error: 'no_autorizado' }, 401)
+      const { data, error } = await db.from('kyt_watchlist')
+        .select('*').eq('user_id', yo.userId).eq('activo', true)
+        .order('created_at', { ascending: false }).limit(500)
+      if (error) {
+        const base = (SUPABASE_URL.match(/^https:\/\/([^.]+)\./)?.[1] ?? '').slice(0, 4)
+        return json({ ok: false, error: error.message, base }, 500)
+      }
+      const filas = (data ?? []) as any[]
+      // Hora de la última ronda: la revisión más reciente de esta cuenta.
+      const ultima = filas.reduce<string | null>((a, r) => {
+        const t = r.revisado_at
+        return t && (!a || new Date(t) > new Date(a)) ? t : a
+      }, null)
+      return json({
+        ok: true,
+        tope: c.topeMonitoreadas,
+        horas: c.horasMonitoreo,
+        ultimaRonda: ultima,
+        direcciones: filas.map(r => ({
+          id: r.id, coin: r.coin, address: r.address, alias: r.alias,
+          puntaje: r.score_actual, nivel: r.nivel_actual,
+          categoria: r.banda_actual ?? 'sin_dato',
+          puntajeInicial: r.score_inicial, bandaInicial: r.banda_inicial,
+          subio: r.subio === true, subioAt: r.subio_at, motivo: r.motivo_cambio,
+          avisoEnviado: r.aviso_enviado === true,
+          revisadoAt: r.revisado_at, guardadaAt: r.created_at,
+        })),
+      })
+    }
+
+    if (accion === 'alertas') {
+      if (!yo.userId) return json({ error: 'no_autorizado' }, 401)
+      const { data } = await db.from('kyt_alerts')
+        .select('*').eq('user_id', yo.userId)
+        .order('created_at', { ascending: false }).limit(200)
+      return json({ ok: true, alertas: (data ?? []) as any[] })
+    }
+
+    // ── RONDA DE MONITOREO ────────────────────────────────────────
+    // La dispara el cron (con CRON_SECRET) o un admin. NO la puede disparar un
+    // cliente: gasta consultas pagadas de toda la cuenta.
+    if (accion === 'monitorear') {
+      const secreto = Deno.env.get('CRON_SECRET') ?? ''
+      const traido = String(body.secret ?? req.headers.get('x-cron-secret') ?? '')
+      const autorizado = yo.esAdmin || (!!secreto && traido === secreto)
+      if (!autorizado) return json({ error: 'no_autorizado' }, 401)
+      if (!secreto && !yo.esAdmin) return json({ error: 'sin_cron_secret' }, 503)
+
+      const limite = Math.max(1, Math.min(200, Number(body.limite) || 40))
+      const corte = new Date(Date.now() - c.horasMonitoreo * 3600_000).toISOString()
+
+      // Las que llevan más tiempo sin revisar primero. Nunca revisadas van
+      // antes que todas (NULLS FIRST en el índice).
+      const { data: pend } = await db.from('kyt_watchlist')
+        .select('*').eq('activo', true)
+        .or(`revisado_at.is.null,revisado_at.lt.${corte}`)
+        .order('revisado_at', { ascending: true, nullsFirst: true })
+        .limit(limite)
+
+      const out: any[] = []
+      for (const w of ((pend ?? []) as any[])) {
+        const ficha3 = await padronBuscar(w.coin, w.address)
+        const ev = await evaluarYGuardar(c, w.coin, w.address, { userId: w.user_id }, ficha3)
+        const ahora2 = new Date().toISOString()
+
+        if (!ev.hay) {
+          // No se pudo confirmar: se anota la revisión pero NO se toca la
+          // banda. Bajar el riesgo porque el proveedor no contestó sería
+          // exactamente el error de las dispersiones, al revés.
+          await db.from('kyt_watchlist').update({ revisado_at: ahora2 }).eq('id', w.id)
+          out.push({ id: w.id, r: 'sin_resultado' })
+          continue
+        }
+
+        const antes = String(w.banda_actual ?? 'sin_dato')
+        const ahoraBanda = clasificar(c, ev.score, ev.level)
+        const ORDEN: Record<string, number> = { bajo: 1, sin_dato: 1, medio: 2, alto: 3 }
+        const empeoro = (ORDEN[ahoraBanda] ?? 1) > (ORDEN[antes] ?? 1)
+
+        const motivo = empeoro
+          ? (Array.isArray(ev.hallazgos) && ev.hallazgos.length
+              ? String(typeof ev.hallazgos[0] === 'string' ? ev.hallazgos[0] : (ev.hallazgos[0]?.label ?? ev.hallazgos[0]?.type ?? 'nuevo hallazgo')).slice(0, 180)
+              : 'cambió la clasificación del proveedor')
+          : null
+
+        await db.from('kyt_watchlist').update({
+          score_actual: ev.score, nivel_actual: ev.level, banda_actual: ahoraBanda,
+          revisado_at: ahora2,
+          ...(empeoro ? { subio: true, subio_at: ahora2, motivo_cambio: motivo, aviso_enviado: false } : {}),
+        }).eq('id', w.id)
+
+        if (empeoro) {
+          // El correo se manda ANTES de anotar aviso_enviado, y solo se anota
+          // si de verdad salio. Marcar el aviso como enviado cuando no salio
+          // le diria al cliente en pantalla que ya le avisamos -- y dejaria de
+          // revisar.
+          const enviado = await avisarPorCorreo(w.user_id, {
+            alias: w.alias, address: w.address, coin: w.coin,
+            antes: w.score_actual, despues: ev.score, motivo,
+          })
+          await db.from('kyt_alerts').insert({
+            user_id: w.user_id, watchlist_id: w.id,
+            coin: w.coin, address: w.address, alias: w.alias,
+            score_antes: w.score_actual, score_despues: ev.score,
+            banda_antes: antes, banda_despues: ahoraBanda,
+            motivo, empeoro: true, aviso_enviado: enviado,
+          })
+          if (enviado) await db.from('kyt_watchlist').update({ aviso_enviado: true }).eq('id', w.id)
+          out.push({ id: w.id, r: 'subio', de: w.score_actual, a: ev.score, aviso: enviado })
+        } else {
+          out.push({ id: w.id, r: 'sin_cambio' })
+        }
+      }
+      return json({ ok: true, revisadas: out.length, resultados: out })
     }
 
     // ── Padrón completo (admin) ───────────────────────────────────
