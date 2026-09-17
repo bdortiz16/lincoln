@@ -28,6 +28,13 @@
 -- a proposito, y cada bloque usa su propia etiqueta de dollar-quote. El editor
 -- cuenta comillas para partir el script, y una comilla suelta en un comentario
 -- o una etiqueta de dollar-quote repetida lo hacen cortar donde no debe.
+--
+-- LA COMPROBACION NO VA EN ESTE ARCHIVO, A PROPOSITO. El editor corre todo lo
+-- que se le pega dentro de UNA SOLA transaccion: si la consulta de verificacion
+-- del final falla, se revierte tambien el DDL que si habia funcionado, y queda
+-- pareciendo que los triggers no se crearon cuando en realidad se crearon y se
+-- deshicieron en el mismo instante. Eso paso la primera vez. La verificacion
+-- vive ahora en 2026_zz_verificacion.sql y se corre APARTE, despues.
 -- ============================================================================
 
 
@@ -75,7 +82,18 @@ BEGIN
       'CREATE POLICY %I ON public.%I FOR DELETE TO authenticated USING (public.is_any_admin())',
       t || '_del', t);
 
+    -- Se quita el permiso a la llave anonima Y a PUBLIC. Revocar solo a anon
+    -- no alcanza cuando el permiso viene heredado de PUBLIC: seguiria pudiendo
+    -- leer, y la comprobacion de anon seguiria dando false sin explicacion.
     EXECUTE format('REVOKE ALL ON public.%I FROM anon', t);
+    EXECUTE format('REVOKE ALL ON public.%I FROM PUBLIC', t);
+
+    -- Y se devuelve explicitamente lo que la app SI necesita. Va despues del
+    -- revoke a proposito: si el acceso de los usuarios firmados venia heredado
+    -- de PUBLIC, el revoke de arriba se lo habria llevado por delante y la app
+    -- dejaria de cargar. Las filas las sigue filtrando la RLS de arriba.
+    EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON public.%I TO authenticated', t);
+    EXECUTE format('GRANT ALL ON public.%I TO service_role', t);
   END LOOP;
 END;
 $cierre_rls$;
@@ -139,6 +157,20 @@ BEGIN
   RETURN NEW;
 END;
 $apply_limit$;
+
+-- El trigger que la dispara puede no existir en este proyecto: la verificacion
+-- devolvio NULL, que significa que la funcion no estaba creada, no que estuviera
+-- sin proteger. Se crea aca, pero SOLO si la tabla existe -- si no, un CREATE
+-- TRIGGER contra una tabla ausente aborta el script entero y revierte todo lo
+-- demas, que es exactamente lo que hay que evitar.
+DO $trg_topes$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'limit_increase_requests') THEN
+    EXECUTE 'DROP TRIGGER IF EXISTS trg_apply_limit_increase ON public.limit_increase_requests';
+    EXECUTE 'CREATE TRIGGER trg_apply_limit_increase AFTER UPDATE OF status ON public.limit_increase_requests FOR EACH ROW EXECUTE FUNCTION public.apply_limit_increase()';
+  END IF;
+END;
+$trg_topes$;
 
 
 -- ─── 5. Nadie se crea admin al registrarse ──────────────────────────────────
@@ -215,31 +247,8 @@ NOTIFY pgrst, 'reload schema';
 
 
 -- ============================================================================
--- COMPROBACION: las cinco columnas deben decir true.
+-- La comprobacion esta en 2026_zz_verificacion.sql. Se corre APARTE, en una
+-- pestana nueva, DESPUES de que este script termine sin error. Ver la nota de
+-- la cabecera: si la verificacion viaja pegada al DDL y falla, se lleva el DDL
+-- con ella.
 -- ============================================================================
-SELECT
-  NOT EXISTS (
-    SELECT 1 FROM pg_tables t
-    WHERE t.schemaname = 'public'
-      AND t.tablename IN ('limit_increase_requests','document_requests',
-                          'beneficiaries','notifications','user_limits','kyc_submissions')
-      AND NOT t.rowsecurity
-  ) AS rls_puesta,
-  NOT EXISTS (
-    SELECT 1 FROM pg_policies
-    WHERE schemaname = 'public'
-      AND policyname IN ('allow_select_all_transactions','allow_update_all_transactions',
-                         'allow_select_all_users','users_all','tx_all',
-                         'beneficiaries_all','notifications_all','user_limits_all','kyc_submissions_all')
-  ) AS permisivas_fuera,
-  EXISTS (
-    SELECT 1 FROM pg_trigger WHERE tgname = 'trg_guard_users_insert' AND NOT tgisinternal
-  ) AS insert_protegido,
-  position('Solo un administrador' in pg_get_functiondef(
-    (SELECT p.oid FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-     WHERE p.proname = 'apply_limit_increase' AND n.nspname = 'public' LIMIT 1))) > 0 AS topes_protegidos,
-  NOT EXISTS (
-    SELECT 1 FROM information_schema.role_table_grants
-    WHERE table_schema = 'public' AND grantee = 'anon'
-      AND table_name IN ('limit_increase_requests','document_requests','kyc_submissions','user_limits')
-  ) AS anon_revocado;

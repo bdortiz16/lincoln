@@ -153,14 +153,8 @@ CREATE TRIGGER trg_guard_beneficiario_bloqueado
 NOTIFY pgrst, 'reload schema';
 
 -- ============================================================================
--- COMPROBACION: las dos columnas deben decir true.
+-- La comprobacion esta en 2026_zz_verificacion.sql y se corre APARTE. Pegada
+-- aca abajo seria peligrosa: el editor de Supabase corre todo el script en una
+-- sola transaccion, asi que un error en la consulta de comprobacion revierte
+-- tambien el DDL que si habia funcionado.
 -- ============================================================================
-SELECT
-  EXISTS (
-    SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-    WHERE p.proname = 'guard_beneficiario_bloqueado' AND n.nspname = 'public'
-  ) AS funcion_creada,
-  EXISTS (
-    SELECT 1 FROM pg_trigger t
-    WHERE t.tgname = 'trg_guard_beneficiario_bloqueado' AND NOT t.tgisinternal
-  ) AS trigger_puesto;

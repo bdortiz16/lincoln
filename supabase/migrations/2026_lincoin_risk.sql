@@ -88,12 +88,8 @@ $limpia_pol$;
 NOTIFY pgrst, 'reload schema';
 
 -- ============================================================================
--- COMPROBACION — las tres columnas deben decir true.
+-- La comprobacion esta en 2026_zz_verificacion.sql y se corre APARTE. Pegada
+-- aca abajo seria peligrosa: el editor de Supabase corre todo el script en una
+-- sola transaccion, asi que un error en la consulta de comprobacion revierte
+-- tambien el DDL que si habia funcionado.
 -- ============================================================================
-SELECT
-  EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'risk_registry') AS tabla_creada,
-  (SELECT rowsecurity FROM pg_tables WHERE schemaname = 'public' AND tablename = 'risk_registry') AS rls_puesta,
-  NOT EXISTS (
-    SELECT 1 FROM information_schema.role_table_grants
-    WHERE table_schema = 'public' AND table_name = 'risk_registry' AND grantee IN ('anon', 'authenticated')
-  ) AS cerrada_al_cliente;

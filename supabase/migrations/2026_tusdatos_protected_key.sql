@@ -107,13 +107,7 @@ CREATE TRIGGER trg_guard_raw_data_server_keys
 
 NOTIFY pgrst, 'reload schema';
 
--- Comprobación: las dos columnas deben decir true.
-SELECT
-  position('''kumplo''' in pg_get_functiondef(p.oid)) > 0 AS kumplo_protegido,
-  position('''tusdatos''' in pg_get_functiondef(p.oid)) > 0 AS tusdatos_protegido,
-  EXISTS (
-    SELECT 1 FROM pg_trigger t
-    WHERE t.tgname = 'trg_guard_raw_data_server_keys' AND NOT t.tgisinternal
-  ) AS trigger_puesto
-FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-WHERE p.proname = 'guard_raw_data_server_keys' AND n.nspname = 'public';
+-- La comprobación está en 2026_zz_verificacion.sql y se corre APARTE. Pegada
+-- acá abajo sería peligrosa: el editor de Supabase corre todo el script en una
+-- sola transacción, así que un error en la consulta de comprobación revierte
+-- también el DDL que sí había funcionado.
