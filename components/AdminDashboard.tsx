@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { CodeInput } from './CodeInput';
 import { 
   Users, 
   FileText, 
@@ -1939,10 +1940,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                   {!carguesRecordOnly && (
                     <div className="rounded-xl p-3 mb-3" style={{ backgroundColor: '#121413', border: '1px solid rgba(255,255,255,0.12)' }}>
                       <label className="block text-[10px] font-bold uppercase tracking-wide mb-1" style={{ color: '#878E88' }}>Tu código 2FA para autorizar este cargue</label>
-                      <input inputMode="numeric" placeholder="123 456" maxLength={6} value={cargueOtp}
-                        onChange={e => setCargueOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                        className="w-full px-3 py-2.5 rounded-lg text-center font-mono text-lg tracking-widest outline-none"
-                        style={{ backgroundColor: '#0C0E0D', color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.12)' }} />
+                      <CodeInput value={cargueOtp} onChange={setCargueOtp} tone="dark"
+                        aria="Tu código 2FA para autorizar el cargue" />
                       <p className="text-[10px] mt-1.5 mb-0" style={{ color: 'rgba(244,244,242,0.45)' }}>Se pide en cada cargue, no solo al entrar. Cada código sirve una sola vez.</p>
                     </div>
                   )}

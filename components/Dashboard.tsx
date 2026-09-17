@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { CodeInput } from './CodeInput';
 import { Sidebar } from './Sidebar';
 import { MouvSection, fetchMouvBalance } from './OtcMigration';
 import { supabase } from '../lib/supabaseClient';
@@ -1883,7 +1884,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                       <p className="text-sm font-bold text-slate-700">Ingresa el código de 6 dígitos que aparece en la app</p>
                   </div>
                   {mfaVerifyError && <p className="text-red-500 text-sm text-center mb-3">{mfaVerifyError}</p>}
-                  <input type="text" inputMode="numeric" maxLength={6} value={mfaVerifyCode} onChange={(e) => setMfaVerifyCode(e.target.value.replace(/\D/g, ''))} className="w-full h-14 text-center text-2xl font-bold tracking-[0.4em] border-2 border-slate-200 rounded-xl focus:border-[#0C0E0D] outline-none mb-4 bg-slate-50" placeholder="000000" autoFocus onKeyDown={(e) => e.key === 'Enter' && handleVerifyMFAEnrollment()} />
+                  <div className="mb-4">
+                    <CodeInput value={mfaVerifyCode} onChange={setMfaVerifyCode}
+                      onComplete={() => { if (!mfaVerifyLoading) handleVerifyMFAEnrollment(); }}
+                      status={mfaVerifyLoading ? 'verifying' : mfaVerifyError ? 'error' : 'idle'}
+                      tone="light" autoFocus disabled={mfaVerifyLoading}
+                      aria="Código de tu app autenticadora" />
+                  </div>
                   <button onClick={handleVerifyMFAEnrollment} disabled={mfaVerifyCode.length !== 6 || mfaVerifyLoading} className="w-full h-12 bg-[#0C0E0D] font-bold rounded-xl disabled:opacity-50 hover:bg-[#161A17] transition-colors">
                       {mfaVerifyLoading ? 'Verificando...' : 'Confirmar activación'}
                   </button>
@@ -1905,9 +1912,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   ) : (
                       <div className="mb-3">
                           <p className="text-xs text-slate-500 mb-2">Enviamos un código a {disableOtp.to || 'tu correo'}. Ingrésalo:</p>
-                          <input type="text" inputMode="numeric" maxLength={6} value={disableOtp.code}
-                              onChange={e => setDisableOtp(s => ({ ...s, code: e.target.value.replace(/\D/g, '').slice(0, 6), error: '' }))}
-                              className="w-full h-12 text-center text-xl font-bold tracking-[0.4em] border-2 border-slate-200 rounded-xl focus:border-slate-800 outline-none mb-2 bg-slate-50" placeholder="000000" autoFocus />
+                          <div className="mb-2">
+                            <CodeInput value={disableOtp.code}
+                              onChange={v => setDisableOtp(st => ({ ...st, code: v, error: '' }))}
+                              status={disableOtp.error ? 'error' : 'idle'}
+                              tone="light" autoFocus
+                              aria="Código enviado a tu correo" />
+                          </div>
                           <button onClick={sendDisableOtp} disabled={disableOtp.sending} className="text-xs text-slate-500 font-semibold hover:underline">
                               {disableOtp.sending ? 'Reenviando…' : 'Reenviar código'}
                           </button>
@@ -3570,15 +3581,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   </div>
                   <p className="text-sm text-slate-500 mb-4 text-center">Ingresa el código de 6 dígitos de tu app autenticadora para confirmar el pago.</p>
                   {payVerifyError && <p className="text-red-500 text-sm text-center mb-3">{payVerifyError}</p>}
-                  <input
-                      type="text" inputMode="numeric" maxLength={6}
-                      value={payVerifyCode}
-                      onChange={e => setPayVerifyCode(e.target.value.replace(/\D/g, ''))}
-                      onKeyDown={e => e.key === 'Enter' && handlePayVerifyAndSend()}
-                      className="w-full h-14 text-center text-2xl font-bold tracking-[0.4em] border-2 border-slate-200 rounded-xl focus:border-[#0C0E0D] outline-none mb-4 bg-slate-50"
-                      placeholder="000000"
-                      autoFocus
-                  />
+                  <div className="mb-4">
+                      <CodeInput value={payVerifyCode} onChange={setPayVerifyCode}
+                          onComplete={() => { if (!payVerifyLoading) handlePayVerifyAndSend(); }}
+                          status={payVerifyLoading ? 'verifying' : payVerifyError ? 'error' : 'idle'}
+                          tone="light" autoFocus disabled={payVerifyLoading}
+                          aria="Código de tu app autenticadora" />
+                  </div>
                   <button
                       onClick={handlePayVerifyAndSend}
                       disabled={payVerifyCode.length !== 6 || payVerifyLoading}

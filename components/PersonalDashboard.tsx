@@ -80,6 +80,7 @@ import { achEta, achEtaShort } from './achEta';
 import { ContactsSection, contactStatus } from './ContactsSection';
 import { WalletsGasfreeSection } from './WalletsGasfreeSection';
 import { KytSection } from './KytSection';
+import { CodeInput } from './CodeInput';
 import { supabase } from '../lib/supabaseClient';
 import { FlagImg, FlagSelect, flagUrl } from './FlagImg';
 import { useExchangeRates } from '../context/ExchangeRateContext';
@@ -4688,15 +4689,17 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   </div>
                   <p className="text-xs text-slate-500 text-center mb-4">Usa <strong>Google Authenticator</strong>, <strong>Authy</strong> o cualquier app TOTP. Luego ingresa el código de 6 dígitos:</p>
                   {mfaVerifyError && <p className="text-red-500 text-sm text-center mb-3">{mfaVerifyError}</p>}
-                  <input
-                      type="text" inputMode="numeric" maxLength={6}
-                      value={mfaVerifyCode}
-                      onChange={(e) => setMfaVerifyCode(e.target.value.replace(/\D/g, ''))}
-                      className="w-full h-14 text-center text-2xl font-bold tracking-[0.4em] border-2 border-slate-200 rounded-xl focus:border-[#0C0E0D] outline-none mb-4 bg-slate-50"
-                      placeholder="000000"
-                      autoFocus
-                      onKeyDown={(e) => e.key === 'Enter' && handleVerifyMFAEnrollment()}
-                  />
+                  <div className="mb-4">
+                      <CodeInput
+                          value={mfaVerifyCode}
+                          onChange={setMfaVerifyCode}
+                          onComplete={() => handleVerifyMFAEnrollment()}
+                          status={mfaVerifyError ? 'error' : 'idle'}
+                          tone="light"
+                          autoFocus
+                          aria="Código de tu app autenticadora"
+                      />
+                  </div>
                   <button
                       onClick={handleVerifyMFAEnrollment}
                       disabled={mfaVerifyCode.length !== 6 || mfaVerifyLoading}
@@ -4758,15 +4761,18 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   </div>
                   <p className="text-sm text-slate-500 mb-4 text-center">Ingresa el código de 6 dígitos de tu app autenticadora para confirmar el pago.</p>
                   {payVerifyError && <p className="text-red-500 text-sm text-center mb-3">{payVerifyError}</p>}
-                  <input
-                      type="text" inputMode="numeric" maxLength={6}
-                      value={payVerifyCode}
-                      onChange={e => setPayVerifyCode(e.target.value.replace(/\D/g, ''))}
-                      onKeyDown={e => e.key === 'Enter' && handlePayVerifyAndSend()}
-                      className="w-full h-14 text-center text-2xl font-bold tracking-[0.4em] border-2 border-slate-200 rounded-xl focus:border-[#0C0E0D] outline-none mb-4 bg-slate-50"
-                      placeholder="000000"
-                      autoFocus
-                  />
+                  <div className="mb-4">
+                      <CodeInput
+                          value={payVerifyCode}
+                          onChange={setPayVerifyCode}
+                          onComplete={() => { if (!payVerifyLoading) handlePayVerifyAndSend(); }}
+                          status={payVerifyLoading ? 'verifying' : payVerifyError ? 'error' : 'idle'}
+                          tone="light"
+                          autoFocus
+                          disabled={payVerifyLoading}
+                          aria="Código de tu app autenticadora"
+                      />
+                  </div>
                   <button
                       type="button"
                       onClick={handlePayVerifyAndSend}
@@ -4791,14 +4797,18 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   </div>
                   <h3 style={{ fontSize: 18, fontWeight: 800, letterSpacing: '-0.4px', color: '#F4F4F2', marginTop: 14 }}>Confirma con tu 2FA</h3>
                   <p style={{ fontSize: 13, color: '#878E88', marginTop: 6, lineHeight: 1.5 }}>Por tu seguridad, ingresa el código de 6 dígitos de tu app de autenticación para autorizar este envío.</p>
-                  <input
-                      type="text" inputMode="numeric" maxLength={6} autoFocus
-                      value={sendOtpCode}
-                      onChange={e => setSendOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                      onKeyDown={e => e.key === 'Enter' && confirmSendOtp()}
-                      placeholder="••••••"
-                      style={{ width: '100%', marginTop: 18, textAlign: 'center', letterSpacing: 12, fontSize: 28, fontWeight: 800, fontFamily: 'ui-monospace, Menlo, monospace', color: '#F4F4F2', background: 'rgba(255,255,255,0.03)', border: `1px solid ${sendOtpError ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.12)'}`, borderRadius: 12, padding: '13px 0', outline: 'none' }}
-                  />
+                  <div style={{ marginTop: 18 }}>
+                      <CodeInput
+                          value={sendOtpCode}
+                          onChange={setSendOtpCode}
+                          onComplete={() => { if (!sendOtpLoading) confirmSendOtp(); }}
+                          status={sendOtpLoading ? 'verifying' : sendOtpError ? 'error' : 'idle'}
+                          tone="dark"
+                          autoFocus
+                          disabled={sendOtpLoading}
+                          aria="Código para autorizar el envío"
+                      />
+                  </div>
                   {sendOtpError && <p style={{ fontSize: 12.5, color: '#F4F4F2', marginTop: 10, fontWeight: 600 }}>{sendOtpError}</p>}
                   <button
                       type="button"

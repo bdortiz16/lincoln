@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 declare global { interface Window { grecaptcha: any } }
 import { Eye, EyeOff, ArrowLeft, AlertTriangle, X, CheckCircle, ShieldCheck } from 'lucide-react';
 import { Logo } from './Logo';
+import { CodeInput } from './CodeInput';
 import { TurnstileWidget, captchaEnabled } from './TurnstileWidget';
 import { useSystemConfig } from '../context/SystemConfigContext';
 import { useDatabase } from '../context/DatabaseContext';
@@ -153,17 +154,22 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
             </div>
           )}
 
-          <input
-            type="text"
-            inputMode="numeric"
-            maxLength={6}
-            value={mfaCode}
-            onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, ''))}
-            className="w-full h-16 text-center text-3xl font-bold tracking-[0.5em] border-2 border-slate-200 rounded-xl focus:border-[#0C0E0D] outline-none mb-6 bg-slate-50"
-            placeholder="000000"
-            autoFocus
-            onKeyDown={(e) => e.key === 'Enter' && handleVerify2FA()}
-          />
+          {/* Al completar los seis dígitos se verifica solo: tener que tocar
+              "Verificar" con el código ya puesto es un paso de más justo donde
+              la gente ya está esperando. El botón se queda para quien prefiera
+              tocarlo y para reintentar. */}
+          <div className="mb-6">
+            <CodeInput
+              value={mfaCode}
+              onChange={setMfaCode}
+              onComplete={() => { if (!mfaLoading) handleVerify2FA(); }}
+              status={mfaLoading ? 'verifying' : mfaError ? 'error' : 'idle'}
+              tone="light"
+              autoFocus
+              disabled={mfaLoading}
+              aria="Código de verificación en dos pasos"
+            />
+          </div>
 
           <button
             onClick={handleVerify2FA}
