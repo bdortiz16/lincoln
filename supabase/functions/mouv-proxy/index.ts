@@ -91,6 +91,52 @@ async function creditBalanceAtomic(userId: string, col: string, delta: number): 
   await db.from('users').update({ balances: { ...bals, [col]: nb } }).eq('id', userId)
 }
 
+// ── AVISO AL ADMIN POR DISPERSION SIN CONFIRMAR ───────────────────
+// Los botones de Fallos resuelven el caso, pero no evitan que se repita:
+// alguien tiene que MIRAR. Dos veces ya quedo plata de un cliente en el aire
+// porque nadie se entero a tiempo.
+//
+// Esto avisa una sola vez por dispersion (flag alertaEnviada) cuando lleva
+// demasiado sin confirmarse. No resuelve nada solo -- confirmar o devolver
+// sigue siendo una decision humana contra la consola del proveedor -- pero
+// hace imposible que pase inadvertido.
+async function avisarAdminSinConfirmar(tx: any): Promise<boolean> {
+  const KEY = Deno.env.get('RESEND_API_KEY') ?? ''
+  const FROM = Deno.env.get('OTP_FROM_EMAIL') ?? Deno.env.get('FROM_EMAIL') ?? 'no-reply@lincoin.me'
+  const ADMIN = Deno.env.get('VITE_ADMIN_EMAIL') ?? Deno.env.get('ADMIN_EMAIL') ?? ''
+  if (!KEY || !ADMIN) return false
+  const rd = (tx.raw_data ?? {}) as Record<string, any>
+  const horas = Math.floor((Date.now() - new Date(tx.created_at).getTime()) / 3600_000)
+  const monto = Number(tx.amount ?? 0).toLocaleString('es-CO')
+  try {
+    const r = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: `Lincoin <${FROM}>`, to: [ADMIN],
+        subject: `Dispersion sin confirmar hace ${horas} h - ${monto} COP`,
+        html: `<!doctype html><html><body style="margin:0;padding:24px;background:#F0EFEB;font-family:Arial,sans-serif">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;background:#FFF;border:1px solid rgba(21,24,26,0.08);border-radius:14px"><tr><td style="padding:26px">
+<p style="font-family:'Archivo',Arial,sans-serif;font-size:21px;font-weight:800;color:#15181A;margin:0">Lincoin<span style="color:#22A35C">.</span></p>
+<p style="font-size:17px;font-weight:800;color:#15181A;margin:20px 0 8px">Una dispersion lleva ${horas} h sin confirmar</p>
+<p style="font-size:13px;color:#5C625E;line-height:1.6;margin:0 0 16px">El proveedor acepto el envio pero no confirmo que se pagara, y el saldo del cliente ya esta debitado. Hay que cotejarlo en la consola del proveedor y resolverlo: confirmarlo o devolver el dinero.</p>
+<table width="100%" style="font-size:12.5px">
+<tr><td style="padding:8px 0;border-top:1px solid rgba(21,24,26,0.06);color:#5C625E">Monto</td><td align="right" style="padding:8px 0;border-top:1px solid rgba(21,24,26,0.06);color:#15181A;font-weight:700">${monto} COP</td></tr>
+<tr><td style="padding:8px 0;border-top:1px solid rgba(21,24,26,0.06);color:#5C625E">Beneficiario</td><td align="right" style="padding:8px 0;border-top:1px solid rgba(21,24,26,0.06);color:#15181A;font-weight:700">${String(rd.beneficiary ?? '-')}</td></tr>
+<tr><td style="padding:8px 0;border-top:1px solid rgba(21,24,26,0.06);color:#5C625E">Referencia</td><td align="right" style="padding:8px 0;border-top:1px solid rgba(21,24,26,0.06);color:#15181A;font-weight:700;font-family:monospace">${String(rd.providerRef ?? '-')}</td></tr>
+</table>
+<p style="font-size:12.5px;color:#5C625E;margin:18px 0 0;line-height:1.6">Se resuelve en <b style="color:#15181A">Admin &rarr; Fallos</b>, con los botones Devolver y reembolsar / Confirmar como pagada.</p>
+</td></tr></table></body></html>`,
+      }),
+    })
+    if (!r.ok) { console.error(`[mouv] aviso admin rechazado HTTP ${r.status}`); return false }
+    return true
+  } catch (e) {
+    console.error('[mouv] fallo el aviso al admin:', (e as Error)?.message)
+    return false
+  }
+}
+
 // Dispara el correo transaccional del envío directamente contra
 // notify-transaction (con service role), sin depender del webhook de la base
 // — que NO estaba llegando para las dispersiones. notify-transaction deduplica
@@ -944,6 +990,13 @@ serve(async (req: Request) => {
         // "en curso" y pasa a ser algo que alguien tiene que mirar contra la
         // consola del proveedor.
         const revisar = ageMin >= 15
+        // Aviso al admin UNA sola vez, pasada una hora. Quince minutos es el
+        // umbral para marcarla en pantalla; una hora es cuando ya dejo de ser
+        // "esta tardando" y hay plata de alguien sin destino conocido.
+        if (ageMin >= 60 && !rd.alertaEnviada) {
+          const enviado = await avisarAdminSinConfirmar(tx)
+          if (enviado) await db.from('transactions').update({ raw_data: { ...rd, alertaEnviada: true, alertaAt: new Date().toISOString() } }).eq('id', tx.id)
+        }
         await db.from('transactions').update({
           raw_data: {
             ...rd,
@@ -973,6 +1026,43 @@ serve(async (req: Request) => {
       }
     }
     return json(200, { ok: true, checked: (rows ?? []).length, results: out })
+  }
+
+  // ── CONFIRMAR A MANO UNA DISPERSION ───────────────────────────────
+  // La contraparte de force_return. Mientras la consulta de estado no funcione,
+  // la unica fuente de verdad es la consola del proveedor, y quien la mira es
+  // una persona. Esto le deja cerrar el caso en el sentido bueno.
+  //
+  // Queda marcado como confirmacion MANUAL y con quien la hizo: un Completado
+  // puesto por una persona no es lo mismo que uno confirmado por el proveedor,
+  // y dentro de seis meses eso tiene que poder distinguirse.
+  if (action === 'confirmar_dispersion') {
+    if (!caller.admin || !caller.viaJwt) return json(403, { error: 'forbidden' })
+    const txId = payload?.txId ?? payload?.tx_id
+    if (txId == null) return json(400, { error: 'missing_tx' })
+    const { data: tx } = await db.from('transactions')
+      .select('id, user_id, status, type, raw_data').eq('id', txId).maybeSingle()
+    if (!tx) return json(404, { error: 'not_found' })
+    if (tx.type !== 'dispersion') return json(400, { error: 'not_a_dispersion' })
+    const rd = (tx.raw_data ?? {}) as Record<string, any>
+    if (rd.refunded) return json(200, { ok: true, already: 'refunded' })
+    if (tx.status === 'Completado') return json(200, { ok: true, already: 'Completado' })
+
+    await db.from('transactions').update({
+      status: 'Completado',
+      raw_data: {
+        ...rd,
+        settledAt: new Date().toISOString(),
+        confirmadaManualmente: true,
+        confirmadaPor: caller.userId,
+        revisionManual: undefined,
+      },
+    }).eq('id', tx.id).neq('status', 'Rechazado')
+    await logAudit(tx.user_id, 'mouv.confirmar_dispersion', {
+      txId: tx.id, admin: caller.userId, providerRef: rd.providerRef ?? null,
+    })
+    await notifyTx(tx.id)
+    return json(200, { ok: true, confirmada: true })
   }
 
   // ── SONDEO DE ENDPOINTS DEL PROVEEDOR (admin) ─────────────────────

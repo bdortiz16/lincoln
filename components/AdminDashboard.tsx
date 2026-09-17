@@ -505,6 +505,57 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     }
   };
 
+  // ── Resolver una dispersión sin confirmar ────────────────────────────────
+  // Mientras la consulta de estado del proveedor no funcione, la única fuente
+  // de verdad es su consola, y quien la mira es una persona. Estos dos botones
+  // son lo que convierte eso en algo de un clic en vez de una llamada a la API
+  // armada a mano — que es lo que hizo que un reembolso quedara sin hacer.
+  const [resolviendo, setResolviendo] = useState<string | null>(null);
+
+  const llamarMouv = async (cuerpo: Record<string, unknown>) => {
+    const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+    const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+    let jwt: string | null = null;
+    try {
+      const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
+      if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; }
+    } catch { /* sin sesión */ }
+    const r = await fetch(`${SURL}/functions/v1/mouv-proxy`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}` },
+      body: JSON.stringify(cuerpo),
+    });
+    return r.json().catch(() => null);
+  };
+
+  const devolverDispersion = async (t: any) => {
+    const ref = t.providerRef ?? t.raw_data?.providerRef ?? '';
+    const motivo = window.prompt(
+      `Devolver ${Number(t.amount).toLocaleString('es-CO')} al cliente y marcar la dispersión como rechazada.\n\n` +
+      `Confírmalo en la consola del proveedor ANTES de hacerlo: un reembolso indebido es tan malo como un cobro indebido.\n\n` +
+      `Motivo (queda auditado):`,
+      ref ? `Devuelta por el proveedor · ref ${ref}` : 'Devuelta por el proveedor');
+    if (!motivo) return;
+    setResolviendo(t.id);
+    const r = await llamarMouv({ action: 'force_return', txId: t.id, reason: motivo });
+    setResolviendo(null);
+    if (r?.ok) { alert(r.already ? 'Ya estaba reembolsada.' : `Reembolsados ${Number(r.refundCop ?? 0).toLocaleString('es-CO')} al riel del cliente.`); refreshData?.(); }
+    else alert(r?.error ? `No se pudo: ${r.error}` : 'No se pudo completar la devolución.');
+  };
+
+  const confirmarDispersion = async (t: any) => {
+    const ref = t.providerRef ?? t.raw_data?.providerRef ?? '';
+    if (!window.confirm(
+      `Marcar esta dispersión como COMPLETADA.\n\n` +
+      `Hacelo solo si la viste pagada en la consola del proveedor${ref ? ` (ref ${ref})` : ''}.\n\n` +
+      `Queda registrada como confirmación manual, con tu usuario.`)) return;
+    setResolviendo(t.id);
+    const r = await llamarMouv({ action: 'confirmar_dispersion', txId: t.id });
+    setResolviendo(null);
+    if (r?.ok) { alert(r.already ? `Ya estaba en ${r.already}.` : 'Marcada como completada.'); refreshData?.(); }
+    else alert(r?.error ? `No se pudo: ${r.error}` : 'No se pudo confirmar.');
+  };
+
   const loadFinityPool = async () => {
     setFinityPool({ loading: true });
     try {
@@ -3761,6 +3812,23 @@ const renderDesign = () => (
                       Referencia: <span className="font-semibold text-slate-700 font-mono">{t.providerRef ?? t.raw_data?.providerRef}</span>
                     </p>
                   )}
+                  {/* Los dos desenlaces posibles, a un clic. Antes esto exigía
+                      armar una llamada a la API a mano, y por eso un reembolso
+                      se quedó sin hacer. */}
+                  <div className="flex items-center gap-2 mt-2.5 flex-wrap">
+                    <button
+                      onClick={() => devolverDispersion(t)}
+                      disabled={resolviendo === t.id}
+                      className="text-xs font-bold px-3 py-1.5 rounded-lg bg-white border border-red-300 text-red-700 hover:bg-red-50 transition-colors disabled:opacity-50">
+                      {resolviendo === t.id ? 'Procesando…' : 'Devolver y reembolsar'}
+                    </button>
+                    <button
+                      onClick={() => confirmarDispersion(t)}
+                      disabled={resolviendo === t.id}
+                      className="text-xs font-bold px-3 py-1.5 rounded-lg bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-50">
+                      Confirmar como pagada
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
