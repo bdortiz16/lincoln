@@ -51,16 +51,87 @@ const esBajo = (cat?: string) => cat === 'bajo';
 const tono = (cat?: string) =>
   cat === 'alto' ? ROJO : cat === 'medio' ? AMBAR : cat === 'bajo' ? VERDE : NEUTRO;
 
-const REDES = [
-  { v: 'TRX', t: 'TRON' },
-  { v: 'ETH', t: 'ETHEREUM' },
-  { v: 'MATIC', t: 'POLYGON' },
+// ── Redes de MistTrack ────────────────────────────────────────────
+// Las 18 cadenas de su documentación. El rediseño había dejado tres fijas
+// porque el diseño mostraba tres botones; eso escondía quince redes que el
+// proveedor sí consulta. La lista real se le pide a /v1/status al abrir y
+// esto queda como respaldo.
+//
+// OJO CON zkSync: su código va en mayúscula y minúscula MEZCLADAS. No se
+// puede normalizar a mayúsculas — se manda tal cual.
+//
+// El color es el de cada cadena. La paleta reserva los colores de marca
+// justamente para las insignias de moneda, que es lo que son.
+const REDES: { v: string; t: string; c: string }[] = [
+  { v: 'BTC',    t: 'Bitcoin',      c: '#F7931A' },
+  { v: 'ETH',    t: 'Ethereum',     c: '#627EEA' },
+  { v: 'TRX',    t: 'TRON',         c: '#EF0027' },
+  { v: 'BNB',    t: 'BNB Chain',    c: '#F0B90B' },
+  { v: 'SOL',    t: 'Solana',       c: '#9945FF' },
+  { v: 'MATIC',  t: 'Polygon',      c: '#8247E5' },
+  { v: 'ARB',    t: 'Arbitrum',     c: '#28A0F0' },
+  { v: 'BASE',   t: 'Base',         c: '#0052FF' },
+  { v: 'AVAX',   t: 'Avalanche',    c: '#E84142' },
+  { v: 'OP',     t: 'Optimism',     c: '#FF0420' },
+  { v: 'zkSync', t: 'zkSync Era',   c: '#8C8DFC' },
+  { v: 'TON',    t: 'Toncoin',      c: '#0098EA' },
+  { v: 'SUI',    t: 'Sui',          c: '#4DA2FF' },
+  { v: 'LTC',    t: 'Litecoin',     c: '#A6A9AA' },
+  { v: 'DOGE',   t: 'Dogecoin',     c: '#C2A633' },
+  { v: 'BCH',    t: 'Bitcoin Cash', c: '#8DC351' },
+  { v: 'IOTX',   t: 'IoTeX',        c: '#00D4D5' },
+  { v: 'HSK',    t: 'HashKey',      c: '#1F6FEB' },
 ];
 
-const EVM = /^0x[0-9a-fA-F]{40}$/;
+const redDe = (v?: string) => REDES.find(r => r.v.toLowerCase() === String(v ?? '').toLowerCase());
+const nombreRed = (v?: string) => redDe(v)?.t ?? String(v ?? '');
+
+// Insignia de la red: círculo del color de la cadena con su símbolo. Es lo
+// mismo que ya hace la app con las insignias de moneda.
+//
+// No se dibujan los logos reales a propósito: reproducir dieciocho logos de
+// memoria garantiza que varios queden mal, y un logo mal dibujado en una
+// pantalla de cumplimiento se lee como descuido. Si querés los logos de
+// verdad, lo correcto es vendorizar un set con licencia (cryptocurrency-icons
+// es MIT) DENTRO del repo — nunca por CDN, que acá está descartado.
+const Insignia: React.FC<{ v: string; size?: number }> = ({ v, size = 22 }) => {
+  const r = redDe(v);
+  const color = r?.c ?? '#878E88';
+  const sigla = (r?.v ?? v).replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase();
+  return (
+    <span
+      aria-hidden
+      style={{
+        width: size, height: size, borderRadius: '50%', flexShrink: 0,
+        background: color, display: 'inline-grid', placeItems: 'center',
+        // Texto oscuro sobre los colores claros (amarillos, verdes, grises):
+        // blanco sobre #F0B90B no se lee.
+        color: /^#(F7931A|F0B90B|A6A9AA|C2A633|8DC351|00D4D5|8C8DFC|4DA2FF)$/i.test(color) ? '#15181A' : '#FFFFFF',
+        fontSize: size * 0.36, fontWeight: 800, letterSpacing: '-0.3px',
+        fontFamily: FONT, lineHeight: 1,
+      }}
+    >{sigla}</span>
+  );
+};
+
+// Formato por red. Las EVM comparten formato; el resto tiene el suyo. Una red
+// que no reconocemos NO se rechaza: preferimos que el proveedor la rechace
+// antes que bloquear una cadena que él sí soporta y nosotros no anotamos.
+const EVM_SET = new Set(['eth', 'bnb', 'matic', 'arb', 'op', 'base', 'avax', 'zksync', 'hsk', 'iotx']);
+const FORMATOS: Record<string, RegExp> = {
+  TRX:  /^T[1-9A-HJ-NP-Za-km-z]{33}$/,
+  BTC:  /^(bc1[0-9a-z]{11,71}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})$/,
+  BCH:  /^((bitcoincash:)?[qp][0-9a-z]{41}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})$/,
+  LTC:  /^(ltc1[0-9a-z]{11,71}|[LM3][a-km-zA-HJ-NP-Z1-9]{26,33})$/,
+  DOGE: /^D[5-9A-HJ-NP-U][1-9A-HJ-NP-Za-km-z]{32}$/,
+  SOL:  /^[1-9A-HJ-NP-Za-km-z]{32,44}$/,
+  SUI:  /^0x[0-9a-fA-F]{64}$/,
+  TON:  /^(EQ|UQ|kQ|0Q)[A-Za-z0-9_-]{46}$/,
+};
 const formatoOk = (coin: string, dir: string) => {
-  if (coin === 'TRX') return /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(dir);
-  return EVM.test(dir);
+  if (EVM_SET.has(coin.toLowerCase())) return /^0x[0-9a-fA-F]{40}$/.test(dir);
+  const re = FORMATOS[coin.toUpperCase()];
+  return re ? re.test(dir) : dir.length >= 20 && dir.length <= 120;
 };
 
 const enmascarar = (a?: string) => {
@@ -132,6 +203,9 @@ type Fila = any;
 
 export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
   const [coin, setCoin] = useState('TRX');
+  // Las redes las manda el proveedor (/v1/status). Si no contesta, el servidor
+  // devuelve la lista conocida: un selector vacío deja la pantalla inservible.
+  const [redes, setRedes] = useState(REDES);
   const [dir, setDir] = useState('');
   const [busy, setBusy] = useState(false);
   const [res, setRes] = useState<Res | null>(null);
@@ -154,10 +228,29 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
   }, []);
   useEffect(() => { cargarLista(); }, [cargarLista]);
 
+  useEffect(() => {
+    let vivo = true;
+    llamarFuncion('kyt', { action: 'cadenas' }, 20000)
+      .then(r => {
+        if (!vivo || !Array.isArray(r?.cadenas) || !r.cadenas.length) return;
+        // Solo se muestran las que sabemos nombrar y colorear. Una fila con
+        // doscientos códigos crudos no es un selector, es una lista de errores
+        // esperando a pasar.
+        const vivas = r.cadenas
+          .map((x: any) => String(typeof x === 'string' ? x : (x?.coin ?? x?.symbol ?? x?.value ?? '')).trim())
+          .filter(Boolean)
+          .map((v: string) => redDe(v))
+          .filter(Boolean) as typeof REDES;
+        if (vivas.length) setRedes(vivas);
+      })
+      .catch(() => { /* se queda el respaldo */ });
+    return () => { vivo = false; };
+  }, []);
+
   const consultar = async () => {
     const a = dir.trim();
     if (!formatoOk(coin, a)) {
-      setRes({ ok: false, error: 'formato_red', mensaje: `Esa dirección no tiene el formato de ${REDES.find(r => r.v === coin)?.t ?? coin}. Revisá la red que elegiste.` });
+      setRes({ ok: false, error: 'formato_red', mensaje: `Esa dirección no tiene el formato de ${nombreRed(coin)}. Revisá la red que elegiste.` });
       return;
     }
     setBusy(true); setRes(null);
@@ -242,20 +335,28 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
         <div className="flex flex-wrap items-end" style={{ gap: 14 }}>
           <div>
             <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: C.sub, margin: '0 0 7px' }}>RED</p>
-            <div style={{ display: 'flex', gap: 6 }}>
-              {REDES.map(r => (
-                <button key={r.v} onClick={() => setCoin(r.v)}
-                  style={{
-                    fontFamily: FONT, fontSize: 12.5, fontWeight: 700,
-                    color: coin === r.v ? C.text : C.sub,
-                    background: coin === r.v ? 'rgba(255,255,255,0.09)' : 'transparent',
-                    border: `1px solid ${coin === r.v ? 'rgba(255,255,255,0.2)' : C.bd}`,
-                    borderRadius: 9, padding: '11px 15px', cursor: 'pointer',
-                  }}
-                  onFocus={e => { e.currentTarget.style.boxShadow = ANILLO; }} onBlur={e => { e.currentTarget.style.boxShadow = 'none'; }}>
-                  {r.t}
-                </button>
-              ))}
+            {/* Dieciocho redes no caben en una fila de botones segmentados, así
+                que la fila envuelve. Con la insignia delante se reconoce la
+                cadena de un vistazo sin leer el nombre. */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, maxWidth: 560 }}>
+              {redes.map(r => {
+                const act = coin.toLowerCase() === r.v.toLowerCase();
+                return (
+                  <button key={r.v} onClick={() => setCoin(r.v)}
+                    style={{
+                      fontFamily: FONT, fontSize: 12.5, fontWeight: 700,
+                      color: act ? C.text : C.sub,
+                      background: act ? 'rgba(255,255,255,0.09)' : 'transparent',
+                      border: `1px solid ${act ? 'rgba(255,255,255,0.2)' : C.bd}`,
+                      borderRadius: 9, padding: '7px 11px 7px 7px', cursor: 'pointer',
+                      display: 'inline-flex', alignItems: 'center', gap: 7,
+                    }}
+                    onFocus={e => { e.currentTarget.style.boxShadow = ANILLO; }} onBlur={e => { e.currentTarget.style.boxShadow = 'none'; }}>
+                    <Insignia v={r.v} size={20} />
+                    {r.t}
+                  </button>
+                );
+              })}
             </div>
           </div>
           <div style={{ flex: 1, minWidth: 260 }}>
@@ -320,10 +421,11 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
           <div className="flex items-start justify-between flex-wrap" style={{ gap: 16, marginBottom: 16 }}>
             <div className="flex items-center" style={{ gap: 14, minWidth: 0 }}>
               <Puntaje n={res.puntaje ?? null} cat={res.categoria} />
+              <Insignia v={res.coin} size={24} />
               <div style={{ minWidth: 0 }}>
                 <p style={{ fontSize: 15, fontWeight: 700, margin: 0 }}>{nivelTexto(res.categoria, res.puntaje)}</p>
                 <p style={{ fontFamily: MONO, fontSize: 12, color: C.sub, margin: '4px 0 0' }}>
-                  {enmascarar(res.address)} · {REDES.find(r => r.v === res.coin)?.t ?? res.coin} · consultada {hora(res.consultadoAt)}
+                  {enmascarar(res.address)} · {nombreRed(res.coin)} · consultada {hora(res.consultadoAt)}
                   {res.delPadron ? ' · de una consulta reciente' : ''}
                 </p>
               </div>
@@ -511,8 +613,8 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
             <div style={{ minWidth: 170, flex: '1 1 210px' }}>
               <div className="flex items-center flex-wrap" style={{ gap: 8 }}>
                 <span style={{ fontSize: 13.5, fontWeight: 700 }}>{f.alias || enmascarar(f.address)}</span>
-                <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.8px', color: C.sub, border: `1px solid ${C.bd}`, borderRadius: 999, padding: '2px 8px' }}>
-                  {REDES.find(r => r.v === f.coin)?.t ?? f.coin}
+                <span className="inline-flex items-center" style={{ gap: 5, fontSize: 10, fontWeight: 700, letterSpacing: '0.8px', color: C.sub, border: `1px solid ${C.bd}`, borderRadius: 999, padding: '2px 8px 2px 3px' }}>
+                  <Insignia v={f.coin} size={14} /> {nombreRed(f.coin)}
                 </span>
               </div>
               <p style={{ fontFamily: MONO, fontSize: 11.5, color: C.sub, margin: '4px 0 0' }}>

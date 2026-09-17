@@ -235,6 +235,30 @@ function clasificar(c: Config, score: number | null, level: string | null): 'alt
 
 const normDir = (s: string) => String(s ?? '').trim()
 
+// ── Codigos de red de MistTrack ───────────────────────────────────
+// De su documentacion oficial. Son mas de 200 tokens; estas son las cadenas.
+// OJO CON zkSync: va en mayuscula y minuscula MEZCLADAS. El codigo hacia
+// toUpperCase() a lo que llegaba del cliente, asi que esa red habria fallado
+// siempre -- y el fallo se habria visto como "sin resultado", que en esta
+// pantalla se lee como un problema nuestro y no como una red mal escrita.
+const REDES_MT = [
+  'BTC', 'ETH', 'TRX', 'BNB', 'SOL', 'MATIC', 'ARB', 'BASE', 'AVAX',
+  'OP', 'zkSync', 'TON', 'SUI', 'LTC', 'DOGE', 'BCH', 'IOTX', 'HSK',
+] as const
+
+// Devuelve el codigo con la GRAFIA que espera el proveedor. Hace falta para
+// dos cosas: que la llamada salga bien, y que el padron no guarde la misma red
+// con dos grafias distintas y pague dos veces por el mismo dato.
+function canonCoin(v: string): string {
+  const x = String(v ?? '').trim()
+  if (!x) return ''
+  const hit = REDES_MT.find(r => r.toLowerCase() === x.toLowerCase())
+  // Una red que no conocemos se manda TAL CUAL: la lista real la tiene
+  // /v1/status, y preferimos que el proveedor la rechace antes que rechazarla
+  // nosotros por no tenerla anotada.
+  return hit ?? x
+}
+
 // ── Padrón ────────────────────────────────────────────────────────
 async function padronBuscar(coin: string, dir: string) {
   const { data } = await db.from('kyt_registry')
@@ -260,17 +284,24 @@ function anotarEmpresa(previas: any, quien: { userId: string | null; email?: str
 // consultada como TRON es una consulta pagada que no sirve para nada, y el
 // cliente recibe un "sin resultado" que parece un problema nuestro.
 const FORMATOS: Record<string, RegExp> = {
-  TRX: /^T[1-9A-HJ-NP-Za-km-z]{33}$/,
-  BTC: /^(bc1[0-9a-z]{11,71}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})$/,
-  SOL: /^[1-9A-HJ-NP-Za-km-z]{32,44}$/,
+  TRX:  /^T[1-9A-HJ-NP-Za-km-z]{33}$/,
+  BTC:  /^(bc1[0-9a-z]{11,71}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})$/,
+  BCH:  /^((bitcoincash:)?[qp][0-9a-z]{41}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})$/,
+  LTC:  /^(ltc1[0-9a-z]{11,71}|[LM3][a-km-zA-HJ-NP-Z1-9]{26,33})$/,
+  DOGE: /^D[5-9A-HJ-NP-U][1-9A-HJ-NP-Za-km-z]{32}$/,
+  SOL:  /^[1-9A-HJ-NP-Za-km-z]{32,44}$/,
+  SUI:  /^0x[0-9a-fA-F]{64}$/,
+  TON:  /^(EQ|UQ|kQ|0Q)[A-Za-z0-9_-]{46}$/,
 }
 // Las cadenas EVM comparten formato. Se listan por nombre para poder decirle
 // al cliente cuál eligió, no para distinguir el formato.
-const EVM = new Set(['ETH', 'BSC', 'MATIC', 'POLYGON', 'ARB', 'OP', 'BASE', 'AVAX', 'ZKSYNC', 'MERLIN', 'HASHKEY', 'IOTEX'])
+// Las cadenas EVM comparten formato de direccion. Se compara en minusculas
+// para que zkSync entre igual sin romper su grafia.
+const EVM = new Set(['eth', 'bnb', 'bsc', 'matic', 'polygon', 'arb', 'op', 'base', 'avax', 'zksync', 'merlin', 'hsk', 'iotx'])
 function formatoValido(coin: string, dir: string): boolean {
-  const c = coin.toUpperCase()
+  const c = coin.toLowerCase()
   if (EVM.has(c)) return /^0x[0-9a-fA-F]{40}$/.test(dir)
-  const re = FORMATOS[c]
+  const re = FORMATOS[coin.toUpperCase()]
   // Red que no conocemos: NO se rechaza. Preferimos gastar una consulta antes
   // que bloquear una red que el proveedor sí soporta y nosotros no listamos.
   return re ? re.test(dir) : dir.length >= 20 && dir.length <= 120
@@ -463,17 +494,24 @@ Deno.serve(async (req) => {
     // sin explicación al elegir una que el proveedor ya no acepta.
     if (accion === 'cadenas') {
       const r = await llamarMT(c, c.rutaEstado, {})
-      if (!r.ok) return json({ ok: false, error: 'proveedor', status: r.status, detalle: r.error ?? null })
-      const d = desenvolver(r.data) ?? {}
+      const d = r.ok ? (desenvolver(r.data) ?? {}) : {}
       const lista = (d.coin_list ?? d.coins ?? d.supported_coins ?? d.list ?? []) as any[]
-      return json({ ok: true, cadenas: Array.isArray(lista) ? lista : [], crudo: yo.esAdmin ? r.data : undefined })
+      // Si el proveedor no contesta, se devuelve la lista conocida en vez de un
+      // error: un selector de redes vacio deja la pantalla inservible, y estos
+      // codigos salen de su propia documentacion.
+      return json({
+        ok: true,
+        cadenas: Array.isArray(lista) && lista.length ? lista : REDES_MT.map(v => ({ coin: v })),
+        delProveedor: Array.isArray(lista) && lista.length > 0,
+        crudo: yo.esAdmin ? r.data : undefined,
+      })
     }
 
     // ── CONSULTA ──────────────────────────────────────────────────
     if (accion === 'consultar') {
       if (!c.activo) return json({ ok: false, error: 'inactivo', mensaje: 'El servicio no está habilitado.' })
 
-      const coin = String(body.coin ?? '').trim().toUpperCase()
+      const coin = canonCoin(body.coin)
       const dir = normDir(body.address)
       if (!coin) return json({ ok: false, error: 'falta_cadena', mensaje: 'Elegí la red de la dirección.' })
       if (dir.length < 20 || dir.length > 120) {
@@ -595,7 +633,7 @@ Deno.serve(async (req) => {
     // ── GUARDAR Y MONITOREAR ──────────────────────────────────────
     if (accion === 'guardar') {
       if (!yo.userId) return json({ error: 'no_autorizado' }, 401)
-      const coin = String(body.coin ?? '').trim().toUpperCase()
+      const coin = canonCoin(body.coin)
       const dir = normDir(body.address)
       const alias = String(body.alias ?? '').trim().slice(0, 80)
       if (!coin || !dir) return json({ ok: false, error: 'faltan_datos' })
