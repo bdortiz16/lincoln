@@ -1565,28 +1565,49 @@ serve(async (req: Request) => {
     // 4) Llamar al PROVEEDOR del riel: BREB → Mouv · ACH → Finity
     if (rail === 'BREB') {
       const pay = await mouvPayout(rail, recipient, amount)
-      // Bre-B se completa casi al instante. Mouv responde el envío como
-      // "aceptada" (PENDING) o ya "completada"; en ambos casos se marca
-      // COMPLETADO de una vez para no dejar al cliente en "Procesando" indefinido
-      // (la lectura de estado de Mouv no es confiable —doc bloqueada— así que
-      // esperar a conciliar dejaba los pagos atascados). La RED DE SEGURIDAD ante
-      // una DEVOLUCIÓN posterior sigue activa: reconcile_breb (revisa las
-      // Completado recientes) y el webhook de Mouv revierten a Rechazado y
-      // REEMBOLSAN (idempotente) si Mouv reporta la devolución. Sólo un estado de
-      // DEVOLUCIÓN en el propio send evita marcar Completado (cae al reembolso).
+      // ACEPTADA NO ES PAGADA.
+      //
+      // Mouv responde /transfers/send con 201 { status: 'PENDING' }: eso
+      // significa "la recibí para procesar", no "la pagué". El banco destino
+      // puede rechazarla minutos después.
+      //
+      // Acá se marcaba Completado en el acto salvo que la respuesta del envío
+      // YA viniera devuelta, y se justificaba apoyándose en dos redes de
+      // seguridad: reconcile_breb y el webhook de Mouv. Ninguna de las dos
+      // existe en la práctica — mouvTransferStatus adivina la ruta entre seis
+      // candidatas y todas dan 404, y el webhook no está registrado. Así que
+      // no era una apuesta cubierta: era una afirmación sin respaldo.
+      //
+      // El 16 de septiembre eso le cobró 2.900.000 COP a un cliente por una
+      // dispersión que Mouv rechazó. El comprobante decía Completado, el saldo
+      // estaba debitado, y la plata nunca salió.
+      //
+      // Ahora Completado exige que el proveedor lo diga. Si solo la aceptó,
+      // queda Procesando —que es lo que realmente pasó— hasta que se confirme
+      // por conciliación, por webhook, o a mano. Un cliente esperando es un
+      // problema; un cliente al que se le cobró por algo que no ocurrió y se
+      // le dijo que sí, es otra cosa.
       const sendState = pay.ok ? normalizeMouvState(pay.data) : { verdict: 'unknown' as MouvVerdict, state: '' }
       if (pay.ok && sendState.verdict !== 'returned') {
-        await asentarTx('Completado', {
+        const confirmada = sendState.verdict === 'completed'
+        const estado = confirmada ? 'Completado' : 'Procesando'
+        await asentarTx(estado, {
             ...prettyBase, ...feeDetail,
             ...(pay.targetName ? { beneficiary: pay.targetName } : {}),
             ...(pay.targetDocument ? { documentNumber: pay.targetDocument } : {}),
             providerRef: pay.providerRef ?? null,
             providerState: sendState.state || null,
-            settledAt: new Date().toISOString(),
+            aceptadaAt: new Date().toISOString(),
+            ...(confirmada
+              ? { settledAt: new Date().toISOString() }
+              : { sinConfirmarDesde: new Date().toISOString() }),
         })
-        await logAudit(userId, `mouv.${action}.ok`, { amount, feeCop, rail, providerRef: pay.providerRef ?? null, providerState: sendState.state || null })
-        await notifyTx(txId) // "tu envío Bre-B llegó a destino"
-        return json(200, { ok: true, status: 'Completado', providerRef: pay.providerRef ?? null, providerState: sendState.state || null, feeCop, newBalance: afterDebit })
+        await logAudit(userId, `mouv.${action}.${confirmada ? 'ok' : 'aceptada'}`, {
+          amount, feeCop, rail, providerRef: pay.providerRef ?? null,
+          providerState: sendState.state || null, estado,
+        })
+        await notifyTx(txId)
+        return json(200, { ok: true, status: estado, confirmada, providerRef: pay.providerRef ?? null, providerState: sendState.state || null, feeCop, newBalance: afterDebit })
       }
       // Falló (o el send ya vino DEVUELTO) → REINTEGRAR monto + comisión
       // (atómico; fallback read-write). El estado devuelto se guarda como error.
