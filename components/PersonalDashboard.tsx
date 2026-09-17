@@ -81,6 +81,7 @@ import { ContactsSection, contactStatus } from './ContactsSection';
 import { WalletsGasfreeSection } from './WalletsGasfreeSection';
 import { KytSection } from './KytSection';
 import { CodeInput } from './CodeInput';
+import { ServiciosSection } from './ServiciosSection';
 import { supabase } from '../lib/supabaseClient';
 import { FlagImg, FlagSelect, flagUrl } from './FlagImg';
 import { useExchangeRates } from '../context/ExchangeRateContext';
@@ -2195,7 +2196,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               { Icon: ArrowLeftRight, t: 'Mesa OTC',    go: () => { setOtcRail(null); setMouvMode('converter'); setActiveView('mouv'); } },
               { Icon: ScanSearch,     t: 'KYT',         go: () => setActiveView('kyt') },
               { Icon: Layers,         t: 'Multiwallet', go: () => setActiveView('walletsGasfree') },
-              { Icon: TrendingUp,     t: 'Staking',     go: null },
+              { Icon: TrendingUp,     t: 'Rendimientos', go: null },
               { Icon: ShoppingBag,    t: 'Comercio',    go: null },
             ] as const).map(({ Icon, t, go }) => (
               <button key={t} onClick={go ?? undefined} disabled={!go} className="flex flex-col items-center text-center transition-colors hover:bg-white/[0.03]" style={{ gap: 7, padding: '10px 4px', borderRadius: 12, cursor: go ? 'pointer' : 'default', opacity: go ? 1 : 0.5 }}>
@@ -3900,56 +3901,29 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       </div>
   );
 
-  const renderServicios = () => {
-    const SERVICES = [
-      { icon: ArrowLeftRight, label: 'Mesa OTC',   desc: 'Operaciones de alto volumen con tasa negociada.',            color: 'bg-slate-50 text-green-700',
-        onClick: () => { setOtcRail(null); setMouvMode('converter'); setActiveView('mouv'); } },
-      { icon: ScanSearch,     label: 'KYT',        desc: 'Consulta si una dirección cripto está señalada antes de operar con ella.', color: 'bg-slate-50 text-green-700',
-        onClick: () => setActiveView('kyt') },
-      { icon: TrendingUp,     label: 'Staking',    desc: 'Genera rendimientos con tu saldo digital.',                  color: 'bg-green-50 text-green-700' },
-      { icon: Layers,         label: 'Multiwallet', desc: 'Varias billeteras USDT con nombre — ideal para estudios y negocios.', color: 'bg-violet-50 text-violet-700',
-        onClick: () => setActiveView('walletsGasfree') },
-      { icon: ShoppingBag,    label: 'Comercio',   desc: 'Cobra a tus clientes con links y botones de pago.',          color: 'bg-amber-50 text-amber-700' },
-      { icon: GraduationCap,  label: 'Educación',  desc: 'Paga matrículas y cursos en el exterior.',                   color: 'bg-rose-50 text-rose-700' },
-    ];
-    return (
-      <div className="pt-6 space-y-6 animate-in fade-in duration-300">
-        <div className="flex items-center gap-3 mb-2">
-          <button onClick={() => setActiveView('dashboard')} className="flex items-center gap-2 text-slate-700 hover:text-slate-900 font-bold text-sm">
-            <ArrowLeft size={18}/> Volver
-          </button>
-          <h2 className="text-xl font-bold text-[#0C0E0D]">Servicios</h2>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {SERVICES.map(({ icon: Icon, label, desc, color, onClick }: any) => (
-            <div
-              key={label}
-              onClick={onClick}
-              className={`bg-white rounded-2xl border border-slate-200 shadow-sm p-5 flex items-start gap-4 transition-all ${onClick ? 'cursor-pointer hover:border-[#4ADE80] hover:shadow-md' : 'hover:border-[#4ADE80] hover:shadow-md'}`}
-            >
-              <div className={`w-12 h-12 rounded-xl ${color} flex items-center justify-center shrink-0`}>
-                <Icon size={22}/>
-              </div>
-              <div className="flex-1">
-                <div className="flex items-center justify-between mb-1">
-                  <h3 className="font-bold text-slate-800 text-sm">{label}</h3>
-                  {!onClick && <span className="text-[10px] font-bold bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full ml-2">Próximamente</span>}
-                </div>
-                <p className="text-xs text-slate-500 leading-relaxed">{desc}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-        <div className="bg-[#0C0E0D] rounded-2xl p-6 text-white text-center">
-          <h3 className="font-bold text-lg mb-1">¿Necesitas ayuda?</h3>
-          <p className="text-green-200 text-sm mb-4">Nuestro equipo está disponible para asistirte.</p>
-          <a href="mailto:soporte@lincoin.me" className="inline-flex items-center gap-2 bg-[#4ADE80] text-[#0C0E0D] font-bold px-6 py-2.5 rounded-xl hover:bg-[#00b396] transition-colors text-sm">
-            Contactar soporte
-          </a>
-        </div>
-      </div>
-    );
-  };
+  // El diseño completo vive en ServiciosSection. Acá solo se le pasan las
+  // navegaciones y el guardado del aviso: la página no sabe nada del estado
+  // del dashboard, y el dashboard no sabe nada de cómo se ve la página.
+  const avisosServicios: string[] = Array.isArray((currentUser as any)?.avisosServicios)
+    ? (currentUser as any).avisosServicios
+    : [];
+
+  const renderServicios = () => (
+    <ServiciosSection
+      onBack={() => setActiveView('dashboard')}
+      onOtc={() => { setOtcRail(null); setMouvMode('converter'); setActiveView('mouv'); }}
+      onMultiwallet={() => setActiveView('walletsGasfree')}
+      onKyt={() => setActiveView('kyt')}
+      avisos={avisosServicios}
+      onAvisar={(id) => {
+        if (!currentUser?.id) return;
+        // Se guarda en el perfil, no en el navegador: el aviso lo tiene que
+        // ver quien mande el correo cuando el servicio se active.
+        const ya = avisosServicios.includes(id) ? avisosServicios : [...avisosServicios, id];
+        updateUserRawData(currentUser.id, { avisosServicios: ya }).catch(() => {});
+      }}
+    />
+  );
 
   const TX_LABELS: Record<string, string> = {
     convert: 'Conversión de divisas', load: 'Carga de saldo', send: 'Envío / Retiro',

@@ -2329,9 +2329,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
     // Mismo catálogo que el dashboard personal: 4 servicios + Educación.
     const SERVICES = [
       { icon: ArrowLeftRight, label: 'Mesa OTC',    desc: 'Operaciones de alto volumen con tasa negociada.',    color: 'bg-slate-50 text-green-700', action: undefined },
-      { icon: TrendingUp,     label: 'Staking',     desc: 'Genera rendimientos con tu saldo digital.',          color: 'bg-green-50 text-green-700', action: undefined },
-      { icon: Layers,         label: 'Multiwallet', desc: 'Varias billeteras y monedas en una sola cuenta.',    color: 'bg-violet-50 text-violet-700', action: undefined },
-      { icon: ShoppingBag,    label: 'Comercio',    desc: 'Cobra a tus clientes con links y botones de pago.',  color: 'bg-amber-50 text-amber-700', action: undefined },
+      { icon: TrendingUp,     label: 'Rendimientos', desc: 'Genera rendimientos con tu saldo digital, sin bloquear tu dinero.', color: 'bg-green-50 text-green-700', action: undefined },
+      { icon: Layers,         label: 'Multiwallet', desc: 'Varias billeteras USDC con nombre — ideal para separar proyectos y negocios.', color: 'bg-violet-50 text-violet-700', action: undefined },
+      { icon: ShoppingBag,    label: 'Comercio',    desc: 'Cobra a tus clientes con links y botones de pago en USDC y EURC.', color: 'bg-amber-50 text-amber-700', action: undefined },
       { icon: GraduationCap,  label: 'Educación',   desc: 'Paga matrículas y cursos en el exterior.',           color: 'bg-rose-50 text-rose-700', action: undefined },
     ];
     return (
