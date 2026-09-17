@@ -975,6 +975,63 @@ serve(async (req: Request) => {
     return json(200, { ok: true, checked: (rows ?? []).length, results: out })
   }
 
+  // ── SONDEO DE ENDPOINTS DEL PROVEEDOR (admin) ─────────────────────
+  // La causa raiz de que una devolucion no se detecte es que NO SABEMOS como
+  // se consulta el estado de una transferencia: la doc de Mouv esta bloqueada
+  // para este backend y mouvTransferStatus ADIVINA entre seis rutas que dan
+  // 404. Mientras eso siga asi, ninguna devolucion se detecta sola.
+  //
+  // Esto prueba rutas candidatas -- por id y de LISTADO, que es lo que la
+  // consola del proveedor usa para mostrar los estados -- y devuelve el cuerpo
+  // CRUDO de cada una. Con eso se fija la ruta correcta con el dato a la vista,
+  // en vez de seguir adivinando. Es el mismo remedio que el diagnostico de KYT.
+  if (action === 'probe_status') {
+    if (!caller.admin || !caller.viaJwt) return json(403, { error: 'forbidden' })
+    const ref = String(payload?.providerRef ?? payload?.ref ?? '').trim()
+    const enc = encodeURIComponent(ref)
+
+    const candidatas: { que: string; ruta: string; metodo: 'GET' }[] = [
+      ...(ref ? [
+        { que: 'por id', ruta: `/transfers/${enc}`, metodo: 'GET' as const },
+        { que: 'por id', ruta: `/transfers/${enc}/status`, metodo: 'GET' as const },
+        { que: 'por id', ruta: `/transfers/status/${enc}`, metodo: 'GET' as const },
+        { que: 'por id', ruta: `/transactions/${enc}`, metodo: 'GET' as const },
+        { que: 'por id', ruta: `/payments/${enc}`, metodo: 'GET' as const },
+        { que: 'por referencia', ruta: `/transfers?reference=${enc}`, metodo: 'GET' as const },
+      ] : []),
+      // LISTADOS: lo mas probable que exista, porque es lo que alimenta la
+      // consola. Si alguna responde, se puede conciliar por lote y dejamos de
+      // depender de una consulta por id.
+      { que: 'listado', ruta: '/transfers', metodo: 'GET' },
+      { que: 'listado', ruta: '/transfers?limit=20', metodo: 'GET' },
+      { que: 'listado', ruta: '/transactions?limit=20', metodo: 'GET' },
+      { que: 'listado', ruta: '/payments?limit=20', metodo: 'GET' },
+      { que: 'listado', ruta: '/transfers/history?limit=20', metodo: 'GET' },
+      { que: 'listado', ruta: '/movements?limit=20', metodo: 'GET' },
+    ]
+
+    const out: any[] = []
+    for (const cand of candidatas) {
+      const r = await mouvFetch(cand.ruta, { method: cand.metodo })
+      let crudo = ''
+      try { crudo = typeof r.data === 'string' ? r.data : JSON.stringify(r.data) } catch { crudo = '(ilegible)' }
+      // Interesa sobre todo si el cuerpo MENCIONA la referencia buscada y si
+      // trae algo que se parezca a un estado.
+      const mencionaRef = !!ref && crudo.includes(ref)
+      const pareceEstado = /"(status|state|estado)"\s*:/i.test(crudo)
+      out.push({
+        ruta: cand.ruta, tipo: cand.que,
+        httpStatus: r.status, ok: r.ok,
+        mencionaLaReferencia: mencionaRef,
+        traeAlgoParecidoAEstado: pareceEstado,
+        crudo: crudo.slice(0, 1200),
+      })
+    }
+    // Primero lo que respondio: es lo unico que sirve mirar.
+    out.sort((a, b) => (b.ok ? 1 : 0) - (a.ok ? 1 : 0))
+    return json(200, { ok: true, referencia: ref || null, candidatas: out })
+  }
+
   // ── DEVOLUCIÓN MANUAL DE UNA DISPERSIÓN ───────────────────────────
   // Para cuando el proveedor RECHAZÓ un envío y acá quedó Completado. Pasa
   // cuando el estado no se puede consultar (la ruta de Mouv está adivinada) y
@@ -1589,8 +1646,27 @@ serve(async (req: Request) => {
       // le dijo que sí, es otra cosa.
       const sendState = pay.ok ? normalizeMouvState(pay.data) : { verdict: 'unknown' as MouvVerdict, state: '' }
       if (pay.ok && sendState.verdict !== 'returned') {
-        const confirmada = sendState.verdict === 'completed'
-        const estado = confirmada ? 'Completado' : 'Procesando'
+        // LA RESPUESTA DEL ENVIO NO PUEDE PROBAR LA LIQUIDACION FINAL.
+        //
+        // El arreglo anterior exigia veredicto 'completed' para marcar
+        // Completado, y no alcanzo: Mouv responde con su propio vocabulario y
+        // "Exitoso" normaliza a completed. El 17 de septiembre una dispersion
+        // salio "Exitoso" en el envio, quedo Completado, y Mouv la marco
+        // DEVUELTA minutos despues. El cliente pago por algo que no ocurrio.
+        //
+        // En un riel que se puede revertir, lo unico que prueba el pago es una
+        // consulta POSTERIOR. Asi que el envio ya no marca Completado nunca:
+        // deja Procesando, que es lo que realmente se sabe en ese instante, y
+        // la confirmacion la da la conciliacion o el webhook.
+        //
+        // El costo es real: si la conciliacion no puede confirmar -- hoy no
+        // puede, porque la ruta de consulta de estado esta adivinada y da 404
+        // -- la dispersion se queda en Procesando y alguien tiene que
+        // resolverla a mano contra la consola del proveedor. Sale en
+        // Admin -> Fallos, marcada como sin confirmar. Es incomodo; decirle a
+        // un cliente que su plata llego cuando no llego es otra cosa.
+        const estado = 'Procesando'
+        const confirmada = false
         await asentarTx(estado, {
             ...prettyBase, ...feeDetail,
             ...(pay.targetName ? { beneficiary: pay.targetName } : {}),
@@ -1602,7 +1678,7 @@ serve(async (req: Request) => {
               ? { settledAt: new Date().toISOString() }
               : { sinConfirmarDesde: new Date().toISOString() }),
         })
-        await logAudit(userId, `mouv.${action}.${confirmada ? 'ok' : 'aceptada'}`, {
+        await logAudit(userId, `mouv.${action}.aceptada`, {
           amount, feeCop, rail, providerRef: pay.providerRef ?? null,
           providerState: sendState.state || null, estado,
         })
