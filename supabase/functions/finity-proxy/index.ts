@@ -998,7 +998,10 @@ Deno.serve(async (req) => {
         sandbox: FINITY_BASE !== PROD_BASE,
         data: salida,
         ajusteCop: aj.finityCop,
-        ...(await esAdmin(db, caller.userId) ? { rateBruta: bruta } : {}),
+        // rateBruta viaja al admin y a los llamantes INTERNOS (service-role:
+        // otc-mesa la necesita como precio de referencia para cotizar con su
+        // propio margen). Nunca al cliente: el margen no le corresponde.
+        ...(caller.internal || await esAdmin(db, caller.userId) ? { rateBruta: bruta } : {}),
       })
     }
 

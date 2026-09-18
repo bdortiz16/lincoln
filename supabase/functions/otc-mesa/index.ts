@@ -105,10 +105,55 @@ async function validCaller(req: Request, payload: Record<string, unknown>): Prom
 }
 
 // ─── Tasa ───────────────────────────────────────────────
-// Se le pide a finity-proxy, que es donde nace la tasa y donde se le aplica el
-// ajuste de Lincoin. Replicar el calculo aca serian dos criterios que se van a
-// separar el dia que alguien toque uno solo.
-async function tasaUsdCop(): Promise<{ rate: number | null; fuente: string; motivo?: string }> {
+// Margen de la mesa manual, en POR CIENTO sobre el precio de referencia. Vive
+// en system_config para poder moverlo sin desplegar. 0,25 % es el acordado.
+const MARGEN_KEY = 'otc_manual_config'
+const MARGEN_DEFAULT = 0.25
+// Tope de cordura: un margen mal escrito (25 en vez de 0,25) no puede quedarse
+// con la cuarta parte de la operacion sin que nadie lo note.
+const MARGEN_MAX = 5
+
+async function margenManual(): Promise<number> {
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', MARGEN_KEY).maybeSingle()
+    const v = data?.value ? JSON.parse(data.value) : null
+    const n = Number(v?.margenPct)
+    if (Number.isFinite(n) && n >= 0 && n <= MARGEN_MAX) return n
+    return MARGEN_DEFAULT
+  } catch { return MARGEN_DEFAULT }
+}
+
+// La forma exacta del JSON de Finity cambia segun la ruta que responda, asi
+// que se prueban las rutas conocidas. Es el MISMO extractor que usa el resto
+// de la app (FinitySection.extractRate): tener dos criterios distintos para
+// leer la misma respuesta es como esta pantalla se quedo sin tasa.
+function extractRate(d: any): number | null {
+  if (d == null) return null
+  const cand = d.rate ?? d.value ?? d.price ?? d.cop ?? d.exchange_rate ?? d.exchangeRate
+    ?? d.data?.rate ?? d.data?.value ?? d.data?.price
+    ?? (Array.isArray(d) ? (d[0]?.rate ?? d[0]?.value) : undefined)
+    ?? (Array.isArray(d?.data) ? (d.data[0]?.rate ?? d.data[0]?.value) : undefined)
+  const n = Number(cand)
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+type Cotizacion = {
+  referencia: number | null    // precio Finity, sin margen — lo que se muestra como referencia
+  rate: number | null          // el que se le aplica al cliente (referencia - margen)
+  margenPct: number
+  fuente: string
+  motivo?: string
+  crudo?: string               // solo para admin, cuando no hubo tasa
+}
+
+// Una tasa ausente NO es una tasa de cero ni una cotizacion en blanco. Si el
+// proveedor no responde, el cierre se puede pedir igual (la mesa lo cotiza a
+// mano) pero se guarda SIN tasa y se dice por que — no se inventa un numero
+// que despues alguien va a leer como un precio acordado.
+async function tasaUsdCop(): Promise<Cotizacion> {
+  const margenPct = await margenManual()
+  const vacia = (motivo: string, crudo?: string): Cotizacion =>
+    ({ referencia: null, rate: null, margenPct, fuente: 'finity', motivo, crudo })
   try {
     const r = await fetch(`${SUPABASE_URL}/functions/v1/finity-proxy`, {
       method: 'POST',
@@ -117,19 +162,37 @@ async function tasaUsdCop(): Promise<{ rate: number | null; fuente: string; moti
       signal: AbortSignal.timeout(15000),
     })
     const d = await r.json().catch(() => null)
-    const bruto = d?.data?.rate ?? d?.data?.value ?? d?.data?.price
-    const n = Number(bruto)
-    if (Number.isFinite(n) && n > 0) return { rate: n, fuente: 'finity' }
-    return { rate: null, fuente: 'finity', motivo: d?.data?.message ?? d?.error ?? 'el proveedor no devolvio tasa' }
+
+    // Una tasa de SANDBOX es de mentira. Mostrarla como cotizacion seria peor
+    // que no mostrar ninguna: el cliente cerraria contra un numero inventado.
+    if (d?.sandbox === true) {
+      return vacia('el proveedor esta respondiendo en modo de prueba')
+    }
+
+    // La referencia es la tasa BRUTA de Finity. La de `data` ya viene con el
+    // ajuste en pesos del riel ACH aplicado; usarla aca cobraria dos margenes
+    // sobre la misma operacion.
+    const referencia = Number(d?.rateBruta) > 0 ? Number(d.rateBruta) : extractRate(d?.data)
+    if (!(Number(referencia) > 0)) {
+      return vacia(
+        d?.data?.message ?? d?.message ?? d?.error ?? 'el proveedor no devolvio tasa',
+        JSON.stringify(d ?? null).slice(0, 400),
+      )
+    }
+    const ref = Number(referencia)
+    const rate = ref * (1 - margenPct / 100)
+    return { referencia: ref, rate, margenPct, fuente: 'finity' }
   } catch (e: any) {
-    return { rate: null, fuente: 'finity', motivo: `no se pudo consultar la tasa: ${e?.message ?? 'error de red'}` }
+    return vacia(`no se pudo consultar la tasa: ${e?.message ?? 'error de red'}`)
   }
 }
 
-// Una tasa ausente NO es una tasa de cero ni una cotizacion en blanco. Si el
-// proveedor no responde, el cierre se puede pedir igual (la mesa lo cotiza a
-// mano) pero se guarda SIN tasa y se dice por que — no se inventa un numero
-// que despues alguien va a leer como un precio acordado.
+// Como quedo armada la tasa, en una linea legible. Sin columnas nuevas: el
+// expediente tiene que poder decir contra que referencia y con que margen se
+// cotizo, no solo el numero final.
+function trazaTasa(c: Cotizacion): string {
+  return `finity ${c.referencia?.toLocaleString('es-CO', { maximumFractionDigits: 2 })} menos ${c.margenPct}%`
+}
 
 // ─── Referencia corta ───────────────────────────────────
 function refNueva(): string {
@@ -203,14 +266,24 @@ Deno.serve(async (req) => {
     if (action === 'cotizar') {
       const side = String(payload.side ?? 'vende_usdt')
       const monto = num(payload.fromAmount)
-      const { rate, fuente, motivo } = await tasaUsdCop()
-      if (rate == null) {
-        return json(200, { ok: true, rate: null, toAmount: null, fuente, motivo, indicativa: true })
+      const c = await tasaUsdCop()
+      if (c.rate == null) {
+        return json(200, {
+          ok: true, rate: null, referencia: null, margenPct: c.margenPct,
+          toAmount: null, fuente: c.fuente, motivo: c.motivo, indicativa: true,
+          // El crudo del proveedor solo para la mesa: sin esto, "no devolvio
+          // tasa" tapa por igual un limite de plan, una ruta caida y una
+          // respuesta con otra forma.
+          ...(caller.admin && c.crudo ? { crudo: c.crudo } : {}),
+        })
       }
       const to = Number.isFinite(monto) && monto > 0
-        ? (side === 'vende_usdt' ? monto * rate : monto / rate)
+        ? (side === 'vende_usdt' ? monto * c.rate : monto / c.rate)
         : null
-      return json(200, { ok: true, rate, toAmount: to, fuente, indicativa: true })
+      return json(200, {
+        ok: true, rate: c.rate, referencia: c.referencia, margenPct: c.margenPct,
+        toAmount: to, fuente: c.fuente, indicativa: true,
+      })
     }
 
     // ── Crear un cierre (cliente) ───────────────────────
@@ -240,7 +313,9 @@ Deno.serve(async (req) => {
 
       // La tasa se resuelve EN EL SERVIDOR. Si viniera del body, el cliente
       // elegiria su propio precio.
-      const { rate, fuente, motivo } = await tasaUsdCop()
+      const c = await tasaUsdCop()
+      const rate = c.rate
+      const motivo = c.motivo
       const from_currency = side === 'vende_usdt' ? 'USDT' : 'COP'
       const to_currency   = side === 'vende_usdt' ? 'COP' : 'USDT'
       const to_amount = rate != null
@@ -252,7 +327,7 @@ Deno.serve(async (req) => {
         ref, user_id: uid, side,
         from_currency, from_amount: monto,
         to_currency, to_amount,
-        rate_cotizada: rate, rate_fuente: rate != null ? fuente : null,
+        rate_cotizada: rate, rate_fuente: rate != null ? trazaTasa(c) : null,
         payout: payload.payout && typeof payload.payout === 'object' ? payload.payout : {},
         status: 'abierta',
         last_msg_at: ahora(), last_msg_por: 'sistema',
@@ -262,7 +337,7 @@ Deno.serve(async (req) => {
       const montoTxt = `${monto.toLocaleString('es-CO', { maximumFractionDigits: 2 })} ${from_currency}`
       await escribirMensaje(creada.id, 'sistema',
         rate != null
-          ? `Solicitud de cierre por ${montoTxt}. Cotizacion indicativa: ${rate.toLocaleString('es-CO', { maximumFractionDigits: 2 })} COP por USD. La mesa confirma la tasa final.`
+          ? `Solicitud de cierre por ${montoTxt}. Cotizacion indicativa: ${rate.toLocaleString('es-CO', { maximumFractionDigits: 2 })} COP por USD (referencia ${c.referencia?.toLocaleString('es-CO', { maximumFractionDigits: 2 })} menos ${c.margenPct}%). La mesa confirma la tasa final.`
           : `Solicitud de cierre por ${montoTxt}. No se pudo tomar cotizacion automatica (${motivo ?? 'sin detalle'}): la mesa la cotiza a mano.`)
 
       const nota = String(payload.nota ?? '').trim()

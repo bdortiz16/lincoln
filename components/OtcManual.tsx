@@ -3,6 +3,7 @@ import {
     ArrowLeftRight, Send, RefreshCw, ChevronLeft, MessageSquare,
     CheckCircle2, Clock, XCircle, AlertTriangle, Landmark, Wallet,
 } from 'lucide-react';
+import { FinityRateChart } from './FinityRateChart';
 
 // ─────────────────────────────────────────────
 // OtcManual — Mesa OTC manual del cliente.
@@ -176,8 +177,13 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; o
     const [side, setSide]     = useState<'vende_usdt' | 'compra_usdt'>('vende_usdt');
     const [monto, setMonto]   = useState('');
     const [tasa, setTasa]     = useState<number | null>(null);
+    const [referencia, setReferencia] = useState<number | null>(null);
+    const [margenPct, setMargenPct]   = useState<number>(0.25);
     const [motivoSinTasa, setMotivoSinTasa] = useState<string | null>(null);
     const [cargandoTasa, setCargandoTasa]   = useState(true);
+    // Destino del COP: el riel donde quiere recibirlo.
+    const [destino, setDestino] = useState<'lincoin' | 'breb' | 'ach'>('lincoin');
+    const [llave, setLlave]   = useState('');
     const [banco, setBanco]   = useState('');
     const [cuenta, setCuenta] = useState('');
     const [titular, setTitular] = useState('');
@@ -190,8 +196,15 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; o
     const pedirTasa = useCallback(async () => {
         setCargandoTasa(true);
         const r = await callOtcMesa('cotizar', { user_id: userId, side });
-        if (r?.ok && r.rate != null) { setTasa(Number(r.rate)); setMotivoSinTasa(null); }
-        else { setTasa(null); setMotivoSinTasa(r?.motivo ?? 'no se pudo tomar la cotización'); }
+        if (r?.margenPct != null) setMargenPct(Number(r.margenPct));
+        if (r?.ok && r.rate != null) {
+            setTasa(Number(r.rate));
+            setReferencia(r.referencia != null ? Number(r.referencia) : null);
+            setMotivoSinTasa(null);
+        } else {
+            setTasa(null); setReferencia(null);
+            setMotivoSinTasa(r?.motivo ?? 'no se pudo tomar la cotización');
+        }
         setCargandoTasa(false);
     }, [userId, side]);
 
@@ -212,16 +225,21 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; o
     const enviar = async () => {
         setError(null);
         if (!montoOk) { setError('Escribí cuánto querés enviar.'); return; }
-        if (side === 'vende_usdt' && !(banco.trim() && cuenta.trim() && titular.trim())) {
-            setError('Faltan los datos de la cuenta donde querés recibir el COP.'); return;
+        if (side === 'vende_usdt') {
+            if (destino === 'breb' && !llave.trim()) { setError('Falta la llave Bre-B donde querés recibir.'); return; }
+            if (destino === 'ach' && !(banco.trim() && cuenta.trim() && titular.trim())) {
+                setError('Faltan los datos de la cuenta bancaria.'); return;
+            }
         }
         if (side === 'compra_usdt' && !wallet.trim()) {
             setError('Falta la dirección donde querés recibir el USDT.'); return;
         }
         setEnviando(true);
-        const payout = side === 'vende_usdt'
-            ? { tipo: 'banco', banco: banco.trim(), cuenta: cuenta.trim(), titular: titular.trim() }
-            : { tipo: 'wallet', red, direccion: wallet.trim() };
+        const payout = side === 'compra_usdt'
+            ? { tipo: 'wallet', red, direccion: wallet.trim() }
+            : destino === 'lincoin' ? { tipo: 'lincoin' }
+            : destino === 'breb'    ? { tipo: 'breb', llave: llave.trim() }
+            : { tipo: 'ach', banco: banco.trim(), cuenta: cuenta.trim(), titular: titular.trim() };
         const r = await callOtcMesa('crear', { user_id: userId, side, fromAmount: n, payout, nota: nota.trim() });
         setEnviando(false);
         if (!r?.ok) {
@@ -242,6 +260,21 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; o
             <p style={{ color: '#878E88', fontSize: 12.5, marginTop: 5, lineHeight: 1.55 }}>
                 Operación negociada con un asesor. Decinos cuánto querés mover y la mesa te confirma la tasa por el chat.
             </p>
+
+            {/* El precio de referencia, a la vista y con su historial. Cerrar
+                una operacion negociada sin ver como se viene moviendo la tasa
+                es decidir a ciegas. */}
+            <div style={{ marginTop: 16, border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12, overflow: 'hidden', background: 'rgba(255,255,255,0.02)' }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10, padding: '11px 14px 8px', flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 10.5, fontWeight: 700, color: '#878E88', letterSpacing: '0.5px', textTransform: 'uppercase' }}>
+                        Referencia USD / COP
+                    </span>
+                    <span style={{ fontSize: 17, fontWeight: 800, color: '#F4F4F2', letterSpacing: '-0.3px' }}>
+                        {referencia != null ? nf(referencia) : '—'}
+                    </span>
+                </div>
+                <FinityRateChart from="USD" to="COP" />
+            </div>
 
             {/* Lado */}
             <div style={{ display: 'flex', gap: 7, marginTop: 16 }}>
@@ -288,23 +321,32 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; o
                 </div>
             </div>
 
-            {/* La tasa, dicha por lo que es */}
-            <div style={{ marginTop: 11, display: 'flex', alignItems: 'flex-start', gap: 7 }}>
+            {/* Como se arma la tasa, a la vista. Un numero solo no deja
+                comprobar nada; con referencia y margen el cliente puede
+                verificar la cuenta el mismo. */}
+            <div style={{ marginTop: 11 }}>
                 {cargandoTasa ? (
                     <p style={{ color: '#878E88', fontSize: 12 }}>Consultando la tasa…</p>
                 ) : tasa != null ? (
-                    <p style={{ color: '#878E88', fontSize: 12, lineHeight: 1.5 }}>
-                        Tasa indicativa <b style={{ color: '#F4F4F2' }}>{nf(tasa)}</b> COP por USD.{' '}
-                        <span style={{ color: 'rgba(244,244,242,0.45)' }}>La mesa confirma la tasa final antes de que envíes nada.</span>
-                        <button onClick={pedirTasa} style={{ marginLeft: 6, color: '#4ADE80', textDecoration: 'underline', fontSize: 11.5 }}>actualizar</button>
-                    </p>
-                ) : (
                     <>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 5, border: '1px solid rgba(255,255,255,0.07)', borderRadius: 10, padding: '10px 12px', background: 'rgba(255,255,255,0.02)' }}>
+                            <Renglon k="Referencia Finity" v={`${nf(referencia ?? 0)} COP/USD`} />
+                            <Renglon k={`Margen Lincoin (${margenPct}%)`} v={`− ${nf((referencia ?? 0) * margenPct / 100)}`} />
+                            <div style={{ height: 1, background: 'rgba(255,255,255,0.07)', margin: '2px 0' }} />
+                            <Renglon k="Tu tasa" v={`${nf(tasa)} COP/USD`} fuerte />
+                        </div>
+                        <p style={{ color: 'rgba(244,244,242,0.45)', fontSize: 11.5, marginTop: 7, lineHeight: 1.5 }}>
+                            Indicativa: la mesa confirma la tasa final antes de que envíes nada.
+                            <button onClick={pedirTasa} style={{ marginLeft: 6, color: '#4ADE80', textDecoration: 'underline', fontSize: 11.5 }}>actualizar</button>
+                        </p>
+                    </>
+                ) : (
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 7 }}>
                         <AlertTriangle size={13} style={{ color: '#FBBF24', marginTop: 1, flexShrink: 0 }} />
                         <p style={{ color: '#878E88', fontSize: 12, lineHeight: 1.5 }}>
                             No se pudo tomar la cotización automática ({motivoSinTasa}). Podés pedir el cierre igual: la mesa lo cotiza a mano.
                         </p>
-                    </>
+                    </div>
                 )}
             </div>
 
@@ -316,13 +358,51 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; o
                             <Landmark size={14} style={{ color: '#878E88' }} />
                             <span style={{ fontSize: 12.5, color: '#F4F4F2', fontWeight: 600 }}>Dónde querés recibir el COP</span>
                         </div>
-                        <div style={{ display: 'grid', gap: 10 }}>
-                            <div><label style={LABEL}>Banco</label><input value={banco} onChange={e => setBanco(e.target.value)} placeholder="Bancolombia" style={INPUT} /></div>
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                                <div><label style={LABEL}>Número de cuenta</label><input value={cuenta} onChange={e => setCuenta(e.target.value)} inputMode="numeric" style={{ ...INPUT, fontFamily: 'ui-monospace, monospace' }} /></div>
-                                <div><label style={LABEL}>Titular</label><input value={titular} onChange={e => setTitular(e.target.value)} style={INPUT} /></div>
-                            </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 7 }}>
+                            {([
+                                ['lincoin', 'Lincoin', 'A tu saldo'],
+                                ['breb',    'Bre-B',   'A una llave'],
+                                ['ach',     'ACH',     'A una cuenta'],
+                            ] as const).map(([v, l, pie]) => (
+                                <button
+                                    key={v}
+                                    onClick={() => setDestino(v)}
+                                    className="text-left transition-colors"
+                                    style={{
+                                        padding: '10px 11px', borderRadius: 10,
+                                        border: `1px solid ${destino === v ? 'rgba(74,222,128,0.45)' : 'rgba(255,255,255,0.10)'}`,
+                                        background: destino === v ? 'rgba(74,222,128,0.07)' : 'rgba(255,255,255,0.025)',
+                                    }}
+                                >
+                                    <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: destino === v ? '#4ADE80' : '#F4F4F2' }}>{l}</span>
+                                    <span style={{ display: 'block', fontSize: 10.5, color: '#878E88', marginTop: 2 }}>{pie}</span>
+                                </button>
+                            ))}
                         </div>
+
+                        {destino === 'lincoin' && (
+                            <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 10, lineHeight: 1.5 }}>
+                                El COP queda en tu saldo Lincoin. Desde ahí lo enviás cuando quieras, sin pedir nada más.
+                            </p>
+                        )}
+                        {destino === 'breb' && (
+                            <div style={{ marginTop: 12 }}>
+                                <label style={LABEL}>Llave Bre-B</label>
+                                <input value={llave} onChange={e => setLlave(e.target.value)} placeholder="Celular, correo, cédula o alfanumérica" style={{ ...INPUT, fontFamily: 'ui-monospace, monospace', fontSize: 13 }} />
+                                <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', marginTop: 6, lineHeight: 1.5 }}>
+                                    La mesa confirma a nombre de quién está la llave antes de enviar.
+                                </p>
+                            </div>
+                        )}
+                        {destino === 'ach' && (
+                            <div style={{ display: 'grid', gap: 10, marginTop: 12 }}>
+                                <div><label style={LABEL}>Banco</label><input value={banco} onChange={e => setBanco(e.target.value)} placeholder="Bancolombia" style={INPUT} /></div>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                                    <div><label style={LABEL}>Número de cuenta</label><input value={cuenta} onChange={e => setCuenta(e.target.value)} inputMode="numeric" style={{ ...INPUT, fontFamily: 'ui-monospace, monospace' }} /></div>
+                                    <div><label style={LABEL}>Titular</label><input value={titular} onChange={e => setTitular(e.target.value)} style={INPUT} /></div>
+                                </div>
+                            </div>
+                        )}
                     </>
                 ) : (
                     <>
@@ -456,18 +536,11 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
                     <Dato label="Tasa" valor={tasaVigente != null ? nf(tasaVigente) : '—'}
                         pie={cierre.rate_final ? 'confirmada por la mesa' : cierre.rate_cotizada ? 'indicativa' : undefined} />
                     <Dato label="Solicitado" valor={fecha(cierre.created_at)} />
-                    {cierre.payout?.tipo === 'banco' && (
-                        <>
-                            <Dato label="Banco" valor={cierre.payout.banco ?? '—'} />
-                            <Dato label="Cuenta" valor={cierre.payout.cuenta ?? '—'} mono />
-                        </>
-                    )}
-                    {cierre.payout?.tipo === 'wallet' && (
-                        <>
-                            <Dato label="Red" valor={cierre.payout.red ?? '—'} />
-                            <Dato label="Dirección" valor={cierre.payout.direccion ?? '—'} mono />
-                        </>
-                    )}
+                    {(() => {
+                        const d = destinoTexto(cierre.payout);
+                        return d ? <Dato label={d.label} valor={d.valor} mono={d.mono} /> : null;
+                    })()}
+                    {cierre.payout?.tipo === 'ach' && <Dato label="Titular" valor={cierre.payout.titular ?? '—'} />}
                 </div>
             </div>
 
@@ -518,6 +591,23 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
         </div>
     );
 };
+
+const Renglon: React.FC<{ k: string; v: string; fuerte?: boolean }> = ({ k, v, fuerte }) => (
+    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
+        <span style={{ fontSize: 11.5, color: fuerte ? '#F4F4F2' : '#878E88', fontWeight: fuerte ? 700 : 500 }}>{k}</span>
+        <span style={{ fontSize: fuerte ? 13.5 : 12, color: fuerte ? '#4ADE80' : '#878E88', fontWeight: fuerte ? 800 : 600 }}>{v}</span>
+    </div>
+);
+
+// Como se describe cada destino del COP en el detalle del cierre.
+export function destinoTexto(p: any): { label: string; valor: string; mono?: boolean } | null {
+    if (!p?.tipo) return null;
+    if (p.tipo === 'lincoin') return { label: 'Recibe en', valor: 'Saldo Lincoin' };
+    if (p.tipo === 'breb')    return { label: 'Llave Bre-B', valor: p.llave ?? '—', mono: true };
+    if (p.tipo === 'ach' || p.tipo === 'banco') return { label: 'Cuenta', valor: `${p.banco ?? '—'} · ${p.cuenta ?? '—'}`, mono: true };
+    if (p.tipo === 'wallet')  return { label: `Wallet ${p.red ?? ''}`.trim(), valor: p.direccion ?? '—', mono: true };
+    return null;
+}
 
 const Dato: React.FC<{ label: string; valor: string; pie?: string; mono?: boolean }> = ({ label, valor, pie, mono }) => (
     <div>
