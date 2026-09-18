@@ -173,10 +173,15 @@ async function tasaUsdCop(): Promise<Cotizacion> {
       return vacia('el proveedor esta respondiendo en modo de prueba')
     }
 
-    // La referencia es la tasa BRUTA de Finity. La de `data` ya viene con el
-    // ajuste en pesos del riel ACH aplicado; usarla aca cobraria dos margenes
-    // sobre la misma operacion.
-    const referencia = Number(d?.rateBruta) > 0 ? Number(d.rateBruta) : extractRate(d?.data)
+    // La REFERENCIA es la tasa que el panel de admin promete que ve el
+    // cliente: la del proveedor menos los puntos configurados ahi. Es la que
+    // sale en `data` (el proxy ya se los resto). La bruta solo sirve de
+    // respaldo si esa no se puede leer.
+    //
+    // Son DOS margenes encadenados a proposito: los puntos del riel mas el
+    // porcentaje de la mesa manual, que cuesta mas de operar. Quien mueva uno
+    // tiene que saber que el otro sigue estando.
+    const referencia = extractRate(d?.data) ?? (Number(d?.rateBruta) > 0 ? Number(d.rateBruta) : null)
     if (!(Number(referencia) > 0)) {
       return vacia(
         d?.data?.message ?? d?.message ?? d?.error ?? 'el proveedor no devolvio tasa',
@@ -227,10 +232,12 @@ async function escribirMensaje(closeId: string, autor: 'cliente' | 'mesa' | 'sis
 }
 
 // El cierre, tal como lo puede ver el CLIENTE: sin notas internas, sin el
-// nombre del operador que lo tomo (le corresponde "la mesa", no quien).
+// nombre del operador que lo tomo (le corresponde "la mesa", no quien) y sin
+// rate_fuente, que nombra al proveedor de la tasa. Que no se pinte en pantalla
+// no alcanza: si viaja en la respuesta, esta a un devtools de distancia.
 function paraCliente(c: any) {
   if (!c) return c
-  const { notas_internas: _n, tomada_por: _t, tomada_por_nom: _tn, ...resto } = c
+  const { notas_internas: _n, tomada_por: _t, tomada_por_nom: _tn, rate_fuente: _rf, ...resto } = c
   return { ...resto, atendida: !!c.tomada_at }
 }
 
@@ -274,7 +281,12 @@ Deno.serve(async (req) => {
       if (c.rate == null) {
         return json(200, {
           ok: true, rate: null, referencia: null, margenPct: c.margenPct,
-          toAmount: null, fuente: c.fuente, motivo: c.motivo, indicativa: true,
+          toAmount: null, indicativa: true,
+          // Al cliente no le corresponde saber QUIEN nos da la tasa ni por que
+          // fallo: el motivo del proveedor puede nombrarlo o filtrar detalle de
+          // nuestra infraestructura. Ve que no hay cotizacion automatica; el
+          // diagnostico va para la mesa.
+          ...(caller.admin ? { fuente: c.fuente, motivo: c.motivo } : {}),
           // El crudo del proveedor solo para la mesa: sin esto, "no devolvio
           // tasa" tapa por igual un limite de plan, una ruta caida y una
           // respuesta con otra forma.
@@ -286,7 +298,8 @@ Deno.serve(async (req) => {
         : null
       return json(200, {
         ok: true, rate: c.rate, referencia: c.referencia, margenPct: c.margenPct,
-        toAmount: to, fuente: c.fuente, indicativa: true,
+        toAmount: to, indicativa: true,
+        ...(caller.admin ? { fuente: c.fuente } : {}),
       })
     }
 

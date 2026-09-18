@@ -205,7 +205,10 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
             setMotivoSinTasa(null);
         } else {
             setTasa(null); setReferencia(null);
-            setMotivoSinTasa(r?.motivo ?? 'no se pudo tomar la cotización');
+            // El servidor solo manda `motivo` cuando quien pregunta es la
+            // mesa: nombra al proveedor. Para el cliente queda vacío y el
+            // texto de abajo se lee igual de bien sin él.
+            setMotivoSinTasa(r?.motivo ?? null);
         }
         setCargandoTasa(false);
     }, [userId, side]);
@@ -321,7 +324,7 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
                 ) : tasa != null ? (
                     <>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 5, border: '1px solid rgba(255,255,255,0.07)', borderRadius: 10, padding: '10px 12px', background: 'rgba(255,255,255,0.02)' }}>
-                            <Renglon k="Referencia Finity" v={`${nf(referencia ?? 0)} COP/USD`} />
+                            <Renglon k="Tasa de referencia" v={`${nf(referencia ?? 0)} COP/USD`} />
                             <Renglon k={`Margen Lincoin (${margenPct}%)`} v={`− ${nf((referencia ?? 0) * margenPct / 100)}`} />
                             <div style={{ height: 1, background: 'rgba(255,255,255,0.07)', margin: '2px 0' }} />
                             <Renglon k="Tu tasa" v={`${nf(tasa)} COP/USD`} fuerte />
@@ -335,7 +338,7 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
                     <div style={{ display: 'flex', alignItems: 'flex-start', gap: 7 }}>
                         <AlertTriangle size={13} style={{ color: '#FBBF24', marginTop: 1, flexShrink: 0 }} />
                         <p style={{ color: '#878E88', fontSize: 12, lineHeight: 1.5 }}>
-                            No se pudo tomar la cotización automática ({motivoSinTasa}). Podés pedir el cierre igual: la mesa lo cotiza a mano.
+                            No hay cotización automática en este momento{motivoSinTasa ? ` (${motivoSinTasa})` : ''}. Podés pedir el cierre igual: la mesa lo cotiza a mano.
                         </p>
                     </div>
                 )}
