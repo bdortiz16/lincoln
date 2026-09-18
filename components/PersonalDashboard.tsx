@@ -58,7 +58,8 @@ import {
   SlidersHorizontal,
   ArrowLeftRight,
   XCircle,
-  Archive
+  Archive,
+  MessageSquare
 } from 'lucide-react';
 import { KumploUserCard } from './KumploUserCard';
 
@@ -80,6 +81,7 @@ import { achEta, achEtaShort } from './achEta';
 import { ContactsSection, contactStatus } from './ContactsSection';
 import { WalletsGasfreeSection } from './WalletsGasfreeSection';
 import { KytSection } from './KytSection';
+import { OtcManual } from './OtcManual';
 import { CodeInput } from './CodeInput';
 import { ServiciosSection } from './ServiciosSection';
 import { supabase } from '../lib/supabaseClient';
@@ -282,7 +284,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const [mouvMode, setMouvMode] = useState<'full' | 'converter'>('full');
   // Mesa OTC: primero se elige el riel de salida del COP — ACH (conversor
   // Finity, apificado) o Bre-B (Mouv, aún por mesa manual).
-  const [otcRail, setOtcRail] = useState<'ach' | 'breb' | null>(null);
+  const [otcRail, setOtcRail] = useState<'ach' | 'breb' | 'manual' | null>(null);
   // Riel elegido para dispersar (lo fija el botón "Dispersar" de cada tarjeta).
   const [dispersRail, setDispersRail] = useState<'COP_BREB' | 'COP_ACH'>('COP_BREB');
   const [selectedWalletCode, setSelectedWalletCode] = useState<string | null>(null);
@@ -4497,14 +4499,28 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   </div>
                                   <p style={{ fontSize: 12, color: '#878E88', marginTop: 6, lineHeight: 1.5 }}>Por ahora la conversión con salida Bre-B se gestiona por mesa manual.</p>
                               </button>
+                              <button onClick={() => setOtcRail('manual')} className="text-left transition-colors hover:bg-white/[0.03] sm:col-span-2"
+                                  style={{ padding: '16px 17px', borderRadius: 13, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.025)' }}>
+                                  <div className="flex items-center gap-2">
+                                      <MessageSquare size={17} style={{ color: '#4ADE80' }} />
+                                      <span style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>Manual · con asesor</span>
+                                      <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 8.5, fontWeight: 700, letterSpacing: '0.6px', padding: '2px 6px', borderRadius: 999 }}>DISPONIBLE</span>
+                                  </div>
+                                  <p style={{ fontSize: 12, color: '#878E88', marginTop: 6, lineHeight: 1.5 }}>Montos grandes o destinos fuera de ACH. Cotizás, la mesa te confirma la tasa por chat y se cierra ahí mismo.</p>
+                              </button>
                           </div>
                       </div>
+                  </div>
+              ) : mouvMode === 'converter' && otcRail === 'manual' ? (
+                  <div style={{ margin: '24px auto', maxWidth: 620 }}>
+                      <OtcManual userId={currentUser.id} showToast={(m) => showToast(m)} onVolver={() => setOtcRail(null)} />
                   </div>
               ) : mouvMode === 'converter' && otcRail === 'breb' ? (
                   <div style={{ maxWidth: 560, margin: '24px auto', background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 18, padding: '32px 28px', textAlign: 'center', fontFamily: "'Archivo', system-ui, sans-serif" }}>
                       <p style={{ color: '#F4F4F2', fontWeight: 700, fontSize: 16 }}>Mesa Bre-B · por mesa manual</p>
-                      <p style={{ color: '#878E88', fontSize: 13, marginTop: 6, lineHeight: 1.6 }}>La conversión con salida Bre-B se gestiona por mesa manual. Escríbenos por el canal de la mesa y la gestionamos al instante — o usa la salida ACH, que es automática.</p>
-                      <button onClick={() => setOtcRail('ach')} className="lincoin-btn-white transition-colors" style={{ marginTop: 16, fontWeight: 700, fontSize: 13.5, padding: '11px 20px', borderRadius: 10, border: 'none' }}>Usar salida ACH</button>
+                      <p style={{ color: '#878E88', fontSize: 13, marginTop: 6, lineHeight: 1.6 }}>La conversión con salida Bre-B se gestiona por mesa manual: pedís el cierre y un asesor te confirma la tasa por chat. O usá la salida ACH, que es automática.</p>
+                      <button onClick={() => setOtcRail('manual')} className="lincoin-btn-white transition-colors" style={{ marginTop: 16, fontWeight: 700, fontSize: 13.5, padding: '11px 20px', borderRadius: 10, border: 'none' }}>Ir a la mesa manual</button>
+                      <button onClick={() => setOtcRail('ach')} style={{ display: 'block', margin: '10px auto 0', fontSize: 12.5, color: '#878E88', textDecoration: 'underline' }}>Usar salida ACH</button>
                       <button onClick={() => setOtcRail(null)} style={{ display: 'block', margin: '12px auto 0', fontSize: 12.5, color: '#878E88', textDecoration: 'underline' }}>← Elegir otro riel</button>
                   </div>
               ) : (

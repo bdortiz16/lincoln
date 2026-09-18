@@ -96,7 +96,8 @@ import { AdminLincoinRisk } from './AdminLincoinRisk';
 import { AdminClientes } from './AdminClientes';
 import { AdminReconcile } from './AdminReconcile';
 import { AdminOtcSection } from './AdminOtcSection';
-import { Zap, ArrowLeftRight, ArrowLeft, Info, ChevronRight, Activity, Link2 } from 'lucide-react';
+import { AdminOtcCierres } from './AdminOtcCierres';
+import { Zap, ArrowLeftRight, ArrowLeft, Info, ChevronRight, Activity, Link2, MessageSquare } from 'lucide-react';
 import { CollectionWalletCard } from './CollectionWalletCard';
 import type { AdminProfile } from './AdminPersonas/lib/adminAuth';
 import { FlagImg, flagUrl } from './FlagImg';
@@ -104,6 +105,9 @@ import { PaletteChooser } from './PaletteChooser';
 import { useExchangeRates } from '../context/ExchangeRateContext'; 
 import { useSystemConfig, Coupon } from '../context/SystemConfigContext'; 
 import { useDatabase, AdminUser, BankDetail, Transaction, User, TreasuryAccount } from '../context/DatabaseContext';
+
+const SURL_ADMIN = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+const SKEY_ADMIN = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
 
 interface AdminDashboardProps {
   onLogout: () => void;
@@ -226,6 +230,7 @@ const TAB_TITLES: Record<string, string> = {
   gasfree: 'Custodia USDT', otcConfig: 'Contabilidad OTC', fallos: 'Fallos',
   auditoria: 'Auditoría', monitoreo: 'Monitoreo', kumplo: 'Kumplo', comando: 'Centro de Comando',
   tusdatos: 'TusDatos', compliance: 'Cumplimiento', risk: 'Lincoin Risk',
+  otcCierres: 'Cierres OTC',
 };
 
 // Cómo se llama cada pestaña DENTRO de su sección. La primera no puede
@@ -237,7 +242,7 @@ const SUBTAB_TITLES: Record<string, string> = {
 };
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'tusdatos' | 'compliance' | 'comando'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'tusdatos' | 'compliance' | 'comando' | 'otcCierres'>('overview');
   const [auditRows, setAuditRows] = useState<any[] | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
   const [adminLogins, setAdminLogins] = useState<{ admins: any[]; activity: any[] } | null>(null);
@@ -894,6 +899,31 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     .sort((a, b) => new Date(a.createdAt ?? 0).getTime() - new Date(b.createdAt ?? 0).getTime());
 
   const failuresCount = failuresList.length + sinConfirmarList.length;
+
+  // Cierres OTC que esperan a la mesa. El conteo lo hace el servidor (accion
+  // `resumen`) y no esta pantalla: contar aca obligaria a traerse la bandeja
+  // entera solo para pintar un numero en el sidebar.
+  const [otcPend, setOtcPend] = useState(0);
+  useEffect(() => {
+    let vivo = true;
+    const leer = async () => {
+      try {
+        let token = SKEY_ADMIN;
+        const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
+        if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) token = d.access_token; }
+        const r = await fetch(`${SURL_ADMIN}/functions/v1/otc-mesa`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SKEY_ADMIN, Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ action: 'resumen' }),
+        });
+        const d = await r.json().catch(() => null);
+        if (vivo && d?.ok) setOtcPend(Number(d.abiertas ?? 0));
+      } catch { /* el badge no puede tumbar el panel */ }
+    };
+    leer();
+    const t = setInterval(leer, 30000);
+    return () => { vivo = false; clearInterval(t); };
+  }, []);
 
   // Una cuenta BLOQUEADA o en LISTA NEGRA no cuenta como pendiente: no hay nada
   // que aprobarle (ya le negaste el acceso), y aparecer ahí solo ensucia la
@@ -4022,7 +4052,7 @@ const renderDesign = () => (
                 </button>
 
                 {(() => {
-                    const operacionBadge = (pendingClientsCount || 0) + pendingDeposits.length + pendingWithdrawals.length + (failuresCount || 0);
+                    const operacionBadge = (pendingClientsCount || 0) + pendingDeposits.length + pendingWithdrawals.length + (failuresCount || 0) + (otcPend || 0);
                     const groups: { key: string; title: string; badge?: number; items: React.ReactNode }[] = [
                         { key: 'operacion', title: 'Operación', badge: operacionBadge, items: <>
                             <AdminSidebarItem icon={Users} label="Clientes" active={activeTab === 'clients'} badge={pendingClientsCount > 0 ? pendingClientsCount : undefined} onClick={() => navTo('clients')} />
@@ -4030,6 +4060,7 @@ const renderDesign = () => (
                             {/* Cargues (COP) y GasFree (USDT) ya NO van sueltos aquí:
                                 se entra por Tesorería → Billeteras, que es donde se
                                 elige con qué moneda se opera. */}
+                            <AdminSidebarItem icon={MessageSquare} label="Cierres OTC" active={activeTab === 'otcCierres'} badge={otcPend > 0 ? otcPend : undefined} onClick={() => navTo('otcCierres')} />
                             <AdminSidebarItem icon={AlertTriangle} label="Fallos" active={activeTab === 'fallos'} badge={failuresCount > 0 ? failuresCount : undefined} onClick={() => navTo('fallos')} />
                         </> },
                         { key: 'finanzas', title: 'Finanzas', items: <>
@@ -4213,6 +4244,7 @@ const renderDesign = () => (
                   <AdminGasFreeSection />
                 </>)}
                 {activeTab === 'otcConfig' && <AdminOtcSection />}
+                {activeTab === 'otcCierres' && <AdminOtcCierres />}
                 {activeTab === 'fallos' && renderFallos()}
                 {activeTab === 'auditoria' && renderAuditoria()}
             </div>
