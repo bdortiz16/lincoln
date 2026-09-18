@@ -310,7 +310,7 @@ async function portalFetch(path: string, init: RequestInit = {}): Promise<Respon
 }
 
 // ─── Validación del caller ───
-// Dos modos (mismo patrón que didit-kyc/tatum-wallet en la app Empresas):
+// Dos modos (mismo patrón que tatum-wallet en la app Empresas):
 //  a) JWT de usuario de Supabase válido (panel admin) → userId del token.
 //  b) anon key + payload.user_id de un usuario EXISTENTE en public.users
 //     (la app Empresas usa auth propia y llama con la anon key).

@@ -32,8 +32,8 @@
 // ════════════════════════════════════════════════════════
 
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-// Se aceptan los dos nombres: WEBHOOK_KEY ya existe en este proyecto
-// (didit-aml-monitor lo usa), así que no hace falta crear otro secreto.
+// Se aceptan los dos nombres: WEBHOOK_KEY ya existe en este proyecto,
+// así que no hace falta crear otro secreto.
 const SECRETO = (Deno.env.get('WEBHOOK_SECRET') ?? Deno.env.get('WEBHOOK_KEY') ?? '').trim()
 
 /** Comparación en tiempo constante: no filtra el secreto por lo que tarda. */

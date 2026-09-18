@@ -368,7 +368,6 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const [proofFile, setProofFile] = useState<File | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [toastType, setToastType] = useState<'success' | 'error'>('success');
-  const [kycLoading, setKycLoading] = useState(false);
 
   // 2FA States
   const [mfaEnrolled, setMfaEnrolled] = useState(false);
@@ -1037,45 +1036,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       setActiveView('wallet-detail');
   };
 
-  // When in_progress: poll get_status so DB stays synced even without a webhook.
-  // DatabaseContext's 10 s polling picks up the updated kyc_status automatically.
-  useEffect(() => {
-    const isInProgress = currentUser?.kycStatus === 'in_progress';
-    if (!isInProgress || !currentUser?.id) return;
-    const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
-    const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-    const poll = () => fetch(`${SURL}/functions/v1/didit-kyc`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': `Bearer ${SKEY}` },
-      body: JSON.stringify({ action: 'get_status', userId: currentUser.id }),
-    }).catch(() => {});
-    poll();
-    const id = setInterval(poll, 30_000);
-    return () => clearInterval(id);
-  }, [currentUser?.kycStatus, currentUser?.id]);
-
-  const startDiditKyc = async () => {
-    if (!currentUser?.id || kycLoading) return;
-    setKycLoading(true);
-    try {
-      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
-      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-      const r = await fetch(`${SURL}/functions/v1/didit-kyc`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': `Bearer ${SKEY}` },
-        body: JSON.stringify({ action: 'create_session', userId: currentUser.id }),
-      });
-      const data = await r.json();
-      if (data.url) {
-        window.location.href = data.url;
-      } else {
-        showToast(data.error || 'Error al iniciar la verificación. Contacta soporte.', 5000, 'error');
-      }
-    } catch {
-      showToast('Error de conexión. Intenta de nuevo.', 5000, 'error');
-    }
-    setKycLoading(false);
-  };
+  // La verificación de identidad la hace el equipo de Lincoin a mano: no hay
+  // proveedor de KYC conectado. Antes acá vivían un polling al proveedor y el
+  // arranque de su sesión; sin proveedor no hay estado remoto que consultar ni
+  // sesión que abrir, y el estado lo escribe un admin desde el panel.
+  const SOPORTE_KYC = 'mailto:soporte@lincoin.me?subject=Verificaci%C3%B3n%20de%20identidad';
 
   const handleActionRestricted = (requireKyc = true) => {
       if (isBlocked) {
@@ -2354,11 +2319,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   </div>
                   <div className="flex-1">
                     <h3 className="text-red-800 font-bold text-sm">Verificación rechazada</h3>
-                    <p className="text-red-700 text-xs mt-1">Tu verificación de identidad fue rechazada. Por favor intenta de nuevo. Si el problema persiste, contacta soporte.</p>
+                    <p className="text-red-700 text-xs mt-1">Tu verificación de identidad fue rechazada. Escribinos y te decimos qué falta corregir.</p>
                   </div>
-                  <button onClick={startDiditKyc} disabled={kycLoading} className="shrink-0 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg disabled:opacity-50 flex items-center gap-2 transition-colors">
-                    {kycLoading ? <><RefreshCw size={14} className="animate-spin"/> Cargando...</> : <><ShieldCheck size={14}/> Reintentar verificación</>}
-                  </button>
+                  <a href={SOPORTE_KYC} className="shrink-0 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg flex items-center gap-2 transition-colors">
+                    <ShieldCheck size={14}/> Escribir a soporte
+                  </a>
                 </div>
               );
               if (ks === 'in_review') return (
@@ -2379,11 +2344,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   </div>
                   <div className="flex-1">
                     <h3 className="text-[#0C0E0D] font-bold text-sm">Verificación en progreso</h3>
-                    <p className="text-[#4ADE80] text-xs mt-1">Abriste Lincoin pero aún no terminaste. Completa el proceso para activar tu cuenta.</p>
+                    <p className="text-[#4ADE80] text-xs mt-1">Falta documentación para activar tu cuenta. Escribinos y te indicamos cuál.</p>
                   </div>
-                  <button onClick={startDiditKyc} disabled={kycLoading} className="shrink-0 px-4 py-2 bg-[#0C0E0D] hover:bg-[#161A17] text-xs font-bold rounded-lg disabled:opacity-50 flex items-center gap-2 transition-colors">
-                    {kycLoading ? <><RefreshCw size={14} className="animate-spin"/> Cargando...</> : <><ShieldCheck size={14}/> Continuar verificación</>}
-                  </button>
+                  <a href={SOPORTE_KYC} className="shrink-0 px-4 py-2 bg-[#0C0E0D] hover:bg-[#161A17] text-white text-xs font-bold rounded-lg flex items-center gap-2 transition-colors">
+                    <ShieldCheck size={14}/> Escribir a soporte
+                  </a>
                 </div>
               );
               // pending / not_started / undefined
@@ -2394,11 +2359,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   </div>
                   <div className="flex-1">
                     <h3 className="text-amber-900 font-bold text-sm">{isBusinessProduct ? 'Verifica tu empresa para desbloquear envíos' : 'Verifica tu identidad para desbloquear envíos'}</h3>
-                    <p className="text-amber-700 text-xs mt-0.5">Puedes cargar dinero ahora. Para enviar y convertir, completa la verificación {isBusinessProduct ? 'KYB de tu empresa' : 'KYC'} en menos de 2 minutos.</p>
+                    <p className="text-amber-700 text-xs mt-0.5">Puedes cargar dinero ahora. Para enviar y convertir, nuestro equipo tiene que completar la verificación {isBusinessProduct ? 'KYB de tu empresa' : 'KYC'}.</p>
                   </div>
-                  <button onClick={startDiditKyc} disabled={kycLoading} className="shrink-0 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold rounded-lg disabled:opacity-50 flex items-center gap-2 transition-colors">
-                    {kycLoading ? <><RefreshCw size={14} className="animate-spin"/> Cargando...</> : <><ShieldCheck size={14}/> Verificar ahora</>}
-                  </button>
+                  <a href={SOPORTE_KYC} className="shrink-0 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold rounded-lg flex items-center gap-2 transition-colors">
+                    <ShieldCheck size={14}/> Solicitar verificación
+                  </a>
                 </div>
               );
           })()}
@@ -2600,7 +2565,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               {/* TU DINERO — confianza (aliados reales de Lincoin) */}
               <div className="lincoin-panel">
                 <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.8px', color: '#878E88', marginBottom: 14 }}>TU DINERO</p>
-                {[['Respaldo en USDT', 'Dólar digital de Tether (USDT), 1:1 con el dólar.'], ['Rieles locales', 'Retiros en Colombia por Bre-B y ACH.'], ['Identidad verificada', 'KYC/KYB y monitoreo SARLAFT con Didit.']].map(([t, d]) => (
+                {[['Respaldo en USDT', 'Dólar digital de Tether (USDT), 1:1 con el dólar.'], ['Rieles locales', 'Retiros en Colombia por Bre-B y ACH.'], ['Identidad verificada', 'KYC/KYB y monitoreo SARLAFT.']].map(([t, d]) => (
                   <div key={t} className="flex items-start gap-3" style={{ marginBottom: 13, fontSize: 12.5 }}>
                     <ShieldCheck size={16} style={{ color: '#878E88', flexShrink: 0, marginTop: 1 }} />
                     <div><span style={{ fontWeight: 700, color: '#F4F4F2' }}>{t}</span> <span style={{ color: '#878E88' }}>— {d}</span></div>

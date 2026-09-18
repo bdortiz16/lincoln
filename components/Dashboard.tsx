@@ -162,153 +162,30 @@ const DOC_TYPES: Record<string, { label: string; value: string }[]> = {
   ],
 };
 
-const DiditKycButton: React.FC<{ userId?: string; kycStatus?: string; showToast: (msg: string) => void }> = ({ userId, kycStatus, showToast }) => {
-  const [loading, setLoading] = React.useState(false);
-  const [checkingStatus, setCheckingStatus] = React.useState(false);
-  const isInProgress = kycStatus === 'in_progress';
+// KycContactoSoporte — la verificación empresarial (KYB) la hace el equipo de
+// Lincoin a mano. No hay proveedor de verificación conectado, así que no hay
+// un flujo de autoservicio que arrancar desde acá: lo único honesto que puede
+// ofrecer este botón es el canal por el que la verificación efectivamente
+// ocurre.
+//
+// El botón anterior abría una sesión con un proveedor externo y hacía polling
+// esperando su veredicto. Sin ese proveedor, un botón "Verificar identidad"
+// que no verifica nada sería peor que no tenerlo.
+const KycContactoSoporte: React.FC<{ kycStatus?: string }> = ({ kycStatus }) => {
   const isRejected = kycStatus === 'rejected';
-
-  // Poll Didit for status updates — every 10s, and bursts on tab-focus return
-  React.useEffect(() => {
-    if (!isInProgress || !userId) return;
-    const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
-    const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-    let active = true;
-    const poll = async () => {
-      try {
-        const r = await fetch(`${SURL}/functions/v1/didit-kyc`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': `Bearer ${SKEY}` },
-          body: JSON.stringify({ action: 'get_status', userId }),
-        });
-        if (!active) return;
-        const d = await r.json();
-        if (d.status === 'verified') {
-          showToast('¡Verificación aprobada! Actualizando...');
-          setTimeout(() => window.location.reload(), 1200);
-        } else if (d.status === 'rejected') {
-          setTimeout(() => window.location.reload(), 500);
-        }
-      } catch { /* network error — retry next tick */ }
-    };
-    poll(); // immediate on mount
-    const id = setInterval(poll, 10_000);
-    // Burst polls when user tabs back — catches approval quickly
-    const onVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        poll();
-        setTimeout(poll, 3_000);
-        setTimeout(poll, 7_000);
-      }
-    };
-    document.addEventListener('visibilitychange', onVisibility);
-    return () => { active = false; clearInterval(id); document.removeEventListener('visibilitychange', onVisibility); };
-  }, [isInProgress, userId]);
-
-  const checkStatusManually = async () => {
-    if (!userId || checkingStatus) return;
-    setCheckingStatus(true);
-    try {
-      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
-      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-      const r = await fetch(`${SURL}/functions/v1/didit-kyc`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': `Bearer ${SKEY}` },
-        body: JSON.stringify({ action: 'get_status', userId }),
-      });
-      const d = await r.json();
-      if (d.status === 'verified') {
-        showToast('¡Verificación aprobada! Actualizando...');
-        setTimeout(() => window.location.reload(), 1200);
-      } else if (d.status === 'in_review') {
-        showToast('Tu verificación está en revisión manual.');
-      } else if (d.status === 'rejected') {
-        showToast('Tu verificación fue rechazada. Intenta de nuevo.');
-        setTimeout(() => window.location.reload(), 1500);
-      } else {
-        showToast('Aún en proceso. Intenta nuevamente en unos minutos.');
-      }
-    } catch {
-      showToast('Error al consultar estado. Intenta más tarde.');
-    }
-    setCheckingStatus(false);
-  };
-
-  const startVerification = async () => {
-    if (!userId || loading) return;
-    setLoading(true);
-    try {
-      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
-      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-      // If already in_progress, resume the SAME session (never create a new one)
-      const action = isInProgress ? 'resume_session' : 'create_session';
-      const r = await fetch(`${SURL}/functions/v1/didit-kyc`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': `Bearer ${SKEY}` },
-        body: JSON.stringify({ action, userId, type: 'kyb' }),
-      });
-      const data = await r.json();
-      if (data.status === 'verified') {
-        showToast('¡Verificación aprobada! Actualizando...');
-        setTimeout(() => window.location.reload(), 1500);
-        return;
-      }
-      if (data.status === 'in_review') {
-        showToast('Tu verificación está en revisión. Te notificaremos cuando esté lista.');
-        return;
-      }
-      if (data.status === 'rejected') {
-        showToast('Verificación rechazada. Intenta de nuevo.');
-        setTimeout(() => window.location.reload(), 1500);
-        return;
-      }
-      if (data.no_url) {
-        showToast('Tu sesión de verificación está activa en Lincoin. Si ya completaste los pasos, espera unos segundos y la página se actualizará sola.');
-        return;
-      }
-      if (data.url) {
-        window.location.href = data.url;
-      } else {
-        showToast(data.error || 'Error al iniciar verificación. Contacta soporte.');
-      }
-    } catch {
-      showToast('Error de conexión. Intenta de nuevo.');
-    }
-    setLoading(false);
-  };
-
   return (
     <div className="space-y-2">
-      <button
-        onClick={startVerification}
-        disabled={loading}
-        className="w-full py-3 px-6 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#161A17] disabled:opacity-50 transition-colors flex items-center justify-center gap-2 text-sm"
+      <a
+        href="mailto:soporte@lincoin.me?subject=Verificaci%C3%B3n%20empresarial%20(KYB)"
+        className="w-full py-3 px-6 bg-[#0C0E0D] text-white font-bold rounded-xl hover:bg-[#161A17] transition-colors flex items-center justify-center gap-2 text-sm"
       >
-        {loading ? (
-          <><span className="animate-spin">⏳</span> Iniciando verificación...</>
-        ) : isRejected ? (
-          <><ShieldCheck size={16}/> Reintentar verificación de identidad</>
-        ) : isInProgress ? (
-          <><ShieldCheck size={16}/> Continuar verificación de identidad</>
-        ) : (
-          <><ShieldCheck size={16}/> Verificar identidad con Lincoin</>
-        )}
-      </button>
-      {isInProgress && (
-        <div className="flex flex-col items-center gap-2">
-          <button onClick={checkStatusManually} disabled={checkingStatus}
-            className="text-xs text-[#0C0E0D] font-bold underline underline-offset-2 hover:text-[#0C0E0D] disabled:opacity-50">
-            {checkingStatus ? '⏳ Consultando...' : '¿Ya terminaste? → Verificar estado ahora'}
-          </button>
-          <p className="text-xs text-slate-400 text-center">El estado se actualiza automáticamente cada 15 seg.</p>
-        </div>
-      )}
-      {isRejected && (
-        <p className="text-xs text-red-500 text-center">Tu verificación fue rechazada. Asegúrate de usar documentos vigentes y buena iluminación.</p>
-      )}
-      {!isInProgress && !isRejected && (
-        <p className="text-xs text-slate-400 text-center">Proceso rápido · Foto de documento + selfie · Resultado en minutos</p>
-      )}
+        <ShieldCheck size={16} /> {isRejected ? 'Escribir a soporte' : 'Solicitar verificación'}
+      </a>
+      <p className="text-xs text-slate-400 text-center">
+        {isRejected
+          ? 'Escribinos y te decimos qué hace falta corregir.'
+          : 'Nuestro equipo te pide la documentación y activa tu cuenta.'}
+      </p>
     </div>
   );
 };
@@ -1311,9 +1188,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center shrink-0"><AlertTriangle className="text-red-600" size={20} /></div>
                   <div className="flex-1">
                     <h3 className="text-red-800 font-bold text-sm">Verificación rechazada</h3>
-                    <p className="text-red-700 text-xs mt-1">Tu verificación empresarial fue rechazada. Por favor intenta de nuevo o contacta soporte.</p>
+                    <p className="text-red-700 text-xs mt-1">Tu verificación empresarial fue rechazada. Escribinos y te decimos qué falta.</p>
                   </div>
-                  <DiditKycButton userId={currentUser?.id} kycStatus={ks} showToast={showToast} />
+                  <KycContactoSoporte kycStatus={ks} />
                 </div>
               );
               if (ks === 'in_review') return (
@@ -1330,9 +1207,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   <div className="w-10 h-10 bg-slate-100 rounded-full flex items-center justify-center shrink-0"><ShieldCheck className="text-[#0C0E0D]" size={20} /></div>
                   <div className="flex-1">
                     <h3 className="text-[#0C0E0D] font-bold text-sm">Verificación KYB en progreso</h3>
-                    <p className="text-[#4ADE80] text-xs mt-1">Abriste Lincoin pero aún no terminaste. Completa el proceso para activar tu cuenta empresarial.</p>
+                    <p className="text-[#4ADE80] text-xs mt-1">Falta documentación para activar tu cuenta empresarial. Escribinos y te indicamos cuál.</p>
                   </div>
-                  <DiditKycButton userId={currentUser?.id} kycStatus={ks} showToast={showToast} />
+                  <KycContactoSoporte kycStatus={ks} />
                 </div>
               );
               return (
@@ -1340,9 +1217,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   <div className="w-10 h-10 bg-white/10 rounded-full flex items-center justify-center shrink-0"><ShieldCheck className="text-white" size={20} /></div>
                   <div className="flex-1">
                     <h3 className="text-white font-bold text-sm">Activa tu cuenta — Verificación Empresarial (KYB)</h3>
-                    <p className="text-green-200 text-xs mt-1">Verifica tu empresa con Lincoin para acceder a todos los servicios. El proceso toma menos de 5 minutos.</p>
+                    <p className="text-green-200 text-xs mt-1">Nuestro equipo verifica tu empresa para darte acceso a todos los servicios.</p>
                   </div>
-                  <DiditKycButton userId={currentUser?.id} kycStatus={ks} showToast={showToast} />
+                  <KycContactoSoporte kycStatus={ks} />
                 </div>
               );
           })()}
@@ -1767,7 +1644,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
               </div>
               {!isKycVerified && (
                   <div className="mt-4">
-                      <DiditKycButton userId={currentUser?.id} kycStatus={currentUser?.kycStatus} showToast={showToast} />
+                      <KycContactoSoporte kycStatus={currentUser?.kycStatus} />
                   </div>
               )}
           </div>
