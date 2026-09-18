@@ -4549,6 +4549,19 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           showToast={(m) => showToast(m)}
                           onVolver={() => setOtcRail(null)}
                           saldos={{ COP: getBalance('COP'), COP_BREB: getBalance('COP_BREB'), COP_ACH: getBalance('COP_ACH') }}
+                          onAcreditado={(billetera, monto) => {
+                              // La mesa acredita en el servidor. Sin esto el saldo de la
+                              // pantalla quedaba viejo hasta recargar — justo despues de
+                              // recibir plata, que es cuando mas se mira el numero.
+                              // 1) Optimista, para que se vea al instante.
+                              bumpLocalBalance?.(billetera, monto);
+                              showToast(`Recibiste ${monto.toLocaleString('es-CO', { maximumFractionDigits: 2 })} en tu ${billetera === 'COP_BREB' ? 'saldo Bre-B' : billetera === 'COP_ACH' ? 'saldo ACH' : billetera === 'USD' ? 'saldo USDT' : 'saldo Lincoin'} ⚡`);
+                              // 2) Autoritativo: el servidor manda. Escalonado porque la
+                              //    lectura puede llegar antes de que la escritura se refleje.
+                              refreshData?.();
+                              setTimeout(() => refreshData?.(), 2500);
+                              setTimeout(() => refreshData?.(), 6000);
+                          }}
                       />
                   </div>
               ) : mouvMode === 'converter' && otcRail === 'breb' ? (

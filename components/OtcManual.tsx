@@ -87,19 +87,47 @@ interface Props {
     // cada opcion: elegir donde recibir sin ver cuanto hay en cada una obliga
     // a salir de la pantalla para decidir.
     saldos?: Record<string, number>;
+    // Se llama UNA vez cuando un cierre pasa a completado. La mesa acredita del
+    // lado del servidor, asi que sin este aviso el saldo de la pantalla queda
+    // viejo hasta que el cliente recarga -- justo despues de recibir plata, que
+    // es cuando mas mira el numero.
+    onAcreditado?: (billetera: string, monto: number) => void;
 }
 
-export const OtcManual: React.FC<Props> = ({ userId, showToast, onVolver, saldos }) => {
+export const OtcManual: React.FC<Props> = ({ userId, showToast, onVolver, saldos, onAcreditado }) => {
     const [vista, setVista] = useState<'nueva' | 'detalle'>('nueva');
     const [abierta, setAbierta] = useState<string | null>(null);
     const [cierres, setCierres] = useState<any[]>([]);
     const [cargando, setCargando] = useState(true);
+    // Cierres por los que ya se aviso. Sin esto, cada relectura del hilo
+    // volveria a sumar el saldo en la vista.
+    const avisados = useRef<Set<string>>(new Set());
+    const primeraLectura = useRef(true);
+
+    const avisarAcreditado = useCallback((c: any) => {
+        if (!c || c.status !== 'completada' || !c.id) return;
+        if (avisados.current.has(c.id)) return;
+        avisados.current.add(c.id);
+        const billetera = String(c.payout?.wallet ?? (c.side === 'vende_usdt' ? 'COP' : 'USD'));
+        const monto = Number(c.to_amount);
+        if (monto > 0) onAcreditado?.(billetera, monto);
+    }, [onAcreditado]);
 
     const cargarMios = useCallback(async () => {
         const r = await callOtcMesa('mios', { user_id: userId });
-        if (r?.ok) setCierres(r.cierres ?? []);
+        if (r?.ok) {
+            setCierres(r.cierres ?? []);
+            // La primera lectura no avisa: son cierres viejos, ya contados en
+            // el saldo que vino del servidor.
+            if (primeraLectura.current) {
+                for (const c of r.cierres ?? []) if (c.status === 'completada') avisados.current.add(c.id);
+                primeraLectura.current = false;
+            } else {
+                for (const c of r.cierres ?? []) avisarAcreditado(c);
+            }
+        }
         setCargando(false);
-    }, [userId]);
+    }, [userId, avisarAcreditado]);
 
     useEffect(() => { cargarMios(); }, [cargarMios]);
 
@@ -109,6 +137,7 @@ export const OtcManual: React.FC<Props> = ({ userId, showToast, onVolver, saldos
                 id={abierta}
                 userId={userId}
                 showToast={showToast}
+                onCompletado={avisarAcreditado}
                 onVolver={() => { setVista('nueva'); setAbierta(null); cargarMios(); }}
             />
         );
@@ -427,7 +456,7 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
 };
 
 // ─── Detalle + hilo ─────────────────────────────────────
-const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: string) => void; onVolver: () => void }> = ({ id, userId, showToast, onVolver }) => {
+const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: string) => void; onCompletado?: (c: any) => void; onVolver: () => void }> = ({ id, userId, showToast, onCompletado, onVolver }) => {
     const [cierre, setCierre]   = useState<any>(null);
     const [msgs, setMsgs]       = useState<any[]>([]);
     const [texto, setTexto]     = useState('');
@@ -437,9 +466,9 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
 
     const cargar = useCallback(async () => {
         const r = await callOtcMesa('detalle', { user_id: userId, id });
-        if (r?.ok) { setCierre(r.cierre); setMsgs(r.mensajes ?? []); }
+        if (r?.ok) { setCierre(r.cierre); setMsgs(r.mensajes ?? []); onCompletado?.(r.cierre); }
         setCargando(false);
-    }, [id, userId]);
+    }, [id, userId, onCompletado]);
 
     // Se releé cada 8 s mientras el cierre está vivo. Un hilo que solo se
     // actualiza al recargar la página no sirve para acordar una tasa.
