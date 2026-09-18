@@ -4544,7 +4544,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   </div>
               ) : mouvMode === 'converter' && otcRail === 'manual' ? (
                   <div style={{ margin: '24px auto', maxWidth: 620 }}>
-                      <OtcManual userId={currentUser.id} showToast={(m) => showToast(m)} onVolver={() => setOtcRail(null)} />
+                      <OtcManual
+                          userId={currentUser.id}
+                          showToast={(m) => showToast(m)}
+                          onVolver={() => setOtcRail(null)}
+                          saldos={{ COP: getBalance('COP'), COP_BREB: getBalance('COP_BREB'), COP_ACH: getBalance('COP_ACH') }}
+                      />
                   </div>
               ) : mouvMode === 'converter' && otcRail === 'breb' ? (
                   <div style={{ maxWidth: 560, margin: '24px auto', background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 18, padding: '32px 28px', textAlign: 'center', fontFamily: "'Archivo', system-ui, sans-serif" }}>

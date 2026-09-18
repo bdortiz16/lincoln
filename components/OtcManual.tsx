@@ -83,9 +83,13 @@ interface Props {
     userId: string;
     showToast?: (msg: string) => void;
     onVolver?: () => void;
+    // Saldos COP del cliente, por codigo de billetera. Van a la vista junto a
+    // cada opcion: elegir donde recibir sin ver cuanto hay en cada una obliga
+    // a salir de la pantalla para decidir.
+    saldos?: Record<string, number>;
 }
 
-export const OtcManual: React.FC<Props> = ({ userId, showToast, onVolver }) => {
+export const OtcManual: React.FC<Props> = ({ userId, showToast, onVolver, saldos }) => {
     const [vista, setVista] = useState<'nueva' | 'detalle'>('nueva');
     const [abierta, setAbierta] = useState<string | null>(null);
     const [cierres, setCierres] = useState<any[]>([]);
@@ -121,6 +125,7 @@ export const OtcManual: React.FC<Props> = ({ userId, showToast, onVolver }) => {
             <NuevoCierre
                 userId={userId}
                 showToast={showToast}
+                saldos={saldos}
                 onCreado={async (id) => { await cargarMios(); setAbierta(id); setVista('detalle'); }}
             />
 
@@ -173,7 +178,7 @@ export const OtcManual: React.FC<Props> = ({ userId, showToast, onVolver }) => {
 };
 
 // ─── Formulario de cotización ───────────────────────────
-const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; onCreado: (id: string) => void }> = ({ userId, showToast, onCreado }) => {
+const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; saldos?: Record<string, number>; onCreado: (id: string) => void }> = ({ userId, showToast, saldos, onCreado }) => {
     const [side, setSide]     = useState<'vende_usdt' | 'compra_usdt'>('vende_usdt');
     const [monto, setMonto]   = useState('');
     const [tasa, setTasa]     = useState<number | null>(null);
@@ -181,14 +186,11 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; o
     const [margenPct, setMargenPct]   = useState<number>(0.25);
     const [motivoSinTasa, setMotivoSinTasa] = useState<string | null>(null);
     const [cargandoTasa, setCargandoTasa]   = useState(true);
-    // Destino del COP: el riel donde quiere recibirlo.
-    const [destino, setDestino] = useState<'lincoin' | 'breb' | 'ach'>('lincoin');
-    const [llave, setLlave]   = useState('');
-    const [banco, setBanco]   = useState('');
-    const [cuenta, setCuenta] = useState('');
-    const [titular, setTitular] = useState('');
-    const [wallet, setWallet] = useState('');
-    const [red, setRed]       = useState('TRON');
+    // Billetera del cliente donde se le acredita lo que recibe. NO es un
+    // envio: la mesa cambia una moneda por otra dentro de la cuenta. Sacar
+    // esa plata hacia un banco es otra operacion, la de Enviar dinero, con
+    // sus propios destinatarios y sus propios topes.
+    const [destino, setDestino] = useState<'COP' | 'COP_BREB' | 'COP_ACH'>('COP');
     const [nota, setNota]     = useState('');
     const [enviando, setEnviando] = useState(false);
     const [error, setError]   = useState<string | null>(null);
@@ -225,21 +227,10 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; o
     const enviar = async () => {
         setError(null);
         if (!montoOk) { setError('Escribí cuánto querés enviar.'); return; }
-        if (side === 'vende_usdt') {
-            if (destino === 'breb' && !llave.trim()) { setError('Falta la llave Bre-B donde querés recibir.'); return; }
-            if (destino === 'ach' && !(banco.trim() && cuenta.trim() && titular.trim())) {
-                setError('Faltan los datos de la cuenta bancaria.'); return;
-            }
-        }
-        if (side === 'compra_usdt' && !wallet.trim()) {
-            setError('Falta la dirección donde querés recibir el USDT.'); return;
-        }
         setEnviando(true);
         const payout = side === 'compra_usdt'
-            ? { tipo: 'wallet', red, direccion: wallet.trim() }
-            : destino === 'lincoin' ? { tipo: 'lincoin' }
-            : destino === 'breb'    ? { tipo: 'breb', llave: llave.trim() }
-            : { tipo: 'ach', banco: banco.trim(), cuenta: cuenta.trim(), titular: titular.trim() };
+            ? { tipo: 'saldo', wallet: 'USD' }
+            : { tipo: 'saldo', wallet: destino };
         const r = await callOtcMesa('crear', { user_id: userId, side, fromAmount: n, payout, nota: nota.trim() });
         setEnviando(false);
         if (!r?.ok) {
@@ -354,15 +345,18 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; o
             <div style={{ marginTop: 18, paddingTop: 16, borderTop: '1px solid rgba(255,255,255,0.07)' }}>
                 {side === 'vende_usdt' ? (
                     <>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 12 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 4 }}>
                             <Landmark size={14} style={{ color: '#878E88' }} />
-                            <span style={{ fontSize: 12.5, color: '#F4F4F2', fontWeight: 600 }}>Dónde querés recibir el COP</span>
+                            <span style={{ fontSize: 12.5, color: '#F4F4F2', fontWeight: 600 }}>En qué billetera querés el COP</span>
                         </div>
+                        <p style={{ fontSize: 11.5, color: '#878E88', marginBottom: 11, lineHeight: 1.5 }}>
+                            Se acredita en tu cuenta. Sacarlo hacia un banco es aparte, desde Enviar dinero.
+                        </p>
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 7 }}>
                             {([
-                                ['lincoin', 'Lincoin', 'A tu saldo'],
-                                ['breb',    'Bre-B',   'A una llave'],
-                                ['ach',     'ACH',     'A una cuenta'],
+                                ['COP',      'Lincoin', 'Peso Lincoin'],
+                                ['COP_BREB', 'Bre-B',   'Saldo Bre-B'],
+                                ['COP_ACH',  'ACH',     'Saldo ACH'],
                             ] as const).map(([v, l, pie]) => (
                                 <button
                                     key={v}
@@ -376,50 +370,25 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; o
                                 >
                                     <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: destino === v ? '#4ADE80' : '#F4F4F2' }}>{l}</span>
                                     <span style={{ display: 'block', fontSize: 10.5, color: '#878E88', marginTop: 2 }}>{pie}</span>
+                                    {saldos?.[v] != null && (
+                                        <span style={{ display: 'block', fontSize: 10.5, color: 'rgba(244,244,242,0.45)', marginTop: 3 }}>
+                                            {nf(saldos[v], 0)}
+                                        </span>
+                                    )}
                                 </button>
                             ))}
                         </div>
-
-                        {destino === 'lincoin' && (
-                            <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 10, lineHeight: 1.5 }}>
-                                El COP queda en tu saldo Lincoin. Desde ahí lo enviás cuando quieras, sin pedir nada más.
-                            </p>
-                        )}
-                        {destino === 'breb' && (
-                            <div style={{ marginTop: 12 }}>
-                                <label style={LABEL}>Llave Bre-B</label>
-                                <input value={llave} onChange={e => setLlave(e.target.value)} placeholder="Celular, correo, cédula o alfanumérica" style={{ ...INPUT, fontFamily: 'ui-monospace, monospace', fontSize: 13 }} />
-                                <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', marginTop: 6, lineHeight: 1.5 }}>
-                                    La mesa confirma a nombre de quién está la llave antes de enviar.
-                                </p>
-                            </div>
-                        )}
-                        {destino === 'ach' && (
-                            <div style={{ display: 'grid', gap: 10, marginTop: 12 }}>
-                                <div><label style={LABEL}>Banco</label><input value={banco} onChange={e => setBanco(e.target.value)} placeholder="Bancolombia" style={INPUT} /></div>
-                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                                    <div><label style={LABEL}>Número de cuenta</label><input value={cuenta} onChange={e => setCuenta(e.target.value)} inputMode="numeric" style={{ ...INPUT, fontFamily: 'ui-monospace, monospace' }} /></div>
-                                    <div><label style={LABEL}>Titular</label><input value={titular} onChange={e => setTitular(e.target.value)} style={INPUT} /></div>
-                                </div>
-                            </div>
-                        )}
                     </>
                 ) : (
-                    <>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 12 }}>
-                            <Wallet size={14} style={{ color: '#878E88' }} />
-                            <span style={{ fontSize: 12.5, color: '#F4F4F2', fontWeight: 600 }}>Dónde querés recibir el USDT</span>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                        <Wallet size={14} style={{ color: '#878E88', marginTop: 2, flexShrink: 0 }} />
+                        <div>
+                            <span style={{ fontSize: 12.5, color: '#F4F4F2', fontWeight: 600, display: 'block' }}>El USDT va a tu saldo</span>
+                            <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 3, lineHeight: 1.5 }}>
+                                Se acredita en tu billetera USDT de Lincoin. Para mandarlo a una dirección externa, usá Enviar dinero.
+                            </p>
                         </div>
-                        <div style={{ display: 'grid', gap: 10 }}>
-                            <div>
-                                <label style={LABEL}>Red</label>
-                                <select value={red} onChange={e => setRed(e.target.value)} style={{ ...INPUT, appearance: 'none' }}>
-                                    {['TRON', 'BSC', 'BASE', 'ETH', 'POLYGON'].map(x => <option key={x} value={x} style={{ background: '#0C0E0D' }}>{x}</option>)}
-                                </select>
-                            </div>
-                            <div><label style={LABEL}>Dirección</label><input value={wallet} onChange={e => setWallet(e.target.value)} style={{ ...INPUT, fontFamily: 'ui-monospace, monospace', fontSize: 12.5 }} /></div>
-                        </div>
-                    </>
+                    </div>
                 )}
             </div>
 
@@ -600,9 +569,16 @@ const Renglon: React.FC<{ k: string; v: string; fuerte?: boolean }> = ({ k, v, f
 );
 
 // Como se describe cada destino del COP en el detalle del cierre.
+export const NOMBRE_BILLETERA: Record<string, string> = {
+    COP: 'Peso Lincoin', COP_BREB: 'Saldo Bre-B', COP_ACH: 'Saldo ACH', USD: 'Saldo USDT',
+};
+
 export function destinoTexto(p: any): { label: string; valor: string; mono?: boolean } | null {
     if (!p?.tipo) return null;
-    if (p.tipo === 'lincoin') return { label: 'Recibe en', valor: 'Saldo Lincoin' };
+    if (p.tipo === 'saldo') return { label: 'Se acredita en', valor: NOMBRE_BILLETERA[p.wallet] ?? String(p.wallet ?? '—') };
+    // Formas viejas: cierres creados antes de que el destino fuera una
+    // billetera propia. Se siguen mostrando para no romper el historial.
+    if (p.tipo === 'lincoin') return { label: 'Se acredita en', valor: 'Peso Lincoin' };
     if (p.tipo === 'breb')    return { label: 'Llave Bre-B', valor: p.llave ?? '—', mono: true };
     if (p.tipo === 'ach' || p.tipo === 'banco') return { label: 'Cuenta', valor: `${p.banco ?? '—'} · ${p.cuenta ?? '—'}`, mono: true };
     if (p.tipo === 'wallet')  return { label: `Wallet ${p.red ?? ''}`.trim(), valor: p.direccion ?? '—', mono: true };

@@ -157,7 +157,11 @@ async function tasaUsdCop(): Promise<Cotizacion> {
   try {
     const r = await fetch(`${SUPABASE_URL}/functions/v1/finity-proxy`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', apikey: ANON_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+      // Las DOS llaves tienen que ser la misma. Mandar la anon en `apikey` y
+      // la service-role en `Authorization` hace que el runtime de Supabase
+      // rechace la llamada con "Conflicting API keys" — y eso llegaba a la
+      // pantalla del cliente como "el proveedor no devolvio tasa".
+      headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
       body: JSON.stringify({ action: 'rates', query: { from: 'USD', to: 'COP' } }),
       signal: AbortSignal.timeout(15000),
     })

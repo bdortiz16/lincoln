@@ -65,6 +65,12 @@ const ESTADO: Record<string, { label: string; bg: string; tx: string }> = {
 };
 const caraDe = (s: string) => ESTADO[s] ?? { label: String(s ?? '—').toUpperCase(), bg: '#F1F5F9', tx: '#475569' };
 
+// Billeteras del cliente donde se le acredita lo que recibe. El cierre NO es
+// un envío: la mesa cambia una moneda por otra dentro de la cuenta.
+const BILLETERA: Record<string, string> = {
+    COP: 'Peso Lincoin', COP_BREB: 'Saldo Bre-B', COP_ACH: 'Saldo ACH', USD: 'Saldo USDT',
+};
+
 const FILTROS: Array<{ id: string; label: string }> = [
     { id: 'vivos',          label: 'En curso' },
     { id: 'abierta',        label: 'Sin tomar' },
@@ -329,23 +335,26 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
 
                         <div className="border-t border-slate-100 pt-4">
                             <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">
-                                {cierre.payout?.tipo === 'wallet' ? 'Dónde recibe el USDT' : 'Dónde recibe el COP'}
+                                Dónde se le acredita
                             </p>
+                            {cierre.payout?.tipo === 'saldo' && (
+                                <div className="bg-slate-50 rounded-xl p-3 space-y-1.5">
+                                    <Fila icon={Wallet} label="Billetera" valor={BILLETERA[cierre.payout.wallet] ?? cierre.payout.wallet} />
+                                    <p className="text-[11px] text-slate-400 pt-0.5">
+                                        Se acredita en la cuenta del cliente. No sale plata hacia ningún banco: si después
+                                        la quiere afuera, la manda él desde Enviar dinero, con sus topes y destinatarios.
+                                    </p>
+                                </div>
+                            )}
                             {cierre.payout?.tipo === 'lincoin' && (
                                 <div className="bg-slate-50 rounded-xl p-3 space-y-1.5">
-                                    <Fila icon={Wallet} label="Riel" valor="Saldo Lincoin" />
-                                    <p className="text-[11px] text-slate-400 pt-0.5">
-                                        Se acredita en la cuenta del cliente. No hay que sacar plata a ningun banco.
-                                    </p>
+                                    <Fila icon={Wallet} label="Billetera" valor="Peso Lincoin" />
                                 </div>
                             )}
                             {cierre.payout?.tipo === 'breb' && (
                                 <div className="bg-slate-50 rounded-xl p-3 space-y-1.5">
                                     <Fila icon={Zap}  label="Riel"  valor="Bre-B" />
                                     <Fila icon={Hash} label="Llave" valor={cierre.payout.llave} mono onCopy={() => copiar(String(cierre.payout.llave ?? ''))} />
-                                    <p className="text-[11px] text-amber-700 pt-0.5">
-                                        Confirma a nombre de quien esta la llave antes de enviar.
-                                    </p>
                                 </div>
                             )}
                             {(cierre.payout?.tipo === 'ach' || cierre.payout?.tipo === 'banco') && (
