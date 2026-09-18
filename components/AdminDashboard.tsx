@@ -97,6 +97,7 @@ import { AdminClientes } from './AdminClientes';
 import { AdminReconcile } from './AdminReconcile';
 import { AdminOtcSection } from './AdminOtcSection';
 import { AdminOtcCierres } from './AdminOtcCierres';
+import { sonarCampana, campanaActiva } from './campanaOtc';
 import { Zap, ArrowLeftRight, ArrowLeft, Info, ChevronRight, Activity, Link2, MessageSquare } from 'lucide-react';
 import { CollectionWalletCard } from './CollectionWalletCard';
 import type { AdminProfile } from './AdminPersonas/lib/adminAuth';
@@ -904,6 +905,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   // `resumen`) y no esta pantalla: contar aca obligaria a traerse la bandeja
   // entera solo para pintar un numero en el sidebar.
   const [otcPend, setOtcPend] = useState(0);
+  // Cuantos habia la vez anterior. La campana suena desde ACA y no solo desde
+  // la bandeja: el aviso existe justamente para cuando el operador NO esta
+  // mirando esa pantalla.
+  const otcPrev = useRef<number | null>(null);
   useEffect(() => {
     let vivo = true;
     const leer = async () => {
@@ -917,7 +922,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
           body: JSON.stringify({ action: 'resumen' }),
         });
         const d = await r.json().catch(() => null);
-        if (vivo && d?.ok) setOtcPend(Number(d.abiertas ?? 0));
+        if (vivo && d?.ok) {
+          const n = Number(d.abiertas ?? 0);
+          setOtcPend(n);
+          // La PRIMERA lectura solo toma nota: sonar ahi repicaria al entrar al
+          // panel por cierres que ya estaban esperando.
+          if (otcPrev.current != null && n > otcPrev.current && campanaActiva()) sonarCampana();
+          otcPrev.current = n;
+        }
       } catch { /* el badge no puede tumbar el panel */ }
     };
     leer();

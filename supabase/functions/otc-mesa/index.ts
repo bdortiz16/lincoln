@@ -648,7 +648,12 @@ Deno.serve(async (req) => {
       if (!archivo) return json(400, { ok: false, error: 'falta el archivo' })
       const sub = await guardarComprobante(r.cierre.id, archivo, String(payload.nombre ?? ''), String(payload.tipo ?? ''))
       if (!sub.ok) return json(400, { ok: false, error: sub.error })
-      await escribirMensaje(r.cierre.id, 'cliente', String(payload.nota ?? 'Comprobante del envio.').slice(0, 500),
+      // Quien adjunta importa: marcar_pagada exige un comprobante DEL CLIENTE.
+      // Si un adjunto de la mesa se guardara como suyo, la mesa habilitaria
+      // sin querer el "ya pague" de alguien que no pago.
+      const quien = caller.admin ? 'mesa' : 'cliente'
+      await escribirMensaje(r.cierre.id, quien,
+        String(payload.nota ?? (quien === 'mesa' ? 'Adjunto de la mesa.' : 'Comprobante del envio.')).slice(0, 500),
         { autorId: caller.userId, autorNom: caller.nombre ?? undefined, adjunto: sub.path })
       return json(200, { ok: true })
     }
