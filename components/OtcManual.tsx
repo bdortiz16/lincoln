@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
     ArrowLeftRight, Send, RefreshCw, ChevronLeft, MessageSquare,
-    CheckCircle2, Clock, XCircle, AlertTriangle, Landmark, Wallet,
+    CheckCircle2, Clock, XCircle, AlertTriangle, Landmark, Wallet, Paperclip,
 } from 'lucide-react';
 import { FinityRateChart } from './FinityRateChart';
 
@@ -522,10 +522,14 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
 
             {/* Acciones del cliente */}
             {cierre.status === 'esperando_pago' && (
-                <button onClick={() => accion('marcar_pagada')} className="lincoin-btn-white transition-colors"
-                    style={{ width: '100%', marginTop: 10, padding: '12px 0', borderRadius: 11, border: 'none', fontWeight: 700, fontSize: 13.5 }}>
-                    Ya envié el pago
-                </button>
+                <SubirComprobante
+                    venceAt={cierre.vence_at}
+                    onSubir={async (archivo, nombre, tipo) => {
+                        const r = await callOtcMesa('marcar_pagada', { user_id: userId, id, archivo, nombre, tipo });
+                        if (r?.ok) { cargar(); showToast?.('Comprobante enviado a la mesa.'); return null; }
+                        return r?.message ?? r?.error ?? 'No se pudo enviar el comprobante.';
+                    }}
+                />
             )}
             {['abierta', 'en_proceso', 'esperando_pago'].includes(cierre.status) && (
                 <button onClick={() => accion('cancelar')}
@@ -564,6 +568,106 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
                     </p>
                 )}
             </div>
+        </div>
+    );
+};
+
+// ─── Comprobante, contra reloj ──────────────────────────
+// El comprobante es OBLIGATORIO: "ya pagué" sin respaldo obliga a la mesa a
+// salir a buscar en el banco un pago del que solo sabe que alguien dice que
+// existe. Y hay plazo, porque la tasa acordada no se sostiene mientras el
+// mercado se mueve.
+//
+// El contador de esta pantalla es informativo. Quien decide si llegó a tiempo
+// es el servidor: un reloj del navegador se para, se adelanta o se edita.
+const SubirComprobante: React.FC<{
+    venceAt: string | null;
+    onSubir: (archivo: string, nombre: string, tipo: string) => Promise<string | null>;
+}> = ({ venceAt, onSubir }) => {
+    const [restante, setRestante] = useState<number | null>(null);
+    const [subiendo, setSubiendo] = useState(false);
+    const [error, setError]   = useState<string | null>(null);
+    const fileRef = useRef<HTMLInputElement | null>(null);
+
+    useEffect(() => {
+        if (!venceAt) { setRestante(null); return; }
+        const calc = () => setRestante(Math.max(0, Math.floor((new Date(venceAt).getTime() - Date.now()) / 1000)));
+        calc();
+        const t = setInterval(calc, 1000);
+        return () => clearInterval(t);
+    }, [venceAt]);
+
+    const elegir = async (f: File | null | undefined) => {
+        if (!f) return;
+        setError(null);
+        if (f.size > 5 * 1024 * 1024) { setError('El comprobante no puede pesar más de 5 MB.'); return; }
+        setSubiendo(true);
+        try {
+            const b64: string = await new Promise((res, rej) => {
+                const fr = new FileReader();
+                fr.onload = () => res(String(fr.result ?? ''));
+                fr.onerror = () => rej(new Error('no se pudo leer el archivo'));
+                fr.readAsDataURL(f);
+            });
+            const msg = await onSubir(b64, f.name, f.type);
+            if (msg) setError(msg);
+        } catch (e: any) {
+            setError(e?.message ?? 'No se pudo leer el archivo.');
+        }
+        setSubiendo(false);
+        if (fileRef.current) fileRef.current.value = '';
+    };
+
+    const mm = restante != null ? String(Math.floor(restante / 60)).padStart(2, '0') : '--';
+    const ss = restante != null ? String(restante % 60).padStart(2, '0') : '--';
+    const urgente = restante != null && restante <= 60;
+    const vencido = restante === 0;
+
+    return (
+        <div style={{ ...PANEL, marginTop: 10, padding: '16px 18px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>Envía y subí el comprobante</span>
+                {venceAt && (
+                    <span style={{
+                        fontFamily: 'ui-monospace, monospace', fontSize: 15, fontWeight: 800,
+                        color: vencido ? '#F87171' : urgente ? '#FBBF24' : '#4ADE80',
+                    }}>
+                        {vencido ? 'vencido' : `${mm}:${ss}`}
+                    </span>
+                )}
+            </div>
+            <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 5, lineHeight: 1.5 }}>
+                {vencido
+                    ? 'Se venció el plazo. Si ya enviaste el dinero, escribile a la mesa por el chat antes de montar otra solicitud.'
+                    : 'Tiene que verse el monto enviado. Imagen o PDF, hasta 5 MB.'}
+            </p>
+
+            <input
+                ref={fileRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/heic,application/pdf"
+                onChange={e => elegir(e.target.files?.[0])}
+                style={{ display: 'none' }}
+            />
+            <button
+                onClick={() => fileRef.current?.click()}
+                disabled={subiendo || vencido}
+                className="lincoin-btn-white transition-colors"
+                style={{
+                    width: '100%', marginTop: 12, padding: '12px 0', borderRadius: 11, border: 'none',
+                    fontWeight: 700, fontSize: 13.5, opacity: (subiendo || vencido) ? 0.5 : 1,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
+                }}
+            >
+                {subiendo ? <><RefreshCw size={15} className="animate-spin" /> Enviando…</> : <><Paperclip size={15} /> Adjuntar comprobante</>}
+            </button>
+
+            {error && (
+                <div style={{ marginTop: 10, display: 'flex', alignItems: 'flex-start', gap: 7 }}>
+                    <AlertTriangle size={13} style={{ color: '#F87171', marginTop: 1, flexShrink: 0 }} />
+                    <p style={{ color: '#F87171', fontSize: 12, lineHeight: 1.5 }}>{error}</p>
+                </div>
+            )}
         </div>
     );
 };

@@ -87,6 +87,15 @@ const fecha = (d: any) => {
     if (!d || Number.isNaN(t.getTime())) return '—';
     return t.toLocaleString('es-CO', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 };
+// Cuánto le queda al cliente para subir el comprobante. Vencido, el servidor
+// cancela la solicitud solo.
+const restante = (d: any) => {
+    const t = new Date(d ?? '').getTime();
+    if (!Number.isFinite(t)) return '';
+    const s = Math.floor((t - Date.now()) / 1000);
+    if (s <= 0) return 'vencido';
+    return `quedan ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+};
 // Cuánto lleva esperando. Es el dato que decide a cuál se entra primero.
 const espera = (d: any) => {
     const t = new Date(d ?? '').getTime();
@@ -320,6 +329,9 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
                             <KV label="Tasa final" valor={cierre.rate_final != null ? nf(cierre.rate_final) : '— sin fijar'} />
                             <KV label="Tasa que vio el cliente" valor={cierre.rate_cotizada != null ? nf(cierre.rate_cotizada) : '— no se pudo cotizar'} pie={cierre.rate_fuente ?? undefined} />
                             <KV label="Solicitado" valor={fecha(cierre.created_at)} pie={espera(cierre.created_at)} />
+                            {cierre.status === 'esperando_pago' && cierre.vence_at && (
+                                <KV label="Plazo para pagar" valor={fecha(cierre.vence_at)} pie={restante(cierre.vence_at)} />
+                            )}
                         </div>
 
                         <div className="border-t border-slate-100 pt-4">

@@ -113,6 +113,48 @@ const MARGEN_DEFAULT = 0.25
 // con la cuarta parte de la operacion sin que nadie lo note.
 const MARGEN_MAX = 5
 
+// Minutos que tiene el cliente para pagar y subir el comprobante desde que la
+// mesa fija la tasa. Una tasa acordada no se sostiene indefinidamente mientras
+// el mercado se mueve.
+const VENTANA_DEFAULT = 5
+const VENTANA_MIN = 2      // menos que esto no alcanza ni para abrir el banco
+const VENTANA_MAX = 120
+
+async function ventanaPago(): Promise<number> {
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', MARGEN_KEY).maybeSingle()
+    const v = data?.value ? JSON.parse(data.value) : null
+    const n = Number(v?.ventanaMin)
+    if (Number.isFinite(n) && n >= VENTANA_MIN && n <= VENTANA_MAX) return n
+    return VENTANA_DEFAULT
+  } catch { return VENTANA_DEFAULT }
+}
+
+// Cancela los cierres a los que se les vencio el plazo. Se ejecuta al leer, no
+// por cron: asi no hace falta infraestructura extra y el estado que se muestra
+// siempre esta al dia con el reloj.
+//
+// VENCIDO NO SIGNIFICA QUE NO PAGO. Puede haber enviado el dinero sobre la hora
+// y no haber llegado a subir el comprobante. Por eso el mensaje que queda le
+// dice que escriba, y el hilo sigue abierto.
+async function caducarVencidos(): Promise<void> {
+  try {
+    const { data } = await db.from('otc_closes')
+      .update({
+        status: 'cancelada', cancelada_at: ahora(), updated_at: ahora(),
+        motivo_cierre: 'Vencio el plazo para subir el comprobante',
+      })
+      .eq('status', 'esperando_pago')
+      .lt('vence_at', ahora())
+      .select('id')
+    for (const c of data ?? []) {
+      await escribirMensaje((c as any).id, 'sistema',
+        'Se vencio el plazo para subir el comprobante y la solicitud quedo cancelada. '
+        + 'Si YA enviaste el dinero, escribi por aca antes de montar otra: la mesa lo verifica y lo resuelve sobre esta misma solicitud.')
+    }
+  } catch { /* nunca frena la lectura */ }
+}
+
 async function margenManual(): Promise<number> {
   try {
     const { data } = await db.from('system_config').select('value').eq('key', MARGEN_KEY).maybeSingle()
@@ -256,6 +298,48 @@ async function cargarCierre(id: string, caller: Caller): Promise<{ ok: boolean; 
 const num = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : NaN }
 const ahora = () => new Date().toISOString()
 
+// ─── Comprobantes ───────────────────────────────────────
+// Bucket PRIVADO. El archivo entra y sale por aca: la app Empresas usa auth
+// propia, asi que una politica de storage basada en auth.uid() no protegeria
+// nada. El cliente nunca recibe una URL permanente, solo una firmada que vence.
+const BUCKET = 'otc-comprobantes'
+const MAX_BYTES = 5 * 1024 * 1024
+const TIPOS_OK = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'application/pdf']
+
+async function guardarComprobante(closeId: string, archivo: string, nombre: string, tipo: string): Promise<{ ok: boolean; path?: string; error?: string }> {
+  const t = String(tipo || '').toLowerCase()
+  if (!TIPOS_OK.includes(t)) return { ok: false, error: 'El comprobante tiene que ser una imagen (JPG, PNG, WEBP) o un PDF.' }
+  let bytes: Uint8Array
+  try {
+    const b64 = String(archivo).includes(',') ? String(archivo).split(',')[1] : String(archivo)
+    const bin = atob(b64)
+    bytes = Uint8Array.from(bin, ch => ch.charCodeAt(0))
+  } catch { return { ok: false, error: 'No se pudo leer el archivo.' } }
+  if (bytes.byteLength === 0) return { ok: false, error: 'El archivo llego vacio.' }
+  if (bytes.byteLength > MAX_BYTES) return { ok: false, error: 'El comprobante no puede pesar mas de 5 MB.' }
+
+  const limpio = String(nombre || 'comprobante').replace(/[^\w.\-]/g, '_').slice(-60)
+  const path = `${closeId}/${Date.now()}-${limpio}`
+  const { error } = await db.storage.from(BUCKET).upload(path, bytes, { contentType: t, upsert: false })
+  if (error) return { ok: false, error: `No se pudo guardar el comprobante: ${error.message}` }
+  return { ok: true, path }
+}
+
+// Los mensajes guardan el PATH dentro del bucket, no una URL. Al leerlos se
+// cambia por una URL firmada que vence en una hora: un enlace permanente a un
+// documento bancario, una vez que sale, ya no se puede retirar.
+async function firmarAdjuntos(msgs: any[]): Promise<any[]> {
+  const out: any[] = []
+  for (const m of msgs) {
+    if (!m.adjunto_url) { out.push(m); continue }
+    try {
+      const { data } = await db.storage.from(BUCKET).createSignedUrl(m.adjunto_url, 3600)
+      out.push({ ...m, adjunto_url: data?.signedUrl ?? null, adjunto_falla: data?.signedUrl ? undefined : true })
+    } catch { out.push({ ...m, adjunto_url: null, adjunto_falla: true }) }
+  }
+  return out
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
 
@@ -367,6 +451,7 @@ Deno.serve(async (req) => {
 
     // ── Mis cierres (cliente) ───────────────────────────
     if (action === 'mios') {
+      await caducarVencidos()
       const uid = String(payload.user_id ?? caller.userId ?? '')
       if (!uid) return json(400, { ok: false, error: 'falta el usuario' })
       if (!caller.admin && uid !== String(caller.userId)) return json(403, { ok: false, error: 'no' })
@@ -377,6 +462,7 @@ Deno.serve(async (req) => {
 
     // ── Bandeja de la mesa ──────────────────────────────
     if (action === 'lista') {
+      await caducarVencidos()
       const estado = String(payload.estado ?? '')
       let q = db.from('otc_closes').select('*')
       if (estado === 'vivos') q = q.in('status', VIVOS)
@@ -408,6 +494,7 @@ Deno.serve(async (req) => {
 
     // ── Conteo para el badge del sidebar ────────────────
     if (action === 'resumen') {
+      await caducarVencidos()
       const { count: abiertas } = await db.from('otc_closes')
         .select('id', { count: 'exact', head: true }).in('status', VIVOS)
       // Sin leer por la mesa: hay mensaje del cliente posterior a la ultima vez
@@ -422,10 +509,12 @@ Deno.serve(async (req) => {
 
     // ── Detalle + hilo (los dos lados) ──────────────────
     if (action === 'detalle') {
+      await caducarVencidos()
       const r = await cargarCierre(String(payload.id ?? ''), caller)
       if (!r.ok) return json(404, { ok: false, error: r.motivo })
-      const { data: msgs } = await db.from('otc_messages').select('*')
+      const { data: msgsRaw } = await db.from('otc_messages').select('*')
         .eq('close_id', r.cierre.id).order('created_at', { ascending: true }).limit(500)
+      const msgs = await firmarAdjuntos(msgsRaw ?? [])
 
       // Marcar visto del lado que abrio.
       const campo = caller.admin ? 'visto_mesa' : 'visto_cliente'
@@ -440,7 +529,7 @@ Deno.serve(async (req) => {
       return json(200, {
         ok: true,
         cierre: caller.admin ? r.cierre : paraCliente(r.cierre),
-        mensajes: msgs ?? [],
+        mensajes: msgs,
         cliente,
       })
     }
@@ -452,9 +541,10 @@ Deno.serve(async (req) => {
       const body = String(payload.body ?? '').trim()
       const adjunto = String(payload.adjunto ?? '').trim()
       if (!body && !adjunto) return json(400, { ok: false, error: 'mensaje vacio' })
-      if (r.cierre.status === 'completada' || r.cierre.status === 'cancelada') {
-        return json(409, { ok: false, error: 'ese cierre ya esta cerrado' })
-      }
+      // El hilo NO se cierra con el cierre. Justo cuando una solicitud se
+      // cancela por vencimiento es cuando un cliente que alcanzo a pagar
+      // necesita avisar; bloquearle el chat ahi lo deja sin a quien escribirle
+      // con la plata afuera.
       await escribirMensaje(r.cierre.id, caller.admin ? 'mesa' : 'cliente', body.slice(0, 4000), {
         autorId: caller.userId, autorNom: caller.nombre ?? undefined, adjunto: adjunto || undefined,
       })
@@ -494,20 +584,26 @@ Deno.serve(async (req) => {
       const monto = Number(r.cierre.from_amount)
       const to = r.cierre.side === 'vende_usdt' ? monto * rate : monto / rate
 
+      // El reloj arranca ACA, no al crear la solicitud: antes de que la mesa
+      // diga a que tasa la toma, el cliente no tiene contra que pagar.
+      const mins = await ventanaPago()
+      const vence = new Date(Date.now() + mins * 60_000).toISOString()
+
       const { error } = await db.from('otc_closes').update({
         rate_final: rate, to_amount: to, status: 'esperando_pago',
-        confirmada_at: ahora(), updated_at: ahora(),
+        confirmada_at: ahora(), vence_at: vence, updated_at: ahora(),
       }).eq('id', r.cierre.id)
       if (error) return json(500, { ok: false, error: error.message })
 
       await escribirMensaje(r.cierre.id, 'sistema',
         `Tasa confirmada: ${rate.toLocaleString('es-CO', { maximumFractionDigits: 2 })}. `
         + `Recibis ${to.toLocaleString('es-CO', { maximumFractionDigits: 2 })} ${r.cierre.to_currency} `
-        + `por ${monto.toLocaleString('es-CO', { maximumFractionDigits: 2 })} ${r.cierre.from_currency}.`)
+        + `por ${monto.toLocaleString('es-CO', { maximumFractionDigits: 2 })} ${r.cierre.from_currency}. `
+        + `Tenes ${mins} minutos para enviar y subir el comprobante.`)
       if (instrucciones) {
         await escribirMensaje(r.cierre.id, 'mesa', instrucciones.slice(0, 4000), { autorId: caller.userId, autorNom: caller.nombre ?? undefined })
       }
-      return json(200, { ok: true, toAmount: to })
+      return json(200, { ok: true, toAmount: to, venceAt: vence, ventanaMin: mins })
     }
 
     // ── El cliente avisa que ya pago ────────────────────
@@ -517,12 +613,29 @@ Deno.serve(async (req) => {
       if (r.cierre.status !== 'esperando_pago') {
         return json(409, { ok: false, error: 'todavia no hay instrucciones de pago para este cierre' })
       }
-      const adjunto = String(payload.adjunto ?? '').trim()
-      await db.from('otc_closes').update({ status: 'pagada', pagada_at: ahora(), updated_at: ahora() }).eq('id', r.cierre.id)
-      await escribirMensaje(r.cierre.id, 'sistema', 'El cliente marco el envio como realizado. La mesa lo verifica.')
-      if (adjunto) {
-        await escribirMensaje(r.cierre.id, 'cliente', 'Comprobante adjunto.', { autorId: caller.userId, autorNom: caller.nombre ?? undefined, adjunto })
+      // El plazo se comprueba ACA tambien, no solo en el reloj de la pantalla:
+      // un contador del navegador se para, se adelanta o se edita.
+      if (r.cierre.vence_at && new Date(r.cierre.vence_at).getTime() < Date.now()) {
+        await caducarVencidos()
+        return json(409, {
+          ok: false, error: 'vencido',
+          message: 'Se vencio el plazo. Si ya enviaste el dinero, escribi por el chat antes de montar otra solicitud.',
+        })
       }
+      // El comprobante es OBLIGATORIO. "Ya pague" sin respaldo no le sirve a
+      // nadie: la mesa tendria que salir a buscar en el banco un pago del que
+      // solo sabe que alguien dice que existe.
+      const archivo = String(payload.archivo ?? '')
+      if (!archivo) {
+        return json(400, { ok: false, error: 'falta_comprobante', message: 'Adjunta el comprobante del envio para confirmar.' })
+      }
+      const sub = await guardarComprobante(r.cierre.id, archivo, String(payload.nombre ?? ''), String(payload.tipo ?? ''))
+      if (!sub.ok) return json(400, { ok: false, error: sub.error })
+
+      await db.from('otc_closes').update({ status: 'pagada', pagada_at: ahora(), updated_at: ahora() }).eq('id', r.cierre.id)
+      await escribirMensaje(r.cierre.id, 'cliente', String(payload.nota ?? 'Comprobante del envio.').slice(0, 500),
+        { autorId: caller.userId, autorNom: caller.nombre ?? undefined, adjunto: sub.path })
+      await escribirMensaje(r.cierre.id, 'sistema', 'El cliente subio el comprobante. La mesa verifica el ingreso antes de liberar.')
       return json(200, { ok: true })
     }
 
