@@ -986,6 +986,49 @@ serve(async (req: Request) => {
       //    cliente que su plata llegó cuando no llegó es otra cosa.
       if (tx.status === 'Procesando') {
         const ageMin = Math.round((Date.now() - new Date(tx.created_at).getTime()) / 60000)
+
+        // ── VENTANA DE LIQUIDACION ──────────────────────────────────────
+        // Dejar TODO en Procesando hasta que una persona lo confirme no es
+        // sostenible: el cliente ve "en curso" en transferencias que si se
+        // pagaron, que son la enorme mayoria, y nueve de cada diez avisos al
+        // admin son ruido. Un aviso que casi siempre es ruido se deja de mirar,
+        // y ahi volvemos al punto de partida.
+        //
+        // Bre-B liquida en segundos y una devolucion del banco destino llega
+        // en minutos. Pasada la ventana sin que nadie la haya marcado como
+        // devuelta, se da por liquidada.
+        //
+        // ESTO SIGUE SIENDO UNA SUPOSICION, no una confirmacion, y por eso:
+        //   · queda marcada autoConfirmada con la ventana que se uso, para que
+        //     seis meses despues se pueda distinguir de una confirmada por el
+        //     proveedor o por una persona;
+        //   · el admin recibe el aviso ANTES de que la ventana venza, asi que
+        //     tiene la oportunidad de frenarla;
+        //   · la conciliacion sigue mirando las Completado recientes durante
+        //     cinco dias, asi que si algun dia el estado se puede consultar,
+        //     una devolucion tardia todavia revierte y reembolsa.
+        //
+        // La ventana por defecto es de 3 horas. El auto-completado viejo era de
+        // DOS MINUTOS, que es lo que dejaba pasar las devoluciones: llegaban
+        // despues. Se puede ajustar con BREB_SETTLE_HOURS sin desplegar.
+        const ventanaH = Number(Deno.env.get('BREB_SETTLE_HOURS') ?? '3') || 3
+        if (ageMin >= ventanaH * 60) {
+          const { data: cerrada } = await db.from('transactions').update({
+            status: 'Completado',
+            raw_data: {
+              ...rd,
+              settledAt: new Date().toISOString(),
+              autoConfirmada: true,
+              ventanaHoras: ventanaH,
+              revisionManual: undefined,
+            },
+          }).eq('id', tx.id).eq('status', 'Procesando').select('id')
+          if (cerrada?.length) {
+            await notifyTx(tx.id)
+            out.push({ id: tx.id, result: 'auto_confirmada', horas: ventanaH })
+            continue
+          }
+        }
         // Bre-B liquida en segundos. Pasado un rato sin confirmar, deja de ser
         // "en curso" y pasa a ser algo que alguien tiene que mirar contra la
         // consola del proveedor.
@@ -993,7 +1036,9 @@ serve(async (req: Request) => {
         // Aviso al admin UNA sola vez, pasada una hora. Quince minutos es el
         // umbral para marcarla en pantalla; una hora es cuando ya dejo de ser
         // "esta tardando" y hay plata de alguien sin destino conocido.
-        if (ageMin >= 60 && !rd.alertaEnviada) {
+        // El aviso llega a los 30 minutos: tiene que haber margen para frenar
+        // una devolucion antes de que la ventana la de por liquidada.
+        if (ageMin >= 30 && !rd.alertaEnviada) {
           const enviado = await avisarAdminSinConfirmar(tx)
           if (enviado) await db.from('transactions').update({ raw_data: { ...rd, alertaEnviada: true, alertaAt: new Date().toISOString() } }).eq('id', tx.id)
         }

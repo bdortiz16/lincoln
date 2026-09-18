@@ -412,6 +412,27 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const [isConverting, setIsConverting] = useState(false);
   const [showConvertDetails, setShowConvertDetails] = useState(false);
   const [selectedTx, setSelectedTx] = useState<any>(null);
+
+  // Estado de un movimiento, con la parte que más le importa al cliente: si le
+  // devolvieron la plata. Un "RECHAZADO" a secas deja a alguien creyendo que
+  // perdió el dinero — la pregunta que sigue siempre es "¿y mi plata?", y la
+  // respuesta tiene que estar en la misma línea, no en soporte.
+  const etiquetaEstado = (t: any) => {
+    const st = String(t?.status ?? '');
+    const rd = (t?.raw_data && typeof t.raw_data === 'object') ? t.raw_data : {};
+    const devuelto = t?.refunded === true || rd.refunded === true;
+    if (st === 'Completado') return { label: 'COMPLETADO', color: '#4ADE80', border: 'rgba(74,222,128,0.3)' };
+    if (st === 'Rechazado' || st === 'Fallido') {
+      return {
+        label: devuelto ? `${st.toUpperCase()} · SALDO DEVUELTO` : st.toUpperCase(),
+        color: '#F87171', border: 'rgba(248,113,113,0.35)',
+      };
+    }
+    if (st === 'Procesando' || st === 'Pendiente' || st === 'En proceso') {
+      return { label: 'EN CURSO', color: 'rgba(244,244,242,0.7)', border: 'rgba(255,255,255,0.14)' };
+    }
+    return { label: (st || 'PENDIENTE').toUpperCase(), color: '#878E88', border: 'rgba(255,255,255,0.14)' };
+  };
   const [showCouponInput, setShowCouponInput] = useState(false);
   const [couponCode, setCouponCode] = useState('');
   const [appliedCoupon, setAppliedCoupon] = useState<{code: string, discount: number} | null>(null);
@@ -2560,7 +2581,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                     </div>
                     <div style={{ textAlign: 'right' }}>
                       <p style={{ fontSize: 13.5, fontWeight: 700, color: credit ? '#4ADE80' : '#F4F4F2', whiteSpace: 'nowrap' }}>{credit ? '+' : '−'} {formatMoney(tx.amount, tx.currency)}</p>
-                      <span style={{ display: 'inline-block', marginTop: 3, fontSize: 10.5, fontWeight: 700, padding: '2px 8px', borderRadius: 999, border: tx.status === 'Completado' ? '1px solid rgba(74,222,128,0.3)' : (tx.status === 'Rechazado' || tx.status === 'Fallido') ? '1px solid rgba(248,113,113,0.35)' : '1px solid rgba(255,255,255,0.14)', color: tx.status === 'Completado' ? '#4ADE80' : (tx.status === 'Rechazado' || tx.status === 'Fallido') ? '#F87171' : '#878E88' }}>{tx.status}</span>
+                      <span style={{ display: 'inline-block', marginTop: 3, fontSize: 10.5, fontWeight: 700, padding: '2px 8px', borderRadius: 999, border: `1px solid ${etiquetaEstado(tx).border}`, color: etiquetaEstado(tx).color }}>{etiquetaEstado(tx).label}</span>
                     </div>
                   </button>
                 );
@@ -2677,13 +2698,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           const ref0 = t.providerRef ?? rd.providerRef ?? rd.providerTraceId ?? '';
           const reference = ref0 ? String(ref0) : `TX-${String(t.id ?? '').replace(/-/g, '').slice(-6).toUpperCase()}`;
           const st = String(t.status || '');
-          const pill = st === 'Completado'
-              ? { label: 'COMPLETADO', border: 'rgba(74,222,128,0.3)', color: '#4ADE80' }
-              : isInFlight(t)
-              ? { label: 'EN CURSO', border: 'rgba(255,255,255,0.14)', color: 'rgba(244,244,242,0.7)' }
-              : isFailedTx(t)
-              ? { label: st === 'Rechazado' ? 'RECHAZADO' : 'FALLIDO', border: 'rgba(248,113,113,0.35)', color: '#F87171' }
-              : { label: (st || 'PENDIENTE').toUpperCase(), border: 'rgba(255,255,255,0.14)', color: '#878E88' };
+          const pill = etiquetaEstado(t);
           const failReason = isFailedTx(t) ? String(rd.error?.message ?? (typeof rd.error === 'string' ? rd.error : '') ?? '').slice(0, 220) : '';
           const rateVal = t.mouvRate ?? rd.mouvRate;
           const sub2 = t.type === 'convert' && rateVal ? `tasa ${Math.round(Number(rateVal)).toLocaleString('es-CO')}` : '';
