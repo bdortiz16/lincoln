@@ -531,8 +531,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const devolverDispersion = async (t: any) => {
     const ref = t.providerRef ?? t.raw_data?.providerRef ?? '';
     const motivo = window.prompt(
-      `Devolver ${Number(t.amount).toLocaleString('es-CO')} al cliente y marcar la dispersión como rechazada.\n\n` +
-      `Confírmalo en la consola del proveedor ANTES de hacerlo: un reembolso indebido es tan malo como un cobro indebido.\n\n` +
+      `Reembolsar ${Number(t.amount).toLocaleString('es-CO')} al cliente y marcar la dispersión como rechazada.\n\n` +
+      `Hacelo SOLO si la viste devuelta en la consola del proveedor. Si en realidad se pagó, ` +
+      `estarías devolviendo plata por una transferencia que sí salió: el cliente cobraría dos veces.\n\n` +
       `Motivo (queda auditado):`,
       ref ? `Devuelta por el proveedor · ref ${ref}` : 'Devuelta por el proveedor');
     if (!motivo) return;
@@ -546,9 +547,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const confirmarDispersion = async (t: any) => {
     const ref = t.providerRef ?? t.raw_data?.providerRef ?? '';
     if (!window.confirm(
-      `Marcar esta dispersión como COMPLETADA.\n\n` +
-      `Hacelo solo si la viste pagada en la consola del proveedor${ref ? ` (ref ${ref})` : ''}.\n\n` +
-      `Queda registrada como confirmación manual, con tu usuario.`)) return;
+      `Marcar esta dispersión como pagada.\n\n` +
+      `Hacelo solo si la viste exitosa en la consola del proveedor${ref ? ` (ref ${ref})` : ''}.\n\n` +
+      `Queda registrada como confirmación manual, con tu usuario: un pagado puesto por una persona ` +
+      `no es lo mismo que uno confirmado por el proveedor.`)) return;
     setResolviendo(t.id);
     const r = await llamarMouv({ action: 'confirmar_dispersion', txId: t.id });
     setResolviendo(null);
@@ -3768,73 +3770,105 @@ const renderDesign = () => (
     };
     const errText = (t: any): string => errParts(t).texto;
     const emailOf = (t: any): string => allUsers.find((u: any) => u.id === t.userId)?.email ?? t.userName ?? t.raw_data?.userName ?? t.userId ?? '—';
-    const fmtDate = (d: any) => { try { return new Date(d).toLocaleString('es-CO', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }); } catch { return '—'; } };
+    // new Date(undefined) no lanza: devuelve una fecha inválida y toLocaleString
+    // imprime "Invalid Date". El try/catch no atrapaba nada. Se comprueba el
+    // valor, y se aceptan las dos formas en que llega la fecha.
+    const fmtDate = (d: any) => {
+      const t = new Date(d ?? '');
+      if (!d || Number.isNaN(t.getTime())) return '—';
+      return t.toLocaleString('es-CO', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+    };
+    const fechaDe = (t: any) => t?.createdAt ?? t?.created_at ?? t?.raw_data?.requestedAt ?? t?.requestedAt ?? null;
     return (
       <div className="space-y-4">
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div>
             <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2"><AlertTriangle size={18} className="text-red-500" /> Fallos de operaciones</h2>
-            <p className="text-sm text-slate-500">Envíos/retiros que fallaron o fueron rechazados, con el error técnico real. Al cliente solo se le muestra un mensaje amable.</p>
+            <p className="text-sm text-slate-500">Operaciones que necesitan una decisión: las que quedaron sin confirmar con el proveedor, y las que fallaron o fueron rechazadas con su error técnico real. Al cliente solo se le muestra un mensaje amable.</p>
           </div>
           <span className="text-xs font-bold px-3 py-1.5 rounded-full bg-red-50 text-red-700 border border-red-200">{failuresCount} {failuresCount === 1 ? 'caso' : 'casos'}</span>
         </div>
 
-        {/* Va ARRIBA de los fallos a propósito: en un fallo la plata ya volvió
-            al cliente y el caso está cerrado. Acá la plata salió de la cuenta y
-            no se sabe si llegó — es lo único de esta pantalla donde el dinero
-            de alguien está en el aire. */}
+        {/* PENDIENTES DE VERIFICAR — no son fallos.
+            En un fallo la plata ya volvió al cliente y el caso está cerrado.
+            Acá la plata salió de la cuenta y no sabemos si llegó, porque el
+            proveedor no expone un estado consultable. La mayoría habrá salido
+            bien; hay que cotejarlas contra su consola.
+
+            Va en la paleta de la app —negro, bordes translúcidos, ámbar solo
+            como acento fino— y no en un bloque crema: un panel de color claro
+            metido en una pantalla oscura se lee como un error de maquetación,
+            no como una advertencia. */}
         {sinConfirmarList.length > 0 && (
-          <div className="bg-amber-50 rounded-xl border border-amber-200 p-4">
-            <h3 className="text-sm font-bold text-amber-900 flex items-center gap-2">
-              <AlertTriangle size={16} /> Sin confirmar con el proveedor ({sinConfirmarList.length})
-            </h3>
-            <p className="text-xs text-amber-800 mt-1 leading-relaxed">
-              El proveedor aceptó estos envíos pero nunca confirmó que se pagaran, y el saldo del
-              cliente ya está debitado. Cotéjalos en la consola del proveedor por su referencia:
-              si están rechazados, hay que devolver el dinero; si se pagaron, se confirman.
-              No se marcan solos — afirmar un pago sin confirmación es justo lo que hay que evitar.
-            </p>
-            <div className="mt-3 space-y-2">
-              {sinConfirmarList.map((t: any) => (
-                <div key={t.id} className="bg-white rounded-lg border border-amber-200 p-3">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{railLabel(t.currency)}</span>
-                    <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200">SIN CONFIRMAR</span>
-                    <span className="text-xs text-slate-400">{fmtDate(t.createdAt)}</span>
-                  </div>
-                  <p className="text-sm font-bold text-slate-800 mt-1.5">
-                    {Number(t.amount).toLocaleString('es-CO')} <span className="text-slate-400 font-medium">{String(t.currency ?? '').split('_')[0]}</span>
-                  </p>
-                  <p className="text-xs text-slate-500 mt-0.5">Cliente: <span className="font-semibold text-slate-700">{emailOf(t)}</span></p>
-                  <p className="text-xs text-slate-500">Beneficiario: <span className="font-semibold text-slate-700">{t.beneficiary ?? '—'}</span>{t.account ? ` · ${t.account}` : ''}</p>
-                  {(t.providerRef ?? t.raw_data?.providerRef) && (
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      Referencia: <span className="font-semibold text-slate-700 font-mono">{t.providerRef ?? t.raw_data?.providerRef}</span>
-                    </p>
-                  )}
-                  {/* Los dos desenlaces posibles, a un clic. Antes esto exigía
-                      armar una llamada a la API a mano, y por eso un reembolso
-                      se quedó sin hacer. */}
-                  <div className="flex items-center gap-2 mt-2.5 flex-wrap">
-                    <button
-                      onClick={() => devolverDispersion(t)}
-                      disabled={resolviendo === t.id}
-                      className="text-xs font-bold px-3 py-1.5 rounded-lg bg-white border border-red-300 text-red-700 hover:bg-red-50 transition-colors disabled:opacity-50">
-                      {resolviendo === t.id ? 'Procesando…' : 'Devolver y reembolsar'}
-                    </button>
-                    <button
-                      onClick={() => confirmarDispersion(t)}
-                      disabled={resolviendo === t.id}
-                      className="text-xs font-bold px-3 py-1.5 rounded-lg bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-50">
-                      Confirmar como pagada
-                    </button>
-                  </div>
-                </div>
-              ))}
+          <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, overflow: 'hidden' }}>
+            <div style={{ padding: '16px 18px', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+              <div className="flex items-center" style={{ gap: 9 }}>
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#FBBF24', flexShrink: 0 }} />
+                <h3 style={{ fontSize: 14.5, fontWeight: 800, color: '#F4F4F2', margin: 0 }}>
+                  Pendientes de verificar con el proveedor
+                </h3>
+                <span style={{ fontSize: 11, fontWeight: 700, color: '#878E88', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 999, padding: '2px 8px' }}>
+                  {sinConfirmarList.length}
+                </span>
+              </div>
+              <p style={{ fontSize: 12.5, color: '#878E88', margin: '8px 0 0', lineHeight: 1.6, maxWidth: 720 }}>
+                El proveedor aceptó estos envíos pero no expone un estado consultable, así que no
+                podemos confirmarlos solos. <span style={{ color: '#F4F4F2' }}>La mayoría habrá salido bien.</span>{' '}
+                Cotejalos en su consola por la referencia y cerrá cada caso.
+              </p>
             </div>
+
+            {sinConfirmarList.map((t: any) => (
+              <div key={t.id} className="flex items-start justify-between flex-wrap"
+                style={{ gap: 14, padding: '14px 18px', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                <div style={{ minWidth: 0, flex: '1 1 300px' }}>
+                  <div className="flex items-center flex-wrap" style={{ gap: 8 }}>
+                    <span style={{ fontSize: 15, fontWeight: 800, color: '#F4F4F2' }}>
+                      {Number(t.amount).toLocaleString('es-CO')}
+                      <span style={{ fontSize: 11.5, color: '#878E88', fontWeight: 600 }}> {String(t.currency ?? '').split('_')[0]}</span>
+                    </span>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: '#878E88', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 999, padding: '2px 8px' }}>
+                      {railLabel(t.currency)}
+                    </span>
+                    <span style={{ fontSize: 11.5, color: 'rgba(244,244,242,0.45)' }}>{fmtDate(fechaDe(t))}</span>
+                  </div>
+                  <p style={{ fontSize: 12.5, color: '#878E88', margin: '6px 0 0' }}>
+                    {t.beneficiary ?? '—'}{t.account ? ` · ${t.account}` : ''}
+                  </p>
+                  <p style={{ fontSize: 11.5, color: 'rgba(244,244,242,0.45)', margin: '3px 0 0' }}>
+                    {emailOf(t)}
+                    {(t.providerRef ?? t.raw_data?.providerRef) && (
+                      <> · <span style={{ fontFamily: 'ui-monospace, Menlo, monospace' }}>{t.providerRef ?? t.raw_data?.providerRef}</span></>
+                    )}
+                  </p>
+                </div>
+                {/* Confirmar primero: es el desenlace de la mayoría. Poner
+                    "Reembolsar" como acción principal en diez filas donde nueve
+                    salieron bien invita a devolver plata que sí se pagó. */}
+                <div className="flex items-center" style={{ gap: 8, flexShrink: 0 }}>
+                  <button
+                    onClick={() => confirmarDispersion(t)}
+                    disabled={resolviendo === t.id}
+                    style={{ fontSize: 12.5, fontWeight: 700, color: '#0A0A0A', background: '#F4F4F2', border: 'none', borderRadius: 9, padding: '9px 15px', cursor: 'pointer', opacity: resolviendo === t.id ? 0.5 : 1, whiteSpace: 'nowrap' }}>
+                    {resolviendo === t.id ? 'Procesando…' : 'Sí se pagó'}
+                  </button>
+                  <button
+                    onClick={() => devolverDispersion(t)}
+                    disabled={resolviendo === t.id}
+                    style={{ fontSize: 12.5, fontWeight: 700, color: '#F87171', background: 'transparent', border: '1px solid rgba(248,113,113,0.35)', borderRadius: 9, padding: '9px 15px', cursor: 'pointer', opacity: resolviendo === t.id ? 0.5 : 1, whiteSpace: 'nowrap' }}>
+                    Reembolsar
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
         )}
 
+        {sinConfirmarList.length > 0 && failuresList.length > 0 && (
+          <p style={{ fontSize: 11, fontWeight: 700, letterSpacing: '1.6px', color: '#878E88', margin: '26px 0 10px' }}>
+            FALLOS Y RECHAZOS
+          </p>
+        )}
         {failuresList.length === 0 ? (
           <div className="bg-white rounded-xl border border-slate-200 p-10 text-center">
             <p className="text-slate-700 font-semibold">Sin fallos recientes</p>
@@ -3849,7 +3883,7 @@ const renderDesign = () => (
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{railLabel(t.currency)}</span>
                       <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-200">{String(t.status).toUpperCase()}</span>
-                      <span className="text-xs text-slate-400">{fmtDate(t.createdAt)}</span>
+                      <span className="text-xs text-slate-400">{fmtDate(fechaDe(t))}</span>
                     </div>
                     <p className="text-sm font-bold text-slate-800 mt-1.5">{Number(t.amount).toLocaleString('es-CO')} <span className="text-slate-400 font-medium">{String(t.currency ?? '').split('_')[0]}</span></p>
                     <p className="text-xs text-slate-500 mt-0.5">Cliente: <span className="font-semibold text-slate-700">{emailOf(t)}</span></p>
