@@ -933,8 +933,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       } catch { /* el badge no puede tumbar el panel */ }
     };
     leer();
-    const t = setInterval(leer, 30000);
-    return () => { vivo = false; clearInterval(t); };
+    // Cada 10 s: este es el que hace sonar la campana cuando el operador NO
+    // esta en la bandeja, asi que enterarse medio minuto tarde de que alguien
+    // esta esperando es justo lo que se queria evitar.
+    //
+    // Pausado con la pestana oculta y releido al volver: preguntar cada 10 s
+    // por una pantalla que nadie mira es gasto, y al volver lo que importa es
+    // el estado de AHORA.
+    let t: any = setInterval(() => { if (!document.hidden) leer(); }, 10000);
+    const alVolver = () => { if (!document.hidden) leer(); };
+    document.addEventListener('visibilitychange', alVolver);
+    window.addEventListener('focus', alVolver);
+    return () => {
+      vivo = false;
+      clearInterval(t);
+      document.removeEventListener('visibilitychange', alVolver);
+      window.removeEventListener('focus', alVolver);
+    };
   }, []);
 
   // Una cuenta BLOQUEADA o en LISTA NEGRA no cuenta como pendiente: no hay nada

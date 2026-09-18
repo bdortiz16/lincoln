@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { sonarCampana, campanaActiva, guardarCampana } from './campanaOtc';
+import { sonarCampana, campanaActiva, guardarCampana, TONOS, tonoActual, guardarTono, volumenActual, guardarVolumen } from './campanaOtc';
 import {
     RefreshCw, Send, X, MessageSquare, CheckCircle2, Clock, XCircle,
     AlertTriangle, Landmark, Wallet, User, Hash, Copy, Lock, Zap, Paperclip,
-    ChevronRight, Bell, BellOff, Plus, ChevronDown, ChevronUp,
+    ChevronRight, Bell, BellOff, Plus, ChevronDown, ChevronUp, Settings, Play,
 } from 'lucide-react';
 
 // ─────────────────────────────────────────────
@@ -162,6 +162,7 @@ export const AdminOtcCierres: React.FC = () => {
     // alguien tiene abierto todo el dia deja de ser un aviso y pasa a ser
     // ruido -- y lo que se hace con el ruido es ignorarlo.
     const [sonido, setSonido] = useState(campanaActiva);
+    const [ajustes, setAjustes] = useState(false);
     const conocidos = useRef<Set<string> | null>(null);
     const sonidoRef = useRef(sonido);
     useEffect(() => {
@@ -194,11 +195,29 @@ export const AdminOtcCierres: React.FC = () => {
     useEffect(() => { conocidos.current = null; }, [filtro]);
 
     useEffect(() => { setCargando(true); cargar(); }, [cargar]);
-    // La bandeja se relee sola: un operador mirando la lista tiene que ver
-    // entrar el cierre nuevo sin apretar nada.
+
+    // La bandeja se relee sola cada 5 s: un operador mirando la lista tiene que
+    // ver entrar el cierre casi al instante. Antes eran 15 s y se sentia
+    // lento -- del otro lado hay alguien con un reloj corriendo.
+    //
+    // Se PAUSA con la pestana oculta y se relee al volver: consultar cada 5 s
+    // una pantalla que nadie mira es gasto puro, y al volver lo que importa es
+    // el estado de AHORA, no esperar al proximo tick.
     useEffect(() => {
-        const t = setInterval(() => { if (!abierta) cargar(); }, 15000);
-        return () => clearInterval(t);
+        let t: any = null;
+        const arrancar = () => {
+            if (t) clearInterval(t);
+            t = setInterval(() => { if (!abierta && !document.hidden) cargar(); }, 5000);
+        };
+        const alVolver = () => { if (!document.hidden) { cargar(); arrancar(); } };
+        arrancar();
+        document.addEventListener('visibilitychange', alVolver);
+        window.addEventListener('focus', alVolver);
+        return () => {
+            if (t) clearInterval(t);
+            document.removeEventListener('visibilitychange', alVolver);
+            window.removeEventListener('focus', alVolver);
+        };
     }, [cargar, abierta]);
 
     return (
@@ -208,19 +227,25 @@ export const AdminOtcCierres: React.FC = () => {
                     <h2 style={{ fontSize: 18, fontWeight: 800, color: TXT, letterSpacing: '-0.4px' }}>Cierres OTC</h2>
                     <p style={{ fontSize: 12, color: TXT2, marginTop: 3 }}>Solicitudes de la mesa manual. Se atienden por orden de llegada.</p>
                 </div>
-                <div style={{ display: 'flex', gap: 8 }}>
-                    <button
-                        onClick={() => { const v = !sonido; setSonido(v); if (v) sonarCampana(); }}
-                        title={sonido ? 'Avisar con sonido al entrar un cierre' : 'Sonido apagado'}
-                        className="flex items-center gap-1.5 transition-colors hover:bg-white/[0.07]"
-                        style={{ padding: '8px 13px', fontSize: 12, fontWeight: 700, color: sonido ? VERDE : TXT2, borderRadius: 9, border: `1px solid ${sonido ? VERDE + '44' : BORDE2}`, background: sonido ? VERDE + '10' : 'rgba(255,255,255,0.045)' }}>
-                        {sonido ? <Bell size={13} /> : <BellOff size={13} />} {sonido ? 'Aviso' : 'Silencio'}
-                    </button>
+                <div style={{ display: 'flex', gap: 8, position: 'relative' }}>
                     <button onClick={() => { setCargando(true); cargar(); }}
                         className="flex items-center gap-1.5 transition-colors hover:bg-white/[0.07]"
                         style={{ padding: '8px 13px', fontSize: 12, fontWeight: 700, color: TXT, borderRadius: 9, border: `1px solid ${BORDE2}`, background: 'rgba(255,255,255,0.045)' }}>
                         <RefreshCw size={13} className={cargando ? 'animate-spin' : ''} /> Actualizar
                     </button>
+                    <button
+                        onClick={() => setAjustes(v => !v)}
+                        title="Aviso sonoro"
+                        className="flex items-center justify-center transition-colors hover:bg-white/[0.07]"
+                        style={{ width: 38, height: 38, color: sonido ? VERDE : TXT2, borderRadius: 9, border: `1px solid ${sonido ? VERDE + '44' : BORDE2}`, background: sonido ? VERDE + '10' : 'rgba(255,255,255,0.045)' }}>
+                        <Settings size={15} />
+                    </button>
+                    {ajustes && (
+                        <AjustesCampana
+                            sonido={sonido} setSonido={setSonido}
+                            onCerrar={() => setAjustes(false)}
+                        />
+                    )}
                 </div>
             </div>
 
@@ -301,6 +326,93 @@ export const AdminOtcCierres: React.FC = () => {
             {abierta && (
                 <DetalleMesa id={abierta} onClose={() => { setAbierta(null); cargar(); }} onCambio={cargar} />
             )}
+        </div>
+    );
+};
+
+// ─── Ajustes del aviso ──────────────────────────────────
+// Quien atiende la mesa tiene esto sonando todo el dia. El tono que a una
+// persona le resulta claro a otra le resulta molesto, y un aviso molesto
+// termina apagado — que es peor que no tenerlo, porque nadie se entera de que
+// se apago. Por eso se elige, y cada opcion se puede escuchar antes.
+const AjustesCampana: React.FC<{
+    sonido: boolean;
+    setSonido: (v: boolean) => void;
+    onCerrar: () => void;
+}> = ({ sonido, setSonido, onCerrar }) => {
+    const [tono, setTono] = useState(tonoActual);
+    const [vol, setVol]   = useState(volumenActual);
+    const caja = useRef<HTMLDivElement | null>(null);
+
+    // Cerrar al clickear afuera o con Esc: un panel que solo se cierra con su
+    // propio boton se queda abierto tapando la bandeja.
+    useEffect(() => {
+        const fuera = (e: MouseEvent) => { if (caja.current && !caja.current.contains(e.target as Node)) onCerrar(); };
+        const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') onCerrar(); };
+        document.addEventListener('mousedown', fuera);
+        window.addEventListener('keydown', esc);
+        return () => { document.removeEventListener('mousedown', fuera); window.removeEventListener('keydown', esc); };
+    }, [onCerrar]);
+
+    const elegirTono = (id: string) => {
+        setTono(id); guardarTono(id);
+        // Suena al elegirlo: probar un tono sin escucharlo no es elegir.
+        sonarCampana({ tono: id, volumen: vol });
+    };
+
+    return (
+        <div ref={caja}
+            style={{
+                position: 'absolute', top: 46, right: 0, zIndex: 40, width: 268,
+                background: PANEL, border: `1px solid ${BORDE2}`, borderRadius: 14,
+                padding: 16, boxShadow: '0 18px 50px rgba(0,0,0,0.65)',
+            }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: TXT }}>Aviso de cierre nuevo</span>
+                <button
+                    onClick={() => { const v = !sonido; setSonido(v); guardarCampana(v); if (v) sonarCampana({ tono, volumen: vol }); }}
+                    className="flex items-center gap-1.5 transition-colors"
+                    style={{ padding: '5px 10px', borderRadius: 999, fontSize: 10.5, fontWeight: 700, color: sonido ? '#0C0E0D' : TXT2, background: sonido ? VERDE : 'rgba(255,255,255,0.06)', border: 'none' }}>
+                    {sonido ? <Bell size={11} /> : <BellOff size={11} />} {sonido ? 'ON' : 'OFF'}
+                </button>
+            </div>
+
+            <div style={{ opacity: sonido ? 1 : 0.45, pointerEvents: sonido ? 'auto' : 'none', marginTop: 14 }}>
+                <p style={{ ...ROTULO, marginBottom: 8 }}>Tono</p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                    {TONOS.map(t => {
+                        const on = t.id === tono;
+                        return (
+                            <button key={t.id} onClick={() => elegirTono(t.id)}
+                                className="transition-colors hover:bg-white/[0.05]"
+                                style={{
+                                    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+                                    padding: '8px 11px', borderRadius: 9, textAlign: 'left',
+                                    border: `1px solid ${on ? VERDE + '55' : BORDE}`,
+                                    background: on ? VERDE + '10' : 'transparent',
+                                    color: on ? VERDE : TXT, fontSize: 12.5, fontWeight: on ? 700 : 500,
+                                }}>
+                                {t.nombre}
+                                <Play size={11} style={{ opacity: 0.7, flexShrink: 0 }} />
+                            </button>
+                        );
+                    })}
+                </div>
+
+                <p style={{ ...ROTULO, margin: '14px 0 8px' }}>Volumen</p>
+                <input
+                    type="range" min={0} max={100} value={Math.round(vol * 100)}
+                    onChange={e => { const v = Number(e.target.value) / 100; setVol(v); guardarVolumen(v); }}
+                    onMouseUp={() => sonarCampana({ tono, volumen: vol })}
+                    onTouchEnd={() => sonarCampana({ tono, volumen: vol })}
+                    style={{ width: '100%', accentColor: VERDE }}
+                />
+                <p style={{ fontSize: 10.5, color: TXT3, marginTop: 4 }}>{Math.round(vol * 100)}%</p>
+            </div>
+
+            <p style={{ fontSize: 10.5, color: TXT3, marginTop: 12, lineHeight: 1.5, borderTop: `1px solid ${BORDE}`, paddingTop: 10 }}>
+                El navegador no deja sonar nada hasta que hayas hecho un clic en la página.
+            </p>
         </div>
     );
 };
