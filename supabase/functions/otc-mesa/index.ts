@@ -155,7 +155,7 @@ async function caducarVencidos(): Promise<void> {
   } catch { /* nunca frena la lectura */ }
 }
 
-async function margenManual(): Promise<number> {
+async function margenGlobal(): Promise<number> {
   try {
     const { data } = await db.from('system_config').select('value').eq('key', MARGEN_KEY).maybeSingle()
     const v = data?.value ? JSON.parse(data.value) : null
@@ -163,6 +163,24 @@ async function margenManual(): Promise<number> {
     if (Number.isFinite(n) && n >= 0 && n <= MARGEN_MAX) return n
     return MARGEN_DEFAULT
   } catch { return MARGEN_DEFAULT }
+}
+
+// El margen que le toca a ESTE cliente. La comision negociada por cuenta manda
+// sobre la global, igual que en el riel ACH.
+//
+// CERO ES UN VALOR, NO UN VACIO. Un cliente con 0% de comision tiene que pagar
+// 0%: si se resolviera con `??` sobre un numero que puede ser 0, o con un `||`,
+// el cero caeria al global y se le cobraria un margen que nadie le nego.
+async function margenDe(userId?: string): Promise<number> {
+  if (userId) {
+    try {
+      const { data } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
+      const cfg = (data as any)?.raw_data?.otcConfig ?? {}
+      const n = Number(cfg.manualPct)
+      if (Number.isFinite(n) && n >= 0 && n <= MARGEN_MAX) return n
+    } catch { /* cae al global */ }
+  }
+  return await margenGlobal()
 }
 
 // La forma exacta del JSON de Finity cambia segun la ruta que responda, asi
@@ -192,8 +210,8 @@ type Cotizacion = {
 // proveedor no responde, el cierre se puede pedir igual (la mesa lo cotiza a
 // mano) pero se guarda SIN tasa y se dice por que — no se inventa un numero
 // que despues alguien va a leer como un precio acordado.
-async function tasaUsdCop(): Promise<Cotizacion> {
-  const margenPct = await margenManual()
+async function tasaUsdCop(userId?: string): Promise<Cotizacion> {
+  const margenPct = await margenDe(userId)
   const vacia = (motivo: string, crudo?: string): Cotizacion =>
     ({ referencia: null, rate: null, margenPct, fuente: 'finity', motivo, crudo })
   try {
@@ -352,7 +370,7 @@ Deno.serve(async (req) => {
     if (!caller.ok) return json(401, { ok: false, error: 'unauthorized' })
 
     // Acciones que solo puede hacer la mesa.
-    const SOLO_MESA = new Set(['lista', 'tomar', 'fijar_tasa', 'completar', 'cancelar_mesa', 'notas', 'resumen'])
+    const SOLO_MESA = new Set(['lista', 'tomar', 'fijar_tasa', 'completar', 'cancelar_mesa', 'notas', 'resumen', 'config_get', 'config_set'])
     if (SOLO_MESA.has(action) && !caller.admin) {
       return json(403, { ok: false, error: 'solo la mesa' })
     }
@@ -361,7 +379,7 @@ Deno.serve(async (req) => {
     if (action === 'cotizar') {
       const side = String(payload.side ?? 'vende_usdt')
       const monto = num(payload.fromAmount)
-      const c = await tasaUsdCop()
+      const c = await tasaUsdCop(String(payload.user_id ?? caller.userId ?? ''))
       if (c.rate == null) {
         return json(200, {
           ok: true, rate: null, referencia: null, margenPct: c.margenPct,
@@ -414,7 +432,7 @@ Deno.serve(async (req) => {
 
       // La tasa se resuelve EN EL SERVIDOR. Si viniera del body, el cliente
       // elegiria su propio precio.
-      const c = await tasaUsdCop()
+      const c = await tasaUsdCop(uid)
       const rate = c.rate
       const motivo = c.motivo
       const from_currency = side === 'vende_usdt' ? 'USDT' : 'COP'
@@ -677,6 +695,48 @@ Deno.serve(async (req) => {
       await escribirMensaje(r.cierre.id, 'sistema',
         caller.admin ? `Cierre cancelado por la mesa. Motivo: ${motivo}` : 'El cliente cancelo la solicitud.')
       return json(200, { ok: true })
+    }
+
+    // ── Config de la mesa manual (solo mesa) ────────────
+    if (action === 'config_get') {
+      const { data } = await db.from('system_config').select('value').eq('key', MARGEN_KEY).maybeSingle()
+      let v: any = null
+      try { v = data?.value ? JSON.parse(data.value) : null } catch { v = null }
+      return json(200, {
+        ok: true,
+        margenPct: await margenGlobal(),
+        ventanaMin: await ventanaPago(),
+        guardado: v ?? null,
+        limites: { margenMax: MARGEN_MAX, ventanaMin: VENTANA_MIN, ventanaMax: VENTANA_MAX },
+      })
+    }
+
+    if (action === 'config_set') {
+      const actual = { margenPct: await margenGlobal(), ventanaMin: await ventanaPago() }
+      const nuevo: Record<string, number> = { ...actual }
+      if (payload.margenPct !== undefined) {
+        const n = num(payload.margenPct)
+        if (!(Number.isFinite(n) && n >= 0 && n <= MARGEN_MAX)) {
+          return json(400, { ok: false, error: `El margen tiene que estar entre 0 y ${MARGEN_MAX}%.` })
+        }
+        nuevo.margenPct = n
+      }
+      if (payload.ventanaMin !== undefined) {
+        const n = num(payload.ventanaMin)
+        if (!(Number.isFinite(n) && n >= VENTANA_MIN && n <= VENTANA_MAX)) {
+          return json(400, { ok: false, error: `El plazo tiene que estar entre ${VENTANA_MIN} y ${VENTANA_MAX} minutos.` })
+        }
+        nuevo.ventanaMin = n
+      }
+      const { error } = await db.from('system_config')
+        .upsert({ key: MARGEN_KEY, value: JSON.stringify(nuevo) }, { onConflict: 'key' })
+      if (error) return json(500, { ok: false, error: error.message })
+      try {
+        await db.from('audit_log').insert({
+          action: 'otc_manual.config', metadata: { de: actual, a: nuevo, por: caller.userId ?? null },
+        })
+      } catch { /* la auditoria no frena el guardado */ }
+      return json(200, { ok: true, ...nuevo })
     }
 
     // ── Notas internas (solo mesa) ──────────────────────

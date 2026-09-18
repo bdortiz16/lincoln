@@ -22,6 +22,129 @@ import { llamarFuncion } from '../lib/edge';
 // ─────────────────────────────────────────────
 
 const DEFAULT_FEE_PCT = 4;
+// Margen por defecto de la mesa MANUAL. Es otro riel y otro margen: el de acá
+// es un porcentaje sobre la tasa de referencia, el de Finity son puntos en COP.
+const DEFAULT_MANUAL_PCT = 0.25;
+
+// ─── Mesa manual: margen y plazo por defecto ────────────
+// Va al lado de las tarjetas de los proveedores porque es lo mismo que hacen
+// ellas: fijar cuánto se le baja a la tasa antes de mostrarla. La diferencia es
+// que este riel no tiene proveedor propio — cotiza sobre la misma referencia.
+//
+// Lo de acá es el VALOR POR DEFECTO. La comisión negociada de cada cliente, en
+// la tabla de abajo, manda sobre esto.
+const MesaManualCard: React.FC<{ baseRate: number | null }> = ({ baseRate }) => {
+    const [margen, setMargen] = React.useState('');
+    const [ventana, setVentana] = React.useState('');
+    const [guardado, setGuardado] = React.useState<{ margenPct: number; ventanaMin: number } | null>(null);
+    const [msg, setMsg] = React.useState<{ ok: boolean; text: string } | null>(null);
+    const [guardando, setGuardando] = React.useState(false);
+
+    const leer = React.useCallback(async () => {
+        const r = await callOtcMesaAdmin('config_get');
+        if (r?.ok) {
+            setGuardado({ margenPct: Number(r.margenPct), ventanaMin: Number(r.ventanaMin) });
+            setMargen(String(r.margenPct));
+            setVentana(String(r.ventanaMin));
+        }
+    }, []);
+    React.useEffect(() => { leer(); }, [leer]);
+
+    const guardar = async () => {
+        setGuardando(true); setMsg(null);
+        const m = parseFloat(String(margen).replace(',', '.'));
+        const v = parseFloat(String(ventana).replace(',', '.'));
+        const r = await callOtcMesaAdmin('config_set', { margenPct: m, ventanaMin: v });
+        setGuardando(false);
+        if (r?.ok) { setMsg({ ok: true, text: 'Guardado.' }); leer(); }
+        else setMsg({ ok: false, text: r?.error ?? 'No se pudo guardar.' });
+    };
+
+    const pct = parseFloat(String(margen).replace(',', '.'));
+    const queda = (baseRate != null && !isNaN(pct)) ? baseRate * (1 - pct / 100) : null;
+
+    return (
+        <div style={{ background: '#121413', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 12, padding: '14px 16px' }}>
+            <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '1.2px', color: '#878E88' }}>MESA MANUAL</span>
+
+            <div style={{ marginTop: 10 }}>
+                <p style={{ fontSize: 11.5, color: '#878E88', margin: 0 }}>Margen por defecto (% sobre la referencia)</p>
+                <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                    <input
+                        value={margen}
+                        onChange={e => { const v = e.target.value; if (/^[0-9]*[.,]?[0-9]*$/.test(v)) setMargen(v); }}
+                        inputMode="decimal"
+                        placeholder="0.25"
+                        style={{ flex: 1, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 9, padding: '9px 11px', color: '#F4F4F2', fontSize: 15, fontWeight: 700, outline: 'none' }}
+                    />
+                    <span style={{ alignSelf: 'center', color: '#878E88', fontSize: 13, fontWeight: 700 }}>%</span>
+                </div>
+            </div>
+
+            <div style={{ marginTop: 10 }}>
+                <p style={{ fontSize: 11.5, color: '#878E88', margin: 0 }}>Plazo para pagar y subir el comprobante</p>
+                <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                    <input
+                        value={ventana}
+                        onChange={e => { const v = e.target.value; if (/^[0-9]*$/.test(v)) setVentana(v); }}
+                        inputMode="numeric"
+                        placeholder="5"
+                        style={{ flex: 1, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 9, padding: '9px 11px', color: '#F4F4F2', fontSize: 15, fontWeight: 700, outline: 'none' }}
+                    />
+                    <span style={{ alignSelf: 'center', color: '#878E88', fontSize: 13, fontWeight: 700 }}>min</span>
+                </div>
+            </div>
+
+            <button
+                onClick={guardar}
+                disabled={guardando}
+                style={{ width: '100%', marginTop: 11, padding: '9px 0', borderRadius: 9, border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(255,255,255,0.06)', color: '#F4F4F2', fontSize: 12.5, fontWeight: 700, opacity: guardando ? 0.5 : 1 }}
+            >
+                {guardando ? 'Guardando…' : 'Guardar'}
+            </button>
+
+            {queda != null && (
+                <p style={{ fontSize: 12, color: '#878E88', marginTop: 10, lineHeight: 1.5 }}>
+                    Queda en <b style={{ color: '#4ADE80' }}>{queda.toLocaleString('es-CO', { maximumFractionDigits: 2 })} COP</b> por dólar
+                    para quien no tenga comisión propia.
+                </p>
+            )}
+            {guardado && (
+                <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', marginTop: 6 }}>
+                    Guardado: {guardado.margenPct}% · {guardado.ventanaMin} min.
+                </p>
+            )}
+            {msg && (
+                <p style={{ fontSize: 11.5, color: msg.ok ? '#4ADE80' : '#F87171', marginTop: 6 }}>{msg.text}</p>
+            )}
+            <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', marginTop: 8, lineHeight: 1.5 }}>
+                Es el valor por defecto. La comisión que tenga pactada cada cliente, en la tabla de abajo,
+                manda sobre esta.
+            </p>
+        </div>
+    );
+};
+
+// Llamada a la edge de la mesa con la sesión del admin.
+async function callOtcMesaAdmin(action: string, body: Record<string, unknown> = {}): Promise<any> {
+    const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+    const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+    let token = SKEY;
+    try {
+        const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
+        if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) token = d.access_token; }
+    } catch { /* sin sesión */ }
+    try {
+        const r = await fetch(`${SURL}/functions/v1/otc-mesa`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ action, ...body }),
+        });
+        return await r.json().catch(() => null);
+    } catch (e: any) {
+        return { ok: false, error: String(e?.message ?? e) };
+    }
+}
 
 const isOtcConvertTx = (t: any) => t.type === 'convert' && (t.source === 'MOUV' || t.source === 'FINITY' || t.gasfree === true);
 
@@ -132,7 +255,9 @@ export const AdminOtcSection: React.FC = () => {
         return (u.name ?? '').toLowerCase().includes(s) || (u.email ?? '').toLowerCase().includes(s) || (u.id ?? '').toLowerCase().includes(s);
     });
 
-    const otcConfigOf = (u: any) => (u.otcConfig ?? u.raw_data?.otcConfig ?? {}) as { enabled?: boolean; feePct?: number };
+    const [manualEdit, setManualEdit] = useState<{ userId: string; value: string } | null>(null);
+
+    const otcConfigOf = (u: any) => (u.otcConfig ?? u.raw_data?.otcConfig ?? {}) as { enabled?: boolean; feePct?: number; manualPct?: number };
 
     // Escritura DIRECTA a raw_data (updateUserRawData): el update de perfil
     // completo se estrellaba contra el candado de columnas sensibles cuando
@@ -159,6 +284,24 @@ export const AdminOtcSection: React.FC = () => {
                 ? { ok: true, text: `✅ Comisión de ${u.name ?? u.email} guardada: ${next}%.` }
                 : { ok: false, text: 'La comisión NO quedó guardada en el servidor. Reintenta; si persiste, vuelve a iniciar sesión.' });
             if (ok) setFeeEdit(null);
+        } finally { setSavingId(null); }
+    };
+
+    // Comision de la MESA MANUAL para este cliente. Mismo camino que saveFee
+    // (escritura directa a raw_data) porque el update de perfil completo se
+    // estrella contra el candado de columnas sensibles.
+    const saveManual = async (u: any) => {
+        if (!manualEdit || manualEdit.userId !== u.id) return;
+        const next = parseFloat(manualEdit.value.replace(',', '.'));
+        if (isNaN(next) || next < 0 || next > 5) { setSaveMsg({ ok: false, text: 'Comision invalida — escribe un % entre 0 y 5 (ej: 0.25).' }); return; }
+        const cfg = otcConfigOf(u);
+        setSavingId(u.id); setSaveMsg(null);
+        try {
+            const ok = await updateUserRawData(u.id, { otcConfig: { ...cfg, manualPct: next } });
+            setSaveMsg(ok
+                ? { ok: true, text: `✅ Comisión de mesa manual de ${u.name ?? u.email} guardada: ${next}%.` }
+                : { ok: false, text: 'La comisión NO quedó guardada en el servidor. Reintenta.' });
+            if (ok) setManualEdit(null);
         } finally { setSavingId(null); }
     };
 
@@ -375,6 +518,9 @@ export const AdminOtcSection: React.FC = () => {
                                 todavía porque no tendría sobre qué aplicarse.
                             </p>
                         </div>
+
+                        {/* MESA MANUAL — margen y plazo por defecto */}
+                        <MesaManualCard baseRate={baseRate} />
                     </div>
                 </div>
 
@@ -395,8 +541,9 @@ export const AdminOtcSection: React.FC = () => {
                             <tr>
                                 <th className="text-left px-4 py-3">Empresa</th>
                                 <th className="text-center px-4 py-3">Estado OTC</th>
-                                <th className="text-right px-4 py-3">Comisión (%)</th>
+                                <th className="text-right px-4 py-3">Comisión ACH (%)</th>
                                 <th className="text-right px-4 py-3">Tasa cliente (USD→COP)</th>
+                                <th className="text-right px-4 py-3">Mesa manual (%)</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -464,11 +611,55 @@ export const AdminOtcSection: React.FC = () => {
                                                 <span className="text-xs text-slate-300">{rateLoading ? '…' : 'sin tasa base'}</span>
                                             )}
                                         </td>
+                                        {/* Mesa manual: otro riel, otra comisión. Se edita igual
+                                            que la de ACH y sale del mismo raw_data.otcConfig. */}
+                                        <td className="px-4 py-3 text-right">
+                                            {manualEdit?.userId === u.id ? (
+                                                <div className="inline-flex items-center gap-2 bg-white border-2 border-[#4ADE80] rounded-xl pl-3 pr-1.5 py-1 shadow-sm shadow-green-100">
+                                                    <input autoFocus type="text" inputMode="decimal" placeholder="0.25" value={manualEdit.value}
+                                                        onChange={e => { const v = e.target.value; if (/^[0-9]*[.,]?[0-9]*$/.test(v)) setManualEdit({ userId: u.id, value: v }); }}
+                                                        onKeyDown={e => { if (e.key === 'Enter') saveManual(u); if (e.key === 'Escape') setManualEdit(null); }}
+                                                        className="w-16 bg-transparent text-right text-base font-bold text-slate-800 outline-none tabular-nums" />
+                                                    <span className="text-sm text-slate-400 font-medium">%</span>
+                                                    <div className="flex items-center gap-1 pl-2 ml-1 border-l border-slate-200">
+                                                        <button onClick={() => saveManual(u)} disabled={savingId === u.id} className="w-7 h-7 flex items-center justify-center rounded-full bg-[#16A34A] text-white hover:bg-[#0F766E] transition-colors disabled:opacity-50" title="Guardar">
+                                                            <Check size={14} />
+                                                        </button>
+                                                        <button onClick={() => setManualEdit(null)} className="w-7 h-7 flex items-center justify-center rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 hover:text-slate-700 transition-colors" title="Cancelar">
+                                                            <X size={14} />
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            ) : (() => {
+                                                // Distinguir "tiene 0% pactado" de "no tiene nada
+                                                // pactado y usa el global" — son cosas distintas y
+                                                // confundirlas es justamente cobrarle a quien no
+                                                // se le debe cobrar.
+                                                const propio = typeof cfg.manualPct === 'number' && !isNaN(cfg.manualPct);
+                                                return (
+                                                    <button
+                                                        onClick={() => setManualEdit({ userId: u.id, value: propio ? String(cfg.manualPct) : String(DEFAULT_MANUAL_PCT) })}
+                                                        className="inline-flex items-center gap-2 group"
+                                                        title="Comisión de la mesa manual para este cliente"
+                                                    >
+                                                        <span className="text-right">
+                                                            <span className={`block text-base font-bold tabular-nums transition-colors ${propio ? 'text-slate-800 group-hover:text-[#16A34A]' : 'text-slate-400 group-hover:text-[#16A34A]'}`}>
+                                                                {propio ? `${cfg.manualPct}%` : '—'}
+                                                            </span>
+                                                            {!propio && <span className="block text-[9px] text-slate-400">usa el global</span>}
+                                                        </span>
+                                                        <span className="w-7 h-7 flex items-center justify-center rounded-full text-slate-400 bg-slate-50 group-hover:bg-[#16A34A] group-hover:text-white transition-colors">
+                                                            <Pencil size={13} />
+                                                        </span>
+                                                    </button>
+                                                );
+                                            })()}
+                                        </td>
                                     </tr>
                                 );
                             })}
                             {filtered.length === 0 && (
-                                <tr><td colSpan={4} className="px-4 py-10 text-center text-slate-400 text-sm">Sin clientes registrados todavía.</td></tr>
+                                <tr><td colSpan={5} className="px-4 py-10 text-center text-slate-400 text-sm">Sin clientes registrados todavía.</td></tr>
                             )}
                         </tbody>
                     </table>
