@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
     ArrowLeftRight, Send, RefreshCw, ChevronLeft, MessageSquare,
-    CheckCircle2, Clock, XCircle, AlertTriangle, Landmark, Wallet, Paperclip,
+    CheckCircle2, Clock, XCircle, AlertTriangle, Landmark, Wallet, Paperclip, Plus, ChevronDown, ChevronUp,
 } from 'lucide-react';
 import { FinityRateChart } from './FinityRateChart';
 
@@ -461,9 +461,14 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
     const [msgs, setMsgs]       = useState<any[]>([]);
     const [texto, setTexto]     = useState('');
     const [enviando, setEnviando] = useState(false);
+    const [subiendo, setSubiendo] = useState(false);
+    const [marcando, setMarcando] = useState(false);
     const [cargando, setCargando] = useState(true);
+    const [detalles, setDetalles] = useState(false);
     const [lupa, setLupa] = useState<string | null>(null);
+    const [error, setError] = useState<string | null>(null);
     const finRef = useRef<HTMLDivElement | null>(null);
+    const fileRef = useRef<HTMLInputElement | null>(null);
 
     const cargar = useCallback(async () => {
         const r = await callOtcMesa('detalle', { user_id: userId, id });
@@ -497,10 +502,33 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
         else showToast?.(r?.message ?? r?.error ?? 'No se pudo enviar el mensaje.');
     };
 
+    const adjuntar = async (f: File | null | undefined) => {
+        if (!f) return;
+        setError(null);
+        if (f.size > 5 * 1024 * 1024) { setError('El comprobante no puede pesar más de 5 MB.'); return; }
+        setSubiendo(true);
+        try {
+            const b64: string = await new Promise((res, rej) => {
+                const fr = new FileReader();
+                fr.onload = () => res(String(fr.result ?? ''));
+                fr.onerror = () => rej(new Error('no se pudo leer el archivo'));
+                fr.readAsDataURL(f);
+            });
+            const r = await callOtcMesa('comprobante', { user_id: userId, id, archivo: b64, nombre: f.name, tipo: f.type });
+            if (r?.ok) { cargar(); showToast?.('Comprobante subido.'); }
+            else setError(r?.message ?? r?.error ?? 'No se pudo subir el comprobante.');
+        } catch (e: any) {
+            setError(e?.message ?? 'No se pudo leer el archivo.');
+        }
+        setSubiendo(false);
+        if (fileRef.current) fileRef.current.value = '';
+    };
+
     const accion = async (action: string, extra: Record<string, unknown> = {}) => {
         const r = await callOtcMesa(action, { user_id: userId, id, ...extra });
-        if (r?.ok) { cargar(); showToast?.('Listo.'); }
-        else showToast?.(r?.message ?? r?.error ?? 'No se pudo.');
+        if (r?.ok) { cargar(); return true; }
+        setError(r?.message ?? r?.error ?? 'No se pudo.');
+        return false;
     };
 
     if (cargando && !cierre) {
@@ -517,82 +545,131 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
 
     const cara = caraDe(cierre.status);
     const tasaVigente = cierre.rate_final ?? cierre.rate_cotizada;
-    const vivo = !['completada', 'cancelada'].includes(cierre.status);
+    const vivo  = !['completada', 'cancelada'].includes(cierre.status);
     const enPago = cierre.status === 'esperando_pago';
-    // Si ya subio comprobante se ve en el hilo. Es el mismo hecho que comprueba
-    // el servidor antes de aceptar "ya pague".
+    // Si ya subió comprobante se ve en el hilo. Es el mismo hecho que comprueba
+    // el servidor antes de aceptar "ya pagué".
     const tieneComprobante = msgs.some((m: any) => m.autor === 'cliente' && m.adjunto_url);
+    const verbo = cierre.side === 'vende_usdt' ? 'Vender' : 'Comprar';
+    const destino = destinoTexto(cierre.payout);
 
     return (
         <div style={{ maxWidth: 620, margin: '0 auto', fontFamily: "'Archivo', system-ui, sans-serif" }}>
-            <button onClick={onVolver} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12.5, color: '#878E88', marginBottom: 14 }}>
+            <button onClick={onVolver} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12.5, color: '#878E88', marginBottom: 12 }}>
                 <ChevronLeft size={15} /> Mis cierres
             </button>
 
-            {/* Cabecera de la orden */}
-            <div style={{ ...PANEL, padding: '18px 20px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
-                    <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 13, color: '#878E88' }}>{cierre.ref}</span>
-                    <div style={{ textAlign: 'right' }}>
-                        <span style={{ border: `1px solid ${cara.borde}`, background: cara.fondo, color: cara.color, fontSize: 9, fontWeight: 700, letterSpacing: '0.6px', padding: '3px 9px', borderRadius: 999 }}>
+            {/* Toda la operación en una sola pieza: barra, detalles, hilo y
+                acciones. El chat es la superficie principal — es donde pasa la
+                operación — y el estado vive arriba, siempre a la vista. */}
+            <div style={{ ...PANEL, overflow: 'hidden' }}>
+
+                {/* ── Barra de la orden ── */}
+                <div style={{ padding: '14px 18px', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+                        <div style={{ minWidth: 0 }}>
+                            <p style={{ fontSize: 16, fontWeight: 800, color: '#F4F4F2', letterSpacing: '-0.4px', lineHeight: 1.3 }}>
+                                {verbo} {nf(cierre.from_amount)} {cierre.from_currency}
+                            </p>
+                            <p style={{ fontSize: 13, color: '#878E88', marginTop: 2 }}>
+                                {cierre.to_amount != null
+                                    ? <>por <b style={{ color: '#F4F4F2', fontWeight: 700 }}>{nf(cierre.to_amount, 0)} {cierre.to_currency}</b></>
+                                    : 'a cotizar'}
+                            </p>
+                            {enPago && cierre.vence_at && <PagaEn hasta={cierre.vence_at} />}
+                        </div>
+                        <span style={{ border: `1px solid ${cara.borde}`, background: cara.fondo, color: cara.color, fontSize: 9, fontWeight: 700, letterSpacing: '0.6px', padding: '4px 10px', borderRadius: 999, flexShrink: 0, whiteSpace: 'nowrap' }}>
                             {cara.label}
                         </span>
-                        {enPago && cierre.vence_at && <Contador hasta={cierre.vence_at} />}
                     </div>
-                </div>
-                <p style={{ color: '#F4F4F2', fontSize: 22, fontWeight: 800, marginTop: 10, letterSpacing: '-0.5px' }}>
-                    {nf(cierre.from_amount)} {cierre.from_currency}
-                    <span style={{ color: '#878E88', fontWeight: 500 }}> → </span>
-                    {cierre.to_amount != null ? `${nf(cierre.to_amount, 0)} ${cierre.to_currency}` : <span style={{ color: '#878E88', fontSize: 16, fontWeight: 600 }}>a cotizar</span>}
-                </p>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 14, paddingTop: 13, borderTop: '1px solid rgba(255,255,255,0.07)' }}>
-                    <Dato label="Tasa" valor={tasaVigente != null ? nf(tasaVigente) : '—'}
-                        pie={cierre.rate_final ? 'confirmada por la mesa' : cierre.rate_cotizada ? 'indicativa' : undefined} />
-                    <Dato label="Solicitado" valor={fecha(cierre.created_at)} />
-                    {(() => {
-                        const d = destinoTexto(cierre.payout);
-                        return d ? <Dato label={d.label} valor={d.valor} mono={d.mono} /> : null;
-                    })()}
-                    {cierre.payout?.tipo === 'ach' && <Dato label="Titular" valor={cierre.payout.titular ?? '—'} />}
-                </div>
-            </div>
 
-            {/* Acciones del cliente */}
-            {enPago && (
-                <SubirComprobante
-                    venceAt={cierre.vence_at}
-                    yaSubido={tieneComprobante}
-                    onSubir={async (archivo, nombre, tipo) => {
-                        const r = await callOtcMesa('comprobante', { user_id: userId, id, archivo, nombre, tipo });
-                        if (r?.ok) { cargar(); showToast?.('Comprobante subido.'); return null; }
-                        return r?.message ?? r?.error ?? 'No se pudo subir el comprobante.';
-                    }}
-                    onMarcarPagado={async () => {
-                        const r = await callOtcMesa('marcar_pagada', { user_id: userId, id });
-                        if (r?.ok) { cargar(); showToast?.('Avisamos a la mesa. Están verificando el ingreso.'); return null; }
-                        return r?.message ?? r?.error ?? 'No se pudo marcar como pagado.';
-                    }}
-                />
-            )}
-            {['abierta', 'en_proceso', 'esperando_pago'].includes(cierre.status) && (
-                <button onClick={() => accion('cancelar')}
-                    style={{ width: '100%', marginTop: 8, padding: '10px 0', borderRadius: 11, fontWeight: 600, fontSize: 12.5, color: '#F87171', background: 'transparent', border: '1px solid rgba(248,113,113,0.3)' }}>
-                    Cancelar solicitud
-                </button>
-            )}
+                    <button
+                        onClick={() => setDetalles(v => !v)}
+                        style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 10, fontSize: 12, fontWeight: 600, color: '#4ADE80', background: 'transparent', border: 'none', padding: 0 }}
+                    >
+                        Ver detalles {detalles ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                    </button>
 
-            {/* Hilo */}
-            <div style={{ ...PANEL, marginTop: 14, overflow: 'hidden' }}>
-                <div style={{ padding: '12px 16px', borderBottom: '1px solid rgba(255,255,255,0.07)', display: 'flex', alignItems: 'center', gap: 7 }}>
-                    <MessageSquare size={14} style={{ color: '#878E88' }} />
-                    <span style={{ fontSize: 12.5, fontWeight: 700, color: '#F4F4F2' }}>Chat con la mesa</span>
+                    {detalles && (
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 12, paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+                            <Dato label="Referencia" valor={cierre.ref} mono />
+                            <Dato label="Tasa" valor={tasaVigente != null ? nf(tasaVigente) : '—'}
+                                pie={cierre.rate_final ? 'confirmada por la mesa' : cierre.rate_cotizada ? 'indicativa' : undefined} />
+                            <Dato label="Solicitado" valor={fecha(cierre.created_at)} />
+                            {destino && <Dato label={destino.label} valor={destino.valor} mono={destino.mono} />}
+                        </div>
+                    )}
                 </div>
-                <div style={{ maxHeight: 380, overflowY: 'auto', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+
+                {/* ── El hilo ── */}
+                <div style={{ maxHeight: 400, minHeight: 200, overflowY: 'auto', padding: '16px 16px 8px', display: 'flex', flexDirection: 'column', gap: 10 }}>
                     {msgs.map(m => <Burbuja key={m.id} m={m} onVer={setLupa} />)}
                     <div ref={finRef} />
                 </div>
+
+                {error && (
+                    <div style={{ margin: '0 16px 10px', display: 'flex', alignItems: 'flex-start', gap: 7, border: '1px solid rgba(248,113,113,0.35)', background: 'rgba(248,113,113,0.06)', borderRadius: 10, padding: '9px 11px' }}>
+                        <AlertTriangle size={13} style={{ color: '#F87171', marginTop: 1, flexShrink: 0 }} />
+                        <p style={{ color: '#F87171', fontSize: 12, lineHeight: 1.5 }}>{error}</p>
+                    </div>
+                )}
+
+                {/* ── Acciones ── */}
+                {vivo && (
+                    <div style={{ padding: '12px 16px', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+                        {enPago && !tieneComprobante && (
+                            <p style={{ fontSize: 11.5, color: '#878E88', marginBottom: 9, lineHeight: 1.5 }}>
+                                Enviá el pago y adjuntá el comprobante con el <b style={{ color: '#F4F4F2' }}>+</b> de abajo. Tiene que verse el monto.
+                            </p>
+                        )}
+                        {/* Apiladas en móvil, en línea en escritorio: en el ancho
+                            de un teléfono, dos botones lado a lado quedan
+                            demasiado angostos para leerse de un vistazo. */}
+                        <div className="flex flex-col sm:flex-row" style={{ gap: 8 }}>
+                            {enPago && (
+                                <button
+                                    onClick={async () => { setMarcando(true); await accion('marcar_pagada'); setMarcando(false); }}
+                                    disabled={!tieneComprobante || marcando}
+                                    className={tieneComprobante ? 'lincoin-btn-white transition-colors' : undefined}
+                                    style={{
+                                        flex: 1, padding: '13px 0', borderRadius: 11, border: 'none', fontWeight: 700, fontSize: 14,
+                                        ...(tieneComprobante ? {} : { background: 'rgba(255,255,255,0.05)', color: '#878E88' }),
+                                        cursor: tieneComprobante ? 'pointer' : 'not-allowed', opacity: marcando ? 0.6 : 1,
+                                    }}
+                                >
+                                    {marcando ? 'Avisando a la mesa…' : 'Marcar como pagado'}
+                                </button>
+                            )}
+                            <button
+                                onClick={() => accion('cancelar')}
+                                className="sm:w-auto transition-colors hover:bg-white/[0.04]"
+                                style={{ padding: '13px 20px', borderRadius: 11, fontWeight: 600, fontSize: 13, color: '#F87171', background: 'transparent', border: '1px solid rgba(248,113,113,0.3)', whiteSpace: 'nowrap' }}
+                            >
+                                Cancelar solicitud
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+                {/* ── Composer, con el adjuntar adentro ── */}
                 {vivo ? (
-                    <div style={{ display: 'flex', gap: 8, padding: '12px 14px', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+                    <div style={{ display: 'flex', gap: 8, padding: '12px 16px', borderTop: '1px solid rgba(255,255,255,0.07)', alignItems: 'center' }}>
+                        <input
+                            ref={fileRef}
+                            type="file"
+                            accept="image/jpeg,image/png,image/webp,image/heic,application/pdf"
+                            onChange={e => adjuntar(e.target.files?.[0])}
+                            style={{ display: 'none' }}
+                        />
+                        <button
+                            onClick={() => fileRef.current?.click()}
+                            disabled={subiendo}
+                            title="Adjuntar comprobante"
+                            className="transition-colors hover:bg-white/[0.09]"
+                            style={{ flexShrink: 0, width: 40, height: 40, borderRadius: 999, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#F4F4F2' }}
+                        >
+                            {subiendo ? <RefreshCw size={16} className="animate-spin" /> : <Plus size={18} />}
+                        </button>
                         <input
                             value={texto}
                             onChange={e => setTexto(e.target.value)}
@@ -601,13 +678,14 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
                             style={{ ...INPUT, fontSize: 13.5 }}
                         />
                         <button onClick={enviar} disabled={enviando || !texto.trim()}
-                            style={{ flexShrink: 0, width: 42, borderRadius: 10, background: texto.trim() ? '#4ADE80' : 'rgba(255,255,255,0.06)', border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            style={{ flexShrink: 0, width: 40, height: 40, borderRadius: 999, background: texto.trim() ? '#4ADE80' : 'rgba(255,255,255,0.055)', border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                             {enviando ? <RefreshCw size={15} className="animate-spin" style={{ color: '#0C0E0D' }} /> : <Send size={15} style={{ color: texto.trim() ? '#0C0E0D' : '#878E88' }} />}
                         </button>
                     </div>
                 ) : (
-                    <p style={{ padding: '12px 16px', borderTop: '1px solid rgba(255,255,255,0.07)', color: 'rgba(244,244,242,0.45)', fontSize: 12 }}>
-                        Este cierre está {cierre.status === 'completada' ? 'completado' : 'cancelado'}. El hilo queda como registro.
+                    <p style={{ padding: '13px 18px', borderTop: '1px solid rgba(255,255,255,0.07)', color: 'rgba(244,244,242,0.45)', fontSize: 12, lineHeight: 1.5 }}>
+                        Este cierre está {cierre.status === 'completada' ? 'completado' : 'cancelado'}
+                        {cierre.status === 'cancelada' && cierre.motivo_cierre ? ` — ${cierre.motivo_cierre}` : ''}. El hilo queda como registro.
                     </p>
                 )}
             </div>
@@ -617,9 +695,20 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
     );
 };
 
-// Segundos que faltan para una fecha, vivos. El contador de pantalla es
-// informativo: quien decide si llego a tiempo es el servidor, porque un reloj
-// de navegador se para, se adelanta o se edita.
+// "Paga en 04:52" — el plazo dicho como lo que le toca hacer, no como un dato
+// del sistema. Ambar en el ultimo minuto, rojo al vencer: el color tiene que
+// cambiar ANTES de que sea tarde, no cuando ya lo es.
+const PagaEn: React.FC<{ hasta: string }> = ({ hasta }) => {
+    const seg = useCuentaAtras(hasta);
+    if (seg == null) return null;
+    const color = seg === 0 ? '#F87171' : seg <= 60 ? '#FBBF24' : '#4ADE80';
+    return (
+        <p style={{ fontSize: 13, color: '#878E88', marginTop: 6 }}>
+            {seg === 0 ? 'Plazo vencido' : <>Paga en <b style={{ color, fontFamily: 'ui-monospace, monospace', fontWeight: 800, fontSize: 15 }}>{reloj(seg)}</b></>}
+        </p>
+    );
+};
+
 function useCuentaAtras(hasta: string | null | undefined): number | null {
     const [seg, setSeg] = useState<number | null>(null);
     useEffect(() => {
@@ -641,117 +730,6 @@ const reloj = (seg: number) => `${String(Math.floor(seg / 60)).padStart(2, '0')}
 //
 // El contador de esta pantalla es informativo. Quien decide si llegó a tiempo
 // es el servidor: un reloj del navegador se para, se adelanta o se edita.
-const SubirComprobante: React.FC<{
-    venceAt: string | null;
-    yaSubido: boolean;
-    onSubir: (archivo: string, nombre: string, tipo: string) => Promise<string | null>;
-    onMarcarPagado: () => Promise<string | null>;
-}> = ({ venceAt, yaSubido, onSubir, onMarcarPagado }) => {
-    const restante = useCuentaAtras(venceAt);
-    const [subiendo, setSubiendo] = useState(false);
-    const [marcando, setMarcando] = useState(false);
-    const [error, setError]   = useState<string | null>(null);
-    const fileRef = useRef<HTMLInputElement | null>(null);
-
-    const elegir = async (f: File | null | undefined) => {
-        if (!f) return;
-        setError(null);
-        if (f.size > 5 * 1024 * 1024) { setError('El comprobante no puede pesar más de 5 MB.'); return; }
-        setSubiendo(true);
-        try {
-            const b64: string = await new Promise((res, rej) => {
-                const fr = new FileReader();
-                fr.onload = () => res(String(fr.result ?? ''));
-                fr.onerror = () => rej(new Error('no se pudo leer el archivo'));
-                fr.readAsDataURL(f);
-            });
-            const msg = await onSubir(b64, f.name, f.type);
-            if (msg) setError(msg);
-        } catch (e: any) {
-            setError(e?.message ?? 'No se pudo leer el archivo.');
-        }
-        setSubiendo(false);
-        if (fileRef.current) fileRef.current.value = '';
-    };
-
-    const marcar = async () => {
-        setError(null); setMarcando(true);
-        const msg = await onMarcarPagado();
-        if (msg) setError(msg);
-        setMarcando(false);
-    };
-
-    const vencido = restante === 0;
-
-    return (
-        <div style={{ ...PANEL, marginTop: 10, padding: '16px 18px' }}>
-            <p style={{ fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>Envía y subí el comprobante</p>
-            <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 5, lineHeight: 1.5 }}>
-                {vencido
-                    ? 'Se venció el plazo. Si ya enviaste el dinero, escribile a la mesa por el chat antes de montar otra solicitud.'
-                    : 'Tiene que verse el monto enviado. Imagen o PDF, hasta 5 MB.'}
-            </p>
-
-            <input
-                ref={fileRef}
-                type="file"
-                accept="image/jpeg,image/png,image/webp,image/heic,application/pdf"
-                onChange={e => elegir(e.target.files?.[0])}
-                style={{ display: 'none' }}
-            />
-
-            {/* Paso 1: el comprobante. Paso 2: avisar. Separados porque son dos
-                hechos distintos -- tener la prueba y declarar que ya pago -- y
-                juntarlos obligaba a subir de nuevo para corregir cualquier cosa. */}
-            <button
-                onClick={() => fileRef.current?.click()}
-                disabled={subiendo || vencido}
-                style={{
-                    width: '100%', marginTop: 12, padding: '11px 0', borderRadius: 11,
-                    border: `1px solid ${yaSubido ? 'rgba(74,222,128,0.4)' : 'rgba(255,255,255,0.14)'}`,
-                    background: yaSubido ? 'rgba(74,222,128,0.08)' : 'rgba(255,255,255,0.05)',
-                    color: yaSubido ? '#4ADE80' : '#F4F4F2',
-                    fontWeight: 700, fontSize: 13, opacity: (subiendo || vencido) ? 0.5 : 1,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
-                }}
-            >
-                {subiendo
-                    ? <><RefreshCw size={15} className="animate-spin" /> Subiendo…</>
-                    : yaSubido
-                        ? <><CheckCircle2 size={15} /> Comprobante subido · cambiar</>
-                        : <><Paperclip size={15} /> Subir comprobante</>}
-            </button>
-
-            <button
-                onClick={marcar}
-                disabled={!yaSubido || marcando || vencido}
-                className={yaSubido && !vencido ? 'lincoin-btn-white transition-colors' : undefined}
-                style={{
-                    width: '100%', marginTop: 8, padding: '12px 0', borderRadius: 11, border: 'none',
-                    fontWeight: 700, fontSize: 13.5,
-                    ...(yaSubido && !vencido ? {} : { background: 'rgba(255,255,255,0.05)', color: '#878E88' }),
-                    opacity: marcando ? 0.6 : 1,
-                    cursor: (!yaSubido || vencido) ? 'not-allowed' : 'pointer',
-                }}
-            >
-                {marcando ? 'Avisando a la mesa…' : 'Marcar como pagado'}
-            </button>
-            {!yaSubido && !vencido && (
-                <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', textAlign: 'center', marginTop: 7 }}>
-                    Primero subí el comprobante.
-                </p>
-            )}
-
-            {error && (
-                <div style={{ marginTop: 10, display: 'flex', alignItems: 'flex-start', gap: 7 }}>
-                    <AlertTriangle size={13} style={{ color: '#F87171', marginTop: 1, flexShrink: 0 }} />
-                    <p style={{ color: '#F87171', fontSize: 12, lineHeight: 1.5 }}>{error}</p>
-                </div>
-            )}
-        </div>
-    );
-};
-
 // Un comprobante se mira, no se abre en otra pestana. Un enlace obliga a salir
 // de la conversacion justo cuando hay que comparar lo que dice el papel con lo
 // que dice la orden. Se muestra adentro y se amplia con un click.
@@ -799,19 +777,6 @@ const Lupa: React.FC<{ url: string; onCerrar: () => void }> = ({ url, onCerrar }
             style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', borderRadius: 10 }} />
     </div>
 );
-
-// El tiempo que queda, debajo del estado. Ambar en el ultimo minuto, rojo al
-// vencer: el color tiene que cambiar antes de que sea tarde, no cuando ya lo es.
-const Contador: React.FC<{ hasta: string }> = ({ hasta }) => {
-    const seg = useCuentaAtras(hasta);
-    if (seg == null) return null;
-    const color = seg === 0 ? '#F87171' : seg <= 60 ? '#FBBF24' : '#4ADE80';
-    return (
-        <p style={{ fontFamily: 'ui-monospace, monospace', fontSize: 17, fontWeight: 800, color, marginTop: 6, letterSpacing: '-0.3px' }}>
-            {seg === 0 ? 'vencido' : reloj(seg)}
-        </p>
-    );
-};
 
 const Renglon: React.FC<{ k: string; v: string; fuerte?: boolean }> = ({ k, v, fuerte }) => (
     <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
