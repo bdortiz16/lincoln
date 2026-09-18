@@ -763,16 +763,37 @@ const Adjunto: React.FC<{ url: string; onVer?: (url: string) => void }> = ({ url
     );
 };
 
-const Lupa: React.FC<{ url: string; onCerrar: () => void }> = ({ url, onCerrar }) => (
-    <div onClick={e => { e.stopPropagation(); onCerrar(); }}
-        className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.93)' }}>
-        <button onClick={e => { e.stopPropagation(); onCerrar(); }} aria-label="Cerrar"
-            style={{ position: 'absolute', top: 16, right: 16, width: 38, height: 38, borderRadius: 999, background: 'rgba(255,255,255,0.12)', border: 'none', color: TXT, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <X size={20} />
-        </button>
-        <img src={url} alt="Comprobante" onClick={e => e.stopPropagation()} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', borderRadius: 10 }} />
-    </div>
-);
+const Lupa: React.FC<{ url: string; onCerrar: () => void }> = ({ url, onCerrar }) => {
+    useEffect(() => {
+        const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') onCerrar(); };
+        window.addEventListener('keydown', esc);
+        return () => window.removeEventListener('keydown', esc);
+    }, [onCerrar]);
+
+    return (
+        <div onClick={e => { e.stopPropagation(); onCerrar(); }}
+            className="fixed inset-0 z-[70] flex items-center justify-center"
+            style={{ background: 'rgba(0,0,0,0.93)', padding: '76px 16px 16px' }}>
+            {/* La X lleva su propio fondo y borde: un comprobante es casi
+                siempre una captura BLANCA, y una X translucida encima de eso
+                desaparece. No puede depender del color de la imagen. */}
+            <button onClick={e => { e.stopPropagation(); onCerrar(); }} aria-label="Cerrar"
+                className="transition-colors hover:bg-black"
+                style={{
+                    position: 'absolute', top: 18, right: 18, width: 52, height: 52, borderRadius: 999,
+                    background: 'rgba(12,14,13,0.92)', border: '1.5px solid rgba(255,255,255,0.45)',
+                    color: TXT, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    boxShadow: '0 4px 18px rgba(0,0,0,0.6)', zIndex: 2, cursor: 'pointer',
+                }}>
+                <X size={26} strokeWidth={2.6} />
+            </button>
+            <img src={url} alt="Comprobante" onClick={e => e.stopPropagation()} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', borderRadius: 10 }} />
+            <p style={{ position: 'absolute', bottom: 18, left: 0, right: 0, textAlign: 'center', fontSize: 11.5, color: TXT3 }}>
+                Hacé clic fuera de la imagen o apretá Esc para cerrar
+            </p>
+        </div>
+    );
+};
 
 const KV: React.FC<{ label: string; valor: string; pie?: string }> = ({ label, valor, pie }) => (
     <div>
