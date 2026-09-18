@@ -248,9 +248,26 @@ const VIEW_PATHS: Record<string, string> = {
   contactos: '/beneficiarios',
   walletsGasfree: '/wallets',
 };
-const PATH_VIEWS: Record<string, string> = Object.fromEntries(
-  Object.entries(VIEW_PATHS).map(([view, path]) => [path, view])
-);
+// 'mouv' es la unica vista con DOS entradas distintas —Dispersar por Bre-B y
+// la Mesa OTC— y, dentro de la mesa, tres rieles. Todo eso vivia solo en
+// memoria: al recargar /mesa-otc el modo volvia a su valor inicial ('full') y
+// aparecia la pantalla de dispersion, que no era donde estaba el usuario.
+// Compartir dos pantallas en una sola direccion es justamente lo que hace que
+// la recarga tenga que adivinar. Cada una tiene la suya.
+const RUTAS_MOUV: Record<string, { mouvMode: 'full' | 'converter'; otcRail: 'ach' | 'breb' | 'manual' | null }> = {
+  '/dispersar':       { mouvMode: 'full',      otcRail: null },
+  '/mesa-otc':        { mouvMode: 'converter', otcRail: null },
+  '/mesa-otc/manual': { mouvMode: 'converter', otcRail: 'manual' },
+  '/mesa-otc/ach':    { mouvMode: 'converter', otcRail: 'ach' },
+  '/mesa-otc/breb':   { mouvMode: 'converter', otcRail: 'breb' },
+};
+const rutaMouv = (mouvMode: 'full' | 'converter', otcRail: 'ach' | 'breb' | 'manual' | null): string =>
+  mouvMode === 'full' ? '/dispersar' : (otcRail ? `/mesa-otc/${otcRail}` : '/mesa-otc');
+
+const PATH_VIEWS: Record<string, string> = {
+  ...Object.fromEntries(Object.entries(VIEW_PATHS).map(([view, path]) => [path, view])),
+  ...Object.fromEntries(Object.keys(RUTAS_MOUV).map(p => [p, 'mouv'])),
+};
 
 export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }) => {
   const [activeView, setActiveView] = useState<'dashboard' | 'movements' | 'wallet-detail' | 'profile' | 'notifications' | 'referrals' | 'affiliates' | 'settings' | 'servicios' | 'mouv' | 'contactos' | 'walletsGasfree' | 'kyt'>(() => {
@@ -265,26 +282,40 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   });
   // Sincroniza vista ↔ URL: al cambiar de vista, actualiza la dirección;
   // y responde a los botones atrás/adelante del navegador.
+  // 'mouv' se usa para dos entradas distintas: "Dispersar" (Bre-B, flujo
+  // completo con cuentas destino/movimientos) y el boton "OTC" en Servicios
+  // (solo el convertidor USD->COP, sin nada de dispersion bancaria).
+  // Ambas se leen de la URL para que la recarga caiga donde estabas.
+  const [mouvMode, setMouvMode] = useState<'full' | 'converter'>(() => {
+    try { return RUTAS_MOUV[window.location.pathname]?.mouvMode ?? 'full'; } catch { return 'full'; }
+  });
+  // Mesa OTC: primero se elige el riel de salida del COP — ACH (conversor
+  // Finity, apificado), Bre-B, o la mesa manual con asesor.
+  const [otcRail, setOtcRail] = useState<'ach' | 'breb' | 'manual' | null>(() => {
+    try { return RUTAS_MOUV[window.location.pathname]?.otcRail ?? null; } catch { return null; }
+  });
   useEffect(() => {
     try {
-      const path = VIEW_PATHS[activeView] || '/inicio';
+      const path = activeView === 'mouv' ? rutaMouv(mouvMode, otcRail) : (VIEW_PATHS[activeView] || '/inicio');
       if (window.location.pathname !== path) window.history.pushState({ view: activeView }, '', path);
     } catch { /* entorno sin history */ }
-  }, [activeView]);
+  }, [activeView, mouvMode, otcRail]);
   useEffect(() => {
     const onPop = () => {
-      try { const v = PATH_VIEWS[window.location.pathname]; if (v) setActiveView(v as any); } catch { /* noop */ }
+      try {
+        const p = window.location.pathname;
+        const v = PATH_VIEWS[p];
+        if (!v) return;
+        setActiveView(v as any);
+        // El riel forma parte de dónde estabas: sin esto, "atrás" desde la
+        // mesa manual te devolvía a la misma dirección con otra pantalla.
+        const m = RUTAS_MOUV[p];
+        if (m) { setMouvMode(m.mouvMode); setOtcRail(m.otcRail); }
+      } catch { /* noop */ }
     };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, []);
-  // 'mouv' se usa para dos entradas distintas: "Dispersar" (Bre-B, flujo
-  // completo con cuentas destino/movimientos) y el boton "OTC" en Servicios
-  // (solo el convertidor USD->COP, sin nada de dispersion bancaria).
-  const [mouvMode, setMouvMode] = useState<'full' | 'converter'>('full');
-  // Mesa OTC: primero se elige el riel de salida del COP — ACH (conversor
-  // Finity, apificado) o Bre-B (Mouv, aún por mesa manual).
-  const [otcRail, setOtcRail] = useState<'ach' | 'breb' | 'manual' | null>(null);
   // Riel elegido para dispersar (lo fija el botón "Dispersar" de cada tarjeta).
   const [dispersRail, setDispersRail] = useState<'COP_BREB' | 'COP_ACH'>('COP_BREB');
   const [selectedWalletCode, setSelectedWalletCode] = useState<string | null>(null);
