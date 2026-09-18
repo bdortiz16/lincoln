@@ -234,6 +234,25 @@ function playDepositSound() {
 // Ruteo por URL: cada vista tiene su propia dirección (como un banco:
 // /movimientos, /billetera…) en vez de quedarse siempre en lincoin.me/#.
 // Así el usuario ve dónde está, puede compartir/recargar y usar atrás/adelante.
+// Un movimiento `convert` puede guardar el lado ACREDITADO o el DEBITADO,
+// segun quien lo inserte. Las filas que guardan el debitado SIEMPRE traen
+// targetCurrency (el destino va aparte); las que guardan el acreditado no.
+//
+// Se decide por esa estructura y no por una lista de origenes conocidos: esa
+// lista habia que ampliarla cada vez que entraba un riel nuevo, y el dia que
+// entro la Mesa OTC manual el movimiento salio en NEGATIVO aunque el cliente
+// habia recibido la plata. Un signo al reves en un movimiento de dinero no es
+// un detalle de estilo.
+//
+// `direccion: 'in'` en raw_data lo dice explicito cuando el servidor lo sabe;
+// la estructura queda como respaldo para las filas que no lo traen.
+function esConvertAcreditado(t: any): boolean {
+    if (t?.type !== 'convert') return false;
+    const rd = (t?.raw_data && typeof t.raw_data === 'object') ? t.raw_data : {};
+    if (rd.direccion === 'in' || t.direccion === 'in') return true;
+    return !(t.targetCurrency ?? rd.targetCurrency);
+}
+
 const VIEW_PATHS: Record<string, string> = {
   dashboard: '/inicio',
   movements: '/movimientos',
@@ -2107,7 +2126,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // una conversión Mouv SÍ es un crédito visualmente y las demás no.
   const isTxCredit = (t: any): boolean =>
       t.type === 'load' || t.type === 'referral_payout' || t.type === 'pay_received' || t.type === 'otc_deposit'
-      || (t.type === 'convert' && (t.source === 'MOUV' || t.raw_data?.source === 'MOUV'));
+      || esConvertAcreditado(t);
 
   const baseCurrency = (c?: string) => String(c || '').split('_')[0];
 
@@ -3989,7 +4008,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     // (lo que el cliente RECIBE — ej. COP), a diferencia del convertidor
     // general que guarda la moneda de ORIGEN (lo que se debita) — por eso
     // esta sí es un crédito y las demás 'convert' no.
-    const isOtcConvertCredit = tx.type === 'convert' && (tx.source === 'MOUV' || rawData.source === 'MOUV');
+    const isOtcConvertCredit = esConvertAcreditado(tx);
     const isCredit = tx.type === 'load' || tx.type === 'pay_received' || tx.type === 'referral_payout' || tx.type === 'otc_deposit' || isOtcConvertCredit;
     const targetAmount = tx.targetAmount ?? rawData.targetAmount;
     const targetCurrency = tx.targetCurrency ?? rawData.targetCurrency;

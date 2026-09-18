@@ -737,6 +737,10 @@ Deno.serve(async (req) => {
             fromCurrency: r.cierre.from_currency, fromAmount: Number(r.cierre.from_amount),
             destAmount: monto, mouvRate: tasa,
             source: 'OTC_MANUAL', otcRef: r.cierre.ref, otcCloseId: r.cierre.id,
+            // El cliente RECIBE: el movimiento va en positivo. Se dice
+            // explicito y no se deja deducir -- un signo al reves en un
+            // movimiento de dinero no es un detalle de estilo.
+            direccion: 'in',
             completadaPor: caller.nombre ?? null,
           },
         })
