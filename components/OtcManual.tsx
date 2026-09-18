@@ -462,6 +462,7 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
     const [texto, setTexto]     = useState('');
     const [enviando, setEnviando] = useState(false);
     const [cargando, setCargando] = useState(true);
+    const [lupa, setLupa] = useState<string | null>(null);
     const finRef = useRef<HTMLDivElement | null>(null);
 
     const cargar = useCallback(async () => {
@@ -587,7 +588,7 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
                     <span style={{ fontSize: 12.5, fontWeight: 700, color: '#F4F4F2' }}>Chat con la mesa</span>
                 </div>
                 <div style={{ maxHeight: 380, overflowY: 'auto', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-                    {msgs.map(m => <Burbuja key={m.id} m={m} />)}
+                    {msgs.map(m => <Burbuja key={m.id} m={m} onVer={setLupa} />)}
                     <div ref={finRef} />
                 </div>
                 {vivo ? (
@@ -610,6 +611,8 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
                     </p>
                 )}
             </div>
+
+            {lupa && <Lupa url={lupa} onCerrar={() => setLupa(null)} />}
         </div>
     );
 };
@@ -749,6 +752,54 @@ const SubirComprobante: React.FC<{
     );
 };
 
+// Un comprobante se mira, no se abre en otra pestana. Un enlace obliga a salir
+// de la conversacion justo cuando hay que comparar lo que dice el papel con lo
+// que dice la orden. Se muestra adentro y se amplia con un click.
+//
+// El tipo real lo sabe el servidor, pero la URL firmada no siempre delata la
+// extension: se intenta pintar como imagen y, si el navegador no puede, recien
+// ahi se cae al enlace. Probar en vez de adivinar.
+const Adjunto: React.FC<{ url: string; onVer?: (url: string) => void }> = ({ url, onVer }) => {
+    const [falla, setFalla] = useState(false);
+    const esPdf = /\.pdf(\?|$)/i.test(url);
+
+    if (esPdf || falla) {
+        return (
+            <a href={url} target="_blank" rel="noreferrer"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 6, padding: '8px 11px', borderRadius: 9, border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(255,255,255,0.05)', fontSize: 12.5, color: '#F4F4F2', fontWeight: 600 }}>
+                <Paperclip size={13} /> {esPdf ? 'Abrir comprobante (PDF)' : 'Abrir comprobante'}
+            </a>
+        );
+    }
+    return (
+        <button
+            onClick={() => onVer?.(url)}
+            style={{ display: 'block', marginTop: 7, padding: 0, border: 'none', background: 'transparent', cursor: 'zoom-in', width: '100%' }}
+            title="Ampliar"
+        >
+            <img
+                src={url}
+                alt="Comprobante"
+                onError={() => setFalla(true)}
+                style={{ display: 'block', width: '100%', maxHeight: 320, objectFit: 'contain', borderRadius: 9, border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(0,0,0,0.3)' }}
+            />
+        </button>
+    );
+};
+
+// Overlay para ver el comprobante en grande sin salir de la conversacion.
+const Lupa: React.FC<{ url: string; onCerrar: () => void }> = ({ url, onCerrar }) => (
+    <div onClick={onCerrar}
+        style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.92)', zIndex: 70, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+        <button onClick={onCerrar} aria-label="Cerrar"
+            style={{ position: 'absolute', top: 16, right: 16, width: 38, height: 38, borderRadius: 999, background: 'rgba(255,255,255,0.12)', border: 'none', color: '#F4F4F2', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <XCircle size={20} />
+        </button>
+        <img src={url} alt="Comprobante" onClick={e => e.stopPropagation()}
+            style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', borderRadius: 10 }} />
+    </div>
+);
+
 // El tiempo que queda, debajo del estado. Ambar en el ultimo minuto, rojo al
 // vencer: el color tiene que cambiar antes de que sea tarde, no cuando ya lo es.
 const Contador: React.FC<{ hasta: string }> = ({ hasta }) => {
@@ -794,7 +845,7 @@ const Dato: React.FC<{ label: string; valor: string; pie?: string; mono?: boolea
     </div>
 );
 
-const Burbuja: React.FC<{ m: any }> = ({ m }) => {
+const Burbuja: React.FC<{ m: any; onVer?: (url: string) => void }> = ({ m, onVer }) => {
     // El mensaje de sistema va centrado y sin burbuja: narra lo que pasó, no
     // lo dijo nadie. Mezclarlo con los de la mesa haría creer que un operador
     // escribió "tasa confirmada" cuando lo escribió el propio flujo.
@@ -815,11 +866,7 @@ const Burbuja: React.FC<{ m: any }> = ({ m }) => {
             }}>
                 {!mio && <p style={{ fontSize: 10, fontWeight: 700, color: '#4ADE80', marginBottom: 3 }}>MESA LINCOIN</p>}
                 {m.body && <p style={{ fontSize: 13.5, color: '#F4F4F2', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{m.body}</p>}
-                {m.adjunto_url && (
-                    <a href={m.adjunto_url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: '#4ADE80', textDecoration: 'underline', display: 'inline-block', marginTop: 5 }}>
-                        Ver comprobante
-                    </a>
-                )}
+                {m.adjunto_url && <Adjunto url={m.adjunto_url} onVer={onVer} />}
                 <p style={{ fontSize: 10, color: 'rgba(244,244,242,0.45)', marginTop: 4, textAlign: 'right' }}>{fecha(m.created_at)}</p>
             </div>
         </div>

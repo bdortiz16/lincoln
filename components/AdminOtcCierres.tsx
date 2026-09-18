@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
     RefreshCw, Send, X, MessageSquare, CheckCircle2, Clock, XCircle,
-    AlertTriangle, Landmark, Wallet, User, Hash, Copy, Lock, Zap,
+    AlertTriangle, Landmark, Wallet, User, Hash, Copy, Lock, Zap, Paperclip,
 } from 'lucide-react';
 
 // ─────────────────────────────────────────────
@@ -241,6 +241,7 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
     const [instrucciones, setInstrucciones] = useState('');
     const [notas, setNotas]   = useState('');
     const [notasGuardadas, setNotasGuardadas] = useState(false);
+    const [lupa, setLupa] = useState<string | null>(null);
     // Confirmacion propia en vez del window.confirm del navegador: completar
     // ACREDITA plata, y el dialogo tiene que decir cuanta y en que billetera.
     // El del navegador no puede mostrar eso y ademas no se puede leer sin
@@ -428,7 +429,7 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
                     )}
 
                     <div className="flex-1 overflow-auto px-4 py-4 space-y-2.5 bg-slate-50 min-h-[180px]">
-                        {msgs.map(m => <Burbuja key={m.id} m={m} />)}
+                        {msgs.map(m => <Burbuja key={m.id} m={m} onVer={setLupa} />)}
                         <div ref={finRef} />
                     </div>
 
@@ -538,6 +539,8 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
                 </div>
             </div>
 
+            {lupa && <Lupa url={lupa} onCerrar={() => setLupa(null)} />}
+
             {/* Confirmacion de completar / cancelar */}
             {pide && (
                 <div className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-4" onClick={e => { e.stopPropagation(); setPide(null); setMotivo(''); }}>
@@ -600,6 +603,41 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
     );
 };
 
+// La mesa tiene que VER el comprobante para verificar el ingreso, no abrirlo en
+// otra pestana: comparar lo que dice el papel con lo que dice la orden exige
+// tener las dos cosas a la vista. Se muestra adentro y se amplia con un click.
+//
+// La URL firmada no siempre delata la extension, asi que se intenta pintar como
+// imagen y recien si el navegador no puede se cae al enlace. Probar, no adivinar.
+const Adjunto: React.FC<{ url: string; onVer?: (url: string) => void }> = ({ url, onVer }) => {
+    const [falla, setFalla] = useState(false);
+    const esPdf = /\.pdf(\?|$)/i.test(url);
+    if (esPdf || falla) {
+        return (
+            <a href={url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 mt-1.5 px-2.5 py-1.5 rounded-lg border border-slate-300 text-[11px] font-bold text-slate-700 bg-white hover:bg-slate-50">
+                <Paperclip size={12} /> {esPdf ? 'Abrir comprobante (PDF)' : 'Abrir comprobante'}
+            </a>
+        );
+    }
+    return (
+        <button onClick={() => onVer?.(url)} className="block w-full mt-1.5 cursor-zoom-in" title="Ampliar">
+            <img src={url} alt="Comprobante" onError={() => setFalla(true)}
+                className="block w-full max-h-72 object-contain rounded-lg border border-slate-200 bg-slate-50" />
+        </button>
+    );
+};
+
+const Lupa: React.FC<{ url: string; onCerrar: () => void }> = ({ url, onCerrar }) => (
+    <div onClick={e => { e.stopPropagation(); onCerrar(); }}
+        className="fixed inset-0 bg-black/90 z-[70] flex items-center justify-center p-4">
+        <button onClick={e => { e.stopPropagation(); onCerrar(); }} aria-label="Cerrar"
+            className="absolute top-4 right-4 w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center">
+            <X size={20} />
+        </button>
+        <img src={url} alt="Comprobante" onClick={e => e.stopPropagation()} className="max-w-full max-h-full object-contain rounded-lg" />
+    </div>
+);
+
 const KV: React.FC<{ label: string; valor: string; pie?: string }> = ({ label, valor, pie }) => (
     <div>
         <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{label}</p>
@@ -617,7 +655,7 @@ const Fila: React.FC<{ icon: any; label: string; valor: any; mono?: boolean; onC
     </div>
 );
 
-const Burbuja: React.FC<{ m: any }> = ({ m }) => {
+const Burbuja: React.FC<{ m: any; onVer?: (url: string) => void }> = ({ m, onVer }) => {
     if (m.autor === 'sistema') {
         return <p className="text-center text-[11px] text-slate-400 px-6 leading-relaxed">{m.body}</p>;
     }
@@ -629,11 +667,7 @@ const Burbuja: React.FC<{ m: any }> = ({ m }) => {
                     {deLaMesa ? (m.autor_nom ?? 'Mesa') : 'Cliente'}
                 </p>
                 {m.body && <p className="text-[13px] leading-relaxed whitespace-pre-wrap">{m.body}</p>}
-                {m.adjunto_url && (
-                    <a href={m.adjunto_url} target="_blank" rel="noreferrer" className={`text-[11px] underline mt-1 inline-block ${deLaMesa ? 'text-emerald-300' : 'text-emerald-700'}`}>
-                        Ver comprobante
-                    </a>
-                )}
+                {m.adjunto_url && <Adjunto url={m.adjunto_url} onVer={onVer} />}
                 <p className={`text-[10px] mt-1 text-right ${deLaMesa ? 'text-slate-500' : 'text-slate-400'}`}>{fecha(m.created_at)}</p>
             </div>
         </div>
