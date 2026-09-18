@@ -441,23 +441,36 @@ Deno.serve(async (req) => {
         ? (side === 'vende_usdt' ? monto * rate : monto / rate)
         : null
 
+      // El plazo arranca al CREAR, no cuando la mesa contesta: el cliente ya vio
+      // la tasa y ya puede pagar. Hacerlo esperar a una confirmacion para
+      // recien entonces darle 5 minutos alarga la operacion sin darle nada.
+      //
+      // Por eso la tasa cotizada es tambien el precio de ejecucion: es contra
+      // ese numero que va a pagar. La mesa puede cambiarlo con fijar_tasa si
+      // hay que renegociar, y ahi el plazo vuelve a empezar.
+      const mins = await ventanaPago()
+      const conTasa = rate != null
       const ref = await refUnica()
       const { data: creada, error } = await db.from('otc_closes').insert({
         ref, user_id: uid, side,
         from_currency, from_amount: monto,
         to_currency, to_amount,
-        rate_cotizada: rate, rate_fuente: rate != null ? trazaTasa(c) : null,
+        rate_cotizada: rate, rate_final: rate, rate_fuente: rate != null ? trazaTasa(c) : null,
+        status: conTasa ? 'esperando_pago' : 'abierta',
+        confirmada_at: conTasa ? ahora() : null,
+        vence_at: conTasa ? new Date(Date.now() + mins * 60_000).toISOString() : null,
         payout: payload.payout && typeof payload.payout === 'object' ? payload.payout : {},
-        status: 'abierta',
         last_msg_at: ahora(), last_msg_por: 'sistema',
       }).select('*').maybeSingle()
       if (error) return json(500, { ok: false, error: error.message })
 
       const montoTxt = `${monto.toLocaleString('es-CO', { maximumFractionDigits: 2 })} ${from_currency}`
       await escribirMensaje(creada.id, 'sistema',
-        rate != null
-          ? `Solicitud de cierre por ${montoTxt}. Cotizacion indicativa: ${rate.toLocaleString('es-CO', { maximumFractionDigits: 2 })} COP por USD (referencia ${c.referencia?.toLocaleString('es-CO', { maximumFractionDigits: 2 })} menos ${c.margenPct}%). La mesa confirma la tasa final.`
-          : `Solicitud de cierre por ${montoTxt}. No se pudo tomar cotizacion automatica (${motivo ?? 'sin detalle'}): la mesa la cotiza a mano.`)
+        conTasa
+          ? `Solicitud de cierre por ${montoTxt} a ${rate!.toLocaleString('es-CO', { maximumFractionDigits: 2 })} COP por USD `
+            + `(referencia ${c.referencia?.toLocaleString('es-CO', { maximumFractionDigits: 2 })} menos ${c.margenPct}%). `
+            + `Tenes ${mins} minutos para enviar y subir el comprobante.`
+          : `Solicitud de cierre por ${montoTxt}. No se pudo tomar cotizacion automatica (${motivo ?? 'sin detalle'}): la mesa la cotiza a mano y ahi arranca el plazo.`)
 
       const nota = String(payload.nota ?? '').trim()
       if (nota) {
@@ -624,6 +637,22 @@ Deno.serve(async (req) => {
       return json(200, { ok: true, toAmount: to, venceAt: vence, ventanaMin: mins })
     }
 
+    // ── Subir comprobante (paso propio, antes de marcar pagado) ──
+    if (action === 'comprobante') {
+      const r = await cargarCierre(String(payload.id ?? ''), caller)
+      if (!r.ok) return json(404, { ok: false, error: r.motivo })
+      if (r.cierre.status === 'completada' || r.cierre.status === 'cancelada') {
+        return json(409, { ok: false, error: 'ese cierre ya esta cerrado' })
+      }
+      const archivo = String(payload.archivo ?? '')
+      if (!archivo) return json(400, { ok: false, error: 'falta el archivo' })
+      const sub = await guardarComprobante(r.cierre.id, archivo, String(payload.nombre ?? ''), String(payload.tipo ?? ''))
+      if (!sub.ok) return json(400, { ok: false, error: sub.error })
+      await escribirMensaje(r.cierre.id, 'cliente', String(payload.nota ?? 'Comprobante del envio.').slice(0, 500),
+        { autorId: caller.userId, autorNom: caller.nombre ?? undefined, adjunto: sub.path })
+      return json(200, { ok: true })
+    }
+
     // ── El cliente avisa que ya pago ────────────────────
     if (action === 'marcar_pagada') {
       const r = await cargarCierre(String(payload.id ?? ''), caller)
@@ -640,20 +669,21 @@ Deno.serve(async (req) => {
           message: 'Se vencio el plazo. Si ya enviaste el dinero, escribi por el chat antes de montar otra solicitud.',
         })
       }
-      // El comprobante es OBLIGATORIO. "Ya pague" sin respaldo no le sirve a
-      // nadie: la mesa tendria que salir a buscar en el banco un pago del que
-      // solo sabe que alguien dice que existe.
-      const archivo = String(payload.archivo ?? '')
-      if (!archivo) {
-        return json(400, { ok: false, error: 'falta_comprobante', message: 'Adjunta el comprobante del envio para confirmar.' })
+      // El comprobante es OBLIGATORIO y tiene que estar YA SUBIDO. "Ya pague"
+      // sin respaldo no le sirve a nadie: la mesa tendria que salir a buscar en
+      // el banco un pago del que solo sabe que alguien dice que existe.
+      //
+      // Se comprueba contra el hilo y no contra lo que mande la pantalla: el
+      // boton se puede deshabilitar en el navegador, la regla vive aca.
+      const { count } = await db.from('otc_messages')
+        .select('id', { count: 'exact', head: true })
+        .eq('close_id', r.cierre.id).eq('autor', 'cliente').not('adjunto_url', 'is', null)
+      if (!(count ?? 0)) {
+        return json(400, { ok: false, error: 'falta_comprobante', message: 'Subi el comprobante del envio antes de marcarlo como pagado.' })
       }
-      const sub = await guardarComprobante(r.cierre.id, archivo, String(payload.nombre ?? ''), String(payload.tipo ?? ''))
-      if (!sub.ok) return json(400, { ok: false, error: sub.error })
 
       await db.from('otc_closes').update({ status: 'pagada', pagada_at: ahora(), updated_at: ahora() }).eq('id', r.cierre.id)
-      await escribirMensaje(r.cierre.id, 'cliente', String(payload.nota ?? 'Comprobante del envio.').slice(0, 500),
-        { autorId: caller.userId, autorNom: caller.nombre ?? undefined, adjunto: sub.path })
-      await escribirMensaje(r.cierre.id, 'sistema', 'El cliente subio el comprobante. La mesa verifica el ingreso antes de liberar.')
+      await escribirMensaje(r.cierre.id, 'sistema', 'El cliente marco el envio como realizado. La mesa verifica el ingreso antes de liberar.')
       return json(200, { ok: true })
     }
 

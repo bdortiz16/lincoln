@@ -55,7 +55,7 @@ export async function callOtcMesa(action: string, body: Record<string, unknown> 
 const ESTADO: Record<string, { label: string; color: string; borde: string; fondo: string; Icon: any }> = {
     abierta:        { label: 'ESPERANDO A LA MESA', color: '#FBBF24', borde: 'rgba(251,191,36,0.4)',  fondo: 'rgba(251,191,36,0.07)', Icon: Clock },
     en_proceso:     { label: 'EN PROCESO',          color: '#FBBF24', borde: 'rgba(251,191,36,0.4)',  fondo: 'rgba(251,191,36,0.07)', Icon: MessageSquare },
-    esperando_pago: { label: 'ESPERANDO TU ENVÍO',  color: '#4ADE80', borde: 'rgba(74,222,128,0.45)', fondo: 'rgba(74,222,128,0.07)', Icon: Send },
+    esperando_pago: { label: 'ESPERANDO PAGO',      color: '#4ADE80', borde: 'rgba(74,222,128,0.45)', fondo: 'rgba(74,222,128,0.07)', Icon: Send },
     pagada:         { label: 'VERIFICANDO',         color: '#FBBF24', borde: 'rgba(251,191,36,0.4)',  fondo: 'rgba(251,191,36,0.07)', Icon: Clock },
     completada:     { label: 'COMPLETADA',          color: '#4ADE80', borde: 'rgba(74,222,128,0.45)', fondo: 'transparent',           Icon: CheckCircle2 },
     cancelada:      { label: 'CANCELADA',           color: '#F87171', borde: 'rgba(248,113,113,0.4)', fondo: 'transparent',           Icon: XCircle },
@@ -517,6 +517,10 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
     const cara = caraDe(cierre.status);
     const tasaVigente = cierre.rate_final ?? cierre.rate_cotizada;
     const vivo = !['completada', 'cancelada'].includes(cierre.status);
+    const enPago = cierre.status === 'esperando_pago';
+    // Si ya subio comprobante se ve en el hilo. Es el mismo hecho que comprueba
+    // el servidor antes de aceptar "ya pague".
+    const tieneComprobante = msgs.some((m: any) => m.autor === 'cliente' && m.adjunto_url);
 
     return (
         <div style={{ maxWidth: 620, margin: '0 auto', fontFamily: "'Archivo', system-ui, sans-serif" }}>
@@ -528,9 +532,12 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
             <div style={{ ...PANEL, padding: '18px 20px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
                     <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 13, color: '#878E88' }}>{cierre.ref}</span>
-                    <span style={{ border: `1px solid ${cara.borde}`, background: cara.fondo, color: cara.color, fontSize: 9, fontWeight: 700, letterSpacing: '0.6px', padding: '3px 9px', borderRadius: 999 }}>
-                        {cara.label}
-                    </span>
+                    <div style={{ textAlign: 'right' }}>
+                        <span style={{ border: `1px solid ${cara.borde}`, background: cara.fondo, color: cara.color, fontSize: 9, fontWeight: 700, letterSpacing: '0.6px', padding: '3px 9px', borderRadius: 999 }}>
+                            {cara.label}
+                        </span>
+                        {enPago && cierre.vence_at && <Contador hasta={cierre.vence_at} />}
+                    </div>
                 </div>
                 <p style={{ color: '#F4F4F2', fontSize: 22, fontWeight: 800, marginTop: 10, letterSpacing: '-0.5px' }}>
                     {nf(cierre.from_amount)} {cierre.from_currency}
@@ -550,13 +557,19 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
             </div>
 
             {/* Acciones del cliente */}
-            {cierre.status === 'esperando_pago' && (
+            {enPago && (
                 <SubirComprobante
                     venceAt={cierre.vence_at}
+                    yaSubido={tieneComprobante}
                     onSubir={async (archivo, nombre, tipo) => {
-                        const r = await callOtcMesa('marcar_pagada', { user_id: userId, id, archivo, nombre, tipo });
-                        if (r?.ok) { cargar(); showToast?.('Comprobante enviado a la mesa.'); return null; }
-                        return r?.message ?? r?.error ?? 'No se pudo enviar el comprobante.';
+                        const r = await callOtcMesa('comprobante', { user_id: userId, id, archivo, nombre, tipo });
+                        if (r?.ok) { cargar(); showToast?.('Comprobante subido.'); return null; }
+                        return r?.message ?? r?.error ?? 'No se pudo subir el comprobante.';
+                    }}
+                    onMarcarPagado={async () => {
+                        const r = await callOtcMesa('marcar_pagada', { user_id: userId, id });
+                        if (r?.ok) { cargar(); showToast?.('Avisamos a la mesa. Están verificando el ingreso.'); return null; }
+                        return r?.message ?? r?.error ?? 'No se pudo marcar como pagado.';
                     }}
                 />
             )}
@@ -601,6 +614,22 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
     );
 };
 
+// Segundos que faltan para una fecha, vivos. El contador de pantalla es
+// informativo: quien decide si llego a tiempo es el servidor, porque un reloj
+// de navegador se para, se adelanta o se edita.
+function useCuentaAtras(hasta: string | null | undefined): number | null {
+    const [seg, setSeg] = useState<number | null>(null);
+    useEffect(() => {
+        if (!hasta) { setSeg(null); return; }
+        const calc = () => setSeg(Math.max(0, Math.floor((new Date(hasta).getTime() - Date.now()) / 1000)));
+        calc();
+        const t = setInterval(calc, 1000);
+        return () => clearInterval(t);
+    }, [hasta]);
+    return seg;
+}
+const reloj = (seg: number) => `${String(Math.floor(seg / 60)).padStart(2, '0')}:${String(seg % 60).padStart(2, '0')}`;
+
 // ─── Comprobante, contra reloj ──────────────────────────
 // El comprobante es OBLIGATORIO: "ya pagué" sin respaldo obliga a la mesa a
 // salir a buscar en el banco un pago del que solo sabe que alguien dice que
@@ -611,20 +640,15 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
 // es el servidor: un reloj del navegador se para, se adelanta o se edita.
 const SubirComprobante: React.FC<{
     venceAt: string | null;
+    yaSubido: boolean;
     onSubir: (archivo: string, nombre: string, tipo: string) => Promise<string | null>;
-}> = ({ venceAt, onSubir }) => {
-    const [restante, setRestante] = useState<number | null>(null);
+    onMarcarPagado: () => Promise<string | null>;
+}> = ({ venceAt, yaSubido, onSubir, onMarcarPagado }) => {
+    const restante = useCuentaAtras(venceAt);
     const [subiendo, setSubiendo] = useState(false);
+    const [marcando, setMarcando] = useState(false);
     const [error, setError]   = useState<string | null>(null);
     const fileRef = useRef<HTMLInputElement | null>(null);
-
-    useEffect(() => {
-        if (!venceAt) { setRestante(null); return; }
-        const calc = () => setRestante(Math.max(0, Math.floor((new Date(venceAt).getTime() - Date.now()) / 1000)));
-        calc();
-        const t = setInterval(calc, 1000);
-        return () => clearInterval(t);
-    }, [venceAt]);
 
     const elegir = async (f: File | null | undefined) => {
         if (!f) return;
@@ -647,24 +671,18 @@ const SubirComprobante: React.FC<{
         if (fileRef.current) fileRef.current.value = '';
     };
 
-    const mm = restante != null ? String(Math.floor(restante / 60)).padStart(2, '0') : '--';
-    const ss = restante != null ? String(restante % 60).padStart(2, '0') : '--';
-    const urgente = restante != null && restante <= 60;
+    const marcar = async () => {
+        setError(null); setMarcando(true);
+        const msg = await onMarcarPagado();
+        if (msg) setError(msg);
+        setMarcando(false);
+    };
+
     const vencido = restante === 0;
 
     return (
         <div style={{ ...PANEL, marginTop: 10, padding: '16px 18px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>Envía y subí el comprobante</span>
-                {venceAt && (
-                    <span style={{
-                        fontFamily: 'ui-monospace, monospace', fontSize: 15, fontWeight: 800,
-                        color: vencido ? '#F87171' : urgente ? '#FBBF24' : '#4ADE80',
-                    }}>
-                        {vencido ? 'vencido' : `${mm}:${ss}`}
-                    </span>
-                )}
-            </div>
+            <p style={{ fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>Envía y subí el comprobante</p>
             <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 5, lineHeight: 1.5 }}>
                 {vencido
                     ? 'Se venció el plazo. Si ya enviaste el dinero, escribile a la mesa por el chat antes de montar otra solicitud.'
@@ -678,18 +696,48 @@ const SubirComprobante: React.FC<{
                 onChange={e => elegir(e.target.files?.[0])}
                 style={{ display: 'none' }}
             />
+
+            {/* Paso 1: el comprobante. Paso 2: avisar. Separados porque son dos
+                hechos distintos -- tener la prueba y declarar que ya pago -- y
+                juntarlos obligaba a subir de nuevo para corregir cualquier cosa. */}
             <button
                 onClick={() => fileRef.current?.click()}
                 disabled={subiendo || vencido}
-                className="lincoin-btn-white transition-colors"
                 style={{
-                    width: '100%', marginTop: 12, padding: '12px 0', borderRadius: 11, border: 'none',
-                    fontWeight: 700, fontSize: 13.5, opacity: (subiendo || vencido) ? 0.5 : 1,
+                    width: '100%', marginTop: 12, padding: '11px 0', borderRadius: 11,
+                    border: `1px solid ${yaSubido ? 'rgba(74,222,128,0.4)' : 'rgba(255,255,255,0.14)'}`,
+                    background: yaSubido ? 'rgba(74,222,128,0.08)' : 'rgba(255,255,255,0.05)',
+                    color: yaSubido ? '#4ADE80' : '#F4F4F2',
+                    fontWeight: 700, fontSize: 13, opacity: (subiendo || vencido) ? 0.5 : 1,
                     display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
                 }}
             >
-                {subiendo ? <><RefreshCw size={15} className="animate-spin" /> Enviando…</> : <><Paperclip size={15} /> Adjuntar comprobante</>}
+                {subiendo
+                    ? <><RefreshCw size={15} className="animate-spin" /> Subiendo…</>
+                    : yaSubido
+                        ? <><CheckCircle2 size={15} /> Comprobante subido · cambiar</>
+                        : <><Paperclip size={15} /> Subir comprobante</>}
             </button>
+
+            <button
+                onClick={marcar}
+                disabled={!yaSubido || marcando || vencido}
+                className={yaSubido && !vencido ? 'lincoin-btn-white transition-colors' : undefined}
+                style={{
+                    width: '100%', marginTop: 8, padding: '12px 0', borderRadius: 11, border: 'none',
+                    fontWeight: 700, fontSize: 13.5,
+                    ...(yaSubido && !vencido ? {} : { background: 'rgba(255,255,255,0.05)', color: '#878E88' }),
+                    opacity: marcando ? 0.6 : 1,
+                    cursor: (!yaSubido || vencido) ? 'not-allowed' : 'pointer',
+                }}
+            >
+                {marcando ? 'Avisando a la mesa…' : 'Marcar como pagado'}
+            </button>
+            {!yaSubido && !vencido && (
+                <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', textAlign: 'center', marginTop: 7 }}>
+                    Primero subí el comprobante.
+                </p>
+            )}
 
             {error && (
                 <div style={{ marginTop: 10, display: 'flex', alignItems: 'flex-start', gap: 7 }}>
@@ -698,6 +746,19 @@ const SubirComprobante: React.FC<{
                 </div>
             )}
         </div>
+    );
+};
+
+// El tiempo que queda, debajo del estado. Ambar en el ultimo minuto, rojo al
+// vencer: el color tiene que cambiar antes de que sea tarde, no cuando ya lo es.
+const Contador: React.FC<{ hasta: string }> = ({ hasta }) => {
+    const seg = useCuentaAtras(hasta);
+    if (seg == null) return null;
+    const color = seg === 0 ? '#F87171' : seg <= 60 ? '#FBBF24' : '#4ADE80';
+    return (
+        <p style={{ fontFamily: 'ui-monospace, monospace', fontSize: 17, fontWeight: 800, color, marginTop: 6, letterSpacing: '-0.3px' }}>
+            {seg === 0 ? 'vencido' : reloj(seg)}
+        </p>
     );
 };
 
