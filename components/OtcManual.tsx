@@ -355,11 +355,15 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
                         <p style={{ fontSize: 11.5, color: '#878E88', marginBottom: 11, lineHeight: 1.5 }}>
                             Se acredita en tu cuenta. Sacarlo hacia un banco es aparte, desde Enviar dinero.
                         </p>
+                        {/* Los mismos tres rieles, con los mismos nombres, que
+                            en la billetera Peso colombiano. Si acá se llamaran
+                            distinto habría que traducir mentalmente entre dos
+                            pantallas para saber dónde va a caer la plata. */}
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 7 }}>
                             {([
-                                ['COP',      'Lincoin', 'Peso Lincoin'],
-                                ['COP_BREB', 'Bre-B',   'Saldo Bre-B'],
-                                ['COP_ACH',  'ACH',     'Saldo ACH'],
+                                ['COP',      'Saldo Lincoin', 'Cuenta principal'],
+                                ['COP_BREB', 'Bre-B',         'Pagos inmediatos'],
+                                ['COP_ACH',  'ACH',           'Interbancario'],
                             ] as const).map(([v, l, pie]) => (
                                 <button
                                     key={v}
@@ -573,7 +577,7 @@ const Renglon: React.FC<{ k: string; v: string; fuerte?: boolean }> = ({ k, v, f
 
 // Como se describe cada destino del COP en el detalle del cierre.
 export const NOMBRE_BILLETERA: Record<string, string> = {
-    COP: 'Peso Lincoin', COP_BREB: 'Saldo Bre-B', COP_ACH: 'Saldo ACH', USD: 'Saldo USDT',
+    COP: 'Saldo Lincoin', COP_BREB: 'Bre-B', COP_ACH: 'ACH', USD: 'Saldo USDT',
 };
 
 export function destinoTexto(p: any): { label: string; valor: string; mono?: boolean } | null {

@@ -68,7 +68,7 @@ const caraDe = (s: string) => ESTADO[s] ?? { label: String(s ?? '—').toUpperCa
 // Billeteras del cliente donde se le acredita lo que recibe. El cierre NO es
 // un envío: la mesa cambia una moneda por otra dentro de la cuenta.
 const BILLETERA: Record<string, string> = {
-    COP: 'Peso Lincoin', COP_BREB: 'Saldo Bre-B', COP_ACH: 'Saldo ACH', USD: 'Saldo USDT',
+    COP: 'Saldo Lincoin', COP_BREB: 'Bre-B', COP_ACH: 'ACH', USD: 'Saldo USDT',
 };
 
 const FILTROS: Array<{ id: string; label: string }> = [
