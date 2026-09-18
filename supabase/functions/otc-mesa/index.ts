@@ -105,10 +105,13 @@ async function validCaller(req: Request, payload: Record<string, unknown>): Prom
 }
 
 // ─── Tasa ───────────────────────────────────────────────
-// Margen de la mesa manual, en POR CIENTO sobre el precio de referencia. Vive
-// en system_config para poder moverlo sin desplegar. 0,25 % es el acordado.
-const MARGEN_KEY = 'otc_manual_config'
-const MARGEN_DEFAULT = 0.25
+// Margen de la mesa manual, en POR CIENTO sobre el precio de referencia.
+//
+// NO hay margen global configurable: el margen de la mesa manual se pacta POR
+// CLIENTE. Lo de aca es solo el valor con el que arranca una cuenta a la que
+// todavia no se le puso el suyo, para no dejarla sin margen por olvido.
+const MARGEN_KEY = 'otc_manual_config'   // la clave sigue viva: guarda el plazo
+const MARGEN_DEFAULT = 0.5
 // Tope de cordura: un margen mal escrito (25 en vez de 0,25) no puede quedarse
 // con la cuarta parte de la operacion sin que nadie lo note.
 const MARGEN_MAX = 5
@@ -155,22 +158,12 @@ async function caducarVencidos(): Promise<void> {
   } catch { /* nunca frena la lectura */ }
 }
 
-async function margenGlobal(): Promise<number> {
-  try {
-    const { data } = await db.from('system_config').select('value').eq('key', MARGEN_KEY).maybeSingle()
-    const v = data?.value ? JSON.parse(data.value) : null
-    const n = Number(v?.margenPct)
-    if (Number.isFinite(n) && n >= 0 && n <= MARGEN_MAX) return n
-    return MARGEN_DEFAULT
-  } catch { return MARGEN_DEFAULT }
-}
-
-// El margen que le toca a ESTE cliente. La comision negociada por cuenta manda
-// sobre la global, igual que en el riel ACH.
+// El margen que le toca a ESTE cliente.
 //
 // CERO ES UN VALOR, NO UN VACIO. Un cliente con 0% de comision tiene que pagar
 // 0%: si se resolviera con `??` sobre un numero que puede ser 0, o con un `||`,
-// el cero caeria al global y se le cobraria un margen que nadie le nego.
+// el cero caeria al valor por defecto y se le cobraria un margen que nadie le
+// nego.
 async function margenDe(userId?: string): Promise<number> {
   if (userId) {
     try {
@@ -178,9 +171,9 @@ async function margenDe(userId?: string): Promise<number> {
       const cfg = (data as any)?.raw_data?.otcConfig ?? {}
       const n = Number(cfg.manualPct)
       if (Number.isFinite(n) && n >= 0 && n <= MARGEN_MAX) return n
-    } catch { /* cae al global */ }
+    } catch { /* cae al valor por defecto */ }
   }
-  return await margenGlobal()
+  return MARGEN_DEFAULT
 }
 
 // La forma exacta del JSON de Finity cambia segun la ruta que responda, asi
@@ -756,7 +749,7 @@ Deno.serve(async (req) => {
       try { v = data?.value ? JSON.parse(data.value) : null } catch { v = null }
       return json(200, {
         ok: true,
-        margenPct: await margenGlobal(),
+        margenDefecto: MARGEN_DEFAULT,
         ventanaMin: await ventanaPago(),
         guardado: v ?? null,
         limites: { margenMax: MARGEN_MAX, ventanaMin: VENTANA_MIN, ventanaMax: VENTANA_MAX },
@@ -764,15 +757,9 @@ Deno.serve(async (req) => {
     }
 
     if (action === 'config_set') {
-      const actual = { margenPct: await margenGlobal(), ventanaMin: await ventanaPago() }
+      // Solo el plazo. El margen NO se configura global: se pacta por cliente.
+      const actual = { ventanaMin: await ventanaPago() }
       const nuevo: Record<string, number> = { ...actual }
-      if (payload.margenPct !== undefined) {
-        const n = num(payload.margenPct)
-        if (!(Number.isFinite(n) && n >= 0 && n <= MARGEN_MAX)) {
-          return json(400, { ok: false, error: `El margen tiene que estar entre 0 y ${MARGEN_MAX}%.` })
-        }
-        nuevo.margenPct = n
-      }
       if (payload.ventanaMin !== undefined) {
         const n = num(payload.ventanaMin)
         if (!(Number.isFinite(n) && n >= VENTANA_MIN && n <= VENTANA_MAX)) {

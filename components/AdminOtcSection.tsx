@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { ArrowLeftRight, Search, Power, Pencil, Check, X, ArrowDownToLine, ArrowUpFromLine, Users, Landmark, RefreshCw, Zap, MessageSquare } from 'lucide-react';
+import { ArrowLeftRight, Search, Power, Pencil, Check, X, ArrowDownToLine, ArrowUpFromLine, Users, Landmark, RefreshCw, Zap, MessageSquare, Clock } from 'lucide-react';
 import { useDatabase } from '../context/DatabaseContext';
 import { callFinity, extractRate } from './FinitySection';
 import { llamarFuncion } from '../lib/edge';
@@ -22,105 +22,60 @@ import { llamarFuncion } from '../lib/edge';
 // ─────────────────────────────────────────────
 
 const DEFAULT_FEE_PCT = 4;
-// Margen por defecto de la mesa MANUAL. Es otro riel y otro margen: el de acá
-// es un porcentaje sobre la tasa de referencia, el de Finity son puntos en COP.
-const DEFAULT_MANUAL_PCT = 0.25;
+// Con el que arranca una cuenta a la que todavía no se le pactó el suyo. No es
+// una tarifa de lista: el margen de la mesa manual se acuerda cliente por
+// cliente, y esto solo evita que una cuenta quede sin margen por olvido.
+const DEFAULT_MANUAL_PCT = 0.5;
 
-// ─── Mesa manual: margen y plazo por defecto ────────────
-// Va al lado de las tarjetas de los proveedores porque es lo mismo que hacen
-// ellas: fijar cuánto se le baja a la tasa antes de mostrarla. La diferencia es
-// que este riel no tiene proveedor propio — cotiza sobre la misma referencia.
-//
-// Lo de acá es el VALOR POR DEFECTO. La comisión negociada de cada cliente, en
-// la tabla de abajo, manda sobre esto.
-const MesaManualCard: React.FC<{ baseRate: number | null }> = ({ baseRate }) => {
-    const [margen, setMargen] = React.useState('');
+// ─── Plazo de la mesa manual ────────────────────────────
+// Lo unico global de este riel: cuantos minutos tiene el cliente para pagar y
+// subir el comprobante. El MARGEN no vive aca — se pacta por cliente en la
+// tabla, porque no es una tarifa de lista sino un acuerdo con cada cuenta.
+const PlazoManual: React.FC = () => {
     const [ventana, setVentana] = React.useState('');
-    const [guardado, setGuardado] = React.useState<{ margenPct: number; ventanaMin: number } | null>(null);
+    const [guardado, setGuardado] = React.useState<number | null>(null);
     const [msg, setMsg] = React.useState<{ ok: boolean; text: string } | null>(null);
     const [guardando, setGuardando] = React.useState(false);
 
     const leer = React.useCallback(async () => {
         const r = await callOtcMesaAdmin('config_get');
-        if (r?.ok) {
-            setGuardado({ margenPct: Number(r.margenPct), ventanaMin: Number(r.ventanaMin) });
-            setMargen(String(r.margenPct));
-            setVentana(String(r.ventanaMin));
-        }
+        if (r?.ok) { setGuardado(Number(r.ventanaMin)); setVentana(String(r.ventanaMin)); }
     }, []);
     React.useEffect(() => { leer(); }, [leer]);
 
     const guardar = async () => {
         setGuardando(true); setMsg(null);
-        const m = parseFloat(String(margen).replace(',', '.'));
-        const v = parseFloat(String(ventana).replace(',', '.'));
-        const r = await callOtcMesaAdmin('config_set', { margenPct: m, ventanaMin: v });
+        const r = await callOtcMesaAdmin('config_set', { ventanaMin: parseFloat(String(ventana).replace(',', '.')) });
         setGuardando(false);
-        if (r?.ok) { setMsg({ ok: true, text: 'Guardado.' }); leer(); }
-        else setMsg({ ok: false, text: r?.error ?? 'No se pudo guardar.' });
+        if (r?.ok) { setMsg({ ok: true, text: 'Guardado' }); leer(); }
+        else setMsg({ ok: false, text: r?.error ?? 'No se pudo guardar' });
     };
 
-    const pct = parseFloat(String(margen).replace(',', '.'));
-    const queda = (baseRate != null && !isNaN(pct)) ? baseRate * (1 - pct / 100) : null;
+    const cambio = guardado != null && String(guardado) !== String(ventana).trim();
 
     return (
-        <div style={{ background: '#121413', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 12, padding: '14px 16px' }}>
-            <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '1.2px', color: '#878E88' }}>MESA MANUAL</span>
-
-            <div style={{ marginTop: 10 }}>
-                <p style={{ fontSize: 11.5, color: '#878E88', margin: 0 }}>Margen por defecto (% sobre la referencia)</p>
-                <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
-                    <input
-                        value={margen}
-                        onChange={e => { const v = e.target.value; if (/^[0-9]*[.,]?[0-9]*$/.test(v)) setMargen(v); }}
-                        inputMode="decimal"
-                        placeholder="0.25"
-                        style={{ flex: 1, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 9, padding: '9px 11px', color: '#F4F4F2', fontSize: 15, fontWeight: 700, outline: 'none' }}
-                    />
-                    <span style={{ alignSelf: 'center', color: '#878E88', fontSize: 13, fontWeight: 700 }}>%</span>
-                </div>
+        <div className="bg-white rounded-xl border border-slate-200 px-4 py-3 flex items-center gap-3 flex-wrap">
+            <Clock size={15} className="text-slate-400 shrink-0" />
+            <div className="min-w-0">
+                <p className="text-xs font-bold text-slate-700">Plazo para pagar</p>
+                <p className="text-[11px] text-slate-400">Desde que la mesa fija la tasa. Vencido, la solicitud se cancela sola.</p>
             </div>
-
-            <div style={{ marginTop: 10 }}>
-                <p style={{ fontSize: 11.5, color: '#878E88', margin: 0 }}>Plazo para pagar y subir el comprobante</p>
-                <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
-                    <input
-                        value={ventana}
-                        onChange={e => { const v = e.target.value; if (/^[0-9]*$/.test(v)) setVentana(v); }}
-                        inputMode="numeric"
-                        placeholder="5"
-                        style={{ flex: 1, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 9, padding: '9px 11px', color: '#F4F4F2', fontSize: 15, fontWeight: 700, outline: 'none' }}
-                    />
-                    <span style={{ alignSelf: 'center', color: '#878E88', fontSize: 13, fontWeight: 700 }}>min</span>
-                </div>
+            <div className="flex items-center gap-2 ml-auto">
+                <input
+                    value={ventana}
+                    onChange={e => { const v = e.target.value; if (/^[0-9]*$/.test(v)) setVentana(v); }}
+                    inputMode="numeric"
+                    className="w-16 h-9 px-2 text-center text-base font-bold tabular-nums text-slate-800 border border-slate-200 rounded-lg outline-none focus:border-[#4ADE80]"
+                />
+                <span className="text-xs text-slate-400 font-medium">min</span>
+                {cambio && (
+                    <button onClick={guardar} disabled={guardando}
+                        className="h-9 px-3 rounded-lg text-xs font-bold text-white bg-[#16A34A] hover:bg-[#0F766E] disabled:opacity-50">
+                        {guardando ? 'Guardando…' : 'Guardar'}
+                    </button>
+                )}
+                {msg && <span className={`text-[11px] font-bold ${msg.ok ? 'text-[#16A34A]' : 'text-red-600'}`}>{msg.text}</span>}
             </div>
-
-            <button
-                onClick={guardar}
-                disabled={guardando}
-                style={{ width: '100%', marginTop: 11, padding: '9px 0', borderRadius: 9, border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(255,255,255,0.06)', color: '#F4F4F2', fontSize: 12.5, fontWeight: 700, opacity: guardando ? 0.5 : 1 }}
-            >
-                {guardando ? 'Guardando…' : 'Guardar'}
-            </button>
-
-            {queda != null && (
-                <p style={{ fontSize: 12, color: '#878E88', marginTop: 10, lineHeight: 1.5 }}>
-                    Queda en <b style={{ color: '#4ADE80' }}>{queda.toLocaleString('es-CO', { maximumFractionDigits: 2 })} COP</b> por dólar
-                    para quien no tenga comisión propia.
-                </p>
-            )}
-            {guardado && (
-                <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', marginTop: 6 }}>
-                    Guardado: {guardado.margenPct}% · {guardado.ventanaMin} min.
-                </p>
-            )}
-            {msg && (
-                <p style={{ fontSize: 11.5, color: msg.ok ? '#4ADE80' : '#F87171', marginTop: 6 }}>{msg.text}</p>
-            )}
-            <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', marginTop: 8, lineHeight: 1.5 }}>
-                Es el valor por defecto. La comisión que tenga pactada cada cliente, en la tabla de abajo,
-                manda sobre esta.
-            </p>
         </div>
     );
 };
@@ -293,7 +248,7 @@ export const AdminOtcSection: React.FC = () => {
     const saveManual = async (u: any) => {
         if (!manualEdit || manualEdit.userId !== u.id) return;
         const next = parseFloat(manualEdit.value.replace(',', '.'));
-        if (isNaN(next) || next < 0 || next > 5) { setSaveMsg({ ok: false, text: 'Comision invalida — escribe un % entre 0 y 5 (ej: 0.25).' }); return; }
+        if (isNaN(next) || next < 0 || next > 5) { setSaveMsg({ ok: false, text: 'Comisión inválida — escribe un % entre 0 y 5 (ej: 0.5).' }); return; }
         const cfg = otcConfigOf(u);
         setSavingId(u.id); setSaveMsg(null);
         try {
@@ -426,19 +381,34 @@ export const AdminOtcSection: React.FC = () => {
     if (partner === 'manual') {
         return (
             <div className="space-y-6 animate-in fade-in duration-300">
-                <div>
-                    <button onClick={() => setPartner(null)} className="text-[11px] text-slate-400 hover:text-slate-600 font-bold mb-1">← Cambiar riel</button>
-                    <h3 className="font-bold text-slate-800 text-lg flex items-center gap-2">
-                        <MessageSquare size={20} className="text-slate-700" /> Mesa manual · margen por cliente
-                    </h3>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                        Los cierres negociados con asesor. Cotizan sobre la misma tasa de referencia, con este margen.
-                    </p>
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div>
+                        <button onClick={() => setPartner(null)} className="text-[11px] text-slate-400 hover:text-slate-600 font-bold mb-1">← Cambiar riel</button>
+                        <h3 className="font-bold text-slate-800 text-lg flex items-center gap-2">
+                            <MessageSquare size={20} className="text-slate-700" /> Mesa manual · margen por cliente
+                        </h3>
+                        <p className="text-xs text-slate-500 mt-0.5">
+                            Cierres negociados con asesor. El margen se pacta con cada cuenta, no es una tarifa de lista.
+                        </p>
+                    </div>
+                    {/* La referencia, arriba a la derecha — igual que en Finity.
+                        Sin ella, los porcentajes de la tabla no dicen en cuánto
+                        queda la tasa. */}
+                    <div className="bg-[#0C0E0D] rounded-2xl px-5 py-3.5 text-right shrink-0">
+                        <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 flex items-center justify-end gap-1.5">
+                            Tasa de referencia · USD → COP
+                            <button onClick={loadBaseRate} title="Actualizar" className="text-slate-400 hover:text-white transition-colors">
+                                <RefreshCw size={11} className={rateLoading ? 'animate-spin' : ''} />
+                            </button>
+                        </p>
+                        {baseRate != null
+                            ? <p className="text-2xl font-black tabular-nums" style={{ color: '#4ADE80' }}>{baseRate.toLocaleString('es-CO', { maximumFractionDigits: 2 })}</p>
+                            : <p className="text-sm font-bold text-slate-400 py-1">{rateLoading ? 'Consultando…' : (rateErr ?? '—')}</p>}
+                        <p className="text-[9px] text-slate-500">Sobre esta se aplica el margen de cada cliente</p>
+                    </div>
                 </div>
 
-                <div className="max-w-sm">
-                    <MesaManualCard baseRate={baseRate} />
-                </div>
+                <PlazoManual />
 
                 <div className="relative max-w-md">
                     <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -467,7 +437,10 @@ export const AdminOtcSection: React.FC = () => {
                                 // es exactamente cómo se le termina cobrando a quien no se debe.
                                 const propio = typeof cfg.manualPct === 'number' && !isNaN(cfg.manualPct);
                                 const editando = manualEdit?.userId === u.id;
-                                const pctVista = editando ? parseFloat(String(manualEdit!.value).replace(',', '.')) : (propio ? Number(cfg.manualPct) : NaN);
+                                // Lo que se le aplica HOY: el pactado, o el de arranque si
+                                // todavia no tiene. Mostrar "—" escondia el numero real.
+                                const pctEfectivo = propio ? Number(cfg.manualPct) : DEFAULT_MANUAL_PCT;
+                                const pctVista = editando ? parseFloat(String(manualEdit!.value).replace(',', '.')) : pctEfectivo;
                                 const tasaVista = (baseRate != null && !isNaN(pctVista)) ? baseRate * (1 - pctVista / 100) : null;
                                 return (
                                     <tr key={u.id} className="border-t border-slate-100">
@@ -478,7 +451,7 @@ export const AdminOtcSection: React.FC = () => {
                                         <td className="px-4 py-3 text-right">
                                             {editando ? (
                                                 <div className="inline-flex items-center gap-2 bg-white border-2 border-[#4ADE80] rounded-xl pl-3 pr-1.5 py-1 shadow-sm shadow-green-100">
-                                                    <input autoFocus type="text" inputMode="decimal" placeholder="0.25" value={manualEdit!.value}
+                                                    <input autoFocus type="text" inputMode="decimal" placeholder="0.5" value={manualEdit!.value}
                                                         onChange={e => { const v = e.target.value; if (/^[0-9]*[.,]?[0-9]*$/.test(v)) setManualEdit({ userId: u.id, value: v }); }}
                                                         onKeyDown={e => { if (e.key === 'Enter') saveManual(u); if (e.key === 'Escape') setManualEdit(null); }}
                                                         className="w-16 bg-transparent text-right text-base font-bold text-slate-800 outline-none tabular-nums" />
@@ -500,9 +473,11 @@ export const AdminOtcSection: React.FC = () => {
                                                 >
                                                     <span className="text-right">
                                                         <span className={`block text-base font-bold tabular-nums transition-colors ${propio ? 'text-slate-800' : 'text-slate-400'} group-hover:text-[#16A34A]`}>
-                                                            {propio ? `${cfg.manualPct}%` : '—'}
+                                                            {pctEfectivo}%
                                                         </span>
-                                                        {!propio && <span className="block text-[9px] text-slate-400">usa el global</span>}
+                                                        <span className={`block text-[9px] ${propio ? 'text-[#16A34A]' : 'text-slate-400'}`}>
+                                                            {propio ? 'pactado' : 'sin pactar'}
+                                                        </span>
                                                     </span>
                                                     <span className="w-7 h-7 flex items-center justify-center rounded-full text-slate-400 bg-slate-50 group-hover:bg-[#16A34A] group-hover:text-white transition-colors">
                                                         <Pencil size={13} />
@@ -521,7 +496,7 @@ export const AdminOtcSection: React.FC = () => {
                                                     </p>
                                                 </div>
                                             ) : (
-                                                <span className="text-xs text-slate-300">{rateLoading ? '…' : (baseRate == null ? 'sin tasa base' : 'según el global')}</span>
+                                                <span className="text-xs text-slate-300">{rateLoading ? '…' : 'sin tasa de referencia'}</span>
                                             )}
                                         </td>
                                     </tr>
@@ -535,9 +510,9 @@ export const AdminOtcSection: React.FC = () => {
                 </div>
 
                 <p className="text-xs text-slate-500 leading-relaxed">
-                    La comisión de acá <b>no</b> se hereda de la del riel ACH: son rieles distintos con costos
-                    distintos, y heredarla aplicaría en silencio el porcentaje de ACH a la mesa manual. Sin
-                    comisión propia, se usa el margen global de arriba.
+                    <b>Sin pactar</b> quiere decir que a esa cuenta todavía no se le puso su margen y opera con
+                    el de arranque ({DEFAULT_MANUAL_PCT}%). No se hereda el del riel ACH: son rieles con costos
+                    distintos, y heredarlo aplicaría en silencio el porcentaje de ACH a la mesa manual.
                 </p>
             </div>
         );
@@ -654,8 +629,6 @@ export const AdminOtcSection: React.FC = () => {
                             </p>
                         </div>
 
-                        {/* MESA MANUAL — margen y plazo por defecto */}
-                        <MesaManualCard baseRate={baseRate} />
                     </div>
                 </div>
 
@@ -766,22 +739,24 @@ export const AdminOtcSection: React.FC = () => {
                                                     </div>
                                                 </div>
                                             ) : (() => {
-                                                // Distinguir "tiene 0% pactado" de "no tiene nada
-                                                // pactado y usa el global" — son cosas distintas y
-                                                // confundirlas es justamente cobrarle a quien no
-                                                // se le debe cobrar.
+                                                // Distinguir "tiene 0% pactado" de "todavía sin
+                                                // pactar" — son cosas distintas y confundirlas es
+                                                // justamente cobrarle a quien no se le debe cobrar.
                                                 const propio = typeof cfg.manualPct === 'number' && !isNaN(cfg.manualPct);
+                                                const efectivo = propio ? Number(cfg.manualPct) : DEFAULT_MANUAL_PCT;
                                                 return (
                                                     <button
-                                                        onClick={() => setManualEdit({ userId: u.id, value: propio ? String(cfg.manualPct) : String(DEFAULT_MANUAL_PCT) })}
+                                                        onClick={() => setManualEdit({ userId: u.id, value: String(efectivo) })}
                                                         className="inline-flex items-center gap-2 group"
                                                         title="Comisión de la mesa manual para este cliente"
                                                     >
                                                         <span className="text-right">
-                                                            <span className={`block text-base font-bold tabular-nums transition-colors ${propio ? 'text-slate-800 group-hover:text-[#16A34A]' : 'text-slate-400 group-hover:text-[#16A34A]'}`}>
-                                                                {propio ? `${cfg.manualPct}%` : '—'}
+                                                            <span className={`block text-base font-bold tabular-nums transition-colors ${propio ? 'text-slate-800' : 'text-slate-400'} group-hover:text-[#16A34A]`}>
+                                                                {efectivo}%
                                                             </span>
-                                                            {!propio && <span className="block text-[9px] text-slate-400">usa el global</span>}
+                                                            <span className={`block text-[9px] ${propio ? 'text-[#16A34A]' : 'text-slate-400'}`}>
+                                                                {propio ? 'pactado' : 'sin pactar'}
+                                                            </span>
                                                         </span>
                                                         <span className="w-7 h-7 flex items-center justify-center rounded-full text-slate-400 bg-slate-50 group-hover:bg-[#16A34A] group-hover:text-white transition-colors">
                                                             <Pencil size={13} />
