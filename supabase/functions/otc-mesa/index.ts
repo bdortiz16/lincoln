@@ -316,6 +316,13 @@ async function cargarCierre(id: string, caller: Caller): Promise<{ ok: boolean; 
 const num = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : NaN }
 const ahora = () => new Date().toISOString()
 
+// Como se llama cada billetera del cliente. Mismos nombres que en su app: el
+// mensaje que le queda en el hilo tiene que decir el mismo riel que el que ve
+// en su pantalla de saldos.
+const NOMBRE_BILLETERA: Record<string, string> = {
+  COP: 'Saldo Lincoin', COP_BREB: 'Bre-B', COP_ACH: 'ACH', USD: 'Saldo USDT',
+}
+
 // ─── Comprobantes ───────────────────────────────────────
 // Bucket PRIVADO. El archivo entra y sale por aca: la app Empresas usa auth
 // propia, asi que una politica de storage basada en auth.uid() no protegeria
@@ -666,13 +673,58 @@ Deno.serve(async (req) => {
       if (!r.cierre.rate_final) {
         return json(409, { ok: false, error: 'falta_tasa', message: 'Fija la tasa final antes de completar: sin eso el cierre queda sin precio de ejecucion.' })
       }
-      // CAS sobre el estado: completar dos veces no puede pasar por dos clicks.
+      const destino = String(r.cierre.payout?.wallet ?? (r.cierre.side === 'vende_usdt' ? 'COP' : 'USD'))
+      const monto = Number(r.cierre.to_amount)
+      if (!(monto > 0)) {
+        return json(409, { ok: false, error: 'sin_monto', message: 'Este cierre no tiene monto a acreditar. Fija la tasa final primero.' })
+      }
+
+      // CAS sobre el estado: es el ÚNICO seguro contra completar dos veces —
+      // dos clicks, dos pestañas o un reintento de red. Se toma ANTES de mover
+      // plata, para que el acreditado corra una sola vez.
       const { data: ok } = await db.from('otc_closes').update({
         status: 'completada', completada_at: ahora(), updated_at: ahora(),
       }).eq('id', r.cierre.id).neq('status', 'completada').select('id')
       if (!ok?.length) return json(200, { ok: true, yaEstaba: true })
-      await escribirMensaje(r.cierre.id, 'sistema', `Cierre completado por ${caller.nombre ?? 'la mesa'}.`)
-      return json(200, { ok: true })
+
+      // Completar es lo que ACREDITA. Antes solo cambiaba el estado: el cierre
+      // quedaba "completado" y el cliente sin su plata ni el movimiento.
+      const { data: res, error: errSaldo } = await db.rpc('adjust_balances', {
+        p_user_id: r.cierre.user_id, p_fiat: { [destino]: monto },
+      })
+      if (errSaldo || (res as any)?.error) {
+        // No se acredito: el cierre NO puede quedar completado. Se devuelve al
+        // estado anterior para que se pueda reintentar, en vez de dejar un
+        // "completado" que no movio nada.
+        await db.from('otc_closes').update({ status: r.cierre.status, completada_at: null, updated_at: ahora() }).eq('id', r.cierre.id)
+        const detalle = errSaldo?.message ?? (res as any)?.error
+        await escribirMensaje(r.cierre.id, 'sistema', `No se pudo acreditar el saldo (${detalle}). El cierre sigue abierto.`)
+        return json(500, { ok: false, error: 'no_acreditado', message: `No se pudo acreditar el saldo: ${detalle}. El cierre quedo como estaba.` })
+      }
+
+      // El movimiento. Si esto fallara, la plata ya esta bien y lo que falta es
+      // el registro — se dice en el hilo en vez de callarlo.
+      const tasa = Number(r.cierre.rate_final ?? r.cierre.rate_cotizada) || null
+      try {
+        await db.from('transactions').insert({
+          user_id: r.cierre.user_id, type: 'convert', amount: monto, currency: destino, status: 'Completado',
+          raw_data: {
+            title: `${r.cierre.from_currency} → ${r.cierre.to_currency} · Mesa OTC ${r.cierre.ref}`,
+            initials: 'FX',
+            fromCurrency: r.cierre.from_currency, fromAmount: Number(r.cierre.from_amount),
+            destAmount: monto, mouvRate: tasa,
+            source: 'OTC_MANUAL', otcRef: r.cierre.ref, otcCloseId: r.cierre.id,
+            completadaPor: caller.nombre ?? null,
+          },
+        })
+      } catch (e: any) {
+        await escribirMensaje(r.cierre.id, 'sistema', `Saldo acreditado, pero el movimiento no quedo registrado (${e?.message ?? 'error'}). Avisar a soporte.`)
+      }
+
+      await escribirMensaje(r.cierre.id, 'sistema',
+        `Cierre completado por ${caller.nombre ?? 'la mesa'}. Se acreditaron `
+        + `${monto.toLocaleString('es-CO', { maximumFractionDigits: 2 })} ${r.cierre.to_currency} en ${NOMBRE_BILLETERA[destino] ?? destino}.`)
+      return json(200, { ok: true, acreditado: monto, billetera: destino })
     }
 
     // ── Cancelar (los dos lados, con reglas distintas) ──

@@ -241,6 +241,12 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
     const [instrucciones, setInstrucciones] = useState('');
     const [notas, setNotas]   = useState('');
     const [notasGuardadas, setNotasGuardadas] = useState(false);
+    // Confirmacion propia en vez del window.confirm del navegador: completar
+    // ACREDITA plata, y el dialogo tiene que decir cuanta y en que billetera.
+    // El del navegador no puede mostrar eso y ademas no se puede leer sin
+    // sacar la vista de encima de la operacion.
+    const [pide, setPide] = useState<null | 'completar' | 'cancelar'>(null);
+    const [motivo, setMotivo] = useState('');
     const finRef = useRef<HTMLDivElement | null>(null);
 
     const cargar = useCallback(async () => {
@@ -486,10 +492,9 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
 
                                 <div className="flex gap-2">
                                     <button
-                                        onClick={async () => {
+                                        onClick={() => {
                                             if (!cierre.rate_final) { setAviso('Fijá la tasa final antes de completar.'); return; }
-                                            if (!window.confirm(`¿Completar ${cierre.ref}? Esto cierra la operación.`)) return;
-                                            hacer('completar');
+                                            setPide('completar');
                                         }}
                                         disabled={ocupado}
                                         className="flex-1 py-2.5 rounded-lg text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 flex items-center justify-center gap-1.5"
@@ -497,10 +502,7 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
                                         <CheckCircle2 size={14} /> Completar
                                     </button>
                                     <button
-                                        onClick={() => {
-                                            const m = window.prompt('¿Por qué se cancela? (queda en el hilo, el cliente lo ve)');
-                                            if (m && m.trim()) hacer('cancelar_mesa', { motivo: m.trim() });
-                                        }}
+                                        onClick={() => setPide('cancelar')}
                                         disabled={ocupado}
                                         className="px-4 py-2.5 rounded-lg text-xs font-bold text-red-600 border border-red-200 hover:bg-red-50 disabled:opacity-50"
                                     >
@@ -535,6 +537,65 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
                     )}
                 </div>
             </div>
+
+            {/* Confirmacion de completar / cancelar */}
+            {pide && (
+                <div className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-4" onClick={e => { e.stopPropagation(); setPide(null); setMotivo(''); }}>
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-5" onClick={e => e.stopPropagation()}>
+                        {pide === 'completar' ? (
+                            <>
+                                <h4 className="text-base font-bold text-slate-900">Completar {cierre.ref}</h4>
+                                <p className="text-xs text-slate-500 mt-1">Esto acredita el saldo y cierra la operación.</p>
+                                <div className="mt-4 bg-slate-50 rounded-xl p-3 space-y-1.5">
+                                    <Fila icon={Wallet} label="Se acredita" valor={`${nf(cierre.to_amount, 0)} ${cierre.to_currency}`} />
+                                    <Fila icon={Landmark} label="En" valor={BILLETERA[cierre.payout?.wallet] ?? (cierre.payout?.wallet ?? '—')} />
+                                    <Fila icon={Hash} label="A la tasa" valor={nf(cierre.rate_final)} />
+                                </div>
+                                <p className="text-[11px] text-amber-700 mt-3 leading-relaxed">
+                                    Verificá que el envío del cliente haya llegado. Lo que él marque no es prueba de que el dinero entró.
+                                </p>
+                                <div className="flex gap-2 mt-4">
+                                    <button onClick={() => { setPide(null); }} className="px-4 py-2.5 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-100">
+                                        Volver
+                                    </button>
+                                    <button
+                                        onClick={async () => { setPide(null); await hacer('completar'); }}
+                                        disabled={ocupado}
+                                        className="flex-1 py-2.5 rounded-lg text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50"
+                                    >
+                                        Sí, acreditar y completar
+                                    </button>
+                                </div>
+                            </>
+                        ) : (
+                            <>
+                                <h4 className="text-base font-bold text-slate-900">Cancelar {cierre.ref}</h4>
+                                <p className="text-xs text-slate-500 mt-1">El motivo queda en el hilo y el cliente lo ve.</p>
+                                <textarea
+                                    autoFocus
+                                    value={motivo}
+                                    onChange={e => setMotivo(e.target.value)}
+                                    rows={3}
+                                    placeholder="Ej: el comprobante no corresponde al monto acordado"
+                                    className="w-full mt-3 px-3 py-2 rounded-lg border border-slate-200 focus:border-slate-400 outline-none text-xs"
+                                />
+                                <div className="flex gap-2 mt-4">
+                                    <button onClick={() => { setPide(null); setMotivo(''); }} className="px-4 py-2.5 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-100">
+                                        Volver
+                                    </button>
+                                    <button
+                                        onClick={async () => { const m = motivo.trim(); if (!m) return; setPide(null); setMotivo(''); await hacer('cancelar_mesa', { motivo: m }); }}
+                                        disabled={ocupado || !motivo.trim()}
+                                        className="flex-1 py-2.5 rounded-lg text-xs font-bold text-white bg-red-600 hover:bg-red-700 disabled:opacity-40"
+                                    >
+                                        Cancelar el cierre
+                                    </button>
+                                </div>
+                            </>
+                        )}
+                    </div>
+                </div>
+            )}
         </div>
     );
 };
