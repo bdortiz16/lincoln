@@ -496,6 +496,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     const res = (r.results ?? []) as any[];
     const dev = res.filter(x => x.result === 'refunded');
     const comp = res.filter(x => x.result === 'completed');
+    const emparejados = res.filter(x => x.campoRef === 'emparejado por monto + documento').length;
     const quedan = res.filter(x => x.result === 'still_processing' || x.result === 'sin_confirmar_revisar');
     const plata = dev.reduce((n, x) => n + Number(x.refund ?? 0), 0);
     // POR QUÉ no hubo veredicto. Un "sin respuesta del proveedor" a secas tapa
@@ -525,6 +526,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       `· ${comp.length} confirmados como pagados\n` +
       `· ${dev.length} devueltos → reembolsados ${plata.toLocaleString('es-CO')} COP\n` +
       `· ${quedan.length} sin respuesta del proveedor (siguen en curso)` +
+      (emparejados ? `\n\n${emparejados} se emparejaron con Mouv por monto + documento (no tenían el id guardado). El id quedó guardado para la próxima.` : '') +
       detalle);
     refreshData?.();
   };

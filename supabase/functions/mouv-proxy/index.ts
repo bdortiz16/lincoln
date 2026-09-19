@@ -265,7 +265,7 @@ async function mouvPayout(
   rail: 'BREB' | 'ACH',
   recipient: Record<string, any>,
   amountCop: number,
-): Promise<{ ok: boolean; status: number; data: any; providerRef?: string; notImplemented?: boolean; targetName?: string; targetDocument?: string }> {
+): Promise<{ ok: boolean; status: number; data: any; providerRef?: string; referencia?: string; notImplemented?: boolean; targetName?: string; targetDocument?: string }> {
   // Mouv trabaja en CENTAVOS (confirmado contra el saldo real). El monto que
   // llega es en PESOS → se convierte a centavos para /transfers/send.
   const amountCents = Math.round(amountCop * 100)
@@ -316,7 +316,10 @@ async function mouvPayout(
     })
     // Devolver el titular RESUELTO (oficial, de resolve-key) para que el
     // comprobante muestre el nombre/documento reales del beneficiario.
-    return { ok: r.ok, status: r.status, data: r.data, providerRef: r.data?.id, targetName, targetDocument }
+    // La referencia EXACTA que se mando vuelve con el resultado. Sin esto no
+    // quedaba guardada en ningun lado -- `reason` tiene la base, no el sufijo
+    // unico -- y era otra forma de no poder reencontrar el envio en Mouv.
+    return { ok: r.ok, status: r.status, data: r.data, providerRef: r.data?.id, referencia: refUniq, targetName, targetDocument }
   }
 
   // ── ACH — mismo endpoint /transfers/send con destino de cuenta bancaria.
@@ -481,6 +484,70 @@ async function mouvTransferStatus(id: string): Promise<EstadoMouv> {
     : primera.httpStatus === 0 ? 'no se pudo conectar con Mouv'
     : `respuesta inesperada (HTTP ${primera.httpStatus})`
   return { found: false, verdict: 'unknown', state: '', raw: lastRaw, diag: { motivo, ...(primera ?? {}) } }
+}
+
+// ── LISTADO DE MOVIMIENTOS DE MOUV ────────────────────────────────
+// GET /wallets/transactions?type=TRANSFER_OUT&rail=BREB&from=...  (scope READ)
+//
+// Esto resuelve el problema de raiz. La conciliacion por id necesita el UUID
+// que Mouv devuelve al enviar, y el 19 de septiembre resulto que NINGUNA de 75
+// filas lo tenia guardado: dos fallas encadenadas -- ruta equivocada e id
+// ausente -- de las que solo se veia la primera.
+//
+// El listado no necesita el id: trae `status` ya puesto, asi que UNA consulta
+// concilia todos los envios de la ventana en vez de una por envio. De paso
+// deja de rozar el limite de 100 lecturas por minuto.
+async function mouvListarBrebOut(desdeISO: string): Promise<{ ok: boolean; items: any[]; diag?: any }> {
+  const desde = String(desdeISO ?? '').slice(0, 10)   // el filtro `from` es una fecha
+  const items: any[] = []
+  let primera: any = null
+  // Tope de 5 paginas (500 movimientos): mas que eso no entra en la ventana de
+  // conciliacion, y un bucle sin tope contra un proveedor es una forma de
+  // colgar la funcion.
+  for (let page = 0; page < 5; page++) {
+    const r = await mouvFetch(`/wallets/transactions?type=TRANSFER_OUT&rail=BREB&from=${desde}&limit=100&page=${page}`, { method: 'GET' })
+    if (!primera) primera = { ruta: '/wallets/transactions', httpStatus: r.status, cuerpo: (() => { try { return (typeof r.data === 'string' ? r.data : JSON.stringify(r.data ?? '')).slice(0, 400) } catch { return '(ilegible)' } })() }
+    if (!r.ok) {
+      const motivo = r.status === 401 || r.status === 403 ? `la llave no tiene permiso de lectura (HTTP ${r.status})`
+        : r.status === 429 ? 'limite de consultas (429)'
+        : r.status === 404 ? 'la ruta del listado devolvio 404'
+        : r.status === 0 ? 'no se pudo conectar con Mouv'
+        : `respuesta inesperada (HTTP ${r.status})`
+      return { ok: false, items, diag: { motivo, ...primera } }
+    }
+    const lote = Array.isArray((r.data as any)?.items) ? (r.data as any).items : []
+    items.push(...lote)
+    if (!(r.data as any)?.hasMore || lote.length === 0) break
+  }
+  return { ok: true, items }
+}
+
+// Emparejar UNA fila nuestra con un movimiento de Mouv cuando no tenemos su id.
+//
+// ES DELIBERADAMENTE ESTRICTO. Emparejar mal no es un error cosmetico: marca
+// como devuelto un envio que si se pago (y le regala la plata al cliente) o da
+// por pagado uno que volvio. Por eso exige que coincidan el MONTO EXACTO en
+// centavos Y el documento del beneficiario, y que haya UN solo candidato sin
+// reclamar. Dos envios identicos a la misma persona no se emparejan: quedan
+// para que los mire una persona, que es la respuesta correcta cuando no se
+// puede distinguir cual es cual.
+function emparejarConMouv(rd: any, montoCop: number, items: any[], reclamados: Set<string>): any | null {
+  // La referencia exacta, si la fila la guardo, es una coincidencia sin
+  // ambiguedad: la generamos nosotros con un sufijo unico por envio.
+  const refExacta = String(rd?.providerReference ?? '').trim()
+  if (refExacta) {
+    const porRef = items.filter(it => !reclamados.has(String(it?.id ?? '')) && String(it?.reference ?? '') === refExacta)
+    if (porRef.length === 1) return porRef[0]
+  }
+  const doc = String(rd?.documentNumber ?? rd?.recipient?.documentNumber ?? '').replace(/\D/g, '')
+  if (!doc) return null
+  const centavos = Math.round(Number(montoCop) * 100)
+  if (!(centavos > 0)) return null
+  const cand = items.filter(it =>
+    !reclamados.has(String(it?.id ?? '')) &&
+    Math.round(Number(it?.amount ?? 0)) === centavos &&
+    String(it?.targetDocument ?? '').replace(/\D/g, '') === doc)
+  return cand.length === 1 ? cand[0] : null
 }
 
 // ── Cotización de comisión Mouv (Bre-B) ────────────────────────────
@@ -1027,6 +1094,20 @@ serve(async (req: Request) => {
       .limit(todos ? 80 : 30)   // lectura = 100 req/min; 80 deja aire
     if (!todos) q = q.eq('user_id', userId)
     const { data: rows } = await q
+
+    // UNA sola consulta trae el estado de todos los envios de la ventana. Se
+    // usa como fuente principal; la consulta por id queda de respaldo para lo
+    // que no aparezca en el listado.
+    const listado = await mouvListarBrebOut(since)
+    const porId = new Map<string, any>()
+    for (const it of listado.items) { const k = String(it?.id ?? ''); if (k) porId.set(k, it) }
+    // Un movimiento de Mouv no puede quedar emparejado con dos filas nuestras.
+    const reclamados = new Set<string>()
+    for (const tx of (rows ?? []) as any[]) {
+      const k = String(((tx.raw_data ?? {}) as any).providerRef ?? '')
+      if (k) reclamados.add(k)
+    }
+
     const out: any[] = []
     for (const tx of (rows ?? []) as any[]) {
       const rd = (tx.raw_data ?? {}) as Record<string, any>
@@ -1057,15 +1138,47 @@ serve(async (req: Request) => {
         }
         return { ref: '', campo: '' }
       }
-      const { ref, campo: campoRef } = buscarRef(rd)
-      const st: EstadoMouv = ref ? await mouvTransferStatus(ref)
+      const { ref: refGuardado, campo: campoRef } = buscarRef(rd)
+
+      // ORDEN: (1) el id que ya teniamos, buscado en el listado; (2) si no hay
+      // id, emparejar por monto + documento; (3) consulta por id, para lo que
+      // sea mas viejo que el listado.
+      let ref = refGuardado
+      let origenRef = campoRef
+      let item: any = ref ? porId.get(ref) ?? null : null
+
+      if (!item && !ref && listado.ok) {
+        const m = emparejarConMouv(rd, Number(tx.amount ?? 0), listado.items, reclamados)
+        if (m) {
+          item = m
+          ref = String(m.id ?? '')
+          origenRef = 'emparejado por monto + documento'
+          reclamados.add(ref)
+          // Se GUARDA para que la proxima vez sea exacto y no haya que volver
+          // a emparejar. Queda marcado como emparejado y no como dato de
+          // primera mano: dentro de seis meses eso tiene que distinguirse.
+          await db.from('transactions').update({
+            raw_data: { ...rd, providerRef: ref, providerRefOrigen: 'conciliacion_por_listado', providerRefAt: new Date().toISOString() },
+          }).eq('id', tx.id)
+          rd.providerRef = ref
+        }
+      }
+
+      const st: EstadoMouv = item
+        ? (() => { const n = normalizeMouvState(item); return { found: !!n.state, verdict: n.verdict, state: n.state, raw: item, path: '/wallets/transactions' } })()
+        : ref ? await mouvTransferStatus(ref)
         : {
             found: false, verdict: 'unknown', state: '', raw: null,
             diag: {
-              motivo: 'la fila no guarda el id de Mouv (UUID) en ningun campo conocido',
+              motivo: listado.ok
+                ? 'sin id guardado y sin un unico movimiento de Mouv que coincida (monto + documento)'
+                : `no se pudo leer el listado de Mouv: ${listado.diag?.motivo ?? 'sin detalle'}`,
+              ...(listado.ok ? {} : { ruta: listado.diag?.ruta, httpStatus: listado.diag?.httpStatus }),
               // Las LLAVES de raw_data, no sus valores: hacen falta para saber
               // donde quedo el id, y los valores traen datos del beneficiario.
-              cuerpo: `source=${String(rd.source ?? '?')} · campos: ${Object.keys(rd).join(', ').slice(0, 300)}`,
+              cuerpo: listado.ok
+                ? `movimientos Bre-B leidos de Mouv: ${listado.items.length} · source=${String(rd.source ?? '?')} · campos: ${Object.keys(rd).join(', ').slice(0, 220)}`
+                : String(listado.diag?.cuerpo ?? ''),
             },
           }
       // Cupo de lectura agotado: se para ACA. Seguir el barrido solo suma 429s,
@@ -1170,7 +1283,7 @@ serve(async (req: Request) => {
           providerState: st.state || null,
           // El diagnostico solo para la mesa: nombra al proveedor y puede
           // traer detalle de su respuesta.
-          ...(caller.admin ? { diag: st.diag ?? null, providerRef: ref || null, campoRef: campoRef || null } : {}),
+          ...(caller.admin ? { diag: st.diag ?? null, providerRef: ref || null, campoRef: origenRef || null } : {}),
         })
       } else if (rd.autoCompleted) {
         // Quedó Completado por el auto-completado viejo: NUNCA lo confirmó el
@@ -1928,6 +2041,7 @@ serve(async (req: Request) => {
             ...(pay.targetName ? { beneficiary: pay.targetName } : {}),
             ...(pay.targetDocument ? { documentNumber: pay.targetDocument } : {}),
             providerRef: pay.providerRef ?? null,
+            providerReference: pay.referencia ?? null,
             providerState: sendState.state || null,
             aceptadaAt: new Date().toISOString(),
             ...(confirmada
@@ -1938,6 +2052,17 @@ serve(async (req: Request) => {
           amount, feeCop, rail, providerRef: pay.providerRef ?? null,
           providerState: sendState.state || null, estado,
         })
+        // UN ENVIO ACEPTADO SIN ID ES UN ENVIO QUE NO SE VA A PODER CONCILIAR.
+        // Es la falla que dejo 75 dispersiones sin forma de consultar su
+        // estado, y no dejaba rastro: se veia como "aceptada" igual que las
+        // buenas. Ahora queda asentada aparte, con el cuerpo que contesto
+        // Mouv, para que se note el mismo dia y no tres semanas despues.
+        if (!pay.providerRef) {
+          await logAudit(userId, `mouv.${action}.sin_provider_ref`, {
+            txId, amount, rail, referencia: pay.referencia ?? null,
+            respuesta: (() => { try { return JSON.stringify(pay.data ?? '').slice(0, 500) } catch { return '(ilegible)' } })(),
+          })
+        }
         await notifyTx(txId)
         return json(200, { ok: true, status: estado, confirmada, providerRef: pay.providerRef ?? null, providerState: sendState.state || null, feeCop, newBalance: afterDebit })
       }
