@@ -416,9 +416,19 @@ function normalizeMouvState(raw: any): { verdict: MouvVerdict; state: string } {
 // ahi. Antes se probaban las siete siempre que no hubiera respuesta util, y un
 // barrido de cien envios gastaba setecientas consultas: se comia el limite,
 // empezaba a recibir 429 y las que seguian quedaban sin veredicto.
-async function mouvTransferStatus(id: string): Promise<{ found: boolean; verdict: MouvVerdict; state: string; raw: any; path?: string; limitado?: boolean }> {
+type EstadoMouv = {
+  found: boolean; verdict: MouvVerdict; state: string; raw: any
+  path?: string; limitado?: boolean
+  // Por que NO hubo veredicto. Sin esto, "sin respuesta del proveedor" tapa por
+  // igual una ruta caida, una llave sin permiso, un id que Mouv no reconoce y
+  // una fila nuestra sin referencia guardada -- cuatro problemas con cuatro
+  // arreglos distintos. Es el mismo remedio que el diagnostico de KYT.
+  diag?: { motivo: string; ruta?: string; httpStatus?: number; cuerpo?: string }
+}
+
+async function mouvTransferStatus(id: string): Promise<EstadoMouv> {
   const tid = String(id ?? '').trim()
-  if (!tid) return { found: false, verdict: 'unknown', state: '', raw: null }
+  if (!tid) return { found: false, verdict: 'unknown', state: '', raw: null, diag: { motivo: 'la fila no tiene providerRef guardado' } }
   const enc = encodeURIComponent(tid)
   const paths = [
     `/wallets/transactions/${enc}`,   // ← la documentada
@@ -440,15 +450,22 @@ async function mouvTransferStatus(id: string): Promise<{ found: boolean; verdict
   const esIdInexistente = (data: any): boolean => {
     try { return JSON.stringify(data ?? '').includes('TRANSACTION_NOT_FOUND') } catch { return false }
   }
+  const recorte = (d: any): string => {
+    try { return (typeof d === 'string' ? d : JSON.stringify(d ?? '')).slice(0, 400) } catch { return '(ilegible)' }
+  }
   let lastRaw: any = null
+  let primera: { ruta: string; httpStatus: number; cuerpo: string } | null = null
   for (const p of paths) {
     const r = await mouvFetch(p, { method: 'GET' })
+    // Se guarda SIEMPRE lo que contesto la ruta oficial, responda lo que
+    // responda: es lo unico que permite distinguir los cuatro motivos.
+    if (!primera) primera = { ruta: p, httpStatus: r.status, cuerpo: recorte(r.data) }
     // 429 = se acabo el cupo de lectura. NO es "no se pudo confirmar": es "no
     // preguntamos". Se corta y se avisa, para que el barrido no siga quemando
     // cupo y para no confundir un limite con un estado desconocido.
-    if (r.status === 429) return { found: false, verdict: 'unknown', state: '', raw: r.data, limitado: true }
+    if (r.status === 429) return { found: false, verdict: 'unknown', state: '', raw: r.data, limitado: true, diag: { motivo: 'limite de consultas (429)', ...primera } }
     if (r.status === 404 && esIdInexistente(r.data)) {
-      return { found: false, verdict: 'unknown', state: '', raw: r.data, path: p }
+      return { found: false, verdict: 'unknown', state: '', raw: r.data, path: p, diag: { motivo: 'Mouv no reconoce ese id (TRANSACTION_NOT_FOUND)', ...primera } }
     }
     if (r.status === 404 || r.status === 0) continue
     lastRaw = r.data
@@ -458,7 +475,12 @@ async function mouvTransferStatus(id: string): Promise<{ found: boolean; verdict
       // Ruta válida y del mismo id pero sin estado legible → seguir intentando.
     }
   }
-  return { found: false, verdict: 'unknown', state: '', raw: lastRaw }
+  const motivo = !primera ? 'ninguna ruta respondio'
+    : primera.httpStatus === 401 || primera.httpStatus === 403 ? `la llave no tiene permiso para leer (HTTP ${primera.httpStatus})`
+    : primera.httpStatus === 404 ? 'la ruta oficial devolvio 404'
+    : primera.httpStatus === 0 ? 'no se pudo conectar con Mouv'
+    : `respuesta inesperada (HTTP ${primera.httpStatus})`
+  return { found: false, verdict: 'unknown', state: '', raw: lastRaw, diag: { motivo, ...(primera ?? {}) } }
 }
 
 // ── Cotización de comisión Mouv (Bre-B) ────────────────────────────
@@ -466,10 +488,17 @@ async function mouvTransferStatus(id: string): Promise<{ found: boolean; verdict
 // { feeBreakdown:{ fixedFee, variableFee, subtotalFee, ivaAmount,
 //   totalCharged }, totalCost, canAfford }  (valores en CENTAVOS)
 // La comisión SE COBRA AL CLIENTE: el débito del riel es monto + comisión.
-async function mouvQuoteBreb(amountCop: number, keyValue: string): Promise<{ ok: boolean; feeCop: number; fixedCop: number; variableCop: number; ivaCop: number; raw: any }> {
+// OJO: hoy NO se usa — el precio al cliente sale de brebFeeCop(), nuestra
+// propia tarifa, y por eso el body incompleto nunca rompio nada. Queda correcta
+// para el dia que se quiera cotizar contra el proveedor de verdad.
+//
+// `keyType` es OBLIGATORIO en /transfers/quote (PHONE | EMAIL | ALPHANUM |
+// NRIC). Faltaba. Se deriva igual que en el envio: el que devuelve resolve-key
+// si lo hay, y si no se infiere del formato de la llave.
+async function mouvQuoteBreb(amountCop: number, keyValue: string, keyType?: string): Promise<{ ok: boolean; feeCop: number; fixedCop: number; variableCop: number; ivaCop: number; raw: any }> {
   const r = await mouvFetch('/transfers/quote', {
     method: 'POST',
-    body: JSON.stringify({ amount: Math.round(amountCop * 100), keyValue }),
+    body: JSON.stringify({ amount: Math.round(amountCop * 100), keyValue, keyType: brebTypeToMouv(keyType ?? '', keyValue) }),
   })
   const d: any = r.data ?? {}
   const fb = d.feeBreakdown ?? {}
@@ -1003,7 +1032,8 @@ serve(async (req: Request) => {
       const rd = (tx.raw_data ?? {}) as Record<string, any>
       if (rd.refunded) { out.push({ id: tx.id, result: 'already_refunded' }); continue }
       const ref = String(rd.providerRef ?? '')
-      const st = ref ? await mouvTransferStatus(ref) : { found: false, verdict: 'unknown' as MouvVerdict, state: '', raw: null }
+      const st: EstadoMouv = ref ? await mouvTransferStatus(ref)
+        : { found: false, verdict: 'unknown', state: '', raw: null, diag: { motivo: 'la fila no tiene providerRef guardado' } }
       // Cupo de lectura agotado: se para ACA. Seguir el barrido solo suma 429s,
       // y cada fila que se salte quedaria marcada "sin confirmar" por un limite
       // nuestro, no por algo que dijo el proveedor.
@@ -1104,6 +1134,9 @@ serve(async (req: Request) => {
           result: revisar ? 'sin_confirmar_revisar' : 'still_processing',
           minutos: ageMin,
           providerState: st.state || null,
+          // El diagnostico solo para la mesa: nombra al proveedor y puede
+          // traer detalle de su respuesta.
+          ...(caller.admin ? { diag: st.diag ?? null, providerRef: ref || null } : {}),
         })
       } else if (rd.autoCompleted) {
         // Quedó Completado por el auto-completado viejo: NUNCA lo confirmó el
@@ -1115,7 +1148,7 @@ serve(async (req: Request) => {
         }).eq('id', tx.id)
         out.push({ id: tx.id, result: 'completado_sin_confirmar', providerState: st.state || null })
       } else {
-        out.push({ id: tx.id, result: 'still_completed' })
+        out.push({ id: tx.id, result: 'still_completed', ...(caller.admin ? { diag: st.diag ?? null } : {}) })
       }
     }
     return json(200, { ok: true, checked: (rows ?? []).length, results: out })

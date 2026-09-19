@@ -498,11 +498,32 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     const comp = res.filter(x => x.result === 'completed');
     const quedan = res.filter(x => x.result === 'still_processing' || x.result === 'sin_confirmar_revisar');
     const plata = dev.reduce((n, x) => n + Number(x.refund ?? 0), 0);
+    // POR QUÉ no hubo veredicto. Un "sin respuesta del proveedor" a secas tapa
+    // por igual una ruta caída, una llave sin permiso de lectura, un id que
+    // Mouv no reconoce y una fila nuestra sin referencia guardada — cuatro
+    // problemas con cuatro arreglos distintos. Sin esto, la pantalla dice que
+    // algo falló y no deja ni empezar a buscar dónde.
+    const motivos = new Map<string, number>();
+    let muestra: any = null;
+    for (const x of res) {
+      if (!x?.diag?.motivo) continue;
+      motivos.set(x.diag.motivo, (motivos.get(x.diag.motivo) ?? 0) + 1);
+      if (!muestra) muestra = x;
+    }
+    const detalle = motivos.size
+      ? '\n\nPor qué no se pudo confirmar:\n' +
+        [...motivos.entries()].map(([m, n]) => `· ${n} × ${m}`).join('\n') +
+        (muestra?.diag?.ruta
+          ? `\n\nPrimera consulta: ${muestra.diag.ruta}` +
+            ` → HTTP ${muestra.diag.httpStatus}\n${String(muestra.diag.cuerpo ?? '').slice(0, 300)}`
+          : '')
+      : '';
     alert(
       `Revisados ${r.checked ?? res.length} envíos Bre-B.\n\n` +
       `· ${comp.length} confirmados como pagados\n` +
       `· ${dev.length} devueltos → reembolsados ${plata.toLocaleString('es-CO')} COP\n` +
-      `· ${quedan.length} sin respuesta del proveedor (siguen en curso)`);
+      `· ${quedan.length} sin respuesta del proveedor (siguen en curso)` +
+      detalle);
     refreshData?.();
   };
 
