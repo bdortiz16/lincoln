@@ -516,7 +516,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
         (muestra?.diag?.ruta
           ? `\n\nPrimera consulta: ${muestra.diag.ruta}` +
             ` → HTTP ${muestra.diag.httpStatus}\n${String(muestra.diag.cuerpo ?? '').slice(0, 300)}`
-          : '')
+          : muestra?.diag?.cuerpo
+            ? `\n\nQué trae una de esas filas:\n${String(muestra.diag.cuerpo).slice(0, 400)}`
+            : '')
       : '';
     alert(
       `Revisados ${r.checked ?? res.length} envíos Bre-B.\n\n` +

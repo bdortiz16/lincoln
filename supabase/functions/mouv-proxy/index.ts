@@ -1031,9 +1031,43 @@ serve(async (req: Request) => {
     for (const tx of (rows ?? []) as any[]) {
       const rd = (tx.raw_data ?? {}) as Record<string, any>
       if (rd.refunded) { out.push({ id: tx.id, result: 'already_refunded' }); continue }
-      const ref = String(rd.providerRef ?? '')
+      // EL ID DE MOUV, BUSCADO EN SERIO.
+      // El barrido del 19 de septiembre devolvio "75 x la fila no tiene
+      // providerRef guardado": ni una sola de 75 filas traia el id, o no lo
+      // traia DONDE se lo buscaba. Antes se leia un unico campo y, si el id
+      // vivia en otro lado, la conciliacion se declaraba imposible sin haber
+      // preguntado nada.
+      //
+      // Se prueban los nombres plausibles y se DICE cual sirvio: si el id
+      // estaba todo este tiempo bajo otra llave, la conciliacion arranca ya; y
+      // si de verdad no esta, el diagnostico lista las llaves que SI tiene la
+      // fila, que es lo unico que permite arreglarlo sin adivinar otra vez.
+      const buscarRef = (d: any): { ref: string; campo: string } => {
+        const cand: Array<[string, any]> = [
+          ['providerRef', d?.providerRef], ['provider_ref', d?.provider_ref],
+          ['mouvId', d?.mouvId], ['transferId', d?.transferId], ['transfer_id', d?.transfer_id],
+          ['id', d?.id], ['raw.id', d?.raw?.id], ['response.id', d?.response?.id],
+          ['data.id', d?.data?.id], ['provider.id', d?.provider?.id],
+        ]
+        for (const [campo, v] of cand) {
+          const sv = v == null ? '' : String(v).trim()
+          // El id de Mouv es un UUID. Exigir la FORMA evita agarrar por error
+          // un id nuestro (numerico) y preguntarle a Mouv por algo que no es.
+          if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sv)) return { ref: sv, campo }
+        }
+        return { ref: '', campo: '' }
+      }
+      const { ref, campo: campoRef } = buscarRef(rd)
       const st: EstadoMouv = ref ? await mouvTransferStatus(ref)
-        : { found: false, verdict: 'unknown', state: '', raw: null, diag: { motivo: 'la fila no tiene providerRef guardado' } }
+        : {
+            found: false, verdict: 'unknown', state: '', raw: null,
+            diag: {
+              motivo: 'la fila no guarda el id de Mouv (UUID) en ningun campo conocido',
+              // Las LLAVES de raw_data, no sus valores: hacen falta para saber
+              // donde quedo el id, y los valores traen datos del beneficiario.
+              cuerpo: `source=${String(rd.source ?? '?')} · campos: ${Object.keys(rd).join(', ').slice(0, 300)}`,
+            },
+          }
       // Cupo de lectura agotado: se para ACA. Seguir el barrido solo suma 429s,
       // y cada fila que se salte quedaria marcada "sin confirmar" por un limite
       // nuestro, no por algo que dijo el proveedor.
@@ -1136,7 +1170,7 @@ serve(async (req: Request) => {
           providerState: st.state || null,
           // El diagnostico solo para la mesa: nombra al proveedor y puede
           // traer detalle de su respuesta.
-          ...(caller.admin ? { diag: st.diag ?? null, providerRef: ref || null } : {}),
+          ...(caller.admin ? { diag: st.diag ?? null, providerRef: ref || null, campoRef: campoRef || null } : {}),
         })
       } else if (rd.autoCompleted) {
         // Quedó Completado por el auto-completado viejo: NUNCA lo confirmó el
