@@ -411,7 +411,12 @@ function normalizeMouvState(raw: any): { verdict: MouvVerdict; state: string } {
 //   pista estuvo todo el tiempo dos funciones mas abajo.
 //
 // Las adivinadas quedan DESPUES, solo por si un dia cambia la ruta oficial.
-async function mouvTransferStatus(id: string): Promise<{ found: boolean; verdict: MouvVerdict; state: string; raw: any; path?: string }> {
+//
+// LIMITE DE LECTURA: 100 req/min. Por eso la ruta oficial responde y se CORTA
+// ahi. Antes se probaban las siete siempre que no hubiera respuesta util, y un
+// barrido de cien envios gastaba setecientas consultas: se comia el limite,
+// empezaba a recibir 429 y las que seguian quedaban sin veredicto.
+async function mouvTransferStatus(id: string): Promise<{ found: boolean; verdict: MouvVerdict; state: string; raw: any; path?: string; limitado?: boolean }> {
   const tid = String(id ?? '').trim()
   if (!tid) return { found: false, verdict: 'unknown', state: '', raw: null }
   const enc = encodeURIComponent(tid)
@@ -428,9 +433,23 @@ async function mouvTransferStatus(id: string): Promise<{ found: boolean; verdict
   const bodyMentionsId = (data: any): boolean => {
     try { return JSON.stringify(data ?? '').includes(tid) } catch { return false }
   }
+  // ¿El 404 es "esa transaccion no existe" o "esa ruta no existe"? Mouv
+  // responde TRANSACTION_NOT_FOUND para lo primero, y eso ES una respuesta: no
+  // tiene sentido seguir probando seis rutas adivinadas con un id que el
+  // proveedor ya dijo que no reconoce.
+  const esIdInexistente = (data: any): boolean => {
+    try { return JSON.stringify(data ?? '').includes('TRANSACTION_NOT_FOUND') } catch { return false }
+  }
   let lastRaw: any = null
   for (const p of paths) {
     const r = await mouvFetch(p, { method: 'GET' })
+    // 429 = se acabo el cupo de lectura. NO es "no se pudo confirmar": es "no
+    // preguntamos". Se corta y se avisa, para que el barrido no siga quemando
+    // cupo y para no confundir un limite con un estado desconocido.
+    if (r.status === 429) return { found: false, verdict: 'unknown', state: '', raw: r.data, limitado: true }
+    if (r.status === 404 && esIdInexistente(r.data)) {
+      return { found: false, verdict: 'unknown', state: '', raw: r.data, path: p }
+    }
     if (r.status === 404 || r.status === 0) continue
     lastRaw = r.data
     if (r.ok && bodyMentionsId(r.data)) {
@@ -976,7 +995,7 @@ serve(async (req: Request) => {
       .in('status', ['Procesando', 'Completado'])
       .gte('created_at', since)
       .order('created_at', { ascending: false })
-      .limit(todos ? 200 : 30)
+      .limit(todos ? 80 : 30)   // lectura = 100 req/min; 80 deja aire
     if (!todos) q = q.eq('user_id', userId)
     const { data: rows } = await q
     const out: any[] = []
@@ -985,6 +1004,13 @@ serve(async (req: Request) => {
       if (rd.refunded) { out.push({ id: tx.id, result: 'already_refunded' }); continue }
       const ref = String(rd.providerRef ?? '')
       const st = ref ? await mouvTransferStatus(ref) : { found: false, verdict: 'unknown' as MouvVerdict, state: '', raw: null }
+      // Cupo de lectura agotado: se para ACA. Seguir el barrido solo suma 429s,
+      // y cada fila que se salte quedaria marcada "sin confirmar" por un limite
+      // nuestro, no por algo que dijo el proveedor.
+      if ((st as any).limitado) {
+        out.push({ id: tx.id, result: 'limite_proveedor' })
+        return json(200, { ok: true, checked: (rows ?? []).length, results: out, limiteProveedor: true, message: 'Mouv corto por limite de consultas (100/min). Volve a intentar en un minuto: lo ya conciliado quedo guardado.' })
+      }
       // 1) DEVOLUCIÓN confirmada por Mouv → Rechazado + REEMBOLSO (idempotente).
       if (st.found && st.verdict === 'returned') {
         const refund = Number(tx.amount ?? 0) + Number(rd.feeCop ?? 0)
