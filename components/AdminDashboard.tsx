@@ -496,7 +496,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     const res = (r.results ?? []) as any[];
     const dev = res.filter(x => x.result === 'refunded');
     const comp = res.filter(x => x.result === 'completed');
-    const emparejados = res.filter(x => x.campoRef === 'emparejado por monto + documento').length;
+    // Cómo se emparejó cada uno: no es lo mismo la referencia exacta que
+    // "único con ese monto". Lo segundo hay que poder mirarlo.
+    const vias = new Map<string, number>();
+    for (const x of res) if (x?.campoRef) vias.set(x.campoRef, (vias.get(x.campoRef) ?? 0) + 1);
+    const emparejados = [...vias.entries()].filter(([v]) => v !== 'providerRef');
     const quedan = res.filter(x => x.result === 'still_processing' || x.result === 'sin_confirmar_revisar');
     const plata = dev.reduce((n, x) => n + Number(x.refund ?? 0), 0);
     // POR QUÉ no hubo veredicto. Un "sin respuesta del proveedor" a secas tapa
@@ -526,7 +530,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       `· ${comp.length} confirmados como pagados\n` +
       `· ${dev.length} devueltos → reembolsados ${plata.toLocaleString('es-CO')} COP\n` +
       `· ${quedan.length} sin respuesta del proveedor (siguen en curso)` +
-      (emparejados ? `\n\n${emparejados} se emparejaron con Mouv por monto + documento (no tenían el id guardado). El id quedó guardado para la próxima.` : '') +
+      (emparejados.length
+        ? '\n\nEmparejados con Mouv (no tenían el id guardado):\n' +
+          emparejados.map(([v, n]) => `· ${n} × ${v}`).join('\n') +
+          '\nEl id quedó guardado para la próxima.'
+        : '') +
       detalle);
     refreshData?.();
   };

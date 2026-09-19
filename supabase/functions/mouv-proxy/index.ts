@@ -531,23 +531,55 @@ async function mouvListarBrebOut(desdeISO: string): Promise<{ ok: boolean; items
 // reclamar. Dos envios identicos a la misma persona no se emparejan: quedan
 // para que los mire una persona, que es la respuesta correcta cuando no se
 // puede distinguir cual es cual.
-function emparejarConMouv(rd: any, montoCop: number, items: any[], reclamados: Set<string>): any | null {
-  // La referencia exacta, si la fila la guardo, es una coincidencia sin
-  // ambiguedad: la generamos nosotros con un sufijo unico por envio.
-  const refExacta = String(rd?.providerReference ?? '').trim()
-  if (refExacta) {
-    const porRef = items.filter(it => !reclamados.has(String(it?.id ?? '')) && String(it?.reference ?? '') === refExacta)
-    if (porRef.length === 1) return porRef[0]
-  }
-  const doc = String(rd?.documentNumber ?? rd?.recipient?.documentNumber ?? '').replace(/\D/g, '')
-  if (!doc) return null
+function emparejarConMouv(rd: any, montoCop: number, items: any[], reclamados: Set<string>): { item: any; via: string } | null {
+  const libres = items.filter(it => !reclamados.has(String(it?.id ?? '')))
   const centavos = Math.round(Number(montoCop) * 100)
   if (!(centavos > 0)) return null
-  const cand = items.filter(it =>
-    !reclamados.has(String(it?.id ?? '')) &&
-    Math.round(Number(it?.amount ?? 0)) === centavos &&
-    String(it?.targetDocument ?? '').replace(/\D/g, '') === doc)
-  return cand.length === 1 ? cand[0] : null
+  // El monto en centavos es el ancla de TODOS los niveles. Nunca se empareja
+  // algo cuyo monto no calce exacto.
+  const mismoMonto = libres.filter(it => Math.round(Number(it?.amount ?? 0)) === centavos)
+  if (!mismoMonto.length) return null
+
+  const unico = (xs: any[], via: string) => (xs.length === 1 ? { item: xs[0], via } : null)
+  const limpiar = (v: any) => String(v ?? '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase().replace(/[^A-Z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim()
+
+  // 1) La referencia EXACTA que mandamos. Sin ambiguedad posible: la generamos
+  //    nosotros con un sufijo unico por envio.
+  const refExacta = String(rd?.providerReference ?? '').trim()
+  if (refExacta) {
+    const r = unico(mismoMonto.filter(it => String(it?.reference ?? '') === refExacta), 'referencia exacta')
+    if (r) return r
+  }
+
+  // 2) Documento del beneficiario. Solo esta en las filas que alcanzaron a
+  //    guardar el dato del resolve-key.
+  const doc = String(rd?.documentNumber ?? rd?.recipient?.documentNumber ?? '').replace(/\D/g, '')
+  if (doc) {
+    const r = unico(mismoMonto.filter(it => String(it?.targetDocument ?? '').replace(/\D/g, '') === doc), 'monto + documento')
+    if (r) return r
+  }
+
+  // 3) Nombre del beneficiario, normalizado (sin tildes, sin mayusculas, sin
+  //    puntuacion). El nombre que guardamos puede ser el que escribio el
+  //    cliente y no el oficial del directorio, asi que se compara flojo.
+  const nom = limpiar(rd?.beneficiary ?? rd?.recipient?.holderName)
+  if (nom) {
+    const r = unico(mismoMonto.filter(it => limpiar(it?.targetName) === nom), 'monto + nombre')
+    if (r) return r
+  }
+
+  // 4) Solo el monto, y SOLO si en toda la ventana hay UN unico movimiento de
+  //    Mouv con ese importe exacto al centavo. Es el ultimo recurso para las
+  //    filas viejas que no guardaron ni documento ni id.
+  //
+  //    El riesgo real de emparejar mal es regalar plata (marcar devuelto algo
+  //    que se pago) o darle por pagado al cliente algo que volvio. La unicidad
+  //    en la ventana es la proteccion: si hay dos envios por el mismo importe
+  //    no se toca ninguno y los resuelve una persona, que es la respuesta
+  //    correcta cuando no se puede distinguir cual es cual.
+  return unico(mismoMonto, 'solo por monto (unico en la ventana)')
 }
 
 // ── Cotización de comisión Mouv (Bre-B) ────────────────────────────
@@ -1150,15 +1182,15 @@ serve(async (req: Request) => {
       if (!item && !ref && listado.ok) {
         const m = emparejarConMouv(rd, Number(tx.amount ?? 0), listado.items, reclamados)
         if (m) {
-          item = m
-          ref = String(m.id ?? '')
-          origenRef = 'emparejado por monto + documento'
+          item = m.item
+          ref = String(m.item.id ?? '')
+          origenRef = m.via
           reclamados.add(ref)
           // Se GUARDA para que la proxima vez sea exacto y no haya que volver
           // a emparejar. Queda marcado como emparejado y no como dato de
           // primera mano: dentro de seis meses eso tiene que distinguirse.
           await db.from('transactions').update({
-            raw_data: { ...rd, providerRef: ref, providerRefOrigen: 'conciliacion_por_listado', providerRefAt: new Date().toISOString() },
+            raw_data: { ...rd, providerRef: ref, providerRefOrigen: `conciliacion_por_listado: ${m.via}`, providerRefAt: new Date().toISOString() },
           }).eq('id', tx.id)
           rd.providerRef = ref
         }
@@ -1170,8 +1202,12 @@ serve(async (req: Request) => {
         : {
             found: false, verdict: 'unknown', state: '', raw: null,
             diag: {
+              // Los datos van DENTRO del motivo a proposito: el panel ya lo
+              // imprime, asi que se ven sin esperar a que se redespliegue la
+              // web. Un diagnostico que necesita otro despliegue para leerse
+              // llega tarde.
               motivo: listado.ok
-                ? 'sin id guardado y sin un unico movimiento de Mouv que coincida (monto + documento)'
+                ? `sin emparejar · Mouv devolvio ${listado.items.length} movimientos Bre-B en la ventana · la fila tiene monto=${Number(tx.amount ?? 0)} doc=${rd.documentNumber ? 'si' : 'NO'} nombre=${rd.beneficiary ? 'si' : 'NO'} ref=${rd.providerReference ? 'si' : 'NO'}`
                 : `no se pudo leer el listado de Mouv: ${listado.diag?.motivo ?? 'sin detalle'}`,
               ...(listado.ok ? {} : { ruta: listado.diag?.ruta, httpStatus: listado.diag?.httpStatus }),
               // Las LLAVES de raw_data, no sus valores: hacen falta para saber
@@ -1980,7 +2016,25 @@ serve(async (req: Request) => {
     // sí o sí. Antes cada sitio hacía `if (txId) update(...)`: sin fila, el
     // movimiento se perdía para siempre y el cliente no tenía cómo verlo.
     const asentarTx = async (status: string, raw: Record<string, unknown>) => {
-      if (txId) { await db.from('transactions').update({ status, raw_data: raw }).eq('id', txId); return }
+      if (txId) {
+        // EL ERROR DE ESTE UPDATE NO SE PUEDE DESCARTAR.
+        // Se descartaba, y esa es la causa de fondo del 19 de septiembre: 75
+        // dispersiones quedaron con el raw_data del insert inicial, sin
+        // providerRef y sin documentNumber -- los dos se escriben ACA -- asi
+        // que no habia ni id para consultar el estado ni documento para
+        // emparejar. La fila decia "Procesando" y parecia normal.
+        const { error: upErr } = await db.from('transactions').update({ status, raw_data: raw }).eq('id', txId)
+        if (upErr) {
+          await logAudit(userId, 'mouv.asentar_tx_failed', {
+            txId, status, motivo: upErr.message,
+            // Con esto se puede reconstruir la fila a mano: el envio ya ocurrio.
+            providerRef: (raw as any)?.providerRef ?? null,
+            providerReference: (raw as any)?.providerReference ?? null,
+            amount, railCol,
+          })
+        }
+        return
+      }
       const { data: tardio } = await db.from('transactions')
         .insert({ user_id: userId, type: 'dispersion', amount, currency: railCol, status, raw_data: raw })
         .select('id').maybeSingle()
