@@ -1417,6 +1417,67 @@ serve(async (req: Request) => {
     return json(200, { ok: true, confirmada: true })
   }
 
+  // ── COMPROBANTE OFICIAL DEL PROVEEDOR (PDF) ───────────────────────
+  // GET /wallets/transactions/:id/receipt.pdf  (scope READ)
+  //
+  // El comprobante que damos hoy lo dibujamos nosotros. Este lo firma el
+  // proveedor: es el que sirve como evidencia fiscal y el que se le manda al
+  // beneficiario cuando dice que no le llego.
+  //
+  // PASA POR ACA Y NO POR EL NAVEGADOR: el PDF se pide con la llave mvk_, que
+  // no puede tocar el cliente. Ademas asi se comprueba que la transaccion sea
+  // SUYA -- sin eso, cambiando un id cualquiera se bajaria el comprobante de
+  // otro, con el nombre y el documento del beneficiario adentro.
+  if (action === 'comprobante_proveedor') {
+    const userId = requireOwner(caller, payload)
+    if (!userId) return json(403, { error: 'forbidden', message: 'Vuelve a iniciar sesión.' })
+
+    const txId = payload?.txId ?? payload?.tx_id
+    if (txId == null) return json(400, { error: 'missing_tx' })
+
+    const { data: tx } = await db.from('transactions')
+      .select('id, user_id, type, raw_data').eq('id', txId).maybeSingle()
+    // Un cierre ajeno no se confirma que exista: mismo criterio que el resto.
+    if (!tx || (!caller.admin && String(tx.user_id) !== String(userId))) {
+      return json(404, { error: 'not_found' })
+    }
+
+    const rd = (tx.raw_data ?? {}) as Record<string, any>
+    const ref = String(rd.providerRef ?? '').trim()
+    if (!ref) {
+      return json(409, {
+        error: 'sin_referencia',
+        message: 'Este envío no tiene guardada la referencia del proveedor, así que no se puede pedir su comprobante.',
+      })
+    }
+
+    const r = await fetch(`${MOUV_BASE}/wallets/transactions/${encodeURIComponent(ref)}/receipt.pdf`, {
+      headers: { accept: 'application/pdf', authorization: `Bearer ${MOUV_API_KEY}` },
+      signal: AbortSignal.timeout(20000),
+    }).catch((e) => ({ ok: false, status: 0, _err: String((e as Error)?.message ?? e) } as any))
+
+    if (!r.ok) {
+      // El motivo se dice en castellano: "no se pudo" manda a buscar a ciegas.
+      const motivo = r.status === 404 ? 'El proveedor todavía no tiene el comprobante de este envío.'
+        : r.status === 401 || r.status === 403 ? 'No tenemos permiso para descargar este comprobante.'
+        : r.status === 429 ? 'Demasiadas descargas seguidas. Probá en un minuto.'
+        : 'El proveedor no devolvió el comprobante en este momento.'
+      return json(502, { error: 'comprobante_no_disponible', message: motivo, httpStatus: r.status })
+    }
+
+    const bytes = new Uint8Array(await (r as Response).arrayBuffer())
+    // Se devuelve el PDF tal cual. Va como descarga, con un nombre que se
+    // entiende seis meses despues sin abrirlo.
+    return new Response(bytes, {
+      status: 200,
+      headers: {
+        ...CORS,
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': `attachment; filename="comprobante-${ref}.pdf"`,
+      },
+    })
+  }
+
   // ── SONDEO DE ENDPOINTS DEL PROVEEDOR (admin) ─────────────────────
   // Esto existio porque no sabiamos como se consultaba el estado de una
   // transferencia y mouvTransferStatus adivinaba entre seis rutas que daban

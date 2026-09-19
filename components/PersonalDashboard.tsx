@@ -29,7 +29,7 @@ import {
   Lock,
   LayoutGrid,
   Share2,
-  Download,
+  FileText, Download,
   Megaphone,
   Plane,
   ShoppingBag,
@@ -1244,6 +1244,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           .catch(e => setPayoutQuote({ loading: false, error: String(e?.message ?? e) }));
       // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sendStep, sendMode, currentUser?.id]);
+
+  // Vive ACA y no dentro de renderTxDetail: esa es una función de render con un
+  // `return null` adelante, así que un useState adentro se llamaría unas veces
+  // sí y otras no — y React cuenta los hooks por orden. Se rompe al abrir un
+  // comprobante, no al escribirlo.
+  const [bajandoPdf, setBajandoPdf] = useState(false);
 
   const callMouvProxy = async (payload: Record<string, unknown>) => {
       const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
@@ -4298,6 +4304,48 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       } catch { showToast('No se pudo generar el comprobante', 4000, 'error'); }
     };
     // Descarga directa (sin diálogo de compartir): guarda el PNG del comprobante.
+    // La referencia del proveedor, esté donde esté guardada.
+    const refProveedor = String(
+      (selectedTx as any)?.providerRef ?? (selectedTx as any)?.raw_data?.providerRef ?? ''
+    ).trim();
+    // El PDF se pide a nuestra función, no a Mouv: la llave del proveedor no
+    // puede estar en el navegador, y del lado del servidor se comprueba además
+    // que el envío sea de quien lo pide.
+    const bajarComprobanteProveedor = async () => {
+        setBajandoPdf(true);
+        try {
+            const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+            const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+            const r = await fetch(`${SURL}/functions/v1/mouv-proxy`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: myAuthHeader() },
+                body: JSON.stringify({ action: 'comprobante_proveedor', userId: currentUser?.id, txId: (selectedTx as any)?.id }),
+            });
+            if (!r.ok) {
+                // El cuerpo del error viene en JSON con el motivo en castellano.
+                let msg = 'No se pudo traer el comprobante.';
+                try { const j = await r.json(); msg = j?.message || msg; } catch { /* sin cuerpo */ }
+                showToast(msg, 7000);
+                return;
+            }
+            const blob = await r.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `comprobante-${refProveedor}.pdf`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            // Liberar el objeto: sin esto el PDF queda en memoria toda la sesión.
+            setTimeout(() => URL.revokeObjectURL(url), 10000);
+            showToast('Comprobante del banco descargado');
+        } catch (e: any) {
+            showToast(`No se pudo traer el comprobante: ${String(e?.message ?? e)}`, 7000);
+        } finally {
+            setBajandoPdf(false);
+        }
+    };
+
     const downloadReceipt = async () => {
       try {
         const canvas = buildReceiptCanvas();
@@ -4402,6 +4450,20 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                 </div>
               ))}
             </div>
+            {/* Comprobante OFICIAL del proveedor.
+                El de arriba lo dibujamos nosotros; este lo firma quien movió el
+                dinero, y es el que sirve para mostrarle a un beneficiario que
+                dice que no le llegó.
+
+                Solo aparece cuando el envío tiene la referencia del proveedor
+                guardada: un botón que falla siempre es peor que no tenerlo. */}
+            {refProveedor && (
+              <button onClick={bajarComprobanteProveedor} disabled={bajandoPdf}
+                className="w-full flex items-center justify-center hover:bg-white/[0.09] transition-colors"
+                style={{ gap: 7, marginTop: 14, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.11)', opacity: bajandoPdf ? 0.5 : 1 }}>
+                <FileText size={15} /> {bajandoPdf ? 'Pidiendo el comprobante…' : 'Comprobante del banco (PDF)'}
+              </button>
+            )}
             {/* Botonera */}
             <div className="flex" style={{ gap: 9, marginTop: 18 }}>
               <button onClick={shareReceipt} title="Compartir" style={{ width: 44, height: 44, borderRadius: 10, border: '1px solid rgba(255,255,255,0.11)', background: 'rgba(255,255,255,0.055)', display: 'grid', placeItems: 'center', flexShrink: 0 }} className="hover:bg-white/[0.09] transition-colors"><Share2 size={16} style={{ color: '#F4F4F2' }} /></button>
