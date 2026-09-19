@@ -1426,6 +1426,59 @@ serve(async (req: Request) => {
     return json(200, { ok: true, confirmada: true })
   }
 
+  // ── MARCAR UNA DISPERSION COMO YA REEMBOLSADA POR FUERA ───────────
+  // Para cuando el operador ya le devolvio el saldo al cliente A MANO, sin
+  // pasar por force_return. La fila queda en Procesando y SIN la marca
+  // `refunded`, asi que el dia que la conciliacion lea el estado real y vea que
+  // fue devuelta, va a reembolsar OTRA VEZ. El cliente cobraria dos veces por
+  // un envio que nunca salio.
+  //
+  // Esto cierra ese hueco: marca la fila como devuelta y reembolsada, y NO
+  // TOCA NINGUN SALDO -- la plata ya la movio una persona. Acreditar aca seria
+  // cometer exactamente el error que esto viene a evitar.
+  if (action === 'marcar_reembolso_externo') {
+    if (!caller.admin || !caller.viaJwt) return json(403, { error: 'forbidden' })
+    const txId = payload?.txId ?? payload?.tx_id
+    if (txId == null) return json(400, { error: 'missing_tx' })
+    const motivo = String(payload?.reason ?? '').trim().slice(0, 300)
+    if (!motivo) return json(400, { error: 'missing_reason', message: 'Hay que decir por que se dio por reembolsada.' })
+
+    const { data: tx } = await db.from('transactions')
+      .select('id, user_id, amount, currency, status, type, raw_data').eq('id', txId).maybeSingle()
+    if (!tx) return json(404, { error: 'not_found' })
+    if (tx.type !== 'dispersion') return json(400, { error: 'not_a_dispersion' })
+    if (tx.status === 'Completado') {
+      return json(409, { error: 'esta_completada', message: 'Esa dispersión figura como pagada. Si se devolvió, usá Reembolsar.' })
+    }
+
+    const rd = (tx.raw_data ?? {}) as Record<string, any>
+    if (rd.refunded) return json(200, { ok: true, already: 'refunded' })
+
+    // Mismo CAS que force_return: si otra ejecucion ya la reclamo, no se pisa.
+    const { data: claimed } = await db.from('transactions').update({
+      status: 'Rechazado',
+      raw_data: {
+        ...rd,
+        refunded: true,
+        // CERO a proposito: el sistema no acredito nada. Poner el monto aca
+        // haria parecer que esta app movio una plata que movio una persona.
+        refundCop: 0,
+        reembolsoExterno: true,
+        returnedAt: new Date().toISOString(),
+        returnedBy: caller.userId,
+        returnReason: motivo,
+      },
+    }).eq('id', tx.id).filter('raw_data->>refunded', 'is', null).select('id')
+    if (!claimed?.length) return json(200, { ok: true, already: 'refund_already_claimed' })
+
+    await logAudit(tx.user_id, 'mouv.reembolso_externo', {
+      txId: tx.id, amount: tx.amount, rail: tx.currency, reason: motivo,
+      admin: caller.userId, providerRef: rd.providerRef ?? null,
+      nota: 'saldo devuelto por fuera del sistema; no se acredito nada aca',
+    })
+    return json(200, { ok: true, marcada: true })
+  }
+
   // ── VINCULAR A MANO UNA DISPERSION CON SU ID EN MOUV ──────────────
   // Mientras el listado no se pueda leer, la unica fuente de verdad es la
   // consola del proveedor, y el operador la tiene delante: ahi esta el id

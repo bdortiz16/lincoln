@@ -690,6 +690,24 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     refreshData?.();
   };
 
+  // Para las que ya se devolvieron A MANO. Cierra el caso SIN acreditar nada:
+  // la plata ya la movió una persona, y acreditar acá sería el doble reembolso
+  // que esto viene a evitar.
+  const marcarReembolsada = async (t: any) => {
+    const motivo = window.prompt(
+      `Dar por cerrada esta dispersión de ${Number(t.amount).toLocaleString('es-CO')} porque ya le devolviste el saldo al cliente por fuera del sistema.\n\n` +
+      `NO se acredita nada acá — se asume que ya lo hiciste vos. Sirve para que la conciliación ` +
+      `no vuelva a reembolsarlo cuando el proveedor confirme que fue devuelta.\n\n` +
+      `Motivo (queda auditado):`,
+      'Devuelta por el proveedor · saldo ya reintegrado a mano');
+    if (!motivo) return;
+    setResolviendo(t.id);
+    const r = await llamarMouv({ action: 'marcar_reembolso_externo', txId: t.id, reason: motivo });
+    setResolviendo(null);
+    if (r?.ok) { alert(r.already ? 'Ya estaba marcada.' : 'Marcada. La conciliación ya no la va a tocar.'); refreshData?.(); }
+    else alert(r?.message || r?.error || 'No se pudo marcar.');
+  };
+
   const confirmarDispersion = async (t: any) => {
     const ref = t.providerRef ?? t.raw_data?.providerRef ?? '';
     if (!window.confirm(
@@ -4073,6 +4091,13 @@ const renderDesign = () => (
                     disabled={resolviendo === t.id}
                     style={{ fontSize: 12.5, fontWeight: 700, color: '#F87171', background: 'transparent', border: '1px solid rgba(248,113,113,0.35)', borderRadius: 9, padding: '9px 15px', cursor: 'pointer', opacity: resolviendo === t.id ? 0.5 : 1, whiteSpace: 'nowrap' }}>
                     Reembolsar
+                  </button>
+                  <button
+                    onClick={() => marcarReembolsada(t)}
+                    disabled={resolviendo === t.id}
+                    title="Ya le devolviste el saldo por fuera del sistema"
+                    style={{ fontSize: 12.5, fontWeight: 700, color: '#878E88', background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 9, padding: '9px 13px', cursor: 'pointer', opacity: resolviendo === t.id ? 0.5 : 1, whiteSpace: 'nowrap' }}>
+                    Ya la devolví
                   </button>
                 </div>
               </div>
