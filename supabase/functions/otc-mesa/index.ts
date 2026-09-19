@@ -123,6 +123,106 @@ const VENTANA_DEFAULT = 5
 const VENTANA_MIN = 2      // menos que esto no alcanza ni para abrir el banco
 const VENTANA_MAX = 120
 
+// ─── Horario de la mesa ─────────────────────────────────────
+// La mesa manual la atienden PERSONAS. Fuera de hora no hay quien cotice ni
+// quien libere, y una solicitud creada un domingo a las once de la noche se
+// queda con el plazo de pago corriendo contra nadie: al cliente se le vence
+// sola y queda pensando que el servicio anda mal.
+//
+// Por eso el horario se DECLARA y se hace valer EN EL SERVIDOR. Esconder el
+// boton no alcanza: una pestana abierta desde el viernes lo sigue teniendo, y
+// una pestana vieja no es permiso para abrir la mesa.
+//
+// La hora es la de Colombia. Comparar contra la hora del navegador seria dejar
+// que el reloj del cliente decida si la mesa esta abierta.
+const TZ_MESA = 'America/Bogota'
+const DIAS = ['dom', 'lun', 'mar', 'mie', 'jue', 'vie', 'sab'] as const
+const DIA_NOMBRE: Record<string, string> = {
+  dom: 'domingo', lun: 'lunes', mar: 'martes', mie: 'miercoles',
+  jue: 'jueves', vie: 'viernes', sab: 'sabado',
+}
+type Franja = { activo: boolean; desde: string; hasta: string }
+// Por defecto: lunes a viernes 8-18, sabado 9-13, domingo cerrado. Es un punto
+// de partida razonable, no una decision: se edita desde el panel.
+const HORARIO_DEFAULT: Record<string, Franja> = {
+  lun: { activo: true,  desde: '08:00', hasta: '18:00' },
+  mar: { activo: true,  desde: '08:00', hasta: '18:00' },
+  mie: { activo: true,  desde: '08:00', hasta: '18:00' },
+  jue: { activo: true,  desde: '08:00', hasta: '18:00' },
+  vie: { activo: true,  desde: '08:00', hasta: '18:00' },
+  sab: { activo: true,  desde: '09:00', hasta: '13:00' },
+  dom: { activo: false, desde: '09:00', hasta: '13:00' },
+}
+
+const esHora = (v: unknown): boolean => /^([01]\d|2[0-3]):[0-5]\d$/.test(String(v ?? ''))
+const aMin = (hhmm: string): number => {
+  const [h, m] = String(hhmm).split(':').map(Number)
+  return h * 60 + m
+}
+
+function normalizarHorario(v: any): Record<string, Franja> {
+  const out: Record<string, Franja> = { ...HORARIO_DEFAULT }
+  if (!v || typeof v !== 'object') return out
+  for (const d of DIAS) {
+    const f = v[d]
+    if (!f || typeof f !== 'object') continue
+    const desde = esHora(f.desde) ? String(f.desde) : HORARIO_DEFAULT[d].desde
+    const hasta = esHora(f.hasta) ? String(f.hasta) : HORARIO_DEFAULT[d].hasta
+    out[d] = { activo: !!f.activo, desde, hasta }
+  }
+  return out
+}
+
+async function horarioMesa(): Promise<Record<string, Franja>> {
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', MARGEN_KEY).maybeSingle()
+    const v = data?.value ? JSON.parse(data.value) : null
+    return normalizarHorario(v?.horario)
+  } catch { return { ...HORARIO_DEFAULT } }
+}
+
+// Que dia y que hora es AHORA en Colombia, sin depender de la zona del server.
+function ahoraEnBogota(): { dia: string; min: number; hhmm: string } {
+  const f = new Intl.DateTimeFormat('en-US', {
+    timeZone: TZ_MESA, weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).formatToParts(new Date())
+  const get = (t: string) => f.find(p => p.type === t)?.value ?? ''
+  const mapa: Record<string, string> = { Sun: 'dom', Mon: 'lun', Tue: 'mar', Wed: 'mie', Thu: 'jue', Fri: 'vie', Sat: 'sab' }
+  const dia = mapa[get('weekday')] ?? 'lun'
+  // A medianoche este formato devuelve "24": es el mismo instante que las 00.
+  const h = get('hour') === '24' ? 0 : Number(get('hour'))
+  const m = Number(get('minute'))
+  return { dia, min: h * 60 + m, hhmm: `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}` }
+}
+
+type EstadoMesa = { abierta: boolean; dia: string; hhmm: string; hoy: Franja | null; proxima: string | null }
+
+async function estadoMesa(): Promise<EstadoMesa> {
+  const hor = await horarioMesa()
+  const { dia, min, hhmm } = ahoraEnBogota()
+  const hoy = hor[dia] ?? null
+  const abierta = !!hoy?.activo && min >= aMin(hoy.desde) && min < aMin(hoy.hasta)
+
+  // Cuando vuelve a abrir. Decir "cerrado" sin decir hasta cuando obliga a
+  // escribir para preguntar algo que la pantalla ya sabe.
+  let proxima: string | null = null
+  if (!abierta) {
+    const i = DIAS.indexOf(dia as any)
+    for (let k = 0; k < 8; k++) {
+      const d = DIAS[(i + k) % 7]
+      const f = hor[d]
+      if (!f?.activo) continue
+      // Hoy solo sirve si todavia no paso la hora de apertura.
+      if (k === 0 && min >= aMin(f.desde)) continue
+      proxima = k === 0 ? `hoy a las ${f.desde}`
+        : k === 1 ? `manana a las ${f.desde}`
+        : `el ${DIA_NOMBRE[d]} a las ${f.desde}`
+      break
+    }
+  }
+  return { abierta, dia, hhmm, hoy, proxima }
+}
+
 async function ventanaPago(): Promise<number> {
   try {
     const { data } = await db.from('system_config').select('value').eq('key', MARGEN_KEY).maybeSingle()
@@ -413,9 +513,11 @@ Deno.serve(async (req) => {
       const monto = num(payload.fromAmount)
       const c = await tasaUsdCop(String(payload.user_id ?? caller.userId ?? ''))
       if (c.rate == null) {
+        const emSinTasa = await estadoMesa()
         return json(200, {
           ok: true, rate: null, referencia: null, margenPct: c.margenPct,
           toAmount: null, indicativa: true,
+          mesa: { abierta: emSinTasa.abierta, proxima: emSinTasa.proxima, hoy: emSinTasa.hoy, dia: emSinTasa.dia },
           // Al cliente no le corresponde saber QUIEN nos da la tasa ni por que
           // fallo: el motivo del proveedor puede nombrarlo o filtrar detalle de
           // nuestra infraestructura. Ve que no hay cotizacion automatica; el
@@ -430,9 +532,11 @@ Deno.serve(async (req) => {
       const to = Number.isFinite(monto) && monto > 0
         ? (side === 'vende_usdt' ? monto * c.rate : monto / c.rate)
         : null
+      const em = await estadoMesa()
       return json(200, {
         ok: true, rate: c.rate, referencia: c.referencia, margenPct: c.margenPct,
         toAmount: to, indicativa: true, ajusteCop: c.ajusteCop,
+        mesa: { abierta: em.abierta, proxima: em.proxima, hoy: em.hoy, dia: em.dia },
         ...(caller.admin ? { fuente: c.fuente } : {}),
       })
     }
@@ -443,6 +547,27 @@ Deno.serve(async (req) => {
       if (!uid) return json(400, { ok: false, error: 'falta el usuario' })
       if (!caller.admin && uid !== String(caller.userId)) {
         return json(403, { ok: false, error: 'no podes crear cierres a nombre de otro' })
+      }
+
+      // LA MESA CERRADA NO TOMA ORDENES, Y SE COMPRUEBA ACA.
+      // La pantalla ya esconde el boton, pero una pestana abierta desde el
+      // viernes lo sigue teniendo, y una pestana vieja no es permiso para
+      // abrir la mesa. Crear igual seria peor que negarse: el plazo de pago
+      // arranca al crear, asi que la solicitud se venceria sola contra nadie.
+      //
+      // La mesa SI puede crear fuera de hora: si esta trabajando, esta abierta
+      // para ella.
+      if (!caller.admin) {
+        const em = await estadoMesa()
+        if (!em.abierta) {
+          return json(409, {
+            ok: false, error: 'mesa_cerrada',
+            message: em.proxima
+              ? `La mesa está cerrada en este momento. Vuelve a abrir ${em.proxima}.`
+              : 'La mesa está cerrada en este momento.',
+            proxima: em.proxima,
+          })
+        }
       }
 
       const side = String(payload.side ?? 'vende_usdt')
@@ -841,6 +966,10 @@ Deno.serve(async (req) => {
         ok: true,
         margenDefecto: MARGEN_DEFAULT,
         ventanaMin: await ventanaPago(),
+        horario: await horarioMesa(),
+        horarioDefecto: HORARIO_DEFAULT,
+        zona: TZ_MESA,
+        estado: await estadoMesa(),
         guardado: v ?? null,
         limites: { margenMax: MARGEN_MAX, ventanaMin: VENTANA_MIN, ventanaMax: VENTANA_MAX },
       })
@@ -848,14 +977,25 @@ Deno.serve(async (req) => {
 
     if (action === 'config_set') {
       // Solo el plazo. El margen NO se configura global: se pacta por cliente.
-      const actual = { ventanaMin: await ventanaPago() }
-      const nuevo: Record<string, number> = { ...actual }
+      const actual = { ventanaMin: await ventanaPago(), horario: await horarioMesa() }
+      const nuevo: Record<string, any> = { ...actual }
       if (payload.ventanaMin !== undefined) {
         const n = num(payload.ventanaMin)
         if (!(Number.isFinite(n) && n >= VENTANA_MIN && n <= VENTANA_MAX)) {
           return json(400, { ok: false, error: `El plazo tiene que estar entre ${VENTANA_MIN} y ${VENTANA_MAX} minutos.` })
         }
         nuevo.ventanaMin = n
+      }
+      if (payload.horario !== undefined) {
+        const h = normalizarHorario(payload.horario)
+        // Una franja que termina antes de empezar deja el dia cerrado sin
+        // decirlo: se rechaza en vez de guardarse y confundir despues.
+        for (const d of DIAS) {
+          if (h[d].activo && aMin(h[d].hasta) <= aMin(h[d].desde)) {
+            return json(400, { ok: false, error: `El ${DIA_NOMBRE[d]} termina antes de empezar (${h[d].desde} a ${h[d].hasta}).` })
+          }
+        }
+        nuevo.horario = h
       }
       const { error } = await db.from('system_config')
         .upsert({ key: MARGEN_KEY, value: JSON.stringify(nuevo) }, { onConflict: 'key' })

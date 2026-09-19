@@ -164,6 +164,7 @@ export const AdminOtcCierres: React.FC = () => {
     // ruido -- y lo que se hace con el ruido es ignorarlo.
     const [sonido, setSonido] = useState(campanaActiva);
     const [ajustes, setAjustes] = useState(false);
+    const [horario, setHorario] = useState(false);
     const conocidos = useRef<Set<string> | null>(null);
     const sonidoRef = useRef(sonido);
     useEffect(() => {
@@ -245,10 +246,13 @@ export const AdminOtcCierres: React.FC = () => {
                         <AjustesCampana
                             sonido={sonido} setSonido={setSonido}
                             onCerrar={() => setAjustes(false)}
+                            onHorario={() => { setAjustes(false); setHorario(true); }}
                         />
                     )}
                 </div>
             </div>
+
+            {horario && <HorarioMesa onCerrar={() => setHorario(false)} />}
 
             <div className="flex gap-1.5 flex-wrap" style={{ marginBottom: 14 }}>
                 {FILTROS.map(f => {
@@ -331,6 +335,135 @@ export const AdminOtcCierres: React.FC = () => {
     );
 };
 
+
+// ─── Horario de la mesa ─────────────────────────────────
+// La mesa manual la atienden personas. Declarar el horario no es cosmética:
+// una solicitud creada un domingo a las once de la noche arranca con el plazo
+// de pago corriendo contra nadie, se vence sola, y el cliente queda pensando
+// que el servicio anda mal.
+//
+// Lo que se guarda acá lo hace valer el SERVIDOR. La pantalla del cliente
+// esconde el botón, pero una pestaña abierta desde el viernes lo sigue
+// teniendo — y una pestaña vieja no es permiso para abrir la mesa.
+const DIAS_UI: Array<{ id: string; nombre: string }> = [
+    { id: 'lun', nombre: 'Lunes' },     { id: 'mar', nombre: 'Martes' },
+    { id: 'mie', nombre: 'Miércoles' }, { id: 'jue', nombre: 'Jueves' },
+    { id: 'vie', nombre: 'Viernes' },   { id: 'sab', nombre: 'Sábado' },
+    { id: 'dom', nombre: 'Domingo' },
+];
+
+const HorarioMesa: React.FC<{ onCerrar: () => void }> = ({ onCerrar }) => {
+    const [hor, setHor] = useState<Record<string, any> | null>(null);
+    const [estado, setEstado] = useState<any>(null);
+    const [zona, setZona] = useState('America/Bogota');
+    const [guardando, setGuardando] = useState(false);
+    const [msg, setMsg] = useState<{ ok: boolean; texto: string } | null>(null);
+
+    const leer = useCallback(async () => {
+        const r = await callMesa('config_get');
+        if (r?.ok) { setHor(r.horario ?? null); setEstado(r.estado ?? null); setZona(r.zona ?? 'America/Bogota'); }
+        else setMsg({ ok: false, texto: r?.error ?? 'No se pudo leer el horario.' });
+    }, []);
+    useEffect(() => { leer(); }, [leer]);
+
+    useEffect(() => {
+        const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') onCerrar(); };
+        window.addEventListener('keydown', esc);
+        return () => window.removeEventListener('keydown', esc);
+    }, [onCerrar]);
+
+    const set = (dia: string, campo: string, valor: any) =>
+        setHor(h => ({ ...(h ?? {}), [dia]: { ...(h?.[dia] ?? {}), [campo]: valor } }));
+
+    const guardar = async () => {
+        setGuardando(true); setMsg(null);
+        const r = await callMesa('config_set', { horario: hor });
+        setGuardando(false);
+        if (r?.ok) { setMsg({ ok: true, texto: 'Horario guardado.' }); leer(); }
+        else setMsg({ ok: false, texto: r?.error ?? 'No se pudo guardar.' });
+    };
+
+    return (
+        <div onClick={onCerrar}
+            style={{ position: 'fixed', inset: 0, zIndex: 95, background: 'rgba(0,0,0,0.72)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+            <div onClick={e => e.stopPropagation()}
+                style={{ width: '100%', maxWidth: 520, maxHeight: '88vh', overflowY: 'auto', background: PANEL, border: `1px solid ${BORDE2}`, borderRadius: 16, boxShadow: '0 24px 70px rgba(0,0,0,0.7)', fontFamily: "'Archivo', system-ui, sans-serif" }}>
+
+                <div style={{ padding: '18px 20px', borderBottom: `1px solid ${BORDE}`, display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+                    <div style={{ minWidth: 0 }}>
+                        <h3 style={{ fontSize: 15.5, fontWeight: 800, color: TXT, margin: 0, letterSpacing: '-0.3px' }}>Horario de la mesa</h3>
+                        <p style={{ fontSize: 12, color: TXT2, margin: '5px 0 0', lineHeight: 1.5 }}>
+                            Fuera de estas horas el cliente no puede crear solicitudes. Hora de Colombia ({zona}).
+                        </p>
+                    </div>
+                    <button onClick={onCerrar} aria-label="Cerrar"
+                        style={{ width: 32, height: 32, flexShrink: 0, display: 'grid', placeItems: 'center', color: TXT2, background: 'rgba(255,255,255,0.05)', border: `1px solid ${BORDE}`, borderRadius: 9 }}>
+                        <X size={15} />
+                    </button>
+                </div>
+
+                {estado && (
+                    <div style={{ padding: '11px 20px', borderBottom: `1px solid ${BORDE}`, display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ width: 6, height: 6, borderRadius: 999, background: estado.abierta ? VERDE : TXT2, flexShrink: 0 }} />
+                        <span style={{ fontSize: 12.5, color: estado.abierta ? VERDE : TXT2, fontWeight: 700 }}>
+                            {estado.abierta ? 'Abierta ahora' : 'Cerrada ahora'}
+                        </span>
+                        <span style={{ fontSize: 11.5, color: TXT3 }}>
+                            {estado.hhmm}{!estado.abierta && estado.proxima ? ` · abre ${estado.proxima}` : ''}
+                        </span>
+                    </div>
+                )}
+
+                <div style={{ padding: '14px 20px 18px' }}>
+                    {!hor ? (
+                        <p style={{ fontSize: 12.5, color: TXT2 }}>Cargando…</p>
+                    ) : DIAS_UI.map(d => {
+                        const f = hor[d.id] ?? { activo: false, desde: '08:00', hasta: '18:00' };
+                        return (
+                            <div key={d.id} className="flex items-center flex-wrap"
+                                style={{ gap: 10, padding: '9px 0', borderTop: `1px solid ${BORDE}` }}>
+                                <button onClick={() => set(d.id, 'activo', !f.activo)}
+                                    title={f.activo ? 'Opera este día' : 'No opera este día'}
+                                    style={{
+                                        width: 38, height: 22, borderRadius: 999, flexShrink: 0, position: 'relative',
+                                        background: f.activo ? VERDE : 'rgba(255,255,255,0.12)', border: 'none', cursor: 'pointer',
+                                        transition: 'background 140ms',
+                                    }}>
+                                    <span style={{ position: 'absolute', top: 3, left: f.activo ? 19 : 3, width: 16, height: 16, borderRadius: 999, background: f.activo ? '#0C0E0D' : TXT2, transition: 'left 140ms' }} />
+                                </button>
+                                <span style={{ fontSize: 13, fontWeight: 700, color: f.activo ? TXT : TXT3, minWidth: 82 }}>{d.nombre}</span>
+                                {f.activo ? (
+                                    <span className="flex items-center" style={{ gap: 7, marginLeft: 'auto' }}>
+                                        <input type="time" value={f.desde} onChange={e => set(d.id, 'desde', e.target.value)}
+                                            style={{ ...INPUT, width: 108, padding: '6px 9px', fontSize: 12.5 }} />
+                                        <span style={{ fontSize: 12, color: TXT3 }}>a</span>
+                                        <input type="time" value={f.hasta} onChange={e => set(d.id, 'hasta', e.target.value)}
+                                            style={{ ...INPUT, width: 108, padding: '6px 9px', fontSize: 12.5 }} />
+                                    </span>
+                                ) : (
+                                    <span style={{ marginLeft: 'auto', fontSize: 11.5, color: TXT3 }}>No opera</span>
+                                )}
+                            </div>
+                        );
+                    })}
+
+                    {msg && (
+                        <p style={{ fontSize: 12, color: msg.ok ? VERDE : ROJO, marginTop: 12, lineHeight: 1.5 }}>{msg.texto}</p>
+                    )}
+
+                    <button onClick={guardar} disabled={guardando || !hor}
+                        style={{ marginTop: 16, width: '100%', padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 700, color: '#0C0E0D', background: VERDE, border: 'none', cursor: guardando ? 'default' : 'pointer', opacity: guardando || !hor ? 0.5 : 1 }}>
+                        {guardando ? 'Guardando…' : 'Guardar horario'}
+                    </button>
+                    <p style={{ fontSize: 10.5, color: TXT3, marginTop: 9, lineHeight: 1.5 }}>
+                        La mesa puede crear y atender cierres fuera de hora: si estás trabajando, estás abierta.
+                    </p>
+                </div>
+            </div>
+        </div>
+    );
+};
+
 // ─── Ajustes del aviso ──────────────────────────────────
 // Quien atiende la mesa tiene esto sonando todo el dia. El tono que a una
 // persona le resulta claro a otra le resulta molesto, y un aviso molesto
@@ -340,7 +473,8 @@ const AjustesCampana: React.FC<{
     sonido: boolean;
     setSonido: (v: boolean) => void;
     onCerrar: () => void;
-}> = ({ sonido, setSonido, onCerrar }) => {
+    onHorario: () => void;
+}> = ({ sonido, setSonido, onCerrar, onHorario }) => {
     const [tono, setTono] = useState(tonoActual);
     const [vol, setVol]   = useState(volumenActual);
     const caja = useRef<HTMLDivElement | null>(null);
@@ -416,6 +550,13 @@ const AjustesCampana: React.FC<{
             </p>
 
             <AvisosTelefono />
+
+            <button onClick={onHorario}
+                className="w-full flex items-center justify-between transition-colors hover:bg-white/[0.05]"
+                style={{ marginTop: 12, padding: '9px 11px', borderRadius: 9, border: `1px solid ${BORDE}`, background: 'transparent', color: TXT, fontSize: 12.5, fontWeight: 700 }}>
+                <span className="flex items-center" style={{ gap: 7 }}><Clock size={13} style={{ color: TXT2 }} /> Horario de la mesa</span>
+                <ChevronRight size={13} style={{ color: TXT2 }} />
+            </button>
         </div>
     );
 };

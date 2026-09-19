@@ -225,9 +225,14 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
     const [enviando, setEnviando] = useState(false);
     const [error, setError]   = useState<string | null>(null);
 
+    // Si la mesa está cerrada, el servidor lo dice al cotizar. No se deduce del
+    // reloj del navegador: ese reloj lo pone el cliente.
+    const [mesa, setMesa] = useState<{ abierta: boolean; proxima: string | null } | null>(null);
+
     const pedirTasa = useCallback(async () => {
         setCargandoTasa(true);
         const r = await callOtcMesa('cotizar', { user_id: userId, side });
+        if (r?.mesa) setMesa({ abierta: !!r.mesa.abierta, proxima: r.mesa.proxima ?? null });
         if (r?.margenPct != null) setMargenPct(Number(r.margenPct));
         if (r?.ajusteCop != null) setAjusteCop(Number(r.ajusteCop));
         if (r?.ok && r.rate != null) {
@@ -442,13 +447,31 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
                 </div>
             )}
 
+            {/* La mesa cerrada se dice ANTES del botón, y con la hora de vuelta.
+                "Cerrado" a secas obliga a escribir para preguntar algo que la
+                pantalla ya sabe. El servidor rechaza igual si el botón llega
+                habilitado desde una pestaña vieja. */}
+            {mesa && !mesa.abierta && (
+                <div style={{ marginTop: 16, padding: '12px 14px', borderRadius: 11, border: '1px solid rgba(251,191,36,0.32)', background: 'rgba(251,191,36,0.07)' }}>
+                    <div className="flex items-center" style={{ gap: 7 }}>
+                        <Clock size={13} style={{ color: '#FBBF24', flexShrink: 0 }} />
+                        <span style={{ fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>La mesa está cerrada</span>
+                    </div>
+                    <p style={{ fontSize: 12, color: '#878E88', margin: '6px 0 0', lineHeight: 1.55 }}>
+                        {mesa.proxima
+                            ? `Vuelve a abrir ${mesa.proxima}. Podés dejar tu consulta en un cierre abierto y te contestamos apenas abra.`
+                            : 'Escribinos y te contestamos apenas abra.'}
+                    </p>
+                </div>
+            )}
+
             <button
                 onClick={enviar}
-                disabled={enviando}
+                disabled={enviando || (!!mesa && !mesa.abierta)}
                 className="lincoin-btn-white transition-colors"
-                style={{ width: '100%', marginTop: 16, padding: '13px 0', borderRadius: 11, border: 'none', fontWeight: 700, fontSize: 14, opacity: enviando ? 0.6 : 1 }}
+                style={{ width: '100%', marginTop: 16, padding: '13px 0', borderRadius: 11, border: 'none', fontWeight: 700, fontSize: 14, opacity: enviando || (!!mesa && !mesa.abierta) ? 0.45 : 1 }}
             >
-                {enviando ? 'Enviando a la mesa…' : 'Solicitar cierre'}
+                {enviando ? 'Enviando a la mesa…' : (mesa && !mesa.abierta) ? 'Mesa cerrada' : 'Solicitar cierre'}
             </button>
             <p style={{ color: 'rgba(244,244,242,0.45)', fontSize: 11, textAlign: 'center', marginTop: 9, lineHeight: 1.5 }}>
                 No se mueve nada de tu saldo al pedir el cierre. La mesa te escribe por el chat.
