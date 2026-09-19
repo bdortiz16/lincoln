@@ -212,7 +212,8 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
     const [monto, setMonto]   = useState('');
     const [tasa, setTasa]     = useState<number | null>(null);
     const [referencia, setReferencia] = useState<number | null>(null);
-    const [margenPct, setMargenPct]   = useState<number>(0.25);
+    const [margenPct, setMargenPct]   = useState<number>(0.5);
+    const [ajusteCop, setAjusteCop]   = useState<number>(0);
     const [motivoSinTasa, setMotivoSinTasa] = useState<string | null>(null);
     const [cargandoTasa, setCargandoTasa]   = useState(true);
     // Billetera del cliente donde se le acredita lo que recibe. NO es un
@@ -228,6 +229,7 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
         setCargandoTasa(true);
         const r = await callOtcMesa('cotizar', { user_id: userId, side });
         if (r?.margenPct != null) setMargenPct(Number(r.margenPct));
+        if (r?.ajusteCop != null) setAjusteCop(Number(r.ajusteCop));
         if (r?.ok && r.rate != null) {
             setTasa(Number(r.rate));
             setReferencia(r.referencia != null ? Number(r.referencia) : null);
@@ -296,7 +298,7 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
                         {referencia != null ? nf(referencia) : '—'}
                     </span>
                 </div>
-                <FinityRateChart from="USD" to="COP" />
+                <FinityRateChart from="USD" to="COP" ajusteCop={ajusteCop} />
             </div>
 
             {/* Lado */}

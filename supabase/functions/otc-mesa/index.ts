@@ -191,9 +191,14 @@ function extractRate(d: any): number | null {
 }
 
 type Cotizacion = {
-  referencia: number | null    // precio Finity, sin margen — lo que se muestra como referencia
+  referencia: number | null    // la tasa de referencia que ve el cliente
   rate: number | null          // el que se le aplica al cliente (referencia - margen)
   margenPct: number
+  // Pesos que el proveedor ya trae restados para llegar a la referencia. Viaja
+  // para que el GRAFICO pueda dibujar la misma serie: los snapshots guardan la
+  // tasa bruta, y sin esto el grafico y la referencia mostraban dos numeros
+  // distintos para lo mismo en la misma pantalla.
+  ajusteCop: number
   fuente: string
   motivo?: string
   crudo?: string               // solo para admin, cuando no hubo tasa
@@ -206,7 +211,7 @@ type Cotizacion = {
 async function tasaUsdCop(userId?: string): Promise<Cotizacion> {
   const margenPct = await margenDe(userId)
   const vacia = (motivo: string, crudo?: string): Cotizacion =>
-    ({ referencia: null, rate: null, margenPct, fuente: 'finity', motivo, crudo })
+    ({ referencia: null, rate: null, margenPct, ajusteCop: 0, fuente: 'finity', motivo, crudo })
   try {
     const r = await fetch(`${SUPABASE_URL}/functions/v1/finity-proxy`, {
       method: 'POST',
@@ -243,7 +248,8 @@ async function tasaUsdCop(userId?: string): Promise<Cotizacion> {
     }
     const ref = Number(referencia)
     const rate = ref * (1 - margenPct / 100)
-    return { referencia: ref, rate, margenPct, fuente: 'finity' }
+    const ajusteCop = Number(d?.ajusteCop) > 0 ? Number(d.ajusteCop) : 0
+    return { referencia: ref, rate, margenPct, ajusteCop, fuente: 'finity' }
   } catch (e: any) {
     return vacia(`no se pudo consultar la tasa: ${e?.message ?? 'error de red'}`)
   }
@@ -400,7 +406,7 @@ Deno.serve(async (req) => {
         : null
       return json(200, {
         ok: true, rate: c.rate, referencia: c.referencia, margenPct: c.margenPct,
-        toAmount: to, indicativa: true,
+        toAmount: to, indicativa: true, ajusteCop: c.ajusteCop,
         ...(caller.admin ? { fuente: c.fuente } : {}),
       })
     }
