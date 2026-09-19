@@ -290,6 +290,32 @@ async function escribirMensaje(closeId: string, autor: 'cliente' | 'mesa' | 'sis
   }).eq('id', closeId)
 }
 
+// ─── Aviso al telefono de la mesa ───────────────────────
+// La campana del panel solo suena con el panel abierto. Esto suena igual con
+// el telefono guardado, que es cuando el retraso cuesta plata.
+//
+// NUNCA tumba la operacion: si el push falla, el cierre ya esta creado y lo
+// que corresponde es seguir. Un aviso que no llega es molesto; una solicitud
+// que se pierde porque el aviso fallo es otra cosa.
+//
+// Se espera la respuesta en vez de dispararlo y seguir: la funcion puede
+// terminar antes de que un fetch suelto salga, y entonces no se manda nada.
+async function avisarMesa(titulo: string, cuerpo: string, tag: string): Promise<void> {
+  try {
+    await fetch(`${SUPABASE_URL}/functions/v1/push`, {
+      method: 'POST',
+      // Las dos cabeceras con la MISMA clave: mandar la anon en apikey y la de
+      // servicio en Authorization lo rechaza el runtime con "Conflicting API keys".
+      headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+      body: JSON.stringify({
+        action: 'enviar', rol: 'admin', titulo, cuerpo, tag,
+        url: '/admin-empresas', insistir: true,
+      }),
+      signal: AbortSignal.timeout(8000),
+    })
+  } catch { /* el aviso es un extra, no una condicion */ }
+}
+
 // El cierre, tal como lo puede ver el CLIENTE: sin notas internas, sin el
 // nombre del operador que lo tomo (le corresponde "la mesa", no quien) y sin
 // rate_fuente, que nombra al proveedor de la tasa. Que no se pinte en pantalla
@@ -483,6 +509,13 @@ Deno.serve(async (req) => {
         await escribirMensaje(creada.id, 'cliente', nota.slice(0, 2000), { autorId: uid, autorNom: caller.nombre ?? undefined })
       }
 
+      await avisarMesa(
+        'Nuevo cierre OTC',
+        `${caller.nombre ?? 'Un cliente'} pide ${side === 'vende_usdt' ? 'vender' : 'comprar'} ${montoTxt}. Ref ${ref}.`,
+        // Un tag por cierre: dos solicitudes distintas tienen que verse como
+        // dos avisos. Con el tag fijo la segunda tapaba a la primera.
+        `otc-${ref}`)
+
       return json(200, { ok: true, id: creada.id, ref: creada.ref, cierre: paraCliente(creada) })
     }
 
@@ -585,6 +618,13 @@ Deno.serve(async (req) => {
       await escribirMensaje(r.cierre.id, caller.admin ? 'mesa' : 'cliente', body.slice(0, 4000), {
         autorId: caller.userId, autorNom: caller.nombre ?? undefined, adjunto: adjunto || undefined,
       })
+      // Solo lo que escribe el cliente: avisarle a la mesa de lo que acaba de
+      // escribir la mesa es ruido que termina con las notificaciones apagadas.
+      if (!caller.admin) {
+        await avisarMesa(`Mensaje en ${r.cierre.ref}`,
+          body ? `${caller.nombre ?? 'El cliente'}: ${body.slice(0, 140)}` : `${caller.nombre ?? 'El cliente'} adjunto un archivo.`,
+          `otc-${r.cierre.ref}`)
+      }
       return json(200, { ok: true })
     }
 
@@ -695,6 +735,11 @@ Deno.serve(async (req) => {
 
       await db.from('otc_closes').update({ status: 'pagada', pagada_at: ahora(), updated_at: ahora() }).eq('id', r.cierre.id)
       await escribirMensaje(r.cierre.id, 'sistema', 'El cliente marco el envio como realizado. La mesa verifica el ingreso antes de liberar.')
+      // Este es el aviso que mas urge: hay plata enviada esperando que alguien
+      // la verifique y libere.
+      await avisarMesa(`Pago declarado en ${r.cierre.ref}`,
+        `${caller.nombre ?? 'El cliente'} subio comprobante por ${Number(r.cierre.from_amount).toLocaleString('es-CO', { maximumFractionDigits: 2 })} ${r.cierre.from_currency}. Falta verificar y liberar.`,
+        `otc-${r.cierre.ref}`)
       return json(200, { ok: true })
     }
 

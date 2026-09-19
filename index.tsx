@@ -8,6 +8,11 @@ import { DatabaseProvider } from './context/DatabaseContext';
 import { ThemeProvider } from './context/ThemeContext';
 import { PersonasAdminApp } from './components/AdminPersonas/PersonasAdminApp';
 import { AdminEmpresasApp } from './components/AdminEmpresasApp';
+import { registrarSW } from './components/pushLincoin';
+
+// Service worker: lo único que hace es recibir notificaciones push con la app
+// cerrada. No cachea nada a propósito — ver public/sw.js.
+registrarSW();
 
 // Hidden admin URL: /admin-personas — runs in TOTAL isolation,
 // no Empresas providers, no Empresas auth.

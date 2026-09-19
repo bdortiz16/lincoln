@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { sonarCampana, campanaActiva, guardarCampana, TONOS, tonoActual, guardarTono, volumenActual, guardarVolumen } from './campanaOtc';
+import { estadoPush, activarPush, desactivarPush, probarPush, type EstadoPush } from './pushLincoin';
 import {
     RefreshCw, Send, X, MessageSquare, CheckCircle2, Clock, XCircle,
     AlertTriangle, Landmark, Wallet, User, Hash, Copy, Lock, Zap, Paperclip,
-    ChevronRight, Bell, BellOff, Plus, ChevronDown, ChevronUp, Settings, Play,
+    ChevronRight, Bell, BellOff, Plus, ChevronDown, ChevronUp, Settings, Play, Smartphone,
 } from 'lucide-react';
 
 // ─────────────────────────────────────────────
@@ -412,6 +413,96 @@ const AjustesCampana: React.FC<{
 
             <p style={{ fontSize: 10.5, color: TXT3, marginTop: 12, lineHeight: 1.5, borderTop: `1px solid ${BORDE}`, paddingTop: 10 }}>
                 El navegador no deja sonar nada hasta que hayas hecho un clic en la página.
+            </p>
+
+            <AvisosTelefono />
+        </div>
+    );
+};
+
+// ─── Notificaciones al teléfono ─────────────────────────
+// La campana de arriba solo suena con este panel abierto. Esto llega con el
+// teléfono guardado, que es cuando el retraso cuesta plata.
+//
+// NO REEMPLAZA AL CORREO. El push no tiene garantía de entrega: iOS suelta la
+// suscripción sola si la app no se abre por semanas, y borrar el ícono de la
+// pantalla de inicio la mata sin avisar. Para plata, es un extra.
+const AvisosTelefono: React.FC = () => {
+    const [estado, setEstado] = useState<EstadoPush | null>(null);
+    const [ocupado, setOcupado] = useState(false);
+    const [msg, setMsg] = useState<string | null>(null);
+
+    const releer = useCallback(() => { estadoPush().then(setEstado); }, []);
+    useEffect(() => { releer(); }, [releer]);
+
+    const activar = async () => {
+        setOcupado(true); setMsg(null);
+        const r = await activarPush();
+        setOcupado(false);
+        setMsg(r.ok ? 'Listo. Este aparato ya recibe los avisos.' : (r.error ?? 'No se pudo.'));
+        releer();
+    };
+    const apagar = async () => {
+        setOcupado(true); setMsg(null);
+        await desactivarPush();
+        setOcupado(false); setMsg('Este aparato ya no recibe avisos.');
+        releer();
+    };
+    const probar = async () => {
+        setOcupado(true); setMsg(null);
+        const r = await probarPush();
+        setOcupado(false);
+        setMsg(r.ok ? 'Enviado. Debería llegarte en segundos.' : (r.error ?? 'No llegó a ningún aparato.'));
+    };
+
+    const boton = (texto: string, onClick: () => void, principal = false) => (
+        <button onClick={onClick} disabled={ocupado}
+            className="transition-colors"
+            style={{
+                padding: '7px 11px', borderRadius: 8, fontSize: 11.5, fontWeight: 700,
+                color: principal ? '#0C0E0D' : TXT,
+                background: principal ? VERDE : 'rgba(255,255,255,0.06)',
+                border: principal ? 'none' : `1px solid ${BORDE2}`,
+                opacity: ocupado ? 0.5 : 1, flex: 1,
+            }}>
+            {texto}
+        </button>
+    );
+
+    return (
+        <div style={{ marginTop: 12, borderTop: `1px solid ${BORDE}`, paddingTop: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+                <Smartphone size={12} style={{ color: estado === 'activo' ? VERDE : TXT2, flexShrink: 0 }} />
+                <span style={{ fontSize: 12.5, fontWeight: 700, color: TXT }}>Avisos al teléfono</span>
+            </div>
+
+            {estado === 'falta_instalar' && (
+                <p style={{ fontSize: 10.5, color: TXT2, lineHeight: 1.55 }}>
+                    En iPhone hay que agregar Lincoin a la pantalla de inicio (Compartir → “Añadir a pantalla de inicio”) y activarlos desde ahí. En una pestaña del navegador iOS no entrega notificaciones.
+                </p>
+            )}
+            {estado === 'no_soportado' && (
+                <p style={{ fontSize: 10.5, color: TXT2, lineHeight: 1.55 }}>Este navegador no admite notificaciones push.</p>
+            )}
+            {estado === 'bloqueado' && (
+                <p style={{ fontSize: 10.5, color: AMBAR, lineHeight: 1.55 }}>
+                    Están bloqueadas para este sitio. Hay que habilitarlas en los ajustes del navegador — el permiso no se puede volver a pedir desde acá.
+                </p>
+            )}
+            {(estado === 'pedir' || estado === 'permitido') && (
+                <div style={{ display: 'flex', gap: 6 }}>{boton('Activar en este aparato', activar, true)}</div>
+            )}
+            {estado === 'activo' && (
+                <div style={{ display: 'flex', gap: 6 }}>
+                    {boton('Probar', probar)}
+                    {boton('Apagar', apagar)}
+                </div>
+            )}
+
+            {msg && <p style={{ fontSize: 10.5, color: TXT2, marginTop: 8, lineHeight: 1.5 }}>{msg}</p>}
+
+            <p style={{ fontSize: 10, color: TXT3, marginTop: 8, lineHeight: 1.5 }}>
+                Se activa por aparato. No reemplaza al correo: el push no tiene entrega garantizada.
             </p>
         </div>
     );
