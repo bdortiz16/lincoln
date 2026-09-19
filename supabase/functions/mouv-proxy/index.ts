@@ -497,29 +497,66 @@ async function mouvTransferStatus(id: string): Promise<EstadoMouv> {
 // El listado no necesita el id: trae `status` ya puesto, asi que UNA consulta
 // concilia todos los envios de la ventana en vez de una por envio. De paso
 // deja de rozar el limite de 100 lecturas por minuto.
-async function mouvListarBrebOut(desdeISO: string): Promise<{ ok: boolean; items: any[]; diag?: any }> {
-  const desde = String(desdeISO ?? '').slice(0, 10)   // el filtro `from` es una fecha
+async function mouvListarBrebOut(desdeISO: string): Promise<{ ok: boolean; items: any[]; diag?: any; crudo?: string }> {
+  const desdeMs = new Date(desdeISO).getTime()
   const items: any[] = []
   let primera: any = null
-  // Tope de 5 paginas (500 movimientos): mas que eso no entra en la ventana de
-  // conciliacion, y un bucle sin tope contra un proveedor es una forma de
-  // colgar la funcion.
-  for (let page = 0; page < 5; page++) {
-    const r = await mouvFetch(`/wallets/transactions?type=TRANSFER_OUT&rail=BREB&from=${desde}&limit=100&page=${page}`, { method: 'GET' })
-    if (!primera) primera = { ruta: '/wallets/transactions', httpStatus: r.status, cuerpo: (() => { try { return (typeof r.data === 'string' ? r.data : JSON.stringify(r.data ?? '')).slice(0, 400) } catch { return '(ilegible)' } })() }
+  let crudo = ''
+
+  // SIN FILTROS EN LA URL, A PROPOSITO.
+  // El primer intento pedia ?type=TRANSFER_OUT&rail=BREB&from=... y Mouv
+  // devolvio CERO movimientos con HTTP 200 -- que es lo peor que puede pasar:
+  // una respuesta exitosa y vacia se lee como "no hay nada que conciliar" y no
+  // como "preguntaste mal". No sabemos si fue el enum, el formato de `from` o
+  // la combinacion; lo que si sabemos es que no hace falta arriesgarse. Se pide
+  // el listado pelado y se filtra ACA, donde se puede ver lo que llego.
+  for (let page = 0; page < 10; page++) {
+    const r = await mouvFetch(`/wallets/transactions?limit=100&page=${page}`, { method: 'GET' })
+    if (page === 0) {
+      try { crudo = (typeof r.data === 'string' ? r.data : JSON.stringify(r.data ?? '')).slice(0, 500) } catch { crudo = '(ilegible)' }
+      primera = { ruta: '/wallets/transactions', httpStatus: r.status, cuerpo: crudo }
+    }
     if (!r.ok) {
       const motivo = r.status === 401 || r.status === 403 ? `la llave no tiene permiso de lectura (HTTP ${r.status})`
         : r.status === 429 ? 'limite de consultas (429)'
         : r.status === 404 ? 'la ruta del listado devolvio 404'
         : r.status === 0 ? 'no se pudo conectar con Mouv'
         : `respuesta inesperada (HTTP ${r.status})`
-      return { ok: false, items, diag: { motivo, ...primera } }
+      return { ok: false, items, diag: { motivo, ...primera }, crudo }
     }
-    const lote = Array.isArray((r.data as any)?.items) ? (r.data as any).items : []
+    // La forma de la respuesta tampoco se da por sentada: items, data, results,
+    // o directamente un array.
+    const d: any = r.data
+    const lote: any[] = Array.isArray(d) ? d
+      : Array.isArray(d?.items) ? d.items
+      : Array.isArray(d?.data) ? d.data
+      : Array.isArray(d?.results) ? d.results
+      : Array.isArray(d?.transactions) ? d.transactions
+      : []
     items.push(...lote)
-    if (!(r.data as any)?.hasMore || lote.length === 0) break
+    if (lote.length === 0) break
+    // Cortar cuando la pagina ya es mas vieja que la ventana: sin esto se
+    // pagina el historico entero para nada.
+    const masViejo = lote.reduce((min: number, it: any) => {
+      const t = new Date(it?.createdAt ?? it?.created_at ?? 0).getTime()
+      return Number.isFinite(t) && t > 0 ? Math.min(min, t) : min
+    }, Number.POSITIVE_INFINITY)
+    if (Number.isFinite(masViejo) && Number.isFinite(desdeMs) && masViejo < desdeMs) break
+    if (d?.hasMore === false) break
   }
-  return { ok: true, items }
+
+  // Filtrado LOCAL. Se queda con lo que es una salida Bre-B, y lo que no trae
+  // esos campos NO se descarta: es preferible un candidato de mas -- que el
+  // emparejamiento por monto va a descartar igual -- que perder el movimiento
+  // que se esta buscando por un nombre de campo distinto al esperado.
+  const esSalidaBreb = (it: any): boolean => {
+    const tipo = String(it?.type ?? it?.direction ?? '').toUpperCase()
+    const rail = String(it?.rail ?? '').toUpperCase()
+    if (tipo && !/OUT|DEBIT|TRANSFER_OUT|SALIDA/.test(tipo)) return false
+    if (rail && rail !== 'BREB') return false
+    return true
+  }
+  return { ok: true, items: items.filter(esSalidaBreb), crudo }
 }
 
 // Emparejar UNA fila nuestra con un movimiento de Mouv cuando no tenemos su id.
@@ -1207,7 +1244,7 @@ serve(async (req: Request) => {
               // web. Un diagnostico que necesita otro despliegue para leerse
               // llega tarde.
               motivo: listado.ok
-                ? `sin emparejar · Mouv devolvio ${listado.items.length} movimientos Bre-B en la ventana · la fila tiene monto=${Number(tx.amount ?? 0)} doc=${rd.documentNumber ? 'si' : 'NO'} nombre=${rd.beneficiary ? 'si' : 'NO'} ref=${rd.providerReference ? 'si' : 'NO'}`
+                ? `sin emparejar · Mouv devolvio ${listado.items.length} salidas Bre-B · la fila tiene monto=${Number(tx.amount ?? 0)} doc=${rd.documentNumber ? 'si' : 'NO'} nombre=${rd.beneficiary ? 'si' : 'NO'} ref=${rd.providerReference ? 'si' : 'NO'}`
                 : `no se pudo leer el listado de Mouv: ${listado.diag?.motivo ?? 'sin detalle'}`,
               ...(listado.ok ? {} : { ruta: listado.diag?.ruta, httpStatus: listado.diag?.httpStatus }),
               // Las LLAVES de raw_data, no sus valores: hacen falta para saber
@@ -1334,7 +1371,13 @@ serve(async (req: Request) => {
         out.push({ id: tx.id, result: 'still_completed', ...(caller.admin ? { diag: st.diag ?? null } : {}) })
       }
     }
-    return json(200, { ok: true, checked: (rows ?? []).length, results: out })
+    return json(200, {
+      ok: true, checked: (rows ?? []).length, results: out,
+      // El crudo del listado va SOLO a la mesa: si Mouv vuelve a devolver cero
+      // movimientos, esto es lo unico que dice por que. Sin el, "0 movimientos"
+      // es indistinguible de "no preguntaste bien".
+      ...(caller.admin ? { listado: { ok: listado.ok, salidasBreb: listado.items.length, crudo: listado.crudo ?? null, diag: listado.diag ?? null } } : {}),
+    })
   }
 
   // ── CONFIRMAR A MANO UNA DISPERSION ───────────────────────────────

@@ -48,6 +48,7 @@ import {
   Tag, 
   DollarSign, 
   ChevronDown, 
+  ChevronUp, 
   Link as LinkIcon, 
   Bitcoin, 
   Filter, 
@@ -240,6 +241,142 @@ const TAB_TITLES: Record<string, string> = {
 const SUBTAB_TITLES: Record<string, string> = {
   security: 'Cuentas y accesos',
   compliance: 'Bandeja de casos',
+};
+
+
+// ─── Resultado de la conciliación Bre-B ─────────────────────────────
+// Esto vivía en un window.alert del navegador: texto plano, blanco sobre gris,
+// en una pantalla negra, y truncado justo donde estaba el dato que servía. Un
+// resultado que se lee tres veces seguidas mientras se persigue una falla tiene
+// que poder leerse.
+//
+// El detalle técnico va PLEGADO. Lo que importa arriba es cuánta plata se
+// devolvió y cuántos envíos quedaron sin confirmar; el crudo del proveedor
+// importa sólo cuando algo no cuadra, y entonces se abre.
+const PanelConciliacion: React.FC<{ datos: any; onCerrar: () => void }> = ({ datos, onCerrar }) => {
+    const [tecnico, setTecnico] = useState(false);
+    useEffect(() => {
+        const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') onCerrar(); };
+        window.addEventListener('keydown', esc);
+        return () => window.removeEventListener('keydown', esc);
+    }, [onCerrar]);
+
+    const TXT = '#F4F4F2', TXT2 = '#878E88', TXT3 = 'rgba(244,244,242,0.45)';
+    const BORDE = 'rgba(255,255,255,0.09)', BORDE2 = 'rgba(255,255,255,0.14)';
+    const VERDE = '#4ADE80', AMBAR = '#FBBF24', ROJO = '#F87171';
+    const nf = (n: any) => Number(n ?? 0).toLocaleString('es-CO');
+
+    const Cifra: React.FC<{ n: any; rotulo: string; color?: string }> = ({ n, rotulo, color }) => (
+        <div style={{ flex: '1 1 110px', background: 'rgba(255,255,255,0.03)', border: `1px solid ${BORDE}`, borderRadius: 11, padding: '12px 13px' }}>
+            <div style={{ fontSize: 21, fontWeight: 800, color: color ?? TXT, letterSpacing: '-0.5px' }}>{n}</div>
+            <div style={{ fontSize: 10.5, color: TXT2, marginTop: 3, lineHeight: 1.35 }}>{rotulo}</div>
+        </div>
+    );
+
+    return (
+        <div onClick={onCerrar}
+            style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'rgba(0,0,0,0.72)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+            <div onClick={e => e.stopPropagation()}
+                style={{
+                    width: '100%', maxWidth: 560, maxHeight: '86vh', overflowY: 'auto',
+                    background: '#0C0E0D', border: `1px solid ${BORDE2}`, borderRadius: 16,
+                    boxShadow: '0 24px 70px rgba(0,0,0,0.7)', fontFamily: "'Archivo', system-ui, sans-serif",
+                }}>
+                <div style={{ padding: '18px 20px', borderBottom: `1px solid ${BORDE}`, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+                    <div>
+                        <h3 style={{ fontSize: 15.5, fontWeight: 800, color: TXT, margin: 0, letterSpacing: '-0.3px' }}>
+                            {datos.error ? 'No se pudo conciliar' : 'Conciliación Bre-B'}
+                        </h3>
+                        {!datos.error && (
+                            <p style={{ fontSize: 12, color: TXT2, margin: '5px 0 0' }}>
+                                {nf(datos.revisados)} envíos revisados contra el proveedor.
+                            </p>
+                        )}
+                    </div>
+                    <button onClick={onCerrar} aria-label="Cerrar"
+                        style={{ width: 32, height: 32, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: TXT2, background: 'rgba(255,255,255,0.05)', border: `1px solid ${BORDE}`, borderRadius: 9, cursor: 'pointer' }}>
+                        <X size={15} />
+                    </button>
+                </div>
+
+                {datos.error ? (
+                    <p style={{ padding: '18px 20px', fontSize: 13, color: ROJO, lineHeight: 1.6, margin: 0 }}>{datos.error}</p>
+                ) : (
+                    <div style={{ padding: '16px 20px 20px' }}>
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                            <Cifra n={nf(datos.completados)} rotulo="confirmados como pagados" color={datos.completados ? VERDE : TXT} />
+                            <Cifra n={nf(datos.devueltos)} rotulo="devueltos y reembolsados" color={datos.devueltos ? ROJO : TXT} />
+                            <Cifra n={nf(datos.enCurso)} rotulo="siguen sin confirmar" color={datos.enCurso ? AMBAR : TXT} />
+                        </div>
+
+                        {datos.devueltos > 0 && (
+                            <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 11, border: `1px solid ${ROJO}33`, background: `${ROJO}10` }}>
+                                <div style={{ fontSize: 13.5, fontWeight: 700, color: TXT }}>
+                                    {nf(datos.plata)} COP reintegrados
+                                </div>
+                                <div style={{ fontSize: 11.5, color: TXT2, marginTop: 3, lineHeight: 1.5 }}>
+                                    Monto y comisión volvieron al riel de cada cliente. Ya les llegó el aviso.
+                                </div>
+                            </div>
+                        )}
+
+                        {datos.vias.length > 0 && (
+                            <div style={{ marginTop: 14 }}>
+                                <p style={{ fontSize: 9.5, fontWeight: 700, color: TXT3, letterSpacing: '0.6px', textTransform: 'uppercase', margin: '0 0 7px' }}>
+                                    Cómo se encontró cada envío
+                                </p>
+                                {datos.vias.map(([via, n]: [string, number]) => (
+                                    <div key={via} style={{ display: 'flex', alignItems: 'baseline', gap: 8, fontSize: 12.5, color: TXT2, padding: '3px 0' }}>
+                                        <span style={{ color: TXT, fontWeight: 700, minWidth: 26 }}>{n}</span>
+                                        <span>{via}</span>
+                                    </div>
+                                ))}
+                                <p style={{ fontSize: 11, color: TXT3, margin: '7px 0 0', lineHeight: 1.5 }}>
+                                    Los que dicen “solo por monto” se emparejaron porque había un único movimiento
+                                    con ese importe exacto. Vale la pena mirarlos.
+                                </p>
+                            </div>
+                        )}
+
+                        {datos.motivos.length > 0 && (
+                            <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${BORDE}` }}>
+                                <p style={{ fontSize: 9.5, fontWeight: 700, color: TXT3, letterSpacing: '0.6px', textTransform: 'uppercase', margin: '0 0 7px' }}>
+                                    Por qué no se pudo confirmar el resto
+                                </p>
+                                {datos.motivos.map(([m, n]: [string, number]) => (
+                                    <div key={m} style={{ display: 'flex', gap: 8, fontSize: 12, color: TXT2, padding: '4px 0', lineHeight: 1.5 }}>
+                                        <span style={{ color: AMBAR, fontWeight: 700, minWidth: 26, flexShrink: 0 }}>{n}</span>
+                                        <span style={{ wordBreak: 'break-word' }}>{m}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {(datos.listado || datos.muestra) && (
+                            <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${BORDE}` }}>
+                                <button onClick={() => setTecnico(v => !v)}
+                                    style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, fontWeight: 700, color: TXT2, background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}>
+                                    {tecnico ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                                    Respuesta cruda del proveedor
+                                </button>
+                                {tecnico && (
+                                    <pre style={{
+                                        marginTop: 9, padding: '11px 12px', borderRadius: 9,
+                                        background: '#070808', border: `1px solid ${BORDE}`, color: TXT2,
+                                        fontSize: 10.5, lineHeight: 1.55, whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+                                        fontFamily: 'ui-monospace, Menlo, monospace', maxHeight: 240, overflowY: 'auto',
+                                    }}>
+{datos.listado ? `GET /wallets/transactions → ${datos.listado.ok ? 'OK' : 'FALLÓ'}\nsalidas Bre-B encontradas: ${datos.listado.salidasBreb}\n\n${datos.listado.crudo ?? '(sin cuerpo)'}` : ''}
+{datos.muestra?.cuerpo ? `\n\nUna fila sin emparejar:\n${datos.muestra.cuerpo}` : ''}
+                                    </pre>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                )}
+            </div>
+        </div>
+    );
 };
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
@@ -488,26 +625,26 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   // cliente abra su app. Consulta GET /wallets/transactions/:id por cada uno y
   // aplica el veredicto real: completa los exitosos y REEMBOLSA los devueltos.
   const [conciliando, setConciliando] = useState(false);
+  const [resConciliar, setResConciliar] = useState<any>(null);
   const conciliarBreb = async () => {
     setConciliando(true);
     const r = await llamarMouv({ action: 'reconcile_breb', todos: true });
     setConciliando(false);
-    if (!r?.ok) { alert(r?.message || r?.error || 'No se pudo conciliar.'); return; }
+    if (!r?.ok) { setResConciliar({ error: r?.message || r?.error || 'No se pudo conciliar.' }); return; }
+
     const res = (r.results ?? []) as any[];
     const dev = res.filter(x => x.result === 'refunded');
     const comp = res.filter(x => x.result === 'completed');
-    // Cómo se emparejó cada uno: no es lo mismo la referencia exacta que
-    // "único con ese monto". Lo segundo hay que poder mirarlo.
-    const vias = new Map<string, number>();
-    for (const x of res) if (x?.campoRef) vias.set(x.campoRef, (vias.get(x.campoRef) ?? 0) + 1);
-    const emparejados = [...vias.entries()].filter(([v]) => v !== 'providerRef');
     const quedan = res.filter(x => x.result === 'still_processing' || x.result === 'sin_confirmar_revisar');
-    const plata = dev.reduce((n, x) => n + Number(x.refund ?? 0), 0);
-    // POR QUÉ no hubo veredicto. Un "sin respuesta del proveedor" a secas tapa
-    // por igual una ruta caída, una llave sin permiso de lectura, un id que
-    // Mouv no reconoce y una fila nuestra sin referencia guardada — cuatro
-    // problemas con cuatro arreglos distintos. Sin esto, la pantalla dice que
-    // algo falló y no deja ni empezar a buscar dónde.
+
+    // CÓMO se emparejó cada uno. No es lo mismo la referencia exacta que
+    // "único con ese monto": lo segundo hay que poder mirarlo antes de confiar.
+    const vias = new Map<string, number>();
+    for (const x of res) if (x?.campoRef && x.campoRef !== 'providerRef') vias.set(x.campoRef, (vias.get(x.campoRef) ?? 0) + 1);
+
+    // POR QUÉ no hubo veredicto. "Sin respuesta del proveedor" a secas tapa por
+    // igual una ruta caída, una llave sin permiso, un id que Mouv no reconoce y
+    // una fila nuestra incompleta — cuatro problemas con cuatro arreglos.
     const motivos = new Map<string, number>();
     let muestra: any = null;
     for (const x of res) {
@@ -515,27 +652,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       motivos.set(x.diag.motivo, (motivos.get(x.diag.motivo) ?? 0) + 1);
       if (!muestra) muestra = x;
     }
-    const detalle = motivos.size
-      ? '\n\nPor qué no se pudo confirmar:\n' +
-        [...motivos.entries()].map(([m, n]) => `· ${n} × ${m}`).join('\n') +
-        (muestra?.diag?.ruta
-          ? `\n\nPrimera consulta: ${muestra.diag.ruta}` +
-            ` → HTTP ${muestra.diag.httpStatus}\n${String(muestra.diag.cuerpo ?? '').slice(0, 300)}`
-          : muestra?.diag?.cuerpo
-            ? `\n\nQué trae una de esas filas:\n${String(muestra.diag.cuerpo).slice(0, 400)}`
-            : '')
-      : '';
-    alert(
-      `Revisados ${r.checked ?? res.length} envíos Bre-B.\n\n` +
-      `· ${comp.length} confirmados como pagados\n` +
-      `· ${dev.length} devueltos → reembolsados ${plata.toLocaleString('es-CO')} COP\n` +
-      `· ${quedan.length} sin respuesta del proveedor (siguen en curso)` +
-      (emparejados.length
-        ? '\n\nEmparejados con Mouv (no tenían el id guardado):\n' +
-          emparejados.map(([v, n]) => `· ${n} × ${v}`).join('\n') +
-          '\nEl id quedó guardado para la próxima.'
-        : '') +
-      detalle);
+
+    setResConciliar({
+      revisados: r.checked ?? res.length,
+      completados: comp.length,
+      devueltos: dev.length,
+      plata: dev.reduce((n, x) => n + Number(x.refund ?? 0), 0),
+      enCurso: quedan.length,
+      vias: [...vias.entries()],
+      motivos: [...motivos.entries()],
+      listado: r.listado ?? null,
+      muestra: muestra?.diag ?? null,
+    });
     refreshData?.();
   };
 
@@ -3873,6 +4001,7 @@ const renderDesign = () => (
                 }}>
                 {conciliando ? 'Consultando al proveedor…' : 'Conciliar ahora con el proveedor'}
               </button>
+              {resConciliar && <PanelConciliacion datos={resConciliar} onCerrar={() => setResConciliar(null)} />}
             </div>
 
             {sinConfirmarList.map((t: any) => (
