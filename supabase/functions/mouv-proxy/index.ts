@@ -357,6 +357,28 @@ function normalizeMouvState(raw: any): { verdict: MouvVerdict; state: string } {
   }
   const s = pickState(raw).trim().toUpperCase()
   if (!s) return { verdict: 'unknown', state: '' }
+
+  // ── ESTADOS DOCUMENTADOS DE MOUV ──────────────────────────────────
+  // El ciclo de vida real de /transfers/send es: PENDING, AWAITING_APPROVAL,
+  // EXECUTING, COMPLETED, FAILED, EXPIRED.
+  //
+  // Tres de esos seis NO los reconocian las expresiones regulares de abajo, que
+  // se escribieron a ciegas cuando la doc estaba bloqueada: AWAITING_APPROVAL,
+  // EXECUTING y EXPIRED caian todos en 'unknown'. Un EXPIRED clasificado como
+  // "no se" es plata que no salio y que nadie reembolsa.
+  //
+  // Por eso la tabla EXPLICITA va PRIMERO y las regex quedan solo de red para
+  // estados no documentados. Adivinar esta bien cuando no hay otra; con la
+  // lista oficial a la vista, adivinar es un error.
+  const OFICIALES: Record<string, MouvVerdict> = {
+    PENDING: 'pending',
+    AWAITING_APPROVAL: 'pending',   // esperando firma, todavia no salio
+    EXECUTING: 'pending',
+    COMPLETED: 'completed',
+    FAILED: 'returned',             // la consola de Mouv lo muestra "Devuelto"
+    EXPIRED: 'returned',            // vencio sin ejecutarse: la plata no salio
+  }
+  if (OFICIALES[s]) return { verdict: OFICIALES[s], state: s }
   // DEVUELTO / RETURNED / RECHAZADO / FALLIDO / CANCELADO → dinero NO salió.
   // Términos EXPLÍCITOS de devolución (se quitó 'ERROR' genérico y 'OK\b'/'DONE'
   // ambiguos): un falso 'returned' dispara un reembolso, así que el veredicto
@@ -369,15 +391,32 @@ function normalizeMouvState(raw: any): { verdict: MouvVerdict; state: string } {
   return { verdict: 'unknown', state: s }
 }
 
-// Consulta el estado de una transferencia Mouv por su id. La doc de Mouv está
-// bloqueada para este backend, así que se prueban rutas GET candidatas (igual
-// que se hizo con el recaudo PSE). Un 404 = ruta inexistente; la primera que
-// responda 2xx con un estado utilizable gana.
+// Consulta el estado de una transferencia Mouv por su id.
+//
+// LA RUTA BUENA ES /wallets/transactions/:id — ESTA DOCUMENTADA.
+//   La doc de Mouv dice, textual, "Pollea el estado via GET
+//   /wallets/transactions/:id o espera webhooks", y el `id` que devuelve
+//   /transfers/send es ese mismo UUID, que es justo lo que guardamos en
+//   raw_data.providerRef.
+//
+//   Hasta ahora se probaban seis rutas ADIVINADAS -- /transfers/:id,
+//   /transactions/:id, /payments/:id y variantes -- y NINGUNA era la correcta.
+//   Las seis daban 404, el veredicto salia 'unknown' siempre, y por eso ningun
+//   envio Bre-B cambiaba de estado NUNCA: ni los exitosos ni, sobre todo, los
+//   devueltos. El 19 de septiembre la consola de Mouv mostraba cuatro envios
+//   DEVUELTOS que en Lincoin seguian diciendo "en curso", con el saldo del
+//   cliente debitado y la plata ya de vuelta en la cuenta.
+//
+//   El prefijo /wallets es el mismo de /wallets/balance, que si funcionaba: la
+//   pista estuvo todo el tiempo dos funciones mas abajo.
+//
+// Las adivinadas quedan DESPUES, solo por si un dia cambia la ruta oficial.
 async function mouvTransferStatus(id: string): Promise<{ found: boolean; verdict: MouvVerdict; state: string; raw: any; path?: string }> {
   const tid = String(id ?? '').trim()
   if (!tid) return { found: false, verdict: 'unknown', state: '', raw: null }
   const enc = encodeURIComponent(tid)
   const paths = [
+    `/wallets/transactions/${enc}`,   // ← la documentada
     `/transfers/${enc}`, `/transfers/status/${enc}`, `/transfers/${enc}/status`,
     `/transfer/${enc}`, `/transactions/${enc}`, `/payments/${enc}`,
   ]
@@ -926,32 +965,51 @@ serve(async (req: Request) => {
     // días (default 5), más TODAS las que sigan 'Procesando'. Overridable.
     const days = Number(Deno.env.get('BREB_RECONCILE_DAYS') ?? '5') || 5
     const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
-    const { data: rows } = await db.from('transactions')
+    // TODOS LOS CLIENTES (solo admin). La conciliacion por cliente depende de
+    // que ESE cliente abra la app, y una devolucion no puede quedar esperando a
+    // que a alguien se le ocurra entrar: la plata ya volvio y el saldo sigue
+    // debitado. Con esto la mesa cierra el circulo desde el panel.
+    const todos = caller.admin && caller.viaJwt && payload?.todos === true
+    let q = db.from('transactions')
       .select('id, user_id, amount, currency, status, raw_data, created_at')
-      .eq('type', 'dispersion').eq('user_id', userId).eq('currency', 'COP_BREB')
+      .eq('type', 'dispersion').eq('currency', 'COP_BREB')
       .in('status', ['Procesando', 'Completado'])
       .gte('created_at', since)
       .order('created_at', { ascending: false })
-      .limit(30)
+      .limit(todos ? 200 : 30)
+    if (!todos) q = q.eq('user_id', userId)
+    const { data: rows } = await q
     const out: any[] = []
     for (const tx of (rows ?? []) as any[]) {
       const rd = (tx.raw_data ?? {}) as Record<string, any>
       if (rd.refunded) { out.push({ id: tx.id, result: 'already_refunded' }); continue }
       const ref = String(rd.providerRef ?? '')
-      const st = ref ? await mouvTransferStatus(ref) : { found: false, verdict: 'unknown' as MouvVerdict, state: '' }
+      const st = ref ? await mouvTransferStatus(ref) : { found: false, verdict: 'unknown' as MouvVerdict, state: '', raw: null }
       // 1) DEVOLUCIÓN confirmada por Mouv → Rechazado + REEMBOLSO (idempotente).
       if (st.found && st.verdict === 'returned') {
         const refund = Number(tx.amount ?? 0) + Number(rd.feeCop ?? 0)
         const railCol = String(tx.currency ?? 'COP_BREB')
         // CAS: reclamar el reembolso ANTES de tocar el saldo. Si una ejecución
         // paralela ya reclamó, `claimed` viene vacío y NO se acredita de nuevo.
+        // El motivo que da Mouv (`errorMessage` de /wallets/transactions/:id)
+        // se guarda: "fue devuelto" sin decir por que obliga a abrir la consola
+        // del proveedor para contestarle al cliente lo mas basico.
+        const motivoProveedor = (() => {
+          const m = (st.raw as any)?.errorMessage ?? (st.raw as any)?.data?.errorMessage
+          return typeof m === 'string' && m.trim() ? m.trim().slice(0, 300) : null
+        })()
         const { data: claimed } = await db.from('transactions').update({
           status: 'Rechazado',
-          raw_data: { ...rd, refunded: true, refundCop: refund, providerState: st.state, returnedAt: new Date().toISOString(), reconciledAt: new Date().toISOString() },
+          raw_data: { ...rd, refunded: true, refundCop: refund, providerState: st.state, providerError: motivoProveedor, returnedAt: new Date().toISOString(), reconciledAt: new Date().toISOString() },
         }).eq('id', tx.id).filter('raw_data->>refunded', 'is', null).select('id')
         if (!claimed?.length) { out.push({ id: tx.id, result: 'refund_already_claimed' }); continue }
-        await creditBalanceAtomic(userId, railCol, refund)
-        await logAudit(userId, 'mouv.reconcile_breb.refunded', { txId: tx.id, refund, providerState: st.state, providerRef: ref })
+        // El reembolso va al DUEÑO DE LA FILA, no a quien llamó. Con el barrido
+        // de todos los clientes, `userId` es el admin que apretó el botón —
+        // acreditarle a él la devolución de otro sería mover plata a la cuenta
+        // equivocada.
+        const duenio = String(tx.user_id)
+        await creditBalanceAtomic(duenio, railCol, refund)
+        await logAudit(duenio, 'mouv.reconcile_breb.refunded', { txId: tx.id, refund, providerState: st.state, providerError: motivoProveedor, providerRef: ref })
         await notifyTx(tx.id) // correo "tu envío fue devuelto · saldo reintegrado"
         out.push({ id: tx.id, result: 'refunded', refund })
         continue
@@ -966,69 +1024,33 @@ serve(async (req: Request) => {
         out.push({ id: tx.id, result: 'completed' })
         continue
       }
-      // 3) NO se pudo confirmar el estado. Y no se confirma seguido: la doc de
-      //    Mouv está bloqueada para este backend, así que mouvTransferStatus
-      //    ADIVINA la ruta entre seis candidatas. Cuando las seis dan 404, el
-      //    veredicto es 'unknown' — que significa "no sé", no "salió bien".
+      // 3) NO se pudo confirmar el estado: Mouv no respondio o devolvio algo
+      //    que no se entiende. 'unknown' significa "no se", no "salio bien".
       //
-      //    ACÁ HABÍA UN AUTO-COMPLETADO OPTIMISTA: a los 2 minutos se marcaba
-      //    Completado "para no dejarla atascada". Eso afirmaba el éxito a
-      //    partir de la AUSENCIA de información, y el 16 de septiembre le
-      //    cobró a un cliente 2.900.000 COP por una dispersión que Mouv había
-      //    RECHAZADO: el comprobante decía Completado, el saldo estaba
-      //    debitado, y la plata nunca salió.
+      //    ACA HUBO DOS AUTO-COMPLETADOS, Y LOS DOS MINTIERON.
+      //    El primero marcaba Completado a los 2 minutos; el 16 de septiembre
+      //    le cobro a un cliente 2.900.000 COP por una dispersion que Mouv
+      //    habia RECHAZADO. Se reemplazo por una ventana de 3 horas, con el
+      //    argumento de que una devolucion llega antes. El 19 de septiembre la
+      //    consola de Mouv mostraba CUATRO envios devueltos del mismo dia que
+      //    en Lincoin seguian en "en curso" — y que esa ventana iba a dar por
+      //    liquidados esa misma tarde, por 5.609.000 COP que ya estaban de
+      //    vuelta en la cuenta y que nadie iba a reembolsar.
       //
-      //    Es el mismo principio que rige el AML de esta app, en el otro
-      //    sentido: sin resultado no sale plata; sin resultado tampoco se
-      //    declara que salió. Una operación sin confirmar se queda en
-      //    Procesando, que es la verdad, y se marca para revisión humana. Que
-      //    algo quede "atascado" es un problema de operación; decirle a un
-      //    cliente que su plata llegó cuando no llegó es otra cosa.
+      //    La ventana no era una aproximacion razonable: existia unicamente
+      //    porque la consulta de estado estaba rota, y tapaba justo el caso que
+      //    tenia que detectar. Ahora /wallets/transactions/:id responde de
+      //    verdad y cada envio recibe un veredicto real en segundos, asi que se
+      //    elimina: no hace falta suponer nada.
+      //
+      //    Lo que queda sin confirmar se queda en Procesando, que es la verdad,
+      //    y se marca para que lo mire una persona. Que algo quede "atascado"
+      //    es un problema de operacion; decirle a un cliente que su plata llego
+      //    cuando no llego es otra cosa. Si esto se llena de atascadas, el
+      //    problema es que Mouv no responde — y eso hay que verlo, no taparlo.
       if (tx.status === 'Procesando') {
         const ageMin = Math.round((Date.now() - new Date(tx.created_at).getTime()) / 60000)
 
-        // ── VENTANA DE LIQUIDACION ──────────────────────────────────────
-        // Dejar TODO en Procesando hasta que una persona lo confirme no es
-        // sostenible: el cliente ve "en curso" en transferencias que si se
-        // pagaron, que son la enorme mayoria, y nueve de cada diez avisos al
-        // admin son ruido. Un aviso que casi siempre es ruido se deja de mirar,
-        // y ahi volvemos al punto de partida.
-        //
-        // Bre-B liquida en segundos y una devolucion del banco destino llega
-        // en minutos. Pasada la ventana sin que nadie la haya marcado como
-        // devuelta, se da por liquidada.
-        //
-        // ESTO SIGUE SIENDO UNA SUPOSICION, no una confirmacion, y por eso:
-        //   · queda marcada autoConfirmada con la ventana que se uso, para que
-        //     seis meses despues se pueda distinguir de una confirmada por el
-        //     proveedor o por una persona;
-        //   · el admin recibe el aviso ANTES de que la ventana venza, asi que
-        //     tiene la oportunidad de frenarla;
-        //   · la conciliacion sigue mirando las Completado recientes durante
-        //     cinco dias, asi que si algun dia el estado se puede consultar,
-        //     una devolucion tardia todavia revierte y reembolsa.
-        //
-        // La ventana por defecto es de 3 horas. El auto-completado viejo era de
-        // DOS MINUTOS, que es lo que dejaba pasar las devoluciones: llegaban
-        // despues. Se puede ajustar con BREB_SETTLE_HOURS sin desplegar.
-        const ventanaH = Number(Deno.env.get('BREB_SETTLE_HOURS') ?? '3') || 3
-        if (ageMin >= ventanaH * 60) {
-          const { data: cerrada } = await db.from('transactions').update({
-            status: 'Completado',
-            raw_data: {
-              ...rd,
-              settledAt: new Date().toISOString(),
-              autoConfirmada: true,
-              ventanaHoras: ventanaH,
-              revisionManual: undefined,
-            },
-          }).eq('id', tx.id).eq('status', 'Procesando').select('id')
-          if (cerrada?.length) {
-            await notifyTx(tx.id)
-            out.push({ id: tx.id, result: 'auto_confirmada', horas: ventanaH })
-            continue
-          }
-        }
         // Bre-B liquida en segundos. Pasado un rato sin confirmar, deja de ser
         // "en curso" y pasa a ser algo que alguien tiene que mirar contra la
         // consola del proveedor.
@@ -1111,10 +1133,14 @@ serve(async (req: Request) => {
   }
 
   // ── SONDEO DE ENDPOINTS DEL PROVEEDOR (admin) ─────────────────────
-  // La causa raiz de que una devolucion no se detecte es que NO SABEMOS como
-  // se consulta el estado de una transferencia: la doc de Mouv esta bloqueada
-  // para este backend y mouvTransferStatus ADIVINA entre seis rutas que dan
-  // 404. Mientras eso siga asi, ninguna devolucion se detecta sola.
+  // Esto existio porque no sabiamos como se consultaba el estado de una
+  // transferencia y mouvTransferStatus adivinaba entre seis rutas que daban
+  // 404. YA SE SABE: es GET /wallets/transactions/:id, esta documentada y es
+  // la primera que prueba mouvTransferStatus.
+  //
+  // El sondeo se queda igual, como diagnostico: si algun dia la conciliacion
+  // vuelve a dejar todo en 'Procesando', esto dice si la ruta oficial cambio y
+  // cual responde ahora, con el cuerpo crudo a la vista.
   //
   // Esto prueba rutas candidatas -- por id y de LISTADO, que es lo que la
   // consola del proveedor usa para mostrar los estados -- y devuelve el cuerpo
@@ -1127,6 +1153,7 @@ serve(async (req: Request) => {
 
     const candidatas: { que: string; ruta: string; metodo: 'GET' }[] = [
       ...(ref ? [
+        { que: 'por id (LA OFICIAL)', ruta: `/wallets/transactions/${enc}`, metodo: 'GET' as const },
         { que: 'por id', ruta: `/transfers/${enc}`, metodo: 'GET' as const },
         { que: 'por id', ruta: `/transfers/${enc}/status`, metodo: 'GET' as const },
         { que: 'por id', ruta: `/transfers/status/${enc}`, metodo: 'GET' as const },
@@ -1137,6 +1164,7 @@ serve(async (req: Request) => {
       // LISTADOS: lo mas probable que exista, porque es lo que alimenta la
       // consola. Si alguna responde, se puede conciliar por lote y dejamos de
       // depender de una consulta por id.
+      { que: 'listado (LA OFICIAL)', ruta: '/wallets/transactions?limit=20', metodo: 'GET' },
       { que: 'listado', ruta: '/transfers', metodo: 'GET' },
       { que: 'listado', ruta: '/transfers?limit=20', metodo: 'GET' },
       { que: 'listado', ruta: '/transactions?limit=20', metodo: 'GET' },

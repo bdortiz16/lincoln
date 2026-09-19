@@ -484,6 +484,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     else alert(r?.error ? `No se pudo: ${r.error}` : 'No se pudo completar la devolución.');
   };
 
+  // Conciliar TODOS los envíos Bre-B contra Mouv, sin esperar a que cada
+  // cliente abra su app. Consulta GET /wallets/transactions/:id por cada uno y
+  // aplica el veredicto real: completa los exitosos y REEMBOLSA los devueltos.
+  const [conciliando, setConciliando] = useState(false);
+  const conciliarBreb = async () => {
+    setConciliando(true);
+    const r = await llamarMouv({ action: 'reconcile_breb', todos: true });
+    setConciliando(false);
+    if (!r?.ok) { alert(r?.message || r?.error || 'No se pudo conciliar.'); return; }
+    const res = (r.results ?? []) as any[];
+    const dev = res.filter(x => x.result === 'refunded');
+    const comp = res.filter(x => x.result === 'completed');
+    const quedan = res.filter(x => x.result === 'still_processing' || x.result === 'sin_confirmar_revisar');
+    const plata = dev.reduce((n, x) => n + Number(x.refund ?? 0), 0);
+    alert(
+      `Revisados ${r.checked ?? res.length} envíos Bre-B.\n\n` +
+      `· ${comp.length} confirmados como pagados\n` +
+      `· ${dev.length} devueltos → reembolsados ${plata.toLocaleString('es-CO')} COP\n` +
+      `· ${quedan.length} sin respuesta del proveedor (siguen en curso)`);
+    refreshData?.();
+  };
+
   const confirmarDispersion = async (t: any) => {
     const ref = t.providerRef ?? t.raw_data?.providerRef ?? '';
     if (!window.confirm(
@@ -3803,10 +3825,21 @@ const renderDesign = () => (
                 </span>
               </div>
               <p style={{ fontSize: 12.5, color: '#878E88', margin: '8px 0 0', lineHeight: 1.6, maxWidth: 720 }}>
-                El proveedor aceptó estos envíos pero no expone un estado consultable, así que no
-                podemos confirmarlos solos. <span style={{ color: '#F4F4F2' }}>La mayoría habrá salido bien.</span>{' '}
-                Cotejalos en su consola por la referencia y cerrá cada caso.
+                Estos envíos siguen sin un estado confirmado por el proveedor. Probá primero{' '}
+                <span style={{ color: '#F4F4F2' }}>Conciliar ahora</span>: consulta el estado real de cada uno
+                y cierra solo los que Mouv confirma, reembolsando los devueltos. Lo que quede acá después
+                de eso es lo que hay que cotejar a mano en su consola por la referencia.
               </p>
+              <button
+                onClick={conciliarBreb}
+                disabled={conciliando}
+                style={{
+                  marginTop: 12, fontSize: 12.5, fontWeight: 700, color: '#0A0A0A', background: '#4ADE80',
+                  border: 'none', borderRadius: 9, padding: '9px 15px', cursor: conciliando ? 'default' : 'pointer',
+                  opacity: conciliando ? 0.5 : 1,
+                }}>
+                {conciliando ? 'Consultando al proveedor…' : 'Conciliar ahora con el proveedor'}
+              </button>
             </div>
 
             {sinConfirmarList.map((t: any) => (
