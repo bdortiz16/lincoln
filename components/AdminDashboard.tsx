@@ -254,7 +254,10 @@ const SUBTAB_TITLES: Record<string, string> = {
 // devolvió y cuántos envíos quedaron sin confirmar; el crudo del proveedor
 // importa sólo cuando algo no cuadra, y entonces se abre.
 const PanelConciliacion: React.FC<{ datos: any; onCerrar: () => void }> = ({ datos, onCerrar }) => {
-    const [tecnico, setTecnico] = useState(false);
+    // Si el listado vino vacío, el crudo del proveedor es EL dato que hace
+    // falta — no puede estar plegado esperando que a alguien se le ocurra
+    // abrirlo.
+    const [tecnico, setTecnico] = useState(!!datos?.listado && datos.listado.salidasBreb === 0);
     useEffect(() => {
         const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') onCerrar(); };
         window.addEventListener('keydown', esc);
@@ -664,6 +667,26 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       listado: r.listado ?? null,
       muestra: muestra?.diag ?? null,
     });
+    refreshData?.();
+  };
+
+  // Pegar el ID que muestra la consola del proveedor (TX-PG-483AC9). No cambia
+  // el estado ni mueve plata: solo vincula, y de paso consulta el estado real.
+  const vincularRef = async (t: any) => {
+    const ref = window.prompt(
+      'Pegá el ID de este envío tal como aparece en la consola del proveedor.\n\n' +
+      'Ejemplo: TX-PG-483AC9\n\n' +
+      'Esto NO confirma ni devuelve nada: solo deja el envío enlazado para poder ' +
+      'consultar su estado y bajar su comprobante.', '');
+    if (!ref || !ref.trim()) return;
+    setResolviendo(t.id);
+    const r = await llamarMouv({ action: 'vincular_referencia', txId: t.id, providerRef: ref.trim() });
+    setResolviendo(null);
+    if (!r?.ok) { alert(r?.message || r?.error || 'No se pudo vincular.'); return; }
+    const est = r.estadoProveedor
+      ? `El proveedor lo reporta como: ${r.estadoProveedor}.`
+      : 'Vinculado, pero el proveedor todavía no devuelve su estado.';
+    alert(`ID guardado.\n\n${est}`);
     refreshData?.();
   };
 
@@ -4037,6 +4060,13 @@ const renderDesign = () => (
                     disabled={resolviendo === t.id}
                     style={{ fontSize: 12.5, fontWeight: 700, color: '#0A0A0A', background: '#F4F4F2', border: 'none', borderRadius: 9, padding: '9px 15px', cursor: 'pointer', opacity: resolviendo === t.id ? 0.5 : 1, whiteSpace: 'nowrap' }}>
                     {resolviendo === t.id ? 'Procesando…' : 'Sí se pagó'}
+                  </button>
+                  <button
+                    onClick={() => vincularRef(t)}
+                    disabled={resolviendo === t.id}
+                    title="Pegar el ID que muestra la consola del proveedor"
+                    style={{ fontSize: 12.5, fontWeight: 700, color: '#878E88', background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 9, padding: '9px 13px', cursor: 'pointer', opacity: resolviendo === t.id ? 0.5 : 1, whiteSpace: 'nowrap' }}>
+                    Vincular ID
                   </button>
                   <button
                     onClick={() => devolverDispersion(t)}

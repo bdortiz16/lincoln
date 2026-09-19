@@ -578,15 +578,22 @@ function emparejarConMouv(rd: any, montoCop: number, items: any[], reclamados: S
   if (!mismoMonto.length) return null
 
   const unico = (xs: any[], via: string) => (xs.length === 1 ? { item: xs[0], via } : null)
+  // El id del movimiento puede venir en varios campos, y con la forma que la
+  // consola muestra (TX-PG-483AC9), no necesariamente como UUID.
+  const idsDe = (it: any) => [it?.id, it?.transactionId, it?.reference, it?.externalId]
+    .map((v: any) => String(v ?? '').trim()).filter(Boolean)
   const limpiar = (v: any) => String(v ?? '')
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
     .toUpperCase().replace(/[^A-Z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim()
 
   // 1) La referencia EXACTA que mandamos. Sin ambiguedad posible: la generamos
   //    nosotros con un sufijo unico por envio.
-  const refExacta = String(rd?.providerReference ?? '').trim()
+  // Se mira el id / la referencia venga como venga: la consola de Mouv los
+  // muestra como TX-PG-483AC9, no como el UUID del ejemplo de la doc. Y ACA no
+  // se ancla al monto: un id que coincide identifica la operacion por si solo.
+  const refExacta = String(rd?.providerReference ?? rd?.providerRef ?? '').trim()
   if (refExacta) {
-    const r = unico(mismoMonto.filter(it => String(it?.reference ?? '') === refExacta), 'referencia exacta')
+    const r = unico(libres.filter(it => idsDe(it).includes(refExacta)), 'referencia exacta')
     if (r) return r
   }
 
@@ -1201,9 +1208,11 @@ serve(async (req: Request) => {
         ]
         for (const [campo, v] of cand) {
           const sv = v == null ? '' : String(v).trim()
-          // El id de Mouv es un UUID. Exigir la FORMA evita agarrar por error
-          // un id nuestro (numerico) y preguntarle a Mouv por algo que no es.
-          if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sv)) return { ref: sv, campo }
+          // NO se exige forma de UUID. La doc pone un UUID de ejemplo, pero la
+          // consola de Mouv muestra los ids como TX-PG-483AC9, y un filtro que
+          // solo acepta UUID tira justo el id que sirve. Lo unico que se
+          // descarta es un id puramente numerico, que seria el NUESTRO.
+          if (sv.length >= 6 && !/^\d+$/.test(sv)) return { ref: sv, campo }
         }
         return { ref: '', campo: '' }
       }
@@ -1415,6 +1424,55 @@ serve(async (req: Request) => {
     })
     await notifyTx(tx.id)
     return json(200, { ok: true, confirmada: true })
+  }
+
+  // ── VINCULAR A MANO UNA DISPERSION CON SU ID EN MOUV ──────────────
+  // Mientras el listado no se pueda leer, la unica fuente de verdad es la
+  // consola del proveedor, y el operador la tiene delante: ahi esta el id
+  // (TX-PG-483AC9). Pegarlo cuesta cinco segundos y desbloquea TODO lo demas
+  // para esa fila -- consulta de estado, conciliacion y comprobante PDF.
+  //
+  // NO cambia el estado ni mueve plata: solo guarda el id. Confirmar o devolver
+  // sigue siendo una decision aparte, para que pegar un id equivocado no
+  // acredite ni reembolse nada por si solo.
+  if (action === 'vincular_referencia') {
+    if (!caller.admin || !caller.viaJwt) return json(403, { error: 'forbidden' })
+    const txId = payload?.txId ?? payload?.tx_id
+    const ref = String(payload?.providerRef ?? '').trim()
+    if (txId == null) return json(400, { error: 'missing_tx' })
+    if (ref.length < 4) return json(400, { error: 'ref_invalida', message: 'Pegá el ID tal como aparece en la consola del proveedor.' })
+
+    const { data: tx } = await db.from('transactions')
+      .select('id, user_id, type, raw_data').eq('id', txId).maybeSingle()
+    if (!tx) return json(404, { error: 'not_found' })
+    if (tx.type !== 'dispersion') return json(400, { error: 'not_a_dispersion' })
+
+    // Un mismo id no puede quedar pegado a dos dispersiones: seria decir que
+    // dos envios distintos son el mismo, y a partir de ahi cualquier
+    // conciliacion posterior saca la conclusion equivocada.
+    const { data: yaUsada } = await db.from('transactions')
+      .select('id').eq('type', 'dispersion').filter('raw_data->>providerRef', 'eq', ref).neq('id', tx.id).limit(1)
+    if (yaUsada?.length) {
+      return json(409, { error: 'ref_duplicada', message: `Ese ID ya está vinculado al movimiento ${yaUsada[0].id}.` })
+    }
+
+    const rd = (tx.raw_data ?? {}) as Record<string, any>
+    const { error } = await db.from('transactions').update({
+      raw_data: { ...rd, providerRef: ref, providerRefOrigen: 'pegado_a_mano', providerRefAt: new Date().toISOString(), providerRefPor: caller.userId ?? null },
+    }).eq('id', tx.id)
+    if (error) return json(500, { error: 'no_se_pudo_guardar', message: error.message })
+
+    await logAudit(tx.user_id, 'mouv.vincular_referencia', { txId: tx.id, providerRef: ref, admin: caller.userId })
+
+    // Con el id ya guardado se consulta el estado en el acto: es justo lo que
+    // faltaba para poder decidir.
+    const st = await mouvTransferStatus(ref)
+    return json(200, {
+      ok: true, providerRef: ref,
+      estadoProveedor: st.found ? st.state : null,
+      veredicto: st.found ? st.verdict : 'unknown',
+      diag: st.diag ?? null,
+    })
   }
 
   // ── COMPROBANTE OFICIAL DEL PROVEEDOR (PDF) ───────────────────────
