@@ -30,7 +30,7 @@ import {
   Lock,
   LayoutGrid,
   Share2,
-  FileText, Download,
+  Download,
   Megaphone,
   Plane,
   ShoppingBag,
@@ -1257,11 +1257,6 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sendStep, sendMode, currentUser?.id]);
 
-  // Vive ACA y no dentro de renderTxDetail: esa es una función de render con un
-  // `return null` adelante, así que un useState adentro se llamaría unas veces
-  // sí y otras no — y React cuenta los hooks por orden. Se rompe al abrir un
-  // comprobante, no al escribirlo.
-  const [bajandoPdf, setBajandoPdf] = useState(false);
   // La llave Bre-B para RECIBIR pagos. Vive en la misma billetera Bre-B: no es
   // una segunda cuenta, es una dirección de entrada a la que ya existe.
   const [recaudoOpen, setRecaudoOpen] = useState(false);
@@ -1449,30 +1444,55 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser?.id]);
 
+  // Y la vigilancia normal, que CORRE SOLA CADA 45 SEGUNDOS mientras haya algo
+  // en curso.
+  //
+  // Antes las dependencias eran [activeView, selectedWalletCode, currentUser.id]
+  // y no había intervalo: el efecto corría UNA vez al entrar a la pantalla y
+  // nunca más. Si el proveedor confirmaba el envío un minuto después -- que es
+  // lo normal, y más todavía porque su listado va con retraso -- nadie volvía a
+  // preguntar. Un envío que Mouv daba por Exitoso a la 01:25 seguía diciendo
+  // "EN CURSO" a las 04:20, con el comprobante del banco ya descargado y
+  // firmado. La pantalla contradecía al banco.
+  const movsRef = useRef<any[]>([]);
+  movsRef.current = movements || [];
+
   useEffect(() => {
-      const relevant = activeView === 'movements' || (activeView === 'wallet-detail' && (selectedWalletCode === 'COP' || selectedWalletCode === 'COP_BREB')) || activeView === 'dashboard';
-      if (!relevant || !currentUser?.id) return;
-      const fiveDaysAgo = Date.now() - 5 * 24 * 60 * 60 * 1000;
-      const needsCheck = (movements || []).some((t: any) => {
-          if (t.type !== 'dispersion' || t.currency !== 'COP_BREB') return false;
-          if (t.status === 'Procesando') return true;
-          // 'Completado' reciente: vigilar por una devolución tardía.
-          if (t.status === 'Completado') { const ts = t.createdAt ? new Date(t.createdAt).getTime() : 0; return ts >= fiveDaysAgo; }
-          return false;
-      });
-      if (!needsCheck) return;
-      if (Date.now() - brebReconcileAtRef.current < 60000) return;
-      brebReconcileAtRef.current = Date.now();
-      callMouvProxy({ action: 'reconcile_breb', userId: currentUser.id })
-          .then(r => {
-              const changed = (r?.results ?? []).filter((x: any) => x.result === 'completed' || x.result === 'refunded');
-              if (changed.length > 0) {
-                  refreshData?.();
-                  if (changed.some((x: any) => x.result === 'completed')) showToast('✅ Tu envío Bre-B fue confirmado.');
-                  if (changed.some((x: any) => x.result === 'refunded')) showToast('Un envío Bre-B fue devuelto — el monto y la comisión fueron reembolsados a tu saldo.', 8000);
-              }
-          })
-          .catch(() => { /* silencioso */ });
+      if (!currentUser?.id) return;
+      const relevante = () => activeView === 'movements'
+          || (activeView === 'wallet-detail' && (selectedWalletCode === 'COP' || selectedWalletCode === 'COP_BREB'))
+          || activeView === 'dashboard';
+
+      const tick = async () => {
+          if (document.hidden || !relevante()) return;
+          const cincoDias = Date.now() - 5 * 24 * 60 * 60 * 1000;
+          const hayQueMirar = movsRef.current.some((t: any) => {
+              if (t.type !== 'dispersion' || t.currency !== 'COP_BREB') return false;
+              if (t.status === 'Procesando') return true;
+              // 'Completado' reciente: vigilar por una devolución tardía.
+              if (t.status === 'Completado') { const ts = t.createdAt ? new Date(t.createdAt).getTime() : 0; return ts >= cincoDias; }
+              return false;
+          });
+          if (!hayQueMirar) return;
+          if (Date.now() - brebReconcileAtRef.current < 40000) return;
+          brebReconcileAtRef.current = Date.now();
+          const r = await callMouvProxy({ action: 'reconcile_breb', userId: currentUser.id }).catch(() => null);
+          const cambios = (r?.results ?? []).filter((x: any) => x.result === 'completed' || x.result === 'refunded');
+          if (!cambios.length) return;
+          refreshData?.();
+          if (cambios.some((x: any) => x.result === 'refunded')) {
+              showToast('Un envío Bre-B fue devuelto — el monto y la comisión volvieron a tu saldo.', 9000);
+          } else {
+              showToast('✅ Tu envío Bre-B fue confirmado.');
+          }
+      };
+
+      tick();
+      const t = setInterval(tick, 45000);
+      // Al volver a la pestaña interesa el estado de AHORA, no esperar al tick.
+      const alVolver = () => { if (!document.hidden) tick(); };
+      document.addEventListener('visibilitychange', alVolver);
+      return () => { clearInterval(t); document.removeEventListener('visibilitychange', alVolver); };
       // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeView, selectedWalletCode, currentUser?.id]);
 
@@ -4369,48 +4389,6 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       } catch { showToast('No se pudo generar el comprobante', 4000, 'error'); }
     };
     // Descarga directa (sin diálogo de compartir): guarda el PNG del comprobante.
-    // La referencia del proveedor, esté donde esté guardada.
-    const refProveedor = String(
-      (selectedTx as any)?.providerRef ?? (selectedTx as any)?.raw_data?.providerRef ?? ''
-    ).trim();
-    // El PDF se pide a nuestra función, no a Mouv: la llave del proveedor no
-    // puede estar en el navegador, y del lado del servidor se comprueba además
-    // que el envío sea de quien lo pide.
-    const bajarComprobanteProveedor = async () => {
-        setBajandoPdf(true);
-        try {
-            const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
-            const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-            const r = await fetch(`${SURL}/functions/v1/mouv-proxy`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: myAuthHeader() },
-                body: JSON.stringify({ action: 'comprobante_proveedor', userId: currentUser?.id, txId: (selectedTx as any)?.id }),
-            });
-            if (!r.ok) {
-                // El cuerpo del error viene en JSON con el motivo en castellano.
-                let msg = 'No se pudo traer el comprobante.';
-                try { const j = await r.json(); msg = j?.message || msg; } catch { /* sin cuerpo */ }
-                showToast(msg, 7000);
-                return;
-            }
-            const blob = await r.blob();
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `comprobante-${refProveedor}.pdf`;
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            // Liberar el objeto: sin esto el PDF queda en memoria toda la sesión.
-            setTimeout(() => URL.revokeObjectURL(url), 10000);
-            showToast('Comprobante del banco descargado');
-        } catch (e: any) {
-            showToast(`No se pudo traer el comprobante: ${String(e?.message ?? e)}`, 7000);
-        } finally {
-            setBajandoPdf(false);
-        }
-    };
-
     const downloadReceipt = async () => {
       try {
         const canvas = buildReceiptCanvas();
@@ -4515,20 +4493,15 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                 </div>
               ))}
             </div>
-            {/* Comprobante OFICIAL del proveedor.
-                El de arriba lo dibujamos nosotros; este lo firma quien movió el
-                dinero, y es el que sirve para mostrarle a un beneficiario que
-                dice que no le llegó.
+            {/* EL COMPROBANTE DEL PROVEEDOR NO VA AL CLIENTE.
+                Ese PDF lo emite y lo firma nuestro proveedor de pagos, con su
+                marca y su nombre encima. El cliente no tiene por qué saber con
+                quién operamos -- es información nuestra, y además la comparte
+                con su beneficiario cuando reenvía el comprobante.
 
-                Solo aparece cuando el envío tiene la referencia del proveedor
-                guardada: un botón que falla siempre es peor que no tenerlo. */}
-            {refProveedor && (
-              <button onClick={bajarComprobanteProveedor} disabled={bajandoPdf}
-                className="w-full flex items-center justify-center hover:bg-white/[0.09] transition-colors"
-                style={{ gap: 7, marginTop: 14, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.11)', opacity: bajandoPdf ? 0.5 : 1 }}>
-                <FileText size={15} /> {bajandoPdf ? 'Pidiendo el comprobante…' : 'Comprobante del banco (PDF)'}
-              </button>
-            )}
+                El botón estuvo unas horas y se saca. La acción sigue existiendo
+                del lado del servidor para la mesa, que sí la necesita cuando hay
+                que reclamarle algo al proveedor. */}
             {/* Botonera */}
             <div className="flex" style={{ gap: 9, marginTop: 18 }}>
               <button onClick={shareReceipt} title="Compartir" style={{ width: 44, height: 44, borderRadius: 10, border: '1px solid rgba(255,255,255,0.11)', background: 'rgba(255,255,255,0.055)', display: 'grid', placeItems: 'center', flexShrink: 0 }} className="hover:bg-white/[0.09] transition-colors"><Share2 size={16} style={{ color: '#F4F4F2' }} /></button>
