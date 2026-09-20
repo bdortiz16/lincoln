@@ -157,7 +157,7 @@ async function notifyTx(txId: number | string | null): Promise<void> {
 
 // Llamada autenticada a Mouv. Timeout duro para no colgar el proxy si Mouv
 // no responde. Devuelve { ok, status, data, path } sin lanzar.
-async function mouvFetch(path: string, init: RequestInit = {}): Promise<{ ok: boolean; status: number; data: any; path: string }> {
+async function mouvFetch(path: string, init: RequestInit = {}, _reintento = false): Promise<{ ok: boolean; status: number; data: any; path: string }> {
   try {
     const r = await fetch(`${MOUV_BASE}${path}`, {
       ...init,
@@ -169,6 +169,24 @@ async function mouvFetch(path: string, init: RequestInit = {}): Promise<{ ok: bo
       },
       signal: init.signal ?? AbortSignal.timeout(20000),
     })
+    // 429: Mouv dice en `Retry-After` los segundos EXACTOS que faltan, y una
+    // 429 no consume cuota. Se espera y se reintenta UNA vez.
+    //
+    // SOLO EN LECTURAS. Reintentar solo un POST que mueve plata seria buscarse
+    // un doble pago: aunque una 429 significa que no se proceso, el reintento
+    // automatico sobre una operacion financiera es exactamente el tipo de
+    // atajo que termina pagando dos veces. Esas vuelven con el 429 y decide
+    // quien llamo.
+    const metodo = String(init.method ?? 'GET').toUpperCase()
+    if (r.status === 429 && !_reintento && metodo === 'GET') {
+      const seg = Number(r.headers.get('Retry-After') ?? '1')
+      // Tope de 15 s: esperar un minuto adentro de una edge function la deja
+      // colgada y el cliente ve un timeout en vez de un error entendible.
+      const espera = Math.min(Number.isFinite(seg) && seg > 0 ? seg : 1, 15)
+      await new Promise(res => setTimeout(res, espera * 1000))
+      return mouvFetch(path, init, true)
+    }
+
     const text = await r.text()
     let data: any = null
     try { data = text ? JSON.parse(text) : null } catch { data = text }
@@ -1360,7 +1378,11 @@ serve(async (req: Request) => {
         }).eq('id', tx.id).eq('status', 'Procesando')
         out.push({
           id: tx.id,
-          result: revisar ? 'sin_confirmar_revisar' : 'still_processing',
+          // "Esperando firma" NO es lo mismo que "procesando": nadie esta
+          // moviendo esa plata, esta detenida hasta que una persona firme en
+          // el panel del proveedor. A las 24 h expira y se revierte sola.
+          result: st.state === 'AWAITING_APPROVAL' ? 'espera_firma'
+            : revisar ? 'sin_confirmar_revisar' : 'still_processing',
           minutos: ageMin,
           providerState: st.state || null,
           // El diagnostico solo para la mesa: nombra al proveedor y puede
@@ -1489,6 +1511,14 @@ serve(async (req: Request) => {
     // limite de 30/minuto sin necesidad.
     if (!payload?.refrescar && guardada?.valor && guardada?.estado === 'ACTIVE') {
       return json(200, { ok: true, llave: guardada, cuenta: rd.cuentaNo ?? null, deCache: true })
+    }
+
+    // `soloLeer` = la pantalla esta preguntando si YA tiene llave. Emitir una
+    // por el solo hecho de abrir una pantalla seria crear identidad en la red
+    // Bre-B sin que nadie lo haya pedido -- ademas de gastar el cupo de 30 por
+    // minuto en usuarios que solo estaban mirando. Emitir es una ACCION.
+    if (payload?.soloLeer) {
+      return json(200, { ok: false, error: 'sin_llave', cuenta: rd.cuentaNo ?? null })
     }
 
     const nombre = String((u as any).full_name ?? '').trim()
@@ -2621,6 +2651,14 @@ serve(async (req: Request) => {
             providerRef: pay.providerRef ?? null,
             providerReference: pay.referencia ?? null,
             providerState: sendState.state || null,
+            // MULTI-FIRMA: si la empresa tiene multiSigThreshold >= 2, el envio
+            // NO se despacha hasta que una persona firme en el panel del
+            // proveedor, y a las 24 h expira y se revierte. Visto desde aca se
+            // parece a "procesando" y no lo es: nadie esta moviendo esa plata,
+            // esta esperando una firma que quiza nadie sabe que debe dar.
+            ...(sendState.state === 'AWAITING_APPROVAL'
+              ? { esperaFirma: true, esperaFirmaDesde: new Date().toISOString() }
+              : {}),
             aceptadaAt: new Date().toISOString(),
             ...(confirmada
               ? { settledAt: new Date().toISOString() }
@@ -2642,7 +2680,12 @@ serve(async (req: Request) => {
           })
         }
         await notifyTx(txId)
-        return json(200, { ok: true, status: estado, confirmada, providerRef: pay.providerRef ?? null, providerState: sendState.state || null, feeCop, newBalance: afterDebit })
+        return json(200, {
+          ok: true, status: estado, confirmada,
+          providerRef: pay.providerRef ?? null, providerState: sendState.state || null,
+          ...(sendState.state === 'AWAITING_APPROVAL' ? { esperaFirma: true } : {}),
+          feeCop, newBalance: afterDebit,
+        })
       }
       // Falló (o el send ya vino DEVUELTO) → REINTEGRAR monto + comisión
       // (atómico; fallback read-write). El estado devuelto se guarda como error.

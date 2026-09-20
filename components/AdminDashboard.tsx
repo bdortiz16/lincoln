@@ -312,6 +312,18 @@ const PanelConciliacion: React.FC<{ datos: any; onCerrar: () => void }> = ({ dat
                             <Cifra n={nf(datos.enCurso)} rotulo="siguen sin confirmar" color={datos.enCurso ? AMBAR : TXT} />
                         </div>
 
+                        {datos.esperaFirma > 0 && (
+                            <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 11, border: `1px solid ${AMBAR}44`, background: `${AMBAR}10` }}>
+                                <div style={{ fontSize: 13.5, fontWeight: 700, color: TXT }}>
+                                    {datos.esperaFirma} esperando firma
+                                </div>
+                                <div style={{ fontSize: 11.5, color: TXT2, marginTop: 3, lineHeight: 1.5 }}>
+                                    Tu cuenta tiene firma múltiple activa: estos envíos no salen hasta que alguien
+                                    los firme en el panel del proveedor. A las 24 h expiran y se revierten solos.
+                                </div>
+                            </div>
+                        )}
+
                         {datos.devueltos > 0 && (
                             <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 11, border: `1px solid ${ROJO}33`, background: `${ROJO}10` }}>
                                 <div style={{ fontSize: 13.5, fontWeight: 700, color: TXT }}>
@@ -639,6 +651,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     const dev = res.filter(x => x.result === 'refunded');
     const comp = res.filter(x => x.result === 'completed');
     const quedan = res.filter(x => x.result === 'still_processing' || x.result === 'sin_confirmar_revisar');
+    // Esperando firma es un caso aparte y accionable: hay que ir a firmar al
+    // panel del proveedor, y si nadie firma en 24 h el envío expira solo.
+    const firma = res.filter(x => x.result === 'espera_firma').length;
 
     // CÓMO se emparejó cada uno. No es lo mismo la referencia exacta que
     // "único con ese monto": lo segundo hay que poder mirarlo antes de confiar.
@@ -658,6 +673,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
 
     setResConciliar({
       revisados: r.checked ?? res.length,
+      esperaFirma: firma,
       completados: comp.length,
       devueltos: dev.length,
       plata: dev.reduce((n, x) => n + Number(x.refund ?? 0), 0),

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { BrebRecaudo } from './BrebRecaudo';
 import {
   Landmark,
   CheckCircle2,
@@ -1250,6 +1251,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // sí y otras no — y React cuenta los hooks por orden. Se rompe al abrir un
   // comprobante, no al escribirlo.
   const [bajandoPdf, setBajandoPdf] = useState(false);
+  // La llave Bre-B para RECIBIR pagos. Vive en la misma billetera Bre-B: no es
+  // una segunda cuenta, es una dirección de entrada a la que ya existe.
+  const [recaudoOpen, setRecaudoOpen] = useState(false);
 
   const callMouvProxy = async (payload: Record<string, unknown>) => {
       const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
@@ -3279,6 +3283,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           </div>
                           <div style={{ padding: '11px 20px', borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.015)', display: 'flex', gap: 13 }}>
                               <button onClick={() => { setDispersRail('COP_BREB'); setMouvMode('full'); setActiveView('mouv'); }} disabled={brebBal <= 0} style={{ fontSize: 12, fontWeight: 600, color: brebBal <= 0 ? '#878E88' : '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors disabled:cursor-not-allowed">Dispersar</button>
+                              <button onClick={() => setRecaudoOpen(true)} style={{ fontSize: 12, fontWeight: 600, color: '#4ADE80' }} className="hover:opacity-80 transition-opacity">Recibir pagos</button>
                               <button onClick={() => { setBrebMoveOpen(true); setBrebDir('to_peso'); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Mover saldo</button>
                           </div>
                       </div>
@@ -4850,6 +4855,14 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       )}
 
       {renderTxDetail()}
+      {recaudoOpen && currentUser?.id && (
+        <BrebRecaudo
+          userId={currentUser.id}
+          authHeader={myAuthHeader}
+          onCerrar={() => { setRecaudoOpen(false); refreshData?.(); }}
+          showToast={showToast}
+        />
+      )}
 
       {/* PAY 2FA VERIFY MODAL */}
       {showPayVerify && (
