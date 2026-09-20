@@ -41,9 +41,21 @@ jobs:
           SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           if [ -z "$SUPABASE_URL" ] || [ -z "$SERVICE_KEY" ]; then
-            echo "❌ Faltan los secretos SUPABASE_URL y/o SUPABASE_SERVICE_ROLE_KEY."
-            echo "   GitHub → Settings → Secrets and variables → Actions."
-            exit 1
+            echo "⏭️  Todavía sin configurar: faltan los secretos SUPABASE_URL y/o SUPABASE_SERVICE_ROLE_KEY."
+            echo "    GitHub → Settings → Secrets and variables → Actions."
+            # NO se falla en las corridas programadas.
+            #
+            # Estaba con exit 1 y eso mandaba un correo de "All jobs have failed"
+            # CADA CINCO MINUTOS mientras los secretos no estuvieran puestos --
+            # a las 12 de la noche, por algo que no es una falla sino una
+            # configuración pendiente. Una alerta que suena sola cada cinco
+            # minutos se apaga, y con ella se apagan las que sí importan.
+            #
+            # A mano (workflow_dispatch) SÍ falla: si alguien lo corre para
+            # probarlo, tiene que enterarse de que no está configurado y no ver
+            # un tilde verde engañoso.
+            if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then exit 1; fi
+            exit 0
           fi
 
           RESP=$(curl -sS --max-time 120 -w '\n%{http_code}' \
