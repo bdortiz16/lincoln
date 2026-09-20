@@ -1,0 +1,69 @@
+name: Conciliar Bre-B
+
+# POR QUE EXISTE
+#   La conciliación decide si un envío se completó o se devolvió, y si se
+#   devolvió REINTEGRA la plata al cliente. Hasta ahora sólo corría cuando
+#   alguien abría una pantalla: la del cliente al entrar a la app, o la del
+#   admin al apretar un botón. Con el listado de Mouv llegando con retraso, un
+#   solo intento casi siempre cae temprano y no encuentra nada — y una
+#   devolución quedaba sin reembolsar hasta que a alguien se le ocurría mirar.
+#
+#   Esto lo corre cada 5 minutos sin depender de nadie.
+#
+# LO CORRECTO A LARGO PLAZO es pg_cron dentro de Supabase: no depende de
+# GitHub ni de guardar la service_role key acá. Este workflow es el camino
+# corto para que empiece a correr hoy.
+
+on:
+  schedule:
+    # Cada 5 minutos. GitHub no garantiza el minuto exacto y puede atrasarse
+    # con carga alta; para esto alcanza — la conciliación es idempotente y lo
+    # que no se concilie en una corrida se concilia en la siguiente.
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+# Si una corrida se demora, la siguiente NO arranca encima: dos barridos en
+# paralelo contra el mismo proveedor gastan el cupo de lectura al pedo.
+concurrency:
+  group: conciliar-breb
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  conciliar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Conciliar dispersiones Bre-B
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SERVICE_KEY" ]; then
+            echo "❌ Faltan los secretos SUPABASE_URL y/o SUPABASE_SERVICE_ROLE_KEY."
+            echo "   GitHub → Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+
+          RESP=$(curl -sS --max-time 120 -w '\n%{http_code}' \
+            -X POST "$SUPABASE_URL/functions/v1/mouv-proxy" \
+            -H "Content-Type: application/json" \
+            -H "apikey: $SERVICE_KEY" \
+            -H "Authorization: Bearer $SERVICE_KEY" \
+            -d '{"action":"reconcile_breb","todos":true}')
+
+          CODE=$(echo "$RESP" | tail -n1)
+          BODY=$(echo "$RESP" | sed '$d')
+
+          # El cuerpo NO se imprime entero: trae ids de movimientos y montos de
+          # clientes, y los logs de Actions los lee cualquiera con acceso al
+          # repo. Solo los contadores.
+          echo "HTTP $CODE"
+          echo "$BODY" | jq -r '"revisados: \(.checked // 0)"' || true
+          echo "$BODY" | jq -r '[.results[]?.result] | group_by(.) | map("  \(.[0]): \(length)") | .[]' || true
+          echo "$BODY" | jq -r 'select(.ok != true) | "ERROR: \(.message // .error)"' || true
+
+          # Un 5xx es un problema real que hay que ver; un 200 con casos sin
+          # confirmar es normal y no debe pintar la corrida de rojo.
+          if [ "$CODE" -ge 500 ]; then exit 1; fi

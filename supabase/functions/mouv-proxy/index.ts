@@ -91,6 +91,24 @@ async function creditBalanceAtomic(userId: string, col: string, delta: number): 
   await db.from('users').update({ balances: { ...bals, [col]: nb } }).eq('id', userId)
 }
 
+// ── AVISO AL TELEFONO DEL CLIENTE ─────────────────────────────────
+// Cuando un envio se devuelve, el cliente tiene que enterarse YA: del otro lado
+// hay alguien esperando ese pago y, hasta que no lo sepa, no puede rehacerlo ni
+// avisarle a su beneficiario. El correo llega, pero se lee cuando se lee.
+//
+// Nunca frena nada: si el push falla, el reembolso ya ocurrio y lo que
+// corresponde es seguir.
+async function avisarCliente(userId: string, titulo: string, cuerpo: string, tag: string): Promise<void> {
+  try {
+    await fetch(`${SUPABASE_URL}/functions/v1/push`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+      body: JSON.stringify({ action: 'enviar', user_ids: [userId], titulo, cuerpo, tag, url: '/movimientos', insistir: true }),
+      signal: AbortSignal.timeout(8000),
+    })
+  } catch { /* el aviso es un extra, no una condicion */ }
+}
+
 // ── AVISO AL ADMIN POR DISPERSION SIN CONFIRMAR ───────────────────
 // Los botones de Fallos resuelven el caso, pero no evitan que se repita:
 // alguien tiene que MIRAR. Dos veces ya quedo plata de un cliente en el aire
@@ -897,6 +915,17 @@ async function validCaller(req: Request, payload: any): Promise<{ ok: boolean; u
   // (El "AdminBypass <password>" se eliminó: secreto compartido que se filtraba
   //  en el bundle del frontend. El admin real entra por JWT con role='admin'.)
   const jwt = authHeader.replace('Bearer ', '').trim()
+
+  // LLAMADA INTERNA (cron / otra edge function). La service_role key no es un
+  // JWT de usuario: db.auth.getUser() la rechaza, asi que sin esto un cron no
+  // podia correr la conciliacion y todo dependia de que alguien tuviera una
+  // pantalla abierta.
+  //
+  // Solo la sabe el servidor: no viaja al navegador ni esta en el bundle.
+  if (jwt && SERVICE_KEY && jwt === SERVICE_KEY) {
+    return { ok: true, userId: payload?.user_id ?? payload?.userId ?? null, admin: true, viaJwt: true }
+  }
+
   if (jwt) {
     try {
       const { data: { user } } = await Promise.race([
@@ -1330,6 +1359,12 @@ serve(async (req: Request) => {
         await creditBalanceAtomic(duenio, railCol, refund)
         await logAudit(duenio, 'mouv.reconcile_breb.refunded', { txId: tx.id, refund, providerState: st.state, providerError: motivoProveedor, providerRef: ref })
         await notifyTx(tx.id) // correo "tu envío fue devuelto · saldo reintegrado"
+        // Y al telefono, que es donde se lee en el momento.
+        await avisarCliente(duenio,
+          'Tu envío fue devuelto',
+          `El envío de ${Number(tx.amount ?? 0).toLocaleString('es-CO')} a ${String((rd as any).beneficiary ?? 'tu beneficiario')} no llegó a destino. `
+          + `Ya te reintegramos ${refund.toLocaleString('es-CO')} COP a tu saldo${motivoProveedor ? `. Motivo: ${motivoProveedor}` : '.'}`,
+          `dev-${tx.id}`)
         out.push({ id: tx.id, result: 'refunded', refund })
         continue
       }
