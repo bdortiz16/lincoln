@@ -1499,11 +1499,17 @@ serve(async (req: Request) => {
     const userId = requireOwner(caller, payload)
     if (!userId) return json(403, { error: 'forbidden', message: 'Vuelve a iniciar sesión.' })
 
-    const { data: u } = await db.from('users')
-      .select('id, full_name, email, document_number, raw_data').eq('id', userId).maybeSingle()
-    if (!u) return json(404, { error: 'not_found' })
+    // SELECT * a proposito. Pedir `document_number` por nombre reventaba la
+    // consulta entera cuando esa columna no existe en esta base: PostgREST
+    // devuelve error, `data` viene null, y el codigo lo leia como "el usuario
+    // no existe". En pantalla salia un seco "not_found" sobre un usuario que
+    // estaba perfectamente ahi.
+    const { data: u, error: uErr } = await db.from('users').select('*').eq('id', userId).maybeSingle()
+    if (uErr) return json(500, { error: 'no_se_pudo_leer', message: 'No se pudo leer tu cuenta para emitir la llave. Intentá de nuevo.' })
+    if (!u) return json(404, { error: 'no_existe', message: 'No encontramos tu cuenta.' })
 
-    const rd = ((u as any).raw_data ?? {}) as Record<string, any>
+    const au = u as any
+    const rd = (au.raw_data ?? {}) as Record<string, any>
     const guardada = rd.breb ?? null
 
     // Ya la tiene: NO se vuelve a llamar. Es idempotente del lado de Mouv, pero
@@ -1521,14 +1527,21 @@ serve(async (req: Request) => {
       return json(200, { ok: false, error: 'sin_llave', cuenta: rd.cuentaNo ?? null })
     }
 
-    const nombre = String((u as any).full_name ?? '').trim()
+    // El nombre con el que Mouv DERIVA la llave. Para una cuenta empresa el que
+    // corresponde es la razon social, no el nombre de la persona: la llave la
+    // va a ver quien le paga.
+    const nombre = String(au.company_name ?? au.full_name ?? au.name ?? '').trim()
     if (nombre.replace(/[^A-Za-z0-9]/g, '').length < 3) {
       return json(400, {
         error: 'nombre_invalido',
         message: 'La cuenta necesita un nombre con al menos 3 letras o números para poder emitir la llave.',
       })
     }
-    const doc = String((u as any).document_number ?? '').replace(/\D/g, '')
+    // El NIT vive en distintos lugares segun como se dio de alta la cuenta. Sus
+    // ultimos 4 digitos son el sufijo de la llave, asi que vale buscarlo bien:
+    // sin el, el sufijo es aleatorio y la llave queda menos reconocible.
+    const rdu = (au.raw_data ?? {}) as Record<string, any>
+    const doc = String(rdu.nit ?? rdu.documentNumber ?? au.document_number ?? rdu.document ?? '').replace(/\D/g, '')
 
     const r = await mouvFetch('/breb/collect-keys', {
       method: 'POST',

@@ -51,6 +51,16 @@ export const BrebRecaudo: React.FC<Props> = ({ userId, authHeader, onCerrar, sho
     const [qrCargando, setQrCargando] = useState(false);
     const [copiado, setCopiado] = useState(false);
 
+    // NUNCA mostrar el código crudo del servidor. "not_found" en un cartel es
+    // lo mismo que no decir nada: el cliente no sabe si el problema es suyo, si
+    // se arregla reintentando, o si tiene que escribirnos. Si no vino un
+    // mensaje en castellano, se pone uno.
+    const mensajeDe = (j: any, porDefecto: string): string => {
+        const m = String(j?.message ?? '').trim();
+        if (m) return m;
+        return porDefecto;
+    };
+
     const llamar = useCallback(async (body: Record<string, unknown>) => {
         const r = await fetch(`${SURL}/functions/v1/mouv-proxy`, {
             method: 'POST',
@@ -68,7 +78,12 @@ export const BrebRecaudo: React.FC<Props> = ({ userId, authHeader, onCerrar, sho
             const r = await llamar({ action: 'breb_llave', soloLeer: true });
             const j = await r.json().catch(() => null);
             if (j?.ok && j.llave?.valor) { setLlave(j.llave); setCuenta(j.cuenta ?? null); }
-            else if (j?.error && j.error !== 'sin_llave') setError({ texto: j.message ?? j.error });
+            else if (j?.cuenta) setCuenta(j.cuenta);
+            // 'sin_llave' no es un error: es el estado normal de quien todavía
+            // no generó la suya, y para eso está el botón.
+            if (j?.error && j.error !== 'sin_llave') {
+                setError({ texto: mensajeDe(j, 'No pudimos consultar tu llave de recaudo. Probá de nuevo en un momento.') });
+            }
         } catch { /* la pantalla se muestra igual, con el botón de generar */ }
         setCargando(false);
     }, [llamar]);
@@ -90,7 +105,10 @@ export const BrebRecaudo: React.FC<Props> = ({ userId, authHeader, onCerrar, sho
                 setLlave(j.llave); setCuenta(j.cuenta ?? null);
                 showToast?.('Tu llave de recaudo está lista.');
             } else {
-                setError({ texto: j?.message ?? 'No se pudo generar la llave.', intentadas: j?.intentadas ?? undefined });
+                setError({
+                    texto: mensajeDe(j, 'No se pudo generar la llave en este momento. Probá de nuevo o escribinos.'),
+                    intentadas: j?.intentadas ?? undefined,
+                });
             }
         } catch (e: any) {
             setError({ texto: `Error de red: ${String(e?.message ?? e)}` });
@@ -106,8 +124,8 @@ export const BrebRecaudo: React.FC<Props> = ({ userId, authHeader, onCerrar, sho
         try {
             const r = await llamar({ action: 'breb_qr' });
             if (!r.ok) {
-                let msg = 'No se pudo traer el código QR.';
-                try { const j = await r.json(); msg = j?.message || msg; } catch { /* sin cuerpo */ }
+                let msg = 'No se pudo traer el código QR en este momento.';
+                try { const j = await r.json(); msg = mensajeDe(j, msg); } catch { /* sin cuerpo */ }
                 setError({ texto: msg });
             } else {
                 const blob = await r.blob();
