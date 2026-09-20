@@ -6706,9 +6706,17 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           const TetherBadge = <span style={{ width: 24, height: 24, borderRadius: '50%', background: '#26A17B', color: '#fff', fontWeight: 800, fontSize: 11, display: 'grid', placeItems: 'center' }}>₮</span>;
           const CopBadge = <span style={{ width: 24, height: 24, borderRadius: '50%', overflow: 'hidden', display: 'block', background: 'linear-gradient(to bottom, #FCD116 0%, #FCD116 50%, #003893 50%, #003893 75%, #CE1126 75%, #CE1126 100%)' }} />;
           const setPct = (p: number) => {
-              // "Todo" descuenta la comisión para que el resultado sea exacto.
+              // ENTEROS. El campo es de enteros: formatInputNumber hace
+              // replace(/\D/g,''), que BORRA el punto decimal en vez de
+              // redondear. Pasarle "1234.56" daba "123456" — cien veces el
+              // saldo. Con 1.234,56 USDT, "Todo" escribía 123.456 y al
+              // confirmar salía "Saldo insuficiente": el botón de máximo no
+              // funcionaba nunca, salvo con saldos redondos.
+              //
+              // Math.floor, no redondeo: el botón nunca puede proponer más de
+              // lo que hay. Es el mismo criterio que ya usa Enviar.
               const base = p === 100 ? cvAvail : cvAvail * p / 100;
-              setConvertAmountStr(formatInputNumber(String(Math.floor(base * 100) / 100)));
+              setConvertAmountStr(formatInputNumber(String(Math.max(0, Math.floor(base)))));
           };
           return (
           <div className="fixed inset-0 z-50 p-4" style={{ background: 'rgba(4,5,4,0.74)', backdropFilter: 'blur(3px)', display: 'grid', placeItems: 'center' }} onClick={closeConvertModal}>

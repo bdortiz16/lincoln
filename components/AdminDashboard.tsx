@@ -613,12 +613,29 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
       if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; }
     } catch { /* sin sesión */ }
-    const r = await fetch(`${SURL}/functions/v1/mouv-proxy`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}` },
-      body: JSON.stringify(cuerpo),
-    });
-    return r.json().catch(() => null);
+    // CON try/catch Y TIMEOUT. Sin esto, un corte de red dejaba la promesa
+    // rechazada sin atrapar: `resolviendo`/`conciliando` nunca volvían a false y
+    // los botones de esa fila -- Sí se pagó, Vincular ID, Reembolsar, Ya la
+    // devolví -- quedaban en gris y deshabilitados hasta recargar la página,
+    // sin un solo mensaje que dijera qué pasó.
+    try {
+      const r = await fetch(`${SURL}/functions/v1/mouv-proxy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}` },
+        body: JSON.stringify(cuerpo),
+        signal: AbortSignal.timeout(90000),
+      });
+      const t = await r.text();
+      if (!t) return { ok: false, message: 'El servicio no respondió. Probá de nuevo.' };
+      try { return JSON.parse(t); } catch { return { ok: false, message: `Respuesta no válida del servicio (HTTP ${r.status}).` }; }
+    } catch (e: any) {
+      return {
+        ok: false,
+        message: e?.name === 'TimeoutError'
+          ? 'El proveedor tardó demasiado. No se cambió nada; volvé a intentarlo.'
+          : `No se pudo conectar: ${String(e?.message ?? e)}`,
+      };
+    }
   };
 
   const devolverDispersion = async (t: any) => {
@@ -2816,8 +2833,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const renderReports = () => {
       // Filter logic for User Reports
       const filteredReportUsers = allUsers.filter(u => 
-          u.name.toLowerCase().includes(reportUserSearch.toLowerCase()) || 
-          u.email.toLowerCase().includes(reportUserSearch.toLowerCase()) ||
+          (u.name ?? '').toLowerCase().includes(reportUserSearch.toLowerCase()) || 
+          (u.email ?? '').toLowerCase().includes(reportUserSearch.toLowerCase()) ||
           u.id.includes(reportUserSearch)
       );
 
@@ -3703,8 +3720,8 @@ const renderDesign = () => (
         ? allUsers.filter((u: any) => (u.otcEnabled || u.raw_data?.otcEnabled))
         : allUsers;
       const filteredUsers = baseUsers.filter(u =>
-          u.name.toLowerCase().includes(securitySearch.toLowerCase()) ||
-          u.email.toLowerCase().includes(securitySearch.toLowerCase()) ||
+          (u.name ?? '').toLowerCase().includes(securitySearch.toLowerCase()) ||
+          (u.email ?? '').toLowerCase().includes(securitySearch.toLowerCase()) ||
           u.id.includes(securitySearch)
       );
 
@@ -4103,7 +4120,6 @@ const renderDesign = () => (
                 }}>
                 {conciliando ? 'Consultando al proveedor…' : 'Conciliar ahora con el proveedor'}
               </button>
-              {resConciliar && <PanelConciliacion datos={resConciliar} onCerrar={() => setResConciliar(null)} />}
             </div>
 
             {sinConfirmarList.map((t: any) => (
@@ -4365,6 +4381,12 @@ const renderDesign = () => (
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] font-sans text-slate-900 flex">
+        {/* Va ACÁ, fuera de renderFallos(): la conciliación automática corre cada
+            3 min desde cualquier pestaña y puede REEMBOLSAR plata. Montado sólo
+            dentro de Fallos, ese aviso no se veía nunca salvo que el operador
+            estuviera justo en esa pestaña — o sea, casi nunca. Se devolvía
+            dinero y en pantalla no pasaba nada. */}
+        {resConciliar && <PanelConciliacion datos={resConciliar} onCerrar={() => setResConciliar(null)} />}
         {/* Mobile overlay — tap outside sidebar to close */}
         {isSidebarOpen && (
           <div className="fixed inset-0 z-20 bg-black/50 lg:hidden" onClick={closeSidebar}/>

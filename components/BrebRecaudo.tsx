@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { X, Copy, QrCode, Check, AlertTriangle, RefreshCw, Download } from 'lucide-react';
 
 // ─────────────────────────────────────────────
@@ -61,14 +61,27 @@ export const BrebRecaudo: React.FC<Props> = ({ userId, authHeader, onCerrar, sho
         return porDefecto;
     };
 
+    // `authHeader` llega como una función suelta del padre, sin memoizar, así
+    // que cambia de identidad en CADA render del padre — y el padre re-renderiza
+    // solo cada 10 s. Con ella en las dependencias, `llamar` y `leer` se
+    // recreaban, el efecto volvía a correr, y el modal se vaciaba a "Cargando…"
+    // cada 10 segundos: la llave y el QR desaparecían de abajo del dedo, y se
+    // disparaba un POST de más cada vez.
+    //
+    // Va en un ref: se usa siempre la última versión sin que su identidad
+    // cuente como dependencia.
+    const authRef = useRef(authHeader);
+    authRef.current = authHeader;
+
     const llamar = useCallback(async (body: Record<string, unknown>) => {
         const r = await fetch(`${SURL}/functions/v1/mouv-proxy`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: authHeader() },
+            headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: authRef.current() },
             body: JSON.stringify({ userId, ...body }),
+            signal: AbortSignal.timeout(20000),
         });
         return r;
-    }, [userId, authHeader]);
+    }, [userId]);
 
     // Primera lectura: NO emite nada. Emitir una llave es una acción del
     // cliente, no algo que pase por abrir una pantalla.

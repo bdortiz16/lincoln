@@ -453,7 +453,10 @@ export const AdminClientes: React.FC<{
                   </p>
                   <div style={{ display: 'flex', gap: 8 }}>
                     <button onClick={async () => { await verifyUser?.(sel.id, 'verified'); await refreshData?.(); showToast?.('Cliente verificado.'); }} style={btnPri}>Aprobar KYC</button>
-                    <button onClick={() => showToast?.('Verificación reenviada al cliente.')} style={btnSec}>Reenviar verificación</button>
+                    <button
+                      onClick={() => showToast?.('Todavía no está conectado: el reenvío de verificación hay que hacerlo desde soporte.', 7000)}
+                      title="Aún no conectado"
+                      style={{ ...btnSec, opacity: 0.55 }}>Reenviar verificación · pronto</button>
                   </div>
                 </div>
               )}
@@ -716,7 +719,10 @@ const Resumen: React.FC<any> = ({ sel, movs, saldo, totalUsd, alternar, bloquead
               );
             })}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 6 }}>
-              <button onClick={() => showToast?.('Se envió el correo para restablecer la contraseña.')} style={btnSec}>Restablecer contraseña</button>
+              <button
+                onClick={() => showToast?.('Todavía no está conectado: el restablecimiento hay que hacerlo desde soporte.', 7000)}
+                title="Aún no conectado"
+                style={{ ...btnSec, opacity: 0.55 }}>Restablecer contraseña · pronto</button>
               <button
                 onClick={() => {
                   setEscrito('');

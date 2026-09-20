@@ -48,6 +48,20 @@ function adminAuthHeader(): string {
     return `Bearer ${SKEY}`;
 }
 
+// Quién está operando, sacado del mismo JWT con el que se llama al servidor.
+// Hace falta para saber si un cierre lo tomé YO o lo tomó otro.
+function miIdAdmin(): string {
+    try {
+        const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
+        if (!k) return '';
+        const d = JSON.parse(localStorage.getItem(k) || '{}');
+        const t = String(d.access_token ?? '');
+        if (!t) return '';
+        const p = JSON.parse(atob(t.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+        return String(p.sub ?? '');
+    } catch { return ''; }
+}
+
 async function callMesa(action: string, body: Record<string, unknown> = {}): Promise<any> {
     try {
         const r = await fetch(`${SURL}/functions/v1/otc-mesa`, {
@@ -751,7 +765,15 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
         return marco(<div style={{ background: PANEL, border: `1px solid ${BORDE}`, borderRadius: 16, padding: 32, fontSize: 13, color: TXT2 }}>{aviso ?? 'No pude abrir el cierre.'}</div>);
     }
 
-    const mia  = !!cierre.tomada_at;
+    // "Mía" tiene que significar MÍA. Antes solo comprobaba que ALGUIEN lo
+    // hubiera tomado: el operador veía "Atiende Fulano" en la cabecera y todos
+    // los botones activos igual, así que podía fijar otra tasa, completar y
+    // acreditar sobre un cierre ajeno. Es exactamente la falla que el
+    // comentario de cabecera de este archivo llama la peor posible en una mesa.
+    //
+    // Si el servidor no devuelve `tomada_por` no se bloquea: quedarse sin poder
+    // atender por un campo que no vino sería peor que el riesgo que evita.
+    const mia  = !!cierre.tomada_at && (!cierre.tomada_por || String(cierre.tomada_por) === miIdAdmin());
     const viva = !['completada', 'cancelada'].includes(cierre.status);
     const bloqueado = viva && !mia;
 
