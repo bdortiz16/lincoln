@@ -340,16 +340,39 @@ async function mouvPayout(
     // dos envíos iguales chocarían. El sufijo corto evita la colisión.
     const refBase = cleanField(recipient.reference) ?? 'Pago Lincoin'
     const refUniq = `${refBase} ${Date.now().toString(36).slice(-5)}`
-    const r = await mouvFetch('/transfers/send', {
-      method: 'POST',
-      body: JSON.stringify({
-        amount: amountCents,
-        destination: { brebKey: { type: keyType, value: sendKey } },
-        targetName,
-        targetDocument,
-        reference: refUniq,
-      }),
+    const cuerpoEnvio = JSON.stringify({
+      amount: amountCents,
+      destination: { brebKey: { type: keyType, value: sendKey } },
+      targetName,
+      targetDocument,
+      reference: refUniq,
     })
+    const t0 = Date.now()
+    let r = await mouvFetch('/transfers/send', { method: 'POST', body: cuerpoEnvio })
+
+    // UN 5xx O UN TIMEOUT NO SIGNIFICAN "NO SALIO".
+    //
+    // Significan que no sabemos: la transferencia pudo haberse despachado y
+    // haberse cortado la respuesta. Hasta ahora eso se trataba como fallo y se
+    // REEMBOLSABA al cliente en el acto -- si la plata igual habia salido, se
+    // pagaba dos veces.
+    //
+    // Mouv da la salida: `reference` es idempotency key por 60 segundos.
+    // Reenviar EXACTAMENTE lo mismo no crea un segundo envio; devuelve el que
+    // ya existe. Asi que ante un 5xx se pregunta de nuevo con la misma
+    // referencia: si habia salido, vuelve con su id; si no, vuelve el error de
+    // verdad.
+    //
+    // Solo dentro de la ventana de 60 s. Pasada, un reenvio SI crearia una
+    // transferencia nueva, que es exactamente lo que se esta evitando.
+    const transitorio = r.status === 0 || r.status >= 500
+    if (transitorio && Date.now() - t0 < 45_000) {
+      const reintento = await mouvFetch('/transfers/send', { method: 'POST', body: cuerpoEnvio })
+      // Se queda con el reintento solo si aporta algo: si tambien fallo, el
+      // error original describe mejor lo que paso.
+      if (reintento.ok) r = reintento
+      else if (reintento.status !== 0 && reintento.status < 500) r = reintento
+    }
     // Devolver el titular RESUELTO (oficial, de resolve-key) para que el
     // comprobante muestre el nombre/documento reales del beneficiario.
     // La referencia EXACTA que se mando vuelve con el resultado. Sin esto no
@@ -2751,8 +2774,43 @@ serve(async (req: Request) => {
           feeCop, newBalance: afterDebit,
         })
       }
-      // Falló (o el send ya vino DEVUELTO) → REINTEGRAR monto + comisión
-      // (atómico; fallback read-write). El estado devuelto se guarda como error.
+      // ── FALLO TRANSITORIO: NO SE REEMBOLSA ──────────────────────────
+      // Un 5xx o un timeout NO significan "no salio": significan que no
+      // sabemos. Ya se reintento una vez con la MISMA referencia (idempotente
+      // 60 s) y siguio sin respuesta util, asi que el desenlace es
+      // desconocido.
+      //
+      // Reembolsar acá seria afirmar que no salio. Si habia salido, el cliente
+      // cobra dos veces y esa plata no vuelve. Dejarla debitada es el error
+      // barato: si efectivamente no salio, lo resuelve una persona en Fallos en
+      // minutos, con un boton que ya existe.
+      //
+      // Entre pagar dos veces y hacer esperar a alguien, se hace esperar.
+      const rechazoClaro = pay.status > 0 && pay.status < 500
+      if (!rechazoClaro) {
+        await asentarTx('Procesando', {
+          ...prettyBase, ...feeDetail,
+          providerReference: pay.referencia ?? null,
+          desenlaceDesconocido: true,
+          httpStatus: pay.status,
+          error: pay.data ?? 'sin_respuesta',
+          sinConfirmarDesde: new Date().toISOString(),
+          revisionManual: true,
+        })
+        await logAudit(userId, `mouv.${action}.desenlace_desconocido`, {
+          txId, amount, rail, httpStatus: pay.status, referencia: pay.referencia ?? null,
+        })
+        await avisarAdminSinConfirmar({ id: txId, user_id: userId, amount, currency: railCol, raw_data: prettyBase })
+        await notifyTx(txId)
+        return json(200, {
+          ok: true, status: 'Procesando', confirmada: false, desenlaceDesconocido: true,
+          message: 'No pudimos confirmar el envío con el proveedor. NO lo reintentes: lo estamos verificando y te avisamos en minutos.',
+          feeCop, newBalance: afterDebit,
+        })
+      }
+
+      // Rechazo EXPLICITO del proveedor (4xx) o envio ya devuelto → REINTEGRAR
+      // monto + comisión (atómico; fallback read-write).
       let restored = 0
       const { data: adjR, error: adjRErr } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { [railCol]: totalDebit } })
       if (!adjRErr && !(adjR as any)?.error) {

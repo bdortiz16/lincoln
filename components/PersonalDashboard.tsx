@@ -3286,10 +3286,14 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9, fontWeight: 700, letterSpacing: '0.7px', padding: '3px 7px', borderRadius: 999, whiteSpace: 'nowrap' }}>SEGUNDOS</span>
                               </div>
                               <p style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-1px', color: '#F4F4F2', marginTop: 16 }}>{Math.round(brebBal).toLocaleString('es-CO')}</p>
-                              <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '8px 0 0' }}>Dispersa a cuentas bancarias colombianas por llave Bre-B en segundos.</p>
+                              <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '8px 0 0' }}>Dispersa a cuentas bancarias colombianas por llave Bre-B en segundos. Hasta 12 M por envío.</p>
                               <div className="flex items-center" style={{ gap: 7, marginTop: 12 }}>
                                   <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#4ADE80' }} />
-                                  <span style={{ fontSize: 11.5, color: '#878E88' }}>Operativo 24/7 · hasta 50 M por envío</span>
+                                  {/* El tope de Bre-B es 12 M, no 50 M: 50 es el de ACH. La tarjeta
+                                      prometía 50 y el servidor corta en 12, así que un cliente con
+                                      20 M para enviar armaba toda la operación y se la rebotaban
+                                      al final. */}
+                                  <span style={{ fontSize: 11.5, color: '#878E88' }}>Operativo 24/7</span>
                               </div>
                           </div>
                           <div style={{ padding: '11px 20px', borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.015)', display: 'flex', gap: 13 }}>
@@ -3313,7 +3317,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9, fontWeight: 700, letterSpacing: '0.7px', padding: '3px 7px', borderRadius: 999, whiteSpace: 'nowrap' }}>HORARIO</span>
                               </div>
                               <p style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-1px', color: '#F4F4F2', marginTop: 16 }}>{Math.round(achBal).toLocaleString('es-CO')}</p>
-                              <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '8px 0 0' }}>Dispersa a cualquier cuenta en Colombia por el riel ACH tradicional.</p>
+                              <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '8px 0 0' }}>Dispersa a cualquier cuenta en Colombia por el riel ACH tradicional. Hasta 50 M por envío.</p>
                               <div className="flex items-center" style={{ gap: 7, marginTop: 12 }}>
                                   <span style={{ width: 6, height: 6, borderRadius: '50%', background: achOpen ? '#4ADE80' : '#878E88' }} />
                                   <span style={{ fontSize: 11.5, color: '#878E88' }}>L–V 7:00–18:00 · {achOpen ? 'operativo ahora' : 'fuera de horario'}</span>
