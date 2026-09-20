@@ -1426,6 +1426,315 @@ serve(async (req: Request) => {
     return json(200, { ok: true, confirmada: true })
   }
 
+  // ══════════════════════════════════════════════════════════════════
+  //  RECAUDO BRE-B POR LLAVE (modo agregador)
+  //  ----------------------------------------------------------------
+  //  Cada cliente tiene UNA llave Bre-B a su nombre para que le paguen. El
+  //  dinero cae en NUESTRO saldo en Mouv, marcado con la llave que lo recibio,
+  //  y nosotros se lo acreditamos a su billetera COP_BREB. La misma billetera
+  //  donde le acredita la mesa: no hay una segunda cuenta, porque dos saldos
+  //  obligarian a mover plata entre ellos a mano y crearian una forma nueva de
+  //  tenerla en el lugar equivocado.
+  //
+  //  LA LLAVE NO SE ELIGE. Mouv la DERIVA del nombre del cliente
+  //  ("Panaderia La Espiga" → @PANADERIALAESPIG3456, con los ultimos 4 del
+  //  documento como sufijo). No hay picker de @ ni de x.
+  //
+  //  EL TITULAR REGISTRADO EN LA RED BRE-B ES VECTORA, no el cliente. La llave
+  //  lleva su nombre, nada mas. En pantalla se dice "tu llave para recibir
+  //  pagos", nunca "tu cuenta bancaria": afirmar lo segundo seria falso.
+  //
+  //  Requiere modo agregador habilitado (si no, 403 AGGREGATOR_NOT_ENABLED).
+  // ══════════════════════════════════════════════════════════════════
+
+  // Los errores de Mouv, dichos en castellano y accionables. "No se pudo" deja
+  // al operador sin saber si el problema es el nombre, el permiso o la red.
+  const errorLlave = (status: number, d: any): { error: string; message: string; extra?: any } => {
+    const cod = String(d?.error ?? '').toUpperCase()
+    if (cod === 'AGGREGATOR_NOT_ENABLED' || status === 403 && !cod) {
+      return { error: 'agregador_inactivo', message: 'El modo agregador todavía no está habilitado para Lincoin. Hay que pedirlo a Vectora antes de poder emitir llaves.' }
+    }
+    if (cod === 'ACCOUNT_NOT_READY') {
+      return { error: 'cuenta_no_lista', message: 'La cuenta de recaudo Bre-B todavía no está lista del lado del proveedor.' }
+    }
+    if (cod === 'NAME_NOT_DERIVABLE') {
+      return { error: 'nombre_invalido', message: 'El nombre de la empresa no sirve para derivar una llave: necesita al menos 3 letras o números utilizables.' }
+    }
+    if (cod === 'KEY_TAKEN') {
+      return {
+        error: 'nombre_tomado',
+        message: 'Ese nombre ya está tomado en la red Bre-B, incluso probando variantes. Hay que cambiarlo un poco y reintentar.',
+        extra: { intentadas: d?.attempted ?? null },
+      }
+    }
+    if (cod === 'INSUFFICIENT_SCOPE') return { error: 'sin_permiso', message: 'La llave de API no tiene permiso de escritura.' }
+    if (status === 429) return { error: 'limite', message: 'Se alcanzó el límite de creación de llaves. Esperá un minuto y reintentá.' }
+    return { error: 'proveedor', message: String(d?.message ?? 'El proveedor no pudo emitir la llave en este momento.') }
+  }
+
+  // ── Emitir (o traer) la llave de recaudo del usuario ──────────────
+  if (action === 'breb_llave') {
+    const userId = requireOwner(caller, payload)
+    if (!userId) return json(403, { error: 'forbidden', message: 'Vuelve a iniciar sesión.' })
+
+    const { data: u } = await db.from('users')
+      .select('id, full_name, email, document_number, raw_data').eq('id', userId).maybeSingle()
+    if (!u) return json(404, { error: 'not_found' })
+
+    const rd = ((u as any).raw_data ?? {}) as Record<string, any>
+    const guardada = rd.breb ?? null
+
+    // Ya la tiene: NO se vuelve a llamar. Es idempotente del lado de Mouv, pero
+    // gastar una llamada por cada vez que alguien abre la pantalla se come el
+    // limite de 30/minuto sin necesidad.
+    if (!payload?.refrescar && guardada?.valor && guardada?.estado === 'ACTIVE') {
+      return json(200, { ok: true, llave: guardada, cuenta: rd.cuentaNo ?? null, deCache: true })
+    }
+
+    const nombre = String((u as any).full_name ?? '').trim()
+    if (nombre.replace(/[^A-Za-z0-9]/g, '').length < 3) {
+      return json(400, {
+        error: 'nombre_invalido',
+        message: 'La cuenta necesita un nombre con al menos 3 letras o números para poder emitir la llave.',
+      })
+    }
+    const doc = String((u as any).document_number ?? '').replace(/\D/g, '')
+
+    const r = await mouvFetch('/breb/collect-keys', {
+      method: 'POST',
+      body: JSON.stringify({
+        // El externalId es NUESTRO id de usuario: es la clave de idempotencia y
+        // con el se filtran despues los recaudos de esta persona.
+        externalId: String(userId),
+        name: nombre.slice(0, 80),
+        ...(doc.length >= 4 ? { document: doc.slice(0, 20) } : {}),
+      }),
+    })
+    if (!r.ok) {
+      const e = errorLlave(r.status, r.data)
+      await logAudit(userId, 'mouv.breb_llave.fallo', { httpStatus: r.status, cod: (r.data as any)?.error ?? null })
+      return json(r.status === 403 ? 403 : 502, { ...e, httpStatus: r.status })
+    }
+
+    const d: any = r.data ?? {}
+    const llave = {
+      id: String(d.id ?? ''),
+      valor: String(d.key?.value ?? ''),
+      tipo: String(d.key?.type ?? ''),
+      nombre: String(d.name ?? nombre),
+      estado: String(d.state ?? 'ACTIVE'),
+      creadaAt: d.createdAt ?? new Date().toISOString(),
+    }
+    if (!llave.valor) return json(502, { error: 'sin_llave', message: 'El proveedor no devolvió el valor de la llave.' })
+
+    // Numero de cuenta visible, una vez y para siempre. Es una ETIQUETA de la
+    // unica cuenta del usuario, no una cuenta aparte: lo que identifica de
+    // verdad al cliente para los recaudos es el externalId.
+    let cuentaNo = rd.cuentaNo ?? null
+    if (!cuentaNo) {
+      const { count } = await db.from('users').select('id', { count: 'exact', head: true }).not('raw_data->>cuentaNo', 'is', null)
+      cuentaNo = String((Number(count ?? 0) + 1) * 2 + 30).padStart(4, '0')
+    }
+
+    await db.from('users').update({ raw_data: { ...rd, breb: llave, cuentaNo } }).eq('id', userId)
+    await logAudit(userId, 'mouv.breb_llave.emitida', { llave: llave.valor, id: llave.id, idempotente: !!d.idempotent })
+    return json(200, { ok: true, llave, cuenta: cuentaNo, idempotente: !!d.idempotent })
+  }
+
+  // ── QR de cobro de la llave (PNG listo para mostrar o imprimir) ────
+  if (action === 'breb_qr') {
+    const userId = requireOwner(caller, payload)
+    if (!userId) return json(403, { error: 'forbidden', message: 'Vuelve a iniciar sesión.' })
+
+    const { data: u } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
+    const rd = ((u as any)?.raw_data ?? {}) as Record<string, any>
+    const keyId = String(rd.breb?.id ?? '')
+    if (!keyId) return json(409, { error: 'sin_llave', message: 'Primero hay que generar la llave de recaudo.' })
+
+    // Un QR vivo por llave: repetir devuelve el mismo (reused: true).
+    const q = await mouvFetch(`/breb/collect-keys/${encodeURIComponent(keyId)}/qr`, { method: 'POST' })
+    if (!q.ok) {
+      const cod = String((q.data as any)?.error ?? '')
+      const msg = cod === 'KEY_NOT_ACTIVE' ? 'La llave está suspendida o dada de baja, así que no se le puede emitir un QR.'
+        : 'El proveedor no pudo emitir el código QR en este momento.'
+      return json(502, { error: 'qr_no_disponible', message: msg })
+    }
+    const qrId = String((q.data as any)?.qr?.id ?? '')
+    if (!qrId) return json(502, { error: 'qr_no_disponible', message: 'El proveedor no devolvió el código QR.' })
+
+    const img = await fetch(`${MOUV_BASE}/breb/collect-keys/qr/${encodeURIComponent(qrId)}.png`, {
+      headers: { accept: 'image/png', authorization: `Bearer ${MOUV_API_KEY}` },
+      signal: AbortSignal.timeout(20000),
+    }).catch(() => null)
+    if (!img || !img.ok) return json(502, { error: 'qr_no_disponible', message: 'No se pudo descargar la imagen del QR.' })
+
+    const bytes = new Uint8Array(await img.arrayBuffer())
+    return new Response(bytes, {
+      status: 200,
+      headers: { ...CORS, 'Content-Type': 'image/png', 'Cache-Control': 'private, max-age=300' },
+    })
+  }
+
+  // ── CONCILIAR LOS RECAUDOS BRE-B ──────────────────────────────────
+  // UNA consulta trae los depositos de TODOS los clientes y se reparten por
+  // brebKey.externalId. Consultar cliente por cliente serian mil llamadas
+  // contra un limite de 100/minuto: imposible con mil clientes, y esta
+  // integracion nace pensada para mil.
+  //
+  // SE ACREDITA EL NETO, NUNCA EL BRUTO.
+  //   A nuestro saldo en Mouv entra el neto. Acreditarle el bruto al cliente
+  //   nos regalaria la comision en cada recaudo. Y la comision NO se calcula
+  //   con un porcentaje escrito aca: viene en cada deposito (feeAmountCents e
+  //   ivaAmountCents). Hoy puede ser cero; si manana cobran, los numeros
+  //   siguen siendo ciertos sin tocar una linea.
+  //
+  // SOLO 'ASSIGNED' ES PLATA.
+  //   PENDING_CONFIRM no se acredita. Y un deposito puede pasar a REVERSED
+  //   DESPUES de acreditado: es el mismo problema de las dispersiones
+  //   devueltas, con el signo cambiado, y peor, porque el cliente ya lo pudo
+  //   gastar. Por eso se siguen mirando los ya acreditados y, si se reversan,
+  //   se debita y se deja constancia.
+  if (action === 'breb_conciliar') {
+    // Admin con JWT, o llamada interna (cron). Mueve saldo: un uid en el body
+    // no alcanza.
+    if (!caller.admin || !caller.viaJwt) return json(403, { error: 'forbidden' })
+
+    const paginas = Math.min(Number(payload?.paginas ?? 3) || 3, 10)
+    const recaudos: any[] = []
+    let diagLista: any = null
+    for (let page = 0; page < paginas; page++) {
+      const r = await mouvFetch(`/deposits?rail=BREB&limit=100&page=${page}`, { method: 'GET' })
+      if (!diagLista) {
+        let crudo = ''
+        try { crudo = (typeof r.data === 'string' ? r.data : JSON.stringify(r.data ?? '')).slice(0, 400) } catch { crudo = '(ilegible)' }
+        diagLista = { httpStatus: r.status, crudo }
+      }
+      if (!r.ok) {
+        const e = errorLlave(r.status, r.data)
+        return json(502, { ...e, diag: diagLista })
+      }
+      // La forma NO se da por sentada: este endpoint devuelve `deposits`,
+      // /wallets/transactions devuelve `items` y collect-keys devuelve `items`
+      // con cursor. Tres formas distintas en la misma API.
+      const d: any = r.data
+      const lote: any[] = Array.isArray(d?.deposits) ? d.deposits
+        : Array.isArray(d?.items) ? d.items
+        : Array.isArray(d) ? d : []
+      recaudos.push(...lote)
+      const tp = Number(d?.pagination?.totalPages ?? 0)
+      if (lote.length === 0 || (tp && page + 1 >= tp)) break
+    }
+
+    const out: any[] = []
+    let acreditados = 0, reversados = 0, montoAcreditado = 0
+    const cent = (v: any) => Math.round(Number(v ?? 0)) / 100
+
+    for (const dep of recaudos) {
+      const depId = String(dep?.id ?? '')
+      const ext = String(dep?.brebKey?.externalId ?? '')
+      // Sin llave no es un recaudo por llave (puede ser PSE): no es nuestro.
+      if (!depId || !ext) continue
+
+      const estado = String(dep?.status ?? '').toUpperCase()
+      const bruto = cent(dep?.amountCents)
+      const comision = cent(dep?.feeAmountCents) + cent(dep?.ivaAmountCents)
+      const neto = dep?.netAmountCents != null ? cent(dep.netAmountCents) : bruto - comision
+      if (!(neto > 0)) continue
+
+      const { data: usuario } = await db.from('users').select('id').eq('id', ext).maybeSingle()
+      if (!usuario) { out.push({ dep: depId, result: 'usuario_desconocido', externalId: ext }); continue }
+
+      // Idempotencia por el id del deposito: es la unica forma de no acreditar
+      // dos veces el mismo pago cuando el polling lo ve otra vez.
+      const { data: yaHay } = await db.from('transactions')
+        .select('id, status, raw_data').eq('type', 'load')
+        .filter('raw_data->>depositId', 'eq', depId).limit(1)
+      const fila = yaHay?.[0] ?? null
+
+      if (estado === 'ASSIGNED') {
+        if (fila) {
+          // Ya estaba: si habia sido reversada y vuelve a ASSIGNED, no se
+          // re-acredita sola. Eso lo mira una persona.
+          out.push({ dep: depId, result: (fila as any).status === 'Devuelto' ? 'revivio_revisar' : 'ya_acreditado' })
+          continue
+        }
+        const { data: creada, error: insErr } = await db.from('transactions').insert({
+          user_id: ext, type: 'load', amount: neto, currency: 'COP_BREB', status: 'Completado',
+          raw_data: {
+            source: 'mouv_breb_recaudo', title: 'Recaudo Bre-B',
+            depositId: depId, brutoCop: bruto, comisionCop: comision, netoCop: neto,
+            llave: dep?.brebKey?.value ?? null, llaveId: dep?.brebKey?.id ?? null,
+            // Quien pago: es lo que convierte un ingreso en un cobro
+            // identificable. Sin esto el cliente ve plata y no sabe de quien.
+            pagador: dep?.payerName ?? null,
+            pagadorDocumento: dep?.payerDocument ?? null,
+            pagadorBanco: dep?.payerBank ?? null,
+            providerTransferId: dep?.providerTransferId ?? null,
+            confirmadoAt: dep?.providerConfirmedAt ?? null,
+            acreditadoAt: new Date().toISOString(),
+          },
+        }).select('id').maybeSingle()
+        // Si la fila no se pudo escribir NO se acredita: sin movimiento, el
+        // saldo sube y no hay como explicar de donde salio.
+        if (insErr || !creada) { out.push({ dep: depId, result: 'no_se_registro', error: insErr?.message ?? null }); continue }
+
+        await creditBalanceAtomic(ext, 'COP_BREB', neto)
+        await logAudit(ext, 'mouv.breb_recaudo.acreditado', { depId, neto, bruto, comision, llave: dep?.brebKey?.value ?? null })
+        acreditados++; montoAcreditado += neto
+        out.push({ dep: depId, result: 'acreditado', neto })
+        continue
+      }
+
+      if (estado === 'REVERSED') {
+        if (!fila) { out.push({ dep: depId, result: 'reversado_nunca_acreditado' }); continue }
+        const frd = ((fila as any).raw_data ?? {}) as Record<string, any>
+        if (frd.reversado) { out.push({ dep: depId, result: 'ya_reversado' }); continue }
+
+        // CAS antes de tocar el saldo, igual que en los reembolsos.
+        const { data: claimed } = await db.from('transactions').update({
+          status: 'Devuelto',
+          raw_data: { ...frd, reversado: true, reversadoAt: new Date().toISOString() },
+        }).eq('id', (fila as any).id).filter('raw_data->>reversado', 'is', null).select('id')
+        if (!claimed?.length) { out.push({ dep: depId, result: 'reverso_ya_reclamado' }); continue }
+
+        const montoFila = Number(frd.netoCop ?? (fila as any).amount ?? 0)
+        const { data: saldoU } = await db.from('users').select('balances').eq('id', ext).maybeSingle()
+        const disponible = Number(((saldoU as any)?.balances ?? {})['COP_BREB'] ?? 0)
+
+        if (disponible >= montoFila) {
+          await creditBalanceAtomic(ext, 'COP_BREB', -montoFila)
+          out.push({ dep: depId, result: 'reversado', monto: montoFila })
+        } else {
+          // NO se deja el saldo en negativo ni se ignora el faltante: se debita
+          // lo que hay y el resto queda asentado como deuda para que alguien lo
+          // cobre. Un reverso que no se puede cubrir es un problema real, y
+          // callarlo no lo hace desaparecer.
+          if (disponible > 0) await creditBalanceAtomic(ext, 'COP_BREB', -disponible)
+          const deuda = Number((montoFila - disponible).toFixed(2))
+          await db.from('transactions').update({
+            raw_data: { ...frd, reversado: true, reversadoAt: new Date().toISOString(), deudaCop: deuda, debitadoCop: disponible },
+          }).eq('id', (fila as any).id)
+          await logAudit(ext, 'mouv.breb_recaudo.reverso_sin_fondos', { depId, montoFila, debitado: disponible, deuda })
+          out.push({ dep: depId, result: 'reversado_con_deuda', debitado: disponible, deuda })
+        }
+        await logAudit(ext, 'mouv.breb_recaudo.reversado', { depId, montoFila })
+        reversados++
+        continue
+      }
+
+      // PENDING_CONFIRM / UNASSIGNED / EXPIRED: no son plata todavia (o ya no
+      // lo son). Se informan, no se acreditan.
+      out.push({ dep: depId, result: 'sin_acreditar', estado })
+    }
+
+    return json(200, {
+      ok: true, revisados: recaudos.length,
+      acreditados, reversados, montoAcreditado,
+      resultados: out.slice(0, 200),
+      ...(caller.admin ? { diag: diagLista } : {}),
+    })
+  }
+
   // ── MARCAR UNA DISPERSION COMO YA REEMBOLSADA POR FUERA ───────────
   // Para cuando el operador ya le devolvio el saldo al cliente A MANO, sin
   // pasar por force_return. La fila queda en Procesando y SIN la marca
