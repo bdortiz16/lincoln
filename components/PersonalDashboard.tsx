@@ -274,15 +274,26 @@ const VIEW_PATHS: Record<string, string> = {
 // aparecia la pantalla de dispersion, que no era donde estaba el usuario.
 // Compartir dos pantallas en una sola direccion es justamente lo que hace que
 // la recarga tenga que adivinar. Cada una tiene la suya.
+// '/dispersar' YA NO ESTA ACA, a proposito.
+//
+// La pantalla de dispersar saltaba directo al envio sin pasar por
+// openSendMoney(), que es donde se exige la cuenta verificada y el 2FA
+// ENROLADO. Un usuario sin dos pasos activados podia mover plata por ahi y no
+// por "Enviar dinero".
+//
+// Quitar los dos botones no alcanzaba: mientras esta ruta siguiera mapeada,
+// escribir la direccion a mano volvia a abrir la misma pantalla. Esconder una
+// puerta no es cerrarla -- es el mismo razonamiento que el horario de la mesa.
 const RUTAS_MOUV: Record<string, { mouvMode: 'full' | 'converter'; otcRail: 'ach' | 'breb' | 'manual' | null }> = {
-  '/dispersar':       { mouvMode: 'full',      otcRail: null },
   '/mesa-otc':        { mouvMode: 'converter', otcRail: null },
   '/mesa-otc/manual': { mouvMode: 'converter', otcRail: 'manual' },
   '/mesa-otc/ach':    { mouvMode: 'converter', otcRail: 'ach' },
   '/mesa-otc/breb':   { mouvMode: 'converter', otcRail: 'breb' },
 };
-const rutaMouv = (mouvMode: 'full' | 'converter', otcRail: 'ach' | 'breb' | 'manual' | null): string =>
-  mouvMode === 'full' ? '/dispersar' : (otcRail ? `/mesa-otc/${otcRail}` : '/mesa-otc');
+// Ya no hay modo 'full' alcanzable desde la app: si por algun camino se llegara,
+// la direccion que se escribe es la de la mesa, no una ruta que ya no existe.
+const rutaMouv = (_mouvMode: 'full' | 'converter', otcRail: 'ach' | 'breb' | 'manual' | null): string =>
+  otcRail ? `/mesa-otc/${otcRail}` : '/mesa-otc';
 
 const PATH_VIEWS: Record<string, string> = {
   ...Object.fromEntries(Object.entries(VIEW_PATHS).map(([view, path]) => [path, view])),
@@ -3282,7 +3293,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               </div>
                           </div>
                           <div style={{ padding: '11px 20px', borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.015)', display: 'flex', gap: 13 }}>
-                              <button onClick={() => { setDispersRail('COP_BREB'); setMouvMode('full'); setActiveView('mouv'); }} disabled={brebBal <= 0} style={{ fontSize: 12, fontWeight: 600, color: brebBal <= 0 ? '#878E88' : '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors disabled:cursor-not-allowed">Dispersar</button>
+                              <button onClick={() => openSendMoney()} disabled={brebBal <= 0} style={{ fontSize: 12, fontWeight: 600, color: brebBal <= 0 ? '#878E88' : '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors disabled:cursor-not-allowed">Enviar dinero</button>
                               <button onClick={() => setRecaudoOpen(true)} style={{ fontSize: 12, fontWeight: 600, color: '#4ADE80' }} className="hover:opacity-80 transition-opacity">Recibir pagos</button>
                               <button onClick={() => { setBrebMoveOpen(true); setBrebDir('to_peso'); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Mover saldo</button>
                           </div>
@@ -3309,7 +3320,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               </div>
                           </div>
                           <div style={{ padding: '11px 20px', borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.015)', display: 'flex', gap: 13 }}>
-                              <button onClick={() => { if (achOpen) { setDispersRail('COP_ACH'); setMouvMode('full'); setActiveView('mouv'); } }} disabled={!achOpen || achBal <= 0} title={achOpen ? '' : 'Disponible L–V 7:00–18:00 hora Colombia'} style={{ fontSize: 12, fontWeight: 600, color: (!achOpen || achBal <= 0) ? '#878E88' : '#F4F4F2', cursor: achOpen ? 'pointer' : 'not-allowed' }} className="transition-colors">Dispersar</button>
+                              <button onClick={() => { if (achOpen) openSendMoney(); }} disabled={!achOpen || achBal <= 0} title={achOpen ? '' : 'Disponible L–V 7:00–18:00 hora Colombia'} style={{ fontSize: 12, fontWeight: 600, color: (!achOpen || achBal <= 0) ? '#878E88' : '#F4F4F2', cursor: achOpen ? 'pointer' : 'not-allowed' }} className="transition-colors">Enviar dinero</button>
                               <button onClick={() => { setBrebMoveOpen(true); setBrebDir('to_peso'); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Mover saldo</button>
                           </div>
                       </div>
