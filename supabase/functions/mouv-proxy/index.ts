@@ -1240,8 +1240,19 @@ serve(async (req: Request) => {
     // Ventana de conciliación para las ya-Completadas: una devolución bancaria
     // llega en horas/pocos días. Se revisan las Completadas de los últimos N
     // días (default 5), más TODAS las que sigan 'Procesando'. Overridable.
+    // Dos modos, mismo motor:
+    //   · BARRIDO (por defecto): 5 dias hacia atras, para atrapar devoluciones
+    //     tardias sobre envios que ya figuraban completados.
+    //   · VIGILANCIA (`recientesMin`): solo lo de los ultimos N minutos. Es
+    //     barato -- una consulta al listado y unas pocas filas -- asi que puede
+    //     correr cada minuto. Es el que hace que un envio fallido se detecte y
+    //     se devuelva en minutos y no en horas: justo despues de enviar es
+    //     cuando hay alguien esperando del otro lado.
+    const recientesMin = Number(payload?.recientesMin ?? 0) || 0
     const days = Number(Deno.env.get('BREB_RECONCILE_DAYS') ?? '5') || 5
-    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
+    const since = recientesMin > 0
+      ? new Date(Date.now() - recientesMin * 60 * 1000).toISOString()
+      : new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
     // TODOS LOS CLIENTES (solo admin). La conciliacion por cliente depende de
     // que ESE cliente abra la app, y una devolucion no puede quedar esperando a
     // que a alguien se le ocurra entrar: la plata ya volvio y el saldo sigue
@@ -1250,7 +1261,7 @@ serve(async (req: Request) => {
     let q = db.from('transactions')
       .select('id, user_id, amount, currency, status, raw_data, created_at')
       .eq('type', 'dispersion').eq('currency', 'COP_BREB')
-      .in('status', ['Procesando', 'Completado'])
+      .in('status', recientesMin > 0 ? ['Procesando'] : ['Procesando', 'Completado'])
       .gte('created_at', since)
       .order('created_at', { ascending: false })
       .limit(todos ? 80 : 30)   // lectura = 100 req/min; 80 deja aire

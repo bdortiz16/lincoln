@@ -1417,6 +1417,38 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // destino las devolvió más tarde) para reembolsar aunque ya se vieran
   // completadas. Máximo una vez por minuto, desde las vistas relevantes.
   const brebReconcileAtRef = useRef(0);
+
+  // ── Vigilancia rápida del envío recién hecho ──────────────────────
+  // El barrido general corre cada minuto, y el del servidor cada minuto
+  // también. Pero JUSTO DESPUÉS de enviar es cuando el cliente está mirando la
+  // pantalla y cuando, del otro lado, alguien está esperando ese pago. Un
+  // minuto ahí se siente eterno, y si el envío se devolvió, cada segundo que
+  // el cliente no lo sabe es un segundo en que no puede rehacerlo.
+  //
+  // Por eso, durante los 4 minutos siguientes a un envío Bre-B se pregunta
+  // cada 12 segundos — pero SOLO por lo reciente, que es una consulta barata.
+  // Pasados esos minutos vuelve el ritmo normal.
+  const vigilarHasta = useRef(0);
+  useEffect(() => {
+      if (!currentUser?.id) return;
+      const t = setInterval(async () => {
+          if (Date.now() > vigilarHasta.current) return;
+          if (document.hidden) return;
+          const r = await callMouvProxy({ action: 'reconcile_breb', userId: currentUser.id, recientesMin: 20 }).catch(() => null);
+          const cambios = (r?.results ?? []).filter((x: any) => x.result === 'refunded' || x.result === 'completed');
+          if (!cambios.length) return;
+          vigilarHasta.current = 0;   // ya se resolvió: dejar de insistir
+          refreshData?.();
+          if (cambios.some((x: any) => x.result === 'refunded')) {
+              showToast('Tu envío Bre-B fue devuelto — el monto y la comisión ya volvieron a tu saldo.', 9000);
+          } else {
+              showToast('✅ Tu envío Bre-B fue confirmado.');
+          }
+      }, 12000);
+      return () => clearInterval(t);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id]);
+
   useEffect(() => {
       const relevant = activeView === 'movements' || (activeView === 'wallet-detail' && (selectedWalletCode === 'COP' || selectedWalletCode === 'COP_BREB')) || activeView === 'dashboard';
       if (!relevant || !currentUser?.id) return;
@@ -1959,6 +1991,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               ]);
               if (r?.ok) {
                   setSendResult({ ok: true, providerRef: r?.providerRef ?? null, feeCop: Number(r?.feeCop ?? (isBreb ? 1200 : 2500)), rail, at: new Date().toISOString() });
+                  // Arranca la vigilancia rápida: 4 minutos preguntando cada 12 s
+                  // por el desenlace de ESTE envío. Si se devolvió, el cliente
+                  // se entera mientras todavía está en la pantalla.
+                  vigilarHasta.current = Date.now() + 4 * 60 * 1000;
                   sendingRef.current = false; setIsSending(false); setSendStep(5);
                   refreshData?.();
                   return;
