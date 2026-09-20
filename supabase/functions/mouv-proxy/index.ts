@@ -447,7 +447,7 @@ type EstadoMouv = {
   diag?: { motivo: string; ruta?: string; httpStatus?: number; cuerpo?: string }
 }
 
-async function mouvTransferStatus(id: string): Promise<EstadoMouv> {
+async function mouvTransferStatus(id: string, creadaAt?: string | null): Promise<EstadoMouv> {
   const tid = String(id ?? '').trim()
   if (!tid) return { found: false, verdict: 'unknown', state: '', raw: null, diag: { motivo: 'la fila no tiene providerRef guardado' } }
   const enc = encodeURIComponent(tid)
@@ -465,12 +465,22 @@ async function mouvTransferStatus(id: string): Promise<EstadoMouv> {
     try { return JSON.stringify(data ?? '').includes(tid) } catch { return false }
   }
   // ¿El 404 es "esa transaccion no existe" o "esa ruta no existe"? Mouv
-  // responde TRANSACTION_NOT_FOUND para lo primero, y eso ES una respuesta: no
-  // tiene sentido seguir probando seis rutas adivinadas con un id que el
-  // proveedor ya dijo que no reconoce.
+  // responde TRANSACTION_NOT_FOUND para lo primero.
   const esIdInexistente = (data: any): boolean => {
     try { return JSON.stringify(data ?? '').includes('TRANSACTION_NOT_FOUND') } catch { return false }
   }
+
+  // PERO UN 404 RECIEN ENVIADO NO SIGNIFICA "NO EXISTE".
+  // Los movimientos tardan en aparecer del lado de Mouv -- las notificaciones
+  // de su consola llegan antes que el listado. Asi que un TRANSACTION_NOT_FOUND
+  // sobre un envio de hace dos minutos es "todavia no aparecio", no "ese id no
+  // es nuestro", y tratarlo como respuesta definitiva deja la dispersion
+  // marcada como desconocida para siempre.
+  //
+  // Recien pasada esta ventana el 404 empieza a significar algo.
+  const MIN_PARA_CREER_404 = 30
+  const edadMin = creadaAt ? (Date.now() - new Date(creadaAt).getTime()) / 60000 : Number.POSITIVE_INFINITY
+  const confiarEn404 = !Number.isFinite(edadMin) || edadMin >= MIN_PARA_CREER_404
   const recorte = (d: any): string => {
     try { return (typeof d === 'string' ? d : JSON.stringify(d ?? '')).slice(0, 400) } catch { return '(ilegible)' }
   }
@@ -486,6 +496,12 @@ async function mouvTransferStatus(id: string): Promise<EstadoMouv> {
     // cupo y para no confundir un limite con un estado desconocido.
     if (r.status === 429) return { found: false, verdict: 'unknown', state: '', raw: r.data, limitado: true, diag: { motivo: 'limite de consultas (429)', ...primera } }
     if (r.status === 404 && esIdInexistente(r.data)) {
+      if (!confiarEn404) {
+        return {
+          found: false, verdict: 'unknown', state: '', raw: r.data, path: p,
+          diag: { motivo: `el envio todavia no aparece en Mouv (${Math.round(edadMin)} min; su listado va detras de sus notificaciones)`, ...primera },
+        }
+      }
       return { found: false, verdict: 'unknown', state: '', raw: r.data, path: p, diag: { motivo: 'Mouv no reconoce ese id (TRANSACTION_NOT_FOUND)', ...primera } }
     }
     if (r.status === 404 || r.status === 0) continue
@@ -1262,7 +1278,7 @@ serve(async (req: Request) => {
 
       const st: EstadoMouv = item
         ? (() => { const n = normalizeMouvState(item); return { found: !!n.state, verdict: n.verdict, state: n.state, raw: item, path: '/wallets/transactions' } })()
-        : ref ? await mouvTransferStatus(ref)
+        : ref ? await mouvTransferStatus(ref, tx.created_at)
         : {
             found: false, verdict: 'unknown', state: '', raw: null,
             diag: {

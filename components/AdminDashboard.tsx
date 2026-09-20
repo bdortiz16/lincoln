@@ -288,7 +288,8 @@ const PanelConciliacion: React.FC<{ datos: any; onCerrar: () => void }> = ({ dat
                 <div style={{ padding: '18px 20px', borderBottom: `1px solid ${BORDE}`, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
                     <div>
                         <h3 style={{ fontSize: 15.5, fontWeight: 800, color: TXT, margin: 0, letterSpacing: '-0.3px' }}>
-                            {datos.error ? 'No se pudo conciliar' : 'Conciliación Bre-B'}
+                            {datos.error ? 'No se pudo conciliar'
+                                : datos.automatica ? 'Se devolvió un envío' : 'Conciliación Bre-B'}
                         </h3>
                         {!datos.error && (
                             <p style={{ fontSize: 12, color: TXT2, margin: '5px 0 0' }}>
@@ -723,6 +724,50 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     if (r?.ok) { alert(r.already ? 'Ya estaba marcada.' : 'Marcada. La conciliación ya no la va a tocar.'); refreshData?.(); }
     else alert(r?.message || r?.error || 'No se pudo marcar.');
   };
+
+  // ── Conciliación automática de Bre-B ──────────────────────────────
+  // NADIE estaba corriendo esto. La conciliación por cliente depende de que
+  // ESE cliente abra su app, y el botón depende de que alguien se acuerde de
+  // apretarlo. Con el listado de Mouv llegando con retraso, un clic único casi
+  // siempre cae temprano y no encuentra nada — que es exactamente lo que pasó.
+  //
+  // Corre sola cada 3 minutos con el panel abierto, en silencio. Solo
+  // interrumpe si movió plata: un reembolso automático es algo que el operador
+  // tiene que enterarse el mismo momento, lo demás es ruido.
+  const autoConcAt = useRef(0);
+  useEffect(() => {
+    let vivo = true;
+    const correr = async () => {
+      if (document.hidden) return;
+      if (Date.now() - autoConcAt.current < 170000) return;
+      autoConcAt.current = Date.now();
+      const r = await llamarMouv({ action: 'reconcile_breb', todos: true });
+      if (!vivo || !r?.ok) return;
+      const res = (r.results ?? []) as any[];
+      const dev = res.filter((x: any) => x.result === 'refunded');
+      const comp = res.filter((x: any) => x.result === 'completed');
+      if (dev.length || comp.length) refreshData?.();
+      // Solo la plata devuelta justifica cortarle la pantalla a alguien.
+      if (dev.length) {
+        setResConciliar({
+          revisados: r.checked ?? res.length,
+          completados: comp.length,
+          devueltos: dev.length,
+          plata: dev.reduce((n: number, x: any) => n + Number(x.refund ?? 0), 0),
+          enCurso: res.filter((x: any) => x.result === 'still_processing' || x.result === 'sin_confirmar_revisar').length,
+          esperaFirma: res.filter((x: any) => x.result === 'espera_firma').length,
+          vias: [], motivos: [], listado: r.listado ?? null, muestra: null,
+          automatica: true,
+        });
+      }
+    };
+    const t = setInterval(correr, 180000);
+    const alVolver = () => { correr(); };
+    document.addEventListener('visibilitychange', alVolver);
+    correr();
+    return () => { vivo = false; clearInterval(t); document.removeEventListener('visibilitychange', alVolver); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const confirmarDispersion = async (t: any) => {
     const ref = t.providerRef ?? t.raw_data?.providerRef ?? '';
