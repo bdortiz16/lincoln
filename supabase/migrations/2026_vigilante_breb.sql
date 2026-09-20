@@ -84,9 +84,9 @@ SELECT cron.unschedule('vigilar-breb')        WHERE EXISTS (SELECT 1 FROM cron.j
 SELECT cron.unschedule('conciliar-breb-full') WHERE EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'conciliar-breb-full');
 
 -- Cada minuto: lo reciente y vivo.
-SELECT cron.schedule('vigilar-breb', '* * * * *', $$SELECT public.vigilar_breb(45)$$);
+SELECT cron.schedule('vigilar-breb', '* * * * *', $cron_vig$SELECT public.vigilar_breb(45)$cron_vig$);
 
 -- Cada 10 minutos: el barrido de 5 dias, por las devoluciones tardias.
-SELECT cron.schedule('conciliar-breb-full', '*/10 * * * *', $$SELECT public.vigilar_breb(0)$$);
+SELECT cron.schedule('conciliar-breb-full', '*/10 * * * *', $cron_full$SELECT public.vigilar_breb(0)$cron_full$);
 
 NOTIFY pgrst, 'reload schema';
