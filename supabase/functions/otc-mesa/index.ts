@@ -441,6 +441,31 @@ async function cargarCierre(id: string, caller: Caller): Promise<{ ok: boolean; 
 const num = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : NaN }
 const ahora = () => new Date().toISOString()
 
+// ─── A QUE BILLETERA SE ACREDITA ────────────────────────
+// La billetera NO puede salir del cuerpo del pedido sin comprobarse.
+//
+// `payout` se guardaba tal cual venia del cliente y `completar` usaba
+// payout.wallet como CLAVE del saldo, y adjust_balances acepta cualquier clave
+// sin lista blanca. Un cierre con side 'vende_usdt' (recibe PESOS) y
+// payout {wallet:'USD'} acreditaba el importe en PESOS dentro de la columna de
+// dolares: cuatro mil veces su valor, con la mesa viendo una orden normal y el
+// mensaje de confirmacion diciendo "Saldo USDT", que es justo lo que se pidio.
+//
+// El lado de la operacion decide la MONEDA; el cliente solo puede elegir en
+// cual de sus rieles de esa moneda la quiere.
+const BILLETERAS_COP = ['COP', 'COP_BREB', 'COP_ACH'] as const
+
+function billeteraDestino(side: string, pedida?: unknown): string | null {
+  const w = String((pedida as any) ?? '').trim()
+  if (side === 'compra_usdt') {
+    // Compra USDT: recibe dolares. No hay eleccion de riel.
+    return !w || w === 'USD' ? 'USD' : null
+  }
+  // Vende USDT: recibe pesos, y puede elegir entre sus rieles COP.
+  if (!w) return 'COP'
+  return (BILLETERAS_COP as readonly string[]).includes(w) ? w : null
+}
+
 // Como se llama cada billetera del cliente. Mismos nombres que en su app: el
 // mensaje que le queda en el hilo tiene que decir el mismo riel que el que ve
 // en su pantalla de saldos.
@@ -577,6 +602,13 @@ Deno.serve(async (req) => {
       const monto = num(payload.fromAmount)
       if (!(monto > 0)) return json(400, { ok: false, error: 'el monto tiene que ser mayor a cero' })
 
+      // La billetera se valida ACA y se guarda ya normalizada: lo que quede en
+      // la fila tiene que ser algo que corresponda al lado de la operacion.
+      const destinoValidado = billeteraDestino(side, (payload.payout as any)?.wallet)
+      if (!destinoValidado) {
+        return json(400, { ok: false, error: 'billetera_invalida', message: 'Esa billetera no corresponde a esta operación.' })
+      }
+
       const { count } = await db.from('otc_closes')
         .select('id', { count: 'exact', head: true })
         .eq('user_id', uid).in('status', VIVOS)
@@ -616,7 +648,7 @@ Deno.serve(async (req) => {
         status: conTasa ? 'esperando_pago' : 'abierta',
         confirmada_at: conTasa ? ahora() : null,
         vence_at: conTasa ? new Date(Date.now() + mins * 60_000).toISOString() : null,
-        payout: payload.payout && typeof payload.payout === 'object' ? payload.payout : {},
+        payout: { wallet: destinoValidado },
         last_msg_at: ahora(), last_msg_por: 'sistema',
       }).select('*').maybeSingle()
       if (error) return json(500, { ok: false, error: error.message })
@@ -877,7 +909,17 @@ Deno.serve(async (req) => {
       if (!r.cierre.rate_final) {
         return json(409, { ok: false, error: 'falta_tasa', message: 'Fija la tasa final antes de completar: sin eso el cierre queda sin precio de ejecucion.' })
       }
-      const destino = String(r.cierre.payout?.wallet ?? (r.cierre.side === 'vende_usdt' ? 'COP' : 'USD'))
+      // Se REVALIDA contra el lado de la operacion. Confiar en lo guardado
+      // alcanzaria si nada mas pudiera escribir esa fila, y eso es justo lo que
+      // no se puede dar por sentado con plata: una fila vieja, una migracion o
+      // un futuro camino de escritura vuelven a abrir el agujero.
+      const destino = billeteraDestino(String(r.cierre.side ?? ''), r.cierre.payout?.wallet)
+      if (!destino) {
+        return json(409, {
+          ok: false, error: 'billetera_invalida',
+          message: 'La billetera de destino no corresponde a esta operación. No se acreditó nada.',
+        })
+      }
       const monto = Number(r.cierre.to_amount)
       if (!(monto > 0)) {
         return json(409, { ok: false, error: 'sin_monto', message: 'Este cierre no tiene monto a acreditar. Fija la tasa final primero.' })
