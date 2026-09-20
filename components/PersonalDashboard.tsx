@@ -4220,7 +4220,16 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       const rows = fields.filter(f => f.label !== 'Estado').map(f => ({ f, lines: wrap(f.value, F_VALUE) }));
       // Pie informativo: soporte de la operación + sitio web.
       const F_FOOT = `500 9.5px ${FONT}`;
-      const footNote = 'Este comprobante es un soporte de la operación realizada a través de Lincoin. No constituye una factura ni un extracto bancario. Lincoin no es un banco; la confianza opera sobre infraestructura de Circle, Fireblocks y SEPA/SWIFT.';
+      // Un comprobante SIN CONFIRMAR se comparte igual que uno confirmado: el
+      // cliente se lo manda al beneficiario y ahí se lee como prueba de pago.
+      // Si la operación todavía no está confirmada, la imagen tiene que
+      // decirlo con todas las letras — el chip de estado solo no alcanza
+      // cuando alguien lo mira de reojo en WhatsApp.
+      const sinConfirmar = tx.status !== 'Completado' && tx.status !== 'Rechazado' && tx.status !== 'Fallido';
+      const footNote = (sinConfirmar
+        ? 'ESTA OPERACIÓN TODAVÍA NO ESTÁ CONFIRMADA. Este soporte no acredita que el dinero haya llegado a destino: el estado final lo confirma el banco. '
+        : '')
+        + 'Este comprobante es un soporte de la operación realizada a través de Lincoin. No constituye una factura ni un extracto bancario. Lincoin no es un banco; la confianza opera sobre infraestructura de Circle, Fireblocks y SEPA/SWIFT.';
       const footLines = wrap(footNote, F_FOOT);
       // Medir alto
       let H = PAD_TOP + 30 + 22 + 16 + 84 + 20;
@@ -6565,7 +6574,18 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                           const realMov: any = sendResult?.providerRef
                                               ? movements.find((m: any) => m?.providerRef === sendResult.providerRef || m?.raw_data?.providerRef === sendResult.providerRef)
                                               : null;
-                                          const receiptStatus = realMov?.status || (isWalletSend || isBrebS ? 'Completado' : 'Procesando');
+                                          // NUNCA 'Completado' por defecto. Acá seguía puesto para
+                                          // wallet y Bre-B, y es falso: el servidor deja toda
+                                          // dispersión en 'Procesando' al enviar, justamente porque
+                                          // el 200 del proveedor sólo significa "aceptada" y puede
+                                          // terminar DEVUELTA minutos después.
+                                          //
+                                          // Un comprobante que dice Completado sin que nadie lo
+                                          // haya confirmado es lo peor que puede emitir esto: el
+                                          // cliente se lo manda al beneficiario como prueba de un
+                                          // pago que quizá no ocurrió. Si todavía no encontramos el
+                                          // movimiento real, lo cierto es 'Procesando'.
+                                          const receiptStatus = realMov?.status || 'Procesando';
                                           const receiptTx = {
                                               id: sendResult?.providerRef || `TX-${Date.now()}`,
                                               type: isWalletSend ? 'send' : 'dispersion',
