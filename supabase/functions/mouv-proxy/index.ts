@@ -82,13 +82,46 @@ function json(status: number, body: unknown): Response {
 // Crédito/reintegro ATÓMICO de un riel COP (bloqueo de fila vía adjust_balances)
 // — evita la carrera de duplicación en reconcile/webhooks (pentest #3). Fallback
 // a read-write si la RPC no está desplegada.
-async function creditBalanceAtomic(userId: string, col: string, delta: number): Promise<void> {
-  const { error } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { [col]: delta } })
-  if (!error) return
-  const { data: u } = await db.from('users').select('balances').eq('id', userId).single()
-  const bals: Record<string, number> = (u?.balances as any) ?? {}
+// Devuelve SI SE ACREDITO O NO. Antes devolvia void y los llamadores asumian
+// que habia funcionado -- marcaban la fila como reembolsada y seguian. Si el
+// ajuste fallaba, la fila quedaba marcada, el CAS impedia reintentarla, y el
+// cliente perdia el reembolso de forma definitiva y sin rastro.
+async function creditBalanceAtomic(userId: string, col: string, delta: number): Promise<boolean> {
+  // `adjust_balances` devuelve {error:'not_found'} o {error:'insufficient'}
+  // como respuesta EXITOSA (200, sin error de transporte). Mirar solo `error`
+  // daba el ajuste por bueno cuando el payload decia que no se hizo nada.
+  const { data: adj, error } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { [col]: delta } })
+  if (!error && !(adj as any)?.error) return true
+  // Un error DE PAYLOAD es una respuesta del servidor, no un problema de
+  // transporte: reintentarlo a mano da el mismo resultado. 'insufficient' sobre
+  // un delta negativo es un faltante real y hay que verlo, no taparlo.
+  if (!error) {
+    await logAudit(userId, 'balance.ajuste_rechazado', { col, delta, motivo: (adj as any)?.error ?? null })
+    return false
+  }
+
+  // Respaldo SOLO para fallos de transporte.
+  const { data: u, error: leerErr } = await db.from('users').select('balances').eq('id', userId).single()
+  // SIN ESTA GUARDA se escribia `balances = { [col]: delta }` cuando la lectura
+  // fallaba: se perdian COP, COP_ACH, USD y todo lo demas del usuario en una
+  // sola escritura. Y este respaldo corre justo cuando la base ya viene
+  // inestable, que es cuando esa lectura tiene mas chance de fallar tambien.
+  if (leerErr || !u || typeof (u as any).balances !== 'object' || (u as any).balances === null) {
+    await logAudit(userId, 'balance.ajuste_fallido', { col, delta, motivo: leerErr?.message ?? 'no se pudo leer el saldo' })
+    return false
+  }
+  const bals: Record<string, number> = ((u as any).balances ?? {}) as any
   const nb = parseFloat((Number(bals[col] ?? 0) + delta).toFixed(2))
-  await db.from('users').update({ balances: { ...bals, [col]: nb } }).eq('id', userId)
+  if (nb < 0) {
+    await logAudit(userId, 'balance.ajuste_negativo', { col, delta, actual: bals[col] ?? 0 })
+    return false
+  }
+  const { error: escribirErr } = await db.from('users').update({ balances: { ...bals, [col]: nb } }).eq('id', userId)
+  if (escribirErr) {
+    await logAudit(userId, 'balance.ajuste_fallido', { col, delta, motivo: escribirErr.message })
+    return false
+  }
+  return true
 }
 
 // ── AVISO AL TELEFONO DEL CLIENTE ─────────────────────────────────
@@ -368,10 +401,22 @@ async function mouvPayout(
     const transitorio = r.status === 0 || r.status >= 500
     if (transitorio && Date.now() - t0 < 45_000) {
       const reintento = await mouvFetch('/transfers/send', { method: 'POST', body: cuerpoEnvio })
-      // Se queda con el reintento solo si aporta algo: si tambien fallo, el
-      // error original describe mejor lo que paso.
+      // SOLO se acepta el reintento si vuelve OK.
+      //
+      // Es tentador quedarse tambien con un 4xx "porque es mas informativo", y
+      // eso es justo lo que no hay que hacer: si el primer POST SI despacho la
+      // transferencia y solo se perdio la respuesta, el reintento con la misma
+      // referencia puede volver 409 (referencia duplicada, o ventana
+      // antiestructuracion). Tomar ese 409 como respuesta convierte un
+      // desenlace DESCONOCIDO en un "rechazo claro", y el rechazo claro
+      // reembolsa: el beneficiario cobrado y el cliente reintegrado, hasta 12
+      // millones por evento, sin que nadie se entere -- la fila queda 'Fallido'
+      // y la conciliacion no mira las Fallido.
+      //
+      // Un reintento tras un 5xx solo aporta cuando confirma que la
+      // transferencia existe. Cualquier otra cosa deja el desenlace como lo que
+      // es: desconocido.
       if (reintento.ok) r = reintento
-      else if (reintento.status !== 0 && reintento.status < 500) r = reintento
     }
     // Devolver el titular RESUELTO (oficial, de resolve-key) para que el
     // comprobante muestre el nombre/documento reales del beneficiario.
@@ -624,14 +669,34 @@ async function mouvListarBrebOut(desdeISO: string): Promise<{ ok: boolean; items
   // esos campos NO se descarta: es preferible un candidato de mas -- que el
   // emparejamiento por monto va a descartar igual -- que perder el movimiento
   // que se esta buscando por un nombre de campo distinto al esperado.
+  // Lo que NO dice ser una salida se conserva como candidato (puede venir con
+  // otro nombre de campo), pero se MARCA. El emparejamiento por monto solo --
+  // el ultimo recurso -- exige salida confirmada: un recaudo REVERSADO del
+  // mismo importe, que entra sin `type`, podria emparejarse con una dispersion
+  // y hacerla ver como devuelta. Seria reembolsar un envio que si salio.
   const esSalidaBreb = (it: any): boolean => {
     const tipo = String(it?.type ?? it?.direction ?? '').toUpperCase()
     const rail = String(it?.rail ?? '').toUpperCase()
     if (tipo && !/OUT|DEBIT|TRANSFER_OUT|SALIDA/.test(tipo)) return false
     if (rail && rail !== 'BREB') return false
+    if (tipo) it.__salidaConfirmada = true
     return true
   }
-  return { ok: true, items: items.filter(esSalidaBreb), crudo }
+  // FILTRO REAL POR FECHA. `desdeISO` se usaba SOLO para cortar la paginacion,
+  // asi que el universo de candidatos eran hasta 1000 movimientos de meses
+  // atras. Toda la proteccion del emparejamiento por monto se apoya en "un
+  // unico movimiento con ese importe EN LA VENTANA" -- y esa ventana no
+  // existia. Un envio de la semana pasada por el mismo monto era candidato.
+  const dentroDeVentana = (it: any): boolean => {
+    if (!Number.isFinite(desdeMs)) return true
+    const t = new Date(it?.createdAt ?? it?.created_at ?? 0).getTime()
+    // Sin fecha legible NO se descarta: se deja para que lo filtren las otras
+    // condiciones. Descartarlo seria perder el movimiento buscado por un campo
+    // con otro nombre.
+    if (!Number.isFinite(t) || t <= 0) return true
+    return t >= desdeMs
+  }
+  return { ok: true, items: items.filter(it => esSalidaBreb(it) && dentroDeVentana(it)), crudo }
 }
 
 // Emparejar UNA fila nuestra con un movimiento de Mouv cuando no tenemos su id.
@@ -643,7 +708,7 @@ async function mouvListarBrebOut(desdeISO: string): Promise<{ ok: boolean; items
 // reclamar. Dos envios identicos a la misma persona no se emparejan: quedan
 // para que los mire una persona, que es la respuesta correcta cuando no se
 // puede distinguir cual es cual.
-function emparejarConMouv(rd: any, montoCop: number, items: any[], reclamados: Set<string>): { item: any; via: string } | null {
+function emparejarConMouv(rd: any, montoCop: number, items: any[], reclamados: Set<string>, creadaAt?: string | null): { item: any; via: string } | null {
   const libres = items.filter(it => !reclamados.has(String(it?.id ?? '')))
   const centavos = Math.round(Number(montoCop) * 100)
   if (!(centavos > 0)) return null
@@ -698,7 +763,18 @@ function emparejarConMouv(rd: any, montoCop: number, items: any[], reclamados: S
   //    en la ventana es la proteccion: si hay dos envios por el mismo importe
   //    no se toca ninguno y los resuelve una persona, que es la respuesta
   //    correcta cuando no se puede distinguir cual es cual.
-  return unico(mismoMonto, 'solo por monto (unico en la ventana)')
+  //    Ademas exige que el movimiento SE DECLARE salida y que este cerca en el
+  //    tiempo de nuestra fila. Sin la cercania, el "unico con ese importe"
+  //    puede ser un envio de otro dia -- y, cuando concilia un cliente puntual,
+  //    de OTRO cliente, porque el listado es de toda la tesoreria.
+  const nuestroMs = new Date(creadaAt ?? 0).getTime()
+  const cerca = (it: any): boolean => {
+    if (!Number.isFinite(nuestroMs) || nuestroMs <= 0) return false
+    const t = new Date(it?.createdAt ?? it?.created_at ?? 0).getTime()
+    if (!Number.isFinite(t) || t <= 0) return false
+    return Math.abs(t - nuestroMs) <= 6 * 60 * 60 * 1000
+  }
+  return unico(mismoMonto.filter(it => it?.__salidaConfirmada && cerca(it)), 'solo por monto (unico y del mismo momento)')
 }
 
 // ── Cotización de comisión Mouv (Bre-B) ────────────────────────────
@@ -1275,7 +1351,23 @@ serve(async (req: Request) => {
     const porId = new Map<string, any>()
     for (const it of listado.items) { const k = String(it?.id ?? ''); if (k) porId.set(k, it) }
     // Un movimiento de Mouv no puede quedar emparejado con dos filas nuestras.
+    //
+    // SE SIEMBRA DESDE LA BASE, no solo con las filas de este batch. Sembrarlo
+    // con `rows` dejaba libre todo movimiento ya pegado a una fila que este
+    // lote no trae: las Rechazado (que el filtro de estados excluye), las de
+    // otro usuario cuando concilia un cliente puntual, y las que caen fuera del
+    // limite. Un movimiento devuelto ya reembolsado quedaba disponible para
+    // reembolsar una SEGUNDA fila.
     const reclamados = new Set<string>()
+    const { data: yaPegados } = await db.from('transactions')
+      .select('raw_data').eq('type', 'dispersion').eq('currency', 'COP_BREB')
+      .not('raw_data->>providerRef', 'is', null)
+      .gte('created_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
+      .limit(2000)
+    for (const f of (yaPegados ?? []) as any[]) {
+      const k = String((f.raw_data ?? {}).providerRef ?? '')
+      if (k) reclamados.add(k)
+    }
     for (const tx of (rows ?? []) as any[]) {
       const k = String(((tx.raw_data ?? {}) as any).providerRef ?? '')
       if (k) reclamados.add(k)
@@ -1323,7 +1415,7 @@ serve(async (req: Request) => {
       let item: any = ref ? porId.get(ref) ?? null : null
 
       if (!item && !ref && listado.ok) {
-        const m = emparejarConMouv(rd, Number(tx.amount ?? 0), listado.items, reclamados)
+        const m = emparejarConMouv(rd, Number(tx.amount ?? 0), listado.items, reclamados, tx.created_at)
         if (m) {
           item = m.item
           ref = String(m.item.id ?? '')
@@ -1332,6 +1424,17 @@ serve(async (req: Request) => {
           // Se GUARDA para que la proxima vez sea exacto y no haya que volver
           // a emparejar. Queda marcado como emparejado y no como dato de
           // primera mano: dentro de seis meses eso tiene que distinguirse.
+          // Ultima verificacion contra la base: entre que se leyo `reclamados` y
+          // ahora, otra corrida pudo haber pegado este mismo movimiento a otra
+          // fila. Dos filas con el mismo providerRef significan "estos dos
+          // envios distintos son el mismo", y a partir de ahi toda conciliacion
+          // posterior saca la conclusion equivocada.
+          const { data: chocaCon } = await db.from('transactions')
+            .select('id').eq('type', 'dispersion').filter('raw_data->>providerRef', 'eq', ref).neq('id', tx.id).limit(1)
+          if (chocaCon?.length) {
+            out.push({ id: tx.id, result: 'emparejamiento_duplicado', providerRef: ref })
+            continue
+          }
           await db.from('transactions').update({
             raw_data: { ...rd, providerRef: ref, providerRefOrigen: `conciliacion_por_listado: ${m.via}`, providerRefAt: new Date().toISOString() },
           }).eq('id', tx.id)
@@ -1390,7 +1493,20 @@ serve(async (req: Request) => {
         // acreditarle a él la devolución de otro sería mover plata a la cuenta
         // equivocada.
         const duenio = String(tx.user_id)
-        await creditBalanceAtomic(duenio, railCol, refund)
+        const acreditado = await creditBalanceAtomic(duenio, railCol, refund)
+        // SI NO SE ACREDITO, SE SUELTA EL CLAIM.
+        // El CAS ya marco la fila como reembolsada; dejarla asi con el saldo sin
+        // tocar seria perder el reembolso para siempre, porque ninguna corrida
+        // posterior vuelve a intentarlo. Se revierte y la proxima lo reintenta.
+        if (!acreditado) {
+          await db.from('transactions').update({
+            status: tx.status,
+            raw_data: { ...rd, reembolsoFallido: true, reembolsoFallidoAt: new Date().toISOString(), providerState: st.state },
+          }).eq('id', tx.id)
+          await logAudit(duenio, 'mouv.reconcile_breb.reembolso_fallido', { txId: tx.id, refund, providerRef: ref })
+          out.push({ id: tx.id, result: 'reembolso_fallido', refund })
+          continue
+        }
         await logAudit(duenio, 'mouv.reconcile_breb.refunded', { txId: tx.id, refund, providerState: st.state, providerError: motivoProveedor, providerRef: ref })
         await notifyTx(tx.id) // correo "tu envío fue devuelto · saldo reintegrado"
         // Y al telefono, que es donde se lee en el momento.
@@ -1450,8 +1566,21 @@ serve(async (req: Request) => {
         // una devolucion antes de que la ventana la de por liquidada.
         if (ageMin >= 30 && !rd.alertaEnviada) {
           const enviado = await avisarAdminSinConfirmar(tx)
-          if (enviado) await db.from('transactions').update({ raw_data: { ...rd, alertaEnviada: true, alertaAt: new Date().toISOString() } }).eq('id', tx.id)
+          // Misma guarda: este update tambien escribe el snapshot viejo y
+          // borraria `refunded` si otra corrida reembolso en el medio.
+          if (enviado) await db.from('transactions').update({ raw_data: { ...rd, alertaEnviada: true, alertaAt: new Date().toISOString() } }).eq('id', tx.id).filter('raw_data->>refunded', 'is', null)
         }
+        // OJO CON ESTE UPDATE: reescribe raw_data desde el snapshot `rd`, que
+        // se leyo al empezar el ciclo. Si mientras tanto OTRA corrida reembolso
+        // esta fila, escribir el snapshot viejo BORRA su flag `refunded` -- que
+        // es la unica llave de idempotencia del reembolso. La fila quedaria
+        // 'Rechazado' pero sin la marca, y el siguiente que apriete Reembolsar
+        // acredita por segunda vez.
+        //
+        // Con `refunded is null` el update simplemente no aplica si ya la
+        // reembolsaron. `.eq('status','Procesando')` no alcanzaba: el reembolso
+        // deja la fila en 'Rechazado', pero la carrera se resuelve por orden de
+        // llegada y el snapshot viejo puede ganar.
         await db.from('transactions').update({
           raw_data: {
             ...rd,
@@ -1460,7 +1589,7 @@ serve(async (req: Request) => {
             ultimaRevision: new Date().toISOString(),
             revisionManual: revisar || undefined,
           },
-        }).eq('id', tx.id).eq('status', 'Procesando')
+        }).eq('id', tx.id).eq('status', 'Procesando').filter('raw_data->>refunded', 'is', null)
         out.push({
           id: tx.id,
           // "Esperando firma" NO es lo mismo que "procesando": nadie esta
@@ -1481,7 +1610,7 @@ serve(async (req: Request) => {
         // Lo resuelve un humano contra la consola, con force_return.
         await db.from('transactions').update({
           raw_data: { ...rd, revisionManual: true, ultimaRevision: new Date().toISOString(), providerState: st.state || null },
-        }).eq('id', tx.id)
+        }).eq('id', tx.id).filter('raw_data->>refunded', 'is', null)
         out.push({ id: tx.id, result: 'completado_sin_confirmar', providerState: st.state || null })
       } else {
         out.push({ id: tx.id, result: 'still_completed', ...(caller.admin ? { diag: st.diag ?? null } : {}) })
@@ -2136,7 +2265,20 @@ serve(async (req: Request) => {
     }).eq('id', tx.id).filter('raw_data->>refunded', 'is', null).select('id')
     if (!claimed?.length) return json(200, { ok: true, already: 'refund_already_claimed' })
 
-    await creditBalanceAtomic(tx.user_id, railCol, refund)
+    const acreditadoFR = await creditBalanceAtomic(tx.user_id, railCol, refund)
+    if (!acreditadoFR) {
+      // Se suelta el claim: si quedara marcada sin acreditar, el boton no se
+      // podria volver a usar y el cliente perderia el reembolso.
+      await db.from('transactions').update({
+        status: tx.status,
+        raw_data: { ...rd, reembolsoFallido: true, reembolsoFallidoAt: new Date().toISOString() },
+      }).eq('id', tx.id)
+      await logAudit(tx.user_id, 'mouv.force_return.reembolso_fallido', { txId: tx.id, refund, admin: caller.userId })
+      return json(500, {
+        error: 'no_se_acredito',
+        message: 'No se pudo acreditar el reembolso, así que la dispersión quedó como estaba. Volvé a intentarlo en un momento.',
+      })
+    }
     await logAudit(tx.user_id, 'mouv.force_return', {
       txId: tx.id, refund, rail: railCol, reason: motivo,
       admin: caller.userId, providerRef: rd.providerRef ?? null,
