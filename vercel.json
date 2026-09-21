@@ -1,7 +1,29 @@
 {
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
-  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }],
+  "_comment_rewrites": [
+    "Los webhooks van bajo NUESTRO dominio, no bajo la URL del proveedor de",
+    "infraestructura. Tres razones y las tres pesan:",
+    "",
+    "1. NO SE REVELA CON QUE OPERAMOS. La URL cruda dice en qué corremos y",
+    "   además expone el identificador del proyecto. Es el mismo criterio por",
+    "   el que el comprobante del proveedor no va al cliente.",
+    "2. SE PUEDE MUDAR. Si algún día cambia el backend, la URL que el banco",
+    "   registró sigue funcionando: se re-apunta acá. Cambiarle la URL de un",
+    "   webhook a un banco es un trámite de semanas, no un deploy.",
+    "3. Se lee como una empresa y no como un prototipo.",
+    "",
+    "UNA ENTRADA POR WEBHOOK, NUNCA UN COMODÍN. Con /webhooks/:path* se",
+    "abriría un proxy a TODAS nuestras funciones bajo un dominio de confianza,",
+    "incluidas las de admin. Cada socio tiene su línea explícita.",
+    "",
+    "El catch-all a index.html va ÚLTIMO: Vercel toma la primera que coincide,",
+    "y si va antes se traga los webhooks y el banco recibe el HTML de la app."
+  ],
+  "rewrites": [
+    { "source": "/webhooks/gowd", "destination": "https://wqleypebmfiaygrurnrc.supabase.co/functions/v1/gowd-webhook" },
+    { "source": "/(.*)", "destination": "/index.html" }
+  ],
   "headers": [
     {
       "source": "/(.*)",
