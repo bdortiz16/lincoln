@@ -57,18 +57,16 @@ variable "proxy_secret" {
 }
 
 variable "gowd_base" {
-  description = "Base de la API del banco, sin barra final. Ej: https://api.gowd.com.br"
+  description = "Base de la API del banco, sin barra final. Produccion: https://mtls-api-platform.gowd.com"
   type        = string
   # VACIO POR DEFECTO, A PROPOSITO.
   #
-  # Las IPs las producen el NAT y la EIP, que no dependen de saber la URL del
-  # banco. Asi se puede aplicar HOY, sacar las dos IPs y mandarselas a Gowd
-  # mientras ellos pasan su documentacion -- en vez de tener los dos lados
-  # esperandose.
+  # Las IPs las producen el NAT y la EIP, que no dependen de nada de Gowd. Asi
+  # se pudo aplicar antes de tener su documentacion, sacar las dos IPs y
+  # mandarselas -- en vez de tener los dos lados esperandose.
   #
   # Con esto vacio el proxy NO reenvia nada: contesta 503 "sin configurar".
-  # Queda arriba pero mudo, que es el estado honesto. Cuando llegue la base se
-  # vuelve a aplicar con -var="gowd_base=..." y empieza a funcionar.
+  # Queda arriba pero mudo, que es el estado honesto.
   default     = ""
 }
 
@@ -179,7 +177,71 @@ resource "aws_security_group" "lambda" {
   tags = { Name = local.nombre }
 }
 
-# ── La función ────────────────────────────────────────────────────────
+# ── El certificado y las credenciales del banco ───────────────────────
+#
+#  Gowd exige mTLS: la conexion no se abre si no presentamos el .pfx que ellos
+#  emiten. Ese archivo, su contrasena y las credenciales del token tienen que
+#  estar en algun lado que la Lambda pueda leer.
+#
+#  POR QUE SECRETS MANAGER Y NO VARIABLES DE ENTORNO
+#    Un .pfx en base64 anda por los 3-5 KB, y Lambda limita a 4 KB el total de
+#    TODAS sus variables juntas. No entra, y si entrara quedaria visible en la
+#    consola para cualquiera que pueda ver la funcion.
+#
+#  POR QUE EL CONTENIDO NO ESTA ACA
+#    Terraform guarda en su estado, EN TEXTO PLANO, todo lo que administra. Si
+#    el certificado de un banco se pasara por aca, quedaria en un archivo que
+#    se copia, se respalda y se manda por chat. Se crea el contenedor vacio y
+#    el contenido se carga una vez por CLI:
+#
+#      aws secretsmanager put-secret-value \
+#        --secret-id lincoin-gowd-proxy \
+#        --secret-string file://gowd.json
+#
+#    ignore_changes hace que los siguientes `terraform apply` NO lo pisen.
+resource "aws_secretsmanager_secret" "gowd" {
+  name        = local.nombre
+  description = "Certificado mTLS (.pfx) y credenciales de la API de Gowd."
+
+  # Si alguna vez se destruye, que se pueda volver a crear con el mismo nombre
+  # sin esperar la ventana de recuperacion de 7 a 30 dias.
+  recovery_window_in_days = 7
+}
+
+resource "aws_secretsmanager_secret_version" "gowd" {
+  secret_id = aws_secretsmanager_secret.gowd.id
+
+  # Contenedor vacio. El contenido real entra por CLI, no por aca.
+  secret_string = jsonencode({
+    pfxBase64    = ""
+    pfxPassword  = ""
+    clientId     = ""
+    clientSecret = ""
+    scopes       = []
+  })
+
+  lifecycle {
+    # SIN ESTO, cada `terraform apply` borraria el certificado y volveria a
+    # dejar el JSON vacio -- y Brasil dejaria de operar en silencio hasta que
+    # alguien se diera cuenta.
+    ignore_changes = [secret_string]
+  }
+}
+
+# Solo leer, y solo ESTE secreto.
+resource "aws_iam_role_policy" "secreto" {
+  name = "${local.nombre}-leer-secreto"
+  role = aws_iam_role.lambda.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = aws_secretsmanager_secret.gowd.arn
+    }]
+  })
+}
+
 data "archive_file" "codigo" {
   type        = "zip"
   source_file = "${path.module}/../index.mjs"
@@ -220,8 +282,9 @@ resource "aws_lambda_function" "proxy" {
 
   environment {
     variables = {
-      PROXY_SECRET = var.proxy_secret
-      GOWD_BASE    = var.gowd_base
+      PROXY_SECRET   = var.proxy_secret
+      GOWD_BASE      = var.gowd_base
+      GOWD_SECRET_ID = aws_secretsmanager_secret.gowd.arn
     }
   }
 }
@@ -250,4 +313,9 @@ output "ips_para_el_banco" {
 output "url_del_proxy" {
   description = "A donde le pega Lincoin. Va como secreto (GOWD_PROXY_URL), no en el código."
   value       = aws_lambda_function_url.proxy.function_url
+}
+
+output "secreto_donde_va_el_certificado" {
+  description = "Nombre del secreto donde se carga el .pfx y las credenciales de Gowd (ver README)."
+  value       = aws_secretsmanager_secret.gowd.name
 }

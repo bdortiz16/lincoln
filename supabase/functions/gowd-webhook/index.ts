@@ -6,23 +6,35 @@
 // (vercel.json la reenvía acá. Ver el comentario de ese archivo: cambiar la
 // URL de un webhook con un banco es un trámite de semanas, no un deploy.)
 //
-// ESTADO HOY: RECIBE Y GUARDA. NO ACTUA.
-//   Todavía no sabemos cómo firma Gowd sus webhooks — si mandan un secreto en
-//   una cabecera, un HMAC del cuerpo, o mTLS. Hasta saberlo, esto:
+// LO QUE GOWD ESPERA DE NOSOTROS (de su documentación)
+//   HTTP 200 con { "returnCode": "SUCCESS" }. Si no lo recibe, REINTENTA 4
+//   VECES MAS. O sea que el mismo evento puede llegar hasta 5 veces: lo que
+//   procese esto tiene que ser idempotente, sí o sí.
 //
-//     · contesta 200 siempre que pueda (para que su prueba de registro pase),
-//     · guarda el evento entero en gowd_eventos,
-//     · y lo marca verificado = false.
+// UN POSTBACK NO ES UNA PRUEBA — ESTO ES LO IMPORTANTE
+//   Su documentación describe el cuerpo del postback con todo detalle, y NO
+//   DESCRIBE NINGUNA FIRMA NI SECRETO. Por lo que está escrito, cualquiera que
+//   descubra esta URL puede mandarnos "ORDER-PAYIN.PAID" por el monto que se
+//   le ocurra, y si acreditáramos sobre eso, acabamos de regalar la plata.
 //
-//   NADA con verificado = false puede mover un saldo. Guardar un evento no es
-//   creerle. Esta función no toca balances ni transacciones: cuando llegue su
-//   documentación se escribe esa parte, y recién ahí importa.
+//   Por eso la regla, que no se negocia:
 //
-//   El valor real de tenerla arriba desde hoy es que CAPTURA SUS CABECERAS:
-//   la primera llamada de prueba nos dice cuál es su esquema de firma sin
-//   tener que esperar a que alguien lo escriba en un correo.
+//     EL POSTBACK AVISA. LA API CONFIRMA.
 //
-// CUANDO SEPAMOS EL ESQUEMA
+//   Al recibir un aviso se guarda y se despierta a quien corresponda, pero
+//   antes de mover un peso hay que preguntarle a Gowd por ese id (a través del
+//   proxy mTLS, que es el único que puede hablarles) y creerle a la respuesta.
+//   Esa confirmación es la columna confirmado_api.
+//
+// ESTADO HOY: RECIBE, GUARDA Y CONTESTA. NO ACREDITA NADA.
+//   No hay lógica de negocio de Gowd todavía — no hay cuentas en BRL ni
+//   órdenes que conciliar. Cuando la haya, entra por confirmado_api.
+//
+//   Tenerla arriba desde hoy sirve igual: CAPTURA SUS CABECERAS. Si mandan
+//   alguna firma que no está documentada, la primera llamada de prueba nos la
+//   muestra sin esperar a que alguien la escriba en un correo.
+//
+// SI APARECE UNA FIRMA
 //   Se setea GOWD_WEBHOOK_SECRET en Supabase → Edge Functions → Secrets.
 //   Desde ese momento se EXIGE: un evento que no valide se guarda como
 //   'rechazado' y se contesta 401.
@@ -141,15 +153,27 @@ Deno.serve(async (req) => {
     headersGuardables[k] = SENSIBLES.includes(k) ? await huella(v) : v.slice(0, 500)
   }
 
-  let cuerpoJson: unknown = null
+  let cuerpoJson: Record<string, unknown> | null = null
   try {
-    cuerpoJson = cuerpo ? JSON.parse(cuerpo) : null
+    const p = cuerpo ? JSON.parse(cuerpo) : null
+    cuerpoJson = p && typeof p === 'object' ? p as Record<string, unknown> : null
   } catch {
     cuerpoJson = null // no era JSON; queda el texto crudo, que es la prueba
   }
 
-  // Se guarda SIEMPRE, incluso lo rechazado: si alguien golpea esta URL con
-  // firmas malas, eso es justamente lo que hay que poder ver.
+  // Los campos que su documentación marca como required en todos los
+  // postbacks. Se extraen para poder buscar sin abrir el JSON — el JSON
+  // completo se guarda igual.
+  const j = cuerpoJson ?? {}
+  const txt = (v: unknown): string | null => {
+    const s = typeof v === 'string' ? v.trim() : typeof v === 'number' ? String(v) : ''
+    return s ? s.slice(0, 300) : null
+  }
+  const monto = (j.amount ?? {}) as Record<string, unknown>
+
+  // El monto NO se convierte a número. Su ejemplo es "50.00": pasarlo por un
+  // float lo deja de ser, y con plata eso no se perdona. Se guarda tal cual
+  // llegó y se convierte a centavos enteros recién cuando haga falta.
   const { error } = await db.from('gowd_eventos').insert({
     verificado: verdicto.ok,
     metodo_auth: verdicto.metodo,
@@ -157,8 +181,19 @@ Deno.serve(async (req) => {
     ip: headers['x-forwarded-for']?.split(',')[0]?.trim() ?? null,
     cuerpo_texto: cuerpo.slice(0, 100_000),
     cuerpo: cuerpoJson,
+    orden_id: txt(j.id),
+    orden_code: txt(j.code),
+    // 'event' es de los postbacks nuevos (banking); los viejos solo traen
+    // status. Si no viene, se arma uno para que la columna sirva igual.
+    evento: txt(j.event) ?? (txt(j.type) && txt(j.status) ? `${txt(j.type)}.${txt(j.status)}` : null),
+    estado: txt(j.status),
+    tipo: txt(j.type),
+    end_to_end: txt(j.endToEndId),
+    monto_valor: txt(monto.value),
+    monto_moneda: txt(monto.currency),
+    actualizado_at: txt(j.updatedAt),
     nota: verdicto.metodo === 'sin_secreto'
-      ? 'GOWD_WEBHOOK_SECRET no está configurado: el evento NO está verificado y no debe accionarse.'
+      ? 'Sin firma: su documentación no define ninguna. Este aviso NO confirma nada — hay que preguntarle a la API de Gowd por este id antes de mover un saldo.'
       : null,
   })
 
@@ -176,6 +211,7 @@ Deno.serve(async (req) => {
     return json(401, { error: 'no_autorizado' })
   }
 
-  // Recibido y guardado. Todavía no procesado — y no se finge lo contrario.
-  return json(200, { ok: true, verificado: verdicto.ok })
+  // Exactamente lo que su documentación dice que esperan. Si no ven esto,
+  // reintentan 4 veces más.
+  return json(200, { returnCode: 'SUCCESS' })
 })

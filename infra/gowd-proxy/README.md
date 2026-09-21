@@ -1,12 +1,26 @@
-# Salida con IP fija hacia Gowd
-
-Gowd exige registrar una IP de origen. Las funciones de Lincoin corren en
-infraestructura serverless, donde **la IP de salida cambia entre una llamada y
-otra**: no hay un número que darles. Esto crea una salida propia con IP fija.
+# La puerta hacia Gowd
 
 ```
 Lincoin  →  Function URL  →  Lambda (subred privada)  →  NAT  →  IP fija  →  Gowd
+                                  ↑
+                        acá vive el certificado mTLS
 ```
+
+Esta pieza existe por **dos** razones, y la segunda es la que manda:
+
+1. **IP fija.** Gowd registra una IP de origen. Las funciones de Lincoin corren
+   en infraestructura serverless, donde la IP de salida cambia entre una llamada
+   y otra: no hay un número que darles.
+
+2. **mTLS.** Gowd exige TLS mutuo: la conexión no se abre si no presentamos el
+   `.pfx` que ellos emiten. **Una edge function de Supabase no puede hacer eso** —
+   su `fetch` no expone el certificado de cliente. Aunque la IP no importara,
+   esto seguiría siendo obligatorio.
+
+Además el proxy **acuña el bearer** de `/auth/v1/token`. Las credenciales del
+banco quedan en un solo lugar (el mismo donde ya tiene que estar el certificado)
+y Supabase nunca las ve: solo conoce el secreto del proxy. De paso la caché del
+token funciona de verdad, porque Lambda reusa el contenedor entre llamadas.
 
 ## Antes de aplicar
 
@@ -34,16 +48,83 @@ Sin `gowd_base`, el proxy queda **arriba pero mudo**: contesta 503 "sin
 configurar" y no reenvía nada. Es el estado honesto mientras no sepamos a dónde
 tiene que hablar.
 
-## Cuando llegue la base de Gowd
+## Cuando Gowd entregue el certificado y las credenciales
+
+Hacen falta cuatro cosas de ellos: el archivo **`.pfx`**, su **contraseña**, el
+**clientId** y el **clientSecret** (y los **scopes**, si no son el
+`api://<clientId>/.default` por defecto).
+
+**1. Cargar el certificado en Secrets Manager.** No va en Terraform ni en
+variables de entorno — ver "Dónde vive el certificado" más abajo.
+
+```bash
+cat > gowd.json <<JSON
+{
+  "pfxBase64": "$(base64 -w0 client.pfx)",
+  "pfxPassword": "LA-CONTRASEÑA-DEL-PFX",
+  "clientId": "EL-CLIENT-ID",
+  "clientSecret": "EL-CLIENT-SECRET",
+  "scopes": ["api://EL-CLIENT-ID/.default"]
+}
+JSON
+
+aws secretsmanager put-secret-value \
+  --secret-id lincoin-gowd-proxy \
+  --secret-string file://gowd.json
+
+shred -u gowd.json client.pfx     # que no queden en el disco
+```
+
+**2. Apuntar el proxy a producción.**
 
 ```bash
 terraform apply \
   -var="proxy_secret=$SECRETO" \
-  -var="gowd_base=https://LA-BASE-DE-GOWD"
+  -var="gowd_base=https://mtls-api-platform.gowd.com"
 ```
+
+| Ambiente | Base |
+|---|---|
+| Sandbox | `https://mtls-api-platform-hml.gowd.com` |
+| Producción | `https://mtls-api-platform.gowd.com` |
+
+El certificado es **por ambiente**: el de sandbox no sirve en producción ni al
+revés. Las credenciales también.
 
 Esto **no cambia las IPs** — sólo actualiza la configuración de la Lambda. Las
 IPs que le diste al banco siguen siendo las mismas.
+
+## Dónde vive el certificado, y por qué ahí
+
+En **AWS Secrets Manager**, no en variables de entorno y no en Terraform.
+
+- **No en variables de entorno**: un `.pfx` en base64 anda por los 3–5 KB y
+  Lambda limita a **4 KB el total de todas sus variables juntas**. No entra — y
+  si entrara, quedaría a la vista de cualquiera que pueda abrir la función.
+- **No en Terraform**: el estado guarda **en texto plano** todo lo que
+  administra. El certificado de un banco terminaría en un archivo que se copia,
+  se respalda y se manda por chat.
+
+Terraform crea el contenedor vacío con `ignore_changes`, así que los `apply`
+siguientes **no lo pisan**. Sin eso, cada `apply` borraría el certificado y
+Brasil dejaría de operar en silencio.
+
+## Cómo se le pega al proxy
+
+La ruta del banco va en una cabecera nuestra, no en la URL — así este endpoint
+no parece, ni puede usarse como, un proxy genérico.
+
+```
+POST  <url_del_proxy>
+  x-proxy-secret: <GOWD_PROXY_SECRET>
+  x-gowd-path:    /banking/v1/...
+  content-type:   application/json
+  <cuerpo>
+```
+
+El `Authorization` **no se manda**: lo pone el proxy con su propio token.
+`/auth/v1/token` está bloqueado a propósito — si se pudiera pedir a través del
+proxy, el `clientSecret` saldría en una respuesta hacia afuera.
 
 Al terminar imprime:
 
@@ -70,8 +151,15 @@ problema, Brasil deja de operar y no hay nada que hacer en el momento: agregar
 una IP después es volver a abrir el trámite. Se registran las dos desde el
 principio, aunque una esté de reserva.
 
-**Cómo autentican su webhook hacia nosotros** — secreto en un header, firma
-HMAC del cuerpo, o mTLS. Eso decide cómo se escribe `gowd-webhook`.
+**Cómo autentican su webhook hacia nosotros.** Su documentación describe el
+cuerpo del postback con todo detalle y **no menciona ninguna firma ni secreto**.
+Tal como está escrito, cualquiera que descubra la URL puede mandarnos
+`ORDER-PAYIN.PAID` por el monto que se le ocurra. Hay que preguntarles si existe
+algún mecanismo que no esté documentado.
+
+Mientras tanto la regla es **el postback avisa, la API confirma**: al recibir un
+aviso se guarda y se despierta a quien corresponda, pero antes de mover un peso
+se le pregunta a Gowd por ese id y se le cree a la respuesta, no al aviso.
 
 ## Lo que cuesta
 
