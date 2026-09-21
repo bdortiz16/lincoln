@@ -140,6 +140,20 @@ export const AdminClientes: React.FC<{
   // caso en que hace falta -- cuando el proveedor dice una cosa y nosotros
   // otra -- lo que se necesita es poder mirarlo con calma y copiarlo.
   const [diagSync, setDiagSync] = useState<any>(null);
+  const [sondeando, setSondeando] = useState<string | null>(null);
+  const [sonda, setSonda] = useState<any>(null);
+
+  // Preguntarle al proveedor por UN movimiento. Solo lee: no cambia estados ni
+  // toca saldos. Es la pregunta más simple que se puede hacer, y es la que
+  // faltaba -- cada hipótesis sobre por qué un envío seguía "En curso" costaba
+  // una vuelta entera de ida y vuelta.
+  const sondear = async (txId: string) => {
+    setSondeando(txId); setSonda(null);
+    const r = await pedirMouv({ action: 'sondear_dispersion', txId }).catch((e: any) => ({ ok: false, message: String(e?.message ?? e) }));
+    setSonda(r);
+    setSondeando(null);
+    if (!r?.ok) showToast?.(r?.message ?? 'No se pudo consultar al proveedor.', 7000);
+  };
   const [menu, setMenu] = useState(false);
   const [confirmar, setConfirmar] = useState<{ titulo: string; cuerpo: string; nombre: string; accion: () => void } | null>(null);
   const [escrito, setEscrito] = useState('');
@@ -526,7 +540,8 @@ export const AdminClientes: React.FC<{
 
               {tab === 'movimientos' && <>
                 {diagSync && <DiagnosticoSync d={diagSync} onCerrar={() => setDiagSync(null)} />}
-                <Movimientos movs={movsDe(sel.id)} />
+                {sonda && <ResultadoSonda r={sonda} onCerrar={() => setSonda(null)} />}
+                <Movimientos movs={movsDe(sel.id)} onSondear={sondear} sondeando={sondeando} />
               </>}
               {tab === 'kyc' && <Kyc sel={sel} verifyUser={verifyUser} refreshData={refreshData} showToast={showToast} verificado={verificado} />}
               {tab === 'limites' && <Limites sel={sel} movs={movsDe(sel.id)} updateUserRawData={updateUserRawData} refreshData={refreshData} showToast={showToast} />}
@@ -907,7 +922,62 @@ const DiagnosticoSync: React.FC<{ d: any; onCerrar: () => void }> = ({ d, onCerr
   );
 };
 
-const Movimientos: React.FC<any> = ({ movs }) => (
+// ── Lo que contestó el proveedor sobre UN movimiento ──────────────────
+//
+// Sin interpretar: el id que le preguntamos, lo que dijo, y la respuesta
+// cruda. La "conclusión" la arma el servidor en una línea, para que no haya
+// que leer JSON para entender si hay diferencia o no.
+const ResultadoSonda: React.FC<{ r: any; onCerrar: () => void }> = ({ r, onCerrar }) => {
+  const [crudo, setCrudo] = useState(false);
+  const hayDiferencia = r?.veredicto === 'completed' && r?.estadoLincoin === 'Procesando';
+  return (
+    <div style={{ border: `1px solid ${hayDiferencia ? C.amber : C.b2}`, background: C.elev, borderRadius: 12, padding: 14, marginBottom: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <p style={{ fontFamily: FONT, fontWeight: 800, fontSize: 13, color: C.text, margin: 0 }}>
+            Consulta al proveedor
+          </p>
+          <p style={{ fontSize: 12, color: hayDiferencia ? C.amber : C.sub, margin: '5px 0 0', lineHeight: 1.5 }}>
+            {r?.conclusion ?? '—'}
+          </p>
+          <div style={{ marginTop: 9, display: 'grid', gap: 3 }}>
+            {[
+              ['Estado en Lincoin', r?.estadoLincoin],
+              ['Estado en el proveedor', r?.estadoProveedor ?? '(no respondió)'],
+              ['Id del proveedor', r?.providerRef ?? '(no guardado)'],
+              ['Referencia nuestra', r?.providerReference ?? '—'],
+              ['Ruta que respondió', r?.rutaQueRespondio ?? '—'],
+            ].map(([k, v]) => (
+              <div key={String(k)} style={{ display: 'flex', gap: 8, fontSize: 11.5 }}>
+                <span style={{ color: C.dim, minWidth: 148 }}>{k}</span>
+                <span style={{ color: C.text, fontFamily: MONO, wordBreak: 'break-all' }}>{String(v ?? '—')}</span>
+              </div>
+            ))}
+          </div>
+          {r?.diag?.motivo && (
+            <p style={{ fontSize: 11.5, color: C.amber, margin: '8px 0 0', lineHeight: 1.5 }}>{r.diag.motivo}</p>
+          )}
+          {(r?.crudo != null || r?.diag != null || r?.respuestaEnvio != null) && (
+            <>
+              <button onClick={() => setCrudo(v => !v)}
+                style={{ background: 'none', border: 'none', color: C.dim, fontSize: 11, cursor: 'pointer', padding: '8px 0 0', textDecoration: 'underline' }}>
+                {crudo ? 'Ocultar' : 'Ver'} la respuesta cruda
+              </button>
+              {crudo && (
+                <pre style={{ marginTop: 7, maxHeight: 260, overflow: 'auto', background: C.doc, border: `1px solid ${C.b1}`, borderRadius: 8, padding: 10, fontSize: 10.5, color: C.sub, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                  {JSON.stringify({ diag: r.diag, crudo: r.crudo, respuestaEnvio: r.respuestaEnvio }, null, 2).slice(0, 6000)}
+                </pre>
+              )}
+            </>
+          )}
+        </div>
+        <button onClick={onCerrar} style={{ background: 'none', border: 'none', color: C.dim, fontSize: 16, cursor: 'pointer', lineHeight: 1 }}>×</button>
+      </div>
+    </div>
+  );
+};
+
+const Movimientos: React.FC<any> = ({ movs, onSondear, sondeando }) => (
   <Tarjeta style={{ marginTop: 18, padding: 0 }}>
     {movs.length === 0 ? (
       <p style={{ fontSize: 12.5, color: C.sub, padding: 22, margin: 0, textAlign: 'center' }}>Esta cuenta todavía no tiene movimientos.</p>
@@ -929,6 +999,15 @@ const Movimientos: React.FC<any> = ({ movs }) => (
             {entra ? '+' : '−'}{money(Math.abs(Number(t.amount) || 0), String(t.currency ?? '').startsWith('COP') ? 0 : 2)} <span style={{ color: C.sub, fontWeight: 500, fontSize: 11 }}>{String(t.currency ?? '').split('_')[0]}</span>
           </p>
           <div style={{ flexShrink: 0 }}><Pill tono={tono as any}>{(estado || '—').toUpperCase()}</Pill></div>
+          {/* Preguntarle al proveedor por ESTE movimiento. Solo tiene sentido
+              en una dispersión: es el caso donde Mouv y Lincoin pueden decir
+              cosas distintas. */}
+          {String(t.type) === 'dispersion' && (
+            <button onClick={() => onSondear?.(t.id)} disabled={sondeando === t.id}
+              style={{ flexShrink: 0, background: 'transparent', border: `1px solid ${C.b2}`, color: sondeando === t.id ? C.dim : C.sub, borderRadius: 8, padding: '4px 9px', fontSize: 10.5, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+              {sondeando === t.id ? 'Consultando…' : 'Consultar'}
+            </button>
+          )}
         </div>
       );
     })}

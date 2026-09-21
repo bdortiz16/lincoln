@@ -1651,6 +1651,62 @@ serve(async (req: Request) => {
     })
   }
 
+  // ── SONDEAR UNA DISPERSION CONTRA EL PROVEEDOR ────────────────────
+  //
+  // Pregunta por UN id y devuelve lo que contesta Mouv, crudo. Nada de
+  // listados ni de emparejamiento: la pregunta mas simple que se puede hacer.
+  //
+  // Existe porque se pasaron horas suponiendo por que un envio seguia "En
+  // curso" con Mouv diciendo "Exitoso". Cada hipotesis --la moneda, el id
+  // faltante, el filtro-- costo una vuelta entera y ninguna era. Con esto la
+  // respuesta esta a un clic, y NO CAMBIA NADA: solo lee y muestra.
+  if (action === 'sondear_dispersion') {
+    if (!caller.admin || !caller.viaJwt) return json(403, { error: 'forbidden' })
+    const txId = payload?.txId ?? payload?.tx_id
+    if (txId == null) return json(400, { error: 'missing_tx' })
+
+    const { data: tx } = await db.from('transactions')
+      .select('id, user_id, status, type, amount, currency, created_at, raw_data')
+      .eq('id', txId).maybeSingle()
+    if (!tx) return json(404, { error: 'not_found' })
+
+    const rd = (tx.raw_data ?? {}) as Record<string, any>
+    const ref = String(rd.providerRef ?? '').trim()
+
+    // Sin id del proveedor no hay a quien preguntarle, y eso YA es la
+    // respuesta: el problema esta en el envio, no en la consulta.
+    if (!ref) {
+      return json(200, {
+        ok: true, txId: tx.id, estadoLincoin: tx.status, providerRef: null,
+        conclusion: 'La fila no tiene el id de Mouv guardado. Sin el no se puede consultar por id; la conciliacion depende del listado y del emparejamiento por monto.',
+        respuestaEnvio: rd.respuestaEnvio ?? null,
+        providerReference: rd.providerReference ?? null,
+      })
+    }
+
+    const st = await mouvTransferStatus(ref, tx.created_at)
+    return json(200, {
+      ok: true,
+      txId: tx.id,
+      estadoLincoin: tx.status,
+      providerRef: ref,
+      providerReference: rd.providerReference ?? null,
+      // Lo que Mouv contesto, tal cual y sin interpretar.
+      encontrado: st.found,
+      estadoProveedor: st.state || null,
+      veredicto: st.verdict,
+      rutaQueRespondio: st.path ?? null,
+      diag: st.diag ?? null,
+      crudo: st.raw ?? null,
+      // La diferencia, dicha en una linea.
+      conclusion: !st.found
+        ? `No se pudo confirmar: ${st.diag?.motivo ?? 'sin motivo'}`
+        : st.state && tx.status === 'Procesando' && st.verdict === 'completed'
+          ? 'Mouv dice COMPLETED y Lincoin sigue en Procesando: la conciliacion no lo esta aplicando.'
+          : `Mouv dice ${st.state}; Lincoin dice ${tx.status}.`,
+    })
+  }
+
   // ── CONFIRMAR A MANO UNA DISPERSION ───────────────────────────────
   // La contraparte de force_return. Mientras la consulta de estado no funcione,
   // la unica fuente de verdad es la consola del proveedor, y quien la mira es
