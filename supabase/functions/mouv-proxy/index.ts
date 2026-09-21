@@ -486,7 +486,21 @@ function normalizeMouvState(raw: any): { verdict: MouvVerdict; state: string } {
   const pickState = (o: any): string => {
     if (o == null) return ''
     if (typeof o === 'string') return o
-    return String(o.status ?? o.state ?? o.transferStatus ?? o.result ?? o?.data?.status ?? o?.data?.state ?? '')
+    // `kaminStatus` VA PRIMERO, y es el que importa.
+    //
+    // GET /wallets/transactions/:id devuelve 200 con el estado en ESE campo,
+    // no en `status`. Como no estaba en esta lista, una respuesta perfectamente
+    // buena se leia como "sin estado legible": se descartaba, se seguian
+    // probando rutas adivinadas, y la consulta terminaba en "respuesta
+    // inesperada (HTTP 200)".
+    //
+    // Eso fue LA causa de que un envio ya COMPLETED en Mouv se quedara en
+    // "Procesando" en Lincoin durante dias. El proveedor contestaba bien todo
+    // el tiempo; le estabamos preguntando por un campo que no existe.
+    return String(
+      o.kaminStatus ?? o.status ?? o.state ?? o.transferStatus ?? o.result
+      ?? o?.data?.kaminStatus ?? o?.data?.status ?? o?.data?.state ?? '',
+    )
   }
   const s = pickState(raw).trim().toUpperCase()
   if (!s) return { verdict: 'unknown', state: '' }
