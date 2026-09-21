@@ -2305,7 +2305,15 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
             <div className="flex items-baseline justify-between" style={{ marginBottom: 13 }}>
               <div className="flex items-baseline gap-2">
                 <span style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>Billeteras</span>
-                <span style={{ fontSize: 12.5, color: '#878E88' }}>2 activas</span>
+                {/* Estaba fijo en "2 activas". Al activar un país aparecía una
+                    tercera tarjeta y el texto seguía diciendo dos: un número
+                    escrito a mano deja de ser cierto el día que algo cambia. */}
+                {(() => {
+                  const cs: Record<string, string> = { ...((config as any).countryStatus || {}) };
+                  const extra = ['Brasil', 'México', 'Perú', 'Chile', 'Venezuela'].filter(p => cs[p] === 'on').length;
+                  const n = 2 + extra;
+                  return <span style={{ fontSize: 12.5, color: '#878E88' }}>{n} activa{n === 1 ? '' : 's'}</span>;
+                })()}
               </div>
             </div>
             {/* Cuadro de progreso de DEPÓSITO — inline, encima de las billeteras.
@@ -2409,6 +2417,54 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                     </div>
                   </div>
                 );
+              })()}
+
+              {/* ── Cuentas de otros países, manejadas desde el admin ──
+                  Antes las dos tarjetas de arriba estaban escritas a mano y
+                  no había forma de que el interruptor de Admin → Países se
+                  viera acá: alguien activaba Brasil, veía que se guardaba, y
+                  en la app no pasaba nada.
+
+                  Ahora poner un país en "on" hace aparecer su billetera. El
+                  saldo arranca en cero porque todavía no hay riel detrás —
+                  no se inventa un número. */}
+              {(() => {
+                const cs: Record<string, string> = { ...((config as any).countryStatus || {}) };
+                const OTROS: { pais: string; code: string; nombre: string; riel: string }[] = [
+                  { pais: 'Brasil',    code: 'BRL', nombre: 'Real brasileño', riel: 'Pix · BRL' },
+                  { pais: 'México',    code: 'MXN', nombre: 'Peso mexicano',  riel: 'SPEI · MXN' },
+                  { pais: 'Perú',      code: 'PEN', nombre: 'Sol peruano',    riel: 'CCI · PEN' },
+                  { pais: 'Chile',     code: 'CLP', nombre: 'Peso chileno',   riel: 'Transferencia · CLP' },
+                  { pais: 'Venezuela', code: 'VES', nombre: 'Bolívar',        riel: 'Pago móvil · VES' },
+                ];
+                return OTROS.filter(o => cs[o.pais] === 'on').map(o => {
+                  const saldo = getBalance(o.code);
+                  return (
+                    <div key={o.code} style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 14, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                      <div style={{ padding: '18px 18px 16px', flex: 1 }}>
+                        <div className="flex items-center" style={{ gap: 10, marginBottom: 14 }}>
+                          <FlagImg code={o.code} size={26} />
+                          <div style={{ minWidth: 0 }}>
+                            <p style={{ fontSize: 14.5, fontWeight: 700, color: '#F4F4F2' }}>{o.nombre}</p>
+                            <p style={{ fontSize: 11, color: '#878E88' }}>Cuenta local · {o.riel}</p>
+                          </div>
+                        </div>
+                        <div className="flex items-baseline" style={{ gap: 5 }}>
+                          <span style={{ fontFamily: 'Archivo, system-ui, sans-serif', fontWeight: 800, fontSize: 25, letterSpacing: '-0.7px', color: '#F4F4F2' }}>
+                            {saldo.toLocaleString('es-CO', { maximumFractionDigits: 2 })}
+                          </span>
+                          <span style={{ fontSize: 12, fontWeight: 600, color: '#878E88', marginBottom: 1 }}>{o.code}</span>
+                        </div>
+                        {/* Se dice que todavía no opera en vez de dejar creer
+                            que un cero es un saldo. Un cero y "no disponible"
+                            se ven igual y significan cosas muy distintas. */}
+                        <p style={{ fontSize: 10.5, color: 'rgba(244,244,242,0.45)', marginTop: 8, lineHeight: 1.45 }}>
+                          Cuenta habilitada. Los cargues y envíos en {o.code} se activan cuando el riel esté conectado.
+                        </p>
+                      </div>
+                    </div>
+                  );
+                });
               })()}
             </div>
             {/* Cuentas por país que vienen (modelo hub: cada moneda local
