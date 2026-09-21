@@ -1934,6 +1934,56 @@ Deno.serve(async (req: Request) => {
         return json({ ok: true, admins, activity: withIp })
       }
 
+      // ── Correos que NO están llegando ─────────────────────────────────
+      // Cuando una dirección rebota en duro o alguien marca un correo como
+      // spam, Resend la suprime y deja de mandarle -- pero a nosotros nos
+      // sigue contestando que aceptó el envío. La app le dice a esa persona
+      // "revisá tu correo" para un correo que nunca va a salir, y ella no
+      // puede avisarnos: el correo es justo el canal que se rompió.
+      //
+      // Esta lista es la única forma de enterarse. Sale de resend-webhook.
+      if (body.action === 'email_incidencias') {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        const { data, error } = await db.from('email_incidencias')
+          .select('*').eq('resuelto', false)
+          .order('creado_at', { ascending: false }).limit(100)
+        if (error) return json({ ok: false, error: error.message }, 500)
+
+        // Una misma dirección puede rebotar muchas veces. Interesa la
+        // dirección, no cada rebote: 40 filas del mismo correo no son 40
+        // problemas, y ver la lista así hace que nadie la mire.
+        const porEmail = new Map<string, any>()
+        for (const r of (data ?? [])) {
+          const k = String((r as any).email ?? '').toLowerCase()
+          const ya = porEmail.get(k)
+          if (!ya) porEmail.set(k, { ...(r as any), veces: 1 })
+          else {
+            ya.veces++
+            // Un rebote duro manda sobre uno blando aunque sea más viejo: es
+            // el que dice que esa dirección no va a funcionar nunca más.
+            if ((r as any).dureza === 'hard' && ya.dureza !== 'hard') {
+              ya.dureza = 'hard'; ya.tipo = (r as any).tipo; ya.motivo = (r as any).motivo
+            }
+          }
+        }
+        return json({ ok: true, incidencias: [...porEmail.values()] })
+      }
+
+      // Marcar resuelto = "ya la saqué de la lista de supresión de Resend y
+      // confirmé que le llega". No lo arregla solo: sacarla de la supresión
+      // es un paso a mano en Resend, y esto solo deja constancia.
+      if (body.action === 'email_incidencia_resuelta') {
+        const v = await verifyAdmin(req)
+        if (!v.ok) return json({ error: 'No autorizado' }, 401)
+        const email = String(body.email ?? '').toLowerCase().trim()
+        if (!email) return json({ ok: false, error: 'falta_email' }, 400)
+        const { error } = await db.from('email_incidencias')
+          .update({ resuelto: true, resuelto_at: new Date().toISOString(), resuelto_por: v.userId ?? null })
+          .eq('resuelto', false).ilike('email', email)
+        if (error) return json({ ok: false, error: error.message }, 500)
+        return json({ ok: true })
+      }
+
       // ── Panel de seguridad: datos REALES de acceso ────────────────────
       // Reemplaza los tres recuadros que estaban en "demo": rotación de
       // llaves, intentos fallidos / IPs bloqueadas, e historial de accesos

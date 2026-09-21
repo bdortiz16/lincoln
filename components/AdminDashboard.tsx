@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { CodeInput } from './CodeInput';
 import { 
   Users, 
@@ -253,6 +253,116 @@ const SUBTAB_TITLES: Record<string, string> = {
 // El detalle técnico va PLEGADO. Lo que importa arriba es cuánta plata se
 // devolvió y cuántos envíos quedaron sin confirmar; el crudo del proveedor
 // importa sólo cuando algo no cuadra, y entonces se abre.
+// Llamada a admin-data con la sesión del admin. Mismo patrón que el resto del
+// panel; se extrae para que un componente suelto no tenga que repetirlo.
+async function pedirAdmin(body: any): Promise<any> {
+    const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+    const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+    let jwt: string | null = null;
+    try {
+        const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
+        if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; }
+    } catch { /* sin sesión, va con la anon y el servidor rechaza */ }
+    const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}` },
+        body: JSON.stringify(body),
+    });
+    return r.json();
+}
+
+// ── Aviso: correos que NO están llegando ──────────────────────────────
+//
+// Cuando una dirección rebota en duro o alguien marca un correo como spam,
+// Resend la suprime y deja de mandarle -- pero a nosotros nos sigue
+// contestando que aceptó el envío. La app le dice a esa persona "revisá tu
+// correo" para un correo que nunca va a salir, y ella no puede avisarnos:
+// el correo es justo el canal que se rompió.
+//
+// Por eso esto va ARRIBA Y EN ROJO, no escondido en una pestaña. Nos pasó
+// con la cuenta de admin y tardamos horas en darnos cuenta; a un cliente le
+// pasa igual y no tiene cómo contarlo.
+const AvisoCorreos: React.FC = () => {
+    const [lista, setLista] = useState<any[]>([]);
+    const [abierto, setAbierto] = useState(false);
+
+    const cargar = useCallback(async () => {
+        try {
+            const r = await pedirAdmin({ action: 'email_incidencias' });
+            if (r?.ok && Array.isArray(r.incidencias)) setLista(r.incidencias);
+        } catch { /* que no se caiga el panel por esto */ }
+    }, []);
+
+    useEffect(() => {
+        cargar();
+        // Cada 5 min. No hace falta más: una dirección rota lo sigue estando.
+        const t = setInterval(cargar, 5 * 60 * 1000);
+        return () => clearInterval(t);
+    }, [cargar]);
+
+    const resolver = async (email: string) => {
+        // Optimista a propósito: el admin acaba de hacer el paso manual en
+        // Resend y quiere ver que la fila se va. Si falla, vuelve en la
+        // próxima carga.
+        setLista((l) => l.filter((x) => String(x.email).toLowerCase() !== email.toLowerCase()));
+        try { await pedirAdmin({ action: 'email_incidencia_resuelta', email }); } catch { cargar(); }
+    };
+
+    if (!lista.length) return null;
+    const duros = lista.filter((x) => x.dureza === 'hard').length;
+
+    return (
+        <div className="mb-6 rounded-xl border border-red-200 bg-red-50 overflow-hidden">
+            <button onClick={() => setAbierto((v) => !v)} className="w-full flex items-center gap-3 px-4 py-3 text-left">
+                <AlertTriangle size={18} className="text-red-600 shrink-0" />
+                <div className="flex-1 min-w-0">
+                    <p className="text-sm font-bold text-red-900">
+                        {lista.length === 1
+                            ? 'Hay 1 dirección que no está recibiendo correos'
+                            : `Hay ${lista.length} direcciones que no están recibiendo correos`}
+                    </p>
+                    <p className="text-xs text-red-700 mt-0.5">
+                        {duros > 0
+                            ? `${duros} con rebote definitivo. Esas personas no pueden recibir su código de acceso.`
+                            : 'No pueden recibir su código de acceso.'}
+                    </p>
+                </div>
+                <ChevronRight size={16} className={`text-red-500 shrink-0 transition-transform ${abierto ? 'rotate-90' : ''}`} />
+            </button>
+
+            {abierto && (
+                <div className="border-t border-red-200 bg-white/60 px-4 py-3">
+                    <p className="text-xs text-slate-600 mb-3">
+                        Para reactivar una dirección hay que sacarla de la lista de supresión en
+                        Resend (<span className="font-mono text-[11px]">Emails → Suppressions</span>) y después
+                        marcarla acá. Este panel no lo hace solo: ese paso es manual en Resend.
+                    </p>
+                    <div className="space-y-1.5">
+                        {lista.map((x) => (
+                            <div key={x.email} className="flex items-center gap-3 py-1.5 border-b border-slate-100 last:border-0">
+                                <div className="flex-1 min-w-0">
+                                    <p className="text-sm font-medium text-slate-900 truncate">{x.email}</p>
+                                    <p className="text-[11px] text-slate-500 truncate">
+                                        {x.dureza === 'hard' ? 'Rebote definitivo' : x.tipo === 'complained' ? 'Marcado como spam' : x.dureza === 'soft' ? 'Rebote pasajero' : x.tipo}
+                                        {x.veces > 1 ? ` · ${x.veces} veces` : ''}
+                                        {x.motivo ? ` · ${x.motivo}` : ''}
+                                    </p>
+                                </div>
+                                <button
+                                    onClick={() => resolver(x.email)}
+                                    className="text-xs font-semibold text-slate-600 hover:text-slate-900 border border-slate-300 rounded-lg px-2.5 py-1 shrink-0"
+                                >
+                                    Ya la reactivé
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+};
+
 const PanelConciliacion: React.FC<{ datos: any; onCerrar: () => void }> = ({ datos, onCerrar }) => {
     // Si el listado vino vacío, el crudo del proveedor es EL dato que hace
     // falta — no puede estar plegado esperando que a alguien se le ocurra
@@ -4387,6 +4497,12 @@ const renderDesign = () => (
             estuviera justo en esa pestaña — o sea, casi nunca. Se devolvía
             dinero y en pantalla no pasaba nada. */}
         {resConciliar && <PanelConciliacion datos={resConciliar} onCerrar={() => setResConciliar(null)} />}
+        {/* Correos que no están llegando. Va suelto y fijo arriba a la derecha
+            porque el aviso tiene que verse desde CUALQUIER pestaña: quien no
+            recibe el código no puede escribirnos para contarlo. */}
+        <div className="fixed top-3 right-3 z-40 w-[min(26rem,calc(100vw-1.5rem))]">
+            <AvisoCorreos />
+        </div>
         {/* Mobile overlay — tap outside sidebar to close */}
         {isSidebarOpen && (
           <div className="fixed inset-0 z-20 bg-black/50 lg:hidden" onClick={closeSidebar}/>

@@ -22,6 +22,7 @@
   ],
   "rewrites": [
     { "source": "/webhooks/gowd", "destination": "https://wqleypebmfiaygrurnrc.supabase.co/functions/v1/gowd-webhook" },
+    { "source": "/webhooks/resend", "destination": "https://wqleypebmfiaygrurnrc.supabase.co/functions/v1/resend-webhook" },
     { "source": "/(.*)", "destination": "/index.html" }
   ],
   "headers": [
