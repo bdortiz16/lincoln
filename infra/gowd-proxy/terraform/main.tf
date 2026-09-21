@@ -59,6 +59,17 @@ variable "proxy_secret" {
 variable "gowd_base" {
   description = "Base de la API del banco, sin barra final. Ej: https://api.gowd.com.br"
   type        = string
+  # VACIO POR DEFECTO, A PROPOSITO.
+  #
+  # Las IPs las producen el NAT y la EIP, que no dependen de saber la URL del
+  # banco. Asi se puede aplicar HOY, sacar las dos IPs y mandarselas a Gowd
+  # mientras ellos pasan su documentacion -- en vez de tener los dos lados
+  # esperandose.
+  #
+  # Con esto vacio el proxy NO reenvia nada: contesta 503 "sin configurar".
+  # Queda arriba pero mudo, que es el estado honesto. Cuando llegue la base se
+  # vuelve a aplicar con -var="gowd_base=..." y empieza a funcionar.
+  default     = ""
 }
 
 provider "aws" {

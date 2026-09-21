@@ -10,24 +10,40 @@ Lincoin  →  Function URL  →  Lambda (subred privada)  →  NAT  →  IP fija
 
 ## Antes de aplicar
 
-Tres cosas que hay que tener:
-
 1. **Una cuenta de AWS** con permisos para crear VPC, NAT, EIP, Lambda e IAM.
-2. **La base de la API de Gowd** (`https://api...`). Sin eso el proxy no sabe a
-   dónde reenviar.
-3. **Terraform** instalado (`>= 1.5`).
+2. **Terraform** (`>= 1.5`) y **AWS CLI**.
 
-## Aplicar
+La base de la API de Gowd **no hace falta todavía**: las IPs las producen el NAT
+y la EIP, que no dependen de ella. Se aplica ahora, se sacan las IPs y se les
+manda, y cuando llegue su documentación se vuelve a aplicar con la base. Así no
+quedan los dos lados esperándose.
+
+## Aplicar (primera vez, para sacar las IPs)
 
 ```bash
 cd infra/gowd-proxy/terraform
 terraform init
 
 SECRETO=$(openssl rand -hex 32)
+echo "GUARDA ESTO: $SECRETO"
+
+terraform apply -var="proxy_secret=$SECRETO"
+```
+
+Sin `gowd_base`, el proxy queda **arriba pero mudo**: contesta 503 "sin
+configurar" y no reenvía nada. Es el estado honesto mientras no sepamos a dónde
+tiene que hablar.
+
+## Cuando llegue la base de Gowd
+
+```bash
 terraform apply \
   -var="proxy_secret=$SECRETO" \
   -var="gowd_base=https://LA-BASE-DE-GOWD"
 ```
+
+Esto **no cambia las IPs** — sólo actualiza la configuración de la Lambda. Las
+IPs que le diste al banco siguen siendo las mismas.
 
 Al terminar imprime:
 
