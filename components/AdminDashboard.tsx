@@ -100,6 +100,8 @@ import { AdminOtcSection } from './AdminOtcSection';
 import { AdminOtcCierres } from './AdminOtcCierres';
 import { sonarCampana, campanaActiva } from './campanaOtc';
 import { Zap, ArrowLeftRight, ArrowLeft, Info, ChevronRight, Activity, Link2, MessageSquare } from 'lucide-react';
+import { pedirAdmin } from './adminApi';
+import { AdminEquipo } from './AdminEquipo';
 import { CollectionWalletCard } from './CollectionWalletCard';
 import type { AdminProfile } from './AdminPersonas/lib/adminAuth';
 import { FlagImg, flagUrl } from './FlagImg';
@@ -253,24 +255,6 @@ const SUBTAB_TITLES: Record<string, string> = {
 // El detalle técnico va PLEGADO. Lo que importa arriba es cuánta plata se
 // devolvió y cuántos envíos quedaron sin confirmar; el crudo del proveedor
 // importa sólo cuando algo no cuadra, y entonces se abre.
-// Llamada a admin-data con la sesión del admin. Mismo patrón que el resto del
-// panel; se extrae para que un componente suelto no tenga que repetirlo.
-async function pedirAdmin(body: any): Promise<any> {
-    const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
-    const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-    let jwt: string | null = null;
-    try {
-        const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
-        if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; }
-    } catch { /* sin sesión, va con la anon y el servidor rechaza */ }
-    const r = await fetch(`${SURL}/functions/v1/admin-data`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}` },
-        body: JSON.stringify(body),
-    });
-    return r.json();
-}
-
 // ── Aviso: correos que NO están llegando ──────────────────────────────
 //
 // Cuando una dirección rebota en duro o alguien marca un correo como spam,
@@ -3568,87 +3552,10 @@ const renderRates = () => {
   );
 };
 
-const renderTeam = () => (
-    <div className="space-y-6 animate-in fade-in duration-300">
-        <div className="flex justify-between items-center">
-            <h3 className="font-bold text-slate-800">Gestión de Equipo</h3>
-            <button onClick={() => { setEditingUserId(null); setNewUserForm({name:'', email:'', role:'Soporte L1', status:'Activo'}); setShowAddUserModal(true); }} className="bg-[#0C0E0D] px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2">
-                <UserPlus size={16}/> Nuevo Usuario
-            </button>
-        </div>
-
-        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
-            <table className="w-full text-left text-sm">
-                <thead className="bg-slate-50 text-slate-500 font-bold uppercase text-[10px]">
-                    <tr>
-                        <th className="px-6 py-4">Usuario</th>
-                        <th className="px-6 py-4">Rol</th>
-                        <th className="px-6 py-4">Estado</th>
-                        <th className="px-6 py-4">Último Acceso</th>
-                        <th className="px-6 py-4 text-right">Acciones</th>
-                    </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                    {adminTeam.map(admin => (
-                        <tr key={admin.id} className="hover:bg-slate-50">
-                            <td className="px-6 py-4">
-                                <div className="flex items-center gap-3">
-                                    <div className="w-8 h-8 rounded-full bg-[#0C0E0D] text-white flex items-center justify-center font-bold text-xs">{admin?.name?.charAt(0) ?? "?"}</div>
-                                    <div>
-                                        <p className="font-bold text-slate-800">{admin.name}</p>
-                                        <p className="text-xs text-slate-400">{admin.email}</p>
-                                    </div>
-                                </div>
-                            </td>
-                            <td className="px-6 py-4">
-                                <span className="bg-slate-100 text-slate-600 px-2 py-1 rounded text-xs font-bold">{admin.role}</span>
-                            </td>
-                            <td className="px-6 py-4">
-                                <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${admin.status === 'Activo' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                                    {admin.status}
-                                </span>
-                            </td>
-                            <td className="px-6 py-4 text-xs text-slate-500">{admin.lastAccess}</td>
-                            <td className="px-6 py-4 text-right">
-                                <div className="flex justify-end gap-2">
-                                    <button onClick={() => { setEditingUserId(admin.id); setNewUserForm(admin); setShowAddUserModal(true); }} className="text-[#4ADE80] hover:bg-slate-50 p-1.5 rounded"><Edit2 size={16}/></button>
-                                    <button onClick={() => { if(confirm('Eliminar usuario?')) deleteAdminUser(admin.id); }} className="text-red-600 hover:bg-red-50 p-1.5 rounded"><Trash2 size={16}/></button>
-                                </div>
-                            </td>
-                        </tr>
-                    ))}
-                </tbody>
-            </table>
-        </div>
-
-        {/* Add User Modal */}
-        {showAddUserModal && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-                <div className="bg-white rounded-xl w-full max-w-sm p-6">
-                    <h3 className="font-bold text-lg mb-4">{editingUserId ? 'Editar' : 'Nuevo'} Administrador</h3>
-                    <div className="space-y-4">
-                        <input type="text" placeholder="Nombre" value={newUserForm.name} onChange={(e) => setNewUserForm({...newUserForm, name: e.target.value})} className="w-full border p-2 rounded" />
-                        <input type="email" placeholder="Email" value={newUserForm.email} onChange={(e) => setNewUserForm({...newUserForm, email: e.target.value})} className="w-full border p-2 rounded" />
-                        <select value={newUserForm.role} onChange={(e) => setNewUserForm({...newUserForm, role: e.target.value as any})} className="w-full border p-2 rounded">
-                            <option value="Soporte L1">Soporte L1</option>
-                            <option value="Tesorero">Tesorero</option>
-                            <option value="Auditor">Auditor</option>
-                            <option value="Super Admin">Super Admin</option>
-                        </select>
-                        <select value={newUserForm.status} onChange={(e) => setNewUserForm({...newUserForm, status: e.target.value as any})} className="w-full border p-2 rounded">
-                            <option value="Activo">Activo</option>
-                            <option value="Inactivo">Inactivo</option>
-                        </select>
-                        <div className="flex justify-end gap-2 mt-2">
-                            <button onClick={() => setShowAddUserModal(false)} className="px-4 py-2 text-slate-500">Cancelar</button>
-                            <button onClick={handleTeamSave} className="px-4 py-2 bg-[#0C0E0D] rounded font-bold">Guardar</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        )}
-    </div>
-);
+// renderTeam() se eliminó: guardaba nombres en un JSON de configuración y no
+// creaba ni restringía ningún acceso. Dejarla, aunque fuera sin usar, invitaba
+// a que alguien la volviera a conectar creyendo que administraba permisos. El
+// equipo de verdad está en AdminEquipo, contra admin_miembros.
 
 const renderDesign = () => (
       <div className="space-y-8 animate-in fade-in duration-300 max-w-4xl">
@@ -4703,7 +4610,7 @@ const renderDesign = () => (
                 {activeTab === 'design' && renderDesign()}
                 {activeTab === 'banks' && renderBanks()}
                 {activeTab === 'rates' && renderRates()}
-                {activeTab === 'team' && renderTeam()}
+                {activeTab === 'team' && <AdminEquipo />}
                 {activeTab === 'comando' && <div className="animate-in fade-in duration-300"><AdminCommandCenter /></div>}
                 {activeTab === 'security' && renderSecurity()}
                 {activeTab === 'tusdatos' && <div className="animate-in fade-in duration-300"><AdminTusdatos /></div>}

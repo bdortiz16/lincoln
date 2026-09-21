@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { ThemeProvider } from '../context/ThemeContext';
 import { SystemConfigProvider } from '../context/SystemConfigContext';
 import { DatabaseProvider, useDatabase } from '../context/DatabaseContext';
@@ -11,6 +11,88 @@ import { AdminIdleGuard } from './AdminIdleGuard';
 import { Logo } from './Logo';
 import { TurnstileWidget, captchaEnabled } from './TurnstileWidget';
 import { Lock, LogOut, ShieldCheck, Fingerprint } from 'lucide-react';
+import { SelectorPais, paisElegido, olvidarPais, type PaisDisponible } from './SelectorPais';
+
+// ─────────────────────────────────────────────
+// PuertaDePais — entre las verificaciones y el panel.
+//
+// Le pregunta al servidor qué rol y qué países tiene esta cuenta, y con eso
+// muestra la pantalla de elección. El panel recién se dibuja después.
+//
+// El servidor es el que manda: esta pantalla solo ofrece lo que `mi_acceso`
+// devuelve, y el filtro de datos vive allá también. Forzar esta pantalla no
+// abre nada — simplemente no llegarían datos de ese país.
+// ─────────────────────────────────────────────
+const PuertaDePais: React.FC<{ onSalir: () => Promise<void> }> = ({ onSalir }) => {
+    const [acceso, setAcceso] = useState<{ rol: string; paises: PaisDisponible[] } | null>(null);
+    const [elegido, setElegido] = useState<string | null>(paisElegido());
+    const [error, setError] = useState<string | null>(null);
+
+    const cargar = useCallback(async () => {
+        try {
+            const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+            const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+            const { data: s } = await supabase.auth.getSession();
+            const jwt = s?.session?.access_token;
+            const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${jwt ?? SKEY}` },
+                body: JSON.stringify({ action: 'mi_acceso' }),
+            });
+            const d = await r.json();
+            if (d?.ok) setAcceso({ rol: String(d.rol ?? 'lectura'), paises: Array.isArray(d.paises) ? d.paises : [] });
+            else setError(d?.error ?? 'No se pudieron cargar tus permisos.');
+        } catch {
+            setError('No se pudieron cargar tus permisos.');
+        }
+    }, []);
+
+    useEffect(() => { cargar(); }, [cargar]);
+
+    // Si la elección guardada ya no está entre los países permitidos, se
+    // descarta. Pasa cuando a alguien le cambian el alcance con la sesión
+    // abierta: seguir mostrando el país anterior sería mostrarle datos que
+    // ya no le corresponden.
+    useEffect(() => {
+        if (!acceso || !elegido) return;
+        if (!acceso.paises.some((p) => p.code === elegido && p.estado === 'on')) {
+            olvidarPais();
+            setElegido(null);
+        }
+    }, [acceso, elegido]);
+
+    if (error) {
+        return (
+            <div style={{ minHeight: '100vh', background: '#0C0E0D', color: '#F4F4F2', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+                <div style={{ maxWidth: 380, textAlign: 'center' }}>
+                    <p style={{ fontWeight: 800, fontSize: 17, margin: '0 0 8px' }}>No se pudieron cargar tus permisos</p>
+                    <p style={{ fontSize: 13, color: '#878E88', lineHeight: 1.55, margin: '0 0 18px' }}>
+                        No entrás al panel sin ellos: sin saber qué te corresponde, mostrarte todo
+                        sería peor que no mostrarte nada.
+                    </p>
+                    <button onClick={() => { setError(null); cargar(); }}
+                        style={{ background: '#4ADE80', color: '#0A0B0A', border: 'none', borderRadius: 10, padding: '10px 18px', fontWeight: 800, cursor: 'pointer' }}>
+                        Reintentar
+                    </button>
+                </div>
+            </div>
+        );
+    }
+
+    if (!elegido) {
+        return (
+            <SelectorPais
+                paises={acceso?.paises ?? []}
+                rol={acceso?.rol ?? ''}
+                cargando={!acceso}
+                onElegir={setElegido}
+                onSalir={onSalir}
+            />
+        );
+    }
+
+    return <AdminDashboard onLogout={async () => { olvidarPais(); await onSalir(); }} />;
+};
 
 // ─────────────────────────────────────────────
 // AdminEmpresasApp — /admin-empresas (y /admin)
@@ -145,7 +227,7 @@ const AdminEmpresasInner: React.FC = () => {
                 {/* Media hora sin uso y el panel se cierra solo. El corte de
                     verdad está en el servidor; esto es la parte visible. */}
                 <AdminIdleGuard userId={currentUser.id} onCerrar={async () => { await logoutUser(); }} />
-                <AdminDashboard onLogout={async () => { await logoutUser(); }} />
+                <PuertaDePais onSalir={async () => { await logoutUser(); }} />
             </>
         );
     }

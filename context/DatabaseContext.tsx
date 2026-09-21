@@ -632,8 +632,18 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       const isAdminCaller = (cu as any)?.role === 'admin';
       let directUsers: any, directTx: any;
       if (isAdminCaller) {
-        directUsers = await supabase.from('users').select('*');
-        directTx = await supabase.from('transactions').select('*');
+        // NO se consulta directo. Este respaldo existía para que el panel no
+        // quedara vacío cuando la edge function arranca en frío, pero traía
+        // TODO sin filtrar: un miembro con acceso a un solo país podía hacer
+        // fallar la función (la pestaña de red del navegador alcanza) y
+        // quedarse con la base entera. Un filtro que se esquiva apagando algo
+        // no es un filtro.
+        //
+        // Sin respaldo, lo que pasa es que el panel muestra lo último en caché
+        // y avisa. Es peor de usar y es lo correcto: entre mostrar de menos y
+        // mostrar lo que no corresponde, se muestra de menos.
+        console.warn('[fetchData] admin-data no respondió; no se consulta directo para no saltear el filtro por país');
+        return;
       } else {
         directUsers = await supabase.from('users').select('*').eq('id', cu?.id ?? '');
         directTx = await supabase.from('transactions').select('*').eq('user_id', cu?.id ?? '');

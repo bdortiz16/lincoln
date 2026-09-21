@@ -814,7 +814,7 @@ async function isIpBlocked(req: Request): Promise<boolean> {
   return (await blockedIps()).some(b => b.ip === ip)
 }
 
-async function verifyAdmin(req: Request): Promise<{ ok: boolean; error?: string; userId?: string }> {
+async function verifyAdmin(req: Request): Promise<{ ok: boolean; error?: string; userId?: string; email?: string; acceso?: Acceso }> {
   const authHeader = req.headers.get('Authorization') ?? ''
 
   // Identidad de admin SOLO por JWT real de Supabase (role='admin'). Se eliminó
@@ -837,10 +837,170 @@ async function verifyAdmin(req: Request): Promise<{ ok: boolean; error?: string;
     // quitaba nada. La identidad y el permiso deben venir de la misma fuente.
     const { data: profile } = await db.from('users').select('role').eq('id', user.id).single()
     if (profile?.role !== 'admin') return { ok: false, error: 'Forbidden: admin only' }
-    return { ok: true, userId: user.id }
+
+    const acceso = await accesoDe(user.id, String(user.email ?? ''))
+    return { ok: true, userId: user.id, email: String(user.email ?? ''), acceso }
   } catch {
     return { ok: false, error: 'Auth check failed' }
   }
+}
+
+// Qué rol y qué países tiene esta cuenta.
+//
+// EL DUEÑO NO SE PUEDE QUEDAR AFUERA. Si no hay fila en admin_miembros y el
+// correo es el de ADMIN_EMAIL, se trata como dueño con todos los países. Sin
+// esa salvedad, el día que se aplique la migración nadie —ni el dueño— podría
+// entrar a crear la primera fila: el arranque dependería de algo que todavía
+// no existe.
+//
+// Una cuenta admin SIN fila y que NO es ADMIN_EMAIL queda en 'lectura' sin
+// países: ve el panel, no ve datos. Es el lado seguro del error — alguien
+// avisa que no ve nada, nadie avisa que ve de más.
+async function accesoDe(userId: string, email: string): Promise<Acceso> {
+  const esDuenoPorCorreo = !!ADMIN_EMAIL && email.toLowerCase() === String(ADMIN_EMAIL).toLowerCase()
+  try {
+    const { data: m } = await db.from('admin_miembros')
+      .select('rol, paises, activo').eq('id', userId).maybeSingle()
+
+    if (m && (m as any).activo) {
+      const rol = String((m as any).rol) as Rol
+      return {
+        rol,
+        paises: Array.isArray((m as any).paises) ? (m as any).paises.map(String) : [],
+        todosLosPaises: rol === 'dueno',
+      }
+    }
+    // Fila desactivada: el acceso se le quitó a propósito. No hay respaldo por
+    // correo acá — si lo hubiera, desactivar al dueño no haría nada.
+    if (m && !(m as any).activo) return { rol: 'lectura', paises: [], todosLosPaises: false }
+  } catch {
+    // Si la tabla todavía no existe (migración sin correr), no se puede dejar
+    // al dueño afuera de su propio panel.
+    if (esDuenoPorCorreo) return { rol: 'dueno', paises: [], todosLosPaises: true }
+    return { rol: 'lectura', paises: [], todosLosPaises: false }
+  }
+  if (esDuenoPorCorreo) return { rol: 'dueno', paises: [], todosLosPaises: true }
+  return { rol: 'lectura', paises: [], todosLosPaises: false }
+}
+
+// ════════════════════════════════════════════════════════
+//  EQUIPO: QUÉ PUEDE HACER CADA UNO Y SOBRE QUÉ PAÍSES
+//
+//  Esto vive en el servidor a propósito. Un filtro que vive en el navegador
+//  no es una frontera: es una sugerencia que cualquiera desactiva con la
+//  consola abierta. Si "este miembro solo ve Colombia" va a significar algo,
+//  tiene que significarlo acá.
+// ════════════════════════════════════════════════════════
+
+type Rol = 'dueno' | 'operaciones' | 'cumplimiento' | 'lectura'
+
+interface Acceso {
+  rol: Rol
+  paises: string[]      // códigos ISO; para 'dueno' no se miran
+  todosLosPaises: boolean
+}
+
+// Los permisos son gruesos a propósito: cuatro roles que alguien puede
+// explicar en una frase valen más que veinte casillas que nadie revisa.
+const PERMISOS_POR_ROL: Record<Rol, Set<string>> = {
+  dueno:        new Set(['*']),
+  operaciones:  new Set(['clientes.ver', 'clientes.editar', 'plata.ver', 'plata.mover']),
+  cumplimiento: new Set(['clientes.ver', 'plata.ver', 'cumplimiento']),
+  lectura:      new Set(['clientes.ver', 'plata.ver']),
+}
+
+// Qué permiso exige cada acción.
+//
+// LO QUE NO ESTÁ EN ESTA TABLA SE NIEGA a todo el que no sea dueño. Es
+// deliberado: cuando se agregue una acción nueva y alguien se olvide de
+// anotarla acá, lo que pasa es que no funciona para el equipo — no que quede
+// abierta. Entre romperse y filtrarse, que se rompa.
+const PERMISO_DE_ACCION: Record<string, string> = {
+  // Saber quién soy: lo tienen los cuatro roles. Sin esto, un miembro no
+  // podría ni enterarse de qué países le tocan, y el panel quedaría en blanco
+  // sin decir por qué.
+  mi_acceso: 'clientes.ver',
+
+  // Consultar
+  admin_logins: 'plata.ver',
+  command_map: 'plata.ver',
+  get_tx_proof: 'plata.ver',
+  conciliar_movimientos: 'plata.mover',
+  otc_ajuste_get: 'plata.ver',
+  email_incidencias: 'clientes.ver',
+  email_incidencia_resuelta: 'clientes.editar',
+
+  // Mover plata
+  admin_credit_balance: 'plata.mover',
+  admin_credit_crypto: 'plata.mover',
+  credit_conversion_fee: 'plata.mover',
+  approve_rail_move: 'plata.mover',
+  reject_rail_move: 'plata.mover',
+  otc_ajuste_set: 'plata.mover',
+
+  // Clientes
+  set_kyc_status: 'cumplimiento',
+
+  // Cumplimiento y auditoría
+  list_audit: 'cumplimiento',
+  security_audit: 'cumplimiento',
+  security_series: 'cumplimiento',
+  security_stats: 'cumplimiento',
+  log_incident: 'cumplimiento',
+
+  // Solo el dueño (no figuran con permiso propio: caen en la negación por
+  // defecto). delete_user, force_delete_by_email, save_config, block_ip,
+  // unblock_ip, log_key_rotation, access_policy_get/set, equipo_*.
+}
+
+const PAIS_POR_MONEDA: Record<string, string> = {
+  COP: 'CO', COP_BREB: 'CO', COP_ACH: 'CO',
+  BRL: 'BR', MXN: 'MX',
+  USD: 'US', USDT: 'US', USDT_TRON: 'US', USDC: 'US', EURC: 'US',
+}
+
+// Normaliza lo que haya en raw_data.country — viene escrito a mano y llega
+// como "Colombia", "colombia", "CO", "COL"…
+function paisAcodigo(v: unknown): string | null {
+  const s = String(v ?? '').trim().toLowerCase()
+  if (!s) return null
+  if (s.startsWith('col') || s === 'co') return 'CO'
+  if (s.startsWith('bra') || s === 'br') return 'BR'
+  if (s.startsWith('mex') || s.startsWith('méx') || s === 'mx') return 'MX'
+  if (s.startsWith('est') || s.startsWith('usa') || s.startsWith('united') || s === 'us') return 'US'
+  return null
+}
+
+// Los movimientos no tienen columna de país: se deduce de la moneda y del
+// riel, que es de donde realmente sale. Si no se puede deducir, devuelve null
+// y ESO NO SIGNIFICA "no mostrar" — ver el comentario de `visibleEnPais`.
+function paisDeMovimiento(tx: Record<string, unknown>): string | null {
+  const m = String(tx.currency ?? '').toUpperCase()
+  if (PAIS_POR_MONEDA[m]) return PAIS_POR_MONEDA[m]
+  const rd = (tx.raw_data ?? {}) as Record<string, unknown>
+  const riel = String(rd.rail ?? rd.riel ?? rd.wallet ?? '').toUpperCase()
+  if (riel.includes('BREB') || riel.includes('ACH') || riel.includes('COP')) return 'CO'
+  if (riel.includes('PIX') || riel.includes('BRL')) return 'BR'
+  return null
+}
+
+// LO QUE NO TIENE PAÍS NO DESAPARECE.
+//
+// Hoy muchos clientes vienen sin país y el panel asumía "Colombia" cuando
+// faltaba. Si filtrara a secas, esas personas se volverían invisibles en
+// TODAS las vistas y nadie notaría que existen: ni para atenderlas, ni para
+// detectar algo raro en su cuenta. Un dato que falta no es permiso para
+// esconder a alguien.
+//
+// Así que lo no atribuible se muestra a cualquiera que tenga al menos un
+// país, marcado aparte, para que alguien lo asigne. El día que opere más de
+// un país de verdad, esto se endurece — y cuando eso pase habrá que decidirlo
+// a propósito, no descubrirlo.
+function visibleEnPais(paisDelDato: string | null, acceso: Acceso): boolean {
+  if (acceso.todosLosPaises) return true
+  if (!acceso.paises.length) return false
+  if (!paisDelDato) return true
+  return acceso.paises.includes(paisDelDato)
 }
 
 // Auditoría DURABLE de acciones sensibles del admin (borrado de cuentas, etc.).
@@ -1868,6 +2028,25 @@ Deno.serve(async (req: Request) => {
     if (req.method === 'POST') {
       const body = selfServiceBody ?? {}
 
+      // ── PERMISO DEL MIEMBRO ───────────────────────────────────────────
+      // Acá se decide si esta persona puede pedir esto, antes que cualquier
+      // otra cosa. Lo que no está en PERMISO_DE_ACCION se niega a todo el
+      // que no sea dueño: una acción nueva sin anotar falla, no filtra.
+      {
+        const acceso = auth.acceso ?? { rol: 'lectura' as Rol, paises: [], todosLosPaises: false }
+        const accion = String(body.action ?? '')
+        const permisos = PERMISOS_POR_ROL[acceso.rol] ?? new Set<string>()
+        const necesita = PERMISO_DE_ACCION[accion]
+        const puede = permisos.has('*') || (!!necesita && permisos.has(necesita))
+        if (!puede) {
+          await auditAdmin(req, 'auth.permiso_denegado', { accion, rol: acceso.rol, userId: auth.userId })
+          return json({
+            error: 'Tu rol no permite esta operación.',
+            permisoDenegado: true, rol: acceso.rol,
+          }, 403)
+        }
+      }
+
       // Acciones que cambian dinero, cuentas o la propia seguridad: exigen
       // que ESTA sesión haya pasado el 2FA, no solo la contraseña. Las de
       // consulta se dejan fuera a propósito, para no dejar al admin sin panel
@@ -1932,6 +2111,104 @@ Deno.serve(async (req: Request) => {
         const withIp = (acts ?? []).filter((a: any) => a?.metadata?.ip || a?.action === 'auth.admin_login')
           .map((a: any) => ({ action: a.action, at: a.metadata?.at ?? a.created_at, byEmail: a.metadata?.byEmail ?? null, ip: a.metadata?.ip ?? null, userAgent: a.metadata?.userAgent ?? null, hadSession: a.metadata?.hadSession }))
         return json({ ok: true, admins, activity: withIp })
+      }
+
+      // ── Quién soy y qué puedo ver ─────────────────────────────────────
+      // Lo pide el panel al entrar, para saber qué países ofrecer y qué
+      // secciones dibujar. Es un REFLEJO de lo que ya decidió el servidor,
+      // no la decisión: mentirle a esta respuesta no abre ninguna puerta,
+      // porque cada acción se vuelve a verificar de todos modos.
+      if (body.action === 'mi_acceso') {
+        const a = auth.acceso ?? { rol: 'lectura' as Rol, paises: [], todosLosPaises: false }
+        // Los países salen de la misma configuración que ya usa el panel, para
+        // que no queden dos listas que se desincronizan.
+        let estados: Record<string, string> = {}
+        try {
+          const { data: cfg } = await db.from('app_config').select('settings').eq('id', 1).maybeSingle()
+          estados = ((cfg as any)?.settings?.countryStatus ?? {}) as Record<string, string>
+        } catch { /* sin config, se usa el valor por defecto de abajo */ }
+        const CATALOGO = [
+          { code: 'CO', nombre: 'Colombia' },
+          { code: 'US', nombre: 'Estados Unidos' },
+          { code: 'MX', nombre: 'México' },
+          { code: 'BR', nombre: 'Brasil' },
+        ]
+        const paises = CATALOGO
+          .map((c) => ({ ...c, estado: estados[c.nombre] ?? (c.code === 'CO' ? 'on' : 'soon') }))
+          .filter((c) => a.todosLosPaises || a.paises.includes(c.code))
+
+        try {
+          await db.from('admin_miembros')
+            .update({ ultimo_acceso_at: new Date().toISOString() }).eq('id', auth.userId)
+        } catch { /* el último acceso es informativo, no bloquea entrar */ }
+
+        return json({
+          ok: true, rol: a.rol, todosLosPaises: a.todosLosPaises,
+          permisos: [...(PERMISOS_POR_ROL[a.rol] ?? [])],
+          paises,
+        })
+      }
+
+      // ── El equipo (solo el dueño) ─────────────────────────────────────
+      if (body.action === 'equipo_listar') {
+        const { data, error } = await db.from('admin_miembros')
+          .select('*').order('creado_at', { ascending: true })
+        if (error) return json({ ok: false, error: error.message }, 500)
+        return json({ ok: true, miembros: data ?? [] })
+      }
+
+      if (body.action === 'equipo_guardar') {
+        const email = String(body.email ?? '').toLowerCase().trim()
+        const rol = String(body.rol ?? '') as Rol
+        if (!email) return json({ ok: false, error: 'falta_email' }, 400)
+        if (!['dueno', 'operaciones', 'cumplimiento', 'lectura'].includes(rol)) {
+          return json({ ok: false, error: 'rol_invalido' }, 400)
+        }
+        const paises = Array.isArray(body.paises) ? body.paises.map((p: unknown) => String(p).toUpperCase()) : []
+
+        // El permiso se le da a una CUENTA QUE YA EXISTE. Esto no crea
+        // accesos: la persona tiene que tener su cuenta en Lincoin con rol
+        // admin. Si no existe, se dice claro en vez de guardar una fila
+        // huérfana que no sirve para nada y que nadie entiende después.
+        const { data: cuenta } = await db.from('users')
+          .select('id, role, name').ilike('email', email).maybeSingle()
+        if (!cuenta) {
+          return json({ ok: false, error: 'sin_cuenta', message: 'Esa persona todavía no tiene cuenta en Lincoin. Que se registre primero.' }, 400)
+        }
+        if ((cuenta as any).role !== 'admin') {
+          return json({ ok: false, error: 'sin_rol_admin', message: 'Esa cuenta existe pero no tiene rol de administrador. Cambiáselo primero en Clientes.' }, 400)
+        }
+
+        const fila = {
+          id: (cuenta as any).id,
+          email,
+          nombre: String(body.nombre ?? (cuenta as any).name ?? '').slice(0, 120) || null,
+          rol,
+          paises: rol === 'dueno' ? [] : paises,   // al dueño no se le miran
+          activo: body.activo === false ? false : true,
+          actualizado_at: new Date().toISOString(),
+          creado_por: auth.userId,
+        }
+        const { error } = await db.from('admin_miembros').upsert(fila, { onConflict: 'id' })
+        if (error) return json({ ok: false, error: error.message }, 500)
+
+        await auditAdmin(req, 'equipo.guardado', { email, rol, paises: fila.paises, activo: fila.activo })
+        return json({ ok: true })
+      }
+
+      if (body.action === 'equipo_desactivar') {
+        const id = String(body.id ?? '')
+        if (!id) return json({ ok: false, error: 'falta_id' }, 400)
+        // Nadie se quita el acceso a sí mismo por accidente: quedaría un panel
+        // sin dueño y sin forma de volver a entrar salvo tocando la base.
+        if (id === auth.userId) {
+          return json({ ok: false, error: 'no_a_vos_mismo', message: 'No podés quitarte el acceso a vos mismo.' }, 400)
+        }
+        const { error } = await db.from('admin_miembros')
+          .update({ activo: false, actualizado_at: new Date().toISOString() }).eq('id', id)
+        if (error) return json({ ok: false, error: error.message }, 500)
+        await auditAdmin(req, 'equipo.desactivado', { id })
+        return json({ ok: true })
       }
 
       // ── Correos que NO están llegando ─────────────────────────────────
@@ -2839,14 +3116,42 @@ Deno.serve(async (req: Request) => {
     for (const t of (pendingRes.data ?? [])) txById.set(String((t as any).id), t)
     const allTx = Array.from(txById.values())
 
+    // ── FILTRO POR PAÍS ────────────────────────────────────────────────
+    // Esta es LA vía por la que el panel trae clientes y movimientos, así que
+    // es acá donde el "este miembro solo ve Colombia" tiene que ser cierto.
+    // Recortar en el navegador no sería una frontera: los datos ya habrían
+    // viajado y estarían en la memoria de la pestaña.
+    const acc: Acceso = auth.acceso ?? { rol: 'lectura', paises: [], todosLosPaises: false }
+
+    const usuariosVisibles = (usersRes.data ?? []).filter((u: Record<string, unknown>) => {
+      if (acc.todosLosPaises) return true
+      // La propia fila siempre se ve: sin ella el panel no sabe ni quién es.
+      if (String(u.id ?? '') === String(auth.userId ?? '')) return true
+      const rd = (u.raw_data ?? {}) as Record<string, unknown>
+      return visibleEnPais(paisAcodigo(rd.country), acc)
+    })
+    const idsVisibles = new Set(usuariosVisibles.map((u: Record<string, unknown>) => String(u.id)))
+
+    // Un movimiento se muestra si su país corresponde O si es de un cliente
+    // que esta persona puede ver. Lo segundo importa: un movimiento en USDT
+    // de un cliente colombiano es suyo, aunque la moneda no diga "Colombia".
+    const movimientosVisibles = allTx.filter((t: Record<string, unknown>) => {
+      if (acc.todosLosPaises) return true
+      if (idsVisibles.has(String(t.user_id ?? ''))) return true
+      return visibleEnPais(paisDeMovimiento(t), acc)
+    })
+
     const payload = {
       // Usuarios: solo se quitan blobs base64 gigantes (>20 KB) — los campos
       // normales (contactos, wallets, notificaciones) pasan intactos.
-      users:        (usersRes.data ?? []).map((u: Record<string, unknown>) => ({ ...u, raw_data: slimRawData(u.raw_data, 20000) })),
-      transactions: allTx.map((t: Record<string, unknown>) => ({ ...t, raw_data: slimRawData(t.raw_data) })),
+      users:        usuariosVisibles.map((u: Record<string, unknown>) => ({ ...u, raw_data: slimRawData(u.raw_data, 20000) })),
+      transactions: movimientosVisibles.map((t: Record<string, unknown>) => ({ ...t, raw_data: slimRawData(t.raw_data) })),
+      // Para que el panel pueda decir "estás viendo solo Colombia" en vez de
+      // dejar creer que eso es todo lo que hay.
+      alcance: { rol: acc.rol, paises: acc.paises, todos: acc.todosLosPaises },
     }
     const body = JSON.stringify(payload)
-    console.log(`[admin-data] respuesta: ${payload.users.length} usuarios, ${payload.transactions.length} tx, ${(body.length / 1024).toFixed(0)} KB`)
+    console.log(`[admin-data] respuesta: ${payload.users.length} usuarios, ${payload.transactions.length} tx (rol ${acc.rol}), ${(body.length / 1024).toFixed(0)} KB`)
     return new Response(body, { headers: { ...CORS, 'Content-Type': 'application/json' } })
   } catch (e) {
     return json({ error: String(e) }, 500)
