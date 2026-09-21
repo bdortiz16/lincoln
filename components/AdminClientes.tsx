@@ -135,6 +135,11 @@ export const AdminClientes: React.FC<{
   const [selId, setSelId] = useState<string | null>(null);
   const [tab, setTab] = useState<'resumen' | 'movimientos' | 'kyc' | 'limites' | 'auditoria'>('resumen');
   const [sincronizando, setSincronizando] = useState(false);
+  // El resultado de la última sincronización, FIJO en pantalla.
+  // Estaba solo en un toast: se esfumaba antes de poder leerlo, y justo en el
+  // caso en que hace falta -- cuando el proveedor dice una cosa y nosotros
+  // otra -- lo que se necesita es poder mirarlo con calma y copiarlo.
+  const [diagSync, setDiagSync] = useState<any>(null);
   const [menu, setMenu] = useState(false);
   const [confirmar, setConfirmar] = useState<{ titulo: string; cuerpo: string; nombre: string; accion: () => void } | null>(null);
   const [escrito, setEscrito] = useState('');
@@ -233,6 +238,8 @@ export const AdminClientes: React.FC<{
         pedirMouv({ action: 'reconcile_ach',  userId: sel?.id }),
       ]);
       await refreshData?.();
+
+      setDiagSync({ at: new Date().toISOString(), breb, ach });
 
       const revisados = Number(breb?.checked ?? 0) + Number(ach?.checked ?? 0);
       const cambios = [...(breb?.results ?? []), ...(ach?.results ?? [])]
@@ -517,7 +524,10 @@ export const AdminClientes: React.FC<{
                 toggleUserBlock={toggleUserBlock} refreshData={refreshData} showToast={showToast}
                 nota={nota} setNota={setNota} guardarNota={guardarNota} setTab={setTab} angosta={angosta} />}
 
-              {tab === 'movimientos' && <Movimientos movs={movsDe(sel.id)} />}
+              {tab === 'movimientos' && <>
+                {diagSync && <DiagnosticoSync d={diagSync} onCerrar={() => setDiagSync(null)} />}
+                <Movimientos movs={movsDe(sel.id)} />
+              </>}
               {tab === 'kyc' && <Kyc sel={sel} verifyUser={verifyUser} refreshData={refreshData} showToast={showToast} verificado={verificado} />}
               {tab === 'limites' && <Limites sel={sel} movs={movsDe(sel.id)} updateUserRawData={updateUserRawData} refreshData={refreshData} showToast={showToast} />}
               {tab === 'auditoria' && <Auditoria sel={sel} movs={movsDe(sel.id)} />}
@@ -810,6 +820,93 @@ const Resumen: React.FC<any> = ({ sel, movs, saldo, totalUsd, alternar, bloquead
 };
 
 // ── Tab: Movimientos ─────────────────────────────────────────────────────
+// ── Qué pasó en la última sincronización ──────────────────────────────
+//
+// Esto existe porque estuvimos horas adivinando por qué Mouv decía "Exitoso" y
+// Lincoin seguía en "Procesando". El dato que hacía falta —cuántos movimientos
+// se revisaron y cuántos trajo el proveedor— ya venía en la respuesta; solo no
+// se mostraba en ningún lado.
+//
+// Va FIJO, no en un toast. Un toast se esfuma justo cuando uno quiere leerlo
+// con calma o copiarlo para preguntar.
+const DiagnosticoSync: React.FC<{ d: any; onCerrar: () => void }> = ({ d, onCerrar }) => {
+  const [crudo, setCrudo] = useState(false);
+  const breb = d?.breb ?? {}, ach = d?.ach ?? {};
+  const revisados = Number(breb?.checked ?? 0) + Number(ach?.checked ?? 0);
+  const todos = [...(breb?.results ?? []), ...(ach?.results ?? [])];
+
+  // Agrupado por desenlace: "8 sin cambios, 2 devueltos" dice más que una
+  // lista de ids que nadie va a leer.
+  const porResultado = todos.reduce((acc: Record<string, number>, r: any) => {
+    const k = String(r?.result ?? 'sin_resultado');
+    acc[k] = (acc[k] ?? 0) + 1; return acc;
+  }, {});
+
+  const listado = breb?.listado;
+  // Si el proveedor devolvió CERO salidas, ese es el problema y no el
+  // emparejamiento. Se abre solo, porque es el caso que hay que mirar.
+  const sinListado = listado && Number(listado.salidasBreb ?? 0) === 0;
+
+  return (
+    <div style={{ border: `1px solid ${sinListado ? C.amber : C.b2}`, background: C.elev, borderRadius: 12, padding: 14, marginBottom: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <p style={{ fontFamily: FONT, fontWeight: 800, fontSize: 13, color: C.text, margin: 0 }}>
+            Última sincronización con el proveedor
+          </p>
+          <p style={{ fontSize: 11.5, color: C.sub, margin: '4px 0 0', lineHeight: 1.5 }}>
+            Se revisaron <b style={{ color: C.text }}>{revisados}</b> movimientos de este cliente.
+            {listado != null && <> El listado de Mouv devolvió <b style={{ color: sinListado ? C.amber : C.text }}>{listado.salidasBreb ?? 0}</b> salidas Bre-B.</>}
+          </p>
+
+          {revisados === 0 && (
+            <p style={{ fontSize: 11.5, color: C.amber, margin: '7px 0 0', lineHeight: 1.5 }}>
+              Ningún movimiento entró en la ventana de conciliación. O son más viejos que
+              la ventana, o están guardados con otra moneda que la que se consulta.
+            </p>
+          )}
+          {sinListado && (
+            <p style={{ fontSize: 11.5, color: C.amber, margin: '7px 0 0', lineHeight: 1.5 }}>
+              El proveedor no devolvió ninguna salida Bre-B. Sin eso no hay contra qué
+              comparar — el problema está antes del emparejamiento.
+            </p>
+          )}
+
+          {Object.keys(porResultado).length > 0 && (
+            <div style={{ marginTop: 9 }}>
+              {Object.entries(porResultado).map(([k, n]) => (
+                <div key={k} style={{ display: 'flex', gap: 8, fontSize: 11.5, color: C.sub, padding: '2px 0' }}>
+                  <span style={{ color: C.text, fontWeight: 700, minWidth: 22 }}>{n as number}</span>
+                  <span>{k}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {(breb?.message || ach?.message) && (
+            <p style={{ fontSize: 11.5, color: C.amber, margin: '7px 0 0' }}>{breb?.message ?? ach?.message}</p>
+          )}
+
+          {listado?.crudo != null && (
+            <>
+              <button onClick={() => setCrudo(v => !v)}
+                style={{ background: 'none', border: 'none', color: C.dim, fontSize: 11, cursor: 'pointer', padding: '8px 0 0', textDecoration: 'underline' }}>
+                {crudo ? 'Ocultar' : 'Ver'} la respuesta cruda del proveedor
+              </button>
+              {crudo && (
+                <pre style={{ marginTop: 7, maxHeight: 220, overflow: 'auto', background: C.doc, border: `1px solid ${C.b1}`, borderRadius: 8, padding: 10, fontSize: 10.5, color: C.sub, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                  {JSON.stringify({ diag: listado.diag, crudo: listado.crudo }, null, 2).slice(0, 6000)}
+                </pre>
+              )}
+            </>
+          )}
+        </div>
+        <button onClick={onCerrar} style={{ background: 'none', border: 'none', color: C.dim, fontSize: 16, cursor: 'pointer', lineHeight: 1 }}>×</button>
+      </div>
+    </div>
+  );
+};
+
 const Movimientos: React.FC<any> = ({ movs }) => (
   <Tarjeta style={{ marginTop: 18, padding: 0 }}>
     {movs.length === 0 ? (
