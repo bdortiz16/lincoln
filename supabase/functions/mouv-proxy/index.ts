@@ -330,6 +330,32 @@ async function mouvResolveBrebKey(rawKey: string, keyType?: string): Promise<{
   return { found: false, matchedKey: key, raw: lastRaw }
 }
 
+// El id que Mouv le pone a la operación, sacado de su respuesta al ENVIAR.
+//
+// Se leía solo `data.id`. Pero el emparejamiento del listado (idsDe) ya
+// tolera cuatro nombres distintos —id, transactionId, reference, externalId—
+// porque Mouv no es consistente entre endpoints. Leer un solo nombre al
+// enviar era la mitad de esa tolerancia, y si el id venía con otro nombre o
+// un nivel más adentro, se perdía: sin él, la conciliación queda sin su mejor
+// ancla y tiene que adivinar por monto y nombre.
+//
+// NO se acepta `reference`: esa suele ser LA NUESTRA, la que mandamos como
+// idempotencia. Guardarla como si fuera el id del proveedor haría que la
+// consulta de estado pidiera un id que Mouv no conoce.
+function refDeMouv(d: any): string | undefined {
+  const sacar = (o: any): string | undefined => {
+    if (!o || typeof o !== 'object') return undefined
+    for (const k of ['id', 'transactionId', 'transaction_id', 'txId', 'externalId']) {
+      const v = o[k]
+      const s = typeof v === 'string' ? v.trim() : typeof v === 'number' ? String(v) : ''
+      if (s) return s
+    }
+    return undefined
+  }
+  // Nivel de arriba primero; después los envoltorios que usan algunas APIs.
+  return sacar(d) ?? sacar(d?.data) ?? sacar(d?.transaction) ?? sacar(d?.result)
+}
+
 async function mouvPayout(
   rail: 'BREB' | 'ACH',
   recipient: Record<string, any>,
@@ -423,7 +449,7 @@ async function mouvPayout(
     // La referencia EXACTA que se mando vuelve con el resultado. Sin esto no
     // quedaba guardada en ningun lado -- `reason` tiene la base, no el sufijo
     // unico -- y era otra forma de no poder reencontrar el envio en Mouv.
-    return { ok: r.ok, status: r.status, data: r.data, providerRef: r.data?.id, referencia: refUniq, targetName, targetDocument }
+    return { ok: r.ok, status: r.status, data: r.data, providerRef: refDeMouv(r.data), referencia: refUniq, targetName, targetDocument }
   }
 
   // ── ACH — mismo endpoint /transfers/send con destino de cuenta bancaria.
@@ -446,7 +472,7 @@ async function mouvPayout(
       reference: recipient.reference ?? 'Pago Lincoin',
     }),
   })
-  return { ok: r.ok, status: r.status, data: r.data, providerRef: r.data?.id, targetName: recipient.holderName, targetDocument: recipient.documentNumber }
+  return { ok: r.ok, status: r.status, data: r.data, providerRef: refDeMouv(r.data), targetName: recipient.holderName, targetDocument: recipient.documentNumber }
 }
 
 // ── Estado REAL de una transferencia Mouv ───────────────────────────
@@ -2891,6 +2917,17 @@ serve(async (req: Request) => {
             providerRef: pay.providerRef ?? null,
             providerReference: pay.referencia ?? null,
             providerState: sendState.state || null,
+            // LA RESPUESTA CRUDA DEL ENVIO, GUARDADA.
+            //
+            // Cuando providerRef sale null no hay forma de saber POR QUE sin
+            // esto: si Mouv no devolvio id, si lo devolvio con otro nombre, o
+            // si vino un nivel mas adentro. Se paso horas preguntandole a una
+            // persona que corriera consultas para averiguarlo. Con el crudo
+            // guardado, el proximo caso se diagnostica solo.
+            //
+            // Se recorta: no hace falta un blob enorme por fila, y lo que
+            // importa (ids, estado, mensaje) siempre viene arriba.
+            respuestaEnvio: JSON.stringify(pay.data ?? null).slice(0, 4000),
             // MULTI-FIRMA: si la empresa tiene multiSigThreshold >= 2, el envio
             // NO se despacha hasta que una persona firme en el panel del
             // proveedor, y a las 24 h expira y se revierte. Visto desde aca se
