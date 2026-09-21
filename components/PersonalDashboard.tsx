@@ -30,7 +30,7 @@ import {
   Lock,
   LayoutGrid,
   Share2,
-  Download,
+  FileText, Download,
   Megaphone,
   Plane,
   ShoppingBag,
@@ -4389,6 +4389,78 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       } catch { showToast('No se pudo generar el comprobante', 4000, 'error'); }
     };
     // Descarga directa (sin diálogo de compartir): guarda el PNG del comprobante.
+    // ── Comprobante en PDF, con NUESTRA marca ──────────────────────
+    // El del proveedor lleva su logo y su nombre, así que no va al cliente.
+    // Este es el mismo comprobante que ya dibujamos nosotros, envuelto en un
+    // PDF — que es el formato que pide un contador, un banco o el beneficiario
+    // que quiere un archivo y no una foto.
+    //
+    // Se arma a mano, sin librería: un PDF de una página con la imagen
+    // embebida como JPEG (DCTDecode, que el formato admite tal cual). Meter
+    // 300 KB de dependencia para envolver una imagen no se justifica.
+    const canvasAPdf = async (canvas: HTMLCanvasElement): Promise<Blob> => {
+        const jpeg = new Uint8Array(await new Promise<ArrayBuffer>((res, rej) => {
+            canvas.toBlob(b => b ? b.arrayBuffer().then(res) : rej(new Error('sin imagen')), 'image/jpeg', 0.95);
+        }));
+
+        // A4 en puntos. La imagen se centra y se escala para entrar con margen.
+        const A4W = 595.28, A4H = 841.89, MARGEN = 42;
+        const escala = Math.min((A4W - MARGEN * 2) / canvas.width, (A4H - MARGEN * 2) / canvas.height);
+        const w = canvas.width * escala, h = canvas.height * escala;
+        const x = (A4W - w) / 2, y = (A4H - h) / 2;
+
+        const enc = new TextEncoder();
+        const partes: Array<string | Uint8Array> = [];
+        const offsets: number[] = [];
+        let largo = 0;
+        const push = (p: string | Uint8Array) => {
+            partes.push(p);
+            largo += typeof p === 'string' ? enc.encode(p).length : p.length;
+        };
+        const obj = (n: number, cuerpo: string) => { offsets[n] = largo; push(cuerpo); };
+
+        push('%PDF-1.4\n');
+        obj(1, '1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n');
+        obj(2, '2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n');
+        obj(3, `3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 ${A4W.toFixed(2)} ${A4H.toFixed(2)}] `
+            + '/Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >> endobj\n');
+        offsets[4] = largo;
+        push(`4 0 obj << /Type /XObject /Subtype /Image /Width ${canvas.width} /Height ${canvas.height} `
+            + `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpeg.length} >> stream\n`);
+        push(jpeg);
+        push('\nendstream endobj\n');
+        const flujo = `q ${w.toFixed(2)} 0 0 ${h.toFixed(2)} ${x.toFixed(2)} ${y.toFixed(2)} cm /Im0 Do Q`;
+        obj(5, `5 0 obj << /Length ${flujo.length} >> stream\n${flujo}\nendstream endobj\n`);
+
+        const inicioXref = largo;
+        let xref = 'xref\n0 6\n0000000000 65535 f \n';
+        for (let i = 1; i <= 5; i++) xref += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
+        push(xref);
+        push(`trailer << /Size 6 /Root 1 0 R >>\nstartxref\n${inicioXref}\n%%EOF\n`);
+
+        const out = new Uint8Array(largo);
+        let i = 0;
+        for (const p of partes) {
+            const b = typeof p === 'string' ? enc.encode(p) : p;
+            out.set(b, i); i += b.length;
+        }
+        return new Blob([out], { type: 'application/pdf' });
+    };
+
+    const descargarPdf = async () => {
+        try {
+            const blob = await canvasAPdf(buildReceiptCanvas());
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = `Lincoin-comprobante-${tx.id}.pdf`;
+            document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 10000);
+            showToast('Comprobante PDF descargado');
+        } catch (e: any) {
+            showToast(`No se pudo generar el PDF: ${String(e?.message ?? e)}`, 6000);
+        }
+    };
+
     const downloadReceipt = async () => {
       try {
         const canvas = buildReceiptCanvas();
@@ -4493,6 +4565,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                 </div>
               ))}
             </div>
+            <button onClick={descargarPdf}
+              className="w-full flex items-center justify-center hover:bg-white/[0.09] transition-colors"
+              style={{ gap: 7, marginTop: 14, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.11)' }}>
+              <FileText size={15} /> Comprobante en PDF
+            </button>
             {/* EL COMPROBANTE DEL PROVEEDOR NO VA AL CLIENTE.
                 Ese PDF lo emite y lo firma nuestro proveedor de pagos, con su
                 marca y su nombre encima. El cliente no tiene por qué saber con
