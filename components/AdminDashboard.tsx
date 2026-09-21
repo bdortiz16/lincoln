@@ -2790,6 +2790,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                     { name: 'Perú', rail: 'CCI · PEN', def: 'off' },
                     { name: 'Chile', rail: 'Transferencia · CLP', def: 'off' },
                     { name: 'Venezuela', rail: 'Pago móvil · VES', def: 'off' },
+                    // Europa: la parte EURC del producto. El riel es SEPA y la
+                    // moneda digital es EURC, igual que USDC para el dolar.
+                    { name: 'Europa', rail: 'SEPA · EUR', def: 'soon' },
+                    { name: 'Suiza', rail: 'SIC · CHF', def: 'soon' },
+                    { name: 'Reino Unido', rail: 'Faster Payments · GBP', def: 'soon' },
                 ] as const).map(c => {
                     const cs: Record<string, string> = { Colombia: 'on', 'Estados Unidos': 'on', 'México': 'soon', Brasil: 'soon', ...((systemConfig as any).countryStatus || {}) };
                     const cur = cs[c.name] ?? c.def;

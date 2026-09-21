@@ -5,7 +5,7 @@ import { ChevronDown } from 'lucide-react';
 const FLAG_MAP: Record<string, string> = {
   // Currency codes
   USD: 'us', COP: 'co', CLP: 'cl', PEN: 'pe', MXN: 'mx',
-  BRL: 'br', VES: 've', EUR: 'eu', CNY: 'cn', ARS: 'ar',
+  BRL: 'br', VES: 've', EUR: 'eu', CNY: 'cn', ARS: 'ar', GBP: 'gb', CHF: 'ch',
   // ISO-2 country codes
   US: 'us', CO: 'co', CL: 'cl', PE: 'pe', MX: 'mx',
   BR: 'br', VE: 've', EU: 'eu', CN: 'cn', AR: 'ar',
