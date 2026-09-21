@@ -3261,8 +3261,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                             <div className="min-w-0">
                                 <p className="font-bold text-slate-800 text-sm">{c.name}</p>
                                 <p className="text-[11px] text-slate-400">{c.rail}</p>
+                                {/* Activo = a los clientes les aparece la billetera en la app.
+                                    Se avisa acá porque "Activo" suena a una vista previa y no
+                                    lo es: sin riel conectado, esa cuenta no puede recibir ni
+                                    mandar un peso, y el cliente la va a ver igual. */}
+                                {cur === 'on' && !['Colombia', 'Estados Unidos'].includes(c.name) && (
+                                    <p className="text-[10.5px] text-amber-600 font-semibold mt-1 leading-snug">
+                                        Los clientes ya ven esta billetera. El riel todavía no está conectado:
+                                        no van a poder cargar ni enviar.
+                                    </p>
+                                )}
                             </div>
-                            <select value={cur} onChange={e => setStatus(e.target.value)} className="border border-slate-200 rounded-lg text-xs font-bold p-2">
+                            <select value={cur} onChange={e => setStatus(e.target.value)} className="border border-slate-200 rounded-lg text-xs font-bold p-2 shrink-0">
                                 <option value="on">Activo</option>
                                 <option value="soon">Próximamente</option>
                                 <option value="off">Oculto</option>
