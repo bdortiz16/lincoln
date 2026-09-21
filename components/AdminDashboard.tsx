@@ -1151,7 +1151,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const [newCouponDiscount, setNewCouponDiscount] = useState('');
 
   const { exchangeRates, updateRate, updateFee, toggleMode, apiStatus, forceRefresh, getRate } = useExchangeRates();
-  const { config: systemConfig, updateConfig: updateSystemConfig, addCoupon, removeCoupon, toggleCoupon, setThemePreset } = useSystemConfig();
+  const { config: systemConfig, updateConfig: updateSystemConfig, configError, addCoupon, removeCoupon, toggleCoupon, setThemePreset } = useSystemConfig();
   const { 
       getAllPendingDeposits, 
       getAllPendingWithdrawals, 
@@ -3243,6 +3243,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
         <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
             <h3 className="font-bold text-slate-800 mb-2 flex items-center gap-2"><Landmark size={20}/> Países y monedas</h3>
             <p className="text-xs text-slate-500 mb-5">Cada país opera su riel local contra USDT (nunca fiat→fiat directo). Activa un país solo cuando su riel esté conectado.</p>
+            {/* Si el guardado falló, se dice ACA. Antes el interruptor se
+                quedaba puesto aunque no se hubiera guardado en ningún lado, y
+                los clientes nunca veían el cambio. */}
+            {configError && (
+                <div className="mb-3 flex items-start gap-2.5 bg-red-50 border border-red-200 rounded-lg px-3 py-2.5">
+                    <AlertTriangle size={15} className="text-red-600 shrink-0 mt-0.5" />
+                    <div>
+                        <p className="text-xs font-bold text-red-900">El cambio no se guardó</p>
+                        <p className="text-[11px] text-red-700 mt-0.5">{configError}</p>
+                    </div>
+                </div>
+            )}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 {([
                     { name: 'Colombia', rail: 'Bre-B · ACH · COP', def: 'on' },
