@@ -33,3 +33,33 @@ export const PAISES: { code: string; nombre: string }[] = [
   { code: 'MX', nombre: 'México' },
   { code: 'BR', nombre: 'Brasil' },
 ];
+
+// Llamada a mouv-proxy. Con timeout y sin promesas sueltas: un corte de red
+// dejaba el botón en gris para siempre y sin un mensaje que dijera qué pasó.
+export async function pedirMouv(cuerpo: Record<string, unknown>): Promise<any> {
+  const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+  const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+  let jwt: string | null = null;
+  try {
+    const k = Object.keys(localStorage).find((key) => key.startsWith('sb-') && key.endsWith('-auth-token'));
+    if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; }
+  } catch { /* sin sesión */ }
+  try {
+    const r = await fetch(`${SURL}/functions/v1/mouv-proxy`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}` },
+      body: JSON.stringify(cuerpo),
+      signal: AbortSignal.timeout(90000),
+    });
+    const t = await r.text();
+    if (!t) return { ok: false, message: 'El servicio no respondió.' };
+    try { return JSON.parse(t); } catch { return { ok: false, message: `Respuesta no válida (HTTP ${r.status}).` }; }
+  } catch (e: any) {
+    return {
+      ok: false,
+      message: e?.name === 'TimeoutError'
+        ? 'El proveedor tardó demasiado. No se cambió nada.'
+        : `No se pudo conectar: ${String(e?.message ?? e)}`,
+    };
+  }
+}

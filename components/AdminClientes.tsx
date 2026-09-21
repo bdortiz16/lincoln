@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { pedirMouv } from './adminApi';
 import { useDatabase } from '../context/DatabaseContext';
 
 // ─────────────────────────────────────────────────────────────
@@ -213,11 +214,45 @@ export const AdminClientes: React.FC<{
     .filter((t: any) => t.userId === id)
     .sort((a: any, b: any) => new Date(b.createdAt ?? b.date ?? 0).getTime() - new Date(a.createdAt ?? a.date ?? 0).getTime());
 
+  // PREGUNTARLE AL PROVEEDOR, NO SOLO RELEER LA BASE.
+  //
+  // Esto antes solo llamaba a refreshData() y decía "Saldos y estado
+  // actualizados". No actualizaba ningún estado: volvía a leer lo mismo que ya
+  // estaba guardado. Es el botón que uno aprieta cuando Mouv dice Exitoso y
+  // Lincoin dice Procesando -- justo el caso en el que no hacía nada.
+  //
+  // Ahora concilia de verdad contra Mouv, los dos rieles, y DICE QUÉ PASÓ:
+  // cuántos movimientos revisó y cuántos cambiaron. Si revisó cero, eso
+  // también es información -- significa que ninguno entró en el filtro, y es
+  // el dato que hace falta para saber por dónde seguir.
   const sincronizar = async () => {
     setSincronizando(true);
-    await refreshData?.();
+    try {
+      const [breb, ach] = await Promise.all([
+        pedirMouv({ action: 'reconcile_breb', userId: sel?.id }),
+        pedirMouv({ action: 'reconcile_ach',  userId: sel?.id }),
+      ]);
+      await refreshData?.();
+
+      const revisados = Number(breb?.checked ?? 0) + Number(ach?.checked ?? 0);
+      const cambios = [...(breb?.results ?? []), ...(ach?.results ?? [])]
+        .filter((r: any) => r?.result && r.result !== 'sin_cambios' && r.result !== 'no_encontrado').length;
+
+      // El mensaje dice lo que de verdad pasó. "Actualizado" cuando no se
+      // actualizó nada es cómo este botón escondió el problema durante meses.
+      if (!breb?.ok && !ach?.ok) {
+        showToast?.(breb?.message ?? ach?.message ?? 'No se pudo consultar al proveedor.', 7000);
+      } else if (revisados === 0) {
+        showToast?.('Se consultó al proveedor y no había movimientos en la ventana de conciliación para este cliente.', 8000);
+      } else if (cambios === 0) {
+        showToast?.(`Se revisaron ${revisados} movimientos contra el proveedor. Ninguno cambió de estado.`, 7000);
+      } else {
+        showToast?.(`${cambios} de ${revisados} movimientos actualizados desde el proveedor.`, 7000);
+      }
+    } catch (e: any) {
+      showToast?.(`No se pudo sincronizar: ${String(e?.message ?? e)}`, 7000);
+    }
     setSincronizando(false);
-    showToast?.('Saldos y estado actualizados.');
   };
 
   const guardarNota = async () => {
