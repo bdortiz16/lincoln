@@ -69,6 +69,9 @@ interface DatabaseContextType {
   currentUser: User | null;
   isAuthLoading: boolean;
   users: User[];
+  // Cuándo falló la última actualización del panel. null = los datos en
+  // pantalla vienen del servidor; con valor, vienen del caché del navegador.
+  syncError: { at: number; motivo: string } | null;
   transactions: Transaction[];
   registerUser: (data: any) => Promise<{ error?: string }>;
   updateUserProfile: (id: string, data: any) => Promise<void>;
@@ -259,6 +262,14 @@ const DatabaseContext = createContext<DatabaseContextType | undefined>(undefined
 export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const { config, updateConfig } = useSystemConfig();
   const [users, setUsers] = useState<User[]>([]);
+  // Cuándo falló la última actualización del panel admin, y por qué.
+  //
+  // Existe porque el panel hidrata desde un caché del navegador para no
+  // quedarse en cero mientras la edge function arranca en frío. Eso está bien
+  // como PUENTE -- pero si el refresco falla, el puente se vuelve permanente y
+  // la pantalla muestra datos viejos sin decirlo. Pasó: el admin mostraba un
+  // envío en "Procesando" que el cliente ya veía "Completado".
+  const [syncError, setSyncError] = useState<{ at: number; motivo: string } | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   // ⚠️ SEGURIDAD: NO se restaura ninguna sesión desde sessionStorage.
   // Antes se leía 'cuypay_admin_session' y se confiaba en ese JSON tal cual,
@@ -614,6 +625,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             // plano. Escrituras protegidas por si se pasa la cuota.
             try { localStorage.setItem('cuypay_admin_users', JSON.stringify(mappedUsers)); } catch { /* quota */ }
             try { if (mappedTxForCache) localStorage.setItem('cuypay_admin_tx', JSON.stringify(mappedTxForCache.slice(0, 200))); } catch { /* quota */ }
+            setSyncError(null);
             return; // Edge function succeeded — no need for fallback
           }
           if (fnErr) console.warn('[fetchData] admin-data edge fn error:', fnErr);
@@ -643,6 +655,10 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         // y avisa. Es peor de usar y es lo correcto: entre mostrar de menos y
         // mostrar lo que no corresponde, se muestra de menos.
         console.warn('[fetchData] admin-data no respondió; no se consulta directo para no saltear el filtro por país');
+        // Se DICE que los datos estan viejos. Mostrarlos en silencio es lo que
+        // hizo que el panel y el cliente afirmaran cosas distintas del mismo
+        // movimiento durante horas.
+        setSyncError({ at: Date.now(), motivo: 'El servicio de datos del panel no respondió.' });
         return;
       } else {
         directUsers = await supabase.from('users').select('*').eq('id', cu?.id ?? '');
@@ -2672,7 +2688,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   return (
     <DatabaseContext.Provider value={{
-      currentUser, isAuthLoading, users, transactions, registerUser, updateUserProfile, updateUserRawData, loginUser, loginWithGoogle, logoutUser,
+      currentUser, isAuthLoading, users, transactions, syncError, registerUser, updateUserProfile, updateUserRawData, loginUser, loginWithGoogle, logoutUser,
       getBalance, bumpLocalBalance, addLocalTx, getPersonalMovements, getUserNotifications, markNotificationsRead,
       mergeNotifications, deleteNotification, clearNotifications,
       requestDeposit, requestWithdrawal, performConversion, approveDeposit, rejectDeposit,

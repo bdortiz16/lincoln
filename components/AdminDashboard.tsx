@@ -1182,6 +1182,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       currentUser,
       enrollMFA,
       verifyMFAEnrollment,
+    syncError,
   } = useDatabase();
 
   // ── 2FA del propio admin (protege el cambio de proveedor de tesorería) ──
@@ -4434,7 +4435,30 @@ const renderDesign = () => (
         {/* Correos que no están llegando. Va suelto y fijo arriba a la derecha
             porque el aviso tiene que verse desde CUALQUIER pestaña: quien no
             recibe el código no puede escribirnos para contarlo. */}
-        <div className="fixed top-3 right-3 z-40 w-[min(26rem,calc(100vw-1.5rem))]">
+        <div className="fixed top-3 right-3 z-40 w-[min(26rem,calc(100vw-1.5rem))] space-y-2">
+            {/* DATOS VIEJOS EN PANTALLA.
+                El panel hidrata desde un caché del navegador para no quedarse
+                en cero mientras la edge function arranca en frío. Si el
+                refresco falla, ese puente se vuelve permanente -- y el panel
+                mostraba "Procesando" en un envío que el cliente ya veía
+                "Completado". Dos pantallas afirmando cosas distintas del mismo
+                movimiento, sin que ninguna admitiera no saber. */}
+            {syncError && (
+                <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 flex items-start gap-2.5 shadow-sm">
+                    <AlertTriangle size={16} className="text-amber-600 shrink-0 mt-0.5" />
+                    <div className="min-w-0">
+                        <p className="text-sm font-bold text-amber-900">Estás viendo datos guardados</p>
+                        <p className="text-xs text-amber-800 mt-0.5 leading-snug">
+                            {syncError.motivo} Lo que ves es de las {new Date(syncError.at).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })} y
+                            puede estar desactualizado — un movimiento puede figurar en otro estado del que tiene de verdad.
+                        </p>
+                        <button onClick={() => window.location.reload()}
+                            className="text-xs font-bold text-amber-900 underline mt-1.5">
+                            Reintentar
+                        </button>
+                    </div>
+                </div>
+            )}
             <AvisoCorreos />
         </div>
         {/* Mobile overlay — tap outside sidebar to close */}
