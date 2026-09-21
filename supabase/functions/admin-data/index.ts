@@ -857,29 +857,49 @@ async function verifyAdmin(req: Request): Promise<{ ok: boolean; error?: string;
 // países: ve el panel, no ve datos. Es el lado seguro del error — alguien
 // avisa que no ve nada, nadie avisa que ve de más.
 async function accesoDe(userId: string, email: string): Promise<Acceso> {
-  const esDuenoPorCorreo = !!ADMIN_EMAIL && email.toLowerCase() === String(ADMIN_EMAIL).toLowerCase()
-  try {
-    const { data: m } = await db.from('admin_miembros')
-      .select('rol, paises, activo').eq('id', userId).maybeSingle()
+  const TODO: Acceso = { rol: 'dueno', paises: [], todosLosPaises: true }
 
-    if (m && (m as any).activo) {
-      const rol = String((m as any).rol) as Rol
-      return {
-        rol,
-        paises: Array.isArray((m as any).paises) ? (m as any).paises.map(String) : [],
-        todosLosPaises: rol === 'dueno',
-      }
+  const { data: m, error } = await db.from('admin_miembros')
+    .select('rol, paises, activo').eq('id', userId).maybeSingle()
+
+  // La tabla todavía no existe (migración sin correr). Antes de esta función
+  // TODO admin veía todo; una migración que no se corrió no puede quitarle el
+  // acceso a nadie.
+  if (error) return TODO
+
+  if (m && (m as any).activo) {
+    const rol = String((m as any).rol) as Rol
+    return {
+      rol,
+      paises: Array.isArray((m as any).paises) ? (m as any).paises.map(String) : [],
+      todosLosPaises: rol === 'dueno',
     }
-    // Fila desactivada: el acceso se le quitó a propósito. No hay respaldo por
-    // correo acá — si lo hubiera, desactivar al dueño no haría nada.
-    if (m && !(m as any).activo) return { rol: 'lectura', paises: [], todosLosPaises: false }
-  } catch {
-    // Si la tabla todavía no existe (migración sin correr), no se puede dejar
-    // al dueño afuera de su propio panel.
-    if (esDuenoPorCorreo) return { rol: 'dueno', paises: [], todosLosPaises: true }
-    return { rol: 'lectura', paises: [], todosLosPaises: false }
   }
-  if (esDuenoPorCorreo) return { rol: 'dueno', paises: [], todosLosPaises: true }
+
+  // Fila desactivada: el acceso se le quitó a propósito. Sin respaldo — si lo
+  // hubiera, desactivar a alguien no haría nada.
+  if (m && !(m as any).activo) return { rol: 'lectura', paises: [], todosLosPaises: false }
+
+  // ── Sin fila. Acá se decide si la restricción está ENCENDIDA ──
+  //
+  // La regla: los permisos por miembro empiezan a regir cuando alguien
+  // empieza a usarlos. Si la tabla está vacía, el sistema todavía no está
+  // configurado y todos siguen como antes; en cuanto hay aunque sea un
+  // miembro cargado, una cuenta sin fila es alguien a quien no se le dio
+  // acceso todavía.
+  //
+  // Lo aprendí rompiéndolo: la primera versión dejaba en 'lectura' a
+  // cualquiera sin fila, y como el respaldo dependía de un secreto
+  // (ADMIN_EMAIL) cuyo valor por defecto es de OTRO dominio, el panel se
+  // quedó sin datos apenas se desplegó la función. Un permiso nuevo no puede
+  // depender de que alguien haya configurado algo que todavía no sabía que
+  // existía.
+  const { count, error: errCount } = await db.from('admin_miembros')
+    .select('id', { count: 'exact', head: true })
+  if (errCount || !count) return TODO
+
+  const esDuenoPorCorreo = !!ADMIN_EMAIL && email.toLowerCase() === String(ADMIN_EMAIL).toLowerCase()
+  if (esDuenoPorCorreo) return TODO
   return { rol: 'lectura', paises: [], todosLosPaises: false }
 }
 
@@ -961,6 +981,9 @@ const PAIS_POR_MONEDA: Record<string, string> = {
 
 // Normaliza lo que haya en raw_data.country — viene escrito a mano y llega
 // como "Colombia", "colombia", "CO", "COL"…
+//
+// NO se usa para esconder clientes: la lista de clientes no se filtra por
+// país. Queda para etiquetar y para agrupar en el panel.
 function paisAcodigo(v: unknown): string | null {
   const s = String(v ?? '').trim().toLowerCase()
   if (!s) return null
@@ -3123,23 +3146,26 @@ Deno.serve(async (req: Request) => {
     // viajado y estarían en la memoria de la pestaña.
     const acc: Acceso = auth.acceso ?? { rol: 'lectura', paises: [], todosLosPaises: false }
 
-    const usuariosVisibles = (usersRes.data ?? []).filter((u: Record<string, unknown>) => {
-      if (acc.todosLosPaises) return true
-      // La propia fila siempre se ve: sin ella el panel no sabe ni quién es.
-      if (String(u.id ?? '') === String(auth.userId ?? '')) return true
-      const rd = (u.raw_data ?? {}) as Record<string, unknown>
-      return visibleEnPais(paisAcodigo(rd.country), acc)
-    })
-    const idsVisibles = new Set(usuariosVisibles.map((u: Record<string, unknown>) => String(u.id)))
+    // LOS CLIENTES NO SE FILTRAN POR PAÍS.
+    //
+    // Un cliente es un cliente: la misma persona aparece en todos lados y lo
+    // que cambia según el país son sus MONEDAS Y BILLETERAS — COP, Bre-B y ACH
+    // en Colombia; BRL y PIX en Brasil; USD/USDT arriba de todo.
+    //
+    // La primera versión de esto filtraba también la lista de clientes y fue
+    // un error: escondía personas enteras en vez de acotar sobre qué opera
+    // cada una, y dejó el panel sin clientes apenas se desplegó.
+    const usuariosVisibles = usersRes.data ?? []
 
-    // Un movimiento se muestra si su país corresponde O si es de un cliente
-    // que esta persona puede ver. Lo segundo importa: un movimiento en USDT
-    // de un cliente colombiano es suyo, aunque la moneda no diga "Colombia".
-    const movimientosVisibles = allTx.filter((t: Record<string, unknown>) => {
-      if (acc.todosLosPaises) return true
-      if (idsVisibles.has(String(t.user_id ?? ''))) return true
-      return visibleEnPais(paisDeMovimiento(t), acc)
-    })
+    // Los movimientos SÍ: un movimiento pertenece a un riel y un riel es de un
+    // país. Es lo que hace que "operar Colombia" signifique algo.
+    //
+    // Lo que no se puede atribuir a ningún país se MUESTRA, no se esconde: un
+    // dato que falta no es permiso para ocultarle a un operador un movimiento
+    // que quizás tiene que atender.
+    const movimientosVisibles = allTx.filter((t: Record<string, unknown>) =>
+      acc.todosLosPaises || visibleEnPais(paisDeMovimiento(t), acc),
+    )
 
     const payload = {
       // Usuarios: solo se quitan blobs base64 gigantes (>20 KB) — los campos
