@@ -47,3 +47,10 @@ dist-ssr
 .agents/
 .claude/skills/
 skills-lock.json
+
+# Artefactos del entorno de trabajo con agentes (skills instaladas en la
+# sesión). No son del proyecto: si entraran, cada sesión metería ruido en el
+# historial y traería código de terceros al repo sin revisión.
+.claude/
+.agents/
+skills-lock.json
