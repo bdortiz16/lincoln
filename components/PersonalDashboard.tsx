@@ -105,6 +105,16 @@ const INITIAL_WALLET_CARDS = [
   { code: 'VES', name: 'Bolívar', type: 'Cuenta Local' },
 ];
 
+// Estado de cada país cuando la configuración todavía no dice nada.
+// DEBE coincidir con la lista de Admin → Configuración → Países y monedas:
+// si las dos se separan, el admin muestra un estado y la app otro.
+const POR_DEFECTO: Record<string, string> = {
+  Colombia: 'on', 'Estados Unidos': 'on',
+  'México': 'soon', Brasil: 'soon',
+  Europa: 'soon', Suiza: 'soon', 'Reino Unido': 'soon',
+  'Perú': 'off', Chile: 'off', Venezuela: 'off',
+};
+
 const CONVERSION_CURRENCIES = [
   { code: 'USD', name: 'Dólar' },
   { code: 'CLP', name: 'Peso Chileno' },
@@ -2685,7 +2695,13 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                 convierte SOLO contra USDT). Se controlan desde Admin →
                 Configuración → Países (estado "Próximamente"). */}
             {(() => {
-              const cs: Record<string, string> = { 'México': 'soon', Brasil: 'soon', ...((config as any).countryStatus || {}) };
+              // Los valores por DEFECTO tienen que ser los mismos que usa el
+              // admin. Estaban desincronizados: el admin mostraba Europa,
+              // Suiza y Reino Unido como "Próximamente" por su propia lista,
+              // pero acá no existían — y como el admin no guarda nada al
+              // mostrar un defecto, esos países no aparecían nunca en la app.
+              // Una lista de defectos duplicada es una mentira esperando.
+              const cs: Record<string, string> = { ...POR_DEFECTO, ...((config as any).countryStatus || {}) };
               const soonMeta: Record<string, { rail: string; bg: string }> = {
                 'México': { rail: 'SPEI · MXN', bg: 'linear-gradient(90deg,#006847 0 33%,#FFFFFF 33% 66%,#CE1126 66%)' },
                 Brasil: { rail: 'Pix · BRL', bg: 'radial-gradient(circle at 50% 50%, #002776 0 24%, #FFDF00 25% 46%, #009C3B 47%)' },
