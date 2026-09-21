@@ -2647,6 +2647,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   { pais: 'Perú',      code: 'PEN', nombre: 'Sol peruano',    riel: 'CCI · PEN' },
                   { pais: 'Chile',     code: 'CLP', nombre: 'Peso chileno',   riel: 'Transferencia · CLP' },
                   { pais: 'Venezuela', code: 'VES', nombre: 'Bolívar',        riel: 'Pago móvil · VES' },
+                  { pais: 'Europa',      code: 'EUR', nombre: 'Euro digital',   riel: 'SEPA · EURC' },
+                  { pais: 'Suiza',       code: 'CHF', nombre: 'Franco suizo',   riel: 'SIC · CHF' },
+                  { pais: 'Reino Unido', code: 'GBP', nombre: 'Libra esterlina', riel: 'Faster Payments · GBP' },
                 ];
                 return OTROS.filter(o => cs[o.pais] === 'on').map(o => {
                   const saldo = getBalance(o.code);
@@ -2689,6 +2692,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                 'Perú': { rail: 'CCI · PEN', bg: 'linear-gradient(90deg,#D91023 0 33%,#FFFFFF 33% 66%,#D91023 66%)' },
                 Chile: { rail: 'Transferencia · CLP', bg: 'linear-gradient(180deg,#FFFFFF 0 50%,#D52B1E 50%)' },
                 Venezuela: { rail: 'Pago móvil · VES', bg: 'linear-gradient(180deg,#FFCC00 0 33%,#00247D 33% 66%,#CF142B 66%)' },
+                Europa: { rail: 'SEPA · EUR', bg: 'radial-gradient(circle at 50% 50%, #FFCC00 0 20%, #003399 21%)' },
+                Suiza: { rail: 'SIC · CHF', bg: 'radial-gradient(circle at 50% 50%, #FFFFFF 0 17%, #D52B1E 18%)' },
+                'Reino Unido': { rail: 'Faster Payments · GBP', bg: 'linear-gradient(45deg,#012169 0 38%,#FFFFFF 38% 48%,#C8102E 48% 58%,#FFFFFF 58% 68%,#012169 68%)' },
               };
               const soon = Object.keys(soonMeta).filter(c => cs[c] === 'soon');
               if (!soon.length) return null;
