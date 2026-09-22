@@ -18,8 +18,8 @@
 //  Contrato de MistTrack (repo oficial slowmist/misttrack-skills):
 //    GET  /v1/status                  → estado + monedas soportadas
 //    GET  /v3/risk_score              → coin + address|txid (síncrono)
-//    POST /v2/risk_score_create_task  → asíncrono (sin límite de tasa)
-//    GET  /v2/risk_score_query_task
+//    POST /v3/risk_score_create_task  → asíncrono (sin límite de tasa)
+//    GET  /v3/risk_score_query_task   → por task_id, NO por coin+address
 //    GET  /v1/address_labels          → etiquetas de la dirección
 //    GET  /v1/address_overview        → saldo y estadísticas
 //  La llave va por query (`api_key`). La ruta base y las rutas se pueden
@@ -190,6 +190,9 @@ function leerVeredicto(bruto: any): {
   level: string | null
   riskDetail: any[]
   detailList: any[]
+  hackingEvent: string | null
+  hopDic: any
+  addressLabel: string | null
   reportUrl: string | null
 } {
   const d = desenvolver(bruto)
@@ -212,6 +215,10 @@ function leerVeredicto(bruto: any): {
     // detail_list ES la descripcion del riesgo en texto. Es el "por que".
     detailList: arr(d?.detail_list ?? d?.detailList),
     hackingEvent: hack || null,
+    // V3 agrega estos dos. hop_dic es el CAMINO: por donde se pasa para llegar
+    // a la entidad senalada. Venia en la respuesta y lo estabamos tirando.
+    hopDic: (d && typeof d === 'object' && !Array.isArray(d)) ? (d.hop_dic ?? d.hopDic ?? null) : null,
+    addressLabel: typeof d?.address_label === 'string' ? d.address_label.trim() || null : null,
     reportUrl: typeof d?.risk_report_url === 'string' ? d.risk_report_url : (typeof d?.report_url === 'string' ? d.report_url : null),
   }
 }
@@ -228,7 +235,65 @@ const TIPO_ES: Record<string, string> = {
   risk_exchange: 'exchange de riesgo',
   bridge: 'puente entre cadenas',
 }
-function exposicionDe(riskDetail: any[]): Record<string, any> | null {
+
+// ── hop_dic: el camino, direccion por direccion ───────────────────
+// Lo agrega la V3 del risk_score. Es un diccionario { "1": [dir...], "2": [...] }
+// donde el salto 1 es la ENTIDAD SENALADA y el ultimo salto es la direccion que
+// preguntamos. O sea: el camino completo, con los intermediarios NOMBRADOS.
+//
+// Esto llega GRATIS con el veredicto que ya se paga. Recorrer ese mismo camino a
+// mano cuesta una consulta por contraparte y llega solo hasta donde alcance el
+// presupuesto -- por eso, cuando hay hop_dic, manda hop_dic.
+//
+// No se asume donde viene: se lee arriba y dentro de cada risk_detail. Si su
+// forma cambia, el crudo queda igual y la seccion dice que no hubo camino, en
+// lugar de inventarse uno.
+function leerHopDic(v: any): { nivel: number; direcciones: string[] }[] | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null
+  const niveles = Object.keys(v)
+    .map(k => ({
+      nivel: Number(k),
+      direcciones: (Array.isArray(v[k]) ? v[k] : [v[k]])
+        .map((a: any) => (typeof a === 'string' ? a : String(a?.address ?? '')).trim())
+        .filter(Boolean)
+        .slice(0, 12),
+    }))
+    .filter(n => Number.isFinite(n.nivel) && n.direcciones.length)
+    .sort((a, b) => a.nivel - b.nivel)
+  return niveles.length ? niveles : null
+}
+
+// Convierte los niveles en algo que se pueda leer de un vistazo: quien
+// contamina, por donde pasa, y si el camino de verdad termina en la direccion
+// que preguntamos. Esto ultimo se COMPRUEBA y se informa: si el ultimo salto no
+// es nuestra direccion, el camino no es de esta direccion y decirlo igual seria
+// atribuirle una ruta ajena.
+function caminoDeHop(dir: string, niveles: { nivel: number; direcciones: string[] }[]) {
+  const bajo = niveles[0]
+  const alto = niveles[niveles.length - 1]
+  const medio = niveles.slice(1, -1)
+  const d = dir.toLowerCase()
+  const igual = (a: string) => a.toLowerCase() === d
+  return {
+    contaminante: bajo.direcciones[0] ?? null,
+    contaminantes: bajo.direcciones,
+    intermediarios: medio.flatMap(n => n.direcciones),
+    // La UI vieja muestra UN intermediario; se le da el primero y la lista
+    // completa aparte, para no romperla ni recortar el dato.
+    intermediario: medio.length ? (medio[0].direcciones[0] ?? null) : null,
+    // Saltos = tramos del camino, no niveles. Un camino de dos niveles
+    // (contaminante → nosotros) es UN salto.
+    saltos: Math.max(1, niveles.length - 1),
+    niveles: niveles.length,
+    camino: niveles,
+    terminaEnLaDireccion: alto.direcciones.some(igual),
+    // Si nuestra direccion aparece en el nivel mas bajo, el "contaminante" del
+    // camino somos nosotros: el camino esta al reves o es de otra direccion.
+    empiezaEnLaDireccion: bajo.direcciones.some(igual),
+  }
+}
+
+function exposicionDe(riskDetail: any[], hopTop?: any): Record<string, any> | null {
   const items = (Array.isArray(riskDetail) ? riskDetail : [])
     .filter(x => x && typeof x === 'object')
     .map(x => ({
@@ -238,6 +303,12 @@ function exposicionDe(riskDetail: any[]): Record<string, any> | null {
       exposicion: String(x.exposure_type ?? '').trim().toLowerCase() || null,
       saltos: Number.isFinite(Number(x.hop_num)) ? Number(x.hop_num) : null,
       volumen: Number.isFinite(Number(x.volume)) ? Number(x.volume) : null,
+      // percent viene en la documentacion y no se leia: es la parte del volumen
+      // de la direccion que pasa por esta ruta, que es lo que dice si el vinculo
+      // es marginal o es casi toda su actividad.
+      pct: Number.isFinite(Number(x.percent)) ? Number(x.percent) : null,
+      // El camino de ESTE hallazgo, si el proveedor lo manda por hallazgo.
+      camino: leerHopDic(x.hop_dic ?? x.hopDic),
     }))
   if (!items.length) return null
   const directas = items.filter(i => i.exposicion === 'direct')
@@ -255,6 +326,11 @@ function exposicionDe(riskDetail: any[]): Record<string, any> | null {
     // poner 0 seria afirmar que no hay exposicion.
     pctIndirecto: total > 0 ? Math.round((volIndirecto / total) * 1000) / 10 : null,
     saltoMinimo: indirectas.length ? Math.min(...indirectas.map(i => i.saltos ?? 99)) : null,
+    // El hop_dic de la respuesta entera, cuando no viene por hallazgo. Se deja
+    // aparte a proposito: pegarselo a cada hallazgo seria afirmar que todos
+    // pasan por el mismo camino, y eso no lo dice el proveedor.
+    caminoGeneral: leerHopDic(hopTop) ?? null,
+    conCamino: items.some(i => i.camino) || !!leerHopDic(hopTop),
   }
 }
 
@@ -462,6 +538,32 @@ function leerComportamiento(bruto: any): Record<string, any> | null {
   return { recibido, enviado }
 }
 
+// Guarda la ficha con las columnas nuevas y, si la base todavia no las tiene,
+// la vuelve a guardar sin ellas. Devuelve si el camino entro.
+//
+// No es paranoia: `2026_kyt_hop_dic.sql` lo corre una persona a mano y el
+// codigo se despliega solo. Entre una cosa y la otra, nombrar una columna
+// inexistente tira la fila COMPLETA, no la columna.
+let faltanColumnasHop = false
+async function guardarFicha(base: Record<string, unknown>, extra: Record<string, unknown>): Promise<boolean> {
+  if (!faltanColumnasHop) {
+    const { error } = await db.from('kyt_registry').upsert({ ...base, ...extra }, { onConflict: 'coin,address_lower' })
+    if (!error) return true
+    // 42703 = undefined_column. Cualquier otro error se reintenta igual sin las
+    // columnas nuevas: perder el veredicto por no poder guardar el camino seria
+    // el peor de los dos resultados.
+    if (/hop_dic|address_label|hop_at|42703|does not exist/i.test(`${error.code ?? ''} ${error.message ?? ''}`)) {
+      faltanColumnasHop = true
+      console.warn('[kyt] falta correr 2026_kyt_hop_dic.sql: se guarda la ficha sin el camino (hop_dic).')
+    } else {
+      console.error('[kyt] no se pudo guardar la ficha:', error.message)
+    }
+  }
+  const { error: e2 } = await db.from('kyt_registry').upsert(base, { onConflict: 'coin,address_lower' })
+  if (e2) console.error('[kyt] no se pudo guardar la ficha ni sin el camino:', e2.message)
+  return false
+}
+
 // Auditar no puede hacer fallar la operacion que audita.
 async function logAuditKyt(userId: string | null, action: string, metadata: Record<string, unknown>) {
   try { await db.from('audit_log').insert({ user_id: userId, action, metadata }) } catch { /* no bloquea */ }
@@ -503,14 +605,19 @@ async function evaluarYGuardar(
     const l = d?.label_list ?? d?.labels ?? d?.label ?? []
     etiquetas = Array.isArray(l) ? l : (l ? [l] : [])
   }
+  // address_label de la V3 va con las etiquetas: es una mas, y de la fuente
+  // mas confiable que tenemos. Se agrega sin duplicar.
+  if (v.addressLabel && !etiquetas.some(e => String(typeof e === 'string' ? e : e?.label ?? e?.name ?? '').toLowerCase() === v.addressLabel!.toLowerCase())) {
+    etiquetas = [v.addressLabel, ...etiquetas]
+  }
   const actividad = eRes?.ok ? leerActividad(eRes.data) : null
-  // De risk_detail, que ya vino con el veredicto.
-  const exposicion = exposicionDe(v.riskDetail)
+  // De risk_detail y hop_dic, que ya vinieron con el veredicto.
+  const exposicion = exposicionDe(v.riskDetail, v.hopDic)
   // Perfil: plataformas con las que interactuo y eventos maliciosos asociados.
   const perfil = ePerfil?.ok ? leerPerfil(ePerfil.data) : null
 
   const ahora = new Date().toISOString()
-  await db.from('kyt_registry').upsert({
+  const base = {
     coin, address_lower: dir.toLowerCase(), address: dir,
     risk_score: v.score, risk_level: v.level,
     risk_detail: v.riskDetail, detail_list: v.detailList,
@@ -522,12 +629,23 @@ async function evaluarYGuardar(
     veces_consultado: Number(ficha?.veces_consultado ?? 0) + 1,
     veces_reutilizado: Number(ficha?.veces_reutilizado ?? 0),
     empresas: anotarEmpresa(ficha?.empresas, quien),
-  }, { onConflict: 'coin,address_lower' })
+  }
+  // Las columnas del camino van aparte y con reintento SIN ellas.
+  //
+  // Las edge functions se despliegan solas al hacer push; el SQL lo corre una
+  // persona. En la ventana entre las dos cosas, un insert que nombra una
+  // columna que todavia no existe NO guarda nada: PostgREST rechaza la fila
+  // entera. O sea que agregar el camino habria dejado de guardar el veredicto
+  // — la parte que si funcionaba — hasta que alguien se acordara de la
+  // migracion. Con este reintento, mientras falte el SQL se guarda todo menos
+  // el camino, y en el log queda dicho por que.
+  await guardarFicha(base, { hop_dic: v.hopDic ?? null, address_label: v.addressLabel, hop_at: ahora })
 
   return {
     hay: true, score: v.score, level: v.level,
     hallazgos: v.riskDetail, detalle: v.detailList, etiquetas,
     hackingEvent: v.hackingEvent, perfil,
+    hopDic: v.hopDic ?? null, addressLabel: v.addressLabel,
     reporte: v.reportUrl, actividad, exposicion,
     status: r.status, crudo: r.data ?? null,
   }
@@ -708,6 +826,7 @@ Deno.serve(async (req) => {
           detalle: ficha.detail_list ?? [],
           actividad: ficha.actividad ?? null,
           exposicion: ficha.exposicion ?? null,
+          hopDic: ficha.hop_dic ?? null,
           perfil: ficha.perfil ?? null,
           hackingEvent: ficha.hacking_event ?? null,
           reporte: ficha.report_url,
@@ -764,6 +883,8 @@ Deno.serve(async (req) => {
         puntaje: ev.score, nivel: ev.level,
         hallazgos: ev.hallazgos, etiquetas: ev.etiquetas, detalle: ev.detalle,
         actividad: ev.actividad, exposicion: ev.exposicion,
+        hopDic: ev.hopDic ?? null,
+        hackingEvent: ev.hackingEvent ?? null, perfil: ev.perfil ?? null,
         reporte: ev.reporte,
         estado: 'finalizado',
         delPadron: false,
@@ -1093,6 +1214,11 @@ Deno.serve(async (req) => {
         detalle: f.detail_list ?? [],
         etiquetas: f.labels ?? [],
         exposicion: f.exposicion ?? null,
+        // El camino del proveedor va al reporte: es la parte que se imprime y
+        // se le muestra a un banco. Cada hallazgo de `exposicion` ya trae el
+        // suyo; este es el de la respuesta entera, cuando viene arriba.
+        hopDic: f.hop_dic ?? null,
+        etiquetaProveedor: f.address_label ?? null,
         actividad: f.actividad ?? null,
         perfil: f.perfil ?? null,
         contrapartes: f.contrapartes ?? null,
@@ -1114,15 +1240,19 @@ Deno.serve(async (req) => {
     //
     // DOS NIVELES, y la diferencia importa:
     //
-    //   · Las rutas que vienen con el veredicto (risk_detail) dicen A CUANTOS
-    //     SALTOS esta la entidad senalada y POR CUANTO volumen, pero no por
-    //     donde se pasa. Son gratis: llegan con el puntaje.
+    //   · EL CAMINO DEL PROVEEDOR (hop_dic, V3 del risk_score). Trae las
+    //     direcciones de CADA salto: contaminante, intermediarios y la nuestra
+    //     al final. Es el dato bueno y llega GRATIS con el puntaje. Lo que no
+    //     dice es si la plata entro o salio.
     //
-    //   · El intermediario hay que RECORRERLO. Se piden las contrapartes de la
-    //     direccion y, por cada una, las suyas, buscando las marcadas como
-    //     maliciosas (type 2). Cada paso es una consulta PAGADA, asi que el
-    //     recorrido tiene presupuesto y lo dispara el cliente a proposito --
-    //     nunca solo.
+    //   · EL RECORRIDO A MANO (transactions_investigation). Se piden las
+    //     contrapartes de la direccion y, por cada una, las suyas, buscando las
+    //     marcadas como maliciosas (type 2). Cada paso es una consulta PAGADA,
+    //     asi que tiene presupuesto y llega hasta donde alcanza. Lo que si dice
+    //     es la DIRECCION del flujo: a quien le mandamos y de quien recibimos.
+    //
+    // Se usan los DOS y se cruzan: el camino lo pone hop_dic, el sentido lo pone
+    // la investigacion. Ninguno de los dos solo contesta la pregunta completa.
     if (accion === 'rutas') {
       if (!yo.userId && !yo.esAdmin) return json({ error: 'no_autorizado' }, 401)
       const coin = canonCoin(body.coin)
@@ -1135,13 +1265,114 @@ Deno.serve(async (req) => {
       // contrapartes se coma el plan en un clic.
       const presupuesto = Math.max(1, Math.min(25, Number(body.presupuesto) || 10))
 
+      // ── 1) El camino que ya tenemos guardado ──
+      // hop_dic viene con el veredicto, y el veredicto ya se pago al consultar.
+      // Se lee del padron; solo si no hay ficha se gasta una consulta de riesgo
+      // -- una, no una por contraparte.
+      const fichaR = await padronBuscar(coin, dir)
+      let hopDic: any = fichaR?.hop_dic ?? null
+      let expo: any = fichaR?.exposicion ?? null
+      let riesgoRecien = false
+      // hop_at marca que YA le preguntamos al proveedor por el camino. Sin esa
+      // marca no se puede distinguir "no tiene camino" de "esta ficha es
+      // anterior a que empezaramos a leerlo", y sin distinguirlas o se paga una
+      // consulta de mas en cada clic, o las fichas viejas nunca muestran el
+      // camino que el proveedor si manda.
+      if (!fichaR?.hop_at) {
+        const rr = await llamarMT(c, c.rutaRiesgo, { coin, address: dir })
+        if (rr.ok) {
+          const vv = leerVeredicto(rr.data)
+          hopDic = vv.hopDic ?? null
+          expo = exposicionDe(vv.riskDetail, vv.hopDic) ?? expo
+          riesgoRecien = true
+          // La exposicion (con el camino adentro) se guarda igual aunque falten
+          // las columnas nuevas: esa columna ya existia. El camino suelto solo
+          // si la migracion ya corrio — si no, el update entero se cae y se
+          // pierde tambien lo que si se podia guardar.
+          const { error: eUp } = await db.from('kyt_registry').update({
+            ...(expo ? { exposicion: expo } : {}),
+            ...(faltanColumnasHop ? {} : {
+              hop_dic: hopDic, address_label: vv.addressLabel, hop_at: new Date().toISOString(),
+            }),
+          }).eq('coin', coin).eq('address_lower', dir.toLowerCase())
+          if (eUp && /hop_dic|address_label|hop_at|42703|does not exist/i.test(`${eUp.code ?? ''} ${eUp.message ?? ''}`)) {
+            faltanColumnasHop = true
+            console.warn('[kyt] falta correr 2026_kyt_hop_dic.sql: el camino no se guarda, se recalcula en cada consulta.')
+            if (expo) await db.from('kyt_registry').update({ exposicion: expo }).eq('coin', coin).eq('address_lower', dir.toLowerCase())
+          }
+        }
+      }
+
+      // Cada hallazgo con camino propio es una ruta del proveedor. El camino
+      // general (cuando el hop_dic viene arriba y no por hallazgo) va una sola
+      // vez, sin atribuirselo a ningun hallazgo en particular.
+      const rutasProveedor: any[] = []
+      for (const it of (Array.isArray(expo?.items) ? expo.items : [])) {
+        // `camino` ya viene normalizado por exposicionDe (y asi quedo guardado
+        // en el padron): niveles ordenados, direcciones limpias.
+        const niveles = Array.isArray(it?.camino) ? it.camino : null
+        if (!niveles || !niveles.length) continue
+        const cm = caminoDeHop(dir, niveles)
+        rutasProveedor.push({
+          fuente: 'proveedor',
+          contaminante: cm.contaminante, etiquetaContaminante: it?.entidad ?? null,
+          contaminantes: cm.contaminantes,
+          intermediario: cm.intermediario, intermediarios: cm.intermediarios,
+          // hop_num del hallazgo manda sobre el largo del camino: es el numero
+          // que el proveedor afirma, y el camino puede venir recortado.
+          saltos: Number.isFinite(Number(it?.saltos)) ? Number(it.saltos) : cm.saltos,
+          camino: cm.camino,
+          terminaEnLaDireccion: cm.terminaEnLaDireccion,
+          tipo: it?.tipo ?? null, tipoEs: it?.tipoEs ?? null,
+          exposicion: it?.exposicion ?? null,
+          monto: it?.volumen ?? null, pct: it?.pct ?? null,
+          flujo: null, hashes: [],
+        })
+      }
+      const general = leerHopDic(hopDic)
+      if (general && !rutasProveedor.length) {
+        const cm = caminoDeHop(dir, general)
+        rutasProveedor.push({
+          fuente: 'proveedor',
+          contaminante: cm.contaminante, etiquetaContaminante: null,
+          contaminantes: cm.contaminantes,
+          intermediario: cm.intermediario, intermediarios: cm.intermediarios,
+          saltos: cm.saltos, camino: cm.camino,
+          terminaEnLaDireccion: cm.terminaEnLaDireccion,
+          tipo: null, tipoEs: null, exposicion: null,
+          monto: null, pct: null, flujo: null, hashes: [],
+          // Este camino es de la respuesta, no de un hallazgo concreto. Se dice,
+          // para que la pantalla no lo presente como si fuera de uno.
+          sinHallazgo: true,
+        })
+      }
+
       const rInv = await llamarMT(c, c.rutaInvestigacion, { coin, address: dir, type: 'all', page: '1' })
       const inv = rInv.ok ? leerInvestigacion(rInv.data) : null
       if (!inv) {
+        // Antes esto cortaba la accion. Ahora ya no puede: si el proveedor
+        // mando el camino, tenemos rutas reales aunque no podamos decir el
+        // sentido del flujo -- y tirarlas para devolver un error seria esconder
+        // lo unico que el cliente vino a ver.
+        if (!rutasProveedor.length) {
+          return json({
+            ok: false, error: 'sin_investigacion',
+            fuente: fuenteDe(rInv, inv),
+            mensaje: 'No pudimos obtener las contrapartes de esta dirección, así que no se pueden rastrear rutas.',
+          })
+        }
+        await logAuditKyt(yo.userId, 'kyt.rutas', { coin, address: dir, soloProveedor: true, rutas: rutasProveedor.length })
         return json({
-          ok: false, error: 'sin_investigacion',
-          fuente: fuenteDe(rInv, inv),
-          mensaje: 'No pudimos obtener las contrapartes de esta dirección, así que no se pueden rastrear rutas.',
+          ok: true, coin, address: dir,
+          rutas: rutasProveedor,
+          resumen: [],
+          delProveedor: rutasProveedor.length, riesgoRecien,
+          contrapartesRevisadas: 0, expandidos: 0, fallos: 0, presupuesto,
+          completo: false,
+          fuenteContrapartes: fuenteDe(rInv, inv),
+          // Se dice que falta, porque es justo la mitad de la pregunta del
+          // cliente: sabe que hay un camino, no si mando o recibio por el.
+          sinSentidoDeFlujo: true,
         })
       }
 
@@ -1186,42 +1417,108 @@ Deno.serve(async (req) => {
         }
       }
 
+      // ── El cruce ──
+      // hop_dic dice POR DONDE pasa. La investigacion dice PARA QUE LADO. Se
+      // cruzan por direccion: si el primer tramo del camino del proveedor es
+      // una contraparte que conocemos, sabemos si le mandamos o nos mando.
+      const sentido = new Map<string, string>()
+      for (const v of vecinos) {
+        const k = String(v.direccion ?? '').toLowerCase()
+        if (!k) continue
+        const nuevo = v.flujo === 'entrada' ? 'entrante' : 'saliente'
+        sentido.set(k, sentido.has(k) && sentido.get(k) !== nuevo ? 'ambos' : nuevo)
+      }
+      for (const r of rutasProveedor) {
+        // El tramo que nos toca es el que sale de NUESTRA direccion: el
+        // intermediario mas cercano, o el contaminante si el camino es directo.
+        const primerTramo = String(
+          (r.intermediarios?.length ? r.intermediarios[r.intermediarios.length - 1] : null) ?? r.contaminante ?? '',
+        ).toLowerCase()
+        r.flujo = sentido.get(primerTramo) ?? null
+        // Se distingue a proposito de "no hay flujo": null significa que esa
+        // contraparte no aparecio entre las que revisamos, no que no exista.
+        r.flujoDesconocido = r.flujo === null
+        const vc = vecinos.find((x: any) => String(x.direccion ?? '').toLowerCase() === primerTramo)
+        if (vc) {
+          r.etiquetaIntermediario = r.etiquetaIntermediario ?? vc.etiqueta ?? null
+          r.hashes = vc.hashes ?? []
+          r.txs = vc.hashes?.length ?? null
+        }
+      }
+
+      // Las rutas del proveedor pisan a las rastreadas a mano cuando llevan al
+      // MISMO contaminante: el proveedor nombra el camino entero y nosotros
+      // solo llegamos a dos saltos. Quedarse con las dos seria contar la misma
+      // exposicion dos veces y abultar el "caminos" del resumen.
+      const delProveedor = new Set(
+        rutasProveedor.map(r => String(r.contaminante ?? '').toLowerCase()).filter(Boolean),
+      )
+      const aMano = [...directas, ...indirectas]
+        .map(r => ({ ...r, fuente: 'rastreo' }))
+        .filter(r => !delProveedor.has(String(r.contaminante ?? '').toLowerCase()))
+
       // Agrupado por contaminante, como en un reporte de exposicion: lo que se
       // mira primero es CUANTOS caminos llevan a la misma entidad senalada.
       const porContaminante: Record<string, any> = {}
-      for (const r of [...directas, ...indirectas]) {
+      for (const r of [...rutasProveedor, ...aMano]) {
         const k = String(r.contaminante ?? 'desconocido')
         if (!porContaminante[k]) {
           porContaminante[k] = {
             contaminante: r.contaminante, etiqueta: r.etiquetaContaminante,
-            caminos: 0, montoTotal: 0, saltoMinimo: 99, intermediarios: new Set<string>(),
+            caminos: 0, montoTotal: 0, saltoMinimo: 99,
+            intermediarios: new Set<string>(), flujos: new Set<string>(),
+            delProveedor: false,
           }
         }
         const g = porContaminante[k]
+        g.etiqueta = g.etiqueta ?? r.etiquetaContaminante ?? null
         g.caminos += 1
         g.montoTotal += Number(r.monto ?? 0)
         g.saltoMinimo = Math.min(g.saltoMinimo, r.saltos)
-        if (r.intermediario) g.intermediarios.add(r.intermediario)
+        for (const m of (r.intermediarios?.length ? r.intermediarios : (r.intermediario ? [r.intermediario] : []))) {
+          g.intermediarios.add(m)
+        }
+        if (r.flujo && r.flujo !== 'ambos') g.flujos.add(r.flujo)
+        if (r.flujo === 'ambos') { g.flujos.add('entrante'); g.flujos.add('saliente') }
+        if (r.fuente === 'proveedor') g.delProveedor = true
       }
       const resumen = Object.values(porContaminante).map((g: any) => ({
         contaminante: g.contaminante, etiqueta: g.etiqueta,
         caminos: g.caminos, montoTotal: g.montoTotal || null,
         saltoMinimo: g.saltoMinimo === 99 ? null : g.saltoMinimo,
         intermediarios: Array.from(g.intermediarios),
+        // Lo que el cliente pregunto con todas las letras: si le mando o
+        // recibio de una direccion contaminada. Vacio = no lo sabemos.
+        flujos: Array.from(g.flujos),
+        delProveedor: !!g.delProveedor,
       })).sort((a: any, b: any) => (b.montoTotal ?? 0) - (a.montoTotal ?? 0))
 
-      await logAuditKyt(yo.userId, 'kyt.rutas', { coin, address: dir, expandidos, directas: directas.length, indirectas: indirectas.length })
+      const todasLasRutas = [...rutasProveedor, ...aMano]
+        .sort((a, b) => (a.saltos ?? 99) - (b.saltos ?? 99) || (b.monto ?? 0) - (a.monto ?? 0))
+
+      await logAuditKyt(yo.userId, 'kyt.rutas', {
+        coin, address: dir, expandidos,
+        proveedor: rutasProveedor.length, directas: directas.length, indirectas: indirectas.length,
+      })
 
       return json({
         ok: true, coin, address: dir,
-        rutas: [...directas, ...indirectas].sort((a, b) => a.saltos - b.saltos || (b.monto ?? 0) - (a.monto ?? 0)),
+        rutas: todasLasRutas,
         resumen,
+        // Cuantas salieron del camino del proveedor y cuantas de nuestro
+        // rastreo. Importa: las primeras son el camino completo y las segundas
+        // llegan hasta donde alcanzo el presupuesto.
+        delProveedor: rutasProveedor.length,
+        rastreadas: aMano.length,
+        riesgoRecien,
         contrapartesRevisadas: vecinos.length,
         expandidos, fallos, presupuesto,
         // Se dice explicitamente hasta donde se miro. Una lista vacia despues
         // de expandir diez de doscientas contrapartes NO significa "no hay
-        // rutas": significa "no hay en lo que miramos".
-        completo: candidatos.length >= vecinos.filter((x: any) => x.tipoNum !== 2).length,
+        // rutas": significa "no hay en lo que miramos". El camino del proveedor
+        // no tiene ese limite, asi que si hubo rutas suyas el aviso sobra.
+        completo: rutasProveedor.length > 0
+          || candidatos.length >= vecinos.filter((x: any) => x.tipoNum !== 2).length,
       })
     }
 

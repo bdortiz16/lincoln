@@ -625,22 +625,42 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
                         {rastreando ? 'Rastreando…' : 'Rastrear intermediarios'}
                       </button>
                     </div>
-                    {res.exposicion.items.map((it: any, i: number) => (
+                    {res.exposicion.items.map((it: any, i: number) => {
+                      // `camino` es el hop_dic del proveedor ya ordenado: salto 1
+                      // la entidad señalada, último salto esta dirección. Cuando
+                      // viene, los intermediarios dejan de ser un número y pasan
+                      // a tener dirección — que es lo que hace falta para ir a
+                      // mirarlos. Cuando no viene, se sigue diciendo cuántos son.
+                      const camino: any[] | null = Array.isArray(it.camino) && it.camino.length ? it.camino : null;
+                      const medios = camino ? camino.slice(1, -1).flatMap((n: any) => n.direcciones ?? []) : [];
+                      return (
                       <div key={i} style={{ padding: '11px 15px', borderTop: i ? `1px solid ${C.bdSoft}` : 'none' }}>
-                        <p style={{ fontFamily: MONO, fontSize: 11.5, color: C.sub, margin: 0 }}>
+                        <p style={{ fontFamily: MONO, fontSize: 11.5, color: C.sub, margin: 0, wordBreak: 'break-all', lineHeight: 1.6 }}>
                           esta dirección
-                          {it.saltos && it.saltos > 1 ? ` → ${it.saltos - 1} ${it.saltos - 1 === 1 ? 'intermediario' : 'intermediarios'}` : ''}
+                          {medios.length
+                            ? medios.slice(0, 4).map((m: string, k: number) => (
+                                <React.Fragment key={k}> {'→'} <span style={{ color: C.text }}>{enmascarar(m)}</span></React.Fragment>
+                              ))
+                            : (it.saltos && it.saltos > 1 ? ` → ${it.saltos - 1} ${it.saltos - 1 === 1 ? 'intermediario' : 'intermediarios'}` : '')}
                           {' → '}
                           <span style={{ color: ROJO.c, fontWeight: 700 }}>{it.entidad ?? 'entidad señalada'}</span>
                         </p>
+                        {camino && camino[0]?.direcciones?.length ? (
+                          <p style={{ fontFamily: MONO, fontSize: 10.5, color: C.sub, margin: '4px 0 0', wordBreak: 'break-all' }}>
+                            en {enmascarar(camino[0].direcciones[0])}
+                            {camino[0].direcciones.length > 1 ? ` y ${camino[0].direcciones.length - 1} más` : ''}
+                          </p>
+                        ) : null}
                         <p style={{ fontSize: 12, color: C.text, margin: '5px 0 0' }}>
                           {it.tipoEs ?? 'tipo no informado'}
                           {it.saltos != null ? ` · ${it.saltos} ${it.saltos === 1 ? 'salto' : 'saltos'}` : ''}
                           {it.volumen != null ? ` · ${Number(it.volumen).toLocaleString('es-CO', { maximumFractionDigits: 2 })} de volumen vinculado` : ''}
+                          {it.pct != null ? ` · ${it.pct} % de su volumen` : ''}
                           {it.exposicion === 'direct' ? ' · exposición directa' : ''}
                         </p>
                       </div>
-                    ))}
+                      );
+                    })}
                     <p style={{ fontSize: 11.5, color: C.sub, margin: 0, padding: '11px 15px', borderTop: `1px solid ${C.bdSoft}`, lineHeight: 1.55 }}>
                       Una ruta contaminada no significa que el titular haya hecho algo: puede venir de
                       operaciones ajenas. Pero sí es lo que suele llevar a que un exchange congele fondos.
@@ -669,31 +689,111 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
             );
           })()}
 
-          {/* Rutas rastreadas: acá sí aparece el intermediario. */}
+          {/* ── RUTAS: acá aparecen los intermediarios con nombre y apellido ──
+              Dos fuentes, y la diferencia se dice en pantalla porque cambia
+              cuánto vale cada fila:
+
+                · `proveedor` — el camino que manda MistTrack con el puntaje
+                  (hop_dic). Es el camino COMPLETO, salto por salto. No tiene
+                  presupuesto ni tope.
+
+                · `rastreo` — el que recorremos nosotros pidiendo las
+                  contrapartes de cada contraparte. Llega hasta donde alcanza el
+                  presupuesto, y eso se dice.
+
+              Lo que el proveedor NO manda es el sentido del flujo. Eso sale de
+              cruzar el camino con las contrapartes: si el primer tramo es una
+              dirección a la que le enviamos, es saliente. Cuando no aparece
+              entre las revisadas, se dice "sentido no confirmado" — nunca se
+              supone uno, porque "le enviaste a una dirección contaminada" y
+              "recibiste de una" no son la misma frase para nadie. */}
           {rutas && (
             <div style={{ marginBottom: 14, border: `1px solid ${C.bdHard}`, borderRadius: 12, overflow: 'hidden' }}>
               <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1.4px', color: C.sub, margin: 0, padding: '11px 15px', borderBottom: `1px solid ${C.bdSoft}` }}>
-                RUTAS RASTREADAS · {rutas.expandidos} de {rutas.contrapartesRevisadas} contrapartes revisadas
+                RUTAS
+                {rutas.delProveedor > 0 ? ` · ${rutas.delProveedor} del proveedor` : ''}
+                {rutas.rastreadas > 0 ? ` · ${rutas.rastreadas} rastreadas` : ''}
+                {rutas.contrapartesRevisadas > 0 ? ` · ${rutas.expandidos} de ${rutas.contrapartesRevisadas} contrapartes expandidas` : ''}
               </p>
+
+              {/* Lo primero que se lee: a quién le enviaste y de quién recibiste.
+                  Es la pregunta literal, respondida antes que el detalle. */}
+              {(() => {
+                const con = (f: string) => rutas.resumen.filter((g: any) => (g.flujos ?? []).includes(f));
+                const sal = con('saliente'); const ent = con('entrante');
+                const sinSentido = rutas.resumen.filter((g: any) => !(g.flujos ?? []).length);
+                if (!rutas.resumen.length) return null;
+                return (
+                  <div style={{ padding: '12px 15px', borderBottom: `1px solid ${C.bdSoft}`, background: 'rgba(255,255,255,0.02)' }}>
+                    <p style={{ fontSize: 12.5, color: C.text, margin: 0, lineHeight: 1.65 }}>
+                      {sal.length > 0 && <><b style={{ color: ROJO.c, fontWeight: 800 }}>Le enviaste</b> a {sal.length} {sal.length === 1 ? 'dirección contaminada' : 'direcciones contaminadas'}. </>}
+                      {ent.length > 0 && <><b style={{ color: ROJO.c, fontWeight: 800 }}>Recibiste</b> de {ent.length} {ent.length === 1 ? 'dirección contaminada' : 'direcciones contaminadas'}. </>}
+                      {sinSentido.length > 0 && <>{sal.length || ent.length ? 'Otras ' : ''}{sinSentido.length} {sinSentido.length === 1 ? 'ruta contaminada' : 'rutas contaminadas'} {sinSentido.length === 1 ? 'aparece' : 'aparecen'} sin sentido confirmado: sabemos que el camino existe, no si la plata entró o salió por él.</>}
+                    </p>
+                  </div>
+                );
+              })()}
+
               {rutas.rutas.length === 0 ? (
                 <p style={{ fontSize: 12.5, color: C.sub, margin: 0, padding: '13px 15px', lineHeight: 1.6 }}>
-                  No se encontraron rutas hacia entidades señaladas entre las contrapartes revisadas.
+                  No se encontraron rutas hacia entidades señaladas.
                   {!rutas.completo && ' Quedaron contrapartes sin revisar: esto no descarta que existan otras rutas.'}
                 </p>
-              ) : rutas.rutas.map((r: any, i: number) => (
-                <div key={i} style={{ padding: '11px 15px', borderTop: i ? `1px solid ${C.bdSoft}` : 'none' }}>
-                  <p style={{ fontFamily: MONO, fontSize: 11, color: C.sub, margin: 0, wordBreak: 'break-all', lineHeight: 1.6 }}>
-                    {enmascarar(rutas.address)}
-                    {r.intermediario ? <> {'→'} <span style={{ color: C.text }}>{enmascarar(r.intermediario)}</span></> : null}
-                    {' → '}
-                    <span style={{ color: ROJO.c, fontWeight: 700 }}>{enmascarar(r.contaminante)}</span>
-                  </p>
-                  <p style={{ fontSize: 12, color: C.text, margin: '5px 0 0' }}>
-                    {r.etiquetaContaminante ?? 'contraparte señalada'} · {r.saltos} {r.saltos === 1 ? 'salto' : 'saltos'} · flujo {r.flujo}
-                    {r.monto != null ? ` · ${Number(r.monto).toLocaleString('es-CO', { maximumFractionDigits: 2 })}` : ''}
-                  </p>
-                </div>
-              ))}
+              ) : rutas.rutas.map((r: any, i: number) => {
+                // El camino completo cuando lo manda el proveedor; el
+                // intermediario único cuando lo rastreamos nosotros.
+                const medios: string[] = r.intermediarios?.length
+                  ? r.intermediarios
+                  : (r.intermediario ? [r.intermediario] : []);
+                const flujoTexto = r.flujo === 'saliente' ? 'le enviaste'
+                  : r.flujo === 'entrante' ? 'recibiste'
+                  : r.flujo === 'ambos' ? 'enviaste y recibiste'
+                  : null;
+                return (
+                  <div key={i} style={{ padding: '11px 15px', borderTop: i ? `1px solid ${C.bdSoft}` : 'none' }}>
+                    <p style={{ fontFamily: MONO, fontSize: 11, color: C.sub, margin: 0, wordBreak: 'break-all', lineHeight: 1.6 }}>
+                      {enmascarar(rutas.address)}
+                      {medios.slice(0, 5).map((m: string, k: number) => (
+                        <React.Fragment key={k}> {'→'} <span style={{ color: C.text }}>{enmascarar(m)}</span></React.Fragment>
+                      ))}
+                      {medios.length > 5 ? <> {'→'} <span style={{ color: C.sub }}>+{medios.length - 5}</span></> : null}
+                      {' → '}
+                      <span style={{ color: ROJO.c, fontWeight: 700 }}>{enmascarar(r.contaminante)}</span>
+                    </p>
+                    <p style={{ fontSize: 12, color: C.text, margin: '5px 0 0' }}>
+                      {r.etiquetaContaminante ?? r.tipoEs ?? 'contraparte señalada'}
+                      {r.saltos != null ? ` · ${r.saltos} ${r.saltos === 1 ? 'salto' : 'saltos'}` : ''}
+                      {flujoTexto ? ` · ${flujoTexto}` : ''}
+                      {r.monto != null ? ` · ${Number(r.monto).toLocaleString('es-CO', { maximumFractionDigits: 2 })}` : ''}
+                    </p>
+                    {/* Los dos avisos que no se pueden callar. */}
+                    {r.flujoDesconocido && (
+                      <p style={{ fontSize: 11, color: C.sub, margin: '4px 0 0', lineHeight: 1.55 }}>
+                        Sentido no confirmado: esa contraparte no apareció entre las revisadas, así que
+                        no sabemos si la plata salió o entró por acá.
+                      </p>
+                    )}
+                    {r.fuente === 'proveedor' && r.terminaEnLaDireccion === false && (
+                      <p style={{ fontSize: 11, color: C.sub, margin: '4px 0 0', lineHeight: 1.55 }}>
+                        El camino que devolvió el proveedor no termina en esta dirección. Se muestra tal
+                        cual llegó, sin atribuírselo.
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
+
+              {rutas.sinSentidoDeFlujo && (
+                <p style={{ fontSize: 11.5, color: C.sub, margin: 0, padding: '11px 15px', borderTop: `1px solid ${C.bdSoft}`, lineHeight: 1.55 }}>
+                  No pudimos obtener las contrapartes de esta dirección, así que ninguna ruta tiene
+                  sentido de flujo confirmado. El camino sí es el que reportó el proveedor.
+                </p>
+              )}
+              {!rutas.completo && rutas.rutas.length > 0 && (
+                <p style={{ fontSize: 11.5, color: C.sub, margin: 0, padding: '11px 15px', borderTop: `1px solid ${C.bdSoft}`, lineHeight: 1.55 }}>
+                  Quedaron contrapartes sin expandir. Esta lista es lo que hay, no todo lo que puede haber.
+                </p>
+              )}
             </div>
           )}
 

@@ -268,16 +268,35 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
               <th style={th}>MONTO</th><th style={th}>DISTANCIA</th>
             </tr></thead>
             <tbody>
-              {indirectos.map((r: any, i: number) => (
+              {indirectos.map((r: any, i: number) => {
+                // El camino completo cuando lo manda el proveedor (hop_dic).
+                // Antes esta celda mostraba UN intermediario aunque el camino
+                // tuviera tres, y la columna de flujo decía siempre lo mismo —
+                // una frase fija en un reporte que se le entrega a un banco.
+                const medios: string[] = r.intermediarios?.length
+                  ? r.intermediarios : (r.intermediario ? [r.intermediario] : []);
+                return (
                 <tr key={i}>
                   <td style={{ ...td, fontFamily: MONO, fontSize: 8.5, color: T.rojo, fontWeight: 700 }}>{corta(r.contaminante)}</td>
-                  <td style={{ ...td, fontFamily: MONO, fontSize: 8.5 }}>{corta(r.intermediario)}</td>
-                  <td style={{ ...td, color: T.azul, fontWeight: 700, fontSize: 9 }}>Analizada → Intermediario → Señalada</td>
+                  <td style={{ ...td, fontFamily: MONO, fontSize: 8.5 }}>
+                    {medios.length ? medios.slice(0, 2).map(corta).join(' → ') : '—'}
+                    {medios.length > 2 ? ` +${medios.length - 2}` : ''}
+                  </td>
+                  <td style={{ ...td, color: r.flujo ? T.azul : T.suave, fontWeight: 700, fontSize: 9 }}>
+                    {r.flujo === 'saliente' ? 'Enviado desde la analizada'
+                      : r.flujo === 'entrante' ? 'Recibido en la analizada'
+                      : r.flujo === 'ambos' ? 'Enviado y recibido'
+                      : 'Sentido no confirmado'}
+                  </td>
                   <td style={td}>{r.txs ?? '—'}</td>
                   <td style={td}>{n(r.monto) ?? '—'}</td>
-                  <td style={td}>{r.saltos} saltos</td>
+                  <td style={td}>
+                    {r.saltos} saltos
+                    {r.fuente === 'proveedor' ? ' · proveedor' : ''}
+                  </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         ) : ex?.items?.length ? (
@@ -346,7 +365,10 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
           <p style={{ fontSize: 9, color: T.suave, margin: '8px 0 0', lineHeight: 1.6 }}>
             Alcance: se revisaron {tr.contrapartesRevisadas} contrapartes directas y se expandieron{' '}
             {tr.expandidos} de ellas para buscar rutas de segundo nivel.
+            {tr.delProveedor > 0 && ` ${tr.delProveedor} ${tr.delProveedor === 1 ? 'ruta proviene' : 'rutas provienen'} del camino completo que reporta el proveedor (hop_dic), que no está sujeto a ese alcance.`}
             {tr.completo === false && ' Quedaron contrapartes sin expandir: la ausencia de más rutas en estas tablas no descarta que existan otras.'}
+            {' '}El sentido del flujo solo se afirma cuando la contraparte aparece entre las revisadas;
+            en las demás filas se indica que no está confirmado.
           </p>
         )}
 
