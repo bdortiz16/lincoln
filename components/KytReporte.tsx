@@ -129,6 +129,7 @@ const PorQueVacio: React.FC<{ f?: any; que: string }> = ({ f, que }) => {
 export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClose }) => {
   const ac = d.actividad;
   const tk = d.tokenActividad;
+  const cad = d.cadena; // el explorador de la cadena: de donde salen los saldos
   const ex = d.exposicion;
   const tr = d.rutas;
 
@@ -248,19 +249,76 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
           </div>
         </div>
 
-        {/* Indicadores — actividad de la moneda NATIVA de la red */}
-        <div className="flex" style={{ border: `1px solid ${T.linea}`, borderTop: 'none', flexWrap: 'wrap' }}>
-          <Ind rot={`Saldo ${d.coin}`}><Cifra v={n(ac?.saldo)} u={d.coin} /></Ind>
-          <Ind rot={`Recibido ${d.coin}`}><Cifra v={n(ac?.recibido)} /></Ind>
-          <Ind rot={`Enviado ${d.coin}`}><Cifra v={n(ac?.enviado)} /></Ind>
-          <Ind rot="Transacciones"><Cifra v={n(ac?.txs, 0)} /></Ind>
-          <Ind rot="Antigüedad"><Cifra v={ac?.primera ? fecha(ac.primera, false) : null} /></Ind>
-        </div>
+        {/* ── LO QUE TIENE, según el explorador de la cadena ──
+            MistTrack es un proveedor de riesgo, no un explorador: para esta
+            misma dirección devolvió "sin dato" en saldo y transacciones
+            mientras Tronscan mostraba 766.000 USDT y 106 transacciones. Los
+            saldos salen de la cadena; el riesgo, de MistTrack. Cada uno lo
+            suyo, y acá se dice de dónde salió cada número. */}
+        {cad ? (
+          <>
+            <div className="flex" style={{ border: `1px solid ${T.linea}`, borderTop: 'none', flexWrap: 'wrap' }}>
+              <Ind rot="Valor total en USD"><Cifra v={n(cad.valorUsd)} u="USD" /></Ind>
+              <Ind rot="Saldo USDT"><Cifra v={n(cad.saldoUsdt)} u="USDT" /></Ind>
+              <Ind rot={`Saldo ${d.coin}`}><Cifra v={n(cad.saldoNativo)} u={d.coin} /></Ind>
+              <Ind rot="Transacciones">
+                <Cifra v={n(cad.transacciones, 0)} />
+                {cad.entradas != null || cad.salidas != null ? (
+                  <p style={{ fontSize: 8.5, color: T.suave, margin: '3px 0 0' }}>
+                    ↓ {n(cad.entradas, 0) ?? '—'} · ↑ {n(cad.salidas, 0) ?? '—'}
+                  </p>
+                ) : null}
+              </Ind>
+              <Ind rot="Creada · última actividad">
+                <p style={{ fontSize: 10.5, fontWeight: 700, margin: 0, lineHeight: 1.35 }}>
+                  {cad.creada ? fecha(cad.creada, false) : <span style={{ color: T.tenue, fontWeight: 400 }}>sin dato</span>}
+                  <br />
+                  <span style={{ fontSize: 9, color: T.suave }}>{cad.ultimaActividad ? fecha(cad.ultimaActividad, false) : '—'}</span>
+                </p>
+              </Ind>
+            </div>
+            {cad.tokens?.length > 1 && (
+              <div style={{ border: `1px solid ${T.linea}`, borderTop: 'none', padding: '6px 12px', background: T.fondo }}>
+                <p style={{ fontSize: 8.5, color: T.suave, margin: 0, lineHeight: 1.6 }}>
+                  <b>Otros activos:</b>{' '}
+                  {cad.tokens.filter((t: any) => t.simbolo !== 'USDT' && t.simbolo !== d.coin).slice(0, 8)
+                    .map((t: any) => `${t.simbolo} ${n(t.cantidad, 2) ?? '—'}${t.usd != null ? ` (USD ${n(t.usd)})` : ''}`)
+                    .join(' · ') || '—'}
+                </p>
+              </div>
+            )}
+            <div style={{ border: `1px solid ${T.linea}`, borderTop: 'none', padding: '5px 12px' }}>
+              <p style={{ fontSize: 8.5, color: T.tenue, margin: 0, fontStyle: 'italic' }}>
+                Saldos y conteos según {cad.fuente === 'tronscan' ? 'Tronscan' : 'TronGrid'}, consultado el {fecha(cad.consultadoAt)}.
+                Son los de ese momento: una dirección activa cambia de saldo entre una consulta y la siguiente.
+              </p>
+            </div>
+          </>
+        ) : (
+          <>
+            {/* Sin explorador: lo que haya devuelto MistTrack de la moneda nativa. */}
+            <div className="flex" style={{ border: `1px solid ${T.linea}`, borderTop: 'none', flexWrap: 'wrap' }}>
+              <Ind rot={`Saldo ${d.coin}`}><Cifra v={n(ac?.saldo)} u={d.coin} /></Ind>
+              <Ind rot={`Recibido ${d.coin}`}><Cifra v={n(ac?.recibido)} /></Ind>
+              <Ind rot={`Enviado ${d.coin}`}><Cifra v={n(ac?.enviado)} /></Ind>
+              <Ind rot="Transacciones"><Cifra v={n(ac?.txs, 0)} /></Ind>
+              <Ind rot="Antigüedad"><Cifra v={ac?.primera ? fecha(ac.primera, false) : null} /></Ind>
+            </div>
+            {d.coin === 'TRX' && (
+              <div style={{ border: `1px solid ${T.linea}`, borderTop: 'none', padding: '6px 12px' }}>
+                <p style={{ fontSize: 9, color: T.tenue, margin: 0, fontStyle: 'italic', lineHeight: 1.55 }}>
+                  No se pudo consultar el explorador de la cadena para esta dirección
+                  {d.cadenaFuentes ? ` (${Object.entries(d.cadenaFuentes).map(([k, v]: [string, any]) => `${k}: ${v?.status === 0 ? 'sin conexión' : `HTTP ${v?.status}`}${v?.motivo ? ` — ${v.motivo}` : ''}`).join('; ')})` : ''}.
+                  Los indicadores de arriba son solo lo que devolvió el proveedor de riesgo.
+                </p>
+              </div>
+            )}
+          </>
+        )}
 
-        {/* ── Indicadores — el ESTABLE, que suele ser lo que de verdad se movió ──
-            address_overview devuelve la moneda nativa de la cadena. Una wallet
-            de TRON que movió cien mil dólares en USDT puede tener 0 TRX, y esa
-            fila de arriba mostraba ese cero como si fuera todo el saldo. */}
+        {/* ── El ESTABLE según MistTrack, cuando lo devuelve ──
+            Se muestra aparte del explorador porque es otra fuente y puede no
+            coincidir; el lector tiene que poder ver las dos. */}
         {tk ? (
           <div className="flex" style={{ border: `1px solid ${T.linea}`, borderTop: 'none', flexWrap: 'wrap' }}>
             <Ind rot={`Saldo ${tk.simbolo ?? 'USDT'}`}><Cifra v={n(tk.saldo)} u={tk.simbolo ?? 'USDT'} /></Ind>
@@ -269,15 +327,15 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
             <Ind rot="Transacciones"><Cifra v={n(tk.txs, 0)} /></Ind>
             <Ind rot="Antigüedad"><Cifra v={tk.primera ? fecha(tk.primera, false) : null} /></Ind>
           </div>
-        ) : (
+        ) : !cad ? (
           <div style={{ border: `1px solid ${T.linea}`, borderTop: 'none', padding: '7px 12px' }}>
             <p style={{ fontSize: 9, color: T.tenue, margin: 0, fontStyle: 'italic' }}>
-              El proveedor no devolvió saldo ni movimientos de stablecoins para esta dirección.
-              Los indicadores de arriba son solo de {d.coin}, la moneda nativa de la red — una
-              dirección puede mover stablecoins y tener {d.coin} en cero.
+              El proveedor de riesgo no devolvió saldo ni movimientos de stablecoins para esta
+              dirección. Los indicadores de arriba son solo de {d.coin}, la moneda nativa de la red —
+              una dirección puede mover stablecoins y tener {d.coin} en cero.
             </p>
           </div>
-        )}
+        ) : null}
 
         {/* Indicadores — riesgo y exposición */}
         <div className="flex" style={{ border: `1px solid ${T.linea}`, borderTop: 'none', flexWrap: 'wrap' }}>

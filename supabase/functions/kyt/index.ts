@@ -478,6 +478,167 @@ const TOKEN_DE_RED: Record<string, string> = {
 }
 const tokenDe = (coin: string): string | null => TOKEN_DE_RED[String(coin ?? '').toUpperCase()] ?? null
 
+// ── El explorador de la cadena: de donde salen los saldos de verdad ──
+//
+// MistTrack es un proveedor de RIESGO, no un explorador. Para la direccion
+// TJU4pJx…V28kk devolvio "sin dato" de saldo y transacciones, y Tronscan
+// mostraba 766.000 USDT, 3.483 TRX y 106 transacciones. Los dos tienen razon:
+// uno sabe quien es la direccion, el otro sabe que tiene. El reporte necesita
+// las dos cosas, asi que se le pregunta a cada uno lo suyo.
+//
+// Es GRATIS y publico. No pasa por el presupuesto de MistTrack.
+//
+// DOS FUENTES PARA TRON, en orden:
+//   1. Tronscan (apilist.tronscanapi.com/api/accountv2): trae mas — conteo de
+//      transacciones, entradas y salidas, y los tokens con precio.
+//   2. TronGrid (api.trongrid.io/v1/accounts): el nodo oficial. Trae saldo TRX,
+//      saldos TRC20 en crudo y fechas. Menos, pero la forma esta documentada y
+//      es estable.
+//
+// EL CRUDO SE GUARDA. Estos nombres de campo NO se pudieron verificar desde el
+// entorno donde se escribio esto (bloquea ambos dominios), asi que cada uno se
+// lee con sus variantes conocidas y la respuesta entera va a `crudo` y al
+// diagnostico de admin. Si un campo no coincide, se ve — no se adivina otra vez.
+const USDT_TRC20 = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'
+const TRONSCAN_KEY = Deno.env.get('TRONSCAN_API_KEY') ?? ''
+const TRONGRID_KEY = Deno.env.get('TRONGRID_API_KEY') ?? ''
+
+async function pedirJson(url: string, headers: Record<string, string>, ms = 12000):
+  Promise<{ ok: boolean; status: number; data: any; error?: string }> {
+  try {
+    const ctrl = new AbortController()
+    const reloj = setTimeout(() => ctrl.abort(), ms)
+    const r = await fetch(url, { headers: { Accept: 'application/json', ...headers }, signal: ctrl.signal })
+    clearTimeout(reloj)
+    const txt = await r.text().catch(() => '')
+    let data: any = null
+    try { data = txt ? JSON.parse(txt) : null } catch { data = txt }
+    return { ok: r.ok, status: r.status, data }
+  } catch (e) {
+    return { ok: false, status: 0, data: null, error: (e as Error)?.message ?? 'red' }
+  }
+}
+
+const num = (v: any): number | null => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v))
+const fechaMs = (v: any): string | null => {
+  const n = num(v)
+  if (n == null || n <= 0) return null
+  // Tronscan y TronGrid dan milisegundos; si alguna vez viene en segundos se
+  // nota porque cae antes del 2001.
+  return new Date(n < 1e12 ? n * 1000 : n).toISOString()
+}
+
+// Lo que se saca del explorador. Lo que no se pudo leer queda en null y la
+// pantalla dice "sin dato": nunca un cero que en realidad es "no se".
+type Cadena = {
+  fuente: 'tronscan' | 'trongrid'
+  saldoNativo: number | null
+  saldoUsdt: number | null
+  valorUsd: number | null
+  transacciones: number | null
+  entradas: number | null
+  salidas: number | null
+  creada: string | null
+  ultimaActividad: string | null
+  tokens: { simbolo: string; cantidad: number | null; usd: number | null }[]
+  consultadoAt: string
+}
+
+function leerTronscan(d: any): Cadena | null {
+  if (!d || typeof d !== 'object') return null
+  // balance viene en SUN (1 TRX = 1.000.000 SUN).
+  const saldoSun = num(d.balance)
+  const tokens: Cadena['tokens'] = []
+  let saldoUsdt: number | null = null
+  let valorUsd: number | null = null
+  const lista = Array.isArray(d.withPriceTokens) ? d.withPriceTokens
+    : Array.isArray(d.tokens) ? d.tokens : []
+  for (const t of lista) {
+    const dec = num(t?.tokenDecimal) ?? 6
+    const bruto = num(t?.balance)
+    const cantidad = bruto == null ? num(t?.amount) : bruto / Math.pow(10, dec)
+    const usd = num(t?.amountInUsd) ?? num(t?.tokenPriceInUsd && cantidad != null ? Number(t.tokenPriceInUsd) * cantidad : null)
+    const simbolo = String(t?.tokenAbbr ?? t?.tokenName ?? '').trim()
+    if (!simbolo) continue
+    tokens.push({ simbolo, cantidad, usd })
+    if (String(t?.tokenId ?? '') === USDT_TRC20 || /^USDT$/i.test(simbolo)) saldoUsdt = cantidad
+    if (usd != null) valorUsd = (valorUsd ?? 0) + usd
+  }
+  const out: Cadena = {
+    fuente: 'tronscan',
+    saldoNativo: saldoSun == null ? null : saldoSun / 1e6,
+    saldoUsdt,
+    valorUsd: valorUsd ?? num(d.totalAssetInUsd) ?? null,
+    transacciones: num(d.totalTransactionCount) ?? num(d.transactions),
+    entradas: num(d.transactions_in),
+    salidas: num(d.transactions_out),
+    creada: fechaMs(d.date_created),
+    ultimaActividad: fechaMs(d.latest_operation_time),
+    tokens: tokens.slice(0, 12),
+    consultadoAt: new Date().toISOString(),
+  }
+  const algo = out.saldoNativo != null || out.saldoUsdt != null || out.transacciones != null || out.creada != null
+  return algo ? out : null
+}
+
+function leerTronGrid(d: any): Cadena | null {
+  const cuenta = Array.isArray(d?.data) ? d.data[0] : (d?.data ?? d)
+  if (!cuenta || typeof cuenta !== 'object') return null
+  const saldoSun = num(cuenta.balance)
+  let saldoUsdt: number | null = null
+  const tokens: Cadena['tokens'] = []
+  // trc20: [{ "<contrato>": "<cantidad en unidades minimas>" }, ...]
+  for (const par of (Array.isArray(cuenta.trc20) ? cuenta.trc20 : [])) {
+    for (const [contrato, cant] of Object.entries(par ?? {})) {
+      if (contrato === USDT_TRC20) {
+        const n = num(cant)
+        saldoUsdt = n == null ? null : n / 1e6
+        tokens.push({ simbolo: 'USDT', cantidad: saldoUsdt, usd: null })
+      }
+    }
+  }
+  const out: Cadena = {
+    fuente: 'trongrid',
+    saldoNativo: saldoSun == null ? null : saldoSun / 1e6,
+    saldoUsdt,
+    valorUsd: null,
+    transacciones: null, entradas: null, salidas: null,
+    creada: fechaMs(cuenta.create_time),
+    // TronGrid lo escribe asi, con la falta de ortografia. Se leen las dos.
+    ultimaActividad: fechaMs(cuenta.latest_opration_time ?? cuenta.latest_operation_time),
+    tokens,
+    consultadoAt: new Date().toISOString(),
+  }
+  const algo = out.saldoNativo != null || out.saldoUsdt != null || out.creada != null
+  return algo ? out : null
+}
+
+// Devuelve lo leido y, aparte, que contesto cada fuente. Lo segundo es lo que
+// permite arreglar un nombre de campo sin volver a adivinar.
+async function consultarExplorador(coin: string, dir: string):
+  Promise<{ cadena: Cadena | null; fuentes: Record<string, Fuente & { crudo?: string }> }> {
+  const fuentes: Record<string, any> = {}
+  if (String(coin).toUpperCase() !== 'TRX') return { cadena: null, fuentes }
+
+  const recorte = (d: any) => { try { return (typeof d === 'string' ? d : JSON.stringify(d)).slice(0, 1500) } catch { return '' } }
+
+  const rTs = await pedirJson(
+    `https://apilist.tronscanapi.com/api/accountv2?address=${encodeURIComponent(dir)}`,
+    TRONSCAN_KEY ? { 'TRON-PRO-API-KEY': TRONSCAN_KEY } : {},
+  )
+  let cadena = rTs.ok ? leerTronscan(rTs.data) : null
+  fuentes.tronscan = { ...fuenteDe(rTs, cadena), crudo: recorte(rTs.data) }
+  if (cadena) return { cadena, fuentes }
+
+  const rTg = await pedirJson(
+    `https://api.trongrid.io/v1/accounts/${encodeURIComponent(dir)}`,
+    TRONGRID_KEY ? { 'TRON-PRO-API-KEY': TRONGRID_KEY } : {},
+  )
+  cadena = rTg.ok ? leerTronGrid(rTg.data) : null
+  fuentes.trongrid = { ...fuenteDe(rTg, cadena), crudo: recorte(rTg.data) }
+  return { cadena, fuentes }
+}
+
 // ── Perfil de la direccion (address_trace) ────────────────────────
 // Campos REALES de la documentacion: use_platform, malicious_event,
 // relation_info y first_address. Antes se leian platform_list y
@@ -590,7 +751,7 @@ async function guardarFicha(base: Record<string, unknown>, extra: Record<string,
     // 42703 = undefined_column. Cualquier otro error se reintenta igual sin las
     // columnas nuevas: perder el veredicto por no poder guardar el camino seria
     // el peor de los dos resultados.
-    if (/hop_dic|address_label|hop_at|token_actividad|42703|does not exist/i.test(`${error.code ?? ''} ${error.message ?? ''}`)) {
+    if (/hop_dic|address_label|hop_at|token_actividad|cadena|42703|does not exist/i.test(`${error.code ?? ''} ${error.message ?? ''}`)) {
       faltanColumnasHop = true
       console.warn('[kyt] falta correr 2026_kyt_hop_dic.sql: se guarda la ficha sin el camino (hop_dic).')
     } else {
@@ -633,11 +794,14 @@ async function evaluarYGuardar(
   // Los enriquecimientos son OPCIONALES: si fallan, el veredicto vale igual.
   // Se piden en paralelo para no encadenar esperas.
   const token = tokenDe(coin)
-  const [eEtq, eRes, ePerfil, eTok] = await Promise.all([
+  const [eEtq, eRes, ePerfil, eTok, explorador] = await Promise.all([
     llamarMT(c, c.rutaEtiquetas, { coin, address: dir }).catch(() => null),
     llamarMT(c, c.rutaResumen, { coin, address: dir }).catch(() => null),
     llamarMT(c, c.rutaPerfil, { coin, address: dir }).catch(() => null),
     token ? llamarMT(c, c.rutaResumen, { coin: token, address: dir }).catch(() => null) : Promise.resolve(null),
+    // El explorador de la cadena, gratis y en paralelo. Es de donde salen los
+    // saldos y el conteo de transacciones que MistTrack no devuelve.
+    consultarExplorador(coin, dir).catch(() => ({ cadena: null, fuentes: {} })),
   ])
   let etiquetas: any[] = []
   if (eEtq?.ok) {
@@ -686,6 +850,7 @@ async function evaluarYGuardar(
   await guardarFicha(base, {
     hop_dic: v.hopDic ?? null, address_label: v.addressLabel, hop_at: ahora,
     token_actividad: tokenActividad,
+    cadena: explorador.cadena, cadena_fuentes: explorador.fuentes,
   })
 
   return {
@@ -693,7 +858,7 @@ async function evaluarYGuardar(
     hallazgos: v.riskDetail, detalle: v.detailList, etiquetas,
     hackingEvent: v.hackingEvent, perfil,
     hopDic: v.hopDic ?? null, addressLabel: v.addressLabel,
-    tokenActividad,
+    tokenActividad, cadena: explorador.cadena, cadenaFuentes: explorador.fuentes,
     reporte: v.reportUrl, actividad, exposicion,
     status: r.status, crudo: r.data ?? null,
   }
@@ -874,6 +1039,7 @@ Deno.serve(async (req) => {
           detalle: ficha.detail_list ?? [],
           actividad: ficha.actividad ?? null,
           tokenActividad: ficha.token_actividad ?? null,
+          cadena: ficha.cadena ?? null,
           exposicion: ficha.exposicion ?? null,
           hopDic: ficha.hop_dic ?? null,
           perfil: ficha.perfil ?? null,
@@ -932,6 +1098,7 @@ Deno.serve(async (req) => {
         puntaje: ev.score, nivel: ev.level,
         hallazgos: ev.hallazgos, etiquetas: ev.etiquetas, detalle: ev.detalle,
         actividad: ev.actividad, tokenActividad: ev.tokenActividad ?? null,
+        cadena: ev.cadena ?? null,
         exposicion: ev.exposicion,
         hopDic: ev.hopDic ?? null,
         hackingEvent: ev.hackingEvent ?? null, perfil: ev.perfil ?? null,
@@ -1146,8 +1313,12 @@ Deno.serve(async (req) => {
       const ficha = await padronBuscar(coin, dir)
       const vigenteHasta = ficha?.consultado_at
         ? new Date(ficha.consultado_at).getTime() + c.diasVigencia * 86400_000 : 0
+      // Una ficha sin `fuentes` es de antes de que se guardara por que quedo
+      // vacia cada seccion. Se regenera una vez: reutilizarla imprime un
+      // reporte que no puede explicar sus propios huecos.
       const completo = !!ficha && ficha.estado === 'finalizado'
         && ficha.contrapartes !== null && ficha.investigacion !== null
+        && ficha.fuentes != null
       const reusar = body.force !== true && completo && Date.now() < vigenteHasta
 
       if (!reusar) {
@@ -1271,6 +1442,9 @@ Deno.serve(async (req) => {
         etiquetaProveedor: f.address_label ?? null,
         actividad: f.actividad ?? null,
         tokenActividad: f.token_actividad ?? null,
+        // Lo que dice el explorador de la cadena. Es la fuente de los saldos.
+        cadena: f.cadena ?? null,
+        cadenaFuentes: f.cadena_fuentes ?? null,
         perfil: f.perfil ?? null,
         contrapartes: f.contrapartes ?? null,
         investigacion: f.investigacion ?? null,
@@ -1619,7 +1793,13 @@ Deno.serve(async (req) => {
           crudo: crudo.slice(0, 1800),
         }
       }
-      return json({ ok: true, coin, address: dir, credencial: !!MT_KEY, fuentes: out })
+      // El explorador va aparte: no es MistTrack, no cuesta, y sus nombres de
+      // campo son justo lo que hay que poder mirar en crudo si algo no cuadra.
+      const expl = await consultarExplorador(coin, dir).catch(() => ({ cadena: null, fuentes: {} }))
+      return json({
+        ok: true, coin, address: dir, credencial: !!MT_KEY, fuentes: out,
+        explorador: { leido: expl.cadena, fuentes: expl.fuentes },
+      })
     }
 
     // ── Padrón completo (admin) ───────────────────────────────────

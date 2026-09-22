@@ -57,6 +57,23 @@ ALTER TABLE public.kyt_registry ADD COLUMN IF NOT EXISTS hop_at timestamptz;
 -- distintos, y sumarlos o pisar uno con el otro seria inventar un numero.
 ALTER TABLE public.kyt_registry ADD COLUMN IF NOT EXISTS token_actividad jsonb;
 
+-- Lo que dice el EXPLORADOR de la cadena (Tronscan / TronGrid): saldo nativo,
+-- saldo USDT, valor en USD, conteo de transacciones, fecha de creacion y ultima
+-- actividad.
+--
+-- MistTrack es un proveedor de riesgo, no un explorador. Para una direccion con
+-- 766.000 USDT y 106 transacciones devolvio "sin dato" en todo. Los dos tienen
+-- razon: uno sabe QUIEN es la direccion, el otro sabe QUE tiene. El reporte
+-- necesita las dos cosas.
+--
+-- Es gratis y publico: no gasta presupuesto de MistTrack.
+ALTER TABLE public.kyt_registry ADD COLUMN IF NOT EXISTS cadena jsonb;
+
+-- Que contesto cada explorador, con un recorte del crudo. Los nombres de campo
+-- no se pudieron verificar desde el entorno donde se escribio el parser: si uno
+-- no coincide, aca se ve — y se corrige sin volver a adivinar.
+ALTER TABLE public.kyt_registry ADD COLUMN IF NOT EXISTS cadena_fuentes jsonb;
+
 -- Para encontrar las fichas a las que todavia no se les pidio el camino.
 CREATE INDEX IF NOT EXISTS kyt_registry_sin_hop_idx
   ON public.kyt_registry (actualizado_at DESC)
@@ -76,7 +93,7 @@ NOTIFY pgrst, 'reload schema';
 --   SELECT column_name
 --     FROM information_schema.columns
 --    WHERE table_schema = 'public' AND table_name = 'kyt_registry'
---      AND column_name IN ('hop_dic','address_label','hop_at','token_actividad')
+--      AND column_name IN ('hop_dic','address_label','hop_at','token_actividad','cadena','cadena_fuentes')
 --    ORDER BY column_name;
---   -- Tienen que salir las cuatro.
+--   -- Tienen que salir las seis.
 -- ============================================================================

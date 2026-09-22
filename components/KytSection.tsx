@@ -18,7 +18,7 @@
 //  pantalla vacía: se opera con él.
 // ══════════════════════════════════════════════════════════════════
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowLeft, Eye, EyeOff, ExternalLink, FileText, Loader2, ShieldQuestion, History, X, ChevronDown, Check } from 'lucide-react';
+import { ArrowLeft, Eye, EyeOff, FileText, Loader2, ShieldQuestion, History, X, ChevronDown, Check } from 'lucide-react';
 import { llamarFuncion } from '../lib/edge';
 import { hallazgosEnEspanol, bandaDeRiesgo } from '../lib/kytTextos';
 import { KytReporte } from './KytReporte';
@@ -581,13 +581,10 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
               >
                 <FileText size={15} strokeWidth={1.5} /> {armando ? 'Armando…' : 'Reporte AML'}
               </button>
-              {res.reporte && (
-                <a href={res.reporte} target="_blank" rel="noopener noreferrer"
-                  className="transition-colors hover:text-[#F4F4F2]"
-                  style={{ fontSize: 12.5, fontWeight: 700, color: C.sub, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                  Ver reporte completo <ExternalLink size={12} />
-                </a>
-              )}
+              {/* El enlace "Ver reporte completo" llevaba al reporte de
+                  MistTrack, afuera de Lincoin. Se quitó: lo que ese reporte
+                  dice tiene que estar en el nuestro. Si algo falta acá, se
+                  agrega acá — no se manda al cliente a otro sitio. */}
             </div>
           </div>
 
