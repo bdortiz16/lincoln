@@ -33,7 +33,6 @@ import {
   FileText, Download,
   Megaphone,
   Plane,
-  ShoppingBag,
   GraduationCap,
   TrendingUp,
   Layers,
@@ -2312,17 +2311,18 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
             <span style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2' }}>Servicios</span>
             <button onClick={() => setActiveView('servicios')} style={{ fontSize: 12, color: '#878E88' }} className="hover:text-[#F4F4F2] transition-colors">Ver más ›</button>
           </div>
-          {/* Fila de accesos rápidos: los 4 servicios como iconos (icono
-              arriba, nombre abajo) en 4 columnas. */}
-          {/* Cinco columnas desde que entró KYT. Los iconos son de 46px, así
-              que cinco caben en el ancho del panel también en móvil. */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 6, marginTop: 10 }}>
+          {/* CUATRO accesos, no cinco.
+              Eran cinco y dos de ellos no llevaban a ningún lado: iconos en
+              gris que ocupaban lugar y no hacían nada. Una fila de accesos
+              rápidos donde casi la mitad no responde deja de leerse como
+              accesos. Quedan los tres que funcionan y uno que viene; el resto
+              vive en "Ver más". */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6, marginTop: 10 }}>
             {([
               { Icon: ArrowLeftRight, t: 'Mesa OTC',    go: () => { setOtcRail(null); setMouvMode('converter'); setActiveView('mouv'); } },
               { Icon: ScanSearch,     t: 'KYT',         go: () => setActiveView('kyt') },
               { Icon: Layers,         t: 'Multiwallet', go: () => setActiveView('walletsGasfree') },
               { Icon: TrendingUp,     t: 'Rendimientos', go: null },
-              { Icon: ShoppingBag,    t: 'Comercio',    go: null },
             ] as const).map(({ Icon, t, go }) => (
               <button key={t} onClick={go ?? undefined} disabled={!go} className="flex flex-col items-center text-center transition-colors hover:bg-white/[0.03]" style={{ gap: 7, padding: '10px 4px', borderRadius: 12, cursor: go ? 'pointer' : 'default', opacity: go ? 1 : 0.5 }}>
                 <div style={{ width: 46, height: 46, borderRadius: 13, background: 'rgba(255,255,255,0.055)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Icon size={19} style={{ color: '#F4F4F2' }} /></div>
