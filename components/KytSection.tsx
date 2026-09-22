@@ -267,7 +267,12 @@ function conLectura(r: any): any {
 }
 
 // ── Círculo del puntaje ───────────────────────────────────────────
-const Puntaje: React.FC<{ n: number | null; cat?: string; size?: number }> = ({ n, cat, size = 44 }) => {
+// El círculo lleva NUESTRA banda (el color) y el puntaje del proveedor (el
+// número). Cuando los dos coinciden, se ve un 85 en rojo y se entiende solo.
+// Cuando la banda subió por un señalamiento directo, un "3" en rojo se lee
+// como un error: el número se va a la línea de texto, con su etiqueta, y el
+// círculo muestra el aviso.
+const Puntaje: React.FC<{ n: number | null; cat?: string; size?: number; elevado?: boolean }> = ({ n, cat, size = 44, elevado }) => {
   const t = tono(cat);
   return (
     <div style={{
@@ -275,7 +280,7 @@ const Puntaje: React.FC<{ n: number | null; cat?: string; size?: number }> = ({ 
       border: `2px solid ${t.b}`, background: t.f, display: 'grid', placeItems: 'center',
     }}>
       <span style={{ fontSize: size * 0.36, fontWeight: 800, color: t.c, fontVariantNumeric: 'tabular-nums' }}>
-        {n == null ? '–' : n}
+        {elevado ? '!' : n == null ? '–' : n}
       </span>
     </div>
   );
@@ -401,10 +406,11 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
   const conCambio = lista.filter(x => x.subio);
   const visibles = filtro === 'cambio' ? conCambio : filtro === 'orden' ? lista.filter(x => !x.subio) : lista;
 
-  const nivelTexto = (cat?: string, n?: number | null) => {
-    const t = cat === 'alto' ? 'Riesgo alto' : cat === 'medio' ? 'Riesgo medio' : cat === 'bajo' ? 'Riesgo bajo' : 'Sin clasificar';
-    return n == null ? t : `${t} · ${n} / 100`;
-  };
+  // "Riesgo alto · 3 / 100" en una sola línea se lee como un error de la
+  // pantalla, no como dos fuentes distintas. Cuando nuestra banda subió por
+  // encima del puntaje del proveedor, el número va aparte y con dueño.
+  const nivelTexto = (cat?: string) =>
+    cat === 'alto' ? 'Riesgo alto' : cat === 'medio' ? 'Riesgo medio' : cat === 'bajo' ? 'Riesgo bajo' : 'Sin clasificar';
 
   const btnFiltro = (k: typeof filtro, t: string) => (
     <button
@@ -512,17 +518,35 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
         <div style={{ background: C.card, border: `1px solid ${C.bdSoft}`, borderRadius: 14, padding: '20px 24px', marginBottom: 30 }}>
           <div className="flex items-start justify-between flex-wrap" style={{ gap: 16, marginBottom: 16 }}>
             <div className="flex items-center" style={{ gap: 14, minWidth: 0 }}>
-              <Puntaje n={res.puntaje ?? null} cat={res.categoria} />
+              <Puntaje n={res.puntaje ?? null} cat={res.categoria} elevado={!!res.lectura?.elevada} />
               <Insignia v={res.coin} size={24} />
               <div style={{ minWidth: 0 }}>
-                <p style={{ fontSize: 15, fontWeight: 700, margin: 0 }}>{nivelTexto(res.categoria, res.puntaje)}</p>
+                <p style={{ fontSize: 15, fontWeight: 700, margin: 0 }}>
+                  {nivelTexto(res.categoria)}
+                  {res.puntaje != null && !res.lectura?.elevada && (
+                    <span style={{ color: C.sub, fontWeight: 600 }}> · {res.puntaje} / 100</span>
+                  )}
+                </p>
+                {res.lectura?.elevada && (
+                  <p style={{ fontSize: 12, color: C.sub, margin: '3px 0 0', lineHeight: 1.45 }}>
+                    Puntaje del proveedor: <b style={{ color: C.text, fontWeight: 700 }}>{res.puntaje ?? '—'} / 100</b>
+                    {' · '}elevado por señalamiento directo
+                  </p>
+                )}
+                {/* Dos líneas cortas en vez de una larga que en el celular se
+                    partía en cuatro renglones. */}
                 <p style={{ fontFamily: MONO, fontSize: 12, color: C.sub, margin: '4px 0 0' }}>
-                  {enmascarar(res.address)} · {nombreRed(res.coin)} · consultada {hora(res.consultadoAt)}
-                  {res.delPadron ? ' · de una consulta reciente' : ''}
+                  {enmascarar(res.address)} · {nombreRed(res.coin)}
+                </p>
+                <p style={{ fontSize: 11.5, color: C.sub, margin: '2px 0 0' }}>
+                  Consultada {hora(res.consultadoAt)}{res.delPadron ? ' · de una consulta reciente' : ''}
                 </p>
               </div>
             </div>
-            <div className="flex items-center" style={{ gap: 14, flexShrink: 0 }}>
+            {/* En el celular los tres botones iban en una sola fila y el
+                tercero —el del reporte— quedaba cortado fuera de la pantalla.
+                Ahora la fila envuelve. */}
+            <div className="flex items-center" style={{ gap: 10, flexWrap: 'wrap', maxWidth: '100%' }}>
               <button
                 onClick={() => { if (!yaGuardada) { setAlias(''); setAliasPara({ coin: res.coin, address: res.address }); } }}
                 disabled={!!yaGuardada}
@@ -550,7 +574,10 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
                   onClick={async () => {
                     setBusy(true);
                     const r = await llamarFuncion('kyt', { action: 'consultar', coin: res.coin, address: res.address, force: true }, 45000).catch(() => null);
-                    if (r) setRes(r);
+                    // Pasa por la misma lectura que la consulta inicial: sin
+                    // esto, re-consultar devolvía la banda del proveedor y una
+                    // dirección señalada volvía a salir en verde.
+                    if (r) setRes(conLectura(r));
                     setBusy(false);
                   }}
                   className="transition-colors hover:text-[#F4F4F2]"
