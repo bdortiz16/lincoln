@@ -19,6 +19,7 @@
 //  es lo peor que puede decir un reporte de cumplimiento: alguien opera con eso.
 // ══════════════════════════════════════════════════════════════════
 import React from 'react';
+import { hallazgosEnEspanol, bandaDeRiesgo } from '../lib/kytTextos';
 
 const FONT = 'Archivo, system-ui, sans-serif';
 const MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace';
@@ -96,14 +97,28 @@ const Vacio: React.FC<{ children: React.ReactNode }> = ({ children }) => (
 );
 
 export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClose }) => {
-  const b = banda(d.categoria);
   const ac = d.actividad;
+  const tk = d.tokenActividad;
   const ex = d.exposicion;
   const tr = d.rutas;
 
-  const motivos = Array.from(new Set([...textos(d.detalle), ...textos(d.hallazgos)]));
+  // Los hallazgos van EN ESPAÑOL. Salían tal cual los manda MistTrack
+  // —"Involved Illicit Activity"— en un documento que se le entrega a un banco
+  // colombiano. Lo que el traductor no reconoce queda en inglés a propósito:
+  // ver lib/kytTextos.ts.
+  const motivos = Array.from(new Set([
+    ...hallazgosEnEspanol(d.detalle), ...hallazgosEnEspanol(d.hallazgos),
+  ]));
   if (d.hackingEvent) motivos.unshift(`Incidente: ${d.hackingEvent}`);
   const senalada = motivos.length > 0 || d.categoria === 'alto' || d.categoria === 'medio';
+
+  // LA BANDA ES NUESTRA LECTURA, NO SU PUNTAJE.
+  // MistTrack le puso 3/100 a una dirección cuyo propio detail_list dice
+  // "Involved Illicit Activity", y nosotros pintábamos ese 3 de verde con
+  // "está señalada directamente" escrito al lado. Una dirección señalada no
+  // sale en verde. Su puntaje se sigue mostrando tal cual.
+  const lectura = bandaDeRiesgo(d.categoria, motivos);
+  const b = banda(lectura.categoria);
 
   const directos: any[] = (tr?.rutas ?? []).filter((r: any) => r.saltos === 1);
   const indirectos: any[] = (tr?.rutas ?? []).filter((r: any) => r.saltos > 1);
@@ -172,14 +187,36 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
           </div>
         </div>
 
-        {/* Indicadores — actividad */}
+        {/* Indicadores — actividad de la moneda NATIVA de la red */}
         <div className="flex" style={{ border: `1px solid ${T.linea}`, borderTop: 'none', flexWrap: 'wrap' }}>
-          <Ind rot="Saldo"><Cifra v={n(ac?.saldo)} u={d.coin} /></Ind>
-          <Ind rot="Total recibido"><Cifra v={n(ac?.recibido)} /></Ind>
-          <Ind rot="Total enviado"><Cifra v={n(ac?.enviado)} /></Ind>
+          <Ind rot={`Saldo ${d.coin}`}><Cifra v={n(ac?.saldo)} u={d.coin} /></Ind>
+          <Ind rot={`Recibido ${d.coin}`}><Cifra v={n(ac?.recibido)} /></Ind>
+          <Ind rot={`Enviado ${d.coin}`}><Cifra v={n(ac?.enviado)} /></Ind>
           <Ind rot="Transacciones"><Cifra v={n(ac?.txs, 0)} /></Ind>
           <Ind rot="Antigüedad"><Cifra v={ac?.primera ? fecha(ac.primera, false) : null} /></Ind>
         </div>
+
+        {/* ── Indicadores — el ESTABLE, que suele ser lo que de verdad se movió ──
+            address_overview devuelve la moneda nativa de la cadena. Una wallet
+            de TRON que movió cien mil dólares en USDT puede tener 0 TRX, y esa
+            fila de arriba mostraba ese cero como si fuera todo el saldo. */}
+        {tk ? (
+          <div className="flex" style={{ border: `1px solid ${T.linea}`, borderTop: 'none', flexWrap: 'wrap' }}>
+            <Ind rot={`Saldo ${tk.simbolo ?? 'USDT'}`}><Cifra v={n(tk.saldo)} u={tk.simbolo ?? 'USDT'} /></Ind>
+            <Ind rot={`Recibido ${tk.simbolo ?? 'USDT'}`}><Cifra v={n(tk.recibido)} /></Ind>
+            <Ind rot={`Enviado ${tk.simbolo ?? 'USDT'}`}><Cifra v={n(tk.enviado)} /></Ind>
+            <Ind rot="Transacciones"><Cifra v={n(tk.txs, 0)} /></Ind>
+            <Ind rot="Antigüedad"><Cifra v={tk.primera ? fecha(tk.primera, false) : null} /></Ind>
+          </div>
+        ) : (
+          <div style={{ border: `1px solid ${T.linea}`, borderTop: 'none', padding: '7px 12px' }}>
+            <p style={{ fontSize: 9, color: T.tenue, margin: 0, fontStyle: 'italic' }}>
+              El proveedor no devolvió saldo ni movimientos de stablecoins para esta dirección.
+              Los indicadores de arriba son solo de {d.coin}, la moneda nativa de la red — una
+              dirección puede mover stablecoins y tener {d.coin} en cero.
+            </p>
+          </div>
+        )}
 
         {/* Indicadores — riesgo y exposición */}
         <div className="flex" style={{ border: `1px solid ${T.linea}`, borderTop: 'none', flexWrap: 'wrap' }}>
@@ -190,7 +227,7 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
             <div style={{ background: b.bg, padding: '10px 8px', textAlign: 'center' }}>
               <p style={{ fontSize: 15, fontWeight: 800, color: b.c, margin: 0 }}>{b.t}</p>
               <p style={{ fontSize: 9, color: b.c, margin: '2px 0 0', opacity: 0.92 }}>
-                {d.puntaje == null ? 'sin puntaje' : `Puntaje: ${d.puntaje}`}
+                {d.puntaje == null ? 'sin puntaje' : `Puntaje del proveedor: ${d.puntaje}`}
                 {senalada ? ' · SEÑALADA' : ''}
               </p>
             </div>
@@ -210,6 +247,19 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
           <p style={{ fontSize: 10.5, margin: '0 0 7px', lineHeight: 1.65, color: T.rojo, fontWeight: 700 }}>
             Esta dirección está señalada directamente: {motivos.slice(0, 6).join(' · ')}. El hallazgo
             recae sobre la dirección analizada, no sobre su entorno.
+          </p>
+        )}
+        {/* POR QUÉ LA BANDA NO COINCIDE CON EL PUNTAJE.
+            Sin esta explicación, un lector ve "RIESGO ALTO" arriba de un
+            "Puntaje: 3" y no sabe a cuál de los dos creerle — que es peor que
+            cualquiera de los dos solo. */}
+        {lectura.elevada && (
+          <p style={{ fontSize: 10, margin: '0 0 7px', lineHeight: 1.6, color: T.suave,
+                      borderLeft: `3px solid ${T.ambar}`, paddingLeft: 9 }}>
+            <b style={{ color: T.tinta }}>Sobre el puntaje:</b> {lectura.motivo} Por eso el nivel de
+            riesgo de este reporte es <b style={{ color: T.tinta }}>{b.t.replace('RIESGO ', '').toLowerCase()}</b>{' '}
+            y no el que sugiere el puntaje{d.puntaje != null ? ` de ${d.puntaje}` : ''}. El número del
+            proveedor se muestra sin alterar.
           </p>
         )}
         <p style={{ fontSize: 10.5, margin: 0, lineHeight: 1.7 }}>
@@ -304,27 +354,75 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
           // muestra lo que hay. Dejar la sección vacía teniendo el dato sería
           // esconder justamente lo que se vino a buscar.
           <>
+            {/* Acá faltaban LAS DIRECCIONES, que es lo que se vino a buscar:
+                la tabla nombraba la entidad ("htx", "nobitex.ir") y la
+                distancia, pero no decía en qué wallet estaba ni por dónde se
+                llegaba. Con hop_dic el proveedor manda el camino entero, así
+                que cada fila puede mostrar la dirección señalada y los
+                intermediarios reales. Cuando no lo manda, se dice. */}
             <p style={{ fontSize: 10.5, margin: '0 0 7px', lineHeight: 1.65 }}>
-              No se reconstruyeron los intermediarios, pero el análisis de riesgo sí reporta estos
-              vínculos con su distancia y volumen:
+              {ex.items.some((i: any) => Array.isArray(i.camino) && i.camino.length)
+                ? <>El análisis de riesgo reporta estos vínculos con su camino, distancia y volumen:</>
+                : <>El análisis de riesgo reporta estos vínculos con su distancia y volumen. El proveedor
+                   no devolvió las direcciones del camino para esta consulta, así que las columnas de
+                   wallets van vacías:</>}
             </p>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead><tr>
-                <th style={th}>ENTIDAD SEÑALADA</th><th style={th}>TIPO</th>
+                <th style={th}>ENTIDAD SEÑALADA</th><th style={th}>WALLET SEÑALADA</th>
+                <th style={th}>PASA POR</th><th style={th}>TIPO</th>
                 <th style={th}>EXPOSICIÓN</th><th style={th}>DISTANCIA</th><th style={th}>VOLUMEN</th>
               </tr></thead>
               <tbody>
-                {ex.items.map((it: any, i: number) => (
-                  <tr key={i}>
-                    <td style={{ ...td, color: T.rojo, fontWeight: 700 }}>{it.entidad ?? '—'}</td>
-                    <td style={td}>{it.tipoEs ?? '—'}</td>
-                    <td style={td}>{it.exposicion === 'direct' ? 'Directa' : it.exposicion === 'indirect' ? 'Indirecta' : '—'}</td>
-                    <td style={td}>{it.saltos != null ? `${it.saltos} saltos` : '—'}</td>
-                    <td style={td}>{n(it.volumen) ?? '—'}</td>
-                  </tr>
-                ))}
+                {ex.items.map((it: any, i: number) => {
+                  const camino: any[] = Array.isArray(it.camino) ? it.camino : [];
+                  // Salto 1 = la entidad señalada. Último salto = la analizada.
+                  const wallets: string[] = camino[0]?.direcciones ?? [];
+                  const medios: string[] = camino.slice(1, -1).flatMap((nv: any) => nv.direcciones ?? []);
+                  return (
+                    <tr key={i}>
+                      <td style={{ ...td, color: T.rojo, fontWeight: 700 }}>{it.entidad ?? '—'}</td>
+                      <td style={{ ...td, fontFamily: MONO, fontSize: 8.5, color: T.rojo }}>
+                        {wallets.length
+                          ? <>{corta(wallets[0])}{wallets.length > 1 ? ` +${wallets.length - 1}` : ''}</>
+                          : '—'}
+                      </td>
+                      <td style={{ ...td, fontFamily: MONO, fontSize: 8.5 }}>
+                        {medios.length
+                          ? <>{medios.slice(0, 2).map(corta).join(' → ')}{medios.length > 2 ? ` +${medios.length - 2}` : ''}</>
+                          : (camino.length ? 'directo' : '—')}
+                      </td>
+                      <td style={td}>{it.tipoEs ?? '—'}</td>
+                      <td style={td}>{it.exposicion === 'direct' ? 'Directa' : it.exposicion === 'indirect' ? 'Indirecta' : '—'}</td>
+                      <td style={td}>{it.saltos != null ? `${it.saltos} saltos` : '—'}</td>
+                      <td style={td}>
+                        {n(it.volumen) ?? '—'}
+                        {it.pct != null ? <><br /><span style={{ fontSize: 8, color: T.suave }}>{it.pct} % del volumen</span></> : null}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
+            {/* Las direcciones completas, para poder copiarlas y pegarlas en un
+                explorador. Cortadas no sirven para verificar nada. */}
+            {(() => {
+              const todas = Array.from(new Set(
+                ex.items.flatMap((it: any) => (Array.isArray(it.camino) ? it.camino : [])
+                  .flatMap((nv: any) => nv.direcciones ?? [])),
+              )) as string[];
+              if (!todas.length) return null;
+              return (
+                <div style={{ marginTop: 8, border: `1px solid ${T.linea}`, padding: '8px 10px', background: T.fondo }}>
+                  <p style={{ fontSize: 8.5, fontWeight: 700, color: T.suave, margin: '0 0 5px' }}>
+                    DIRECCIONES DEL CAMINO, COMPLETAS
+                  </p>
+                  {todas.slice(0, 20).map((a: string, i: number) => (
+                    <p key={i} style={{ fontFamily: MONO, fontSize: 8.5, margin: '2px 0', wordBreak: 'break-all', color: T.tinta }}>{a}</p>
+                  ))}
+                </div>
+              );
+            })()}
           </>
         ) : <Vacio>No se identificaron rutas indirectas hacia entidades señaladas en la información disponible.</Vacio>}
 

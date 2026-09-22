@@ -46,6 +46,17 @@ ALTER TABLE public.kyt_registry ADD COLUMN IF NOT EXISTS address_label text;
 -- Cuando se le pregunto por el camino. NULL = nunca. Ver arriba.
 ALTER TABLE public.kyt_registry ADD COLUMN IF NOT EXISTS hop_at timestamptz;
 
+-- El saldo y los movimientos del ESTABLE de la red, aparte del nativo.
+--
+-- address_overview devuelve la moneda nativa. Una wallet de TRON que movio cien
+-- mil dolares en USDT puede tener 0 TRX — y el reporte mostraba ese 0 como si
+-- fuera todo el saldo, al lado de 4.954 USD de exposicion. Las dos cosas no
+-- podian ser ciertas a la vez.
+--
+-- Va en su propia columna y no mezclado con `actividad`: son dos activos
+-- distintos, y sumarlos o pisar uno con el otro seria inventar un numero.
+ALTER TABLE public.kyt_registry ADD COLUMN IF NOT EXISTS token_actividad jsonb;
+
 -- Para encontrar las fichas a las que todavia no se les pidio el camino.
 CREATE INDEX IF NOT EXISTS kyt_registry_sin_hop_idx
   ON public.kyt_registry (actualizado_at DESC)
@@ -65,7 +76,7 @@ NOTIFY pgrst, 'reload schema';
 --   SELECT column_name
 --     FROM information_schema.columns
 --    WHERE table_schema = 'public' AND table_name = 'kyt_registry'
---      AND column_name IN ('hop_dic','address_label','hop_at')
+--      AND column_name IN ('hop_dic','address_label','hop_at','token_actividad')
 --    ORDER BY column_name;
---   -- Tienen que salir las tres.
+--   -- Tienen que salir las cuatro.
 -- ============================================================================

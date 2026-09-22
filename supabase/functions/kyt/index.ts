@@ -422,6 +422,18 @@ function formatoValido(coin: string, dir: string): boolean {
 }
 
 // ── Actividad de la dirección (address_overview) ──────────────────
+//
+// UN CERO NO ES UN SALDO SI NO HUBO NINGUNA TRANSACCION.
+//   El reporte mostraba "0,00 TRX · 0 transacciones · sin dato de antigüedad"
+//   para una dirección con 4.954 USD de exposición indirecta. Las dos cosas no
+//   pueden ser ciertas a la vez: si nunca se movió nada, no hay por dónde
+//   haberse expuesto. Ese cero no era un saldo, era un overview vacío pintado
+//   como si fuera un dato — justo lo que la cabecera de este archivo promete no
+//   hacer.
+//
+//   Ahora, si TODO viene en cero y ademas no hay ni primera ni ultima
+//   transaccion, se devuelve null: la tarjeta dice "sin dato", que es la
+//   verdad.
 function leerActividad(bruto: any): Record<string, any> | null {
   const d = desenvolver(bruto)
   if (!d || typeof d !== 'object') return null
@@ -434,11 +446,37 @@ function leerActividad(bruto: any): Record<string, any> | null {
     enviado: n(d.total_spent ?? d.totalSpent ?? d.total_sent),
     saldo: n(d.balance),
   }
+  const sinFechas = !out.primera && !out.ultima
+  const todoCero = [out.txs, out.recibido, out.enviado, out.saldo]
+    .every(v => v === null || v === 0)
+  if (sinFechas && todoCero) return null
   // Si no trajo NADA utilizable, es null y la tarjeta dirá que no hay dato.
   // Devolver un objeto de nulos haría que la pantalla muestre guiones como si
   // fueran datos.
   return Object.values(out).some(v => v !== null) ? out : null
 }
+
+// ── El saldo que de verdad importa: el del token ──────────────────
+// address_overview devuelve la moneda NATIVA de la cadena. Una wallet de TRON
+// que movió cien mil dólares en USDT puede tener 0 TRX, y el reporte mostraba
+// ese 0 como si fuera todo el saldo.
+//
+// MistTrack trata cada token como una "coin" propia, con su propio código. Se
+// consulta el estable de la red ademas del nativo.
+//
+// CUESTA PLATA: cada address_overview son USD 0,50 segun su tarifario. Por eso
+// es UNA consulta extra, la del estable principal de esa red, y no un barrido
+// de todos los tokens.
+const TOKEN_DE_RED: Record<string, string> = {
+  TRX: 'USDT-TRC20',
+  ETH: 'USDT-ERC20',
+  BNB: 'USDT-BEP20',
+  MATIC: 'USDT-Polygon',
+  ARB: 'USDT-Arbitrum',
+  OP: 'USDT-Optimism',
+  AVAX: 'USDT-Avalanche',
+}
+const tokenDe = (coin: string): string | null => TOKEN_DE_RED[String(coin ?? '').toUpperCase()] ?? null
 
 // ── Perfil de la direccion (address_trace) ────────────────────────
 // Campos REALES de la documentacion: use_platform, malicious_event,
@@ -552,7 +590,7 @@ async function guardarFicha(base: Record<string, unknown>, extra: Record<string,
     // 42703 = undefined_column. Cualquier otro error se reintenta igual sin las
     // columnas nuevas: perder el veredicto por no poder guardar el camino seria
     // el peor de los dos resultados.
-    if (/hop_dic|address_label|hop_at|42703|does not exist/i.test(`${error.code ?? ''} ${error.message ?? ''}`)) {
+    if (/hop_dic|address_label|hop_at|token_actividad|42703|does not exist/i.test(`${error.code ?? ''} ${error.message ?? ''}`)) {
       faltanColumnasHop = true
       console.warn('[kyt] falta correr 2026_kyt_hop_dic.sql: se guarda la ficha sin el camino (hop_dic).')
     } else {
@@ -592,12 +630,14 @@ async function evaluarYGuardar(
     return { hay: false, score: null, level: null, hallazgos: [], detalle: [], etiquetas: [], reporte: null, actividad: null, exposicion: null, status: r.status, crudo: r.data ?? r.error ?? null, error: r.error }
   }
 
-  // Los tres enriquecimientos son OPCIONALES: si fallan, el veredicto vale
-  // igual. Se piden en paralelo para no encadenar tres esperas.
-  const [eEtq, eRes, ePerfil] = await Promise.all([
+  // Los enriquecimientos son OPCIONALES: si fallan, el veredicto vale igual.
+  // Se piden en paralelo para no encadenar esperas.
+  const token = tokenDe(coin)
+  const [eEtq, eRes, ePerfil, eTok] = await Promise.all([
     llamarMT(c, c.rutaEtiquetas, { coin, address: dir }).catch(() => null),
     llamarMT(c, c.rutaResumen, { coin, address: dir }).catch(() => null),
     llamarMT(c, c.rutaPerfil, { coin, address: dir }).catch(() => null),
+    token ? llamarMT(c, c.rutaResumen, { coin: token, address: dir }).catch(() => null) : Promise.resolve(null),
   ])
   let etiquetas: any[] = []
   if (eEtq?.ok) {
@@ -611,6 +651,10 @@ async function evaluarYGuardar(
     etiquetas = [v.addressLabel, ...etiquetas]
   }
   const actividad = eRes?.ok ? leerActividad(eRes.data) : null
+  // El saldo y los movimientos del estable de la red. Va aparte del nativo a
+  // propósito: son dos activos distintos y sumarlos o pisarlos sería mentir.
+  const actToken = eTok?.ok ? leerActividad(eTok.data) : null
+  const tokenActividad = actToken ? { ...actToken, simbolo: 'USDT', coin: token } : null
   // De risk_detail y hop_dic, que ya vinieron con el veredicto.
   const exposicion = exposicionDe(v.riskDetail, v.hopDic)
   // Perfil: plataformas con las que interactuo y eventos maliciosos asociados.
@@ -639,13 +683,17 @@ async function evaluarYGuardar(
   // — la parte que si funcionaba — hasta que alguien se acordara de la
   // migracion. Con este reintento, mientras falte el SQL se guarda todo menos
   // el camino, y en el log queda dicho por que.
-  await guardarFicha(base, { hop_dic: v.hopDic ?? null, address_label: v.addressLabel, hop_at: ahora })
+  await guardarFicha(base, {
+    hop_dic: v.hopDic ?? null, address_label: v.addressLabel, hop_at: ahora,
+    token_actividad: tokenActividad,
+  })
 
   return {
     hay: true, score: v.score, level: v.level,
     hallazgos: v.riskDetail, detalle: v.detailList, etiquetas,
     hackingEvent: v.hackingEvent, perfil,
     hopDic: v.hopDic ?? null, addressLabel: v.addressLabel,
+    tokenActividad,
     reporte: v.reportUrl, actividad, exposicion,
     status: r.status, crudo: r.data ?? null,
   }
@@ -825,6 +873,7 @@ Deno.serve(async (req) => {
           etiquetas: ficha.labels ?? [],
           detalle: ficha.detail_list ?? [],
           actividad: ficha.actividad ?? null,
+          tokenActividad: ficha.token_actividad ?? null,
           exposicion: ficha.exposicion ?? null,
           hopDic: ficha.hop_dic ?? null,
           perfil: ficha.perfil ?? null,
@@ -882,7 +931,8 @@ Deno.serve(async (req) => {
         categoria: clasificar(c, ev.score, ev.level),
         puntaje: ev.score, nivel: ev.level,
         hallazgos: ev.hallazgos, etiquetas: ev.etiquetas, detalle: ev.detalle,
-        actividad: ev.actividad, exposicion: ev.exposicion,
+        actividad: ev.actividad, tokenActividad: ev.tokenActividad ?? null,
+        exposicion: ev.exposicion,
         hopDic: ev.hopDic ?? null,
         hackingEvent: ev.hackingEvent ?? null, perfil: ev.perfil ?? null,
         reporte: ev.reporte,
@@ -1220,6 +1270,7 @@ Deno.serve(async (req) => {
         hopDic: f.hop_dic ?? null,
         etiquetaProveedor: f.address_label ?? null,
         actividad: f.actividad ?? null,
+        tokenActividad: f.token_actividad ?? null,
         perfil: f.perfil ?? null,
         contrapartes: f.contrapartes ?? null,
         investigacion: f.investigacion ?? null,

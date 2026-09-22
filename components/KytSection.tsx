@@ -20,6 +20,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, Eye, EyeOff, ExternalLink, FileText, Loader2, ShieldQuestion, History, X, ChevronDown, Check } from 'lucide-react';
 import { llamarFuncion } from '../lib/edge';
+import { hallazgosEnEspanol, bandaDeRiesgo } from '../lib/kytTextos';
 import { KytReporte } from './KytReporte';
 
 const FONT = 'Archivo, system-ui, sans-serif';
@@ -241,12 +242,29 @@ const hace = (t?: string | null) => {
   return `hace ${Math.floor(h / 24)} d`;
 };
 
-const textos = (arr: any[] | undefined, max = 30): string[] =>
-  (Array.isArray(arr) ? arr : [])
-    .map(x => typeof x === 'string' ? x : (x?.label ?? x?.name ?? x?.type ?? x?.title ?? ''))
-    .map(s => String(s).trim())
-    .filter(Boolean)
-    .slice(0, max);
+// Los hallazgos del proveedor, EN ESPAÑOL. Salían tal cual llegan de MistTrack
+// —"Involved Illicit Activity"— en una pantalla en castellano. Lo que el
+// traductor no reconoce queda en inglés a propósito: ver lib/kytTextos.ts.
+const textos = (arr: any[] | undefined, max = 30): string[] => hallazgosEnEspanol(arr, max);
+
+// ── NUESTRA lectura del riesgo, aplicada apenas llega el resultado ──
+//
+// MistTrack le puso 3/100 a una dirección cuyo propio detail_list dice
+// "Involved Illicit Activity". La pantalla pintaba ese 3 de verde y arriba
+// escribía "está señalada directamente": dos cosas ciertas que, juntas, se leen
+// como tranquilizadoras.
+//
+// Se corrige acá, una sola vez, para que la pantalla y el reporte no puedan
+// discrepar. El puntaje del proveedor NO se toca — se muestra su número tal
+// cual y se explica por qué la banda no coincide.
+function conLectura(r: any): any {
+  if (!r?.ok) return r;
+  const motivos = Array.from(new Set([
+    ...hallazgosEnEspanol(r.detalle), ...hallazgosEnEspanol(r.hallazgos),
+  ]));
+  const l = bandaDeRiesgo(r.categoria, motivos);
+  return { ...r, categoria: l.categoria, categoriaProveedor: r.categoria, lectura: l };
+}
 
 // ── Círculo del puntaje ───────────────────────────────────────────
 const Puntaje: React.FC<{ n: number | null; cat?: string; size?: number }> = ({ n, cat, size = 44 }) => {
@@ -348,7 +366,7 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
     setBusy(true); setRes(null); setRutas(null);
     try {
       const r = await llamarFuncion('kyt', { action: 'consultar', coin, address: a }, 45000);
-      setRes(r ?? { ok: false, error: 'sin_respuesta', mensaje: 'No obtuvimos respuesta. Probá de nuevo.' });
+      setRes(r ? conLectura(r) : { ok: false, error: 'sin_respuesta', mensaje: 'No obtuvimos respuesta. Probá de nuevo.' });
     } catch {
       setRes({ ok: false, error: 'red', mensaje: 'No obtuvimos respuesta. Probá de nuevo.' });
     }
@@ -604,6 +622,18 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
                       No se trata de estar cerca de alguien señalado: el señalamiento es sobre esta
                       dirección. Operar con ella expone los fondos a congelamiento.
                     </p>
+                    {/* Por qué la banda no coincide con el puntaje. Sin esto,
+                        ver "riesgo alto" sobre un "3/100" deja al lector sin
+                        saber a cuál de los dos creerle. */}
+                    {res.lectura?.elevada && (
+                      <p style={{ fontSize: 11.5, color: C.sub, margin: '9px 0 0', lineHeight: 1.55,
+                                  borderTop: `1px solid ${C.bdSoft}`, paddingTop: 9 }}>
+                        <b style={{ color: C.text, fontWeight: 700 }}>Sobre el puntaje de {res.puntaje ?? '—'}:</b>{' '}
+                        {res.lectura.motivo} Por eso acá figura como riesgo{' '}
+                        <b style={{ color: C.text, fontWeight: 700 }}>{res.categoria}</b>. El número del
+                        proveedor se muestra sin alterar.
+                      </p>
+                    )}
                   </div>
                 )}
 
