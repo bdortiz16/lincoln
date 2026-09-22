@@ -1357,8 +1357,32 @@ Deno.serve(async (req) => {
         }).eq('coin', coin).eq('address_lower', dir.toLowerCase())
       }
 
-      const f = await padronBuscar(coin, dir)
+      let f = await padronBuscar(coin, dir)
       if (!f) return json({ ok: false, error: 'sin_resultado' })
+
+      // El explorador de la cadena se refresca al armar el reporte si falta o
+      // si tiene mas de seis horas. Es GRATIS —no pasa por MistTrack— y los
+      // saldos cambian: un reporte con el saldo de la semana pasada es peor
+      // que uno sin saldo, porque no avisa que es viejo. Una ficha reutilizada
+      // de antes de que existiera esto salia con "no se pudo consultar el
+      // explorador", que no era verdad: nunca se habia intentado.
+      const cadenaVieja = !f.cadena
+        || !f.cadena?.consultadoAt
+        || Date.now() - new Date(f.cadena.consultadoAt).getTime() > 6 * 3600_000
+      if (cadenaVieja) {
+        const expl = await consultarExplorador(coin, dir).catch(() => ({ cadena: null, fuentes: {} }))
+        if (expl.cadena || Object.keys(expl.fuentes).length) {
+          const { error: eC } = await db.from('kyt_registry')
+            .update({ cadena: expl.cadena, cadena_fuentes: expl.fuentes })
+            .eq('coin', coin).eq('address_lower', dir.toLowerCase())
+          if (eC && /cadena|42703|does not exist/i.test(`${eC.code ?? ''} ${eC.message ?? ''}`)) {
+            faltanColumnasHop = true
+            console.warn('[kyt] falta correr 2026_kyt_hop_dic.sql: el explorador no se guarda, se consulta en cada reporte.')
+          }
+          // Aunque no se haya podido guardar, este reporte sale con el dato.
+          f = { ...f, cadena: expl.cadena, cadena_fuentes: expl.fuentes }
+        }
+      }
 
       // Las rutas con intermediario van en el reporte, asi que se rastrean acá
       // mismo. Es caro -- cada contraparte expandida es una consulta pagada --

@@ -215,7 +215,7 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
       <div id="lincoin-reporte" style={{ fontFamily: FONT, color: T.tinta, background: '#FFFFFF', maxWidth: 860, margin: '20px auto', padding: '30px 34px 40px' }}>
 
         {/* ── Cabecera ── */}
-        <div className="flex items-start justify-between" style={{ gap: 16, border: `1px solid ${T.linea}`, padding: '14px 16px' }}>
+        <div className="flex items-start justify-between flex-wrap" style={{ gap: 16, border: `1px solid ${T.linea}`, padding: '14px 16px' }}>
           <div className="flex items-start" style={{ gap: 16 }}>
             <div style={{ paddingRight: 16, borderRight: `1px solid ${T.linea}` }}>
               {/* El wordmark exacto: Archivo 800 y el punto verde. */}

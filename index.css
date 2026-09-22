@@ -232,6 +232,22 @@ button[class~="bg-[#4ADE80]"] {
   .lincoin-code-wait { animation: none !important; }
 }
 
+/* ── El reporte AML en el celular ─────────────────────────────────────────
+   Está pensado para hoja A4: tablas de seis y siete columnas con cabeceras
+   que no se parten. En un teléfono eso desborda hacia la derecha, el
+   navegador desplaza la página entera para mostrarlo, y se llevan consigo
+   los botones de arriba: el de cerrar quedaba fuera de la pantalla.
+
+   La hoja pasa a ocupar el ancho del teléfono y cada tabla se desplaza sola,
+   con el dedo, sin arrastrar el resto. Nada de esto toca la impresión: el
+   bloque de @media print de abajo manda ahí. */
+#lincoin-reporte { box-sizing: border-box; width: 100%; }
+@media screen and (max-width: 720px) {
+  #lincoin-reporte { margin: 0 !important; padding: 18px 14px 28px !important; }
+  #lincoin-reporte table { display: block; max-width: 100%; overflow-x: auto;
+    -webkit-overflow-scrolling: touch; }
+}
+
 /* ── Impresión del reporte AML ────────────────────────────────────────────
    Al imprimir se oculta TODA la app y queda solo la hoja del reporte. Sin
    esto el navegador imprime el dashboard entero de fondo. */
