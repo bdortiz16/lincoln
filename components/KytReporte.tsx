@@ -96,6 +96,36 @@ const Vacio: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <p style={{ fontSize: 10, color: T.tenue, margin: 0, fontStyle: 'italic', lineHeight: 1.6 }}>{children}</p>
 );
 
+// ── POR QUÉ ESTÁ VACÍA ────────────────────────────────────────────
+// El reporte decía "No se pudo obtener la investigación de transacciones" y
+// ahí terminaba. Esa frase tapa por igual tres cosas muy distintas: que el plan
+// contratado no incluye ese endpoint, que la ruta cambió, y que el proveedor
+// contestó bien pero sin datos. Quien lee el reporte no puede hacer nada con
+// "no se pudo" — con "HTTP 403: plan does not include this endpoint" sí.
+//
+// El objeto `fuentes` se venía guardando con exactamente ese dato y no se
+// mostraba en ningún lado. Es el mismo error que nos costó medio día con el
+// proveedor de rieles: dos horas de hipótesis valen menos que una pantalla que
+// muestre la respuesta cruda.
+const PorQueVacio: React.FC<{ f?: any; que: string }> = ({ f, que }) => {
+  if (!f) return <Vacio>No se consultó {que} en este reporte.</Vacio>;
+  const dicho = String(f.motivo ?? '').trim();
+  return (
+    <div style={{ borderLeft: `3px solid ${T.linea}`, paddingLeft: 9 }}>
+      <p style={{ fontSize: 10, color: T.suave, margin: 0, lineHeight: 1.6 }}>
+        No hay datos de {que}.{' '}
+        {f.status === 0 ? 'No se pudo llegar al proveedor (fallo de red o tiempo agotado).'
+          : f.ok === false ? <>El proveedor respondió <b style={{ color: T.tinta }}>HTTP {f.status}</b>.</>
+          : <>El proveedor respondió <b style={{ color: T.tinta }}>HTTP {f.status}</b> pero sin información utilizable.</>}
+        {dicho ? <> Dijo textualmente: <i style={{ color: T.tinta }}>«{dicho}»</i>.</> : null}
+      </p>
+      <p style={{ fontSize: 9, color: T.tenue, margin: '4px 0 0', lineHeight: 1.55, fontStyle: 'italic' }}>
+        Ausencia de información, no ausencia de riesgo.
+      </p>
+    </div>
+  );
+};
+
 export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClose }) => {
   const ac = d.actividad;
   const tk = d.tokenActividad;
@@ -123,6 +153,37 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
   const directos: any[] = (tr?.rutas ?? []).filter((r: any) => r.saltos === 1);
   const indirectos: any[] = (tr?.rutas ?? []).filter((r: any) => r.saltos > 1);
   const ranking: any[] = tr?.ranking ?? [];
+
+  // Las fuentes que el reporte pide, paga y guarda — y hasta ahora no dibujaba.
+  const inv = d.investigacion;   // transactions_investigation, USD 1,00
+  const cp = d.contrapartes;     // address_counterparty,        USD 0,50
+  const comp = d.comportamiento; // address_action,              USD 0,50
+  const perfil = d.perfil;       // address_trace,               USD 0,50
+  const fu = d.fuentes;          // por qué quedó vacía cada una
+
+  // Las contrapartes reales, con dirección y monto, sin necesidad de rastrear.
+  // Las señaladas primero; después por monto. Es el orden en que se mira.
+  const contactos: any[] = [
+    ...(inv?.entradas ?? []).map((x: any) => ({ ...x, entrante: true })),
+    ...(inv?.salidas ?? []).map((x: any) => ({ ...x, entrante: false })),
+  ]
+    .filter((x: any) => x.direccion)
+    .map((x: any) => ({ ...x, senalada: x.tipoNum === 2, txs: x.hashes?.length ?? null }))
+    .sort((a: any, b: any) =>
+      Number(b.senalada) - Number(a.senalada) || (b.monto ?? 0) - (a.monto ?? 0));
+
+  const senaladasEntrantes = contactos.filter(x => x.senalada && x.entrante);
+  const senaladasSalientes = contactos.filter(x => x.senalada && !x.entrante);
+  const montoEntrante = contactos.filter(x => x.entrante).reduce((t, x) => t + Number(x.monto ?? 0), 0);
+  const montoSaliente = contactos.filter(x => !x.entrante).reduce((t, x) => t + Number(x.monto ?? 0), 0);
+
+  const listas = (o: any): [string, string[]][] =>
+    Object.entries(o ?? {}).filter(([, v]) => Array.isArray(v) && v.length) as [string, string[]][];
+  const ROT: Record<string, string> = {
+    exchange: 'Exchanges', dex: 'DEX', mixer: 'Mixers', nft: 'NFT',
+    phishing: 'Phishing', ransom: 'Ransomware', stealing: 'Robo de fondos', laundering: 'Lavado',
+    wallet: 'Billetera', ens: 'ENS', twitter: 'Twitter',
+  };
 
   const entrantes = directos.filter(r => r.flujo === 'entrada');
   const salientes = directos.filter(r => r.flujo === 'salida');
@@ -232,8 +293,14 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
               </p>
             </div>
           </div>
-          <Ind rot="Fuentes entrantes señaladas"><Cifra v={tr ? String(entrantes.length) : null} /></Ind>
-          <Ind rot="Destinos señalados"><Cifra v={tr ? String(salientes.length) : null} /></Ind>
+          {/* Salían en "sin dato" salvo que alguien hubiera apretado "Rastrear"
+              antes de imprimir, aunque `investigacion` ya los tuviera. */}
+          <Ind rot="Fuentes entrantes señaladas">
+            <Cifra v={inv ? String(senaladasEntrantes.length) : tr ? String(entrantes.length) : null} />
+          </Ind>
+          <Ind rot="Destinos señalados">
+            <Cifra v={inv ? String(senaladasSalientes.length) : tr ? String(salientes.length) : null} />
+          </Ind>
           <Ind rot="Exposición directa"><Cifra v={n(expDirecta)} /></Ind>
           <Ind rot="Exposición indirecta"><Cifra v={n(expIndirecta)} /></Ind>
         </div>
@@ -262,22 +329,121 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
             proveedor se muestra sin alterar.
           </p>
         )}
+        {/* LOS MONTOS SALEN DE `investigacion`, NO DEL RASTREO.
+            Antes esta línea solo sabía sumar si alguien había apretado
+            "Rastrear intermediarios" antes de imprimir; si no, decía "no se
+            pudo obtener el detalle" con el detalle ya en la mano. */}
         <p style={{ fontSize: 10.5, margin: 0, lineHeight: 1.7 }}>
-          {tr
-            ? <>La dirección analizada recibió <b>{n(sum(entrantes)) ?? '—'}</b> desde fuentes señaladas
-                y envió <b>{n(sum(salientes)) ?? '—'}</b> hacia destinos señalados.{' '}</>
-            : <>No se pudo obtener el detalle de transacciones con contrapartes señaladas.{' '}</>}
+          {contactos.length ? (
+            <>La dirección operó con <b>{contactos.length}</b> {contactos.length === 1 ? 'contraparte' : 'contrapartes'}:
+              recibió <b>{n(montoEntrante) ?? '—'}</b> y envió <b>{n(montoSaliente) ?? '—'}</b>.{' '}
+              {(senaladasEntrantes.length || senaladasSalientes.length)
+                ? <span style={{ color: T.rojo, fontWeight: 700 }}>
+                    De esas, {senaladasEntrantes.length} {senaladasEntrantes.length === 1 ? 'fuente entrante está señalada' : 'fuentes entrantes están señaladas'}{' '}
+                    y {senaladasSalientes.length} {senaladasSalientes.length === 1 ? 'destino está señalado' : 'destinos están señalados'}.{' '}
+                  </span>
+                : <>Ninguna de ellas aparece señalada por el proveedor.{' '}</>}
+            </>
+          ) : tr ? (
+            <>La dirección analizada recibió <b>{n(sum(entrantes)) ?? '—'}</b> desde fuentes señaladas
+              y envió <b>{n(sum(salientes)) ?? '—'}</b> hacia destinos señalados.{' '}</>
+          ) : (
+            <>No hay detalle de transacciones con contrapartes (ver el motivo en la sección 2).{' '}</>
+          )}
           {ex?.items?.length
             ? <>Se identificaron <b>{ex.items.length}</b> {ex.items.length === 1 ? 'vínculo' : 'vínculos'} con
                 entidades de riesgo{ex.saltoMinimo != null && ex.saltoMinimo < 99
                   ? `, el más cercano a ${ex.saltoMinimo} ${ex.saltoMinimo === 1 ? 'salto' : 'saltos'}` : ''}.{' '}</>
-            : <>El proveedor no reportó vínculos con entidades de riesgo.{' '}</>}
-          El ranking prioriza posibles contaminadores por monto, recurrencia y cercanía.
+            : senalada
+              ? <>El proveedor no reportó vínculos con <i>terceras</i> entidades de riesgo, lo cual es
+                 habitual cuando el señalamiento recae sobre la dirección misma: no la hace menos
+                 riesgosa.{' '}</>
+              : <>El proveedor no reportó vínculos con entidades de riesgo.{' '}</>}
         </p>
 
-        {/* ── 2. Contactos directos ── */}
+        {/* ── QUÉ HACER CON ESTO ──
+            El reporte describía y no concluía. Quien lo lee tiene que decidir si
+            recibe plata de esta dirección o le manda, y esa decisión no estaba
+            escrita en ningún lado. */}
+        <div style={{ marginTop: 10, border: `1.5px solid ${b.bg === T.fondo ? T.linea : b.bg}`, padding: '10px 12px' }}>
+          <p style={{ fontSize: 9, fontWeight: 700, color: T.suave, margin: '0 0 5px', letterSpacing: '0.4px' }}>
+            QUÉ IMPLICA
+          </p>
+          <p style={{ fontSize: 10.5, margin: 0, lineHeight: 1.65 }}>
+            {lectura.categoria === 'alto' ? (
+              <><b style={{ color: T.rojo }}>No operar con esta dirección.</b> Un exchange o un banco
+                que corra este mismo análisis va a ver lo mismo. Los fondos que pasen por acá quedan
+                expuestos a congelamiento, y el titular que los reciba queda obligado a explicar su
+                origen. Si ya hubo una operación, conviene documentarla antes de que la pregunten.</>
+            ) : lectura.categoria === 'medio' ? (
+              <><b style={{ color: T.ambar }}>Revisión manual antes de operar.</b> Hay señalamientos
+                que no alcanzan para descartar la dirección pero sí para pedir el origen de los fondos
+                y dejarlo por escrito.</>
+            ) : lectura.categoria === 'bajo' ? (
+              <>Sin señalamientos en la información disponible hoy. <b>No es una garantía:</b> una
+                dirección limpia hoy puede aparecer señalada mañana, y este reporte no vuelve a
+                consultarse solo. Para eso está el monitoreo.</>
+            ) : (
+              <><b>No hay clasificación.</b> Que no haya resultado no significa que la dirección esté
+                limpia: significa que no sabemos. Tratala como no verificada.</>
+            )}
+          </p>
+          {/* NUNCA se afirma que algo está bloqueado. Lincoin no bloquea nada y
+              este proveedor tampoco: decir "fondos bloqueados" sería inventar un
+              hecho sobre plata ajena. */}
+          <p style={{ fontSize: 9, color: T.suave, margin: '6px 0 0', lineHeight: 1.55, fontStyle: 'italic' }}>
+            Este reporte no bloquea ni congela nada, y no informa fondos bloqueados: Lincoin no tiene
+            control sobre esta dirección. Describe exposición para que la decisión la tome quien opera.
+          </p>
+        </div>
+
+        {/* ── 2. Contactos directos ──
+            ESTA SECCIÓN MOSTRABA SOLO LAS RUTAS RASTREADAS e ignoraba
+            `investigacion`, que ya viene con el reporte y trae direcciones,
+            montos y hashes de TODAS las contrapartes — no solo las señaladas.
+            Se pedía, se pagaba (USD 1,00), se guardaba, y no se dibujaba: el
+            reporte decía "no se pudo obtener la investigación" con la
+            investigación adentro. */}
         <h2 style={H}>2. Contactos directos: quién interactuó con quién</h2>
-        {directos.length ? (
+        {contactos.length ? (
+          <>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead><tr>
+                <th style={th}>FLUJO</th><th style={th}>CONTRAPARTE</th>
+                <th style={th}>QUIÉN ES</th><th style={th}>LECTURA AML</th>
+                <th style={th}>MONTO</th><th style={th}>TXS</th>
+              </tr></thead>
+              <tbody>
+                {contactos.slice(0, 30).map((r: any, i: number) => (
+                  <tr key={i}>
+                    <td style={{ ...td, fontWeight: 700, color: T.azul, fontSize: 9 }}>
+                      {r.entrante ? 'Recibió de' : 'Envió a'}
+                    </td>
+                    <td style={{ ...td, fontFamily: MONO, fontSize: 8.5, color: r.senalada ? T.rojo : T.tinta, fontWeight: r.senalada ? 700 : 400 }}>
+                      {corta(r.direccion)}
+                    </td>
+                    <td style={{ ...td, fontSize: 9 }}>{r.etiqueta ?? '—'}</td>
+                    <td style={{ ...td, fontSize: 9, color: r.senalada ? T.rojo : T.suave }}>
+                      {r.senalada
+                        ? (r.entrante ? 'Fuente entrante SEÑALADA' : 'Destino SEÑALADO')
+                        : r.tipo === 'contrato' ? 'Contrato'
+                        : r.tipo === 'entidad' ? 'Entidad identificada'
+                        : 'Sin señalamiento'}
+                    </td>
+                    <td style={td}>{n(r.monto) ?? '—'}</td>
+                    <td style={td}>{r.txs ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {contactos.length > 30 && (
+              <p style={{ fontSize: 9, color: T.suave, margin: '6px 0 0' }}>
+                Se muestran las 30 primeras de {contactos.length}
+                {inv?.paginas > 1 ? `, y el proveedor reporta ${inv.paginas} páginas de contrapartes en total` : ''}.
+              </p>
+            )}
+          </>
+        ) : directos.length ? (
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead><tr>
               <th style={th}>FLUJO OBSERVADO</th><th style={th}>CONTRAPARTE SEÑALADA</th>
@@ -301,12 +467,126 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
               ))}
             </tbody>
           </table>
-        ) : tr ? (
-          <p style={{ fontSize: 10.5, margin: 0, lineHeight: 1.65 }}>
-            No se registraron transacciones directas con contrapartes señaladas entre las{' '}
-            {tr.contrapartesRevisadas} contrapartes revisadas.
-          </p>
-        ) : <Vacio>No se pudo obtener la investigación de transacciones para esta dirección.</Vacio>}
+        ) : <PorQueVacio f={fu?.investigacion} que="la investigación de transacciones" />}
+
+        {/* ── 2b. Contrapartes por monto (address_counterparty) ──
+            Otra consulta que se paga (USD 0,50) y no se dibujaba. Es el
+            "con quién opera y por cuánta plata", agrupado por entidad. */}
+        {cp?.items?.length ? (
+          <>
+            <h2 style={H}>2b. Contrapartes por volumen</h2>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead><tr>
+                <th style={th}>CONTRAPARTE</th><th style={th}>MONTO (USD)</th><th style={th}>% DEL VOLUMEN</th>
+              </tr></thead>
+              <tbody>
+                {cp.items.map((x: any, i: number) => (
+                  <tr key={i}>
+                    <td style={{ ...td, fontWeight: 700 }}>{x.nombre ?? '—'}</td>
+                    <td style={td}>{n(x.montoUsd) ?? '—'}</td>
+                    <td style={td}>{x.pct != null ? `${x.pct} %` : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        ) : cp?.noSoportada ? (
+          <>
+            <h2 style={H}>2b. Contrapartes por volumen</h2>
+            <Vacio>
+              El proveedor no analiza contrapartes para este tipo de dirección (la reporta como
+              billetera caliente de un servicio). No es una falla de la consulta ni ausencia de
+              actividad.
+            </Vacio>
+          </>
+        ) : null}
+
+        {/* ── 2c. Quién es esta dirección ──
+            address_labels y address_trace: dos consultas más que se pagan
+            (USD 0,10 y USD 0,50) y que el reporte no dibujaba. Son lo que
+            convierte una cadena de 34 caracteres en algo que un oficial de
+            cumplimiento puede nombrar en un informe. */}
+        {(d.etiquetas?.length || d.etiquetaProveedor || perfil) && (
+          <>
+            <h2 style={H}>2c. Identidad y trayectoria de la dirección</h2>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <tbody>
+                {(d.etiquetaProveedor || d.etiquetas?.length) && (
+                  <tr>
+                    <td style={{ ...td, width: 175, fontWeight: 700, background: T.fondo }}>Etiquetas del proveedor</td>
+                    <td style={td}>
+                      {[d.etiquetaProveedor, ...textos(d.etiquetas)].filter(Boolean)
+                        .filter((v, i, a) => a.indexOf(v) === i).join(' · ')}
+                    </td>
+                  </tr>
+                )}
+                {perfil?.primeraFuente && (
+                  <tr>
+                    <td style={{ ...td, fontWeight: 700, background: T.fondo }}>Primer origen de fondos</td>
+                    <td style={{ ...td, fontFamily: MONO, fontSize: 8.5 }}>{perfil.primeraFuente}</td>
+                  </tr>
+                )}
+                {listas(perfil?.plataformas).map(([k, v]) => (
+                  <tr key={k}>
+                    <td style={{ ...td, fontWeight: 700, background: T.fondo }}>{ROT[k] ?? k}</td>
+                    <td style={td}>{v.join(' · ')}</td>
+                  </tr>
+                ))}
+                {/* Los eventos maliciosos van en rojo: no son "otra fila más". */}
+                {listas(perfil?.eventos).map(([k, v]) => (
+                  <tr key={k}>
+                    <td style={{ ...td, fontWeight: 700, background: T.fondo, color: T.rojo }}>{ROT[k] ?? k}</td>
+                    <td style={{ ...td, color: T.rojo, fontWeight: 700 }}>{v.join(' · ')}</td>
+                  </tr>
+                ))}
+                {listas(perfil?.relaciones).map(([k, v]) => (
+                  <tr key={k}>
+                    <td style={{ ...td, fontWeight: 700, background: T.fondo }}>{ROT[k] ?? k}</td>
+                    <td style={td}>{v.join(' · ')}</td>
+                  </tr>
+                ))}
+                {d.hackingEvent && (
+                  <tr>
+                    <td style={{ ...td, fontWeight: 700, background: T.fondo, color: T.rojo }}>Incidente asociado</td>
+                    <td style={{ ...td, color: T.rojo, fontWeight: 700 }}>{d.hackingEvent}</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+            {!perfil && <div style={{ marginTop: 6 }}><PorQueVacio f={fu?.perfil} que="la trayectoria de la dirección" /></div>}
+          </>
+        )}
+
+        {/* ── 2d. En qué usa su volumen (address_action) ──
+            La séptima consulta que se paga y no se dibujaba. No es exposición a
+            riesgo —eso sale de risk_detail— es en qué gasta y de dónde recibe. */}
+        {comp && (
+          <>
+            <h2 style={H}>2d. Comportamiento de la dirección</h2>
+            <div className="flex" style={{ gap: 14, flexWrap: 'wrap' }}>
+              {([['recibido', 'DE DÓNDE RECIBE'], ['enviado', 'A DÓNDE ENVÍA']] as const).map(([k, rot]) =>
+                comp[k]?.length ? (
+                  <div key={k} style={{ flex: '1 1 260px' }}>
+                    <p style={{ fontSize: 8.5, fontWeight: 700, color: T.suave, margin: '0 0 4px' }}>{rot}</p>
+                    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                      <tbody>
+                        {comp[k].map((x: any, i: number) => (
+                          <tr key={i}>
+                            <td style={{ ...td, fontSize: 9 }}>{x.accion}</td>
+                            <td style={{ ...td, fontSize: 9, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                              {x.pct != null ? `${x.pct.toFixed(1)} %` : '—'}
+                              {x.veces != null ? ` · ${x.veces} tx` : ''}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : null,
+              )}
+            </div>
+          </>
+        )}
 
         {/* ── 3. Rutas indirectas ── */}
         <h2 style={H}>3. Rutas indirectas agrupadas</h2>
@@ -424,7 +704,16 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
               );
             })()}
           </>
-        ) : <Vacio>No se identificaron rutas indirectas hacia entidades señaladas en la información disponible.</Vacio>}
+        ) : senalada ? (
+          // Una dirección señalada ELLA MISMA normalmente no tiene rutas hacia
+          // terceros. Decir "no se identificaron rutas" a secas, debajo de
+          // "Sospecha de dirección maliciosa", se lee como un atenuante.
+          <Vacio>
+            No se identificaron rutas hacia <i>terceras</i> entidades señaladas. En una dirección que
+            ya está señalada ella misma esto es habitual y no la hace menos riesgosa: el hallazgo es
+            sobre ella, no sobre su entorno.
+          </Vacio>
+        ) : <PorQueVacio f={fu?.investigacion} que="rutas indirectas" />}
 
         {/* ── 4. Ranking ── */}
         <h2 style={H}>4. Ranking de posibles contaminadores</h2>
@@ -456,6 +745,30 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
               ))}
             </tbody>
           </table>
+        ) : contactos.filter(x => x.senalada).length ? (
+          // Hay contrapartes señaladas aunque no se haya corrido el rastreo:
+          // se rankean por monto, que es la información que sí tenemos.
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead><tr>
+              <th style={th}>#</th><th style={th}>DIRECCIÓN SEÑALADA</th>
+              <th style={th}>QUIÉN ES</th><th style={th}>FLUJO</th>
+              <th style={th}>MONTO</th><th style={th}>TXS</th>
+            </tr></thead>
+            <tbody>
+              {contactos.filter(x => x.senalada).slice(0, 25).map((x: any, i: number) => (
+                <tr key={i}>
+                  <td style={td}>{i + 1}</td>
+                  <td style={{ ...td, fontFamily: MONO, fontSize: 8.5, color: T.rojo, fontWeight: 700 }}>{corta(x.direccion)}</td>
+                  <td style={td}>{x.etiqueta ?? '—'}</td>
+                  <td style={{ ...td, fontWeight: 700, color: T.azul, fontSize: 9 }}>
+                    {x.entrante ? 'Le envió fondos' : 'Recibió fondos'}
+                  </td>
+                  <td style={td}>{n(x.monto) ?? '—'}</td>
+                  <td style={td}>{x.txs ?? '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         ) : <Vacio>No hay contaminadores para rankear con la información obtenida.</Vacio>}
 
         {/* Alcance del rastreo — hasta dónde se miró de verdad */}
@@ -468,6 +781,36 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
             {' '}El sentido del flujo solo se afirma cuando la contraparte aparece entre las revisadas;
             en las demás filas se indica que no está confirmado.
           </p>
+        )}
+
+        {/* ── Qué se consultó y qué contestó cada fuente ──
+            Va al final, chico, y no es relleno: cuando el reporte sale con
+            secciones vacías, esto es lo único que distingue "no hay nada que
+            reportar" de "el plan contratado no incluye ese endpoint". Sin esta
+            tabla, las dos cosas se ven igual — y la segunda se arregla, la
+            primera no. */}
+        {fu && (
+          <div style={{ marginTop: 18, breakInside: 'avoid' }}>
+            <p style={{ fontSize: 8.5, fontWeight: 700, color: T.suave, margin: '0 0 5px', letterSpacing: '0.4px' }}>
+              FUENTES CONSULTADAS
+            </p>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <tbody>
+                {Object.entries(fu).map(([k, v]: [string, any]) => (
+                  <tr key={k}>
+                    <td style={{ ...td, fontSize: 9, width: 150, textTransform: 'capitalize' }}>{k}</td>
+                    <td style={{ ...td, fontSize: 9, width: 90, color: v?.ok ? T.verde : T.rojo, fontWeight: 700 }}>
+                      {v?.status === 0 ? 'sin conexión' : `HTTP ${v?.status}`}
+                    </td>
+                    <td style={{ ...td, fontSize: 9, width: 90 }}>
+                      {v?.conDatos ? 'con datos' : 'sin datos'}
+                    </td>
+                    <td style={{ ...td, fontSize: 9, color: T.suave }}>{v?.motivo ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
 
         {/* Nota metodológica */}
