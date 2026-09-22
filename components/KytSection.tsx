@@ -17,8 +17,8 @@
 //  Un puntaje inventado en una pantalla de cumplimiento es peor que una
 //  pantalla vacía: se opera con él.
 // ══════════════════════════════════════════════════════════════════
-import React, { useCallback, useEffect, useState } from 'react';
-import { ArrowLeft, Eye, EyeOff, ExternalLink, FileText, Loader2, ShieldQuestion, History, X } from 'lucide-react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { ArrowLeft, Eye, EyeOff, ExternalLink, FileText, Loader2, ShieldQuestion, History, X, ChevronDown, Check } from 'lucide-react';
 import { llamarFuncion } from '../lib/edge';
 import { KytReporte } from './KytReporte';
 
@@ -63,10 +63,13 @@ const tono = (cat?: string) =>
 //
 // El color es el de cada cadena. La paleta reserva los colores de marca
 // justamente para las insignias de moneda, que es lo que son.
+// TRON va PRIMERA. Es la que se usa en casi todas las consultas -- el USDT de
+// Lincoin vive ahí— y una lista se lee de arriba hacia abajo: lo más usado no
+// puede estar en el medio obligando a buscarlo.
 const REDES: { v: string; t: string; c: string }[] = [
+  { v: 'TRX',    t: 'TRON',         c: '#EF0027' },
   { v: 'BTC',    t: 'Bitcoin',      c: '#F7931A' },
   { v: 'ETH',    t: 'Ethereum',     c: '#627EEA' },
-  { v: 'TRX',    t: 'TRON',         c: '#EF0027' },
   { v: 'BNB',    t: 'BNB Chain',    c: '#F0B90B' },
   { v: 'SOL',    t: 'Solana',       c: '#9945FF' },
   { v: 'MATIC',  t: 'Polygon',      c: '#8247E5' },
@@ -95,6 +98,84 @@ const nombreRed = (v?: string) => redDe(v)?.t ?? String(v ?? '');
 // pantalla de cumplimiento se lee como descuido. Si querés los logos de
 // verdad, lo correcto es vendorizar un set con licencia (cryptocurrency-icons
 // es MIT) DENTRO del repo — nunca por CDN, que acá está descartado.
+// ── Selector de red ───────────────────────────────────────────────────
+//
+// Antes eran dieciocho botones en cuatro filas: ocupaban más espacio que el
+// campo de la dirección, que es lo que uno viene a llenar. Y con dieciocho
+// opciones a la vista, ninguna resalta -- ni siquiera la que se usa siempre.
+//
+// Una lista muestra UNA, la elegida, y guarda el resto detrás de un clic.
+// TRON queda arriba porque es casi siempre la respuesta.
+const SelectorRed: React.FC<{
+  redes: { v: string; t: string; c: string }[];
+  valor: string;
+  onElegir: (v: string) => void;
+}> = ({ redes, valor, onElegir }) => {
+  const [abierto, setAbierto] = useState(false);
+  const caja = useRef<HTMLDivElement>(null);
+  const actual = redes.find(r => r.v.toLowerCase() === valor.toLowerCase()) ?? redes[0];
+
+  // Cerrar al hacer clic afuera o con Escape. Un desplegable que se queda
+  // abierto tapando el campo de al lado estorba más de lo que ayuda.
+  useEffect(() => {
+    if (!abierto) return;
+    const fuera = (e: MouseEvent) => { if (caja.current && !caja.current.contains(e.target as Node)) setAbierto(false); };
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setAbierto(false); };
+    document.addEventListener('mousedown', fuera);
+    document.addEventListener('keydown', esc);
+    return () => { document.removeEventListener('mousedown', fuera); document.removeEventListener('keydown', esc); };
+  }, [abierto]);
+
+  return (
+    <div ref={caja} style={{ position: 'relative', width: 232 }}>
+      <button onClick={() => setAbierto(v => !v)} aria-haspopup="listbox" aria-expanded={abierto}
+        style={{
+          width: '100%', fontFamily: FONT, fontSize: 13.5, fontWeight: 700, color: C.text,
+          background: 'rgba(255,255,255,0.035)', border: `1px solid ${abierto ? 'rgba(255,255,255,0.22)' : C.bd}`,
+          borderRadius: 9, padding: '10px 12px', cursor: 'pointer',
+          display: 'flex', alignItems: 'center', gap: 9, textAlign: 'left',
+        }}
+        onFocus={e => { e.currentTarget.style.boxShadow = ANILLO; }} onBlur={e => { e.currentTarget.style.boxShadow = 'none'; }}>
+        {actual && <Insignia v={actual.v} size={20} />}
+        <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {actual?.t ?? 'Elegí una red'}
+        </span>
+        <ChevronDown size={15} style={{ color: C.sub, flexShrink: 0, transform: abierto ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }} />
+      </button>
+
+      {abierto && (
+        <div role="listbox"
+          style={{
+            position: 'absolute', top: 'calc(100% + 6px)', left: 0, right: 0, zIndex: 40,
+            background: C.card, border: `1px solid ${C.bdSoft}`, borderRadius: 11,
+            boxShadow: '0 16px 40px rgba(0,0,0,0.5)', padding: 5,
+            maxHeight: 292, overflowY: 'auto',
+          }}>
+          {redes.map(r => {
+            const act = valor.toLowerCase() === r.v.toLowerCase();
+            return (
+              <button key={r.v} role="option" aria-selected={act}
+                onClick={() => { onElegir(r.v); setAbierto(false); }}
+                style={{
+                  width: '100%', fontFamily: FONT, fontSize: 13, fontWeight: act ? 700 : 500,
+                  color: act ? C.text : C.sub, background: act ? 'rgba(255,255,255,0.06)' : 'transparent',
+                  border: 'none', borderRadius: 8, padding: '9px 10px', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', gap: 9, textAlign: 'left',
+                }}
+                onMouseEnter={e => { if (!act) e.currentTarget.style.background = 'rgba(255,255,255,0.035)'; }}
+                onMouseLeave={e => { if (!act) e.currentTarget.style.background = 'transparent'; }}>
+                <Insignia v={r.v} size={20} />
+                <span style={{ flex: 1, minWidth: 0 }}>{r.t}</span>
+                {act && <Check size={14} style={{ color: C.text, flexShrink: 0 }} />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const Insignia: React.FC<{ v: string; size?: number }> = ({ v, size = 22 }) => {
   const r = redDe(v);
   const color = r?.c ?? '#878E88';
@@ -246,7 +327,13 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
           .filter(Boolean)
           .map((v: string) => redDe(v))
           .filter(Boolean) as typeof REDES;
-        if (vivas.length) setRedes(vivas);
+        // El proveedor devuelve las cadenas en SU orden. Se reordenan según
+        // el nuestro para que TRON siga primera: si no, el orden de la lista
+        // cambia según lo que conteste un tercero.
+        if (vivas.length) {
+          const pos = new Map(REDES.map((r, i) => [r.v, i]));
+          setRedes([...vivas].sort((a, b) => (pos.get(a.v) ?? 99) - (pos.get(b.v) ?? 99)));
+        }
       })
       .catch(() => { /* se queda el respaldo */ });
     return () => { vivo = false; };
@@ -340,29 +427,11 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
         <div className="flex flex-wrap items-end" style={{ gap: 14 }}>
           <div>
             <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: C.sub, margin: '0 0 7px' }}>RED</p>
-            {/* Dieciocho redes no caben en una fila de botones segmentados, así
-                que la fila envuelve. Con la insignia delante se reconoce la
-                cadena de un vistazo sin leer el nombre. */}
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, maxWidth: 560 }}>
-              {redes.map(r => {
-                const act = coin.toLowerCase() === r.v.toLowerCase();
-                return (
-                  <button key={r.v} onClick={() => setCoin(r.v)}
-                    style={{
-                      fontFamily: FONT, fontSize: 12.5, fontWeight: 700,
-                      color: act ? C.text : C.sub,
-                      background: act ? 'rgba(255,255,255,0.09)' : 'transparent',
-                      border: `1px solid ${act ? 'rgba(255,255,255,0.2)' : C.bd}`,
-                      borderRadius: 9, padding: '7px 11px 7px 7px', cursor: 'pointer',
-                      display: 'inline-flex', alignItems: 'center', gap: 7,
-                    }}
-                    onFocus={e => { e.currentTarget.style.boxShadow = ANILLO; }} onBlur={e => { e.currentTarget.style.boxShadow = 'none'; }}>
-                    <Insignia v={r.v} size={20} />
-                    {r.t}
-                  </button>
-                );
-              })}
-            </div>
+            {/* UNA LISTA, NO DIECIOCHO BOTONES.
+                Desplegadas ocupaban cuatro filas y pesaban más que el campo de
+                la dirección, que es lo que uno viene a llenar. Una sola en
+                pantalla, las demás a un clic. */}
+            <SelectorRed redes={redes} valor={coin} onElegir={setCoin} />
           </div>
           <div style={{ flex: 1, minWidth: 260 }}>
             <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: C.sub, margin: '0 0 7px' }}>DIRECCIÓN</p>
