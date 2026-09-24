@@ -1173,9 +1173,70 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
         for (const mv of Object.values(movidoPor) as { moneda: string; anio: number }[]) top[mv.moneda] = Math.max(top[mv.moneda] ?? 0, mv.anio);
         return top;
     }, [movidoPor]);
-    // Las dos barras, debajo del nombre. Es lo primero que se lee después de
-    // quién es: cuánto se le movió este mes y cuánto en el año.
-    const barrasMovido = (id: string, compacto = false) => {
+    // Los movimientos hacia UN beneficiario, con el mismo criterio que las
+    // barras y que el detalle. Una sola función para que las tres pantallas no
+    // cuenten distinto la misma plata.
+    const movimientosDe = (c: MouvContact) => {
+        const isWallet = c.accountKind === 'wallet';
+        const isBreb = c.destKind === 'breb';
+        const llave = String((isWallet ? c.accountNumber : (isBreb ? (c.brebKey ?? c.accountNumber) : c.accountNumber)) ?? '');
+        const nombre = String(c.name ?? '');
+        const cuando = (t: any) => new Date(t.createdAt ?? t.created_at ?? t.date ?? 0).getTime() || 0;
+        return (transactions as any[])
+            .filter(t =>
+                t.userId === currentUser?.id &&
+                (t.type === 'dispersion' || t.type === 'send') &&
+                (String(t.account ?? '') === llave || String(t.beneficiary ?? '') === nombre))
+            .sort((a, b) => cuando(b) - cuando(a));
+    };
+
+    // Panel abierto desde los botones bajo las barras: el extracto contable o
+    // el expediente de cumplimiento de ESE beneficiario.
+    const [panel, setPanel] = useState<{ c: MouvContact; tipo: 'contabilidad' | 'compliance' } | null>(null);
+    useEffect(() => {
+        if (!panel) return;
+        const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setPanel(null); };
+        window.addEventListener('keydown', esc);
+        return () => window.removeEventListener('keydown', esc);
+    }, [panel]);
+
+    // Descarga del extracto como CSV. Se arma en el navegador: son los mismos
+    // movimientos que ya están en pantalla, no hace falta pedirle nada al
+    // servidor. El BOM del principio es para que Excel abra las tildes bien.
+    const descargarCsv = (c: MouvContact) => {
+        const filas = movimientosDe(c);
+        const esc = (v: any) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+        const lineas = [
+            ['Fecha', 'Beneficiario', 'Cuenta o llave', 'Tipo', 'Monto', 'Moneda', 'Estado', 'Referencia'].map(esc).join(','),
+            ...filas.map(t => [
+                new Date(t.createdAt ?? t.created_at ?? t.date ?? 0).toISOString(),
+                c.name, c.accountKind === 'wallet' ? c.accountNumber : (c.brebKey ?? c.accountNumber),
+                t.type === 'dispersion' ? 'Dispersión' : 'Envío',
+                Number(t.amount) || 0, t.currency ?? 'COP', t.status ?? '',
+                t.providerRef ?? t.reference ?? t.txHash ?? t.id ?? '',
+            ].map(esc).join(',')),
+        ];
+        const blob = new Blob(['﻿' + lineas.join('\n')], { type: 'text/csv;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `lincoin-extracto-${String(c.name).replace(/[^\w]+/g, '-').toLowerCase()}-${new Date().toISOString().slice(0, 10)}.csv`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 30000);
+    };
+
+    // Las dos barras, debajo del nombre, y debajo de ellas los dos botones.
+    // Es lo primero que se lee después de quién es: cuánto se le movió este
+    // mes, cuánto en el año, y desde ahí se abre el extracto o el expediente.
+    const botonPanel = (c: MouvContact, tipo: 'contabilidad' | 'compliance', rot: string) => (
+        <button onClick={(e) => { e.stopPropagation(); setPanel({ c, tipo }); }}
+            className="hover:border-[rgba(74,222,128,0.5)] hover:text-[#F4F4F2] transition-colors"
+            style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '0.4px', color: '#878E88', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 7, padding: '4px 9px', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            {rot}
+        </button>
+    );
+    const barrasMovido = (c: MouvContact, compacto = false) => {
+        const id = c.id;
         const mv = movidoPor[id];
         if (!mv) return null;
         const top = topAnioPorMoneda[mv.moneda] || 0;
@@ -1193,9 +1254,15 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
             </div>
         );
         return (
-            <div style={{ marginTop: 4 }} title={hay ? `${mv.envios} envío${mv.envios === 1 ? '' : 's'} este año` : 'Sin envíos este año'}>
-                {fila('MES', mv.mes, true)}
-                {fila('AÑO', mv.anio, false)}
+            <div style={{ marginTop: 4 }}>
+                <div title={hay ? `${mv.envios} envío${mv.envios === 1 ? '' : 's'} este año` : 'Sin envíos este año'}>
+                    {fila('MES', mv.mes, true)}
+                    {fila('AÑO', mv.anio, false)}
+                </div>
+                <div className="flex items-center" style={{ gap: 6, marginTop: 7 }}>
+                    {botonPanel(c, 'contabilidad', 'Contabilidad')}
+                    {botonPanel(c, 'compliance', 'Compliance')}
+                </div>
             </div>
         );
     };
@@ -1733,14 +1800,20 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                     <div key={c.id}>
                         {/* Fila desktop */}
                         <div className="hidden lg:grid items-center hover:bg-white/[0.02] transition-colors" style={{ gridTemplateColumns: COLS, padding: '14px 22px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-                            <button onClick={() => setDetail(c)} className="flex items-start gap-3 min-w-0 text-left cursor-pointer" style={{ paddingRight: 12 }}>
+                            {/* El nombre es un botón (abre el detalle) y las barras
+                                llevan botones propios. Un botón dentro de otro no
+                                es HTML válido y los clics se pisan, así que van
+                                como hermanos dentro de la celda. */}
+                            <div className="flex items-start gap-3 min-w-0" style={{ paddingRight: 12 }}>
                                 {avatar}
                                 <div className="min-w-0" style={{ flex: 1 }}>
-                                    <p style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{prettyName(c.name)}</p>
-                                    <p style={{ fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.meta}</p>
-                                    {barrasMovido(c.id)}
+                                    <button onClick={() => setDetail(c)} className="block min-w-0 text-left cursor-pointer" style={{ maxWidth: '100%' }}>
+                                        <p style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{prettyName(c.name)}</p>
+                                        <p style={{ fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.meta}</p>
+                                    </button>
+                                    {barrasMovido(c)}
                                 </div>
-                            </button>
+                            </div>
                             {/* AML — el veredicto de cumplimiento, pegado al
                                 nombre: se lee junto con QUIÉN es la persona,
                                 no con su banco. */}
@@ -1766,17 +1839,19 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                         {/* Tarjeta móvil */}
                         <div className="lg:hidden" style={{ padding: '14px 18px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
                             <div className="flex items-center justify-between gap-3">
-                                <button onClick={() => setDetail(c)} className="flex items-center gap-3 min-w-0 text-left flex-1">
+                                <div className="flex items-start gap-3 min-w-0 flex-1">
                                     {avatar}
-                                    <div className="min-w-0">
-                                        <p style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{prettyName(c.name)}</p>
-                                        <div className="flex items-center gap-1.5" style={{ marginTop: 2 }}>
-                                            {flagEl}
-                                            <span style={{ fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.railLine} · {m.maskLine}</span>
-                                        </div>
-                                        {barrasMovido(c.id, true)}
+                                    <div className="min-w-0" style={{ flex: 1 }}>
+                                        <button onClick={() => setDetail(c)} className="block min-w-0 text-left" style={{ maxWidth: '100%' }}>
+                                            <p style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{prettyName(c.name)}</p>
+                                            <div className="flex items-center gap-1.5" style={{ marginTop: 2 }}>
+                                                {flagEl}
+                                                <span style={{ fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.railLine} · {m.maskLine}</span>
+                                            </div>
+                                        </button>
+                                        {barrasMovido(c, true)}
                                     </div>
-                                </button>
+                                </div>
                                 <div className="flex flex-col items-end gap-1.5 shrink-0">
                                     {statusPill}
                                     {kumploPill(c)}
@@ -1803,6 +1878,193 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                     </div>
                 ))}
             </div>
+
+            {/* ── Panel: Contabilidad / Compliance de UN beneficiario ──
+                Se abren desde los botones bajo las barras. El de contabilidad es
+                el extracto de lo movido a esa persona, con descarga en CSV; el
+                de compliance es su expediente: quién es según el documento, qué
+                dijo la verificación, cuándo, y qué hacer con eso. */}
+            {panel && (() => {
+                const c = panel.c;
+                const movs = movimientosDe(c);
+                const mv = movidoPor[c.id];
+                const k = amlDe(c);
+                const st = contactStatus(c);
+                const m = rowMeta(c);
+                const fecha = (t: any) => {
+                    const d = new Date(t.createdAt ?? t.created_at ?? t.date ?? 0);
+                    return isNaN(d.getTime()) ? '—' : d.toLocaleString('es-CO', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+                };
+                const monto = (t: any) => fmtMovido(Number(t.amount) || 0, String(t.currency ?? 'COP'));
+                const historico = movs.filter(t => t.status === 'Completado' || t.status === 'Procesando')
+                    .reduce((s, t) => s + (Number(t.amount) || 0), 0);
+                const estadoColor = (s: string) => s === 'Completado' ? '#4ADE80' : s === 'Rechazado' ? '#F87171' : '#FBBF24';
+                const Fila: React.FC<{ l: string; v: React.ReactNode }> = ({ l, v }) => (
+                    <div className="flex items-start justify-between gap-4" style={{ padding: '10px 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                        <span style={{ fontSize: 12.5, color: '#878E88', flexShrink: 0 }}>{l}</span>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: '#F4F4F2', textAlign: 'right', wordBreak: 'break-word' }}>{v}</span>
+                    </div>
+                );
+                const Rotulo: React.FC<{ t: string }> = ({ t }) => (
+                    <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88', marginTop: 18, marginBottom: 4 }}>{t}</p>
+                );
+                return (
+                    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" style={{ background: 'rgba(4,5,5,0.78)' }} onClick={() => setPanel(null)}>
+                        <div onClick={e => e.stopPropagation()}
+                            style={{ width: '100%', maxWidth: 620, maxHeight: '92vh', display: 'flex', flexDirection: 'column', background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 16, overflow: 'hidden' }}>
+                            {/* Cabecera */}
+                            <div className="flex items-start justify-between gap-3" style={{ padding: '18px 24px 14px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                                <div className="min-w-0">
+                                    <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88' }}>
+                                        {panel.tipo === 'contabilidad' ? 'CONTABILIDAD' : 'COMPLIANCE'}
+                                    </p>
+                                    <h3 style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.3px', color: '#F4F4F2', marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{prettyName(c.name)}</h3>
+                                    <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 2 }}>{m.bankName} · {m.maskLine}</p>
+                                </div>
+                                <button onClick={() => setPanel(null)} style={{ color: '#878E88', flexShrink: 0 }} className="hover:text-[#F4F4F2] transition-colors"><X size={18} /></button>
+                            </div>
+
+                            <div style={{ overflowY: 'auto', padding: '4px 24px 22px' }}>
+                                {panel.tipo === 'contabilidad' ? (
+                                    <>
+                                        {/* Totales: los mismos de las barras, más el histórico. */}
+                                        <div className="grid grid-cols-3" style={{ gap: 8, marginTop: 14 }}>
+                                            {[
+                                                ['ESTE MES', mv ? fmtMovido(mv.mes, mv.moneda) : '—'],
+                                                ['ESTE AÑO', mv ? fmtMovido(mv.anio, mv.moneda) : '—'],
+                                                ['HISTÓRICO', fmtMovido(historico, mv?.moneda ?? 'COP')],
+                                            ].map(([r, v]) => (
+                                                <div key={r} style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 10, padding: '10px 12px', minWidth: 0 }}>
+                                                    <p style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '1px', color: '#878E88' }}>{r}</p>
+                                                    <p style={{ fontSize: 13.5, fontWeight: 800, color: '#F4F4F2', marginTop: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontVariantNumeric: 'tabular-nums' }}>{v}</p>
+                                                </div>
+                                            ))}
+                                        </div>
+                                        <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', marginTop: 8, lineHeight: 1.5 }}>
+                                            Cuenta lo Completado y lo Procesando: la plata ya salió. Lo Rechazado se lista abajo pero no suma.
+                                        </p>
+
+                                        <div className="flex items-center justify-between" style={{ marginTop: 16 }}>
+                                            <Rotulo t={`MOVIMIENTOS · ${movs.length}`} />
+                                            {movs.length > 0 && (
+                                                <button onClick={() => descargarCsv(c)}
+                                                    style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 8, padding: '7px 12px', marginTop: 12 }}
+                                                    className="hover:border-[rgba(74,222,128,0.5)] transition-colors">
+                                                    Descargar CSV
+                                                </button>
+                                            )}
+                                        </div>
+                                        {movs.length === 0 ? (
+                                            <p style={{ fontSize: 12.5, color: '#878E88', padding: '14px 0' }}>Todavía no se le ha enviado nada a este beneficiario.</p>
+                                        ) : movs.slice(0, 200).map((t: any, i: number) => (
+                                            <div key={t.id ?? i} className="flex items-center justify-between gap-3" style={{ padding: '10px 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                                                <div className="min-w-0">
+                                                    <p style={{ fontSize: 13, fontWeight: 600, color: '#F4F4F2' }}>{fecha(t)}</p>
+                                                    <p style={{ fontSize: 11, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontFamily: 'ui-monospace, monospace' }}>
+                                                        {t.type === 'dispersion' ? 'Dispersión' : 'Envío'}
+                                                        {(t.providerRef ?? t.reference ?? t.txHash) ? ` · ${String(t.providerRef ?? t.reference ?? t.txHash).slice(0, 18)}` : ''}
+                                                    </p>
+                                                </div>
+                                                <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                                                    <p style={{ fontSize: 13.5, fontWeight: 700, color: t.status === 'Rechazado' ? '#878E88' : '#F4F4F2', textDecoration: t.status === 'Rechazado' ? 'line-through' : 'none', fontVariantNumeric: 'tabular-nums' }}>{monto(t)}</p>
+                                                    <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.5px', color: estadoColor(String(t.status)) }}>{String(t.status ?? '').toUpperCase()}</p>
+                                                </div>
+                                            </div>
+                                        ))}
+                                        {movs.length > 200 && (
+                                            <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', marginTop: 8 }}>Se muestran los 200 más recientes. El CSV trae todos.</p>
+                                        )}
+                                    </>
+                                ) : (
+                                    <>
+                                        {/* Quién es, según el documento. */}
+                                        <Rotulo t="IDENTIDAD" />
+                                        <Fila l="Nombre inscrito" v={prettyName(c.name)} />
+                                        {c.docNumber && c.docNumber !== '—' && <Fila l="Documento" v={`${String(c.docType ?? '').toUpperCase()} ${c.docNumber}`.trim()} />}
+                                        {k?.nombreReal && k.nombreCoincide === false && (
+                                            <Fila l="Según la Registraduría" v={<span style={{ color: '#F87171' }}>{k.nombreReal}</span>} />
+                                        )}
+                                        {k?.estadoDocumento && <Fila l="Estado del documento" v={k.documentoVigente === false ? <span style={{ color: '#F87171' }}>{k.estadoDocumento}</span> : k.estadoDocumento} />}
+                                        <Fila l="Tipo" v={c.kind === 'empresa' ? 'Empresa' : 'Persona'} />
+
+                                        {/* La verificación de antecedentes. */}
+                                        <Rotulo t="VERIFICACIÓN DE ANTECEDENTES" />
+                                        {!amlActivo ? (
+                                            <p style={{ fontSize: 12.5, color: '#878E88', padding: '10px 0', lineHeight: 1.55 }}>
+                                                La verificación de antecedentes no está activa para esta cuenta.
+                                                {amlMotivo && (currentUser as any)?.role === 'admin' ? ` ${amlMotivo}` : ''}
+                                            </p>
+                                        ) : !k ? (
+                                            <p style={{ fontSize: 12.5, color: '#878E88', padding: '10px 0', lineHeight: 1.55 }}>
+                                                Sin documento inscrito no hay a quién consultar.
+                                            </p>
+                                        ) : (
+                                            <>
+                                                <div style={{ padding: '10px 0' }}>{kumploPill(c)}</div>
+                                                <Fila l="Estado de la consulta" v={String(k.estado ?? '—')} />
+                                                {k.categoria && <Fila l="Categoría" v={String(k.categoria)} />}
+                                                {((k.altos ?? 0) + (k.medios ?? 0)) > 0 && (
+                                                    <Fila l="Hallazgos" v={`${k.altos ?? 0} de riesgo alto · ${k.medios ?? 0} de riesgo medio`} />
+                                                )}
+                                                {k.operable != null && <Fila l="Operable" v={k.operable ? 'Sí' : <span style={{ color: '#F87171' }}>No</span>} />}
+                                                {k.at && <Fila l="Última consulta" v={new Date(k.at).toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' })} />}
+                                                <div className="flex items-center flex-wrap" style={{ gap: 8, marginTop: 12 }}>
+                                                    {(currentUser as any)?.role === 'admin' && k.reportId && (
+                                                        <button onClick={() => verPdf(String(k.reportId))} disabled={pdfCargando}
+                                                            style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 999, padding: '7px 14px', fontSize: 12, fontWeight: 700, opacity: pdfCargando ? 0.55 : 1 }}>
+                                                            {pdfCargando ? 'Abriendo…' : 'Ver el reporte'}
+                                                        </button>
+                                                    )}
+                                                    {(String(k.estado ?? '') !== 'finalizado' || !k.reportId) && (
+                                                        <button onClick={() => revisarCumplimiento(c)} disabled={revisando === c.id}
+                                                            style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 999, padding: '7px 14px', fontSize: 12, fontWeight: 700, opacity: revisando === c.id ? 0.55 : 1 }}>
+                                                            {revisando === c.id ? 'Consultando…' : 'Volver a consultar'}
+                                                        </button>
+                                                    )}
+                                                </div>
+                                                {String(k.estado ?? '') === 'finalizado' && k.reportId && (
+                                                    <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', marginTop: 9, lineHeight: 1.5 }}>
+                                                        Si algo cambia en las listas, TusDatos avisa y la consulta se repite sola.
+                                                    </p>
+                                                )}
+                                            </>
+                                        )}
+
+                                        {/* Qué implica, en una frase. */}
+                                        <Rotulo t="QUÉ IMPLICA" />
+                                        <p style={{ fontSize: 12.5, color: '#F4F4F2', padding: '10px 0', lineHeight: 1.6 }}>
+                                            {amlFrena(c)
+                                                ? (amlEsperando(c)
+                                                    ? 'Los envíos esperan el resultado de la consulta. Suele tardar cerca de un minuto.'
+                                                    : 'No se puede transferir a esta persona. El envío se rechaza en el servidor, no solo en pantalla.')
+                                                : st !== 'aprobada'
+                                                    ? 'La cuenta destino todavía no está validada por el banco. Hasta entonces no se puede enviar.'
+                                                    : 'Se puede operar con esta persona. El veredicto se repite solo si cambian las listas.'}
+                                        </p>
+                                        {amlEsEvidencia(c) && (
+                                            <p style={{ fontSize: 11.5, color: '#878E88', lineHeight: 1.5 }}>
+                                                Este beneficiario no se puede eliminar: el resultado de cumplimiento queda registrado.
+                                            </p>
+                                        )}
+
+                                        {/* La cuenta destino. */}
+                                        <Rotulo t="CUENTA DESTINO" />
+                                        <Fila l="Riel" v={m.railLine} />
+                                        <Fila l="Estado" v={st === 'aprobada' ? 'Verificada por el banco' : st === 'rechazada' ? <span style={{ color: '#F87171' }}>Rechazada</span> : 'En validación'} />
+                                        {c.providerStatus && <Fila l="Según el proveedor" v={<span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12 }}>{String(c.providerStatus)}</span>} />}
+                                        {st === 'rechazada' && c.lastError && <Fila l="Motivo" v={String(c.lastError).slice(0, 200)} />}
+                                        {c.accountKind === 'wallet' && (
+                                            <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 8, lineHeight: 1.5 }}>
+                                                Para el riesgo de la dirección en cadena (sanciones, mixers, rutas contaminadas), consultala en Servicios → KYT.
+                                            </p>
+                                        )}
+                                    </>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
 
             {/* Modal "Detalle del beneficiario" (handoff detalle_beneficiario) */}
             {detail && (() => {
