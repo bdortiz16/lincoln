@@ -6,6 +6,7 @@ import { supabase } from '../lib/supabaseClient';
 import { llamarFuncion } from '../lib/edge';
 import { FlagImg } from './FlagImg';
 import { callFinity } from './FinitySection';
+import { ContabilidadDashboard } from './ContabilidadDashboard';
 
 declare const __BUILD_TS__: string;
 
@@ -1897,122 +1898,23 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
             </>)}
 
             {/* ── VISTA CONTABILIDAD ──
-                La plata, por beneficiario. Arriba los totales de la cuenta por
-                moneda; abajo cada persona ordenada por lo que recibió en el
-                año, con sus barras. Clic en la fila abre su extracto. */}
-            {vista === 'contabilidad' && (() => {
-                const porMoneda: Record<string, { mes: number; anio: number; historico: number; envios: number }> = {};
-                const filas = contacts.map(c => {
-                    const mv = movidoPor[c.id];
-                    const movs = movimientosDe(c).filter(t => t.status === 'Completado' || t.status === 'Procesando');
-                    const historico = movs.reduce((s, t) => s + (Number(t.amount) || 0), 0);
-                    if (mv) {
-                        const acc = porMoneda[mv.moneda] ?? (porMoneda[mv.moneda] = { mes: 0, anio: 0, historico: 0, envios: 0 });
-                        acc.mes += mv.mes; acc.anio += mv.anio; acc.historico += historico; acc.envios += movs.length;
-                    }
-                    return { c, mv, historico, envios: movs.length };
-                }).sort((a, b) => (b.mv?.anio ?? 0) - (a.mv?.anio ?? 0) || b.historico - a.historico);
-                const conPlata = filas.filter(f => f.historico > 0);
-                const sinPlata = filas.length - conPlata.length;
-                const descargarTodo = () => {
-                    const esc = (v: any) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-                    const lineas = [['Fecha', 'Beneficiario', 'Banco o riel', 'Cuenta o llave', 'Tipo', 'Monto', 'Moneda', 'Estado', 'Referencia'].map(esc).join(',')];
-                    for (const c of contacts) {
-                        const m = rowMeta(c);
-                        for (const t of movimientosDe(c)) {
-                            lineas.push([
-                                new Date(t.createdAt ?? t.created_at ?? t.date ?? 0).toISOString(),
-                                c.name, m.bankName === '—' ? m.railLine : m.bankName,
-                                c.accountKind === 'wallet' ? c.accountNumber : (c.brebKey ?? c.accountNumber),
-                                t.type === 'dispersion' ? 'Dispersión' : 'Envío',
-                                Number(t.amount) || 0, t.currency ?? 'COP', t.status ?? '',
-                                t.providerRef ?? t.reference ?? t.txHash ?? t.id ?? '',
-                            ].map(esc).join(','));
-                        }
-                    }
-                    const url = URL.createObjectURL(new Blob(['﻿' + lineas.join('\n')], { type: 'text/csv;charset=utf-8' }));
-                    const a = document.createElement('a');
-                    a.href = url; a.download = `lincoin-contabilidad-beneficiarios-${new Date().toISOString().slice(0, 10)}.csv`; a.click();
-                    setTimeout(() => URL.revokeObjectURL(url), 30000);
-                };
-                const monedas = Object.entries(porMoneda).sort((a, b) => b[1].anio - a[1].anio);
-                return (
-                    <>
-                        {/* Totales de la cuenta, una tarjeta por moneda. */}
-                        {monedas.length === 0 ? (
-                            <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, padding: '26px 24px' }}>
-                                <p style={{ fontSize: 14, fontWeight: 600, color: '#F4F4F2' }}>Todavía no hay envíos a beneficiarios.</p>
-                                <p style={{ fontSize: 12.5, color: '#878E88', marginTop: 4 }}>Cuando salga el primero, acá aparece cuánto y a quién.</p>
-                            </div>
-                        ) : monedas.map(([moneda, tot]) => (
-                            <div key={moneda} className="grid grid-cols-2 md:grid-cols-4" style={{ gap: 10 }}>
-                                {[
-                                    ['ESTE MES', tot.mes], ['ESTE AÑO', tot.anio], ['HISTÓRICO', tot.historico],
-                                ].map(([r, v]) => (
-                                    <div key={String(r)} style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, padding: '16px 18px', minWidth: 0 }}>
-                                        <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1.2px', color: '#878E88' }}>{r} · {moneda}</p>
-                                        <p style={{ fontSize: 19, fontWeight: 800, color: '#F4F4F2', marginTop: 6, letterSpacing: '-0.4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontVariantNumeric: 'tabular-nums' }}>
-                                            {fmtMovido(Number(v), moneda)}
-                                        </p>
-                                    </div>
-                                ))}
-                                <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, padding: '16px 18px', minWidth: 0 }}>
-                                    <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1.2px', color: '#878E88' }}>ENVÍOS · {moneda}</p>
-                                    <p style={{ fontSize: 19, fontWeight: 800, color: '#F4F4F2', marginTop: 6, letterSpacing: '-0.4px', fontVariantNumeric: 'tabular-nums' }}>{tot.envios}</p>
-                                </div>
-                            </div>
-                        ))}
-                        <p style={{ fontSize: 11.5, color: 'rgba(244,244,242,0.45)', lineHeight: 1.5, marginTop: -8 }}>
-                            Cuenta lo Completado y lo Procesando: la plata ya salió. Depósitos, conversiones y demás movimientos están en Movimientos, con su propia exportación.
-                        </p>
-
-                        {/* Por beneficiario. */}
-                        <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, overflow: 'hidden' }}>
-                            <div className="flex items-center justify-between flex-wrap gap-3" style={{ padding: '12px 22px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-                                <span style={{ color: '#878E88', fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px' }}>
-                                    POR BENEFICIARIO · {conPlata.length}{sinPlata > 0 ? ` · ${sinPlata} sin envíos` : ''}
-                                </span>
-                                {conPlata.length > 0 && (
-                                    <button onClick={descargarTodo}
-                                        style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 8, padding: '7px 12px' }}
-                                        className="hover:border-[rgba(74,222,128,0.5)] transition-colors">
-                                        Descargar CSV de todo
-                                    </button>
-                                )}
-                            </div>
-                            {conPlata.length === 0 && (
-                                <p style={{ fontSize: 12.5, color: '#878E88', padding: '18px 22px' }}>Ningún beneficiario ha recibido envíos todavía.</p>
-                            )}
-                            {conPlata.map(({ c, mv, historico, envios }) => {
-                                const m = rowMeta(c);
-                                return (
-                                    <div key={c.id} className="flex items-start gap-3 hover:bg-white/[0.02] transition-colors cursor-pointer"
-                                        onClick={() => setPanel({ c, tipo: 'contabilidad' })}
-                                        style={{ padding: '13px 22px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-                                        <div style={{ width: 38, height: 38, borderRadius: '50%', background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', border: '1px solid rgba(255,255,255,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                                            <span style={{ color: '#878E88', fontWeight: 800, fontSize: 13 }}>{initialsOf(c.name)}</span>
-                                        </div>
-                                        <div className="min-w-0" style={{ flex: 1 }}>
-                                            <div className="flex items-start justify-between gap-3">
-                                                <div className="min-w-0">
-                                                    <p style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{prettyName(c.name)}</p>
-                                                    <p style={{ fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.bankName} · {m.maskLine}</p>
-                                                </div>
-                                                <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                                                    <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.8px', color: '#878E88' }}>HISTÓRICO</p>
-                                                    <p style={{ fontSize: 13.5, fontWeight: 800, color: '#F4F4F2', fontVariantNumeric: 'tabular-nums' }}>{fmtMovido(historico, mv?.moneda ?? 'COP')}</p>
-                                                    <p style={{ fontSize: 11, color: '#878E88' }}>{envios} envío{envios === 1 ? '' : 's'}</p>
-                                                </div>
-                                            </div>
-                                            {barrasMovido(c)}
-                                        </div>
-                                    </div>
-                                );
-                            })}
-                        </div>
-                    </>
-                );
-            })()}
+                Un dashboard, no doce tarjetas. Vive en su propio archivo; acá
+                solo se le pasan los datos y las funciones que ya existen —la
+                MISMA movimientosDe que alimenta las barras y el extracto— para
+                que tres pantallas no puedan contar distinto la misma plata. */}
+            {vista === 'contabilidad' && (
+                <ContabilidadDashboard
+                    contacts={contacts}
+                    transactions={transactions as any[]}
+                    userId={currentUser?.id}
+                    movimientosDe={movimientosDe}
+                    rowMeta={rowMeta}
+                    initialsOf={initialsOf}
+                    prettyName={prettyName}
+                    onExtracto={(c) => setPanel({ c, tipo: 'contabilidad' })}
+                    onCompliance={(c) => setPanel({ c, tipo: 'compliance' })}
+                />
+            )}
 
             {/* ── VISTA COMPLIANCE ──
                 Quién puede recibir plata y quién no. Arriba los conteos; abajo
