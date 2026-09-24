@@ -2378,26 +2378,112 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                     </div>
                   )}
 
-                  {!carguesRecordOnly && (
-                    <div className="rounded-xl p-3 mb-3" style={{ backgroundColor: '#121413', border: '1px solid rgba(255,255,255,0.12)' }}>
-                      <label className="block text-[10px] font-bold uppercase tracking-wide mb-1" style={{ color: '#878E88' }}>Tu código 2FA para autorizar este cargue</label>
-                      <CodeInput value={cargueOtp} onChange={setCargueOtp} tone="dark"
-                        aria="Tu código 2FA para autorizar el cargue" />
-                      <p className="text-[10px] mt-1.5 mb-0" style={{ color: 'rgba(244,244,242,0.45)' }}>Se pide en cada cargue, no solo al entrar. Cada código sirve una sola vez.</p>
-                    </div>
-                  )}
-
+                  {/* El 2FA ya NO se pide acá. Se pide en la ventana de
+                      confirmación, DESPUÉS de ver el desglose: un código que
+                      se escribe antes de revisar la cifra autoriza a ciegas. */}
                   <button
                     onClick={requestCargue}
-                    disabled={carguesBusy || (usandoAcct ? !acctCalc.listo : !carguesAmount) || (!carguesRecordOnly && cargueOtp.length !== 6)}
+                    disabled={carguesBusy || (usandoAcct ? !acctCalc.listo : !carguesAmount)}
                     className="w-full py-3 rounded-lg text-sm font-bold text-white bg-[#0C0E0D] hover:bg-[#161A17] disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
                   >
-                    {carguesBusy ? <><RefreshCw size={15} className="animate-spin" /> Aplicando…</> : <>{carguesDir === 'credit' ? 'Acreditar' : 'Descontar'} saldo</>}
+                    {carguesBusy ? <><RefreshCw size={15} className="animate-spin" /> Aplicando…</> : <>Revisar y {carguesDir === 'credit' ? 'acreditar' : 'descontar'}</>}
                   </button>
                 </>
               )}
             </div>
           </div>
+
+          {/* ── Cargues hechos a este cliente ──
+              Antes no había dónde mirarlos: para saber si un cargue se
+              aplicó bien había que ir a Movimientos y buscar. Acá está la
+              lista de lo que se le acreditó y descontó a mano, con el
+              desglose contable que se guardó, y un botón para revertir que
+              deja el descuento listo —igual pide revisar y 2FA—. */}
+          {carguesClient && (() => {
+            const fechaDe = (t: any): Date | null => {
+              const v = t?.creditedAt ?? t?.createdAt ?? t?.created_at ?? t?.date;
+              const s = String(v ?? '').trim(); if (!s) return null;
+              const dmy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+              const d = dmy ? new Date(Number(dmy[3]), Number(dmy[2]) - 1, Number(dmy[1])) : new Date(s);
+              return isNaN(d.getTime()) ? null : d;
+            };
+            const cargues = (getTransactionHistory() as any[])
+              .filter(t => t.userId === carguesClient.id && (t.source === 'admin_cargue' || t.source === 'admin_backfill' || t.type === 'adjustment' || (t.type === 'load' && t.rail)))
+              .map(t => ({ t, d: fechaDe(t) }))
+              .sort((a, b) => (b.d?.getTime() ?? 0) - (a.d?.getTime() ?? 0));
+            const fmt = (v: any) => Math.round(Number(v) || 0).toLocaleString('es-CO');
+            const revertir = (t: any) => {
+              const esCredito = (t.direction ?? (t.type === 'load' ? 'credit' : 'debit')) === 'credit';
+              const monto = Math.round(Number(t.grossCop ?? t.amount) || 0);
+              setCarguesRail((t.rail ?? t.currency ?? 'COP') as any);
+              setCarguesDir(esCredito ? 'debit' : 'credit');
+              setCarguesRecordOnly(false);
+              setAcctOn(false);
+              setCarguesAmount(String(monto));
+              setCarguesNote(`Reversa del ${esCredito ? 'cargue' : 'descuento'} del ${fechaDe(t)?.toLocaleDateString('es-CO') ?? '—'} · ${fmt(t.amount)} COP${t.note ? ` · ${String(t.note).slice(0, 60)}` : ''}`);
+              setCarguesMsg({ ok: true, text: `Reversa preparada: ${esCredito ? 'descontar' : 'acreditar'} ${fmt(monto)} COP en ${railLabelOf(t.rail ?? t.currency ?? 'COP')}. Revisá y autorizá arriba.` });
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            };
+            return (
+              <div className="mt-6 rounded-xl" style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)' }}>
+                <div className="flex items-center justify-between flex-wrap gap-2" style={{ padding: '14px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                  <div>
+                    <p style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2', margin: 0 }}>Cargues a {carguesClient.name}</p>
+                    <p style={{ fontSize: 12, color: '#878E88', margin: '2px 0 0' }}>{cargues.length} {cargues.length === 1 ? 'movimiento manual' : 'movimientos manuales'} · lo más reciente primero</p>
+                  </div>
+                </div>
+                {cargues.length === 0 ? (
+                  <p style={{ fontSize: 12.5, color: '#878E88', padding: '16px 18px', margin: 0 }}>Todavía no se le ha hecho ningún cargue manual.</p>
+                ) : (
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 820 }}>
+                      <thead><tr>{['FECHA', 'RIEL', 'MOVIMIENTO', 'NETO', 'CONTABILIDAD', 'NOTA', ''].map((h, i) => (
+                        <th key={h || 'acc'} style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1.2px', color: 'rgba(244,244,242,0.45)', textAlign: i === 3 ? 'right' : 'left', padding: '9px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)', whiteSpace: 'nowrap' }}>{h}</th>
+                      ))}</tr></thead>
+                      <tbody>
+                        {cargues.slice(0, 60).map(({ t, d }) => {
+                          const esCredito = (t.direction ?? (t.type === 'load' ? 'credit' : 'debit')) === 'credit';
+                          const backfill = t.source === 'admin_backfill' || t.recordOnly === true;
+                          const a = t.acct;
+                          return (
+                            <tr key={t.id}>
+                              <td style={{ padding: '10px 18px', fontSize: 12, color: '#b9beba', borderBottom: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>{d ? d.toLocaleString('es-CO', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'}</td>
+                              <td style={{ padding: '10px 18px', fontSize: 12.5, color: '#F4F4F2', borderBottom: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap' }}>{railLabelOf(t.rail ?? t.currency ?? 'COP')}</td>
+                              <td style={{ padding: '10px 18px', borderBottom: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap' }}>
+                                <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '3px 8px', borderRadius: 999, border: `1px solid ${backfill ? 'rgba(251,191,36,0.35)' : esCredito ? 'rgba(74,222,128,0.35)' : 'rgba(248,113,113,0.35)'}`, color: backfill ? '#FBBF24' : esCredito ? '#4ADE80' : '#F87171' }}>
+                                  {backfill ? 'SOLO REGISTRO' : esCredito ? 'ACREDITADO' : 'DESCONTADO'}
+                                </span>
+                              </td>
+                              <td style={{ padding: '10px 18px', fontSize: 13, fontWeight: 700, textAlign: 'right', color: esCredito ? '#4ADE80' : '#F87171', borderBottom: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+                                {esCredito ? '+' : '−'}{fmt(t.amount)} COP
+                                {t.feeCop > 0 && <p style={{ fontSize: 10.5, color: '#878E88', margin: '2px 0 0', fontWeight: 500 }}>bruto {fmt(t.grossCop)} − fee {fmt(t.feeCop)}</p>}
+                              </td>
+                              <td style={{ padding: '10px 18px', fontSize: 11.5, color: '#b9beba', borderBottom: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap' }}>
+                                {a ? (
+                                  <>
+                                    <span style={{ fontVariantNumeric: 'tabular-nums' }}>{Number(a.usdtGross).toLocaleString('es-CO')} USDT · venta {Number(a.sellRate).toLocaleString('es-CO')} · cliente {Number(a.clientRate).toLocaleString('es-CO')}</span>
+                                    <p style={{ margin: '2px 0 0', fontWeight: 700, color: Number(a.utilityCop) >= 0 ? '#4ADE80' : '#F87171' }}>utilidad {fmt(a.utilityCop)} COP</p>
+                                  </>
+                                ) : <span style={{ color: 'rgba(244,244,242,0.45)' }}>sin contabilidad</span>}
+                              </td>
+                              <td style={{ padding: '10px 18px', fontSize: 11.5, color: '#878E88', borderBottom: '1px solid rgba(255,255,255,0.06)', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.note ?? ''}>{t.note ?? '—'}</td>
+                              <td style={{ padding: '10px 18px', borderBottom: '1px solid rgba(255,255,255,0.06)', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                                {!backfill && (
+                                  <button onClick={() => revertir(t)} title="Prepara el movimiento contrario por el mismo monto. Igual pide revisar y 2FA."
+                                    style={{ fontSize: 11.5, fontWeight: 700, color: '#878E88', background: 'transparent', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 7, padding: '5px 10px', cursor: 'pointer' }}
+                                    className="hover:text-[#F4F4F2] hover:border-[rgba(255,255,255,0.25)] transition-colors">Revertir</button>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Ventana de confirmación del cargue (tema Lincoin) */}
           {carguesConfirm && carguesClient && (
@@ -2453,6 +2539,45 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                       {Math.max(0, Number((carguesClient.balances as any)?.[carguesRail] ?? 0) + deltaNet).toLocaleString('es-CO')} COP
                     </span>
                   </div>
+                  {/* ── El desglose de la operación ──
+                      Antes la confirmación mostraba el monto y el saldo, y
+                      nada más: las tasas, el fee de red y la utilidad se veían
+                      en el formulario y desaparecían justo cuando había que
+                      autorizarlas. Acá va todo lo que el servidor va a usar. */}
+                  {usandoAcct && acctCalc.listo && (
+                    <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid rgba(255,255,255,0.10)' }}>
+                      <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1.2px', color: '#878E88', margin: '0 0 8px' }}>CÓMO SE CALCULÓ</p>
+                      {[
+                        ['USDT que envió el cliente', `${acctCalc.usdtGross.toLocaleString('es-CO')} USDT`],
+                        ['USDT que llegaron', `${acctCalc.usdtNet.toLocaleString('es-CO')} USDT`],
+                        ['Fee de red', `${acctCalc.feeUsdt.toLocaleString('es-CO')} USDT · ${acctFeeBearer === 'lincoin' ? 'lo asume Lincoin' : 'lo asume el cliente'}`],
+                        ['Tasa de venta', `${acctCalc.sellRate.toLocaleString('es-CO')} COP/USDT`],
+                        ['Tasa al cliente', `${acctCalc.clientRate.toLocaleString('es-CO')} COP/USDT`],
+                        ['Entró por la venta', `${acctCalc.revenueCop.toLocaleString('es-CO')} COP`],
+                        ['Al cliente, antes de comisión', `${acctCalc.copToClient.toLocaleString('es-CO')} COP`],
+                      ].map(([l, v]) => (
+                        <div key={l} className="flex items-center justify-between" style={{ gap: 12, padding: '4px 0' }}>
+                          <span style={{ fontSize: 12, color: '#878E88' }}>{l}</span>
+                          <span style={{ fontSize: 12.5, fontWeight: 700, color: '#F4F4F2', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>{v}</span>
+                        </div>
+                      ))}
+                      <div className="flex items-center justify-between" style={{ gap: 12, paddingTop: 8, marginTop: 4, borderTop: '1px solid rgba(255,255,255,0.10)' }}>
+                        <span style={{ fontSize: 12.5, fontWeight: 700, color: '#F4F4F2' }}>Tu utilidad</span>
+                        <span style={{ fontSize: 15, fontWeight: 800, color: acctCalc.utilityCop >= 0 ? '#4ADE80' : '#F87171', fontVariantNumeric: 'tabular-nums' }}>{acctCalc.utilityCop.toLocaleString('es-CO')} COP</span>
+                      </div>
+                      {acctCalc.utilityCop < 0 && <p style={{ fontSize: 11, color: '#F87171', margin: '6px 0 0' }}>Estás pagando más de lo que recibiste. Revisá las tasas antes de autorizar.</p>}
+                    </div>
+                  )}
+                  {!usandoAcct && !carguesRecordOnly && carguesDir === 'credit' && (
+                    <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', marginTop: 10, lineHeight: 1.5 }}>
+                      Sin contabilidad: este cargue no registra USDT ni tasas, así que no tendrá utilidad calculada.
+                    </p>
+                  )}
+                  {carguesRecordOnly && (
+                    <p style={{ fontSize: 11.5, color: '#FBBF24', marginTop: 10, lineHeight: 1.5, fontWeight: 600 }}>
+                      Solo registro histórico: el saldo NO cambia y no se cobra comisión.
+                    </p>
+                  )}
                   {carguesNote.trim() && <p style={{ fontSize: 12, color: '#878E88', marginTop: 12, fontStyle: 'italic' }}>“{carguesNote.trim()}”</p>}
                 </div>
                   );
@@ -2469,17 +2594,32 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                     </label>
                   </div>
                 )}
+                {/* El 2FA, al final: después de leer el desglose y justo
+                    antes del botón. Cada código sirve una sola vez. */}
+                {!carguesRecordOnly && (
+                  <div style={{ margin: '0 24px 14px', padding: '12px 14px', background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 12 }}>
+                    <label className="block text-[10px] font-bold uppercase tracking-wide mb-1.5" style={{ color: '#878E88' }}>Tu código 2FA para autorizar</label>
+                    <CodeInput value={cargueOtp} onChange={setCargueOtp} tone="dark" aria="Tu código 2FA para autorizar el cargue" />
+                    <p className="text-[10px] mt-1.5 mb-0" style={{ color: 'rgba(244,244,242,0.45)' }}>Se pide en cada cargue, no solo al entrar.</p>
+                  </div>
+                )}
+                {(() => {
+                  const bloqueado = carguesBusy || (cargueExceeds && !carguesOverride) || (!carguesRecordOnly && cargueOtp.length !== 6);
+                  return (
                 <div style={{ display: 'flex', gap: 10, padding: '4px 24px 22px' }}>
                   <button onClick={() => { setCarguesConfirm(null); setCarguesOverride(false); }} disabled={carguesBusy}
                     style={{ flex: 1, padding: '12px', borderRadius: 11, fontSize: 14, fontWeight: 700, color: '#F4F4F2', background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', cursor: carguesBusy ? 'default' : 'pointer' }}>
                     Cancelar
                   </button>
-                  <button onClick={submitCargue} disabled={carguesBusy || (cargueExceeds && !carguesOverride)}
+                  <button onClick={submitCargue} disabled={bloqueado}
+                    title={!carguesRecordOnly && cargueOtp.length !== 6 ? 'Escribí tu código 2FA para autorizar' : undefined}
                     style={{ flex: 1.4, padding: '12px', borderRadius: 11, fontSize: 14, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-                      color: '#0A0C0B', background: (carguesBusy || (cargueExceeds && !carguesOverride)) ? 'rgba(74,222,128,0.4)' : '#4ADE80', border: 'none', cursor: (carguesBusy || (cargueExceeds && !carguesOverride)) ? 'not-allowed' : 'pointer' }}>
-                    {carguesBusy ? <><RefreshCw size={15} className="animate-spin" /> Aplicando…</> : <>Confirmar {carguesDir === 'credit' ? 'cargue' : 'descuento'}</>}
+                      color: '#0A0C0B', background: bloqueado ? 'rgba(74,222,128,0.4)' : '#4ADE80', border: 'none', cursor: bloqueado ? 'not-allowed' : 'pointer' }}>
+                    {carguesBusy ? <><RefreshCw size={15} className="animate-spin" /> Aplicando…</> : <>Autorizar {carguesDir === 'credit' ? 'cargue' : 'descuento'}</>}
                   </button>
                 </div>
+                  );
+                })()}
               </div>
             </div>
           )}
