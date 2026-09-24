@@ -1243,16 +1243,9 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
         setTimeout(() => URL.revokeObjectURL(url), 30000);
     };
 
-    // Las dos barras, debajo del nombre, y debajo de ellas los dos botones.
-    // Es lo primero que se lee después de quién es: cuánto se le movió este
-    // mes, cuánto en el año, y desde ahí se abre el extracto o el expediente.
-    const botonPanel = (c: MouvContact, tipo: 'contabilidad' | 'compliance', rot: string) => (
-        <button onClick={(e) => { e.stopPropagation(); setPanel({ c, tipo }); }}
-            className="hover:border-[rgba(74,222,128,0.5)] hover:text-[#F4F4F2] transition-colors"
-            style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '0.4px', color: '#878E88', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 7, padding: '4px 9px', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-            {rot}
-        </button>
-    );
+    // Las dos barras, debajo del nombre. Es lo primero que se lee después de
+    // quién es: cuánto se le movió este mes y cuánto en el año. El extracto y
+    // el expediente se abren desde Contabilidad y Compliance, en el menú.
     const barrasMovido = (c: MouvContact, compacto = false) => {
         const id = c.id;
         const mv = movidoPor[id];
@@ -1271,16 +1264,12 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                 </span>
             </div>
         );
+        // Sin botones debajo: Contabilidad y Compliance viven en el menú. Acá
+        // solo van las barras.
         return (
-            <div style={{ marginTop: 4 }}>
-                <div title={hay ? `${mv.envios} envío${mv.envios === 1 ? '' : 's'} este año` : 'Sin envíos este año'}>
-                    {fila('MES', mv.mes, true)}
-                    {fila('AÑO', mv.anio, false)}
-                </div>
-                <div className="flex items-center" style={{ gap: 6, marginTop: 7 }}>
-                    {botonPanel(c, 'contabilidad', 'Contabilidad')}
-                    {botonPanel(c, 'compliance', 'Compliance')}
-                </div>
+            <div style={{ marginTop: 4 }} title={hay ? `${mv.envios} envío${mv.envios === 1 ? '' : 's'} este año` : 'Sin envíos este año'}>
+                {fila('MES', mv.mes, true)}
+                {fila('AÑO', mv.anio, false)}
             </div>
         );
     };
