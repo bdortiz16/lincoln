@@ -265,21 +265,6 @@ const DOC_TYPES = [
     { v: 'PAS', l: 'Pasaporte' },
 ];
 
-// Debajo del número, mientras se escribe un NIT: cuántos dígitos van, cuál
-// es el de verificación que falta, o si el que pusieron no cuadra. Se dice
-// ANTES de guardar; el error al guardar es el último recurso, no el primero.
-const pistaNit = (docType: string, numero: string) => {
-    if (docType !== 'NIT') return null;
-    const d = String(numero ?? '').replace(/\D/g, '');
-    if (!d) return null;
-    const v = validarNit(d);
-    return (
-        <p style={{ fontSize: 11, marginTop: 5, lineHeight: 1.4, color: v.ok ? '#4ADE80' : '#FBBF24' }}>
-            {v.ok ? '✓ ' : ''}{v.texto}
-        </p>
-    );
-};
-
 const CONTACT_COUNTRIES = [
     { code: 'CO', name: 'Colombia' },
     { code: 'CL', name: 'Chile' },
@@ -1679,7 +1664,6 @@ export const ContactsSection: React.FC<{
                                     <label style={LBL}>Número de documento</label>
                                     <input value={form.docNumber} onChange={e => setForm(fm => ({ ...fm, docNumber: e.target.value }))} inputMode="numeric" style={INP}
                                         placeholder={form.docType === 'NIT' ? '10 dígitos, con el de verificación' : undefined} />
-                                    {pistaNit(form.docType, form.docNumber)}
                                 </div>
                             </div>
                         </>
@@ -1701,7 +1685,6 @@ export const ContactsSection: React.FC<{
                                 <label style={LBL}>Número de documento</label>
                                 <input value={form.docNumber} onChange={e => setForm(fm => ({ ...fm, docNumber: e.target.value }))} inputMode="numeric" style={INP}
                                     placeholder={form.docType === 'NIT' ? '10 dígitos, con el de verificación' : undefined} />
-                                {pistaNit(form.docType, form.docNumber)}
                             </div>
                         </div>
                         <div className="grid grid-cols-2 gap-3">
