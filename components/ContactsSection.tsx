@@ -607,6 +607,13 @@ export const ContactsSection: React.FC<{
     const [form, setForm] = useState({ ...emptyForm });
     const [saving, setSaving] = useState(false);
     const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
+    // El aviso de error dentro de la ventana de inscribir, encima de lo que
+    // hay que corregir. Fuera de la ventana no se veía.
+    const avisoModal = formOpen && notice && !notice.ok ? (
+        <div role="alert" style={{ background: 'rgba(251,191,36,0.09)', border: '1px solid rgba(251,191,36,0.35)', borderRadius: 10, padding: '10px 13px', fontSize: 12.5, lineHeight: 1.5, color: '#FBBF24', fontWeight: 500 }}>
+            {notice.text}
+        </div>
+    ) : null;
     // Consulta AUTOMÁTICA de la llave Bre-B en el directorio de Mouv: al escribir
     // la llave se resuelve el TITULAR (nombre + documento) y su BANCO, y se
     // autollenan los campos. Evita errores de digitación del beneficiario.
@@ -1451,7 +1458,10 @@ export const ContactsSection: React.FC<{
                 </div>
             )}
 
-            {notice && (
+            {/* Un error del formulario se muestra DENTRO del formulario. Acá,
+                en la página, quedaba tapado por la ventana y parecía que no
+                pasaba nada al guardar. */}
+            {notice && !(formOpen && !notice.ok) && (
                 <div className={`rounded-xl border p-3 text-sm font-medium ${notice.ok ? 'bg-green-50 border-green-200 text-green-800' : 'bg-amber-50 border-amber-200 text-amber-800'}`}>
                     {notice.text}
                 </div>
@@ -1495,6 +1505,7 @@ export const ContactsSection: React.FC<{
 
                     {/* Cuerpo scrolleable */}
                     <div style={{ padding: '6px 22px 20px', overflowY: 'auto' }} className="space-y-4">
+                    {formStep !== 'data' && avisoModal}
 
                     {/* PASO WALLET — datos de la wallet USDT (Estados Unidos) */}
                     {formStep === 'wallet' && (<>
@@ -1582,6 +1593,7 @@ export const ContactsSection: React.FC<{
                             </button>
                         ))}
                     </div>
+                    {avisoModal}
                     {/* Riel de envío (solo Colombia): Bre-B o ACH */}
                     {form.country === 'Colombia' && (<div>
                         <label style={LBL}>Riel de envío</label>
