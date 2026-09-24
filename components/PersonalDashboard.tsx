@@ -4735,6 +4735,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       {(activeView === 'contactos' || activeView === 'contabilidad' || activeView === 'compliance') && (
           <ContactsSection
               vista={activeView === 'contactos' ? 'beneficiarios' : activeView}
+              onVerMovimiento={(tx: any) => setSelectedTx(tx)}
               onBack={() => setActiveView('dashboard')}
               onSendTo={(c: any) => {
                   // "Enviar" desde Beneficiarios: abre Enviar Dinero con el

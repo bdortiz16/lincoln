@@ -311,7 +311,14 @@ const FilterChip: React.FC<{ active: boolean; onClick: () => void; children: Rea
 // que cambia es qué se pone adelante: la cuenta destino, la plata, o quién
 // puede recibirla.
 export type VistaContactos = 'beneficiarios' | 'contabilidad' | 'compliance';
-export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: MouvContact) => void; vista?: VistaContactos }> = ({ onBack, onSendTo, vista = 'beneficiarios' }) => {
+export const ContactsSection: React.FC<{
+    onBack?: () => void;
+    onSendTo?: (c: MouvContact) => void;
+    vista?: VistaContactos;
+    // Abre el detalle de un movimiento (el modal con el comprobante), que vive
+    // en el dashboard principal. Contabilidad lo necesita para "Ver".
+    onVerMovimiento?: (tx: any) => void;
+}> = ({ onBack, onSendTo, vista = 'beneficiarios', onVerMovimiento }) => {
     const { currentUser, updateUserRawData, transactions, refreshData } = useDatabase();
     const { config: sysConfig } = useSystemConfig();
     // Menú "···" del modal de detalle
@@ -1903,15 +1910,9 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                 que tres pantallas no puedan contar distinto la misma plata. */}
             {vista === 'contabilidad' && (
                 <ContabilidadDashboard
-                    contacts={contacts}
                     transactions={transactions as any[]}
                     userId={currentUser?.id}
-                    movimientosDe={movimientosDe}
-                    rowMeta={rowMeta}
-                    initialsOf={initialsOf}
-                    prettyName={prettyName}
-                    onExtracto={(c) => setPanel({ c, tipo: 'contabilidad' })}
-                    onCompliance={(c) => setPanel({ c, tipo: 'compliance' })}
+                    onVerMovimiento={onVerMovimiento}
                 />
             )}
 
@@ -1933,6 +1934,8 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                     amlMotivo={amlMotivo}
                     esAdmin={(currentUser as any)?.role === 'admin'}
                     onDetalle={(c) => setPanel({ c, tipo: 'compliance' })}
+                    movimientosDe={movimientosDe}
+                    onExtracto={(c) => setPanel({ c, tipo: 'contabilidad' })}
                 />
             )}
 

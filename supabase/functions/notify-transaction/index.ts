@@ -287,10 +287,12 @@ const LOGO_SVG_DATAURI = `data:image/svg+xml;base64,${btoa(`
   <circle cx="68" cy="67" r="12" fill="${BRAND_TEAL}"/>
 </svg>`.trim())}`
 
-function htmlEmail(tx: TxRecord, name: string, subject: string, completed = false): string {
+function htmlEmail(tx: TxRecord, name: string, subject: string, completed = false, extraRows = ''): string {
   const label   = completed ? 'Operación completada' : txTypeLabel(tx.type)
   const message = completed ? buildMessageCompleted(tx, name) : buildMessage(tx, name)
-  const details = buildDetailRows(tx, completed)
+  // extraRows: filas que no salen de la operación sino de lo que se hizo con
+  // ella — hoy, el número del comprobante emitido.
+  const details = buildDetailRows(tx, completed) + extraRows
   const amount  = fmt(tx.amount, tx.currency)
 
   return `<!DOCTYPE html>
@@ -509,6 +511,19 @@ Deno.serve(async (req) => {
     if (userErr) console.error('[notify] user lookup error:', userErr.message)
     console.log('[notify] user found:', user?.email ?? 'none')
 
+    // ── COMPROBANTE AUTOMÁTICO ──
+    // Apenas la operación está Completada se emite el comprobante, con número
+    // consecutivo, y su número va en el correo. Se emite ANTES de mirar si el
+    // cliente apagó los correos: el comprobante es un documento contable,
+    // existe aunque el correo no salga. Y se emite ANTES de mandar el correo
+    // para poder ponerle el número.
+    //
+    // Si la tabla no existe todavía (falta correr 2026_comprobantes.sql) se
+    // anota en el log y el correo sale igual: un comprobante que no se pudo
+    // numerar no es motivo para no avisar que la plata llegó.
+    let comprobante: { numero: string; folio: number } | null = null
+    if (completed && !failed) comprobante = await emitirComprobante(tx, user?.email ?? null)
+
     if (!user?.email) return new Response('no_email', { status: 200 })
 
     const prefs = user.raw_data ?? {}
@@ -549,7 +564,9 @@ Deno.serve(async (req) => {
       const tplLookupKey = completed ? `${tplKeyOf(tx.type)}_done` : tplKeyOf(tx.type)
       const ovSubject = (TPL[tplLookupKey] as any)?.subject
       if (ovSubject) subject = applyVars(String(ovSubject), { nombre: name, monto: fmt(tx.amount, tx.currency) })
-      html = htmlEmail(tx, name, subject, completed)
+      const filaComprobante = comprobante ? detailRow('Comprobante', comprobante.numero) : ''
+      html = htmlEmail(tx, name, subject, completed, filaComprobante)
+      if (comprobante) subject = `${subject} · ${comprobante.numero}`
     }
 
     const emailPayload = {
@@ -576,9 +593,61 @@ Deno.serve(async (req) => {
     }
 
     console.log('[notify] email sent OK:', resBody)
+    // Recién ahora, con Resend aceptando, el comprobante queda como enviado.
+    if (comprobante) {
+      await db.from('comprobantes')
+        .update({ enviado_at: new Date().toISOString(), correo: user.email })
+        .eq('folio', comprobante.folio)
+        .then(({ error }) => { if (error) console.error('[notify] comprobante enviado_at:', error.message) })
+    }
     return new Response('sent', { status: 200 })
   } catch (e) {
     console.error('[notify] exception:', e)
     return new Response('error', { status: 500 })
   }
 })
+
+// ── Emisión del comprobante ───────────────────────────────────────
+// Un INSERT con la operación como UNIQUE: si el webhook llega repetido, el
+// segundo intento choca con la restricción y se devuelve el que ya existía.
+// El número lo pone la base (folio bigserial → numero generado): nunca se
+// arma acá, para que no haya dos comprobantes con el mismo número.
+const contraparteDe = (tx: TxRecord): string | null => {
+  const rd = tx.raw_data ?? {}
+  if (tx.type === 'dispersion' || tx.type === 'send') return rd.beneficiary ?? rd.bank ?? null
+  if (tx.type === 'pay_received') return rd.senderName ?? null
+  if (tx.type === 'pay_sent') return rd.recipientName ?? null
+  if (tx.type === 'convert' || tx.type === 'tx_created') return `${tx.currency} → ${rd.targetCurrency ?? '?'}`
+  if (tx.type === 'load') return rd.method ?? rd.bank ?? null
+  if (tx.type === 'otc_deposit' || tx.type === 'otc_withdraw') return networkLabel(tx.currency, rd)
+  return null
+}
+async function emitirComprobante(tx: TxRecord, correo: string | null): Promise<{ numero: string; folio: number } | null> {
+  const fila = {
+    transaction_id: tx.id,
+    user_id: tx.user_id,
+    tipo: tx.type,
+    monto: String(tx.amount),
+    moneda: tx.currency,
+    contraparte: contraparteDe(tx),
+    estado_al_emitir: tx.status,
+    correo,
+    detalle: { id: tx.id, type: tx.type, amount: tx.amount, currency: tx.currency, status: tx.status, raw_data: tx.raw_data ?? {} },
+  }
+  const { data, error } = await db.from('comprobantes').insert(fila).select('numero, folio').single()
+  if (!error && data) {
+    console.log('[notify] comprobante emitido', (data as any).numero, 'tx', tx.id)
+    return { numero: String((data as any).numero), folio: Number((data as any).folio) }
+  }
+  // 23505 = ya existe uno para esta operación: se devuelve ese.
+  if (error?.code === '23505') {
+    const { data: ya } = await db.from('comprobantes').select('numero, folio').eq('transaction_id', tx.id).maybeSingle()
+    if (ya) return { numero: String((ya as any).numero), folio: Number((ya as any).folio) }
+  }
+  if (/relation .*comprobantes.* does not exist|42P01/i.test(`${error?.code ?? ''} ${error?.message ?? ''}`)) {
+    console.warn('[notify] falta correr 2026_comprobantes.sql: la operación se completó y el correo sale, pero sin comprobante numerado.')
+  } else {
+    console.error('[notify] no se pudo emitir el comprobante:', error?.message)
+  }
+  return null
+}

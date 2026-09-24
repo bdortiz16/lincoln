@@ -63,6 +63,11 @@ type Props = {
   amlMotivo: string | null;
   esAdmin: boolean;
   onDetalle: (c: MouvContact) => void;
+  // Los movimientos hacia cada beneficiario: la MISMA función que usan las
+  // barras de la lista y el extracto. Cumplimiento necesita saber cuánto se
+  // le movió a cada persona; por eso la tabla vive acá y no en Contabilidad.
+  movimientosDe?: (c: MouvContact) => any[];
+  onExtracto?: (c: MouvContact) => void;
 };
 
 const Tarjeta: React.FC<{ children: React.ReactNode; style?: React.CSSProperties }> = ({ children, style }) => (
@@ -106,7 +111,36 @@ const motivoDe = (h: { nivel?: string; codigo?: string; texto?: string; fuente?:
 
 export const ComplianceDashboard: React.FC<Props> = ({
   contacts, amlDe, situacionAml, contactStatus, rowMeta, initialsOf, prettyName, amlActivo, amlMotivo, esAdmin, onDetalle,
+  movimientosDe, onExtracto,
 }) => {
+  // ── Cuánto se le movió a cada beneficiario ──
+  // Mes y año calendario en curso, contando Completado y Procesando. Se suma
+  // por moneda y se muestra la dominante: COP con USDT en una cifra sería
+  // inventar un número.
+  const movido = useMemo(() => {
+    if (!movimientosDe) return null;
+    const ahora = new Date();
+    const iniMes = new Date(ahora.getFullYear(), ahora.getMonth(), 1).getTime();
+    const iniAnio = new Date(ahora.getFullYear(), 0, 1).getTime();
+    const cuando = (t: any) => new Date(t.createdAt ?? t.created_at ?? t.date ?? 0).getTime() || 0;
+    const out = contacts.map(c => {
+      const por: Record<string, { mes: number; anio: number; envios: number }> = {};
+      for (const t of movimientosDe(c)) {
+        if (!(t.status === 'Completado' || t.status === 'Procesando')) continue;
+        const ts = cuando(t); if (ts < iniAnio) continue;
+        const m = String(t.currency ?? 'COP').split('_')[0];
+        const acc = por[m] ?? (por[m] = { mes: 0, anio: 0, envios: 0 });
+        const v = Number(t.amount) || 0;
+        acc.anio += v; acc.envios += 1; if (ts >= iniMes) acc.mes += v;
+      }
+      const dom = Object.entries(por).sort((a, b) => b[1].anio - a[1].anio)[0];
+      return { c, mes: dom?.[1].mes ?? 0, anio: dom?.[1].anio ?? 0, envios: dom?.[1].envios ?? 0, moneda: dom?.[0] ?? 'COP' };
+    }).sort((a, b) => b.anio - a.anio || b.mes - a.mes);
+    const totalMes = out.reduce((s, f) => s + (f.moneda === 'COP' ? f.mes : 0), 0);
+    return { filas: out, totalMes, conEnvios: out.filter(f => f.anio > 0).length };
+  }, [contacts, movimientosDe]);
+  const [verTodosMov, setVerTodosMov] = useState(false);
+  const fmtM = (v: number, m: string) => `${v.toLocaleString('es-CO', { maximumFractionDigits: m === 'COP' ? 0 : 2 })} ${m}`;
   const [filtro, setFiltro] = useState<Filtro>('todos');
   const [busca, setBusca] = useState('');
   const [limite, setLimite] = useState(20);
@@ -417,7 +451,57 @@ export const ComplianceDashboard: React.FC<Props> = ({
         </div>
       </Tarjeta>
 
-      {/* 6. Nota */}
+      {/* 6. Por beneficiario: cuánto se le movió a cada uno ──
+          Es una pregunta de cumplimiento —a quién le está saliendo la plata y
+          en qué proporción— por eso está acá y no en Contabilidad. */}
+      {movido && (
+        <Tarjeta style={{ padding: 0, overflow: 'hidden' }}>
+          <div className="flex items-center justify-between flex-wrap" style={{ gap: 12, padding: '16px 20px', borderBottom: `1px solid ${C.borde}` }}>
+            <div>
+              <p style={{ fontSize: 14.5, fontWeight: 700, color: C.text, margin: 0 }}>Cuánto se le movió a cada beneficiario</p>
+              <p style={{ fontSize: 12, color: C.sub, margin: '2px 0 0' }}>{movido.conEnvios} con envíos este año · {contacts.length - movido.conEnvios} sin envíos</p>
+            </div>
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}>
+              <thead><tr>{['BENEFICIARIO', 'SITUACIÓN', 'MES', 'AÑO', '% DEL MES', 'ENVÍOS', ''].map((h, i) => <th key={h || 'acc'} style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1.2px', color: C.tenue, textAlign: i >= 2 && i <= 5 ? 'right' : 'left', padding: '9px 20px', borderBottom: `1px solid ${C.borde}`, whiteSpace: 'nowrap' }}>{h}</th>)}</tr></thead>
+              <tbody>
+                {(verTodosMov ? movido.filas : movido.filas.slice(0, 15)).map(f => {
+                  const sit = situacionAml(f.c); const m = rowMeta(f.c); const gris = f.anio <= 0;
+                  const p = movido.totalMes > 0 && f.moneda === 'COP' ? Math.round((f.mes / movido.totalMes) * 1000) / 10 : 0;
+                  return (
+                    <tr key={f.c.id} className="lincoin-fila-cumpl" style={{ cursor: 'pointer' }} onClick={() => (onExtracto ?? onDetalle)(f.c)}>
+                      <td style={{ padding: '10px 20px', borderBottom: `1px solid ${C.borde}` }}>
+                        <p style={{ fontSize: 13.5, fontWeight: 700, color: gris ? C.medio : C.text, margin: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 260 }}>{prettyName(f.c.name)}</p>
+                        <p style={{ fontSize: 11.5, color: C.sub, margin: '1px 0 0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 260 }}>{m.bankName} · {m.maskLine}</p>
+                      </td>
+                      <td style={{ padding: '10px 20px', borderBottom: `1px solid ${C.borde}` }}><Pill s={sit} /></td>
+                      <td style={{ padding: '10px 20px', fontSize: 12.5, color: f.mes > 0 ? C.text : C.tenue, textAlign: 'right', fontVariantNumeric: 'tabular-nums', borderBottom: `1px solid ${C.borde}`, whiteSpace: 'nowrap' }}>{f.mes > 0 ? fmtM(f.mes, f.moneda) : '—'}</td>
+                      <td style={{ padding: '10px 20px', fontSize: 12.5, color: f.anio > 0 ? C.text : C.tenue, textAlign: 'right', fontVariantNumeric: 'tabular-nums', borderBottom: `1px solid ${C.borde}`, whiteSpace: 'nowrap' }}>{f.anio > 0 ? fmtM(f.anio, f.moneda) : '—'}</td>
+                      <td style={{ padding: '10px 20px', borderBottom: `1px solid ${C.borde}`, minWidth: 140 }}>
+                        <div className="flex items-center justify-end" style={{ gap: 10 }}>
+                          <div style={{ width: 80, height: 5, borderRadius: 999, background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}><div style={{ width: `${Math.min(100, p)}%`, height: '100%', background: C.verde, borderRadius: 999 }} /></div>
+                          <span style={{ fontSize: 12, color: p > 0 ? C.text : C.tenue, fontVariantNumeric: 'tabular-nums', width: 44, textAlign: 'right' }}>{p > 0 ? `${p} %` : '—'}</span>
+                        </div>
+                      </td>
+                      <td style={{ padding: '10px 20px', fontSize: 12.5, color: gris ? C.tenue : C.text, textAlign: 'right', fontVariantNumeric: 'tabular-nums', borderBottom: `1px solid ${C.borde}` }}>{f.envios}</td>
+                      <td style={{ padding: '10px 20px', borderBottom: `1px solid ${C.borde}`, textAlign: 'right', whiteSpace: 'nowrap' }} onClick={e => e.stopPropagation()}>
+                        <button onClick={() => onDetalle(f.c)} style={{ fontFamily: FONT, fontSize: 11.5, fontWeight: 700, color: C.sub, background: 'transparent', border: `1px solid ${C.borde}`, borderRadius: 7, padding: '5px 10px', cursor: 'pointer' }} className="hover:text-[#F4F4F2] hover:border-[rgba(255,255,255,0.22)] transition-colors">Expediente</button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex items-center justify-between flex-wrap" style={{ gap: 10, padding: '12px 20px', borderTop: `1px solid ${C.borde}` }}>
+            <span style={{ fontSize: 12, color: C.sub }}>Mostrando {Math.min(verTodosMov ? movido.filas.length : 15, movido.filas.length)} de {movido.filas.length}</span>
+            {!verTodosMov && movido.filas.length > 15 && <button onClick={() => setVerTodosMov(true)} style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, color: C.text, background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>Ver todos los beneficiarios →</button>}
+          </div>
+        </Tarjeta>
+      )}
+
+      {/* 7. Nota */}
       <p style={{ fontSize: 12, color: C.tenue, margin: 0, lineHeight: 1.55 }}>
         Un beneficiario bloqueado no puede recibir envíos. En revisión, el envío queda retenido hasta que cumplimiento lo resuelva.
       </p>
