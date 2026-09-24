@@ -25,6 +25,8 @@
 // ══════════════════════════════════════════════════════════════════
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
+import { llamarFuncion } from '../lib/edge';
+import { FacturacionConfig } from './FacturacionConfig';
 
 const FONT = 'Archivo, system-ui, sans-serif';
 const C = {
@@ -190,8 +192,12 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   const [filtroDir, setFiltroDir] = useState<'todos' | 'in' | 'out' | 'conv'>('todos');
   const [busca, setBusca] = useState('');
   const [limite, setLimite] = useState(25);
-  const [folios, setFolios] = useState<Record<string, { numero: string; enviado: boolean }>>({});
+  const [folios, setFolios] = useState<Record<string, { folio: number; numero: string; enviado: boolean; factura?: { estado: string | null; numero: string | null; url: string | null; error: string | null } }>>({});
   const [foliosEstado, setFoliosEstado] = useState<'cargando' | 'ok' | 'sin_tabla' | 'error'>('cargando');
+  const [configAbierta, setConfigAbierta] = useState(false);
+  const [facturacionActiva, setFacturacionActiva] = useState<boolean | null>(null);
+  const [reintentando, setReintentando] = useState<number | null>(null);
+  const [foliosVersion, setFoliosVersion] = useState(0);
 
   const ahora = useMemo(() => new Date(), []);
   const inicioMes = new Date(ahora.getFullYear(), ahora.getMonth(), 1).getTime();
@@ -208,15 +214,35 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     if (!userId) return;
     let vivo = true;
     (async () => {
-      const { data, error } = await supabase.from('comprobantes').select('transaction_id, numero, enviado_at').eq('user_id', userId).limit(2000);
+      const { data, error } = await supabase.from('comprobantes')
+        .select('folio, transaction_id, numero, enviado_at, factura_estado, factura_numero, factura_url, factura_error')
+        .eq('user_id', userId).limit(2000);
       if (!vivo) return;
       if (error) { setFoliosEstado(/does not exist|42P01|schema cache/i.test(error.message) ? 'sin_tabla' : 'error'); return; }
-      const m: Record<string, { numero: string; enviado: boolean }> = {};
-      for (const r of (data ?? []) as any[]) m[String(r.transaction_id)] = { numero: String(r.numero), enviado: !!r.enviado_at };
+      const m: typeof folios = {};
+      for (const r of (data ?? []) as any[]) m[String(r.transaction_id)] = {
+        folio: Number(r.folio), numero: String(r.numero), enviado: !!r.enviado_at,
+        factura: { estado: r.factura_estado ?? null, numero: r.factura_numero ?? null, url: r.factura_url ?? null, error: r.factura_error ?? null },
+      };
       setFolios(m); setFoliosEstado('ok');
     })();
     return () => { vivo = false; };
-  }, [userId]);
+  }, [userId, foliosVersion]);
+  // ¿Tiene la facturación automática activa? Solo para decidir qué dice la
+  // columna FACTURA y el botón de configuración.
+  useEffect(() => {
+    if (!userId) return;
+    llamarFuncion('facturacion', { action: 'config_get' }, 20000)
+      .then((r: any) => setFacturacionActiva(!!r?.config?.activo))
+      .catch(() => setFacturacionActiva(null));
+  }, [userId, configAbierta]);
+  const reintentarFactura = async (folio: number) => {
+    setReintentando(folio);
+    const r = await llamarFuncion('facturacion', { action: 'reintentar', folio }, 60000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    setReintentando(null);
+    setFoliosVersion(v => v + 1);
+    if (!r?.ok) alert(r?.error ?? 'No se pudo emitir la factura.');
+  };
 
   // Todos los asientos de la cuenta.
   const asientos = useMemo(() => (transactions ?? []).filter(t => t.userId === userId).flatMap(asientosDe), [transactions, userId]);
@@ -321,8 +347,17 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
             </div>
           )}
         </div>
-        <button onClick={csv} className="lincoin-btn-white" style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '10px 18px', borderRadius: 9, border: 'none', cursor: 'pointer' }}>Descargar CSV</button>
+        <div className="flex items-center" style={{ gap: 8 }}>
+          <button onClick={() => setConfigAbierta(true)}
+            style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '10px 16px', borderRadius: 9, cursor: 'pointer', color: C.text, background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.borde}`, display: 'inline-flex', alignItems: 'center', gap: 8 }}
+            className="hover:border-[rgba(255,255,255,0.22)] transition-colors">
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: facturacionActiva ? C.entra : 'rgba(255,255,255,0.18)', flexShrink: 0 }} />
+            Configuración
+          </button>
+          <button onClick={csv} className="lincoin-btn-white" style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '10px 18px', borderRadius: 9, border: 'none', cursor: 'pointer' }}>Descargar CSV</button>
+        </div>
       </div>
+      {configAbierta && <FacturacionConfig onCerrar={() => setConfigAbierta(false)} />}
 
       {/* 2. KPIs */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 12 }}>
@@ -392,9 +427,9 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
         </div>
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 820 }}>
-            <thead><tr>{['FECHA', 'MOVIMIENTO', 'MONTO', 'ESTADO', 'COMPROBANTE', ''].map((h, i) => <th key={h || 'acc'} style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1.2px', color: C.tenue, textAlign: i === 2 ? 'right' : 'left', padding: '9px 20px', borderBottom: `1px solid ${C.borde}`, whiteSpace: 'nowrap' }}>{h}</th>)}</tr></thead>
+            <thead><tr>{['FECHA', 'MOVIMIENTO', 'MONTO', 'ESTADO', 'COMPROBANTE', 'FACTURA', ''].map((h, i) => <th key={h || 'acc'} style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1.2px', color: C.tenue, textAlign: i === 2 ? 'right' : 'left', padding: '9px 20px', borderBottom: `1px solid ${C.borde}`, whiteSpace: 'nowrap' }}>{h}</th>)}</tr></thead>
             <tbody>
-              {mostrados.length === 0 && <tr><td colSpan={6} style={{ padding: '18px 20px', fontSize: 12.5, color: C.tenue }}>Sin movimientos que coincidan.</td></tr>}
+              {mostrados.length === 0 && <tr><td colSpan={7} style={{ padding: '18px 20px', fontSize: 12.5, color: C.tenue }}>Sin movimientos que coincidan.</td></tr>}
               {mostrados.map((a, i) => {
                 const rech = a.estado === 'Rechazado' || a.estado === 'Fallido';
                 const f = folios[String(a.tx.id)];
@@ -409,6 +444,27 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                     <td style={{ padding: '11px 20px', fontSize: 10, fontWeight: 700, letterSpacing: '0.5px', borderBottom: `1px solid ${C.borde}`, color: estadoColor(a.estado), whiteSpace: 'nowrap' }}>{a.estado.toUpperCase()}</td>
                     <td style={{ padding: '11px 20px', fontSize: 12.5, borderBottom: `1px solid ${C.borde}`, whiteSpace: 'nowrap', fontFamily: 'ui-monospace, monospace', color: f ? C.text : C.tenue }} title={f ? (f.enviado ? 'Enviado por correo' : 'Emitido; el correo no salió') : undefined}>
                       {f ? f.numero : (a.estado === 'Completado' ? '—' : '')}
+                    </td>
+                    {/* FACTURA: lo que Siigo contestó, o por qué no se emitió.
+                        El error va textual en el title y con "Reintentar". */}
+                    <td style={{ padding: '11px 20px', fontSize: 12, borderBottom: `1px solid ${C.borde}`, whiteSpace: 'nowrap' }} onClick={e => e.stopPropagation()}>
+                      {(() => {
+                        const fa = f?.factura;
+                        if (!f || !fa?.estado) return <span style={{ color: C.tenue }}>{f && facturacionActiva ? 'pendiente' : '—'}</span>;
+                        if (fa.estado === 'emitida') return fa.url
+                          ? <a href={fa.url} target="_blank" rel="noopener noreferrer" style={{ color: C.text, fontFamily: 'ui-monospace, monospace', textDecoration: 'underline', textUnderlineOffset: 3 }}>{fa.numero ?? 'ver'}</a>
+                          : <span style={{ color: C.text, fontFamily: 'ui-monospace, monospace' }}>{fa.numero ?? 'emitida'}</span>;
+                        if (fa.estado === 'error') return (
+                          <span className="flex items-center" style={{ gap: 6 }} title={fa.error ?? ''}>
+                            <span style={{ color: '#F87171', fontWeight: 700 }}>error</span>
+                            <button onClick={() => reintentarFactura(f.folio)} disabled={reintentando === f.folio}
+                              style={{ fontFamily: FONT, fontSize: 11, fontWeight: 700, color: C.sub, background: 'transparent', border: `1px solid ${C.borde}`, borderRadius: 6, padding: '3px 8px', cursor: 'pointer', opacity: reintentando === f.folio ? 0.5 : 1 }}>
+                              {reintentando === f.folio ? '…' : 'Reintentar'}
+                            </button>
+                          </span>
+                        );
+                        return <span style={{ color: C.tenue }} title={fa.error ?? ''}>{fa.estado === 'omitida' ? 'no aplica' : fa.estado}</span>;
+                      })()}
                     </td>
                     <td style={{ padding: '11px 20px', borderBottom: `1px solid ${C.borde}`, textAlign: 'right', whiteSpace: 'nowrap' }}>
                       {onVerMovimiento && <button onClick={e => { e.stopPropagation(); onVerMovimiento(a.tx); }} style={{ fontFamily: FONT, fontSize: 11.5, fontWeight: 700, color: C.sub, background: 'transparent', border: `1px solid ${C.borde}`, borderRadius: 7, padding: '5px 10px', cursor: 'pointer' }} className="hover:text-[#F4F4F2] hover:border-[rgba(255,255,255,0.22)] transition-colors">Ver</button>}

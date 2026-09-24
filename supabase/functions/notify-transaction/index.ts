@@ -524,7 +524,9 @@ Deno.serve(async (req) => {
     let comprobante: { numero: string; folio: number } | null = null
     if (completed && !failed) comprobante = await emitirComprobante(tx, user?.email ?? null)
 
-    if (!user?.email) return new Response('no_email', { status: 200 })
+    // Sin correo o con los correos apagados, la factura igual tiene que
+    // salir: es contable, no depende del aviso.
+    if (!user?.email) { if (comprobante) await facturar(comprobante.folio); return new Response('no_email', { status: 200 }) }
 
     const prefs = user.raw_data ?? {}
     const prefMap: Record<string, string> = {
@@ -541,6 +543,7 @@ Deno.serve(async (req) => {
     const prefKey = prefMap[tx.type]
     if (prefKey && prefs[prefKey] === false) {
       console.log('[notify] user disabled', prefKey, '— skipping')
+      if (comprobante) await facturar(comprobante.folio)
       return new Response('pref_off', { status: 200 })
     }
 
@@ -599,6 +602,7 @@ Deno.serve(async (req) => {
         .update({ enviado_at: new Date().toISOString(), correo: user.email })
         .eq('folio', comprobante.folio)
         .then(({ error }) => { if (error) console.error('[notify] comprobante enviado_at:', error.message) })
+      await facturar(comprobante.folio)
     }
     return new Response('sent', { status: 200 })
   } catch (e) {
@@ -606,6 +610,29 @@ Deno.serve(async (req) => {
     return new Response('error', { status: 500 })
   }
 })
+
+// ── Factura automática ────────────────────────────────────────────
+// Se le pide a la función `facturacion` que emita la factura de este
+// comprobante en el Siigo del cliente. ELLA decide si aplica (si el cliente
+// la activó y si este tipo de operación se factura) y guarda el resultado en
+// el comprobante. Acá solo se avisa; si falla, se anota y el correo ya salió.
+async function facturar(folio: number): Promise<void> {
+  try {
+    const ctrl = new AbortController()
+    const reloj = setTimeout(() => ctrl.abort(), 40000)
+    const r = await fetch(`${SUPABASE_URL}/functions/v1/facturacion`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+      body: JSON.stringify({ action: 'emitir', folio }),
+      signal: ctrl.signal,
+    })
+    clearTimeout(reloj)
+    const t = await r.text().catch(() => '')
+    console.log('[notify] facturacion', folio, r.status, t.slice(0, 300))
+  } catch (e) {
+    console.error('[notify] facturacion no respondió:', (e as Error)?.message)
+  }
+}
 
 // ── Emisión del comprobante ───────────────────────────────────────
 // Un INSERT con la operación como UNIQUE: si el webhook llega repetido, el

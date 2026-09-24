@@ -1388,7 +1388,7 @@ export const ContactsSection: React.FC<{
                     </h1>
                     <p style={{ fontSize: 14, color: '#878E88', maxWidth: 560, marginTop: 4, lineHeight: 1.5 }}>
                         {vista === 'contabilidad'
-                            ? 'Cuánto se le movió a cada beneficiario: este mes, este año y en total. Se descarga en CSV.'
+                            ? 'Cuánto entró, cuánto salió y cada movimiento con su comprobante. Por moneda y por periodo. Se descarga en CSV.'
                             : vista === 'compliance'
                                 ? 'Quién puede recibir plata y quién no, y por qué. El mismo criterio que frena los envíos.'
                                 : 'Cuentas inscritas y validadas. Las transferencias locales solo salen hacia beneficiarios aprobados.'}
