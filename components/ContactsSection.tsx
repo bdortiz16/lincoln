@@ -511,11 +511,11 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     // A quien no la conectó esa verificación no le aplica, y una columna
     // vacía en todas las filas es peor que no tenerla.
     const COLS = amlActivo
-        ? 'minmax(180px,1.2fr) 124px 140px minmax(140px,1fr) 150px 106px 78px'
-        : 'minmax(180px,1.2fr) 140px minmax(140px,1fr) 150px 110px 82px';
+        ? 'minmax(230px,1.4fr) 128px 146px minmax(150px,1fr) 106px 78px'
+        : 'minmax(230px,1.4fr) 146px minmax(150px,1fr) 110px 82px';
     const CABECERAS = amlActivo
-        ? ['BENEFICIARIO', 'AML', 'PAÍS Y RIEL', 'BANCO Y CUENTA', 'MOVIDO', 'ESTADO', 'ACCIONES']
-        : ['BENEFICIARIO', 'PAÍS Y RIEL', 'BANCO Y CUENTA', 'MOVIDO', 'ESTADO', 'ACCIONES'];
+        ? ['BENEFICIARIO', 'AML', 'PAÍS Y RIEL', 'BANCO Y CUENTA', 'ESTADO', 'ACCIONES']
+        : ['BENEFICIARIO', 'PAÍS Y RIEL', 'BANCO Y CUENTA', 'ESTADO', 'ACCIONES'];
 
     // El PDF del reporte. TusDatos lo sirve autenticado, así que no se puede
     // abrir con un enlace: viene por el servidor y se abre desde la memoria
@@ -1164,6 +1164,41 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     }, [contacts, transactions, currentUser?.id]);
     const fmtMovido = (v: number, moneda: string) =>
         `${(moneda === 'COP' ? Math.round(v) : v).toLocaleString('es-CO', { maximumFractionDigits: moneda === 'COP' ? 0 : 2 })} ${moneda}`;
+    // La referencia de las barras: el año más grande entre los beneficiarios
+    // de la MISMA moneda. Así el largo de la barra compara personas entre sí
+    // — quien más recibe tiene la barra más larga — y el mes nunca supera al
+    // año. Una barra sin referencia es decoración.
+    const topAnioPorMoneda = useMemo(() => {
+        const top: Record<string, number> = {};
+        for (const mv of Object.values(movidoPor) as { moneda: string; anio: number }[]) top[mv.moneda] = Math.max(top[mv.moneda] ?? 0, mv.anio);
+        return top;
+    }, [movidoPor]);
+    // Las dos barras, debajo del nombre. Es lo primero que se lee después de
+    // quién es: cuánto se le movió este mes y cuánto en el año.
+    const barrasMovido = (id: string, compacto = false) => {
+        const mv = movidoPor[id];
+        if (!mv) return null;
+        const top = topAnioPorMoneda[mv.moneda] || 0;
+        const hay = mv.anio > 0 && top > 0;
+        const pct = (v: number) => (hay ? Math.max(v > 0 ? 3 : 0, Math.min(100, (v / top) * 100)) : 0);
+        const fila = (rot: string, v: number, fuerte: boolean) => (
+            <div className="flex items-center" style={{ gap: 7, marginTop: 3 }}>
+                <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '0.7px', color: '#878E88', width: 26, flexShrink: 0 }}>{rot}</span>
+                <div style={{ flex: 1, height: 4, borderRadius: 999, background: 'rgba(255,255,255,0.08)', overflow: 'hidden', minWidth: 40, maxWidth: compacto ? 90 : 120 }}>
+                    <div style={{ width: `${pct(v)}%`, height: '100%', borderRadius: 999, background: fuerte ? '#4ADE80' : 'rgba(74,222,128,0.55)' }} />
+                </div>
+                <span style={{ fontSize: 11, fontWeight: fuerte ? 700 : 500, color: hay ? (fuerte ? '#F4F4F2' : '#878E88') : 'rgba(244,244,242,0.35)', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+                    {fmtMovido(v, mv.moneda)}
+                </span>
+            </div>
+        );
+        return (
+            <div style={{ marginTop: 4 }} title={hay ? `${mv.envios} envío${mv.envios === 1 ? '' : 's'} este año` : 'Sin envíos este año'}>
+                {fila('MES', mv.mes, true)}
+                {fila('AÑO', mv.anio, false)}
+            </div>
+        );
+    };
 
     // ── Buscador + filtros ───────────────────────────────────
     // Países: los que el usuario ya tiene inscritos, primero; luego el resto
@@ -1698,11 +1733,12 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                     <div key={c.id}>
                         {/* Fila desktop */}
                         <div className="hidden lg:grid items-center hover:bg-white/[0.02] transition-colors" style={{ gridTemplateColumns: COLS, padding: '14px 22px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-                            <button onClick={() => setDetail(c)} className="flex items-center gap-3 min-w-0 text-left cursor-pointer">
+                            <button onClick={() => setDetail(c)} className="flex items-start gap-3 min-w-0 text-left cursor-pointer" style={{ paddingRight: 12 }}>
                                 {avatar}
-                                <div className="min-w-0">
+                                <div className="min-w-0" style={{ flex: 1 }}>
                                     <p style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{prettyName(c.name)}</p>
                                     <p style={{ fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.meta}</p>
+                                    {barrasMovido(c.id)}
                                 </div>
                             </button>
                             {/* AML — el veredicto de cumplimiento, pegado al
@@ -1724,32 +1760,6 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                 <p style={{ fontSize: 13, fontWeight: 600, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.bankName}</p>
                                 <p style={{ fontSize: 11.5, color: '#878E88', fontFamily: 'ui-monospace, monospace' }}>{m.maskLine}</p>
                             </div>
-                            {/* MOVIDO — mes y año en curso, con una barra que
-                                dice qué parte del año es este mes. Un cero se
-                                muestra en gris y sin barra: no es un dato
-                                llamativo, es la ausencia de envíos. */}
-                            {(() => {
-                                const mv = movidoPor[c.id];
-                                const pct = mv && mv.anio > 0 ? Math.max(0, Math.min(100, (mv.mes / mv.anio) * 100)) : 0;
-                                const hay = !!mv && mv.anio > 0;
-                                return (
-                                    <div className="min-w-0" title={hay ? `${mv.envios} envío${mv.envios === 1 ? '' : 's'} este año · este mes es el ${Math.round(pct)} % del año` : 'Sin envíos este año'}>
-                                        <p style={{ fontSize: 12.5, fontWeight: 700, color: hay ? '#F4F4F2' : 'rgba(244,244,242,0.45)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontVariantNumeric: 'tabular-nums' }}>
-                                            <span style={{ fontSize: 10, fontWeight: 700, color: '#878E88', letterSpacing: '0.6px', marginRight: 5 }}>MES</span>
-                                            {mv ? fmtMovido(mv.mes, mv.moneda) : '—'}
-                                        </p>
-                                        <p style={{ fontSize: 11.5, color: hay ? '#878E88' : 'rgba(244,244,242,0.35)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontVariantNumeric: 'tabular-nums', marginTop: 1 }}>
-                                            <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.6px', marginRight: 5 }}>AÑO</span>
-                                            {mv ? fmtMovido(mv.anio, mv.moneda) : '—'}
-                                        </p>
-                                        {hay && (
-                                            <div style={{ height: 3, borderRadius: 999, background: 'rgba(255,255,255,0.08)', marginTop: 5, overflow: 'hidden', maxWidth: 120 }}>
-                                                <div style={{ width: `${pct}%`, height: '100%', background: '#4ADE80', borderRadius: 999 }} />
-                                            </div>
-                                        )}
-                                    </div>
-                                );
-                            })()}
                             <div>{statusPill}</div>
                             {actions}
                         </div>
@@ -1764,17 +1774,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                             {flagEl}
                                             <span style={{ fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.railLine} · {m.maskLine}</span>
                                         </div>
-                                        {/* Movido, en el celular: una línea. */}
-                                        {(() => {
-                                            const mv = movidoPor[c.id];
-                                            if (!mv || mv.anio <= 0) return null;
-                                            return (
-                                                <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontVariantNumeric: 'tabular-nums' }}>
-                                                    Mes <span style={{ color: '#F4F4F2', fontWeight: 700 }}>{fmtMovido(mv.mes, mv.moneda)}</span>
-                                                    {' · '}Año <span style={{ color: '#F4F4F2', fontWeight: 700 }}>{fmtMovido(mv.anio, mv.moneda)}</span>
-                                                </p>
-                                            );
-                                        })()}
+                                        {barrasMovido(c.id, true)}
                                     </div>
                                 </button>
                                 <div className="flex flex-col items-end gap-1.5 shrink-0">
