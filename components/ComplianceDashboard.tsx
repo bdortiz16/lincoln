@@ -5,15 +5,11 @@
 //  Contabilidad: cuatro cifras, una barra de distribución, dos gráficos y la
 //  lista con filtros.
 //
-//  SIN ROJO NI AMARILLO. En el resto de la app el rojo dice "algo salió mal";
-//  un beneficiario bloqueado no es un error del sistema, es un resultado. Acá
-//  el estado se codifica en una sola escala de blanco:
-//    Sin hallazgos → verde         (puede recibir)
-//    En revisión   → blanco al 45 % (envío retenido hasta que cumplimiento diga)
-//    Bloqueado     → blanco sólido  (el más fuerte: no puede recibir)
-//    Esperando     → blanco al 18 % (la consulta no ha vuelto)
-//  La misma codificación en las cifras, la barra, el gráfico, los chips y las
-//  pastillas, para que un color signifique una sola cosa en toda la página.
+//  EL ESTADO LLEVA COLOR: bloqueado rojo, en revisión ámbar, sin hallazgos
+//  verde, esperando gris. Son los mismos tres colores de la insignia AML en la
+//  lista de Beneficiarios, para que un bloqueado se vea igual acá y allá. La
+//  misma codificación en cifras, barra, gráfico, chips y pastillas: un color
+//  significa una sola cosa en toda la página.
 //
 //  LA SITUACIÓN DE CADA UNO NO SE CALCULA ACÁ. Llega por `situacionAml`, la
 //  misma función que frena el botón Enviar. Esta pantalla no puede decir "se
@@ -42,9 +38,13 @@ export type Situacion = 'bloqueado' | 'esperando' | 'revision' | 'limpio' | 'sin
 type Filtro = 'todos' | 'bloqueados' | 'revision' | 'esperando' | 'limpios' | 'sin_consulta';
 
 // La codificación de estado, UNA sola vez.
+// Bloqueado en rojo, en revisión en ámbar, sin hallazgos en verde: los mismos
+// tres colores que usa la insignia AML en la lista de Beneficiarios, para que
+// un bloqueado se vea igual acá y allá. Bloqueado va RELLENO —es el único
+// estado que impide recibir, y tiene que ser el más fuerte de la página.
 const ESTADO: Record<Situacion, { rot: string; color: string; pill: React.CSSProperties; nota: string }> = {
-  bloqueado:    { rot: 'Bloqueado',           color: '#F4F4F2',                 pill: { background: '#F4F4F2', color: '#0A0A0A', border: '1px solid #F4F4F2' }, nota: 'no pueden recibir' },
-  revision:     { rot: 'En revisión',         color: 'rgba(255,255,255,0.45)',  pill: { background: 'transparent', color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.3)' }, nota: 'envíos retenidos' },
+  bloqueado:    { rot: 'Bloqueado',           color: '#F87171',                 pill: { background: '#F87171', color: '#0A0A0A', border: '1px solid #F87171' }, nota: 'no pueden recibir' },
+  revision:     { rot: 'En revisión',         color: '#FBBF24',                 pill: { background: 'transparent', color: '#FBBF24', border: '1px solid rgba(251,191,36,0.4)' }, nota: 'envíos retenidos' },
   limpio:       { rot: 'Sin hallazgos',       color: '#4ADE80',                 pill: { background: 'transparent', color: '#4ADE80', border: '1px solid rgba(74,222,128,0.35)' }, nota: 'pueden recibir' },
   esperando:    { rot: 'Esperando resultado', color: 'rgba(255,255,255,0.18)',  pill: { background: 'transparent', color: '#878E88', border: '1px solid rgba(255,255,255,0.14)' }, nota: 'consulta en curso' },
   sin_consulta: { rot: 'Sin consulta',        color: 'rgba(255,255,255,0.10)',  pill: { background: 'transparent', color: '#878E88', border: '1px solid rgba(255,255,255,0.14)' }, nota: 'sin documento que consultar' },
