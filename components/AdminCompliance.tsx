@@ -339,6 +339,21 @@ export const AdminCompliance: React.FC = () => {
                     <span style={{ display: 'block', fontSize: 11.5, color: C.sub, fontFamily: MONO, marginTop: 2 }}>
                       {c.tipoDocumento} {mask(c.documento)}{c.cliente?.pais ? ` · ${c.cliente.pais}` : ''}
                     </span>
+                    {/* El nombre que tuvo antes. El cliente lo corrigió y ya no
+                        lo ve; cumplimiento sí, y sabe cuándo cambió. */}
+                    {Array.isArray(c.nombresAnteriores) && c.nombresAnteriores.length > 0 && (
+                      <span style={{ display: 'block', fontSize: 11.5, color: C.sub, marginTop: 4, lineHeight: 1.4 }}>
+                        Antes inscrito como <span style={{ color: C.text, fontWeight: 600 }}>{c.nombresAnteriores[c.nombresAnteriores.length - 1]?.nombre}</span>
+                        {c.nombresAnteriores[c.nombresAnteriores.length - 1]?.coincidia === false ? ' (no coincidía)' : ''}
+                        {' · corregido '}{hace(c.nombresAnteriores[c.nombresAnteriores.length - 1]?.hasta)}
+                        {c.nombresAnteriores.length > 1 ? ` · ${c.nombresAnteriores.length} correcciones` : ''}
+                      </span>
+                    )}
+                    {c.nombreIncompleto && c.nombreReal && (
+                      <span style={{ display: 'block', fontSize: 11.5, color: C.sub, marginTop: 4, lineHeight: 1.4 }}>
+                        Nombre incompleto · el documento dice <span style={{ color: C.text, fontWeight: 600 }}>{c.nombreReal}</span>
+                      </span>
+                    )}
                     {/* La trazabilidad: qué cuenta inscribió a esta persona. */}
                     <span style={{ display: 'block', fontSize: 11.5, color: C.sub, marginTop: 4, lineHeight: 1.4 }}>
                       Inscrito por <span style={{ color: C.text, fontWeight: 600, textDecoration: 'underline' }}>{c.cliente?.nombre ?? c.titular}</span>

@@ -372,6 +372,14 @@ export const ContactsSection: React.FC<{
                 : null;
     // Sin ficha todavía = consulta en curso. Es la verdad: el documento ya
     // salió hacia TusDatos y el resultado no ha vuelto.
+    // Misma normalización que usa el servidor para comparar nombres: sin
+    // tildes ni puntos, sin formas jurídicas ni palabras de unión. Sirve para
+    // saber si el nombre inscrito CAMBIÓ respecto al de la ficha.
+    const RELLENO_NOMBRE = new Set(['SAS', 'SA', 'SAC', 'LTDA', 'LTD', 'SCA', 'EU', 'BIC', 'ESAL', 'CIA', 'INC', 'CORP', 'DE', 'DEL', 'LA', 'LAS', 'LOS', 'EL', 'Y', 'EN', 'SUCESION', 'SUC']);
+    const claveNombre = (s: unknown) => String(s ?? '')
+        .normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .toUpperCase().replace(/[.'`´]/g, '').replace(/[^A-Z0-9\s]/g, ' ')
+        .split(/\s+/).filter(x => x.length > 1 && !RELLENO_NOMBRE.has(x)).join(' ');
     const amlDe = (c: Partial<MouvContact>) => {
         if (!amlActivo) return null;
         const doc = String(c?.docNumber ?? '').replace(/\D/g, '');
@@ -1030,19 +1038,27 @@ export const ContactsSection: React.FC<{
     // cada pintada y el tick de 15 s no llegaba a dispararse nunca. Se depende
     // de la CANTIDAD, que es estable.
     const amlHechos = Object.keys(amlBenef).length;
+    // Qué le falta trabajo al servidor: sin ficha, consulta a medias, o el
+    // nombre inscrito ya no es el de la ficha (se borró y se volvió a
+    // inscribir corregido; la ficha, que vive por documento, seguía con el
+    // nombre viejo y el bloqueo viejo). Es una clave estable: el efecto
+    // vuelve a correr cuando cambia y se detiene solo cuando queda vacía.
+    const amlPendientes = bankContacts.map(c => {
+        const doc = String(c.docNumber ?? '').replace(/\D/g, '');
+        if (!doc) return '';
+        const k = amlBenef[doc];
+        if (!k || String(k.estado ?? '') === 'procesando') return doc;
+        if (String(k.estado ?? '') === 'finalizado' && c.name && k.nombreInscrito
+            && claveNombre(k.nombreInscrito) !== claveNombre(c.name)) return `${doc}:nombre`;
+        return '';
+    }).filter(Boolean).join(',');
     useEffect(() => {
         const uid = currentUser?.id;
         // Se dispara solo si la verificación CORRE para esta cuenta. Con
         // resultados guardados pero la integración apagada, la columna se
         // sigue viendo pero no hay nada que lanzar.
         if (!uid || !amlCorre) return;
-        const faltan = bankContacts.some(c => {
-            const doc = String(c.docNumber ?? '').replace(/\D/g, '');
-            if (!doc) return false;
-            const k = amlBenef[doc];
-            return !k || String(k.estado ?? '') === 'procesando';
-        });
-        if (!faltan) return;
+        if (!amlPendientes) return;
         let vueltas = 0;
         let vivo = true;
         // Cada vuelta le pide al SERVIDOR que procese un lote de los que
@@ -1070,7 +1086,7 @@ export const ContactsSection: React.FC<{
         }, 15000);
         return () => { vivo = false; clearInterval(t); };
         /* eslint-disable-next-line react-hooks/exhaustive-deps */
-    }, [currentUser?.id, amlCorre, amlHechos, bankContacts.length, leerTusdatos]);
+    }, [currentUser?.id, amlCorre, amlHechos, amlPendientes, bankContacts.length, leerTusdatos]);
 
     // El registro con el banco se reintenta SOLO: la sincronización al entrar
     // vuelve a inscribir las cuentas ACH que quedaron sin id. Eso es trabajo
@@ -2044,6 +2060,9 @@ export const ContactsSection: React.FC<{
                                         {k?.nombreReal && k.nombreCoincide === false && (
                                             <Fila l="Según la Registraduría" v={<span style={{ color: '#F87171' }}>{k.nombreReal}</span>} />
                                         )}
+                                        {k?.nombreReal && k.nombreCoincide !== false && k.nombreIncompleto && (
+                                            <Fila l="Nombre completo" v={k.nombreReal} />
+                                        )}
                                         {k?.estadoDocumento && <Fila l="Estado del documento" v={k.documentoVigente === false ? <span style={{ color: '#F87171' }}>{k.estadoDocumento}</span> : k.estadoDocumento} />}
                                         <Fila l="Tipo" v={c.kind === 'empresa' ? 'Empresa' : 'Persona'} />
 
@@ -2282,11 +2301,36 @@ export const ContactsSection: React.FC<{
                                                     <p style={{ fontSize: 13, color: '#F87171', fontWeight: 700, margin: '3px 0 0' }}>{String(k.nombreReal ?? '—')}</p>
                                                 </div>
                                             </div>
+                                        ) : k.nombreIncompleto && (k.nombreReal || k.nombre) ? (
+                                            // El mismo nombre, escrito corto. Se muestra el
+                                            // completo al lado, sin rojo: no es otra persona
+                                            // y no frena nada.
+                                            <div style={{ marginTop: 10, background: '#121413', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 10, padding: '11px 13px', display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                                                <div>
+                                                    <p style={{ fontSize: 10, color: '#878E88', margin: 0, letterSpacing: '1px' }}>SE INSCRIBIÓ COMO</p>
+                                                    <p style={{ fontSize: 13, color: '#F4F4F2', fontWeight: 700, margin: '3px 0 0' }}>{String(k.nombreInscrito ?? detail.name)}</p>
+                                                </div>
+                                                <div>
+                                                    <p style={{ fontSize: 10, color: '#878E88', margin: 0, letterSpacing: '1px' }}>NOMBRE COMPLETO</p>
+                                                    <p style={{ fontSize: 13, color: '#F4F4F2', fontWeight: 700, margin: '3px 0 0' }}>{String(k.nombreReal ?? k.nombre)}</p>
+                                                </div>
+                                                <p style={{ fontSize: 11, color: '#878E88', margin: 0, width: '100%', lineHeight: 1.4 }}>Es el mismo nombre, incompleto. No impide transferir.</p>
+                                            </div>
                                         ) : k.nombre ? (
                                             <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 6, lineHeight: 1.5 }}>
                                                 Nombre en el documento: <b style={{ color: '#F4F4F2' }}>{String(k.nombre)}</b>
                                             </p>
                                         ) : null}
+                                        {/* Cómo estuvo inscrito antes de corregirse. Se
+                                            deja a la vista: la corrección no borra que
+                                            hubo otro nombre. */}
+                                        {Array.isArray(k.nombresAnteriores) && k.nombresAnteriores.length > 0 && (
+                                            <p style={{ fontSize: 11, color: '#878E88', marginTop: 8, lineHeight: 1.5 }}>
+                                                Antes inscrito como <b style={{ color: '#F4F4F2' }}>{String(k.nombresAnteriores[k.nombresAnteriores.length - 1]?.nombre ?? '')}</b>
+                                                {k.nombresAnteriores[k.nombresAnteriores.length - 1]?.hasta ? ` · corregido el ${new Date(k.nombresAnteriores[k.nombresAnteriores.length - 1].hasta).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' })}` : ''}
+                                                {k.nombresAnteriores.length > 1 ? ` · ${k.nombresAnteriores.length} correcciones` : ''}
+                                            </p>
+                                        )}
                                         {est === 'finalizado' && conteo > 0 && (
                                             <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 8, lineHeight: 1.5 }}>
                                                 Hallazgos: {k.altos ?? 0} alto{(k.altos ?? 0) === 1 ? '' : 's'} · {k.medios ?? 0} medio{(k.medios ?? 0) === 1 ? '' : 's'} · {k.bajos ?? 0} bajo{(k.bajos ?? 0) === 1 ? '' : 's'}

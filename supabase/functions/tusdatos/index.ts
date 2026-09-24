@@ -246,6 +246,13 @@ type Ficha = {
   nombreInscrito?: string
   nombreReal?: string
   nombreCoincide?: boolean
+  // El nombre es el mismo pero le faltan partes ("AGROSERVIS" por
+  // "Inversiones Agroservis S.A.S"). No bloquea; se muestra para que se vea.
+  nombreIncompleto?: boolean
+  // Cómo estuvo inscrito antes de corregirse. Se conserva a propósito: el
+  // cliente lo corrige y deja de verlo, cumplimiento sigue viendo que hubo
+  // un nombre distinto y cuándo cambió.
+  nombresAnteriores?: { nombre: string; coincidia?: boolean; desde?: string; hasta: string }[]
   // Cuántas veces se ha vuelto a lanzar, y si la pidió un admin a mano.
   reintentos?: number
   manual?: boolean
@@ -329,10 +336,105 @@ function nombreCoincide(inscrito: string, real: string): boolean | undefined {
   if (!a.length || !b.length) return undefined
   const sobran = a.filter(t => !estaEn(t, b))
   const comunes = a.filter(t => estaEn(t, b))
-  // Dos partes en común, salvo que el nombre real tenga una sola —una
-  // empresa suele quedar en una palabra después de quitarle la forma
-  // jurídica, y exigirle dos sería imposible de cumplir.
-  return sobran.length === 0 && comunes.length >= Math.min(2, b.length)
+  // Lo que delata a OTRA PERSONA es una parte que SOBRA: un apellido que el
+  // documento no tiene. Un nombre al que le FALTAN partes —"AGROSERVIS" por
+  // "Inversiones Agroservis S.A.S", "JUAN PEREZ" por "JUAN CARLOS PEREZ
+  // GOMEZ"— es el mismo nombre escrito corto, y bloquearlo frenaba a
+  // clientes legítimos. Antes se exigían dos partes en común y una empresa
+  // inscrita con su nombre comercial quedaba bloqueada por eso.
+  return sobran.length === 0 && comunes.length >= 1
+}
+
+// El nombre coincide pero le faltan partes. Es información, no un bloqueo:
+// se muestra el nombre completo del documento al lado del inscrito.
+function nombreIncompleto(inscrito: string, real: string): boolean {
+  const a = normalizar(inscrito)
+  const b = normalizar(real)
+  if (!a.length || !b.length) return false
+  return b.some(t => !estaEn(t, a))
+}
+
+// Clave para saber si el nombre inscrito CAMBIÓ: misma normalización que la
+// comparación, así "Agroservis S.A.S" y "AGROSERVIS SAS" son el mismo.
+const claveNombre = (s: string) => normalizar(s).join(' ')
+
+// Vuelve a juzgar la identidad de una ficha ya cerrada contra un nombre
+// inscrito (el de siempre, o uno nuevo). No gasta crédito: el nombre real ya
+// se pagó. Si el inscrito cambió, el anterior pasa al historial.
+function rejuzgarNombre(f: Ficha, inscritoNuevo: string, c: Config): Ficha {
+  const real = String(f.nombreReal ?? f.nombre ?? '')
+  const anterior = String(f.nombreInscrito ?? '')
+  const cambio = claveNombre(anterior) !== claveNombre(inscritoNuevo)
+  const coincide = nombreCoincide(inscritoNuevo, real)
+  const incompleto = coincide === true && nombreIncompleto(inscritoNuevo, real)
+  const motivo =
+    coincide === false ? `El nombre inscrito no corresponde a ese documento. Según la Registraduría es ${real}.`
+      : f.documentoVigente === false ? `El documento no está vigente: ${f.estadoDocumento ?? ''}.`
+        : f.categoria === 'alto' ? 'Hallazgos de riesgo alto.'
+          : f.categoria === 'medio' && !c.soloBloquearAlto ? 'Hallazgos de riesgo medio, en revisión de cumplimiento.'
+            : ''
+  const historial = Array.isArray(f.nombresAnteriores) ? [...f.nombresAnteriores] : []
+  if (cambio && anterior) {
+    historial.push({ nombre: anterior, coincidia: f.nombreCoincide, desde: f.at, hasta: new Date().toISOString() })
+  }
+  return {
+    ...f,
+    nombreInscrito: inscritoNuevo || f.nombreInscrito,
+    nombreCoincide: coincide, nombreIncompleto: incompleto || undefined,
+    nombresAnteriores: historial.length ? historial.slice(-10) : f.nombresAnteriores,
+    bloqueo: motivo || undefined,
+    operable: (coincide === false || f.documentoVigente === false) ? false : operableDe(f.categoria, c),
+  }
+}
+
+// ── Sanear los veredictos de nombre de una cuenta ─────────────────────────
+// Dos cosas, ninguna gasta crédito porque el nombre real ya se pagó:
+//
+// 1. EL NOMBRE INSCRITO CAMBIÓ. La ficha vive por documento, así que borrar
+//    al beneficiario y volverlo a inscribir con el nombre corregido caía en
+//    la misma ficha, con el nombre viejo y el bloqueo viejo: el cliente
+//    corregía y la pantalla seguía diciendo lo de antes, como si no hubiera
+//    borrado nada. Se detecta que el nombre de la lista ya no es el de la
+//    ficha y se vuelve a juzgar. El anterior no se pierde: pasa al
+//    historial, para cumplimiento.
+//
+// 2. LA REGLA CAMBIÓ. Un veredicto de "no coincide" tomado con una regla
+//    más estricta se vuelve a tomar con la de hoy. Si ahora coincide, se
+//    libera solo.
+//
+// Devuelve los contactos que hay que RELANZAR: fichas viejas sin nombre real,
+// contra las que no hay nada que juzgar.
+async function sanearNombres(uid: string, raw: any, c: Config): Promise<{ rejuzgados: number; relanzar: any[] }> {
+  const contactos: any[] = Array.isArray(raw?.mouvContacts) ? raw.mouvContacts : []
+  const hechos: Record<string, any> = (raw?.tusdatos ?? {}).beneficiarios ?? {}
+  const vistos = new Set<string>()
+  const relanzar: any[] = []
+  let rejuzgados = 0
+  for (const x of contactos) {
+    const doc = String(x?.docNumber ?? '').replace(/\D/g, '')
+    const f = hechos[doc]
+    const nombre = String(x?.name ?? '').trim()
+    if (!doc || !f || !nombre || vistos.has(doc)) continue
+    vistos.add(doc)
+    if (String(f.estado ?? '') !== 'finalizado') continue
+    const cambioNombre = claveNombre(String(f.nombreInscrito ?? '')) !== claveNombre(nombre)
+    if (!cambioNombre && f.nombreCoincide !== false) continue
+    const real = String(f.nombreReal ?? f.nombre ?? '')
+    if (!real) {
+      if (cambioNombre) relanzar.push(x)
+      continue
+    }
+    const nueva = rejuzgarNombre(f as Ficha, nombre, c)
+    const cambioVeredicto = nueva.nombreCoincide !== f.nombreCoincide || !!nueva.nombreIncompleto !== !!f.nombreIncompleto
+    if (!cambioNombre && !cambioVeredicto) continue
+    await guardarBeneficiario(uid, doc, nueva)
+    rejuzgados += 1
+    await auditar(cambioNombre ? 'tusdatos.nombre_corregido' : 'tusdatos.nombre_rejuzgado', {
+      userId: uid, documento: doc, antes: f.nombreInscrito ?? null, ahora: nombre,
+      coincidia: f.nombreCoincide ?? null, coincide: nueva.nombreCoincide ?? null,
+    })
+  }
+  return { rejuzgados, relanzar }
 }
 
 // Códigos de la Registraduría que significan que la cédula NO está vigente.
@@ -715,6 +817,9 @@ async function cerrar(c: Config, userId: string, jobid: string, doc: string, esB
     nombreInscrito: inscrito || undefined,
     nombreReal: real || undefined,
     nombreCoincide: coincide,
+    nombreIncompleto: (coincide === true && nombreIncompleto(inscrito, real)) || undefined,
+    // Si esta ficha ya tenía historial de nombres, se conserva.
+    nombresAnteriores: Array.isArray(previa?.nombresAnteriores) ? previa.nombresAnteriores : undefined,
     documentoVigente: cedula ? cedula.vigente : undefined,
     estadoDocumento: cedula?.estado || undefined,
     bloqueo: motivo || undefined,
@@ -784,6 +889,7 @@ async function consultar(
         documento: doc, tipoDocumento: RISK_TIPO(d.tipoDocumento),
         nombre: nombreReal, nombreReal, nombreInscrito: d.nombre ? String(d.nombre) : undefined,
         nombreCoincide: coincide,
+        nombreIncompleto: (coincide === true && nombreIncompleto(String(d.nombre ?? ''), String(nombreReal ?? ''))) || undefined,
         documentoVigente: (previo as any).documento_vigente ?? undefined,
         estadoDocumento: (previo as any).estado_documento ?? undefined,
         categoria: (previo as any).categoria ?? undefined,
@@ -1179,6 +1285,9 @@ Deno.serve(async (req: Request) => {
         return true
       })
 
+      const { rejuzgados, relanzar } = await sanearNombres(uid, raw, c)
+      for (const x of relanzar) faltan.push(x)
+
       // CADA LANZAMIENTO GASTA UN CRÉDITO del plan. El lote va chico a
       // propósito: si algo está mal configurado, se pierden cuatro consultas,
       // no sesenta.
@@ -1193,7 +1302,7 @@ Deno.serve(async (req: Request) => {
         if (r.ok) lanzados += 1
       }
       // Y de paso se recogen las que ya hayan terminado.
-      return json({ ok: true, lanzados, pendientes: Math.max(0, faltan.length - lanzados) })
+      return json({ ok: true, lanzados, rejuzgados, pendientes: Math.max(0, faltan.length - lanzados) })
     }
 
     // ── Lo guardado ──────────────────────────────────────────────────────
@@ -1201,7 +1310,14 @@ Deno.serve(async (req: Request) => {
       const uid = String(body.userId ?? yo.userId ?? '')
       if (!uid || (!yo.esAdmin && yo.userId !== uid)) return json({ error: 'No autorizado' }, 401)
       const c = await leerConfig()
-      const raw = await leerRaw(uid)
+      let raw = await leerRaw(uid)
+      // Antes de mostrar, se sanea lo que no cuesta nada: nombres corregidos
+      // y veredictos de nombre tomados con la regla vieja. Así la pantalla
+      // dice lo cierto desde la primera carga, sin esperar al reloj.
+      try {
+        const s = await sanearNombres(uid, raw, c)
+        if (s.rejuzgados > 0) raw = await leerRaw(uid)
+      } catch (e) { console.warn('[tusdatos] sanear nombres', String((e as any)?.message ?? e)) }
       const td = raw?.tusdatos ?? {}
       return json({
         ok: true, activo: c.activo, enLaPrueba: enLaPrueba(c, uid),
@@ -1370,6 +1486,8 @@ Deno.serve(async (req: Request) => {
             documento: doc, tipoDocumento: f.tipoDocumento ?? 'CC',
             nombreInscrito: f.nombreInscrito ?? null, nombreReal: f.nombreReal ?? f.nombre ?? null,
             nombreCoincide: f.nombreCoincide ?? null,
+            nombreIncompleto: f.nombreIncompleto === true,
+            nombresAnteriores: Array.isArray(f.nombresAnteriores) ? f.nombresAnteriores : [],
             documentoVigente: f.documentoVigente ?? null, estadoDocumento: f.estadoDocumento ?? null,
             categoria: cat || null, estado: est || null, operable: f.operable ?? null,
             bloqueo: f.bloqueo ?? null,
@@ -1556,20 +1674,11 @@ Deno.serve(async (req: Request) => {
           const real = String(f.nombreReal ?? f.nombre ?? '')
           if (!inscrito || !real) return f
           revisados += 1
-          const nuevo = nombreCoincide(inscrito, real)
-          if (nuevo === f.nombreCoincide) return f
+          const nuevo = rejuzgarNombre(f, inscrito, c)
+          if (nuevo.nombreCoincide === f.nombreCoincide && !!nuevo.nombreIncompleto === !!f.nombreIncompleto) return f
           cambio = true
-          if (nuevo !== false) liberados += 1
-          const motivo =
-            nuevo === false ? `El nombre inscrito no corresponde a ese documento. Según la Registraduría es ${real}.`
-              : f.documentoVigente === false ? `El documento no está vigente: ${f.estadoDocumento ?? ''}.`
-                : f.categoria === 'alto' ? 'Hallazgos de riesgo alto.'
-                  : f.categoria === 'medio' && !c.soloBloquearAlto ? 'Hallazgos de riesgo medio, en revisión de cumplimiento.'
-                    : ''
-          return {
-            ...f, nombreCoincide: nuevo, bloqueo: motivo || undefined,
-            operable: (nuevo === false || f.documentoVigente === false) ? false : operableDe(f.categoria, c),
-          }
+          if (nuevo.nombreCoincide !== false && f.nombreCoincide === false) liberados += 1
+          return nuevo
         }
 
         for (const [doc, f] of Object.entries(benefs)) benefs[doc] = rejuzgar(f)
