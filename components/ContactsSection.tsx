@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { BookUser, Plus, X, Trash2, CheckCircle, AlertTriangle, Landmark, Wallet, Search, SlidersHorizontal, Zap, Copy, Send } from 'lucide-react';
 import { useDatabase } from '../context/DatabaseContext';
 import { useSystemConfig } from '../context/SystemConfigContext';
@@ -511,11 +511,11 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     // A quien no la conectó esa verificación no le aplica, y una columna
     // vacía en todas las filas es peor que no tenerla.
     const COLS = amlActivo
-        ? 'minmax(190px,1.2fr) 128px 146px minmax(150px,1fr) 106px 78px'
-        : 'minmax(190px,1.2fr) 146px minmax(150px,1fr) 110px 82px';
+        ? 'minmax(180px,1.2fr) 124px 140px minmax(140px,1fr) 150px 106px 78px'
+        : 'minmax(180px,1.2fr) 140px minmax(140px,1fr) 150px 110px 82px';
     const CABECERAS = amlActivo
-        ? ['BENEFICIARIO', 'AML', 'PAÍS Y RIEL', 'BANCO Y CUENTA', 'ESTADO', 'ACCIONES']
-        : ['BENEFICIARIO', 'PAÍS Y RIEL', 'BANCO Y CUENTA', 'ESTADO', 'ACCIONES'];
+        ? ['BENEFICIARIO', 'AML', 'PAÍS Y RIEL', 'BANCO Y CUENTA', 'MOVIDO', 'ESTADO', 'ACCIONES']
+        : ['BENEFICIARIO', 'PAÍS Y RIEL', 'BANCO Y CUENTA', 'MOVIDO', 'ESTADO', 'ACCIONES'];
 
     // El PDF del reporte. TusDatos lo sirve autenticado, así que no se puede
     // abrir con un enlace: viene por el servidor y se abre desde la memoria
@@ -1118,6 +1118,53 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
 
     const mask = (acc: string) => acc.length > 4 ? `···${acc.slice(-4)}` : acc;
 
+    // ── Cuánto se le ha movido a cada beneficiario ───────────
+    // Mes calendario en curso y año calendario en curso. Es la misma pregunta
+    // que responde el detalle del beneficiario ("Total enviado"), calculada
+    // con el mismo criterio para que las dos pantallas no discrepen: envíos y
+    // dispersiones de esta cuenta hacia esa cuenta destino o ese nombre, en
+    // estado Completado o Procesando. Procesando cuenta porque la plata ya
+    // salió — que el riel tarde en confirmar no la devuelve a la cuenta.
+    //
+    // Se suma POR MONEDA y se muestra la dominante. Sumar COP con USDT en una
+    // sola cifra sería inventar un número, y a un beneficiario de Colombia se
+    // le manda COP; a una wallet, USDT. Casi nunca las dos.
+    const movidoPor = useMemo(() => {
+        const ahora = new Date();
+        const inicioMes = new Date(ahora.getFullYear(), ahora.getMonth(), 1).getTime();
+        const inicioAnio = new Date(ahora.getFullYear(), 0, 1).getTime();
+        const cuando = (t: any) => new Date(t.createdAt ?? t.created_at ?? t.date ?? 0).getTime() || 0;
+        const mios = (transactions as any[]).filter(t =>
+            t.userId === currentUser?.id &&
+            (t.type === 'dispersion' || t.type === 'send') &&
+            (t.status === 'Completado' || t.status === 'Procesando'));
+        const out: Record<string, { mes: number; anio: number; moneda: string; envios: number }> = {};
+        for (const c of contacts) {
+            const isWallet = c.accountKind === 'wallet';
+            const isBreb = c.destKind === 'breb';
+            const llave = String((isWallet ? c.accountNumber : (isBreb ? (c.brebKey ?? c.accountNumber) : c.accountNumber)) ?? '');
+            const nombre = String(c.name ?? '');
+            const porMoneda: Record<string, { mes: number; anio: number; envios: number }> = {};
+            for (const t of mios) {
+                if (String(t.account ?? '') !== llave && String(t.beneficiary ?? '') !== nombre) continue;
+                const ts = cuando(t);
+                if (ts < inicioAnio) continue;
+                const m = String(t.currency ?? 'COP');
+                const acc = porMoneda[m] ?? (porMoneda[m] = { mes: 0, anio: 0, envios: 0 });
+                const monto = Number(t.amount) || 0;
+                acc.anio += monto; acc.envios += 1;
+                if (ts >= inicioMes) acc.mes += monto;
+            }
+            const dominante = Object.entries(porMoneda).sort((a, b) => b[1].anio - a[1].anio)[0];
+            out[c.id] = dominante
+                ? { ...dominante[1], moneda: dominante[0] }
+                : { mes: 0, anio: 0, envios: 0, moneda: isWallet ? (c.walletCoin ?? 'USDT') : 'COP' };
+        }
+        return out;
+    }, [contacts, transactions, currentUser?.id]);
+    const fmtMovido = (v: number, moneda: string) =>
+        `${(moneda === 'COP' ? Math.round(v) : v).toLocaleString('es-CO', { maximumFractionDigits: moneda === 'COP' ? 0 : 2 })} ${moneda}`;
+
     // ── Buscador + filtros ───────────────────────────────────
     // Países: los que el usuario ya tiene inscritos, primero; luego el resto
     // de países soportados por la app (para poder filtrar aunque no tenga
@@ -1677,6 +1724,32 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                 <p style={{ fontSize: 13, fontWeight: 600, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.bankName}</p>
                                 <p style={{ fontSize: 11.5, color: '#878E88', fontFamily: 'ui-monospace, monospace' }}>{m.maskLine}</p>
                             </div>
+                            {/* MOVIDO — mes y año en curso, con una barra que
+                                dice qué parte del año es este mes. Un cero se
+                                muestra en gris y sin barra: no es un dato
+                                llamativo, es la ausencia de envíos. */}
+                            {(() => {
+                                const mv = movidoPor[c.id];
+                                const pct = mv && mv.anio > 0 ? Math.max(0, Math.min(100, (mv.mes / mv.anio) * 100)) : 0;
+                                const hay = !!mv && mv.anio > 0;
+                                return (
+                                    <div className="min-w-0" title={hay ? `${mv.envios} envío${mv.envios === 1 ? '' : 's'} este año · este mes es el ${Math.round(pct)} % del año` : 'Sin envíos este año'}>
+                                        <p style={{ fontSize: 12.5, fontWeight: 700, color: hay ? '#F4F4F2' : 'rgba(244,244,242,0.45)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontVariantNumeric: 'tabular-nums' }}>
+                                            <span style={{ fontSize: 10, fontWeight: 700, color: '#878E88', letterSpacing: '0.6px', marginRight: 5 }}>MES</span>
+                                            {mv ? fmtMovido(mv.mes, mv.moneda) : '—'}
+                                        </p>
+                                        <p style={{ fontSize: 11.5, color: hay ? '#878E88' : 'rgba(244,244,242,0.35)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontVariantNumeric: 'tabular-nums', marginTop: 1 }}>
+                                            <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.6px', marginRight: 5 }}>AÑO</span>
+                                            {mv ? fmtMovido(mv.anio, mv.moneda) : '—'}
+                                        </p>
+                                        {hay && (
+                                            <div style={{ height: 3, borderRadius: 999, background: 'rgba(255,255,255,0.08)', marginTop: 5, overflow: 'hidden', maxWidth: 120 }}>
+                                                <div style={{ width: `${pct}%`, height: '100%', background: '#4ADE80', borderRadius: 999 }} />
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })()}
                             <div>{statusPill}</div>
                             {actions}
                         </div>
@@ -1691,6 +1764,17 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                             {flagEl}
                                             <span style={{ fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.railLine} · {m.maskLine}</span>
                                         </div>
+                                        {/* Movido, en el celular: una línea. */}
+                                        {(() => {
+                                            const mv = movidoPor[c.id];
+                                            if (!mv || mv.anio <= 0) return null;
+                                            return (
+                                                <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontVariantNumeric: 'tabular-nums' }}>
+                                                    Mes <span style={{ color: '#F4F4F2', fontWeight: 700 }}>{fmtMovido(mv.mes, mv.moneda)}</span>
+                                                    {' · '}Año <span style={{ color: '#F4F4F2', fontWeight: 700 }}>{fmtMovido(mv.anio, mv.moneda)}</span>
+                                                </p>
+                                            );
+                                        })()}
                                     </div>
                                 </button>
                                 <div className="flex flex-col items-end gap-1.5 shrink-0">
