@@ -275,6 +275,8 @@ const VIEW_PATHS: Record<string, string> = {
   servicios: '/servicios',
   mouv: '/mesa-otc',
   contactos: '/beneficiarios',
+  contabilidad: '/contabilidad',
+  compliance: '/compliance',
   walletsGasfree: '/wallets',
 };
 // 'mouv' es la unica vista con DOS entradas distintas —Dispersar por Bre-B y
@@ -310,7 +312,7 @@ const PATH_VIEWS: Record<string, string> = {
 };
 
 export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }) => {
-  const [activeView, setActiveView] = useState<'dashboard' | 'movements' | 'wallet-detail' | 'profile' | 'notifications' | 'referrals' | 'affiliates' | 'settings' | 'servicios' | 'mouv' | 'contactos' | 'walletsGasfree' | 'kyt'>(() => {
+  const [activeView, setActiveView] = useState<'dashboard' | 'movements' | 'wallet-detail' | 'profile' | 'notifications' | 'referrals' | 'affiliates' | 'settings' | 'servicios' | 'mouv' | 'contactos' | 'contabilidad' | 'compliance' | 'walletsGasfree' | 'kyt'>(() => {
     // Vista inicial según la URL (deep-link / recarga en /movimientos, etc.).
     // /billetera necesita una billetera seleccionada, que NO sobrevive a la
     // recarga (no va en la URL) → si se recarga ahí, se abre Inicio (donde
@@ -4727,8 +4729,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               onBack={() => setActiveView('servicios')}
           />
       )}
-      {activeView === 'contactos' && (
+      {/* Beneficiarios, Contabilidad y Compliance son tres vistas de la misma
+          lista y comparten todo lo de abajo: la verificación de antecedentes,
+          los movimientos, los modales. Una sola sección con tres caras. */}
+      {(activeView === 'contactos' || activeView === 'contabilidad' || activeView === 'compliance') && (
           <ContactsSection
+              vista={activeView === 'contactos' ? 'beneficiarios' : activeView}
               onBack={() => setActiveView('dashboard')}
               onSendTo={(c: any) => {
                   // "Enviar" desde Beneficiarios: abre Enviar Dinero con el
