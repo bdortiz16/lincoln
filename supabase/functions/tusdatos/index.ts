@@ -515,11 +515,35 @@ async function guardarBeneficiario(userId: string, documento: string, ficha: Fic
 // para decidir hoy. Pasado el plazo se vuelve a consultar y se paga.
 
 const RISK_TIPO = (t?: string) => String(t ?? 'CC').toUpperCase().trim() || 'CC'
-const RISK_DOC = (d?: string) => String(d ?? '').replace(/\D/g, '')
+// La llave del padrón. Un NIT llega con sus 10 dígitos (la app lo pide con
+// el de verificación) y se guarda por los 9 base: así "901847876" y
+// "9018478766" son el mismo documento y no se paga dos veces.
+const RISK_DOC = (d?: string, t?: string) => nitSinDv(RISK_TIPO(t), String(d ?? '').replace(/\D/g, ''))
+
+// ── NIT: el dígito de verificación ──────────────────────────────────────
+// Módulo 11 de la DIAN. La app pide el NIT COMPLETO (10 dígitos), pero
+// TusDatos y el padrón lo quieren SIN el DV. Solo se quita el último dígito
+// si de verdad es el DV de los otros nueve: un NIT de 10 que no cuadra se
+// manda tal cual, y que el proveedor diga que no lo valida.
+const PESOS_NIT = [3, 7, 13, 17, 19, 23, 29, 37, 41, 43, 47, 53, 59, 67, 71]
+function dvNit(base: string): number | null {
+  const d = String(base ?? '').replace(/\D/g, '')
+  if (!d.length || d.length > 15) return null
+  let suma = 0
+  for (let i = 0; i < d.length; i++) suma += Number(d[d.length - 1 - i]) * PESOS_NIT[i]
+  const r = suma % 11
+  return r > 1 ? 11 - r : r
+}
+function nitSinDv(tipo: string, doc: string): string {
+  if (tipo !== 'NIT') return doc
+  const d = String(doc ?? '').replace(/\D/g, '')
+  if (d.length !== 10) return d
+  return dvNit(d.slice(0, 9)) === Number(d[9]) ? d.slice(0, 9) : d
+}
 
 // Lo que el padrón tiene sobre un documento, si sigue vigente.
 async function riskBuscar(tipoDoc: string, documento: string, diasVigencia: number): Promise<any | null> {
-  const doc = RISK_DOC(documento)
+  const doc = RISK_DOC(documento, tipoDoc)
   if (!doc) return null
   try {
     const { data } = await db.from('risk_registry')
@@ -537,7 +561,7 @@ async function riskBuscar(tipoDoc: string, documento: string, diasVigencia: numb
 
 // Guardar lo que costó un crédito, para que no haya que volver a pagarlo.
 async function riskGuardar(tipoDoc: string, documento: string, f: Ficha, empresaId: string, fuente = 'tusdatos') {
-  const doc = RISK_DOC(documento)
+  const doc = RISK_DOC(documento, tipoDoc)
   if (!doc || f.estado !== 'finalizado') return
   try {
     const { data: previo } = await db.from('risk_registry')
@@ -571,7 +595,7 @@ async function riskGuardar(tipoDoc: string, documento: string, f: Ficha, empresa
 // cuánto se ahorra de verdad, y saber quién usó cada ficha — un reporte a la
 // UIAF tiene que poder nombrar al reportante aunque el dato se haya reusado.
 async function riskAnotarUso(tipoDoc: string, documento: string, empresaId: string) {
-  const doc = RISK_DOC(documento)
+  const doc = RISK_DOC(documento, tipoDoc)
   if (!doc) return
   try {
     const { data: previo } = await db.from('risk_registry')
@@ -590,7 +614,7 @@ async function riskAnotarUso(tipoDoc: string, documento: string, empresaId: stri
 // tengan a esa persona inscrita. Antes cada cuenta se enteraba por su lado, o
 // no se enteraba: el veredicto viejo se quedaba ahí diciendo que estaba limpia.
 async function riskPropagar(tipoDoc: string, documento: string, cambios: Partial<Ficha>): Promise<number> {
-  const doc = RISK_DOC(documento)
+  const doc = RISK_DOC(documento, tipoDoc)
   if (!doc) return 0
   let tocadas = 0
   try {
@@ -654,8 +678,10 @@ function operableDe(cat: Ficha['categoria'], c: Config): boolean | undefined {
 // cuando force es false, pero ni siquiera vale la pena preguntar.
 async function lanzar(c: Config, d: { documento: string; tipoDocumento: string; nombre?: string; fechaExpedicion?: string; referencia: string; force?: boolean }) {
   const tipo = (d.tipoDocumento || 'CC').toUpperCase()
+  // Un NIT va sin dígito de verificación: así lo pide TusDatos.
+  const docProveedor = nitSinDv(tipo, d.documento)
   const cuerpo: Record<string, unknown> = {
-    doc: /^\d+$/.test(d.documento) ? Number(d.documento) : d.documento,
+    doc: /^\d+$/.test(docProveedor) ? Number(docProveedor) : docProveedor,
     typedoc: tipo,
     // `force` solo en el monitoreo: sin él TusDatos devuelve lo que ya tenía
     // guardado, que es justo lo que NO sirve cuando el aviso es que algo

@@ -4,6 +4,7 @@ import { useDatabase } from '../context/DatabaseContext';
 import { useSystemConfig } from '../context/SystemConfigContext';
 import { supabase } from '../lib/supabaseClient';
 import { llamarFuncion } from '../lib/edge';
+import { validarNit, completarNit, nitSinDv } from '../lib/nit';
 import { FlagImg } from './FlagImg';
 import { callFinity } from './FinitySection';
 import { ContabilidadDashboard } from './ContabilidadDashboard';
@@ -263,6 +264,21 @@ const DOC_TYPES = [
     { v: 'NIT', l: 'NIT (empresa)' },
     { v: 'PAS', l: 'Pasaporte' },
 ];
+
+// Debajo del número, mientras se escribe un NIT: cuántos dígitos van, cuál
+// es el de verificación que falta, o si el que pusieron no cuadra. Se dice
+// ANTES de guardar; el error al guardar es el último recurso, no el primero.
+const pistaNit = (docType: string, numero: string) => {
+    if (docType !== 'NIT') return null;
+    const d = String(numero ?? '').replace(/\D/g, '');
+    if (!d) return null;
+    const v = validarNit(d);
+    return (
+        <p style={{ fontSize: 11, marginTop: 5, lineHeight: 1.4, color: v.ok ? '#4ADE80' : '#FBBF24' }}>
+            {v.ok ? '✓ ' : ''}{v.texto}
+        </p>
+    );
+};
 
 const CONTACT_COUNTRIES = [
     { code: 'CO', name: 'Colombia' },
@@ -642,11 +658,14 @@ export const ContactsSection: React.FC<{
                     // el formulario siguiente.
                     if (fm.brebKey.trim() !== key) return fm;
                     const real = String(r.fullName ?? '').trim();
-                    const doc = String(r.idValue ?? '').trim();
+                    // El directorio entrega el NIT sin dígito de verificación;
+                    // acá va completo, así que se le calcula y se le agrega.
+                    const docCrudo = String(r.idValue ?? '').trim();
+                    const doc = fm.docType === 'NIT' ? completarNit(docCrudo) : docCrudo;
                     const escritoNombre = fm.name.trim();
                     const escritoDoc = fm.docNumber.trim();
                     const chocaN = !!real && !!escritoNombre && escritoNombre.toLowerCase() !== real.toLowerCase();
-                    const chocaD = !!doc && !!escritoDoc && escritoDoc.replace(/\D/g, '') !== doc.replace(/\D/g, '');
+                    const chocaD = !!doc && !!escritoDoc && nitSinDv(escritoDoc) !== nitSinDv(doc);
                     if (chocaN || chocaD) return { ...fm, bank: fm.bank };   // no se toca nada: manda el aviso
                     return {
                         ...fm,
@@ -660,7 +679,7 @@ export const ContactsSection: React.FC<{
                 const realD = String(r.idValue ?? '').trim();
                 const chocaAviso =
                     (!!realN && !!form.name.trim() && form.name.trim().toLowerCase() !== realN.toLowerCase())
-                    || (!!realD && !!form.docNumber.trim() && form.docNumber.trim().replace(/\D/g, '') !== realD.replace(/\D/g, ''));
+                    || (!!realD && !!form.docNumber.trim() && nitSinDv(form.docNumber.trim()) !== nitSinDv(realD));
                 setBrebLookup({
                     loading: false, found: true, bank: r.bank ?? null,
                     msg: chocaAviso
@@ -807,6 +826,11 @@ export const ContactsSection: React.FC<{
         if (f.country === 'Colombia' && f.destKind === 'breb') {
             if (!f.name.trim()) { setNotice({ ok: false, text: 'Ponle un alias al destinatario.' }); return; }
             if (!f.brebKey.trim()) { setNotice({ ok: false, text: 'Escribe la llave Bre-B.' }); return; }
+            // En Bre-B el documento es opcional; si es un NIT, va completo.
+            if (f.docType === 'NIT' && f.docNumber.trim()) {
+                const v = validarNit(f.docNumber);
+                if (!v.ok) { setNotice({ ok: false, text: v.texto }); return; }
+            }
             const keyNorm = f.brebKey.trim().toLowerCase();
             const dupK = bankContacts.find(c => c.destKind === 'breb' && (c.brebKey ?? '').trim().toLowerCase() === keyNorm);
             if (dupK) { setNotice({ ok: false, text: `Ya tienes esta llave inscrita como “${dupK.name}”.` }); return; }
@@ -834,6 +858,11 @@ export const ContactsSection: React.FC<{
         if (!f.name.trim() || !f.docNumber.trim() || !f.bank.trim() || !f.accountNumber.trim()) {
             setNotice({ ok: false, text: 'Completa nombre, documento, banco y número de cuenta.' });
             return;
+        }
+        // Un NIT va completo: 10 dígitos, con el de verificación, y que cuadre.
+        if (f.docType === 'NIT') {
+            const v = validarNit(f.docNumber);
+            if (!v.ok) { setNotice({ ok: false, text: v.texto }); return; }
         }
         // Deduplicar: mismo banco + mismo número de cuenta ya inscrito → no repetir.
         const bAcc = normAccount(f.accountNumber, false);
@@ -1648,7 +1677,9 @@ export const ContactsSection: React.FC<{
                                 </div>
                                 <div>
                                     <label style={LBL}>Número de documento</label>
-                                    <input value={form.docNumber} onChange={e => setForm(fm => ({ ...fm, docNumber: e.target.value }))} inputMode="numeric" style={INP} />
+                                    <input value={form.docNumber} onChange={e => setForm(fm => ({ ...fm, docNumber: e.target.value }))} inputMode="numeric" style={INP}
+                                        placeholder={form.docType === 'NIT' ? '10 dígitos, con el de verificación' : undefined} />
+                                    {pistaNit(form.docType, form.docNumber)}
                                 </div>
                             </div>
                         </>
@@ -1668,7 +1699,9 @@ export const ContactsSection: React.FC<{
                             </div>
                             <div>
                                 <label style={LBL}>Número de documento</label>
-                                <input value={form.docNumber} onChange={e => setForm(fm => ({ ...fm, docNumber: e.target.value }))} inputMode="numeric" style={INP} />
+                                <input value={form.docNumber} onChange={e => setForm(fm => ({ ...fm, docNumber: e.target.value }))} inputMode="numeric" style={INP}
+                                    placeholder={form.docType === 'NIT' ? '10 dígitos, con el de verificación' : undefined} />
+                                {pistaNit(form.docType, form.docNumber)}
                             </div>
                         </div>
                         <div className="grid grid-cols-2 gap-3">
