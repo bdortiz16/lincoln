@@ -7,6 +7,7 @@ import { llamarFuncion } from '../lib/edge';
 import { FlagImg } from './FlagImg';
 import { callFinity } from './FinitySection';
 import { ContabilidadDashboard } from './ContabilidadDashboard';
+import { ComplianceDashboard } from './ComplianceDashboard';
 
 declare const __BUILD_TS__: string;
 
@@ -1199,8 +1200,6 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     // Panel abierto desde los botones bajo las barras: el extracto contable o
     // el expediente de cumplimiento de ESE beneficiario.
     const [panel, setPanel] = useState<{ c: MouvContact; tipo: 'contabilidad' | 'compliance' } | null>(null);
-    // Filtro de la vista Compliance.
-    const [fCumpl, setFCumpl] = useState<'todos' | 'bloqueados' | 'esperando' | 'revision' | 'limpios' | 'sin_consulta'>('todos');
     // La situación de cumplimiento de un beneficiario, en UNA palabra, para
     // contar y filtrar. Sale de los mismos criterios que la insignia y que el
     // freno de envío.
@@ -1917,119 +1916,25 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
             )}
 
             {/* ── VISTA COMPLIANCE ──
-                Quién puede recibir plata y quién no. Arriba los conteos; abajo
-                cada beneficiario con su veredicto de antecedentes, el estado de
-                su cuenta y qué implica. Clic abre el expediente. Los criterios
-                son los mismos que frenan el envío: esta pantalla no puede decir
-                una cosa y el botón Enviar otra. */}
-            {vista === 'compliance' && (() => {
-                const filas = contacts.map(c => ({ c, sit: situacionAml(c), st: contactStatus(c) }));
-                const n = (s: string) => filas.filter(f => f.sit === s).length;
-                const chips: { k: typeof fCumpl; rot: string; cnt: number; color?: string }[] = [
-                    { k: 'todos', rot: 'Todos', cnt: filas.length },
-                    { k: 'bloqueados', rot: 'Bloqueados', cnt: n('bloqueado'), color: '#F87171' },
-                    { k: 'revision', rot: 'En revisión', cnt: n('revision'), color: '#FBBF24' },
-                    { k: 'esperando', rot: 'Esperando resultado', cnt: n('esperando') },
-                    { k: 'limpios', rot: 'Sin hallazgos', cnt: n('limpio'), color: '#4ADE80' },
-                    { k: 'sin_consulta', rot: 'Sin consulta', cnt: n('sin_consulta') },
-                ];
-                const mapa: Record<typeof fCumpl, string | null> = { todos: null, bloqueados: 'bloqueado', revision: 'revision', esperando: 'esperando', limpios: 'limpio', sin_consulta: 'sin_consulta' };
-                const orden: Record<string, number> = { bloqueado: 0, revision: 1, esperando: 2, sin_consulta: 3, limpio: 4 };
-                const visibles = filas
-                    .filter(f => !mapa[fCumpl] || f.sit === mapa[fCumpl])
-                    .sort((a, b) => (orden[a.sit] ?? 9) - (orden[b.sit] ?? 9) || a.c.name.localeCompare(b.c.name));
-                const implica = (f: typeof filas[number]) =>
-                    f.sit === 'bloqueado' ? 'No se puede transferir. El envío se rechaza en el servidor.'
-                    : f.sit === 'esperando' ? 'Los envíos esperan el resultado. Cerca de un minuto.'
-                    : f.sit === 'revision' ? 'Hallazgos de riesgo medio. Queda en revisión de cumplimiento.'
-                    : f.st !== 'aprobada' ? (f.st === 'rechazada' ? 'El banco rechazó la cuenta destino.' : 'La cuenta destino sigue en validación del banco.')
-                    : f.sit === 'sin_consulta' ? (amlActivo ? 'Sin documento para consultar antecedentes.' : 'Sin verificación de antecedentes en esta cuenta.')
-                    : 'Se puede operar.';
-                const colorSit = (s: string) => s === 'bloqueado' ? '#F87171' : s === 'revision' ? '#FBBF24' : s === 'limpio' ? '#4ADE80' : '#878E88';
-                return (
-                    <>
-                        {/* Conteos. Los bloqueados van primero y en rojo: es lo que
-                            hay que mirar. */}
-                        <div className="grid grid-cols-2 md:grid-cols-4" style={{ gap: 10 }}>
-                            {[
-                                ['BLOQUEADOS', n('bloqueado'), '#F87171'],
-                                ['EN REVISIÓN', n('revision'), '#FBBF24'],
-                                ['ESPERANDO RESULTADO', n('esperando'), '#F4F4F2'],
-                                ['CUENTAS EN VALIDACIÓN', filas.filter(f => f.st === 'en_proceso').length, '#F4F4F2'],
-                            ].map(([r, v, col]) => (
-                                <div key={String(r)} style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, padding: '16px 18px' }}>
-                                    <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1.2px', color: '#878E88' }}>{r}</p>
-                                    <p style={{ fontSize: 22, fontWeight: 800, color: Number(v) > 0 ? String(col) : 'rgba(244,244,242,0.45)', marginTop: 6, letterSpacing: '-0.4px' }}>{v}</p>
-                                </div>
-                            ))}
-                        </div>
-                        {!amlActivo && (
-                            <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, padding: '14px 18px' }}>
-                                <p style={{ fontSize: 13, color: '#F4F4F2', fontWeight: 600 }}>La verificación de antecedentes no está activa para esta cuenta.</p>
-                                <p style={{ fontSize: 12, color: '#878E88', marginTop: 4, lineHeight: 1.5 }}>
-                                    Lo que se ve abajo es el estado de las cuentas destino según el banco.
-                                    {(currentUser as any)?.role === 'admin' && amlMotivo ? ` ${amlMotivo}` : ''}
-                                </p>
-                            </div>
-                        )}
-
-                        {/* Filtros. */}
-                        <div className="flex flex-wrap" style={{ gap: 8 }}>
-                            {chips.map(ch => (
-                                <button key={ch.k} onClick={() => setFCumpl(ch.k)}
-                                    style={{
-                                        fontSize: 12.5, fontWeight: 700, padding: '8px 14px', borderRadius: 999,
-                                        color: fCumpl === ch.k ? '#F4F4F2' : '#878E88',
-                                        background: fCumpl === ch.k ? 'rgba(255,255,255,0.07)' : 'transparent',
-                                        border: `1px solid ${fCumpl === ch.k ? 'rgba(74,222,128,0.45)' : 'rgba(255,255,255,0.12)'}`,
-                                    }} className="transition-colors">
-                                    {ch.rot} · <span style={{ color: ch.cnt > 0 && ch.color ? ch.color : undefined }}>{ch.cnt}</span>
-                                </button>
-                            ))}
-                        </div>
-
-                        {/* La lista. */}
-                        <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, overflow: 'hidden' }}>
-                            {visibles.length === 0 && (
-                                <p style={{ fontSize: 12.5, color: '#878E88', padding: '18px 22px' }}>Nadie en esta categoría.</p>
-                            )}
-                            {visibles.map(f => {
-                                const m = rowMeta(f.c);
-                                return (
-                                    <div key={f.c.id} className="flex items-start gap-3 hover:bg-white/[0.02] transition-colors cursor-pointer"
-                                        onClick={() => setPanel({ c: f.c, tipo: 'compliance' })}
-                                        style={{ padding: '13px 22px', borderTop: '1px solid rgba(255,255,255,0.05)', borderLeft: `3px solid ${f.sit === 'bloqueado' ? '#F87171' : f.sit === 'revision' ? '#FBBF24' : 'transparent'}` }}>
-                                        <div style={{ width: 38, height: 38, borderRadius: '50%', background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', border: '1px solid rgba(255,255,255,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                                            <span style={{ color: '#878E88', fontWeight: 800, fontSize: 13 }}>{initialsOf(f.c.name)}</span>
-                                        </div>
-                                        <div className="min-w-0" style={{ flex: 1 }}>
-                                            <div className="flex items-start justify-between gap-3 flex-wrap">
-                                                <div className="min-w-0">
-                                                    <p style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{prettyName(f.c.name)}</p>
-                                                    <p style={{ fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                                        {f.c.docNumber && f.c.docNumber !== '—' ? `${String(f.c.docType ?? '').toUpperCase()} ${f.c.docNumber} · ` : ''}{m.bankName} · {m.maskLine}
-                                                    </p>
-                                                </div>
-                                                <div className="flex items-center gap-2 flex-wrap" style={{ flexShrink: 0 }}>
-                                                    {kumploPill(f.c)}
-                                                    <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap',
-                                                        border: `1px solid ${f.st === 'aprobada' ? 'rgba(74,222,128,0.3)' : 'rgba(255,255,255,0.14)'}`, color: f.st === 'aprobada' ? '#4ADE80' : '#878E88' }}>
-                                                        {f.st === 'aprobada' ? 'CUENTA VERIFICADA' : f.st === 'rechazada' ? 'CUENTA RECHAZADA' : 'CUENTA EN VALIDACIÓN'}
-                                                    </span>
-                                                </div>
-                                            </div>
-                                            <p style={{ fontSize: 12, color: colorSit(f.sit), marginTop: 6, lineHeight: 1.45 }}>{implica(f)}</p>
-                                        </div>
-                                    </div>
-                                );
-                            })}
-                        </div>
-                        <p style={{ fontSize: 11.5, color: 'rgba(244,244,242,0.45)', lineHeight: 1.5 }}>
-                            Para el riesgo de una dirección en cadena (sanciones, mixers, rutas contaminadas) está KYT, en Servicios.
-                        </p>
-                    </>
-                );
-            })()}
+                Un dashboard, mismo sistema visual que Contabilidad. Vive en su
+                propio archivo; acá se le pasan los datos y —esto es lo que
+                importa— la MISMA situacionAml que frena el botón Enviar. Esta
+                pantalla no puede decir "puede recibir" y el envío rechazarse. */}
+            {vista === 'compliance' && (
+                <ComplianceDashboard
+                    contacts={contacts}
+                    amlDe={amlDe}
+                    situacionAml={situacionAml}
+                    contactStatus={contactStatus}
+                    rowMeta={rowMeta}
+                    initialsOf={initialsOf}
+                    prettyName={prettyName}
+                    amlActivo={amlActivo}
+                    amlMotivo={amlMotivo}
+                    esAdmin={(currentUser as any)?.role === 'admin'}
+                    onDetalle={(c) => setPanel({ c, tipo: 'compliance' })}
+                />
+            )}
 
             {/* ── Panel: Contabilidad / Compliance de UN beneficiario ──
                 Se abren desde los botones bajo las barras. El de contabilidad es
