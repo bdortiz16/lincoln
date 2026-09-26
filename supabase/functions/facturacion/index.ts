@@ -790,6 +790,80 @@ Deno.serve(async (req) => {
       return json(await emitir(Number((comp as any).folio), { forzar: true }))
     }
 
+    // ── El documento de UN movimiento, para verlo desde el detalle ──────
+    // Devuelve lo que se guardó al emitir (tipo, número, CUFE/CUDE, fecha,
+    // ítems) y, si Siigo responde, refresca el estado ante la DIAN: el sello
+    // electrónico puede llegar minutos después de crear el documento. Si
+    // Siigo no contesta, se muestra lo guardado y se dice que no se pudo
+    // actualizar — nunca se inventa un estado.
+    if (accion === 'documento' || accion === 'documento_pdf') {
+      const txId = String(body.transactionId ?? '')
+      if (!txId) return json({ ok: false, error: 'falta_transactionId' }, 400)
+      const { data: comp, error: eComp } = await db.from('comprobantes').select('*').eq('transaction_id', txId).maybeSingle()
+      if (eComp) return json({ ok: false, error: /does not exist|42P01|schema cache/i.test(eComp.message) ? 'sin_tabla' : eComp.message })
+      if (!comp || String((comp as any).user_id) !== userId) return json({ ok: true, comprobante: null, documento: null })
+      const c = comp as any
+      const clase: 'FV' | 'DS' = c.factura_tipo === 'DS' ? 'DS' : 'FV'
+      const rutaDoc = clase === 'DS' ? '/v1/purchase-support-documents' : '/v1/invoices'
+      const cfg = await leerConfig(userId)
+      const partner = cfg?.partner_id || 'Lincoin'
+
+      // PDF: Siigo lo entrega en base64 para la factura de venta
+      // (GET /v1/invoices/{id}/pdf). Para el documento soporte no documenta
+      // esa ruta; se intenta la equivalente y, si no existe, se dice.
+      if (accion === 'documento_pdf') {
+        if (c.factura_estado !== 'emitida' || !c.factura_id) return json({ ok: false, error: 'Este movimiento no tiene un documento emitido en Siigo.' })
+        const t = await tokenDe(userId, cfg)
+        if ('error' in t) return json({ ok: false, error: t.error })
+        const r = await siigo('GET', `${rutaDoc}/${encodeURIComponent(String(c.factura_id))}/pdf`, { token: t.token, partner })
+        const b64 = r.data?.base64 ?? r.data?.pdf_base64 ?? null
+        if (r.ok && typeof b64 === 'string' && b64.length > 100) return json({ ok: true, base64: b64, nombre: `${c.factura_numero ?? clase}.pdf` })
+        const e = r.status === 404 || r.status === 405
+          ? `Siigo no entrega por API el PDF del ${clase === 'DS' ? 'documento soporte' : 'documento'} (HTTP ${r.status} en ${rutaDoc}/{id}/pdf). Se descarga desde Siigo Nube: ${clase === 'DS' ? 'Compras → Documento soporte' : 'Ventas → Facturas'} → ${c.factura_numero ?? ''} → Imprimir o descargar.`
+          : `Siigo no entregó el PDF — ${motivoDe(r)}`
+        return json({ ok: false, error: e })
+      }
+
+      let actualizado = false, avisoSiigo: string | null = null
+      let d: any = c.factura_detalle?.respuesta ?? null
+      if (c.factura_estado === 'emitida' && c.factura_id && cfg) {
+        const t = await tokenDe(userId, cfg)
+        if ('error' in t) avisoSiigo = t.error
+        else {
+          const r = await siigo('GET', `${rutaDoc}/${encodeURIComponent(String(c.factura_id))}`, { token: t.token, partner })
+          if (r.ok && r.data && typeof r.data === 'object') {
+            d = r.data
+            const cambios: Record<string, unknown> = {}
+            const cufe = d.stamp?.cufe ?? d.stamp?.cude ?? null
+            if (cufe && cufe !== c.factura_cufe) cambios.factura_cufe = cufe
+            if (d.public_url && d.public_url !== c.factura_url) cambios.factura_url = d.public_url
+            const numero = d.name ?? (d.number != null ? `${d.prefix ?? ''}${d.number}` : null)
+            if (numero && numero !== c.factura_numero) cambios.factura_numero = numero
+            cambios.factura_detalle = { ...(c.factura_detalle ?? {}), respuesta: d, consultado_at: new Date().toISOString() }
+            await db.from('comprobantes').update(cambios).eq('folio', c.folio).then(() => {}, () => {})
+            Object.assign(c, cambios)
+            actualizado = true
+          } else avisoSiigo = `No se pudo consultar el documento en Siigo — ${motivoDe(r)}`
+        }
+      }
+      const items = Array.isArray(d?.items) ? d.items.map((it: any) => ({
+        code: it.code ?? null, description: it.description ?? null, quantity: it.quantity ?? null, price: it.price ?? null, total: it.total ?? null,
+        taxes: Array.isArray(it.taxes) ? it.taxes.map((x: any) => ({ name: x.name ?? null, percentage: x.percentage ?? null, value: x.value ?? null })) : [],
+      })) : []
+      const stamp = d?.stamp && typeof d.stamp === 'object' ? { status: d.stamp.status ?? null, cufe: d.stamp.cufe ?? null, cude: d.stamp.cude ?? null, observations: d.stamp.observations ?? null, errors: d.stamp.errors ?? null } : null
+      const contraparte = d?.supplier ?? d?.customer ?? null
+      return json({
+        ok: true,
+        comprobante: { folio: c.folio, numero: c.numero, tipo: c.tipo, monto: c.monto, moneda: c.moneda, emitido_at: c.emitido_at },
+        documento: c.factura_estado ? {
+          estado: c.factura_estado, tipo: clase, numero: c.factura_numero ?? null, id: c.factura_id ?? null,
+          cufe: c.factura_cufe ?? null, url: c.factura_url ?? null, error: c.factura_error ?? null, fecha: c.factura_at ?? null,
+          siigo: d ? { fecha: d.date ?? null, total: d.total ?? null, balance: d.balance ?? null, observations: d.observations ?? null, stamp, contraparte: contraparte ? { identification: contraparte.identification ?? null, name: contraparte.name ?? contraparte.commercial_name ?? null } : null, items } : null,
+          actualizado, aviso: avisoSiigo,
+        } : null,
+      })
+    }
+
     if (accion === 'facturas') {
       const { data } = await db.from('comprobantes')
         .select('folio, numero, transaction_id, tipo, monto, moneda, emitido_at, factura_estado, factura_tipo, factura_numero, factura_cufe, factura_url, factura_error, factura_at, factura_intentos')

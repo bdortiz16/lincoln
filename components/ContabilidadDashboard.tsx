@@ -488,9 +488,19 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                         // "DS" delante cuando lo que salió fue un documento
                         // soporte, no una factura: son dos cosas distintas.
                         const rotulo = fa.tipo === 'DS' ? 'DS · ' : '';
-                        if (fa.estado === 'emitida') return fa.url
-                          ? <a href={fa.url} target="_blank" rel="noopener noreferrer" title={fa.tipo === 'DS' ? 'Documento soporte' : 'Factura de venta'} style={{ color: C.text, fontFamily: 'ui-monospace, monospace', textDecoration: 'underline', textUnderlineOffset: 3 }}>{rotulo}{fa.numero ?? 'ver'}</a>
-                          : <span title={fa.tipo === 'DS' ? 'Documento soporte' : 'Factura de venta'} style={{ color: C.text, fontFamily: 'ui-monospace, monospace' }}>{rotulo}{fa.numero ?? 'emitida'}</span>;
+                        // El número abre el detalle del movimiento, que
+                        // muestra el documento completo (estado DIAN,
+                        // CUFE/CUDS, ítems, PDF). Si Siigo dio un enlace
+                        // público, además se abre directo.
+                        if (fa.estado === 'emitida') return (
+                          <span className="flex items-center" style={{ gap: 6 }}>
+                            <button onClick={() => onVerMovimiento?.(a.tx)} title={`${fa.tipo === 'DS' ? 'Documento soporte' : 'Factura de venta'} · ver el documento`}
+                              style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12, color: C.text, background: 'transparent', border: 'none', padding: 0, cursor: onVerMovimiento ? 'pointer' : 'default', textDecoration: 'underline', textUnderlineOffset: 3 }}>
+                              {rotulo}{fa.numero ?? 'emitida'}
+                            </button>
+                            {fa.url && <a href={fa.url} target="_blank" rel="noopener noreferrer" title="Abrir en Siigo" style={{ color: C.sub, fontSize: 11 }}>↗</a>}
+                          </span>
+                        );
                         if (fa.estado === 'error') return (
                           <span className="flex items-center" style={{ gap: 6 }} title={fa.error ?? ''}>
                             <span style={{ color: '#F87171', fontWeight: 700 }}>error</span>

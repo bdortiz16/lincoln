@@ -30,7 +30,7 @@ import {
   Lock,
   LayoutGrid,
   Share2,
-  FileText, Download,
+  FileText, Download, ExternalLink,
   Megaphone,
   Plane,
   GraduationCap,
@@ -487,6 +487,41 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const [isConverting, setIsConverting] = useState(false);
   const [showConvertDetails, setShowConvertDetails] = useState(false);
   const [selectedTx, setSelectedTx] = useState<any>(null);
+  // El documento contable del movimiento (factura de venta o documento
+  // soporte emitido en Siigo), para verlo desde el detalle. Se pide al abrir
+  // el detalle; si la cuenta no factura, no hay nada y no se muestra.
+  const [docSiigo, setDocSiigo] = useState<{ txId: string; estado: 'cargando' | 'ok' | 'error'; comprobante?: any; documento?: any; error?: string } | null>(null);
+  const [docPdfBajando, setDocPdfBajando] = useState(false);
+  useEffect(() => {
+    const id = selectedTx?.id ? String(selectedTx.id) : '';
+    if (!id) { setDocSiigo(null); return; }
+    let vivo = true;
+    setDocSiigo({ txId: id, estado: 'cargando' });
+    llamarFuncion('facturacion', { action: 'documento', transactionId: id }, 30000)
+      .then((r: any) => {
+        if (!vivo) return;
+        if (r?.ok) setDocSiigo({ txId: id, estado: 'ok', comprobante: r.comprobante ?? null, documento: r.documento ?? null });
+        else setDocSiigo({ txId: id, estado: 'error', error: String(r?.error ?? r?.mensaje ?? 'sin respuesta') });
+      })
+      .catch((e: any) => { if (vivo) setDocSiigo({ txId: id, estado: 'error', error: String(e?.message ?? e) }); });
+    return () => { vivo = false; };
+  }, [selectedTx?.id]);
+  const descargarPdfSiigo = async (txId: string, nombre: string) => {
+    setDocPdfBajando(true);
+    try {
+      const r = await llamarFuncion('facturacion', { action: 'documento_pdf', transactionId: txId }, 45000);
+      if (!r?.ok || !r.base64) { showToast(String(r?.error ?? 'Siigo no entregó el PDF.'), 9000, 'error'); return; }
+      const bin = atob(String(r.base64));
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+      const a = document.createElement('a');
+      a.href = url; a.download = String(r.nombre ?? nombre ?? 'documento.pdf');
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    } catch (e: any) { showToast(`No se pudo descargar el PDF: ${String(e?.message ?? e)}`, 8000, 'error'); }
+    finally { setDocPdfBajando(false); }
+  };
 
   // Estado de un movimiento, con la parte que más le importa al cliente: si le
   // devolvieron la plata. Un "RECHAZADO" a secas deja a alguien creyendo que
@@ -4656,6 +4691,79 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                 </div>
               ))}
             </div>
+            {/* ── Documento contable en Siigo (factura de venta / documento
+                soporte). Solo aparece si el movimiento tiene comprobante con
+                documento: emitido, con error, omitido o pendiente. */}
+            {(() => {
+              const ds = docSiigo && docSiigo.txId === String(tx.id) ? docSiigo : null;
+              if (!ds || ds.estado === 'cargando') return null;
+              if (ds.estado === 'error') return ds.error === 'sin_tabla' ? null : (
+                <p style={{ marginTop: 14, fontSize: 11.5, color: '#878E88' }}>No se pudo consultar el documento contable: {ds.error}</p>
+              );
+              const doc = ds.documento;
+              if (!doc) return null;
+              const esDS = doc.tipo === 'DS';
+              const titulo = esDS ? 'Documento soporte' : 'Factura de venta';
+              const sg = doc.siigo;
+              const sello: string = sg?.stamp?.status ? String(sg.stamp.status) : '';
+              const cude: string = doc.cufe || sg?.stamp?.cufe || sg?.stamp?.cude || '';
+              const fechaDoc = doc.fecha ? new Date(doc.fecha).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' }) : (sg?.fecha ?? '');
+              const filas: { label: string; value: string; mono?: boolean; copy?: string; color?: string }[] = [];
+              if (doc.estado === 'emitida') {
+                filas.push({ label: 'Número', value: String(doc.numero ?? doc.id ?? '—'), mono: true, copy: doc.numero ? String(doc.numero) : undefined });
+                if (fechaDoc) filas.push({ label: 'Fecha', value: fechaDoc });
+                if (sg?.total != null) filas.push({ label: 'Total', value: `${formatMoney(Number(sg.total), 'COP')} COP` });
+                if (sg?.contraparte?.name || sg?.contraparte?.identification) filas.push({ label: esDS ? 'Proveedor' : 'Cliente', value: [sg.contraparte.name, sg.contraparte.identification ? `NIT/CC ${sg.contraparte.identification}` : ''].filter(Boolean).join(' · ') });
+                if (sello) filas.push({ label: 'DIAN', value: sello, color: /accept|acept|approv/i.test(sello) ? '#4ADE80' : /reject|rechaz|error/i.test(sello) ? '#F87171' : undefined });
+                if (cude) filas.push({ label: esDS ? 'CUDS' : 'CUFE', value: truncMid(cude, 10, 8), mono: true, copy: cude });
+                if (sg?.stamp?.errors) filas.push({ label: 'Error DIAN', value: String(sg.stamp.errors), color: '#F87171' });
+              }
+              if (ds.comprobante?.numero) filas.push({ label: 'Comprobante Lincoin', value: String(ds.comprobante.numero), mono: true });
+              const estadoTxt = doc.estado === 'emitida' ? { l: 'EMITIDO', c: '#4ADE80', b: 'rgba(74,222,128,0.3)' }
+                : doc.estado === 'error' ? { l: 'ERROR', c: '#F87171', b: 'rgba(248,113,113,0.35)' }
+                : doc.estado === 'omitida' ? { l: 'NO APLICA', c: '#878E88', b: 'rgba(255,255,255,0.14)' }
+                : { l: String(doc.estado).toUpperCase(), c: 'rgba(244,244,242,0.7)', b: 'rgba(255,255,255,0.14)' };
+              return (
+                <div style={{ marginTop: 16, border: '1px solid rgba(255,255,255,0.09)', borderRadius: 12, background: 'rgba(255,255,255,0.02)', padding: '12px 14px' }}>
+                  <div className="flex items-center justify-between" style={{ gap: 10 }}>
+                    <span className="flex items-center" style={{ gap: 7, fontSize: 12.5, fontWeight: 700, color: '#F4F4F2' }}><FileText size={14} style={{ color: '#878E88' }} /> {titulo} · Siigo</span>
+                    <span style={{ border: `1px solid ${estadoTxt.b}`, color: estadoTxt.c, fontSize: 9.5, fontWeight: 700, padding: '3px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}>{estadoTxt.l}</span>
+                  </div>
+                  {filas.map((r, i) => (
+                    <div key={r.label} className="flex items-center justify-between" style={{ gap: 12, padding: '8px 0', borderTop: i > 0 ? '1px solid rgba(255,255,255,0.06)' : 'none', marginTop: i === 0 ? 8 : 0 }}>
+                      <span style={{ fontSize: 12, color: '#878E88', flexShrink: 0 }}>{r.label}</span>
+                      <span className="flex items-center" style={{ gap: 6, minWidth: 0 }}>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: r.color ?? '#F4F4F2', fontFamily: r.mono ? 'ui-monospace, Menlo, monospace' : undefined, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.value}</span>
+                        {r.copy && <button onClick={() => copyToClipboard(r.copy!)} style={{ flexShrink: 0 }}><Copy size={12} style={{ color: '#878E88' }} /></button>}
+                      </span>
+                    </div>
+                  ))}
+                  {doc.estado === 'emitida' && Array.isArray(sg?.items) && sg.items.length > 0 && (
+                    <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                      {sg.items.map((it: any, i: number) => (
+                        <div key={i} className="flex items-start justify-between" style={{ gap: 10, padding: '3px 0' }}>
+                          <span style={{ fontSize: 11.5, color: '#878E88', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.description || it.code}{it.taxes?.length ? ` · ${it.taxes.map((t: any) => t.name || `${t.percentage}%`).join(', ')}` : ''}</span>
+                          <span style={{ fontSize: 11.5, fontWeight: 600, color: '#F4F4F2', whiteSpace: 'nowrap' }}>{it.total != null ? formatMoney(Number(it.total), 'COP') : it.price != null ? formatMoney(Number(it.price) * Number(it.quantity ?? 1), 'COP') : ''}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {doc.estado === 'error' && doc.error && <p style={{ marginTop: 8, fontSize: 11.5, color: '#F87171', lineHeight: 1.45 }}>{doc.error}</p>}
+                  {doc.estado === 'omitida' && doc.error && <p style={{ marginTop: 8, fontSize: 11.5, color: '#878E88', lineHeight: 1.45 }}>{doc.error}</p>}
+                  {doc.estado === 'emitida' && (
+                    <div className="flex" style={{ gap: 8, marginTop: 10 }}>
+                      {doc.url && <a href={doc.url} target="_blank" rel="noopener noreferrer" className="flex-1 flex items-center justify-center hover:bg-white/[0.09] transition-colors" style={{ gap: 6, padding: '9px 0', borderRadius: 9, fontSize: 12, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.11)', textDecoration: 'none' }}><ExternalLink size={13} /> Abrir en Siigo</a>}
+                      <button onClick={() => descargarPdfSiigo(String(tx.id), `${doc.numero ?? titulo}.pdf`)} disabled={docPdfBajando}
+                        className="flex-1 flex items-center justify-center hover:bg-white/[0.09] transition-colors"
+                        style={{ gap: 6, padding: '9px 0', borderRadius: 9, fontSize: 12, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.11)', opacity: docPdfBajando ? 0.6 : 1 }}>
+                        <Download size={13} /> {docPdfBajando ? 'Pidiendo a Siigo…' : `PDF del ${esDS ? 'documento soporte' : 'documento'}`}
+                      </button>
+                    </div>
+                  )}
+                  {doc.aviso && <p style={{ marginTop: 8, fontSize: 11, color: '#878E88', lineHeight: 1.45 }}>{doc.aviso}</p>}
+                </div>
+              );
+            })()}
             <button onClick={descargarPdf}
               className="w-full flex items-center justify-center hover:bg-white/[0.09] transition-colors"
               style={{ gap: 7, marginTop: 14, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.11)' }}>
