@@ -366,6 +366,38 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                     )}
                   </div>
 
+                  {/* Lo que Siigo devolvió, tal cual. "No me sale el ítem"
+                      se resuelve mirando esta lista, no adivinando. */}
+                  {cat && (
+                    <details style={{ marginTop: 10 }}>
+                      <summary style={{ fontSize: 11.5, color: C.sub, cursor: 'pointer' }}>
+                        Ver los {productos.length} productos que devolvió Siigo
+                        {cat.fuentes?.productos ? ` (HTTP ${cat.fuentes.productos.status}${cat.fuentes.productos.ok ? '' : ` · ${cat.fuentes.productos.motivo}`})` : ''}
+                      </summary>
+                      <div style={{ marginTop: 8, maxHeight: 220, overflowY: 'auto', border: `1px solid ${C.bordeSuave}`, borderRadius: 10 }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                          <thead>
+                            <tr>{['CÓDIGO', 'NOMBRE', 'TIPO', 'ESTADO'].map(h => <th key={h} style={{ textAlign: 'left', padding: '7px 10px', fontSize: 10, letterSpacing: '1px', color: C.sub, borderBottom: `1px solid ${C.bordeSuave}` }}>{h}</th>)}</tr>
+                          </thead>
+                          <tbody>
+                            {(cat.productos ?? []).map((p: any) => (
+                              <tr key={p.code}>
+                                <td style={{ padding: '6px 10px', fontFamily: 'ui-monospace, monospace', color: C.text }}>{p.code}</td>
+                                <td style={{ padding: '6px 10px', color: C.text }}>{p.name}</td>
+                                <td style={{ padding: '6px 10px', color: C.sub }}>{p.type ?? '—'}</td>
+                                <td style={{ padding: '6px 10px', color: p.active === false ? C.ambar : C.sub }}>{p.active === false ? 'inactivo' : 'activo'}</td>
+                              </tr>
+                            ))}
+                            {!(cat.productos ?? []).length && <tr><td colSpan={4} style={{ padding: '8px 10px', color: C.tenue }}>Siigo no devolvió ningún producto.</td></tr>}
+                          </tbody>
+                        </table>
+                      </div>
+                      <p style={{ fontSize: 11, color: C.tenue, margin: '6px 0 0', lineHeight: 1.5 }}>
+                        Si el que creaste no está acá, Siigo no lo está entregando por su API: revisá en Siigo que esté activo y guardado como producto o servicio, no como borrador.
+                      </p>
+                    </details>
+                  )}
+
                   {/* Qué operaciones */}
                   <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '16px 0 8px' }}>{modelo === 'rotacion' ? 'QUÉ ENTRADAS FACTURAN' : 'QUÉ SALIDAS LLEVAN DOCUMENTO SOPORTE'}</p>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 8 }}>
