@@ -836,7 +836,23 @@ Deno.serve(async (req) => {
         else {
           const r = await siigo('GET', `${rutaDoc}/${encodeURIComponent(String(c.factura_id))}`, { token: t.token, partner })
           if (r.ok && r.data && typeof r.data === 'object') {
-            d = r.data
+            // La consulta del documento soporte vuelve SIN ítems y con total
+            // 0 (Siigo no los devuelve en el GET), así que no puede pisar lo
+            // que contestó al crearlo. Se guarda la respuesta de creación
+            // aparte y se toma de la consulta solo lo que cambia: sello,
+            // estado, enlace.
+            // Los documentos consultados antes de este arreglo ya tienen la
+            // respuesta pisada; la de creación sobrevive en `intentos`.
+            const intentoOk = Array.isArray(c.factura_detalle?.intentos) ? c.factura_detalle.intentos.find((i: any) => i && i.status >= 200 && i.status < 300 && i.respuesta && typeof i.respuesta === 'object') : null
+            const creacion = c.factura_detalle?.respuesta_creacion ?? intentoOk?.respuesta ?? c.factura_detalle?.respuesta ?? null
+            const g = r.data
+            d = creacion && typeof creacion === 'object'
+              ? { ...creacion, ...g,
+                items: Array.isArray(g.items) && g.items.length ? g.items : creacion.items,
+                payments: Array.isArray(g.payments) && g.payments.length ? g.payments : creacion.payments,
+                total: Number(g.total) > 0 ? g.total : creacion.total,
+                stamp: g.stamp ?? creacion.stamp }
+              : g
             const cambios: Record<string, unknown> = {}
             const cufe = d.stamp?.cufe ?? d.stamp?.cude ?? null
             if (cufe && cufe !== c.factura_cufe) cambios.factura_cufe = cufe
@@ -851,7 +867,7 @@ Deno.serve(async (req) => {
             } else if (c.factura_estado === 'anulada') {
               cambios.factura_estado = 'emitida'; cambios.factura_error = null
             }
-            cambios.factura_detalle = { ...(c.factura_detalle ?? {}), respuesta: d, consultado_at: new Date().toISOString() }
+            cambios.factura_detalle = { ...(c.factura_detalle ?? {}), respuesta_creacion: creacion ?? g, respuesta: d, respuesta_consulta: g, consultado_at: new Date().toISOString() }
             await db.from('comprobantes').update(cambios).eq('folio', c.folio).then(() => {}, () => {})
             Object.assign(c, cambios)
             actualizado = true
