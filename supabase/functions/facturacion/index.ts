@@ -571,6 +571,11 @@ Deno.serve(async (req) => {
           m[k] = { emite: v.emite === 'DS' ? 'DS' : 'no', item: v.item ? String(v.item).trim().slice(0, 100) : null }
         }
         fila.motivos = m
+        // El ítem general de terceros, si no lo hay, toma el del primer
+        // motivo con documento soporte: es el respaldo para un envío viejo
+        // que no traiga motivo.
+        const primero = Object.values(m).find(v => v.emite === 'DS' && v.item)
+        if (primero && !(typeof c.item_terceros === 'string' && c.item_terceros.trim())) fila.item_terceros = primero.item
       }
       // Qué documento sale por cada operación. Los disparadores viejos se
       // mantienen en sincronía: son las claves con documento.
@@ -631,7 +636,9 @@ Deno.serve(async (req) => {
           if (!actual.item_terceros) faltan.push('el ítem de servicio para terceros')
           if (!actual.item_comision) faltan.push('el ítem de comisión')
         } else if (modelo === 'psp') {
-          if (!actual.item_terceros) faltan.push('el ítem de servicio para terceros')
+          // En PSP el ítem va por motivo: basta con que un motivo emita
+          // documento soporte con su ítem (ya validado arriba).
+          if (!motivosDS.length) faltan.push('al menos un motivo de envío con documento soporte')
         } else {
           const items = Array.isArray(actual.items) ? actual.items : []
           if (!items.length && !actual.product_code) faltan.push('al menos un ítem')
