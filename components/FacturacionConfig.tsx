@@ -632,21 +632,36 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                 </Seccion>
               )}
 
-              {/* 4. Contraparte y envío */}
-              <Seccion n="4" t="Contraparte, DIAN y correo">
-                <p style={{ fontSize: 12, color: C.sub, margin: '0 0 12px', lineHeight: 1.55 }}>
-                  El documento sale a nombre de quien aparece en la operación: nombre y documento del que pagó o del beneficiario. Si no existe en tu Siigo, se crea. Cuando la operación no trae documento (un depósito, por ejemplo), va al cliente por defecto.
-                </p>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
-                  <Campo rot="NIT DEL CLIENTE POR DEFECTO" ayuda="222222222222 es consumidor final.">
-                    <input value={form.cliente_default_nit ?? ''} onChange={e => set('cliente_default_nit', e.target.value.replace(/\D/g, ''))} inputMode="numeric" style={entrada} />
-                  </Campo>
-                  <Campo rot="NOMBRE DEL CLIENTE POR DEFECTO">
-                    <input value={form.cliente_default_nombre ?? ''} onChange={e => set('cliente_default_nombre', e.target.value)} style={entrada} />
-                  </Campo>
+              {/* 4. A nombre de quién, y cuándo */}
+              <Seccion n="4" t={modelo === 'psp' ? 'A nombre de quién sale, y cuándo' : 'A nombre de quién sale, DIAN y correo'}>
+                <div style={{ padding: '11px 14px', borderRadius: 10, border: `1px solid ${C.bordeSuave}`, background: C.elevado, marginBottom: 12 }}>
+                  <p style={{ fontSize: 12.5, color: C.text, margin: 0, lineHeight: 1.6 }}>
+                    {modelo === 'psp' || (modelo === 'rotacion' && motivosDS.length > 0) ? (
+                      <><b>Documento soporte:</b> a nombre del <b>beneficiario del envío</b>, con el nombre y el documento con que se le envió. Nada se escribe a mano. </>
+                    ) : null}
+                    {modelo === 'rotacion' ? (
+                      <><b>Factura de venta:</b> a nombre de <b>quien pagó</b>, con el documento que trae la operación. </>
+                    ) : null}
+                    <b>Solo se emite cuando la operación queda Completada.</b> Una operación en proceso, rechazada o devuelta no genera nada.
+                  </p>
                 </div>
+                {modelo === 'rotacion' && (
+                  <>
+                    <p style={{ fontSize: 12, color: C.sub, margin: '0 0 10px', lineHeight: 1.55 }}>
+                      Un depósito puede llegar sin el documento de quien pagó. Solo en ese caso la factura sale a este cliente por defecto.
+                    </p>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+                      <Campo rot="NIT DEL CLIENTE POR DEFECTO" ayuda="222222222222 es consumidor final.">
+                        <input value={form.cliente_default_nit ?? ''} onChange={e => set('cliente_default_nit', e.target.value.replace(/\D/g, ''))} inputMode="numeric" style={entrada} />
+                      </Campo>
+                      <Campo rot="NOMBRE DEL CLIENTE POR DEFECTO">
+                        <input value={form.cliente_default_nombre ?? ''} onChange={e => set('cliente_default_nombre', e.target.value)} style={entrada} />
+                      </Campo>
+                    </div>
+                  </>
+                )}
                 <div style={{ display: 'grid', gap: 10, marginTop: 14 }}>
-                  {chk('crear_clientes', 'Crear la contraparte en Siigo si no existe', 'Con el documento y el nombre de la operación. Apagado, el documento queda en error hasta que la crees vos.')}
+                  {chk('crear_clientes', modelo === 'psp' ? 'Crear el beneficiario en tu Siigo si no existe' : 'Crear la contraparte en tu Siigo si no existe', 'Con el documento y el nombre de la operación. Apagado, el documento queda en error hasta que lo crees vos en Siigo.')}
                   {modelo !== 'psp' && chk('stamp', 'Enviar la factura a la DIAN (factura electrónica)', 'Apagado, Siigo la guarda sin validarla ante la DIAN.')}
                   {modelo !== 'psp' && chk('mail', 'Que Siigo mande la factura por correo al cliente')}
                 </div>

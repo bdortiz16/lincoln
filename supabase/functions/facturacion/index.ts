@@ -452,6 +452,13 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
   if ('error' in t) { await marcar({ factura_estado: 'error', factura_error: t.error, factura_tipo: clase }); return { ok: false, error: t.error } }
 
   const cp = contraparteDe(comp, cfg)
+  // El documento soporte va A NOMBRE DEL BENEFICIARIO del envío, con el
+  // nombre y documento con que se le envió. Nunca a un "consumidor final":
+  // si el envío no trae documento, no se emite y se dice.
+  if (clase === 'DS' && cp.esDefault) {
+    const e = 'El envío no trae el documento del beneficiario, y el documento soporte va a su nombre. Revisá el beneficiario en la lista.'
+    await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: clase }); return { ok: false, error: e }
+  }
   const cli = await asegurarCliente(t.token, partner, cfg, cp, clase === 'DS' ? 'Supplier' : 'Customer')
   if (!cli.ok) { await marcar({ factura_estado: 'error', factura_error: cli.error, factura_tipo: clase }); return { ok: false, error: cli.error } }
 
