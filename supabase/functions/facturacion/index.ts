@@ -501,16 +501,13 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
       observations, items,
       payments: [{ id: Number(cfg.ds_payment_id), value: total, due_date: hoy }],
     }
-  // En compras (documento soporte) Siigo exige el TIPO de cada ítem:
-  // "Product" o "Service". Sale del catálogo, que trae el tipo de cada
-  // producto tal como está en Siigo.
+  // En compras (documento soporte) Siigo exige el TIPO de cada línea, y no
+  // es el tipo del producto: es cómo se contabiliza la línea. "Product" vale
+  // para productos y servicios del catálogo (los otros valores son activo
+  // fijo y cuenta contable). Siigo rechazó "Service", textual:
+  // "parameters_exclusive · Invalid value for parameter: type".
   if (clase === 'DS') {
-    const productos: any[] = Array.isArray(cfg.catalogos?.productos) ? cfg.catalogos.productos : []
-    for (const it of (cuerpo as any).items) {
-      const p = productos.find((x: any) => String(x.code) === String(it.code))
-      const t = String(p?.type ?? '')
-      it.type = /service|servicio/i.test(t) ? 'Service' : 'Product'
-    }
+    for (const it of (cuerpo as any).items) it.type = 'Product'
   }
   const ruta = clase === 'FV' ? '/v1/invoices' : '/v1/purchases'
   const r = await siigo('POST', ruta, { token: t.token, partner, body: cuerpo })
