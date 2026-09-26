@@ -1387,6 +1387,42 @@ Deno.serve(async (req: Request) => {
     }
 
     // ── Lo guardado ──────────────────────────────────────────────────────
+    // ── Lugar de expedición de UN beneficiario, a pedido ─────────────────
+    // Lo llama la facturación cuando necesita la ciudad del tercero y la
+    // ficha no la trae. Vuelve a pedir el reporte (no gasta crédito) y, si
+    // no encuentra el lugar, devuelve qué claves del reporte se parecen,
+    // para poder ajustar la búsqueda sin adivinar.
+    if (accion === 'lugar_expedicion') {
+      const uid = String(body.userId ?? yo.userId ?? '')
+      if (!uid || (!yo.esAdmin && yo.userId !== uid)) return json({ error: 'No autorizado' }, 401)
+      const doc = String(body.documento ?? '').replace(/\D/g, '')
+      if (!doc) return json({ ok: false, motivo: 'Falta el documento.' }, 400)
+      const c = await leerConfig()
+      const benef: Record<string, Ficha> = ((await leerRaw(uid))?.tusdatos ?? {}).beneficiarios ?? {}
+      const clave = Object.keys(benef).find(k => k.replace(/\D/g, '') === doc || k.replace(/\D/g, '').slice(0, -1) === doc)
+      const f = clave ? benef[clave] : null
+      if (!f) return json({ ok: false, motivo: 'Este documento no tiene consulta de antecedentes en esta cuenta.' })
+      if (f.estado !== 'finalizado' || !f.reportId) return json({ ok: false, motivo: `La consulta de antecedentes está en «${f.estado ?? 'sin estado'}»${f.reportId ? '' : ' y no tiene reporte'}.` })
+      const det = await detalle(c, String(f.reportId))
+      if (!det) return json({ ok: false, motivo: 'TusDatos no devolvió el reporte.' })
+      const e = extraerExpedicion(det.crudo)
+      const m = e.lugar ? municipioPorNombre(e.lugar) : null
+      // Claves del reporte que suenan a lugar/expedición/Registraduría, con
+      // su ruta, para ver dónde viene el dato si no se encontró.
+      const claves: string[] = []
+      const recorrer = (x: unknown, ruta: string, prof: number) => {
+        if (!x || typeof x !== 'object' || prof > 8 || claves.length >= 40) return
+        for (const [k, v] of Object.entries(x as Record<string, unknown>)) {
+          const r = ruta ? `${ruta}.${k}` : k
+          if (/exped|lugar|registrad|cedul|ciudad|municip/i.test(k)) claves.push(`${r}${typeof v === 'string' ? ` = «${v.slice(0, 60)}»` : Array.isArray(v) ? ` [${v.length}]` : ''}`)
+          if (v && typeof v === 'object') recorrer(v, r, prof + 1)
+        }
+      }
+      if (!e.lugar) recorrer(det.crudo, '', 0)
+      await guardarBeneficiario(uid, clave!, { lugarBuscado: true, ...(e.lugar ? { lugarExpedicion: e.lugar } : {}), ...(m ? { lugarExpedicionCodigo: m.codigo } : {}), ...(e.fecha ? { fechaExpedicionDoc: e.fecha } : {}) } as Ficha)
+      return json({ ok: true, lugarExpedicion: e.lugar ?? null, lugarExpedicionCodigo: m?.codigo ?? null, municipio: m ? `${m.nombre}, ${m.deptoNombre}` : null, fechaExpedicion: e.fecha ?? null, claves, seccionesReporte: det.crudo && typeof det.crudo === 'object' ? Object.keys(det.crudo as object).slice(0, 40) : [] })
+    }
+
     if (accion === 'estado') {
       const uid = String(body.userId ?? yo.userId ?? '')
       if (!uid || (!yo.esAdmin && yo.userId !== uid)) return json({ error: 'No autorizado' }, 401)

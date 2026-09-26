@@ -379,6 +379,7 @@ function direccionDe(rd: Record<string, any>): Direccion | null {
 // .mouvContacts del usuario). El NIT puede estar inscrito con dígito de
 // verificación y acá venir sin él: se compara por los dígitos base.
 async function direccionDelBeneficiario(userId: string, identification: string): Promise<Direccion | null> {
+  ultimoDiagnosticoLugar = ''
   const { data } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
   const raw = (data as any)?.raw_data ?? {}
   const contactos: any[] = Array.isArray(raw.mouvContacts) ? raw.mouvContacts : []
@@ -392,9 +393,39 @@ async function direccionDelBeneficiario(userId: string, identification: string):
   const benef: Record<string, any> = raw.tusdatos?.beneficiarios ?? {}
   const doc = Object.keys(benef).find(k => mismoDoc(k.replace(/\D/g, '')))
   const f = doc ? benef[doc] : null
-  const m = f ? (municipioPorCodigo(f.lugarExpedicionCodigo) ?? municipioPorNombre(f.lugarExpedicion)) : null
+  let m = f ? (municipioPorCodigo(f.lugarExpedicionCodigo) ?? municipioPorNombre(f.lugarExpedicion)) : null
+  if (!m) {
+    // La ficha no lo trae todavía: se le pide a la función de antecedentes,
+    // que vuelve a leer el reporte (sin gastar crédito) y dice qué encontró.
+    const r = await lugarDeExpedicion(userId, base)
+    ultimoDiagnosticoLugar = r.diagnostico
+    m = r.codigo ? municipioPorCodigo(r.codigo) : null
+  }
   if (!m) return null
   return { address: String(hit?.address ?? '').trim().slice(0, 256) || SIN_CALLE, city: { country_code: 'Co', state_code: m.depto, city_code: m.codigo } }
+}
+// Qué contestó la consulta del lugar de expedición, para ponerlo en el error
+// cuando no alcanza: dice si la Registraduría no lo trajo, si trajo un
+// nombre que no corresponde a un municipio único, o si no hay consulta.
+let ultimoDiagnosticoLugar = ''
+async function lugarDeExpedicion(userId: string, documento: string): Promise<{ codigo: string | null; diagnostico: string }> {
+  try {
+    const r = await fetch(`${SUPABASE_URL}/functions/v1/tusdatos`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+      body: JSON.stringify({ action: 'lugar_expedicion', userId, documento }),
+      signal: AbortSignal.timeout(20000),
+    })
+    const d = await r.json().catch(() => ({}))
+    if (!r.ok || !d?.ok) return { codigo: null, diagnostico: `Antecedentes: ${d?.motivo ?? d?.error ?? `HTTP ${r.status}`}.` }
+    if (d.lugarExpedicionCodigo) return { codigo: String(d.lugarExpedicionCodigo), diagnostico: '' }
+    if (d.lugarExpedicion) return { codigo: null, diagnostico: `La Registraduría dice que la cédula se expidió en «${d.lugarExpedicion}», y ese nombre no corresponde a un único municipio de la lista DANE.` }
+    const claves: string[] = Array.isArray(d.claves) ? d.claves : []
+    const secciones: string[] = Array.isArray(d.seccionesReporte) ? d.seccionesReporte : []
+    return { codigo: null, diagnostico: `El reporte de antecedentes no trae el lugar de expedición bajo una clave reconocible. Claves parecidas: ${claves.length ? claves.slice(0, 12).join(' · ') : 'ninguna'}. Secciones del reporte: ${secciones.join(', ') || 'ninguna'}.` }
+  } catch (e) {
+    return { codigo: null, diagnostico: `No se pudo consultar antecedentes: ${(e as Error)?.message ?? e}.` }
+  }
 }
 function contraparteDe(comp: any, cfg: any): Contraparte {
   const rd = comp?.detalle?.raw_data ?? {}
@@ -412,7 +443,7 @@ function contraparteDe(comp: any, cfg: any): Contraparte {
 }
 
 const SIN_DIRECCION = (cp: Contraparte, donde: string) =>
-  `El beneficiario ${cp.nombre} (${cp.identification}) no tiene ciudad ${donde}, y la DIAN rechaza el documento soporte sin el país del tercero («Falta o es inválido el país del tercero»). Tampoco se pudo tomar del lugar de expedición de la cédula (la consulta de antecedentes no lo trajo o el nombre no corresponde a un municipio). Elegí la ciudad en Beneficiarios → abrí la ficha → Ciudad y dirección, y emití de nuevo.`
+  `El beneficiario ${cp.nombre} (${cp.identification}) no tiene ciudad ${donde}, y la DIAN rechaza el documento soporte sin el país del tercero («Falta o es inválido el país del tercero»). Tampoco se pudo tomar del lugar de expedición de la cédula${ultimoDiagnosticoLugar ? ` — ${ultimoDiagnosticoLugar}` : ''} Elegí la ciudad en Beneficiarios → abrí la ficha → Ciudad y dirección, y emití de nuevo.`
 
 async function asegurarCliente(token: string, partner: string, cfg: any, cp: Contraparte, rol: 'Customer' | 'Supplier' = 'Customer'): Promise<{ ok: true } | { ok: false; error: string }> {
   const busca = await siigo('GET', `/v1/customers?identification=${encodeURIComponent(cp.identification)}`, { token, partner })
