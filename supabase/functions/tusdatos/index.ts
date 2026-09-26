@@ -270,6 +270,7 @@ type Ficha = {
   lugarExpedicionCodigo?: string
   fechaExpedicionDoc?: string
   lugarBuscado?: boolean
+  lugarBuscadoV?: number
   // Por qué quedó bloqueado, en una línea. Vacío = no está bloqueado.
   bloqueo?: string
   at?: string
@@ -280,19 +281,39 @@ type Ficha = {
 // lugar y la fecha de expedición de la cédula. No está documentado bajo qué
 // clave exacta, así que se busca en todo el JSON una clave que diga
 // "lugar … expedición" (y "fecha … expedición"), en cualquier nivel.
+//
+// Visto en un reporte real: `registraduria_certificado.lugar_exp =
+// «PEREIRA - RISARALDA»` y `fecha_exp` al lado. Esa sección va primero; el
+// resto del JSON solo si no está (y sin mirar RUNT ni RUAF, que traen
+// "fecha_expedicion" de licencias y afiliaciones, que no es esto).
 function extraerExpedicion(obj: unknown): { lugar?: string; fecha?: string } {
   const out: { lugar?: string; fecha?: string } = {}
+  const norm = (k: string) => k.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+  const esLugar = (k: string) => /lugar.{0,6}exp/.test(norm(k))
+  const esFecha = (k: string) => /fecha.{0,6}exp/.test(norm(k))
+  const toma = (x: unknown) => {
+    if (!x || typeof x !== 'object') return
+    for (const [k, v] of Object.entries(x as Record<string, unknown>)) {
+      if (typeof v !== 'string' || !v.trim()) continue
+      if (!out.lugar && esLugar(k)) out.lugar = v.trim().slice(0, 120)
+      else if (!out.fecha && esFecha(k)) out.fecha = v.trim().slice(0, 40)
+    }
+  }
+  const raiz = obj && typeof obj === 'object' ? (obj as Record<string, unknown>) : {}
+  const cert = Object.entries(raiz).find(([k]) => /registrad.*cert|cert.*registrad/.test(norm(k)))?.[1]
+  toma(cert)
+  if (out.lugar) return out
   const visitar = (x: unknown, prof: number) => {
     if (!x || typeof x !== 'object' || prof > 8 || (out.lugar && out.fecha)) return
     for (const [k, v] of Object.entries(x as Record<string, unknown>)) {
-      const clave = k.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+      if (/^(runt|ruaf|simit|sisben|adres)/.test(norm(k))) continue
       if (typeof v === 'string' && v.trim()) {
-        if (!out.lugar && /lugar.{0,6}exped/.test(clave)) out.lugar = v.trim().slice(0, 120)
-        else if (!out.fecha && /fecha.{0,6}exped/.test(clave)) out.fecha = v.trim().slice(0, 40)
+        if (!out.lugar && esLugar(k)) out.lugar = v.trim().slice(0, 120)
+        else if (!out.fecha && esFecha(k)) out.fecha = v.trim().slice(0, 40)
       } else if (v && typeof v === 'object') visitar(v, prof + 1)
     }
   }
-  visitar(obj, 0)
+  visitar(raiz, 0)
   return out
 }
 function conExpedicion(ficha: Ficha, crudo: unknown): Ficha {
@@ -313,10 +334,12 @@ async function completarLugares(uid: string, raw: any, c: Config, tope = 4): Pro
   let hechos = 0
   for (const [doc, f] of Object.entries(benef)) {
     if (hechos >= tope) break
-    if (!f || f.estado !== 'finalizado' || !f.reportId || f.lugarBuscado) continue
+    // Las que se buscaron con la clave vieja (que no reconocía "lugar_exp")
+    // y quedaron sin lugar se vuelven a mirar.
+    if (!f || f.estado !== 'finalizado' || !f.reportId || (f.lugarBuscado && (f.lugarExpedicion || f.lugarBuscadoV === 2))) continue
     const det = await detalle(c, String(f.reportId))
     const parche = conExpedicion({ documento: doc } as Ficha, det?.crudo ?? null)
-    await guardarBeneficiario(uid, doc, { lugarBuscado: true, ...(parche.lugarExpedicion ? { lugarExpedicion: parche.lugarExpedicion } : {}), ...(parche.lugarExpedicionCodigo ? { lugarExpedicionCodigo: parche.lugarExpedicionCodigo } : {}), ...(parche.fechaExpedicionDoc ? { fechaExpedicionDoc: parche.fechaExpedicionDoc } : {}) } as Ficha)
+    await guardarBeneficiario(uid, doc, { lugarBuscado: true, lugarBuscadoV: 2, ...(parche.lugarExpedicion ? { lugarExpedicion: parche.lugarExpedicion } : {}), ...(parche.lugarExpedicionCodigo ? { lugarExpedicionCodigo: parche.lugarExpedicionCodigo } : {}), ...(parche.fechaExpedicionDoc ? { fechaExpedicionDoc: parche.fechaExpedicionDoc } : {}) } as Ficha)
     hechos++
   }
   return hechos
