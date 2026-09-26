@@ -537,8 +537,14 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
     const rutas = [cfg.ds_ruta, ...RUTAS_DS].filter((x, i, a) => x && a.indexOf(x) === i) as string[]
     r = { ok: false, status: 0, data: null, texto: 'sin intento' }
     for (const ruta of rutas) {
-      r = await siigo('POST', ruta, { token: t.token, partner, body: cuerpo })
-      intentos.push({ ruta, status: r.status, respuesta: r.data ?? r.texto })
+      // El documento soporte llama a la referencia del proveedor
+      // `supplier_receipt_number` (prefijo 1-6 alfanumérico, número 1-11
+      // dígitos); la factura de compra la llama `provider_invoice`. Mismo
+      // dato, nombre distinto según la ruta.
+      const { provider_invoice, ...resto } = cuerpo as any
+      const cuerpoRuta = ruta.includes('support') ? { ...resto, supplier_receipt_number: provider_invoice } : cuerpo
+      r = await siigo('POST', ruta, { token: t.token, partner, body: cuerpoRuta })
+      intentos.push({ ruta, status: r.status, respuesta: r.data ?? r.texto, enviado: cuerpoRuta } as any)
       if (r.ok) {
         if (cfg.ds_ruta !== ruta) await db.from('facturacion_config').update({ ds_ruta: ruta }).eq('user_id', userId).then(() => {}, () => {})
         break
