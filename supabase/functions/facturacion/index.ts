@@ -118,11 +118,20 @@ async function leerConfig(userId: string) {
   return (data as any) ?? null
 }
 
-// Lo que ve la pantalla: nunca la access key.
-function publica(cfg: any, resumen?: any) {
+// Lo que ve la pantalla: nunca la access key. Sí una PISTA de la guardada
+// —cuántos caracteres, cómo empieza y cómo termina— para que quien la pegó
+// pueda compararla con la del portal de Siigo sin que nadie la vea entera.
+async function publica(cfg: any, resumen?: any) {
   if (!cfg) return { existe: false, activo: false, tieneAccessKey: false, disparadores: ['load', 'pay_received'], stamp: true, mail: true, crear_clientes: true, cliente_default_nit: '222222222222', cliente_default_nombre: 'Consumidor final', resumen }
   const { access_key_enc, ...resto } = cfg
-  return { existe: true, ...resto, tieneAccessKey: !!access_key_enc, resumen }
+  let access_key_pista: { largo: number; inicio: string; fin: string } | null = null
+  if (access_key_enc) {
+    try {
+      const k = await decField(access_key_enc)
+      access_key_pista = { largo: k.length, inicio: k.slice(0, 4), fin: k.slice(-3) }
+    } catch { access_key_pista = null }
+  }
+  return { existe: true, ...resto, tieneAccessKey: !!access_key_enc, access_key_pista, resumen }
 }
 
 async function resumenDe(userId: string) {
@@ -296,7 +305,7 @@ Deno.serve(async (req) => {
     const userId = yo.userId
 
     if (accion === 'config_get') {
-      return json({ ok: true, config: publica(await leerConfig(userId), await resumenDe(userId)), disparadores: DISPARADORES })
+      return json({ ok: true, config: await publica(await leerConfig(userId), await resumenDe(userId)), disparadores: DISPARADORES })
     }
 
     if (accion === 'config_set') {
@@ -308,8 +317,10 @@ Deno.serve(async (req) => {
       for (const k of ['activo', 'crear_clientes', 'stamp', 'mail']) if (k in c) fila[k] = !!c[k]
       if (Array.isArray(c.disparadores)) fila.disparadores = c.disparadores.filter((d: any) => typeof d === 'string' && d in DISPARADORES)
       // La access key solo se toca si viene una nueva. Vacío = se conserva.
-      if (typeof c.access_key === 'string' && c.access_key.trim()) {
-        try { fila.access_key_enc = await encField(c.access_key.trim()) }
+      // Sin NINGÚN espacio: una access key pegada desde un correo o un PDF
+      // suele traer un salto de línea en el medio, y Siigo la rechaza entera.
+      if (typeof c.access_key === 'string' && c.access_key.replace(/\s+/g, '')) {
+        try { fila.access_key_enc = await encField(c.access_key.replace(/\s+/g, '')) }
         catch { return json({ ok: false, error: 'No se pudo cifrar la access key: falta FIELD_ENC_KEY en el servidor.' }, 500) }
         tokens.delete(userId)
       }
@@ -326,7 +337,7 @@ Deno.serve(async (req) => {
         if (/does not exist|42P01|schema cache/i.test(error.message)) return json({ ok: false, error: 'Falta correr la migración 2026_facturacion.sql en la base.' }, 500)
         return json({ ok: false, error: error.message }, 500)
       }
-      return json({ ok: true, config: publica(await leerConfig(userId), await resumenDe(userId)) })
+      return json({ ok: true, config: await publica(await leerConfig(userId), await resumenDe(userId)) })
     }
 
     if (accion === 'probar') {
@@ -337,7 +348,7 @@ Deno.serve(async (req) => {
       const ahora = new Date().toISOString()
       if ('error' in t) {
         await db.from('facturacion_config').update({ ultimo_test_at: ahora, ultimo_test_ok: false, ultimo_error: t.error }).eq('user_id', userId)
-        return json({ ok: false, error: t.error, config: publica(await leerConfig(userId)) })
+        return json({ ok: false, error: t.error, config: await publica(await leerConfig(userId)) })
       }
       const cat = await traerCatalogos(t.token, partner)
       const conProblemas = Object.entries(cat.fuentes).filter(([, f]) => !f.ok).map(([k, f]) => `${k}: ${f.motivo}`)
@@ -345,7 +356,7 @@ Deno.serve(async (req) => {
         ultimo_test_at: ahora, ultimo_test_ok: true, catalogos: cat,
         ultimo_error: conProblemas.length ? `Conectó, pero: ${conProblemas.join(' | ')}` : null,
       }).eq('user_id', userId)
-      return json({ ok: true, catalogos: cat, aviso: conProblemas.length ? conProblemas.join(' | ') : null, config: publica(await leerConfig(userId), await resumenDe(userId)) })
+      return json({ ok: true, catalogos: cat, aviso: conProblemas.length ? conProblemas.join(' | ') : null, config: await publica(await leerConfig(userId), await resumenDe(userId)) })
     }
 
     if (accion === 'reintentar') {

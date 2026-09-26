@@ -27,6 +27,7 @@ const C = {
 
 type Cfg = {
   existe: boolean; activo: boolean; username?: string | null; tieneAccessKey: boolean; partner_id?: string | null;
+  access_key_pista?: { largo: number; inicio: string; fin: string } | null;
   document_id?: number | null; seller_id?: number | null; payment_id?: number | null;
   product_code?: string | null; product_description?: string | null;
   cliente_default_nit?: string | null; cliente_default_nombre?: string | null; crear_clientes: boolean;
@@ -86,7 +87,8 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
 
   const guardar = async (extra: Record<string, any> = {}) => {
     setGuardando(true); setAviso(null);
-    const config = { ...form, ...extra, ...(accessKey.trim() ? { access_key: accessKey.trim() } : {}) };
+    const llave = accessKey.replace(/\s+/g, '');
+    const config = { ...form, ...extra, ...(llave ? { access_key: llave } : {}) };
     const r = await llamarFuncion('facturacion', { action: 'config_set', config }, 30000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
     setGuardando(false);
     if (!r?.ok) { setAviso({ ok: false, texto: r?.error ?? 'No se pudo guardar.' }); return false; }
@@ -160,6 +162,16 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                   </button>
                 </div>
                 {cfg?.ultimo_error && <p style={{ fontSize: 11.5, color: cfg.ultimo_test_ok ? C.ambar : C.rojo, margin: '8px 0 0', lineHeight: 1.5, wordBreak: 'break-word' }}>{cfg.ultimo_error}</p>}
+                {/* Siigo dice "invalid_value: access_key" cuando la clave no es
+                    la de ese usuario. Casi siempre es una de tres cosas, y se
+                    dicen acá para no adivinar. */}
+                {cfg?.ultimo_error && /access_key|username|invalid_value|401/i.test(cfg.ultimo_error) && !cfg.ultimo_test_ok && (
+                  <p style={{ fontSize: 11.5, color: C.sub, margin: '6px 0 0', lineHeight: 1.55 }}>
+                    Siigo no reconoce esa access key para ese usuario. No es la contraseña de Siigo Nube: es la clave que genera el
+                    portal de clientes en «Generar credenciales API», para ese mismo correo. Generala de nuevo, pegala completa y
+                    probá otra vez. Abajo se ve cuántos caracteres tiene la guardada, para compararla con la del portal.
+                  </p>
+                )}
               </div>
 
               {/* 1. Credenciales */}
@@ -169,7 +181,9 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                 </p>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
                   <Campo rot="USUARIO (CORREO)"><input value={form.username ?? ''} onChange={e => set('username', e.target.value)} placeholder="cuenta@empresa.com" autoComplete="off" style={entrada} /></Campo>
-                  <Campo rot="ACCESS KEY" ayuda={cfg?.tieneAccessKey ? 'Hay una guardada. Dejá esto vacío para conservarla; escribí otra para reemplazarla.' : 'No se muestra después de guardarla.'}>
+                  <Campo rot="ACCESS KEY" ayuda={cfg?.tieneAccessKey
+                    ? `Hay una guardada${cfg.access_key_pista ? `: ${cfg.access_key_pista.largo} caracteres, empieza «${cfg.access_key_pista.inicio}…» y termina «…${cfg.access_key_pista.fin}»` : ''}. Dejá esto vacío para conservarla; escribí otra para reemplazarla.`
+                    : 'No se muestra después de guardarla.'}>
                     <input type="password" value={accessKey} onChange={e => setAccessKey(e.target.value)} placeholder={cfg?.tieneAccessKey ? '••••••••••••' : 'Pegá la access key'} autoComplete="new-password" style={entrada} />
                   </Campo>
                   <Campo rot="PARTNER ID" ayuda="El nombre con que Siigo identifica la integración. Si no te dieron uno, dejá Lincoin.">
