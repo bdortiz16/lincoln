@@ -492,8 +492,23 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // el detalle; si la cuenta no factura, no hay nada y no se muestra.
   const [docSiigo, setDocSiigo] = useState<{ txId: string; estado: 'cargando' | 'ok' | 'error'; comprobante?: any; documento?: any; error?: string } | null>(null);
   const [docPdfBajando, setDocPdfBajando] = useState(false);
+  const [docVersion, setDocVersion] = useState(0);
+  const [docCrudaAbierta, setDocCrudaAbierta] = useState(false);
+  const [docEmitiendo, setDocEmitiendo] = useState(false);
+  // Emitir de nuevo el documento de un movimiento (anulado en Siigo o en
+  // error), con la configuración actual. Se recarga la tarjeta al terminar.
+  const emitirDeNuevoSiigo = async (txId: string) => {
+    setDocEmitiendo(true);
+    try {
+      const r = await llamarFuncion('facturacion', { action: 'emitir_movimiento', transactionId: txId }, 60000);
+      if (!r?.ok) showToast(String(r?.error ?? 'No se pudo emitir el documento.'), 12000, 'error');
+      else showToast(`Documento emitido: ${r.numero ?? r.estado ?? 'ok'}`);
+    } catch (e: any) { showToast(`No se pudo emitir: ${String(e?.message ?? e)}`, 8000, 'error'); }
+    finally { setDocEmitiendo(false); setDocVersion(v => v + 1); }
+  };
   useEffect(() => {
     const id = selectedTx?.id ? String(selectedTx.id) : '';
+    setDocCrudaAbierta(false);
     if (!id) { setDocSiigo(null); return; }
     let vivo = true;
     setDocSiigo({ txId: id, estado: 'cargando' });
@@ -505,7 +520,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       })
       .catch((e: any) => { if (vivo) setDocSiigo({ txId: id, estado: 'error', error: String(e?.message ?? e) }); });
     return () => { vivo = false; };
-  }, [selectedTx?.id]);
+  }, [selectedTx?.id, docVersion]);
   const descargarPdfSiigo = async (txId: string, nombre: string) => {
     setDocPdfBajando(true);
     try {
@@ -4709,20 +4724,29 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               const cude: string = doc.cufe || sg?.stamp?.cufe || sg?.stamp?.cude || '';
               const fechaDoc = doc.fecha ? new Date(doc.fecha).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' }) : (sg?.fecha ?? '');
               const filas: { label: string; value: string; mono?: boolean; copy?: string; color?: string }[] = [];
-              if (doc.estado === 'emitida') {
+              const conDoc = doc.estado === 'emitida' || doc.estado === 'anulada';
+              const rechazado = /reject|rechaz|error|fail/i.test(sello);
+              const totalSiigo = sg?.total != null ? Number(sg.total) : null;
+              const totalEnviado = doc.enviado?.total != null ? Number(doc.enviado.total) : null;
+              if (conDoc) {
                 filas.push({ label: 'Número', value: String(doc.numero ?? doc.id ?? '—'), mono: true, copy: doc.numero ? String(doc.numero) : undefined });
                 if (fechaDoc) filas.push({ label: 'Fecha', value: fechaDoc });
-                if (sg?.total != null) filas.push({ label: 'Total', value: `${formatMoney(Number(sg.total), 'COP')} COP` });
+                if (totalEnviado != null) filas.push({ label: 'Enviado a Siigo', value: `${formatMoney(totalEnviado, 'COP')} COP` });
+                if (totalSiigo != null) filas.push({ label: 'Total según Siigo', value: `${formatMoney(totalSiigo, 'COP')} COP`, color: totalEnviado != null && Math.abs(totalSiigo - totalEnviado) > 0.5 ? '#F87171' : undefined });
                 if (sg?.contraparte?.name || sg?.contraparte?.identification) filas.push({ label: esDS ? 'Proveedor' : 'Cliente', value: [sg.contraparte.name, sg.contraparte.identification ? `NIT/CC ${sg.contraparte.identification}` : ''].filter(Boolean).join(' · ') });
-                if (sello) filas.push({ label: 'DIAN', value: sello, color: /accept|acept|approv/i.test(sello) ? '#4ADE80' : /reject|rechaz|error/i.test(sello) ? '#F87171' : undefined });
+                if (sello) filas.push({ label: 'DIAN', value: rechazado ? `Rechazado (${sello})` : sello, color: /accept|acept|approv/i.test(sello) ? '#4ADE80' : rechazado ? '#F87171' : undefined });
                 if (cude) filas.push({ label: esDS ? 'CUDS' : 'CUFE', value: truncMid(cude, 10, 8), mono: true, copy: cude });
                 if (sg?.stamp?.errors) filas.push({ label: 'Error DIAN', value: String(sg.stamp.errors), color: '#F87171' });
+                if (sg?.stamp?.observations) filas.push({ label: 'Obs. DIAN', value: String(sg.stamp.observations) });
               }
               if (ds.comprobante?.numero) filas.push({ label: 'Comprobante Lincoin', value: String(ds.comprobante.numero), mono: true });
-              const estadoTxt = doc.estado === 'emitida' ? { l: 'EMITIDO', c: '#4ADE80', b: 'rgba(74,222,128,0.3)' }
+              const estadoTxt = doc.estado === 'emitida' ? (rechazado ? { l: 'RECHAZADO POR LA DIAN', c: '#F87171', b: 'rgba(248,113,113,0.35)' } : { l: 'EMITIDO', c: '#4ADE80', b: 'rgba(74,222,128,0.3)' })
+                : doc.estado === 'anulada' ? { l: 'ANULADO EN SIIGO', c: '#878E88', b: 'rgba(255,255,255,0.14)' }
                 : doc.estado === 'error' ? { l: 'ERROR', c: '#F87171', b: 'rgba(248,113,113,0.35)' }
                 : doc.estado === 'omitida' ? { l: 'NO APLICA', c: '#878E88', b: 'rgba(255,255,255,0.14)' }
                 : { l: String(doc.estado).toUpperCase(), c: 'rgba(244,244,242,0.7)', b: 'rgba(255,255,255,0.14)' };
+              const rechazoMsgs: string[] = Array.isArray(doc.rechazo_dian?.mensajes) ? doc.rechazo_dian.mensajes : [];
+              const puedeReemitir = (doc.estado === 'anulada' || doc.estado === 'error') && tx.status === 'Completado';
               return (
                 <div style={{ marginTop: 16, border: '1px solid rgba(255,255,255,0.09)', borderRadius: 12, background: 'rgba(255,255,255,0.02)', padding: '12px 14px' }}>
                   <div className="flex items-center justify-between" style={{ gap: 10 }}>
@@ -4738,26 +4762,69 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       </span>
                     </div>
                   ))}
-                  {doc.estado === 'emitida' && Array.isArray(sg?.items) && sg.items.length > 0 && (
+                  {/* Ítems: los que Lincoin mandó (con precio) y, si Siigo
+                      devolvió otros, los de Siigo. */}
+                  {conDoc && Array.isArray(doc.enviado?.items) && doc.enviado.items.length > 0 && (
                     <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
-                      {sg.items.map((it: any, i: number) => (
+                      <p style={{ fontSize: 10.5, fontWeight: 700, color: '#878E88', letterSpacing: 0.4, marginBottom: 3 }}>ÍTEMS ENVIADOS</p>
+                      {doc.enviado.items.map((it: any, i: number) => (
                         <div key={i} className="flex items-start justify-between" style={{ gap: 10, padding: '3px 0' }}>
-                          <span style={{ fontSize: 11.5, color: '#878E88', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.description || it.code}{it.taxes?.length ? ` · ${it.taxes.map((t: any) => t.name || `${t.percentage}%`).join(', ')}` : ''}</span>
-                          <span style={{ fontSize: 11.5, fontWeight: 600, color: '#F4F4F2', whiteSpace: 'nowrap' }}>{it.total != null ? formatMoney(Number(it.total), 'COP') : it.price != null ? formatMoney(Number(it.price) * Number(it.quantity ?? 1), 'COP') : ''}</span>
+                          <span style={{ fontSize: 11.5, color: '#878E88', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.code ? `${it.code} · ` : ''}{it.description || ''}</span>
+                          <span style={{ fontSize: 11.5, fontWeight: 600, color: '#F4F4F2', whiteSpace: 'nowrap' }}>{it.price != null ? `${formatMoney(Number(it.price) * Number(it.quantity ?? 1), 'COP')} COP` : ''}</span>
                         </div>
                       ))}
                     </div>
                   )}
-                  {doc.estado === 'error' && doc.error && <p style={{ marginTop: 8, fontSize: 11.5, color: '#F87171', lineHeight: 1.45 }}>{doc.error}</p>}
+                  {conDoc && Array.isArray(sg?.items) && sg.items.length > 0 && (
+                    <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                      <p style={{ fontSize: 10.5, fontWeight: 700, color: '#878E88', letterSpacing: 0.4, marginBottom: 3 }}>ÍTEMS SEGÚN SIIGO</p>
+                      {sg.items.map((it: any, i: number) => (
+                        <div key={i} className="flex items-start justify-between" style={{ gap: 10, padding: '3px 0' }}>
+                          <span style={{ fontSize: 11.5, color: '#878E88', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.code ? `${it.code} · ` : ''}{it.description || ''}{it.taxes?.length ? ` · ${it.taxes.map((t: any) => t.name || `${t.percentage}%`).join(', ')}` : ''}</span>
+                          <span style={{ fontSize: 11.5, fontWeight: 600, color: '#F4F4F2', whiteSpace: 'nowrap' }}>{it.total != null ? `${formatMoney(Number(it.total), 'COP')} COP` : it.price != null ? `${formatMoney(Number(it.price) * Number(it.quantity ?? 1), 'COP')} COP` : 'sin valor'}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {/* Lo que dijo la DIAN al rechazar, si Siigo lo entregó. */}
+                  {conDoc && rechazado && (
+                    <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                      <p style={{ fontSize: 10.5, fontWeight: 700, color: '#F87171', letterSpacing: 0.4, marginBottom: 3 }}>MOTIVO DEL RECHAZO (DIAN)</p>
+                      {rechazoMsgs.length > 0
+                        ? rechazoMsgs.map((m, i) => <p key={i} style={{ fontSize: 11.5, color: '#F4F4F2', lineHeight: 1.45, padding: '2px 0' }}>{m}</p>)
+                        : <p style={{ fontSize: 11.5, color: '#878E88', lineHeight: 1.45 }}>{doc.rechazo_dian?.aviso ?? `Siigo no entregó el motivo por API. Se ve en Siigo Nube: ${esDS ? 'Compras → Documento soporte' : 'Ventas → Facturas'} → ${doc.numero ?? ''} → Ver inconsistencias.`}</p>}
+                    </div>
+                  )}
+                  {(doc.estado === 'error' || doc.estado === 'anulada') && doc.error && <p style={{ marginTop: 8, fontSize: 11.5, color: doc.estado === 'error' ? '#F87171' : '#878E88', lineHeight: 1.45 }}>{doc.error}</p>}
                   {doc.estado === 'omitida' && doc.error && <p style={{ marginTop: 8, fontSize: 11.5, color: '#878E88', lineHeight: 1.45 }}>{doc.error}</p>}
                   {doc.estado === 'emitida' && (
                     <div className="flex" style={{ gap: 8, marginTop: 10 }}>
                       {doc.url && <a href={doc.url} target="_blank" rel="noopener noreferrer" className="flex-1 flex items-center justify-center hover:bg-white/[0.09] transition-colors" style={{ gap: 6, padding: '9px 0', borderRadius: 9, fontSize: 12, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.11)', textDecoration: 'none' }}><ExternalLink size={13} /> Abrir en Siigo</a>}
-                      <button onClick={() => descargarPdfSiigo(String(tx.id), `${doc.numero ?? titulo}.pdf`)} disabled={docPdfBajando}
-                        className="flex-1 flex items-center justify-center hover:bg-white/[0.09] transition-colors"
-                        style={{ gap: 6, padding: '9px 0', borderRadius: 9, fontSize: 12, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.11)', opacity: docPdfBajando ? 0.6 : 1 }}>
-                        <Download size={13} /> {docPdfBajando ? 'Pidiendo a Siigo…' : `PDF del ${esDS ? 'documento soporte' : 'documento'}`}
-                      </button>
+                      {doc.pdf_api && (
+                        <button onClick={() => descargarPdfSiigo(String(tx.id), `${doc.numero ?? titulo}.pdf`)} disabled={docPdfBajando}
+                          className="flex-1 flex items-center justify-center hover:bg-white/[0.09] transition-colors"
+                          style={{ gap: 6, padding: '9px 0', borderRadius: 9, fontSize: 12, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.11)', opacity: docPdfBajando ? 0.6 : 1 }}>
+                          <Download size={13} /> {docPdfBajando ? 'Pidiendo a Siigo…' : 'PDF de la factura'}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {/* Siigo no entrega por API el PDF del documento soporte
+                      (comprobado: HTTP 404). Se baja en Siigo Nube. */}
+                  {doc.estado === 'emitida' && !doc.pdf_api && (
+                    <p style={{ marginTop: 10, fontSize: 11, color: '#878E88', lineHeight: 1.45 }}>El PDF del documento soporte no lo entrega Siigo por API. Se descarga en Siigo Nube: Compras → Documento soporte → {doc.numero ?? ''} → Imprimir o descargar.</p>
+                  )}
+                  {puedeReemitir && (
+                    <button onClick={() => emitirDeNuevoSiigo(String(tx.id))} disabled={docEmitiendo}
+                      className="w-full flex items-center justify-center hover:bg-white/[0.09] transition-colors"
+                      style={{ gap: 6, marginTop: 10, padding: '9px 0', borderRadius: 9, fontSize: 12, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.11)', opacity: docEmitiendo ? 0.6 : 1 }}>
+                      <FileText size={13} /> {docEmitiendo ? 'Emitiendo en Siigo…' : 'Emitir de nuevo'}
+                    </button>
+                  )}
+                  {doc.respuesta_cruda && (
+                    <div style={{ marginTop: 8 }}>
+                      <button onClick={() => setDocCrudaAbierta(v => !v)} style={{ fontSize: 11, color: '#878E88', background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: 3 }}>{docCrudaAbierta ? 'Ocultar' : 'Ver'} la respuesta de Siigo tal cual</button>
+                      {docCrudaAbierta && <pre style={{ marginTop: 6, fontSize: 10, color: '#878E88', whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxHeight: 220, overflowY: 'auto', background: 'rgba(0,0,0,0.3)', borderRadius: 8, padding: 8, fontFamily: 'ui-monospace, Menlo, monospace' }}>{(() => { try { return JSON.stringify(JSON.parse(doc.respuesta_cruda), null, 1); } catch { return doc.respuesta_cruda; } })()}</pre>}
                     </div>
                   )}
                   {doc.aviso && <p style={{ marginTop: 8, fontSize: 11, color: '#878E88', lineHeight: 1.45 }}>{doc.aviso}</p>}

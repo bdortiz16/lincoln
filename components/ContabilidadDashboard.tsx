@@ -479,9 +479,12 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                             {completado && facturacionActiva && txId && botonEmitir(txId)}
                           </span>
                         );
-                        if (fa.estado === 'omitida' || fa.estado === 'pendiente') return (
+                        if (fa.estado === 'omitida' || fa.estado === 'pendiente' || fa.estado === 'anulada') return (
                           <span className="flex items-center" style={{ gap: 6 }} title={fa.error ?? ''}>
-                            <span style={{ color: C.tenue }}>{fa.estado === 'omitida' ? 'no aplica' : fa.estado}</span>
+                            {fa.estado === 'anulada'
+                              ? <button onClick={() => onVerMovimiento?.(a.tx)} style={{ fontFamily: FONT, fontSize: 12, color: C.tenue, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', textDecoration: 'line-through' }}>{fa.tipo === 'DS' ? 'DS · ' : ''}{fa.numero ?? 'anulado'}</button>
+                              : <span style={{ color: C.tenue }}>{fa.estado === 'omitida' ? 'no aplica' : fa.estado}</span>}
+                            {fa.estado === 'anulada' && <span style={{ color: C.tenue, fontSize: 11 }}>anulado</span>}
                             {completado && facturacionActiva && txId && botonEmitir(txId)}
                           </span>
                         );

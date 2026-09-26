@@ -826,7 +826,11 @@ Deno.serve(async (req) => {
 
       let actualizado = false, avisoSiigo: string | null = null
       let d: any = c.factura_detalle?.respuesta ?? null
-      if (c.factura_estado === 'emitida' && c.factura_id && cfg) {
+      // Lo que la DIAN contestó, si se puede pedir. Siigo lo expone para la
+      // factura en GET /v1/invoices/{id}/stamp/errors; para el documento
+      // soporte se prueba la ruta equivalente y, si no existe, se dice.
+      let selloErrores: { mensajes: string[]; aviso: string | null } | null = null
+      if ((c.factura_estado === 'emitida' || c.factura_estado === 'anulada') && c.factura_id && cfg) {
         const t = await tokenDe(userId, cfg)
         if ('error' in t) avisoSiigo = t.error
         else {
@@ -839,19 +843,56 @@ Deno.serve(async (req) => {
             if (d.public_url && d.public_url !== c.factura_url) cambios.factura_url = d.public_url
             const numero = d.name ?? (d.number != null ? `${d.prefix ?? ''}${d.number}` : null)
             if (numero && numero !== c.factura_numero) cambios.factura_numero = numero
+            // Anulado en Siigo (la factura trae `annulled`; el documento
+            // soporte se elimina y desaparece, ver el 404 abajo).
+            if (d.annulled === true || /anul|cancel/i.test(String(d.status ?? ''))) {
+              cambios.factura_estado = 'anulada'
+              cambios.factura_error = `Anulado en Siigo${d.status ? ` (estado «${d.status}»)` : ''}.`
+            } else if (c.factura_estado === 'anulada') {
+              cambios.factura_estado = 'emitida'; cambios.factura_error = null
+            }
             cambios.factura_detalle = { ...(c.factura_detalle ?? {}), respuesta: d, consultado_at: new Date().toISOString() }
             await db.from('comprobantes').update(cambios).eq('folio', c.folio).then(() => {}, () => {})
             Object.assign(c, cambios)
             actualizado = true
-          } else avisoSiigo = `No se pudo consultar el documento en Siigo — ${motivoDe(r)}`
+            // Rechazado por la DIAN: pedir el detalle del rechazo.
+            if (/reject|rechaz|error|fail/i.test(String(d.stamp?.status ?? ''))) {
+              const re = await siigo('GET', `${rutaDoc}/${encodeURIComponent(String(c.factura_id))}/stamp/errors`, { token: t.token, partner })
+              const lista = Array.isArray(re.data?.errors) ? re.data.errors : Array.isArray(re.data) ? re.data : null
+              selloErrores = re.ok && lista
+                ? { mensajes: lista.map((x: any) => typeof x === 'string' ? x : [x.code ?? x.Code, x.message ?? x.Message ?? x.description].filter(Boolean).join(' · ')).filter(Boolean), aviso: null }
+                : { mensajes: [], aviso: `Siigo no entregó el detalle del rechazo por API (${motivoDe(re)} en ${rutaDoc}/{id}/stamp/errors). Se ve en Siigo Nube: ${clase === 'DS' ? 'Compras → Documento soporte' : 'Ventas → Facturas'} → ${c.factura_numero ?? ''} → Ver inconsistencias.` }
+              if (selloErrores.mensajes.length) {
+                const det = { ...(c.factura_detalle ?? {}), respuesta: d, rechazo_dian: selloErrores.mensajes, consultado_at: new Date().toISOString() }
+                await db.from('comprobantes').update({ factura_detalle: det }).eq('folio', c.folio).then(() => {}, () => {})
+              }
+            }
+          } else if (r.status === 404 && c.factura_estado === 'emitida') {
+            // Siigo ya no lo tiene: se eliminó/anuló allá. Queda registrado
+            // así, con el número que tuvo, y el movimiento vuelve a poder
+            // emitirse.
+            const cambios = { factura_estado: 'anulada', factura_error: `Eliminado en Siigo: al consultarlo contestó HTTP 404 (${motivoDe(r).replace(/^HTTP \d+:?\s*/, '')}).`, factura_detalle: { ...(c.factura_detalle ?? {}), consultado_at: new Date().toISOString(), consulta_status: 404 } }
+            await db.from('comprobantes').update(cambios).eq('folio', c.folio).then(() => {}, () => {})
+            Object.assign(c, cambios)
+            actualizado = true
+          } else if (r.status !== 404) avisoSiigo = `No se pudo consultar el documento en Siigo — ${motivoDe(r)}`
         }
       }
+      if (!selloErrores && Array.isArray(c.factura_detalle?.rechazo_dian)) selloErrores = { mensajes: c.factura_detalle.rechazo_dian, aviso: null }
       const items = Array.isArray(d?.items) ? d.items.map((it: any) => ({
         code: it.code ?? null, description: it.description ?? null, quantity: it.quantity ?? null, price: it.price ?? null, total: it.total ?? null,
         taxes: Array.isArray(it.taxes) ? it.taxes.map((x: any) => ({ name: x.name ?? null, percentage: x.percentage ?? null, value: x.value ?? null })) : [],
       })) : []
       const stamp = d?.stamp && typeof d.stamp === 'object' ? { status: d.stamp.status ?? null, cufe: d.stamp.cufe ?? null, cude: d.stamp.cude ?? null, observations: d.stamp.observations ?? null, errors: d.stamp.errors ?? null } : null
       const contraparte = d?.supplier ?? d?.customer ?? null
+      // Lo que Lincoin le mandó a Siigo (ítems con su precio), para cotejar
+      // contra lo que Siigo contestó: si los totales no coinciden, se ve.
+      const enviado = c.factura_detalle?.enviado ?? null
+      const enviadoResumen = enviado && typeof enviado === 'object' ? {
+        fecha: enviado.date ?? null,
+        items: Array.isArray(enviado.items) ? enviado.items.map((it: any) => ({ code: it.code ?? null, description: it.description ?? null, quantity: it.quantity ?? null, price: it.price ?? null })) : [],
+        total: Array.isArray(enviado.payments) ? enviado.payments.reduce((s: number, p: any) => s + (Number(p.value) || 0), 0) : null,
+      } : null
       return json({
         ok: true,
         comprobante: { folio: c.folio, numero: c.numero, tipo: c.tipo, monto: c.monto, moneda: c.moneda, emitido_at: c.emitido_at },
@@ -859,6 +900,11 @@ Deno.serve(async (req) => {
           estado: c.factura_estado, tipo: clase, numero: c.factura_numero ?? null, id: c.factura_id ?? null,
           cufe: c.factura_cufe ?? null, url: c.factura_url ?? null, error: c.factura_error ?? null, fecha: c.factura_at ?? null,
           siigo: d ? { fecha: d.date ?? null, total: d.total ?? null, balance: d.balance ?? null, observations: d.observations ?? null, stamp, contraparte: contraparte ? { identification: contraparte.identification ?? null, name: contraparte.name ?? contraparte.commercial_name ?? null } : null, items } : null,
+          enviado: enviadoResumen,
+          rechazo_dian: selloErrores,
+          // El PDF por API solo existe para la factura de venta.
+          pdf_api: clase === 'FV',
+          respuesta_cruda: d ? JSON.stringify(d).slice(0, 6000) : null,
           actualizado, aviso: avisoSiigo,
         } : null,
       })
