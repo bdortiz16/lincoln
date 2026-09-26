@@ -371,6 +371,19 @@ function direccionDe(rd: Record<string, any>): Direccion | null {
   if (!address || city.length !== 5 || city === '00000') return null
   return { address: address.slice(0, 256), city: { country_code: 'Co', state_code: state, city_code: city } }
 }
+// La dirección del beneficiario inscrito con ese documento (raw_data
+// .mouvContacts del usuario). El NIT puede estar inscrito con dígito de
+// verificación y acá venir sin él: se compara por los dígitos base.
+async function direccionDelBeneficiario(userId: string, identification: string): Promise<Direccion | null> {
+  const { data } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
+  const contactos: any[] = Array.isArray((data as any)?.raw_data?.mouvContacts) ? (data as any).raw_data.mouvContacts : []
+  const base = identification.replace(/\D/g, '')
+  const hit = contactos.find(c => {
+    const d = String(c?.docNumber ?? '').replace(/\D/g, '')
+    return d && (d === base || (d.length === base.length + 1 && d.slice(0, -1) === base))
+  })
+  return hit ? direccionDe({ recipient: { address: hit.address, cityCode: hit.cityCode, stateCode: hit.stateCode } }) : null
+}
 function contraparteDe(comp: any, cfg: any): Contraparte {
   const rd = comp?.detalle?.raw_data ?? {}
   const doc = String(rd.docNumber ?? rd.documentNumber ?? rd.beneficiaryDoc ?? rd.beneficiaryDocument ?? rd.senderDoc ?? '').replace(/\D/g, '')
@@ -504,6 +517,10 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
   if ('error' in t) { await marcar({ factura_estado: 'error', factura_error: t.error, factura_tipo: clase }); return { ok: false, error: t.error } }
 
   const cp = contraparteDe(comp, cfg)
+  // Si el envío no trae la dirección (se hizo antes de que el beneficiario
+  // la tuviera), se toma de la lista de beneficiarios, por documento. Así
+  // completar la ficha alcanza para emitir de nuevo un envío viejo.
+  if (!cp.direccion && !cp.esDefault) cp.direccion = await direccionDelBeneficiario(userId, cp.identification)
   // El documento soporte va A NOMBRE DEL BENEFICIARIO del envío, con el
   // nombre y documento con que se le envió. Nunca a un "consumidor final":
   // si el envío no trae documento, no se emite y se dice.
