@@ -46,7 +46,7 @@
 // ══════════════════════════════════════════════════════════════════
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { encField, decField, KeyMismatchError } from '../_shared/field-crypto.ts'
-import { municipioPorCodigo, municipioPorNombre } from '../_shared/municipios.ts'
+import { municipioPorCodigo, municipioPorNombre, lugarFueraDeColombia } from '../_shared/municipios.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -419,7 +419,9 @@ async function lugarDeExpedicion(userId: string, documento: string): Promise<{ c
     const d = await r.json().catch(() => ({}))
     if (!r.ok || !d?.ok) return { codigo: null, diagnostico: `Antecedentes: ${d?.motivo ?? d?.error ?? `HTTP ${r.status}`}.` }
     if (d.lugarExpedicionCodigo) return { codigo: String(d.lugarExpedicionCodigo), diagnostico: '' }
-    if (d.lugarExpedicion) return { codigo: null, diagnostico: `La Registraduría dice que la cédula se expidió en «${d.lugarExpedicion}», y ese nombre no corresponde a un único municipio de la lista DANE.` }
+    if (d.lugarExpedicion) return { codigo: null, diagnostico: lugarFueraDeColombia(d.lugarExpedicion)
+      ? `La cédula se expidió en el exterior («${d.lugarExpedicion}», en un consulado), así que no hay municipio colombiano que tomar de la Registraduría. Hay que poner la ciudad donde vive la persona.`
+      : `La Registraduría dice que la cédula se expidió en «${d.lugarExpedicion}», y ese nombre corresponde a más de un municipio de la lista DANE (o a ninguno).` }
     const claves: string[] = Array.isArray(d.claves) ? d.claves : []
     const secciones: string[] = Array.isArray(d.seccionesReporte) ? d.seccionesReporte : []
     return { codigo: null, diagnostico: `El reporte de antecedentes no trae el lugar de expedición bajo una clave reconocible. Claves parecidas: ${claves.length ? claves.slice(0, 12).join(' · ') : 'ninguna'}. Secciones del reporte: ${secciones.join(', ') || 'ninguna'}.` }

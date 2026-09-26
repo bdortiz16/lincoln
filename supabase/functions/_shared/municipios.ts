@@ -27,6 +27,9 @@ export function municipioPorNombre(texto: string | null | undefined): Municipio 
   const objetivo = quita(muni)
   let cand = MUNICIPIOS.filter(m => quita(normalizar(m.nombre)) === objetivo)
   if (!cand.length) cand = MUNICIPIOS.filter(m => { const n = quita(normalizar(m.nombre)); return n.startsWith(objetivo + " ") || objetivo.startsWith(n + " ") })
+  // Con pista de departamento que no es colombiano ("MADRID - ESPAÑA"), es
+  // una cédula expedida en el exterior: no se toma el homónimo colombiano.
+  if (resto.length && !resto.some(r => MUNICIPIOS.some(m => { const n = normalizar(m.deptoNombre); const d = quita(r); return !!d && (n === d || n.startsWith(d) || d.startsWith(n)) }))) return null
   if (cand.length > 1 && resto.length) {
     const dep = resto.map(quita)
     const porDepto = cand.filter(m => dep.some(d => d && (normalizar(m.deptoNombre) === d || normalizar(m.deptoNombre).startsWith(d) || d.startsWith(normalizar(m.deptoNombre)))))
@@ -36,4 +39,18 @@ export function municipioPorNombre(texto: string | null | undefined): Municipio 
   // pista: "CALI" solo existe una vez, pero "SANTA ROSA" no.
   if (cand.length > 1) { const cap = cand.filter(m => m.codigo.endsWith("001")); if (cap.length === 1) return cap[0] }
   return cand.length === 1 ? cand[0] : null
+}
+
+// ¿El lugar de expedición está fuera de Colombia? Una cédula expedida en un
+// consulado dice "GUAYAQUIL - ECUADOR": ninguna parte del texto es un
+// departamento ni un municipio colombiano.
+export function lugarFueraDeColombia(texto: string | null | undefined): boolean {
+  const partes = String(texto ?? "").split(/[()\-–,\/]+/).map(x => normalizar(x)).filter(Boolean)
+  if (!partes.length) return false
+  const deptos = MUNICIPIOS.map(m => normalizar(m.deptoNombre))
+  const esDepto = (p: string) => deptos.some(n => n === p || n.startsWith(p + " ") || p.startsWith(n + " ") || n.startsWith(p) || p.startsWith(n))
+  // Con pista de departamento: es del exterior si esa pista no es un
+  // departamento colombiano. Sin pista: si nada del texto es municipio.
+  if (partes.length > 1) return !partes.slice(1).some(esDepto)
+  return municipioPorNombre(texto) === null && !esDepto(partes[0]) && !MUNICIPIOS.some(m => normalizar(m.nombre) === partes[0])
 }

@@ -2320,7 +2320,9 @@ export const ContactsSection: React.FC<{
                         <p style={{ fontSize: 11.5, color: '#878E88', lineHeight: 1.5, marginTop: 3 }}>
                             {!tieneDir && dirEdit?.cityCode
                                 ? `La Registraduría dice que la cédula se expidió en ${lugarExp || 'esta ciudad'}. Se usa como ciudad del tercero en Siigo; si vive en otra, cámbiala. La dirección es opcional: si no la sabes, va «Sin dirección informada».`
-                                : 'Va al tercero en Siigo. Sin ciudad, la DIAN rechaza el documento soporte («Falta o es inválido el país del tercero»). La dirección es opcional.'}
+                                : lugarExp
+                                    ? `La cédula se expidió en ${lugarExp}, y de ahí no sale un municipio colombiano (consulado o nombre repetido). Elige la ciudad donde vive. Va al tercero en Siigo: sin ciudad, la DIAN rechaza el documento soporte. La dirección es opcional.`
+                                    : 'Va al tercero en Siigo. Sin ciudad, la DIAN rechaza el documento soporte («Falta o es inválido el país del tercero»). La dirección es opcional.'}
                         </p>
                         <div className="grid grid-cols-2 gap-3" style={{ marginTop: 10 }}>
                             <div>
