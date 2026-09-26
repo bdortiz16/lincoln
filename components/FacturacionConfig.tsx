@@ -764,9 +764,9 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                   La ciudad sale de la ficha del beneficiario o, si no la tiene, del lugar donde se expidió su cédula (Registraduría).
                 </p>
                 <div style={{ marginTop: 4 }}>
-                  <Campo rot="CIUDAD PARA CÉDULAS EXPEDIDAS EN EL EXTERIOR" ayuda="Una cédula expedida en un consulado no da un municipio colombiano. En esos casos el tercero va con esta ciudad, y en la dirección queda escrito dónde se expidió. Si no eliges ninguna, se usa la ciudad de tu empresa.">
+                  <Campo rot="CIUDAD PARA CÉDULAS EXPEDIDAS EN EL EXTERIOR" ayuda="Una cédula expedida en un consulado no da un municipio colombiano. En esos casos el tercero va con esta ciudad, y en la dirección queda escrito dónde se expidió. Si no eliges ninguna, se usa la ciudad de tu empresa (perfil) y, si tampoco está, Bogotá D.C.">
                     <select value={form.ciudad_exterior ?? ''} onChange={e => set('ciudad_exterior', e.target.value)} style={entrada}>
-                      <option value="">La ciudad de mi empresa</option>
+                      <option value="">La ciudad de mi empresa (o Bogotá D.C.)</option>
                       {MUNICIPIOS.map(m => <option key={m.codigo} value={m.codigo}>{m.nombre} · {m.deptoNombre}</option>)}
                     </select>
                   </Campo>

@@ -412,12 +412,15 @@ async function direccionDelBeneficiario(userId: string, identification: string, 
   // documento no diga más de lo que se sabe.
   if (lugar && lugarFueraDeColombia(lugar)) {
     const u = data as any
-    const ext = municipioPorCodigo(cfg?.ciudad_exterior) ?? municipioPorNombre(u?.company_city) ?? municipioPorNombre(u?.city)
-    if (ext) {
-      ultimoDiagnosticoLugar = ''
-      return { address: `${calle} · Cédula expedida en ${lugar}`.slice(0, 256), city: { country_code: 'Co', state_code: ext.depto, city_code: ext.codigo } }
-    }
-    ultimoDiagnosticoLugar = `La cédula se expidió en el exterior («${lugar}», en un consulado), así que no hay municipio colombiano que tomar de la Registraduría, y no hay ciudad configurada para estos casos. Elegí una en Contabilidad → Configuración → «Ciudad para cédulas expedidas en el exterior» (o poné la ciudad de tu empresa en el perfil), o elegí la ciudad en la ficha del beneficiario.`
+    // Orden: la configurada → la de la empresa (perfil) → Bogotá D.C. El
+    // cliente pidió que no se frene por esto; Bogotá es el último recurso y
+    // queda dicho en la dirección.
+    const ext = municipioPorCodigo(cfg?.ciudad_exterior)
+      ?? municipioPorNombre(u?.company_city) ?? municipioPorNombre(u?.city)
+      ?? municipioPorNombre(raw?.companyCity) ?? municipioPorNombre(raw?.city)
+      ?? municipioPorCodigo('11001')!
+    ultimoDiagnosticoLugar = ''
+    return { address: `${calle} · Cédula expedida en ${lugar}`.slice(0, 256), city: { country_code: 'Co', state_code: ext.depto, city_code: ext.codigo } }
   }
   return null
 }
