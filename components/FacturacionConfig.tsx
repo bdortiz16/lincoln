@@ -88,6 +88,8 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
   const [aviso, setAviso] = useState<{ ok: boolean; texto: string } | null>(null);
   // Las credenciales se pliegan cuando ya conectaron. "Cambiar" las abre.
   const [credAbiertas, setCredAbiertas] = useState(false);
+  // El modelo también: guardado, queda un resumen con "Editar" y "Eliminar".
+  const [modeloAbierto, setModeloAbierto] = useState(true);
 
   const cargar = async () => {
     setCargando(true);
@@ -98,6 +100,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
     setCfg(c); setDisparadores(r.disparadores ?? {});
     setCredAbiertas(!(c.ultimo_test_ok && c.tieneAccessKey));
     const modelo = c.modelo === 'rotacion' || c.modelo === 'psp' ? c.modelo : '';
+    setModeloAbierto(!modelo);
     const docs = c.documentos && typeof c.documentos === 'object' ? c.documentos : {};
     const operaciones = Object.keys(docs).length
       ? Object.keys(docs)
@@ -154,8 +157,23 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
     if (!r?.ok) { setAviso({ ok: false, texto: r?.error ?? 'No se pudo guardar.' }); return false; }
     setCfg(r.config); setAccessKey('');
     if ('activo' in extra) set('activo', extra.activo);
+    // Guardado con modelo: se pliega al resumen.
+    if (!('activo' in extra) && config.modelo) setModeloAbierto(false);
     setAviso({ ok: true, texto: 'activo' in extra ? (extra.activo ? 'Facturación automática activada.' : 'Facturación automática pausada.') : 'Guardado.' });
     return true;
+  };
+
+  // Eliminar el modelo: solo con la facturación pausada, y con confirmación.
+  // Borra el modelo y sus parámetros; las credenciales quedan.
+  const eliminarModelo = async () => {
+    if (form.activo) { setAviso({ ok: false, texto: 'Pausá la facturación antes de eliminar el modelo.' }); return; }
+    if (!window.confirm('¿Eliminar el modelo de negocio y sus parámetros? Las credenciales de Siigo se conservan.')) return;
+    const limpio = { modelo: null, utilidad_pct: '', item_terceros: '', item_comision: '', iva_tax_id: '', desc_terceros: '', desc_comision: '', motivos: {}, documentos: {}, operaciones: [] };
+    const ok = await guardar(limpio);
+    if (!ok) return;
+    setForm((f: any) => ({ ...f, ...limpio, modelo: '' }));
+    setModeloAbierto(true);
+    setAviso({ ok: true, texto: 'Modelo eliminado. Elegí uno nuevo cuando quieras.' });
   };
 
   const probar = async (soloCatalogos = false) => {
@@ -326,6 +344,50 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
     );
   };
 
+  // El modelo guardado, en una tarjeta: lo esencial de un vistazo, "Editar"
+  // para abrirlo, "Eliminar modelo" solo con la facturación pausada.
+  const nombreDoc = (lista: any[] | undefined, id: any) => { const d = (lista ?? []).find((x: any) => String(x.id) === String(id)); return d ? `${d.code ? d.code + ' · ' : ''}${d.name}` : (id ? `#${id}` : '—'); };
+  const nombreVendedor = (id: any) => { const u = (cat?.vendedores ?? []).find((x: any) => String(x.id) === String(id)); return u ? u.nombre : (id ? `#${id}` : '—'); };
+  const nombrePago = (lista: any[] | undefined, id: any) => { const p = (lista ?? []).find((x: any) => String(x.id) === String(id)); return p ? p.name : (id ? `#${id}` : '—'); };
+  const lineaResumen: React.CSSProperties = { margin: 0, fontSize: 12, color: C.sub, lineHeight: 1.6, overflowWrap: 'anywhere' };
+  const resumenModelo = (
+    <Seccion n="2" t="Tu modelo de negocio">
+      <div style={{ padding: '13px 14px', borderRadius: 12, border: '1px solid rgba(74,222,128,0.28)', background: 'rgba(74,222,128,0.04)' }}>
+        <div className="flex items-start justify-between flex-wrap" style={{ gap: 10 }}>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <p className="flex items-center" style={{ gap: 8, fontSize: 13.5, fontWeight: 800, color: C.text, margin: 0 }}>
+              <span style={{ width: 7, height: 7, borderRadius: '50%', background: C.verde }} />
+              {modelo === 'rotacion' ? 'Rotación de capital' : 'PSP / pasarela'}
+            </p>
+            <div style={{ marginTop: 6 }}>
+              {modelo === 'rotacion' && (
+                <>
+                  <p style={lineaResumen}>Utilidad <b style={{ color: C.text }}>{utilidad || 0} %</b> · factura de venta por: {ops.map(k => disparadores[k] ?? k).join(', ') || '—'}</p>
+                  <p style={lineaResumen}>Servicio para terceros: <b style={{ color: C.text }}>{nombreProducto(form.item_terceros) || '—'}</b> · Comisión: <b style={{ color: C.text }}>{nombreProducto(form.item_comision) || '—'}</b>{iva ? ` (${iva.name || 'IVA'} ${iva.percentage} %)` : ''}</p>
+                  <p style={lineaResumen}>Comprobante FV: {nombreDoc(cat?.documentos, form.document_id)} · vendedor {nombreVendedor(form.seller_id)} · pago {nombrePago(cat?.pagos, form.payment_id)}</p>
+                </>
+              )}
+              {motivosDS.length > 0 && (
+                <p style={lineaResumen}>Envíos con documento soporte: {motivosDS.map(m => `${m.l} → ${nombreProducto(String(motivos[m.v]?.item ?? '')) || '—'}`).join(' · ')}</p>
+              )}
+              {modelo === 'psp' && !motivosDS.length && <p style={{ ...lineaResumen, color: C.ambar }}>Ningún motivo de envío emite documento soporte todavía.</p>}
+              {usaDS && <p style={lineaResumen}>Comprobante DS: {nombreDoc(cat?.documentos_ds, form.ds_document_id)} · pago {nombrePago(cat?.pagos_ds, form.ds_payment_id)}</p>}
+              {!listo && <p style={{ ...lineaResumen, color: C.ambar }}>Falta: {faltantes.join(', ')}.</p>}
+            </div>
+          </div>
+          <div className="flex items-center" style={{ gap: 6, flexShrink: 0 }}>
+            <button onClick={() => setModeloAbierto(true)} style={{ fontFamily: FONT, fontSize: 12, fontWeight: 700, color: C.text, background: 'rgba(255,255,255,0.06)', border: `1px solid ${C.borde}`, borderRadius: 8, padding: '7px 11px', cursor: 'pointer' }}>Editar</button>
+            <button onClick={eliminarModelo} disabled={!!form.activo || guardando} title={form.activo ? 'Pausá la facturación primero' : undefined}
+              style={{ fontFamily: FONT, fontSize: 12, fontWeight: 700, color: form.activo ? C.tenue : C.rojo, background: 'transparent', border: `1px solid ${form.activo ? C.bordeSuave : 'rgba(248,113,113,0.35)'}`, borderRadius: 8, padding: '7px 11px', cursor: form.activo ? 'not-allowed' : 'pointer', opacity: form.activo ? 0.6 : 1 }}>
+              Eliminar modelo
+            </button>
+          </div>
+        </div>
+        {form.activo && <p style={{ fontSize: 11, color: C.tenue, margin: '10px 0 0', lineHeight: 1.5 }}>Para eliminar el modelo, pausá primero la facturación con el botón de arriba.</p>}
+      </div>
+    </Seccion>
+  );
+
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" style={{ background: 'rgba(4,5,5,0.78)' }} onClick={onCerrar}>
       <div onClick={e => e.stopPropagation()} style={{ width: '100%', maxWidth: 760, maxHeight: '94vh', display: 'flex', flexDirection: 'column', background: C.fondo, border: `1px solid ${C.borde}`, borderRadius: 16, overflow: 'hidden', fontFamily: FONT }}>
@@ -422,6 +484,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                 )}
               </Seccion>
 
+              {!modeloAbierto && modelo ? resumenModelo : (<>
               {/* 2. Modelo */}
               <Seccion n="2" t="Tu modelo de negocio">
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 10 }}>
@@ -671,6 +734,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                   </Campo>
                 </div>
               </Seccion>
+              </>)}
 
               {aviso && (
                 <p style={{ fontSize: 12.5, color: aviso.ok ? C.verde : C.rojo, margin: '16px 0 0', lineHeight: 1.5, wordBreak: 'break-word' }}>{aviso.texto}</p>

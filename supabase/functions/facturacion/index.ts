@@ -543,7 +543,15 @@ Deno.serve(async (req) => {
       for (const k of ['activo', 'crear_clientes', 'stamp', 'mail']) if (k in c) fila[k] = !!c[k]
       if (Array.isArray(c.disparadores)) fila.disparadores = c.disparadores.filter((d: any) => typeof d === 'string' && d in DISPARADORES)
       // El modelo de negocio y sus parámetros.
-      if ('modelo' in c) fila.modelo = c.modelo === 'rotacion' || c.modelo === 'psp' ? c.modelo : null
+      if ('modelo' in c) {
+        fila.modelo = c.modelo === 'rotacion' || c.modelo === 'psp' ? c.modelo : null
+        // Quitar el modelo con la facturación activa dejaría una activación
+        // sin reglas. Primero se pausa.
+        if (!fila.modelo && fila.activo !== false) {
+          const actual = await leerConfig(userId)
+          if (actual?.activo) return json({ ok: false, error: 'Pausá la facturación antes de eliminar el modelo.' }, 400)
+        }
+      }
       if ('utilidad_pct' in c) fila.utilidad_pct = c.utilidad_pct == null || c.utilidad_pct === '' ? null : Math.max(0, Number(c.utilidad_pct) || 0)
       for (const k of ['item_terceros', 'item_comision', 'desc_terceros', 'desc_comision']) if (k in c) fila[k] = c[k] == null || c[k] === '' ? null : String(c[k]).trim().slice(0, 500)
       if ('iva_tax_id' in c) fila.iva_tax_id = c.iva_tax_id == null || c.iva_tax_id === '' ? null : Number(c.iva_tax_id)
