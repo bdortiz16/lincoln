@@ -561,7 +561,11 @@ Deno.serve(async (req) => {
       }
       const { error } = await db.from('facturacion_config').upsert(fila, { onConflict: 'user_id' })
       if (error) {
-        if (/does not exist|42P01|schema cache/i.test(error.message)) return json({ ok: false, error: 'Falta correr la migración 2026_facturacion.sql en la base.' }, 500)
+        // Qué migración falta, según lo que falte: la tabla entera, o una
+        // columna nueva. Decir el archivo equivocado manda a correr algo que
+        // ya se corrió.
+        if (/relation .* does not exist|42P01/i.test(error.message)) return json({ ok: false, error: 'Falta correr la migración 2026_facturacion.sql en la base.' }, 500)
+        if (/column|schema cache|PGRST204/i.test(error.message)) return json({ ok: false, error: `Falta correr la migración 2026_facturacion_modelo.sql en la base (${error.message}).` }, 500)
         return json({ ok: false, error: error.message }, 500)
       }
       return json({ ok: true, config: await publica(await leerConfig(userId), await resumenDe(userId)) })

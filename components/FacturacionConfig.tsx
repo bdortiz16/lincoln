@@ -143,10 +143,14 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
     return true;
   };
 
-  const probar = async () => {
+  const probar = async (soloCatalogos = false) => {
     // Se guarda primero: probar con credenciales que no están guardadas
     // produciría un "conectó" que no sobrevive a cerrar la ventana.
-    if (!(await guardar())) return;
+    // "Actualizar catálogos", con credenciales ya guardadas, NO guarda nada:
+    // si el guardado fallara por otra cosa (una migración que falta, un
+    // campo del modelo), se quedaba con los catálogos viejos y parecía que
+    // Siigo no devolvía el producto nuevo.
+    if (!soloCatalogos && !(await guardar())) return;
     setProbando(true); setAviso(null);
     const r = await llamarFuncion('facturacion', { action: 'probar' }, 60000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
     setProbando(false);
@@ -290,7 +294,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                       <p style={{ fontSize: 11.5, color: C.sub, margin: '3px 0 0' }}>Última conexión {fecha(cfg?.ultimo_test_at)}{cat?.traido_at ? ` · catálogos del ${fecha(cat.traido_at)}` : ''}</p>
                     </div>
                     <div className="flex items-center" style={{ gap: 6 }}>
-                      <button onClick={probar} disabled={probando} style={{ fontFamily: FONT, fontSize: 12, fontWeight: 700, color: C.sub, background: 'transparent', border: `1px solid ${C.borde}`, borderRadius: 8, padding: '7px 11px', cursor: 'pointer', opacity: probando ? 0.5 : 1 }}>
+                      <button onClick={() => probar(true)} disabled={probando} style={{ fontFamily: FONT, fontSize: 12, fontWeight: 700, color: C.sub, background: 'transparent', border: `1px solid ${C.borde}`, borderRadius: 8, padding: '7px 11px', cursor: 'pointer', opacity: probando ? 0.5 : 1 }}>
                         {probando ? 'Actualizando…' : 'Actualizar catálogos'}
                       </button>
                       <button onClick={() => setCredAbiertas(true)} style={{ fontFamily: FONT, fontSize: 12, fontWeight: 700, color: C.sub, background: 'transparent', border: `1px solid ${C.borde}`, borderRadius: 8, padding: '7px 11px', cursor: 'pointer' }}>
@@ -315,7 +319,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                       </Campo>
                     </div>
                     <div className="flex items-center flex-wrap" style={{ gap: 8, marginTop: 12 }}>
-                      <button onClick={probar} disabled={probando || guardando || !credOk}
+                      <button onClick={() => probar(false)} disabled={probando || guardando || !credOk}
                         className="lincoin-btn-white" style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, padding: '9px 14px', borderRadius: 9, border: 'none', cursor: 'pointer', opacity: (probando || !credOk) ? 0.5 : 1 }}>
                         {probando ? 'Conectando con Siigo…' : 'Guardar y probar conexión'}
                       </button>
