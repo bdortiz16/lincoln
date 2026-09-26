@@ -2078,7 +2078,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           }
           // Ciudad y dirección del beneficiario: quedan en el movimiento y
           // de ahí van al tercero en Siigo (documento soporte).
-          const direccion = d.cityCode && d.address ? { address: d.address, cityCode: d.cityCode, cityName: d.cityName, stateCode: d.stateCode } : {};
+          const direccion = d.cityCode ? { address: d.address ?? '', cityCode: d.cityCode, cityName: d.cityName, stateCode: d.stateCode } : {};
           const recipient = isBreb
               ? { keyType: d.brebKeyType ?? 'celular', key: d.brebKey ?? d.accountNumber, holderName: d.name, documentNumber: d.docNumber, reference: sendForm.reason, motivo: sendForm.motivo, ...direccion }
               : { bankCode: d.bank, accountType: (d.accountType === 'checking' ? 'corriente' : 'ahorros'), accountNumber: d.accountNumber, documentType: d.docType, documentNumber: d.docNumber, holderName: d.name, reference: sendForm.reason, motivo: sendForm.motivo, ...(sendContact?.finityId ? { finityId: sendContact.finityId } : {}), ...direccion };

@@ -39,6 +39,7 @@
 // ════════════════════════════════════════════════════════
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { municipioPorNombre } from '../_shared/municipios.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -262,9 +263,63 @@ type Ficha = {
   // que quien recibe no es quien dice ser.
   documentoVigente?: boolean
   estadoDocumento?: string
+  // Lugar y fecha de expedición de la cédula, como vienen en el reporte
+  // (Registraduría). El lugar, convertido a municipio DANE, es la ciudad
+  // que va al tercero en Siigo cuando el beneficiario no tiene dirección.
+  lugarExpedicion?: string
+  lugarExpedicionCodigo?: string
+  fechaExpedicionDoc?: string
+  lugarBuscado?: boolean
   // Por qué quedó bloqueado, en una línea. Vacío = no está bloqueado.
   bloqueo?: string
   at?: string
+}
+
+// ── Lugar y fecha de expedición, del reporte completo ─────────────────
+// El reporte de TusDatos trae la certificación de la Registraduría con el
+// lugar y la fecha de expedición de la cédula. No está documentado bajo qué
+// clave exacta, así que se busca en todo el JSON una clave que diga
+// "lugar … expedición" (y "fecha … expedición"), en cualquier nivel.
+function extraerExpedicion(obj: unknown): { lugar?: string; fecha?: string } {
+  const out: { lugar?: string; fecha?: string } = {}
+  const visitar = (x: unknown, prof: number) => {
+    if (!x || typeof x !== 'object' || prof > 8 || (out.lugar && out.fecha)) return
+    for (const [k, v] of Object.entries(x as Record<string, unknown>)) {
+      const clave = k.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+      if (typeof v === 'string' && v.trim()) {
+        if (!out.lugar && /lugar.{0,6}exped/.test(clave)) out.lugar = v.trim().slice(0, 120)
+        else if (!out.fecha && /fecha.{0,6}exped/.test(clave)) out.fecha = v.trim().slice(0, 40)
+      } else if (v && typeof v === 'object') visitar(v, prof + 1)
+    }
+  }
+  visitar(obj, 0)
+  return out
+}
+function conExpedicion(ficha: Ficha, crudo: unknown): Ficha {
+  const e = extraerExpedicion(crudo)
+  const m = e.lugar ? municipioPorNombre(e.lugar) : null
+  return {
+    ...ficha,
+    ...(e.lugar ? { lugarExpedicion: e.lugar } : {}),
+    ...(m ? { lugarExpedicionCodigo: m.codigo } : {}),
+    ...(e.fecha ? { fechaExpedicionDoc: e.fecha } : {}),
+    lugarBuscado: true,
+  }
+}
+// Fichas cerradas antes de guardar el lugar de expedición: se vuelve a
+// pedir el reporte (no gasta crédito) y se completa, de a pocas por vuelta.
+async function completarLugares(uid: string, raw: any, c: Config, tope = 4): Promise<number> {
+  const benef: Record<string, Ficha> = (raw?.tusdatos ?? {}).beneficiarios ?? {}
+  let hechos = 0
+  for (const [doc, f] of Object.entries(benef)) {
+    if (hechos >= tope) break
+    if (!f || f.estado !== 'finalizado' || !f.reportId || f.lugarBuscado) continue
+    const det = await detalle(c, String(f.reportId))
+    const parche = conExpedicion({ documento: doc } as Ficha, det?.crudo ?? null)
+    await guardarBeneficiario(uid, doc, { lugarBuscado: true, ...(parche.lugarExpedicion ? { lugarExpedicion: parche.lugarExpedicion } : {}), ...(parche.lugarExpedicionCodigo ? { lugarExpedicionCodigo: parche.lugarExpedicionCodigo } : {}), ...(parche.fechaExpedicionDoc ? { fechaExpedicionDoc: parche.fechaExpedicionDoc } : {}) } as Ficha)
+    hechos++
+  }
+  return hechos
 }
 
 // ── ¿El nombre inscrito es el del documento? ─────────────────────────────
@@ -836,7 +891,7 @@ async function cerrar(c: Config, userId: string, jobid: string, doc: string, esB
           : cat === 'medio' && !c.soloBloquearAlto ? 'Hallazgos de riesgo medio, en revisión de cumplimiento.'
             : ''
 
-  const ficha: Ficha = {
+  const ficha: Ficha = conExpedicion({
     documento: doc,
     tipoDocumento: String(res?.typedoc ?? 'CC'),
     nombre: real || undefined,
@@ -865,7 +920,7 @@ async function cerrar(c: Config, userId: string, jobid: string, doc: string, esB
     fuentesConError: det?.fuentesConError ?? [],
     pdfUrl: reportId ? `${c.baseUrl.replace(/\/+$/, '')}/api/v2/report_pdf/${reportId}` : undefined,
     at: new Date().toISOString(),
-  }
+  }, det?.crudo ?? res)
 
   if (esBeneficiario) await guardarBeneficiario(userId, doc, ficha); else await guardarTitular(userId, ficha)
   // Al padrón: este crédito ya se pagó, que no lo pague nadie más.
@@ -1344,6 +1399,11 @@ Deno.serve(async (req: Request) => {
         const s = await sanearNombres(uid, raw, c)
         if (s.rejuzgados > 0) raw = await leerRaw(uid)
       } catch (e) { console.warn('[tusdatos] sanear nombres', String((e as any)?.message ?? e)) }
+      // Y el lugar de expedición de las fichas viejas, para la ciudad del
+      // tercero en Siigo.
+      try {
+        if (await completarLugares(uid, raw, c) > 0) raw = await leerRaw(uid)
+      } catch (e) { console.warn('[tusdatos] lugares de expedición', String((e as any)?.message ?? e)) }
       const td = raw?.tusdatos ?? {}
       return json({
         ok: true, activo: c.activo, enLaPrueba: enLaPrueba(c, uid),

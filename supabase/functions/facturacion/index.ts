@@ -46,6 +46,7 @@
 // ══════════════════════════════════════════════════════════════════
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { encField, decField, KeyMismatchError } from '../_shared/field-crypto.ts'
+import { municipioPorCodigo, municipioPorNombre } from '../_shared/municipios.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -363,26 +364,37 @@ function partirNit(doc: string): { identification: string; check_digit?: string 
 // inválido el país del tercero", regla vista en DS-1-10).
 type Direccion = { address: string; city: { country_code: string; state_code: string; city_code: string } }
 type Contraparte = { identification: string; check_digit?: string; nombre: string; esDefault: boolean; esEmpresa: boolean; direccion: Direccion | null }
+// Sin calle no se inventa una: Siigo exige texto en address y la DIAN solo
+// valida el país, así que va dicho tal cual.
+const SIN_CALLE = 'Sin dirección informada'
 function direccionDe(rd: Record<string, any>): Direccion | null {
   const r = rd?.recipient && typeof rd.recipient === 'object' ? rd.recipient : {}
   const address = String(r.address ?? rd.address ?? '').trim()
   const city = String(r.cityCode ?? rd.cityCode ?? '').replace(/\D/g, '').padStart(5, '0')
   const state = String(r.stateCode ?? rd.stateCode ?? city.slice(0, 2)).replace(/\D/g, '').padStart(2, '0')
-  if (!address || city.length !== 5 || city === '00000') return null
-  return { address: address.slice(0, 256), city: { country_code: 'Co', state_code: state, city_code: city } }
+  if (city.length !== 5 || city === '00000') return null
+  return { address: (address || SIN_CALLE).slice(0, 256), city: { country_code: 'Co', state_code: state, city_code: city } }
 }
 // La dirección del beneficiario inscrito con ese documento (raw_data
 // .mouvContacts del usuario). El NIT puede estar inscrito con dígito de
 // verificación y acá venir sin él: se compara por los dígitos base.
 async function direccionDelBeneficiario(userId: string, identification: string): Promise<Direccion | null> {
   const { data } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
-  const contactos: any[] = Array.isArray((data as any)?.raw_data?.mouvContacts) ? (data as any).raw_data.mouvContacts : []
+  const raw = (data as any)?.raw_data ?? {}
+  const contactos: any[] = Array.isArray(raw.mouvContacts) ? raw.mouvContacts : []
   const base = identification.replace(/\D/g, '')
-  const hit = contactos.find(c => {
-    const d = String(c?.docNumber ?? '').replace(/\D/g, '')
-    return d && (d === base || (d.length === base.length + 1 && d.slice(0, -1) === base))
-  })
-  return hit ? direccionDe({ recipient: { address: hit.address, cityCode: hit.cityCode, stateCode: hit.stateCode } }) : null
+  const mismoDoc = (d: string) => d && (d === base || (d.length === base.length + 1 && d.slice(0, -1) === base))
+  const hit = contactos.find(c => mismoDoc(String(c?.docNumber ?? '').replace(/\D/g, '')))
+  const deFicha = hit ? direccionDe({ recipient: { address: hit.address, cityCode: hit.cityCode, stateCode: hit.stateCode } }) : null
+  if (deFicha) return deFicha
+  // Sin ciudad en la ficha: la del lugar de expedición de la cédula, que
+  // la Registraduría devolvió en la consulta de antecedentes (TusDatos).
+  const benef: Record<string, any> = raw.tusdatos?.beneficiarios ?? {}
+  const doc = Object.keys(benef).find(k => mismoDoc(k.replace(/\D/g, '')))
+  const f = doc ? benef[doc] : null
+  const m = f ? (municipioPorCodigo(f.lugarExpedicionCodigo) ?? municipioPorNombre(f.lugarExpedicion)) : null
+  if (!m) return null
+  return { address: String(hit?.address ?? '').trim().slice(0, 256) || SIN_CALLE, city: { country_code: 'Co', state_code: m.depto, city_code: m.codigo } }
 }
 function contraparteDe(comp: any, cfg: any): Contraparte {
   const rd = comp?.detalle?.raw_data ?? {}
@@ -400,7 +412,7 @@ function contraparteDe(comp: any, cfg: any): Contraparte {
 }
 
 const SIN_DIRECCION = (cp: Contraparte, donde: string) =>
-  `El beneficiario ${cp.nombre} (${cp.identification}) no tiene ciudad ni dirección ${donde}, y la DIAN rechaza el documento soporte sin el país del tercero («Falta o es inválido el país del tercero»). Completalas en Beneficiarios → abrí la ficha → Ciudad y dirección, y emití de nuevo.`
+  `El beneficiario ${cp.nombre} (${cp.identification}) no tiene ciudad ${donde}, y la DIAN rechaza el documento soporte sin el país del tercero («Falta o es inválido el país del tercero»). Tampoco se pudo tomar del lugar de expedición de la cédula (la consulta de antecedentes no lo trajo o el nombre no corresponde a un municipio). Elegí la ciudad en Beneficiarios → abrí la ficha → Ciudad y dirección, y emití de nuevo.`
 
 async function asegurarCliente(token: string, partner: string, cfg: any, cp: Contraparte, rol: 'Customer' | 'Supplier' = 'Customer'): Promise<{ ok: true } | { ok: false; error: string }> {
   const busca = await siigo('GET', `/v1/customers?identification=${encodeURIComponent(cp.identification)}`, { token, partner })

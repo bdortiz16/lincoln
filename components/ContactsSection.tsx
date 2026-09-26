@@ -303,14 +303,16 @@ const emptyForm = {
 };
 
 // Ciudad y dirección del beneficiario en Colombia, como van al contacto.
-// Las dos son obligatorias: sin ellas el tercero queda sin país en Siigo y
-// la DIAN rechaza el documento soporte.
-const direccionDelForm = (f: { cityCode: string; address: string }): { cityCode: string; cityName: string; stateCode: string; address: string } | { error: string } => {
+// Son opcionales: si faltan, la ciudad se toma del lugar de expedición de
+// la cédula (Registraduría, vía la consulta de antecedentes) y la calle va
+// como «Sin dirección informada». Van al tercero en Siigo, que sin país
+// hace que la DIAN rechace el documento soporte.
+const direccionDelForm = (f: { cityCode: string; address: string }): { cityCode?: string; cityName?: string; stateCode?: string; address?: string } | { error: string } => {
+    const address = f.address.trim().slice(0, 256);
+    if (!f.cityCode) return address ? { address } : {};
     const m = municipioPorCodigo(f.cityCode);
-    if (!m) return { error: 'Elige la ciudad del beneficiario. Va en el documento soporte que se emite en Siigo.' };
-    const address = f.address.trim();
-    if (address.length < 4) return { error: 'Escribe la dirección del beneficiario. Va en el documento soporte que se emite en Siigo.' };
-    return { cityCode: m.codigo, cityName: `${m.nombre}, ${m.deptoNombre}`, stateCode: m.depto, address: address.slice(0, 256) };
+    if (!m) return { error: 'La ciudad elegida no está en la lista de municipios. Elígela de nuevo.' };
+    return { cityCode: m.codigo, cityName: `${m.nombre}, ${m.deptoNombre}`, stateCode: m.depto, ...(address ? { address } : {}) };
 };
 
 // Selector de ciudad (municipios DANE agrupados por departamento).
@@ -739,14 +741,21 @@ export const ContactsSection: React.FC<{
         if (!dirEdit) return;
         const d = direccionDelForm(dirEdit);
         if ('error' in d) { setDirEdit({ ...dirEdit, error: d.error }); return; }
+        if (!d.cityCode) { setDirEdit({ ...dirEdit, error: 'Elige la ciudad.' }); return; }
         setDirEdit({ ...dirEdit, guardando: true, error: null });
-        const actualizado: MouvContact = { ...c, ...d };
+        const actualizado: MouvContact = { ...c, ...d, address: d.address ?? '' };
         const ok = await persistBanks(bankContacts.map(x => x.id === c.id ? actualizado : x));
         if (!ok) { setDirEdit({ ...dirEdit, guardando: false, error: 'No se pudo guardar (sesión vencida o permisos). Vuelve a entrar e inténtalo otra vez.' }); return; }
         setDirEdit(null);
         setDetail(actualizado);
     };
-    useEffect(() => { setDirEdit(null); }, [detail?.id]);
+    // Al abrir una ficha sin ciudad, se propone la del lugar de expedición
+    // de la cédula (Registraduría), si la consulta de antecedentes la trajo.
+    useEffect(() => {
+        if (!detail || detail.cityCode || (detail.country ?? 'Colombia') !== 'Colombia' || detail.accountKind === 'wallet') { setDirEdit(null); return; }
+        const cod = String(amlDe(detail)?.lugarExpedicionCodigo ?? '');
+        setDirEdit(cod && municipioPorCodigo(cod) ? { cityCode: cod, address: detail.address ?? '', guardando: false, error: null } : null);
+    }, [detail?.id]); // eslint-disable-line react-hooks/exhaustive-deps
     // Los hallazgos van PLEGADOS. Treinta y cinco renglones empujan el resto
     // de la ficha fuera de la pantalla y esconden lo que de verdad importa:
     // el veredicto y los botones.
@@ -919,7 +928,7 @@ export const ContactsSection: React.FC<{
         const bAcc = normAccount(f.accountNumber, false);
         const dupB = bankContacts.find(c => normAccount(c.accountNumber, false) === bAcc && (c.bank || '').toLowerCase() === f.bank.toLowerCase() && (c.country || 'Colombia') === f.country);
         if (dupB) { setNotice({ ok: false, text: `Ya tienes esta cuenta de ${f.bank} inscrita como “${dupB.name}”. No es necesario inscribirla de nuevo.` }); return; }
-        const dirB = f.country === 'Colombia' ? direccionDelForm(f) : {};
+        const dirB: ReturnType<typeof direccionDelForm> = f.country === 'Colombia' ? direccionDelForm(f) : {};
         if ('error' in dirB) { setNotice({ ok: false, text: dirB.error }); return; }
         setSaving(true);
         setNotice(null);
@@ -1742,14 +1751,15 @@ export const ContactsSection: React.FC<{
                             </div>
                             <div className="grid grid-cols-2 gap-3">
                                 <div>
-                                    <label style={LBL}>Ciudad</label>
+                                    <label style={LBL}>Ciudad (opcional)</label>
                                     <CiudadSelect value={form.cityCode} onChange={c => setForm(fm => ({ ...fm, cityCode: c }))} style={INP} />
                                 </div>
                                 <div>
-                                    <label style={LBL}>Dirección</label>
+                                    <label style={LBL}>Dirección (opcional)</label>
                                     <input value={form.address} onChange={e => setForm(fm => ({ ...fm, address: e.target.value }))} placeholder="Calle 10 # 20-30" style={INP} />
                                 </div>
                             </div>
+                            <p style={{ fontSize: 11, color: '#878E88', lineHeight: 1.5, marginTop: -4 }}>Van al tercero en Siigo para el documento soporte. Si no eliges ciudad, se toma la del lugar de expedición de la cédula (Registraduría).</p>
                         </>
                     ) : (
                     /* ── Rama ACH / otros países: cuenta bancaria ── */
@@ -1796,16 +1806,19 @@ export const ContactsSection: React.FC<{
                             <input value={form.accountNumber} onChange={e => setForm(fm => ({ ...fm, accountNumber: e.target.value.replace(/[^\d-]/g, '') }))} inputMode="numeric" style={INP} />
                         </div>
                         {form.country === 'Colombia' && (
-                            <div className="grid grid-cols-2 gap-3">
-                                <div>
-                                    <label style={LBL}>Ciudad</label>
-                                    <CiudadSelect value={form.cityCode} onChange={c => setForm(fm => ({ ...fm, cityCode: c }))} style={INP} />
+                            <>
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label style={LBL}>Ciudad (opcional)</label>
+                                        <CiudadSelect value={form.cityCode} onChange={c => setForm(fm => ({ ...fm, cityCode: c }))} style={INP} />
+                                    </div>
+                                    <div>
+                                        <label style={LBL}>Dirección (opcional)</label>
+                                        <input value={form.address} onChange={e => setForm(fm => ({ ...fm, address: e.target.value }))} placeholder="Calle 10 # 20-30" style={INP} />
+                                    </div>
                                 </div>
-                                <div>
-                                    <label style={LBL}>Dirección</label>
-                                    <input value={form.address} onChange={e => setForm(fm => ({ ...fm, address: e.target.value }))} placeholder="Calle 10 # 20-30" style={INP} />
-                                </div>
-                            </div>
+                                <p style={{ fontSize: 11, color: '#878E88', lineHeight: 1.5, marginTop: -4 }}>Van al tercero en Siigo para el documento soporte. Si no eliges ciudad, se toma la del lugar de expedición de la cédula (Registraduría).</p>
+                            </>
                         )}
                     </>
                     )}
@@ -2295,15 +2308,20 @@ export const ContactsSection: React.FC<{
                 // Ciudad y dirección (Colombia): van al tercero en Siigo. Si
                 // faltan, se completan acá mismo.
                 const esColombia = !isWallet && (detail.country ?? 'Colombia') === 'Colombia';
-                const tieneDir = !!(detail.cityCode && detail.address);
+                const tieneDir = !!detail.cityCode;
+                const lugarExp = String(amlDe(detail)?.lugarExpedicion ?? '');
                 if (esColombia && tieneDir && !dirEdit) {
                     rows.push({ l: 'Ciudad', v: detail.cityName ?? municipioPorCodigo(detail.cityCode)?.nombre ?? detail.cityCode ?? '' });
-                    rows.push({ l: 'Dirección', v: <span>{detail.address} <button onClick={() => setDirEdit({ cityCode: detail.cityCode ?? '', address: detail.address ?? '', guardando: false, error: null })} style={{ marginLeft: 6, color: '#878E88', fontSize: 11.5, fontWeight: 700, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer' }}>Editar</button></span> });
+                    rows.push({ l: 'Dirección', v: <span>{detail.address || 'Sin dirección informada'} <button onClick={() => setDirEdit({ cityCode: detail.cityCode ?? '', address: detail.address ?? '', guardando: false, error: null })} style={{ marginLeft: 6, color: '#878E88', fontSize: 11.5, fontWeight: 700, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer' }}>Editar</button></span> });
                 }
                 const dirForm = esColombia && (!tieneDir || dirEdit) ? (
-                    <div style={{ marginTop: 10, border: '1px solid rgba(255,255,255,0.1)', borderLeft: '2px solid #F59E0B', background: 'rgba(255,255,255,0.03)', borderRadius: 10, padding: '12px 14px' }}>
-                        <p style={{ fontSize: 12, color: '#F4F4F2', fontWeight: 700 }}>{tieneDir ? 'Editar ciudad y dirección' : 'Falta la ciudad y la dirección'}</p>
-                        <p style={{ fontSize: 11.5, color: '#878E88', lineHeight: 1.5, marginTop: 3 }}>Van al tercero en Siigo. Sin ellas la DIAN rechaza el documento soporte («Falta o es inválido el país del tercero»).</p>
+                    <div style={{ marginTop: 10, border: '1px solid rgba(255,255,255,0.1)', borderLeft: `2px solid ${dirEdit?.cityCode && !tieneDir ? '#4ADE80' : '#F59E0B'}`, background: 'rgba(255,255,255,0.03)', borderRadius: 10, padding: '12px 14px' }}>
+                        <p style={{ fontSize: 12, color: '#F4F4F2', fontWeight: 700 }}>{tieneDir ? 'Editar ciudad y dirección' : dirEdit?.cityCode ? 'Ciudad tomada de la cédula' : 'Falta la ciudad'}</p>
+                        <p style={{ fontSize: 11.5, color: '#878E88', lineHeight: 1.5, marginTop: 3 }}>
+                            {!tieneDir && dirEdit?.cityCode
+                                ? `La Registraduría dice que la cédula se expidió en ${lugarExp || 'esta ciudad'}. Se usa como ciudad del tercero en Siigo; si vive en otra, cámbiala. La dirección es opcional: si no la sabes, va «Sin dirección informada».`
+                                : 'Va al tercero en Siigo. Sin ciudad, la DIAN rechaza el documento soporte («Falta o es inválido el país del tercero»). La dirección es opcional.'}
+                        </p>
                         <div className="grid grid-cols-2 gap-3" style={{ marginTop: 10 }}>
                             <div>
                                 <label style={LBL}>Ciudad</label>
