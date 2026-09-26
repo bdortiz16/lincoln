@@ -2,6 +2,7 @@ import React, { createContext, useState, useContext, ReactNode, useEffect, useCa
 import { useSystemConfig } from './SystemConfigContext';
 import { supabase, isSupabaseConfigured } from '../lib/supabaseClient';
 import { generateTOTPSecret, getTOTPQRCode, verifyTOTP } from '../lib/totp';
+import { firmarConPasskey, explicarErrorPasskey } from '../lib/webauthn';
 
 // --- TYPES ---
 
@@ -68,6 +69,9 @@ interface DatabaseContextType {
   currentUser: User | null;
   isAuthLoading: boolean;
   users: User[];
+  // Cuándo falló la última actualización del panel. null = los datos en
+  // pantalla vienen del servidor; con valor, vienen del caché del navegador.
+  syncError: { at: number; motivo: string } | null;
   transactions: Transaction[];
   registerUser: (data: any) => Promise<{ error?: string }>;
   updateUserProfile: (id: string, data: any) => Promise<void>;
@@ -117,10 +121,23 @@ interface DatabaseContextType {
   setNewPassword: (newPassword: string) => Promise<string | null>;
   sendCuypayPayment: (recipientCode: string, amount: number, currency: string) => Promise<{ error?: string }>;
   mfaPending: boolean;
+  mfaErrorDetail: string | null;
+  loginErrorDetail: string | null;
+  getLoginError: () => string | null;
+  getMfaError: () => string | null;
   completeMFALogin: (code: string) => Promise<User | null>;
+  emailStepPending: boolean;
+  accountLocked: boolean;
+  passkeyPending: boolean;
+  /** 2 pasos, o 3 si la cuenta tiene una llave registrada. */
+  mfaPasos: number;
+  loginConPasskey: () => Promise<User | null>;
+  completeEmailLogin: (code: string) => Promise<User | null>;
+  resendEmailCode: () => Promise<boolean>;
+  startEmailStep: (userId: string) => Promise<boolean>;
   cancelMFALogin: () => void;
   enrollMFA: () => Promise<{ qrCode: string; secret: string; factorId: string } | null>;
-  verifyMFAEnrollment: (factorId: string, code: string, secret?: string) => Promise<{ ok: boolean; error?: string }>;
+  verifyMFAEnrollment: (factorId: string, code: string, secret?: string) => Promise<{ ok: boolean; error?: string; backupCodes?: string[] }>;
   unenrollMFA: (factorId: string) => Promise<boolean>;
   getMFAStatus: () => Promise<{ enrolled: boolean; factorId?: string; totpSecret?: string }>;
   verifyMfaCode: (code: string) => Promise<boolean>;
@@ -245,22 +262,35 @@ const DatabaseContext = createContext<DatabaseContextType | undefined>(undefined
 export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const { config, updateConfig } = useSystemConfig();
   const [users, setUsers] = useState<User[]>([]);
+  // Cuándo falló la última actualización del panel admin, y por qué.
+  //
+  // Existe porque el panel hidrata desde un caché del navegador para no
+  // quedarse en cero mientras la edge function arranca en frío. Eso está bien
+  // como PUENTE -- pero si el refresco falla, el puente se vuelve permanente y
+  // la pantalla muestra datos viejos sin decirlo. Pasó: el admin mostraba un
+  // envío en "Procesando" que el cliente ya veía "Completado".
+  const [syncError, setSyncError] = useState<{ at: number; motivo: string } | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [currentUser, setCurrentUser] = useState<User | null>(() => {
-    // Restaurar la sesión de admin (bypass) de forma SÍNCRONA: así el panel
-    // de Empresas NO parpadea "Verificando sesión…" en cada recarga (antes
-    // se restauraba dentro de un useEffect, después del primer render, y se
-    // veía un frame del loader aunque ya había sesión).
-    try {
-      const saved = sessionStorage.getItem('cuypay_admin_session');
-      if (saved) return JSON.parse(saved);
-    } catch { /* sessionStorage no disponible */ }
-    return null;
-  });
+  // ⚠️ SEGURIDAD: NO se restaura ninguna sesión desde sessionStorage.
+  // Antes se leía 'cuypay_admin_session' y se confiaba en ese JSON tal cual,
+  // rol incluido. Cualquiera que pudiera escribir en sessionStorage (un XSS,
+  // una extensión, o la propia consola del navegador) se volvía admin en la
+  // interfaz sin contraseña, sin 2FA y sin CAPTCHA. El bypass que lo escribía
+  // ya estaba desactivado, así que esto era superficie de ataque muerta.
+  // La identidad SIEMPRE sale del JWT de Supabase.
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
   // Recuperación de contraseña: cuando el usuario abre el enlace del correo
   // de "olvidé mi contraseña", Supabase dispara PASSWORD_RECOVERY. La app
   // muestra una pantalla para fijar la nueva clave.
-  const [isPasswordRecovery, setIsPasswordRecovery] = useState(false);
+  const [isPasswordRecovery, setIsPasswordRecovery] = useState(() => {
+    // Se detecta desde la URL, no solo desde el evento: el orden en que
+    // Supabase dispara PASSWORD_RECOVERY y SIGNED_IN no está garantizado, y si
+    // llega primero el segundo la sesión de recuperación entraba al panel.
+    try { return /type=recovery/.test(window.location.hash || window.location.search); } catch { return false; }
+  });
+  // Ref para poder consultarlo dentro del listener sin depender del render.
+  const recoveryRef = useRef<boolean>(false);
+  useEffect(() => { recoveryRef.current = isPasswordRecovery; }, [isPasswordRecovery]);
   // Start online immediately if Supabase is configured — avoids a flash of "Modo Offline"
   // while the first fetchData() is still in flight.
   const [isOnline, setIsOnline] = useState(isSupabaseConfigured);
@@ -286,11 +316,37 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   })();
   const [isAuthLoading, setIsAuthLoading] = useState(hasStoredSession);
   const [mfaPending, setMfaPending] = useState(false);
+  // Paso 2 del ingreso: código enviado al correo del titular.
+  const [emailStepPending, setEmailStepPending] = useState(false);
+  // Cuenta bloqueada: la pantalla deja de pedir códigos. Seguir mostrando la
+  // casilla invita a insistir sobre algo que ya no puede funcionar.
+  const [accountLocked, setAccountLocked] = useState(false);
+  // Paso de la llave física. Solo aparece si la cuenta tiene alguna registrada;
+  // si no, el ingreso sigue con el código de la app, como siempre.
+  const [passkeyPending, setPasskeyPending] = useState(false);
+  // Cuántos pasos tiene este ingreso. Lo dice el servidor al mandar el código
+  // del correo: decir "2 de 2" cuando todavía falta la llave es mentirle al
+  // titular sobre dónde está parado.
+  const [mfaPasos, setMfaPasos] = useState(2);
   const [pendingMFAProfile, setPendingMFAProfile] = useState<User | null>(null);
   // 'custom' = TOTP nuestro (raw_data.mfaEnabled, verifica vía mfa_verify);
   // 'native' = MFA de Supabase Auth (challenge/verify). Decide cómo verificar
   // el código en completeMFALogin.
   const [pendingMFAMode, setPendingMFAMode] = useState<'custom' | 'native'>('native');
+  // Motivo real del fallo de verificación 2FA (para no mostrar siempre
+  // "código incorrecto" cuando en realidad falló otra cosa).
+  const [mfaErrorDetail, setMfaErrorDetail] = useState<string | null>(null);
+  // Motivo REAL del fallo de ingreso. "Credenciales incorrectas" se mostraba
+  // para todo — CAPTCHA rechazado, cuenta sin confirmar, red caída — y no
+  // había forma de saber qué arreglar.
+  const [loginErrorDetail, setLoginErrorDetail] = useState<string | null>(null);
+  // El ref se lee AL INSTANTE. Con solo estado, quien llama leía el valor del
+  // render anterior y el motivo salía un intento tarde — o no salía.
+  const loginErrorRef = useRef<string | null>(null);
+  const mfaErrorRef = useRef<string | null>(null);
+  const setLoginError = (v: string | null) => { loginErrorRef.current = v; setLoginErrorDetail(v); };
+  const setLoginError2 = (wrap: (t: string) => string, v: string) => setLoginError(wrap(v));
+  const setMfaError2 = (v: string | null) => { mfaErrorRef.current = v; setMfaErrorDetail(v); };
   // Tracks when a local write is in progress so fetchData doesn't overwrite optimistic state
   const pendingWriteUntilRef = useRef<number>(0);
   // Ids de usuario que comparten el correo del usuario actual (por si hay
@@ -317,13 +373,10 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   useEffect(() => {
     if (!isSupabaseConfigured) return;
 
-    // Restore admin bypass session on page load (sessionStorage — expires when tab closes)
-    const savedAdmin = sessionStorage.getItem('cuypay_admin_session');
-    if (savedAdmin) {
-      try { setCurrentUser(JSON.parse(savedAdmin)); } catch {}
-      setIsAuthLoading(false);
-      // Still set up listener so Supabase regular users work on same browser
-    }
+    // Se retiró la restauración de 'cuypay_admin_session' (ver arriba): la
+    // sesión de admin sale del JWT, nunca de un JSON del navegador. Por si
+    // quedó escrita de una versión anterior, se borra.
+    try { sessionStorage.removeItem('cuypay_admin_session'); } catch { /* */ }
 
     // Safety net: never stay stuck on loading screen more than 5 seconds
     const timeout = setTimeout(() => setIsAuthLoading(false), 5000);
@@ -335,7 +388,16 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       try {
         // Enlace de recuperación de contraseña abierto → mostrar la pantalla
         // para fijar la nueva clave (no entrar directo al dashboard).
-        if (event === 'PASSWORD_RECOVERY') { setIsPasswordRecovery(true); return; }
+        if (event === 'PASSWORD_RECOVERY') { recoveryRef.current = true; setIsPasswordRecovery(true); return; }
+        // ⚠️ SEGURIDAD: el enlace de "recuperar contraseña" crea una sesión
+        // válida. Sin este corte, esa sesión entraba DIRECTO al panel — sin
+        // contraseña, sin 2FA y sin código de correo. Quien tuviera acceso al
+        // buzón entraba como admin. Una sesión de recuperación solo sirve para
+        // fijar la clave nueva; después hay que iniciar sesión de verdad.
+        if (recoveryRef.current && (event === 'SIGNED_IN' || event === 'INITIAL_SESSION')) {
+          setIsPasswordRecovery(true);
+          return;
+        }
         if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION' || event === 'TOKEN_REFRESHED') && session?.user) {
           // Cancel any pending sign-out
           if (signOutTimer) { clearTimeout(signOutTimer); signOutTimer = null; }
@@ -385,10 +447,11 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             // pestaña pero NO una pestaña/navegador nuevo → ahí sí re-pide 2FA.
             const mfaOn2 = !!(profile as any)?.raw_data?.mfaEnabled;
             let mfaOk = false; try { mfaOk = sessionStorage.getItem('mfa_ok') === '1'; } catch { /* */ }
+            // La marca local no basta: la confirma el servidor contra la
+            // sesión del JWT. Si dice que no, se vuelve a pedir el código.
+            if (mfaOn2 && mfaOk) mfaOk = await serverSaysMfaVerified((profile as any).id);
             if (mfaOn2 && !mfaOk && event !== 'TOKEN_REFRESHED') {
-              setPendingMFAProfile(mapSupabaseUser(profile));
-              setPendingMFAMode('custom');
-              setMfaPending(true);
+              beginMfaFlow(mapSupabaseUser(profile), 'custom');
               return;
             }
             setCurrentUser(mapSupabaseUser(profile));
@@ -417,10 +480,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
               // por SQL; el trigger guard_users_sensitive_cols bloquea el cambio.
               const mfaOnE = !!(existingByEmail as any)?.raw_data?.mfaEnabled;
               let mfaOkE = false; try { mfaOkE = sessionStorage.getItem('mfa_ok') === '1'; } catch { /* */ }
+              if (mfaOnE && mfaOkE) mfaOkE = await serverSaysMfaVerified((existingByEmail as any).id);
               if (mfaOnE && !mfaOkE && event !== 'TOKEN_REFRESHED') {
-                setPendingMFAProfile(mapSupabaseUser(existingByEmail));
-                setPendingMFAMode('custom');
-                setMfaPending(true);
+                beginMfaFlow(mapSupabaseUser(existingByEmail), 'custom');
                 return;
               }
               setCurrentUser(mapSupabaseUser(existingByEmail));
@@ -511,10 +573,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         try {
           const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
           const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-          const isAdminBypass = cu.id === 'admin-bypass';
-          const authHeader = isAdminBypass
-            ? `AdminBypass ${SEED_ADMIN_PASSWORD}`
-            : `Bearer ${getStoredToken() ?? SKEY}`;
+          const authHeader = `Bearer ${getStoredToken() ?? SKEY}`;
           const abortCtl = new AbortController();
           const abortTimer = setTimeout(() => abortCtl.abort(), 20000);
           const fnResult = await fetch(`${SURL}/functions/v1/admin-data`, {
@@ -566,6 +625,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             // plano. Escrituras protegidas por si se pasa la cuota.
             try { localStorage.setItem('cuypay_admin_users', JSON.stringify(mappedUsers)); } catch { /* quota */ }
             try { if (mappedTxForCache) localStorage.setItem('cuypay_admin_tx', JSON.stringify(mappedTxForCache.slice(0, 200))); } catch { /* quota */ }
+            setSyncError(null);
             return; // Edge function succeeded — no need for fallback
           }
           if (fnErr) console.warn('[fetchData] admin-data edge fn error:', fnErr);
@@ -584,8 +644,22 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       const isAdminCaller = (cu as any)?.role === 'admin';
       let directUsers: any, directTx: any;
       if (isAdminCaller) {
-        directUsers = await supabase.from('users').select('*');
-        directTx = await supabase.from('transactions').select('*');
+        // NO se consulta directo. Este respaldo existía para que el panel no
+        // quedara vacío cuando la edge function arranca en frío, pero traía
+        // TODO sin filtrar: un miembro con acceso a un solo país podía hacer
+        // fallar la función (la pestaña de red del navegador alcanza) y
+        // quedarse con la base entera. Un filtro que se esquiva apagando algo
+        // no es un filtro.
+        //
+        // Sin respaldo, lo que pasa es que el panel muestra lo último en caché
+        // y avisa. Es peor de usar y es lo correcto: entre mostrar de menos y
+        // mostrar lo que no corresponde, se muestra de menos.
+        console.warn('[fetchData] admin-data no respondió; no se consulta directo para no saltear el filtro por país');
+        // Se DICE que los datos estan viejos. Mostrarlos en silencio es lo que
+        // hizo que el panel y el cliente afirmaran cosas distintas del mismo
+        // movimiento durante horas.
+        setSyncError({ at: Date.now(), motivo: 'El servicio de datos del panel no respondió.' });
+        return;
       } else {
         directUsers = await supabase.from('users').select('*').eq('id', cu?.id ?? '');
         directTx = await supabase.from('transactions').select('*').eq('user_id', cu?.id ?? '');
@@ -635,16 +709,39 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       //    Se REINTENTA hasta 3 veces con timeout: en 4G la petición a veces
       //    no conecta y sin reintento los movimientos quedaban vacíos aunque
       //    existan. ────────────────────────────────────────────────────────
+      // ── SE PINTA LO QUE YA HAY, Y LA EDGE SE SUMA DESPUÉS ────────────────
+      // Antes esto era secuencial y bloqueante: el SELECT directo ya tenía los
+      // movimientos, pero no se mostraba NADA hasta que terminara también la
+      // lectura por la edge — hasta 3 intentos de 12 s con esperas en medio,
+      // casi 38 segundos en el peor caso. En una red mala la cuenta se veía
+      // vacía todo ese rato con los datos ya en memoria. Eso era la demora.
+      const rpcTxs = txData?.length ? mapTx(txData) : [];
+      const pintar = (lista: any[]) => {
+        if (!lista.length) return;
+        const orden = lista.slice().sort((a: any, b: any) => txTime(b) - txTime(a));
+        setTransactions(orden);
+        // Caché local por usuario: la próxima vez los movimientos se ven al
+        // instante aunque la red falle (se refrescan en segundo plano).
+        if (cu?.id) { try { localStorage.setItem(`cuypay_tx_${cu.id}`, JSON.stringify(orden.slice(0, 200))); } catch { /* quota */ } }
+      };
+      pintar(rpcTxs);
+
       let edgeTxs: any[] = [];
       let edgeDebug: any = null;
       if (cu?.id) {
         const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
         const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
         const tok = getStoredToken();
-        for (let attempt = 0; attempt < 3 && edgeTxs.length === 0; attempt++) {
+        // Si ya hay movimientos en pantalla, se intenta UNA vez y con menos
+        // espera: la edge aporta los ids hermanos y el estado más fresco, no lo
+        // básico. Los reintentos largos solo valen cuando no hay nada que
+        // mostrar — ahí sí conviene insistir antes que dejar la cuenta vacía.
+        const intentos = rpcTxs.length ? 1 : 3;
+        const msLimite = rpcTxs.length ? 6000 : 12000;
+        for (let attempt = 0; attempt < intentos && edgeTxs.length === 0; attempt++) {
           try {
             const ctl = new AbortController();
-            const t = setTimeout(() => ctl.abort(), 12000);
+            const t = setTimeout(() => ctl.abort(), msLimite);
             const r = await fetch(`${SURL}/functions/v1/gasfree`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${tok ?? SKEY}` },
@@ -656,24 +753,34 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             if (Array.isArray(r?.ids) && r.ids.length) emailUserIdsRef.current = r.ids;
             if (Array.isArray(r?.transactions) && r.transactions.length) { edgeTxs = mapTx(r.transactions); break; }
           } catch { /* reintenta */ }
-          if (edgeTxs.length === 0 && attempt < 2) await new Promise(res => setTimeout(res, 800));
+          if (edgeTxs.length === 0 && attempt < intentos - 1) await new Promise(res => setTimeout(res, 800));
         }
       }
 
       // Se usa la fuente que SÍ trajo datos (edge preferida, si no el RPC/SELECT).
       // Solo se escribe si hay algo — así una lectura vacía nunca borra la lista.
-      const rpcTxs = txData?.length ? mapTx(txData) : [];
       // Orden por FECHA (desc), no por id: los ids son uuid aleatorios, así que
       // sin esto "Movimientos recientes" mostraba cualquier orden y un depósito
       // nuevo podía no salir arriba (o parecer que "no está").
-      const finalTxs = (edgeTxs.length ? edgeTxs : rpcTxs)
-        .slice()
+      // ⚠️ Las dos fuentes se UNEN, no se eligen. Antes era `edgeTxs.length ?
+      // edgeTxs : rpcTxs`: la que trajera algo TAPABA por completo a la otra,
+      // y las dos ven cosas distintas —
+      //   · el SELECT directo trae solo user_id = el id del perfil;
+      //   · la edge resuelve además los ids HERMANOS (una misma persona puede
+      //     tener el perfil bajo un id y la sesión bajo otro), pero corta en
+      //     500 y depende de una petición que en 4G a veces no conecta.
+      // Con el o-uno-o-el-otro, un movimiento que solo veía una de las dos
+      // simplemente no existía para el cliente. Eso es lo que hacía que a unos
+      // usuarios "no se les actualizaran los movimientos" y a otros sí.
+      const porId = new Map<string, any>();
+      for (const t of rpcTxs) porId.set(String(t.id), t);
+      for (const t of edgeTxs) porId.set(String(t.id), t);   // la edge pisa: trae el estado más fresco
+      const finalTxs = Array.from(porId.values())
         .sort((a: any, b: any) => txTime(b) - txTime(a));
       if (finalTxs.length) {
-        setTransactions(finalTxs);
-        // Caché local por usuario: la próxima vez los movimientos se ven al
-        // instante aunque la red falle (se refrescan en segundo plano).
-        if (cu?.id) { try { localStorage.setItem(`cuypay_tx_${cu.id}`, JSON.stringify(finalTxs.slice(0, 200))); } catch { /* quota */ } }
+        // Segundo pintado: ahora con lo que aportó la edge unido a lo del
+        // SELECT. Si la edge no trajo nada, esto repinta lo mismo y no se nota.
+        pintar(finalTxs);
       } else if (cu?.id) {
         // Diagnóstico visible: si TODAS las fuentes vinieron vacías, guardar
         // el porqué para mostrarlo en la pantalla de Movimientos (en móvil no
@@ -683,7 +790,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           localStorage.setItem('lincoin_tx_debug', JSON.stringify({
             at: new Date().toISOString(), userId: cu.id,
             edge: edgeDebug,
-            rpcErr: txRpc.error?.message ?? null, rpcCount: Array.isArray(txRpc.data) ? txRpc.data.length : null,
+            // 'txRpc' ya no existe (esa vía se reemplazó por el SELECT directo);
+            // referenciarlo lanzaba un ReferenceError que el catch de abajo se
+            // tragaba, así que el diagnóstico NUNCA se guardaba.
             directErr: directTx.error?.message ?? null, directCount: Array.isArray(directTx.data) ? directTx.data.length : null,
           }));
         } catch { /* quota */ }
@@ -772,6 +881,80 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     } catch { /* nunca rompe el login */ }
   };
 
+  // ── Aviso de ingreso, para TODAS las cuentas ───────────────────────────
+  // Apenas la sesión queda abierta de verdad —cliente o admin—, se le avisa
+  // al titular por correo desde dónde se abrió. No impide nada por sí solo;
+  // lo que hace es que un ingreso ajeno se note el mismo día, en vez de
+  // descubrirse semanas después revisando movimientos.
+  //
+  // Va en un efecto sobre currentUser y no repartido por cada camino de
+  // ingreso (contraseña, Google, 2FA, admin) porque esos son cinco sitios y
+  // ya me pasó olvidarme de dos. El servidor manda UNO POR SESIÓN, así que
+  // restaurar la sesión al recargar no vuelve a avisar: el id de sesión es
+  // el mismo. Entrar desde otro dispositivo sí genera aviso.
+  const avisoIngresoRef = useRef<string | null>(null);
+  useEffect(() => {
+    const uid = currentUser?.id;
+    if (!uid || !SUPABASE_URL_FOR_FN) return;
+    if (avisoIngresoRef.current === uid) return;
+    const token = getStoredToken();
+    if (!token) return;            // sin JWT el servidor no puede identificar la sesión
+    avisoIngresoRef.current = uid;
+    fetch(`${SUPABASE_URL_FOR_FN}/functions/v1/admin-data`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_FOR_FN, Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ action: 'notify_login', userId: uid }),
+    }).catch(() => { /* el aviso nunca puede estorbar el ingreso */ });
+
+    // ── Alta en Kumplo + consulta AML ────────────────────────────────────
+    // Va acá y no en el registro porque al inscribirse todavía no siempre hay
+    // sesión abierta, y sin sesión el servidor no puede saber de quién se
+    // trata. Además así quedan cubiertas las cuentas que ya existían antes de
+    // la integración. El servidor decide: si está apagada, o si esta cuenta no
+    // entra en la prueba, no hace nada. Y si ya tiene id, no repite el alta.
+    fetch(`${SUPABASE_URL_FOR_FN}/functions/v1/kumplo`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_FOR_FN, Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ action: 'inscribir', userId: uid }),
+    }).catch(() => { /* una prueba de cumplimiento no puede romper el ingreso */ });
+  }, [currentUser?.id]);
+
+  // ¿El SERVIDOR reconoce esta sesión como verificada con 2FA? La marca
+  // 'mfa_ok' de sessionStorage se puede escribir a mano desde la consola del
+  // navegador, así que sirve para evitar un parpadeo, no para decidir. Ante
+  // la duda (red caída, respuesta rara) se responde NO: se vuelve a pedir el
+  // código, que es el lado seguro del error.
+  const serverSaysMfaVerified = async (userId: string): Promise<boolean> => {
+    try {
+      if (!SUPABASE_URL_FOR_FN) return false;
+      const token = getStoredToken();
+      if (!token) return false;
+      const r = await Promise.race([
+        fetch(`${SUPABASE_URL_FOR_FN}/functions/v1/admin-data`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_FOR_FN, Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ action: 'mfa_session_ok', userId }),
+        }).then(x => x.json()),
+        new Promise<any>(resolve => setTimeout(() => resolve(null), 5000)),
+      ]);
+      return r?.ok === true && r?.verified === true;
+    } catch { return false; }
+  };
+
+  // Deja constancia de un intento de ingreso FALLIDO. El servidor le pone la
+  // IP y la ubicación aproximada, cuenta los fallos de esa IP y la bloquea al
+  // tercero en una hora. Nunca rompe ni demora el login: es fire-and-forget.
+  const logFailedLogin = (email: string, reason: string) => {
+    try {
+      if (!SUPABASE_URL_FOR_FN) return;
+      fetch(`${SUPABASE_URL_FOR_FN}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_FOR_FN, Authorization: `Bearer ${SUPABASE_ANON_FOR_FN}` },
+        body: JSON.stringify({ action: 'log_failed_login', email, reason }),
+      }).catch(() => {});
+    } catch { /* nunca rompe el login */ }
+  };
+
   // PBKDF2 password hash using Web Crypto — fallback when Supabase Auth is misconfigured
   const hashPassword = async (password: string, salt: string): Promise<string> => {
     try {
@@ -854,7 +1037,15 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       // BORRABA/CAMBIABA (la wallet "cambiaba sola", el 2FA "se deshabilitaba").
       // Siempre se dejan como están en la BASE; y si no pudimos leer la base,
       // se OMITE raw_data por completo para no pisar nada.
-      const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'gasfreeCreditedTxs', 'gasfreeCreditedCount', 'mfaEnabled', 'totpSecret', 'totpSecretEnc', 'otp', 'subWallets'];
+      const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'gasfreeCreditedTxs', 'gasfreeCreditedCount', 'mfaEnabled', 'totpSecret', 'totpSecretEnc', 'mfaBackupHashes', 'mfaSessions', 'mfaLastCounter', 'otp', 'subWallets',
+        // 'kumplo' guarda el resultado AML. Si el cliente pudiera escribirlo,
+        // se pondría riesgo "bajo" a sí mismo y el control de lavado dejaría
+        // de existir: es un veredicto, no una preferencia.
+        'kumplo',
+        // 'tusdatos' es la consulta de antecedentes que hacemos nosotros y el
+        // veredicto de cada beneficiario. Es lo que decide si una
+        // transferencia sale: por eso lo escribe solo el servidor.
+        'tusdatos'];
       // COLECCIONES del cliente que tienen su PROPIO escritor seguro
       // (updateUserRawData, merge dirigido): contactos, wallets inscritas,
       // notificaciones. saveUser NUNCA debe reescribirlas desde memoria — una
@@ -944,8 +1135,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         try {
           const SURL2 = (import.meta.env.VITE_SUPABASE_URL as string) || '';
           const SKEY2 = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-          const isBypass = currentUserRef.current?.id === 'admin-bypass';
-          const authHeader = isBypass ? `AdminBypass ${SEED_ADMIN_PASSWORD}` : `Bearer ${token ?? SKEY2}`;
+          const authHeader = `Bearer ${token ?? SKEY2}`;
           const r = await fetch(`${SURL2}/functions/v1/admin-data`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', apikey: SKEY2, Authorization: authHeader },
@@ -1121,6 +1311,8 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     // solo debe durar mientras la sesión ya verificada se refresca). Sin esto,
     // un logout+login en la MISMA pestaña se saltaba el 2FA.
     try { sessionStorage.removeItem('mfa_ok'); } catch { /* */ }
+    setLoginError(null);
+    setAccountLocked(false);
     // Opciones de auth con el token del CAPTCHA (si Turnstile está activo).
     const authOpts = captchaToken ? { captchaToken } : undefined;
 
@@ -1144,9 +1336,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             // 2FA en el login del admin: si tiene el 2FA custom activo, NO se
             // entra directo — se pide el código de 6 dígitos antes de dar acceso.
             if ((u as any)?.mfaEnabled || (profile as any)?.raw_data?.mfaEnabled) {
-              setPendingMFAProfile(u);
-              setPendingMFAMode('custom');
-              setMfaPending(true);
+              beginMfaFlow(u, 'custom');
               return 'MFA_REQUIRED';
             }
             setCurrentUser(u);
@@ -1160,23 +1350,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       } catch { /* cae al AdminBypass local */ }
     }
 
-    // Admin bypass (RED DE SEGURIDAD): authenticate via env vars, skip Supabase.
-    // Requires VITE_ADMIN_PASSWORD to be explicitly set — empty string disables it.
-    if (SEED_ADMIN_PASSWORD && isSeedAdminEmail && pass === SEED_ADMIN_PASSWORD) {
-      const adminUser: User = {
-        id: 'admin-bypass',
-        email: SEED_ADMIN_EMAIL,
-        role: 'admin',
-        name: 'Administrador',
-        balances: {},
-        kycStatus: 'approved',
-        notifications: [],
-      };
-      // sessionStorage expires when the tab is closed, reducing XSS session-theft window
-      sessionStorage.setItem('cuypay_admin_session', JSON.stringify(adminUser));
-      setCurrentUser(adminUser);
-      return adminUser;
-    }
+    // (Se eliminó el "admin bypass" por contraseña de entorno: fabricaba una
+    //  sesión de admin sin JWT, sin 2FA y sin registro. El admin entra con su
+    //  cuenta real de Supabase.)
 
     if (!isSupabaseConfigured) {
       const user = users.find(u => u.email === email && u.password === pass);
@@ -1191,6 +1367,31 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       authTimeout,
     ]);
     if (error) {
+      // Traducir el motivo REAL antes de caer a los respaldos. Un CAPTCHA
+      // rechazado y una contraseña mala no se arreglan igual, y hasta ahora
+      // los dos decían lo mismo.
+      {
+        const cruda = String((error as any)?.message ?? 'sin mensaje');
+        const m = cruda.toLowerCase();
+        // Se ADJUNTA el error crudo de Supabase entre corchetes. Traducirlo a
+        // un texto amable ayuda a quien lo lee, pero esconder el original hace
+        // imposible diagnosticar: llevamos varias rondas sin poder distinguir
+        // "clave mala" de "cuenta inexistente" de "CAPTCHA rechazado".
+        const conCruda = (txt: string) => `${txt} [${cruda}]`;
+        setLoginError2(conCruda,
+          m.includes('captcha')
+            ? 'La verificación anti-bot (CAPTCHA) rechazó el intento. Recarga la página y vuelve a marcarla — el código del CAPTCHA sirve una sola vez.'
+          : m.includes('email not confirmed') || m.includes('not confirmed')
+            ? 'La cuenta existe pero el correo no está confirmado. Confírmalo en Authentication → Users.'
+          : m.includes('invalid login credentials')
+            ? 'Correo o contraseña incorrectos.'
+          : m.includes('timeout') || m.includes('fetch')
+            ? 'No hubo respuesta del servidor de autenticación. Revisa tu conexión.'
+          : m.includes('rate') || m.includes('too many')
+            ? 'Demasiados intentos. Espera unos minutos.'
+          : 'No se pudo iniciar sesión.'
+        );
+      }
       // Any Supabase Auth error → fall back to DB lookup (covers 400 invalid creds, 500 server, timeout, site URL issues)
       {
         console.warn('[loginUser] Supabase Auth error, trying DB fallback:', error.message);
@@ -1214,6 +1415,19 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
               const { user: fnUser, authSynced } = await fnRes.json();
               if (fnUser) {
                 const mapped = mapSupabaseUser(fnUser);
+                // ⚠️ SEGURIDAD: este camino de respaldo NO puede saltarse el
+                // 2FA. Si la cuenta lo tiene activo se exige el código igual
+                // que en el login normal. Primero se ESPERA la sesión real
+                // (el fn de servicio ya sincronizó la contraseña) para que la
+                // verificación del código tenga un JWT con el cual
+                // autorizarse; sin sesión, se deniega — nunca se entra.
+                if ((mapped as any)?.mfaEnabled || (fnUser as any)?.raw_data?.mfaEnabled) {
+                  if (authSynced) {
+                    try { await supabase.auth.signInWithPassword({ email, password: pass! }); } catch { /* */ }
+                  }
+                  beginMfaFlow(mapped, 'custom');
+                  return 'MFA_REQUIRED';
+                }
                 setCurrentUser(mapped);
                 // user-login (service-role) acaba de sincronizar/crear el
                 // usuario de Auth con esta contraseña — reintentar el login
@@ -1235,34 +1449,20 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           }
         }
 
-        // Fallback: direct DB query (works if RLS allows anon reads)
-        const dbTimeout = new Promise<{ data: null; error: any }>(resolve =>
-          setTimeout(() => resolve({ data: null, error: 'db_timeout' }), 5000)
-        );
-        const { data: fbProfile } = await Promise.race([
-          supabase.from('users').select('*').eq('email', email).single(),
-          dbTimeout,
-        ]) as any;
-        if (fbProfile) {
-          const storedHash = fbProfile.raw_data?.passwordHash as string | undefined;
-          if (storedHash) {
-            const inputHash = await hashPassword(pass!, email);
-            if (!inputHash || inputHash !== storedHash) return null;
-          } else {
-            // First fallback login — store hash for future use
-            const hash = await hashPassword(pass!, email);
-            if (hash) {
-              try {
-                await supabase.from('users').update({
-                  raw_data: { ...(fbProfile.raw_data || {}), passwordHash: hash },
-                }).eq('id', fbProfile.id);
-              } catch {}
-            }
-          }
-          const user = mapSupabaseUser(fbProfile);
-          setCurrentUser(user);
-          return user;
-        }
+        // Acá había un CAMINO DE RESPALDO que autenticaba en el NAVEGADOR:
+        // leía la fila del usuario por correo, sacaba raw_data.passwordHash,
+        // calculaba el hash de lo tecleado y, si coincidía, hacía
+        // setCurrentUser SIN sesión de Auth. Tres problemas, cada uno grave:
+        //
+        //   · La decisión de "esta contraseña es correcta" vivía en el
+        //     cliente. Quien controla el navegador controla esa comparación.
+        //   · Para funcionar necesitaba que la base dejara leer la fila de
+        //     cualquier correo — es decir, repartía hashes de contraseña.
+        //   · Si no había hash guardado, lo ESCRIBÍA. El respaldo se
+        //     alimentaba solo.
+        //
+        // Si el servidor de login no contesta, no se entra. Es lo correcto:
+        // un fallo de autenticación no puede tener una puerta de atrás.
         // Not found in Supabase DB — user may have been created in offline/localStorage mode
         const localUsers = lsGetUsers();
         const localMatch = localUsers.find(u => u.email === email && u.password === pass);
@@ -1271,9 +1471,12 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           return localMatch;
         }
       }
+      // Ninguna vía reconoció las credenciales → queda registrado con IP.
+      if (!loginErrorRef.current) setLoginError('Correo o contraseña incorrectos. [ninguna vía reconoció las credenciales]');
+      logFailedLogin(email, 'credenciales incorrectas');
       return null;
     }
-    if (!data.user) return null;
+    if (!data.user) { setLoginError('El servidor aceptó la petición pero no devolvió la cuenta. Reintenta.'); return null; }
 
     const profileTimeout = new Promise<{ data: null }>(resolve => setTimeout(() => resolve({ data: null }), 6000));
     let { data: profile } = await Promise.race([
@@ -1284,6 +1487,22 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     const isAdminEmail = data.user.email === SEED_ADMIN_EMAIL;
 
     if (!profile) {
+      // ⚠️ Antes se creaba un perfil NUEVO de una vez. Si ya existía una fila
+      // con ese correo pero con OTRO id (pasa al recrear la cuenta de acceso),
+      // quedaban DOS filas para la misma persona: el login leía una y el panel
+      // otra, y arreglarlo después chocaba contra la clave primaria. Primero se
+      // busca por CORREO y, si aparece, se reusa esa fila en vez de duplicarla.
+      try {
+        const { data: porCorreo } = await Promise.race([
+          supabase.from('users').select('*').eq('email', data.user.email!).maybeSingle(),
+          new Promise<{ data: null }>(resolve => setTimeout(() => resolve({ data: null }), 5000)),
+        ]) as any;
+        if (porCorreo) {
+          setLoginError(`Tu cuenta de acceso es nueva y todavía no está unida a tu perfil. Un administrador debe igualar el id del perfil (${String(porCorreo.id).slice(0, 8)}…) al de la cuenta (${String(data.user.id).slice(0, 8)}…).`);
+          await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
+          return null;
+        }
+      } catch { /* si la consulta falla, se sigue al alta normal */ }
       const id = data.user.id;
       const newProfile = {
         id,
@@ -1307,9 +1526,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     // 2FA custom (TOTP nuestro): si la cuenta lo tiene activo, se pide el código
     // en el login antes de dar acceso. Cubre admin y clientes por igual.
     if ((user as any)?.mfaEnabled || (profile as any)?.raw_data?.mfaEnabled) {
-      setPendingMFAProfile(user);
-      setPendingMFAMode('custom');
-      setMfaPending(true);
+      beginMfaFlow(user, 'custom');
       return 'MFA_REQUIRED';
     }
 
@@ -1320,9 +1537,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         mfaTimeout,
       ]) as any;
       if (aalData?.nextLevel === 'aal2' && aalData?.currentLevel !== 'aal2') {
-        setPendingMFAProfile(user);
-        setPendingMFAMode('native');
-        setMfaPending(true);
+        beginMfaFlow(user, 'native');
         return 'MFA_REQUIRED';
       }
     } catch { /* MFA not available, continue normally */ }
@@ -1331,8 +1546,199 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     return user;
   };
 
+  // Segundo paso del ingreso: el código que llega al correo.
+  // Arranca el ingreso mandando el código al correo. Es el PRIMER paso.
+  // Un mismo ingreso puede pasar por más de un camino —el resultado del login
+  // y el aviso de sesión iniciada llegan por separado— y cada uno arrancaba su
+  // propio envío. Llegaban DOS códigos con segundos de diferencia y solo servía
+  // el último, así que el titular probaba el primero y le decía "incorrecto".
+  // Acá se recuerda a quién se le acaba de pedir: el segundo intento en menos
+  // de 25 s no vuelve a pedir nada.
+  const ultimoEnvioRef = useRef<{ uid: string; at: number } | null>(null);
+
+  const startEmailStep = async (userId: string): Promise<boolean> => {
+    const ya = ultimoEnvioRef.current;
+    if (ya && ya.uid === userId && Date.now() - ya.at < 25_000) return true;
+    ultimoEnvioRef.current = { uid: userId, at: Date.now() };
+    try {
+      const SURL = SUPABASE_URL_FOR_FN, SKEY = SUPABASE_ANON_FOR_FN, token = getStoredToken();
+      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
+        body: JSON.stringify({ action: 'mfa_start_login', userId }),
+      }).then(x => x.json()).catch(() => null);
+      if (!r?.ok) {
+        if (r?.error === 'account_locked') setAccountLocked(true);
+        setMfaError2(r?.message ?? 'No se pudo iniciar la verificación.');
+        return false;
+      }
+      setMfaPasos(Number(r.pasos) === 3 ? 3 : 2);
+      return true;
+    } catch { setMfaError2('No se pudo iniciar la verificación.'); return false; }
+  };
+
+  // Intenta capturar una imagen de la cámara para adjuntarla a la alerta de
+  // bloqueo. LIMITACIÓN IMPORTANTE: el navegador SIEMPRE pide permiso y lo
+  // muestra en pantalla — no existe la captura silenciosa. Quien no quiera
+  // ser fotografiado simplemente dice que no, así que esto sirve para
+  // reconocer un error propio, no para identificar a un atacante decidido.
+  // Devuelve el JPEG en base64 (sin cabecera) o null.
+  //
+  // ⚠️ SOLO para la cuenta del panel. La foto existe para la alerta de bloqueo
+  // del admin. Pedírsela a un CLIENTE le abría el permiso de cámara en mitad
+  // del ingreso y lo dejaba esperando hasta 6 segundos con una ventana que no
+  // esperaba — se veía exactamente como "el 2FA no me funciona".
+  const tryCapturePhoto = async (esAdmin: boolean): Promise<string | null> => {
+    if (!esAdmin) return null;
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) return null;
+      const stream = await Promise.race([
+        navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } }),
+        new Promise<null>(resolve => setTimeout(() => resolve(null), 6000)),
+      ]);
+      if (!stream) return null;
+      const video = document.createElement('video');
+      video.srcObject = stream as MediaStream;
+      video.muted = true;
+      await video.play().catch(() => {});
+      await new Promise(r => setTimeout(r, 700));   // dejar que enfoque
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth || 640;
+      canvas.height = video.videoHeight || 480;
+      canvas.getContext('2d')?.drawImage(video, 0, 0, canvas.width, canvas.height);
+      (stream as MediaStream).getTracks().forEach(t => t.stop());
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+      return dataUrl.split(',')[1] ?? null;
+    } catch { return null; }   // permiso denegado, sin cámara, o navegador que no deja
+  };
+
+  // Punto ÚNICO por el que pasa cualquier ingreso que exija segundo factor.
+  // Existe porque el arranque estaba repetido en cinco sitios y en dos se
+  // olvidó: la pantalla saltaba al código de la app sin haber mandado el del
+  // correo, y el servidor —con razón— lo rechazaba.
+  const beginMfaFlow = (profile: any, mode: 'custom' | 'native') => {
+    setPendingMFAProfile(profile);
+    setPendingMFAMode(mode);
+    setMfaPending(true);
+    setPasskeyPending(false);        // cada ingreso empieza en el primer paso
+    passkeyOptionsRef.current = null;
+    setMfaError2(null);
+    // El paso extra por correo es SOLO del panel de administración. Un cliente
+    // con 2FA entra con el código de su app, como siempre: mostrarle un paso
+    // que su pantalla no tiene lo dejaba encerrado.
+    if (mode === 'custom' && profile?.role === 'admin') {
+      setEmailStepPending(true);      // PRIMER paso del admin
+      startEmailStep(profile.id);
+    }
+  };
+
+  const completeEmailLogin = async (code: string): Promise<User | null> => {
+    if (!pendingMFAProfile) return null;
+    const fotoIntento: string | null = await tryCapturePhoto(pendingMFAProfile?.role === 'admin');
+    try {
+      const SURL = SUPABASE_URL_FOR_FN, SKEY = SUPABASE_ANON_FOR_FN, token = getStoredToken();
+      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
+        body: JSON.stringify({ action: 'mfa_verify_email', userId: pendingMFAProfile.id, code, foto: fotoIntento }),
+      }).then(x => x.json()).catch(() => null);
+      if (!r?.ok) {
+        if (r?.error === 'account_locked') setAccountLocked(true);
+        fallosLocalRef.current += 1;
+        setMfaError2(r?.message ?? 'Código incorrecto o vencido.');
+        return null;
+      }
+      // Correo validado. NO se entra todavía: sigue el código de la app, y
+      // después la llave si la cuenta tiene una. Ninguno reemplaza al otro.
+      // El paso de la llave se apaga explícitamente: si quedó encendido de un
+      // intento anterior, la pantalla saltaría a la llave sin haber pedido el
+      // código de la app, y el servidor —con razón— la rechazaría.
+      setEmailStepPending(false);
+      setPasskeyPending(false);
+      setMfaError2(null);
+      return null;
+    } catch { setMfaError2('No se pudo verificar el código.'); return null; }
+  };
+
+  // Las opciones que ya pidió el servidor. Se guardan porque el desafío es de
+  // un solo uso: volver a pedirlas invalidaría el que se acaba de entregar.
+  const passkeyOptionsRef = useRef<any>(null);
+
+  // Entrar con la llave. Tiene que salir de un clic del usuario: los
+  // navegadores no dejan abrir el lector de huella sin que alguien lo pida.
+  const loginConPasskey = async (): Promise<User | null> => {
+    if (!pendingMFAProfile) return null;
+    setMfaError2(null);
+    try {
+      const SURL2 = SUPABASE_URL_FOR_FN, SKEY2 = SUPABASE_ANON_FOR_FN, token = getStoredToken();
+      let options = passkeyOptionsRef.current;
+      if (!options) {
+        const o = await fetch(`${SURL2}/functions/v1/admin-data`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SKEY2, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY2}` },
+          body: JSON.stringify({ action: 'passkey_auth_options', userId: pendingMFAProfile.id }),
+        }).then(x => x.json()).catch(() => null);
+        if (!o?.ok) { setMfaError2(o?.message ?? 'No hay ninguna llave registrada en esta cuenta.'); return null; }
+        options = o.options;
+      }
+      passkeyOptionsRef.current = null;   // el desafío se consume aquí
+      const credential = await firmarConPasskey(options);
+      const r = await fetch(`${SURL2}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY2, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY2}` },
+        body: JSON.stringify({ action: 'passkey_auth_verify', userId: pendingMFAProfile.id, credential, stage: 'login' }),
+      }).then(x => x.json()).catch(() => null);
+      if (!r?.ok) {
+        if (r?.error === 'account_locked') setAccountLocked(true);
+        // El servidor dice que falta un paso anterior: la pantalla se
+        // devuelve sola al código de la app en vez de dejar al titular
+        // atascado en una llave que nunca va a servir todavía.
+        if (r?.error === 'email_step_missing') {
+          setPasskeyPending(false);
+          setMfaError2('Falta el código de tu app. Ingrésalo y después confirma con la llave.');
+          return null;
+        }
+        setMfaError2(r?.message ?? 'La llave no se pudo verificar.');
+        logFailedLogin(pendingMFAProfile.email ?? '', 'llave rechazada');
+        return null;
+      }
+      const user = pendingMFAProfile;
+      try { sessionStorage.setItem('mfa_ok', '1'); } catch { /* */ }
+      setCurrentUser(user);
+      setPasskeyPending(false);
+      setMfaPending(false);
+      setPendingMFAProfile(null);
+      logAdminLogin(user);
+      return user;
+    } catch (e) {
+      setMfaError2(explicarErrorPasskey(e));
+      return null;
+    }
+  };
+
+
+  const resendEmailCode = async (): Promise<boolean> => {
+    if (!pendingMFAProfile) return false;
+    try {
+      const SURL = SUPABASE_URL_FOR_FN, SKEY = SUPABASE_ANON_FOR_FN, token = getStoredToken();
+      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
+        body: JSON.stringify({ action: 'mfa_resend_email', userId: pendingMFAProfile.id }),
+      }).then(x => x.json()).catch(() => null);
+      return !!r?.ok;
+    } catch { return false; }
+  };
+
+  // Cuenta los fallos de ESTA pantalla para saber cuándo intentar la foto.
+  const fallosLocalRef = useRef(0);
+
   const completeMFALogin = async (code: string): Promise<User | null> => {
     if (!pendingMFAProfile) return null;
+    // Se intenta en CADA envío, no solo a partir del segundo: el conteo que
+    // dispara el bloqueo vive en el servidor e incluye intentos anteriores,
+    // así que el bloqueo puede saltar ya en el primero de esta pantalla.
+    const fotoIntento: string | null = await tryCapturePhoto(pendingMFAProfile?.role === 'admin');
     // 2FA CUSTOM: verifica el código contra el secreto CIFRADO en el servidor
     // (mfa_verify en admin-data descifra y valida). Es el esquema que activa la
     // tarjeta de Seguridad del admin y protege el cambio de proveedor.
@@ -1342,9 +1748,58 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         const r = await fetch(`${SURL}/functions/v1/admin-data`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
-          body: JSON.stringify({ action: 'mfa_verify', userId: pendingMFAProfile.id, code }),
+          body: JSON.stringify({ action: 'mfa_verify', userId: pendingMFAProfile.id, code, stage: 'login', foto: fotoIntento }),
         }).then(x => x.json()).catch(() => null);
-        if (!r?.ok) return null;
+        if (!r?.ok) {
+          // Diagnóstico: sin esto, un fallo de AUTORIZACIÓN o un secreto que no
+          // se pudo leer se mostraban igual que "código incorrecto", y no había
+          // forma de saber por qué no entra con un código válido.
+          // El servidor manda un mensaje YA redactado para los casos que el
+          // usuario puede resolver (límite de intentos, código repetido). Se
+          // usa tal cual: mostrar el código interno ("too_many_attempts") no
+          // le dice nada a quien está tratando de entrar.
+          const why = r?.message ? String(r.message)
+            : r?.error === 'code_reused'
+            ? 'Ese código ya se usó. Espera al siguiente que muestre tu app.'
+            : r?.error === 'secret_unreadable'
+            ? (r?.hasBackupCodes
+                ? 'El 2FA está activo pero su secreto quedó ilegible para el servidor. Usa uno de tus códigos de respaldo para entrar.'
+                : 'El 2FA está activo pero su secreto quedó ilegible para el servidor (se guardó con otra llave). Hay que desactivar y volver a activar el 2FA.')
+            : r?.error === 'backup_invalid'
+            ? 'Ese código de respaldo no es válido o ya se usó. Cada código sirve una sola vez.'
+            : r?.error === 'no_secret'
+            ? 'La cuenta tiene el 2FA activo pero no hay ningún secreto guardado. Hay que reactivar el 2FA.'
+            : r?.error === 'No autorizado'
+              ? 'La sesión no autorizó la verificación. Vuelve a intentar el inicio de sesión.'
+              : r?.error ? `Verificación rechazada: ${r.error}` : null;
+          if (r?.error === 'account_locked') setAccountLocked(true);
+          fallosLocalRef.current += 1;
+          // SIEMPRE queda un mensaje escrito, aunque el servidor no mande
+          // ninguno (un código simplemente equivocado responde {ok:false} y
+          // nada más). Así la pantalla puede confiar en que "sin mensaje"
+          // significa "no hubo error", en vez de inventarse uno: por eso el
+          // paso de la llave mostraba "código incorrecto" después de un
+          // código que en realidad era correcto.
+          setMfaError2(why ?? 'Código incorrecto o vencido. Ingresa el código actual de tu app.');
+          // Un código de 2FA rechazado también es un intento fallido: es la
+          // señal más clara de que alguien ya tiene la contraseña. PERO un
+          // rechazo por límite de intentos NO es un código malo — contarlo
+          // otra vez inflaba el conteo que bloquea la IP y castigaba dos
+          // veces por lo mismo.
+          if (r?.error !== 'too_many_attempts') {
+            logFailedLogin(pendingMFAProfile.email ?? '', r?.error === 'backup_invalid' ? 'código de respaldo inválido' : 'código 2FA incorrecto');
+          }
+          return null;
+        }
+        // ── Falta la llave ──────────────────────────────────────────────
+        // El código de la app NO termina el ingreso si la cuenta tiene una
+        // llave registrada. El servidor deja la sesión a medio abrir y la
+        // pantalla pasa al último paso. No se entra todavía.
+        if (r.needsPasskey) {
+          setMfaError2(null);
+          setPasskeyPending(true);
+          return null;
+        }
         const user = pendingMFAProfile;
         try { sessionStorage.setItem('mfa_ok', '1'); } catch { /* */ }
         setCurrentUser(user);
@@ -1376,6 +1831,11 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     if (isSupabaseConfigured) supabase.auth.signOut();
     try { sessionStorage.removeItem('mfa_ok'); } catch { /* */ }
     setMfaPending(false);
+    setEmailStepPending(false);
+    setPasskeyPending(false);
+    passkeyOptionsRef.current = null;
+    setMfaPasos(2);
+    setAccountLocked(false);
     setPendingMFAProfile(null);
   };
 
@@ -1401,7 +1861,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     } catch { return null; }
   };
 
-  const verifyMFAEnrollment = async (factorId: string, code: string, secret?: string): Promise<{ ok: boolean; error?: string }> => {
+  const verifyMFAEnrollment = async (factorId: string, code: string, secret?: string): Promise<{ ok: boolean; error?: string; backupCodes?: string[] }> => {
     // If secret is provided, verify locally (no Supabase Auth required)
     if (secret) {
       const ok = verifyTOTP(secret, code);
@@ -1425,11 +1885,22 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
             body: JSON.stringify({ action: 'mfa_set', userId: currentUser.id, secret, factorId }),
           }).then(x => x.json()).catch(() => null);
-          if (r?.success) return { ok: true };
-        } catch { /* cae al legacy */ }
-        // LEGACY: guardar en texto plano (compat si mfa_set no existe aún).
-        const persisted = await updateUserRawData(currentUser.id, { mfaEnabled: true, mfaFactorId: factorId, totpSecret: secret });
-        if (!persisted) return { ok: false, error: 'No pudimos guardar la verificación en dos pasos. Reintenta.' };
+          // Los códigos de respaldo se devuelven UNA sola vez: aquí. La tarjeta
+          // de Seguridad los muestra para que el titular los guarde. Después ya
+          // no se pueden volver a leer (en la base solo queda su hash).
+          if (r?.success) return { ok: true, backupCodes: r.backupCodes as string[] | undefined };
+          // Se ELIMINÓ el guardado "legacy" que caía aquí y escribía el
+          // secreto en TEXTO PLANO desde el navegador. Hacía dos daños: dejaba
+          // la llave del 2FA legible en la fila, y como la base ahora blinda
+          // esas claves contra escrituras del navegador, el guardado se
+          // descartaba en silencio y la pantalla decía "activado" con el 2FA
+          // apagado. Si el servidor no pudo guardarlo, se dice y no se activa.
+          setCurrentUser((prev: any) => prev ? { ...prev, mfaEnabled: false, mfaFactorId: undefined } : prev);
+          return { ok: false, error: r?.error ? String(r.error) : 'No pudimos guardar la verificación en dos pasos. No quedó activada — reintenta.' };
+        } catch {
+          setCurrentUser((prev: any) => prev ? { ...prev, mfaEnabled: false, mfaFactorId: undefined } : prev);
+          return { ok: false, error: 'No pudimos contactar al servidor para guardar el 2FA. No quedó activada — reintenta.' };
+        }
       }
       return { ok: true };
     }
@@ -1538,6 +2009,27 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         .filter(k => k.startsWith('sb-') && k.endsWith('-auth-token'))
         .forEach(k => localStorage.removeItem(k));
     } catch { /* localStorage no disponible */ }
+    // Cachés con DATOS DE PERSONAS: listas de clientes, movimientos,
+    // documentos. Sobrevivían al cierre de sesión, así que quedaban en el
+    // navegador de un equipo compartido para el siguiente que entrara. Se
+    // borran acá, junto con el token.
+    try {
+      Object.keys(localStorage)
+        // OJO con lo que se borra acá. 'lincoin_otp_ok_<uid>' NO va en esta
+        // lista: es "confiar en este dispositivo por 30 días", y su razón de
+        // ser es justamente sobrevivir al cierre de sesión. Al meterlo en la
+        // purga, cada salida —incluidas las automáticas por inactividad, que
+        // ahora sí ocurren— borraba la confianza y el código por correo se
+        // pedía en cada ingreso. No es una credencial: sin el JWT no abre
+        // nada, solo evita repetir el segundo paso en un aparato conocido.
+        .filter(k =>
+          k === 'cuypay_admin_users' || k === 'cuypay_admin_tx' || k === 'lincoin_tx_debug'
+          || k.startsWith('cuypay_tx_')
+          || k.startsWith('cuypay.admin.'))
+        .forEach(k => localStorage.removeItem(k));
+      localStorage.removeItem('lincoin_visto');
+      localStorage.removeItem('lincoin_admin_visto');
+    } catch { /* localStorage no disponible */ }
     setCurrentUser(null);
     setIsAuthLoading(false);
     // NO bloquear la UI esperando la red: el cierre local ya ocurrió arriba
@@ -1546,7 +2038,13 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     // no se quede "Cerrando…" cuando la red está lenta.
     if (isSupabaseConfigured) {
       Promise.race([
-        supabase.auth.signOut({ scope: 'local' }),
+        // 'global', no 'local'. Con 'local' solo se borraba el navegador: el
+        // access token y el refresh token seguían VÁLIDOS hasta vencer, así
+        // que un token robado servía igual después de "cerrar sesión" — y el
+        // cierre por inactividad tampoco acortaba esa ventana. 'global'
+        // invalida la sesión en el servidor, que es lo que la gente cree que
+        // pasa al salir.
+        supabase.auth.signOut({ scope: 'global' }),
         new Promise<void>(res => setTimeout(res, 1500)),
       ]).catch(() => { /* señal de red flaky: el estado local ya está limpio */ });
     }
@@ -2065,24 +2563,16 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       }
     }
 
-    // RPC timed out or not deployed — fallback: direct writes for sender only.
-    // Recipient cannot receive without the SECURITY DEFINER function.
-    const withWriteTimeout = (p: Promise<any>) =>
-      Promise.race([p, new Promise<{ data: null; error: Error }>((_, rej) => setTimeout(() => rej(new Error('write_timeout')), 8000))]);
-    const [balRes, txRes] = await Promise.allSettled([
-      withWriteTimeout(supabase.from('users').update({ balances: senderNewBal }).eq('id', snapSenderId)),
-      withWriteTimeout(supabase.from('transactions').insert({
-        user_id: snapSenderId,
-        type: 'pay_sent', amount, currency, status: 'Completado',
-        raw_data: { initials: 'PA', title: `PAY a ${snapRecipientName}`, recipientName: snapRecipientName, date: now, createdAt: new Date().toISOString(), userName: snapSenderName },
-      })),
-    ]);
-    const balErr = balRes.status === 'fulfilled' ? (balRes.value as any)?.error : balRes.reason;
-    const txErr = txRes.status === 'fulfilled' ? (txRes.value as any)?.error : txRes.reason;
-    if (balErr) console.error('[pay] balance update failed:', balErr?.message || balErr);
-    if (txErr) console.error('[pay] tx insert failed:', txErr?.message || txErr);
-    try { await Promise.race([refreshAll(), new Promise<void>((_, rej) => setTimeout(() => rej(), 5000))]); } catch { /* ignore refresh timeout */ }
-    return {};
+    // Acá había un respaldo que, si el RPC daba timeout o no estaba
+    // desplegado, ESCRIBÍA LOS SALDOS DIRECTO desde el navegador:
+    // supabase.from('users').update({ balances: ... }). Con importes
+    // calculados en el cliente y la validación de fondos también en el
+    // cliente. Quien controla el navegador controla las dos cosas.
+    //
+    // Mover dinero es exclusivamente del servidor. Si el RPC no responde, el
+    // pago no ocurre y se dice: es mejor que el usuario reintente a que el
+    // saldo lo escriba la pantalla.
+    return { error: 'No pudimos completar el pago en este momento. Tu saldo no se movió. Reintenta en un minuto.' };
   };
 
   const deleteUser = async (id: string): Promise<{ error?: string }> => {
@@ -2102,15 +2592,12 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     const action = isSelf ? 'delete_self' : 'delete_user';
     const body = isSelf ? { action } : { action, userId: id };
 
-    // Use direct fetch so we can pass the bypass token for admin-bypass sessions.
+    // Fetch directo para poder mandar el JWT del admin en el header.
     let edgeFnOk = false;
     try {
       const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
       const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-      const cu2 = currentUserRef.current;
-      const authHeader2 = cu2?.id === 'admin-bypass'
-        ? `AdminBypass ${SEED_ADMIN_PASSWORD}`
-        : `Bearer ${getStoredToken() ?? SKEY}`;
+      const authHeader2 = `Bearer ${getStoredToken() ?? SKEY}`;
       const result = await safe(
         fetch(`${SURL}/functions/v1/admin-data`, {
           method: 'POST',
@@ -2148,6 +2635,12 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     const { error } = await supabase.auth.updateUser({ password: newPassword });
     if (error) return error.message;
     setIsPasswordRecovery(false);
+    recoveryRef.current = false;
+    // Se CIERRA la sesión de recuperación: obliga a iniciar sesión de verdad,
+    // con contraseña + 2FA + código de correo. Si se dejara abierta, el enlace
+    // del correo seguiría siendo una entrada al panel sin segundo factor.
+    try { await supabase.auth.signOut(); } catch { /* */ }
+    setCurrentUser(null);
     return null;
   };
 
@@ -2195,7 +2688,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   return (
     <DatabaseContext.Provider value={{
-      currentUser, isAuthLoading, users, transactions, registerUser, updateUserProfile, updateUserRawData, loginUser, loginWithGoogle, logoutUser,
+      currentUser, isAuthLoading, users, transactions, syncError, registerUser, updateUserProfile, updateUserRawData, loginUser, loginWithGoogle, logoutUser,
       getBalance, bumpLocalBalance, addLocalTx, getPersonalMovements, getUserNotifications, markNotificationsRead,
       mergeNotifications, deleteNotification, clearNotifications,
       requestDeposit, requestWithdrawal, performConversion, approveDeposit, rejectDeposit,
@@ -2203,7 +2696,10 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       bankingOptions, treasuryAccounts, getAllUsers, getAllTransactions, updateTxStatus, getAllPendingDeposits, getAllPendingWithdrawals,
       getTransactionHistory, getAdminTeam, addAdminUser, updateAdminUser, deleteAdminUser, deleteUser, registerInternalMovement,
       updateBankList, restoreDatabase, sendPasswordReset, isPasswordRecovery, setNewPassword, sendCuypayPayment,
-      mfaPending, completeMFALogin, cancelMFALogin,
+      mfaPending, mfaErrorDetail, loginErrorDetail, completeMFALogin, cancelMFALogin,
+      getLoginError: () => loginErrorRef.current, getMfaError: () => mfaErrorRef.current,
+      emailStepPending, completeEmailLogin, resendEmailCode, startEmailStep, accountLocked,
+      passkeyPending, mfaPasos, loginConPasskey,
       enrollMFA, verifyMFAEnrollment, unenrollMFA, getMFAStatus, verifyMfaCode,
     }}>
       {children}

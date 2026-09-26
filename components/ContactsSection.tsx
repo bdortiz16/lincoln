@@ -1,10 +1,15 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { BookUser, Plus, X, Trash2, CheckCircle, AlertTriangle, Landmark, Wallet, Search, SlidersHorizontal, Zap, Copy, Send } from 'lucide-react';
 import { useDatabase } from '../context/DatabaseContext';
 import { useSystemConfig } from '../context/SystemConfigContext';
 import { supabase } from '../lib/supabaseClient';
+import { llamarFuncion } from '../lib/edge';
+import { validarNit, completarNit, nitSinDv } from '../lib/nit';
+import { MUNICIPIOS, municipioPorCodigo } from '../lib/municipios';
 import { FlagImg } from './FlagImg';
 import { callFinity } from './FinitySection';
+import { ContabilidadDashboard } from './ContabilidadDashboard';
+import { ComplianceDashboard } from './ComplianceDashboard';
 
 declare const __BUILD_TS__: string;
 
@@ -41,6 +46,14 @@ async function callMouvProxy(action: string, userId: string, extra: Record<strin
         if (!t) return { ok: false, status: r.status, error: 'empty' };
         try { return JSON.parse(t); } catch { return { ok: false, status: r.status, error: t.slice(0, 150) }; }
     } catch (e: any) { return { ok: false, error: String(e?.message ?? e) }; }
+}
+
+// Llamador a la función de cumplimiento (Kumplo).
+async function callTusdatos(cuerpo: Record<string, unknown>): Promise<any> {
+    return llamarFuncion('tusdatos', cuerpo);
+}
+async function callKumplo(cuerpo: Record<string, unknown>): Promise<any> {
+    return llamarFuncion('kumplo', cuerpo);
 }
 
 // ─────────────────────────────────────────────
@@ -86,6 +99,10 @@ export interface MouvContact {
     // Última respuesta de Mouv al intentar inscribir (null = ok). Visible
     // en el detalle para diagnosticar rechazos de campos/validación.
     lastError?: string | null;
+    // El estado TAL CUAL lo dijo el proveedor, sin traducir. Sirve para
+    // rastrear una discrepancia entre lo que muestra su portal y lo que
+    // muestra Lincoin, sin tener que adivinar qué campo se leyó.
+    providerStatus?: string;
     // Tipo de destino Colombia (modelo Mouv): 'ach' = cuenta bancaria
     // (default, retrocompatible con contactos viejos) · 'breb' = llave Bre-B.
     destKind?: 'ach' | 'breb';
@@ -95,6 +112,13 @@ export interface MouvContact {
     // Contacto opcional del destinatario — SOLO notificaciones, no mueve dinero.
     notifyEmail?: string;
     notifyPhone?: string;
+    // Ciudad (código DANE) y dirección del beneficiario en Colombia. Van al
+    // tercero en Siigo: la DIAN rechaza el documento soporte si el tercero
+    // no tiene país/ciudad ("Falta o es inválido el país del tercero").
+    cityCode?: string;
+    cityName?: string;
+    stateCode?: string;
+    address?: string;
 }
 
 // Tipos de llave Bre-B (igual que la consola de Mouv).
@@ -166,6 +190,48 @@ const normalizeStatus = (v: unknown): ContactStatus | null => {
     return null;
 };
 
+// Estado de una fila del proveedor. Mira TODOS los campos de estado y se queda
+// con el MÁS RESTRICTIVO — no con el primero que aparezca.
+//
+// Esto no es un detalle: una cuenta puede venir con status "active" (el
+// registro existe y está vivo) y a la vez verification_status "in_review" (el
+// banco todavía no la aprueba). Son cosas distintas. Leyendo el primer campo
+// que no fuera nulo, "active" ganaba y la cuenta se marcaba VERIFICADA en
+// Lincoin mientras el banco la tenía en revisión — con el botón de enviar
+// habilitado hacia una cuenta que el banco aún no acepta.
+//
+// Ante señales que se contradicen, manda la peor. Aprobar de más deja salir
+// plata; aprobar de menos solo hace esperar.
+// Y una cuenta bancaria SOLO se aprueba con una palabra que signifique
+// aprobación de verdad: "aprobada", "approved", "verified". "active",
+// "enabled" o "complete" describen el registro, no el veredicto del banco —
+// una cuenta en revisión también es un registro activo. Confiar en esas
+// palabras es lo que hacía que una cuenta que Finity tenía en revisión
+// apareciera VERIFICADA en Lincoin.
+//
+// Si el proveedor no dice explícitamente que aprobó, la cuenta se queda en
+// validación. Esperar de más solo demora un envío; aprobar de más lo deja
+// salir hacia una cuenta que el banco no acepta.
+const APRUEBA = /aprob|approv|verified/;
+const estadoDeFila = (row: any): ContactStatus | null => {
+    const textos = [row?.verification_status, row?.estado, row?.state, row?.status]
+        .filter(v => v !== undefined && v !== null && String(v).trim() !== '')
+        .map(v => String(v).toLowerCase());
+    if (textos.some(s => /rechaz|reject|denied|declin|fail/.test(s))) return 'rechazada';
+    if (textos.some(s => /proces|pend|review|revis|created|unconfirmed/.test(s))) return 'en_proceso';
+    if (textos.some(s => APRUEBA.test(s))) return 'aprobada';
+    // Solo "active" y compañía: el registro existe, pero nadie dijo que esté
+    // aprobado. No alcanza.
+    return textos.length ? 'en_proceso' : null;
+};
+
+// Lo que dijo el proveedor, tal cual, para poder rastrear una discrepancia sin
+// tener que adivinar qué campo se leyó.
+const estadoCrudo = (row: any): string =>
+    [row?.verification_status, row?.estado, row?.state, row?.status]
+        .filter(v => v !== undefined && v !== null && String(v).trim() !== '')
+        .map(v => String(v)).join(' · ') || '—';
+
 const BANKS_CO = [
     'Bancolombia', 'Banco de Bogotá', 'Davivienda', 'BBVA Colombia',
     'Banco de Occidente', 'Banco Popular', 'Scotiabank Colpatria',
@@ -231,6 +297,39 @@ const emptyForm = {
     brebKey: '',
     notifyEmail: '',
     notifyPhone: '',
+    // Ciudad (código DANE) y dirección: solo Colombia, van al tercero en Siigo.
+    cityCode: '',
+    address: '',
+};
+
+// Ciudad y dirección del beneficiario en Colombia, como van al contacto.
+// Las dos son obligatorias: sin ellas el tercero queda sin país en Siigo y
+// la DIAN rechaza el documento soporte.
+const direccionDelForm = (f: { cityCode: string; address: string }): { cityCode: string; cityName: string; stateCode: string; address: string } | { error: string } => {
+    const m = municipioPorCodigo(f.cityCode);
+    if (!m) return { error: 'Elige la ciudad del beneficiario. Va en el documento soporte que se emite en Siigo.' };
+    const address = f.address.trim();
+    if (address.length < 4) return { error: 'Escribe la dirección del beneficiario. Va en el documento soporte que se emite en Siigo.' };
+    return { cityCode: m.codigo, cityName: `${m.nombre}, ${m.deptoNombre}`, stateCode: m.depto, address: address.slice(0, 256) };
+};
+
+// Selector de ciudad (municipios DANE agrupados por departamento).
+const CiudadSelect: React.FC<{ value: string; onChange: (codigo: string) => void; style: React.CSSProperties }> = ({ value, onChange, style }) => {
+    const grupos = useMemo(() => {
+        const g = new Map<string, typeof MUNICIPIOS>();
+        for (const m of MUNICIPIOS) { const l = g.get(m.deptoNombre) ?? []; l.push(m); g.set(m.deptoNombre, l); }
+        return Array.from(g.entries());
+    }, []);
+    return (
+        <select value={value} onChange={e => onChange(e.target.value)} style={style}>
+            <option value="">Selecciona…</option>
+            {grupos.map(([depto, lista]) => (
+                <optgroup key={depto} label={depto}>
+                    {lista.map(m => <option key={m.codigo} value={m.codigo}>{m.nombre}</option>)}
+                </optgroup>
+            ))}
+        </select>
+    );
 };
 
 const WALLET_ADDR_RX: Record<string, RegExp> = {
@@ -249,8 +348,20 @@ const FilterChip: React.FC<{ active: boolean; onClick: () => void; children: Rea
     </button>
 );
 
-export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: MouvContact) => void }> = ({ onBack, onSendTo }) => {
-    const { currentUser, updateUserRawData, transactions } = useDatabase();
+// `vista` elige cuál de las tres caras de la lista se muestra. Las tres
+// comparten los datos y la lógica (antecedentes, movimientos, modales); lo
+// que cambia es qué se pone adelante: la cuenta destino, la plata, o quién
+// puede recibirla.
+export type VistaContactos = 'beneficiarios' | 'contabilidad' | 'compliance';
+export const ContactsSection: React.FC<{
+    onBack?: () => void;
+    onSendTo?: (c: MouvContact) => void;
+    vista?: VistaContactos;
+    // Abre el detalle de un movimiento (el modal con el comprobante), que vive
+    // en el dashboard principal. Contabilidad lo necesita para "Ver".
+    onVerMovimiento?: (tx: any) => void;
+}> = ({ onBack, onSendTo, vista = 'beneficiarios', onVerMovimiento }) => {
+    const { currentUser, updateUserRawData, transactions, refreshData } = useDatabase();
     const { config: sysConfig } = useSystemConfig();
     // Menú "···" del modal de detalle
     const [detailMenu, setDetailMenu] = useState(false);
@@ -259,14 +370,291 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     // el riel del país esté listo.
     const countryStatus: Record<string, string> = { Colombia: 'on', 'Estados Unidos': 'on', ...(((sysConfig as any)?.countryStatus) || {}) };
     const AVAILABLE_COUNTRIES = CONTACT_COUNTRIES.filter(c => countryStatus[c.name] === 'on');
-    // Menú "···" abierto (id del contacto)
-    const [menuFor, setMenuFor] = useState<string | null>(null);
+    // ── Antecedentes (TusDatos) ──────────────────────────────────────────
+    // La consulta la hacemos NOSOTROS, directo contra TusDatos, y de ahí sale
+    // la categoría: bajo, medio o alto. Antes se le pedía el veredicto a
+    // Kumplo y Kumplo consultaba; ese camino nunca devolvió nada y desde acá
+    // no había forma de saber de qué lado estaba el problema. Ahora el
+    // resultado es nuestro, y a Kumplo se le envía.
+    //
+    // El estado se le pregunta al SERVIDOR: 'tusdatos' es una clave que solo
+    // escribe el servidor y no siempre viaja fresca al navegador.
+    const tdRaw: any = (currentUser as any)?.raw_data?.tusdatos ?? {};
+    const [tdSrv, setTdSrv] = useState<{ activo: boolean; enLaPrueba: boolean; benef: Record<string, any> } | null>(null);
+
+    // Una consulta que falla NO apaga la sección: solo una respuesta explícita
+    // del servidor cambia el estado. Si no llega, se queda lo último que sí
+    // supimos — antes cualquier tropiezo de red hacía desaparecer la columna.
+    const leerTusdatos = React.useCallback(async (uid: string) => {
+        const e = await callTusdatos({ action: 'estado', userId: uid });
+        if (!e?.ok) return;
+        setTdSrv({ activo: !!e.activo, enLaPrueba: !!e.enLaPrueba, benef: e.beneficiarios ?? {} });
+    }, []);
+
+    useEffect(() => {
+        const uid = currentUser?.id;
+        if (!uid) return;
+        leerTusdatos(uid);
+    }, [currentUser?.id, leerTusdatos]);
+
+    const amlBenef: Record<string, any> = tdSrv ? tdSrv.benef : (tdRaw.beneficiarios ?? {});
+    // La columna aparece si la verificación corre para esta cuenta O si ya hay
+    // resultados guardados. Lo segundo importa: apagar la integración no debe
+    // hacer desaparecer veredictos que ya se consultaron y ya están frenando
+    // envíos — quedaría un bloqueo sin explicación a la vista.
+    const amlCorre = !!tdSrv?.activo && !!tdSrv?.enLaPrueba;
+    const amlActivo = amlCorre || Object.keys(amlBenef).length > 0;
+    // Por qué NO está corriendo. Solo lo ve el administrador: al cliente no le
+    // sirve, pero sin esto la columna simplemente no aparecía y no había forma
+    // de saber si estaba apagada, si esta cuenta quedó fuera, o si algo se
+    // rompió. Ese silencio ya costó varias vueltas.
+    const amlMotivo = !tdSrv ? null
+        : !tdSrv.activo ? 'La verificación de antecedentes está apagada. Enciéndela en Admin → TusDatos.'
+            : !tdSrv.enLaPrueba ? 'Esta cuenta no está en la lista de «Cuentas en la prueba» de Admin → TusDatos, así que se omite.'
+                : null;
+    // Sin ficha todavía = consulta en curso. Es la verdad: el documento ya
+    // salió hacia TusDatos y el resultado no ha vuelto.
+    // Misma normalización que usa el servidor para comparar nombres: sin
+    // tildes ni puntos, sin formas jurídicas ni palabras de unión. Sirve para
+    // saber si el nombre inscrito CAMBIÓ respecto al de la ficha.
+    const RELLENO_NOMBRE = new Set(['SAS', 'SA', 'SAC', 'LTDA', 'LTD', 'SCA', 'EU', 'BIC', 'ESAL', 'CIA', 'INC', 'CORP', 'DE', 'DEL', 'LA', 'LAS', 'LOS', 'EL', 'Y', 'EN', 'SUCESION', 'SUC']);
+    const claveNombre = (s: unknown) => String(s ?? '')
+        .normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .toUpperCase().replace(/[.'`´]/g, '').replace(/[^A-Z0-9\s]/g, ' ')
+        .split(/\s+/).filter(x => x.length > 1 && !RELLENO_NOMBRE.has(x)).join(' ');
+    const amlDe = (c: Partial<MouvContact>) => {
+        if (!amlActivo) return null;
+        const doc = String(c?.docNumber ?? '').replace(/\D/g, '');
+        if (!doc) return null;
+        return amlBenef[doc] ?? { estado: 'procesando' };
+    };
+    // El veredicto que frena. UN SOLO criterio, el mismo que aplica el
+    // servidor en mouv-proxy, para que la insignia y el envío no se
+    // contradigan: antes la fila decía BLOQUEADO y el envío salía igual.
+    //
+    // Frena con la consulta TERMINADA y alguna de estas: el servidor dijo que
+    // no es operable, riesgo alto, el nombre no es el del documento, o el
+    // documento no está vigente. Sin ficha o con la consulta a medias no se
+    // frena nada — la ausencia de resultado no es una condena.
+    const amlFrena = (c: Partial<MouvContact>) => {
+        const k = amlDe(c);
+        if (!k) return false;
+        const est = String(k.estado ?? '');
+        // SIN RESULTADO NO SE ENVÍA.
+        //
+        // Antes esto dejaba pasar mientras la consulta estuviera en curso, con
+        // el argumento de que "la ausencia de resultado no es una condena".
+        // Para no acusar a nadie es cierto — pero dejar salir la plata
+        // mientras el control corre es peor: si el resultado llega negativo,
+        // ya se fue. El control existe para decidir ANTES.
+        //
+        // La consulta tarda cerca de un minuto. Se espera.
+        if (est !== 'finalizado') return true;
+        return k.operable === false
+            || String(k.categoria ?? '') === 'alto'
+            || k.nombreCoincide === false
+            || k.documentoVigente === false;
+    };
+    // Por qué está frenado, para decirlo en la interfaz: esperar un resultado
+    // no es lo mismo que estar bloqueado, y la persona tiene que poder
+    // distinguirlo — en un caso espera, en el otro no hay nada que esperar.
+    const amlEsperando = (c: Partial<MouvContact>) => {
+        const k = amlDe(c);
+        if (!k) return false;
+        return String(k.estado ?? '') !== 'finalizado';
+    };
+    // No poder ENVIAR y no poder BORRAR son cosas distintas.
+    //
+    // Un nombre que no corresponde al documento casi siempre es un error de
+    // digitación: se escribió "Yadian lopez garcia" donde la cédula dice otra
+    // cosa. Eso se corrige borrando e inscribiendo de nuevo con el nombre
+    // bueno, así que ahí SÍ se puede borrar — trabarlo solo deja una ficha
+    // muerta en la lista que nadie puede arreglar.
+    //
+    // Un hallazgo sobre la PERSONA es otra cosa: riesgo alto, o un documento
+    // que no está vigente (una cédula cancelada por muerte recibiendo plata no
+    // es un dedazo). Eso queda grabado: si alguien lo inscribe y al ver el
+    // bloqueo borra la ficha, desaparece el rastro de que lo intentó.
+    //
+    // Nota: se mira la CATEGORÍA, no la etiqueta. Un beneficiario con el nombre
+    // mal escrito Y riesgo alto no se puede borrar, aunque la insignia diga
+    // "nombre incorrecto" (la identidad se muestra primero).
+    const amlEsEvidencia = (c: Partial<MouvContact>) => {
+        const k = amlDe(c);
+        if (!k || String(k.estado ?? '') !== 'finalizado') return false;
+        return String(k.categoria ?? '') === 'alto' || k.documentoVigente === false;
+    };
+    // 'corto' es la COLUMNA; largo es la ficha, donde hay ancho de sobra.
+    //
+    // En la columna la insignia lleva EL ESTADO y el motivo va debajo en
+    // texto pequeño. Al revés se veía mal y, peor, se leía peor: con el
+    // motivo dentro de la insignia cada fila tenía un ancho distinto y no
+    // había forma de barrer la columna de un vistazo. Con el estado arriba,
+    // todos los bloqueados se ven iguales y saltan solos.
+    const kumploPill = (c: Partial<MouvContact>, corto = false) => {
+        const k = amlDe(c);
+        if (!k) return null;
+        const base: React.CSSProperties = {
+            fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px',
+            padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap', display: 'inline-block',
+        };
+        const ROJO = { b: 'rgba(248,113,113,0.32)', c: '#F87171' };
+        const AMBAR = { b: 'rgba(251,191,36,0.32)', c: '#FBBF24' };
+        const GRIS = { b: 'rgba(255,255,255,0.14)', c: '#878E88' };
+        const VERDE = { b: 'rgba(74,222,128,0.3)', c: '#4ADE80' };
+
+        const cat = String(k.categoria ?? '');
+        const est = String(k.estado ?? '');
+
+        // Cada caso: el estado que va en la insignia, el motivo que va debajo,
+        // y la explicación completa para la ficha y para el tooltip.
+        let tono = GRIS, estado = '', motivo = '', ayuda = '';
+        if (est === 'procesando' || !est) {
+            estado = 'CONSULTANDO';
+            ayuda = 'Estamos consultando los antecedentes de esta persona. Suele tardar alrededor de un minuto.';
+        } else if (est === 'sin_autorizacion') {
+            estado = 'SIN AUTORIZAR';
+            ayuda = 'El titular del documento no autoriza la consulta de su información. No impide transferirle.';
+        } else if (est !== 'finalizado') {
+            estado = 'SIN RESULTADO';
+            ayuda = 'La consulta no pudo completarse. No impide transferirle; se vuelve a intentar.';
+        } else if (k.nombreCoincide === false) {
+            // La identidad va ANTES que los antecedentes: si el nombre no es el
+            // del documento, saber que otra persona está limpia no sirve de nada.
+            tono = ROJO; estado = k.operable === false ? 'BLOQUEADO' : 'REVISAR'; motivo = 'Nombre incorrecto';
+            ayuda = `El nombre inscrito no corresponde al documento. Según la Registraduría es ${k.nombreReal ?? 'otra persona'}.`;
+        } else if (k.documentoVigente === false) {
+            tono = ROJO; estado = k.operable === false ? 'BLOQUEADO' : 'REVISAR'; motivo = 'Documento no vigente';
+            ayuda = `El documento no está vigente${k.estadoDocumento ? `: ${k.estadoDocumento}` : ''}.`;
+        } else if (cat === 'alto') {
+            tono = ROJO; estado = k.operable === false ? 'BLOQUEADO' : 'RIESGO ALTO'; motivo = 'Riesgo alto';
+            ayuda = 'Hallazgos de riesgo alto. No se puede transferir a esta persona.';
+        } else if (cat === 'medio') {
+            tono = AMBAR; estado = k.operable === false ? 'EN REVISIÓN' : 'RIESGO MEDIO'; motivo = 'Riesgo medio';
+            ayuda = 'Hallazgos de riesgo medio. Queda en revisión de cumplimiento.';
+        } else if (cat === 'sin_validar') {
+            // Un documento que la Registraduría no validó no se puede
+            // categorizar: no se sabe de quién son esos antecedentes.
+            estado = 'SIN VALIDAR';
+            ayuda = 'No se pudo validar el documento. Revisa que el número esté correcto.';
+        } else if (cat === 'bajo') {
+            tono = VERDE; estado = 'RIESGO BAJO';
+            ayuda = 'Hallazgos menores. Se puede operar con esta persona.';
+        } else if (cat === 'ninguno' || cat === 'informativo') {
+            tono = VERDE; estado = 'SIN HALLAZGOS';
+            ayuda = 'No se encontraron antecedentes. Se puede operar con esta persona.';
+        } else {
+            estado = 'SIN RESULTADO';
+            ayuda = 'La consulta terminó sin una categoría. No impide transferirle.';
+        }
+
+        // En la ficha va todo en una línea: hay ancho y se lee de corrido.
+        if (!corto) {
+            // Cuando el motivo y el estado dicen lo mismo (riesgo medio que no
+            // llega a bloquear) salía "AML · RIESGO MEDIO · RIESGO MEDIO".
+            const cola = motivo && motivo.toUpperCase() !== estado
+                ? `${motivo.toUpperCase()} · ${estado}`
+                : estado;
+            return (
+                <span title={ayuda} style={{ ...base, border: `1px solid ${tono.b}`, color: tono.c }}>
+                    AML · {cola}
+                </span>
+            );
+        }
+        return (
+            <span title={ayuda} style={{ display: 'inline-block' }}>
+                <span style={{ ...base, border: `1px solid ${tono.b}`, color: tono.c }}>{estado}</span>
+                {motivo && (
+                    <span style={{ display: 'block', fontSize: 10.5, color: '#878E88', marginTop: 4, paddingLeft: 2, lineHeight: 1.3 }}>{motivo}</span>
+                )}
+            </span>
+        );
+    };
+
+    // La columna AML solo existe si el titular conectó su cuenta de Kumplo.
+    // A quien no la conectó esa verificación no le aplica, y una columna
+    // vacía en todas las filas es peor que no tenerla.
+    const COLS = amlActivo
+        ? 'minmax(230px,1.4fr) 128px 146px minmax(150px,1fr) 106px 78px'
+        : 'minmax(230px,1.4fr) 146px minmax(150px,1fr) 110px 82px';
+    const CABECERAS = amlActivo
+        ? ['BENEFICIARIO', 'AML', 'PAÍS Y RIEL', 'BANCO Y CUENTA', 'ESTADO', 'ACCIONES']
+        : ['BENEFICIARIO', 'PAÍS Y RIEL', 'BANCO Y CUENTA', 'ESTADO', 'ACCIONES'];
+
+    // El PDF del reporte. TusDatos lo sirve autenticado, así que no se puede
+    // abrir con un enlace: viene por el servidor y se abre desde la memoria
+    // del navegador. La credencial no sale de la Bóveda.
+    const [pdfCargando, setPdfCargando] = useState(false);
+    const verPdf = async (reportId: string) => {
+        if (!currentUser?.id || pdfCargando) return;
+        setPdfCargando(true);
+        const r = await callTusdatos({ action: 'pdf', userId: currentUser.id, reportId });
+        setPdfCargando(false);
+        if (!r?.ok) { setNotice({ ok: false, text: r?.motivo ?? 'No se pudo abrir el reporte.' }); return; }
+        try {
+            const bin = atob(r.pdf);
+            const buf = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+            const url = URL.createObjectURL(new Blob([buf], { type: 'application/pdf' }));
+            window.open(url, '_blank');
+            setTimeout(() => URL.revokeObjectURL(url), 60000);
+        } catch { setNotice({ ok: false, text: 'No se pudo abrir el reporte.' }); }
+    };
+
+    // Revisión manual del cumplimiento de un beneficiario (id del contacto).
+    const [revisando, setRevisando] = useState<string | null>(null);
+    const revisarCumplimiento = async (c: MouvContact) => {
+        if (!currentUser?.id || revisando) return;
+        setRevisando(c.id);
+        // Se lanza y se recoge: la consulta tarda cerca de un minuto, así que
+        // el primer intento de recoger casi nunca la encuentra lista. El
+        // webhook la cierra después, o la siguiente vuelta del reloj.
+        await callTusdatos({
+            action: 'verificar_beneficiario', userId: currentUser.id,
+            nombre: c.name, documento: String(c.docNumber ?? '').replace(/\D/g, ''),
+            tipoDocumento: String(c.docType ?? 'CC').toUpperCase(),
+        });
+        await callTusdatos({ action: 'recoger_pendientes', userId: currentUser.id });
+        await leerTusdatos(currentUser.id);
+        setRevisando(null);
+    };
+
+    // Menú "···" abierto: el id del contacto Y la posición del botón.
+    // El menú se dibuja en posición FIJA, no dentro de la fila. La tarjeta de
+    // la tabla recorta lo que se sale (overflow: hidden, que es lo que le da
+    // las esquinas redondeadas), así que un menú absoluto dentro de la fila
+    // quedaba cortado a la mitad — y en la última fila no se veía en absoluto.
+    const [menuFor, setMenuFor] = useState<{ id: string; x: number; y: number; arriba: boolean } | null>(null);
+    const abrirMenu = (id: string, e: React.MouseEvent<HTMLButtonElement>) => {
+        if (menuFor?.id === id) { setMenuFor(null); return; }
+        const r = e.currentTarget.getBoundingClientRect();
+        // Si no cabe abajo, se abre hacia arriba. Un menú que se sale de la
+        // pantalla obliga a hacer scroll a ciegas para alcanzarlo.
+        const arriba = window.innerHeight - r.bottom < 110;
+        setMenuFor({ id, x: r.right, y: arriba ? r.top : r.bottom, arriba });
+    };
+    // Cerrarlo al hacer scroll: queda anclado a un punto de la pantalla, y si
+    // la lista se mueve el menú se despega de su fila.
+    useEffect(() => {
+        if (!menuFor) return;
+        const cerrar = () => setMenuFor(null);
+        window.addEventListener('scroll', cerrar, true);
+        window.addEventListener('resize', cerrar);
+        return () => { window.removeEventListener('scroll', cerrar, true); window.removeEventListener('resize', cerrar); };
+    }, [menuFor]);
     const [formOpen, setFormOpen] = useState(false);
     // Paso 0: ¿banco o wallet? → banco: país → datos · wallet: datos wallet
     const [formStep, setFormStep] = useState<'type' | 'country' | 'data' | 'wallet'>('type');
     const [form, setForm] = useState({ ...emptyForm });
     const [saving, setSaving] = useState(false);
     const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
+    // El aviso de error dentro de la ventana de inscribir, encima de lo que
+    // hay que corregir. Fuera de la ventana no se veía.
+    const avisoModal = formOpen && notice && !notice.ok ? (
+        <div role="alert" style={{ background: 'rgba(251,191,36,0.09)', border: '1px solid rgba(251,191,36,0.35)', borderRadius: 10, padding: '10px 13px', fontSize: 12.5, lineHeight: 1.5, color: '#FBBF24', fontWeight: 500 }}>
+            {notice.text}
+        </div>
+    ) : null;
     // Consulta AUTOMÁTICA de la llave Bre-B en el directorio de Mouv: al escribir
     // la llave se resuelve el TITULAR (nombre + documento) y su BANCO, y se
     // autollenan los campos. Evita errores de digitación del beneficiario.
@@ -282,14 +670,58 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
         try {
             const r: any = await callMouvProxy('resolve_breb_key', currentUser!.id, { keyValue: key, keyType: form.brebKeyType });
             if (r?.ok && r?.found) {
-                setForm(fm => ({
-                    ...fm,
-                    name: fm.name.trim() ? fm.name : (r.fullName ?? fm.name),
-                    docNumber: fm.docNumber.trim() ? fm.docNumber : (r.idValue ?? fm.docNumber),
-                    bank: r.bank ?? fm.bank,
-                }));
-                setBrebLookup({ loading: false, found: true, bank: r.bank ?? null, msg: r.fullName ? `Titular: ${r.fullName}` : 'Llave verificada' });
-            } else if (r?.found === false) {
+                // TODO junto o nada, y atado a LA LLAVE QUE SE CONSULTÓ.
+                //
+                // Antes esto era la fábrica de beneficiarios mezclados: el
+                // nombre y el documento se negaban a pisar lo que ya hubiera
+                // ("no le borro lo que escribió"), pero el banco SIEMPRE se
+                // reemplazaba. Así que consultar una llave, corregirla por otra
+                // y guardar dejaba inscrito el nombre y la cédula del PRIMER
+                // titular con la llave del SEGUNDO. Eso es exactamente lo que
+                // se vio en producción, y desde ahí toda la app lo repetía sin
+                // contradecirse: pantalla, comprobante y control de
+                // antecedentes, todos sobre la cédula equivocada.
+                //
+                // Ahora los tres campos vienen del MISMO titular. Si el usuario
+                // ya había escrito un nombre o un documento distinto, no se le
+                // pisa en silencio: se le dice y decide él.
+                setForm(fm => {
+                    // La respuesta llegó tarde y la llave ya es otra: se
+                    // descarta. Sin esto, una consulta lenta aterrizaba sobre
+                    // el formulario siguiente.
+                    if (fm.brebKey.trim() !== key) return fm;
+                    const real = String(r.fullName ?? '').trim();
+                    // El directorio entrega el NIT sin dígito de verificación;
+                    // acá va completo, así que se le calcula y se le agrega.
+                    const docCrudo = String(r.idValue ?? '').trim();
+                    const doc = fm.docType === 'NIT' ? completarNit(docCrudo) : docCrudo;
+                    const escritoNombre = fm.name.trim();
+                    const escritoDoc = fm.docNumber.trim();
+                    const chocaN = !!real && !!escritoNombre && escritoNombre.toLowerCase() !== real.toLowerCase();
+                    const chocaD = !!doc && !!escritoDoc && nitSinDv(escritoDoc) !== nitSinDv(doc);
+                    if (chocaN || chocaD) return { ...fm, bank: fm.bank };   // no se toca nada: manda el aviso
+                    return {
+                        ...fm,
+                        name: real || fm.name,
+                        docNumber: doc || fm.docNumber,
+                        docType: doc ? (fm.docType || 'CC') : fm.docType,
+                        bank: r.bank ?? fm.bank,
+                    };
+                });
+                const realN = String(r.fullName ?? '').trim();
+                const realD = String(r.idValue ?? '').trim();
+                const chocaAviso =
+                    (!!realN && !!form.name.trim() && form.name.trim().toLowerCase() !== realN.toLowerCase())
+                    || (!!realD && !!form.docNumber.trim() && nitSinDv(form.docNumber.trim()) !== nitSinDv(realD));
+                setBrebLookup({
+                    loading: false, found: true, bank: r.bank ?? null,
+                    msg: chocaAviso
+                        ? `Esta llave es de ${realN || 'otra persona'}${realD ? ` (${realD})` : ''}, no de lo que escribiste. Borra el nombre y el documento para que se llenen solos, o revisa la llave.`
+                        : (realN ? `Titular: ${realN}` : 'Llave verificada'),
+                });
+                return;
+            }
+            if (r?.found === false) {
                 setBrebLookup({ loading: false, found: false, msg: 'La llave no existe o no está activa.' });
             } else {
                 setBrebLookup({ loading: false, msg: 'No se pudo consultar la llave ahora. Puedes escribir el nombre manualmente.' });
@@ -300,6 +732,49 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     };
     // Contacto abierto en el modal de detalle (clic sobre la fila)
     const [detail, setDetail] = useState<MouvContact | null>(null);
+    // Completar ciudad y dirección de un beneficiario ya inscrito (los de
+    // antes no las tienen, y sin ellas el documento soporte sale rechazado).
+    const [dirEdit, setDirEdit] = useState<{ cityCode: string; address: string; guardando: boolean; error: string | null } | null>(null);
+    const guardarDireccion = async (c: MouvContact) => {
+        if (!dirEdit) return;
+        const d = direccionDelForm(dirEdit);
+        if ('error' in d) { setDirEdit({ ...dirEdit, error: d.error }); return; }
+        setDirEdit({ ...dirEdit, guardando: true, error: null });
+        const actualizado: MouvContact = { ...c, ...d };
+        const ok = await persistBanks(bankContacts.map(x => x.id === c.id ? actualizado : x));
+        if (!ok) { setDirEdit({ ...dirEdit, guardando: false, error: 'No se pudo guardar (sesión vencida o permisos). Vuelve a entrar e inténtalo otra vez.' }); return; }
+        setDirEdit(null);
+        setDetail(actualizado);
+    };
+    useEffect(() => { setDirEdit(null); }, [detail?.id]);
+    // Los hallazgos van PLEGADOS. Treinta y cinco renglones empujan el resto
+    // de la ficha fuera de la pantalla y esconden lo que de verdad importa:
+    // el veredicto y los botones.
+    const [verHallazgos, setVerHallazgos] = useState(false);
+
+    // Al abrir la ficha, si la consulta ya terminó pero el detalle de los
+    // hallazgos no quedó guardado —consultas anteriores a que se empezara a
+    // guardar—, se trae del reporte. Leer un reporte que YA existe no gasta un
+    // crédito: el crédito se gastó al lanzar la consulta.
+    const detalleTraidoRef = useRef<Set<string>>(new Set());
+    useEffect(() => {
+        const uid = currentUser?.id;
+        if (!uid || !detail) return;
+        setVerHallazgos(false);
+        const doc = String(detail.docNumber ?? '').replace(/\D/g, '');
+        if (!doc || detalleTraidoRef.current.has(doc)) return;
+        const k = amlBenef[doc];
+        if (!k || k.estado !== 'finalizado' || !k.reportId) return;
+        if (Array.isArray(k.hallazgos) && k.hallazgos.length) return;
+        if (((k.altos ?? 0) + (k.medios ?? 0)) === 0) return;
+        detalleTraidoRef.current.add(doc);
+        (async () => {
+            const r = await callTusdatos({ action: 'hallazgos', userId: uid, documento: doc });
+            if (r?.ok) await leerTusdatos(uid);
+        })();
+        /* eslint-disable-next-line react-hooks/exhaustive-deps */
+    }, [detail?.id, currentUser?.id]);
+
 
     // Buscador + filtros de la lista
     const [search, setSearch] = useState('');
@@ -399,9 +874,16 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
         if (f.country === 'Colombia' && f.destKind === 'breb') {
             if (!f.name.trim()) { setNotice({ ok: false, text: 'Ponle un alias al destinatario.' }); return; }
             if (!f.brebKey.trim()) { setNotice({ ok: false, text: 'Escribe la llave Bre-B.' }); return; }
+            // En Bre-B el documento es opcional; si es un NIT, va completo.
+            if (f.docType === 'NIT' && f.docNumber.trim()) {
+                const v = validarNit(f.docNumber);
+                if (!v.ok) { setNotice({ ok: false, text: v.texto }); return; }
+            }
             const keyNorm = f.brebKey.trim().toLowerCase();
             const dupK = bankContacts.find(c => c.destKind === 'breb' && (c.brebKey ?? '').trim().toLowerCase() === keyNorm);
             if (dupK) { setNotice({ ok: false, text: `Ya tienes esta llave inscrita como “${dupK.name}”.` }); return; }
+            const dirK = direccionDelForm(f);
+            if ('error' in dirK) { setNotice({ ok: false, text: dirK.error }); return; }
             setSaving(true); setNotice(null);
             // Bre-B no exige inscripción previa vía API: Mouv resuelve la llave
             // (resolve-key, SARLAFT) al momento del envío. El destinatario
@@ -415,6 +897,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                 status: 'aprobada', createdAt: new Date().toISOString(), lastError: null,
                 destKind: 'breb', brebKeyType: f.brebKeyType, brebKey: f.brebKey.trim(),
                 notifyEmail: f.notifyEmail.trim() || undefined, notifyPhone: f.notifyPhone.trim() || undefined,
+                ...dirK,
             };
             const okK = await persistBanks([brebContact, ...bankContacts]);
             setSaving(false); setFormOpen(false); setForm({ ...emptyForm });
@@ -427,10 +910,17 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
             setNotice({ ok: false, text: 'Completa nombre, documento, banco y número de cuenta.' });
             return;
         }
+        // Un NIT va completo: 10 dígitos, con el de verificación, y que cuadre.
+        if (f.docType === 'NIT') {
+            const v = validarNit(f.docNumber);
+            if (!v.ok) { setNotice({ ok: false, text: v.texto }); return; }
+        }
         // Deduplicar: mismo banco + mismo número de cuenta ya inscrito → no repetir.
         const bAcc = normAccount(f.accountNumber, false);
         const dupB = bankContacts.find(c => normAccount(c.accountNumber, false) === bAcc && (c.bank || '').toLowerCase() === f.bank.toLowerCase() && (c.country || 'Colombia') === f.country);
         if (dupB) { setNotice({ ok: false, text: `Ya tienes esta cuenta de ${f.bank} inscrita como “${dupB.name}”. No es necesario inscribirla de nuevo.` }); return; }
+        const dirB = f.country === 'Colombia' ? direccionDelForm(f) : {};
+        if ('error' in dirB) { setNotice({ ok: false, text: dirB.error }); return; }
         setSaving(true);
         setNotice(null);
 
@@ -458,7 +948,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                     // tiempo y el envío rebotaba. La cuenta SIEMPRE arranca
                     // en validación; la aprobación real llega por la
                     // sincronización con la LISTA del proveedor.
-                    const st0 = normalizeStatus(dd.verification_status ?? dd.status ?? dd.estado ?? dd.state);
+                    const st0 = estadoDeFila(dd);
                     status = st0 === 'rechazada' ? 'rechazada' : 'en_proceso';
                 } else {
                     lastError = `[registro bancario] HTTP ${rr?.status ?? '—'}: ${JSON.stringify(rr?.data ?? rr).slice(0, 260)}`;
@@ -484,6 +974,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
             createdAt: new Date().toISOString(),
             lastError,
             destKind: 'ach',
+            ...dirB,
         };
         const okB = await persistBanks([contact, ...bankContacts]);
         setSaving(false);
@@ -523,7 +1014,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                     const fid = dd.id ?? dd.external_account_id ?? dd.account_id ?? dd?.account?.id ?? null;
                     if (rr?.ok && fid) {
                         retried = retried.map(x => x.id === c.id
-                            ? { ...x, mouvId: String(fid), finityId: String(fid), status: normalizeStatus(dd.verification_status ?? dd.status ?? dd.estado ?? dd.state) ?? 'en_proceso', lastError: null }
+                            ? { ...x, mouvId: String(fid), finityId: String(fid), status: estadoDeFila(dd) === 'rechazada' ? 'rechazada' : 'en_proceso', lastError: null }
                             : x);
                     } else {
                         // Guardar el rechazo de Finity — visible en el detalle del contacto
@@ -577,12 +1068,13 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                         return /[*·•]/.test(acc) && accDigits.length >= 4 && cDigits.endsWith(accDigits.slice(-4));
                     });
                     if (!row) return c;
-                    const st = normalizeStatus(row.verification_status ?? row.status ?? row.estado ?? row.state);
+                    const st = estadoDeFila(row);
+                    const crudo = estadoCrudo(row);
                     const fid = row.id ?? row.external_account_id ?? row.account_id ?? c.mouvId;
-                    if ((st && st !== contactStatus(c)) || (fid && fid !== c.mouvId)) {
+                    if ((st && st !== contactStatus(c)) || (fid && fid !== c.mouvId) || crudo !== (c as any).providerStatus) {
                         changed = true;
                         const wasApproved = contactStatus(c) === 'aprobada';
-                        const updated = { ...c, status: st ?? contactStatus(c), mouvId: fid ? String(fid) : c.mouvId, finityId: fid ? String(fid) : (c.finityId ?? c.mouvId) };
+                        const updated = { ...c, status: st ?? contactStatus(c), providerStatus: crudo, mouvId: fid ? String(fid) : c.mouvId, finityId: fid ? String(fid) : (c.finityId ?? c.mouvId) };
                         if (st === 'aprobada' && !wasApproved) newlyApproved.push(updated);
                         return updated;
                     }
@@ -617,9 +1109,102 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     // fallidas). Solo actualiza estados — NUNCA borra contactos.
     useEffect(() => { syncStatuses(true); }, [currentUser?.id]);
 
+    // ── El AML llega después ─────────────────────────────────────────────
+    // La consulta a Kumplo tarda: al entrar, un beneficiario recién inscrito
+    // todavía no tiene veredicto. Sin esto la columna se quedaba en
+    // "VERIFICANDO" hasta recargar la página a mano, y parecía que el
+    // resultado nunca llegaba. Se vuelve a preguntar cada 15 s mientras
+    // FALTE algún veredicto, y se para: ni deja la pantalla colgada ni
+    // consulta para siempre.
+    // OJO con las dependencias: 'amlBenef' es un objeto nuevo en cada render
+    // cuando todavía no hay datos, así que ponerlo acá reiniciaba el reloj en
+    // cada pintada y el tick de 15 s no llegaba a dispararse nunca. Se depende
+    // de la CANTIDAD, que es estable.
+    const amlHechos = Object.keys(amlBenef).length;
+    // Qué le falta trabajo al servidor: sin ficha, consulta a medias, o el
+    // nombre inscrito ya no es el de la ficha (se borró y se volvió a
+    // inscribir corregido; la ficha, que vive por documento, seguía con el
+    // nombre viejo y el bloqueo viejo). Es una clave estable: el efecto
+    // vuelve a correr cuando cambia y se detiene solo cuando queda vacía.
+    const amlPendientes = bankContacts.map(c => {
+        const doc = String(c.docNumber ?? '').replace(/\D/g, '');
+        if (!doc) return '';
+        const k = amlBenef[doc];
+        if (!k || String(k.estado ?? '') === 'procesando') return doc;
+        if (String(k.estado ?? '') === 'finalizado' && c.name && k.nombreInscrito
+            && claveNombre(k.nombreInscrito) !== claveNombre(c.name)) return `${doc}:nombre`;
+        return '';
+    }).filter(Boolean).join(',');
+    useEffect(() => {
+        const uid = currentUser?.id;
+        // Se dispara solo si la verificación CORRE para esta cuenta. Con
+        // resultados guardados pero la integración apagada, la columna se
+        // sigue viendo pero no hay nada que lanzar.
+        if (!uid || !amlCorre) return;
+        if (!amlPendientes) return;
+        let vueltas = 0;
+        let vivo = true;
+        // Cada vuelta le pide al SERVIDOR que procese un lote de los que
+        // faltan y después relee. El navegador no encadena una consulta por
+        // beneficiario: con sesenta contactos eso son minutos de llamadas que
+        // se cortan apenas la persona cambia de pantalla, y ningún veredicto
+        // alcanza a guardarse.
+        // Dos cosas por vuelta: LANZAR las consultas que faltan y RECOGER las
+        // que ya terminaron. El webhook de TusDatos es el camino principal
+        // para recoger; esto es el respaldo, porque un aviso perdido dejaría a
+        // alguien «consultando» para siempre.
+        const vuelta = async () => {
+            if (!vivo) return;
+            await callTusdatos({ action: 'verificar_pendientes', userId: uid, limite: 4 });
+            if (!vivo) return;
+            await callTusdatos({ action: 'recoger_pendientes', userId: uid });
+            if (!vivo) return;
+            await leerTusdatos(uid);
+        };
+        vuelta();
+        const t = setInterval(() => {
+            vueltas += 1;
+            if (vueltas > 25) { clearInterval(t); return; }
+            vuelta();
+        }, 15000);
+        return () => { vivo = false; clearInterval(t); };
+        /* eslint-disable-next-line react-hooks/exhaustive-deps */
+    }, [currentUser?.id, amlCorre, amlHechos, amlPendientes, bankContacts.length, leerTusdatos]);
+
+    // El registro con el banco se reintenta SOLO: la sincronización al entrar
+    // vuelve a inscribir las cuentas ACH que quedaron sin id. Eso es trabajo
+    // nuestro y no se le cuenta al cliente — para él la cuenta está EN
+    // VALIDACIÓN hasta que el banco la resuelva, que es lo que el banco mismo
+    // dice. Los reintentos y sus errores quedan en la Auditoría, que es donde
+    // sirven: quien los tiene que leer es quien puede hacer algo con ellos.
+
+    // ── Confirmación ─────────────────────────────────────────────────────
+    // El confirm del navegador es del sistema operativo, no de Lincoin: rompe
+    // la pantalla, no dice a QUIÉN se va a borrar y en iOS aparece pegado
+    // arriba, encima de otra fila. Para una acción que no se deshace, la
+    // ventana tiene que decir el nombre y verse como el resto del producto.
+    const [confirmar, setConfirmar] = useState<{ titulo: string; cuerpo: string; onOk: () => void } | null>(null);
+    useEffect(() => {
+        if (!confirmar) return;
+        const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setConfirmar(null); };
+        window.addEventListener('keydown', esc);
+        return () => window.removeEventListener('keydown', esc);
+    }, [confirmar]);
+    const pedirEliminar = (c: MouvContact) => setConfirmar({
+        titulo: `¿Eliminar a ${prettyName(c.name)}?`,
+        cuerpo: 'Se quita de tu lista y se des-inscribe la cuenta. Para volver a transferirle tendrás que inscribirla otra vez y esperar la validación del banco.',
+        onOk: () => { setDetail(null); removeContact(c.id); },
+    });
+
     const removeContact = async (id: string) => {
-        if (!window.confirm('¿Eliminar este contacto?')) return;
         const target = contacts.find(c => c.id === id);
+        // Cinturón: los botones ya no ofrecen borrar a quien es evidencia de
+        // cumplimiento, pero esta función también se llama desde otros lados.
+        // Un registro que motivó un bloqueo no se borra desde la interfaz.
+        if (target && amlEsEvidencia(target)) {
+            setNotice({ ok: false, text: 'Este beneficiario no se puede eliminar: el resultado de cumplimiento queda registrado.' });
+            return;
+        }
         const isWallet = walletContacts.some(c => c.id === id);
         // 1) Quitar de la lista local del usuario (cada tipo de SU lista).
         const removedOk = isWallet
@@ -645,6 +1230,155 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
     };
 
     const mask = (acc: string) => acc.length > 4 ? `···${acc.slice(-4)}` : acc;
+
+    // ── Cuánto se le ha movido a cada beneficiario ───────────
+    // Mes calendario en curso y año calendario en curso. Es la misma pregunta
+    // que responde el detalle del beneficiario ("Total enviado"), calculada
+    // con el mismo criterio para que las dos pantallas no discrepen: envíos y
+    // dispersiones de esta cuenta hacia esa cuenta destino o ese nombre, en
+    // estado Completado o Procesando. Procesando cuenta porque la plata ya
+    // salió — que el riel tarde en confirmar no la devuelve a la cuenta.
+    //
+    // Se suma POR MONEDA y se muestra la dominante. Sumar COP con USDT en una
+    // sola cifra sería inventar un número, y a un beneficiario de Colombia se
+    // le manda COP; a una wallet, USDT. Casi nunca las dos.
+    const movidoPor = useMemo(() => {
+        const ahora = new Date();
+        const inicioMes = new Date(ahora.getFullYear(), ahora.getMonth(), 1).getTime();
+        const inicioAnio = new Date(ahora.getFullYear(), 0, 1).getTime();
+        const cuando = (t: any) => new Date(t.createdAt ?? t.created_at ?? t.date ?? 0).getTime() || 0;
+        const mios = (transactions as any[]).filter(t =>
+            t.userId === currentUser?.id &&
+            (t.type === 'dispersion' || t.type === 'send') &&
+            (t.status === 'Completado' || t.status === 'Procesando'));
+        const out: Record<string, { mes: number; anio: number; moneda: string; envios: number }> = {};
+        for (const c of contacts) {
+            const isWallet = c.accountKind === 'wallet';
+            const isBreb = c.destKind === 'breb';
+            const llave = String((isWallet ? c.accountNumber : (isBreb ? (c.brebKey ?? c.accountNumber) : c.accountNumber)) ?? '');
+            const nombre = String(c.name ?? '');
+            const porMoneda: Record<string, { mes: number; anio: number; envios: number }> = {};
+            for (const t of mios) {
+                if (String(t.account ?? '') !== llave && String(t.beneficiary ?? '') !== nombre) continue;
+                const ts = cuando(t);
+                if (ts < inicioAnio) continue;
+                const m = String(t.currency ?? 'COP');
+                const acc = porMoneda[m] ?? (porMoneda[m] = { mes: 0, anio: 0, envios: 0 });
+                const monto = Number(t.amount) || 0;
+                acc.anio += monto; acc.envios += 1;
+                if (ts >= inicioMes) acc.mes += monto;
+            }
+            const dominante = Object.entries(porMoneda).sort((a, b) => b[1].anio - a[1].anio)[0];
+            out[c.id] = dominante
+                ? { ...dominante[1], moneda: dominante[0] }
+                : { mes: 0, anio: 0, envios: 0, moneda: isWallet ? (c.walletCoin ?? 'USDT') : 'COP' };
+        }
+        return out;
+    }, [contacts, transactions, currentUser?.id]);
+    const fmtMovido = (v: number, moneda: string) =>
+        `${(moneda === 'COP' ? Math.round(v) : v).toLocaleString('es-CO', { maximumFractionDigits: moneda === 'COP' ? 0 : 2 })} ${moneda}`;
+    // La referencia de las barras: el año más grande entre los beneficiarios
+    // de la MISMA moneda. Así el largo de la barra compara personas entre sí
+    // — quien más recibe tiene la barra más larga — y el mes nunca supera al
+    // año. Una barra sin referencia es decoración.
+    const topAnioPorMoneda = useMemo(() => {
+        const top: Record<string, number> = {};
+        for (const mv of Object.values(movidoPor) as { moneda: string; anio: number }[]) top[mv.moneda] = Math.max(top[mv.moneda] ?? 0, mv.anio);
+        return top;
+    }, [movidoPor]);
+    // Los movimientos hacia UN beneficiario, con el mismo criterio que las
+    // barras y que el detalle. Una sola función para que las tres pantallas no
+    // cuenten distinto la misma plata.
+    const movimientosDe = (c: MouvContact) => {
+        const isWallet = c.accountKind === 'wallet';
+        const isBreb = c.destKind === 'breb';
+        const llave = String((isWallet ? c.accountNumber : (isBreb ? (c.brebKey ?? c.accountNumber) : c.accountNumber)) ?? '');
+        const nombre = String(c.name ?? '');
+        const cuando = (t: any) => new Date(t.createdAt ?? t.created_at ?? t.date ?? 0).getTime() || 0;
+        return (transactions as any[])
+            .filter(t =>
+                t.userId === currentUser?.id &&
+                (t.type === 'dispersion' || t.type === 'send') &&
+                (String(t.account ?? '') === llave || String(t.beneficiary ?? '') === nombre))
+            .sort((a, b) => cuando(b) - cuando(a));
+    };
+
+    // Panel abierto desde los botones bajo las barras: el extracto contable o
+    // el expediente de cumplimiento de ESE beneficiario.
+    const [panel, setPanel] = useState<{ c: MouvContact; tipo: 'contabilidad' | 'compliance' } | null>(null);
+    // La situación de cumplimiento de un beneficiario, en UNA palabra, para
+    // contar y filtrar. Sale de los mismos criterios que la insignia y que el
+    // freno de envío.
+    const situacionAml = (c: MouvContact): 'bloqueado' | 'esperando' | 'revision' | 'limpio' | 'sin_consulta' => {
+        const k = amlDe(c);
+        if (!k) return 'sin_consulta';
+        if (amlEsperando(c)) return 'esperando';
+        if (amlFrena(c)) return 'bloqueado';
+        if (String(k.categoria ?? '') === 'medio' || k.operable === false) return 'revision';
+        return 'limpio';
+    };
+    useEffect(() => {
+        if (!panel) return;
+        const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setPanel(null); };
+        window.addEventListener('keydown', esc);
+        return () => window.removeEventListener('keydown', esc);
+    }, [panel]);
+
+    // Descarga del extracto como CSV. Se arma en el navegador: son los mismos
+    // movimientos que ya están en pantalla, no hace falta pedirle nada al
+    // servidor. El BOM del principio es para que Excel abra las tildes bien.
+    const descargarCsv = (c: MouvContact) => {
+        const filas = movimientosDe(c);
+        const esc = (v: any) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+        const lineas = [
+            ['Fecha', 'Beneficiario', 'Cuenta o llave', 'Tipo', 'Monto', 'Moneda', 'Estado', 'Referencia'].map(esc).join(','),
+            ...filas.map(t => [
+                new Date(t.createdAt ?? t.created_at ?? t.date ?? 0).toISOString(),
+                c.name, c.accountKind === 'wallet' ? c.accountNumber : (c.brebKey ?? c.accountNumber),
+                t.type === 'dispersion' ? 'Dispersión' : 'Envío',
+                Number(t.amount) || 0, t.currency ?? 'COP', t.status ?? '',
+                t.providerRef ?? t.reference ?? t.txHash ?? t.id ?? '',
+            ].map(esc).join(',')),
+        ];
+        const blob = new Blob(['﻿' + lineas.join('\n')], { type: 'text/csv;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `lincoin-extracto-${String(c.name).replace(/[^\w]+/g, '-').toLowerCase()}-${new Date().toISOString().slice(0, 10)}.csv`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 30000);
+    };
+
+    // Las dos barras, debajo del nombre. Es lo primero que se lee después de
+    // quién es: cuánto se le movió este mes y cuánto en el año. El extracto y
+    // el expediente se abren desde Contabilidad y Compliance, en el menú.
+    const barrasMovido = (c: MouvContact, compacto = false) => {
+        const id = c.id;
+        const mv = movidoPor[id];
+        if (!mv) return null;
+        const top = topAnioPorMoneda[mv.moneda] || 0;
+        const hay = mv.anio > 0 && top > 0;
+        const pct = (v: number) => (hay ? Math.max(v > 0 ? 3 : 0, Math.min(100, (v / top) * 100)) : 0);
+        const fila = (rot: string, v: number, fuerte: boolean) => (
+            <div className="flex items-center" style={{ gap: 7, marginTop: 3 }}>
+                <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '0.7px', color: '#878E88', width: 26, flexShrink: 0 }}>{rot}</span>
+                <div style={{ flex: 1, height: 4, borderRadius: 999, background: 'rgba(255,255,255,0.08)', overflow: 'hidden', minWidth: 40, maxWidth: compacto ? 90 : 120 }}>
+                    <div style={{ width: `${pct(v)}%`, height: '100%', borderRadius: 999, background: fuerte ? '#4ADE80' : 'rgba(74,222,128,0.55)' }} />
+                </div>
+                <span style={{ fontSize: 11, fontWeight: fuerte ? 700 : 500, color: hay ? (fuerte ? '#F4F4F2' : '#878E88') : 'rgba(244,244,242,0.35)', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+                    {fmtMovido(v, mv.moneda)}
+                </span>
+            </div>
+        );
+        // Sin botones debajo: Contabilidad y Compliance viven en el menú. Acá
+        // solo van las barras.
+        return (
+            <div style={{ marginTop: 4 }} title={hay ? `${mv.envios} envío${mv.envios === 1 ? '' : 's'} este año` : 'Sin envíos este año'}>
+                {fila('MES', mv.mes, true)}
+                {fila('AÑO', mv.anio, false)}
+            </div>
+        );
+    };
 
     // ── Buscador + filtros ───────────────────────────────────
     // Países: los que el usuario ya tiene inscritos, primero; luego el resto
@@ -680,6 +1414,9 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
         'Venezuela':'linear-gradient(180deg,#FFCC00 0 33%,#00247D 33% 66%,#CF142B 66%)',
         'Ecuador': 'linear-gradient(180deg,#FFD100 0 50%,#0072CE 50% 75%,#EF3340 75%)',
         'Argentina':'linear-gradient(180deg,#74ACDF 0 33%,#FFFFFF 33% 66%,#74ACDF 66%)',
+        // Trece franjas y el cantón azul arriba a la izquierda. Sin estrellas:
+        // a 15 px no se distinguen y solo ensucian el círculo.
+        'Estados Unidos': 'linear-gradient(#3C3B6E 0 0) 0 0/50% 54% no-repeat, repeating-linear-gradient(180deg,#B22234 0 15.38%,#FFFFFF 15.38% 30.76%)',
     };
     // Riel y moneda por país (paso 1 del modal) — config, no hardcode en UI.
     const COUNTRY_RAILS: Record<string, string> = {
@@ -745,21 +1482,48 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
             )}
             <div className="flex items-start justify-between flex-wrap gap-3">
                 <div>
-                    <h1 style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-0.8px', color: '#F4F4F2' }}>Beneficiarios</h1>
+                    <h1 style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-0.8px', color: '#F4F4F2' }}>
+                        {vista === 'contabilidad' ? 'Contabilidad' : vista === 'compliance' ? 'Compliance' : 'Beneficiarios'}
+                    </h1>
                     <p style={{ fontSize: 14, color: '#878E88', maxWidth: 560, marginTop: 4, lineHeight: 1.5 }}>
-                        Cuentas inscritas y validadas. Las transferencias locales solo salen hacia beneficiarios aprobados.
+                        {vista === 'contabilidad'
+                            ? 'Cuánto entró, cuánto salió y cada movimiento con su comprobante. Por moneda y por periodo. Se descarga en CSV.'
+                            : vista === 'compliance'
+                                ? 'Quién puede recibir plata y quién no, y por qué. El mismo criterio que frena los envíos.'
+                                : 'Cuentas inscritas y validadas. Las transferencias locales solo salen hacia beneficiarios aprobados.'}
                     </p>
                 </div>
-                <button
-                    onClick={() => { setFormOpen(true); setFormStep('country'); setForm({ ...emptyForm }); setNotice(null); }}
-                    className="lincoin-btn-white flex items-center gap-2 transition-colors"
-                    style={{ fontWeight: 700, fontSize: 13.5, padding: '11px 20px', borderRadius: 9, border: 'none' }}
-                >
-                    <Plus size={15} strokeWidth={2.5} /> Inscribir beneficiario
-                </button>
+                {vista === 'beneficiarios' && (
+                    <button
+                        onClick={() => { setFormOpen(true); setFormStep('country'); setForm({ ...emptyForm }); setNotice(null); }}
+                        className="lincoin-btn-white flex items-center gap-2 transition-colors"
+                        style={{ fontWeight: 700, fontSize: 13.5, padding: '11px 20px', borderRadius: 9, border: 'none' }}
+                    >
+                        <Plus size={15} strokeWidth={2.5} /> Inscribir beneficiario
+                    </button>
+                )}
             </div>
 
-            {notice && (
+            {/* Por qué no se ve la columna AML. SOLO para el administrador: al
+                cliente no le sirve saberlo, pero sin esto la columna
+                simplemente no aparecía y no había manera de distinguir
+                «apagada» de «rota». */}
+            {(currentUser as any)?.role === 'admin' && amlMotivo && (
+                <div style={{
+                    display: 'flex', alignItems: 'flex-start', gap: 9, marginTop: 14,
+                    background: '#0C0E0D', border: '1px solid rgba(251,191,36,0.26)', borderRadius: 12, padding: '12px 15px',
+                }}>
+                    <AlertTriangle size={15} color="#FBBF24" style={{ flexShrink: 0, marginTop: 1 }} />
+                    <p style={{ fontSize: 12.5, color: '#878E88', margin: 0, lineHeight: 1.55 }}>
+                        <b style={{ color: '#FBBF24' }}>No se está consultando el AML.</b> {amlMotivo}
+                    </p>
+                </div>
+            )}
+
+            {/* Un error del formulario se muestra DENTRO del formulario. Acá,
+                en la página, quedaba tapado por la ventana y parecía que no
+                pasaba nada al guardar. */}
+            {notice && !(formOpen && !notice.ok) && (
                 <div className={`rounded-xl border p-3 text-sm font-medium ${notice.ok ? 'bg-green-50 border-green-200 text-green-800' : 'bg-amber-50 border-amber-200 text-amber-800'}`}>
                     {notice.text}
                 </div>
@@ -803,6 +1567,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
 
                     {/* Cuerpo scrolleable */}
                     <div style={{ padding: '6px 22px 20px', overflowY: 'auto' }} className="space-y-4">
+                    {formStep !== 'data' && avisoModal}
 
                     {/* PASO WALLET — datos de la wallet USDT (Estados Unidos) */}
                     {formStep === 'wallet' && (<>
@@ -890,6 +1655,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                             </button>
                         ))}
                     </div>
+                    {avisoModal}
                     {/* Riel de envío (solo Colombia): Bre-B o ACH */}
                     {form.country === 'Colombia' && (<div>
                         <label style={LBL}>Riel de envío</label>
@@ -970,7 +1736,18 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                 </div>
                                 <div>
                                     <label style={LBL}>Número de documento</label>
-                                    <input value={form.docNumber} onChange={e => setForm(fm => ({ ...fm, docNumber: e.target.value }))} inputMode="numeric" style={INP} />
+                                    <input value={form.docNumber} onChange={e => setForm(fm => ({ ...fm, docNumber: e.target.value }))} inputMode="numeric" style={INP}
+                                        placeholder={form.docType === 'NIT' ? '10 dígitos, con el de verificación' : undefined} />
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label style={LBL}>Ciudad</label>
+                                    <CiudadSelect value={form.cityCode} onChange={c => setForm(fm => ({ ...fm, cityCode: c }))} style={INP} />
+                                </div>
+                                <div>
+                                    <label style={LBL}>Dirección</label>
+                                    <input value={form.address} onChange={e => setForm(fm => ({ ...fm, address: e.target.value }))} placeholder="Calle 10 # 20-30" style={INP} />
                                 </div>
                             </div>
                         </>
@@ -990,7 +1767,8 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                             </div>
                             <div>
                                 <label style={LBL}>Número de documento</label>
-                                <input value={form.docNumber} onChange={e => setForm(fm => ({ ...fm, docNumber: e.target.value }))} inputMode="numeric" style={INP} />
+                                <input value={form.docNumber} onChange={e => setForm(fm => ({ ...fm, docNumber: e.target.value }))} inputMode="numeric" style={INP}
+                                    placeholder={form.docType === 'NIT' ? '10 dígitos, con el de verificación' : undefined} />
                             </div>
                         </div>
                         <div className="grid grid-cols-2 gap-3">
@@ -1017,6 +1795,18 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                             <label style={LBL}>Número de cuenta</label>
                             <input value={form.accountNumber} onChange={e => setForm(fm => ({ ...fm, accountNumber: e.target.value.replace(/[^\d-]/g, '') }))} inputMode="numeric" style={INP} />
                         </div>
+                        {form.country === 'Colombia' && (
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label style={LBL}>Ciudad</label>
+                                    <CiudadSelect value={form.cityCode} onChange={c => setForm(fm => ({ ...fm, cityCode: c }))} style={INP} />
+                                </div>
+                                <div>
+                                    <label style={LBL}>Dirección</label>
+                                    <input value={form.address} onChange={e => setForm(fm => ({ ...fm, address: e.target.value }))} placeholder="Calle 10 # 20-30" style={INP} />
+                                </div>
+                            </div>
+                        )}
                     </>
                     )}
 
@@ -1066,6 +1856,7 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                 </div>
             )}
 
+            {vista === 'beneficiarios' && (<>
             {/* Buscador + chips de filtro por país (diseño Beneficiarios) */}
             <div className="space-y-3">
                 <div className="relative" style={{ maxWidth: 440 }}>
@@ -1106,9 +1897,9 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
             {/* Tabla de beneficiarios (diseño Beneficiarios) */}
             <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, overflow: 'hidden' }}>
                 {/* Encabezados — solo desktop */}
-                <div className="hidden lg:grid" style={{ gridTemplateColumns: '1fr 180px 190px 120px 90px', padding: '9px 22px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-                    {['BENEFICIARIO', 'PAÍS Y RIEL', 'BANCO Y CUENTA', 'ESTADO', 'ACCIONES'].map((h, i) => (
-                        <span key={h} style={{ color: '#878E88', fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', textAlign: i === 4 ? 'right' : 'left' }}>{h}</span>
+                <div className="hidden lg:grid" style={{ gridTemplateColumns: COLS, padding: '9px 22px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                    {CABECERAS.map((h, i) => (
+                        <span key={h} style={{ color: '#878E88', fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', textAlign: i === CABECERAS.length - 1 ? 'right' : 'left' }}>{h}</span>
                     ))}
                 </div>
                 {contacts.length === 0 && (
@@ -1142,31 +1933,46 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                     const flagEl = m.isWallet
                         ? <span style={{ width: 22, height: 22, borderRadius: '50%', background: '#26A17B', color: '#fff', fontWeight: 800, fontSize: 10, display: 'grid', placeItems: 'center', flexShrink: 0 }}>₮</span>
                         : <span style={{ width: 22, height: 22, borderRadius: '50%', flexShrink: 0, display: 'block', background: FLAG_BG[m.country ?? ''] ?? '#2E3330' }} />;
+                    // "Enviar" no puede estar disponible para alguien a quien el
+                    // cumplimiento ya bloqueó: el servidor rechaza el envío de
+                    // todos modos, y ofrecerlo solo lleva a un error al final.
+                    const frenado = amlFrena(c);
+                    const puedeEnviar = !!onSendTo && st === 'aprobada' && !frenado;
                     const actions = (
                         <div className="flex items-center justify-end gap-2" style={{ position: 'relative' }}>
-                            <button onClick={() => onSendTo?.(c)} disabled={!onSendTo || st !== 'aprobada'}
-                                style={{ fontSize: 12.5, fontWeight: 600, color: (!onSendTo || st !== 'aprobada') ? '#878E88' : '#F4F4F2', cursor: (!onSendTo || st !== 'aprobada') ? 'not-allowed' : 'pointer' }}
+                            <button onClick={() => onSendTo?.(c)} disabled={!puedeEnviar}
+                                title={frenado ? (amlEsperando(c) ? 'Esperando el resultado de antecedentes. Suele tardar cerca de un minuto.' : 'Bloqueado por cumplimiento. No se puede transferir a esta persona.') : undefined}
+                                style={{ fontSize: 12.5, fontWeight: 600, color: puedeEnviar ? '#F4F4F2' : '#878E88', cursor: puedeEnviar ? 'pointer' : 'not-allowed' }}
                                 className="hover:text-[#4ADE80] transition-colors">Enviar</button>
-                            <button onClick={() => setMenuFor(menuFor === c.id ? null : c.id)} style={{ color: '#878E88', fontWeight: 700, fontSize: 14, padding: '2px 6px', borderRadius: 6 }} className="hover:bg-white/[0.06] transition-colors">···</button>
-                            {menuFor === c.id && (
-                                <div style={{ position: 'absolute', right: 0, top: '110%', zIndex: 20, background: '#121413', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10, overflow: 'hidden', minWidth: 150, boxShadow: '0 12px 30px rgba(0,0,0,0.5)' }}>
-                                    <button onClick={() => { setMenuFor(null); setDetail(c); }} className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '10px 14px', fontSize: 12.5, color: '#F4F4F2' }}>Ver detalle</button>
-                                    <button onClick={() => { setMenuFor(null); removeContact(c.id); }} className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '10px 14px', fontSize: 12.5, color: '#F87171', borderTop: '1px solid rgba(255,255,255,0.07)' }}>Eliminar</button>
-                                </div>
-                            )}
+                            <button onClick={e => abrirMenu(c.id, e)} style={{ color: '#878E88', fontWeight: 700, fontSize: 14, padding: '2px 6px', borderRadius: 6 }} className="hover:bg-white/[0.06] transition-colors">···</button>
                         </div>
                     );
                     return (
                     <div key={c.id}>
                         {/* Fila desktop */}
-                        <div className="hidden lg:grid items-center hover:bg-white/[0.02] transition-colors" style={{ gridTemplateColumns: '1fr 180px 190px 120px 90px', padding: '14px 22px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-                            <button onClick={() => setDetail(c)} className="flex items-center gap-3 min-w-0 text-left cursor-pointer">
+                        <div className="hidden lg:grid items-center hover:bg-white/[0.02] transition-colors" style={{ gridTemplateColumns: COLS, padding: '14px 22px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                            {/* El nombre es un botón (abre el detalle) y las barras
+                                llevan botones propios. Un botón dentro de otro no
+                                es HTML válido y los clics se pisan, así que van
+                                como hermanos dentro de la celda. */}
+                            <div className="flex items-start gap-3 min-w-0" style={{ paddingRight: 12 }}>
                                 {avatar}
-                                <div className="min-w-0">
-                                    <p style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{prettyName(c.name)}</p>
-                                    <p style={{ fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.meta}</p>
+                                <div className="min-w-0" style={{ flex: 1 }}>
+                                    <button onClick={() => setDetail(c)} className="block min-w-0 text-left cursor-pointer" style={{ maxWidth: '100%' }}>
+                                        <p style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{prettyName(c.name)}</p>
+                                        <p style={{ fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.meta}</p>
+                                    </button>
+                                    {barrasMovido(c)}
                                 </div>
-                            </button>
+                            </div>
+                            {/* AML — el veredicto de cumplimiento, pegado al
+                                nombre: se lee junto con QUIÉN es la persona,
+                                no con su banco. */}
+                            {amlActivo && (
+                                <div className="min-w-0">
+                                    {kumploPill(c, true) ?? <span style={{ fontSize: 12, color: 'rgba(244,244,242,0.45)' }}>—</span>}
+                                </div>
+                            )}
                             <div className="flex items-center gap-2 min-w-0">
                                 {flagEl}
                                 <div className="min-w-0">
@@ -1184,18 +1990,22 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                         {/* Tarjeta móvil */}
                         <div className="lg:hidden" style={{ padding: '14px 18px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
                             <div className="flex items-center justify-between gap-3">
-                                <button onClick={() => setDetail(c)} className="flex items-center gap-3 min-w-0 text-left flex-1">
+                                <div className="flex items-start gap-3 min-w-0 flex-1">
                                     {avatar}
-                                    <div className="min-w-0">
-                                        <p style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{prettyName(c.name)}</p>
-                                        <div className="flex items-center gap-1.5" style={{ marginTop: 2 }}>
-                                            {flagEl}
-                                            <span style={{ fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.railLine} · {m.maskLine}</span>
-                                        </div>
+                                    <div className="min-w-0" style={{ flex: 1 }}>
+                                        <button onClick={() => setDetail(c)} className="block min-w-0 text-left" style={{ maxWidth: '100%' }}>
+                                            <p style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{prettyName(c.name)}</p>
+                                            <div className="flex items-center gap-1.5" style={{ marginTop: 2 }}>
+                                                {flagEl}
+                                                <span style={{ fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.railLine} · {m.maskLine}</span>
+                                            </div>
+                                        </button>
+                                        {barrasMovido(c, true)}
                                     </div>
-                                </button>
+                                </div>
                                 <div className="flex flex-col items-end gap-1.5 shrink-0">
                                     {statusPill}
+                                    {kumploPill(c)}
                                     {actions}
                                 </div>
                             </div>
@@ -1219,6 +2029,233 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                     </div>
                 ))}
             </div>
+            </>)}
+
+            {/* ── VISTA CONTABILIDAD ──
+                Un dashboard, no doce tarjetas. Vive en su propio archivo; acá
+                solo se le pasan los datos y las funciones que ya existen —la
+                MISMA movimientosDe que alimenta las barras y el extracto— para
+                que tres pantallas no puedan contar distinto la misma plata. */}
+            {vista === 'contabilidad' && (
+                <ContabilidadDashboard
+                    transactions={transactions as any[]}
+                    userId={currentUser?.id}
+                    onVerMovimiento={onVerMovimiento}
+                />
+            )}
+
+            {/* ── VISTA COMPLIANCE ──
+                Un dashboard, mismo sistema visual que Contabilidad. Vive en su
+                propio archivo; acá se le pasan los datos y —esto es lo que
+                importa— la MISMA situacionAml que frena el botón Enviar. Esta
+                pantalla no puede decir "puede recibir" y el envío rechazarse. */}
+            {vista === 'compliance' && (
+                <ComplianceDashboard
+                    contacts={contacts}
+                    amlDe={amlDe}
+                    situacionAml={situacionAml}
+                    contactStatus={contactStatus}
+                    rowMeta={rowMeta}
+                    initialsOf={initialsOf}
+                    prettyName={prettyName}
+                    amlActivo={amlActivo}
+                    amlMotivo={amlMotivo}
+                    esAdmin={(currentUser as any)?.role === 'admin'}
+                    onDetalle={(c) => setPanel({ c, tipo: 'compliance' })}
+                    movimientosDe={movimientosDe}
+                    onExtracto={(c) => setPanel({ c, tipo: 'contabilidad' })}
+                />
+            )}
+
+            {/* ── Panel: Contabilidad / Compliance de UN beneficiario ──
+                Se abren desde los botones bajo las barras. El de contabilidad es
+                el extracto de lo movido a esa persona, con descarga en CSV; el
+                de compliance es su expediente: quién es según el documento, qué
+                dijo la verificación, cuándo, y qué hacer con eso. */}
+            {panel && (() => {
+                const c = panel.c;
+                const movs = movimientosDe(c);
+                const mv = movidoPor[c.id];
+                const k = amlDe(c);
+                const st = contactStatus(c);
+                const m = rowMeta(c);
+                const fecha = (t: any) => {
+                    const d = new Date(t.createdAt ?? t.created_at ?? t.date ?? 0);
+                    return isNaN(d.getTime()) ? '—' : d.toLocaleString('es-CO', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+                };
+                const monto = (t: any) => fmtMovido(Number(t.amount) || 0, String(t.currency ?? 'COP'));
+                const historico = movs.filter(t => t.status === 'Completado' || t.status === 'Procesando')
+                    .reduce((s, t) => s + (Number(t.amount) || 0), 0);
+                const estadoColor = (s: string) => s === 'Completado' ? '#4ADE80' : s === 'Rechazado' ? '#F87171' : '#FBBF24';
+                const Fila: React.FC<{ l: string; v: React.ReactNode }> = ({ l, v }) => (
+                    <div className="flex items-start justify-between gap-4" style={{ padding: '10px 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                        <span style={{ fontSize: 12.5, color: '#878E88', flexShrink: 0 }}>{l}</span>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: '#F4F4F2', textAlign: 'right', wordBreak: 'break-word' }}>{v}</span>
+                    </div>
+                );
+                const Rotulo: React.FC<{ t: string }> = ({ t }) => (
+                    <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88', marginTop: 18, marginBottom: 4 }}>{t}</p>
+                );
+                return (
+                    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" style={{ background: 'rgba(4,5,5,0.78)' }} onClick={() => setPanel(null)}>
+                        <div onClick={e => e.stopPropagation()}
+                            style={{ width: '100%', maxWidth: 620, maxHeight: '92vh', display: 'flex', flexDirection: 'column', background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 16, overflow: 'hidden' }}>
+                            {/* Cabecera */}
+                            <div className="flex items-start justify-between gap-3" style={{ padding: '18px 24px 14px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                                <div className="min-w-0">
+                                    <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88' }}>
+                                        {panel.tipo === 'contabilidad' ? 'CONTABILIDAD' : 'COMPLIANCE'}
+                                    </p>
+                                    <h3 style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.3px', color: '#F4F4F2', marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{prettyName(c.name)}</h3>
+                                    <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 2 }}>{m.bankName} · {m.maskLine}</p>
+                                </div>
+                                <button onClick={() => setPanel(null)} style={{ color: '#878E88', flexShrink: 0 }} className="hover:text-[#F4F4F2] transition-colors"><X size={18} /></button>
+                            </div>
+
+                            <div style={{ overflowY: 'auto', padding: '4px 24px 22px' }}>
+                                {panel.tipo === 'contabilidad' ? (
+                                    <>
+                                        {/* Totales: los mismos de las barras, más el histórico. */}
+                                        <div className="grid grid-cols-3" style={{ gap: 8, marginTop: 14 }}>
+                                            {[
+                                                ['ESTE MES', mv ? fmtMovido(mv.mes, mv.moneda) : '—'],
+                                                ['ESTE AÑO', mv ? fmtMovido(mv.anio, mv.moneda) : '—'],
+                                                ['HISTÓRICO', fmtMovido(historico, mv?.moneda ?? 'COP')],
+                                            ].map(([r, v]) => (
+                                                <div key={r} style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 10, padding: '10px 12px', minWidth: 0 }}>
+                                                    <p style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '1px', color: '#878E88' }}>{r}</p>
+                                                    <p style={{ fontSize: 13.5, fontWeight: 800, color: '#F4F4F2', marginTop: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontVariantNumeric: 'tabular-nums' }}>{v}</p>
+                                                </div>
+                                            ))}
+                                        </div>
+                                        <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', marginTop: 8, lineHeight: 1.5 }}>
+                                            Cuenta lo Completado y lo Procesando: la plata ya salió. Lo Rechazado se lista abajo pero no suma.
+                                        </p>
+
+                                        <div className="flex items-center justify-between" style={{ marginTop: 16 }}>
+                                            <Rotulo t={`MOVIMIENTOS · ${movs.length}`} />
+                                            {movs.length > 0 && (
+                                                <button onClick={() => descargarCsv(c)}
+                                                    style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 8, padding: '7px 12px', marginTop: 12 }}
+                                                    className="hover:border-[rgba(74,222,128,0.5)] transition-colors">
+                                                    Descargar CSV
+                                                </button>
+                                            )}
+                                        </div>
+                                        {movs.length === 0 ? (
+                                            <p style={{ fontSize: 12.5, color: '#878E88', padding: '14px 0' }}>Todavía no se le ha enviado nada a este beneficiario.</p>
+                                        ) : movs.slice(0, 200).map((t: any, i: number) => (
+                                            <div key={t.id ?? i} className="flex items-center justify-between gap-3" style={{ padding: '10px 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                                                <div className="min-w-0">
+                                                    <p style={{ fontSize: 13, fontWeight: 600, color: '#F4F4F2' }}>{fecha(t)}</p>
+                                                    <p style={{ fontSize: 11, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontFamily: 'ui-monospace, monospace' }}>
+                                                        {t.type === 'dispersion' ? 'Dispersión' : 'Envío'}
+                                                        {(t.providerRef ?? t.reference ?? t.txHash) ? ` · ${String(t.providerRef ?? t.reference ?? t.txHash).slice(0, 18)}` : ''}
+                                                    </p>
+                                                </div>
+                                                <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                                                    <p style={{ fontSize: 13.5, fontWeight: 700, color: t.status === 'Rechazado' ? '#878E88' : '#F4F4F2', textDecoration: t.status === 'Rechazado' ? 'line-through' : 'none', fontVariantNumeric: 'tabular-nums' }}>{monto(t)}</p>
+                                                    <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.5px', color: estadoColor(String(t.status)) }}>{String(t.status ?? '').toUpperCase()}</p>
+                                                </div>
+                                            </div>
+                                        ))}
+                                        {movs.length > 200 && (
+                                            <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', marginTop: 8 }}>Se muestran los 200 más recientes. El CSV trae todos.</p>
+                                        )}
+                                    </>
+                                ) : (
+                                    <>
+                                        {/* Quién es, según el documento. */}
+                                        <Rotulo t="IDENTIDAD" />
+                                        <Fila l="Nombre inscrito" v={prettyName(c.name)} />
+                                        {c.docNumber && c.docNumber !== '—' && <Fila l="Documento" v={`${String(c.docType ?? '').toUpperCase()} ${c.docNumber}`.trim()} />}
+                                        {k?.nombreReal && k.nombreCoincide === false && (
+                                            <Fila l="Según la Registraduría" v={<span style={{ color: '#F87171' }}>{k.nombreReal}</span>} />
+                                        )}
+                                        {k?.nombreReal && k.nombreCoincide !== false && k.nombreIncompleto && (
+                                            <Fila l="Nombre completo" v={k.nombreReal} />
+                                        )}
+                                        {k?.estadoDocumento && <Fila l="Estado del documento" v={k.documentoVigente === false ? <span style={{ color: '#F87171' }}>{k.estadoDocumento}</span> : k.estadoDocumento} />}
+                                        <Fila l="Tipo" v={c.kind === 'empresa' ? 'Empresa' : 'Persona'} />
+
+                                        {/* La verificación de antecedentes. */}
+                                        <Rotulo t="VERIFICACIÓN DE ANTECEDENTES" />
+                                        {!amlActivo ? (
+                                            <p style={{ fontSize: 12.5, color: '#878E88', padding: '10px 0', lineHeight: 1.55 }}>
+                                                La verificación de antecedentes no está activa para esta cuenta.
+                                                {amlMotivo && (currentUser as any)?.role === 'admin' ? ` ${amlMotivo}` : ''}
+                                            </p>
+                                        ) : !k ? (
+                                            <p style={{ fontSize: 12.5, color: '#878E88', padding: '10px 0', lineHeight: 1.55 }}>
+                                                Sin documento inscrito no hay a quién consultar.
+                                            </p>
+                                        ) : (
+                                            <>
+                                                <div style={{ padding: '10px 0' }}>{kumploPill(c)}</div>
+                                                <Fila l="Estado de la consulta" v={String(k.estado ?? '—')} />
+                                                {k.categoria && <Fila l="Categoría" v={String(k.categoria)} />}
+                                                {((k.altos ?? 0) + (k.medios ?? 0)) > 0 && (
+                                                    <Fila l="Hallazgos" v={`${k.altos ?? 0} de riesgo alto · ${k.medios ?? 0} de riesgo medio`} />
+                                                )}
+                                                {k.operable != null && <Fila l="Operable" v={k.operable ? 'Sí' : <span style={{ color: '#F87171' }}>No</span>} />}
+                                                {k.at && <Fila l="Última consulta" v={new Date(k.at).toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' })} />}
+                                                <div className="flex items-center flex-wrap" style={{ gap: 8, marginTop: 12 }}>
+                                                    {(currentUser as any)?.role === 'admin' && k.reportId && (
+                                                        <button onClick={() => verPdf(String(k.reportId))} disabled={pdfCargando}
+                                                            style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 999, padding: '7px 14px', fontSize: 12, fontWeight: 700, opacity: pdfCargando ? 0.55 : 1 }}>
+                                                            {pdfCargando ? 'Abriendo…' : 'Ver el reporte'}
+                                                        </button>
+                                                    )}
+                                                    {(String(k.estado ?? '') !== 'finalizado' || !k.reportId) && (
+                                                        <button onClick={() => revisarCumplimiento(c)} disabled={revisando === c.id}
+                                                            style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 999, padding: '7px 14px', fontSize: 12, fontWeight: 700, opacity: revisando === c.id ? 0.55 : 1 }}>
+                                                            {revisando === c.id ? 'Consultando…' : 'Volver a consultar'}
+                                                        </button>
+                                                    )}
+                                                </div>
+                                                {String(k.estado ?? '') === 'finalizado' && k.reportId && (
+                                                    <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', marginTop: 9, lineHeight: 1.5 }}>
+                                                        Si algo cambia en las listas, TusDatos avisa y la consulta se repite sola.
+                                                    </p>
+                                                )}
+                                            </>
+                                        )}
+
+                                        {/* Qué implica, en una frase. */}
+                                        <Rotulo t="QUÉ IMPLICA" />
+                                        <p style={{ fontSize: 12.5, color: '#F4F4F2', padding: '10px 0', lineHeight: 1.6 }}>
+                                            {amlFrena(c)
+                                                ? (amlEsperando(c)
+                                                    ? 'Los envíos esperan el resultado de la consulta. Suele tardar cerca de un minuto.'
+                                                    : 'No se puede transferir a esta persona. El envío se rechaza en el servidor, no solo en pantalla.')
+                                                : st !== 'aprobada'
+                                                    ? 'La cuenta destino todavía no está validada por el banco. Hasta entonces no se puede enviar.'
+                                                    : 'Se puede operar con esta persona. El veredicto se repite solo si cambian las listas.'}
+                                        </p>
+                                        {amlEsEvidencia(c) && (
+                                            <p style={{ fontSize: 11.5, color: '#878E88', lineHeight: 1.5 }}>
+                                                Este beneficiario no se puede eliminar: el resultado de cumplimiento queda registrado.
+                                            </p>
+                                        )}
+
+                                        {/* La cuenta destino. */}
+                                        <Rotulo t="CUENTA DESTINO" />
+                                        <Fila l="Riel" v={m.railLine} />
+                                        <Fila l="Estado" v={st === 'aprobada' ? 'Verificada por el banco' : st === 'rechazada' ? <span style={{ color: '#F87171' }}>Rechazada</span> : 'En validación'} />
+                                        {c.providerStatus && <Fila l="Según el proveedor" v={<span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12 }}>{String(c.providerStatus)}</span>} />}
+                                        {st === 'rechazada' && c.lastError && <Fila l="Motivo" v={String(c.lastError).slice(0, 200)} />}
+                                        {c.accountKind === 'wallet' && (
+                                            <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 8, lineHeight: 1.5 }}>
+                                                Para el riesgo de la dirección en cadena (sanciones, mixers, rutas contaminadas), consultala en Servicios → KYT.
+                                            </p>
+                                        )}
+                                    </>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
 
             {/* Modal "Detalle del beneficiario" (handoff detalle_beneficiario) */}
             {detail && (() => {
@@ -1255,39 +2292,98 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                     { l: 'Banco', v: `${detail.bank} · ${detail.accountType === 'checking' ? 'Corriente' : 'Ahorros'} · ${(detail.country ?? 'Colombia') === 'Colombia' ? 'COP' : 'Local'}` },
                     { l: 'Documento del titular', v: `${detail.docType ?? ''} ${detail.docNumber ?? ''}`.trim() || '—' },
                 ];
+                // Ciudad y dirección (Colombia): van al tercero en Siigo. Si
+                // faltan, se completan acá mismo.
+                const esColombia = !isWallet && (detail.country ?? 'Colombia') === 'Colombia';
+                const tieneDir = !!(detail.cityCode && detail.address);
+                if (esColombia && tieneDir && !dirEdit) {
+                    rows.push({ l: 'Ciudad', v: detail.cityName ?? municipioPorCodigo(detail.cityCode)?.nombre ?? detail.cityCode ?? '' });
+                    rows.push({ l: 'Dirección', v: <span>{detail.address} <button onClick={() => setDirEdit({ cityCode: detail.cityCode ?? '', address: detail.address ?? '', guardando: false, error: null })} style={{ marginLeft: 6, color: '#878E88', fontSize: 11.5, fontWeight: 700, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer' }}>Editar</button></span> });
+                }
+                const dirForm = esColombia && (!tieneDir || dirEdit) ? (
+                    <div style={{ marginTop: 10, border: '1px solid rgba(255,255,255,0.1)', borderLeft: '2px solid #F59E0B', background: 'rgba(255,255,255,0.03)', borderRadius: 10, padding: '12px 14px' }}>
+                        <p style={{ fontSize: 12, color: '#F4F4F2', fontWeight: 700 }}>{tieneDir ? 'Editar ciudad y dirección' : 'Falta la ciudad y la dirección'}</p>
+                        <p style={{ fontSize: 11.5, color: '#878E88', lineHeight: 1.5, marginTop: 3 }}>Van al tercero en Siigo. Sin ellas la DIAN rechaza el documento soporte («Falta o es inválido el país del tercero»).</p>
+                        <div className="grid grid-cols-2 gap-3" style={{ marginTop: 10 }}>
+                            <div>
+                                <label style={LBL}>Ciudad</label>
+                                <CiudadSelect value={dirEdit?.cityCode ?? ''} onChange={c => setDirEdit(e => ({ cityCode: c, address: e?.address ?? '', guardando: false, error: null }))} style={INP} />
+                            </div>
+                            <div>
+                                <label style={LBL}>Dirección</label>
+                                <input value={dirEdit?.address ?? ''} onChange={ev => setDirEdit(e => ({ cityCode: e?.cityCode ?? '', address: ev.target.value, guardando: false, error: null }))} placeholder="Calle 10 # 20-30" style={INP} />
+                            </div>
+                        </div>
+                        {dirEdit?.error && <p style={{ fontSize: 11.5, color: '#F87171', marginTop: 8 }}>{dirEdit.error}</p>}
+                        <div className="flex" style={{ gap: 8, marginTop: 10 }}>
+                            <button onClick={() => guardarDireccion(detail)} disabled={!dirEdit || dirEdit.guardando} className="lincoin-btn-white transition-colors" style={{ flex: 1, padding: '9px 0', borderRadius: 9, fontSize: 12.5, fontWeight: 700, border: 'none', opacity: !dirEdit || dirEdit.guardando ? 0.5 : 1 }}>{dirEdit?.guardando ? 'Guardando…' : 'Guardar'}</button>
+                            {tieneDir && <button onClick={() => setDirEdit(null)} style={{ flex: 1, padding: '9px 0', borderRadius: 9, fontSize: 12.5, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)' }}>Cancelar</button>}
+                        </div>
+                    </div>
+                ) : null;
                 return (
-                <div className="fixed inset-0 z-50 p-4" style={{ background: 'rgba(4,5,4,0.72)', display: 'grid', placeItems: 'center' }} onClick={() => { setDetail(null); setDetailMenu(false); }}>
+                // El overlay NO desplaza: el que desplaza es el cuerpo de la
+                // ficha. Con overflow acá y el diálogo centrado, en cuanto la
+                // ficha superaba el alto de la pantalla se le comía la parte
+                // de ARRIBA —el nombre quedaba cortado contra la barra del
+                // navegador y no había forma de subir a verlo.
+                <div className="fixed inset-0 z-50 p-3 sm:p-4" style={{ background: 'rgba(4,5,4,0.72)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }} onClick={() => { setDetail(null); setDetailMenu(false); }}>
+                    {/* Más ancha que un diálogo normal porque acá se lee texto
+                        largo —los hallazgos de antecedentes— y a 480 px cada
+                        uno se partía en tres renglones. Y con alto máximo: en
+                        una pantalla baja, una ficha con muchos hallazgos se
+                        salía por arriba y por abajo, y los botones quedaban
+                        fuera de alcance. */}
                     <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" className="w-full animate-in zoom-in-95 duration-300"
-                        style={{ maxWidth: 480, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, overflow: 'hidden', fontFamily: "'Archivo', system-ui, sans-serif" }}>
+                        style={{
+                            // dvh, no vh: en el móvil la barra del navegador
+                            // entra y sale, y con vh la ficha quedaba más alta
+                            // que la pantalla visible.
+                            maxWidth: 640, maxHeight: 'calc(100dvh - 24px)', display: 'flex', flexDirection: 'column',
+                            background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18,
+                            overflow: 'hidden', fontFamily: "'Archivo', system-ui, sans-serif",
+                        }}>
                         {/* Cabecera: quién es */}
-                        <div style={{ padding: '22px 24px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-                            <div className="flex items-start justify-between gap-3">
-                                <div className="flex items-center gap-3 min-w-0">
-                                    <div style={{ width: 46, height: 46, borderRadius: '50%', background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', border: '1px solid rgba(255,255,255,0.12)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
-                                        <span style={{ color: '#878E88', fontWeight: 800, fontSize: 15 }}>{initialsOf(detail.name)}</span>
-                                    </div>
-                                    <div className="min-w-0">
-                                        <p style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.3px', color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{prettyName(detail.name)}</p>
-                                        <div className="flex items-center gap-1.5" style={{ marginTop: 3 }}>
-                                            {isWallet
-                                                ? <span style={{ width: 15, height: 15, borderRadius: '50%', background: '#26A17B', color: '#fff', fontWeight: 800, fontSize: 8, display: 'grid', placeItems: 'center', flexShrink: 0 }}>₮</span>
-                                                : <span style={{ width: 15, height: 15, borderRadius: '50%', display: 'block', flexShrink: 0, background: FLAG_BG[m.country ?? ''] ?? '#2E3330' }} />}
-                                            <span style={{ fontSize: 12.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                                {isWallet ? `USDT · ${detail.walletNetwork ?? 'TRC-20'} · Wallet` : `${m.country} · ${isBreb ? 'Bre-B' : 'ACH'} · ${detail.kind === 'empresa' ? 'Empresa' : 'Persona'}`}
-                                            </span>
-                                        </div>
+                        {/* El nombre y la X en su propia fila: antes las
+                            insignias le robaban el ancho y un nombre normal se
+                            cortaba en "Yadian lopez gar…". Las insignias van
+                            debajo, donde caben enteras y pueden envolver. */}
+                        <div style={{ padding: '18px 20px 15px', borderBottom: '1px solid rgba(255,255,255,0.08)', flexShrink: 0 }}>
+                            <div className="flex items-center gap-3">
+                                <div style={{ width: 42, height: 42, borderRadius: '50%', background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', border: '1px solid rgba(255,255,255,0.12)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                                    <span style={{ color: '#878E88', fontWeight: 800, fontSize: 14 }}>{initialsOf(detail.name)}</span>
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                    <p style={{ fontSize: 16.5, fontWeight: 700, letterSpacing: '-0.3px', color: '#F4F4F2', lineHeight: 1.25, overflowWrap: 'anywhere' }}>{prettyName(detail.name)}</p>
+                                    <div className="flex items-center gap-1.5" style={{ marginTop: 3 }}>
+                                        {isWallet
+                                            ? <span style={{ width: 14, height: 14, borderRadius: '50%', background: '#26A17B', color: '#fff', fontWeight: 800, fontSize: 8, display: 'grid', placeItems: 'center', flexShrink: 0 }}>₮</span>
+                                            : <span style={{ width: 14, height: 14, borderRadius: '50%', display: 'block', flexShrink: 0, background: FLAG_BG[m.country ?? ''] ?? '#2E3330' }} />}
+                                        <span style={{ fontSize: 12, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                            {isWallet ? `USDT · ${detail.walletNetwork ?? 'TRC-20'} · Wallet` : `${m.country} · ${isBreb ? 'Bre-B' : 'ACH'} · ${detail.kind === 'empresa' ? 'Empresa' : 'Persona'}`}
+                                        </span>
                                     </div>
                                 </div>
-                                <div className="flex items-center gap-2 shrink-0">
-                                    {statusPill}
-                                    <button onClick={() => { setDetail(null); setDetailMenu(false); }} style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', display: 'grid', placeItems: 'center' }}>
-                                        <X size={13} style={{ color: '#878E88' }} strokeWidth={1.7} />
-                                    </button>
-                                </div>
+                                <button onClick={() => { setDetail(null); setDetailMenu(false); }} aria-label="Cerrar" style={{ width: 34, height: 34, borderRadius: 9, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                                    <X size={14} style={{ color: '#878E88' }} strokeWidth={1.7} />
+                                </button>
+                            </div>
+                            {/* El AML primero: es el que decide si el envío
+                                sale. "VERIFICADO" habla de la CUENTA en el
+                                banco, y al ir primero parecía desmentir el
+                                bloqueo que venía justo debajo. */}
+                            <div className="flex flex-wrap items-center" style={{ gap: 6, marginTop: 11 }}>
+                                {kumploPill(detail)}
+                                {statusPill}
                             </div>
                         </div>
 
-                        <div style={{ padding: '16px 24px 6px' }}>
+                        {/* Solo el CUERPO desplaza. La cabecera —quién es— y la
+                            botonera —qué se puede hacer— se quedan a la vista:
+                            si desplazaran con el resto, en una ficha larga uno
+                            se pierde de con quién está y tiene que bajar hasta
+                            el final para encontrar los botones. */}
+                        <div style={{ padding: '16px 24px 6px', overflowY: 'auto', flex: 1, minHeight: 0 }}>
                             {/* CUENTA DE DESTINO */}
                             <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88' }}>CUENTA DE DESTINO</p>
                             <div>
@@ -1303,7 +2399,206 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                     </div>
                                 ))}
                             </div>
+                            {dirForm}
 
+                            {/* Cumplimiento: acá sí cabe explicar qué significa
+                                la insignia y desde cuándo. En la fila solo hay
+                                espacio para el estado. */}
+                            {(() => {
+                                const k = amlDe(detail);
+                                if (!k) return null;
+                                const est = String(k.estado ?? '');
+                                const cat = String(k.categoria ?? '');
+                                const texto =
+                                    est === 'procesando' || !est ? 'Estamos consultando los antecedentes de esta persona contra las fuentes oficiales. Suele tardar alrededor de un minuto.'
+                                    : est === 'sin_autorizacion' ? 'El titular del documento no autoriza la consulta de su información, un derecho que le ampara la ley de protección de datos. Esto no impide transferirle.'
+                                    : est !== 'finalizado' ? 'La consulta no pudo completarse. Se vuelve a intentar; mientras tanto no impide transferirle.'
+                                    : k.nombreCoincide === false ? `El nombre inscrito no corresponde a ese documento. Según la Registraduría la cédula pertenece a ${k.nombreReal ?? 'otra persona'}. No se le puede transferir hasta corregirlo.`
+                                    : k.documentoVigente === false ? `El documento no está vigente${k.estadoDocumento ? `: ${k.estadoDocumento}` : ''}. No se le puede transferir.`
+                                    : cat === 'alto' ? 'La consulta encontró hallazgos de riesgo alto. No se puede transferir a esta persona.'
+                                    : cat === 'medio' ? 'La consulta encontró hallazgos de riesgo medio. Queda en revisión de cumplimiento y por ahora no se le puede transferir.'
+                                    : cat === 'sin_validar' ? 'No se pudo validar el documento contra la Registraduría, así que no se sabe de quién son los antecedentes. Revisa que el número esté correcto. No impide transferirle.'
+                                    : cat === 'bajo' ? 'La consulta encontró hallazgos menores. Se puede operar con esta persona.'
+                                    : cat === 'ninguno' || cat === 'informativo' ? 'No se encontraron antecedentes. Se puede operar con esta persona.'
+                                    : 'La consulta terminó sin una categoría. No impide transferirle.';
+                                const conteo = (k.altos ?? 0) + (k.medios ?? 0) + (k.bajos ?? 0);
+                                return (
+                                    <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                                        {/* La insignia ya está en la cabecera, a
+                                            la vista aunque se baje. Repetirla acá
+                                            era decir dos veces lo mismo. */}
+                                        <span style={{ display: 'block', fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88', marginBottom: 7 }}>ANTECEDENTES</span>
+                                        <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.55 }}>{texto}</p>
+                                        {/* Lo inscrito y lo que dice el documento,
+                                            uno al lado del otro. Es el contraste
+                                            que hace evidente el problema. */}
+                                        {k.nombreCoincide === false ? (
+                                            <div style={{ marginTop: 10, background: '#121413', border: '1px solid rgba(248,113,113,0.24)', borderRadius: 10, padding: '11px 13px', display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                                                <div>
+                                                    <p style={{ fontSize: 10, color: '#878E88', margin: 0, letterSpacing: '1px' }}>SE INSCRIBIÓ COMO</p>
+                                                    <p style={{ fontSize: 13, color: '#F4F4F2', fontWeight: 700, margin: '3px 0 0' }}>{String(k.nombreInscrito ?? detail.name)}</p>
+                                                </div>
+                                                <div>
+                                                    <p style={{ fontSize: 10, color: '#878E88', margin: 0, letterSpacing: '1px' }}>DICE EL DOCUMENTO</p>
+                                                    <p style={{ fontSize: 13, color: '#F87171', fontWeight: 700, margin: '3px 0 0' }}>{String(k.nombreReal ?? '—')}</p>
+                                                </div>
+                                            </div>
+                                        ) : k.nombreIncompleto && (k.nombreReal || k.nombre) ? (
+                                            // El mismo nombre, escrito corto. Se muestra el
+                                            // completo al lado, sin rojo: no es otra persona
+                                            // y no frena nada.
+                                            <div style={{ marginTop: 10, background: '#121413', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 10, padding: '11px 13px', display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                                                <div>
+                                                    <p style={{ fontSize: 10, color: '#878E88', margin: 0, letterSpacing: '1px' }}>SE INSCRIBIÓ COMO</p>
+                                                    <p style={{ fontSize: 13, color: '#F4F4F2', fontWeight: 700, margin: '3px 0 0' }}>{String(k.nombreInscrito ?? detail.name)}</p>
+                                                </div>
+                                                <div>
+                                                    <p style={{ fontSize: 10, color: '#878E88', margin: 0, letterSpacing: '1px' }}>NOMBRE COMPLETO</p>
+                                                    <p style={{ fontSize: 13, color: '#F4F4F2', fontWeight: 700, margin: '3px 0 0' }}>{String(k.nombreReal ?? k.nombre)}</p>
+                                                </div>
+                                                <p style={{ fontSize: 11, color: '#878E88', margin: 0, width: '100%', lineHeight: 1.4 }}>Es el mismo nombre, incompleto. No impide transferir.</p>
+                                            </div>
+                                        ) : k.nombre ? (
+                                            <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 6, lineHeight: 1.5 }}>
+                                                Nombre en el documento: <b style={{ color: '#F4F4F2' }}>{String(k.nombre)}</b>
+                                            </p>
+                                        ) : null}
+                                        {/* Cómo estuvo inscrito antes de corregirse. Se
+                                            deja a la vista: la corrección no borra que
+                                            hubo otro nombre. */}
+                                        {Array.isArray(k.nombresAnteriores) && k.nombresAnteriores.length > 0 && (
+                                            <p style={{ fontSize: 11, color: '#878E88', marginTop: 8, lineHeight: 1.5 }}>
+                                                Antes inscrito como <b style={{ color: '#F4F4F2' }}>{String(k.nombresAnteriores[k.nombresAnteriores.length - 1]?.nombre ?? '')}</b>
+                                                {k.nombresAnteriores[k.nombresAnteriores.length - 1]?.hasta ? ` · corregido el ${new Date(k.nombresAnteriores[k.nombresAnteriores.length - 1].hasta).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' })}` : ''}
+                                                {k.nombresAnteriores.length > 1 ? ` · ${k.nombresAnteriores.length} correcciones` : ''}
+                                            </p>
+                                        )}
+                                        {est === 'finalizado' && conteo > 0 && (
+                                            <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 8, lineHeight: 1.5 }}>
+                                                Hallazgos: {k.altos ?? 0} alto{(k.altos ?? 0) === 1 ? '' : 's'} · {k.medios ?? 0} medio{(k.medios ?? 0) === 1 ? '' : 's'} · {k.bajos ?? 0} bajo{(k.bajos ?? 0) === 1 ? '' : 's'}
+                                            </p>
+                                        )}
+                                        {/* EL PORQUÉ. Una etiqueta de riesgo sin
+                                            el motivo no deja decidir nada: quien
+                                            revisa el caso necesita leer qué
+                                            encontraron y en qué fuente. */}
+                                        {Array.isArray(k.hallazgos) && k.hallazgos.length > 0 && (() => {
+                                            // Los hallazgos vienen con MUCHA repetición:
+                                            // "proceso civil", "proceso civil 002",
+                                            // "proceso civil 003"… son el mismo tipo de
+                                            // hallazgo numerado. Listarlos uno por uno
+                                            // llena la pantalla sin decir nada nuevo, así
+                                            // que se agrupan y se cuenta cuántos hay.
+                                            const limpiar = (t: string) => String(t).replace(/\s*\d{1,3}\s*$/, '').trim();
+                                            const grupos: any[] = [];
+                                            const porClave = new Map<string, any>();
+                                            for (const h of k.hallazgos) {
+                                                const texto = limpiar(h.texto || h.codigo);
+                                                const c = `${h.nivel}|${texto}`;
+                                                if (porClave.has(c)) { porClave.get(c).n += 1; continue; }
+                                                const g = { ...h, texto, n: 1 };
+                                                porClave.set(c, g); grupos.push(g);
+                                            }
+                                            const altos = grupos.filter(g => g.nivel === 'alto');
+                                            const total = (k.altos ?? 0) + (k.medios ?? 0);
+                                            // Plegado se muestran solo los ALTOS: son la
+                                            // razón del bloqueo y es lo que hay que leer.
+                                            // Los medios quedan detrás del botón.
+                                            const visibles = verHallazgos ? grupos : altos;
+                                            const ocultos = grupos.length - altos.length;
+                                            return (
+                                                <div style={{ marginTop: 9, background: '#121413', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 10, padding: '11px 12px' }}>
+                                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                                                        <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1px', color: '#878E88', margin: 0 }}>QUÉ SE ENCONTRÓ</p>
+                                                        {ocultos > 0 && (
+                                                            <button onClick={() => setVerHallazgos(v => !v)}
+                                                                style={{ background: 'transparent', border: 'none', color: '#878E88', fontSize: 11.5, fontWeight: 700, cursor: 'pointer', fontFamily: "'Archivo', system-ui, sans-serif", padding: 0 }}>
+                                                                {verHallazgos ? 'Ocultar' : `Ver detalle · ${grupos.length}`}
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                    <div style={{ maxHeight: verHallazgos ? 240 : undefined, overflowY: verHallazgos ? 'auto' : undefined }}>
+                                                        {visibles.map((h: any, i: number) => (
+                                                            <div key={`${h.codigo}-${i}`} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 8 }}>
+                                                                <span style={{
+                                                                    flexShrink: 0, marginTop: 1, fontSize: 8.5, fontWeight: 700, letterSpacing: '0.5px',
+                                                                    border: `1px solid ${h.nivel === 'alto' ? 'rgba(248,113,113,0.32)' : 'rgba(251,191,36,0.32)'}`,
+                                                                    color: h.nivel === 'alto' ? '#F87171' : '#FBBF24',
+                                                                    borderRadius: 999, padding: '2px 7px',
+                                                                }}>{h.nivel === 'alto' ? 'ALTO' : 'MEDIO'}</span>
+                                                                <div style={{ minWidth: 0, flex: 1 }}>
+                                                                    <p style={{ fontSize: 12, color: '#F4F4F2', margin: 0, lineHeight: 1.45 }}>
+                                                                        {h.texto}
+                                                                        {h.n > 1 && <span style={{ color: '#878E88', fontWeight: 700 }}> ×{h.n}</span>}
+                                                                    </p>
+                                                                    {h.fuente && <p style={{ fontSize: 10.5, color: 'rgba(244,244,242,0.45)', margin: '1px 0 0' }}>{h.fuente}</p>}
+                                                                </div>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                    {!verHallazgos && ocultos > 0 && (
+                                                        <p style={{ fontSize: 11.5, color: 'rgba(244,244,242,0.45)', margin: '9px 0 0', lineHeight: 1.5 }}>
+                                                            {altos.length > 0 ? 'Y ' : ''}{ocultos} tipo{ocultos === 1 ? '' : 's'} de hallazgo de riesgo medio.
+                                                        </p>
+                                                    )}
+                                                    {verHallazgos && total > k.hallazgos.length && (
+                                                        <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', margin: '9px 0 0' }}>
+                                                            El reporte completo trae {total} en total.
+                                                        </p>
+                                                    )}
+                                                </div>
+                                            );
+                                        })()}
+                                        {/* Sin detalle guardado pero con hallazgos
+                                            contados: la consulta es anterior a que
+                                            se empezara a guardar el porqué. Se dice,
+                                            en vez de dejar el hueco sin explicar. */}
+                                        {est === 'finalizado' && (k.altos ?? 0) + (k.medios ?? 0) > 0 && !(Array.isArray(k.hallazgos) && k.hallazgos.length) && (
+                                            <p style={{ fontSize: 11.5, color: 'rgba(244,244,242,0.45)', marginTop: 7, lineHeight: 1.5 }}>
+                                                Trayendo el detalle del reporte…
+                                            </p>
+                                        )}
+                                        {k.at && (
+                                            <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', marginTop: 6 }}>
+                                                Última consulta: {new Date(k.at).toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' })}
+                                            </p>
+                                        )}
+                                        {/* El reporte completo es para el admin.
+                                            Al cliente no le sirve un listado de
+                                            fuentes; a quien revisa un caso, sí. */}
+                                        {(currentUser as any)?.role === 'admin' && k.reportId && (
+                                            <button onClick={() => verPdf(String(k.reportId))} disabled={pdfCargando}
+                                                style={{
+                                                    marginTop: 10, marginRight: 8, background: 'transparent', border: '1px solid rgba(255,255,255,0.14)',
+                                                    color: '#F4F4F2', borderRadius: 999, padding: '7px 14px', fontSize: 12, fontWeight: 700,
+                                                    cursor: pdfCargando ? 'default' : 'pointer', opacity: pdfCargando ? 0.55 : 1,
+                                                }}>
+                                                {pdfCargando ? 'Abriendo…' : 'Ver el reporte'}
+                                            </button>
+                                        )}
+                                        {/* Volver a consultar solo cuando la consulta
+                                            NO salió bien. Si ya hay resultado, otra
+                                            consulta gasta un crédito para devolver lo
+                                            mismo: lo que cambia el veredicto es el
+                                            monitoreo de TusDatos, que avisa solo. */}
+                                        {(est !== 'finalizado' || !k.reportId) && (
+                                            <button onClick={() => revisarCumplimiento(detail)} disabled={revisando === detail.id}
+                                                style={{
+                                                    marginTop: 10, background: 'transparent', border: '1px solid rgba(255,255,255,0.14)',
+                                                    color: '#F4F4F2', borderRadius: 999, padding: '7px 14px', fontSize: 12, fontWeight: 700,
+                                                    cursor: revisando === detail.id ? 'default' : 'pointer', opacity: revisando === detail.id ? 0.55 : 1,
+                                                }}>
+                                                {revisando === detail.id ? 'Consultando…' : 'Volver a consultar'}
+                                            </button>
+                                        )}
+                                        {est === 'finalizado' && k.reportId && (
+                                            <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', marginTop: 9, lineHeight: 1.5 }}>
+                                                Si algo cambia en las listas, TusDatos nos avisa y la consulta se repite sola.
+                                            </p>
+                                        )}
+                                    </div>
+                                );
+                            })()}
                             {/* ACTIVIDAD */}
                             <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88', marginTop: 14 }}>ACTIVIDAD</p>
                             <div>
@@ -1318,18 +2613,36 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                     </div>
                                 ))}
                             </div>
+                            {/* El motivo técnico solo se muestra si el banco
+                                rechazó la cuenta: ahí hay algo que corregir.
+                                Mientras está en validación no se le cuenta al
+                                cliente cómo va el registro por dentro — para él
+                                el estado es el del banco, y es en validación. */}
                             {st === 'rechazada' && detail.lastError && (
-                                <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 8, wordBreak: 'break-all' }}>Motivo: {String(detail.lastError).slice(0, 180)}</p>
+                                <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 8, wordBreak: 'break-word' }}>Motivo: {String(detail.lastError).slice(0, 240)}</p>
                             )}
                         </div>
 
                         {/* Botonera */}
-                        <div className="flex items-center" style={{ gap: 9, padding: '16px 24px 22px', borderTop: '1px solid rgba(255,255,255,0.08)', marginTop: 10, position: 'relative' }}>
+                        <div className="flex items-center" style={{ gap: 9, padding: '16px 24px 22px', borderTop: '1px solid rgba(255,255,255,0.08)', position: 'relative', flexShrink: 0, background: '#0C0E0D' }}>
                             <button onClick={() => setDetailMenu(v => !v)} style={{ width: 44, height: 44, borderRadius: 10, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#878E88', fontWeight: 700, fontSize: 16, flexShrink: 0 }} className="hover:bg-white/[0.09] transition-colors">···</button>
                             {detailMenu && (
-                                <div style={{ position: 'absolute', left: 24, bottom: 72, zIndex: 20, background: '#121413', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10, overflow: 'hidden', minWidth: 200, boxShadow: '0 12px 30px rgba(0,0,0,0.5)' }}>
-                                    <button onClick={() => { setDetailMenu(false); const id = detail.id; const name = prettyName(detail.name); if (window.confirm(`¿Eliminar a ${name}? Tendrás que inscribirlo y validarlo de nuevo.`)) { setDetail(null); removeContact(id); } }}
-                                        className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '11px 14px', fontSize: 12.5, color: '#F4F4F2' }}>Eliminar beneficiario</button>
+                                <div style={{ position: 'absolute', left: 24, bottom: 72, zIndex: 20, background: '#121413', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10, overflow: 'hidden', minWidth: 200, maxWidth: 260, boxShadow: '0 12px 30px rgba(0,0,0,0.5)' }}>
+                                    {amlEsEvidencia(detail) ? (
+                                        <div style={{ padding: '11px 14px', fontSize: 11.5, color: '#878E88', lineHeight: 1.45 }}>
+                                            Este beneficiario no se puede eliminar: el resultado de cumplimiento queda registrado.
+                                        </div>
+                                    ) : (
+                                        <>
+                                            <button onClick={() => { setDetailMenu(false); pedirEliminar(detail); }}
+                                                className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '11px 14px', fontSize: 12.5, color: '#F4F4F2' }}>Eliminar beneficiario</button>
+                                            {amlDe(detail)?.nombreCoincide === false && (
+                                                <div style={{ padding: '0 14px 11px', fontSize: 11, color: '#878E88', lineHeight: 1.4 }}>
+                                                    Elimínalo e inscríbelo otra vez con el nombre que aparece en el documento.
+                                                </div>
+                                            )}
+                                        </>
+                                    )}
                                 </div>
                             )}
                             <button onClick={copyKey} className="flex items-center justify-center gap-2 hover:bg-white/[0.09] transition-colors"
@@ -1337,17 +2650,90 @@ export const ContactsSection: React.FC<{ onBack?: () => void; onSendTo?: (c: Mou
                                 <Copy size={14} /> {isBreb ? 'Copiar llave' : isWallet ? 'Copiar dirección' : 'Copiar cuenta'}
                             </button>
                             <button
-                                onClick={() => { if (onSendTo && st === 'aprobada') { const c = detail; setDetail(null); setDetailMenu(false); onSendTo(c); } }}
-                                disabled={!onSendTo || st !== 'aprobada'}
-                                className="lincoin-btn-white flex items-center justify-center gap-2 transition-colors"
-                                style={{ flex: 1.4, height: 44, borderRadius: 10, fontSize: 13.5, fontWeight: 700, border: 'none', opacity: (!onSendTo || st !== 'aprobada') ? 0.45 : 1, cursor: (!onSendTo || st !== 'aprobada') ? 'not-allowed' : 'pointer' }}>
-                                <Send size={14} /> Enviar dinero
+                                onClick={() => { if (onSendTo && st === 'aprobada' && !amlFrena(detail)) { const c = detail; setDetail(null); setDetailMenu(false); onSendTo(c); } }}
+                                disabled={!onSendTo || st !== 'aprobada' || amlFrena(detail)}
+                                className={amlFrena(detail) ? 'flex items-center justify-center gap-2' : 'lincoin-btn-white flex items-center justify-center gap-2 transition-colors'}
+                                style={amlFrena(detail)
+                                    // Un botón blanco a media opacidad se sigue
+                                    // leyendo como "dale, toca acá". Si está
+                                    // frenado, que lo diga — y esperar un
+                                    // resultado no es lo mismo que estar
+                                    // bloqueado: uno se resuelve solo.
+                                    ? (amlEsperando(detail)
+                                        ? { flex: 1.4, height: 44, borderRadius: 10, fontSize: 13, fontWeight: 700, cursor: 'not-allowed', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.14)', color: '#878E88' }
+                                        : { flex: 1.4, height: 44, borderRadius: 10, fontSize: 13, fontWeight: 700, cursor: 'not-allowed', background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.28)', color: '#F87171' })
+                                    : { flex: 1.4, height: 44, borderRadius: 10, fontSize: 13.5, fontWeight: 700, border: 'none', opacity: (!onSendTo || st !== 'aprobada') ? 0.45 : 1, cursor: (!onSendTo || st !== 'aprobada') ? 'not-allowed' : 'pointer' }}>
+                                {amlFrena(detail)
+                                    ? <>{amlEsperando(detail) ? 'Esperando antecedentes…' : 'Bloqueado'}</>
+                                    : <><Send size={14} /> Enviar dinero</>}
                             </button>
                         </div>
                     </div>
                 </div>
                 );
             })()}
+
+            {/* El menú de la fila, dibujado al nivel de la página y anclado a
+                la posición del botón. Acá no lo recorta nadie. */}
+            {menuFor && (() => {
+                const c = filteredContacts.find(x => x.id === menuFor.id);
+                if (!c) return null;
+                return (
+                    <>
+                        {/* Capa invisible para cerrarlo al tocar fuera, sin
+                            oscurecer la pantalla: es un menú, no un diálogo. */}
+                        <div onClick={() => setMenuFor(null)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
+                        <div style={{
+                            position: 'fixed', left: menuFor.x, top: menuFor.y, zIndex: 41,
+                            transform: `translate(-100%, ${menuFor.arriba ? '-100%' : '0'}) translateY(${menuFor.arriba ? '-6px' : '6px'})`,
+                            background: '#121413', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10,
+                            overflow: 'hidden', minWidth: 160, boxShadow: '0 12px 30px rgba(0,0,0,0.5)',
+                            fontFamily: "'Archivo', system-ui, sans-serif",
+                        }}>
+                            <button onClick={() => { setMenuFor(null); setDetail(c); }} className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '10px 14px', fontSize: 12.5, color: '#F4F4F2' }}>Ver detalle</button>
+                            {amlEsEvidencia(c) ? (
+                                <div style={{ padding: '10px 14px', fontSize: 11.5, color: '#878E88', borderTop: '1px solid rgba(255,255,255,0.07)', lineHeight: 1.45, maxWidth: 230 }}>
+                                    No se puede eliminar: queda registrado por cumplimiento.
+                                </div>
+                            ) : (
+                                <button onClick={() => { setMenuFor(null); pedirEliminar(c); }} className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '10px 14px', fontSize: 12.5, color: '#F87171', borderTop: '1px solid rgba(255,255,255,0.07)' }}>Eliminar</button>
+                            )}
+                        </div>
+                    </>
+                );
+            })()}
+
+            {/* Confirmación de una acción que no se deshace. Va por encima del
+                detalle (z-60) porque se abre desde ahí. Cerrar por fuera o con
+                Escape equivale a cancelar: para borrar hay que decir que sí. */}
+            {confirmar && (
+                <div className="fixed inset-0 z-[60] p-4" style={{ background: 'rgba(4,5,4,0.78)', display: 'grid', placeItems: 'center' }}
+                    onClick={() => setConfirmar(null)}>
+                    <div onClick={e => e.stopPropagation()} role="alertdialog" aria-modal="true"
+                        className="w-full animate-in zoom-in-95 duration-200"
+                        style={{ maxWidth: 400, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, overflow: 'hidden', fontFamily: "'Archivo', system-ui, sans-serif" }}>
+                        <div style={{ padding: '24px 24px 20px' }}>
+                            <div style={{ width: 42, height: 42, borderRadius: 12, background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.24)', display: 'grid', placeItems: 'center', marginBottom: 14 }}>
+                                <Trash2 size={18} color="#F87171" />
+                            </div>
+                            <p style={{ fontSize: 18, fontWeight: 800, letterSpacing: '-0.4px', color: '#F4F4F2', lineHeight: 1.3 }}>{confirmar.titulo}</p>
+                            <p style={{ fontSize: 13, color: '#878E88', marginTop: 8, lineHeight: 1.6 }}>{confirmar.cuerpo}</p>
+                        </div>
+                        <div className="flex items-center" style={{ gap: 9, padding: '0 24px 22px' }}>
+                            <button onClick={() => setConfirmar(null)}
+                                className="hover:bg-white/[0.09] transition-colors"
+                                style={{ flex: 1, height: 44, borderRadius: 10, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontSize: 13.5, fontWeight: 600 }}>
+                                Cancelar
+                            </button>
+                            <button onClick={() => { const fn = confirmar.onOk; setConfirmar(null); fn(); }}
+                                className="transition-colors"
+                                style={{ flex: 1, height: 44, borderRadius: 10, background: 'rgba(248,113,113,0.12)', border: '1px solid rgba(248,113,113,0.34)', color: '#F87171', fontSize: 13.5, fontWeight: 700 }}>
+                                Eliminar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

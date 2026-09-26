@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { CodeInput } from './CodeInput';
 import { Sidebar } from './Sidebar';
 import { MouvSection, fetchMouvBalance } from './OtcMigration';
 import { supabase } from '../lib/supabaseClient';
@@ -161,153 +162,30 @@ const DOC_TYPES: Record<string, { label: string; value: string }[]> = {
   ],
 };
 
-const DiditKycButton: React.FC<{ userId?: string; kycStatus?: string; showToast: (msg: string) => void }> = ({ userId, kycStatus, showToast }) => {
-  const [loading, setLoading] = React.useState(false);
-  const [checkingStatus, setCheckingStatus] = React.useState(false);
-  const isInProgress = kycStatus === 'in_progress';
+// KycContactoSoporte — la verificación empresarial (KYB) la hace el equipo de
+// Lincoin a mano. No hay proveedor de verificación conectado, así que no hay
+// un flujo de autoservicio que arrancar desde acá: lo único honesto que puede
+// ofrecer este botón es el canal por el que la verificación efectivamente
+// ocurre.
+//
+// El botón anterior abría una sesión con un proveedor externo y hacía polling
+// esperando su veredicto. Sin ese proveedor, un botón "Verificar identidad"
+// que no verifica nada sería peor que no tenerlo.
+const KycContactoSoporte: React.FC<{ kycStatus?: string }> = ({ kycStatus }) => {
   const isRejected = kycStatus === 'rejected';
-
-  // Poll Didit for status updates — every 10s, and bursts on tab-focus return
-  React.useEffect(() => {
-    if (!isInProgress || !userId) return;
-    const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
-    const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-    let active = true;
-    const poll = async () => {
-      try {
-        const r = await fetch(`${SURL}/functions/v1/didit-kyc`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': `Bearer ${SKEY}` },
-          body: JSON.stringify({ action: 'get_status', userId }),
-        });
-        if (!active) return;
-        const d = await r.json();
-        if (d.status === 'verified') {
-          showToast('¡Verificación aprobada! Actualizando...');
-          setTimeout(() => window.location.reload(), 1200);
-        } else if (d.status === 'rejected') {
-          setTimeout(() => window.location.reload(), 500);
-        }
-      } catch { /* network error — retry next tick */ }
-    };
-    poll(); // immediate on mount
-    const id = setInterval(poll, 10_000);
-    // Burst polls when user tabs back — catches approval quickly
-    const onVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        poll();
-        setTimeout(poll, 3_000);
-        setTimeout(poll, 7_000);
-      }
-    };
-    document.addEventListener('visibilitychange', onVisibility);
-    return () => { active = false; clearInterval(id); document.removeEventListener('visibilitychange', onVisibility); };
-  }, [isInProgress, userId]);
-
-  const checkStatusManually = async () => {
-    if (!userId || checkingStatus) return;
-    setCheckingStatus(true);
-    try {
-      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
-      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-      const r = await fetch(`${SURL}/functions/v1/didit-kyc`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': `Bearer ${SKEY}` },
-        body: JSON.stringify({ action: 'get_status', userId }),
-      });
-      const d = await r.json();
-      if (d.status === 'verified') {
-        showToast('¡Verificación aprobada! Actualizando...');
-        setTimeout(() => window.location.reload(), 1200);
-      } else if (d.status === 'in_review') {
-        showToast('Tu verificación está en revisión manual.');
-      } else if (d.status === 'rejected') {
-        showToast('Tu verificación fue rechazada. Intenta de nuevo.');
-        setTimeout(() => window.location.reload(), 1500);
-      } else {
-        showToast('Aún en proceso. Intenta nuevamente en unos minutos.');
-      }
-    } catch {
-      showToast('Error al consultar estado. Intenta más tarde.');
-    }
-    setCheckingStatus(false);
-  };
-
-  const startVerification = async () => {
-    if (!userId || loading) return;
-    setLoading(true);
-    try {
-      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
-      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-      // If already in_progress, resume the SAME session (never create a new one)
-      const action = isInProgress ? 'resume_session' : 'create_session';
-      const r = await fetch(`${SURL}/functions/v1/didit-kyc`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': `Bearer ${SKEY}` },
-        body: JSON.stringify({ action, userId, type: 'kyb' }),
-      });
-      const data = await r.json();
-      if (data.status === 'verified') {
-        showToast('¡Verificación aprobada! Actualizando...');
-        setTimeout(() => window.location.reload(), 1500);
-        return;
-      }
-      if (data.status === 'in_review') {
-        showToast('Tu verificación está en revisión. Te notificaremos cuando esté lista.');
-        return;
-      }
-      if (data.status === 'rejected') {
-        showToast('Verificación rechazada. Intenta de nuevo.');
-        setTimeout(() => window.location.reload(), 1500);
-        return;
-      }
-      if (data.no_url) {
-        showToast('Tu sesión de verificación está activa en Lincoin. Si ya completaste los pasos, espera unos segundos y la página se actualizará sola.');
-        return;
-      }
-      if (data.url) {
-        window.location.href = data.url;
-      } else {
-        showToast(data.error || 'Error al iniciar verificación. Contacta soporte.');
-      }
-    } catch {
-      showToast('Error de conexión. Intenta de nuevo.');
-    }
-    setLoading(false);
-  };
-
   return (
     <div className="space-y-2">
-      <button
-        onClick={startVerification}
-        disabled={loading}
-        className="w-full py-3 px-6 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] disabled:opacity-50 transition-colors flex items-center justify-center gap-2 text-sm"
+      <a
+        href="mailto:soporte@lincoin.me?subject=Verificaci%C3%B3n%20empresarial%20(KYB)"
+        className="w-full py-3 px-6 bg-[#0C0E0D] text-white font-bold rounded-xl hover:bg-[#161A17] transition-colors flex items-center justify-center gap-2 text-sm"
       >
-        {loading ? (
-          <><span className="animate-spin">⏳</span> Iniciando verificación...</>
-        ) : isRejected ? (
-          <><ShieldCheck size={16}/> Reintentar verificación de identidad</>
-        ) : isInProgress ? (
-          <><ShieldCheck size={16}/> Continuar verificación de identidad</>
-        ) : (
-          <><ShieldCheck size={16}/> Verificar identidad con Lincoin</>
-        )}
-      </button>
-      {isInProgress && (
-        <div className="flex flex-col items-center gap-2">
-          <button onClick={checkStatusManually} disabled={checkingStatus}
-            className="text-xs text-[#0C0E0D] font-bold underline underline-offset-2 hover:text-[#0C0E0D] disabled:opacity-50">
-            {checkingStatus ? '⏳ Consultando...' : '¿Ya terminaste? → Verificar estado ahora'}
-          </button>
-          <p className="text-xs text-slate-400 text-center">El estado se actualiza automáticamente cada 15 seg.</p>
-        </div>
-      )}
-      {isRejected && (
-        <p className="text-xs text-red-500 text-center">Tu verificación fue rechazada. Asegúrate de usar documentos vigentes y buena iluminación.</p>
-      )}
-      {!isInProgress && !isRejected && (
-        <p className="text-xs text-slate-400 text-center">Proceso rápido · Foto de documento + selfie · Resultado en minutos</p>
-      )}
+        <ShieldCheck size={16} /> {isRejected ? 'Escribir a soporte' : 'Solicitar verificación'}
+      </a>
+      <p className="text-xs text-slate-400 text-center">
+        {isRejected
+          ? 'Escribinos y te decimos qué hace falta corregir.'
+          : 'Nuestro equipo te pide la documentación y activa tu cuenta.'}
+      </p>
     </div>
   );
 };
@@ -1281,7 +1159,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   <button 
                     onClick={() => { if(!handleActionRestricted()) { setLoadStep(1); setIsLoadModalOpen(true); } }} 
                     disabled={isBlocked || !isKycVerified} 
-                    className={`px-5 py-2.5 rounded-xl font-bold text-sm flex items-center gap-2 transition-colors shadow-lg ${isBlocked || !isKycVerified ? 'bg-slate-400 cursor-not-allowed opacity-70' : 'bg-[#0C0E0D] hover:bg-[#152e52] shadow-green-900/20'}`}
+                    className={`px-5 py-2.5 rounded-xl font-bold text-sm flex items-center gap-2 transition-colors shadow-lg ${isBlocked || !isKycVerified ? 'bg-slate-400 cursor-not-allowed opacity-70' : 'bg-[#0C0E0D] hover:bg-[#161A17] shadow-green-900/20'}`}
                   >
                       <Plus size={18} /> Fondear Cuenta
                   </button>
@@ -1310,9 +1188,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center shrink-0"><AlertTriangle className="text-red-600" size={20} /></div>
                   <div className="flex-1">
                     <h3 className="text-red-800 font-bold text-sm">Verificación rechazada</h3>
-                    <p className="text-red-700 text-xs mt-1">Tu verificación empresarial fue rechazada. Por favor intenta de nuevo o contacta soporte.</p>
+                    <p className="text-red-700 text-xs mt-1">Tu verificación empresarial fue rechazada. Escribinos y te decimos qué falta.</p>
                   </div>
-                  <DiditKycButton userId={currentUser?.id} kycStatus={ks} showToast={showToast} />
+                  <KycContactoSoporte kycStatus={ks} />
                 </div>
               );
               if (ks === 'in_review') return (
@@ -1329,9 +1207,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   <div className="w-10 h-10 bg-slate-100 rounded-full flex items-center justify-center shrink-0"><ShieldCheck className="text-[#0C0E0D]" size={20} /></div>
                   <div className="flex-1">
                     <h3 className="text-[#0C0E0D] font-bold text-sm">Verificación KYB en progreso</h3>
-                    <p className="text-[#4ADE80] text-xs mt-1">Abriste Lincoin pero aún no terminaste. Completa el proceso para activar tu cuenta empresarial.</p>
+                    <p className="text-[#4ADE80] text-xs mt-1">Falta documentación para activar tu cuenta empresarial. Escribinos y te indicamos cuál.</p>
                   </div>
-                  <DiditKycButton userId={currentUser?.id} kycStatus={ks} showToast={showToast} />
+                  <KycContactoSoporte kycStatus={ks} />
                 </div>
               );
               return (
@@ -1339,9 +1217,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   <div className="w-10 h-10 bg-white/10 rounded-full flex items-center justify-center shrink-0"><ShieldCheck className="text-white" size={20} /></div>
                   <div className="flex-1">
                     <h3 className="text-white font-bold text-sm">Activa tu cuenta — Verificación Empresarial (KYB)</h3>
-                    <p className="text-green-200 text-xs mt-1">Verifica tu empresa con Lincoin para acceder a todos los servicios. El proceso toma menos de 5 minutos.</p>
+                    <p className="text-green-200 text-xs mt-1">Nuestro equipo verifica tu empresa para darte acceso a todos los servicios.</p>
                   </div>
-                  <DiditKycButton userId={currentUser?.id} kycStatus={ks} showToast={showToast} />
+                  <KycContactoSoporte kycStatus={ks} />
                 </div>
               );
           })()}
@@ -1624,7 +1502,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                   ? 'Saldo real de tu cuenta de dispersión — es el que se usa para dispersar.'
                                   : mouvChecked
                                       ? 'Tu saldo interno Lincoin: cargas, envíos entre usuarios y conversiones.'
-                                      : 'Saldo interno Lincoin · consultando Mouv…'}
+                                      : 'Saldo interno Lincoin · consultando…'}
                           </p>
                       </div>
 
@@ -1766,7 +1644,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
               </div>
               {!isKycVerified && (
                   <div className="mt-4">
-                      <DiditKycButton userId={currentUser?.id} kycStatus={currentUser?.kycStatus} showToast={showToast} />
+                      <KycContactoSoporte kycStatus={currentUser?.kycStatus} />
                   </div>
               )}
           </div>
@@ -1804,7 +1682,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                               <button onClick={() => setMfaDisableModalOpen(true)} className="px-3 py-1.5 text-xs font-bold border border-red-200 text-red-600 rounded-lg hover:bg-red-50 transition-colors">Desactivar</button>
                           </div>
                       ) : (
-                          <button onClick={handleOpenMFAEnroll} className="px-4 py-2 text-sm font-bold bg-[#0C0E0D] rounded-lg hover:bg-[#152e52] transition-colors">Activar</button>
+                          <button onClick={handleOpenMFAEnroll} className="px-4 py-2 text-sm font-bold bg-[#0C0E0D] rounded-lg hover:bg-[#161A17] transition-colors">Activar</button>
                       )}
                   </div>
               </div>
@@ -1883,8 +1761,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                       <p className="text-sm font-bold text-slate-700">Ingresa el código de 6 dígitos que aparece en la app</p>
                   </div>
                   {mfaVerifyError && <p className="text-red-500 text-sm text-center mb-3">{mfaVerifyError}</p>}
-                  <input type="text" inputMode="numeric" maxLength={6} value={mfaVerifyCode} onChange={(e) => setMfaVerifyCode(e.target.value.replace(/\D/g, ''))} className="w-full h-14 text-center text-2xl font-bold tracking-[0.4em] border-2 border-slate-200 rounded-xl focus:border-[#0C0E0D] outline-none mb-4 bg-slate-50" placeholder="000000" autoFocus onKeyDown={(e) => e.key === 'Enter' && handleVerifyMFAEnrollment()} />
-                  <button onClick={handleVerifyMFAEnrollment} disabled={mfaVerifyCode.length !== 6 || mfaVerifyLoading} className="w-full h-12 bg-[#0C0E0D] font-bold rounded-xl disabled:opacity-50 hover:bg-[#152e52] transition-colors">
+                  <div className="mb-4">
+                    <CodeInput value={mfaVerifyCode} onChange={setMfaVerifyCode}
+                      onComplete={() => { if (!mfaVerifyLoading) handleVerifyMFAEnrollment(); }}
+                      status={mfaVerifyLoading ? 'verifying' : mfaVerifyError ? 'error' : 'idle'}
+                      tone="light" autoFocus disabled={mfaVerifyLoading}
+                      aria="Código de tu app autenticadora" />
+                  </div>
+                  <button onClick={handleVerifyMFAEnrollment} disabled={mfaVerifyCode.length !== 6 || mfaVerifyLoading} className="w-full h-12 bg-[#0C0E0D] font-bold rounded-xl disabled:opacity-50 hover:bg-[#161A17] transition-colors">
                       {mfaVerifyLoading ? 'Verificando...' : 'Confirmar activación'}
                   </button>
               </div>
@@ -1905,9 +1789,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   ) : (
                       <div className="mb-3">
                           <p className="text-xs text-slate-500 mb-2">Enviamos un código a {disableOtp.to || 'tu correo'}. Ingrésalo:</p>
-                          <input type="text" inputMode="numeric" maxLength={6} value={disableOtp.code}
-                              onChange={e => setDisableOtp(s => ({ ...s, code: e.target.value.replace(/\D/g, '').slice(0, 6), error: '' }))}
-                              className="w-full h-12 text-center text-xl font-bold tracking-[0.4em] border-2 border-slate-200 rounded-xl focus:border-slate-800 outline-none mb-2 bg-slate-50" placeholder="000000" autoFocus />
+                          <div className="mb-2">
+                            <CodeInput value={disableOtp.code}
+                              onChange={v => setDisableOtp(st => ({ ...st, code: v, error: '' }))}
+                              status={disableOtp.error ? 'error' : 'idle'}
+                              tone="light" autoFocus
+                              aria="Código enviado a tu correo" />
+                          </div>
                           <button onClick={sendDisableOtp} disabled={disableOtp.sending} className="text-xs text-slate-500 font-semibold hover:underline">
                               {disableOtp.sending ? 'Reenviando…' : 'Reenviar código'}
                           </button>
@@ -2031,7 +1919,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
           <p className="text-slate-500 max-w-lg mx-auto mb-8">
               Si eres contador, abogado o asesor financiero, únete a nuestro programa de partners y gestiona las finanzas de tus clientes con beneficios exclusivos.
           </p>
-          <button className="bg-[#0C0E0D] px-8 py-3 rounded-xl font-bold hover:bg-[#152e52] transition-colors">
+          <button className="bg-[#0C0E0D] px-8 py-3 rounded-xl font-bold hover:bg-[#161A17] transition-colors">
               Contactar para Alianza
           </button>
       </div>
@@ -2167,7 +2055,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
             </div>
             <h3 className="font-bold text-slate-800">¡Solicitud recibida!</h3>
             <p className="text-slate-500 text-sm">Nuestro equipo de seguros te enviará la cotización en menos de 2 horas. El pago se realiza desde tu saldo Lincoin.</p>
-            <button onClick={() => setSegSolicitado(false)} className="mt-2 px-6 py-2.5 bg-[#0C0E0D] rounded-xl font-bold text-sm hover:bg-[#152e52] transition-colors">
+            <button onClick={() => setSegSolicitado(false)} className="mt-2 px-6 py-2.5 bg-[#0C0E0D] rounded-xl font-bold text-sm hover:bg-[#161A17] transition-colors">
               Nueva cotización
             </button>
           </div>
@@ -2305,7 +2193,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
             <h3 className="font-bold text-slate-800">¡Casi listo!</h3>
             <p className="text-slate-500 text-sm">Nuestro equipo de travel corporativo revisará tu solicitud y te enviará las mejores opciones en menos de 2 horas hábiles.</p>
             <p className="text-xs text-slate-400">El pago se realizará directamente desde tu saldo Lincoin.</p>
-            <button onClick={() => setTravelSearched(false)} className="mt-2 px-6 py-2.5 bg-[#0C0E0D] rounded-xl font-bold text-sm hover:bg-[#152e52] transition-colors">
+            <button onClick={() => setTravelSearched(false)} className="mt-2 px-6 py-2.5 bg-[#0C0E0D] rounded-xl font-bold text-sm hover:bg-[#161A17] transition-colors">
               Nueva búsqueda
             </button>
           </div>
@@ -2318,9 +2206,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
     // Mismo catálogo que el dashboard personal: 4 servicios + Educación.
     const SERVICES = [
       { icon: ArrowLeftRight, label: 'Mesa OTC',    desc: 'Operaciones de alto volumen con tasa negociada.',    color: 'bg-slate-50 text-green-700', action: undefined },
-      { icon: TrendingUp,     label: 'Staking',     desc: 'Genera rendimientos con tu saldo digital.',          color: 'bg-green-50 text-green-700', action: undefined },
-      { icon: Layers,         label: 'Multiwallet', desc: 'Varias billeteras y monedas en una sola cuenta.',    color: 'bg-violet-50 text-violet-700', action: undefined },
-      { icon: ShoppingBag,    label: 'Comercio',    desc: 'Cobra a tus clientes con links y botones de pago.',  color: 'bg-amber-50 text-amber-700', action: undefined },
+      { icon: TrendingUp,     label: 'Rendimientos', desc: 'Genera rendimientos con tu saldo digital, sin bloquear tu dinero.', color: 'bg-green-50 text-green-700', action: undefined },
+      { icon: Layers,         label: 'Multiwallet', desc: 'Varias billeteras USDC con nombre — ideal para separar proyectos y negocios.', color: 'bg-violet-50 text-violet-700', action: undefined },
+      { icon: ShoppingBag,    label: 'Comercio',    desc: 'Cobra a tus clientes con links y botones de pago en USDC y EURC.', color: 'bg-amber-50 text-amber-700', action: undefined },
       { icon: GraduationCap,  label: 'Educación',   desc: 'Paga matrículas y cursos en el exterior.',           color: 'bg-rose-50 text-rose-700', action: undefined },
     ];
     return (
@@ -2404,7 +2292,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                       </div>
                       <a
                           href="mailto:soporte@lincoin.me"
-                          className="w-full bg-[#0C0E0D] text-white py-4 rounded-2xl font-bold text-base hover:bg-[#152e52] transition-colors flex items-center justify-center gap-2"
+                          className="w-full bg-[#0C0E0D] text-white py-4 rounded-2xl font-bold text-base hover:bg-[#161A17] transition-colors flex items-center justify-center gap-2"
                       >
                           <Handshake size={20}/> Solicitar Acceso OTC
                       </a>
@@ -2653,7 +2541,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                       <button
                           disabled={parsedAmt <= 0 || parsedAmt > walletBal || !otcWithdrawAddress.trim() || otcWithdrawSending}
                           onClick={handleOtcWithdraw}
-                          className="w-full bg-[#0C0E0D] py-4 rounded-2xl font-bold text-base disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#152e52] active:scale-[0.98] transition-all duration-150 flex items-center justify-center gap-2 shadow-lg shadow-slate-900/10"
+                          className="w-full bg-[#0C0E0D] py-4 rounded-2xl font-bold text-base disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#161A17] active:scale-[0.98] transition-all duration-150 flex items-center justify-center gap-2 shadow-lg shadow-slate-900/10"
                       >
                           {otcWithdrawSending ? <Loader2 size={18} className="animate-spin"/> : <Send size={18}/>}
                           {otcWithdrawSending ? 'Procesando en blockchain...' : `Retirar ${otcCoin}`}
@@ -2903,7 +2791,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
           </div>
           {/* Footer */}
           <div className="px-6 pt-2 pb-8">
-            <button type="button" onClick={() => setSelectedTx(null)} className="w-full h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-xl transition-colors text-sm">
+            <button type="button" onClick={() => setSelectedTx(null)} className="w-full h-12 bg-[#0C0E0D] hover:bg-[#161A17] font-bold rounded-xl transition-colors text-sm">
               Listo
             </button>
           </div>
@@ -3020,7 +2908,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   </div>
                   <div className="p-4 border-t border-slate-100 flex gap-3">
                       <button onClick={() => setIsWalletOrderModalOpen(false)} className="flex-1 h-11 border border-slate-200 rounded-xl text-slate-600 text-sm font-bold hover:bg-slate-50 transition-colors">Cancelar</button>
-                      <button onClick={saveWalletOrder} className="flex-1 h-11 bg-[#0C0E0D] hover:bg-[#152e52] text-sm font-bold rounded-xl transition-colors">Guardar</button>
+                      <button onClick={saveWalletOrder} className="flex-1 h-11 bg-[#0C0E0D] hover:bg-[#161A17] text-sm font-bold rounded-xl transition-colors">Guardar</button>
                   </div>
               </div>
           </div>
@@ -3089,7 +2977,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                           </div>
                       </div>
 
-                      <button onClick={() => { showToast("Datos copiados al portapapeles"); setIsReceiveModalOpen(false); }} className="w-full py-4 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-transform active:scale-95 flex items-center justify-center gap-2">
+                      <button onClick={() => { showToast("Datos copiados al portapapeles"); setIsReceiveModalOpen(false); }} className="w-full py-4 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#161A17] shadow-lg transition-transform active:scale-95 flex items-center justify-center gap-2">
                           <Copy size={18}/> Copiar Datos Completos
                       </button>
                   </div>
@@ -3156,7 +3044,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                       </span>
                                   </div>
                               </div>
-                              <button onClick={handleAmountConfirm} className="w-full py-4 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-transform active:scale-95">Continuar</button>
+                              <button onClick={handleAmountConfirm} className="w-full py-4 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#161A17] shadow-lg transition-transform active:scale-95">Continuar</button>
                           </div>
                       )}
                       {loadStep === 4 && (
@@ -3202,7 +3090,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                       )}
                                   </div>
                               </div>
-                              <button onClick={handleLoadSubmit} className="w-full py-4 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-transform active:scale-95">
+                              <button onClick={handleLoadSubmit} className="w-full py-4 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#161A17] shadow-lg transition-transform active:scale-95">
                                   Notificar Transferencia
                               </button>
                           </div>
@@ -3307,7 +3195,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                   <div><label className="block text-xs font-bold text-slate-500 uppercase mb-1">Número ID</label><input type="text" className="w-full h-11 px-3 border border-slate-300 rounded-lg"/></div>
                               </div>
                               <div><label className="block text-xs font-bold text-slate-500 uppercase mb-1">Cuenta</label><input type="text" value={sendForm.accountNumber} onChange={(e)=>setSendForm({...sendForm, accountNumber: e.target.value})} className="w-full h-11 px-3 border border-slate-300 rounded-lg"/></div>
-                              <button onClick={() => setSendStep(3)} className="w-full h-12 bg-[#0C0E0D] font-bold rounded-lg hover:bg-[#152e52] mt-4 flex items-center justify-center gap-2 shadow-lg">Revisar Datos</button>
+                              <button onClick={() => setSendStep(3)} className="w-full h-12 bg-[#0C0E0D] font-bold rounded-lg hover:bg-[#161A17] mt-4 flex items-center justify-center gap-2 shadow-lg">Revisar Datos</button>
                           </div>
                       )}
                       {/* STEP 3 BANK: Confirm */}
@@ -3324,7 +3212,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                               </div>
                               <div className="flex gap-3">
                                   <button onClick={() => setSendStep(2)} className="flex-1 py-3 border border-slate-300 text-slate-600 font-bold rounded-xl hover:bg-slate-50 transition-colors">Corregir</button>
-                                  <button onClick={handleSendSubmit} className="flex-1 py-3 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-colors flex items-center justify-center gap-2">{isSending ? <Loader2 className="animate-spin" /> : <><Send size={18}/> Confirmar</>}</button>
+                                  <button onClick={handleSendSubmit} className="flex-1 py-3 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#161A17] shadow-lg transition-colors flex items-center justify-center gap-2">{isSending ? <Loader2 className="animate-spin" /> : <><Send size={18}/> Confirmar</>}</button>
                               </div>
                           </div>
                       )}
@@ -3417,7 +3305,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                               {sendMode === 'cash' && (
                                   <p className="text-sm text-slate-500 mb-4">Un agente se comunicará al <strong>{cashForm.phone || 'número registrado'}</strong> para coordinar el punto de entrega.</p>
                               )}
-                              <button onClick={closeSendModal} className="w-full bg-[#0C0E0D] font-bold py-3 rounded-xl hover:bg-[#152e52] transition-colors">Finalizar</button>
+                              <button onClick={closeSendModal} className="w-full bg-[#0C0E0D] font-bold py-3 rounded-xl hover:bg-[#161A17] transition-colors">Finalizar</button>
                           </div>
                       )}
                   </div>
@@ -3455,7 +3343,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                       {/* Divider Icon */}
                       <div className="flex justify-center -my-6 relative z-10 pointer-events-none">
                           <div className="bg-white border border-slate-200 rounded-full p-1.5 shadow-sm text-slate-400">
-                              <div className="font-serif font-bold text-xs">$</div> 
+                              <div className="font-extrabold text-xs">$</div> 
                           </div>
                       </div>
 
@@ -3489,7 +3377,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                     className="flex-1 border border-slate-300 rounded-lg px-3 py-1.5 text-xs uppercase focus:border-[#0C0E0D] outline-none" 
                                     placeholder="CÓDIGO"
                                   />
-                                  <button onClick={handleApplyCoupon} className="bg-[#0C0E0D] px-3 py-1.5 rounded-lg font-bold text-xs hover:bg-[#152e52]">Aplicar</button>
+                                  <button onClick={handleApplyCoupon} className="bg-[#0C0E0D] px-3 py-1.5 rounded-lg font-bold text-xs hover:bg-[#161A17]">Aplicar</button>
                                   <button onClick={() => setShowCouponInput(false)} className="text-slate-400 hover:text-slate-600"><X size={16}/></button>
                               </div>
                           )}
@@ -3548,7 +3436,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                       <button
                           onClick={handleConvertSubmit}
                           disabled={isConverting}
-                          className="w-full h-12 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg text-sm transition-transform active:scale-95 flex justify-center items-center gap-2"
+                          className="w-full h-12 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#161A17] shadow-lg text-sm transition-transform active:scale-95 flex justify-center items-center gap-2"
                       >
                           {isConverting ? <Loader2 className="animate-spin" /> : 'Confirmar Operación'}
                       </button>
@@ -3570,19 +3458,17 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                   </div>
                   <p className="text-sm text-slate-500 mb-4 text-center">Ingresa el código de 6 dígitos de tu app autenticadora para confirmar el pago.</p>
                   {payVerifyError && <p className="text-red-500 text-sm text-center mb-3">{payVerifyError}</p>}
-                  <input
-                      type="text" inputMode="numeric" maxLength={6}
-                      value={payVerifyCode}
-                      onChange={e => setPayVerifyCode(e.target.value.replace(/\D/g, ''))}
-                      onKeyDown={e => e.key === 'Enter' && handlePayVerifyAndSend()}
-                      className="w-full h-14 text-center text-2xl font-bold tracking-[0.4em] border-2 border-slate-200 rounded-xl focus:border-[#0C0E0D] outline-none mb-4 bg-slate-50"
-                      placeholder="000000"
-                      autoFocus
-                  />
+                  <div className="mb-4">
+                      <CodeInput value={payVerifyCode} onChange={setPayVerifyCode}
+                          onComplete={() => { if (!payVerifyLoading) handlePayVerifyAndSend(); }}
+                          status={payVerifyLoading ? 'verifying' : payVerifyError ? 'error' : 'idle'}
+                          tone="light" autoFocus disabled={payVerifyLoading}
+                          aria="Código de tu app autenticadora" />
+                  </div>
                   <button
                       onClick={handlePayVerifyAndSend}
                       disabled={payVerifyCode.length !== 6 || payVerifyLoading}
-                      className="w-full h-12 bg-[#0C0E0D] font-bold rounded-xl disabled:opacity-50 hover:bg-[#152e52] transition-colors flex items-center justify-center gap-2"
+                      className="w-full h-12 bg-[#0C0E0D] font-bold rounded-xl disabled:opacity-50 hover:bg-[#161A17] transition-colors flex items-center justify-center gap-2"
                   >
                       {payVerifyLoading ? <><Loader2 size={18} className="animate-spin"/> Verificando...</> : 'Confirmar pago'}
                   </button>
@@ -3639,7 +3525,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                   </div>
                               </div>
                               <button onClick={() => setPayLinkStep(2)} disabled={!payLinkAmount || Number(payLinkAmount) <= 0}
-                                  className="w-full py-3.5 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                                  className="w-full py-3.5 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#161A17] transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
                                   Continuar
                               </button>
                           </div>
@@ -3713,8 +3599,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
                                   <div className="flex justify-between"><span className="text-slate-500">Monto</span><span className="font-bold text-[#0C0E0D]">{Number(payLinkAmount).toLocaleString()} {PAY_LINK_COUNTRIES.find(c => c.code === payLinkCountry)?.currency}</span></div>
                               </div>
                               <div className="flex gap-3">
-                                  <button onClick={() => { if (navigator.share) { navigator.share({ title: 'Link de pago LINCOIN', url: payLinkUrl }); } else { navigator.clipboard?.writeText(payLinkUrl); showToast('Link copiado'); } }}
-                                      className="flex-1 py-3 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] transition-colors flex items-center justify-center gap-2">
+                                  <button onClick={() => { if (navigator.share) { navigator.share({ title: 'Link de pago Lincoin', url: payLinkUrl }); } else { navigator.clipboard?.writeText(payLinkUrl); showToast('Link copiado'); } }}
+                                      className="flex-1 py-3 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#161A17] transition-colors flex items-center justify-center gap-2">
                                       <Share2 size={16}/> Compartir
                                   </button>
                                   <button onClick={closePayLink} className="flex-1 py-3 bg-slate-100 text-slate-700 font-bold rounded-xl hover:bg-slate-200 transition-colors">

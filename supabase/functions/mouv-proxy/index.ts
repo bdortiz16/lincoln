@@ -21,6 +21,7 @@
 // ─────────────────────────────────────────────
 import { serve } from 'https://deno.land/std@0.192.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { FIELD_ENC_KEY, decField } from '../_shared/field-crypto.ts'
 // Verificación TOTP en el SERVIDOR (2FA), con Web Crypto NATIVO (sin
 // dependencias externas que pudieran no cargar y tumbar el proxy). Mismo
 // algoritmo que el cliente: SHA1, 6 dígitos, período 30s, ventana ±2. Sin
@@ -36,18 +37,11 @@ function base32Decode(s: string): Uint8Array {
   }
   return new Uint8Array(out)
 }
-// Descifra un campo 'enc:v1:...' con la llave del servidor (FIELD_ENC_KEY).
-// Texto plano legacy pasa igual. Igual que en admin-data.
-const FIELD_ENC_KEY = Deno.env.get('FIELD_ENC_KEY') ?? ''
-async function decField(v: string): Promise<string> {
-  if (typeof v !== 'string' || !v.startsWith('enc:v1:')) return v
-  if (!FIELD_ENC_KEY) throw new Error('FIELD_ENC_KEY missing')
-  const rawKey = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(FIELD_ENC_KEY)))
-  const ck = await crypto.subtle.importKey('raw', rawKey, { name: 'AES-GCM' }, false, ['decrypt'])
-  const bytes = Uint8Array.from(atob(v.slice(7)), c => c.charCodeAt(0))
-  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: bytes.slice(0, 12) }, ck, bytes.slice(12))
-  return new TextDecoder().decode(pt)
-}
+// Cifrado de campos sensibles: la implementación vive en _shared para que
+// NO pueda volver a haber tres copias que se desincronicen (una quedó sin
+// entender el formato nuevo y el 2FA de los envíos falló con el código
+// correcto, sin que ningún build lo detectara).
+
 async function verifyTOTPServer(secret: string, token: string): Promise<boolean> {
   const code = String(token ?? '').replace(/\D/g, '')
   if (code.length !== 6) return false
@@ -88,13 +82,110 @@ function json(status: number, body: unknown): Response {
 // Crédito/reintegro ATÓMICO de un riel COP (bloqueo de fila vía adjust_balances)
 // — evita la carrera de duplicación en reconcile/webhooks (pentest #3). Fallback
 // a read-write si la RPC no está desplegada.
-async function creditBalanceAtomic(userId: string, col: string, delta: number): Promise<void> {
-  const { error } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { [col]: delta } })
-  if (!error) return
-  const { data: u } = await db.from('users').select('balances').eq('id', userId).single()
-  const bals: Record<string, number> = (u?.balances as any) ?? {}
+// Devuelve SI SE ACREDITO O NO. Antes devolvia void y los llamadores asumian
+// que habia funcionado -- marcaban la fila como reembolsada y seguian. Si el
+// ajuste fallaba, la fila quedaba marcada, el CAS impedia reintentarla, y el
+// cliente perdia el reembolso de forma definitiva y sin rastro.
+async function creditBalanceAtomic(userId: string, col: string, delta: number): Promise<boolean> {
+  // `adjust_balances` devuelve {error:'not_found'} o {error:'insufficient'}
+  // como respuesta EXITOSA (200, sin error de transporte). Mirar solo `error`
+  // daba el ajuste por bueno cuando el payload decia que no se hizo nada.
+  const { data: adj, error } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { [col]: delta } })
+  if (!error && !(adj as any)?.error) return true
+  // Un error DE PAYLOAD es una respuesta del servidor, no un problema de
+  // transporte: reintentarlo a mano da el mismo resultado. 'insufficient' sobre
+  // un delta negativo es un faltante real y hay que verlo, no taparlo.
+  if (!error) {
+    await logAudit(userId, 'balance.ajuste_rechazado', { col, delta, motivo: (adj as any)?.error ?? null })
+    return false
+  }
+
+  // Respaldo SOLO para fallos de transporte.
+  const { data: u, error: leerErr } = await db.from('users').select('balances').eq('id', userId).single()
+  // SIN ESTA GUARDA se escribia `balances = { [col]: delta }` cuando la lectura
+  // fallaba: se perdian COP, COP_ACH, USD y todo lo demas del usuario en una
+  // sola escritura. Y este respaldo corre justo cuando la base ya viene
+  // inestable, que es cuando esa lectura tiene mas chance de fallar tambien.
+  if (leerErr || !u || typeof (u as any).balances !== 'object' || (u as any).balances === null) {
+    await logAudit(userId, 'balance.ajuste_fallido', { col, delta, motivo: leerErr?.message ?? 'no se pudo leer el saldo' })
+    return false
+  }
+  const bals: Record<string, number> = ((u as any).balances ?? {}) as any
   const nb = parseFloat((Number(bals[col] ?? 0) + delta).toFixed(2))
-  await db.from('users').update({ balances: { ...bals, [col]: nb } }).eq('id', userId)
+  if (nb < 0) {
+    await logAudit(userId, 'balance.ajuste_negativo', { col, delta, actual: bals[col] ?? 0 })
+    return false
+  }
+  const { error: escribirErr } = await db.from('users').update({ balances: { ...bals, [col]: nb } }).eq('id', userId)
+  if (escribirErr) {
+    await logAudit(userId, 'balance.ajuste_fallido', { col, delta, motivo: escribirErr.message })
+    return false
+  }
+  return true
+}
+
+// ── AVISO AL TELEFONO DEL CLIENTE ─────────────────────────────────
+// Cuando un envio se devuelve, el cliente tiene que enterarse YA: del otro lado
+// hay alguien esperando ese pago y, hasta que no lo sepa, no puede rehacerlo ni
+// avisarle a su beneficiario. El correo llega, pero se lee cuando se lee.
+//
+// Nunca frena nada: si el push falla, el reembolso ya ocurrio y lo que
+// corresponde es seguir.
+async function avisarCliente(userId: string, titulo: string, cuerpo: string, tag: string): Promise<void> {
+  try {
+    await fetch(`${SUPABASE_URL}/functions/v1/push`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+      body: JSON.stringify({ action: 'enviar', user_ids: [userId], titulo, cuerpo, tag, url: '/movimientos', insistir: true }),
+      signal: AbortSignal.timeout(8000),
+    })
+  } catch { /* el aviso es un extra, no una condicion */ }
+}
+
+// ── AVISO AL ADMIN POR DISPERSION SIN CONFIRMAR ───────────────────
+// Los botones de Fallos resuelven el caso, pero no evitan que se repita:
+// alguien tiene que MIRAR. Dos veces ya quedo plata de un cliente en el aire
+// porque nadie se entero a tiempo.
+//
+// Esto avisa una sola vez por dispersion (flag alertaEnviada) cuando lleva
+// demasiado sin confirmarse. No resuelve nada solo -- confirmar o devolver
+// sigue siendo una decision humana contra la consola del proveedor -- pero
+// hace imposible que pase inadvertido.
+async function avisarAdminSinConfirmar(tx: any): Promise<boolean> {
+  const KEY = Deno.env.get('RESEND_API_KEY') ?? ''
+  const FROM = Deno.env.get('OTP_FROM_EMAIL') ?? Deno.env.get('FROM_EMAIL') ?? 'no-reply@lincoin.me'
+  const ADMIN = Deno.env.get('VITE_ADMIN_EMAIL') ?? Deno.env.get('ADMIN_EMAIL') ?? ''
+  if (!KEY || !ADMIN) return false
+  const rd = (tx.raw_data ?? {}) as Record<string, any>
+  const horas = Math.floor((Date.now() - new Date(tx.created_at).getTime()) / 3600_000)
+  const monto = Number(tx.amount ?? 0).toLocaleString('es-CO')
+  try {
+    const r = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: `Lincoin <${FROM}>`, to: [ADMIN],
+        subject: `Dispersion sin confirmar hace ${horas} h - ${monto} COP`,
+        html: `<!doctype html><html><body style="margin:0;padding:24px;background:#F0EFEB;font-family:Arial,sans-serif">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;background:#FFF;border:1px solid rgba(21,24,26,0.08);border-radius:14px"><tr><td style="padding:26px">
+<p style="font-family:'Archivo',Arial,sans-serif;font-size:21px;font-weight:800;color:#15181A;margin:0">Lincoin<span style="color:#22A35C">.</span></p>
+<p style="font-size:17px;font-weight:800;color:#15181A;margin:20px 0 8px">Una dispersion lleva ${horas} h sin confirmar</p>
+<p style="font-size:13px;color:#5C625E;line-height:1.6;margin:0 0 16px">El proveedor acepto el envio pero no confirmo que se pagara, y el saldo del cliente ya esta debitado. Hay que cotejarlo en la consola del proveedor y resolverlo: confirmarlo o devolver el dinero.</p>
+<table width="100%" style="font-size:12.5px">
+<tr><td style="padding:8px 0;border-top:1px solid rgba(21,24,26,0.06);color:#5C625E">Monto</td><td align="right" style="padding:8px 0;border-top:1px solid rgba(21,24,26,0.06);color:#15181A;font-weight:700">${monto} COP</td></tr>
+<tr><td style="padding:8px 0;border-top:1px solid rgba(21,24,26,0.06);color:#5C625E">Beneficiario</td><td align="right" style="padding:8px 0;border-top:1px solid rgba(21,24,26,0.06);color:#15181A;font-weight:700">${String(rd.beneficiary ?? '-')}</td></tr>
+<tr><td style="padding:8px 0;border-top:1px solid rgba(21,24,26,0.06);color:#5C625E">Referencia</td><td align="right" style="padding:8px 0;border-top:1px solid rgba(21,24,26,0.06);color:#15181A;font-weight:700;font-family:monospace">${String(rd.providerRef ?? '-')}</td></tr>
+</table>
+<p style="font-size:12.5px;color:#5C625E;margin:18px 0 0;line-height:1.6">Se resuelve en <b style="color:#15181A">Admin &rarr; Fallos</b>, con los botones Devolver y reembolsar / Confirmar como pagada.</p>
+</td></tr></table></body></html>`,
+      }),
+    })
+    if (!r.ok) { console.error(`[mouv] aviso admin rechazado HTTP ${r.status}`); return false }
+    return true
+  } catch (e) {
+    console.error('[mouv] fallo el aviso al admin:', (e as Error)?.message)
+    return false
+  }
 }
 
 // Dispara el correo transaccional del envío directamente contra
@@ -117,7 +208,7 @@ async function notifyTx(txId: number | string | null): Promise<void> {
 
 // Llamada autenticada a Mouv. Timeout duro para no colgar el proxy si Mouv
 // no responde. Devuelve { ok, status, data, path } sin lanzar.
-async function mouvFetch(path: string, init: RequestInit = {}): Promise<{ ok: boolean; status: number; data: any; path: string }> {
+async function mouvFetch(path: string, init: RequestInit = {}, _reintento = false): Promise<{ ok: boolean; status: number; data: any; path: string }> {
   try {
     const r = await fetch(`${MOUV_BASE}${path}`, {
       ...init,
@@ -129,6 +220,24 @@ async function mouvFetch(path: string, init: RequestInit = {}): Promise<{ ok: bo
       },
       signal: init.signal ?? AbortSignal.timeout(20000),
     })
+    // 429: Mouv dice en `Retry-After` los segundos EXACTOS que faltan, y una
+    // 429 no consume cuota. Se espera y se reintenta UNA vez.
+    //
+    // SOLO EN LECTURAS. Reintentar solo un POST que mueve plata seria buscarse
+    // un doble pago: aunque una 429 significa que no se proceso, el reintento
+    // automatico sobre una operacion financiera es exactamente el tipo de
+    // atajo que termina pagando dos veces. Esas vuelven con el 429 y decide
+    // quien llamo.
+    const metodo = String(init.method ?? 'GET').toUpperCase()
+    if (r.status === 429 && !_reintento && metodo === 'GET') {
+      const seg = Number(r.headers.get('Retry-After') ?? '1')
+      // Tope de 15 s: esperar un minuto adentro de una edge function la deja
+      // colgada y el cliente ve un timeout en vez de un error entendible.
+      const espera = Math.min(Number.isFinite(seg) && seg > 0 ? seg : 1, 15)
+      await new Promise(res => setTimeout(res, espera * 1000))
+      return mouvFetch(path, init, true)
+    }
+
     const text = await r.text()
     let data: any = null
     try { data = text ? JSON.parse(text) : null } catch { data = text }
@@ -221,11 +330,37 @@ async function mouvResolveBrebKey(rawKey: string, keyType?: string): Promise<{
   return { found: false, matchedKey: key, raw: lastRaw }
 }
 
+// El id que Mouv le pone a la operación, sacado de su respuesta al ENVIAR.
+//
+// Se leía solo `data.id`. Pero el emparejamiento del listado (idsDe) ya
+// tolera cuatro nombres distintos —id, transactionId, reference, externalId—
+// porque Mouv no es consistente entre endpoints. Leer un solo nombre al
+// enviar era la mitad de esa tolerancia, y si el id venía con otro nombre o
+// un nivel más adentro, se perdía: sin él, la conciliación queda sin su mejor
+// ancla y tiene que adivinar por monto y nombre.
+//
+// NO se acepta `reference`: esa suele ser LA NUESTRA, la que mandamos como
+// idempotencia. Guardarla como si fuera el id del proveedor haría que la
+// consulta de estado pidiera un id que Mouv no conoce.
+function refDeMouv(d: any): string | undefined {
+  const sacar = (o: any): string | undefined => {
+    if (!o || typeof o !== 'object') return undefined
+    for (const k of ['id', 'transactionId', 'transaction_id', 'txId', 'externalId']) {
+      const v = o[k]
+      const s = typeof v === 'string' ? v.trim() : typeof v === 'number' ? String(v) : ''
+      if (s) return s
+    }
+    return undefined
+  }
+  // Nivel de arriba primero; después los envoltorios que usan algunas APIs.
+  return sacar(d) ?? sacar(d?.data) ?? sacar(d?.transaction) ?? sacar(d?.result)
+}
+
 async function mouvPayout(
   rail: 'BREB' | 'ACH',
   recipient: Record<string, any>,
   amountCop: number,
-): Promise<{ ok: boolean; status: number; data: any; providerRef?: string; notImplemented?: boolean; targetName?: string; targetDocument?: string }> {
+): Promise<{ ok: boolean; status: number; data: any; providerRef?: string; referencia?: string; notImplemented?: boolean; targetName?: string; targetDocument?: string }> {
   // Mouv trabaja en CENTAVOS (confirmado contra el saldo real). El monto que
   // llega es en PESOS → se convierte a centavos para /transfers/send.
   const amountCents = Math.round(amountCop * 100)
@@ -264,19 +399,57 @@ async function mouvPayout(
     // dos envíos iguales chocarían. El sufijo corto evita la colisión.
     const refBase = cleanField(recipient.reference) ?? 'Pago Lincoin'
     const refUniq = `${refBase} ${Date.now().toString(36).slice(-5)}`
-    const r = await mouvFetch('/transfers/send', {
-      method: 'POST',
-      body: JSON.stringify({
-        amount: amountCents,
-        destination: { brebKey: { type: keyType, value: sendKey } },
-        targetName,
-        targetDocument,
-        reference: refUniq,
-      }),
+    const cuerpoEnvio = JSON.stringify({
+      amount: amountCents,
+      destination: { brebKey: { type: keyType, value: sendKey } },
+      targetName,
+      targetDocument,
+      reference: refUniq,
     })
+    const t0 = Date.now()
+    let r = await mouvFetch('/transfers/send', { method: 'POST', body: cuerpoEnvio })
+
+    // UN 5xx O UN TIMEOUT NO SIGNIFICAN "NO SALIO".
+    //
+    // Significan que no sabemos: la transferencia pudo haberse despachado y
+    // haberse cortado la respuesta. Hasta ahora eso se trataba como fallo y se
+    // REEMBOLSABA al cliente en el acto -- si la plata igual habia salido, se
+    // pagaba dos veces.
+    //
+    // Mouv da la salida: `reference` es idempotency key por 60 segundos.
+    // Reenviar EXACTAMENTE lo mismo no crea un segundo envio; devuelve el que
+    // ya existe. Asi que ante un 5xx se pregunta de nuevo con la misma
+    // referencia: si habia salido, vuelve con su id; si no, vuelve el error de
+    // verdad.
+    //
+    // Solo dentro de la ventana de 60 s. Pasada, un reenvio SI crearia una
+    // transferencia nueva, que es exactamente lo que se esta evitando.
+    const transitorio = r.status === 0 || r.status >= 500
+    if (transitorio && Date.now() - t0 < 45_000) {
+      const reintento = await mouvFetch('/transfers/send', { method: 'POST', body: cuerpoEnvio })
+      // SOLO se acepta el reintento si vuelve OK.
+      //
+      // Es tentador quedarse tambien con un 4xx "porque es mas informativo", y
+      // eso es justo lo que no hay que hacer: si el primer POST SI despacho la
+      // transferencia y solo se perdio la respuesta, el reintento con la misma
+      // referencia puede volver 409 (referencia duplicada, o ventana
+      // antiestructuracion). Tomar ese 409 como respuesta convierte un
+      // desenlace DESCONOCIDO en un "rechazo claro", y el rechazo claro
+      // reembolsa: el beneficiario cobrado y el cliente reintegrado, hasta 12
+      // millones por evento, sin que nadie se entere -- la fila queda 'Fallido'
+      // y la conciliacion no mira las Fallido.
+      //
+      // Un reintento tras un 5xx solo aporta cuando confirma que la
+      // transferencia existe. Cualquier otra cosa deja el desenlace como lo que
+      // es: desconocido.
+      if (reintento.ok) r = reintento
+    }
     // Devolver el titular RESUELTO (oficial, de resolve-key) para que el
     // comprobante muestre el nombre/documento reales del beneficiario.
-    return { ok: r.ok, status: r.status, data: r.data, providerRef: r.data?.id, targetName, targetDocument }
+    // La referencia EXACTA que se mando vuelve con el resultado. Sin esto no
+    // quedaba guardada en ningun lado -- `reason` tiene la base, no el sufijo
+    // unico -- y era otra forma de no poder reencontrar el envio en Mouv.
+    return { ok: r.ok, status: r.status, data: r.data, providerRef: refDeMouv(r.data), referencia: refUniq, targetName, targetDocument }
   }
 
   // ── ACH — mismo endpoint /transfers/send con destino de cuenta bancaria.
@@ -299,7 +472,7 @@ async function mouvPayout(
       reference: recipient.reference ?? 'Pago Lincoin',
     }),
   })
-  return { ok: r.ok, status: r.status, data: r.data, providerRef: r.data?.id, targetName: recipient.holderName, targetDocument: recipient.documentNumber }
+  return { ok: r.ok, status: r.status, data: r.data, providerRef: refDeMouv(r.data), targetName: recipient.holderName, targetDocument: recipient.documentNumber }
 }
 
 // ── Estado REAL de una transferencia Mouv ───────────────────────────
@@ -313,10 +486,46 @@ function normalizeMouvState(raw: any): { verdict: MouvVerdict; state: string } {
   const pickState = (o: any): string => {
     if (o == null) return ''
     if (typeof o === 'string') return o
-    return String(o.status ?? o.state ?? o.transferStatus ?? o.result ?? o?.data?.status ?? o?.data?.state ?? '')
+    // `kaminStatus` VA PRIMERO, y es el que importa.
+    //
+    // GET /wallets/transactions/:id devuelve 200 con el estado en ESE campo,
+    // no en `status`. Como no estaba en esta lista, una respuesta perfectamente
+    // buena se leia como "sin estado legible": se descartaba, se seguian
+    // probando rutas adivinadas, y la consulta terminaba en "respuesta
+    // inesperada (HTTP 200)".
+    //
+    // Eso fue LA causa de que un envio ya COMPLETED en Mouv se quedara en
+    // "Procesando" en Lincoin durante dias. El proveedor contestaba bien todo
+    // el tiempo; le estabamos preguntando por un campo que no existe.
+    return String(
+      o.kaminStatus ?? o.status ?? o.state ?? o.transferStatus ?? o.result
+      ?? o?.data?.kaminStatus ?? o?.data?.status ?? o?.data?.state ?? '',
+    )
   }
   const s = pickState(raw).trim().toUpperCase()
   if (!s) return { verdict: 'unknown', state: '' }
+
+  // ── ESTADOS DOCUMENTADOS DE MOUV ──────────────────────────────────
+  // El ciclo de vida real de /transfers/send es: PENDING, AWAITING_APPROVAL,
+  // EXECUTING, COMPLETED, FAILED, EXPIRED.
+  //
+  // Tres de esos seis NO los reconocian las expresiones regulares de abajo, que
+  // se escribieron a ciegas cuando la doc estaba bloqueada: AWAITING_APPROVAL,
+  // EXECUTING y EXPIRED caian todos en 'unknown'. Un EXPIRED clasificado como
+  // "no se" es plata que no salio y que nadie reembolsa.
+  //
+  // Por eso la tabla EXPLICITA va PRIMERO y las regex quedan solo de red para
+  // estados no documentados. Adivinar esta bien cuando no hay otra; con la
+  // lista oficial a la vista, adivinar es un error.
+  const OFICIALES: Record<string, MouvVerdict> = {
+    PENDING: 'pending',
+    AWAITING_APPROVAL: 'pending',   // esperando firma, todavia no salio
+    EXECUTING: 'pending',
+    COMPLETED: 'completed',
+    FAILED: 'returned',             // la consola de Mouv lo muestra "Devuelto"
+    EXPIRED: 'returned',            // vencio sin ejecutarse: la plata no salio
+  }
+  if (OFICIALES[s]) return { verdict: OFICIALES[s], state: s }
   // DEVUELTO / RETURNED / RECHAZADO / FALLIDO / CANCELADO → dinero NO salió.
   // Términos EXPLÍCITOS de devolución (se quitó 'ERROR' genérico y 'OK\b'/'DONE'
   // ambiguos): un falso 'returned' dispara un reembolso, así que el veredicto
@@ -329,15 +538,47 @@ function normalizeMouvState(raw: any): { verdict: MouvVerdict; state: string } {
   return { verdict: 'unknown', state: s }
 }
 
-// Consulta el estado de una transferencia Mouv por su id. La doc de Mouv está
-// bloqueada para este backend, así que se prueban rutas GET candidatas (igual
-// que se hizo con el recaudo PSE). Un 404 = ruta inexistente; la primera que
-// responda 2xx con un estado utilizable gana.
-async function mouvTransferStatus(id: string): Promise<{ found: boolean; verdict: MouvVerdict; state: string; raw: any; path?: string }> {
+// Consulta el estado de una transferencia Mouv por su id.
+//
+// LA RUTA BUENA ES /wallets/transactions/:id — ESTA DOCUMENTADA.
+//   La doc de Mouv dice, textual, "Pollea el estado via GET
+//   /wallets/transactions/:id o espera webhooks", y el `id` que devuelve
+//   /transfers/send es ese mismo UUID, que es justo lo que guardamos en
+//   raw_data.providerRef.
+//
+//   Hasta ahora se probaban seis rutas ADIVINADAS -- /transfers/:id,
+//   /transactions/:id, /payments/:id y variantes -- y NINGUNA era la correcta.
+//   Las seis daban 404, el veredicto salia 'unknown' siempre, y por eso ningun
+//   envio Bre-B cambiaba de estado NUNCA: ni los exitosos ni, sobre todo, los
+//   devueltos. El 19 de septiembre la consola de Mouv mostraba cuatro envios
+//   DEVUELTOS que en Lincoin seguian diciendo "en curso", con el saldo del
+//   cliente debitado y la plata ya de vuelta en la cuenta.
+//
+//   El prefijo /wallets es el mismo de /wallets/balance, que si funcionaba: la
+//   pista estuvo todo el tiempo dos funciones mas abajo.
+//
+// Las adivinadas quedan DESPUES, solo por si un dia cambia la ruta oficial.
+//
+// LIMITE DE LECTURA: 100 req/min. Por eso la ruta oficial responde y se CORTA
+// ahi. Antes se probaban las siete siempre que no hubiera respuesta util, y un
+// barrido de cien envios gastaba setecientas consultas: se comia el limite,
+// empezaba a recibir 429 y las que seguian quedaban sin veredicto.
+type EstadoMouv = {
+  found: boolean; verdict: MouvVerdict; state: string; raw: any
+  path?: string; limitado?: boolean
+  // Por que NO hubo veredicto. Sin esto, "sin respuesta del proveedor" tapa por
+  // igual una ruta caida, una llave sin permiso, un id que Mouv no reconoce y
+  // una fila nuestra sin referencia guardada -- cuatro problemas con cuatro
+  // arreglos distintos. Es el mismo remedio que el diagnostico de KYT.
+  diag?: { motivo: string; ruta?: string; httpStatus?: number; cuerpo?: string }
+}
+
+async function mouvTransferStatus(id: string, creadaAt?: string | null): Promise<EstadoMouv> {
   const tid = String(id ?? '').trim()
-  if (!tid) return { found: false, verdict: 'unknown', state: '', raw: null }
+  if (!tid) return { found: false, verdict: 'unknown', state: '', raw: null, diag: { motivo: 'la fila no tiene providerRef guardado' } }
   const enc = encodeURIComponent(tid)
   const paths = [
+    `/wallets/transactions/${enc}`,   // ← la documentada
     `/transfers/${enc}`, `/transfers/status/${enc}`, `/transfers/${enc}/status`,
     `/transfer/${enc}`, `/transactions/${enc}`, `/payments/${enc}`,
   ]
@@ -349,9 +590,46 @@ async function mouvTransferStatus(id: string): Promise<{ found: boolean; verdict
   const bodyMentionsId = (data: any): boolean => {
     try { return JSON.stringify(data ?? '').includes(tid) } catch { return false }
   }
+  // ¿El 404 es "esa transaccion no existe" o "esa ruta no existe"? Mouv
+  // responde TRANSACTION_NOT_FOUND para lo primero.
+  const esIdInexistente = (data: any): boolean => {
+    try { return JSON.stringify(data ?? '').includes('TRANSACTION_NOT_FOUND') } catch { return false }
+  }
+
+  // PERO UN 404 RECIEN ENVIADO NO SIGNIFICA "NO EXISTE".
+  // Los movimientos tardan en aparecer del lado de Mouv -- las notificaciones
+  // de su consola llegan antes que el listado. Asi que un TRANSACTION_NOT_FOUND
+  // sobre un envio de hace dos minutos es "todavia no aparecio", no "ese id no
+  // es nuestro", y tratarlo como respuesta definitiva deja la dispersion
+  // marcada como desconocida para siempre.
+  //
+  // Recien pasada esta ventana el 404 empieza a significar algo.
+  const MIN_PARA_CREER_404 = 30
+  const edadMin = creadaAt ? (Date.now() - new Date(creadaAt).getTime()) / 60000 : Number.POSITIVE_INFINITY
+  const confiarEn404 = !Number.isFinite(edadMin) || edadMin >= MIN_PARA_CREER_404
+  const recorte = (d: any): string => {
+    try { return (typeof d === 'string' ? d : JSON.stringify(d ?? '')).slice(0, 400) } catch { return '(ilegible)' }
+  }
   let lastRaw: any = null
+  let primera: { ruta: string; httpStatus: number; cuerpo: string } | null = null
   for (const p of paths) {
     const r = await mouvFetch(p, { method: 'GET' })
+    // Se guarda SIEMPRE lo que contesto la ruta oficial, responda lo que
+    // responda: es lo unico que permite distinguir los cuatro motivos.
+    if (!primera) primera = { ruta: p, httpStatus: r.status, cuerpo: recorte(r.data) }
+    // 429 = se acabo el cupo de lectura. NO es "no se pudo confirmar": es "no
+    // preguntamos". Se corta y se avisa, para que el barrido no siga quemando
+    // cupo y para no confundir un limite con un estado desconocido.
+    if (r.status === 429) return { found: false, verdict: 'unknown', state: '', raw: r.data, limitado: true, diag: { motivo: 'limite de consultas (429)', ...primera } }
+    if (r.status === 404 && esIdInexistente(r.data)) {
+      if (!confiarEn404) {
+        return {
+          found: false, verdict: 'unknown', state: '', raw: r.data, path: p,
+          diag: { motivo: `el envio todavia no aparece en Mouv (${Math.round(edadMin)} min; su listado va detras de sus notificaciones)`, ...primera },
+        }
+      }
+      return { found: false, verdict: 'unknown', state: '', raw: r.data, path: p, diag: { motivo: 'Mouv no reconoce ese id (TRANSACTION_NOT_FOUND)', ...primera } }
+    }
     if (r.status === 404 || r.status === 0) continue
     lastRaw = r.data
     if (r.ok && bodyMentionsId(r.data)) {
@@ -360,7 +638,183 @@ async function mouvTransferStatus(id: string): Promise<{ found: boolean; verdict
       // Ruta válida y del mismo id pero sin estado legible → seguir intentando.
     }
   }
-  return { found: false, verdict: 'unknown', state: '', raw: lastRaw }
+  const motivo = !primera ? 'ninguna ruta respondio'
+    : primera.httpStatus === 401 || primera.httpStatus === 403 ? `la llave no tiene permiso para leer (HTTP ${primera.httpStatus})`
+    : primera.httpStatus === 404 ? 'la ruta oficial devolvio 404'
+    : primera.httpStatus === 0 ? 'no se pudo conectar con Mouv'
+    : `respuesta inesperada (HTTP ${primera.httpStatus})`
+  return { found: false, verdict: 'unknown', state: '', raw: lastRaw, diag: { motivo, ...(primera ?? {}) } }
+}
+
+// ── LISTADO DE MOVIMIENTOS DE MOUV ────────────────────────────────
+// GET /wallets/transactions?type=TRANSFER_OUT&rail=BREB&from=...  (scope READ)
+//
+// Esto resuelve el problema de raiz. La conciliacion por id necesita el UUID
+// que Mouv devuelve al enviar, y el 19 de septiembre resulto que NINGUNA de 75
+// filas lo tenia guardado: dos fallas encadenadas -- ruta equivocada e id
+// ausente -- de las que solo se veia la primera.
+//
+// El listado no necesita el id: trae `status` ya puesto, asi que UNA consulta
+// concilia todos los envios de la ventana en vez de una por envio. De paso
+// deja de rozar el limite de 100 lecturas por minuto.
+async function mouvListarBrebOut(desdeISO: string): Promise<{ ok: boolean; items: any[]; diag?: any; crudo?: string }> {
+  const desdeMs = new Date(desdeISO).getTime()
+  const items: any[] = []
+  let primera: any = null
+  let crudo = ''
+
+  // SIN FILTROS EN LA URL, A PROPOSITO.
+  // El primer intento pedia ?type=TRANSFER_OUT&rail=BREB&from=... y Mouv
+  // devolvio CERO movimientos con HTTP 200 -- que es lo peor que puede pasar:
+  // una respuesta exitosa y vacia se lee como "no hay nada que conciliar" y no
+  // como "preguntaste mal". No sabemos si fue el enum, el formato de `from` o
+  // la combinacion; lo que si sabemos es que no hace falta arriesgarse. Se pide
+  // el listado pelado y se filtra ACA, donde se puede ver lo que llego.
+  for (let page = 0; page < 10; page++) {
+    const r = await mouvFetch(`/wallets/transactions?limit=100&page=${page}`, { method: 'GET' })
+    if (page === 0) {
+      try { crudo = (typeof r.data === 'string' ? r.data : JSON.stringify(r.data ?? '')).slice(0, 500) } catch { crudo = '(ilegible)' }
+      primera = { ruta: '/wallets/transactions', httpStatus: r.status, cuerpo: crudo }
+    }
+    if (!r.ok) {
+      const motivo = r.status === 401 || r.status === 403 ? `la llave no tiene permiso de lectura (HTTP ${r.status})`
+        : r.status === 429 ? 'limite de consultas (429)'
+        : r.status === 404 ? 'la ruta del listado devolvio 404'
+        : r.status === 0 ? 'no se pudo conectar con Mouv'
+        : `respuesta inesperada (HTTP ${r.status})`
+      return { ok: false, items, diag: { motivo, ...primera }, crudo }
+    }
+    // La forma de la respuesta tampoco se da por sentada: items, data, results,
+    // o directamente un array.
+    const d: any = r.data
+    const lote: any[] = Array.isArray(d) ? d
+      : Array.isArray(d?.items) ? d.items
+      : Array.isArray(d?.data) ? d.data
+      : Array.isArray(d?.results) ? d.results
+      : Array.isArray(d?.transactions) ? d.transactions
+      : []
+    items.push(...lote)
+    if (lote.length === 0) break
+    // Cortar cuando la pagina ya es mas vieja que la ventana: sin esto se
+    // pagina el historico entero para nada.
+    const masViejo = lote.reduce((min: number, it: any) => {
+      const t = new Date(it?.createdAt ?? it?.created_at ?? 0).getTime()
+      return Number.isFinite(t) && t > 0 ? Math.min(min, t) : min
+    }, Number.POSITIVE_INFINITY)
+    if (Number.isFinite(masViejo) && Number.isFinite(desdeMs) && masViejo < desdeMs) break
+    if (d?.hasMore === false) break
+  }
+
+  // Filtrado LOCAL. Se queda con lo que es una salida Bre-B, y lo que no trae
+  // esos campos NO se descarta: es preferible un candidato de mas -- que el
+  // emparejamiento por monto va a descartar igual -- que perder el movimiento
+  // que se esta buscando por un nombre de campo distinto al esperado.
+  // Lo que NO dice ser una salida se conserva como candidato (puede venir con
+  // otro nombre de campo), pero se MARCA. El emparejamiento por monto solo --
+  // el ultimo recurso -- exige salida confirmada: un recaudo REVERSADO del
+  // mismo importe, que entra sin `type`, podria emparejarse con una dispersion
+  // y hacerla ver como devuelta. Seria reembolsar un envio que si salio.
+  const esSalidaBreb = (it: any): boolean => {
+    const tipo = String(it?.type ?? it?.direction ?? '').toUpperCase()
+    const rail = String(it?.rail ?? '').toUpperCase()
+    if (tipo && !/OUT|DEBIT|TRANSFER_OUT|SALIDA/.test(tipo)) return false
+    if (rail && rail !== 'BREB') return false
+    if (tipo) it.__salidaConfirmada = true
+    return true
+  }
+  // FILTRO REAL POR FECHA. `desdeISO` se usaba SOLO para cortar la paginacion,
+  // asi que el universo de candidatos eran hasta 1000 movimientos de meses
+  // atras. Toda la proteccion del emparejamiento por monto se apoya en "un
+  // unico movimiento con ese importe EN LA VENTANA" -- y esa ventana no
+  // existia. Un envio de la semana pasada por el mismo monto era candidato.
+  const dentroDeVentana = (it: any): boolean => {
+    if (!Number.isFinite(desdeMs)) return true
+    const t = new Date(it?.createdAt ?? it?.created_at ?? 0).getTime()
+    // Sin fecha legible NO se descarta: se deja para que lo filtren las otras
+    // condiciones. Descartarlo seria perder el movimiento buscado por un campo
+    // con otro nombre.
+    if (!Number.isFinite(t) || t <= 0) return true
+    return t >= desdeMs
+  }
+  return { ok: true, items: items.filter(it => esSalidaBreb(it) && dentroDeVentana(it)), crudo }
+}
+
+// Emparejar UNA fila nuestra con un movimiento de Mouv cuando no tenemos su id.
+//
+// ES DELIBERADAMENTE ESTRICTO. Emparejar mal no es un error cosmetico: marca
+// como devuelto un envio que si se pago (y le regala la plata al cliente) o da
+// por pagado uno que volvio. Por eso exige que coincidan el MONTO EXACTO en
+// centavos Y el documento del beneficiario, y que haya UN solo candidato sin
+// reclamar. Dos envios identicos a la misma persona no se emparejan: quedan
+// para que los mire una persona, que es la respuesta correcta cuando no se
+// puede distinguir cual es cual.
+function emparejarConMouv(rd: any, montoCop: number, items: any[], reclamados: Set<string>, creadaAt?: string | null): { item: any; via: string } | null {
+  const libres = items.filter(it => !reclamados.has(String(it?.id ?? '')))
+  const centavos = Math.round(Number(montoCop) * 100)
+  if (!(centavos > 0)) return null
+  // El monto en centavos es el ancla de TODOS los niveles. Nunca se empareja
+  // algo cuyo monto no calce exacto.
+  const mismoMonto = libres.filter(it => Math.round(Number(it?.amount ?? 0)) === centavos)
+  if (!mismoMonto.length) return null
+
+  const unico = (xs: any[], via: string) => (xs.length === 1 ? { item: xs[0], via } : null)
+  // El id del movimiento puede venir en varios campos, y con la forma que la
+  // consola muestra (TX-PG-483AC9), no necesariamente como UUID.
+  const idsDe = (it: any) => [it?.id, it?.transactionId, it?.reference, it?.externalId]
+    .map((v: any) => String(v ?? '').trim()).filter(Boolean)
+  const limpiar = (v: any) => String(v ?? '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase().replace(/[^A-Z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim()
+
+  // 1) La referencia EXACTA que mandamos. Sin ambiguedad posible: la generamos
+  //    nosotros con un sufijo unico por envio.
+  // Se mira el id / la referencia venga como venga: la consola de Mouv los
+  // muestra como TX-PG-483AC9, no como el UUID del ejemplo de la doc. Y ACA no
+  // se ancla al monto: un id que coincide identifica la operacion por si solo.
+  const refExacta = String(rd?.providerReference ?? rd?.providerRef ?? '').trim()
+  if (refExacta) {
+    const r = unico(libres.filter(it => idsDe(it).includes(refExacta)), 'referencia exacta')
+    if (r) return r
+  }
+
+  // 2) Documento del beneficiario. Solo esta en las filas que alcanzaron a
+  //    guardar el dato del resolve-key.
+  const doc = String(rd?.documentNumber ?? rd?.recipient?.documentNumber ?? '').replace(/\D/g, '')
+  if (doc) {
+    const r = unico(mismoMonto.filter(it => String(it?.targetDocument ?? '').replace(/\D/g, '') === doc), 'monto + documento')
+    if (r) return r
+  }
+
+  // 3) Nombre del beneficiario, normalizado (sin tildes, sin mayusculas, sin
+  //    puntuacion). El nombre que guardamos puede ser el que escribio el
+  //    cliente y no el oficial del directorio, asi que se compara flojo.
+  const nom = limpiar(rd?.beneficiary ?? rd?.recipient?.holderName)
+  if (nom) {
+    const r = unico(mismoMonto.filter(it => limpiar(it?.targetName) === nom), 'monto + nombre')
+    if (r) return r
+  }
+
+  // 4) Solo el monto, y SOLO si en toda la ventana hay UN unico movimiento de
+  //    Mouv con ese importe exacto al centavo. Es el ultimo recurso para las
+  //    filas viejas que no guardaron ni documento ni id.
+  //
+  //    El riesgo real de emparejar mal es regalar plata (marcar devuelto algo
+  //    que se pago) o darle por pagado al cliente algo que volvio. La unicidad
+  //    en la ventana es la proteccion: si hay dos envios por el mismo importe
+  //    no se toca ninguno y los resuelve una persona, que es la respuesta
+  //    correcta cuando no se puede distinguir cual es cual.
+  //    Ademas exige que el movimiento SE DECLARE salida y que este cerca en el
+  //    tiempo de nuestra fila. Sin la cercania, el "unico con ese importe"
+  //    puede ser un envio de otro dia -- y, cuando concilia un cliente puntual,
+  //    de OTRO cliente, porque el listado es de toda la tesoreria.
+  const nuestroMs = new Date(creadaAt ?? 0).getTime()
+  const cerca = (it: any): boolean => {
+    if (!Number.isFinite(nuestroMs) || nuestroMs <= 0) return false
+    const t = new Date(it?.createdAt ?? it?.created_at ?? 0).getTime()
+    if (!Number.isFinite(t) || t <= 0) return false
+    return Math.abs(t - nuestroMs) <= 6 * 60 * 60 * 1000
+  }
+  return unico(mismoMonto.filter(it => it?.__salidaConfirmada && cerca(it)), 'solo por monto (unico y del mismo momento)')
 }
 
 // ── Cotización de comisión Mouv (Bre-B) ────────────────────────────
@@ -368,10 +822,17 @@ async function mouvTransferStatus(id: string): Promise<{ found: boolean; verdict
 // { feeBreakdown:{ fixedFee, variableFee, subtotalFee, ivaAmount,
 //   totalCharged }, totalCost, canAfford }  (valores en CENTAVOS)
 // La comisión SE COBRA AL CLIENTE: el débito del riel es monto + comisión.
-async function mouvQuoteBreb(amountCop: number, keyValue: string): Promise<{ ok: boolean; feeCop: number; fixedCop: number; variableCop: number; ivaCop: number; raw: any }> {
+// OJO: hoy NO se usa — el precio al cliente sale de brebFeeCop(), nuestra
+// propia tarifa, y por eso el body incompleto nunca rompio nada. Queda correcta
+// para el dia que se quiera cotizar contra el proveedor de verdad.
+//
+// `keyType` es OBLIGATORIO en /transfers/quote (PHONE | EMAIL | ALPHANUM |
+// NRIC). Faltaba. Se deriva igual que en el envio: el que devuelve resolve-key
+// si lo hay, y si no se infiere del formato de la llave.
+async function mouvQuoteBreb(amountCop: number, keyValue: string, keyType?: string): Promise<{ ok: boolean; feeCop: number; fixedCop: number; variableCop: number; ivaCop: number; raw: any }> {
   const r = await mouvFetch('/transfers/quote', {
     method: 'POST',
-    body: JSON.stringify({ amount: Math.round(amountCop * 100), keyValue }),
+    body: JSON.stringify({ amount: Math.round(amountCop * 100), keyValue, keyType: brebTypeToMouv(keyType ?? '', keyValue) }),
   })
   const d: any = r.data ?? {}
   const fb = d.feeBreakdown ?? {}
@@ -409,6 +870,13 @@ async function finityCall(action: string, userId: string, extra: Record<string, 
 // envío (override con el secret ACH_FEE_COP). Finity no devuelve costs en
 // la orden — doc oficial: { id, status, amount, destination_account }.
 const ACH_FEE_COP = Number(Deno.env.get('ACH_FEE_COP') ?? '2500') || 2500
+
+// Los motivos de un envío: los mismos que Finity pregunta en su pantalla
+// ("Selecciona la razón del pago"). Copia de lib/motivosEnvio.ts.
+const MOTIVOS_ENVIO: Record<string, string> = {
+  proveedores: 'Pago a proveedores', servicios: 'Pago de servicios', nomina: 'Pago de nómina',
+  gastos: 'Gastos generales', compensacion: 'Transferencia a mi cuenta de compensación', otro: 'Otro',
+}
 // ── Comisión de envío Bre-B ─────────────────────────────────────────
 // Mouv le cobra a Lincoin por CADA transferencia: 0,10% del monto + $800 fijos.
 // El 0,10% NO se re-cobra aquí: ya se le cobra al cliente el 0,10% al RECIBIR
@@ -430,24 +898,121 @@ async function finityPayoutAch(userId: string, recipient: Record<string, any>, a
   // 1) Cuenta destino en Finity (destination_id). Reusar si el contacto ya
   //    la trae; si no, registrarla ahora.
   let destId: string | null = recipient.finityId ?? null
+  // Solo dígitos: un número guardado con espacios, puntos o guiones se
+  // rechazaba en Finity y el fallo se veía como un error genérico.
+  const accDigits = String(recipient.accountNumber ?? '').replace(/\D/g, '')
   if (!destId) {
+    // El código de banco puede venir como nombre ('Nequi'), como nombre en
+    // otra caja ('NEQUI', 'nequi') o ya como código ('1507'). El mapa era
+    // sensible a mayúsculas y exacto: cualquier variante se enviaba tal cual
+    // como "código", y Finity la rechazaba.
+    const bankRaw = String(recipient.bankCode ?? '').trim()
+    const bankKey = Object.keys(BANK_CODES_CO).find(k => k.toLowerCase() === bankRaw.toLowerCase())
+    const bankCode = /^\d{3,5}$/.test(bankRaw) ? bankRaw : (bankKey ? BANK_CODES_CO[bankKey] : bankRaw)
+
+    // Tipo de documento en el formato que acepta Finity.
+    const docRaw = String(recipient.documentType ?? 'CC').toUpperCase().trim()
+    const docType = docRaw === 'PAS' || docRaw === 'PASAPORTE' ? 'CE' : (['CC', 'CE', 'NIT'].includes(docRaw) ? docRaw : 'CC')
+    const docNumber = String(recipient.documentNumber ?? '').replace(/\D/g, '')
+    const holder = String(recipient.holderName ?? '').trim()
+
+    // Validar ANTES de llamar: si falta un dato, decirlo con nombre propio en
+    // vez de mandar el hueco y traducir después un rechazo del proveedor.
+    const faltan = [
+      !accDigits && 'número de cuenta',
+      !bankCode && 'banco',
+      !holder && 'nombre del titular',
+      !docNumber && 'documento del titular',
+    ].filter(Boolean)
+    if (faltan.length) {
+      return { ok: false, feeCop: 0, error: { step: 'destino', httpStatus: null, path: null, body: { message: `Al contacto le faltan datos: ${faltan.join(', ')}. Edítalo y vuelve a intentar.` } } }
+    }
+
     const body = {
       data: {
         account: {
           geo: 'CO',
-          account_type: recipient.accountType === 'corriente' || recipient.accountType === 'CORRIENTE' || recipient.accountType === 'checking' ? 'checking' : 'savings',
-          account_number: String(recipient.accountNumber ?? ''),
-          financial_institution_code: BANK_CODES_CO[String(recipient.bankCode ?? '')] ?? String(recipient.bankCode ?? ''),
-          account_holder_fullname: String(recipient.holderName ?? ''),
-          account_holder_id_type: String(recipient.documentType ?? 'CC') === 'PAS' ? 'CE' : String(recipient.documentType ?? 'CC'),
-          account_holder_id_number: String(recipient.documentNumber ?? ''),
+          account_type: ['corriente', 'CORRIENTE', 'checking'].includes(String(recipient.accountType)) ? 'checking' : 'savings',
+          account_number: accDigits,
+          financial_institution_code: bankCode,
+          account_holder_fullname: holder,
+          account_holder_id_type: docType,
+          account_holder_id_number: docNumber,
         },
       },
     }
     const ea = await finityCall('create_external_account', userId, body)
     destId = ea?.data?.id ?? ea?.data?.external_account_id ?? ea?.data?.account_id ?? null
-    if (!ea?.ok || !destId) return { ok: false, feeCop: 0, error: { step: 'destino', httpStatus: ea?.status ?? null, path: ea?.path ?? null, body: ea?.data ?? null } }
+
+    // La cuenta YA estaba inscrita en Finity. Pasaba siempre que un intento
+    // anterior creó el destino y luego falló el retiro: el id no se guardaba
+    // (solo se persistía en el camino de éxito), así que el siguiente envío
+    // volvía a crearla y Finity la rechazaba por duplicada. Desde el panel de
+    // Finity sí funcionaba, porque allá el destino ya existe y ese paso no se
+    // repite. Se busca el existente y se reutiliza.
+    if (!ea?.ok || !destId) {
+      const list = await finityCall('external_accounts', userId)
+      const rows: any[] = list?.data?.data ?? list?.data?.results ?? (Array.isArray(list?.data) ? list.data : [])
+      const hit = rows.find((r: any) => {
+        const acc = String(r?.account_number ?? r?.account?.account_number ?? '').replace(/\D/g, '')
+        return acc && acc === accDigits
+      })
+      const foundId = hit?.id ?? hit?.external_account_id ?? null
+      if (foundId) destId = String(foundId)
+      else return { ok: false, feeCop: 0, error: { step: 'destino', httpStatus: ea?.status ?? null, path: ea?.path ?? null, body: ea?.data ?? null } }
+    }
   }
+  // 1.b) La cuenta destino tiene que estar APROBADA por el banco. El estado
+  //      que muestra Lincoin no sirve como control: vive en los contactos del
+  //      usuario, que el propio cliente puede escribir. El único que manda es
+  //      el proveedor, así que se le pregunta a él antes de mover plata.
+  //
+  //      Se miran TODOS los campos de estado y gana el más restrictivo: una
+  //      cuenta puede venir "active" (el registro existe) y a la vez en
+  //      revisión (el banco no la aprueba todavía). Son cosas distintas.
+  //
+  //      FALLA ABIERTO a propósito: si no se puede consultar la lista, o la
+  //      cuenta no aparece, el envío sigue. Un control que no logra verificar
+  //      no puede frenar una transferencia legítima — y si de verdad no está
+  //      aprobada, el proveedor la rechaza y el saldo se devuelve.
+  try {
+    const lista = await finityCall('external_accounts', userId)
+    const filas: any[] = lista?.data?.data ?? lista?.data?.results ?? (Array.isArray(lista?.data) ? lista.data : [])
+    const fila = filas.find((r: any) => {
+      const rid = String(r?.id ?? r?.external_account_id ?? r?.account_id ?? '')
+      if (destId && rid && rid === destId) return true
+      const acc = String(r?.account_number ?? r?.account?.account_number ?? '').replace(/\D/g, '')
+      return !!acc && acc === accDigits
+    })
+    if (fila) {
+      const textos = [fila.verification_status, fila.estado, fila.state, fila.status]
+        .filter((v: unknown) => v !== undefined && v !== null && String(v).trim() !== '')
+        .map((v: unknown) => String(v).toLowerCase())
+      const rechazada = textos.some(s => /rechaz|reject|denied|declin|fail/.test(s))
+      // Aprobada SOLO con una palabra que lo diga. "active" o "enabled"
+      // describen el registro, no el veredicto: una cuenta en revisión también
+      // es un registro activo.
+      const aprobada = textos.some(s => /aprob|approv|verified/.test(s))
+      const enRevision = !rechazada && !aprobada && textos.length > 0
+      if (rechazada || enRevision) {
+        await logAudit(userId, 'finity.payout.destino_no_aprobado', {
+          destinationId: destId, cuenta: accDigits, estadoProveedor: textos.join(' · '),
+        })
+        return {
+          ok: false, feeCop: 0,
+          error: {
+            step: 'destino', httpStatus: null, path: null,
+            body: {
+              message: rechazada
+                ? 'El banco rechazó esta cuenta destino. Revisa los datos del beneficiario e inscríbela de nuevo.'
+                : 'El banco todavía está validando esta cuenta destino. Podrás transferirle apenas la apruebe.',
+            },
+          },
+        }
+      }
+    }
+  } catch { /* no se pudo verificar: sigue, el proveedor tiene la última palabra */ }
+
   // 2) Orden de retiro:
   //    POST /v0/withdrawal-orders { destination_id, amount, currency:'COP' }
   //    ⚠️ amount va en PESOS ENTEROS — NO en centavos. VERIFICADO CONTRA
@@ -457,7 +1022,17 @@ async function finityPayoutAch(userId: string, recipient: Record<string, any>, a
   //    → 201 { id, status: PROCESSING|COMPLETED|FAILED, destination_account }
   //    (NO devuelve costs — el precio por transferencia es ACH_FEE_COP.)
   const requestedCop = Math.round(amountCop)
-  const w = await finityCall('create_withdrawal', userId, { data: { amount: requestedCop, currency: 'COP', destination_id: destId } })
+  // El motivo del envío va con la orden (es lo que Finity pregunta en su
+  // pantalla: "Selecciona la razón del pago"). Si Finity rechaza el campo
+  // con un 400 —que no crea nada—, se manda la orden sin él y queda en la
+  // auditoría qué contestó, para ajustar el nombre del campo con su doc.
+  const cuerpoBase = { amount: requestedCop, currency: 'COP', destination_id: destId }
+  const motivoTexto = MOTIVOS_ENVIO[String(recipient.motivo ?? '')] ?? ''
+  let w = await finityCall('create_withdrawal', userId, { data: motivoTexto ? { ...cuerpoBase, reason: motivoTexto, description: motivoTexto } : cuerpoBase })
+  if (motivoTexto && !w?.ok && Number(w?.status) === 400) {
+    await logAudit(userId, 'finity.payout.motivo_rechazado', { motivo: motivoTexto, status: w?.status ?? null, respuesta: w?.data ?? null })
+    w = await finityCall('create_withdrawal', userId, { data: cuerpoBase })
+  }
   const od: any = w?.data ?? {}
   // El error DEBE conservar status/path/cuerpo — con '{}' pelado es
   // imposible saber si fue ruta (404), auth (401) o validación (400).
@@ -496,6 +1071,17 @@ async function validCaller(req: Request, payload: any): Promise<{ ok: boolean; u
   // (El "AdminBypass <password>" se eliminó: secreto compartido que se filtraba
   //  en el bundle del frontend. El admin real entra por JWT con role='admin'.)
   const jwt = authHeader.replace('Bearer ', '').trim()
+
+  // LLAMADA INTERNA (cron / otra edge function). La service_role key no es un
+  // JWT de usuario: db.auth.getUser() la rechaza, asi que sin esto un cron no
+  // podia correr la conciliacion y todo dependia de que alguien tuviera una
+  // pantalla abierta.
+  //
+  // Solo la sabe el servidor: no viaja al navegador ni esta en el bundle.
+  if (jwt && SERVICE_KEY && jwt === SERVICE_KEY) {
+    return { ok: true, userId: payload?.user_id ?? payload?.userId ?? null, admin: true, viaJwt: true }
+  }
+
   if (jwt) {
     try {
       const { data: { user } } = await Promise.race([
@@ -536,7 +1122,7 @@ serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
 
   if (!MOUV_API_KEY) {
-    return json(200, { error: 'mouv_not_configured', message: 'Falta el secret MOUV_API_KEY en la edge function.' })
+    return json(200, { error: 'mouv_not_configured', message: 'El servicio de envíos no está disponible en este momento. Intenta más tarde o escríbenos a soporte@lincoin.me.' })
   }
 
   const payload = await req.json().catch(() => ({}))
@@ -638,13 +1224,20 @@ serve(async (req: Request) => {
   }
 
   const caller = await validCaller(req, payload)
-  if (!caller.ok) return json(401, { error: 'unauthorized', message: 'unauthorized (mouv-proxy v1)' })
+  if (!caller.ok) return json(401, { error: 'unauthorized', message: 'Tu sesión expiró. Vuelve a iniciar sesión.' })
 
   // ── Consultar una llave Bre-B (directorio Mouv): devuelve el TITULAR
   //    (nombre, documento) y su BANCO para autollenar la inscripción de
   //    beneficiario. Cualquier usuario autenticado puede consultar (es su
   //    propio beneficiario). Es de solo LECTURA — no mueve dinero.
   if (action === 'resolve_breb_key') {
+    // Devuelve NOMBRE COMPLETO, DOCUMENTO y banco del titular de la llave.
+    // Exigía solo `caller.ok`, que se concede con un user_id cualquiera que
+    // exista en la tabla, sin sesión real: con la llave pública y un uuid se
+    // podía enumerar nombre+cédula+banco de cualquier colombiano con llave
+    // Bre-B, fuera cliente o no. Ahora exige sesión PROBADA y propia.
+    const duenoBreb = requireOwner(caller, payload)
+    if (!duenoBreb) return json(403, { error: 'forbidden', message: 'Esta consulta requiere una sesión válida. Vuelve a iniciar sesión.' })
     const rawKey = String((payload as any).keyValue ?? (payload as any).key ?? '').trim()
     if (!rawKey) return json(400, { error: 'missing_key', message: 'Falta la llave.' })
     const rr = await mouvResolveBrebKey(rawKey, String((payload as any).keyType ?? ''))
@@ -780,35 +1373,205 @@ serve(async (req: Request) => {
     // Ventana de conciliación para las ya-Completadas: una devolución bancaria
     // llega en horas/pocos días. Se revisan las Completadas de los últimos N
     // días (default 5), más TODAS las que sigan 'Procesando'. Overridable.
+    // Dos modos, mismo motor:
+    //   · BARRIDO (por defecto): 5 dias hacia atras, para atrapar devoluciones
+    //     tardias sobre envios que ya figuraban completados.
+    //   · VIGILANCIA (`recientesMin`): solo lo de los ultimos N minutos. Es
+    //     barato -- una consulta al listado y unas pocas filas -- asi que puede
+    //     correr cada minuto. Es el que hace que un envio fallido se detecte y
+    //     se devuelva en minutos y no en horas: justo despues de enviar es
+    //     cuando hay alguien esperando del otro lado.
+    const recientesMin = Number(payload?.recientesMin ?? 0) || 0
     const days = Number(Deno.env.get('BREB_RECONCILE_DAYS') ?? '5') || 5
-    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
-    const { data: rows } = await db.from('transactions')
+    const since = recientesMin > 0
+      ? new Date(Date.now() - recientesMin * 60 * 1000).toISOString()
+      : new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
+    // TODOS LOS CLIENTES (solo admin). La conciliacion por cliente depende de
+    // que ESE cliente abra la app, y una devolucion no puede quedar esperando a
+    // que a alguien se le ocurra entrar: la plata ya volvio y el saldo sigue
+    // debitado. Con esto la mesa cierra el circulo desde el panel.
+    const todos = caller.admin && caller.viaJwt && payload?.todos === true
+    let q = db.from('transactions')
       .select('id, user_id, amount, currency, status, raw_data, created_at')
-      .eq('type', 'dispersion').eq('user_id', userId).eq('currency', 'COP_BREB')
-      .in('status', ['Procesando', 'Completado'])
+      .eq('type', 'dispersion').eq('currency', 'COP_BREB')
+      .in('status', recientesMin > 0 ? ['Procesando'] : ['Procesando', 'Completado'])
       .gte('created_at', since)
       .order('created_at', { ascending: false })
-      .limit(30)
+      .limit(todos ? 80 : 30)   // lectura = 100 req/min; 80 deja aire
+    if (!todos) q = q.eq('user_id', userId)
+    const { data: rows } = await q
+
+    // UNA sola consulta trae el estado de todos los envios de la ventana. Se
+    // usa como fuente principal; la consulta por id queda de respaldo para lo
+    // que no aparezca en el listado.
+    const listado = await mouvListarBrebOut(since)
+    const porId = new Map<string, any>()
+    for (const it of listado.items) { const k = String(it?.id ?? ''); if (k) porId.set(k, it) }
+    // Un movimiento de Mouv no puede quedar emparejado con dos filas nuestras.
+    //
+    // SE SIEMBRA DESDE LA BASE, no solo con las filas de este batch. Sembrarlo
+    // con `rows` dejaba libre todo movimiento ya pegado a una fila que este
+    // lote no trae: las Rechazado (que el filtro de estados excluye), las de
+    // otro usuario cuando concilia un cliente puntual, y las que caen fuera del
+    // limite. Un movimiento devuelto ya reembolsado quedaba disponible para
+    // reembolsar una SEGUNDA fila.
+    const reclamados = new Set<string>()
+    const { data: yaPegados } = await db.from('transactions')
+      .select('raw_data').eq('type', 'dispersion').eq('currency', 'COP_BREB')
+      .not('raw_data->>providerRef', 'is', null)
+      .gte('created_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
+      .limit(2000)
+    for (const f of (yaPegados ?? []) as any[]) {
+      const k = String((f.raw_data ?? {}).providerRef ?? '')
+      if (k) reclamados.add(k)
+    }
+    for (const tx of (rows ?? []) as any[]) {
+      const k = String(((tx.raw_data ?? {}) as any).providerRef ?? '')
+      if (k) reclamados.add(k)
+    }
+
     const out: any[] = []
     for (const tx of (rows ?? []) as any[]) {
       const rd = (tx.raw_data ?? {}) as Record<string, any>
       if (rd.refunded) { out.push({ id: tx.id, result: 'already_refunded' }); continue }
-      const ref = String(rd.providerRef ?? '')
-      const st = ref ? await mouvTransferStatus(ref) : { found: false, verdict: 'unknown' as MouvVerdict, state: '' }
+      // EL ID DE MOUV, BUSCADO EN SERIO.
+      // El barrido del 19 de septiembre devolvio "75 x la fila no tiene
+      // providerRef guardado": ni una sola de 75 filas traia el id, o no lo
+      // traia DONDE se lo buscaba. Antes se leia un unico campo y, si el id
+      // vivia en otro lado, la conciliacion se declaraba imposible sin haber
+      // preguntado nada.
+      //
+      // Se prueban los nombres plausibles y se DICE cual sirvio: si el id
+      // estaba todo este tiempo bajo otra llave, la conciliacion arranca ya; y
+      // si de verdad no esta, el diagnostico lista las llaves que SI tiene la
+      // fila, que es lo unico que permite arreglarlo sin adivinar otra vez.
+      const buscarRef = (d: any): { ref: string; campo: string } => {
+        const cand: Array<[string, any]> = [
+          ['providerRef', d?.providerRef], ['provider_ref', d?.provider_ref],
+          ['mouvId', d?.mouvId], ['transferId', d?.transferId], ['transfer_id', d?.transfer_id],
+          ['id', d?.id], ['raw.id', d?.raw?.id], ['response.id', d?.response?.id],
+          ['data.id', d?.data?.id], ['provider.id', d?.provider?.id],
+        ]
+        for (const [campo, v] of cand) {
+          const sv = v == null ? '' : String(v).trim()
+          // NO se exige forma de UUID. La doc pone un UUID de ejemplo, pero la
+          // consola de Mouv muestra los ids como TX-PG-483AC9, y un filtro que
+          // solo acepta UUID tira justo el id que sirve. Lo unico que se
+          // descarta es un id puramente numerico, que seria el NUESTRO.
+          if (sv.length >= 6 && !/^\d+$/.test(sv)) return { ref: sv, campo }
+        }
+        return { ref: '', campo: '' }
+      }
+      const { ref: refGuardado, campo: campoRef } = buscarRef(rd)
+
+      // ORDEN: (1) el id que ya teniamos, buscado en el listado; (2) si no hay
+      // id, emparejar por monto + documento; (3) consulta por id, para lo que
+      // sea mas viejo que el listado.
+      let ref = refGuardado
+      let origenRef = campoRef
+      let item: any = ref ? porId.get(ref) ?? null : null
+
+      if (!item && !ref && listado.ok) {
+        const m = emparejarConMouv(rd, Number(tx.amount ?? 0), listado.items, reclamados, tx.created_at)
+        if (m) {
+          item = m.item
+          ref = String(m.item.id ?? '')
+          origenRef = m.via
+          reclamados.add(ref)
+          // Se GUARDA para que la proxima vez sea exacto y no haya que volver
+          // a emparejar. Queda marcado como emparejado y no como dato de
+          // primera mano: dentro de seis meses eso tiene que distinguirse.
+          // Ultima verificacion contra la base: entre que se leyo `reclamados` y
+          // ahora, otra corrida pudo haber pegado este mismo movimiento a otra
+          // fila. Dos filas con el mismo providerRef significan "estos dos
+          // envios distintos son el mismo", y a partir de ahi toda conciliacion
+          // posterior saca la conclusion equivocada.
+          const { data: chocaCon } = await db.from('transactions')
+            .select('id').eq('type', 'dispersion').filter('raw_data->>providerRef', 'eq', ref).neq('id', tx.id).limit(1)
+          if (chocaCon?.length) {
+            out.push({ id: tx.id, result: 'emparejamiento_duplicado', providerRef: ref })
+            continue
+          }
+          await db.from('transactions').update({
+            raw_data: { ...rd, providerRef: ref, providerRefOrigen: `conciliacion_por_listado: ${m.via}`, providerRefAt: new Date().toISOString() },
+          }).eq('id', tx.id)
+          rd.providerRef = ref
+        }
+      }
+
+      const st: EstadoMouv = item
+        ? (() => { const n = normalizeMouvState(item); return { found: !!n.state, verdict: n.verdict, state: n.state, raw: item, path: '/wallets/transactions' } })()
+        : ref ? await mouvTransferStatus(ref, tx.created_at)
+        : {
+            found: false, verdict: 'unknown', state: '', raw: null,
+            diag: {
+              // Los datos van DENTRO del motivo a proposito: el panel ya lo
+              // imprime, asi que se ven sin esperar a que se redespliegue la
+              // web. Un diagnostico que necesita otro despliegue para leerse
+              // llega tarde.
+              motivo: listado.ok
+                ? `sin emparejar · Mouv devolvio ${listado.items.length} salidas Bre-B · la fila tiene monto=${Number(tx.amount ?? 0)} doc=${rd.documentNumber ? 'si' : 'NO'} nombre=${rd.beneficiary ? 'si' : 'NO'} ref=${rd.providerReference ? 'si' : 'NO'}`
+                : `no se pudo leer el listado de Mouv: ${listado.diag?.motivo ?? 'sin detalle'}`,
+              ...(listado.ok ? {} : { ruta: listado.diag?.ruta, httpStatus: listado.diag?.httpStatus }),
+              // Las LLAVES de raw_data, no sus valores: hacen falta para saber
+              // donde quedo el id, y los valores traen datos del beneficiario.
+              cuerpo: listado.ok
+                ? `movimientos Bre-B leidos de Mouv: ${listado.items.length} · source=${String(rd.source ?? '?')} · campos: ${Object.keys(rd).join(', ').slice(0, 220)}`
+                : String(listado.diag?.cuerpo ?? ''),
+            },
+          }
+      // Cupo de lectura agotado: se para ACA. Seguir el barrido solo suma 429s,
+      // y cada fila que se salte quedaria marcada "sin confirmar" por un limite
+      // nuestro, no por algo que dijo el proveedor.
+      if ((st as any).limitado) {
+        out.push({ id: tx.id, result: 'limite_proveedor' })
+        return json(200, { ok: true, checked: (rows ?? []).length, results: out, limiteProveedor: true, message: 'Mouv corto por limite de consultas (100/min). Volve a intentar en un minuto: lo ya conciliado quedo guardado.' })
+      }
       // 1) DEVOLUCIÓN confirmada por Mouv → Rechazado + REEMBOLSO (idempotente).
       if (st.found && st.verdict === 'returned') {
         const refund = Number(tx.amount ?? 0) + Number(rd.feeCop ?? 0)
         const railCol = String(tx.currency ?? 'COP_BREB')
         // CAS: reclamar el reembolso ANTES de tocar el saldo. Si una ejecución
         // paralela ya reclamó, `claimed` viene vacío y NO se acredita de nuevo.
+        // El motivo que da Mouv (`errorMessage` de /wallets/transactions/:id)
+        // se guarda: "fue devuelto" sin decir por que obliga a abrir la consola
+        // del proveedor para contestarle al cliente lo mas basico.
+        const motivoProveedor = (() => {
+          const m = (st.raw as any)?.errorMessage ?? (st.raw as any)?.data?.errorMessage
+          return typeof m === 'string' && m.trim() ? m.trim().slice(0, 300) : null
+        })()
         const { data: claimed } = await db.from('transactions').update({
           status: 'Rechazado',
-          raw_data: { ...rd, refunded: true, refundCop: refund, providerState: st.state, returnedAt: new Date().toISOString(), reconciledAt: new Date().toISOString() },
+          raw_data: { ...rd, refunded: true, refundCop: refund, providerState: st.state, providerError: motivoProveedor, returnedAt: new Date().toISOString(), reconciledAt: new Date().toISOString() },
         }).eq('id', tx.id).filter('raw_data->>refunded', 'is', null).select('id')
         if (!claimed?.length) { out.push({ id: tx.id, result: 'refund_already_claimed' }); continue }
-        await creditBalanceAtomic(userId, railCol, refund)
-        await logAudit(userId, 'mouv.reconcile_breb.refunded', { txId: tx.id, refund, providerState: st.state, providerRef: ref })
+        // El reembolso va al DUEÑO DE LA FILA, no a quien llamó. Con el barrido
+        // de todos los clientes, `userId` es el admin que apretó el botón —
+        // acreditarle a él la devolución de otro sería mover plata a la cuenta
+        // equivocada.
+        const duenio = String(tx.user_id)
+        const acreditado = await creditBalanceAtomic(duenio, railCol, refund)
+        // SI NO SE ACREDITO, SE SUELTA EL CLAIM.
+        // El CAS ya marco la fila como reembolsada; dejarla asi con el saldo sin
+        // tocar seria perder el reembolso para siempre, porque ninguna corrida
+        // posterior vuelve a intentarlo. Se revierte y la proxima lo reintenta.
+        if (!acreditado) {
+          await db.from('transactions').update({
+            status: tx.status,
+            raw_data: { ...rd, reembolsoFallido: true, reembolsoFallidoAt: new Date().toISOString(), providerState: st.state },
+          }).eq('id', tx.id)
+          await logAudit(duenio, 'mouv.reconcile_breb.reembolso_fallido', { txId: tx.id, refund, providerRef: ref })
+          out.push({ id: tx.id, result: 'reembolso_fallido', refund })
+          continue
+        }
+        await logAudit(duenio, 'mouv.reconcile_breb.refunded', { txId: tx.id, refund, providerState: st.state, providerError: motivoProveedor, providerRef: ref })
         await notifyTx(tx.id) // correo "tu envío fue devuelto · saldo reintegrado"
+        // Y al telefono, que es donde se lee en el momento.
+        await avisarCliente(duenio,
+          'Tu envío fue devuelto',
+          `El envío de ${Number(tx.amount ?? 0).toLocaleString('es-CO')} a ${String((rd as any).beneficiary ?? 'tu beneficiario')} no llegó a destino. `
+          + `Ya te reintegramos ${refund.toLocaleString('es-CO')} COP a tu saldo${motivoProveedor ? `. Motivo: ${motivoProveedor}` : '.'}`,
+          `dev-${tx.id}`)
         out.push({ id: tx.id, result: 'refunded', refund })
         continue
       }
@@ -822,28 +1585,820 @@ serve(async (req: Request) => {
         out.push({ id: tx.id, result: 'completed' })
         continue
       }
-      // 3) No se pudo confirmar el estado (Mouv no expone un estado consultable
-      //    confiable —doc bloqueada—) o sigue pendiente. Bre-B se completa en
-      //    SEGUNDOS: si una dispersión lleva 'Procesando' más que la gracia, se
-      //    marca Completado (optimista) para no dejarla atascada. La devolución,
-      //    si ocurre, la atrapa el webhook de Mouv o un estado 'returned' futuro
-      //    (que revierte a Rechazado + reembolso). Overridable por secret.
+      // 3) NO se pudo confirmar el estado: Mouv no respondio o devolvio algo
+      //    que no se entiende. 'unknown' significa "no se", no "salio bien".
+      //
+      //    ACA HUBO DOS AUTO-COMPLETADOS, Y LOS DOS MINTIERON.
+      //    El primero marcaba Completado a los 2 minutos; el 16 de septiembre
+      //    le cobro a un cliente 2.900.000 COP por una dispersion que Mouv
+      //    habia RECHAZADO. Se reemplazo por una ventana de 3 horas, con el
+      //    argumento de que una devolucion llega antes. El 19 de septiembre la
+      //    consola de Mouv mostraba CUATRO envios devueltos del mismo dia que
+      //    en Lincoin seguian en "en curso" — y que esa ventana iba a dar por
+      //    liquidados esa misma tarde, por 5.609.000 COP que ya estaban de
+      //    vuelta en la cuenta y que nadie iba a reembolsar.
+      //
+      //    La ventana no era una aproximacion razonable: existia unicamente
+      //    porque la consulta de estado estaba rota, y tapaba justo el caso que
+      //    tenia que detectar. Ahora /wallets/transactions/:id responde de
+      //    verdad y cada envio recibe un veredicto real en segundos, asi que se
+      //    elimina: no hace falta suponer nada.
+      //
+      //    Lo que queda sin confirmar se queda en Procesando, que es la verdad,
+      //    y se marca para que lo mire una persona. Que algo quede "atascado"
+      //    es un problema de operacion; decirle a un cliente que su plata llego
+      //    cuando no llego es otra cosa. Si esto se llena de atascadas, el
+      //    problema es que Mouv no responde — y eso hay que verlo, no taparlo.
       if (tx.status === 'Procesando') {
-        const graceMin = Number(Deno.env.get('BREB_AUTOCOMPLETE_MIN') ?? '2') || 2
-        const ageMs = Date.now() - new Date(tx.created_at).getTime()
-        if (ageMs >= graceMin * 60 * 1000) {
-          const { data: done } = await db.from('transactions').update({
-            status: 'Completado',
-            raw_data: { ...rd, settledAt: new Date().toISOString(), autoCompleted: true, reconciledAt: new Date().toISOString() },
-          }).eq('id', tx.id).eq('status', 'Procesando').select('id')
-          if (done?.length) { await notifyTx(tx.id); out.push({ id: tx.id, result: 'auto_completed' }); continue }
+        const ageMin = Math.round((Date.now() - new Date(tx.created_at).getTime()) / 60000)
+
+        // Bre-B liquida en segundos. Pasado un rato sin confirmar, deja de ser
+        // "en curso" y pasa a ser algo que alguien tiene que mirar contra la
+        // consola del proveedor.
+        const revisar = ageMin >= 15
+        // Aviso al admin UNA sola vez, pasada una hora. Quince minutos es el
+        // umbral para marcarla en pantalla; una hora es cuando ya dejo de ser
+        // "esta tardando" y hay plata de alguien sin destino conocido.
+        // El aviso llega a los 30 minutos: tiene que haber margen para frenar
+        // una devolucion antes de que la ventana la de por liquidada.
+        if (ageMin >= 30 && !rd.alertaEnviada) {
+          const enviado = await avisarAdminSinConfirmar(tx)
+          // Misma guarda: este update tambien escribe el snapshot viejo y
+          // borraria `refunded` si otra corrida reembolso en el medio.
+          if (enviado) await db.from('transactions').update({ raw_data: { ...rd, alertaEnviada: true, alertaAt: new Date().toISOString() } }).eq('id', tx.id).filter('raw_data->>refunded', 'is', null)
         }
-        out.push({ id: tx.id, result: 'still_processing', providerState: st.state || null })
+        // OJO CON ESTE UPDATE: reescribe raw_data desde el snapshot `rd`, que
+        // se leyo al empezar el ciclo. Si mientras tanto OTRA corrida reembolso
+        // esta fila, escribir el snapshot viejo BORRA su flag `refunded` -- que
+        // es la unica llave de idempotencia del reembolso. La fila quedaria
+        // 'Rechazado' pero sin la marca, y el siguiente que apriete Reembolsar
+        // acredita por segunda vez.
+        //
+        // Con `refunded is null` el update simplemente no aplica si ya la
+        // reembolsaron. `.eq('status','Procesando')` no alcanzaba: el reembolso
+        // deja la fila en 'Rechazado', pero la carrera se resuelve por orden de
+        // llegada y el snapshot viejo puede ganar.
+        await db.from('transactions').update({
+          raw_data: {
+            ...rd,
+            providerState: st.state || null,
+            sinConfirmarDesde: rd.sinConfirmarDesde ?? new Date().toISOString(),
+            ultimaRevision: new Date().toISOString(),
+            revisionManual: revisar || undefined,
+          },
+        }).eq('id', tx.id).eq('status', 'Procesando').filter('raw_data->>refunded', 'is', null)
+        out.push({
+          id: tx.id,
+          // "Esperando firma" NO es lo mismo que "procesando": nadie esta
+          // moviendo esa plata, esta detenida hasta que una persona firme en
+          // el panel del proveedor. A las 24 h expira y se revierte sola.
+          result: st.state === 'AWAITING_APPROVAL' ? 'espera_firma'
+            : revisar ? 'sin_confirmar_revisar' : 'still_processing',
+          minutos: ageMin,
+          providerState: st.state || null,
+          // El diagnostico solo para la mesa: nombra al proveedor y puede
+          // traer detalle de su respuesta.
+          ...(caller.admin ? { diag: st.diag ?? null, providerRef: ref || null, campoRef: origenRef || null } : {}),
+        })
+      } else if (rd.autoCompleted) {
+        // Quedó Completado por el auto-completado viejo: NUNCA lo confirmó el
+        // proveedor. Se marca para revisión, pero no se revierte sola — puede
+        // haber salido de verdad, y un reembolso indebido es igual de malo.
+        // Lo resuelve un humano contra la consola, con force_return.
+        await db.from('transactions').update({
+          raw_data: { ...rd, revisionManual: true, ultimaRevision: new Date().toISOString(), providerState: st.state || null },
+        }).eq('id', tx.id).filter('raw_data->>refunded', 'is', null)
+        out.push({ id: tx.id, result: 'completado_sin_confirmar', providerState: st.state || null })
       } else {
-        out.push({ id: tx.id, result: 'still_completed' })
+        out.push({ id: tx.id, result: 'still_completed', ...(caller.admin ? { diag: st.diag ?? null } : {}) })
       }
     }
-    return json(200, { ok: true, checked: (rows ?? []).length, results: out })
+    return json(200, {
+      ok: true, checked: (rows ?? []).length, results: out,
+      // El crudo del listado va SOLO a la mesa: si Mouv vuelve a devolver cero
+      // movimientos, esto es lo unico que dice por que. Sin el, "0 movimientos"
+      // es indistinguible de "no preguntaste bien".
+      ...(caller.admin ? { listado: { ok: listado.ok, salidasBreb: listado.items.length, crudo: listado.crudo ?? null, diag: listado.diag ?? null } } : {}),
+    })
+  }
+
+  // ── SONDEAR UNA DISPERSION CONTRA EL PROVEEDOR ────────────────────
+  //
+  // Pregunta por UN id y devuelve lo que contesta Mouv, crudo. Nada de
+  // listados ni de emparejamiento: la pregunta mas simple que se puede hacer.
+  //
+  // Existe porque se pasaron horas suponiendo por que un envio seguia "En
+  // curso" con Mouv diciendo "Exitoso". Cada hipotesis --la moneda, el id
+  // faltante, el filtro-- costo una vuelta entera y ninguna era. Con esto la
+  // respuesta esta a un clic, y NO CAMBIA NADA: solo lee y muestra.
+  if (action === 'sondear_dispersion') {
+    if (!caller.admin || !caller.viaJwt) return json(403, { error: 'forbidden' })
+    const txId = payload?.txId ?? payload?.tx_id
+    if (txId == null) return json(400, { error: 'missing_tx' })
+
+    const { data: tx } = await db.from('transactions')
+      .select('id, user_id, status, type, amount, currency, created_at, raw_data')
+      .eq('id', txId).maybeSingle()
+    if (!tx) return json(404, { error: 'not_found' })
+
+    const rd = (tx.raw_data ?? {}) as Record<string, any>
+    const ref = String(rd.providerRef ?? '').trim()
+
+    // Sin id del proveedor no hay a quien preguntarle, y eso YA es la
+    // respuesta: el problema esta en el envio, no en la consulta.
+    if (!ref) {
+      return json(200, {
+        ok: true, txId: tx.id, estadoLincoin: tx.status, providerRef: null,
+        conclusion: 'La fila no tiene el id de Mouv guardado. Sin el no se puede consultar por id; la conciliacion depende del listado y del emparejamiento por monto.',
+        respuestaEnvio: rd.respuestaEnvio ?? null,
+        providerReference: rd.providerReference ?? null,
+      })
+    }
+
+    const st = await mouvTransferStatus(ref, tx.created_at)
+    return json(200, {
+      ok: true,
+      txId: tx.id,
+      estadoLincoin: tx.status,
+      providerRef: ref,
+      providerReference: rd.providerReference ?? null,
+      // Lo que Mouv contesto, tal cual y sin interpretar.
+      encontrado: st.found,
+      estadoProveedor: st.state || null,
+      veredicto: st.verdict,
+      rutaQueRespondio: st.path ?? null,
+      diag: st.diag ?? null,
+      crudo: st.raw ?? null,
+      // La diferencia, dicha en una linea.
+      conclusion: !st.found
+        ? `No se pudo confirmar: ${st.diag?.motivo ?? 'sin motivo'}`
+        : st.state && tx.status === 'Procesando' && st.verdict === 'completed'
+          ? 'Mouv dice COMPLETED y Lincoin sigue en Procesando: la conciliacion no lo esta aplicando.'
+          : `Mouv dice ${st.state}; Lincoin dice ${tx.status}.`,
+    })
+  }
+
+  // ── CONFIRMAR A MANO UNA DISPERSION ───────────────────────────────
+  // La contraparte de force_return. Mientras la consulta de estado no funcione,
+  // la unica fuente de verdad es la consola del proveedor, y quien la mira es
+  // una persona. Esto le deja cerrar el caso en el sentido bueno.
+  //
+  // Queda marcado como confirmacion MANUAL y con quien la hizo: un Completado
+  // puesto por una persona no es lo mismo que uno confirmado por el proveedor,
+  // y dentro de seis meses eso tiene que poder distinguirse.
+  if (action === 'confirmar_dispersion') {
+    if (!caller.admin || !caller.viaJwt) return json(403, { error: 'forbidden' })
+    const txId = payload?.txId ?? payload?.tx_id
+    if (txId == null) return json(400, { error: 'missing_tx' })
+    const { data: tx } = await db.from('transactions')
+      .select('id, user_id, status, type, raw_data').eq('id', txId).maybeSingle()
+    if (!tx) return json(404, { error: 'not_found' })
+    if (tx.type !== 'dispersion') return json(400, { error: 'not_a_dispersion' })
+    const rd = (tx.raw_data ?? {}) as Record<string, any>
+    if (rd.refunded) return json(200, { ok: true, already: 'refunded' })
+    if (tx.status === 'Completado') return json(200, { ok: true, already: 'Completado' })
+
+    await db.from('transactions').update({
+      status: 'Completado',
+      raw_data: {
+        ...rd,
+        settledAt: new Date().toISOString(),
+        confirmadaManualmente: true,
+        confirmadaPor: caller.userId,
+        revisionManual: undefined,
+      },
+    }).eq('id', tx.id).neq('status', 'Rechazado')
+    await logAudit(tx.user_id, 'mouv.confirmar_dispersion', {
+      txId: tx.id, admin: caller.userId, providerRef: rd.providerRef ?? null,
+    })
+    await notifyTx(tx.id)
+    return json(200, { ok: true, confirmada: true })
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  //  RECAUDO BRE-B POR LLAVE (modo agregador)
+  //  ----------------------------------------------------------------
+  //  Cada cliente tiene UNA llave Bre-B a su nombre para que le paguen. El
+  //  dinero cae en NUESTRO saldo en Mouv, marcado con la llave que lo recibio,
+  //  y nosotros se lo acreditamos a su billetera COP_BREB. La misma billetera
+  //  donde le acredita la mesa: no hay una segunda cuenta, porque dos saldos
+  //  obligarian a mover plata entre ellos a mano y crearian una forma nueva de
+  //  tenerla en el lugar equivocado.
+  //
+  //  LA LLAVE NO SE ELIGE. Mouv la DERIVA del nombre del cliente
+  //  ("Panaderia La Espiga" → @PANADERIALAESPIG3456, con los ultimos 4 del
+  //  documento como sufijo). No hay picker de @ ni de x.
+  //
+  //  EL TITULAR REGISTRADO EN LA RED BRE-B ES VECTORA, no el cliente. La llave
+  //  lleva su nombre, nada mas. En pantalla se dice "tu llave para recibir
+  //  pagos", nunca "tu cuenta bancaria": afirmar lo segundo seria falso.
+  //
+  //  Requiere modo agregador habilitado (si no, 403 AGGREGATOR_NOT_ENABLED).
+  // ══════════════════════════════════════════════════════════════════
+
+  // Los errores de Mouv, dichos en castellano y accionables. "No se pudo" deja
+  // al operador sin saber si el problema es el nombre, el permiso o la red.
+  const errorLlave = (status: number, d: any): { error: string; message: string; extra?: any } => {
+    const cod = String(d?.error ?? '').toUpperCase()
+    if (cod === 'AGGREGATOR_NOT_ENABLED' || status === 403 && !cod) {
+      return { error: 'agregador_inactivo', message: 'El modo agregador todavía no está habilitado para Lincoin. Hay que pedirlo a Vectora antes de poder emitir llaves.' }
+    }
+    if (cod === 'ACCOUNT_NOT_READY') {
+      return { error: 'cuenta_no_lista', message: 'La cuenta de recaudo Bre-B todavía no está lista del lado del proveedor.' }
+    }
+    if (cod === 'NAME_NOT_DERIVABLE') {
+      return { error: 'nombre_invalido', message: 'El nombre de la empresa no sirve para derivar una llave: necesita al menos 3 letras o números utilizables.' }
+    }
+    if (cod === 'KEY_TAKEN') {
+      return {
+        error: 'nombre_tomado',
+        message: 'Ese nombre ya está tomado en la red Bre-B, incluso probando variantes. Hay que cambiarlo un poco y reintentar.',
+        extra: { intentadas: d?.attempted ?? null },
+      }
+    }
+    if (cod === 'INSUFFICIENT_SCOPE') return { error: 'sin_permiso', message: 'La llave de API no tiene permiso de escritura.' }
+    if (status === 429) return { error: 'limite', message: 'Se alcanzó el límite de creación de llaves. Esperá un minuto y reintentá.' }
+    return { error: 'proveedor', message: String(d?.message ?? 'El proveedor no pudo emitir la llave en este momento.') }
+  }
+
+  // ── Emitir (o traer) la llave de recaudo del usuario ──────────────
+  if (action === 'breb_llave') {
+    const userId = requireOwner(caller, payload)
+    if (!userId) return json(403, { error: 'forbidden', message: 'Vuelve a iniciar sesión.' })
+
+    // SELECT * a proposito. Pedir `document_number` por nombre reventaba la
+    // consulta entera cuando esa columna no existe en esta base: PostgREST
+    // devuelve error, `data` viene null, y el codigo lo leia como "el usuario
+    // no existe". En pantalla salia un seco "not_found" sobre un usuario que
+    // estaba perfectamente ahi.
+    const { data: u, error: uErr } = await db.from('users').select('*').eq('id', userId).maybeSingle()
+    if (uErr) return json(500, { error: 'no_se_pudo_leer', message: 'No se pudo leer tu cuenta para emitir la llave. Intentá de nuevo.' })
+    if (!u) return json(404, { error: 'no_existe', message: 'No encontramos tu cuenta.' })
+
+    const au = u as any
+    const rd = (au.raw_data ?? {}) as Record<string, any>
+    const guardada = rd.breb ?? null
+
+    // Ya la tiene: NO se vuelve a llamar. Es idempotente del lado de Mouv, pero
+    // gastar una llamada por cada vez que alguien abre la pantalla se come el
+    // limite de 30/minuto sin necesidad.
+    if (!payload?.refrescar && guardada?.valor && guardada?.estado === 'ACTIVE') {
+      return json(200, { ok: true, llave: guardada, cuenta: rd.cuentaNo ?? null, deCache: true })
+    }
+
+    // `soloLeer` = la pantalla esta preguntando si YA tiene llave. Emitir una
+    // por el solo hecho de abrir una pantalla seria crear identidad en la red
+    // Bre-B sin que nadie lo haya pedido -- ademas de gastar el cupo de 30 por
+    // minuto en usuarios que solo estaban mirando. Emitir es una ACCION.
+    if (payload?.soloLeer) {
+      return json(200, { ok: false, error: 'sin_llave', cuenta: rd.cuentaNo ?? null })
+    }
+
+    // El nombre con el que Mouv DERIVA la llave. Para una cuenta empresa el que
+    // corresponde es la razon social, no el nombre de la persona: la llave la
+    // va a ver quien le paga.
+    const nombre = String(au.company_name ?? au.full_name ?? au.name ?? '').trim()
+    if (nombre.replace(/[^A-Za-z0-9]/g, '').length < 3) {
+      return json(400, {
+        error: 'nombre_invalido',
+        message: 'La cuenta necesita un nombre con al menos 3 letras o números para poder emitir la llave.',
+      })
+    }
+    // El NIT vive en distintos lugares segun como se dio de alta la cuenta. Sus
+    // ultimos 4 digitos son el sufijo de la llave, asi que vale buscarlo bien:
+    // sin el, el sufijo es aleatorio y la llave queda menos reconocible.
+    const rdu = (au.raw_data ?? {}) as Record<string, any>
+    const doc = String(rdu.nit ?? rdu.documentNumber ?? au.document_number ?? rdu.document ?? '').replace(/\D/g, '')
+
+    const r = await mouvFetch('/breb/collect-keys', {
+      method: 'POST',
+      body: JSON.stringify({
+        // El externalId es NUESTRO id de usuario: es la clave de idempotencia y
+        // con el se filtran despues los recaudos de esta persona.
+        externalId: String(userId),
+        name: nombre.slice(0, 80),
+        ...(doc.length >= 4 ? { document: doc.slice(0, 20) } : {}),
+      }),
+    })
+    if (!r.ok) {
+      const e = errorLlave(r.status, r.data)
+      await logAudit(userId, 'mouv.breb_llave.fallo', { httpStatus: r.status, cod: (r.data as any)?.error ?? null })
+      return json(r.status === 403 ? 403 : 502, { ...e, httpStatus: r.status })
+    }
+
+    const d: any = r.data ?? {}
+    const llave = {
+      id: String(d.id ?? ''),
+      valor: String(d.key?.value ?? ''),
+      tipo: String(d.key?.type ?? ''),
+      nombre: String(d.name ?? nombre),
+      estado: String(d.state ?? 'ACTIVE'),
+      creadaAt: d.createdAt ?? new Date().toISOString(),
+    }
+    if (!llave.valor) return json(502, { error: 'sin_llave', message: 'El proveedor no devolvió el valor de la llave.' })
+
+    // Numero de cuenta visible, una vez y para siempre. Es una ETIQUETA de la
+    // unica cuenta del usuario, no una cuenta aparte: lo que identifica de
+    // verdad al cliente para los recaudos es el externalId.
+    let cuentaNo = rd.cuentaNo ?? null
+    if (!cuentaNo) {
+      const { count } = await db.from('users').select('id', { count: 'exact', head: true }).not('raw_data->>cuentaNo', 'is', null)
+      cuentaNo = String((Number(count ?? 0) + 1) * 2 + 30).padStart(4, '0')
+    }
+
+    await db.from('users').update({ raw_data: { ...rd, breb: llave, cuentaNo } }).eq('id', userId)
+    await logAudit(userId, 'mouv.breb_llave.emitida', { llave: llave.valor, id: llave.id, idempotente: !!d.idempotent })
+    return json(200, { ok: true, llave, cuenta: cuentaNo, idempotente: !!d.idempotent })
+  }
+
+  // ── QR de cobro de la llave (PNG listo para mostrar o imprimir) ────
+  if (action === 'breb_qr') {
+    const userId = requireOwner(caller, payload)
+    if (!userId) return json(403, { error: 'forbidden', message: 'Vuelve a iniciar sesión.' })
+
+    const { data: u } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
+    const rd = ((u as any)?.raw_data ?? {}) as Record<string, any>
+    const keyId = String(rd.breb?.id ?? '')
+    if (!keyId) return json(409, { error: 'sin_llave', message: 'Primero hay que generar la llave de recaudo.' })
+
+    // Un QR vivo por llave: repetir devuelve el mismo (reused: true).
+    const q = await mouvFetch(`/breb/collect-keys/${encodeURIComponent(keyId)}/qr`, { method: 'POST' })
+    if (!q.ok) {
+      const cod = String((q.data as any)?.error ?? '')
+      const msg = cod === 'KEY_NOT_ACTIVE' ? 'La llave está suspendida o dada de baja, así que no se le puede emitir un QR.'
+        : 'El proveedor no pudo emitir el código QR en este momento.'
+      return json(502, { error: 'qr_no_disponible', message: msg })
+    }
+    const qrId = String((q.data as any)?.qr?.id ?? '')
+    if (!qrId) return json(502, { error: 'qr_no_disponible', message: 'El proveedor no devolvió el código QR.' })
+
+    const img = await fetch(`${MOUV_BASE}/breb/collect-keys/qr/${encodeURIComponent(qrId)}.png`, {
+      headers: { accept: 'image/png', authorization: `Bearer ${MOUV_API_KEY}` },
+      signal: AbortSignal.timeout(20000),
+    }).catch(() => null)
+    if (!img || !img.ok) return json(502, { error: 'qr_no_disponible', message: 'No se pudo descargar la imagen del QR.' })
+
+    const bytes = new Uint8Array(await img.arrayBuffer())
+    return new Response(bytes, {
+      status: 200,
+      headers: { ...CORS, 'Content-Type': 'image/png', 'Cache-Control': 'private, max-age=300' },
+    })
+  }
+
+  // ── CONCILIAR LOS RECAUDOS BRE-B ──────────────────────────────────
+  // UNA consulta trae los depositos de TODOS los clientes y se reparten por
+  // brebKey.externalId. Consultar cliente por cliente serian mil llamadas
+  // contra un limite de 100/minuto: imposible con mil clientes, y esta
+  // integracion nace pensada para mil.
+  //
+  // SE ACREDITA EL NETO, NUNCA EL BRUTO.
+  //   A nuestro saldo en Mouv entra el neto. Acreditarle el bruto al cliente
+  //   nos regalaria la comision en cada recaudo. Y la comision NO se calcula
+  //   con un porcentaje escrito aca: viene en cada deposito (feeAmountCents e
+  //   ivaAmountCents). Hoy puede ser cero; si manana cobran, los numeros
+  //   siguen siendo ciertos sin tocar una linea.
+  //
+  // SOLO 'ASSIGNED' ES PLATA.
+  //   PENDING_CONFIRM no se acredita. Y un deposito puede pasar a REVERSED
+  //   DESPUES de acreditado: es el mismo problema de las dispersiones
+  //   devueltas, con el signo cambiado, y peor, porque el cliente ya lo pudo
+  //   gastar. Por eso se siguen mirando los ya acreditados y, si se reversan,
+  //   se debita y se deja constancia.
+  if (action === 'breb_conciliar') {
+    // Admin con JWT, o llamada interna (cron). Mueve saldo: un uid en el body
+    // no alcanza.
+    if (!caller.admin || !caller.viaJwt) return json(403, { error: 'forbidden' })
+
+    const paginas = Math.min(Number(payload?.paginas ?? 3) || 3, 10)
+    const recaudos: any[] = []
+    let diagLista: any = null
+    for (let page = 0; page < paginas; page++) {
+      const r = await mouvFetch(`/deposits?rail=BREB&limit=100&page=${page}`, { method: 'GET' })
+      if (!diagLista) {
+        let crudo = ''
+        try { crudo = (typeof r.data === 'string' ? r.data : JSON.stringify(r.data ?? '')).slice(0, 400) } catch { crudo = '(ilegible)' }
+        diagLista = { httpStatus: r.status, crudo }
+      }
+      if (!r.ok) {
+        const e = errorLlave(r.status, r.data)
+        return json(502, { ...e, diag: diagLista })
+      }
+      // La forma NO se da por sentada: este endpoint devuelve `deposits`,
+      // /wallets/transactions devuelve `items` y collect-keys devuelve `items`
+      // con cursor. Tres formas distintas en la misma API.
+      const d: any = r.data
+      const lote: any[] = Array.isArray(d?.deposits) ? d.deposits
+        : Array.isArray(d?.items) ? d.items
+        : Array.isArray(d) ? d : []
+      recaudos.push(...lote)
+      const tp = Number(d?.pagination?.totalPages ?? 0)
+      if (lote.length === 0 || (tp && page + 1 >= tp)) break
+    }
+
+    const out: any[] = []
+    let acreditados = 0, reversados = 0, montoAcreditado = 0
+    const cent = (v: any) => Math.round(Number(v ?? 0)) / 100
+
+    for (const dep of recaudos) {
+      const depId = String(dep?.id ?? '')
+      const ext = String(dep?.brebKey?.externalId ?? '')
+      // Sin llave no es un recaudo por llave (puede ser PSE): no es nuestro.
+      if (!depId || !ext) continue
+
+      const estado = String(dep?.status ?? '').toUpperCase()
+      const bruto = cent(dep?.amountCents)
+      const comision = cent(dep?.feeAmountCents) + cent(dep?.ivaAmountCents)
+      const neto = dep?.netAmountCents != null ? cent(dep.netAmountCents) : bruto - comision
+      if (!(neto > 0)) continue
+
+      const { data: usuario } = await db.from('users').select('id').eq('id', ext).maybeSingle()
+      if (!usuario) { out.push({ dep: depId, result: 'usuario_desconocido', externalId: ext }); continue }
+
+      // Idempotencia por el id del deposito: es la unica forma de no acreditar
+      // dos veces el mismo pago cuando el polling lo ve otra vez.
+      const { data: yaHay } = await db.from('transactions')
+        .select('id, status, raw_data').eq('type', 'load')
+        .filter('raw_data->>depositId', 'eq', depId).limit(1)
+      const fila = yaHay?.[0] ?? null
+
+      if (estado === 'ASSIGNED') {
+        if (fila) {
+          // Ya estaba: si habia sido reversada y vuelve a ASSIGNED, no se
+          // re-acredita sola. Eso lo mira una persona.
+          out.push({ dep: depId, result: (fila as any).status === 'Devuelto' ? 'revivio_revisar' : 'ya_acreditado' })
+          continue
+        }
+        const { data: creada, error: insErr } = await db.from('transactions').insert({
+          user_id: ext, type: 'load', amount: neto, currency: 'COP_BREB', status: 'Completado',
+          raw_data: {
+            source: 'mouv_breb_recaudo', title: 'Recaudo Bre-B',
+            depositId: depId, brutoCop: bruto, comisionCop: comision, netoCop: neto,
+            llave: dep?.brebKey?.value ?? null, llaveId: dep?.brebKey?.id ?? null,
+            // Quien pago: es lo que convierte un ingreso en un cobro
+            // identificable. Sin esto el cliente ve plata y no sabe de quien.
+            pagador: dep?.payerName ?? null,
+            pagadorDocumento: dep?.payerDocument ?? null,
+            pagadorBanco: dep?.payerBank ?? null,
+            providerTransferId: dep?.providerTransferId ?? null,
+            confirmadoAt: dep?.providerConfirmedAt ?? null,
+            acreditadoAt: new Date().toISOString(),
+          },
+        }).select('id').maybeSingle()
+        // Si la fila no se pudo escribir NO se acredita: sin movimiento, el
+        // saldo sube y no hay como explicar de donde salio.
+        if (insErr || !creada) { out.push({ dep: depId, result: 'no_se_registro', error: insErr?.message ?? null }); continue }
+
+        await creditBalanceAtomic(ext, 'COP_BREB', neto)
+        await logAudit(ext, 'mouv.breb_recaudo.acreditado', { depId, neto, bruto, comision, llave: dep?.brebKey?.value ?? null })
+        acreditados++; montoAcreditado += neto
+        out.push({ dep: depId, result: 'acreditado', neto })
+        continue
+      }
+
+      if (estado === 'REVERSED') {
+        if (!fila) { out.push({ dep: depId, result: 'reversado_nunca_acreditado' }); continue }
+        const frd = ((fila as any).raw_data ?? {}) as Record<string, any>
+        if (frd.reversado) { out.push({ dep: depId, result: 'ya_reversado' }); continue }
+
+        // CAS antes de tocar el saldo, igual que en los reembolsos.
+        const { data: claimed } = await db.from('transactions').update({
+          status: 'Devuelto',
+          raw_data: { ...frd, reversado: true, reversadoAt: new Date().toISOString() },
+        }).eq('id', (fila as any).id).filter('raw_data->>reversado', 'is', null).select('id')
+        if (!claimed?.length) { out.push({ dep: depId, result: 'reverso_ya_reclamado' }); continue }
+
+        const montoFila = Number(frd.netoCop ?? (fila as any).amount ?? 0)
+        const { data: saldoU } = await db.from('users').select('balances').eq('id', ext).maybeSingle()
+        const disponible = Number(((saldoU as any)?.balances ?? {})['COP_BREB'] ?? 0)
+
+        if (disponible >= montoFila) {
+          await creditBalanceAtomic(ext, 'COP_BREB', -montoFila)
+          out.push({ dep: depId, result: 'reversado', monto: montoFila })
+        } else {
+          // NO se deja el saldo en negativo ni se ignora el faltante: se debita
+          // lo que hay y el resto queda asentado como deuda para que alguien lo
+          // cobre. Un reverso que no se puede cubrir es un problema real, y
+          // callarlo no lo hace desaparecer.
+          if (disponible > 0) await creditBalanceAtomic(ext, 'COP_BREB', -disponible)
+          const deuda = Number((montoFila - disponible).toFixed(2))
+          await db.from('transactions').update({
+            raw_data: { ...frd, reversado: true, reversadoAt: new Date().toISOString(), deudaCop: deuda, debitadoCop: disponible },
+          }).eq('id', (fila as any).id)
+          await logAudit(ext, 'mouv.breb_recaudo.reverso_sin_fondos', { depId, montoFila, debitado: disponible, deuda })
+          out.push({ dep: depId, result: 'reversado_con_deuda', debitado: disponible, deuda })
+        }
+        await logAudit(ext, 'mouv.breb_recaudo.reversado', { depId, montoFila })
+        reversados++
+        continue
+      }
+
+      // PENDING_CONFIRM / UNASSIGNED / EXPIRED: no son plata todavia (o ya no
+      // lo son). Se informan, no se acreditan.
+      out.push({ dep: depId, result: 'sin_acreditar', estado })
+    }
+
+    return json(200, {
+      ok: true, revisados: recaudos.length,
+      acreditados, reversados, montoAcreditado,
+      resultados: out.slice(0, 200),
+      ...(caller.admin ? { diag: diagLista } : {}),
+    })
+  }
+
+  // ── MARCAR UNA DISPERSION COMO YA REEMBOLSADA POR FUERA ───────────
+  // Para cuando el operador ya le devolvio el saldo al cliente A MANO, sin
+  // pasar por force_return. La fila queda en Procesando y SIN la marca
+  // `refunded`, asi que el dia que la conciliacion lea el estado real y vea que
+  // fue devuelta, va a reembolsar OTRA VEZ. El cliente cobraria dos veces por
+  // un envio que nunca salio.
+  //
+  // Esto cierra ese hueco: marca la fila como devuelta y reembolsada, y NO
+  // TOCA NINGUN SALDO -- la plata ya la movio una persona. Acreditar aca seria
+  // cometer exactamente el error que esto viene a evitar.
+  if (action === 'marcar_reembolso_externo') {
+    if (!caller.admin || !caller.viaJwt) return json(403, { error: 'forbidden' })
+    const txId = payload?.txId ?? payload?.tx_id
+    if (txId == null) return json(400, { error: 'missing_tx' })
+    const motivo = String(payload?.reason ?? '').trim().slice(0, 300)
+    if (!motivo) return json(400, { error: 'missing_reason', message: 'Hay que decir por que se dio por reembolsada.' })
+
+    const { data: tx } = await db.from('transactions')
+      .select('id, user_id, amount, currency, status, type, raw_data').eq('id', txId).maybeSingle()
+    if (!tx) return json(404, { error: 'not_found' })
+    if (tx.type !== 'dispersion') return json(400, { error: 'not_a_dispersion' })
+    if (tx.status === 'Completado') {
+      return json(409, { error: 'esta_completada', message: 'Esa dispersión figura como pagada. Si se devolvió, usá Reembolsar.' })
+    }
+
+    const rd = (tx.raw_data ?? {}) as Record<string, any>
+    if (rd.refunded) return json(200, { ok: true, already: 'refunded' })
+
+    // Mismo CAS que force_return: si otra ejecucion ya la reclamo, no se pisa.
+    const { data: claimed } = await db.from('transactions').update({
+      status: 'Rechazado',
+      raw_data: {
+        ...rd,
+        refunded: true,
+        // CERO a proposito: el sistema no acredito nada. Poner el monto aca
+        // haria parecer que esta app movio una plata que movio una persona.
+        refundCop: 0,
+        reembolsoExterno: true,
+        returnedAt: new Date().toISOString(),
+        returnedBy: caller.userId,
+        returnReason: motivo,
+      },
+    }).eq('id', tx.id).filter('raw_data->>refunded', 'is', null).select('id')
+    if (!claimed?.length) return json(200, { ok: true, already: 'refund_already_claimed' })
+
+    await logAudit(tx.user_id, 'mouv.reembolso_externo', {
+      txId: tx.id, amount: tx.amount, rail: tx.currency, reason: motivo,
+      admin: caller.userId, providerRef: rd.providerRef ?? null,
+      nota: 'saldo devuelto por fuera del sistema; no se acredito nada aca',
+    })
+    return json(200, { ok: true, marcada: true })
+  }
+
+  // ── VINCULAR A MANO UNA DISPERSION CON SU ID EN MOUV ──────────────
+  // Mientras el listado no se pueda leer, la unica fuente de verdad es la
+  // consola del proveedor, y el operador la tiene delante: ahi esta el id
+  // (TX-PG-483AC9). Pegarlo cuesta cinco segundos y desbloquea TODO lo demas
+  // para esa fila -- consulta de estado, conciliacion y comprobante PDF.
+  //
+  // NO cambia el estado ni mueve plata: solo guarda el id. Confirmar o devolver
+  // sigue siendo una decision aparte, para que pegar un id equivocado no
+  // acredite ni reembolse nada por si solo.
+  if (action === 'vincular_referencia') {
+    if (!caller.admin || !caller.viaJwt) return json(403, { error: 'forbidden' })
+    const txId = payload?.txId ?? payload?.tx_id
+    const ref = String(payload?.providerRef ?? '').trim()
+    if (txId == null) return json(400, { error: 'missing_tx' })
+    if (ref.length < 4) return json(400, { error: 'ref_invalida', message: 'Pegá el ID tal como aparece en la consola del proveedor.' })
+
+    const { data: tx } = await db.from('transactions')
+      .select('id, user_id, type, raw_data').eq('id', txId).maybeSingle()
+    if (!tx) return json(404, { error: 'not_found' })
+    if (tx.type !== 'dispersion') return json(400, { error: 'not_a_dispersion' })
+
+    // Un mismo id no puede quedar pegado a dos dispersiones: seria decir que
+    // dos envios distintos son el mismo, y a partir de ahi cualquier
+    // conciliacion posterior saca la conclusion equivocada.
+    const { data: yaUsada } = await db.from('transactions')
+      .select('id').eq('type', 'dispersion').filter('raw_data->>providerRef', 'eq', ref).neq('id', tx.id).limit(1)
+    if (yaUsada?.length) {
+      return json(409, { error: 'ref_duplicada', message: `Ese ID ya está vinculado al movimiento ${yaUsada[0].id}.` })
+    }
+
+    const rd = (tx.raw_data ?? {}) as Record<string, any>
+    const { error } = await db.from('transactions').update({
+      raw_data: { ...rd, providerRef: ref, providerRefOrigen: 'pegado_a_mano', providerRefAt: new Date().toISOString(), providerRefPor: caller.userId ?? null },
+    }).eq('id', tx.id)
+    if (error) return json(500, { error: 'no_se_pudo_guardar', message: error.message })
+
+    await logAudit(tx.user_id, 'mouv.vincular_referencia', { txId: tx.id, providerRef: ref, admin: caller.userId })
+
+    // Con el id ya guardado se consulta el estado en el acto: es justo lo que
+    // faltaba para poder decidir.
+    const st = await mouvTransferStatus(ref)
+    return json(200, {
+      ok: true, providerRef: ref,
+      estadoProveedor: st.found ? st.state : null,
+      veredicto: st.found ? st.verdict : 'unknown',
+      diag: st.diag ?? null,
+    })
+  }
+
+  // ── COMPROBANTE OFICIAL DEL PROVEEDOR (PDF) ───────────────────────
+  // GET /wallets/transactions/:id/receipt.pdf  (scope READ)
+  //
+  // El comprobante que damos hoy lo dibujamos nosotros. Este lo firma el
+  // proveedor: es el que sirve como evidencia fiscal y el que se le manda al
+  // beneficiario cuando dice que no le llego.
+  //
+  // PASA POR ACA Y NO POR EL NAVEGADOR: el PDF se pide con la llave mvk_, que
+  // no puede tocar el cliente. Ademas asi se comprueba que la transaccion sea
+  // SUYA -- sin eso, cambiando un id cualquiera se bajaria el comprobante de
+  // otro, con el nombre y el documento del beneficiario adentro.
+  if (action === 'comprobante_proveedor') {
+    const userId = requireOwner(caller, payload)
+    if (!userId) return json(403, { error: 'forbidden', message: 'Vuelve a iniciar sesión.' })
+
+    const txId = payload?.txId ?? payload?.tx_id
+    if (txId == null) return json(400, { error: 'missing_tx' })
+
+    const { data: tx } = await db.from('transactions')
+      .select('id, user_id, type, raw_data').eq('id', txId).maybeSingle()
+    // Un cierre ajeno no se confirma que exista: mismo criterio que el resto.
+    if (!tx || (!caller.admin && String(tx.user_id) !== String(userId))) {
+      return json(404, { error: 'not_found' })
+    }
+
+    const rd = (tx.raw_data ?? {}) as Record<string, any>
+    const ref = String(rd.providerRef ?? '').trim()
+    if (!ref) {
+      return json(409, {
+        error: 'sin_referencia',
+        message: 'Este envío no tiene guardada la referencia del proveedor, así que no se puede pedir su comprobante.',
+      })
+    }
+
+    const r = await fetch(`${MOUV_BASE}/wallets/transactions/${encodeURIComponent(ref)}/receipt.pdf`, {
+      headers: { accept: 'application/pdf', authorization: `Bearer ${MOUV_API_KEY}` },
+      signal: AbortSignal.timeout(20000),
+    }).catch((e) => ({ ok: false, status: 0, _err: String((e as Error)?.message ?? e) } as any))
+
+    if (!r.ok) {
+      // El motivo se dice en castellano: "no se pudo" manda a buscar a ciegas.
+      const motivo = r.status === 404 ? 'El proveedor todavía no tiene el comprobante de este envío.'
+        : r.status === 401 || r.status === 403 ? 'No tenemos permiso para descargar este comprobante.'
+        : r.status === 429 ? 'Demasiadas descargas seguidas. Probá en un minuto.'
+        : 'El proveedor no devolvió el comprobante en este momento.'
+      return json(502, { error: 'comprobante_no_disponible', message: motivo, httpStatus: r.status })
+    }
+
+    const bytes = new Uint8Array(await (r as Response).arrayBuffer())
+    // Se devuelve el PDF tal cual. Va como descarga, con un nombre que se
+    // entiende seis meses despues sin abrirlo.
+    return new Response(bytes, {
+      status: 200,
+      headers: {
+        ...CORS,
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': `attachment; filename="comprobante-${ref}.pdf"`,
+      },
+    })
+  }
+
+  // ── SONDEO DE ENDPOINTS DEL PROVEEDOR (admin) ─────────────────────
+  // Esto existio porque no sabiamos como se consultaba el estado de una
+  // transferencia y mouvTransferStatus adivinaba entre seis rutas que daban
+  // 404. YA SE SABE: es GET /wallets/transactions/:id, esta documentada y es
+  // la primera que prueba mouvTransferStatus.
+  //
+  // El sondeo se queda igual, como diagnostico: si algun dia la conciliacion
+  // vuelve a dejar todo en 'Procesando', esto dice si la ruta oficial cambio y
+  // cual responde ahora, con el cuerpo crudo a la vista.
+  //
+  // Esto prueba rutas candidatas -- por id y de LISTADO, que es lo que la
+  // consola del proveedor usa para mostrar los estados -- y devuelve el cuerpo
+  // CRUDO de cada una. Con eso se fija la ruta correcta con el dato a la vista,
+  // en vez de seguir adivinando. Es el mismo remedio que el diagnostico de KYT.
+  if (action === 'probe_status') {
+    if (!caller.admin || !caller.viaJwt) return json(403, { error: 'forbidden' })
+    const ref = String(payload?.providerRef ?? payload?.ref ?? '').trim()
+    const enc = encodeURIComponent(ref)
+
+    const candidatas: { que: string; ruta: string; metodo: 'GET' }[] = [
+      ...(ref ? [
+        { que: 'por id (LA OFICIAL)', ruta: `/wallets/transactions/${enc}`, metodo: 'GET' as const },
+        { que: 'por id', ruta: `/transfers/${enc}`, metodo: 'GET' as const },
+        { que: 'por id', ruta: `/transfers/${enc}/status`, metodo: 'GET' as const },
+        { que: 'por id', ruta: `/transfers/status/${enc}`, metodo: 'GET' as const },
+        { que: 'por id', ruta: `/transactions/${enc}`, metodo: 'GET' as const },
+        { que: 'por id', ruta: `/payments/${enc}`, metodo: 'GET' as const },
+        { que: 'por referencia', ruta: `/transfers?reference=${enc}`, metodo: 'GET' as const },
+      ] : []),
+      // LISTADOS: lo mas probable que exista, porque es lo que alimenta la
+      // consola. Si alguna responde, se puede conciliar por lote y dejamos de
+      // depender de una consulta por id.
+      { que: 'listado (LA OFICIAL)', ruta: '/wallets/transactions?limit=20', metodo: 'GET' },
+      { que: 'listado', ruta: '/transfers', metodo: 'GET' },
+      { que: 'listado', ruta: '/transfers?limit=20', metodo: 'GET' },
+      { que: 'listado', ruta: '/transactions?limit=20', metodo: 'GET' },
+      { que: 'listado', ruta: '/payments?limit=20', metodo: 'GET' },
+      { que: 'listado', ruta: '/transfers/history?limit=20', metodo: 'GET' },
+      { que: 'listado', ruta: '/movements?limit=20', metodo: 'GET' },
+    ]
+
+    const out: any[] = []
+    for (const cand of candidatas) {
+      const r = await mouvFetch(cand.ruta, { method: cand.metodo })
+      let crudo = ''
+      try { crudo = typeof r.data === 'string' ? r.data : JSON.stringify(r.data) } catch { crudo = '(ilegible)' }
+      // Interesa sobre todo si el cuerpo MENCIONA la referencia buscada y si
+      // trae algo que se parezca a un estado.
+      const mencionaRef = !!ref && crudo.includes(ref)
+      const pareceEstado = /"(status|state|estado)"\s*:/i.test(crudo)
+      out.push({
+        ruta: cand.ruta, tipo: cand.que,
+        httpStatus: r.status, ok: r.ok,
+        mencionaLaReferencia: mencionaRef,
+        traeAlgoParecidoAEstado: pareceEstado,
+        crudo: crudo.slice(0, 1200),
+      })
+    }
+    // Primero lo que respondio: es lo unico que sirve mirar.
+    out.sort((a, b) => (b.ok ? 1 : 0) - (a.ok ? 1 : 0))
+    return json(200, { ok: true, referencia: ref || null, candidatas: out })
+  }
+
+  // ── DEVOLUCIÓN MANUAL DE UNA DISPERSIÓN ───────────────────────────
+  // Para cuando el proveedor RECHAZÓ un envío y acá quedó Completado. Pasa
+  // cuando el estado no se puede consultar (la ruta de Mouv está adivinada) y
+  // el rechazo solo se ve en su consola: ahí no hay automatismo posible, lo
+  // tiene que decir una persona que miró las dos pantallas.
+  //
+  // Hace lo mismo que la rama de devolución confirmada: marca Rechazado y
+  // reintegra monto + comisión al riel. Idempotente por el mismo flag y el
+  // mismo CAS, así que dos clics no reembolsan dos veces.
+  //
+  // SOLO ADMIN CON JWT. Reintegra saldo: un uid en el body no alcanza.
+  if (action === 'force_return') {
+    if (!caller.admin || !caller.viaJwt) return json(403, { error: 'forbidden' })
+    const txId = payload?.txId ?? payload?.tx_id
+    if (txId == null) return json(400, { error: 'missing_tx' })
+
+    const { data: tx } = await db.from('transactions')
+      .select('id, user_id, amount, currency, status, type, raw_data')
+      .eq('id', txId).maybeSingle()
+    if (!tx) return json(404, { error: 'not_found' })
+    if (tx.type !== 'dispersion') return json(400, { error: 'not_a_dispersion', type: tx.type })
+
+    const rd = (tx.raw_data ?? {}) as Record<string, any>
+    if (rd.refunded) return json(200, { ok: true, already: 'refunded', refundCop: rd.refundCop ?? null })
+
+    const refund = Number(tx.amount ?? 0) + Number(rd.feeCop ?? 0)
+    if (!(refund > 0)) return json(400, { error: 'bad_amount', refund })
+    const railCol = String(tx.currency ?? 'COP_BREB')
+    const motivo = String(payload?.reason ?? '').trim().slice(0, 300)
+    if (!motivo) return json(400, { error: 'missing_reason', message: 'Hay que decir por qué se devuelve.' })
+
+    // CAS: se reclama el reembolso ANTES de tocar el saldo. Si otra ejecución
+    // ya lo reclamó, `claimed` viene vacío y no se acredita de nuevo.
+    const { data: claimed } = await db.from('transactions').update({
+      status: 'Rechazado',
+      raw_data: {
+        ...rd,
+        refunded: true,
+        refundCop: refund,
+        returnedAt: new Date().toISOString(),
+        returnedBy: caller.userId,
+        returnReason: motivo,
+        manualReturn: true,
+      },
+    }).eq('id', tx.id).filter('raw_data->>refunded', 'is', null).select('id')
+    if (!claimed?.length) return json(200, { ok: true, already: 'refund_already_claimed' })
+
+    const acreditadoFR = await creditBalanceAtomic(tx.user_id, railCol, refund)
+    if (!acreditadoFR) {
+      // Se suelta el claim: si quedara marcada sin acreditar, el boton no se
+      // podria volver a usar y el cliente perderia el reembolso.
+      await db.from('transactions').update({
+        status: tx.status,
+        raw_data: { ...rd, reembolsoFallido: true, reembolsoFallidoAt: new Date().toISOString() },
+      }).eq('id', tx.id)
+      await logAudit(tx.user_id, 'mouv.force_return.reembolso_fallido', { txId: tx.id, refund, admin: caller.userId })
+      return json(500, {
+        error: 'no_se_acredito',
+        message: 'No se pudo acreditar el reembolso, así que la dispersión quedó como estaba. Volvé a intentarlo en un momento.',
+      })
+    }
+    await logAudit(tx.user_id, 'mouv.force_return', {
+      txId: tx.id, refund, rail: railCol, reason: motivo,
+      admin: caller.userId, providerRef: rd.providerRef ?? null,
+      eraAutoCompletada: rd.autoCompleted === true,
+    })
+    await notifyTx(tx.id)
+    return json(200, { ok: true, refunded: true, refundCop: refund, rail: railCol })
   }
 
   // ── RECAUDO PSE (pay-in por link) ─────────────────────────────────
@@ -856,12 +2411,29 @@ serve(async (req: Request) => {
   // rutas candidatas y varias formas de body; la respuesta CRUDA vuelve
   // al admin para fijar la ruta correcta (igual que se hizo con Finity).
   if (action === 'payin_pse' || action === 'payin_status') {
+    // IDENTIDAD PROBADA. Antes bastaba la llave pública + el id de cualquier
+    // usuario: se podían crear recaudos a nombre ajeno y, sobre todo,
+    // consultar el estado de CUALQUIER referencia —montos y datos de cobros
+    // de otros—. Además 'payin_pse' prueba treinta rutas contra Mouv en cada
+    // llamada, así que dejarlo abierto era regalar un amplificador.
+    if (!(caller.viaJwt || caller.admin)) {
+      return json(403, { error: 'forbidden', message: 'Esta operación requiere una sesión válida.' })
+    }
     const userId = caller.userId ?? payload.userId ?? payload.user_id
     if (!userId) return json(400, { error: 'missing_user', message: 'Falta el usuario.' })
 
     if (action === 'payin_status') {
       const ref = String(payload.reference ?? payload.id ?? '')
       if (!ref) return json(400, { error: 'missing_ref' })
+      // Y que la referencia sea SUYA. Tener sesión no da derecho a mirar el
+      // cobro de otro con solo cambiar el número.
+      if (!caller.admin) {
+        const { data: mio } = await db.from('transactions').select('id')
+          .eq('user_id', String(userId))
+          .or(`raw_data->>reference.eq.${ref},raw_data->>providerRef.eq.${ref}`)
+          .limit(1)
+        if (!mio?.length) return json(403, { error: 'forbidden', message: 'Operación restringida.' })
+      }
       const paths = [`/collections/${ref}`, `/payin/${ref}`, `/pse/${ref}`, `/transfers/collect/${ref}`, `/collections/status/${ref}`]
       for (const p of paths) {
         const r = await mouvFetch(p, { method: 'GET' })
@@ -923,7 +2495,10 @@ serve(async (req: Request) => {
         candidates: exists })
     }
     return json(200, { ok: false, error: 'payin_not_supported',
-      message: `Ninguna ruta de recaudo respondió (todas 404). Mouv quizá no tiene recaudo PSE por API en esta cuenta, o la ruta es distinta. Probé ${paths.length} rutas.`,
+      // El detalle técnico queda en `tried`, para el equipo. El mensaje que
+      // lee el cliente no nombra al proveedor ni le cuenta cuántas rutas se
+      // probaron: eso no le sirve y revela con quién operamos.
+      message: 'El recaudo por PSE no está disponible en este momento. Intenta más tarde o comunícate con soporte.',
       tried })
   }
 
@@ -962,9 +2537,12 @@ serve(async (req: Request) => {
     // GUARDIA DE BLOQUEO / LISTA NEGRA — una cuenta bloqueada (p. ej. por
     // hackeo) NO puede dispersar dinero aunque llame la API directo.
     {
-      const { data: bU } = await db.from('users').select('is_blocked, is_active, raw_data').eq('id', userId).maybeSingle()
+      // NO se usa `is_active`: esa columna la maneja el módulo de Personas y en
+      // Empresas nadie la pone en true, así que marcaba cuentas legítimas como
+      // bloqueadas y les cortaba las dispersiones COP.
+      const { data: bU } = await db.from('users').select('is_blocked, raw_data').eq('id', userId).maybeSingle()
       const bRaw = ((bU as any)?.raw_data ?? {}) as Record<string, any>
-      if (bU && (bRaw.blacklisted === true || (bU as any).is_blocked === true || (bU as any).is_active === false || bRaw.isBlocked === true)) {
+      if (bU && (bRaw.blacklisted === true || (bU as any).is_blocked === true || bRaw.isBlocked === true)) {
         return json(403, { error: 'blocked', message: bRaw.blacklisted === true ? 'Esta cuenta está en la lista negra y no puede realizar operaciones.' : 'Esta cuenta está bloqueada y no puede realizar operaciones. Contacta a soporte.' })
       }
     }
@@ -986,6 +2564,221 @@ serve(async (req: Request) => {
         if (!mfaSecret || !(await verifyTOTPServer(mfaSecret, otp))) {
           return json(403, { error: 'mfa_required', message: 'No pudimos verificar tu código de dos pasos. Vuelve a intentar el envío.' })
         }
+      }
+    }
+
+    // ── El BENEFICIARIO también tiene que estar en regla ──────────────────
+    // No basta con que el titular pueda operar: la plata sale HACIA alguien, y
+    // ese alguien es el que hay que mirar para lavado de activos. Kumplo lo
+    // verificó al inscribirlo; acá se aplica el veredicto guardado.
+    //
+    // Falla ABIERTO: sin veredicto —beneficiario viejo, integración apagada,
+    // cuenta sin conectar— se deja pasar. Un control a medio conectar no puede
+    // frenar un envío legítimo. Solo corta con un "no operable" explícito.
+    {
+      // El documento del destinatario. En ACH viene siempre en el cuerpo; en
+      // Bre-B NO es obligatorio (basta la llave), y sin documento este control
+      // entero se saltaba — los envíos Bre-B salían sin mirar antecedentes.
+      // Cuando falta, se busca en el beneficiario inscrito que corresponde a
+      // esa llave, que es de donde salió el envío.
+      let docDest = String((payload.recipient as any)?.documentNumber ?? '').replace(/\D/g, '')
+      const { data: uRaw } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
+      const rawU = (uRaw as any)?.raw_data ?? {}
+      // El documento SALE DEL BENEFICIARIO INSCRITO, no de lo que mande el
+      // navegador. Con el documento del cuerpo, una pantalla desincronizada
+      // —o alguien llamando la API a mano— podía pagar a la llave de una
+      // persona declarando la cédula de otra: el control de antecedentes se
+      // hacía sobre el documento equivocado y la plata salía igual.
+      //
+      // Se busca el contacto por llave (Bre-B) o por número de cuenta (ACH).
+      // Si existe, manda su documento. Si además el cuerpo trae uno distinto,
+      // se corta: algo no cuadra y no es momento de adivinar.
+      {
+        const lista: any[] = Array.isArray(rawU?.mouvContacts) ? rawU.mouvContacts : []
+        const soloDig = (v: unknown) => String(v ?? '').replace(/\D/g, '')
+        // Las llaves de celular viajan en varios formatos (3001234567,
+        // +573001234567, 57 300 123 4567) y Mouv las empareja todas. Si acá no
+        // se emparejan igual, el contacto no se encuentra, no hay corte y el
+        // control corre sobre el documento que mandó el navegador.
+        const normLlave = (v: unknown) => {
+          const t = String(v ?? '').trim().toLowerCase()
+          const d = t.replace(/\D/g, '')
+          if (d && d.length >= 10 && /^[+\d\s().-]+$/.test(t)) return d.replace(/^57(?=\d{10}$)/, '')
+          return t
+        }
+        const esBreb = (c: any) => (c?.destKind ?? 'ach') === 'breb'
+        // Se filtra POR RIEL. Sin esto, la búsqueda ACH recorría también los
+        // Bre-B —cuyo accountNumber es la llave— y una llave de celular podía
+        // emparejar con el número de cuenta de otra persona: 409 falso sobre un
+        // envío legítimo, o el control sobre la cédula equivocada.
+        const cands = rail === 'BREB'
+          ? lista.filter(c => esBreb(c) && normLlave(c?.brebKey ?? c?.accountNumber) === normLlave((payload.recipient as any)?.key))
+          : lista.filter(c => !esBreb(c) && soloDig(c?.accountNumber) === soloDig((payload.recipient as any)?.accountNumber))
+        // Dos contactos distintos para el mismo destino: no se adivina cuál.
+        if (cands.length > 1 && new Set(cands.map(c => soloDig(c?.docNumber))).size > 1) {
+          await logAudit(userId, 'mouv.destino_ambiguo', { rail, cuantos: cands.length })
+          return json(409, {
+            error: 'destino_ambiguo',
+            message: 'Tienes dos beneficiarios distintos con ese mismo destino. Borra el que no uses y vuelve a intentar.',
+          })
+        }
+        const hit = cands[0]
+        const docInscrito = soloDig(hit?.docNumber)
+        if (docInscrito) {
+          if (docDest && docDest !== docInscrito) {
+            await logAudit(userId, 'mouv.destinatario_incoherente', {
+              rail, docEnviado: docDest, docInscrito, beneficiario: hit?.name ?? null,
+            })
+            return json(409, {
+              error: 'destinatario_incoherente',
+              message: 'Los datos del beneficiario no coinciden con los que tienes inscritos. Vuelve a elegirlo en la lista e inténtalo de nuevo.',
+            })
+          }
+          docDest = docInscrito
+        }
+
+        // ── EL TITULAR REAL DE LA LLAVE ──────────────────────────────────
+        // Este es el único dato de toda la cadena que no sale del navegador ni
+        // del raw_data del propio usuario: se lo pregunta al proveedor. Si el
+        // documento del titular de la llave no es el que se verificó, la plata
+        // iría a una persona con los antecedentes consultados de otra — que es
+        // justo el incidente que hubo. Se comprueba ACÁ, antes de debitar;
+        // antes esta resolución ocurría dentro del payout, con el saldo ya
+        // descontado y sin comparar nada.
+        if (rail === 'BREB' && docDest) {
+          try {
+            const rrPrev = await mouvResolveBrebKey(String((payload.recipient as any)?.key ?? ''), String((payload.recipient as any)?.keyType ?? ''))
+            const docReal = soloDig(rrPrev?.idValue)
+            if (rrPrev?.found && docReal && docReal !== docDest) {
+              await logAudit(userId, 'mouv.titular_llave_no_coincide', {
+                docVerificado: docDest, docTitular: docReal, titular: rrPrev.fullName ?? null,
+              })
+              return json(409, {
+                error: 'titular_no_coincide',
+                message: `Esa llave Bre-B no pertenece al beneficiario que tienes inscrito${rrPrev.fullName ? `, sino a ${rrPrev.fullName}` : ''}. Corrige el beneficiario antes de enviar.`,
+              })
+            }
+          } catch { /* si el proveedor no contesta, decide la compuerta de abajo */ }
+        }
+      }
+      // La consulta de antecedentes la hacemos NOSOTROS (TusDatos). Este es
+      // el control que manda; el de Kumplo queda debajo como respaldo para
+      // los veredictos que ya estaban guardados de antes.
+      if (docDest) {
+        try {
+          const { data: tdRow } = await db.from('system_config').select('value').eq('key', 'tusdatos_config').maybeSingle()
+          const tdCfg = (tdRow as any)?.value ? JSON.parse((tdRow as any).value) : null
+          if (tdCfg?.activo) {
+            const f = (rawU?.tusdatos?.beneficiarios ?? {})[docDest]
+            const cat = String(f?.categoria ?? '')
+            const cerrado = f?.estado === 'finalizado'
+
+            // ── SIN RESULTADO NO SALE PLATA ──────────────────────────────
+            //
+            // Antes, mientras la consulta corría se dejaba pasar: "un control
+            // que no pudo concluir no puede acusar a nadie". Para no ACUSAR
+            // es cierto, pero no para dejar SALIR el dinero — si el veredicto
+            // llega negativo un minuto después, ya se fue. El control existe
+            // para decidir antes, no para enterarse después.
+            //
+            // Solo aplica a las cuentas que el AML realmente cubre: si la
+            // cuenta está fuera de la lista de prueba no se le va a consultar
+            // nada nunca, y esperar un resultado que no va a llegar dejaría
+            // la operación parada sin ganar nada.
+            //
+            // 'sin_autorizacion' NO espera: el titular está en su derecho de
+            // no autorizar la consulta y eso no se resuelve esperando.
+            {
+              const soloEstos: string[] = Array.isArray(tdCfg?.soloEstosUsuarios) ? tdCfg.soloEstosUsuarios : []
+              const cubierta = soloEstos.length === 0 || soloEstos.includes(userId)
+              const estadoF = String(f?.estado ?? '')
+              const esperando = cubierta && estadoF !== 'finalizado' && estadoF !== 'sin_autorizacion'
+              if (esperando) {
+                await logAudit(userId, 'tusdatos.envio_en_espera', {
+                  documento: docDest, estado: estadoF || 'sin_consulta',
+                })
+                return json(409, {
+                  error: 'aml_pendiente',
+                  message: estadoF === 'procesando' || !estadoF
+                    ? 'Estamos verificando los antecedentes de este beneficiario. Suele tardar cerca de un minuto; inténtalo de nuevo en un momento.'
+                    : 'La verificación de antecedentes de este beneficiario no ha terminado. Se está reintentando; inténtalo de nuevo en unos minutos.',
+                })
+              }
+            }
+            // La identidad pesa más que los antecedentes: si el nombre
+            // inscrito no es el del documento, o la cédula no está vigente,
+            // no se sabe A QUIÉN se le está transfiriendo. Saber que otra
+            // persona está limpia no sirve de nada.
+            const identidadMal = cerrado && (f?.nombreCoincide === false || f?.documentoVigente === false)
+            // Riesgo alto y fallas de identidad cortan SIEMPRE. "Impedir la
+            // transferencia" (bloquear) es para el caso ambiguo —el riesgo
+            // medio—, no para dejar salir plata hacia un riesgo alto. Antes lo
+            // apagaba todo: la insignia decía BLOQUEADO y el envío salía igual.
+            const duro = identidadMal || (cerrado && cat === 'alto')
+            // Y se respeta el veredicto GUARDADO: si el servidor ya dijo que
+            // no es operable, eso manda. Es lo mismo que lee la pantalla para
+            // pintar BLOQUEADO, así que insignia y envío no se contradicen.
+            const noOperable = cerrado && f?.operable === false
+            const medio = cerrado && cat === 'medio' && tdCfg?.soloBloquearAlto !== true && tdCfg?.bloquear !== false
+            const bloquea = duro || noOperable || medio
+            if (bloquea) {
+              await logAudit(userId, 'tusdatos.envio_bloqueado', {
+                documento: docDest, categoria: cat, motivo: f?.bloqueo ?? null,
+                nombreCoincide: f?.nombreCoincide ?? null, documentoVigente: f?.documentoVigente ?? null,
+                reportId: f?.reportId ?? null,
+              })
+              return json(403, {
+                error: 'beneficiario_no_operable',
+                message: f?.nombreCoincide === false
+                  ? `El nombre inscrito no corresponde a ese documento. Según la Registraduría la cédula pertenece a ${f?.nombreReal ?? 'otra persona'}. Corrige el beneficiario e inténtalo de nuevo.`
+                  : f?.documentoVigente === false
+                    ? `El documento de este beneficiario no está vigente${f?.estadoDocumento ? `: ${f.estadoDocumento}` : ''}. No se le puede transferir.`
+                    : cat === 'alto'
+                      ? 'No se puede transferir a este beneficiario: la verificación de antecedentes lo marcó como riesgo alto.'
+                      : 'Este beneficiario está en revisión de cumplimiento. Todavía no se le puede transferir.',
+              })
+            }
+          }
+        } catch (e) {
+          // Sigue fallando ABIERTO —un tropiezo de la base no puede frenar un
+          // envío legítimo— pero ya no en silencio: antes esto equivalía a "sin
+          // control AML" y no quedaba rastro de que hubiera pasado.
+          await logAudit(userId, 'tusdatos.gate_error', { documento: docDest, error: String((e as any)?.message ?? e) })
+        }
+        try {
+          const { data: cfgRow } = await db.from('system_config').select('value').eq('key', 'kumplo_config').maybeSingle()
+          const cfg = (cfgRow as any)?.value ? JSON.parse((cfgRow as any).value) : null
+          if (cfg?.activo && cfg?.bloquearEnAlto !== false) {
+            const b = (rawU?.kumplo?.beneficiarios ?? {})[docDest]
+            // Un veredicto DE VERDAD: o Kumplo dijo operable sí/no, o dio un
+            // nivel de riesgo real. 'desconocido' NO es un veredicto — es
+            // justamente que no pudieron determinarlo, y antes contaba como
+            // uno: bastaba que el campo existiera para que el envío se
+            // bloqueara diciendo que la persona estaba restringida por
+            // cumplimiento sin que nadie la hubiera juzgado.
+            // Y tampoco se confía en un 'operable' guardado junto a un riesgo
+            // 'desconocido': esas fichas las escribió la versión que deducía el
+            // veredicto, y ese false no lo dijo Kumplo. Se vuelven a consultar.
+            const hayVeredicto = !!b && String(b.riesgo ?? '') !== 'desconocido' && (
+              typeof b.operable === 'boolean' ||
+              ['bajo', 'medio', 'alto'].includes(String(b.riesgo ?? ''))
+            )
+            if (hayVeredicto && String(b.estado ?? '') !== 'procesando') {
+              const puede = cfg.soloBloquearAlto ? b.riesgo !== 'alto' : b.operable !== false
+              if (!puede) {
+                await logAudit(userId, 'kumplo.envio_bloqueado', { documento: docDest, riesgo: b.riesgo, estado: b.estado })
+                return json(403, {
+                  error: 'beneficiario_no_operable',
+                  message: b.riesgo === 'alto'
+                    ? 'No se puede transferir a este beneficiario: la verificación de cumplimiento lo marcó como riesgo alto.'
+                    : b.riesgo === 'desconocido'
+                      ? 'No pudimos validar el documento de este beneficiario. Revísalo o comunícate con soporte.'
+                      : 'Este beneficiario está en revisión de cumplimiento. Todavía no se le puede transferir.',
+                })
+              }
+            }
+          }
+        } catch { /* la prueba nunca frena un envío legítimo */ }
       }
     }
 
@@ -1042,6 +2835,11 @@ serve(async (req: Request) => {
       if (!recipient.bankCode || !recipient.accountNumber || !recipient.accountType || !recipient.documentNumber)
         return json(400, { error: 'bad_recipient', message: 'Faltan datos de la cuenta ACH (banco, tipo, número y documento).' })
     }
+    // El MOTIVO del envío es obligatorio: va con la orden al banco y decide
+    // qué documento sale en Siigo. Sin motivo, nada sale.
+    const motivo = String(recipient.motivo ?? '').trim()
+    if (!motivo || !(motivo in MOTIVOS_ENVIO)) return json(400, { error: 'falta_motivo', message: 'Elige el motivo del envío (pago a proveedores, servicios, nómina…).' })
+    const motivoTexto = MOTIVOS_ENVIO[motivo]
 
     // 1) Comisión que SE COBRA AL CLIENTE
     //    BREB → FIJA Lincoin ($1.200 por envío, BREB_FEE_COP). El costo
@@ -1097,45 +2895,205 @@ serve(async (req: Request) => {
       ...(recipient.documentNumber ? { documentNumber: recipient.documentNumber } : {}),
       ...(recipient.documentType ? { documentType: recipient.documentType } : {}),
       ...(recipient.reference ? { reason: recipient.reference } : {}),
+      motivo, motivoTexto,
       recipient,
     }
-    const { data: txIns } = await db.from('transactions').insert({
+    // El ERROR de este insert NO se puede descartar. Antes se leía solo `data`
+    // y, si el insert fallaba, el código seguía adelante con txId = null: el
+    // dinero salía y el movimiento NO EXISTÍA en ninguna parte. Para el cliente
+    // eso se ve como "hice la transferencia y no me aparece" — sin rastro,
+    // porque nadie se enteró de que la fila nunca se escribió.
+    const filaTx = {
       user_id: userId, type: 'dispersion', amount, currency: railCol, status: 'Procesando',
       raw_data: { ...prettyBase, ...feeDetail, requestedAt: new Date().toISOString() },
-    }).select('id').maybeSingle()
-    const txId = (txIns as any)?.id ?? null
+    }
+    const { data: txIns, error: txInsErr } = await db.from('transactions').insert(filaTx).select('id').maybeSingle()
+    let txId = (txIns as any)?.id ?? null
+    if (txInsErr || !txId) {
+      // Un reintento inmediato: la causa más común es un tropiezo puntual.
+      const reintento = await db.from('transactions').insert(filaTx).select('id').maybeSingle()
+      txId = (reintento.data as any)?.id ?? null
+      if (!txId) {
+        // Queda constancia con TODO lo necesario para reconstruir la fila a
+        // mano. Es lo mínimo: el dinero va a salir igual, así que el registro
+        // no puede desaparecer en silencio.
+        await logAudit(userId, 'mouv.tx_insert_failed', {
+          motivo: txInsErr?.message ?? reintento.error?.message ?? 'insert sin id',
+          amount, railCol, recipient,
+        })
+      }
+    }
+
+    // Deja el movimiento en su estado final. Si la fila no llegó a crearse, la
+    // CREA ahora — el envío ya ocurrió, así que el registro tiene que existir
+    // sí o sí. Antes cada sitio hacía `if (txId) update(...)`: sin fila, el
+    // movimiento se perdía para siempre y el cliente no tenía cómo verlo.
+    const asentarTx = async (status: string, raw: Record<string, unknown>) => {
+      if (txId) {
+        // EL ERROR DE ESTE UPDATE NO SE PUEDE DESCARTAR.
+        // Se descartaba, y esa es la causa de fondo del 19 de septiembre: 75
+        // dispersiones quedaron con el raw_data del insert inicial, sin
+        // providerRef y sin documentNumber -- los dos se escriben ACA -- asi
+        // que no habia ni id para consultar el estado ni documento para
+        // emparejar. La fila decia "Procesando" y parecia normal.
+        const { error: upErr } = await db.from('transactions').update({ status, raw_data: raw }).eq('id', txId)
+        if (upErr) {
+          await logAudit(userId, 'mouv.asentar_tx_failed', {
+            txId, status, motivo: upErr.message,
+            // Con esto se puede reconstruir la fila a mano: el envio ya ocurrio.
+            providerRef: (raw as any)?.providerRef ?? null,
+            providerReference: (raw as any)?.providerReference ?? null,
+            amount, railCol,
+          })
+        }
+        return
+      }
+      const { data: tardio } = await db.from('transactions')
+        .insert({ user_id: userId, type: 'dispersion', amount, currency: railCol, status, raw_data: raw })
+        .select('id').maybeSingle()
+      txId = (tardio as any)?.id ?? null
+      if (txId) await logAudit(userId, 'mouv.tx_insert_tardio', { txId, status })
+    }
 
     // 4) Llamar al PROVEEDOR del riel: BREB → Mouv · ACH → Finity
     if (rail === 'BREB') {
       const pay = await mouvPayout(rail, recipient, amount)
-      // Bre-B se completa casi al instante. Mouv responde el envío como
-      // "aceptada" (PENDING) o ya "completada"; en ambos casos se marca
-      // COMPLETADO de una vez para no dejar al cliente en "Procesando" indefinido
-      // (la lectura de estado de Mouv no es confiable —doc bloqueada— así que
-      // esperar a conciliar dejaba los pagos atascados). La RED DE SEGURIDAD ante
-      // una DEVOLUCIÓN posterior sigue activa: reconcile_breb (revisa las
-      // Completado recientes) y el webhook de Mouv revierten a Rechazado y
-      // REEMBOLSAN (idempotente) si Mouv reporta la devolución. Sólo un estado de
-      // DEVOLUCIÓN en el propio send evita marcar Completado (cae al reembolso).
+      // ACEPTADA NO ES PAGADA.
+      //
+      // Mouv responde /transfers/send con 201 { status: 'PENDING' }: eso
+      // significa "la recibí para procesar", no "la pagué". El banco destino
+      // puede rechazarla minutos después.
+      //
+      // Acá se marcaba Completado en el acto salvo que la respuesta del envío
+      // YA viniera devuelta, y se justificaba apoyándose en dos redes de
+      // seguridad: reconcile_breb y el webhook de Mouv. Ninguna de las dos
+      // existe en la práctica — mouvTransferStatus adivina la ruta entre seis
+      // candidatas y todas dan 404, y el webhook no está registrado. Así que
+      // no era una apuesta cubierta: era una afirmación sin respaldo.
+      //
+      // El 16 de septiembre eso le cobró 2.900.000 COP a un cliente por una
+      // dispersión que Mouv rechazó. El comprobante decía Completado, el saldo
+      // estaba debitado, y la plata nunca salió.
+      //
+      // Ahora Completado exige que el proveedor lo diga. Si solo la aceptó,
+      // queda Procesando —que es lo que realmente pasó— hasta que se confirme
+      // por conciliación, por webhook, o a mano. Un cliente esperando es un
+      // problema; un cliente al que se le cobró por algo que no ocurrió y se
+      // le dijo que sí, es otra cosa.
       const sendState = pay.ok ? normalizeMouvState(pay.data) : { verdict: 'unknown' as MouvVerdict, state: '' }
       if (pay.ok && sendState.verdict !== 'returned') {
-        if (txId) await db.from('transactions').update({
-          status: 'Completado',
-          raw_data: {
+        // LA RESPUESTA DEL ENVIO NO PUEDE PROBAR LA LIQUIDACION FINAL.
+        //
+        // El arreglo anterior exigia veredicto 'completed' para marcar
+        // Completado, y no alcanzo: Mouv responde con su propio vocabulario y
+        // "Exitoso" normaliza a completed. El 17 de septiembre una dispersion
+        // salio "Exitoso" en el envio, quedo Completado, y Mouv la marco
+        // DEVUELTA minutos despues. El cliente pago por algo que no ocurrio.
+        //
+        // En un riel que se puede revertir, lo unico que prueba el pago es una
+        // consulta POSTERIOR. Asi que el envio ya no marca Completado nunca:
+        // deja Procesando, que es lo que realmente se sabe en ese instante, y
+        // la confirmacion la da la conciliacion o el webhook.
+        //
+        // El costo es real: si la conciliacion no puede confirmar -- hoy no
+        // puede, porque la ruta de consulta de estado esta adivinada y da 404
+        // -- la dispersion se queda en Procesando y alguien tiene que
+        // resolverla a mano contra la consola del proveedor. Sale en
+        // Admin -> Fallos, marcada como sin confirmar. Es incomodo; decirle a
+        // un cliente que su plata llego cuando no llego es otra cosa.
+        const estado = 'Procesando'
+        const confirmada = false
+        await asentarTx(estado, {
             ...prettyBase, ...feeDetail,
             ...(pay.targetName ? { beneficiary: pay.targetName } : {}),
             ...(pay.targetDocument ? { documentNumber: pay.targetDocument } : {}),
             providerRef: pay.providerRef ?? null,
+            providerReference: pay.referencia ?? null,
             providerState: sendState.state || null,
-            settledAt: new Date().toISOString(),
-          },
-        }).eq('id', txId)
-        await logAudit(userId, `mouv.${action}.ok`, { amount, feeCop, rail, providerRef: pay.providerRef ?? null, providerState: sendState.state || null })
-        await notifyTx(txId) // "tu envío Bre-B llegó a destino"
-        return json(200, { ok: true, status: 'Completado', providerRef: pay.providerRef ?? null, providerState: sendState.state || null, feeCop, newBalance: afterDebit })
+            // LA RESPUESTA CRUDA DEL ENVIO, GUARDADA.
+            //
+            // Cuando providerRef sale null no hay forma de saber POR QUE sin
+            // esto: si Mouv no devolvio id, si lo devolvio con otro nombre, o
+            // si vino un nivel mas adentro. Se paso horas preguntandole a una
+            // persona que corriera consultas para averiguarlo. Con el crudo
+            // guardado, el proximo caso se diagnostica solo.
+            //
+            // Se recorta: no hace falta un blob enorme por fila, y lo que
+            // importa (ids, estado, mensaje) siempre viene arriba.
+            respuestaEnvio: JSON.stringify(pay.data ?? null).slice(0, 4000),
+            // MULTI-FIRMA: si la empresa tiene multiSigThreshold >= 2, el envio
+            // NO se despacha hasta que una persona firme en el panel del
+            // proveedor, y a las 24 h expira y se revierte. Visto desde aca se
+            // parece a "procesando" y no lo es: nadie esta moviendo esa plata,
+            // esta esperando una firma que quiza nadie sabe que debe dar.
+            ...(sendState.state === 'AWAITING_APPROVAL'
+              ? { esperaFirma: true, esperaFirmaDesde: new Date().toISOString() }
+              : {}),
+            aceptadaAt: new Date().toISOString(),
+            ...(confirmada
+              ? { settledAt: new Date().toISOString() }
+              : { sinConfirmarDesde: new Date().toISOString() }),
+        })
+        await logAudit(userId, `mouv.${action}.aceptada`, {
+          amount, feeCop, rail, providerRef: pay.providerRef ?? null,
+          providerState: sendState.state || null, estado,
+        })
+        // UN ENVIO ACEPTADO SIN ID ES UN ENVIO QUE NO SE VA A PODER CONCILIAR.
+        // Es la falla que dejo 75 dispersiones sin forma de consultar su
+        // estado, y no dejaba rastro: se veia como "aceptada" igual que las
+        // buenas. Ahora queda asentada aparte, con el cuerpo que contesto
+        // Mouv, para que se note el mismo dia y no tres semanas despues.
+        if (!pay.providerRef) {
+          await logAudit(userId, `mouv.${action}.sin_provider_ref`, {
+            txId, amount, rail, referencia: pay.referencia ?? null,
+            respuesta: (() => { try { return JSON.stringify(pay.data ?? '').slice(0, 500) } catch { return '(ilegible)' } })(),
+          })
+        }
+        await notifyTx(txId)
+        return json(200, {
+          ok: true, status: estado, confirmada,
+          providerRef: pay.providerRef ?? null, providerState: sendState.state || null,
+          ...(sendState.state === 'AWAITING_APPROVAL' ? { esperaFirma: true } : {}),
+          feeCop, newBalance: afterDebit,
+        })
       }
-      // Falló (o el send ya vino DEVUELTO) → REINTEGRAR monto + comisión
-      // (atómico; fallback read-write). El estado devuelto se guarda como error.
+      // ── FALLO TRANSITORIO: NO SE REEMBOLSA ──────────────────────────
+      // Un 5xx o un timeout NO significan "no salio": significan que no
+      // sabemos. Ya se reintento una vez con la MISMA referencia (idempotente
+      // 60 s) y siguio sin respuesta util, asi que el desenlace es
+      // desconocido.
+      //
+      // Reembolsar acá seria afirmar que no salio. Si habia salido, el cliente
+      // cobra dos veces y esa plata no vuelve. Dejarla debitada es el error
+      // barato: si efectivamente no salio, lo resuelve una persona en Fallos en
+      // minutos, con un boton que ya existe.
+      //
+      // Entre pagar dos veces y hacer esperar a alguien, se hace esperar.
+      const rechazoClaro = pay.status > 0 && pay.status < 500
+      if (!rechazoClaro) {
+        await asentarTx('Procesando', {
+          ...prettyBase, ...feeDetail,
+          providerReference: pay.referencia ?? null,
+          desenlaceDesconocido: true,
+          httpStatus: pay.status,
+          error: pay.data ?? 'sin_respuesta',
+          sinConfirmarDesde: new Date().toISOString(),
+          revisionManual: true,
+        })
+        await logAudit(userId, `mouv.${action}.desenlace_desconocido`, {
+          txId, amount, rail, httpStatus: pay.status, referencia: pay.referencia ?? null,
+        })
+        await avisarAdminSinConfirmar({ id: txId, user_id: userId, amount, currency: railCol, raw_data: prettyBase })
+        await notifyTx(txId)
+        return json(200, {
+          ok: true, status: 'Procesando', confirmada: false, desenlaceDesconocido: true,
+          message: 'No pudimos confirmar el envío con el proveedor. NO lo reintentes: lo estamos verificando y te avisamos en minutos.',
+          feeCop, newBalance: afterDebit,
+        })
+      }
+
+      // Rechazo EXPLICITO del proveedor (4xx) o envio ya devuelto → REINTEGRAR
+      // monto + comisión (atómico; fallback read-write).
       let restored = 0
       const { data: adjR, error: adjRErr } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { [railCol]: totalDebit } })
       if (!adjRErr && !(adjR as any)?.error) {
@@ -1146,10 +3104,7 @@ serve(async (req: Request) => {
         restored = Number((Number(bals2[railCol] ?? 0) + totalDebit).toFixed(2))
         await db.from('users').update({ balances: { ...bals2, [railCol]: restored } }).eq('id', userId)
       }
-      if (txId) await db.from('transactions').update({
-        status: 'Fallido',
-        raw_data: { ...prettyBase, ...feeDetail, error: pay.data ?? 'payout_failed', httpStatus: pay.status, refunded: true, failedAt: new Date().toISOString() },
-      }).eq('id', txId)
+      await asentarTx('Fallido', { ...prettyBase, ...feeDetail, error: pay.data ?? 'payout_failed', httpStatus: pay.status, refunded: true, failedAt: new Date().toISOString() })
       await logAudit(userId, `mouv.${action}.fail`, { amount, rail, status: pay.status, data: pay.data ?? null })
       await notifyTx(txId) // correo "no pudimos completar tu envío · saldo devuelto"
       // Mensaje LIMPIO para el cliente: si el proveedor manda un error
@@ -1200,6 +3155,13 @@ serve(async (req: Request) => {
         friendly = `Ya hiciste un envío a este mismo beneficiario hace poco. Por seguridad, espera ${mins} minuto${mins === 1 ? '' : 's'} antes de repetir un pago al mismo destino. Tu saldo fue devuelto.`
       } else if (isKeyProblem) {
         friendly = `La llave Bre-B del beneficiario no es válida o no está activa. Pídele que te confirme su llave Bre-B exacta (celular, correo, cédula o alias) y vuelve a intentarlo. Tu saldo fue devuelto.`
+      } else if (provMsg && /cumplimiento|compliance|restringid|sarlaft|listas?\s+restrictiv|lavado/i.test(provMsg)) {
+        // Cuando el rechazo es por CUMPLIMIENTO, decir de quién viene. Este
+        // mensaje llega tal cual del operador del riel y se mostraba sin
+        // firma, así que se leía como si lo hubiera decidido Lincoin —
+        // exactamente el mismo texto que usaría nuestra propia verificación.
+        // Costó horas de buscar el bloqueo en el lado equivocado.
+        friendly = `El operador del envío rechazó esta transferencia por una restricción de cumplimiento de su lado: «${provMsg}» No es una restricción de Lincoin. Comunícate con soporte para revisarlo. Tu saldo fue devuelto.`
       } else if (provMsg && !/[{}\[\]]|http\s*\d|status\s*code|errors?\b|\bpath\b|brebkey/i.test(provMsg)) {
         // Solo se muestra el mensaje del proveedor si es TEXTO HUMANO (sin JSON,
         // códigos ni jerga). Si trae basura técnica, se usa el genérico limpio.
@@ -1210,8 +3172,18 @@ serve(async (req: Request) => {
         // y en el audit_log para el Panel de Fallos del admin.
         friendly = `No pudimos completar el envío en este momento. Tu saldo fue devuelto — puedes intentarlo de nuevo en unos minutos.`
       }
+      // Queda anotado QUIÉN rechazó. Un fallo por cumplimiento del proveedor y
+      // uno de nuestra propia verificación se investigan en sitios distintos;
+      // sin esta marca los dos se ven igual en el Panel de Fallos.
+      const porCumplimientoDelProveedor = !!provMsg && /cumplimiento|compliance|restringid|sarlaft|listas?\s+restrictiv|lavado/i.test(provMsg)
+      if (porCumplimientoDelProveedor) {
+        await logAudit(userId, 'mouv.rechazo_cumplimiento_proveedor', {
+          rail, documento: String((payload.recipient as any)?.documentNumber ?? '').replace(/\D/g, ''),
+          httpStatus: pay.status, mensaje: String(provMsg).slice(0, 300),
+        })
+      }
       // Guardar el motivo legible en la tx para que el comprobante del fallo lo muestre.
-      if (txId) { try { await db.from('transactions').update({ raw_data: { ...prettyBase, ...feeDetail, error: pay.data ?? 'payout_failed', errorMessage: provMsg ?? techHint ?? null, httpStatus: pay.status, refunded: true, failedAt: new Date().toISOString() } }).eq('id', txId) } catch { /* best-effort */ } }
+      if (txId) { try { await db.from('transactions').update({ raw_data: { ...prettyBase, ...feeDetail, error: pay.data ?? 'payout_failed', errorMessage: provMsg ?? techHint ?? null, bloqueoDelProveedor: porCumplimientoDelProveedor || undefined, httpStatus: pay.status, refunded: true, failedAt: new Date().toISOString() } }).eq('id', txId) } catch { /* best-effort */ } }
       // NOTA: no se devuelven `data`/`detail` técnicos al cliente. El detalle
       // real vive en la tx (errorMessage/error/httpStatus) y en el audit_log.
       return json(200, { error: 'payout_failed', code: provCode, retryAfterSeconds, refunded: true, newBalance: restored,
@@ -1220,29 +3192,34 @@ serve(async (req: Request) => {
 
     // ── ACH vía FINITY ──
     const fin = await finityPayoutAch(userId, recipient, amount)
+
+    // ⚠️ EL id del destino se guarda PASE LO QUE PASE, no solo si el envío
+    // salió bien. Antes solo se persistía en el camino de éxito: si el destino
+    // se creaba y luego fallaba el retiro, ese id se perdía, el siguiente
+    // intento volvía a crear la MISMA cuenta y Finity la rechazaba por
+    // duplicada — el envío quedaba roto para siempre desde Lincoin, mientras
+    // que desde el panel de Finity funcionaba porque allá el destino ya existe.
+    if (fin.destinationId) {
+      try {
+        const accKey = String(recipient.accountNumber ?? '').replace(/\D/g, '')
+        const { data: u4 } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
+        const raw4 = (u4?.raw_data ?? {}) as Record<string, any>
+        const list = Array.isArray(raw4.mouvContacts) ? raw4.mouvContacts : []
+        const next = list.map((c: any) => String(c?.accountNumber ?? '').replace(/\D/g, '') === accKey ? { ...c, finityId: fin.destinationId } : c)
+        if (JSON.stringify(next) !== JSON.stringify(list)) await db.from('users').update({ raw_data: { ...raw4, mouvContacts: next } }).eq('id', userId)
+      } catch { /* best-effort — nunca bloquea la operación */ }
+    }
+
     if (fin.ok) {
       // El precio por transferencia (ACH_FEE_COP) ya se debitó junto al monto.
       const newBalance = afterDebit
-      // Guardar el finityId en el contacto del usuario (reuso en próximos envíos)
-      if (fin.destinationId) {
-        try {
-          const { data: u4 } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
-          const raw4 = (u4?.raw_data ?? {}) as Record<string, any>
-          const list = Array.isArray(raw4.mouvContacts) ? raw4.mouvContacts : []
-          const next = list.map((c: any) => String(c?.accountNumber ?? '') === String(recipient.accountNumber ?? '') ? { ...c, finityId: fin.destinationId } : c)
-          if (JSON.stringify(next) !== JSON.stringify(list)) await db.from('users').update({ raw_data: { ...raw4, mouvContacts: next } }).eq('id', userId)
-        } catch { /* best-effort */ }
-      }
-      if (txId) await db.from('transactions').update({
-        // Finity CONFIRMED = orden aceptada (aún no pagada) → Procesando.
-        status: 'Procesando',
-        raw_data: {
-          ...prettyBase, feeProvider: 'finity', feeCop: fin.feeCop, costs: fin.costs ?? null,
-          providerRef: fin.providerRef ?? null, state: fin.state ?? null,
-          ...(fin.amountMismatch ? { amountMismatch: fin.amountMismatch, needsReview: true } : {}),
-          acceptedAt: new Date().toISOString(),
-        },
-      }).eq('id', txId)
+      // Finity CONFIRMED = orden aceptada (aún no pagada) → Procesando.
+      await asentarTx('Procesando', {
+        ...prettyBase, feeProvider: 'finity', feeCop: fin.feeCop, costs: fin.costs ?? null,
+        providerRef: fin.providerRef ?? null, state: fin.state ?? null,
+        ...(fin.amountMismatch ? { amountMismatch: fin.amountMismatch, needsReview: true } : {}),
+        acceptedAt: new Date().toISOString(),
+      })
       await logAudit(userId, `finity.${action}.ok`, { amount, feeCop: fin.feeCop, providerRef: fin.providerRef ?? null })
       await notifyTx(txId) // correo "recibimos tu envío · en proceso"
       return json(200, { ok: true, provider: 'finity', providerRef: fin.providerRef ?? null, feeCop: fin.feeCop, newBalance })
@@ -1262,11 +3239,8 @@ serve(async (req: Request) => {
     const finMsgRaw = (typeof finErr === 'string' ? finErr
       : (finErr?.message ?? finErr?.detail ?? finErr?.error?.message)) as string | undefined
     const detail = (() => { try { return JSON.stringify(fin.error ?? fin).slice(0, 350) } catch { return String(fin.error ?? 'sin detalle') } })()
-    if (txId) await db.from('transactions').update({
-      status: 'Fallido',
-      // errorMessage = detalle técnico para el Panel de Fallos del admin.
-      raw_data: { ...prettyBase, feeProvider: 'finity', error: fin.error ?? 'finity_failed', errorMessage: (finMsgRaw ?? detail) ?? null, refunded: true, failedAt: new Date().toISOString() },
-    }).eq('id', txId)
+    // errorMessage = detalle técnico para el Panel de Fallos del admin.
+    await asentarTx('Fallido', { ...prettyBase, feeProvider: 'finity', error: fin.error ?? 'finity_failed', errorMessage: (finMsgRaw ?? detail) ?? null, refunded: true, failedAt: new Date().toISOString() })
     await logAudit(userId, `finity.${action}.fail`, { amount, error: JSON.stringify(fin.error ?? {}).slice(0, 200) })
     await notifyTx(txId) // correo "no pudimos completar tu envío · saldo devuelto"
     // AL CLIENTE: mensaje LIMPIO. Solo se usa el texto de Finity si es HUMANO

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
     ShieldCheck, AlertTriangle, RefreshCw, CheckCircle2, XCircle, Search,
     Plus, X, Trash2, Bell, FileWarning, BarChart3, Ban, Users, UserPlus,
@@ -8,7 +8,7 @@ import { supabasePersonas } from '../../../lib/supabaseClient';
 import { logAdminAction, PERMISSIONS, type AdminProfile } from '../lib/adminAuth';
 import { useConfirm } from '../lib/useConfirm';
 import { useToast } from '../lib/toast';
-import { SectionHeader, StatusBadge, formatDate, formatAmount, NAVY, TEAL, EmptyState } from './shared';
+import { SectionHeader, StatusBadge, formatDate, formatAmount, NAVY, TEAL, EmptyState, origenKyc } from './shared';
 import { ComplianceDashboard } from './ComplianceDashboard';
 import { KycDetailModal } from './KycDetailModal';
 import { DocRequestsTab } from './DocRequestsTab';
@@ -32,124 +32,20 @@ interface UserRow {
     kyc_verified_at: string | null;
     is_blocked?: boolean | null;
     created_at: string;
-    // raw_data?.diditDecision se popula cuando el admin abre el modal por
-    // primera vez (la edge function cachea ahí). Lo usamos para mostrar la
-    // foto del usuario en el avatar de la lista sin pegar más veces a Didit.
+    // Lo que el titular declaró al registrarse, más banderas internas. Se usa
+    // para las advertencias del detalle.
     raw_data?: any;
 }
 
-// Saca la mejor URL de foto disponible de un objeto decisión.
-// Mismo orden de fallbacks que el avatar del modal:
-//   portrait → selfie → frente del documento.
-function avatarUrlFromDecision(dec: any): string | null {
-    if (!dec) return null;
-    const id = dec?.id_verification ?? {};
-    const live = dec?.liveness ?? {};
-    return id.portrait_image_url ?? id.portrait_url ?? id.images?.portrait
-        ?? live.selfie_url ?? live.image_url ?? live.images?.selfie
-        ?? id.front_url ?? id.front_image_url ?? id.images?.front
-        ?? null;
-}
-// Compat: si en algún momento Antigravity cachea la decisión en
-// users.raw_data.diditDecision, también la leemos sin pegar al edge.
-function avatarUrlFromRaw(raw: any): string | null {
-    return avatarUrlFromDecision(raw?.diditDecision);
-}
-
-// Cache compartido de URLs de avatar.
-// Persiste en localStorage para sobrevivir reloads — la mayor parte del
-// delay percibido al entrar a Compliance KYC viene de pegarle 17 veces al
-// edge function `didit-kyc?action=full` a buscar la foto de cada user.
-// Cacheándolo en disco, el segundo reload renderiza con fotos al toque.
-// '' significa "ya probamos y no hay foto"; ausente = no probamos.
-const AVATAR_CACHE_KEY = 'cuypay.admin.avatar_cache.v1';
-const AVATAR_CACHE: Map<string, string | ''> = (() => {
-    try {
-        const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(AVATAR_CACHE_KEY) : null;
-        if (!raw) return new Map();
-        const obj = JSON.parse(raw) as Record<string, string | ''>;
-        return new Map(Object.entries(obj));
-    } catch {
-        return new Map();
-    }
-})();
-
-// Persistimos el cache en localStorage en batch (timeout debouncing) para
-// evitar escrituras síncronas cada vez que se setea un avatar.
-let avatarPersistTimer: number | null = null;
-function persistAvatarCache() {
-    if (avatarPersistTimer != null) return;
-    avatarPersistTimer = window.setTimeout(() => {
-        avatarPersistTimer = null;
-        try {
-            const obj = Object.fromEntries(AVATAR_CACHE);
-            localStorage.setItem(AVATAR_CACHE_KEY, JSON.stringify(obj));
-        } catch { /* quota / disabled */ }
-    }, 500);
-}
-
-// Wrapper que usamos en lugar de AVATAR_CACHE.set() para persistir.
-function rememberAvatar(userId: string, url: string | '') {
-    AVATAR_CACHE.set(userId, url);
-    persistAvatarCache();
-}
-
-// Componente que muestra el avatar de un user: prueba primero el cache
-// y raw_data inline; si no, hace un fetch lazy al edge function
-// action=full una sola vez. Mientras carga muestra la inicial.
-const UserAvatar: React.FC<{ userId: string; rawData?: any; initial: string; blocked?: boolean }> = ({ userId, rawData, initial, blocked }) => {
-    const inlineUrl = avatarUrlFromRaw(rawData);
-    const [url, setUrl] = useState<string | ''>(() => AVATAR_CACHE.get(userId) ?? inlineUrl ?? '');
-    const tried = useRef(false);
-
-    useEffect(() => {
-        if (url) return;                       // ya tenemos foto
-        if (tried.current) return;             // ya intentamos y no había
-        if (AVATAR_CACHE.has(userId)) {        // alguien más lo intentó
-            setUrl(AVATAR_CACHE.get(userId) ?? '');
-            return;
-        }
-        tried.current = true;
-        (async () => {
-            try {
-                const env: any = (import.meta as any).env ?? {};
-                const sbUrl = env.VITE_SUPABASE_PERSONAS_URL || env.VITE_SUPABASE_URL || '';
-                const apikey = env.VITE_SUPABASE_PERSONAS_ANON_KEY || env.VITE_SUPABASE_ANON_KEY || '';
-                const { data: sess } = await supabasePersonas.auth.getSession();
-                const accessToken = sess?.session?.access_token ?? '';
-                const resp = await fetch(`${sbUrl}/functions/v1/didit-kyc?action=full&user_id=${userId}`, {
-                    headers: {
-                        'Authorization': `Bearer ${accessToken || apikey}`,
-                        'apikey': apikey,
-                    },
-                });
-                if (!resp.ok) { rememberAvatar(userId, ''); return; }
-                const d = await resp.json().catch(() => null);
-                const found = avatarUrlFromDecision(d) ?? '';
-                rememberAvatar(userId, found);
-                setUrl(found);
-            } catch {
-                rememberAvatar(userId, '');
-            }
-        })();
-    }, [userId, url]);
-
-    if (url) {
-        return (
-            <img
-                src={url}
-                alt={initial}
-                onError={() => { rememberAvatar(userId, ''); setUrl(''); }}
-                className="w-12 h-12 rounded-full object-cover shrink-0 border-2 border-white shadow-sm bg-slate-100"
-            />
-        );
-    }
-    return (
-        <div className="w-12 h-12 rounded-full flex items-center justify-center font-bold text-lg shrink-0" style={{ backgroundColor: blocked ? '#FCA5A5' : TEAL, color: NAVY }}>
-            {initial}
-        </div>
-    );
-};
+// Avatar del usuario en la lista. Es la inicial y nada más: sin proveedor de
+// KYC no hay retrato del documento ni selfie que mostrar, así que tampoco hay
+// nada que ir a buscar — antes esta lista disparaba una llamada por usuario
+// solo para traer esa foto.
+const UserAvatar: React.FC<{ userId: string; rawData?: any; initial: string; blocked?: boolean }> = ({ initial, blocked }) => (
+    <div className="w-12 h-12 rounded-full flex items-center justify-center font-bold text-lg shrink-0" style={{ backgroundColor: blocked ? '#FCA5A5' : TEAL, color: NAVY }}>
+        {initial}
+    </div>
+);
 
 interface AmlRule {
     id: string;
@@ -184,7 +80,6 @@ interface BeneficiaryRow {
     country: string | null;
     phone: string | null;
     email: string | null;
-    didit_session_id: string | null;
     kyc_status: string | null;
     kyc_verified_at: string | null;
     linked_user_id: string | null;
@@ -390,9 +285,9 @@ const KycTab: React.FC<{ profile: AdminProfile; canApprove: boolean }> = ({ prof
             <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 flex items-start gap-2 text-sm text-blue-900">
                 <ShieldCheck size={16} className="mt-0.5 shrink-0" />
                 <p>
-                    El estado KYC lo determina <strong>Didit</strong> automáticamente y se sincroniza con Lincoin.
-                    Si necesitás cambiarlo manualmente, abrí el detalle del usuario y usá el botón de estado —
-                    el cambio se pushea a Didit y queda en el audit log.
+                    El estado KYC se fija <strong>a mano</strong>: no hay proveedor de verificación conectado.
+                    Abrí el detalle del usuario y usá el botón de estado — el cambio queda en el audit log
+                    con el comentario y con quién lo hizo.
                     Compliance puede <strong>bloquear</strong> un usuario o tercero si infringe una norma AML.
                 </p>
             </div>
@@ -472,9 +367,10 @@ const KycCuentaList: React.FC<{ profile: AdminProfile; canApprove: boolean }> = 
         setRefreshing(true);
 
         // Mostramos TODOS los usuarios recientes (no solo pendientes). El KYC
-        // lo decide Didit; acá compliance MONITOREA y puede BLOQUEAR.
-        // Intento más completo: con raw_data (para mostrar foto en avatar)
-        // + is_blocked. Si raw_data falla por RLS o is_blocked no existe
+        // se aprueba a mano en el detalle; acá compliance MONITOREA y puede
+        // BLOQUEAR.
+        // Intento más completo: con raw_data (para las advertencias del
+        // detalle) + is_blocked. Si raw_data falla por RLS o is_blocked no existe
         // (migraciones pendientes), reintentamos sin esas columnas para
         // que los usuarios sigan apareciendo igual.
         const FULL  = 'id, email, full_name, cuypay_id, flag, country, kyc_status, kyc_provider, kyc_verified_at, is_blocked, created_at, raw_data';
@@ -874,7 +770,7 @@ const KycCuentaList: React.FC<{ profile: AdminProfile; canApprove: boolean }> = 
                             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs text-slate-500 mt-3 pt-3 border-t border-slate-100">
                                 <div><span className="block text-slate-400">Lincoin ID</span><span className="text-slate-700 font-mono">{u.cuypay_id ?? '—'}</span></div>
                                 <div><span className="block text-slate-400">País</span><span className="text-slate-700">{u.flag ?? ''} {u.country ?? '—'}</span></div>
-                                <div><span className="block text-slate-400">Proveedor KYC</span><span className="text-slate-700">{u.kyc_provider && u.kyc_provider !== 'Didit' ? u.kyc_provider : 'Lincoin'}</span></div>
+                                <div><span className="block text-slate-400">Origen del estado</span><span className="text-slate-700">{origenKyc(u.kyc_provider)}</span></div>
                                 <div><span className="block text-slate-400">Registrado</span><span className="text-slate-700">{formatDate(u.created_at)}</span></div>
                             </div>
                             <div className="mt-3 pt-3 border-t border-slate-100">
@@ -935,7 +831,7 @@ const KycCuentaList: React.FC<{ profile: AdminProfile; canApprove: boolean }> = 
 // ─────────────────────────────────────────────
 // Estados de KYC asignables a un beneficiario desde el admin.
 // OJO: el BLOQUEO es una dimensión SEPARADA (is_active + block_*) — un
-// tercero puede estar Aprobado por Didit Y bloqueado por un requisito de
+// tercero puede estar Aprobado Y bloqueado por un requisito de
 // compliance a la vez. Por eso 'blocked' NO es un estado KYC elegible;
 // se bloquea con el botón Bloquear.
 const BEN_KYC_STATES: Array<{ value: string; label: string; bg: string; tx: string }> = [
@@ -1016,7 +912,6 @@ const KycTercerosList: React.FC<{ profile: AdminProfile; canApprove: boolean }> 
             country:          r.country ?? null,
             phone:            r.phone ?? null,
             email:            r.email ?? null,
-            didit_session_id: r.didit_session_id ?? null,
             kyc_status:       r.kyc_status ?? null,
             kyc_verified_at:  r.kyc_verified_at ?? null,
             linked_user_id:   r.linked_user_id ?? null,
@@ -1053,8 +948,8 @@ const KycTercerosList: React.FC<{ profile: AdminProfile; canApprove: boolean }> 
         const notesForDb = payload.type === 'permanent' && payload.customInfo
             ? `[PERMANENTE — info requerida] ${payload.customInfo}${payload.notes ? `\n\n${payload.notes}` : ''}`
             : (payload.notes || null);
-        // El bloqueo NO toca kyc_status — el estado KYC es la verdad de Didit
-        // y el bloqueo es una medida de compliance aparte (is_active + block_*).
+        // El bloqueo NO toca kyc_status — el estado KYC es una dimensión
+        // aparte del bloqueo de compliance (is_active + block_*).
         // Un tercero puede estar Aprobado Y bloqueado a la vez.
         const full: Record<string, any> = {
             is_active:          false,
@@ -1115,7 +1010,7 @@ const KycTercerosList: React.FC<{ profile: AdminProfile; canApprove: boolean }> 
             }
         }
 
-        toast.success(`${b.full_name ?? 'Beneficiario'} bloqueado — el dueño verá los documentos requeridos en la app (vía Didit).`);
+        toast.success(`${b.full_name ?? 'Beneficiario'} bloqueado — el dueño verá los documentos requeridos en la app.`);
         await logAdminAction({
             admin: profile,
             action: 'beneficiary_block',
@@ -1136,7 +1031,7 @@ const KycTercerosList: React.FC<{ profile: AdminProfile; canApprove: boolean }> 
         setProcessingId(b.id);
         // El desbloqueo tampoco toca kyc_status — salvo limpieza de filas
         // LEGACY que quedaron con kyc_status='blocked' de la versión
-        // anterior: esas vuelven a su estado real de Didit.
+        // anterior: esas vuelven a su estado real.
         const restoredKyc = b.kyc_status === 'blocked'
             ? (b.kyc_verified_at ? 'approved' : 'pending')
             : undefined;
@@ -1190,7 +1085,7 @@ const KycTercerosList: React.FC<{ profile: AdminProfile; canApprove: boolean }> 
 
     // Cambiar el kyc_status del beneficiario desde el selector.
     // 'blocked' hace que la app mobile muestre el flujo de re-subir
-    // documentación vía Didit para ese tercero.
+    // documentación para ese tercero.
     const setKycStatus = async (b: BeneficiaryRow, newStatus: string) => {
         if (!canBlock || newStatus === b.kyc_status) return;
         setProcessingId(b.id);
@@ -1207,7 +1102,7 @@ const KycTercerosList: React.FC<{ profile: AdminProfile; canApprove: boolean }> 
             return;
         }
         const label = BEN_KYC_STATES.find(s => s.value === newStatus)?.label ?? newStatus;
-        toast.success(`${b.full_name ?? 'Beneficiario'} → ${label}${newStatus === 'blocked' ? '. La app le pedirá documentación vía Didit.' : ''}`);
+        toast.success(`${b.full_name ?? 'Beneficiario'} → ${label}${newStatus === 'blocked' ? '. La app le pedirá documentación.' : ''}`);
         await logAdminAction({
             admin: profile,
             action: 'beneficiary_kyc_status.set',
@@ -1365,7 +1260,7 @@ const KycTercerosList: React.FC<{ profile: AdminProfile; canApprove: boolean }> 
                                 </div>
                                 <div className="flex gap-2 shrink-0 flex-wrap items-center">
                                     {/* Selector de estado KYC — dimensión SEPARADA del bloqueo.
-                                        Normalizamos sinónimos de Didit (verified/completed →
+                                        Normalizamos sinónimos históricos (verified/completed →
                                         approved) para que el select refleje el estado real. */}
                                     {canBlock && (() => {
                                         const raw = String(b.kyc_status ?? '').toLowerCase();
@@ -1392,14 +1287,14 @@ const KycTercerosList: React.FC<{ profile: AdminProfile; canApprove: boolean }> 
                                         );
                                     })()}
                                     {/* Botón rojo cuando está BLOQUEADO (is_active=false):
-                                        el dueño re-sube docs vía Didit */}
+                                        el dueño re-sube docs desde la app */}
                                     {canBlock && b.is_active === false && (
                                         <button
                                             onClick={() => toast.info(
-                                                `${b.full_name ?? 'El beneficiario'} está BLOQUEADO — el dueño lo verá reflejado en su app y podrá subir la documentación a través de Didit.`
+                                                `${b.full_name ?? 'El beneficiario'} está BLOQUEADO — el dueño lo verá reflejado en su app y podrá subir la documentación desde ahí.`
                                             )}
                                             className="px-3 py-2 text-sm font-bold rounded-lg text-white bg-red-600 hover:bg-red-700 flex items-center gap-1.5"
-                                            title="El usuario verá el estado bloqueado en la app y podrá re-subir documentación vía Didit"
+                                            title="El usuario verá el estado bloqueado en la app y podrá re-subir documentación"
                                         >
                                             <FileWarning size={14} /> Solicitar Documentación
                                         </button>
@@ -1483,7 +1378,6 @@ const KycTercerosList: React.FC<{ profile: AdminProfile; canApprove: boolean }> 
                         doc_number:       detail.doc_number,
                         kyc_status:       detail.kyc_status,
                         kyc_verified_at:  detail.kyc_verified_at,
-                        didit_session_id: detail.didit_session_id,
                         is_active:        detail.is_active,
                         owner_user_id:    detail.owner_user_id,
                         linked_user_id:   detail.linked_user_id,

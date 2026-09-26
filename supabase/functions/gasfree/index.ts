@@ -23,14 +23,27 @@
 // ════════════════════════════════════════════════════════
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { FIELD_ENC_KEY, decField } from '../_shared/field-crypto.ts'
 import { ethers } from 'https://esm.sh/ethers@6.13.5'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
 const db = createClient(SUPABASE_URL, SERVICE_KEY)
 
-// 2FA server-side: re-valida el TOTP (SHA1/6/30, ventana ±2) antes de enviar,
-// con Web Crypto NATIVO (sin dependencias externas que puedan no cargar).
+// Cifrado de campos sensibles: la implementación vive en _shared para que
+// NO pueda volver a haber tres copias que se desincronicen (una quedó sin
+// entender el formato nuevo y el 2FA de los envíos falló con el código
+// correcto, sin que ningún build lo detectara).
+// ── TOTP ───────────────────────────────────────────────────────────────────
+// Estas dos funciones NO EXISTÍAN en este archivo, y require2FA/require2FAStrict
+// las llamaban igual. En Deno eso no es un aviso al compilar: es un
+// ReferenceError EN EJECUCIÓN, justo en la rama que verifica el segundo
+// factor. O sea que la comprobación de 2FA de los envíos y los barridos no
+// verificaba nada — reventaba. El error caía en el catch de arriba y salía
+// como "no pudimos verificar tu código", que parecía un código malo.
+//
+// Copia de la implementación de mouv-proxy. Ventana de ±2 pasos (±60 s) por
+// el desfase de reloj del teléfono.
 function base32Decode(s: string): Uint8Array {
   const alph = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
   const clean = String(s ?? '').replace(/=+$/, '').toUpperCase().replace(/\s/g, '')
@@ -42,6 +55,7 @@ function base32Decode(s: string): Uint8Array {
   }
   return new Uint8Array(out)
 }
+
 async function verifyTOTPServer(secret: string, token: string): Promise<boolean> {
   const code = String(token ?? '').replace(/\D/g, '')
   if (code.length !== 6) return false
@@ -60,18 +74,7 @@ async function verifyTOTPServer(secret: string, token: string): Promise<boolean>
   }
   return false
 }
-// Exige el código 2FA si el usuario lo tiene activo. Devuelve un mensaje de
-// error si falla, o null si pasa (o si no aplica).
-const FIELD_ENC_KEY = Deno.env.get('FIELD_ENC_KEY') ?? ''
-async function decField(v: string): Promise<string> {
-  if (typeof v !== 'string' || !v.startsWith('enc:v1:')) return v
-  if (!FIELD_ENC_KEY) throw new Error('FIELD_ENC_KEY missing')
-  const rawKey = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(FIELD_ENC_KEY)))
-  const ck = await crypto.subtle.importKey('raw', rawKey, { name: 'AES-GCM' }, false, ['decrypt'])
-  const bytes = Uint8Array.from(atob(v.slice(7)), c => c.charCodeAt(0))
-  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: bytes.slice(0, 12) }, ck, bytes.slice(12))
-  return new TextDecoder().decode(pt)
-}
+
 async function require2FA(userId: string, otp: unknown): Promise<string | null> {
   const { data } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
   const raw = ((data as any)?.raw_data ?? {}) as Record<string, any>
@@ -87,6 +90,19 @@ async function require2FA(userId: string, otp: unknown): Promise<string | null> 
   return null
 }
 
+// ── Ajuste de la tasa (los "puntos" que Lincoin le baja al proveedor) ──────
+// Misma clave que lee finity-proxy al servir la tasa. Se lee acá otra vez —y
+// no se confía en lo que mande el navegador— porque este es el número con el
+// que se abona plata de verdad.
+async function leerAjusteTasa(): Promise<number> {
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', 'otc_rate_ajuste').maybeSingle()
+    const v = (data as any)?.value ? JSON.parse((data as any).value) : null
+    const n = Number(v?.finityCop)
+    return Number.isFinite(n) && n >= 0 ? n : 0
+  } catch { return 0 }
+}
+
 // ── GUARDIA DE BLOQUEO / LISTA NEGRA ──────────────────────────────
 // Antes el bloqueo solo existía en la interfaz: un usuario bloqueado (p. ej.
 // por hackeo) podía seguir moviendo dinero llamando la API directo. Ahora el
@@ -94,13 +110,62 @@ async function require2FA(userId: string, otp: unknown): Promise<string | null> 
 // negra. Devuelve un mensaje si está bloqueada, o null si puede operar.
 async function assertNotBlocked(userId: string): Promise<string | null> {
   try {
-    const { data } = await db.from('users').select('is_blocked, is_active, raw_data').eq('id', userId).maybeSingle()
+    const { data } = await db.from('users').select('is_blocked, raw_data').eq('id', userId).maybeSingle()
     if (!data) return null
     const raw = ((data as any).raw_data ?? {}) as Record<string, any>
     const blacklisted = raw.blacklisted === true
-    const blocked = (data as any).is_blocked === true || (data as any).is_active === false || raw.isBlocked === true
+    // OJO: NO se usa `is_active` como señal de bloqueo. Esa columna la maneja el
+    // módulo de Personas (otra app) y en Empresas nadie la pone en true, así que
+    // marcaba como bloqueadas cuentas legítimas y les cortaba los envíos COP.
+    // Solo cuentan las banderas que el admin de Empresas sí controla.
+    const blocked = (data as any).is_blocked === true || raw.isBlocked === true
     if (blacklisted) return 'Esta cuenta está en la lista negra y no puede realizar operaciones. Contacta a soporte.'
     if (blocked) return 'Esta cuenta está bloqueada y no puede realizar operaciones. Contacta a soporte.'
+
+    // ── Riesgo AML de Kumplo ──────────────────────────────────────────────
+    // Va acá, en el mismo sitio que el resto de bloqueos, porque esta función
+    // ya la llama TODA operación que mueve dinero. Ponerlo solo en la pantalla
+    // sería un letrero, no un control: la API se puede llamar directamente.
+    //
+    // Falla ABIERTO a propósito. Es una prueba: si la configuración está a
+    // medias, si Kumplo no ha respondido todavía, o si la lectura se cae, la
+    // cuenta opera. Un control de cumplimiento a medio conectar no puede
+    // dejar sin transferir a un cliente legítimo.
+    try {
+      const { data: cfgRow } = await db.from('system_config').select('value').eq('key', 'kumplo_config').maybeSingle()
+      const cfg = (cfgRow as any)?.value ? JSON.parse((cfgRow as any).value) : null
+      if (cfg?.activo && cfg?.bloquearEnAlto !== false) {
+        const soloEstos: string[] = Array.isArray(cfg.soloEstosUsuarios) ? cfg.soloEstosUsuarios : []
+        const enLaPrueba = soloEstos.length === 0 || soloEstos.includes(userId)
+        const k = raw.kumplo ?? {}
+        const riesgo = String(k.riesgo ?? '')
+        // Un veredicto DE VERDAD. 'desconocido' no lo es: significa que no
+        // pudieron determinarlo, y tratarlo como veredicto bloquea a alguien
+        // a quien nadie juzgó.
+        const hayVeredicto = String(k.riesgo ?? '') !== 'desconocido' && (
+          typeof k.operable === 'boolean'
+          || ['bajo', 'medio', 'alto'].includes(String(k.riesgo ?? ''))
+        )
+        // Kumplo pide usar 'operable': ahí ya resolvieron que 'medio' queda en
+        // revisión del Oficial y no opera, y que un documento sin validar
+        // tampoco. 'soloBloquearAlto' permite ignorar eso y bloquear solo el
+        // riesgo alto — es una decisión de negocio, y se toma en el panel.
+        //
+        // Sin veredicto todavía, o con la consulta aún procesando, NO se
+        // bloquea: esperar no puede costarle una operación a un cliente.
+        if (enLaPrueba && hayVeredicto && String(k.estado ?? '') !== 'procesando') {
+          const puede = cfg.soloBloquearAlto ? riesgo !== 'alto' : k.operable !== false
+          if (!puede) {
+            return riesgo === 'alto'
+              ? 'Riesgo alto — no se puede transferir. Comunícate con soporte para revisar tu caso.'
+              : riesgo === 'desconocido'
+                ? 'No pudimos validar tu documento. Comunícate con soporte.'
+                : 'Tu cuenta está en revisión de cumplimiento. Comunícate con soporte.'
+          }
+        }
+      }
+    } catch { /* la prueba nunca frena una operación legítima */ }
+
     return null
   } catch { return null }   // si la lectura falla, no se bloquea la operación legítima
 }
@@ -1786,9 +1851,13 @@ async function myConvertSettle(
   // Resolver proveedor (Mouv) destino del hop 2.
   const providers = await getProviders()
   const tcfg = await getTreasuryConfig()
-  let prov = providers.find((p: any) => p.id === tcfg.alertProviderId)
-  if (!prov) prov = providers.find((p: any) => /mouv/i.test(String(p.name ?? '')))
-  if (!prov) prov = providers[0]
+  // Si hay wallets fijadas en la Bóveda, SOLO se consideran esas: así un
+  // proveedor viejo guardado en base (o apuntado por alertProviderId) nunca
+  // puede volverse el destino del hop 2.
+  const pool = providers.some((p: any) => p.locked) ? providers.filter((p: any) => p.locked) : providers
+  let prov = pool.find((p: any) => p.id === tcfg.alertProviderId)
+  if (!prov) prov = pool.find((p: any) => /mouv/i.test(String(p.name ?? '')))
+  if (!prov) prov = pool[0]
   const provAddr = String(prov?.detail ?? '').trim()
   const fee2 = (Number(token.transferFee ?? 0) + (recAcct.active ? 0 : Number(token.activateFee ?? 0))) / Math.pow(10, dec)
   const fwd = parseFloat((value - fee2).toFixed(dec))
@@ -2256,7 +2325,15 @@ async function autoConvert(txId: string, uid: string) {
           await db.from('transactions').update({ raw_data: { ...rd, lastConvertError: lastErr, lastConvertAt: new Date().toISOString() } }).eq('id', txId)
           await sleepMs(15000); continue
         }
-        const finityRate = Number(done.exchangeRate ?? rd.mouvRate ?? 0)
+        // Los "puntos" que Lincoin le baja a la tasa del proveedor. Es el
+        // MISMO ajuste que ya se aplicó a la tasa que vio el cliente
+        // (finity-proxy, acción 'rates'), leído de la misma clave: lo que se
+        // muestra y lo que se abona tienen que salir del mismo número.
+        const ajusteCop = await leerAjusteTasa()
+        const rateBruta = Number(done.exchangeRate ?? rd.mouvRate ?? 0)
+        const finityRate = (rateBruta > 0 && ajusteCop > 0 && rateBruta - ajusteCop > 0)
+          ? rateBruta - ajusteCop
+          : rateBruta
         const feePct = Number(rd.feePct ?? 0)
         const creditUsd = Number(rd.creditUsd ?? 0) || Math.max(0, Number(rd.fromAmount ?? 0) - 4)
         const grossCop = finityRate > 0 ? creditUsd * finityRate : Number(done.to_amount ?? 0)
@@ -2384,6 +2461,11 @@ async function myVerifyDeposit(userId: string) {
 // Se deja para pagos que sí deben salir de tesorería (ej. proveedores).
 async function myWalletWithdrawal(userId: string, toAddress: string, amount: number) {
   if (!(amount > 0)) throw new Error('Monto inválido')
+  // NO lleva lista blanca a propósito: aquí el CLIENTE saca SU propio USDT a la
+  // wallet que quiera. La tesorería solo hace de custodio — el débito atómico de
+  // abajo (adjust_balances con bloqueo de fila) impide que retire más de lo que
+  // tiene, así que no es una vía para drenar el fondo común. La lista blanca de
+  // la Bóveda aplica al circuito de la CONVERSIÓN (tesorería → proveedor).
   const { data: u } = await db.from('users').select('email').eq('id', userId).single()
   if (!u) throw new Error('Usuario no encontrado')
 
@@ -2521,6 +2603,19 @@ const ENV_PROVIDERS: { id: string; name: string; detail: string; locked: true }[
 const isLockedProvider = (p: any) =>
   ENV_PROVIDERS.some(e => e.id === p?.id || String(e.name).toLowerCase() === String(p?.name ?? '').toLowerCase())
 
+// REGLA DE NEGOCIO: de la RECAUDADORA solo sale dinero hacia las wallets de
+// partners fijadas en la Bóveda (Finity / Mouv). Ninguna otra dirección, venga
+// de donde venga la llamada — pago manual, hop 2 automático de la conversión,
+// sus reintentos o un retiro pedido por un cliente. La recaudadora custodia el
+// USDT agrupado de TODOS los clientes: un destino libre permitiría drenarla.
+function assertTreasuryDestination(toAddress: string) {
+  if (!ENV_PROVIDERS.length) return   // sin Bóveda configurada, comportamiento previo
+  const dest = String(toAddress ?? '').trim()
+  if (!ENV_PROVIDERS.some(e => e.detail === dest)) {
+    throw new Error('Destino no permitido: desde la Tesorería solo se puede pagar a las wallets de partners verificadas en la Bóveda.')
+  }
+}
+
 async function getProviders() {
   const { data } = await db.from('system_config').select('value').eq('key', PROVIDERS_KEY).single()
   const stored: any[] = data?.value ? JSON.parse(data.value) : []
@@ -2534,19 +2629,13 @@ async function getProviders() {
 async function setProviders(list: any[]) {
   const incoming: any[] = Array.isArray(list) ? list : []
   if (ENV_PROVIDERS.length) {
-    // Intento de cambiar la dirección de un proveedor fijado → se RECHAZA.
-    for (const p of incoming) {
-      const locked = ENV_PROVIDERS.find(e => e.id === p?.id || String(e.name).toLowerCase() === String(p?.name ?? '').toLowerCase())
-      if (locked && String(p?.detail ?? '').trim() !== locked.detail) {
-        // NOTA: el mensaje llega a la pantalla del admin — NUNCA nombrar la
-        // infraestructura donde vive el secreto. Solo se dice "Bóveda".
-        throw new Error(`La wallet de ${locked.name} está fijada en la Bóveda y no se puede cambiar desde el panel. Su modificación requiere doble aprobación fuera de la aplicación.`)
-      }
-    }
-    // Solo se persisten los proveedores NO fijados; los fijados se reinyectan
-    // siempre desde el secret, así que tampoco se pueden borrar desde el panel.
-    await saveSystemConfig(PROVIDERS_KEY, JSON.stringify(incoming.filter(p => !isLockedProvider(p))))
-    return await getProviders()
+    // CANDADO TOTAL: con wallets fijadas en la Bóveda, el registro de partners
+    // es de SOLO LECTURA desde la aplicación. No se admite alta, baja ni edición
+    // — ni siquiera de un proveedor "nuevo": si se pudiera agregar uno, el panel
+    // volvería a ser un punto donde manipular a quién se le paga.
+    // NOTA: el mensaje llega a la pantalla del admin — NUNCA nombrar la
+    // infraestructura donde vive el secreto. Solo se dice "Bóveda".
+    throw new Error('Las wallets de partners se administran en la Bóveda: no se pueden agregar, editar ni eliminar desde el panel. Requieren doble aprobación fuera de la aplicación.')
   }
   await saveSystemConfig(PROVIDERS_KEY, JSON.stringify(incoming))
   // Releer de la base: lo que se devuelve es lo que DE VERDAD quedó guardado.
@@ -2577,6 +2666,7 @@ async function getTreasuryMovements() {
 // vivo y se cobra aparte del monto (igual que cualquier envío GasFree).
 async function payFromTreasury(toAddress: string, amount: number, providerName?: string) {
   if (!(amount > 0)) throw new Error('Monto inválido')
+  assertTreasuryDestination(toAddress)   // lista blanca de la Bóveda
   const rec = await recaudadora()
   const r = await sendCore(rec.pkHex, rec.eoa, toAddress, amount)
   await logTreasuryMovement({
@@ -2713,6 +2803,23 @@ Deno.serve(async (req) => {
       if (blockedMsg) return err(blockedMsg, 403)
     }
 
+    // Bloqueo por IP: aquí es donde el bloqueo se vuelve REAL. La pantalla de
+    // ingreso solo puede disuadir (el atacante controla su navegador), pero
+    // nada que mueva dinero pasa por una IP bloqueada.
+    if (MONEY_ACTIONS.has(String(action))) {
+      const reqIp = (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim()
+        || req.headers.get('cf-connecting-ip') || req.headers.get('x-real-ip') || ''
+      if (reqIp) {
+        try {
+          const { data } = await db.from('system_config').select('value').eq('key', 'blocked_ips').single()
+          const list: any[] = data?.value ? JSON.parse(data.value) : []
+          if (list.some((b: any) => b?.ip === reqIp)) {
+            return err('Esta conexión está bloqueada por seguridad. Contacta a soporte.', 403)
+          }
+        } catch { /* si no se puede leer la lista, no se bloquea a nadie por error */ }
+      }
+    }
+
     if (action === 'ping')   return ok({ ok: true, service: 'gasfree', version: 'v6-cache-user-address', net: NET })
 
     // ── Acciones del propio CLIENTE (su wallet, su envío) ──
@@ -2818,6 +2925,15 @@ Deno.serve(async (req) => {
     if (action === 'my_convert_release') {
       if (!userId || !body.txId) return err('Faltan userId o txId', 400)
       if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
+      // Comprobar que la conversión ES DE QUIEN LLAMA. Se verificaba la
+      // sesión pero luego se pasaba solo el txId: con el id de una conversión
+      // ajena se podía soltar su reclamo a destiempo y hacer que el
+      // navegador de la víctima y el autopiloto convirtieran a la vez.
+      // my_convert_status sí lo comprobaba; a estas dos se les olvidó.
+      {
+        const { data: dueno } = await db.from('transactions').select('user_id').eq('id', String(body.txId)).maybeSingle()
+        if (!dueno || (dueno as any).user_id !== userId) return err('Movimiento no encontrado', 404)
+      }
       await releaseConvertClaim(String(body.txId))
       return ok({ ok: true })
     }
@@ -3115,13 +3231,29 @@ Deno.serve(async (req) => {
       const email = String(body.email ?? '').trim().toLowerCase()
       if (!email) return err('Falta email', 400)
       const { data: rows } = await db.from('users').select('*').ilike('email', email)
-      const list = (rows ?? []).map((u: any) => ({
-        id: u.id, email: u.email, role: u.role, kyc_status: u.kyc_status,
-        created_at: u.created_at, full_name: u.full_name,
-        gasfreeIndex: (u.raw_data ?? {})?.gasfreeIndex ?? null,
-        signupSource: (u.raw_data ?? {})?.signupSource ?? (u.raw_data ?? {})?.source ?? null,
-        provider: (u.raw_data ?? {})?.provider ?? null,
-      }))
+      const list = (rows ?? []).map((u: any) => {
+        const raw = (u.raw_data ?? {}) as Record<string, any>
+        // Diagnóstico del BLOQUEO: qué bandera exactamente está frenando las
+        // operaciones de esta cuenta (sirve para descartar falsos positivos).
+        const reasons: string[] = []
+        if (raw.blacklisted === true) reasons.push('raw_data.blacklisted = true (LISTA NEGRA)')
+        if (u.is_blocked === true) reasons.push('columna is_blocked = true')
+        // is_active ya NO bloquea (la maneja Personas); se muestra solo informativo.
+        if (raw.isBlocked === true) reasons.push('raw_data.isBlocked = true')
+        return {
+          id: u.id, email: u.email, role: u.role, kyc_status: u.kyc_status,
+          created_at: u.created_at, full_name: u.full_name,
+          gasfreeIndex: raw.gasfreeIndex ?? null,
+          signupSource: raw.signupSource ?? raw.source ?? null,
+          provider: raw.provider ?? null,
+          // Banderas crudas + veredicto
+          is_blocked: u.is_blocked ?? null, is_active: u.is_active ?? null,
+          rawIsBlocked: raw.isBlocked ?? null, blacklisted: raw.blacklisted ?? null,
+          blockReason: raw.blockReason ?? null,
+          isOperationBlocked: reasons.length > 0,
+          blockedBy: reasons,
+        }
+      })
       return ok({ ok: true, found: list.length, users: list })
     }
     // Auditoría: detectar wallets colisionadas y usuarios sin índice.

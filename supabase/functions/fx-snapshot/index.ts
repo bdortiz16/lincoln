@@ -136,8 +136,20 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: CORS })
 
   try {
-    // mode=ping → solo verifica conectividad y credenciales sin insertar
     const url = new URL(req.url)
+    // Esta función NO tenía ninguna autenticación, y se despliega con el JWT
+    // de la plataforma desactivado: cualquiera en internet podía dispararla y
+    // escribir en fx_rate_snapshots con service role. Esa tabla es la fuente
+    // de la tasa que se usa para validar conversiones, así que envenenarla
+    // vale dinero. Falla CERRADO si no hay secreto configurado.
+    const CRON_SECRET = Deno.env.get('CRON_SECRET') ?? ''
+    if (!CRON_SECRET) {
+      return new Response(JSON.stringify({ error: 'not_configured', message: 'Falta CRON_SECRET.' }), { status: 503, headers: { ...CORS, 'Content-Type': 'application/json' } })
+    }
+    if (url.searchParams.get('key') !== CRON_SECRET) {
+      return new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401, headers: { ...CORS, 'Content-Type': 'application/json' } })
+    }
+    // mode=ping → solo verifica conectividad y credenciales sin insertar
     const mode = url.searchParams.get('mode')
     if (mode === 'ping') {
       try {

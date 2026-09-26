@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { BrebRecaudo } from './BrebRecaudo';
 import {
   Landmark,
   CheckCircle2,
   ArrowUpRight,
   History,
   Info,
-  Home,
   Send,
   RefreshCw,
   CreditCard,
@@ -24,16 +24,15 @@ import {
   Copy,
   User,
   ArrowLeft,
-  Gift,
   ArrowRight,
   ShieldCheck,
+  ScanSearch,
   Lock,
   LayoutGrid,
   Share2,
-  Download,
+  FileText, Download, ExternalLink,
   Megaphone,
   Plane,
-  ShoppingBag,
   GraduationCap,
   TrendingUp,
   Layers,
@@ -59,14 +58,33 @@ import {
   SlidersHorizontal,
   ArrowLeftRight,
   XCircle,
-  Archive
+  Archive,
+  MessageSquare
 } from 'lucide-react';
+import { KumploUserCard } from './KumploUserCard';
+
+const SUPABASE_URL_PD = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+const SUPABASE_ANON_PD = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+const getStoredTokenPD = (): string | null => {
+  try {
+    const k = Object.keys(localStorage).find(x => x.startsWith('sb-') && x.endsWith('-auth-token'));
+    if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) return d.access_token as string; }
+  } catch { /* */ }
+  return null;
+};
 import { Logo } from './Logo';
+import { SidebarEmpresas } from './SidebarEmpresas';
+import { llamarFuncion } from '../lib/edge';
+import { MOTIVOS_ENVIO } from '../lib/motivosEnvio';
 import { MouvSection, fetchMouvBalance, fetchMouvRateValue, fetchMouvUsdCopConfig, callMouv } from './OtcMigration';
 import { MouvDispersion } from './MouvDispersion';
 import { achEta, achEtaShort } from './achEta';
 import { ContactsSection, contactStatus } from './ContactsSection';
 import { WalletsGasfreeSection } from './WalletsGasfreeSection';
+import { KytSection } from './KytSection';
+import { OtcManual } from './OtcManual';
+import { CodeInput } from './CodeInput';
+import { ServiciosSection } from './ServiciosSection';
 import { supabase } from '../lib/supabaseClient';
 import { FlagImg, FlagSelect, flagUrl } from './FlagImg';
 import { useExchangeRates } from '../context/ExchangeRateContext';
@@ -86,6 +104,16 @@ const INITIAL_WALLET_CARDS = [
   { code: 'BRL', name: 'Real Brasileño', type: 'Cuenta Local' },
   { code: 'VES', name: 'Bolívar', type: 'Cuenta Local' },
 ];
+
+// Estado de cada país cuando la configuración todavía no dice nada.
+// DEBE coincidir con la lista de Admin → Configuración → Países y monedas:
+// si las dos se separan, el admin muestra un estado y la app otro.
+const POR_DEFECTO: Record<string, string> = {
+  Colombia: 'on', 'Estados Unidos': 'on',
+  'México': 'soon', Brasil: 'soon',
+  Europa: 'soon', Suiza: 'soon', 'Reino Unido': 'soon',
+  'Perú': 'off', Chile: 'off', Venezuela: 'off',
+};
 
 const CONVERSION_CURRENCIES = [
   { code: 'USD', name: 'Dólar' },
@@ -160,39 +188,6 @@ const DOC_TYPES: Record<string, { label: string; value: string }[]> = {
   ],
 };
 
-const SidebarItem: React.FC<{
-  icon: React.ElementType;
-  label: string;
-  active?: boolean;
-  badge?: boolean;
-  onClick: () => void;
-  small?: boolean;
-}> = ({ icon: Icon, label, active, badge, onClick, small }) => (
-  <button
-    onClick={onClick}
-    className={`
-      w-full flex items-center justify-between px-4 py-3.5 mb-1 rounded-xl transition-all duration-200 group
-      ${active
-        ? 'bg-[#0C0E0D] font-bold shadow-lg shadow-green-900/10'
-        : small
-          ? 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
-          : 'text-slate-700 hover:bg-slate-50 hover:text-[#0C0E0D] hover:shadow-sm font-medium'}
-      ${small ? 'text-xs' : 'text-sm'}
-    `}
-  >
-    <div className="flex items-center gap-3">
-      {/* Trazo fino 1.6 (handoff): iconos de línea elegantes, monocromos */}
-      <Icon size={small ? 15 : 19} strokeWidth={1.6} className={active ? 'text-[#4ADE80]' : 'text-slate-500 group-hover:text-[#0C0E0D]'} />
-      {/* color explícito: el label del item activo se perdía (navy sobre navy
-          según el orden de clases) — blanco fijo cuando está activo */}
-      <span style={active ? { color: '#FFFFFF' } : undefined}>{label}</span>
-    </div>
-    {badge && (
-      <span className={`w-2 h-2 rounded-full ${active ? 'bg-[#4ADE80]' : 'bg-red-500'}`}></span>
-    )}
-  </button>
-);
-
 // Sonido de notificación — dos tonos suaves (ding) vía Web Audio, sin
 // archivos externos. Se reutiliza un único AudioContext. Los navegadores
 // exigen un gesto previo del usuario para reproducir audio; como esto suena
@@ -250,6 +245,25 @@ function playDepositSound() {
 // Ruteo por URL: cada vista tiene su propia dirección (como un banco:
 // /movimientos, /billetera…) en vez de quedarse siempre en lincoin.me/#.
 // Así el usuario ve dónde está, puede compartir/recargar y usar atrás/adelante.
+// Un movimiento `convert` puede guardar el lado ACREDITADO o el DEBITADO,
+// segun quien lo inserte. Las filas que guardan el debitado SIEMPRE traen
+// targetCurrency (el destino va aparte); las que guardan el acreditado no.
+//
+// Se decide por esa estructura y no por una lista de origenes conocidos: esa
+// lista habia que ampliarla cada vez que entraba un riel nuevo, y el dia que
+// entro la Mesa OTC manual el movimiento salio en NEGATIVO aunque el cliente
+// habia recibido la plata. Un signo al reves en un movimiento de dinero no es
+// un detalle de estilo.
+//
+// `direccion: 'in'` en raw_data lo dice explicito cuando el servidor lo sabe;
+// la estructura queda como respaldo para las filas que no lo traen.
+function esConvertAcreditado(t: any): boolean {
+    if (t?.type !== 'convert') return false;
+    const rd = (t?.raw_data && typeof t.raw_data === 'object') ? t.raw_data : {};
+    if (rd.direccion === 'in' || t.direccion === 'in') return true;
+    return !(t.targetCurrency ?? rd.targetCurrency);
+}
+
 const VIEW_PATHS: Record<string, string> = {
   dashboard: '/inicio',
   movements: '/movimientos',
@@ -262,14 +276,44 @@ const VIEW_PATHS: Record<string, string> = {
   servicios: '/servicios',
   mouv: '/mesa-otc',
   contactos: '/beneficiarios',
+  contabilidad: '/contabilidad',
+  compliance: '/compliance',
   walletsGasfree: '/wallets',
 };
-const PATH_VIEWS: Record<string, string> = Object.fromEntries(
-  Object.entries(VIEW_PATHS).map(([view, path]) => [path, view])
-);
+// 'mouv' es la unica vista con DOS entradas distintas —Dispersar por Bre-B y
+// la Mesa OTC— y, dentro de la mesa, tres rieles. Todo eso vivia solo en
+// memoria: al recargar /mesa-otc el modo volvia a su valor inicial ('full') y
+// aparecia la pantalla de dispersion, que no era donde estaba el usuario.
+// Compartir dos pantallas en una sola direccion es justamente lo que hace que
+// la recarga tenga que adivinar. Cada una tiene la suya.
+// '/dispersar' YA NO ESTA ACA, a proposito.
+//
+// La pantalla de dispersar saltaba directo al envio sin pasar por
+// openSendMoney(), que es donde se exige la cuenta verificada y el 2FA
+// ENROLADO. Un usuario sin dos pasos activados podia mover plata por ahi y no
+// por "Enviar dinero".
+//
+// Quitar los dos botones no alcanzaba: mientras esta ruta siguiera mapeada,
+// escribir la direccion a mano volvia a abrir la misma pantalla. Esconder una
+// puerta no es cerrarla -- es el mismo razonamiento que el horario de la mesa.
+const RUTAS_MOUV: Record<string, { mouvMode: 'full' | 'converter'; otcRail: 'ach' | 'breb' | 'manual' | null }> = {
+  '/mesa-otc':        { mouvMode: 'converter', otcRail: null },
+  '/mesa-otc/manual': { mouvMode: 'converter', otcRail: 'manual' },
+  '/mesa-otc/ach':    { mouvMode: 'converter', otcRail: 'ach' },
+  '/mesa-otc/breb':   { mouvMode: 'converter', otcRail: 'breb' },
+};
+// Ya no hay modo 'full' alcanzable desde la app: si por algun camino se llegara,
+// la direccion que se escribe es la de la mesa, no una ruta que ya no existe.
+const rutaMouv = (_mouvMode: 'full' | 'converter', otcRail: 'ach' | 'breb' | 'manual' | null): string =>
+  otcRail ? `/mesa-otc/${otcRail}` : '/mesa-otc';
+
+const PATH_VIEWS: Record<string, string> = {
+  ...Object.fromEntries(Object.entries(VIEW_PATHS).map(([view, path]) => [path, view])),
+  ...Object.fromEntries(Object.keys(RUTAS_MOUV).map(p => [p, 'mouv'])),
+};
 
 export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }) => {
-  const [activeView, setActiveView] = useState<'dashboard' | 'movements' | 'wallet-detail' | 'profile' | 'notifications' | 'referrals' | 'affiliates' | 'settings' | 'servicios' | 'mouv' | 'contactos' | 'walletsGasfree'>(() => {
+  const [activeView, setActiveView] = useState<'dashboard' | 'movements' | 'wallet-detail' | 'profile' | 'notifications' | 'referrals' | 'affiliates' | 'settings' | 'servicios' | 'mouv' | 'contactos' | 'contabilidad' | 'compliance' | 'walletsGasfree' | 'kyt'>(() => {
     // Vista inicial según la URL (deep-link / recarga en /movimientos, etc.).
     // /billetera necesita una billetera seleccionada, que NO sobrevive a la
     // recarga (no va en la URL) → si se recarga ahí, se abre Inicio (donde
@@ -281,26 +325,40 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   });
   // Sincroniza vista ↔ URL: al cambiar de vista, actualiza la dirección;
   // y responde a los botones atrás/adelante del navegador.
+  // 'mouv' se usa para dos entradas distintas: "Dispersar" (Bre-B, flujo
+  // completo con cuentas destino/movimientos) y el boton "OTC" en Servicios
+  // (solo el convertidor USD->COP, sin nada de dispersion bancaria).
+  // Ambas se leen de la URL para que la recarga caiga donde estabas.
+  const [mouvMode, setMouvMode] = useState<'full' | 'converter'>(() => {
+    try { return RUTAS_MOUV[window.location.pathname]?.mouvMode ?? 'full'; } catch { return 'full'; }
+  });
+  // Mesa OTC: primero se elige el riel de salida del COP — ACH (conversor
+  // Finity, apificado), Bre-B, o la mesa manual con asesor.
+  const [otcRail, setOtcRail] = useState<'ach' | 'breb' | 'manual' | null>(() => {
+    try { return RUTAS_MOUV[window.location.pathname]?.otcRail ?? null; } catch { return null; }
+  });
   useEffect(() => {
     try {
-      const path = VIEW_PATHS[activeView] || '/inicio';
+      const path = activeView === 'mouv' ? rutaMouv(mouvMode, otcRail) : (VIEW_PATHS[activeView] || '/inicio');
       if (window.location.pathname !== path) window.history.pushState({ view: activeView }, '', path);
     } catch { /* entorno sin history */ }
-  }, [activeView]);
+  }, [activeView, mouvMode, otcRail]);
   useEffect(() => {
     const onPop = () => {
-      try { const v = PATH_VIEWS[window.location.pathname]; if (v) setActiveView(v as any); } catch { /* noop */ }
+      try {
+        const p = window.location.pathname;
+        const v = PATH_VIEWS[p];
+        if (!v) return;
+        setActiveView(v as any);
+        // El riel forma parte de dónde estabas: sin esto, "atrás" desde la
+        // mesa manual te devolvía a la misma dirección con otra pantalla.
+        const m = RUTAS_MOUV[p];
+        if (m) { setMouvMode(m.mouvMode); setOtcRail(m.otcRail); }
+      } catch { /* noop */ }
     };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, []);
-  // 'mouv' se usa para dos entradas distintas: "Dispersar" (Bre-B, flujo
-  // completo con cuentas destino/movimientos) y el boton "OTC" en Servicios
-  // (solo el convertidor USD->COP, sin nada de dispersion bancaria).
-  const [mouvMode, setMouvMode] = useState<'full' | 'converter'>('full');
-  // Mesa OTC: primero se elige el riel de salida del COP — ACH (conversor
-  // Finity, apificado) o Bre-B (Mouv, aún por mesa manual).
-  const [otcRail, setOtcRail] = useState<'ach' | 'breb' | null>(null);
   // Riel elegido para dispersar (lo fija el botón "Dispersar" de cada tarjeta).
   const [dispersRail, setDispersRail] = useState<'COP_BREB' | 'COP_ACH'>('COP_BREB');
   const [selectedWalletCode, setSelectedWalletCode] = useState<string | null>(null);
@@ -364,13 +422,17 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               refreshData?.();
           } else if (r?.ok && !r?.link) {
               // El cobro se creó pero el confirm no devolvió la URL del link.
-              setPseResult({ ok: false, message: `El cobro se creó (ref ${String(r.reference || '').slice(-8)}) pero el proveedor no devolvió el enlace.`, detail: r?.confirmResponse ? JSON.stringify(r.confirmResponse).slice(0, 300) : undefined });
+              // Sin `detail`: era la respuesta CRUDA del proveedor volcada en
+              // pantalla en monoespaciada — su dominio, sus códigos, sus campos.
+              // Al cliente no le dice nada y nos delata. El detalle ya queda en
+              // la transacción y en la auditoría, que es donde el equipo lo mira.
+              setPseResult({ ok: false, message: `El cobro se creó (ref ${String(r.reference || '').slice(-8)}) pero no se devolvió el enlace. Escríbenos a soporte con esa referencia.` });
               refreshData?.();
           } else {
-              setPseResult({ ok: false, message: r?.message || 'No se pudo generar el link de cobro.', detail: r?.data ? JSON.stringify(r.data).slice(0, 300) : undefined });
+              setPseResult({ ok: false, message: r?.message || 'No se pudo generar el link de cobro.' });
           }
       } catch (e: any) {
-          setPseResult({ ok: false, message: 'Error de red al generar el link.', detail: String(e?.message ?? e).slice(0, 200) });
+          setPseResult({ ok: false, message: 'No pudimos generar el link de cobro. Revisa tu conexión e inténtalo de nuevo.' });
       }
       setPseBusy(false);
   };
@@ -382,7 +444,6 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const [proofFile, setProofFile] = useState<File | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [toastType, setToastType] = useState<'success' | 'error'>('success');
-  const [kycLoading, setKycLoading] = useState(false);
 
   // 2FA States
   const [mfaEnrolled, setMfaEnrolled] = useState(false);
@@ -426,6 +487,77 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const [isConverting, setIsConverting] = useState(false);
   const [showConvertDetails, setShowConvertDetails] = useState(false);
   const [selectedTx, setSelectedTx] = useState<any>(null);
+  // El documento contable del movimiento (factura de venta o documento
+  // soporte emitido en Siigo), para verlo desde el detalle. Se pide al abrir
+  // el detalle; si la cuenta no factura, no hay nada y no se muestra.
+  const [docSiigo, setDocSiigo] = useState<{ txId: string; estado: 'cargando' | 'ok' | 'error'; comprobante?: any; documento?: any; error?: string } | null>(null);
+  const [docPdfBajando, setDocPdfBajando] = useState(false);
+  const [docVersion, setDocVersion] = useState(0);
+  const [docCrudaAbierta, setDocCrudaAbierta] = useState(false);
+  const [docEmitiendo, setDocEmitiendo] = useState(false);
+  // Emitir de nuevo el documento de un movimiento (anulado en Siigo o en
+  // error), con la configuración actual. Se recarga la tarjeta al terminar.
+  const emitirDeNuevoSiigo = async (txId: string) => {
+    setDocEmitiendo(true);
+    try {
+      const r = await llamarFuncion('facturacion', { action: 'emitir_movimiento', transactionId: txId }, 60000);
+      if (!r?.ok) showToast(String(r?.error ?? 'No se pudo emitir el documento.'), 12000, 'error');
+      else showToast(`Documento emitido: ${r.numero ?? r.estado ?? 'ok'}`);
+    } catch (e: any) { showToast(`No se pudo emitir: ${String(e?.message ?? e)}`, 8000, 'error'); }
+    finally { setDocEmitiendo(false); setDocVersion(v => v + 1); }
+  };
+  useEffect(() => {
+    const id = selectedTx?.id ? String(selectedTx.id) : '';
+    setDocCrudaAbierta(false);
+    if (!id) { setDocSiigo(null); return; }
+    let vivo = true;
+    setDocSiigo({ txId: id, estado: 'cargando' });
+    llamarFuncion('facturacion', { action: 'documento', transactionId: id }, 30000)
+      .then((r: any) => {
+        if (!vivo) return;
+        if (r?.ok) setDocSiigo({ txId: id, estado: 'ok', comprobante: r.comprobante ?? null, documento: r.documento ?? null });
+        else setDocSiigo({ txId: id, estado: 'error', error: String(r?.error ?? r?.mensaje ?? 'sin respuesta') });
+      })
+      .catch((e: any) => { if (vivo) setDocSiigo({ txId: id, estado: 'error', error: String(e?.message ?? e) }); });
+    return () => { vivo = false; };
+  }, [selectedTx?.id, docVersion]);
+  const descargarPdfSiigo = async (txId: string, nombre: string) => {
+    setDocPdfBajando(true);
+    try {
+      const r = await llamarFuncion('facturacion', { action: 'documento_pdf', transactionId: txId }, 45000);
+      if (!r?.ok || !r.base64) { showToast(String(r?.error ?? 'Siigo no entregó el PDF.'), 9000, 'error'); return; }
+      const bin = atob(String(r.base64));
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+      const a = document.createElement('a');
+      a.href = url; a.download = String(r.nombre ?? nombre ?? 'documento.pdf');
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    } catch (e: any) { showToast(`No se pudo descargar el PDF: ${String(e?.message ?? e)}`, 8000, 'error'); }
+    finally { setDocPdfBajando(false); }
+  };
+
+  // Estado de un movimiento, con la parte que más le importa al cliente: si le
+  // devolvieron la plata. Un "RECHAZADO" a secas deja a alguien creyendo que
+  // perdió el dinero — la pregunta que sigue siempre es "¿y mi plata?", y la
+  // respuesta tiene que estar en la misma línea, no en soporte.
+  const etiquetaEstado = (t: any) => {
+    const st = String(t?.status ?? '');
+    const rd = (t?.raw_data && typeof t.raw_data === 'object') ? t.raw_data : {};
+    const devuelto = t?.refunded === true || rd.refunded === true;
+    if (st === 'Completado') return { label: 'COMPLETADO', color: '#4ADE80', border: 'rgba(74,222,128,0.3)' };
+    if (st === 'Rechazado' || st === 'Fallido') {
+      return {
+        label: devuelto ? `${st.toUpperCase()} · SALDO DEVUELTO` : st.toUpperCase(),
+        color: '#F87171', border: 'rgba(248,113,113,0.35)',
+      };
+    }
+    if (st === 'Procesando' || st === 'Pendiente' || st === 'En proceso') {
+      return { label: 'EN CURSO', color: 'rgba(244,244,242,0.7)', border: 'rgba(255,255,255,0.14)' };
+    }
+    return { label: (st || 'PENDIENTE').toUpperCase(), color: '#878E88', border: 'rgba(255,255,255,0.14)' };
+  };
   const [showCouponInput, setShowCouponInput] = useState(false);
   const [couponCode, setCouponCode] = useState('');
   const [appliedCoupon, setAppliedCoupon] = useState<{code: string, discount: number} | null>(null);
@@ -456,6 +588,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       accountType: '',
       accountNumber: '',
       reason: 'Envío de dinero',
+      // El motivo del envío: se pregunta al confirmar, se le manda a Finity
+      // con la orden, y decide qué documento sale en Siigo.
+      motivo: '',
   });
   // Billetera de ORIGEN para envíos COP: los 3 rieles son saldos SEPARADOS
   // (Saldo Lincoin / Bre-B / ACH). El cliente elige de cuál sale el dinero;
@@ -464,6 +599,55 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // Contacto elegido para el envío COP (trae destKind/brebKey/banco para la
   // dispersión REAL inline de Mouv).
   const [sendContact, setSendContact] = useState<any>(null);
+
+  // ── Quién recibe la plata: UNA sola fuente ────────────────────────────
+  //
+  // Había dos objetos describiendo a la misma persona: `sendContact` (el
+  // beneficiario inscrito, de donde salía la llave Bre-B y el banco) y
+  // `sendForm` (el formulario, de donde salían el nombre y el documento).
+  // Se podían desincronizar, y cuando pasó el resultado fue el peor posible:
+  // la pantalla de confirmación mostró la llave de una persona con el nombre
+  // y la cédula de otra, y el envío habría salido así — a la llave de una,
+  // con la cédula de otra, y con el control de antecedentes hecho sobre el
+  // documento equivocado.
+  //
+  // Con un beneficiario inscrito, TODO sale de él. El formulario solo manda
+  // cuando no hay inscrito (destinos escritos a mano).
+  //
+  // `coherente` es la red de seguridad: si por cualquier camino los dos
+  // objetos discrepan en llave, cuenta o documento, no se envía. Preferimos
+  // hacer volver al usuario al selector que mandarle la plata a quien no es.
+  const destinatario = React.useMemo(() => {
+    const c = sendContact;
+    if (!c) {
+      return {
+        name: sendForm.beneficiaryName, docType: sendForm.documentType, docNumber: sendForm.documentNumber,
+        bank: sendForm.bankName, accountType: sendForm.accountType, accountNumber: sendForm.accountNumber,
+        brebKey: undefined as string | undefined, brebKeyType: undefined as string | undefined,
+        address: undefined as string | undefined, cityCode: undefined as string | undefined, cityName: undefined as string | undefined, stateCode: undefined as string | undefined,
+        esInscrito: false, coherente: true,
+      };
+    }
+    const mismo = (a: unknown, b: unknown) => {
+      const x = String(a ?? '').trim().toLowerCase();
+      const y = String(b ?? '').trim().toLowerCase();
+      return !x || !y || x === y;   // si el formulario no lo trae, no contradice
+    };
+    const llave = c.brebKey ?? c.accountNumber;
+    const coherente =
+      mismo(sendForm.documentNumber, c.docNumber)
+      && mismo(sendForm.beneficiaryName, c.name)
+      && (c.destKind === 'breb' ? true : mismo(sendForm.accountNumber, c.accountNumber));
+    return {
+      name: c.name, docType: c.docType, docNumber: c.docNumber,
+      bank: c.bank, accountType: c.accountType, accountNumber: c.accountNumber,
+      brebKey: llave, brebKeyType: c.brebKeyType,
+      // Ciudad y dirección del beneficiario: van al tercero en Siigo.
+      address: c.address, cityCode: c.cityCode, cityName: c.cityName, stateCode: c.stateCode,
+      esInscrito: true, coherente,
+    };
+  }, [sendContact, sendForm.beneficiaryName, sendForm.documentType, sendForm.documentNumber, sendForm.bankName, sendForm.accountType, sendForm.accountNumber]);
+
   // Método elegido en el paso 2 del flujo (diseño Flujo Enviar): lista radio.
   const [sendMethodSel, setSendMethodSel] = useState<'breb' | 'ach' | 'pay' | 'cash' | null>(null);
   // Cotización de la comisión del proveedor para el paso Confirmar:
@@ -564,6 +748,40 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
   const isKycVerified = currentUser?.kycStatus === 'verified';
   const isInReview = currentUser?.kycStatus === 'in_review';
+
+  // Veredictos de antecedentes, preguntados AL SERVIDOR.
+  //
+  // El selector de beneficiarios los leía de currentUser.raw_data.tusdatos.
+  // Esa clave solo la escribe el servidor y no siempre viaja fresca al
+  // navegador: cuando llegaba vacía, un beneficiario bloqueado se podía
+  // elegir y se pintaba VERIFICADA en verde. La lista de beneficiarios ya le
+  // pregunta al servidor por esto mismo; acá faltaba.
+  const [amlSrv, setAmlSrv] = useState<Record<string, any> | null>(null);
+  useEffect(() => {
+    const uid = currentUser?.id;
+    if (!uid || !isSendModalOpen) return;
+    let vivo = true;
+    (async () => {
+      const e = await llamarFuncion('tusdatos', { action: 'estado', userId: uid });
+      // Solo una respuesta explícita cambia el estado: si la consulta falla
+      // se conserva lo último que sí supimos.
+      if (vivo && e?.ok) setAmlSrv(e.beneficiarios ?? {});
+
+      // Y se arrancan las consultas que falten. Ahora que un beneficiario sin
+      // resultado NO se puede elegir, quedarse esperando una consulta que
+      // nadie lanzó dejaría la cuenta sin poder enviar. Abrir el envío es
+      // justo el momento de pedirlas.
+      const p = await llamarFuncion('tusdatos', { action: 'verificar_pendientes', userId: uid, limite: 4 });
+      if (!vivo || !p?.ok) return;
+      // Recoger lo que ya haya vuelto y refrescar, para no dejar la pantalla
+      // diciendo "espera" cuando el resultado ya llegó.
+      await llamarFuncion('tusdatos', { action: 'recoger_pendientes', userId: uid });
+      const e2 = await llamarFuncion('tusdatos', { action: 'estado', userId: uid });
+      if (vivo && e2?.ok) setAmlSrv(e2.beneficiarios ?? {});
+    })();
+    return () => { vivo = false; };
+  }, [currentUser?.id, isSendModalOpen]);
+
   // Lincoin web = producto EMPRESAS: aquí TODA cuenta es empresa y su
   // verificación es KYB (los clientes personales solo existen en la app
   // móvil). Por eso el copy de verificación se muestra siempre como KYB,
@@ -596,6 +814,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // Al acreditarse muestra "Acreditado" y se oculta solo a los pocos segundos.
   const [depositCard, setDepositCard] = useState<{ amount: number; phase: 'recibido' | 'acreditado'; at: number } | null>(null);
   const depositCardTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Candado para no lanzar dos verificaciones de depósito a la vez. Estaba en
+  // uso pero nunca se declaró: forceVerifyDeposit reventaba con ReferenceError
+  // y la acreditación manual del depósito no se ejecutaba nunca.
+  const verifyDepositInFlight = useRef(false);
   const DEP_CARD_KEY = 'lincoinDepositCard';
   // Persiste el cuadro para que SOBREVIVA una recarga mientras se acredita.
   useEffect(() => {
@@ -946,45 +1168,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       setActiveView('wallet-detail');
   };
 
-  // When in_progress: poll get_status so DB stays synced even without a webhook.
-  // DatabaseContext's 10 s polling picks up the updated kyc_status automatically.
-  useEffect(() => {
-    const isInProgress = currentUser?.kycStatus === 'in_progress';
-    if (!isInProgress || !currentUser?.id) return;
-    const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
-    const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-    const poll = () => fetch(`${SURL}/functions/v1/didit-kyc`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': `Bearer ${SKEY}` },
-      body: JSON.stringify({ action: 'get_status', userId: currentUser.id }),
-    }).catch(() => {});
-    poll();
-    const id = setInterval(poll, 30_000);
-    return () => clearInterval(id);
-  }, [currentUser?.kycStatus, currentUser?.id]);
-
-  const startDiditKyc = async () => {
-    if (!currentUser?.id || kycLoading) return;
-    setKycLoading(true);
-    try {
-      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
-      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-      const r = await fetch(`${SURL}/functions/v1/didit-kyc`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': `Bearer ${SKEY}` },
-        body: JSON.stringify({ action: 'create_session', userId: currentUser.id }),
-      });
-      const data = await r.json();
-      if (data.url) {
-        window.location.href = data.url;
-      } else {
-        showToast(data.error || 'Error al iniciar la verificación. Contacta soporte.', 5000, 'error');
-      }
-    } catch {
-      showToast('Error de conexión. Intenta de nuevo.', 5000, 'error');
-    }
-    setKycLoading(false);
-  };
+  // La verificación de identidad la hace el equipo de Lincoin a mano: no hay
+  // proveedor de KYC conectado. Antes acá vivían un polling al proveedor y el
+  // arranque de su sesión; sin proveedor no hay estado remoto que consultar ni
+  // sesión que abrir, y el estado lo escribe un admin desde el panel.
+  const SOPORTE_KYC = 'mailto:soporte@lincoin.me?subject=Verificaci%C3%B3n%20de%20identidad';
 
   const handleActionRestricted = (requireKyc = true) => {
       if (isBlocked) {
@@ -1137,6 +1325,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sendStep, sendMode, currentUser?.id]);
 
+  // La llave Bre-B para RECIBIR pagos. Vive en la misma billetera Bre-B: no es
+  // una segunda cuenta, es una dirección de entrada a la que ya existe.
+  const [recaudoOpen, setRecaudoOpen] = useState(false);
+
   const callMouvProxy = async (payload: Record<string, unknown>) => {
       const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
       const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
@@ -1288,30 +1480,87 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // destino las devolvió más tarde) para reembolsar aunque ya se vieran
   // completadas. Máximo una vez por minuto, desde las vistas relevantes.
   const brebReconcileAtRef = useRef(0);
+
+  // ── Vigilancia rápida del envío recién hecho ──────────────────────
+  // El barrido general corre cada minuto, y el del servidor cada minuto
+  // también. Pero JUSTO DESPUÉS de enviar es cuando el cliente está mirando la
+  // pantalla y cuando, del otro lado, alguien está esperando ese pago. Un
+  // minuto ahí se siente eterno, y si el envío se devolvió, cada segundo que
+  // el cliente no lo sabe es un segundo en que no puede rehacerlo.
+  //
+  // Por eso, durante los 4 minutos siguientes a un envío Bre-B se pregunta
+  // cada 12 segundos — pero SOLO por lo reciente, que es una consulta barata.
+  // Pasados esos minutos vuelve el ritmo normal.
+  const vigilarHasta = useRef(0);
   useEffect(() => {
-      const relevant = activeView === 'movements' || (activeView === 'wallet-detail' && (selectedWalletCode === 'COP' || selectedWalletCode === 'COP_BREB')) || activeView === 'dashboard';
-      if (!relevant || !currentUser?.id) return;
-      const fiveDaysAgo = Date.now() - 5 * 24 * 60 * 60 * 1000;
-      const needsCheck = (movements || []).some((t: any) => {
-          if (t.type !== 'dispersion' || t.currency !== 'COP_BREB') return false;
-          if (t.status === 'Procesando') return true;
-          // 'Completado' reciente: vigilar por una devolución tardía.
-          if (t.status === 'Completado') { const ts = t.createdAt ? new Date(t.createdAt).getTime() : 0; return ts >= fiveDaysAgo; }
-          return false;
-      });
-      if (!needsCheck) return;
-      if (Date.now() - brebReconcileAtRef.current < 60000) return;
-      brebReconcileAtRef.current = Date.now();
-      callMouvProxy({ action: 'reconcile_breb', userId: currentUser.id })
-          .then(r => {
-              const changed = (r?.results ?? []).filter((x: any) => x.result === 'completed' || x.result === 'refunded');
-              if (changed.length > 0) {
-                  refreshData?.();
-                  if (changed.some((x: any) => x.result === 'completed')) showToast('✅ Tu envío Bre-B fue confirmado.');
-                  if (changed.some((x: any) => x.result === 'refunded')) showToast('Un envío Bre-B fue devuelto — el monto y la comisión fueron reembolsados a tu saldo.', 8000);
-              }
-          })
-          .catch(() => { /* silencioso */ });
+      if (!currentUser?.id) return;
+      const t = setInterval(async () => {
+          if (Date.now() > vigilarHasta.current) return;
+          if (document.hidden) return;
+          const r = await callMouvProxy({ action: 'reconcile_breb', userId: currentUser.id, recientesMin: 20 }).catch(() => null);
+          const cambios = (r?.results ?? []).filter((x: any) => x.result === 'refunded' || x.result === 'completed');
+          if (!cambios.length) return;
+          vigilarHasta.current = 0;   // ya se resolvió: dejar de insistir
+          refreshData?.();
+          if (cambios.some((x: any) => x.result === 'refunded')) {
+              showToast('Tu envío Bre-B fue devuelto — el monto y la comisión ya volvieron a tu saldo.', 9000);
+          } else {
+              showToast('✅ Tu envío Bre-B fue confirmado.');
+          }
+      }, 12000);
+      return () => clearInterval(t);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id]);
+
+  // Y la vigilancia normal, que CORRE SOLA CADA 45 SEGUNDOS mientras haya algo
+  // en curso.
+  //
+  // Antes las dependencias eran [activeView, selectedWalletCode, currentUser.id]
+  // y no había intervalo: el efecto corría UNA vez al entrar a la pantalla y
+  // nunca más. Si el proveedor confirmaba el envío un minuto después -- que es
+  // lo normal, y más todavía porque su listado va con retraso -- nadie volvía a
+  // preguntar. Un envío que Mouv daba por Exitoso a la 01:25 seguía diciendo
+  // "EN CURSO" a las 04:20, con el comprobante del banco ya descargado y
+  // firmado. La pantalla contradecía al banco.
+  const movsRef = useRef<any[]>([]);
+  movsRef.current = movements || [];
+
+  useEffect(() => {
+      if (!currentUser?.id) return;
+      const relevante = () => activeView === 'movements'
+          || (activeView === 'wallet-detail' && (selectedWalletCode === 'COP' || selectedWalletCode === 'COP_BREB'))
+          || activeView === 'dashboard';
+
+      const tick = async () => {
+          if (document.hidden || !relevante()) return;
+          const cincoDias = Date.now() - 5 * 24 * 60 * 60 * 1000;
+          const hayQueMirar = movsRef.current.some((t: any) => {
+              if (t.type !== 'dispersion' || t.currency !== 'COP_BREB') return false;
+              if (t.status === 'Procesando') return true;
+              // 'Completado' reciente: vigilar por una devolución tardía.
+              if (t.status === 'Completado') { const ts = t.createdAt ? new Date(t.createdAt).getTime() : 0; return ts >= cincoDias; }
+              return false;
+          });
+          if (!hayQueMirar) return;
+          if (Date.now() - brebReconcileAtRef.current < 40000) return;
+          brebReconcileAtRef.current = Date.now();
+          const r = await callMouvProxy({ action: 'reconcile_breb', userId: currentUser.id }).catch(() => null);
+          const cambios = (r?.results ?? []).filter((x: any) => x.result === 'completed' || x.result === 'refunded');
+          if (!cambios.length) return;
+          refreshData?.();
+          if (cambios.some((x: any) => x.result === 'refunded')) {
+              showToast('Un envío Bre-B fue devuelto — el monto y la comisión volvieron a tu saldo.', 9000);
+          } else {
+              showToast('✅ Tu envío Bre-B fue confirmado.');
+          }
+      };
+
+      tick();
+      const t = setInterval(tick, 45000);
+      // Al volver a la pestaña interesa el estado de AHORA, no esperar al tick.
+      const alVolver = () => { if (!document.hidden) tick(); };
+      document.addEventListener('visibilitychange', alVolver);
+      return () => { clearInterval(t); document.removeEventListener('visibilitychange', alVolver); };
       // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeView, selectedWalletCode, currentUser?.id]);
 
@@ -1807,9 +2056,32 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               showToast(`Saldo insuficiente en ${isBreb ? 'Bre-B' : 'ACH'}: necesitas ${(amount + feeCop).toLocaleString('es-CO')} COP (monto + comisión ${feeCop.toLocaleString('es-CO')}).`, 7000, 'error');
               return;
           }
+          // UNA SOLA FUENTE. Antes la llave salía de sendContact y el nombre y
+          // el documento de sendForm: dos objetos distintos describiendo a la
+          // MISMA persona. Si se desincronizaban —y se desincronizaban— el
+          // dinero salía hacia la llave de uno con la cédula de otro, y el
+          // control de antecedentes se había hecho sobre el documento
+          // equivocado. Si hay beneficiario inscrito, TODO sale de él.
+          const d = destinatario;
+          if (sendContact && !d.coherente) {
+              sendingRef.current = false; setIsSending(false);
+              showToast('Los datos del beneficiario no coinciden. Vuelve a elegirlo en la lista antes de enviar.', 8000, 'error');
+              setSendStep(3);
+              return;
+          }
+          // Sin motivo no sale: es lo que Finity pide y lo que decide la
+          // factura o el documento soporte en Siigo.
+          if (!sendForm.motivo) {
+              sendingRef.current = false; setIsSending(false);
+              showToast('Elige el motivo del envío antes de confirmar.', 5000, 'error');
+              return;
+          }
+          // Ciudad y dirección del beneficiario: quedan en el movimiento y
+          // de ahí van al tercero en Siigo (documento soporte).
+          const direccion = d.cityCode && d.address ? { address: d.address, cityCode: d.cityCode, cityName: d.cityName, stateCode: d.stateCode } : {};
           const recipient = isBreb
-              ? { keyType: sendContact?.brebKeyType ?? 'celular', key: sendContact?.brebKey ?? sendContact?.accountNumber ?? sendForm.accountNumber, holderName: sendForm.beneficiaryName, documentNumber: sendForm.documentNumber, reference: sendForm.reason }
-              : { bankCode: sendContact?.bank ?? sendForm.bankName, accountType: (sendContact?.accountType === 'checking' ? 'corriente' : 'ahorros'), accountNumber: sendForm.accountNumber, documentType: sendForm.documentType, documentNumber: sendForm.documentNumber, holderName: sendForm.beneficiaryName, reference: sendForm.reason, ...(sendContact?.finityId ? { finityId: sendContact.finityId } : {}) };
+              ? { keyType: d.brebKeyType ?? 'celular', key: d.brebKey ?? d.accountNumber, holderName: d.name, documentNumber: d.docNumber, reference: sendForm.reason, motivo: sendForm.motivo, ...direccion }
+              : { bankCode: d.bank, accountType: (d.accountType === 'checking' ? 'corriente' : 'ahorros'), accountNumber: d.accountNumber, documentType: d.docType, documentNumber: d.docNumber, holderName: d.name, reference: sendForm.reason, motivo: sendForm.motivo, ...(sendContact?.finityId ? { finityId: sendContact.finityId } : {}), ...direccion };
           try {
               const r = await Promise.race([
                   callMouvProxy({ action: isBreb ? 'payout_breb' : 'payout_ach', userId: currentUser.id, amount, recipient, otp: sentOtpRef.current }),
@@ -1817,6 +2089,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               ]);
               if (r?.ok) {
                   setSendResult({ ok: true, providerRef: r?.providerRef ?? null, feeCop: Number(r?.feeCop ?? (isBreb ? 1200 : 2500)), rail, at: new Date().toISOString() });
+                  // Arranca la vigilancia rápida: 4 minutos preguntando cada 12 s
+                  // por el desenlace de ESTE envío. Si se devolvió, el cliente
+                  // se entera mientras todavía está en la pantalla.
+                  vigilarHasta.current = Date.now() + 4 * 60 * 1000;
                   sendingRef.current = false; setIsSending(false); setSendStep(5);
                   refreshData?.();
                   return;
@@ -1924,7 +2200,17 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       setPayRecipientCode('');
       setPayRecipientUser(null);
       setPayLookupStatus('idle');
-      setSendForm({ ...sendForm, amount: '', beneficiaryName: '', accountNumber: '', reason: 'Envío de dinero', bankName: '' });
+      // Se limpia TODO lo del destinatario. Antes se dejaban documentType y
+      // documentNumber del envío anterior: un residuo de la persona a la que
+      // se le acababa de pagar, esperando a mezclarse con el siguiente
+      // beneficiario. Solo sobreviven país y moneda, que son preferencias.
+      setSendForm({
+        ...sendForm,
+        amount: '', reason: 'Envío de dinero',
+        beneficiaryName: '', beneficiaryType: 'personal',
+        documentType: '', documentNumber: '',
+        bankName: '', accountType: '', accountNumber: '',
+      });
       setCashForm({ recipientName: '', docType: 'CC', docNumber: '', phone: '', city: '' });
       setCashReference('');
       setMouvDestId(null);
@@ -1995,7 +2281,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // una conversión Mouv SÍ es un crédito visualmente y las demás no.
   const isTxCredit = (t: any): boolean =>
       t.type === 'load' || t.type === 'referral_payout' || t.type === 'pay_received' || t.type === 'otc_deposit'
-      || (t.type === 'convert' && (t.source === 'MOUV' || t.raw_data?.source === 'MOUV'));
+      || esConvertAcreditado(t);
 
   const baseCurrency = (c?: string) => String(c || '').split('_')[0];
 
@@ -2094,14 +2380,18 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
             <span style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2' }}>Servicios</span>
             <button onClick={() => setActiveView('servicios')} style={{ fontSize: 12, color: '#878E88' }} className="hover:text-[#F4F4F2] transition-colors">Ver más ›</button>
           </div>
-          {/* Fila de accesos rápidos: los 4 servicios como iconos (icono
-              arriba, nombre abajo) en 4 columnas. */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginTop: 10 }}>
+          {/* CUATRO accesos, no cinco.
+              Eran cinco y dos de ellos no llevaban a ningún lado: iconos en
+              gris que ocupaban lugar y no hacían nada. Una fila de accesos
+              rápidos donde casi la mitad no responde deja de leerse como
+              accesos. Quedan los tres que funcionan y uno que viene; el resto
+              vive en "Ver más". */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6, marginTop: 10 }}>
             {([
               { Icon: ArrowLeftRight, t: 'Mesa OTC',    go: () => { setOtcRail(null); setMouvMode('converter'); setActiveView('mouv'); } },
-              { Icon: TrendingUp,     t: 'Staking',     go: null },
+              { Icon: ScanSearch,     t: 'KYT',         go: () => setActiveView('kyt') },
               { Icon: Layers,         t: 'Multiwallet', go: () => setActiveView('walletsGasfree') },
-              { Icon: ShoppingBag,    t: 'Comercio',    go: null },
+              { Icon: TrendingUp,     t: 'Rendimientos', go: null },
             ] as const).map(({ Icon, t, go }) => (
               <button key={t} onClick={go ?? undefined} disabled={!go} className="flex flex-col items-center text-center transition-colors hover:bg-white/[0.03]" style={{ gap: 7, padding: '10px 4px', borderRadius: 12, cursor: go ? 'pointer' : 'default', opacity: go ? 1 : 0.5 }}>
                 <div style={{ width: 46, height: 46, borderRadius: 13, background: 'rgba(255,255,255,0.055)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Icon size={19} style={{ color: '#F4F4F2' }} /></div>
@@ -2237,11 +2527,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   </div>
                   <div className="flex-1">
                     <h3 className="text-red-800 font-bold text-sm">Verificación rechazada</h3>
-                    <p className="text-red-700 text-xs mt-1">Tu verificación de identidad fue rechazada. Por favor intenta de nuevo. Si el problema persiste, contacta soporte.</p>
+                    <p className="text-red-700 text-xs mt-1">Tu verificación de identidad fue rechazada. Escribinos y te decimos qué falta corregir.</p>
                   </div>
-                  <button onClick={startDiditKyc} disabled={kycLoading} className="shrink-0 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg disabled:opacity-50 flex items-center gap-2 transition-colors">
-                    {kycLoading ? <><RefreshCw size={14} className="animate-spin"/> Cargando...</> : <><ShieldCheck size={14}/> Reintentar verificación</>}
-                  </button>
+                  <a href={SOPORTE_KYC} className="shrink-0 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg flex items-center gap-2 transition-colors">
+                    <ShieldCheck size={14}/> Escribir a soporte
+                  </a>
                 </div>
               );
               if (ks === 'in_review') return (
@@ -2262,11 +2552,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   </div>
                   <div className="flex-1">
                     <h3 className="text-[#0C0E0D] font-bold text-sm">Verificación en progreso</h3>
-                    <p className="text-[#4ADE80] text-xs mt-1">Abriste Lincoin pero aún no terminaste. Completa el proceso para activar tu cuenta.</p>
+                    <p className="text-[#4ADE80] text-xs mt-1">Falta documentación para activar tu cuenta. Escribinos y te indicamos cuál.</p>
                   </div>
-                  <button onClick={startDiditKyc} disabled={kycLoading} className="shrink-0 px-4 py-2 bg-[#0C0E0D] hover:bg-[#152e52] text-xs font-bold rounded-lg disabled:opacity-50 flex items-center gap-2 transition-colors">
-                    {kycLoading ? <><RefreshCw size={14} className="animate-spin"/> Cargando...</> : <><ShieldCheck size={14}/> Continuar verificación</>}
-                  </button>
+                  <a href={SOPORTE_KYC} className="shrink-0 px-4 py-2 bg-[#0C0E0D] hover:bg-[#161A17] text-white text-xs font-bold rounded-lg flex items-center gap-2 transition-colors">
+                    <ShieldCheck size={14}/> Escribir a soporte
+                  </a>
                 </div>
               );
               // pending / not_started / undefined
@@ -2277,11 +2567,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   </div>
                   <div className="flex-1">
                     <h3 className="text-amber-900 font-bold text-sm">{isBusinessProduct ? 'Verifica tu empresa para desbloquear envíos' : 'Verifica tu identidad para desbloquear envíos'}</h3>
-                    <p className="text-amber-700 text-xs mt-0.5">Puedes cargar dinero ahora. Para enviar y convertir, completa la verificación {isBusinessProduct ? 'KYB de tu empresa' : 'KYC'} en menos de 2 minutos.</p>
+                    <p className="text-amber-700 text-xs mt-0.5">Puedes cargar dinero ahora. Para enviar y convertir, nuestro equipo tiene que completar la verificación {isBusinessProduct ? 'KYB de tu empresa' : 'KYC'}.</p>
                   </div>
-                  <button onClick={startDiditKyc} disabled={kycLoading} className="shrink-0 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold rounded-lg disabled:opacity-50 flex items-center gap-2 transition-colors">
-                    {kycLoading ? <><RefreshCw size={14} className="animate-spin"/> Cargando...</> : <><ShieldCheck size={14}/> Verificar ahora</>}
-                  </button>
+                  <a href={SOPORTE_KYC} className="shrink-0 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold rounded-lg flex items-center gap-2 transition-colors">
+                    <ShieldCheck size={14}/> Solicitar verificación
+                  </a>
                 </div>
               );
           })()}
@@ -2474,7 +2764,13 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                 convierte SOLO contra USDT). Se controlan desde Admin →
                 Configuración → Países (estado "Próximamente"). */}
             {(() => {
-              const cs: Record<string, string> = { 'México': 'soon', Brasil: 'soon', ...((config as any).countryStatus || {}) };
+              // Los valores por DEFECTO tienen que ser los mismos que usa el
+              // admin. Estaban desincronizados: el admin mostraba Europa,
+              // Suiza y Reino Unido como "Próximamente" por su propia lista,
+              // pero acá no existían — y como el admin no guarda nada al
+              // mostrar un defecto, esos países no aparecían nunca en la app.
+              // Una lista de defectos duplicada es una mentira esperando.
+              const cs: Record<string, string> = { ...POR_DEFECTO, ...((config as any).countryStatus || {}) };
               const soonMeta: Record<string, { rail: string; bg: string }> = {
                 'México': { rail: 'SPEI · MXN', bg: 'linear-gradient(90deg,#006847 0 33%,#FFFFFF 33% 66%,#CE1126 66%)' },
                 Brasil: { rail: 'Pix · BRL', bg: 'radial-gradient(circle at 50% 50%, #002776 0 24%, #FFDF00 25% 46%, #009C3B 47%)' },
@@ -2526,7 +2822,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                     </div>
                     <div style={{ textAlign: 'right' }}>
                       <p style={{ fontSize: 13.5, fontWeight: 700, color: credit ? '#4ADE80' : '#F4F4F2', whiteSpace: 'nowrap' }}>{credit ? '+' : '−'} {formatMoney(tx.amount, tx.currency)}</p>
-                      <span style={{ display: 'inline-block', marginTop: 3, fontSize: 10.5, fontWeight: 700, padding: '2px 8px', borderRadius: 999, border: tx.status === 'Completado' ? '1px solid rgba(74,222,128,0.3)' : (tx.status === 'Rechazado' || tx.status === 'Fallido') ? '1px solid rgba(248,113,113,0.35)' : '1px solid rgba(255,255,255,0.14)', color: tx.status === 'Completado' ? '#4ADE80' : (tx.status === 'Rechazado' || tx.status === 'Fallido') ? '#F87171' : '#878E88' }}>{tx.status}</span>
+                      <span style={{ display: 'inline-block', marginTop: 3, fontSize: 10.5, fontWeight: 700, padding: '2px 8px', borderRadius: 999, border: `1px solid ${etiquetaEstado(tx).border}`, color: etiquetaEstado(tx).color }}>{etiquetaEstado(tx).label}</span>
                     </div>
                   </button>
                 );
@@ -2545,7 +2841,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               {/* TU DINERO — confianza (aliados reales de Lincoin) */}
               <div className="lincoin-panel">
                 <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.8px', color: '#878E88', marginBottom: 14 }}>TU DINERO</p>
-                {[['Respaldo en USDT', 'Dólar digital de Tether (USDT), 1:1 con el dólar.'], ['Rieles locales', 'Retiros en Colombia por Bre-B y ACH.'], ['Identidad verificada', 'KYC/KYB y monitoreo SARLAFT con Didit.']].map(([t, d]) => (
+                {[['Respaldo en USDT', 'Dólar digital de Tether (USDT), 1:1 con el dólar.'], ['Rieles locales', 'Retiros en Colombia por Bre-B y ACH.'], ['Identidad verificada', 'KYC/KYB y monitoreo SARLAFT.']].map(([t, d]) => (
                   <div key={t} className="flex items-start gap-3" style={{ marginBottom: 13, fontSize: 12.5 }}>
                     <ShieldCheck size={16} style={{ color: '#878E88', flexShrink: 0, marginTop: 1 }} />
                     <div><span style={{ fontWeight: 700, color: '#F4F4F2' }}>{t}</span> <span style={{ color: '#878E88' }}>— {d}</span></div>
@@ -2643,13 +2939,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           const ref0 = t.providerRef ?? rd.providerRef ?? rd.providerTraceId ?? '';
           const reference = ref0 ? String(ref0) : `TX-${String(t.id ?? '').replace(/-/g, '').slice(-6).toUpperCase()}`;
           const st = String(t.status || '');
-          const pill = st === 'Completado'
-              ? { label: 'COMPLETADO', border: 'rgba(74,222,128,0.3)', color: '#4ADE80' }
-              : isInFlight(t)
-              ? { label: 'EN CURSO', border: 'rgba(255,255,255,0.14)', color: 'rgba(244,244,242,0.7)' }
-              : isFailedTx(t)
-              ? { label: st === 'Rechazado' ? 'RECHAZADO' : 'FALLIDO', border: 'rgba(248,113,113,0.35)', color: '#F87171' }
-              : { label: (st || 'PENDIENTE').toUpperCase(), border: 'rgba(255,255,255,0.14)', color: '#878E88' };
+          const pill = etiquetaEstado(t);
           const failReason = isFailedTx(t) ? String(rd.error?.message ?? (typeof rd.error === 'string' ? rd.error : '') ?? '').slice(0, 220) : '';
           const rateVal = t.mouvRate ?? rd.mouvRate;
           const sub2 = t.type === 'convert' && rateVal ? `tasa ${Math.round(Number(rateVal)).toLocaleString('es-CO')}` : '';
@@ -3199,14 +3489,19 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9, fontWeight: 700, letterSpacing: '0.7px', padding: '3px 7px', borderRadius: 999, whiteSpace: 'nowrap' }}>SEGUNDOS</span>
                               </div>
                               <p style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-1px', color: '#F4F4F2', marginTop: 16 }}>{Math.round(brebBal).toLocaleString('es-CO')}</p>
-                              <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '8px 0 0' }}>Dispersa a cuentas bancarias colombianas por llave Bre-B en segundos.</p>
+                              <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '8px 0 0' }}>Dispersa a cuentas bancarias colombianas por llave Bre-B en segundos. Hasta 12 M por envío.</p>
                               <div className="flex items-center" style={{ gap: 7, marginTop: 12 }}>
                                   <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#4ADE80' }} />
-                                  <span style={{ fontSize: 11.5, color: '#878E88' }}>Operativo 24/7 · hasta 50 M por envío</span>
+                                  {/* El tope de Bre-B es 12 M, no 50 M: 50 es el de ACH. La tarjeta
+                                      prometía 50 y el servidor corta en 12, así que un cliente con
+                                      20 M para enviar armaba toda la operación y se la rebotaban
+                                      al final. */}
+                                  <span style={{ fontSize: 11.5, color: '#878E88' }}>Operativo 24/7</span>
                               </div>
                           </div>
                           <div style={{ padding: '11px 20px', borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.015)', display: 'flex', gap: 13 }}>
-                              <button onClick={() => { setDispersRail('COP_BREB'); setMouvMode('full'); setActiveView('mouv'); }} disabled={brebBal <= 0} style={{ fontSize: 12, fontWeight: 600, color: brebBal <= 0 ? '#878E88' : '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors disabled:cursor-not-allowed">Dispersar</button>
+                              <button onClick={() => openSendMoney()} disabled={brebBal <= 0} style={{ fontSize: 12, fontWeight: 600, color: brebBal <= 0 ? '#878E88' : '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors disabled:cursor-not-allowed">Enviar dinero</button>
+                              <button onClick={() => setRecaudoOpen(true)} style={{ fontSize: 12, fontWeight: 600, color: '#4ADE80' }} className="hover:opacity-80 transition-opacity">Recibir pagos</button>
                               <button onClick={() => { setBrebMoveOpen(true); setBrebDir('to_peso'); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Mover saldo</button>
                           </div>
                       </div>
@@ -3225,14 +3520,14 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9, fontWeight: 700, letterSpacing: '0.7px', padding: '3px 7px', borderRadius: 999, whiteSpace: 'nowrap' }}>HORARIO</span>
                               </div>
                               <p style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-1px', color: '#F4F4F2', marginTop: 16 }}>{Math.round(achBal).toLocaleString('es-CO')}</p>
-                              <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '8px 0 0' }}>Dispersa a cualquier cuenta en Colombia por el riel ACH tradicional.</p>
+                              <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '8px 0 0' }}>Dispersa a cualquier cuenta en Colombia por el riel ACH tradicional. Hasta 50 M por envío.</p>
                               <div className="flex items-center" style={{ gap: 7, marginTop: 12 }}>
                                   <span style={{ width: 6, height: 6, borderRadius: '50%', background: achOpen ? '#4ADE80' : '#878E88' }} />
                                   <span style={{ fontSize: 11.5, color: '#878E88' }}>L–V 7:00–18:00 · {achOpen ? 'operativo ahora' : 'fuera de horario'}</span>
                               </div>
                           </div>
                           <div style={{ padding: '11px 20px', borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.015)', display: 'flex', gap: 13 }}>
-                              <button onClick={() => { if (achOpen) { setDispersRail('COP_ACH'); setMouvMode('full'); setActiveView('mouv'); } }} disabled={!achOpen || achBal <= 0} title={achOpen ? '' : 'Disponible L–V 7:00–18:00 hora Colombia'} style={{ fontSize: 12, fontWeight: 600, color: (!achOpen || achBal <= 0) ? '#878E88' : '#F4F4F2', cursor: achOpen ? 'pointer' : 'not-allowed' }} className="transition-colors">Dispersar</button>
+                              <button onClick={() => { if (achOpen) openSendMoney(); }} disabled={!achOpen || achBal <= 0} title={achOpen ? '' : 'Disponible L–V 7:00–18:00 hora Colombia'} style={{ fontSize: 12, fontWeight: 600, color: (!achOpen || achBal <= 0) ? '#878E88' : '#F4F4F2', cursor: achOpen ? 'pointer' : 'not-allowed' }} className="transition-colors">Enviar dinero</button>
                               <button onClick={() => { setBrebMoveOpen(true); setBrebDir('to_peso'); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Mover saldo</button>
                           </div>
                       </div>
@@ -3545,6 +3840,15 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       showToast('Email de restablecimiento enviado a ' + currentUser.email);
   };
 
+  // ── Verificación de beneficiarios en Kumplo ─────────────────────────────
+  // La dispara el SERVIDOR por lotes, desde la sección de Beneficiarios
+  // (acción 'verificar_pendientes'). Acá vivía un bucle que recorría los
+  // contactos y esperaba una respuesta por cada uno: con sesenta contactos
+  // eran minutos de llamadas encadenadas desde el navegador, que se cortaban
+  // apenas la persona cambiaba de pantalla. Los veredictos no alcanzaban a
+  // guardarse y todos los beneficiarios se quedaban «verificando» para
+  // siempre.
+
   const renderSettings = () => {
       const raw = (currentUser as any)?.raw_data ?? {};
       const refCur = raw.refCurrency ?? 'USDT';
@@ -3645,6 +3949,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           </div>
                       </div>
                   </div>
+
+                  {/* KUMPLO — acá el titular conecta su cuenta pegando el
+                      código de su empresa y ve si la conexión quedó hecha.
+                      Va en la columna, entre Seguridad y Límites: es una
+                      sección más de Ajustes, no un anuncio. */}
+                  {currentUser?.id && <KumploUserCard userId={currentUser.id} />}
 
                   {/* LÍMITES */}
                   <div style={card}>
@@ -3845,61 +4155,36 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           <p className="text-slate-500 max-w-lg mx-auto mb-8">
               ¿Eres influencer, creador de contenido o tienes una comunidad? Únete a nuestro programa de afiliados y obtén beneficios exclusivos.
           </p>
-          <button className="bg-[#0C0E0D] px-8 py-3 rounded-xl font-bold hover:bg-[#152e52] transition-colors">
+          <button className="bg-[#0C0E0D] px-8 py-3 rounded-xl font-bold hover:bg-[#161A17] transition-colors">
               Aplicar al Programa
           </button>
       </div>
       </div>
   );
 
-  const renderServicios = () => {
-    const SERVICES = [
-      { icon: ArrowLeftRight, label: 'Mesa OTC',   desc: 'Operaciones de alto volumen con tasa negociada.',            color: 'bg-slate-50 text-green-700',
-        onClick: () => { setOtcRail(null); setMouvMode('converter'); setActiveView('mouv'); } },
-      { icon: TrendingUp,     label: 'Staking',    desc: 'Genera rendimientos con tu saldo digital.',                  color: 'bg-green-50 text-green-700' },
-      { icon: Layers,         label: 'Multiwallet', desc: 'Varias billeteras USDT con nombre — ideal para estudios y negocios.', color: 'bg-violet-50 text-violet-700',
-        onClick: () => setActiveView('walletsGasfree') },
-      { icon: ShoppingBag,    label: 'Comercio',   desc: 'Cobra a tus clientes con links y botones de pago.',          color: 'bg-amber-50 text-amber-700' },
-      { icon: GraduationCap,  label: 'Educación',  desc: 'Paga matrículas y cursos en el exterior.',                   color: 'bg-rose-50 text-rose-700' },
-    ];
-    return (
-      <div className="pt-6 space-y-6 animate-in fade-in duration-300">
-        <div className="flex items-center gap-3 mb-2">
-          <button onClick={() => setActiveView('dashboard')} className="flex items-center gap-2 text-slate-700 hover:text-slate-900 font-bold text-sm">
-            <ArrowLeft size={18}/> Volver
-          </button>
-          <h2 className="text-xl font-bold text-[#0C0E0D]">Servicios</h2>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {SERVICES.map(({ icon: Icon, label, desc, color, onClick }: any) => (
-            <div
-              key={label}
-              onClick={onClick}
-              className={`bg-white rounded-2xl border border-slate-200 shadow-sm p-5 flex items-start gap-4 transition-all ${onClick ? 'cursor-pointer hover:border-[#4ADE80] hover:shadow-md' : 'hover:border-[#4ADE80] hover:shadow-md'}`}
-            >
-              <div className={`w-12 h-12 rounded-xl ${color} flex items-center justify-center shrink-0`}>
-                <Icon size={22}/>
-              </div>
-              <div className="flex-1">
-                <div className="flex items-center justify-between mb-1">
-                  <h3 className="font-bold text-slate-800 text-sm">{label}</h3>
-                  {!onClick && <span className="text-[10px] font-bold bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full ml-2">Próximamente</span>}
-                </div>
-                <p className="text-xs text-slate-500 leading-relaxed">{desc}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-        <div className="bg-[#0C0E0D] rounded-2xl p-6 text-white text-center">
-          <h3 className="font-bold text-lg mb-1">¿Necesitas ayuda?</h3>
-          <p className="text-green-200 text-sm mb-4">Nuestro equipo está disponible para asistirte.</p>
-          <a href="mailto:soporte@lincoin.me" className="inline-flex items-center gap-2 bg-[#4ADE80] text-[#0C0E0D] font-bold px-6 py-2.5 rounded-xl hover:bg-[#00b396] transition-colors text-sm">
-            Contactar soporte
-          </a>
-        </div>
-      </div>
-    );
-  };
+  // El diseño completo vive en ServiciosSection. Acá solo se le pasan las
+  // navegaciones y el guardado del aviso: la página no sabe nada del estado
+  // del dashboard, y el dashboard no sabe nada de cómo se ve la página.
+  const avisosServicios: string[] = Array.isArray((currentUser as any)?.avisosServicios)
+    ? (currentUser as any).avisosServicios
+    : [];
+
+  const renderServicios = () => (
+    <ServiciosSection
+      onBack={() => setActiveView('dashboard')}
+      onOtc={() => { setOtcRail(null); setMouvMode('converter'); setActiveView('mouv'); }}
+      onMultiwallet={() => setActiveView('walletsGasfree')}
+      onKyt={() => setActiveView('kyt')}
+      avisos={avisosServicios}
+      onAvisar={(id) => {
+        if (!currentUser?.id) return;
+        // Se guarda en el perfil, no en el navegador: el aviso lo tiene que
+        // ver quien mande el correo cuando el servicio se active.
+        const ya = avisosServicios.includes(id) ? avisosServicios : [...avisosServicios, id];
+        updateUserRawData(currentUser.id, { avisosServicios: ya }).catch(() => {});
+      }}
+    />
+  );
 
   const TX_LABELS: Record<string, string> = {
     convert: 'Conversión de divisas', load: 'Carga de saldo', send: 'Envío / Retiro',
@@ -3952,7 +4237,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     // (lo que el cliente RECIBE — ej. COP), a diferencia del convertidor
     // general que guarda la moneda de ORIGEN (lo que se debita) — por eso
     // esta sí es un crédito y las demás 'convert' no.
-    const isOtcConvertCredit = tx.type === 'convert' && (tx.source === 'MOUV' || rawData.source === 'MOUV');
+    const isOtcConvertCredit = esConvertAcreditado(tx);
     const isCredit = tx.type === 'load' || tx.type === 'pay_received' || tx.type === 'referral_payout' || tx.type === 'otc_deposit' || isOtcConvertCredit;
     const targetAmount = tx.targetAmount ?? rawData.targetAmount;
     const targetCurrency = tx.targetCurrency ?? rawData.targetCurrency;
@@ -4021,9 +4306,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     const providerOpRef: string = String(
       tx.providerRef ?? rawData.providerRef ?? rawData.providerTraceId ?? ''
     ).trim();
-    const providerRefLabel: string = tx.currency === 'COP_BREB'
-      ? 'Referencia Mouv'
-      : (tx.currency === 'COP_ACH' || isMouvConvert) ? 'Referencia Finity' : 'Referencia de operación';
+    // La etiqueta NO nombra al proveedor. Al cliente le sirve para reclamar y
+    // para cruzar la operación con su banco; quién nos presta el riel es un
+    // asunto nuestro, y ponerlo en un comprobante que el cliente reenvía es
+    // regalarlo. El número es el mismo.
+    const providerRefLabel: string = 'Referencia de la operación';
 
     // Documento con tipo (CC 1005237062) — usado por dispersión y genéricos.
     // Las dispersiones Bre-B guardan el número (resolve-key) pero no siempre
@@ -4116,7 +4403,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       c.closePath();
     };
     const buildReceiptCanvas = () => {
-      const scale = 3, W = 380, PAD = 26, maxW = W - PAD * 2;
+      // PAD_TOP aparte del lateral: el comprobante se ve casi siempre dentro
+      // de otra cosa —el visor de fotos del teléfono, WhatsApp— y ahí la barra
+      // de estado o el encabezado de la app se come la franja de arriba. Con
+      // el mismo margen que los lados, el logo quedaba pegado al borde y se
+      // veía tapado. Se le da aire de sobra arriba y abajo.
+      const scale = 3, W = 380, PAD = 26, PAD_TOP = 58, PAD_BOTTOM = 40, maxW = W - PAD * 2;
       const F_VALUE = `600 14px ${FONT}`, F_LABEL = `700 10px ${FONT}`;
       const mctx = document.createElement('canvas').getContext('2d')!;
       const wrap = (text: string, font: string) => {
@@ -4135,13 +4427,22 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       const rows = fields.filter(f => f.label !== 'Estado').map(f => ({ f, lines: wrap(f.value, F_VALUE) }));
       // Pie informativo: soporte de la operación + sitio web.
       const F_FOOT = `500 9.5px ${FONT}`;
-      const footNote = 'Este comprobante es un soporte de la operación realizada a través de Lincoin. No constituye una factura ni un extracto bancario. Lincoin no es un banco; la confianza opera sobre infraestructura de Circle, Fireblocks y SEPA/SWIFT.';
+      // Un comprobante SIN CONFIRMAR se comparte igual que uno confirmado: el
+      // cliente se lo manda al beneficiario y ahí se lee como prueba de pago.
+      // Si la operación todavía no está confirmada, la imagen tiene que
+      // decirlo con todas las letras — el chip de estado solo no alcanza
+      // cuando alguien lo mira de reojo en WhatsApp.
+      const sinConfirmar = tx.status !== 'Completado' && tx.status !== 'Rechazado' && tx.status !== 'Fallido';
+      const footNote = (sinConfirmar
+        ? 'ESTA OPERACIÓN TODAVÍA NO ESTÁ CONFIRMADA. Este soporte no acredita que el dinero haya llegado a destino: el estado final lo confirma el banco. '
+        : '')
+        + 'Este comprobante es un soporte de la operación realizada a través de Lincoin. No constituye una factura ni un extracto bancario. Lincoin no es un banco; la confianza opera sobre infraestructura de Circle, Fireblocks y SEPA/SWIFT.';
       const footLines = wrap(footNote, F_FOOT);
       // Medir alto
-      let H = PAD + 30 + 22 + 16 + 84 + 20;
+      let H = PAD_TOP + 30 + 22 + 16 + 84 + 20;
       for (const r of rows) H += 16 + r.lines.length * 18 + 14;
       // Pie: espacio + "Comprobante Lincoin" + nota + web + margen inferior
-      H += 20 + 16 + 12 + footLines.length * 13 + 20 + PAD;
+      H += 20 + 16 + 12 + footLines.length * 13 + 20 + PAD_BOTTOM;
 
       const canvas = document.createElement('canvas');
       canvas.width = W * scale; canvas.height = H * scale;
@@ -4150,9 +4451,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       // Fondo oscuro Lincoin
       ctx.fillStyle = '#0C0E0D'; ctx.fillRect(0, 0, W, H);
 
-      let y = PAD + 24;
+      let y = PAD_TOP + 24;
       // Logo: wordmark tipográfico "Lincoin" + punto verde (NUNCA ícono/cubo
       // ni el nombre viejo — reglas de marca en CLAUDE.md).
+      // La línea base se fija a mano: el valor por defecto varía entre
+      // navegadores y de él depende cuánto aire queda por encima de la "L".
+      ctx.textBaseline = 'alphabetic';
       ctx.font = `800 26px Archivo, ${FONT}`;
       const wWord = ctx.measureText('Lincoin').width, wDot = ctx.measureText('.').width;
       const gx = (W - (wWord + wDot)) / 2;
@@ -4232,6 +4536,78 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       } catch { showToast('No se pudo generar el comprobante', 4000, 'error'); }
     };
     // Descarga directa (sin diálogo de compartir): guarda el PNG del comprobante.
+    // ── Comprobante en PDF, con NUESTRA marca ──────────────────────
+    // El del proveedor lleva su logo y su nombre, así que no va al cliente.
+    // Este es el mismo comprobante que ya dibujamos nosotros, envuelto en un
+    // PDF — que es el formato que pide un contador, un banco o el beneficiario
+    // que quiere un archivo y no una foto.
+    //
+    // Se arma a mano, sin librería: un PDF de una página con la imagen
+    // embebida como JPEG (DCTDecode, que el formato admite tal cual). Meter
+    // 300 KB de dependencia para envolver una imagen no se justifica.
+    const canvasAPdf = async (canvas: HTMLCanvasElement): Promise<Blob> => {
+        const jpeg = new Uint8Array(await new Promise<ArrayBuffer>((res, rej) => {
+            canvas.toBlob(b => b ? b.arrayBuffer().then(res) : rej(new Error('sin imagen')), 'image/jpeg', 0.95);
+        }));
+
+        // A4 en puntos. La imagen se centra y se escala para entrar con margen.
+        const A4W = 595.28, A4H = 841.89, MARGEN = 42;
+        const escala = Math.min((A4W - MARGEN * 2) / canvas.width, (A4H - MARGEN * 2) / canvas.height);
+        const w = canvas.width * escala, h = canvas.height * escala;
+        const x = (A4W - w) / 2, y = (A4H - h) / 2;
+
+        const enc = new TextEncoder();
+        const partes: Array<string | Uint8Array> = [];
+        const offsets: number[] = [];
+        let largo = 0;
+        const push = (p: string | Uint8Array) => {
+            partes.push(p);
+            largo += typeof p === 'string' ? enc.encode(p).length : p.length;
+        };
+        const obj = (n: number, cuerpo: string) => { offsets[n] = largo; push(cuerpo); };
+
+        push('%PDF-1.4\n');
+        obj(1, '1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n');
+        obj(2, '2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n');
+        obj(3, `3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 ${A4W.toFixed(2)} ${A4H.toFixed(2)}] `
+            + '/Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >> endobj\n');
+        offsets[4] = largo;
+        push(`4 0 obj << /Type /XObject /Subtype /Image /Width ${canvas.width} /Height ${canvas.height} `
+            + `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpeg.length} >> stream\n`);
+        push(jpeg);
+        push('\nendstream endobj\n');
+        const flujo = `q ${w.toFixed(2)} 0 0 ${h.toFixed(2)} ${x.toFixed(2)} ${y.toFixed(2)} cm /Im0 Do Q`;
+        obj(5, `5 0 obj << /Length ${flujo.length} >> stream\n${flujo}\nendstream endobj\n`);
+
+        const inicioXref = largo;
+        let xref = 'xref\n0 6\n0000000000 65535 f \n';
+        for (let i = 1; i <= 5; i++) xref += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
+        push(xref);
+        push(`trailer << /Size 6 /Root 1 0 R >>\nstartxref\n${inicioXref}\n%%EOF\n`);
+
+        const out = new Uint8Array(largo);
+        let i = 0;
+        for (const p of partes) {
+            const b = typeof p === 'string' ? enc.encode(p) : p;
+            out.set(b, i); i += b.length;
+        }
+        return new Blob([out], { type: 'application/pdf' });
+    };
+
+    const descargarPdf = async () => {
+        try {
+            const blob = await canvasAPdf(buildReceiptCanvas());
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = `Lincoin-comprobante-${tx.id}.pdf`;
+            document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 10000);
+            showToast('Comprobante PDF descargado');
+        } catch (e: any) {
+            showToast(`No se pudo generar el PDF: ${String(e?.message ?? e)}`, 6000);
+        }
+    };
+
     const downloadReceipt = async () => {
       try {
         const canvas = buildReceiptCanvas();
@@ -4336,6 +4712,145 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                 </div>
               ))}
             </div>
+            {/* ── Documento contable en Siigo (factura de venta / documento
+                soporte). Solo aparece si el movimiento tiene comprobante con
+                documento: emitido, con error, omitido o pendiente. */}
+            {(() => {
+              const ds = docSiigo && docSiigo.txId === String(tx.id) ? docSiigo : null;
+              if (!ds || ds.estado === 'cargando') return null;
+              if (ds.estado === 'error') return ds.error === 'sin_tabla' ? null : (
+                <p style={{ marginTop: 14, fontSize: 11.5, color: '#878E88' }}>No se pudo consultar el documento contable: {ds.error}</p>
+              );
+              const doc = ds.documento;
+              if (!doc) return null;
+              const esDS = doc.tipo === 'DS';
+              const titulo = esDS ? 'Documento soporte' : 'Factura de venta';
+              const sg = doc.siigo;
+              const sello: string = sg?.stamp?.status ? String(sg.stamp.status) : '';
+              const cude: string = doc.cufe || sg?.stamp?.cufe || sg?.stamp?.cude || '';
+              const fechaDoc = doc.fecha ? new Date(doc.fecha).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' }) : (sg?.fecha ?? '');
+              const filas: { label: string; value: string; mono?: boolean; copy?: string; color?: string }[] = [];
+              const conDoc = doc.estado === 'emitida' || doc.estado === 'anulada';
+              const rechazado = /reject|rechaz|error|fail/i.test(sello);
+              const totalSiigo = sg?.total != null ? Number(sg.total) : null;
+              const totalEnviado = doc.enviado?.total != null ? Number(doc.enviado.total) : null;
+              if (conDoc) {
+                filas.push({ label: 'Número', value: String(doc.numero ?? doc.id ?? '—'), mono: true, copy: doc.numero ? String(doc.numero) : undefined });
+                if (fechaDoc) filas.push({ label: 'Fecha', value: fechaDoc });
+                if (totalEnviado != null) filas.push({ label: 'Enviado a Siigo', value: `${formatMoney(totalEnviado, 'COP')} COP` });
+                if (totalSiigo != null) filas.push({ label: 'Total según Siigo', value: `${formatMoney(totalSiigo, 'COP')} COP`, color: totalEnviado != null && Math.abs(totalSiigo - totalEnviado) > 0.5 ? '#F87171' : undefined });
+                if (sg?.contraparte?.name || sg?.contraparte?.identification) filas.push({ label: esDS ? 'Proveedor' : 'Cliente', value: [sg.contraparte.name, sg.contraparte.identification ? `NIT/CC ${sg.contraparte.identification}` : ''].filter(Boolean).join(' · ') });
+                if (sello) filas.push({ label: 'DIAN', value: rechazado ? `Rechazado (${sello})` : sello, color: /accept|acept|approv/i.test(sello) ? '#4ADE80' : rechazado ? '#F87171' : undefined });
+                if (cude) filas.push({ label: esDS ? 'CUDS' : 'CUFE', value: truncMid(cude, 10, 8), mono: true, copy: cude });
+                if (sg?.stamp?.errors) filas.push({ label: 'Error DIAN', value: String(sg.stamp.errors), color: '#F87171' });
+                if (sg?.stamp?.observations) filas.push({ label: 'Obs. DIAN', value: String(sg.stamp.observations) });
+              }
+              if (ds.comprobante?.numero) filas.push({ label: 'Comprobante Lincoin', value: String(ds.comprobante.numero), mono: true });
+              const estadoTxt = doc.estado === 'emitida' ? (rechazado ? { l: 'RECHAZADO POR LA DIAN', c: '#F87171', b: 'rgba(248,113,113,0.35)' } : { l: 'EMITIDO', c: '#4ADE80', b: 'rgba(74,222,128,0.3)' })
+                : doc.estado === 'anulada' ? { l: 'ANULADO EN SIIGO', c: '#878E88', b: 'rgba(255,255,255,0.14)' }
+                : doc.estado === 'error' ? { l: 'ERROR', c: '#F87171', b: 'rgba(248,113,113,0.35)' }
+                : doc.estado === 'omitida' ? { l: 'NO APLICA', c: '#878E88', b: 'rgba(255,255,255,0.14)' }
+                : { l: String(doc.estado).toUpperCase(), c: 'rgba(244,244,242,0.7)', b: 'rgba(255,255,255,0.14)' };
+              const rechazoMsgs: string[] = Array.isArray(doc.rechazo_dian?.mensajes) ? doc.rechazo_dian.mensajes : [];
+              const puedeReemitir = (doc.estado === 'anulada' || doc.estado === 'error') && tx.status === 'Completado';
+              return (
+                <div style={{ marginTop: 16, border: '1px solid rgba(255,255,255,0.09)', borderRadius: 12, background: 'rgba(255,255,255,0.02)', padding: '12px 14px' }}>
+                  <div className="flex items-center justify-between" style={{ gap: 10 }}>
+                    <span className="flex items-center" style={{ gap: 7, fontSize: 12.5, fontWeight: 700, color: '#F4F4F2' }}><FileText size={14} style={{ color: '#878E88' }} /> {titulo} · Siigo</span>
+                    <span style={{ border: `1px solid ${estadoTxt.b}`, color: estadoTxt.c, fontSize: 9.5, fontWeight: 700, padding: '3px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}>{estadoTxt.l}</span>
+                  </div>
+                  {filas.map((r, i) => (
+                    <div key={r.label} className="flex items-center justify-between" style={{ gap: 12, padding: '8px 0', borderTop: i > 0 ? '1px solid rgba(255,255,255,0.06)' : 'none', marginTop: i === 0 ? 8 : 0 }}>
+                      <span style={{ fontSize: 12, color: '#878E88', flexShrink: 0 }}>{r.label}</span>
+                      <span className="flex items-center" style={{ gap: 6, minWidth: 0 }}>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: r.color ?? '#F4F4F2', fontFamily: r.mono ? 'ui-monospace, Menlo, monospace' : undefined, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.value}</span>
+                        {r.copy && <button onClick={() => copyToClipboard(r.copy!)} style={{ flexShrink: 0 }}><Copy size={12} style={{ color: '#878E88' }} /></button>}
+                      </span>
+                    </div>
+                  ))}
+                  {/* Ítems: los que Lincoin mandó (con precio) y, si Siigo
+                      devolvió otros, los de Siigo. */}
+                  {conDoc && Array.isArray(doc.enviado?.items) && doc.enviado.items.length > 0 && (
+                    <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                      <p style={{ fontSize: 10.5, fontWeight: 700, color: '#878E88', letterSpacing: 0.4, marginBottom: 3 }}>ÍTEMS ENVIADOS</p>
+                      {doc.enviado.items.map((it: any, i: number) => (
+                        <div key={i} className="flex items-start justify-between" style={{ gap: 10, padding: '3px 0' }}>
+                          <span style={{ fontSize: 11.5, color: '#878E88', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.code ? `${it.code} · ` : ''}{it.description || ''}</span>
+                          <span style={{ fontSize: 11.5, fontWeight: 600, color: '#F4F4F2', whiteSpace: 'nowrap' }}>{it.price != null ? `${formatMoney(Number(it.price) * Number(it.quantity ?? 1), 'COP')} COP` : ''}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {conDoc && Array.isArray(sg?.items) && sg.items.length > 0 && (
+                    <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                      <p style={{ fontSize: 10.5, fontWeight: 700, color: '#878E88', letterSpacing: 0.4, marginBottom: 3 }}>ÍTEMS SEGÚN SIIGO</p>
+                      {sg.items.map((it: any, i: number) => (
+                        <div key={i} className="flex items-start justify-between" style={{ gap: 10, padding: '3px 0' }}>
+                          <span style={{ fontSize: 11.5, color: '#878E88', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.code ? `${it.code} · ` : ''}{it.description || ''}{it.taxes?.length ? ` · ${it.taxes.map((t: any) => t.name || `${t.percentage}%`).join(', ')}` : ''}</span>
+                          <span style={{ fontSize: 11.5, fontWeight: 600, color: '#F4F4F2', whiteSpace: 'nowrap' }}>{it.total != null ? `${formatMoney(Number(it.total), 'COP')} COP` : it.price != null ? `${formatMoney(Number(it.price) * Number(it.quantity ?? 1), 'COP')} COP` : 'sin valor'}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {/* Lo que dijo la DIAN al rechazar, si Siigo lo entregó. */}
+                  {conDoc && rechazado && (
+                    <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                      <p style={{ fontSize: 10.5, fontWeight: 700, color: '#F87171', letterSpacing: 0.4, marginBottom: 3 }}>MOTIVO DEL RECHAZO (DIAN)</p>
+                      {rechazoMsgs.length > 0
+                        ? rechazoMsgs.map((m, i) => <p key={i} style={{ fontSize: 11.5, color: '#F4F4F2', lineHeight: 1.45, padding: '2px 0' }}>{m}</p>)
+                        : <p style={{ fontSize: 11.5, color: '#878E88', lineHeight: 1.45 }}>{doc.rechazo_dian?.aviso ?? `Siigo no entregó el motivo por API. Se ve en Siigo Nube: ${esDS ? 'Compras → Documento soporte' : 'Ventas → Facturas'} → ${doc.numero ?? ''} → Ver inconsistencias.`}</p>}
+                    </div>
+                  )}
+                  {(doc.estado === 'error' || doc.estado === 'anulada') && doc.error && <p style={{ marginTop: 8, fontSize: 11.5, color: doc.estado === 'error' ? '#F87171' : '#878E88', lineHeight: 1.45 }}>{doc.error}</p>}
+                  {doc.estado === 'omitida' && doc.error && <p style={{ marginTop: 8, fontSize: 11.5, color: '#878E88', lineHeight: 1.45 }}>{doc.error}</p>}
+                  {doc.estado === 'emitida' && (
+                    <div className="flex" style={{ gap: 8, marginTop: 10 }}>
+                      {doc.url && <a href={doc.url} target="_blank" rel="noopener noreferrer" className="flex-1 flex items-center justify-center hover:bg-white/[0.09] transition-colors" style={{ gap: 6, padding: '9px 0', borderRadius: 9, fontSize: 12, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.11)', textDecoration: 'none' }}><ExternalLink size={13} /> Abrir en Siigo</a>}
+                      {doc.pdf_api && (
+                        <button onClick={() => descargarPdfSiigo(String(tx.id), `${doc.numero ?? titulo}.pdf`)} disabled={docPdfBajando}
+                          className="flex-1 flex items-center justify-center hover:bg-white/[0.09] transition-colors"
+                          style={{ gap: 6, padding: '9px 0', borderRadius: 9, fontSize: 12, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.11)', opacity: docPdfBajando ? 0.6 : 1 }}>
+                          <Download size={13} /> {docPdfBajando ? 'Pidiendo a Siigo…' : 'PDF de la factura'}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {/* Siigo no entrega por API el PDF del documento soporte
+                      (comprobado: HTTP 404). Se baja en Siigo Nube. */}
+                  {doc.estado === 'emitida' && !doc.pdf_api && (
+                    <p style={{ marginTop: 10, fontSize: 11, color: '#878E88', lineHeight: 1.45 }}>El PDF del documento soporte no lo entrega Siigo por API. Se descarga en Siigo Nube: Compras → Documento soporte → {doc.numero ?? ''} → Imprimir o descargar.</p>
+                  )}
+                  {puedeReemitir && (
+                    <button onClick={() => emitirDeNuevoSiigo(String(tx.id))} disabled={docEmitiendo}
+                      className="w-full flex items-center justify-center hover:bg-white/[0.09] transition-colors"
+                      style={{ gap: 6, marginTop: 10, padding: '9px 0', borderRadius: 9, fontSize: 12, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.11)', opacity: docEmitiendo ? 0.6 : 1 }}>
+                      <FileText size={13} /> {docEmitiendo ? 'Emitiendo en Siigo…' : 'Emitir de nuevo'}
+                    </button>
+                  )}
+                  {doc.respuesta_cruda && (
+                    <div style={{ marginTop: 8 }}>
+                      <button onClick={() => setDocCrudaAbierta(v => !v)} style={{ fontSize: 11, color: '#878E88', background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: 3 }}>{docCrudaAbierta ? 'Ocultar' : 'Ver'} la respuesta de Siigo tal cual</button>
+                      {docCrudaAbierta && <pre style={{ marginTop: 6, fontSize: 10, color: '#878E88', whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxHeight: 220, overflowY: 'auto', background: 'rgba(0,0,0,0.3)', borderRadius: 8, padding: 8, fontFamily: 'ui-monospace, Menlo, monospace' }}>{(() => { try { return JSON.stringify(JSON.parse(doc.respuesta_cruda), null, 1); } catch { return doc.respuesta_cruda; } })()}</pre>}
+                    </div>
+                  )}
+                  {doc.aviso && <p style={{ marginTop: 8, fontSize: 11, color: '#878E88', lineHeight: 1.45 }}>{doc.aviso}</p>}
+                </div>
+              );
+            })()}
+            <button onClick={descargarPdf}
+              className="w-full flex items-center justify-center hover:bg-white/[0.09] transition-colors"
+              style={{ gap: 7, marginTop: 14, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.11)' }}>
+              <FileText size={15} /> Comprobante en PDF
+            </button>
+            {/* EL COMPROBANTE DEL PROVEEDOR NO VA AL CLIENTE.
+                Ese PDF lo emite y lo firma nuestro proveedor de pagos, con su
+                marca y su nombre encima. El cliente no tiene por qué saber con
+                quién operamos -- es información nuestra, y además la comparte
+                con su beneficiario cuando reenvía el comprobante.
+
+                El botón estuvo unas horas y se saca. La acción sigue existiendo
+                del lado del servidor para la mesa, que sí la necesita cuando hay
+                que reclamarle algo al proveedor. */}
             {/* Botonera */}
             <div className="flex" style={{ gap: 9, marginTop: 18 }}>
               <button onClick={shareReceipt} title="Compartir" style={{ width: 44, height: 44, borderRadius: 10, border: '1px solid rgba(255,255,255,0.11)', background: 'rgba(255,255,255,0.055)', display: 'grid', placeItems: 'center', flexShrink: 0 }} className="hover:bg-white/[0.09] transition-colors"><Share2 size={16} style={{ color: '#F4F4F2' }} /></button>
@@ -4351,7 +4866,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   };
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] font-sans text-slate-900 flex">
+    // El caparazón venía del tema claro (#F8FAFC) y quedaba escondido detrás
+    // de la barra blanca. Con la barra oscura el borde claro se vería, así que
+    // el fondo pasa al negro Lincoin, que es el que ya usa el contenido.
+    <div className="min-h-screen bg-[#070808] font-sans text-[#F4F4F2] flex">
       {/* Toast */}
       {toastMessage && (
           <div className={`fixed top-6 right-6 z-[70] px-6 py-3 rounded-lg shadow-xl flex items-center gap-3 animate-in slide-in-from-top-4 fade-in max-w-md ${toastType === 'error' ? 'bg-red-600 text-white' : 'bg-[#0C0E0D] text-white'}`}>
@@ -4360,62 +4878,26 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           </div>
       )}
 
-      {/* Backdrop móvil: al tocar fuera de la barra, se cierra el menú. Va
-          debajo del sidebar (z-30) y encima del contenido; solo en móvil. */}
-      {isMobileMenuOpen && (
-        <div
-          className="fixed inset-0 z-[25] bg-black/50 lg:hidden"
-          onClick={() => setIsMobileMenuOpen(false)}
-          aria-hidden="true"
-        />
-      )}
-
-      {/* Sidebar - COLLAPSIBLE ON MOBILE */}
-      <aside className={`
-          fixed inset-y-0 left-0 z-30 w-64 bg-white border-r border-slate-200 transform transition-transform duration-300 lg:translate-x-0
-          ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}
-          lg:static flex flex-col
-      `}>
-          <div className="h-20 flex items-center px-6 border-b border-slate-50">
-              {/* Cuentas de empresa: etiqueta BUSINESS bajo el logo (como en el
-                  antiguo panel de empresas) */}
-              <Logo business={currentUser?.role === 'business'} />
-          </div>
-
-          <div className="flex-1 overflow-y-auto py-6 px-4 space-y-1">
-              <SidebarItem icon={Home} label="Inicio" active={activeView === 'dashboard'} onClick={() => {setActiveView('dashboard'); setIsMobileMenuOpen(false);}} />
-              <SidebarItem icon={Send} label="Enviar Dinero" active={false} onClick={() => { openSendMoney(); }} />
-              <SidebarItem icon={ArrowLeftRight} label="Convertir" active={false} onClick={() => { if(!handleActionRestricted()) setIsConvertModalOpen(true); }} />
-              <SidebarItem icon={History} label="Movimientos" active={activeView === 'movements'} onClick={() => {setActiveView('movements'); setIsMobileMenuOpen(false);}} />
-              <SidebarItem icon={Users} label="Beneficiarios" active={activeView === 'contactos'} onClick={() => {setActiveView('contactos'); setIsMobileMenuOpen(false);}} />
-              
-              <div className="pt-6 pb-2 pl-4 text-xs font-bold text-slate-500 uppercase tracking-widest">Descubre</div>
-              <SidebarItem
-                  icon={Gift}
-                  label="Invita y Gana"
-                  active={activeView === 'referrals'} 
-                  onClick={() => {setActiveView('referrals'); setIsMobileMenuOpen(false);}} 
-                  badge={true}
-              />
-              <SidebarItem 
-                  icon={Megaphone} 
-                  label="Aliados LINCOIN" 
-                  active={activeView === 'affiliates'} 
-                  onClick={() => {setActiveView('affiliates'); setIsMobileMenuOpen(false);}} 
-              />
-          </div>
-
-          <div className="p-4 border-t border-slate-50">
-              <button onClick={onLogout} className="flex items-center gap-3 w-full px-4 py-3 text-slate-600 hover:text-red-600 hover:bg-red-50 rounded-xl transition-colors font-medium text-sm">
-                  <LogOut size={18} /> Cerrar Sesión
-              </button>
-          </div>
-      </aside>
+      {/* Barra lateral. El backdrop móvil y el drawer viven adentro. */}
+      <SidebarEmpresas
+          activeView={activeView}
+          nombre={currentUser?.companyName || currentUser?.name || ''}
+          esEmpresa={currentUser?.role === 'business'}
+          kycVerificado={isKycVerified}
+          novedadReferidos={true}
+          irA={(v) => setActiveView(v as any)}
+          onEnviar={() => { openSendMoney(); }}
+          onConvertir={() => { if (!handleActionRestricted()) setIsConvertModalOpen(true); }}
+          onPerfil={() => setActiveView('profile')}
+          onLogout={onLogout}
+          abiertaMovil={isMobileMenuOpen}
+          cerrarMovil={() => setIsMobileMenuOpen(false)}
+      />
 
       <main className="flex-1 lg:pt-0 pt-16 h-screen overflow-y-auto p-4 md:p-8 lg:p-10">
-          <header className="lg:hidden fixed top-0 left-0 right-0 h-16 bg-white border-b border-slate-200 flex items-center justify-between px-4 z-20">
-              <Logo collapsed />
-              <button onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)} className="p-2 text-slate-600">
+          <header className="lg:hidden fixed top-0 left-0 right-0 h-16 flex items-center justify-between px-4 z-20" style={{ background: '#0A0C0B', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+              <span style={{ fontFamily: 'Archivo, system-ui, sans-serif', fontWeight: 800, fontSize: 18, letterSpacing: '-0.5px', color: '#F4F4F2' }}>Lincoin<span style={{ color: '#4ADE80' }}>.</span></span>
+              <button onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)} className="p-2" style={{ color: '#878E88' }} aria-label="Menú">
                   <span className="sr-only">Menu</span>
                   <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
               </button>
@@ -4430,6 +4912,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           {activeView === 'affiliates' && renderAffiliates()}
           {activeView === 'settings' && renderSettings()}
       {activeView === 'servicios' && renderServicios()}
+      {activeView === 'kyt' && <KytSection onBack={() => setActiveView('servicios')} />}
       {activeView === 'walletsGasfree' && currentUser?.id && (
           <WalletsGasfreeSection
               userId={currentUser.id}
@@ -4438,8 +4921,13 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               onBack={() => setActiveView('servicios')}
           />
       )}
-      {activeView === 'contactos' && (
+      {/* Beneficiarios, Contabilidad y Compliance son tres vistas de la misma
+          lista y comparten todo lo de abajo: la verificación de antecedentes,
+          los movimientos, los modales. Una sola sección con tres caras. */}
+      {(activeView === 'contactos' || activeView === 'contabilidad' || activeView === 'compliance') && (
           <ContactsSection
+              vista={activeView === 'contactos' ? 'beneficiarios' : activeView}
+              onVerMovimiento={(tx: any) => setSelectedTx(tx)}
               onBack={() => setActiveView('dashboard')}
               onSendTo={(c: any) => {
                   // "Enviar" desde Beneficiarios: abre Enviar Dinero con el
@@ -4515,14 +5003,46 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   </div>
                                   <p style={{ fontSize: 12, color: '#878E88', marginTop: 6, lineHeight: 1.5 }}>Por ahora la conversión con salida Bre-B se gestiona por mesa manual.</p>
                               </button>
+                              <button onClick={() => setOtcRail('manual')} className="text-left transition-colors hover:bg-white/[0.03] sm:col-span-2"
+                                  style={{ padding: '16px 17px', borderRadius: 13, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.025)' }}>
+                                  <div className="flex items-center gap-2">
+                                      <MessageSquare size={17} style={{ color: '#4ADE80' }} />
+                                      <span style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>Manual · con asesor</span>
+                                      <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 8.5, fontWeight: 700, letterSpacing: '0.6px', padding: '2px 6px', borderRadius: 999 }}>DISPONIBLE</span>
+                                  </div>
+                                  <p style={{ fontSize: 12, color: '#878E88', marginTop: 6, lineHeight: 1.5 }}>Montos grandes o destinos fuera de ACH. Cotizás, la mesa te confirma la tasa por chat y se cierra ahí mismo.</p>
+                              </button>
                           </div>
                       </div>
+                  </div>
+              ) : mouvMode === 'converter' && otcRail === 'manual' ? (
+                  <div style={{ margin: '24px auto', maxWidth: 620 }}>
+                      <OtcManual
+                          userId={currentUser.id}
+                          showToast={(m) => showToast(m)}
+                          onVolver={() => setOtcRail(null)}
+                          saldos={{ COP: getBalance('COP'), COP_BREB: getBalance('COP_BREB'), COP_ACH: getBalance('COP_ACH') }}
+                          onAcreditado={(billetera, monto) => {
+                              // La mesa acredita en el servidor. Sin esto el saldo de la
+                              // pantalla quedaba viejo hasta recargar — justo despues de
+                              // recibir plata, que es cuando mas se mira el numero.
+                              // 1) Optimista, para que se vea al instante.
+                              bumpLocalBalance?.(billetera, monto);
+                              showToast(`Recibiste ${monto.toLocaleString('es-CO', { maximumFractionDigits: 2 })} en tu ${billetera === 'COP_BREB' ? 'saldo Bre-B' : billetera === 'COP_ACH' ? 'saldo ACH' : billetera === 'USD' ? 'saldo USDT' : 'saldo Lincoin'} ⚡`);
+                              // 2) Autoritativo: el servidor manda. Escalonado porque la
+                              //    lectura puede llegar antes de que la escritura se refleje.
+                              refreshData?.();
+                              setTimeout(() => refreshData?.(), 2500);
+                              setTimeout(() => refreshData?.(), 6000);
+                          }}
+                      />
                   </div>
               ) : mouvMode === 'converter' && otcRail === 'breb' ? (
                   <div style={{ maxWidth: 560, margin: '24px auto', background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 18, padding: '32px 28px', textAlign: 'center', fontFamily: "'Archivo', system-ui, sans-serif" }}>
                       <p style={{ color: '#F4F4F2', fontWeight: 700, fontSize: 16 }}>Mesa Bre-B · por mesa manual</p>
-                      <p style={{ color: '#878E88', fontSize: 13, marginTop: 6, lineHeight: 1.6 }}>La conversión con salida Bre-B se gestiona por mesa manual. Escríbenos por el canal de la mesa y la gestionamos al instante — o usa la salida ACH, que es automática.</p>
-                      <button onClick={() => setOtcRail('ach')} className="lincoin-btn-white transition-colors" style={{ marginTop: 16, fontWeight: 700, fontSize: 13.5, padding: '11px 20px', borderRadius: 10, border: 'none' }}>Usar salida ACH</button>
+                      <p style={{ color: '#878E88', fontSize: 13, marginTop: 6, lineHeight: 1.6 }}>La conversión con salida Bre-B se gestiona por mesa manual: pedís el cierre y un asesor te confirma la tasa por chat. O usá la salida ACH, que es automática.</p>
+                      <button onClick={() => setOtcRail('manual')} className="lincoin-btn-white transition-colors" style={{ marginTop: 16, fontWeight: 700, fontSize: 13.5, padding: '11px 20px', borderRadius: 10, border: 'none' }}>Ir a la mesa manual</button>
+                      <button onClick={() => setOtcRail('ach')} style={{ display: 'block', margin: '10px auto 0', fontSize: 12.5, color: '#878E88', textDecoration: 'underline' }}>Usar salida ACH</button>
                       <button onClick={() => setOtcRail(null)} style={{ display: 'block', margin: '12px auto 0', fontSize: 12.5, color: '#878E88', textDecoration: 'underline' }}>← Elegir otro riel</button>
                   </div>
               ) : (
@@ -4632,7 +5152,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   </div>
                   <div className="p-4 border-t border-slate-100 flex gap-3">
                       <button onClick={() => setIsWalletOrderModalOpen(false)} className="flex-1 h-11 border border-slate-200 rounded-xl text-slate-600 text-sm font-bold hover:bg-slate-50 transition-colors">Cancelar</button>
-                      <button onClick={saveWalletOrder} className="flex-1 h-11 bg-[#0C0E0D] hover:bg-[#152e52] text-sm font-bold rounded-xl transition-colors">Guardar</button>
+                      <button onClick={saveWalletOrder} className="flex-1 h-11 bg-[#0C0E0D] hover:bg-[#161A17] text-sm font-bold rounded-xl transition-colors">Guardar</button>
                   </div>
               </div>
           </div>
@@ -4661,19 +5181,21 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   </div>
                   <p className="text-xs text-slate-500 text-center mb-4">Usa <strong>Google Authenticator</strong>, <strong>Authy</strong> o cualquier app TOTP. Luego ingresa el código de 6 dígitos:</p>
                   {mfaVerifyError && <p className="text-red-500 text-sm text-center mb-3">{mfaVerifyError}</p>}
-                  <input
-                      type="text" inputMode="numeric" maxLength={6}
-                      value={mfaVerifyCode}
-                      onChange={(e) => setMfaVerifyCode(e.target.value.replace(/\D/g, ''))}
-                      className="w-full h-14 text-center text-2xl font-bold tracking-[0.4em] border-2 border-slate-200 rounded-xl focus:border-[#0C0E0D] outline-none mb-4 bg-slate-50"
-                      placeholder="000000"
-                      autoFocus
-                      onKeyDown={(e) => e.key === 'Enter' && handleVerifyMFAEnrollment()}
-                  />
+                  <div className="mb-4">
+                      <CodeInput
+                          value={mfaVerifyCode}
+                          onChange={setMfaVerifyCode}
+                          onComplete={() => handleVerifyMFAEnrollment()}
+                          status={mfaVerifyError ? 'error' : 'idle'}
+                          tone="light"
+                          autoFocus
+                          aria="Código de tu app autenticadora"
+                      />
+                  </div>
                   <button
                       onClick={handleVerifyMFAEnrollment}
                       disabled={mfaVerifyCode.length !== 6 || mfaVerifyLoading}
-                      className="w-full h-12 bg-[#0C0E0D] font-bold rounded-xl disabled:opacity-50 hover:bg-[#152e52] transition-colors"
+                      className="w-full h-12 bg-[#0C0E0D] font-bold rounded-xl disabled:opacity-50 hover:bg-[#161A17] transition-colors"
                   >
                       {mfaVerifyLoading ? 'Verificando...' : 'Confirmar activación'}
                   </button>
@@ -4690,7 +5212,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
                   {!disableOtp.sent ? (
                       <button onClick={sendDisableOtp} disabled={disableOtp.sending}
-                          className="w-full h-11 bg-[#0C0E0D] text-white font-bold rounded-lg hover:bg-[#152e52] transition-colors disabled:opacity-60 mb-4">
+                          className="w-full h-11 bg-[#0C0E0D] text-white font-bold rounded-lg hover:bg-[#161A17] transition-colors disabled:opacity-60 mb-4">
                           {disableOtp.sending ? 'Enviando…' : '📧 Enviarme el código al correo'}
                       </button>
                   ) : (
@@ -4720,6 +5242,14 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       )}
 
       {renderTxDetail()}
+      {recaudoOpen && currentUser?.id && (
+        <BrebRecaudo
+          userId={currentUser.id}
+          authHeader={myAuthHeader}
+          onCerrar={() => { setRecaudoOpen(false); refreshData?.(); }}
+          showToast={showToast}
+        />
+      )}
 
       {/* PAY 2FA VERIFY MODAL */}
       {showPayVerify && (
@@ -4731,15 +5261,18 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   </div>
                   <p className="text-sm text-slate-500 mb-4 text-center">Ingresa el código de 6 dígitos de tu app autenticadora para confirmar el pago.</p>
                   {payVerifyError && <p className="text-red-500 text-sm text-center mb-3">{payVerifyError}</p>}
-                  <input
-                      type="text" inputMode="numeric" maxLength={6}
-                      value={payVerifyCode}
-                      onChange={e => setPayVerifyCode(e.target.value.replace(/\D/g, ''))}
-                      onKeyDown={e => e.key === 'Enter' && handlePayVerifyAndSend()}
-                      className="w-full h-14 text-center text-2xl font-bold tracking-[0.4em] border-2 border-slate-200 rounded-xl focus:border-[#0C0E0D] outline-none mb-4 bg-slate-50"
-                      placeholder="000000"
-                      autoFocus
-                  />
+                  <div className="mb-4">
+                      <CodeInput
+                          value={payVerifyCode}
+                          onChange={setPayVerifyCode}
+                          onComplete={() => { if (!payVerifyLoading) handlePayVerifyAndSend(); }}
+                          status={payVerifyLoading ? 'verifying' : payVerifyError ? 'error' : 'idle'}
+                          tone="light"
+                          autoFocus
+                          disabled={payVerifyLoading}
+                          aria="Código de tu app autenticadora"
+                      />
+                  </div>
                   <button
                       type="button"
                       onClick={handlePayVerifyAndSend}
@@ -4764,14 +5297,18 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   </div>
                   <h3 style={{ fontSize: 18, fontWeight: 800, letterSpacing: '-0.4px', color: '#F4F4F2', marginTop: 14 }}>Confirma con tu 2FA</h3>
                   <p style={{ fontSize: 13, color: '#878E88', marginTop: 6, lineHeight: 1.5 }}>Por tu seguridad, ingresa el código de 6 dígitos de tu app de autenticación para autorizar este envío.</p>
-                  <input
-                      type="text" inputMode="numeric" maxLength={6} autoFocus
-                      value={sendOtpCode}
-                      onChange={e => setSendOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                      onKeyDown={e => e.key === 'Enter' && confirmSendOtp()}
-                      placeholder="••••••"
-                      style={{ width: '100%', marginTop: 18, textAlign: 'center', letterSpacing: 12, fontSize: 28, fontWeight: 800, fontFamily: 'ui-monospace, Menlo, monospace', color: '#F4F4F2', background: 'rgba(255,255,255,0.03)', border: `1px solid ${sendOtpError ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.12)'}`, borderRadius: 12, padding: '13px 0', outline: 'none' }}
-                  />
+                  <div style={{ marginTop: 18 }}>
+                      <CodeInput
+                          value={sendOtpCode}
+                          onChange={setSendOtpCode}
+                          onComplete={() => { if (!sendOtpLoading) confirmSendOtp(); }}
+                          status={sendOtpLoading ? 'verifying' : sendOtpError ? 'error' : 'idle'}
+                          tone="dark"
+                          autoFocus
+                          disabled={sendOtpLoading}
+                          aria="Código para autorizar el envío"
+                      />
+                  </div>
                   {sendOtpError && <p style={{ fontSize: 12.5, color: '#F4F4F2', marginTop: 10, fontWeight: 600 }}>{sendOtpError}</p>}
                   <button
                       type="button"
@@ -4866,7 +5403,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   onClick={() => setPayLinkStep(2)}
                                   disabled={!payLinkAmount || Number(payLinkAmount) <= 0}
                                   style={{ color: '#FFFFFF' }}
-                                  className="w-full py-3.5 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                  className="w-full py-3.5 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#161A17] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                               >
                                   Continuar
                               </button>
@@ -4980,8 +5517,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
                               <div className="flex gap-3">
                                   <button
-                                      onClick={() => { if (navigator.share) { navigator.share({ title: 'Link de pago LINCOIN', url: payLinkUrl }); } else { navigator.clipboard?.writeText(payLinkUrl); showToast('Link copiado'); } }}
-                                      className="flex-1 py-3 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] transition-colors flex items-center justify-center gap-2"
+                                      onClick={() => { if (navigator.share) { navigator.share({ title: 'Link de pago Lincoin', url: payLinkUrl }); } else { navigator.clipboard?.writeText(payLinkUrl); showToast('Link copiado'); } }}
+                                      className="flex-1 py-3 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#161A17] transition-colors flex items-center justify-center gap-2"
                                   >
                                       <Share2 size={16}/> Compartir
                                   </button>
@@ -5425,7 +5962,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       </span>
                                   </div>
                               </div>
-                              <button onClick={handleAmountConfirm} style={{ color: '#FFFFFF' }} className="w-full py-4 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-transform active:scale-95">Continuar</button>
+                              <button onClick={handleAmountConfirm} style={{ color: '#FFFFFF' }} className="w-full py-4 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#161A17] shadow-lg transition-transform active:scale-95">Continuar</button>
                           </div>
                       )}
                       {loadStep === 4 && (
@@ -5471,7 +6008,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       )}
                                   </div>
                               </div>
-                              <button onClick={handleLoadSubmit} style={{ color: '#FFFFFF' }} className="w-full py-4 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-transform active:scale-95">
+                              <button onClick={handleLoadSubmit} style={{ color: '#FFFFFF' }} className="w-full py-4 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#161A17] shadow-lg transition-transform active:scale-95">
                                   Notificar Transferencia
                               </button>
                           </div>
@@ -5736,8 +6273,78 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           const myContacts = all.filter((c: any) => c.accountKind !== 'wallet' && (c.country ?? 'Colombia') === 'Colombia' && ((c.destKind ?? 'ach') === railKind));
                           const q = contactSearch.trim().toLowerCase();
                           const list = myContacts.filter((c: any) => !q || `${c.name} ${c.bank} ${c.docNumber} ${c.accountNumber} ${c.brebKey ?? ''}`.toLowerCase().includes(q));
-                          const goContacts = () => { setIsSendModalOpen(false); setActiveView('contactos'); };
+                          const goContacts = () => { closeSendModal(); setActiveView('contactos'); };
                           const maskAcc = (a: string) => (a?.length > 4 ? `···${a.slice(-4)}` : a);
+                          // El veredicto de antecedentes de cada beneficiario.
+                          // El bloqueo real vive en el servidor y ahí se corta
+                          // el envío igual; pero dejar elegir a alguien que va a
+                          // rebotar es hacerle recorrer tres pasos y cobrarle el
+                          // viaje para nada. Se dice acá, antes de empezar.
+                          // Lo del servidor manda; la copia local es el respaldo
+                          // mientras la consulta viaja.
+                          const amlBenefs: Record<string, any> = amlSrv ?? ((currentUser as any)?.raw_data?.tusdatos?.beneficiarios) ?? {};
+                          const amlDe = (c: any) => {
+                              const doc = String(c?.docNumber ?? '').replace(/\D/g, '');
+                              return doc ? amlBenefs[doc] : null;
+                          };
+                          // Solo un veredicto EXPLÍCITO frena. Sin consulta, en
+                          // curso o sin resultado, se deja pasar: el servidor
+                          // tiene la última palabra y no se acusa a nadie por
+                          // falta de información.
+                          // Mismo criterio que la lista de beneficiarios y que
+                          // el servidor: riesgo alto y fallas de identidad
+                          // frenan siempre, no solo cuando quedó guardado un
+                          // 'operable: false'.
+                          const amlFrena = (c: any) => {
+                              const k = amlDe(c);
+                              if (!k) return false;
+                              // SIN RESULTADO NO SE ENVÍA. Mientras la consulta
+                              // corre no se deja elegir: si el veredicto llega
+                              // negativo con la plata ya enviada, el control no
+                              // sirvió de nada. Tarda cerca de un minuto.
+                              if (k.estado !== 'finalizado') return true;
+                              return k.operable === false || k.categoria === 'alto'
+                                  || k.nombreCoincide === false || k.documentoVigente === false;
+                          };
+                          const amlEsperando = (c: any) => {
+                              const k = amlDe(c);
+                              return !!k && k.estado !== 'finalizado';
+                          };
+                          // El resultado de antecedentes de cada beneficiario,
+                          // con el mismo lenguaje que la lista de
+                          // beneficiarios. Se muestra SIEMPRE que haya
+                          // veredicto, no solo cuando es malo: antes un
+                          // beneficiario de riesgo bajo y uno sin consultar se
+                          // veían idénticos, los dos con "VERIFICADA" en verde
+                          // —que además habla del banco, no del AML.
+                          type Aml = { t: string; tono: 'rojo' | 'ambar' | 'verde' | 'gris' } | null;
+                          const amlEtiqueta = (c: any): Aml => {
+                              const k = amlDe(c);
+                              if (!k) return null;
+                              const est = String(k.estado ?? '');
+                              // Mientras no haya resultado no se puede enviar, así
+                              // que la etiqueta lo dice: "consultando" a secas
+                              // parecía un detalle informativo y no la razón por
+                              // la que la fila está deshabilitada.
+                              if (est === 'procesando' || !est) return { t: 'AML · CONSULTANDO · ESPERA', tono: 'gris' };
+                              if (est !== 'finalizado') return { t: 'AML · SIN RESULTADO · ESPERA', tono: 'gris' };
+                              const frena = amlFrena(c);
+                              const fin = (s: string) => frena ? `${s} · BLOQUEADO` : s;
+                              if (k.nombreCoincide === false) return { t: `AML · ${fin('NOMBRE INCORRECTO')}`, tono: 'rojo' };
+                              if (k.documentoVigente === false) return { t: `AML · ${fin('DOCUMENTO NO VIGENTE')}`, tono: 'rojo' };
+                              if (k.categoria === 'alto') return { t: `AML · ${fin('RIESGO ALTO')}`, tono: 'rojo' };
+                              if (k.categoria === 'medio') return { t: `AML · ${frena ? 'RIESGO MEDIO · EN REVISIÓN' : 'RIESGO MEDIO'}`, tono: 'ambar' };
+                              if (k.categoria === 'bajo') return { t: 'AML · RIESGO BAJO', tono: 'verde' };
+                              if (k.categoria === 'ninguno' || k.categoria === 'informativo') return { t: 'AML · SIN HALLAZGOS', tono: 'verde' };
+                              if (k.categoria === 'sin_validar') return { t: 'AML · SIN VALIDAR', tono: 'gris' };
+                              return { t: 'AML · SIN RESULTADO', tono: 'gris' };
+                          };
+                          const AML_TONO = {
+                              rojo: { b: 'rgba(248,113,113,0.32)', c: '#F87171' },
+                              ambar: { b: 'rgba(251,191,36,0.32)', c: '#FBBF24' },
+                              verde: { b: 'rgba(74,222,128,0.3)', c: '#4ADE80' },
+                              gris: { b: 'rgba(255,255,255,0.14)', c: '#878E88' },
+                          } as const;
                           const initials = (n: string) => { const p = String(n || '').trim().split(/\s+/); return ((p[0]?.[0] ?? '') + (p[1]?.[0] ?? '')).toUpperCase() || '·'; };
                           const pickContact = (c: any) => {
                               setSendForm({
@@ -5766,7 +6373,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   <div className="space-y-2" style={{ maxHeight: 300, overflowY: 'auto' }}>
                                       {list.map((c: any) => {
                                           const st = contactStatus(c);
-                                          const selectable = st === 'aprobada';
+                                          const aml = amlEtiqueta(c);
+                                          const selectable = st === 'aprobada' && !amlFrena(c);
                                           const sel = sendContact?.id === c.id;
                                           const railLine = c.destKind === 'breb'
                                               ? `Bre-B · ${maskAcc(c.brebKey ?? c.accountNumber)}`
@@ -5784,9 +6392,19 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                                       <span style={{ display: 'block', fontSize: 13.5, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.name}</span>
                                                       <span style={{ display: 'block', fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{railLine}{c.bank && !String(c.bank).startsWith('Bre-B') ? ` · ${c.bank}` : ''}</span>
                                                   </span>
-                                                  {selectable
-                                                      ? <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 9, fontWeight: 700, letterSpacing: '0.5px', padding: '3px 8px', borderRadius: 999, whiteSpace: 'nowrap', flexShrink: 0 }}>VERIFICADA</span>
-                                                      : <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 999, whiteSpace: 'nowrap', flexShrink: 0 }}>{st === 'rechazada' ? 'RECHAZADA' : 'EN VALIDACIÓN'}</span>}
+                                                  {/* Dos cosas distintas que antes competían por el
+                                                      mismo espacio: el estado de la CUENTA (banco) y
+                                                      el de la PERSONA (antecedentes). Van una debajo
+                                                      de la otra, y el AML abajo porque es el que
+                                                      decide si el envío sale. */}
+                                                  <span className="flex flex-col items-end shrink-0" style={{ gap: 4 }}>
+                                                      {st === 'aprobada'
+                                                          ? <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 9, fontWeight: 700, letterSpacing: '0.5px', padding: '3px 8px', borderRadius: 999, whiteSpace: 'nowrap' }}>VERIFICADA</span>
+                                                          : <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 999, whiteSpace: 'nowrap' }}>{st === 'rechazada' ? 'RECHAZADA' : 'EN VALIDACIÓN'}</span>}
+                                                      {aml && (
+                                                          <span style={{ border: `1px solid ${AML_TONO[aml.tono].b}`, color: AML_TONO[aml.tono].c, fontSize: 9, fontWeight: 700, letterSpacing: '0.5px', padding: '3px 8px', borderRadius: 999, whiteSpace: 'nowrap' }}>{aml.t}</span>
+                                                      )}
+                                                  </span>
                                               </button>
                                           );
                                       })}
@@ -5827,7 +6445,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           const q = contactSearch.trim().toLowerCase();
                           const list = myWalletsList.filter((c: any) =>
                               !q || `${c.name} ${c.walletCoin} ${c.walletNetwork} ${c.accountNumber}`.toLowerCase().includes(q));
-                          const goContacts = () => { setIsSendModalOpen(false); setActiveView('contactos'); };
+                          const goContacts = () => { closeSendModal(); setActiveView('contactos'); };
                           const maskAddr = (a: string) => (a?.length > 10 ? `${a.slice(0, 6)}…${a.slice(-6)}` : a);
                           return (
                               <div className="space-y-4">
@@ -5867,6 +6485,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                                           accountNumber: c.accountNumber,
                                                           beneficiaryType: 'personal',
                                                       });
+                                                      // También el contacto: si no, sobrevive el
+                                                      // beneficiario bancario elegido antes y
+                                                      // `destinatario` sigue describiéndolo a él.
+                                                      setSendContact(c);
                                                       setMouvDestId(null);
                                                       setSendStep(4);
                                                   }}
@@ -5946,9 +6568,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           const isBrebM = (sendContact?.destKind ?? (sendSourceRail === 'COP_BREB' ? 'breb' : 'ach')) === 'breb';
                           const railLbl = isBrebM ? 'Bre-B' : 'ACH';
                           const initials = (n: string) => { const p = String(n || '').trim().split(/\s+/); return ((p[0]?.[0] ?? '') + (p[1]?.[0] ?? '')).toUpperCase() || '·'; };
+                          // Todo de `destinatario`: con un beneficiario inscrito, la
+                          // pantalla no puede mostrar la llave de uno y el nombre de otro.
+                          const d = destinatario;
                           const destLine = isBrebM
-                              ? `Bre-B · ${sendContact?.brebKey ? `···${String(sendContact.brebKey).slice(-4)}` : ''}${sendForm.bankName && !String(sendForm.bankName).startsWith('Bre-B') ? ` · ${sendForm.bankName}` : ''}`
-                              : `${sendForm.bankName} · ${sendForm.accountType === 'checking' ? 'Corriente' : 'Ahorros'} ···${String(sendForm.accountNumber || '').slice(-4)}`;
+                              ? `Bre-B · ${d.brebKey ? `···${String(d.brebKey).slice(-4)}` : ''}${d.bank && !String(d.bank).startsWith('Bre-B') ? ` · ${d.bank}` : ''}`
+                              : `${d.bank} · ${d.accountType === 'checking' ? 'Corriente' : 'Ahorros'} ···${String(d.accountNumber || '').slice(-4)}`;
                           return (
                           <div className="space-y-4">
                               {/* Destinatario + Editar — con los datos COMPLETOS que
@@ -5957,10 +6582,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               <div style={{ padding: '13px 15px', borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.025)' }}>
                                   <div className="flex items-center gap-3">
                                       <span style={{ width: 38, height: 38, borderRadius: '50%', background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', border: '1px solid rgba(255,255,255,0.12)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
-                                          <span style={{ color: '#878E88', fontWeight: 800, fontSize: 13 }}>{initials(sendForm.beneficiaryName)}</span>
+                                          <span style={{ color: '#878E88', fontWeight: 800, fontSize: 13 }}>{initials(d.name)}</span>
                                       </span>
                                       <div className="flex-1 min-w-0">
-                                          <p style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{sendForm.beneficiaryName}</p>
+                                          <p style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.name}</p>
                                           <p style={{ fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{destLine}</p>
                                       </div>
                                       <button onClick={() => setSendStep(3)} style={{ fontSize: 12.5, fontWeight: 600, color: '#F4F4F2', textDecoration: 'underline', flexShrink: 0 }}>Editar</button>
@@ -5969,25 +6594,25 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       {isBrebM ? (
                                           <>
                                               <div className="flex items-center justify-between gap-3">
-                                                  <span style={{ fontSize: 11.5, color: '#878E88' }}>Llave Bre-B{sendContact?.brebKeyType ? ` (${sendContact.brebKeyType})` : ''}</span>
-                                                  <span style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2', fontFamily: 'monospace', wordBreak: 'break-all', textAlign: 'right' }}>{sendContact?.brebKey ?? sendForm.accountNumber ?? '—'}</span>
+                                                  <span style={{ fontSize: 11.5, color: '#878E88' }}>Llave Bre-B{d.brebKeyType ? ` (${d.brebKeyType})` : ''}</span>
+                                                  <span style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2', fontFamily: 'monospace', wordBreak: 'break-all', textAlign: 'right' }}>{d.brebKey ?? '—'}</span>
                                               </div>
                                           </>
                                       ) : (
                                           <>
                                               <div className="flex items-center justify-between gap-3">
                                                   <span style={{ fontSize: 11.5, color: '#878E88' }}>Banco</span>
-                                                  <span style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2' }}>{sendForm.bankName || '—'} · {sendForm.accountType === 'checking' ? 'Corriente' : 'Ahorros'}</span>
+                                                  <span style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2' }}>{d.bank || '—'} · {d.accountType === 'checking' ? 'Corriente' : 'Ahorros'}</span>
                                               </div>
                                               <div className="flex items-center justify-between gap-3">
                                                   <span style={{ fontSize: 11.5, color: '#878E88' }}>Cuenta</span>
-                                                  <span style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2', fontFamily: 'monospace' }}>{sendForm.accountNumber || '—'}</span>
+                                                  <span style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2', fontFamily: 'monospace' }}>{d.accountNumber || '—'}</span>
                                               </div>
                                           </>
                                       )}
                                       <div className="flex items-center justify-between gap-3">
                                           <span style={{ fontSize: 11.5, color: '#878E88' }}>Documento</span>
-                                          <span style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2', fontFamily: 'monospace' }}>{(sendForm.documentType || sendContact?.docType || 'CC')} {sendForm.documentNumber || sendContact?.docNumber || '—'}</span>
+                                          <span style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2', fontFamily: 'monospace' }}>{(d.docType || 'CC')} {d.docNumber || '—'}</span>
                                       </div>
                                   </div>
                               </div>
@@ -6017,6 +6642,18 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   </div>
                               </div>
                               {payoutQuote?.error && <p style={{ fontSize: 11.5, color: '#878E88' }}>No se pudo cotizar la comisión ({payoutQuote.error}) — se calculará al confirmar.</p>}
+                              {/* MOTIVO DEL ENVÍO. Obligatorio: se le manda a
+                                  Finity con la orden y decide qué documento
+                                  sale en Siigo (Contabilidad → Configuración). */}
+                              <div style={{ border: `1px solid ${sendForm.motivo ? 'rgba(255,255,255,0.1)' : 'rgba(251,191,36,0.4)'}`, borderRadius: 13, padding: '13px 16px', background: 'rgba(255,255,255,0.025)' }}>
+                                  <span style={{ color: '#878E88', fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px' }}>MOTIVO DEL ENVÍO</span>
+                                  <select value={sendForm.motivo} onChange={e => setSendForm(f => ({ ...f, motivo: e.target.value }))}
+                                      style={{ width: '100%', marginTop: 8, fontSize: 13.5, color: sendForm.motivo ? '#F4F4F2' : '#878E88', background: '#121413', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 9, padding: '10px 12px', outline: 'none', appearance: 'auto' }}>
+                                      <option value="">Elige el motivo…</option>
+                                      {MOTIVOS_ENVIO.map(m => <option key={m.v} value={m.v}>{m.l}</option>)}
+                                  </select>
+                                  <p style={{ fontSize: 11, color: '#6b716c', marginTop: 6, lineHeight: 1.45 }}>Va con la orden al banco y define qué documento se emite en tu contabilidad.</p>
+                              </div>
                               {/* Aviso antes de confirmar */}
                               <div className="flex items-start" style={{ gap: 11, border: '1px solid rgba(255,255,255,0.1)', borderLeft: '2px solid #4ADE80', background: 'rgba(255,255,255,0.03)', borderRadius: 10, padding: '12px 15px' }}>
                                   <Clock size={16} style={{ color: '#878E88', flexShrink: 0, marginTop: 1 }} strokeWidth={1.5} />
@@ -6031,7 +6668,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               ) : (
                                   <div className="flex" style={{ gap: 9 }}>
                                       <button onClick={() => setSendStep(3)} disabled={isSending} style={{ flex: 1, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 14, padding: '13px 0', borderRadius: 10, opacity: isSending ? 0.5 : 1 }} className="hover:bg-white/[0.09] transition-colors">Corregir</button>
-                                      <button onClick={requestSendConfirm} disabled={isSending} className="lincoin-btn-white transition-colors flex items-center justify-center gap-2" style={{ flex: 1.5, fontWeight: 700, fontSize: 14, padding: '13px 0', borderRadius: 10, border: 'none', opacity: isSending ? 0.45 : 1 }}>
+                                      <button onClick={requestSendConfirm} disabled={isSending || !sendForm.motivo} title={!sendForm.motivo ? 'Elige el motivo del envío' : undefined} className="lincoin-btn-white transition-colors flex items-center justify-center gap-2" style={{ flex: 1.5, fontWeight: 700, fontSize: 14, padding: '13px 0', borderRadius: 10, border: 'none', opacity: (isSending || !sendForm.motivo) ? 0.45 : 1 }}>
                                           {isSending ? <><Loader2 className="animate-spin" size={16} /> Procesando…</> : 'Confirmar envío'}
                                       </button>
                                   </div>
@@ -6109,7 +6746,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               ) : (
                                   <div className="flex gap-3">
                                       <button onClick={() => setSendStep(3)} disabled={isSending} className="flex-1 py-3 border border-slate-300 text-slate-600 font-bold rounded-xl hover:bg-slate-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">Corregir</button>
-                                      <button onClick={requestSendConfirm} disabled={isSending} style={{ color: '#FFFFFF' }} className="flex-1 py-3 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#152e52] shadow-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed">{isSending ? <><Loader2 className="animate-spin" size={18} /> Procesando… no cierres</> : <><Send size={18}/> Confirmar</>}</button>
+                                      <button onClick={requestSendConfirm} disabled={isSending} style={{ color: '#FFFFFF' }} className="flex-1 py-3 bg-[#0C0E0D] font-bold rounded-xl hover:bg-[#161A17] shadow-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed">{isSending ? <><Loader2 className="animate-spin" size={18} /> Procesando… no cierres</> : <><Send size={18}/> Confirmar</>}</button>
                                   </div>
                               )}
                               {isSending && sendForm.destinationCurrency === 'COP' && (
@@ -6216,14 +6853,19 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           const isBrebS = (sendResult?.rail ?? sendSourceRail) === 'COP_BREB';
                           const amt = getRawAmount(sendForm.amount);
                           const isWalletSend = sendMode === 'wallet' || sendResult?.rail === 'USDT';
-                          const name = (sendForm.beneficiaryName || sendContact?.name || (isWalletSend ? 'Wallet externa' : 'Destinatario')).trim();
+                          // El comprobante es lo que el cliente guarda como soporte:
+                          // tiene que decir lo mismo que la confirmación y que el
+                          // pago. Salía de `sendForm` con `sendContact` de respaldo,
+                          // o sea la misma mezcla de dos fuentes.
+                          const dR = destinatario;
+                          const name = (dR.name || (isWalletSend ? 'Wallet externa' : 'Destinatario')).trim();
                           const initials = name.split(/\s+/).filter(Boolean).map(w => w[0]).slice(0, 2).join('').toUpperCase() || 'LN';
-                          const acctRaw = String((isBrebS ? (sendContact?.brebKey ?? sendForm.accountNumber) : sendForm.accountNumber) ?? '');
+                          const acctRaw = String((isBrebS ? (dR.brebKey ?? dR.accountNumber) : dR.accountNumber) ?? '');
                           const last4 = acctRaw.slice(-4);
                           const methodLine = isWalletSend ? `Wallet ···${last4} · TRC-20`
                               : !isCop ? `Cuenta ···${last4}`
                               : isBrebS ? `Llave ···${last4} · Bre-B`
-                              : `${sendContact?.bank ?? sendForm.bankName ?? 'Banco'} ···${last4} · ACH`;
+                              : `${dR.bank ?? 'Banco'} ···${last4} · ACH`;
                           const subOk = isWalletSend
                               ? 'Tu envío ya salió de tu billetera. Te avisamos cuando la red lo confirme.'
                               : !isCop
@@ -6311,7 +6953,18 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                           const realMov: any = sendResult?.providerRef
                                               ? movements.find((m: any) => m?.providerRef === sendResult.providerRef || m?.raw_data?.providerRef === sendResult.providerRef)
                                               : null;
-                                          const receiptStatus = realMov?.status || (isWalletSend || isBrebS ? 'Completado' : 'Procesando');
+                                          // NUNCA 'Completado' por defecto. Acá seguía puesto para
+                                          // wallet y Bre-B, y es falso: el servidor deja toda
+                                          // dispersión en 'Procesando' al enviar, justamente porque
+                                          // el 200 del proveedor sólo significa "aceptada" y puede
+                                          // terminar DEVUELTA minutos después.
+                                          //
+                                          // Un comprobante que dice Completado sin que nadie lo
+                                          // haya confirmado es lo peor que puede emitir esto: el
+                                          // cliente se lo manda al beneficiario como prueba de un
+                                          // pago que quizá no ocurrió. Si todavía no encontramos el
+                                          // movimiento real, lo cierto es 'Procesando'.
+                                          const receiptStatus = realMov?.status || 'Procesando';
                                           const receiptTx = {
                                               id: sendResult?.providerRef || `TX-${Date.now()}`,
                                               type: isWalletSend ? 'send' : 'dispersion',
@@ -6322,12 +6975,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                               beneficiary: name,
                                               bank: sendContact?.bank || sendForm.bankName || (isBrebS ? 'Bre-B' : 'ACH'),
                                               account: acctRaw,
-                                              documentType: sendForm.documentType,
-                                              documentNumber: sendForm.documentNumber,
+                                              documentType: dR.docType,
+                                              documentNumber: dR.docNumber,
                                               providerRef: sendResult?.providerRef || '',
                                               reason: sendForm.reason,
                                               feeCop,
-                                              recipient: { holderName: name, key: isBrebS ? acctRaw : undefined, accountNumber: !isBrebS ? acctRaw : undefined, keyType: sendContact?.brebKeyType, documentType: sendForm.documentType, documentNumber: sendForm.documentNumber, accountType: sendContact?.accountType },
+                                              recipient: { holderName: name, key: isBrebS ? acctRaw : undefined, accountNumber: !isBrebS ? acctRaw : undefined, keyType: dR.brebKeyType, documentType: dR.docType, documentNumber: dR.docNumber, accountType: dR.accountType },
                                           };
                                           closeSendModal();
                                           setSelectedTx(receiptTx as any);
@@ -6367,7 +7020,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   </div>
                               )}
                               <p className="text-sm text-slate-500 mb-6">Un agente se comunicará al <strong>{cashForm.phone || 'número registrado'}</strong> para coordinar el punto de entrega.</p>
-                              <button onClick={closeSendModal} style={{ color: '#FFFFFF' }} className="w-full bg-[#0C0E0D] font-bold py-3 rounded-xl hover:bg-[#152e52] transition-colors">Finalizar</button>
+                              <button onClick={closeSendModal} style={{ color: '#FFFFFF' }} className="w-full bg-[#0C0E0D] font-bold py-3 rounded-xl hover:bg-[#161A17] transition-colors">Finalizar</button>
                           </div>
                       )}
                   </div>
@@ -6392,9 +7045,17 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           const TetherBadge = <span style={{ width: 24, height: 24, borderRadius: '50%', background: '#26A17B', color: '#fff', fontWeight: 800, fontSize: 11, display: 'grid', placeItems: 'center' }}>₮</span>;
           const CopBadge = <span style={{ width: 24, height: 24, borderRadius: '50%', overflow: 'hidden', display: 'block', background: 'linear-gradient(to bottom, #FCD116 0%, #FCD116 50%, #003893 50%, #003893 75%, #CE1126 75%, #CE1126 100%)' }} />;
           const setPct = (p: number) => {
-              // "Todo" descuenta la comisión para que el resultado sea exacto.
+              // ENTEROS. El campo es de enteros: formatInputNumber hace
+              // replace(/\D/g,''), que BORRA el punto decimal en vez de
+              // redondear. Pasarle "1234.56" daba "123456" — cien veces el
+              // saldo. Con 1.234,56 USDT, "Todo" escribía 123.456 y al
+              // confirmar salía "Saldo insuficiente": el botón de máximo no
+              // funcionaba nunca, salvo con saldos redondos.
+              //
+              // Math.floor, no redondeo: el botón nunca puede proponer más de
+              // lo que hay. Es el mismo criterio que ya usa Enviar.
               const base = p === 100 ? cvAvail : cvAvail * p / 100;
-              setConvertAmountStr(formatInputNumber(String(Math.floor(base * 100) / 100)));
+              setConvertAmountStr(formatInputNumber(String(Math.max(0, Math.floor(base)))));
           };
           return (
           <div className="fixed inset-0 z-50 p-4" style={{ background: 'rgba(4,5,4,0.74)', backdropFilter: 'blur(3px)', display: 'grid', placeItems: 'center' }} onClick={closeConvertModal}>

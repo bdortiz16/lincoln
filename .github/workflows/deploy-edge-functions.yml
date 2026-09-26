@@ -4,8 +4,18 @@ on:
   push:
     branches:
       - main
+      # La rama de trabajo TIENE que estar acá. Al quitarla, los push dejaron
+      # de desplegar en silencio: no falla nada, simplemente no corre. Se
+      # acumularon diecisiete commits, diez de ellos de edge functions, y los
+      # controles de AML quedaron escritos pero no corriendo — se veían en la
+      # pantalla y el servidor seguía dejando pasar la plata. Un control que
+      # se cree puesto y no lo está es peor que no tenerlo.
       - claude/busy-fermi-h8to5p
   workflow_dispatch:
+
+# El token solo necesita leer el repositorio para hacer checkout.
+permissions:
+  contents: read
 
 jobs:
   deploy:
@@ -43,11 +53,6 @@ jobs:
           fi
           echo "✅ Proyecto Lincoin: ${SUPABASE_PROJECT_REF:0:4}****"
 
-      # ── Diagnóstico del token (NO imprime el secreto) ─────────────────────
-      # Valida el token directo contra la API de administración de Supabase:
-      #   HTTP 200 + proyecto visible → token bueno (el 401 sería otra cosa)
-      #   HTTP 200 sin el proyecto    → token de OTRA cuenta de Supabase
-      #   HTTP 401                    → token revocado, vencido o mal pegado
       - name: Diagnóstico del token
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
@@ -84,7 +89,10 @@ jobs:
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
         run: |
           FAILED=0
-          FUNCTIONS="gasfree mouv-proxy finity-proxy finity-webhook didit-kyc admin-data get-system-config notify-transaction user-login admin-login delete-self fastforex-sync fx-snapshot notify-account-events notify-limit-increase send-compliance-email didit-aml-monitor crisp-proxy email-otp"
+          # ⚠️ Una función que no esté en esta lista NO se despliega, aunque
+          # exista en el repo. Al agregar una función nueva hay que añadirla
+          # aquí — si no, el panel la llama y recibe un 404 sin explicación.
+          FUNCTIONS="gasfree mouv-proxy finity-proxy finity-webhook admin-data get-system-config notify-transaction user-login admin-login delete-self fastforex-sync fx-snapshot notify-account-events notify-limit-increase send-compliance-email crisp-proxy email-otp kumplo tusdatos kyt otc-mesa push gowd-webhook resend-webhook facturacion"
           for fn in $FUNCTIONS; do
             echo "▶ Desplegando $fn…"
             if supabase functions deploy "$fn" \

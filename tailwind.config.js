@@ -11,14 +11,20 @@ export default {
   ],
   theme: {
     extend: {
+      // Archivo en todo — es la tipografía de la marca. Mientras acá decía
+      // Inter, TODA clase de Tailwind resolvía a Inter: solo se salvaban los
+      // componentes que declaran fontFamily inline.
       fontFamily: {
-        sans: ['Inter', 'sans-serif'],
+        sans: ['Archivo', 'system-ui', 'sans-serif'],
       },
       colors: {
+        // Los tokens siguen llamándose "cuypay" por la marca anterior; el
+        // nombre está regado por el onboarding y renombrarlo es otro cambio.
+        // Los VALORES sí son ya los de Lincoin, que es lo que se ve.
         cuypay: {
-          dark: '#0F172A',
-          accent: '#2DD4BF',
-          light: '#F8FAFC',
+          dark: '#0A0C0B',
+          accent: '#4ADE80',
+          light: '#F4F4F2',
         },
       },
     },

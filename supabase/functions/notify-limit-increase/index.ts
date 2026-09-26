@@ -28,6 +28,7 @@
 // ════════════════════════════════════════════════════════
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { exigirWebhook } from '../_shared/webhook-auth.ts'
 
 const RESEND_KEY   = Deno.env.get('RESEND_API_KEY') ?? ''
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
@@ -349,6 +350,11 @@ async function sendPush(userId: string, userRow: Record<string, any> | null, tit
 // ─────────────────────────────────────────────
 Deno.serve(async (req) => {
   try {
+    // Quién llama. Sin credencial no se manda ningún correo: la URL
+    // viaja en el bundle del navegador, así que conocerla no puede
+    // alcanzar para que Lincoin le escriba a un cliente.
+    { const no = await exigirWebhook(req, 'limit-increase', db); if (no) return no }
+
     const payload = (await req.json()) as WebhookPayload
     if (payload.type !== 'UPDATE') return new Response('ignored_type', { status: 200 })
 

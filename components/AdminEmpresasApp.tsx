@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { ThemeProvider } from '../context/ThemeContext';
 import { SystemConfigProvider } from '../context/SystemConfigContext';
 import { DatabaseProvider, useDatabase } from '../context/DatabaseContext';
@@ -7,9 +7,92 @@ import { ToastProvider } from './AdminPersonas/lib/toast';
 import { setRatesDbClient } from './AdminPersonas/sections/RatesPanel';
 import { supabase } from '../lib/supabaseClient';
 import { AdminDashboard } from './AdminDashboard';
+import { AdminIdleGuard } from './AdminIdleGuard';
 import { Logo } from './Logo';
 import { TurnstileWidget, captchaEnabled } from './TurnstileWidget';
-import { Lock, LogOut, ShieldCheck } from 'lucide-react';
+import { Lock, LogOut, ShieldCheck, Fingerprint } from 'lucide-react';
+import { SelectorPais, paisElegido, olvidarPais, type PaisDisponible } from './SelectorPais';
+
+// ─────────────────────────────────────────────
+// PuertaDePais — entre las verificaciones y el panel.
+//
+// Le pregunta al servidor qué rol y qué países tiene esta cuenta, y con eso
+// muestra la pantalla de elección. El panel recién se dibuja después.
+//
+// El servidor es el que manda: esta pantalla solo ofrece lo que `mi_acceso`
+// devuelve, y el filtro de datos vive allá también. Forzar esta pantalla no
+// abre nada — simplemente no llegarían datos de ese país.
+// ─────────────────────────────────────────────
+const PuertaDePais: React.FC<{ onSalir: () => Promise<void> }> = ({ onSalir }) => {
+    const [acceso, setAcceso] = useState<{ rol: string; paises: PaisDisponible[] } | null>(null);
+    const [elegido, setElegido] = useState<string | null>(paisElegido());
+    const [error, setError] = useState<string | null>(null);
+
+    const cargar = useCallback(async () => {
+        try {
+            const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+            const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+            const { data: s } = await supabase.auth.getSession();
+            const jwt = s?.session?.access_token;
+            const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${jwt ?? SKEY}` },
+                body: JSON.stringify({ action: 'mi_acceso' }),
+            });
+            const d = await r.json();
+            if (d?.ok) setAcceso({ rol: String(d.rol ?? 'lectura'), paises: Array.isArray(d.paises) ? d.paises : [] });
+            else setError(d?.error ?? 'No se pudieron cargar tus permisos.');
+        } catch {
+            setError('No se pudieron cargar tus permisos.');
+        }
+    }, []);
+
+    useEffect(() => { cargar(); }, [cargar]);
+
+    // Si la elección guardada ya no está entre los países permitidos, se
+    // descarta. Pasa cuando a alguien le cambian el alcance con la sesión
+    // abierta: seguir mostrando el país anterior sería mostrarle datos que
+    // ya no le corresponden.
+    useEffect(() => {
+        if (!acceso || !elegido) return;
+        if (!acceso.paises.some((p) => p.code === elegido && p.estado === 'on')) {
+            olvidarPais();
+            setElegido(null);
+        }
+    }, [acceso, elegido]);
+
+    if (error) {
+        return (
+            <div style={{ minHeight: '100vh', background: '#0C0E0D', color: '#F4F4F2', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+                <div style={{ maxWidth: 380, textAlign: 'center' }}>
+                    <p style={{ fontWeight: 800, fontSize: 17, margin: '0 0 8px' }}>No se pudieron cargar tus permisos</p>
+                    <p style={{ fontSize: 13, color: '#878E88', lineHeight: 1.55, margin: '0 0 18px' }}>
+                        No entrás al panel sin ellos: sin saber qué te corresponde, mostrarte todo
+                        sería peor que no mostrarte nada.
+                    </p>
+                    <button onClick={() => { setError(null); cargar(); }}
+                        style={{ background: '#4ADE80', color: '#0A0B0A', border: 'none', borderRadius: 10, padding: '10px 18px', fontWeight: 800, cursor: 'pointer' }}>
+                        Reintentar
+                    </button>
+                </div>
+            </div>
+        );
+    }
+
+    if (!elegido) {
+        return (
+            <SelectorPais
+                paises={acceso?.paises ?? []}
+                rol={acceso?.rol ?? ''}
+                cargando={!acceso}
+                onElegir={setElegido}
+                onSalir={onSalir}
+            />
+        );
+    }
+
+    return <AdminDashboard onLogout={async () => { olvidarPais(); await onSalir(); }} />;
+};
 
 // ─────────────────────────────────────────────
 // AdminEmpresasApp — /admin-empresas (y /admin)
@@ -32,7 +115,7 @@ if (typeof window !== 'undefined' &&
 }
 
 const AdminEmpresasInner: React.FC = () => {
-    const { currentUser, isAuthLoading, loginUser, logoutUser, mfaPending, completeMFALogin, cancelMFALogin } = useDatabase();
+    const { currentUser, isAuthLoading, loginUser, logoutUser, mfaPending, getMfaError, getLoginError, completeMFALogin, isPasswordRecovery, setNewPassword, cancelMFALogin, emailStepPending, completeEmailLogin, resendEmailCode, accountLocked, passkeyPending, loginConPasskey, mfaPasos } = useDatabase();
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [submitting, setSubmitting] = useState(false);
@@ -42,6 +125,13 @@ const AdminEmpresasInner: React.FC = () => {
     const [verifying, setVerifying] = useState(false);
     const [captchaToken, setCaptchaToken] = useState('');
     const [captchaKey, setCaptchaKey] = useState(0);
+    const [useBackup, setUseBackup] = useState(false);
+    const [emailCode, setEmailCode] = useState('');
+    const [resendMsg, setResendMsg] = useState<string | null>(null);
+    const [pwd1, setPwd1] = useState('');
+    const [pwd2, setPwd2] = useState('');
+    const [pwdMsg, setPwdMsg] = useState<string | null>(null);
+    const [pwdBusy, setPwdBusy] = useState(false);
 
     const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -58,7 +148,7 @@ const AdminEmpresasInner: React.FC = () => {
             if (result === 'MFA_REQUIRED') { setSubmitting(false); return; }
             const user = result;
             if (!user) {
-                setError('Credenciales incorrectas.');
+                setError(getLoginError() ?? 'Credenciales incorrectas.');
             } else if (user.role !== 'admin') {
                 setError('Esta cuenta no tiene permisos de administrador.');
                 await logoutUser();
@@ -70,13 +160,53 @@ const AdminEmpresasInner: React.FC = () => {
         setSubmitting(false);
     };
 
+    // Se acepta el código de 6 dígitos de la app O un código de respaldo
+    // (8 caracteres, formato XXXX-XXXX). El de respaldo existe justo para
+    // cuando la app o el secreto ya no sirven.
+    const codeReady = useBackup
+        ? mfaCode.replace(/[^A-Za-z0-9]/g, '').length === 8
+        : mfaCode.length === 6;
+
+    // Paso 2: el código que llegó al correo.
+    const handleVerifyEmail = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (emailCode.length !== 6 || verifying) return;
+        setVerifying(true); setMfaError(null);
+        try {
+            await completeEmailLogin(emailCode);
+            // Si hubo error, el contexto lo deja escrito; si no, la pantalla
+            // avanza sola al paso del código de la app.
+            const err = getMfaError();
+            if (err) setMfaError(err);
+            setEmailCode('');
+        } catch { setMfaError('No se pudo verificar. Intenta de nuevo.'); }
+        setVerifying(false);
+    };
+
+    // Último paso: la llave del dispositivo. No reemplaza al código de la app
+    // —va después—, y sale de un clic a propósito: el navegador no abre el
+    // lector de huella sin que alguien lo pida.
+    const handlePasskey = async () => {
+        if (verifying) return;
+        setVerifying(true); setMfaError(null);
+        try {
+            const user = await loginConPasskey();
+            if (!user) setMfaError(getMfaError() ?? 'La llave no se pudo verificar.');
+            else if (user.role !== 'admin') { setMfaError('Esta cuenta no tiene permisos de administrador.'); await logoutUser(); }
+        } catch { setMfaError('No se pudo verificar la llave.'); }
+        setVerifying(false);
+    };
+
     const handleVerify2FA = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (mfaCode.length !== 6 || verifying) return;
+        if (!codeReady || verifying) return;
         setVerifying(true); setMfaError(null);
         try {
             const user = await completeMFALogin(mfaCode);
-            if (!user) setMfaError('Código incorrecto o vencido. Ingresa el código actual de tu app.');
+            // Sin usuario NO siempre es un fallo: con llave registrada, el
+            // código correcto avanza al tercer paso sin abrir la sesión. El
+            // contexto deja escrito un mensaje solo cuando de verdad falló.
+            if (!user) { const err = getMfaError(); if (err) setMfaError(err); else setMfaCode(''); }
             else if (user.role !== 'admin') { setMfaError('Esta cuenta no tiene permisos de administrador.'); await logoutUser(); }
             // Si es admin, currentUser se setea y el render cambia solo.
         } catch { setMfaError('No se pudo verificar. Intenta de nuevo.'); }
@@ -92,7 +222,14 @@ const AdminEmpresasInner: React.FC = () => {
     }
 
     if (currentUser?.role === 'admin') {
-        return <AdminDashboard onLogout={async () => { await logoutUser(); }} />;
+        return (
+            <>
+                {/* Media hora sin uso y el panel se cierra solo. El corte de
+                    verdad está en el servidor; esto es la parte visible. */}
+                <AdminIdleGuard userId={currentUser.id} onCerrar={async () => { await logoutUser(); }} />
+                <PuertaDePais onSalir={async () => { await logoutUser(); }} />
+            </>
+        );
     }
 
     return (
@@ -108,25 +245,117 @@ const AdminEmpresasInner: React.FC = () => {
                     </div>
                     <p className="text-xs text-slate-500 mb-5">Acceso exclusivo para administradores.</p>
 
-                    {mfaPending ? (
-                        <form onSubmit={handleVerify2FA} className="space-y-3">
+                    {accountLocked ? (
+                        <div className="space-y-3">
+                            <div className="rounded-xl p-4" style={{ backgroundColor: 'rgba(248,113,113,0.10)', border: '1px solid rgba(248,113,113,0.32)' }}>
+                                <p className="text-sm font-bold mb-1" style={{ color: '#F87171' }}>Cuenta bloqueada</p>
+                                <p className="text-xs leading-relaxed" style={{ color: '#878E88' }}>
+                                    Se bloqueó por intentos fallidos. Enviamos al titular un correo con los datos
+                                    del intento y un enlace para reactivarla. También se bloqueó la conexión desde
+                                    donde se hicieron los intentos.
+                                </p>
+                            </div>
+                            <button type="button" onClick={() => { cancelMFALogin(); setMfaCode(''); setEmailCode(''); setMfaError(null); setPassword(''); setUseBackup(false); }}
+                                className="w-full py-3 rounded-xl text-sm font-bold" style={{ backgroundColor: '#121413', color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.12)' }}>
+                                Volver al inicio
+                            </button>
+                        </div>
+                    ) : isPasswordRecovery ? (
+                        <form onSubmit={async (e) => {
+                            e.preventDefault();
+                            if (pwd1.length < 10) { setPwdMsg('Usa al menos 10 caracteres.'); return; }
+                            if (pwd1 !== pwd2) { setPwdMsg('Las dos contraseñas no coinciden.'); return; }
+                            setPwdBusy(true); setPwdMsg(null);
+                            const err = await setNewPassword(pwd1);
+                            setPwdBusy(false);
+                            setPwdMsg(err ? `No se pudo cambiar: ${err}` : '✅ Contraseña cambiada. Ahora inicia sesión normalmente.');
+                            if (!err) { setPwd1(''); setPwd2(''); }
+                        }} className="space-y-3">
                             <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl p-2.5">
                                 <ShieldCheck size={16} className="text-[#16A34A]" />
-                                <p className="text-xs text-slate-600">Verificación en dos pasos. Ingresa el código de 6 dígitos de tu app de autenticación.</p>
+                                <p className="text-xs text-slate-600">
+                                    Abriste el enlace de recuperación. Define tu contraseña nueva — este enlace <b>no</b> da acceso al panel.
+                                </p>
+                            </div>
+                            <input type="password" value={pwd1} onChange={e => setPwd1(e.target.value)} placeholder="Contraseña nueva" autoComplete="new-password"
+                                className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#4ADE80] outline-none" />
+                            <input type="password" value={pwd2} onChange={e => setPwd2(e.target.value)} placeholder="Repítela" autoComplete="new-password"
+                                className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:border-[#4ADE80] outline-none" />
+                            {pwdMsg && <p className={`text-xs rounded-xl p-2.5 border ${pwdMsg.startsWith('✅') ? 'text-green-700 bg-green-50 border-green-200' : 'text-red-700 bg-red-50 border-red-200'}`}>{pwdMsg}</p>}
+                            <button type="submit" disabled={pwdBusy} style={{ color: '#FFFFFF' }} className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#161A17] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60">
+                                <Lock size={14} /> {pwdBusy ? 'Guardando…' : 'Guardar contraseña'}
+                            </button>
+                        </form>
+                    ) : emailStepPending ? (
+                        <form onSubmit={handleVerifyEmail} className="space-y-3">
+                            <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl p-2.5">
+                                <ShieldCheck size={16} className="text-[#16A34A]" />
+                                <p className="text-xs text-slate-600">
+                                    Verificación 1 de {mfaPasos}. Ingresa el código de 6 dígitos.
+                                </p>
                             </div>
                             <input
-                                value={mfaCode}
-                                onChange={e => setMfaCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                                value={emailCode}
+                                onChange={e => setEmailCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
                                 autoFocus
                                 inputMode="numeric"
                                 placeholder="123 456"
                                 className="w-full px-3 py-3 rounded-xl border border-slate-200 text-center font-mono text-lg tracking-widest focus:border-[#4ADE80] outline-none"
                             />
                             {mfaError && <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-xl p-2.5">{mfaError}</p>}
-                            <button type="submit" disabled={verifying || mfaCode.length !== 6} style={{ color: '#FFFFFF' }} className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#152e52] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60 transition-colors">
+                            {resendMsg && <p className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-xl p-2.5">{resendMsg}</p>}
+                            <button type="submit" disabled={verifying || emailCode.length !== 6} style={{ color: '#FFFFFF' }} className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#161A17] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60 transition-colors">
+                                <Lock size={14} /> {verifying ? 'Verificando…' : 'Continuar'}
+                            </button>
+                            <button type="button" onClick={async () => { setResendMsg('Enviando…'); const ok = await resendEmailCode(); setResendMsg(ok ? 'Código reenviado.' : 'No se pudo reenviar. Espera un momento.'); }} className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-800 underline">
+                                Reenviar código
+                            </button>
+                            <button type="button" onClick={() => { cancelMFALogin(); setEmailCode(''); setMfaCode(''); setMfaError(null); setResendMsg(null); setPassword(''); setUseBackup(false); }} className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-800">
+                                Cancelar
+                            </button>
+                        </form>
+                    ) : passkeyPending ? (
+                        <div className="space-y-3">
+                            <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl p-2.5">
+                                <ShieldCheck size={16} className="text-[#16A34A]" />
+                                <p className="text-xs text-slate-600">
+                                    Verificación {mfaPasos} de {mfaPasos}. Confirma con tu llave.
+                                </p>
+                            </div>
+                            {mfaError && <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-xl p-2.5">{mfaError}</p>}
+                            <button type="button" onClick={handlePasskey} disabled={verifying} style={{ color: '#FFFFFF' }} className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#161A17] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60 transition-colors">
+                                <Fingerprint size={15} /> {verifying ? 'Esperando…' : 'Continuar'}
+                            </button>
+                            <button type="button" onClick={() => { cancelMFALogin(); setEmailCode(''); setMfaCode(''); setMfaError(null); setResendMsg(null); setPassword(''); setUseBackup(false); }} className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-800">
+                                Cancelar
+                            </button>
+                        </div>
+                    ) : mfaPending ? (
+                        <form onSubmit={handleVerify2FA} className="space-y-3">
+                            <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl p-2.5">
+                                <ShieldCheck size={16} className="text-[#16A34A]" />
+                                <p className="text-xs text-slate-600">{useBackup
+                                    ? 'Ingresa uno de tus códigos de respaldo (formato XXXX-XXXX). Cada uno sirve una sola vez.'
+                                    : `Verificación 2 de ${mfaPasos}. Ingresa el código de 6 dígitos.`}</p>
+                            </div>
+                            <input
+                                value={mfaCode}
+                                onChange={e => setMfaCode(useBackup
+                                    ? e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, '').slice(0, 9)
+                                    : e.target.value.replace(/\D/g, '').slice(0, 6))}
+                                autoFocus
+                                inputMode={useBackup ? 'text' : 'numeric'}
+                                placeholder={useBackup ? 'ABCD-2345' : '123 456'}
+                                className="w-full px-3 py-3 rounded-xl border border-slate-200 text-center font-mono text-lg tracking-widest focus:border-[#4ADE80] outline-none"
+                            />
+                            {mfaError && <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-xl p-2.5">{mfaError}</p>}
+                            <button type="submit" disabled={verifying || !codeReady} style={{ color: '#FFFFFF' }} className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#161A17] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60 transition-colors">
                                 <Lock size={14} /> {verifying ? 'Verificando…' : 'Verificar código'}
                             </button>
-                            <button type="button" onClick={() => { cancelMFALogin(); setMfaCode(''); setMfaError(null); setPassword(''); }} className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-800">
+                            <button type="button" onClick={() => { setUseBackup(v => !v); setMfaCode(''); setMfaError(null); }} className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-800 underline">
+                                {useBackup ? 'Volver al código normal' : 'Usar un código de respaldo'}
+                            </button>
+                            <button type="button" onClick={() => { cancelMFALogin(); setMfaCode(''); setMfaError(null); setPassword(''); setUseBackup(false); }} className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-800">
                                 Cancelar
                             </button>
                         </form>
@@ -171,7 +400,7 @@ const AdminEmpresasInner: React.FC = () => {
                             type="submit"
                             disabled={submitting || (captchaEnabled && !captchaToken)}
                             style={{ color: '#FFFFFF' }}
-                            className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#152e52] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60 transition-colors"
+                            className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#161A17] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60 transition-colors"
                         >
                             <Lock size={14} /> {submitting ? 'Ingresando…' : 'Ingresar'}
                         </button>

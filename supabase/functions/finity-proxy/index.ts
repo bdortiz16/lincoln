@@ -310,7 +310,7 @@ async function portalFetch(path: string, init: RequestInit = {}): Promise<Respon
 }
 
 // ─── Validación del caller ───
-// Dos modos (mismo patrón que didit-kyc/tatum-wallet en la app Empresas):
+// Dos modos (mismo patrón que tatum-wallet en la app Empresas):
 //  a) JWT de usuario de Supabase válido (panel admin) → userId del token.
 //  b) anon key + payload.user_id de un usuario EXISTENTE en public.users
 //     (la app Empresas usa auth propia y llama con la anon key).
@@ -333,6 +333,23 @@ function isProjectAnonKey(jwt: string): boolean {
   } catch {
     return false
   }
+}
+
+// ¿Ese id de cobro o de retiro es de QUIEN pregunta? Tener sesión válida no
+// alcanza: sin esto, un cliente cualquiera podía consultar los montos y
+// destinos de los cobros y retiros de otro con solo cambiar el id.
+// Los llamantes internos (mouv-proxy conciliando) pasan sin restricción.
+async function esMiReferencia(caller: { userId?: string; internal?: boolean }, id: string): Promise<boolean> {
+  if (caller.internal) return true
+  const uid = String(caller.userId ?? '')
+  if (!uid || !id) return false
+  try {
+    const { data } = await db.from('transactions').select('id')
+      .eq('user_id', uid)
+      .or(`raw_data->>providerRef.eq.${id},raw_data->>reference.eq.${id}`)
+      .limit(1)
+    return !!(data && data.length)
+  } catch { return false }   // ante la duda, no se muestra
 }
 
 async function validCaller(req: Request, payload: Record<string, unknown>): Promise<{ ok: boolean; userId?: string; internal?: boolean; viaJwt?: boolean }> {
@@ -419,6 +436,47 @@ function extractBalances(d: any): { usdt: number | null; cop: number | null } {
 
 // Extrae la tasa numérica de la respuesta de Finity (mismo criterio que el
 // cliente). Para el snapshot programado de la gráfica.
+// ── Ajuste de la tasa (los "puntos" que se le bajan) ──────────────────────
+//
+// La tasa del proveedor llega tal cual. Lo que Lincoin cobra por encima se
+// expresa restándole PESOS a esa tasa: si Finity da 3.097,75 y el ajuste es 5,
+// la tasa que se usa —y la que se muestra— es 3.092,75. Esos 5 pesos por dólar
+// son el margen.
+//
+// Se aplica ACÁ, donde nace la tasa, y no en la pantalla: así el cliente nunca
+// ve una tasa distinta de la que se le va a aplicar, y no hay dos números que
+// puedan quedar desalineados. El cálculo real del abono hace lo mismo en
+// gasfree, leyendo esta misma clave.
+const AJUSTE_KEY = 'otc_rate_ajuste'
+
+type AjusteTasa = { finityCop: number; mouvCop: number }
+
+async function leerAjuste(db: any): Promise<AjusteTasa> {
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', AJUSTE_KEY).maybeSingle()
+    const v = data?.value ? JSON.parse(data.value) : null
+    const n = (x: any) => { const k = Number(x); return Number.isFinite(k) && k >= 0 ? k : 0 }
+    return { finityCop: n(v?.finityCop), mouvCop: n(v?.mouvCop) }
+  } catch { return { finityCop: 0, mouvCop: 0 } }
+}
+
+async function esAdmin(db: any, userId?: string): Promise<boolean> {
+  if (!userId) return false
+  try {
+    const { data } = await db.from('users').select('role').eq('id', userId).maybeSingle()
+    return String(data?.role ?? '') === 'admin'
+  } catch { return false }
+}
+
+// Nunca deja la tasa en cero o negativa: un ajuste mal escrito (500 en vez de
+// 5) no puede convertir una conversión en un regalo. Si el ajuste se comiera
+// la tasa, no se aplica y se sigue con la del proveedor.
+export function aplicarAjuste(rate: number, ajusteCop: number): number {
+  if (!(rate > 0) || !(ajusteCop > 0)) return rate
+  const r = rate - ajusteCop
+  return r > 0 ? r : rate
+}
+
 function extractRate(d: any): number | null {
   if (d == null) return null
   const cand = d.rate ?? d.value ?? d.price ?? d.cop ?? d.exchange_rate ?? d.exchangeRate
@@ -436,7 +494,7 @@ Deno.serve(async (req) => {
 
   try {
     if (!FINITY_ID || !FINITY_SECRET) {
-      return json(200, { error: 'finity_not_configured', message: 'Faltan los secrets FINITY_CLIENT_ID / FINITY_CLIENT_SECRET.' })
+      return json(200, { error: 'finity_not_configured', message: 'El servicio de cobros no está disponible en este momento. Escríbenos a soporte@lincoin.me.' })
     }
 
     const payload = await req.json().catch(() => ({}))
@@ -476,7 +534,19 @@ Deno.serve(async (req) => {
     // body. Sin esto, cualquiera con la anon key + el UUID de una víctima podía
     // enumerar sus retiros (fuga) y forzar cambios de estado/reembolsos en su
     // cuenta (IDOR). Los reconciliadores mueven saldo → aquí adentro.
-    const NEEDS_IDENTITY = new Set(['external_accounts', 'create_external_account', 'delete_external_account', 'create_payment_link', 'reconcile_withdrawals', 'reconcile_payin'])
+    // 'email_event' entró acá porque era una PUERTA TRASERA a los correos:
+    // con la sola llave pública + el id de cualquier usuario se podía hacer
+    // que Lincoin le mandara a esa persona un correo con asunto, título y
+    // mensaje ELEGIDOS POR QUIEN LLAMA — y salía firmado desde nuestro
+    // dominio. Peor que el hueco de los webhooks: ahí el texto era nuestro,
+    // acá lo escribe el atacante. Además esta función reenvía a
+    // notify-transaction con el service key, o sea que autenticaba al
+    // atacante por él.
+    //
+    // 'payment_link_status' y 'withdrawal_status' consultaban a Finity por un
+    // id suelto, sin mirar de quién era: montos, destinos y estados de cobros
+    // y retiros ajenos, a la vista de cualquiera con la llave pública.
+    const NEEDS_IDENTITY = new Set(['external_accounts', 'create_external_account', 'delete_external_account', 'create_payment_link', 'reconcile_withdrawals', 'reconcile_payin', 'email_event', 'payment_link_status', 'withdrawal_status'])
     if (NEEDS_IDENTITY.has(action) && !(caller.viaJwt || caller.internal)) {
       return json(403, { error: 'forbidden', message: 'Vuelve a iniciar sesión para continuar.' })
     }
@@ -609,7 +679,34 @@ Deno.serve(async (req) => {
 
     if (action === 'external_accounts') {
       const { res, path } = await finityTry('externalAccounts')
-      return json(200, { ok: res.ok, status: res.status, path, data: await res.json().catch(() => null) })
+      const data = await res.json().catch(() => null)
+      // Se audita un RESUMEN de los estados que devuelve el proveedor: qué
+      // campos trae cada cuenta y con qué valor. Sin esto no se puede resolver
+      // una discrepancia entre su portal y Lincoin más que adivinando qué
+      // campo mirar — que fue exactamente el problema con una cuenta que allá
+      // estaba en revisión y acá salía aprobada.
+      try {
+        const d: any = data
+        const filas: any[] = Array.isArray(d) ? d : (d?.data ?? d?.results ?? d?.items ?? d?.accounts ?? [])
+        if (Array.isArray(filas) && filas.length) {
+          await logAudit(caller.userId!, 'finity.external_accounts.estados', {
+            total: filas.length,
+            // Solo las claves que suenan a estado, para no volcar datos
+            // bancarios en la auditoría.
+            campos: Array.from(new Set(filas.flatMap((r: any) =>
+              Object.keys(r ?? {}).filter(k => /status|estado|state|verif/i.test(k))))),
+            muestra: filas.slice(0, 12).map((r: any) => ({
+              id: r?.id ?? r?.external_account_id ?? null,
+              cuenta: String(r?.account_number ?? r?.account?.account_number ?? '').slice(-4),
+              verification_status: r?.verification_status ?? null,
+              status: r?.status ?? null,
+              estado: r?.estado ?? null,
+              state: r?.state ?? null,
+            })),
+          })
+        }
+      } catch { /* la auditoría nunca puede tumbar la consulta */ }
+      return json(200, { ok: res.ok, status: res.status, path, data })
     }
 
     if (action === 'create_external_account') {
@@ -618,7 +715,16 @@ Deno.serve(async (req) => {
         body: JSON.stringify(payload.data ?? {}),
       })
       const data = await res.json().catch(() => null)
-      await logAudit(caller.userId!, 'finity.external_account.create', { status: res.status, path, data: payload.data })
+      // Se audita también LA RESPUESTA, no solo lo enviado. Sin esto, una
+      // cuenta que se quedaba "en validación" no se podía diagnosticar: había
+      // registro de lo que se mandó y ninguno de lo que contestó el banco.
+      const idCreado = (data as any)?.id ?? (data as any)?.external_account_id ?? (data as any)?.account_id ?? (data as any)?.account?.id ?? null
+      await logAudit(caller.userId!, 'finity.external_account.create', {
+        status: res.status, path, ok: res.ok,
+        enviado: payload.data,
+        idCreado,
+        respuesta: JSON.stringify(data ?? {}).slice(0, 600),
+      })
       return json(200, { ok: res.ok, status: res.status, path, data })
     }
 
@@ -632,7 +738,7 @@ Deno.serve(async (req) => {
     if (action === 'delete_external_account') {
       const eaId = String(payload.finityId ?? '').trim()
       const accDigits = String(payload.accountNumber ?? '').replace(/\D/g, '')
-      if (!eaId && !accDigits) return json(200, { ok: false, error: 'missing_ref', message: 'Falta finityId o número de cuenta.' })
+      if (!eaId && !accDigits) return json(200, { ok: false, error: 'missing_ref', message: 'Falta la referencia de la cuenta o su número.' })
 
       // Guard cross-usuario: ¿alguien más (o el mismo, en otro contacto) sigue
       // teniendo esta cuenta inscrita? Se comparan finityId e igual número.
@@ -703,6 +809,7 @@ Deno.serve(async (req) => {
     if (action === 'withdrawal_status') {
       const id = String(payload.id ?? '')
       if (!id) return json(400, { error: 'missing_id' })
+      if (!(await esMiReferencia(caller, id))) return json(403, { error: 'forbidden', message: 'Operación restringida.' })
       const enc = encodeURIComponent(id)
       // El id de la dispersión ACH es un MOVEMENT id (mvm-…): en Finity vive bajo
       // /v0/movements/{id} (así lo muestra el portal: "Detalle del movimiento").
@@ -876,7 +983,26 @@ Deno.serve(async (req) => {
     if (action === 'rates') {
       const qs = payload.query ? `?${new URLSearchParams(payload.query as Record<string, string>)}` : ''
       const { res, path } = await finityTry('rates', {}, qs)
-      return json(200, { ok: res.ok, status: res.status, path, base: FINITY_BASE, sandbox: FINITY_BASE !== PROD_BASE, data: await res.json().catch(() => null) })
+      const data = await res.json().catch(() => null)
+      // La tasa sale de acá YA ajustada: el cliente no ve una y se le aplica
+      // otra. `rateBruta` solo viaja para el admin, que necesita ver contra
+      // qué está ajustando; al cliente no le corresponde el margen.
+      const aj = await leerAjuste(db)
+      const bruta = extractRate(data)
+      const neta = bruta != null ? aplicarAjuste(bruta, aj.finityCop) : null
+      const salida = (bruta != null && neta != null && neta !== bruta && data && typeof data === 'object')
+        ? { ...data, rate: neta, value: neta }
+        : data
+      return json(200, {
+        ok: res.ok, status: res.status, path, base: FINITY_BASE,
+        sandbox: FINITY_BASE !== PROD_BASE,
+        data: salida,
+        ajusteCop: aj.finityCop,
+        // rateBruta viaja al admin y a los llamantes INTERNOS (service-role:
+        // otc-mesa la necesita como precio de referencia para cotizar con su
+        // propio margen). Nunca al cliente: el margen no le corresponde.
+        ...(caller.internal || await esAdmin(db, caller.userId) ? { rateBruta: bruta } : {}),
+      })
     }
 
     // ── Snapshot programado de la tasa USD→COP (para la gráfica). Pensado
@@ -1029,6 +1155,7 @@ Deno.serve(async (req) => {
     if (action === 'payment_link_status') {
       const id = String(payload.id ?? payload.reference ?? '')
       if (!id) return json(400, { error: 'missing_id' })
+      if (!(await esMiReferencia(caller, id))) return json(403, { error: 'forbidden', message: 'Operación restringida.' })
       for (const p of [`/v0/payment-link/${id}`, `/v0/payment-link/status/${id}`, `/v0/payment-links/${id}`]) {
         const r = await finityFetch(p, { method: 'GET' })
         if (r.ok) return json(200, { ok: true, path: p, data: await r.json().catch(() => null) })
@@ -1088,13 +1215,18 @@ Deno.serve(async (req) => {
     const msg = String((e as Error)?.message ?? e)
     console.error('[finity] exception:', msg)
     if (msg.startsWith('finity_auth_failed')) {
+      // El detalle —nombre del proveedor, su dominio, el código HTTP— se
+      // queda en el log de arriba, que solo ve el equipo. Lo que viaja al
+      // navegador lo lee el cliente en la mesa OTC, y ahí nombrar al
+      // proveedor y su dominio es regalarlo.
       return json(200, {
         error: 'finity_auth_failed',
-        base: FINITY_BASE,
-        message: `Finity no entregó token contra ${FINITY_BASE} → ${msg.replace('finity_auth_failed:', 'HTTP ')}`,
+        message: 'No pudimos conectar con la red de pagos en este momento. Intenta de nuevo en unos minutos.',
       })
     }
-    return json(500, { error: 'internal', message: msg })
+    // Igual con las excepciones sueltas: el mensaje crudo puede traer la URL
+    // del proveedor o su respuesta literal.
+    return json(500, { error: 'internal', message: 'No pudimos completar la operación. Intenta de nuevo o escríbenos a soporte@lincoin.me.' })
   }
 })
 

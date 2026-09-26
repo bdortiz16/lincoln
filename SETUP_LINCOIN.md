@@ -33,7 +33,7 @@ npx supabase db push
 ```bash
 npx supabase functions deploy gasfree
 npx supabase functions deploy mouv-proxy
-# (y las demás: notify-*, didit-kyc, admin-*, get-system-config, etc.)
+# (y las demás: notify-*, admin-*, get-system-config, etc.)
 ```
 
 ## 4. Secrets de GasFree (Supabase → Edge Functions → Secrets)

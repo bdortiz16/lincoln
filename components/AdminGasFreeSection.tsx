@@ -434,6 +434,8 @@ export const AdminGasFreeSection: React.FC = () => {
     // ── Modo discreto (ON por defecto): enmascara TODAS las direcciones de la
     // página y oculta el QR. Desactivarlo queda registrado en la auditoría. ──
     const [discreet, setDiscreet] = useState(true);
+    const [showTreasuryDetail, setShowTreasuryDetail] = useState(false);
+    const [showTools, setShowTools] = useState(false);
     const [pageAudit, setPageAudit] = useState<AuditEntry[]>([]);
     const addAudit = (text: string, sev: 'info' | 'warn' = 'info') =>
         setPageAudit(p => [{ at: Date.now(), text, sev }, ...p].slice(0, 60));
@@ -673,7 +675,8 @@ export const AdminGasFreeSection: React.FC = () => {
                 mouvCop={mouvBal?.cop ?? null}
                 walletsCount={businesses.length}
                 providerLocked={providers.some((p: any) => p.locked)}
-                providerAssigned={!!treasuryCfg?.alertProviderId}
+                providerAssigned={!!treasuryCfg?.alertProviderId || providers.some((p: any) => p.locked)}
+                onOpenTreasury={() => setShowTreasuryDetail(true)}
                 mfaCovered={allUsers.filter((u: any) => u.role === 'admin' && (u.mfaEnabled || u.raw_data?.mfaEnabled)).length}
                 mfaTotal={allUsers.filter((u: any) => u.role === 'admin').length}
                 alertThreshold={Number(treasuryCfg?.alertThresholdUsdt ?? 10000)}
@@ -701,8 +704,15 @@ export const AdminGasFreeSection: React.FC = () => {
                 clientes; desde aquí se pagan los envíos y a los proveedores.
                 Estilo billetera (igual al del cliente) — se carga sola al
                 entrar, sin tener que darle a "Actualizar" primero. */}
-            <div className="rounded-2xl overflow-hidden bg-gradient-to-br from-[#0C0E0D] to-[#0C0E0D] text-white shadow-xl relative">
+            {/* Se abre como VENTANA desde la tarjeta de Tesorería del panel de
+                arriba — antes salía duplicada e inline, mostrando la dirección
+                completa y el QR abiertos (anulaba el Modo discreto). */}
+            {showTreasuryDetail && (
+            <>
+            <div onClick={() => setShowTreasuryDetail(false)} className="fixed inset-0 z-[60] bg-black/70" />
+            <div className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-[61] w-[720px] max-w-[94vw] max-h-[88vh] overflow-y-auto rounded-2xl overflow-hidden bg-gradient-to-br from-[#0C0E0D] to-[#0C0E0D] text-white shadow-2xl ring-1 ring-white/10 relative">
                 <div className="absolute -right-10 -top-10 w-40 h-40 bg-white/5 rounded-full blur-3xl" />
+                <button onClick={() => setShowTreasuryDetail(false)} className="absolute top-4 right-4 z-20 text-white/50 hover:text-white p-1 rounded-lg"><X size={18} /></button>
                 <div className="relative z-10 p-5 space-y-4">
                     <div className="flex items-start justify-between gap-3 flex-wrap">
                         <div className="flex items-center gap-3">
@@ -743,8 +753,8 @@ export const AdminGasFreeSection: React.FC = () => {
                                     <p className="text-4xl font-bold tracking-tight">
                                         {fmt(rec.balance)} <span className="text-base font-normal text-green-200">USDT</span>
                                     </p>
-                                    <button onClick={() => rec.gasFreeAddress && copy(rec.gasFreeAddress)} className="mt-1.5 inline-flex items-center gap-1.5 text-xs text-green-100/80 hover:text-white font-mono break-all text-left">
-                                        {rec.gasFreeAddress}
+                                    <button onClick={() => { if (rec.gasFreeAddress) { copy(rec.gasFreeAddress); addAudit('Copió la dirección de Tesorería', 'warn'); } }} className="mt-1.5 inline-flex items-center gap-1.5 text-xs text-green-100/80 hover:text-white font-mono break-all text-left">
+                                        {discreet ? maskAddr(rec.gasFreeAddress) : rec.gasFreeAddress}
                                         <Copy size={12} className="shrink-0" />
                                         {copied === rec.gasFreeAddress && <span className="text-green-300 font-sans">copiado</span>}
                                     </button>
@@ -752,12 +762,20 @@ export const AdminGasFreeSection: React.FC = () => {
                                         <b className="text-white">Deposita AQUÍ</b> (USDT · TRC-20). Esta es la ÚNICA dirección del circuito automático: lo que llega sale solo hacia el proveedor y las comisiones GasFree se pagan de este mismo saldo.
                                     </p>
                                 </div>
-                                {rec.gasFreeAddress && (
+                                {/* El QR solo se muestra con el Modo discreto APAGADO —
+                                    si no, el enmascarado de la dirección no serviría. */}
+                                {rec.gasFreeAddress && !discreet && (
                                     <div className="shrink-0 text-center">
                                         <img
                                             src={`https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${encodeURIComponent(rec.gasFreeAddress)}&color=0A0A0A&bgcolor=FFFFFF&margin=6`}
                                             alt="QR Tesorería GasFree" className="w-[120px] h-[120px] rounded-lg bg-white p-1" />
                                         <p className="text-[10px] text-green-100/70 mt-1 font-bold">Escanea para depositar</p>
+                                    </div>
+                                )}
+                                {rec.gasFreeAddress && discreet && (
+                                    <div className="shrink-0 text-center w-[120px] h-[120px] rounded-lg bg-white/5 border border-white/10 flex flex-col items-center justify-center gap-1.5">
+                                        <span className="text-2xl">🔒</span>
+                                        <p className="text-[10px] text-green-100/60 font-bold px-2 leading-tight">QR oculto por Modo discreto</p>
                                     </div>
                                 )}
                             </div>
@@ -786,6 +804,8 @@ export const AdminGasFreeSection: React.FC = () => {
                     )}
                 </div>
             </div>
+            </>
+            )}
 
             {/* Ajustes de Tesorería (MANUAL, bajo demanda): wallet dueña
                 rotativa + períodos archivados. NO es donde se deposita. */}
@@ -798,47 +818,20 @@ export const AdminGasFreeSection: React.FC = () => {
                 </div>
             )}
 
-            {/* Saldos en la plataforma Mouv (USDt + Peso Mouv/COP) */}
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
-                <div className="flex items-center justify-between gap-3 flex-wrap mb-4">
-                    <div>
-                        <p className="font-bold text-slate-800 text-sm flex items-center gap-2">
-                            <Landmark size={15} className="text-[#16A34A]" /> Saldos en Mouv
-                        </p>
-                        <p className="text-[11px] text-slate-400 mt-0.5">Saldo real de la cuenta Mouv de Lincoin (partner de dispersión COP). · Se actualiza solo cada minuto.</p>
-                    </div>
-                    <button onClick={loadMouvBalances} disabled={mouvBalLoading} className="flex items-center gap-2 px-3 py-1.5 text-xs font-bold border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-60 transition-colors text-slate-700">
-                        <RefreshCw size={13} className={mouvBalLoading ? 'animate-spin' : ''} /> {mouvBalLoading ? 'Consultando…' : 'Actualizar'}
-                    </button>
-                </div>
-                {mouvBal?.error ? (
-                    <div className="text-xs font-semibold text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">❌ {mouvBal.error}</div>
-                ) : (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <div className="rounded-xl border border-slate-200 p-4">
-                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">USDt · Dólar Digital</p>
-                            <p className="text-2xl font-black text-slate-800 tabular-nums">
-                                {mouvBalLoading && !mouvBal ? '—' : mouvBal?.usdt != null ? `$${mouvBal.usdt.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
-                                <span className="text-sm font-bold text-slate-400 ml-1">USDt</span>
-                            </p>
-                        </div>
-                        <div className="rounded-xl border border-slate-200 p-4">
-                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Peso Mouv · COP</p>
-                            <p className="text-2xl font-black text-slate-800 tabular-nums">
-                                {mouvBalLoading && !mouvBal ? '—' : mouvBal?.cop != null ? `$${mouvBal.cop.toLocaleString('es-CO', { maximumFractionDigits: 2 })}` : '—'}
-                                <span className="text-sm font-bold text-slate-400 ml-1">COP</span>
-                            </p>
-                        </div>
-                    </div>
-                )}
-                {mouvBal?.sandbox && (
-                    <p className="text-[11px] font-bold text-amber-600 mt-3">⚠ El conector está en SANDBOX — estos saldos son de prueba, no reales.</p>
-                )}
-                {mouvBal && mouvBal.usdt == null && mouvBal.cop == null && !mouvBal.error && !mouvBalLoading && (
-                    <p className="text-[11px] text-slate-400 mt-3">No se pudieron leer los saldos de Mouv (revisa credenciales del conector o el formato de la respuesta).</p>
-                )}
-            </div>
-
+            {/* TODAS las herramientas de recuperación/forense detrás de UN solo
+                botón: la página queda limpia y solo se abren cuando se usan. */}
+            <button onClick={() => setShowTools(v => !v)}
+                className={`w-full flex items-center justify-between gap-3 rounded-xl border px-4 py-3 transition-colors ${showTools ? 'border-amber-300 bg-amber-50' : 'border-slate-200 bg-white hover:border-amber-300'}`}>
+                <span className="flex items-center gap-2.5 text-left">
+                    <span className="text-lg">🛟</span>
+                    <span>
+                        <span className="block font-bold text-slate-800 text-sm">Recuperar fondos</span>
+                        <span className="block text-[11px] text-slate-500">Localizar depósitos, buscar en semillas, auditar wallets, forense de cuentas e historial</span>
+                    </span>
+                </span>
+                <span className="text-xs font-bold text-slate-500 shrink-0">{showTools ? 'Cerrar ▲' : 'Abrir ▼'}</span>
+            </button>
+            {showTools && (<>
             {/* Recuperación de wallet: localizar el índice HD de una dirección
                 y barrer su USDT a Tesorería (para depósitos que llegaron a una
                 wallet cuyo índice se perdió). */}
@@ -859,7 +852,7 @@ export const AdminGasFreeSection: React.FC = () => {
                         className="w-20 px-2 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#4ADE80]"
                         placeholder="rango"
                     />
-                    <button onClick={locateAddr} disabled={recBusy || !recAddr.trim()} className="px-3 py-2 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#152e52] disabled:opacity-60">
+                    <button onClick={locateAddr} disabled={recBusy || !recAddr.trim()} className="px-3 py-2 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#161A17] disabled:opacity-60">
                         {recBusy ? 'Buscando…' : 'Localizar'}
                     </button>
                     <button onClick={sweepAddr} disabled={recBusy || !recAddr.trim()} title="Localiza y barre el saldo a la recaudadora en un solo paso" className="px-3 py-2 text-xs font-bold rounded-lg bg-[#4ADE80] text-[#0C0E0D] hover:bg-[#26bda9] disabled:opacity-60">
@@ -1039,7 +1032,7 @@ export const AdminGasFreeSection: React.FC = () => {
                                 </div>
                                 <input value={seedAddr} onChange={(e) => setSeedAddr(e.target.value)} placeholder="Dirección USDT (TRC-20)" className="flex-1 min-w-[220px] px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#4ADE80]" />
                                 <input value={seedRange} onChange={(e) => setSeedRange(e.target.value.replace(/[^0-9]/g, ''))} title="Rango" className="w-20 px-2 py-2 text-xs border border-slate-300 rounded-lg" placeholder="rango" />
-                                <button onClick={searchInSeed} disabled={seedBusy || !seedAddr.trim() || !seedPick} className="px-3 py-2 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#152e52] disabled:opacity-60">{seedBusy ? 'Buscando…' : 'Buscar en esta semilla'}</button>
+                                <button onClick={searchInSeed} disabled={seedBusy || !seedAddr.trim() || !seedPick} className="px-3 py-2 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#161A17] disabled:opacity-60">{seedBusy ? 'Buscando…' : 'Buscar en esta semilla'}</button>
                             </div>
                         </>
                     )
@@ -1082,7 +1075,7 @@ export const AdminGasFreeSection: React.FC = () => {
                         <p className="font-bold text-slate-800 text-sm">🔎 Forense de cuentas y wallets</p>
                         <p className="text-[11px] text-slate-500">Cruza el archivo de wallets contra los clientes reales y marca correos "fantasma" (con wallet pero que NO son clientes). Y busca de dónde salió un correo.</p>
                     </div>
-                    <button onClick={runForensic} disabled={forensicBusy} className="px-3 py-1.5 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#152e52] disabled:opacity-60">
+                    <button onClick={runForensic} disabled={forensicBusy} className="px-3 py-1.5 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#161A17] disabled:opacity-60">
                         {forensicBusy ? 'Cruzando…' : 'Cruzar wallets ↔ clientes'}
                     </button>
                 </div>
@@ -1143,7 +1136,7 @@ export const AdminGasFreeSection: React.FC = () => {
                     <p className="text-[11px] font-bold text-slate-600 mb-1.5">🔍 Buscar de dónde salió un correo</p>
                     <div className="flex items-end gap-2 flex-wrap">
                         <input value={lookupEmail} onChange={(e) => setLookupEmail(e.target.value)} placeholder="correo · ej. xaloy46425@mapsguy.com" className="flex-1 min-w-[240px] px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#4ADE80]" />
-                        <button onClick={() => lookupUser()} disabled={lookupBusy || !lookupEmail.trim()} className="px-3 py-2 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#152e52] disabled:opacity-60">{lookupBusy ? 'Buscando…' : 'Buscar'}</button>
+                        <button onClick={() => lookupUser()} disabled={lookupBusy || !lookupEmail.trim()} className="px-3 py-2 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#161A17] disabled:opacity-60">{lookupBusy ? 'Buscando…' : 'Buscar'}</button>
                     </div>
                     {lookupRes && (
                         <div className="text-xs bg-white border border-slate-200 rounded-lg p-3 mt-2 space-y-1.5">
@@ -1154,6 +1147,18 @@ export const AdminGasFreeSection: React.FC = () => {
                                     <p className="text-slate-700 font-bold">Existe {lookupRes.found} cuenta(s) con ese correo:</p>
                                     {lookupRes.users.map((u: any) => (
                                         <div key={u.id} className="rounded-lg border border-slate-200 p-2">
+                                            {/* Diagnóstico de bloqueo: por qué esta cuenta no puede operar */}
+                                            {u.isOperationBlocked ? (
+                                                <div className="mb-2 rounded-lg p-2" style={{ background: 'rgba(248,113,113,0.10)', border: '1px solid rgba(248,113,113,0.35)' }}>
+                                                    <p className="font-bold" style={{ color: '#F87171' }}>🚫 Esta cuenta NO puede operar</p>
+                                                    <ul className="mt-1 ml-4 list-disc" style={{ color: '#F87171' }}>
+                                                        {(u.blockedBy ?? []).map((r: string, i: number) => <li key={i} className="text-[11px]">{r}</li>)}
+                                                    </ul>
+                                                    {u.blockReason && <p className="text-[11px] mt-1" style={{ color: '#878E88' }}>Motivo guardado: {u.blockReason}</p>}
+                                                </div>
+                                            ) : (
+                                                <p className="mb-1 font-bold" style={{ color: '#4ADE80' }}>✅ Cuenta habilitada para operar</p>
+                                            )}
                                             <p className="text-slate-700"><b>Rol:</b> {u.role ?? '—'} · <b>KYC:</b> {u.kyc_status ?? '—'} · <b>Índice wallet:</b> {u.gasfreeIndex ?? '—'}</p>
                                             <p className="text-slate-500">Creada: {u.created_at ? new Date(u.created_at).toLocaleString('es-CO') : '—'} · id {String(u.id).slice(0, 8)}…</p>
                                             {u.signupSource && <p className="text-slate-500">Origen registro: {u.signupSource}</p>}
@@ -1174,7 +1179,7 @@ export const AdminGasFreeSection: React.FC = () => {
                 <div className="flex flex-wrap items-center gap-2">
                     <input value={logEmail} onChange={e => setLogEmail(e.target.value)} placeholder="Filtrar por correo (opcional)"
                         className="flex-1 min-w-[180px] px-3 py-2 text-xs rounded-lg border border-slate-200 outline-none focus:border-[#4ADE80]" />
-                    <button onClick={loadWalletLog} disabled={logBusy} className="px-3 py-2 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#152e52] disabled:opacity-60">
+                    <button onClick={loadWalletLog} disabled={logBusy} className="px-3 py-2 text-xs font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#161A17] disabled:opacity-60">
                         {logBusy ? 'Cargando…' : 'Ver historial'}
                     </button>
                 </div>
@@ -1213,37 +1218,7 @@ export const AdminGasFreeSection: React.FC = () => {
                 ))}
             </div>
 
-            {/* Parámetro editable: umbral de alerta de Tesorería */}
-            <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
-                <p className="font-bold text-slate-800 text-sm">⚙️ Parámetro de Tesorería</p>
-                <p className="text-[11px] text-slate-400 -mt-1.5">Cuando el saldo supere este umbral, aquí queda claro a cuál proveedor inscrito se le debe pagar (si hay varios registrados abajo).</p>
-                <div className="flex items-end gap-3 flex-wrap">
-                    <div>
-                        <label className="text-[10px] font-bold uppercase text-slate-500">Alertar cuando el saldo supere (USDT)</label>
-                        <input value={treasuryEdit.alertThresholdUsdt} onChange={e => setTreasuryEdit(p => ({ ...p, alertThresholdUsdt: e.target.value.replace(/[^\d.]/g, '') }))}
-                            className="mt-1 w-40 px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#4ADE80]" placeholder="10000" />
-                    </div>
-                    <div>
-                        <label className="text-[10px] font-bold uppercase text-slate-500">Proveedor destino</label>
-                        <select value={treasuryEdit.alertProviderId} onChange={e => setTreasuryEdit(p => ({ ...p, alertProviderId: e.target.value }))}
-                            className="mt-1 w-48 px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#4ADE80] bg-white">
-                            <option value="">— Sin asignar —</option>
-                            {providers.map((p: any) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                        </select>
-                    </div>
-                    <div className="flex-1 min-w-[220px]">
-                        <label className="text-[10px] font-bold uppercase text-slate-500">Notas (opcional)</label>
-                        <input value={treasuryEdit.notes} onChange={e => setTreasuryEdit(p => ({ ...p, notes: e.target.value }))}
-                            className="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-[#4ADE80]" placeholder="Notas adicionales" />
-                    </div>
-                    <button onClick={saveTreasuryCfg} disabled={treasurySaving} style={{ color: '#FFFFFF' }} className="px-4 py-2 text-sm font-bold bg-[#0C0E0D] rounded-lg hover:bg-[#152e52] disabled:opacity-60">
-                        {treasurySaving ? 'Guardando…' : 'Guardar'}
-                    </button>
-                </div>
-                {treasuryCfgMsg && (
-                    <p className={`text-[11px] font-bold ${treasuryCfgMsg.ok ? 'text-green-700' : 'text-slate-600'}`}>{treasuryCfgMsg.text}</p>
-                )}
-            </div>
+            </>)}
 
             {/* Proveedores: a quién se paga con el USDT de Tesorería */}
             <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
@@ -1251,25 +1226,43 @@ export const AdminGasFreeSection: React.FC = () => {
                 <p className="text-[11px] text-slate-400">A quién se le paga el USDT acumulado en Tesorería. Solo los partners de Lincoin — <b>Finity</b> (ACH) y <b>Mouv</b> (Bre-B) — y únicamente su wallet USDT, para que la plata no pueda irse a otro lado.</p>
                 <div className="space-y-2">
                     {providers.map((p: any) => (
-                        <div key={p.id} className={`flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-sm ${p.locked ? 'bg-emerald-50 border border-emerald-200' : 'bg-slate-50'}`}>
+                        <div key={p.id} className="flex items-center justify-between gap-2 rounded-lg px-3 py-2.5 text-sm"
+                            style={{ background: p.locked ? 'rgba(74,222,128,0.09)' : 'rgba(255,255,255,0.04)', border: `1px solid ${p.locked ? 'rgba(74,222,128,0.30)' : 'rgba(255,255,255,0.10)'}` }}>
                             <div className="min-w-0">
-                                <span className="font-bold text-slate-800">{p.name}</span>
-                                {p.detail && <span className="text-slate-400"> · {mask(p.detail)}</span>}
-                                {p.locked && <span className="ml-2 text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-600 text-white">🔒 BÓVEDA</span>}
-                                {p.locked && <p className="text-[10px] text-emerald-700 mt-0.5">Fijada fuera del panel con doble aprobación. No editable ni visible completa desde aquí.</p>}
+                                <span style={{ color: '#F4F4F2', fontWeight: 700 }}>{p.name}</span>
+                                {p.detail && <span style={{ color: '#878E88', fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12 }}> · {mask(p.detail)}</span>}
+                                {p.locked && <span className="ml-2 text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ background: '#4ADE80', color: '#0C0E0D' }}>🔒 BÓVEDA</span>}
+                                {p.locked && <p className="text-[10px] mt-1" style={{ color: '#4ADE80' }}>Fijada fuera del panel con doble aprobación. No editable ni visible completa desde aquí.</p>}
                             </div>
                             <div className="flex items-center gap-3 shrink-0">
-                                <button onClick={() => { setPayTarget(p); setPayAmount(''); setPayMsg(null); }} className="inline-flex items-center gap-1 text-xs font-bold text-[#16A34A] hover:underline" title="Pagar a este proveedor desde Tesorería — manual, sin mínimo acumulado">
+                                <button onClick={() => { setPayTarget(p); setPayAmount(''); setPayMsg(null); }} className="inline-flex items-center gap-1 text-xs font-bold hover:underline" style={{ color: '#4ADE80' }} title="Pagar a este proveedor desde Tesorería — manual, sin mínimo acumulado">
                                     <Send size={12} /> Pagar
                                 </button>
                                 {p.locked
-                                    ? <span className="text-[11px] text-slate-400 font-semibold" title="Fijada en la Bóveda">Protegida</span>
-                                    : <button onClick={() => removeProvider(p.id)} className="text-red-500 hover:underline text-xs font-bold">Eliminar</button>}
+                                    ? <span className="text-[11px] font-semibold" style={{ color: '#5b675f' }} title="Fijada en la Bóveda">Protegida</span>
+                                    : <button onClick={() => removeProvider(p.id)} className="hover:underline text-xs font-bold" style={{ color: '#F87171' }}>Eliminar</button>}
                             </div>
                         </div>
                     ))}
                     {providersLoaded && providers.length === 0 && <p className="text-xs text-slate-400">Aún no hay proveedores registrados.</p>}
                 </div>
+                {/* Con wallets fijadas en la Bóveda, el alta y la baja NO se hacen
+                    desde el panel: se administran fuera, con doble aprobación. */}
+                {/* Hasta que los proveedores NO hayan cargado no se muestra nada
+                    editable: si no, se alcanzaba a ver por un instante el
+                    formulario de alta/baja antes de saber que están en la Bóveda. */}
+                {!providersLoaded ? (
+                    <div className="rounded-lg p-3" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.10)' }}>
+                        <p className="text-xs font-bold" style={{ color: '#878E88' }}>Verificando el registro de partners…</p>
+                    </div>
+                ) : providers.some((p: any) => p.locked) ? (
+                    <div className="rounded-lg p-3" style={{ background: 'rgba(74,222,128,0.09)', border: '1px solid rgba(74,222,128,0.30)' }}>
+                        <p className="text-xs font-bold" style={{ color: '#4ADE80' }}>🔒 Administrado en la Bóveda</p>
+                        <p className="text-[11px] mt-1" style={{ color: '#878E88' }}>
+                            Las wallets de partners no se agregan, editan ni eliminan desde este panel. Se fijan fuera de la aplicación con doble aprobación, y la Tesorería solo puede pagar a esas direcciones.
+                        </p>
+                    </div>
+                ) : (
                 <div className="flex items-end gap-2 flex-wrap">
                     <div>
                         <label className="text-[10px] font-bold uppercase text-slate-500">Proveedor</label>
@@ -1297,9 +1290,15 @@ export const AdminGasFreeSection: React.FC = () => {
                         {providerSaving ? 'Guardando…' : '+ Agregar'}
                     </button>
                 </div>
+                )}
                 {providerErr && <p className="text-[11px] font-bold text-slate-500">⚠ {providerErr}</p>}
                 {!providerErr && providersLoaded && providers.length > 0 && (
-                    <p className="text-[11px] font-bold text-green-700">✅ {providers.length === 1 ? '1 proveedor guardado' : `${providers.length} proveedores guardados`} en el servidor (verificado).</p>
+                    <p className="text-[11px] font-bold text-green-700">✅ {providers.length === 1 ? '1 proveedor guardado' : `${providers.length} proveedores guardados`} (verificado).</p>
+                )}
+                {providersLoaded && !providers.some((p: any) => p.locked) && (
+                    <p className="text-[11px] font-bold rounded-lg p-2" style={{ color: '#FBBF24', background: 'rgba(251,191,36,0.10)', border: '1px solid rgba(251,191,36,0.30)' }}>
+                        ⚠ Ninguna wallet está fijada en la Bóveda todavía — mientras tanto se pueden editar desde aquí. Fíjalas en la Bóveda para blindarlas.
+                    </p>
                 )}
                 <p className="text-[10px] text-slate-400">Verifica la wallet con el proveedor antes de guardarla — los pagos de Tesorería salen directo a esa dirección.</p>
             </div>
@@ -1313,7 +1312,7 @@ export const AdminGasFreeSection: React.FC = () => {
                 <button onClick={loadAll} disabled={loadingAll || filtered.length === 0} className="flex items-center gap-2 px-3 py-2 text-sm font-semibold border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-60">
                     <RefreshCw size={14} className={loadingAll ? 'animate-spin' : ''} /> {loadingAll ? 'Cargando…' : 'Cargar wallets (todos)'}
                 </button>
-                <button onClick={sweepAll} disabled={sweepingAll} style={{ color: '#FFFFFF' }} className="flex items-center gap-2 px-3 py-2 text-sm font-bold bg-[#0C0E0D] rounded-lg hover:bg-[#152e52] disabled:opacity-60">
+                <button onClick={sweepAll} disabled={sweepingAll} style={{ color: '#FFFFFF' }} className="flex items-center gap-2 px-3 py-2 text-sm font-bold bg-[#0C0E0D] rounded-lg hover:bg-[#161A17] disabled:opacity-60">
                     <Landmark size={14} className={sweepingAll ? 'animate-pulse' : ''} /> {sweepingAll ? 'Barriendo…' : 'Barrer todo a recaudadora'}
                 </button>
             </div>
@@ -1457,7 +1456,7 @@ export const AdminGasFreeSection: React.FC = () => {
                             )}
                         </div>
                         <div className="px-5 pb-5">
-                            <button onClick={doPayProvider} disabled={paying || !payAmount} style={{ color: '#FFFFFF' }} className="w-full h-11 bg-[#0C0E0D] hover:bg-[#152e52] rounded-xl font-bold text-sm disabled:opacity-50 flex items-center justify-center gap-2">
+                            <button onClick={doPayProvider} disabled={paying || !payAmount} style={{ color: '#FFFFFF' }} className="w-full h-11 bg-[#0C0E0D] hover:bg-[#161A17] rounded-xl font-bold text-sm disabled:opacity-50 flex items-center justify-center gap-2">
                                 <Send size={15} /> {paying ? 'Pagando…' : 'Confirmar pago'}
                             </button>
                         </div>
