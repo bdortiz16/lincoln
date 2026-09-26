@@ -43,3 +43,8 @@ ALTER TABLE public.facturacion_config ADD COLUMN IF NOT EXISTS motivos       jso
 ALTER TABLE public.facturacion_config ADD COLUMN IF NOT EXISTS ds_ruta       text;
 
 NOTIFY pgrst, 'reload schema';
+
+-- De 2026_facturacion_ciudad.sql (por si no se corrió): ciudad para
+-- beneficiarios con cédula expedida en el exterior.
+ALTER TABLE public.facturacion_config ADD COLUMN IF NOT EXISTS ciudad_exterior text;
+NOTIFY pgrst, 'reload schema';

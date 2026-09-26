@@ -378,9 +378,9 @@ function direccionDe(rd: Record<string, any>): Direccion | null {
 // La dirección del beneficiario inscrito con ese documento (raw_data
 // .mouvContacts del usuario). El NIT puede estar inscrito con dígito de
 // verificación y acá venir sin él: se compara por los dígitos base.
-async function direccionDelBeneficiario(userId: string, identification: string): Promise<Direccion | null> {
+async function direccionDelBeneficiario(userId: string, identification: string, cfg: any): Promise<Direccion | null> {
   ultimoDiagnosticoLugar = ''
-  const { data } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
+  const { data } = await db.from('users').select('raw_data, city, company_city').eq('id', userId).maybeSingle()
   const raw = (data as any)?.raw_data ?? {}
   const contactos: any[] = Array.isArray(raw.mouvContacts) ? raw.mouvContacts : []
   const base = identification.replace(/\D/g, '')
@@ -388,27 +388,44 @@ async function direccionDelBeneficiario(userId: string, identification: string):
   const hit = contactos.find(c => mismoDoc(String(c?.docNumber ?? '').replace(/\D/g, '')))
   const deFicha = hit ? direccionDe({ recipient: { address: hit.address, cityCode: hit.cityCode, stateCode: hit.stateCode } }) : null
   if (deFicha) return deFicha
+  const calle = String(hit?.address ?? '').trim().slice(0, 200) || SIN_CALLE
   // Sin ciudad en la ficha: la del lugar de expedición de la cédula, que
   // la Registraduría devolvió en la consulta de antecedentes (TusDatos).
   const benef: Record<string, any> = raw.tusdatos?.beneficiarios ?? {}
   const doc = Object.keys(benef).find(k => mismoDoc(k.replace(/\D/g, '')))
   const f = doc ? benef[doc] : null
-  let m = f ? (municipioPorCodigo(f.lugarExpedicionCodigo) ?? municipioPorNombre(f.lugarExpedicion)) : null
-  if (!m) {
+  let lugar = String(f?.lugarExpedicion ?? '')
+  let m = f ? (municipioPorCodigo(f.lugarExpedicionCodigo) ?? municipioPorNombre(lugar)) : null
+  if (!m && !(lugar && lugarFueraDeColombia(lugar))) {
     // La ficha no lo trae todavía: se le pide a la función de antecedentes,
     // que vuelve a leer el reporte (sin gastar crédito) y dice qué encontró.
     const r = await lugarDeExpedicion(userId, base)
     ultimoDiagnosticoLugar = r.diagnostico
+    lugar = r.lugar || lugar
     m = r.codigo ? municipioPorCodigo(r.codigo) : null
   }
-  if (!m) return null
-  return { address: String(hit?.address ?? '').trim().slice(0, 256) || SIN_CALLE, city: { country_code: 'Co', state_code: m.depto, city_code: m.codigo } }
+  if (m) return { address: calle, city: { country_code: 'Co', state_code: m.depto, city_code: m.codigo } }
+  // Cédula expedida en el exterior (consulado): de ahí no sale un municipio
+  // colombiano. Decisión del cliente: el tercero va con la ciudad
+  // configurada para estos casos o, si no hay, con la de su empresa. El
+  // lugar real de expedición queda escrito en la dirección, para que el
+  // documento no diga más de lo que se sabe.
+  if (lugar && lugarFueraDeColombia(lugar)) {
+    const u = data as any
+    const ext = municipioPorCodigo(cfg?.ciudad_exterior) ?? municipioPorNombre(u?.company_city) ?? municipioPorNombre(u?.city)
+    if (ext) {
+      ultimoDiagnosticoLugar = ''
+      return { address: `${calle} · Cédula expedida en ${lugar}`.slice(0, 256), city: { country_code: 'Co', state_code: ext.depto, city_code: ext.codigo } }
+    }
+    ultimoDiagnosticoLugar = `La cédula se expidió en el exterior («${lugar}», en un consulado), así que no hay municipio colombiano que tomar de la Registraduría, y no hay ciudad configurada para estos casos. Elegí una en Contabilidad → Configuración → «Ciudad para cédulas expedidas en el exterior» (o poné la ciudad de tu empresa en el perfil), o elegí la ciudad en la ficha del beneficiario.`
+  }
+  return null
 }
 // Qué contestó la consulta del lugar de expedición, para ponerlo en el error
 // cuando no alcanza: dice si la Registraduría no lo trajo, si trajo un
 // nombre que no corresponde a un municipio único, o si no hay consulta.
 let ultimoDiagnosticoLugar = ''
-async function lugarDeExpedicion(userId: string, documento: string): Promise<{ codigo: string | null; diagnostico: string }> {
+async function lugarDeExpedicion(userId: string, documento: string): Promise<{ codigo: string | null; lugar: string; diagnostico: string }> {
   try {
     const r = await fetch(`${SUPABASE_URL}/functions/v1/tusdatos`, {
       method: 'POST',
@@ -417,16 +434,17 @@ async function lugarDeExpedicion(userId: string, documento: string): Promise<{ c
       signal: AbortSignal.timeout(20000),
     })
     const d = await r.json().catch(() => ({}))
-    if (!r.ok || !d?.ok) return { codigo: null, diagnostico: `Antecedentes: ${d?.motivo ?? d?.error ?? `HTTP ${r.status}`}.` }
-    if (d.lugarExpedicionCodigo) return { codigo: String(d.lugarExpedicionCodigo), diagnostico: '' }
-    if (d.lugarExpedicion) return { codigo: null, diagnostico: lugarFueraDeColombia(d.lugarExpedicion)
-      ? `La cédula se expidió en el exterior («${d.lugarExpedicion}», en un consulado), así que no hay municipio colombiano que tomar de la Registraduría. Hay que poner la ciudad donde vive la persona.`
-      : `La Registraduría dice que la cédula se expidió en «${d.lugarExpedicion}», y ese nombre corresponde a más de un municipio de la lista DANE (o a ninguno).` }
+    if (!r.ok || !d?.ok) return { codigo: null, lugar: '', diagnostico: `Antecedentes: ${d?.motivo ?? d?.error ?? `HTTP ${r.status}`}.` }
+    const lugar = String(d.lugarExpedicion ?? '')
+    if (d.lugarExpedicionCodigo) return { codigo: String(d.lugarExpedicionCodigo), lugar, diagnostico: '' }
+    if (lugar) return { codigo: null, lugar, diagnostico: lugarFueraDeColombia(lugar)
+      ? `La cédula se expidió en el exterior («${lugar}», en un consulado), así que no hay municipio colombiano que tomar de la Registraduría.`
+      : `La Registraduría dice que la cédula se expidió en «${lugar}», y ese nombre corresponde a más de un municipio de la lista DANE (o a ninguno).` }
     const claves: string[] = Array.isArray(d.claves) ? d.claves : []
     const secciones: string[] = Array.isArray(d.seccionesReporte) ? d.seccionesReporte : []
-    return { codigo: null, diagnostico: `El reporte de antecedentes no trae el lugar de expedición bajo una clave reconocible. Claves parecidas: ${claves.length ? claves.slice(0, 12).join(' · ') : 'ninguna'}. Secciones del reporte: ${secciones.join(', ') || 'ninguna'}.` }
+    return { codigo: null, lugar: '', diagnostico: `El reporte de antecedentes no trae el lugar de expedición bajo una clave reconocible. Claves parecidas: ${claves.length ? claves.slice(0, 12).join(' · ') : 'ninguna'}. Secciones del reporte: ${secciones.join(', ') || 'ninguna'}.` }
   } catch (e) {
-    return { codigo: null, diagnostico: `No se pudo consultar antecedentes: ${(e as Error)?.message ?? e}.` }
+    return { codigo: null, lugar: '', diagnostico: `No se pudo consultar antecedentes: ${(e as Error)?.message ?? e}.` }
   }
 }
 function contraparteDe(comp: any, cfg: any): Contraparte {
@@ -565,7 +583,7 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
   // Si el envío no trae la dirección (se hizo antes de que el beneficiario
   // la tuviera), se toma de la lista de beneficiarios, por documento. Así
   // completar la ficha alcanza para emitir de nuevo un envío viejo.
-  if (!cp.direccion && !cp.esDefault) cp.direccion = await direccionDelBeneficiario(userId, cp.identification)
+  if (!cp.direccion && !cp.esDefault) cp.direccion = await direccionDelBeneficiario(userId, cp.identification, cfg)
   // El documento soporte va A NOMBRE DEL BENEFICIARIO del envío, con el
   // nombre y documento con que se le envió. Nunca a un "consumidor final":
   // si el envío no trae documento, no se emite y se dice.
@@ -721,6 +739,15 @@ Deno.serve(async (req) => {
       const c = body.config ?? {}
       const fila: Record<string, unknown> = { user_id: userId, proveedor: 'siigo', updated_at: new Date().toISOString() }
       const copiar = ['username', 'partner_id', 'product_code', 'product_description', 'cliente_default_nit', 'cliente_default_nombre', 'observaciones']
+      // Ciudad para cédulas expedidas en el exterior: un código DANE válido o
+      // nada. Solo se escribe si se eligió (o si había una y se quita), para
+      // que un guardado cualquiera no falle mientras no se corra la
+      // migración 2026_facturacion_ciudad.sql.
+      if ('ciudad_exterior' in c) {
+        const cod = municipioPorCodigo(c.ciudad_exterior)?.codigo ?? null
+        if (cod) fila.ciudad_exterior = cod
+        else if ((await leerConfig(userId))?.ciudad_exterior) fila.ciudad_exterior = null
+      }
       for (const k of copiar) if (k in c) fila[k] = c[k] == null || c[k] === '' ? null : String(c[k]).trim()
       for (const k of ['document_id', 'seller_id', 'payment_id', 'ds_document_id', 'ds_payment_id']) if (k in c) fila[k] = c[k] == null || c[k] === '' ? null : Number(c[k])
       for (const k of ['activo', 'crear_clientes', 'stamp', 'mail']) if (k in c) fila[k] = !!c[k]

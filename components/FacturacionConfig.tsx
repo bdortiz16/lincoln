@@ -29,6 +29,7 @@ import React, { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 import { llamarFuncion } from '../lib/edge';
 import { MOTIVOS_ENVIO } from '../lib/motivosEnvio';
+import { MUNICIPIOS } from '../lib/municipios';
 
 const FONT = 'Archivo, system-ui, sans-serif';
 const C = {
@@ -48,6 +49,7 @@ type Cfg = {
   documentos?: Record<string, 'FV' | 'DS'> | null;
   motivos?: Record<string, { emite: 'DS' | 'no'; item?: string | null }> | null;
   cliente_default_nit?: string | null; cliente_default_nombre?: string | null; crear_clientes: boolean;
+  ciudad_exterior?: string | null;
   disparadores: string[]; stamp: boolean; mail: boolean; observaciones?: string | null;
   ultimo_test_at?: string | null; ultimo_test_ok?: boolean | null; ultimo_error?: string | null;
   catalogos?: any; resumen?: { emitidas: number; errores: number; pendientes: number; omitidas: number; comprobantes: number };
@@ -122,6 +124,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
       ds_document_id: c.ds_document_id ?? '', ds_payment_id: c.ds_payment_id ?? '',
       cliente_default_nit: c.cliente_default_nit ?? '222222222222', cliente_default_nombre: c.cliente_default_nombre ?? 'Consumidor final',
       crear_clientes: c.crear_clientes ?? true,
+      ciudad_exterior: c.ciudad_exterior ?? '',
       stamp: c.stamp ?? true, mail: c.mail ?? true, observaciones: c.observaciones ?? '', activo: c.activo ?? false,
     });
   };
@@ -758,7 +761,16 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                 )}
                 <p style={{ fontSize: 12, color: C.sub, margin: '0 0 10px', lineHeight: 1.55 }}>
                   Si el tercero no existe en tu Siigo, se crea con el nombre y el documento de la operación. No hay nada que activar.
+                  La ciudad sale de la ficha del beneficiario o, si no la tiene, del lugar donde se expidió su cédula (Registraduría).
                 </p>
+                <div style={{ marginTop: 4 }}>
+                  <Campo rot="CIUDAD PARA CÉDULAS EXPEDIDAS EN EL EXTERIOR" ayuda="Una cédula expedida en un consulado no da un municipio colombiano. En esos casos el tercero va con esta ciudad, y en la dirección queda escrito dónde se expidió. Si no eliges ninguna, se usa la ciudad de tu empresa.">
+                    <select value={form.ciudad_exterior ?? ''} onChange={e => set('ciudad_exterior', e.target.value)} style={entrada}>
+                      <option value="">La ciudad de mi empresa</option>
+                      {MUNICIPIOS.map(m => <option key={m.codigo} value={m.codigo}>{m.nombre} · {m.deptoNombre}</option>)}
+                    </select>
+                  </Campo>
+                </div>
                 {modelo !== 'psp' && (
                   <div style={{ display: 'grid', gap: 10, marginTop: 14 }}>
                     {chk('stamp', 'Enviar la factura a la DIAN (factura electrónica)', 'Apagado, Siigo la guarda sin validarla ante la DIAN.')}
