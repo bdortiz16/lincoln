@@ -28,6 +28,7 @@
 import React, { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 import { llamarFuncion } from '../lib/edge';
+import { MOTIVOS_ENVIO } from '../lib/motivosEnvio';
 
 const FONT = 'Archivo, system-ui, sans-serif';
 const C = {
@@ -45,6 +46,7 @@ type Cfg = {
   document_id?: number | null; seller_id?: number | null; payment_id?: number | null;
   ds_document_id?: number | null; ds_payment_id?: number | null;
   documentos?: Record<string, 'FV' | 'DS'> | null;
+  motivos?: Record<string, { emite: 'DS' | 'no'; item?: string | null }> | null;
   cliente_default_nit?: string | null; cliente_default_nombre?: string | null; crear_clientes: boolean;
   disparadores: string[]; stamp: boolean; mail: boolean; observaciones?: string | null;
   ultimo_test_at?: string | null; ultimo_test_ok?: boolean | null; ultimo_error?: string | null;
@@ -102,12 +104,17 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
       : modelo === 'psp' ? ['dispersion'] : ['load', 'pay_received'];
     // El IVA por defecto: el del catálogo que diga 19 %, si hay.
     const iva19 = (c.catalogos?.impuestos ?? []).find((t: any) => Number(t.percentage) === 19);
+    // Por motivo del envío. Si nunca se configuró, en PSP arranca con "pago
+    // a proveedores → documento soporte con el ítem de terceros".
+    const motivos = c.motivos && typeof c.motivos === 'object'
+      ? { ...c.motivos }
+      : modelo === 'psp' ? { proveedores: { emite: 'DS', item: c.item_terceros ?? '' } } : {};
     setForm({
       username: c.username ?? '', partner_id: c.partner_id ?? '',
       modelo, utilidad_pct: c.utilidad_pct ?? '', item_terceros: c.item_terceros ?? '', item_comision: c.item_comision ?? '',
       iva_tax_id: c.iva_tax_id ?? (iva19 ? iva19.id : ''),
       desc_terceros: c.desc_terceros ?? '', desc_comision: c.desc_comision ?? '',
-      operaciones,
+      operaciones, motivos,
       document_id: c.document_id ?? '', seller_id: c.seller_id ?? '', payment_id: c.payment_id ?? '',
       ds_document_id: c.ds_document_id ?? '', ds_payment_id: c.ds_payment_id ?? '',
       cliente_default_nit: c.cliente_default_nit ?? '222222222222', cliente_default_nombre: c.cliente_default_nombre ?? 'Consumidor final',
@@ -124,10 +131,18 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
 
   const set = (k: string, v: any) => setForm((f: any) => ({ ...f, [k]: v }));
   const elegirModelo = (m: 'rotacion' | 'psp') => setForm((f: any) => {
-    const validas = m === 'rotacion' ? ENTRADAS : SALIDAS;
-    const actuales = (f.operaciones ?? []).filter((k: string) => validas.includes(k));
-    return { ...f, modelo: m, operaciones: actuales.length ? actuales : (m === 'rotacion' ? ['load', 'pay_received'] : ['dispersion']) };
+    // En PSP el documento soporte lo decide el MOTIVO de cada envío, así
+    // que todas las salidas quedan en juego; en rotación, las entradas.
+    if (m === 'psp') {
+      const motivos = Object.keys(f.motivos ?? {}).length ? f.motivos : { proveedores: { emite: 'DS', item: f.item_terceros ?? '' } };
+      return { ...f, modelo: m, operaciones: [...SALIDAS], motivos };
+    }
+    const actuales = (f.operaciones ?? []).filter((k: string) => ENTRADAS.includes(k));
+    return { ...f, modelo: m, operaciones: actuales.length ? actuales : ['load', 'pay_received'] };
   });
+  const setMotivo = (k: string, patch: Record<string, any>) => setForm((f: any) => ({
+    ...f, motivos: { ...(f.motivos ?? {}), [k]: { emite: 'no', item: '', ...(f.motivos?.[k] ?? {}), ...patch } },
+  }));
   const toggleOp = (k: string, on: boolean) => setForm((f: any) => ({ ...f, operaciones: on ? [...new Set([...(f.operaciones ?? []), k])] : (f.operaciones ?? []).filter((x: string) => x !== k) }));
 
   const guardar = async (extra: Record<string, any> = {}) => {
@@ -191,18 +206,28 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
   // el elegido acá (se manda en la línea para que aplique).
   const iva = ivaComisionProd ?? (ivaElegido ? { id: Number(ivaElegido.id), name: String(ivaElegido.name ?? ''), percentage: Number(ivaElegido.percentage) || 0 } : null);
   const tarifa = iva ? iva.percentage / 100 : 0;
+  // Por motivo del envío: qué sale y con qué ítem.
+  const motivos: Record<string, { emite: string; item?: string | null }> = form.motivos ?? {};
+  const motivosDS = MOTIVOS_ENVIO.filter(m => motivos[m.v]?.emite === 'DS');
+  const motivosSinItem = motivosDS.filter(m => !motivos[m.v]?.item);
+  const motivosConIva = motivosDS.filter(m => motivos[m.v]?.item && ivaDelProducto(String(motivos[m.v].item)));
+  // Hay documento soporte si el modelo es PSP o si algún motivo lo emite.
+  const usaDS = modelo === 'psp' || motivosDS.length > 0;
   const faltantes = [
     !credOk ? 'credenciales' : '',
     !modelo ? 'el modelo de negocio' : '',
-    modelo && !ops.length ? 'qué operaciones emiten' : '',
+    modelo === 'rotacion' && !ops.length ? 'qué entradas facturan' : '',
+    modelo === 'psp' && !motivosDS.length ? 'al menos un motivo de envío con documento soporte' : '',
     modelo === 'rotacion' && !(utilidad > 0) ? 'el porcentaje de utilidad' : '',
-    modelo && !form.item_terceros ? 'el ítem de servicio para terceros' : '',
-    modelo && ivaTerceros ? 'un ítem de servicio para terceros SIN IVA (el elegido tiene IVA en Siigo)' : '',
-    modelo && prodTerceros && prodTerceros.active === false ? 'un ítem de servicio para terceros activo en Siigo' : '',
+    modelo === 'rotacion' && !form.item_terceros ? 'el ítem de servicio para terceros' : '',
+    modelo === 'rotacion' && ivaTerceros ? 'un ítem de servicio para terceros SIN IVA (el elegido tiene IVA en Siigo)' : '',
+    modelo === 'rotacion' && prodTerceros && prodTerceros.active === false ? 'un ítem de servicio para terceros activo en Siigo' : '',
     modelo === 'rotacion' && !form.item_comision ? 'el ítem de comisión' : '',
     modelo === 'rotacion' && prodComision && prodComision.active === false ? 'un ítem de comisión activo en Siigo' : '',
     modelo === 'rotacion' && !(form.document_id && form.seller_id && form.payment_id) ? 'el comprobante, vendedor y forma de pago de la factura' : '',
-    modelo === 'psp' && !(form.ds_document_id && form.ds_payment_id) ? 'el comprobante y forma de pago del documento soporte' : '',
+    motivosSinItem.length ? `el ítem de: ${motivosSinItem.map(m => m.l).join(', ')}` : '',
+    motivosConIva.length ? `un ítem SIN IVA para: ${motivosConIva.map(m => m.l).join(', ')}` : '',
+    usaDS && !(form.ds_document_id && form.ds_payment_id) ? 'el comprobante y forma de pago del documento soporte' : '',
   ].filter(Boolean);
   const listo = faltantes.length === 0;
   const fecha = (s?: string | null) => s ? new Date(s).toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' }) : '—';
@@ -228,8 +253,12 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
   const tarifaTerceros = ivaTerceros ? ivaTerceros.percentage / 100 : 0;
   const ejemplo = (() => {
     if (modelo === 'psp') {
-      const ivaT = r2(EJEMPLO * tarifaTerceros);
-      return { lineas: [{ n: nombreProducto(form.item_terceros) || 'Servicio para terceros', v: EJEMPLO, iva: ivaT, rotulo: ivaTerceros ? `${ivaTerceros.name || 'IVA'} ${ivaTerceros.percentage} %` : 'sin IVA' }], total: r2(EJEMPLO + ivaT) };
+      // El ejemplo del PSP: el primer motivo con documento soporte.
+      const m0 = motivosDS[0];
+      const item0 = m0 ? String(motivos[m0.v]?.item ?? '') : '';
+      const iva0 = item0 ? ivaDelProducto(item0) : null;
+      const ivaT = r2(EJEMPLO * (iva0 ? iva0.percentage / 100 : 0));
+      return { lineas: [{ n: nombreProducto(item0) || 'Servicio para terceros', v: EJEMPLO, iva: ivaT, rotulo: iva0 ? `${iva0.name || 'IVA'} ${iva0.percentage} %` : 'sin IVA' }], total: r2(EJEMPLO + ivaT), motivo: m0?.l };
     }
     if (modelo !== 'rotacion') return null;
     const util = r2(EJEMPLO * utilidad / 100);
@@ -246,6 +275,42 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
     };
   })();
   const sinCatalogoDs = !!cat && !Array.isArray(cat.documentos_ds);
+
+  // Por motivo del envío: el que el cliente elige al confirmar cada envío.
+  // Cada motivo se liga a un ítem de Siigo (documento soporte) o a nada.
+  const tablaMotivos = (
+    <div style={{ display: 'grid', gap: 8 }}>
+      {MOTIVOS_ENVIO.map(m => {
+        const r = motivos[m.v] ?? { emite: 'no', item: '' };
+        const esDS = r.emite === 'DS';
+        const item = String(r.item ?? '');
+        const ivaM = esDS && item ? ivaDelProducto(item) : null;
+        const prodM = item ? productoDe(item) : null;
+        return (
+          <div key={m.v} style={{ padding: '10px 12px', borderRadius: 10, border: `1px solid ${esDS ? 'rgba(74,222,128,0.28)' : C.bordeSuave}`, background: esDS ? 'rgba(74,222,128,0.04)' : 'transparent' }}>
+            <div className="flex items-center justify-between flex-wrap" style={{ gap: 10 }}>
+              <span style={{ fontSize: 13, color: C.text }}>{m.l}</span>
+              <select value={esDS ? 'DS' : 'no'} onChange={e => setMotivo(m.v, { emite: e.target.value })} style={{ ...selectEstilo, width: 'auto', minWidth: 190, padding: '7px 10px', fontSize: 12.5 }}>
+                <option value="no">No emitir nada</option>
+                <option value="DS">Documento soporte</option>
+              </select>
+            </div>
+            {esDS && (
+              <div style={{ marginTop: 8 }}>
+                <select value={item} onChange={e => setMotivo(m.v, { item: e.target.value })} style={selectEstilo} disabled={!productos.length}>
+                  <option value="">{productos.length ? 'Elegir el ítem de Siigo…' : 'Conectá Siigo para elegir el ítem'}</option>
+                  {productos.map((p: any) => <option key={String(p.v)} value={String(p.v)}>{p.t}</option>)}
+                </select>
+                {ivaM && <p style={{ fontSize: 11.5, color: C.ambar, margin: '6px 0 0', lineHeight: 1.5 }}>Este ítem tiene {ivaM.name || 'IVA'} {ivaM.percentage} % en Siigo. El documento soporte por el monto total va sin IVA: elegí otro ítem o quitale el impuesto en Siigo.</p>}
+                {prodM && prodM.active === false && <p style={{ fontSize: 11.5, color: C.ambar, margin: '6px 0 0', lineHeight: 1.5 }}>Este ítem está inactivo en Siigo.</p>}
+                {prodM && !ivaM && prodM.active !== false && <p style={{ fontSize: 11.5, color: C.verde, margin: '6px 0 0', lineHeight: 1.5 }}>Sin IVA en Siigo, activo. Con este ítem sale el documento soporte por el monto total.</p>}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
 
   const tarjetaModelo = (m: 'rotacion' | 'psp', titulo: string, texto: string, ejemploTxt: string) => {
     const on = modelo === m;
@@ -364,7 +429,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                     'Recibís plata de terceros, la rotás y cobrás una comisión. Por cada entrada se emite una factura de venta con dos ítems que suman exacto lo recibido: el servicio para terceros (sin IVA) y tu comisión (con IVA).',
                     'Con 15.000.000 y 1 % de utilidad: terceros 14.850.000 · comisión 126.050,42 + IVA 23.949,58 · total 15.000.000.')}
                   {tarjetaModelo('psp', 'PSP / pasarela',
-                    'Pagás a terceros por cuenta de un cliente. Por cada envío se emite un documento soporte al beneficiario por el monto total, con el ítem de servicio para terceros, sin IVA. La factura de tu comisión al cliente la hacés vos en Siigo.',
+                    'Pagás a terceros por cuenta de un cliente. Según el motivo de cada envío, se emite un documento soporte al beneficiario por el monto total, con el ítem de Siigo que ligues a ese motivo. La factura de tu comisión al cliente la hacés vos en Siigo.',
                     'Con un envío de 15.000.000: documento soporte al beneficiario por 15.000.000.')}
                 </div>
               </Seccion>
@@ -382,7 +447,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                         <input type="number" min={0} max={100} step={0.01} value={form.utilidad_pct ?? ''} onChange={e => set('utilidad_pct', e.target.value)} placeholder="1" inputMode="decimal" style={entrada} />
                       </Campo>
                     )}
-                    <div>
+                    {modelo === 'rotacion' && <div>
                       <Campo rot="ÍTEM · SERVICIO PARA TERCEROS" ayuda={cat?.fuentes?.productos?.motivo ?? `El producto de Siigo para el dinero de terceros. Tiene que estar SIN IVA en Siigo.${cat ? ` ${productos.length} productos traídos el ${fecha(cat.traido_at)}; si creaste uno nuevo, dale a «Actualizar catálogos».` : ''}`}>
                         {select('item_terceros', productos, 'Siigo no devolvió productos')}
                       </Campo>
@@ -397,7 +462,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                       {prodTerceros && !ivaTerceros && prodTerceros.active !== false && (
                         <p style={{ fontSize: 11.5, color: C.verde, margin: '6px 0 0', lineHeight: 1.5 }}>Sin IVA en Siigo, activo. Correcto.</p>
                       )}
-                    </div>
+                    </div>}
                     {modelo === 'rotacion' && (
                       <>
                         <div>
@@ -460,44 +525,68 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                     </details>
                   )}
 
-                  {/* Qué operaciones */}
-                  <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '16px 0 8px' }}>{modelo === 'rotacion' ? 'QUÉ ENTRADAS FACTURAN' : 'QUÉ SALIDAS LLEVAN DOCUMENTO SOPORTE'}</p>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 8 }}>
-                    {(modelo === 'rotacion' ? ENTRADAS : SALIDAS).filter(k => k in disparadores).map(k => (
-                      <label key={k} className="flex items-center" style={{ gap: 9, cursor: 'pointer' }}>
-                        <input type="checkbox" checked={ops.includes(k)} onChange={e => toggleOp(k, e.target.checked)} style={{ width: 15, height: 15, accentColor: C.verde }} />
-                        <span style={{ fontSize: 13, color: C.text }}>{disparadores[k]}</span>
-                      </label>
-                    ))}
-                  </div>
+                  {/* Qué entradas facturan (rotación) */}
+                  {modelo === 'rotacion' && (
+                    <>
+                      <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '16px 0 8px' }}>QUÉ ENTRADAS FACTURAN</p>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 8 }}>
+                        {ENTRADAS.filter(k => k in disparadores).map(k => (
+                          <label key={k} className="flex items-center" style={{ gap: 9, cursor: 'pointer' }}>
+                            <input type="checkbox" checked={ops.includes(k)} onChange={e => toggleOp(k, e.target.checked)} style={{ width: 15, height: 15, accentColor: C.verde }} />
+                            <span style={{ fontSize: 13, color: C.text }}>{disparadores[k]}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </>
+                  )}
+
+                  {/* Envíos, por motivo. En PSP es lo central; en rotación,
+                      opcional: un envío puede necesitar documento soporte. */}
+                  <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '16px 0 4px' }}>{modelo === 'psp' ? 'ENVÍOS: QUÉ SALE SEGÚN EL MOTIVO' : 'ENVÍOS: DOCUMENTO SOPORTE SEGÚN EL MOTIVO (OPCIONAL)'}</p>
+                  <p style={{ fontSize: 12, color: C.sub, margin: '0 0 10px', lineHeight: 1.55 }}>
+                    Al confirmar cada envío se pregunta el motivo, y se le manda al banco con la orden. Acá decidís, motivo por motivo, si sale documento soporte al beneficiario por el monto total y con qué ítem de tu Siigo.
+                  </p>
+                  {tablaMotivos}
 
                   {/* Comprobantes de Siigo */}
-                  <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '16px 0 8px' }}>{modelo === 'rotacion' ? 'COMPROBANTE DE LA FACTURA EN TU SIIGO' : 'COMPROBANTE DEL DOCUMENTO SOPORTE EN TU SIIGO'}</p>
-                  {!cat ? (
-                    <p style={{ fontSize: 12.5, color: C.tenue, margin: 0 }}>Se eligen después de conectar.</p>
-                  ) : modelo === 'rotacion' ? (
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
-                      <Campo rot="TIPO DE COMPROBANTE (FV)" ayuda={cat.fuentes?.documentos?.motivo ?? undefined}>
-                        {select('document_id', (cat.documentos ?? []).map((d: any) => ({ v: d.id, t: `${d.code ? d.code + ' · ' : ''}${d.name}` })), 'Siigo no devolvió tipos de factura')}
-                      </Campo>
-                      <Campo rot="VENDEDOR" ayuda={cat.fuentes?.vendedores?.motivo ?? undefined}>
-                        {select('seller_id', (cat.vendedores ?? []).map((u: any) => ({ v: u.id, t: u.nombre })), 'Siigo no devolvió vendedores')}
-                      </Campo>
-                      <Campo rot="FORMA DE PAGO" ayuda={cat.fuentes?.pagos?.motivo ?? undefined}>
-                        {select('payment_id', (cat.pagos ?? []).map((p: any) => ({ v: p.id, t: p.name })), 'Siigo no devolvió formas de pago')}
-                      </Campo>
-                    </div>
-                  ) : sinCatalogoDs ? (
-                    <p style={{ fontSize: 12.5, color: C.ambar, margin: 0 }}>Los catálogos guardados son de antes de esta opción. Dale a «Actualizar catálogos» arriba para traer los comprobantes de documento soporte.</p>
-                  ) : (
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
-                      <Campo rot="TIPO DE COMPROBANTE (DS)" ayuda={cat.fuentes?.documentos_ds?.motivo ?? 'El comprobante que en tu Siigo está configurado como documento soporte. Si no aparece, crealo en Siigo y actualizá los catálogos.'}>
-                        {select('ds_document_id', (cat.documentos_ds ?? []).map((d: any) => ({ v: d.id, t: `${d.clase} · ${d.code ? d.code + ' · ' : ''}${d.name}` })), 'Siigo no devolvió comprobantes de documento soporte')}
-                      </Campo>
-                      <Campo rot="FORMA DE PAGO (DS)" ayuda={cat.fuentes?.pagos_ds?.motivo ?? undefined}>
-                        {select('ds_payment_id', (cat.pagos_ds ?? []).map((p: any) => ({ v: p.id, t: p.name })), 'Siigo no devolvió formas de pago de compra')}
-                      </Campo>
-                    </div>
+                  {modelo === 'rotacion' && (
+                    <>
+                      <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '16px 0 8px' }}>COMPROBANTE DE LA FACTURA EN TU SIIGO</p>
+                      {!cat ? (
+                        <p style={{ fontSize: 12.5, color: C.tenue, margin: 0 }}>Se eligen después de conectar.</p>
+                      ) : (
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+                          <Campo rot="TIPO DE COMPROBANTE (FV)" ayuda={cat.fuentes?.documentos?.motivo ?? undefined}>
+                            {select('document_id', (cat.documentos ?? []).map((d: any) => ({ v: d.id, t: `${d.code ? d.code + ' · ' : ''}${d.name}` })), 'Siigo no devolvió tipos de factura')}
+                          </Campo>
+                          <Campo rot="VENDEDOR" ayuda={cat.fuentes?.vendedores?.motivo ?? undefined}>
+                            {select('seller_id', (cat.vendedores ?? []).map((u: any) => ({ v: u.id, t: u.nombre })), 'Siigo no devolvió vendedores')}
+                          </Campo>
+                          <Campo rot="FORMA DE PAGO" ayuda={cat.fuentes?.pagos?.motivo ?? undefined}>
+                            {select('payment_id', (cat.pagos ?? []).map((p: any) => ({ v: p.id, t: p.name })), 'Siigo no devolvió formas de pago')}
+                          </Campo>
+                        </div>
+                      )}
+                    </>
+                  )}
+                  {usaDS && (
+                    <>
+                      <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '16px 0 8px' }}>COMPROBANTE DEL DOCUMENTO SOPORTE EN TU SIIGO</p>
+                      {!cat ? (
+                        <p style={{ fontSize: 12.5, color: C.tenue, margin: 0 }}>Se eligen después de conectar.</p>
+                      ) : sinCatalogoDs ? (
+                        <p style={{ fontSize: 12.5, color: C.ambar, margin: 0 }}>Los catálogos guardados son de antes de esta opción. Dale a «Actualizar catálogos» arriba para traer los comprobantes de documento soporte.</p>
+                      ) : (
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+                          <Campo rot="TIPO DE COMPROBANTE (DS)" ayuda={cat.fuentes?.documentos_ds?.motivo ?? 'El comprobante que en tu Siigo está configurado como documento soporte. Si no aparece, crealo en Siigo y actualizá los catálogos.'}>
+                            {select('ds_document_id', (cat.documentos_ds ?? []).map((d: any) => ({ v: d.id, t: `${d.clase} · ${d.code ? d.code + ' · ' : ''}${d.name}` })), 'Siigo no devolvió comprobantes de documento soporte')}
+                          </Campo>
+                          <Campo rot="FORMA DE PAGO (DS)" ayuda={cat.fuentes?.pagos_ds?.motivo ?? undefined}>
+                            {select('ds_payment_id', (cat.pagos_ds ?? []).map((p: any) => ({ v: p.id, t: p.name })), 'Siigo no devolvió formas de pago de compra')}
+                          </Campo>
+                        </div>
+                      )}
+                    </>
                   )}
 
                   {/* Descripciones (opcional) */}
@@ -517,7 +606,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                   {ejemplo && (
                     <div style={{ marginTop: 16, padding: '12px 14px', borderRadius: 12, border: `1px solid ${C.bordeSuave}`, background: C.elevado }}>
                       <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '0 0 8px' }}>
-                        ASÍ QUEDA CON UNA OPERACIÓN DE {fmtCop(EJEMPLO)} COP{modelo === 'rotacion' ? ` Y ${utilidad || 0} % DE UTILIDAD` : ''}
+                        ASÍ QUEDA CON UNA OPERACIÓN DE {fmtCop(EJEMPLO)} COP{modelo === 'rotacion' ? ` Y ${utilidad || 0} % DE UTILIDAD` : (ejemplo as any).motivo ? ` · MOTIVO «${String((ejemplo as any).motivo).toUpperCase()}»` : ''}
                       </p>
                       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
                         <tbody>

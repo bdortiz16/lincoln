@@ -59,6 +59,13 @@ const CORS = {
 }
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...CORS, 'Content-Type': 'application/json' } })
 
+// Los motivos de un envío (los que se preguntan al confirmar). Por motivo se
+// decide si sale documento soporte y con qué ítem. Copia de lib/motivosEnvio.ts.
+const MOTIVOS_ENVIO: Record<string, string> = {
+  proveedores: 'Pago a proveedores', servicios: 'Pago de servicios', nomina: 'Pago de nómina',
+  gastos: 'Gastos generales', compensacion: 'Transferencia a mi cuenta de compensación', otro: 'Otro',
+}
+
 // Tipos de operación que pueden generar factura, con su nombre en pantalla.
 export const DISPARADORES: Record<string, string> = {
   load: 'Depósitos', pay_received: 'Pagos recibidos', otc_deposit: 'Depósitos OTC',
@@ -409,10 +416,27 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
   const tipo = String((comp as any).tipo ?? '')
   const reglas = documentosDe(cfg)
   const regla = reglas[tipo] ?? null
-  if (!opts.forzar && !regla) { await marcar({ factura_estado: 'omitida', factura_error: `El tipo "${DISPARADORES[tipo] ?? tipo}" no emite documento (Configuración → qué sale por cada operación).` }); return { ok: true, estado: 'omitida' } }
-  // Reintentado a mano sin regla: se asume factura de venta, que es lo que
-  // toda cuenta tiene configurado.
-  const clase: 'FV' | 'DS' = regla ?? 'FV'
+  // EL MOTIVO DEL ENVÍO MANDA. Si la operación trae motivo (se pregunta al
+  // confirmar cada envío) y ese motivo tiene regla en Configuración, esa
+  // regla decide: documento soporte con el ítem que se ligó, o nada.
+  const motivoTx = String((comp as any)?.detalle?.raw_data?.motivo ?? '')
+  const reglaMotivo = motivoTx && cfg.motivos && typeof cfg.motivos === 'object' ? (cfg.motivos as any)[motivoTx] : null
+  let clase: 'FV' | 'DS' = regla ?? 'FV'
+  let cfgEmision: any = cfg
+  if (reglaMotivo) {
+    if (reglaMotivo.emite === 'DS' && reglaMotivo.item) {
+      clase = 'DS'
+      cfgEmision = { ...cfg, modelo: 'psp', item_terceros: reglaMotivo.item }
+    } else if (!opts.forzar) {
+      await marcar({ factura_estado: 'omitida', factura_error: `El motivo "${MOTIVOS_ENVIO[motivoTx] ?? motivoTx}" está configurado para no emitir documento.` })
+      return { ok: true, estado: 'omitida' }
+    }
+  } else if (!opts.forzar && !regla) {
+    await marcar({ factura_estado: 'omitida', factura_error: motivoTx
+      ? `El motivo "${MOTIVOS_ENVIO[motivoTx] ?? motivoTx}" no tiene documento configurado (Configuración → envíos por motivo).`
+      : `El tipo "${DISPARADORES[tipo] ?? tipo}" no emite documento (Configuración → qué sale por cada operación).` })
+    return { ok: true, estado: 'omitida' }
+  }
   // Ya emitida: no se emite dos veces.
   if ((comp as any).factura_estado === 'emitida' && (comp as any).factura_numero) return { ok: true, estado: 'emitida', numero: (comp as any).factura_numero }
   // El documento en Siigo va en pesos. Una operación en otra moneda no se
@@ -440,7 +464,7 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
     monto: monto.toLocaleString('es-CO', { maximumFractionDigits: 2 }), fecha: hoy,
     utilidad: String(Number(cfg.utilidad_pct) || 0),
   }
-  const { items, total, error: errorItems } = itemsDe(cfg, monto, ctx)
+  const { items, total, error: errorItems } = itemsDe(cfgEmision, monto, ctx)
   if (errorItems) { await marcar({ factura_estado: 'error', factura_error: errorItems, factura_tipo: clase }); return { ok: false, error: errorItems } }
   if (!items.length) { const e = 'No hay ítems configurados para el documento (Configuración → ítems).'; await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: clase }); return { ok: false, error: e } }
   if (total <= 0) { const e = 'Los ítems suman cero: revisá el valor de cada uno en Configuración.'; await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: clase }); return { ok: false, error: e } }
@@ -524,6 +548,15 @@ Deno.serve(async (req) => {
         fila.documentos = d
         fila.disparadores = Object.keys(d)
       }
+      // Por motivo del envío: documento soporte con qué ítem, o nada.
+      if (c.motivos && typeof c.motivos === 'object' && !Array.isArray(c.motivos)) {
+        const m: Record<string, { emite: 'DS' | 'no'; item: string | null }> = {}
+        for (const [k, v] of Object.entries(c.motivos as Record<string, any>)) {
+          if (!(k in MOTIVOS_ENVIO) || !v || typeof v !== 'object') continue
+          m[k] = { emite: v.emite === 'DS' ? 'DS' : 'no', item: v.item ? String(v.item).trim().slice(0, 100) : null }
+        }
+        fila.motivos = m
+      }
       // Qué documento sale por cada operación. Los disparadores viejos se
       // mantienen en sincronía: son las claves con documento.
       if (c.documentos && typeof c.documentos === 'object' && !Array.isArray(c.documentos)) {
@@ -569,7 +602,13 @@ Deno.serve(async (req) => {
         const clases = new Set(Object.values(reglas))
         const modelo = String(actual.modelo ?? '')
         if (!modelo) faltan.push('el modelo de negocio')
-        if (!Object.keys(reglas).length) faltan.push('qué operaciones emiten')
+        // Los motivos que emiten documento soporte necesitan su ítem, y el
+        // comprobante DS aunque el modelo sea rotación.
+        const motivosCfg: Record<string, any> = actual.motivos && typeof actual.motivos === 'object' ? actual.motivos : {}
+        const motivosDS = Object.entries(motivosCfg).filter(([, v]) => v?.emite === 'DS')
+        if (motivosDS.length) clases.add('DS')
+        for (const [k, v] of motivosDS) if (!v.item) faltan.push(`el ítem del motivo "${MOTIVOS_ENVIO[k] ?? k}"`)
+        if (!Object.keys(reglas).length && !motivosDS.length) faltan.push('qué operaciones emiten')
         if (clases.has('FV')) for (const k of ['document_id', 'seller_id', 'payment_id']) if (!actual[k]) faltan.push(`${k} (factura de venta)`)
         if (clases.has('DS')) for (const k of ['ds_document_id', 'ds_payment_id']) if (!actual[k]) faltan.push(`${k} (documento soporte)`)
         if (modelo === 'rotacion') {

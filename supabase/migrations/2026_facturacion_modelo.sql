@@ -35,5 +35,9 @@ ALTER TABLE public.facturacion_config ADD COLUMN IF NOT EXISTS item_comision tex
 ALTER TABLE public.facturacion_config ADD COLUMN IF NOT EXISTS iva_tax_id    integer;         -- impuesto de la comisión (id en Siigo)
 ALTER TABLE public.facturacion_config ADD COLUMN IF NOT EXISTS desc_terceros text;            -- plantilla de la descripción
 ALTER TABLE public.facturacion_config ADD COLUMN IF NOT EXISTS desc_comision text;
+-- Por MOTIVO del envío (el que se pregunta al confirmar: pago a proveedores,
+-- servicios, nómina…): si sale documento soporte y con qué ítem.
+-- { "proveedores": { "emite": "DS", "item": "00232" }, "nomina": { "emite": "no" } }
+ALTER TABLE public.facturacion_config ADD COLUMN IF NOT EXISTS motivos       jsonb;
 
 NOTIFY pgrst, 'reload schema';

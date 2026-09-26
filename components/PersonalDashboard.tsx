@@ -75,6 +75,7 @@ const getStoredTokenPD = (): string | null => {
 import { Logo } from './Logo';
 import { SidebarEmpresas } from './SidebarEmpresas';
 import { llamarFuncion } from '../lib/edge';
+import { MOTIVOS_ENVIO } from '../lib/motivosEnvio';
 import { MouvSection, fetchMouvBalance, fetchMouvRateValue, fetchMouvUsdCopConfig, callMouv } from './OtcMigration';
 import { MouvDispersion } from './MouvDispersion';
 import { achEta, achEtaShort } from './achEta';
@@ -537,6 +538,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       accountType: '',
       accountNumber: '',
       reason: 'Envío de dinero',
+      // El motivo del envío: se pregunta al confirmar, se le manda a Finity
+      // con la orden, y decide qué documento sale en Siigo.
+      motivo: '',
   });
   // Billetera de ORIGEN para envíos COP: los 3 rieles son saldos SEPARADOS
   // (Saldo Lincoin / Bre-B / ACH). El cliente elige de cuál sale el dinero;
@@ -2012,9 +2016,16 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               setSendStep(3);
               return;
           }
+          // Sin motivo no sale: es lo que Finity pide y lo que decide la
+          // factura o el documento soporte en Siigo.
+          if (!sendForm.motivo) {
+              sendingRef.current = false; setIsSending(false);
+              showToast('Elige el motivo del envío antes de confirmar.', 5000, 'error');
+              return;
+          }
           const recipient = isBreb
-              ? { keyType: d.brebKeyType ?? 'celular', key: d.brebKey ?? d.accountNumber, holderName: d.name, documentNumber: d.docNumber, reference: sendForm.reason }
-              : { bankCode: d.bank, accountType: (d.accountType === 'checking' ? 'corriente' : 'ahorros'), accountNumber: d.accountNumber, documentType: d.docType, documentNumber: d.docNumber, holderName: d.name, reference: sendForm.reason, ...(sendContact?.finityId ? { finityId: sendContact.finityId } : {}) };
+              ? { keyType: d.brebKeyType ?? 'celular', key: d.brebKey ?? d.accountNumber, holderName: d.name, documentNumber: d.docNumber, reference: sendForm.reason, motivo: sendForm.motivo }
+              : { bankCode: d.bank, accountType: (d.accountType === 'checking' ? 'corriente' : 'ahorros'), accountNumber: d.accountNumber, documentType: d.docType, documentNumber: d.docNumber, holderName: d.name, reference: sendForm.reason, motivo: sendForm.motivo, ...(sendContact?.finityId ? { finityId: sendContact.finityId } : {}) };
           try {
               const r = await Promise.race([
                   callMouvProxy({ action: isBreb ? 'payout_breb' : 'payout_ach', userId: currentUser.id, amount, recipient, otp: sentOtpRef.current }),
@@ -6450,6 +6461,18 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   </div>
                               </div>
                               {payoutQuote?.error && <p style={{ fontSize: 11.5, color: '#878E88' }}>No se pudo cotizar la comisión ({payoutQuote.error}) — se calculará al confirmar.</p>}
+                              {/* MOTIVO DEL ENVÍO. Obligatorio: se le manda a
+                                  Finity con la orden y decide qué documento
+                                  sale en Siigo (Contabilidad → Configuración). */}
+                              <div style={{ border: `1px solid ${sendForm.motivo ? 'rgba(255,255,255,0.1)' : 'rgba(251,191,36,0.4)'}`, borderRadius: 13, padding: '13px 16px', background: 'rgba(255,255,255,0.025)' }}>
+                                  <span style={{ color: '#878E88', fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px' }}>MOTIVO DEL ENVÍO</span>
+                                  <select value={sendForm.motivo} onChange={e => setSendForm(f => ({ ...f, motivo: e.target.value }))}
+                                      style={{ width: '100%', marginTop: 8, fontSize: 13.5, color: sendForm.motivo ? '#F4F4F2' : '#878E88', background: '#121413', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 9, padding: '10px 12px', outline: 'none', appearance: 'auto' }}>
+                                      <option value="">Elige el motivo…</option>
+                                      {MOTIVOS_ENVIO.map(m => <option key={m.v} value={m.v}>{m.l}</option>)}
+                                  </select>
+                                  <p style={{ fontSize: 11, color: '#6b716c', marginTop: 6, lineHeight: 1.45 }}>Va con la orden al banco y define qué documento se emite en tu contabilidad.</p>
+                              </div>
                               {/* Aviso antes de confirmar */}
                               <div className="flex items-start" style={{ gap: 11, border: '1px solid rgba(255,255,255,0.1)', borderLeft: '2px solid #4ADE80', background: 'rgba(255,255,255,0.03)', borderRadius: 10, padding: '12px 15px' }}>
                                   <Clock size={16} style={{ color: '#878E88', flexShrink: 0, marginTop: 1 }} strokeWidth={1.5} />
@@ -6464,7 +6487,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               ) : (
                                   <div className="flex" style={{ gap: 9 }}>
                                       <button onClick={() => setSendStep(3)} disabled={isSending} style={{ flex: 1, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 14, padding: '13px 0', borderRadius: 10, opacity: isSending ? 0.5 : 1 }} className="hover:bg-white/[0.09] transition-colors">Corregir</button>
-                                      <button onClick={requestSendConfirm} disabled={isSending} className="lincoin-btn-white transition-colors flex items-center justify-center gap-2" style={{ flex: 1.5, fontWeight: 700, fontSize: 14, padding: '13px 0', borderRadius: 10, border: 'none', opacity: isSending ? 0.45 : 1 }}>
+                                      <button onClick={requestSendConfirm} disabled={isSending || !sendForm.motivo} title={!sendForm.motivo ? 'Elige el motivo del envío' : undefined} className="lincoin-btn-white transition-colors flex items-center justify-center gap-2" style={{ flex: 1.5, fontWeight: 700, fontSize: 14, padding: '13px 0', borderRadius: 10, border: 'none', opacity: (isSending || !sendForm.motivo) ? 0.45 : 1 }}>
                                           {isSending ? <><Loader2 className="animate-spin" size={16} /> Procesando…</> : 'Confirmar envío'}
                                       </button>
                                   </div>

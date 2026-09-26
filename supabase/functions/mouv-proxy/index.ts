@@ -870,6 +870,13 @@ async function finityCall(action: string, userId: string, extra: Record<string, 
 // envío (override con el secret ACH_FEE_COP). Finity no devuelve costs en
 // la orden — doc oficial: { id, status, amount, destination_account }.
 const ACH_FEE_COP = Number(Deno.env.get('ACH_FEE_COP') ?? '2500') || 2500
+
+// Los motivos de un envío: los mismos que Finity pregunta en su pantalla
+// ("Selecciona la razón del pago"). Copia de lib/motivosEnvio.ts.
+const MOTIVOS_ENVIO: Record<string, string> = {
+  proveedores: 'Pago a proveedores', servicios: 'Pago de servicios', nomina: 'Pago de nómina',
+  gastos: 'Gastos generales', compensacion: 'Transferencia a mi cuenta de compensación', otro: 'Otro',
+}
 // ── Comisión de envío Bre-B ─────────────────────────────────────────
 // Mouv le cobra a Lincoin por CADA transferencia: 0,10% del monto + $800 fijos.
 // El 0,10% NO se re-cobra aquí: ya se le cobra al cliente el 0,10% al RECIBIR
@@ -1015,7 +1022,17 @@ async function finityPayoutAch(userId: string, recipient: Record<string, any>, a
   //    → 201 { id, status: PROCESSING|COMPLETED|FAILED, destination_account }
   //    (NO devuelve costs — el precio por transferencia es ACH_FEE_COP.)
   const requestedCop = Math.round(amountCop)
-  const w = await finityCall('create_withdrawal', userId, { data: { amount: requestedCop, currency: 'COP', destination_id: destId } })
+  // El motivo del envío va con la orden (es lo que Finity pregunta en su
+  // pantalla: "Selecciona la razón del pago"). Si Finity rechaza el campo
+  // con un 400 —que no crea nada—, se manda la orden sin él y queda en la
+  // auditoría qué contestó, para ajustar el nombre del campo con su doc.
+  const cuerpoBase = { amount: requestedCop, currency: 'COP', destination_id: destId }
+  const motivoTexto = MOTIVOS_ENVIO[String(recipient.motivo ?? '')] ?? ''
+  let w = await finityCall('create_withdrawal', userId, { data: motivoTexto ? { ...cuerpoBase, reason: motivoTexto, description: motivoTexto } : cuerpoBase })
+  if (motivoTexto && !w?.ok && Number(w?.status) === 400) {
+    await logAudit(userId, 'finity.payout.motivo_rechazado', { motivo: motivoTexto, status: w?.status ?? null, respuesta: w?.data ?? null })
+    w = await finityCall('create_withdrawal', userId, { data: cuerpoBase })
+  }
   const od: any = w?.data ?? {}
   // El error DEBE conservar status/path/cuerpo — con '{}' pelado es
   // imposible saber si fue ruta (404), auth (401) o validación (400).
@@ -2818,6 +2835,11 @@ serve(async (req: Request) => {
       if (!recipient.bankCode || !recipient.accountNumber || !recipient.accountType || !recipient.documentNumber)
         return json(400, { error: 'bad_recipient', message: 'Faltan datos de la cuenta ACH (banco, tipo, número y documento).' })
     }
+    // El MOTIVO del envío es obligatorio: va con la orden al banco y decide
+    // qué documento sale en Siigo. Sin motivo, nada sale.
+    const motivo = String(recipient.motivo ?? '').trim()
+    if (!motivo || !(motivo in MOTIVOS_ENVIO)) return json(400, { error: 'falta_motivo', message: 'Elige el motivo del envío (pago a proveedores, servicios, nómina…).' })
+    const motivoTexto = MOTIVOS_ENVIO[motivo]
 
     // 1) Comisión que SE COBRA AL CLIENTE
     //    BREB → FIJA Lincoin ($1.200 por envío, BREB_FEE_COP). El costo
@@ -2873,6 +2895,7 @@ serve(async (req: Request) => {
       ...(recipient.documentNumber ? { documentNumber: recipient.documentNumber } : {}),
       ...(recipient.documentType ? { documentType: recipient.documentType } : {}),
       ...(recipient.reference ? { reason: recipient.reference } : {}),
+      motivo, motivoTexto,
       recipient,
     }
     // El ERROR de este insert NO se puede descartar. Antes se leía solo `data`
