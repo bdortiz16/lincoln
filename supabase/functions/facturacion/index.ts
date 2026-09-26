@@ -378,7 +378,9 @@ async function asegurarCliente(token: string, partner: string, cfg: any, cp: Con
   const hay = Array.isArray(busca.data?.results) ? busca.data.results.length > 0 : Array.isArray(busca.data) ? busca.data.length > 0 : false
   if (busca.ok && hay) return { ok: true }
   if (!busca.ok) return { ok: false, error: `Buscando al cliente en Siigo — ${motivoDe(busca)}` }
-  if (!cfg.crear_clientes) return { ok: false, error: `El cliente ${cp.identification} no existe en Siigo y "crear clientes" está apagado.` }
+  // Si no existe, se crea SIEMPRE con los datos de la operación: el flujo es
+  // "toma los datos de la transferencia, guarda al tercero y emite". Una
+  // casilla para apagarlo solo producía documentos en error.
   // Empresa (NIT, id_type 31, con dígito de verificación aparte) o persona
   // (cédula, id_type 13). Se crea con lo mínimo que Siigo exige y sin
   // inventar lo que no se sabe: la responsabilidad fiscal va en "no

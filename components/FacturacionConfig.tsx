@@ -723,11 +723,15 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                     </div>
                   </>
                 )}
-                <div style={{ display: 'grid', gap: 10, marginTop: 14 }}>
-                  {chk('crear_clientes', modelo === 'psp' ? 'Crear el beneficiario en tu Siigo si no existe' : 'Crear la contraparte en tu Siigo si no existe', 'Con el documento y el nombre de la operación. Apagado, el documento queda en error hasta que lo crees vos en Siigo.')}
-                  {modelo !== 'psp' && chk('stamp', 'Enviar la factura a la DIAN (factura electrónica)', 'Apagado, Siigo la guarda sin validarla ante la DIAN.')}
-                  {modelo !== 'psp' && chk('mail', 'Que Siigo mande la factura por correo al cliente')}
-                </div>
+                <p style={{ fontSize: 12, color: C.sub, margin: '0 0 10px', lineHeight: 1.55 }}>
+                  Si el tercero no existe en tu Siigo, se crea con el nombre y el documento de la operación. No hay nada que activar.
+                </p>
+                {modelo !== 'psp' && (
+                  <div style={{ display: 'grid', gap: 10, marginTop: 14 }}>
+                    {chk('stamp', 'Enviar la factura a la DIAN (factura electrónica)', 'Apagado, Siigo la guarda sin validarla ante la DIAN.')}
+                    {chk('mail', 'Que Siigo mande la factura por correo al cliente')}
+                  </div>
+                )}
                 <div style={{ marginTop: 14 }}>
                   <Campo rot="OBSERVACIONES EN EL DOCUMENTO (OPCIONAL)">
                     <input value={form.observaciones ?? ''} onChange={e => set('observaciones', e.target.value)} placeholder="Se agrega el número del comprobante Lincoin automáticamente" style={entrada} />
