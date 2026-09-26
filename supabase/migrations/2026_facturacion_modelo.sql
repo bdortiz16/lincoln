@@ -39,5 +39,7 @@ ALTER TABLE public.facturacion_config ADD COLUMN IF NOT EXISTS desc_comision tex
 -- servicios, nómina…): si sale documento soporte y con qué ítem.
 -- { "proveedores": { "emite": "DS", "item": "00232" }, "nomina": { "emite": "no" } }
 ALTER TABLE public.facturacion_config ADD COLUMN IF NOT EXISTS motivos       jsonb;
+-- La ruta de Siigo que aceptó el documento soporte, una vez encontrada.
+ALTER TABLE public.facturacion_config ADD COLUMN IF NOT EXISTS ds_ruta       text;
 
 NOTIFY pgrst, 'reload schema';

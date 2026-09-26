@@ -514,9 +514,40 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
   if (clase === 'DS') {
     for (const it of (cuerpo as any).items) it.type = 'Product'
   }
-  const ruta = clase === 'FV' ? '/v1/invoices' : '/v1/purchases'
-  const r = await siigo('POST', ruta, { token: t.token, partner, body: cuerpo })
+  // El documento soporte: Siigo lo documenta como una compra con el tipo de
+  // comprobante DS, pero /v1/purchases contestó "invalid_document" con ese
+  // id. Como su documentación no se puede consultar desde acá, se prueban
+  // las rutas candidatas en orden y se queda la que responda. Un endpoint
+  // inexistente contesta 404 y no crea nada; un 400 de validación tampoco.
+  // Cada intento queda en factura_detalle, para ver qué dijo cada uno.
+  const RUTAS_DS = ['/v1/purchases', '/v1/support-documents', '/v1/supporting-documents', '/v1/documents-support']
+  const intentos: { ruta: string; status: number; respuesta: any }[] = []
+  let r: Resp
+  if (clase === 'FV') {
+    r = await siigo('POST', '/v1/invoices', { token: t.token, partner, body: cuerpo })
+    intentos.push({ ruta: '/v1/invoices', status: r.status, respuesta: r.data ?? r.texto })
+  } else {
+    const rutas = [cfg.ds_ruta, ...RUTAS_DS].filter((x, i, a) => x && a.indexOf(x) === i) as string[]
+    r = { ok: false, status: 0, data: null, texto: 'sin intento' }
+    for (const ruta of rutas) {
+      r = await siigo('POST', ruta, { token: t.token, partner, body: cuerpo })
+      intentos.push({ ruta, status: r.status, respuesta: r.data ?? r.texto })
+      if (r.ok) {
+        if (cfg.ds_ruta !== ruta) await db.from('facturacion_config').update({ ds_ruta: ruta }).eq('user_id', userId).then(() => {}, () => {})
+        break
+      }
+      // 404/405: la ruta no existe, se prueba la siguiente. Un 400 que no sea
+      // por el tipo de comprobante es un error real del cuerpo: no se insiste.
+      const motivo = motivoDe(r)
+      if (r.status !== 404 && r.status !== 405 && !/document\.id|invalid_document/i.test(motivo)) break
+    }
+  }
   if (!r.ok) {
+    if (intentos.length > 1) {
+      // Se muestra el intento más informativo: el que no fue 404.
+      const util = [...intentos].reverse().find(i => i.status !== 404 && i.status !== 405) ?? intentos[0]
+      r = { ok: false, status: util.status, data: typeof util.respuesta === 'object' ? util.respuesta : null, texto: typeof util.respuesta === 'string' ? util.respuesta : JSON.stringify(util.respuesta ?? '') }
+    }
     let e = `Siigo rechazó ${clase === 'FV' ? 'la factura' : 'el documento soporte'} — ${motivoDe(r)}`
     // Si el problema es el tipo de comprobante, decir cuál se mandó y cuáles
     // otros hay: la lista de Siigo trae varios y el id de uno no sirve para
@@ -529,7 +560,8 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
       e += ` · Se envió el comprobante ${usado ? `«${usado.clase ? usado.clase + ' · ' : ''}${usado.code ? usado.code + ' · ' : ''}${usado.name}» (id ${usado.id})` : `id ${idEnviado}`}.`
       e += otros.length ? ` Otros que devolvió Siigo: ${otros.join('; ')}. Elegí otro en Configuración.` : ' Siigo no devolvió otro comprobante de ese tipo.'
     }
-    await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: clase, factura_detalle: { enviado: cuerpo, respuesta: r.data ?? r.texto } })
+    if (intentos.length > 1) e += ` · Rutas probadas: ${intentos.map(i => `${i.ruta} → HTTP ${i.status}`).join(', ')}.`
+    await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: clase, factura_detalle: { enviado: cuerpo, intentos } })
     return { ok: false, error: e }
   }
   const d = r.data ?? {}
@@ -538,7 +570,7 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
     factura_estado: 'emitida', factura_error: null, factura_tipo: clase,
     factura_proveedor: 'siigo', factura_id: d.id != null ? String(d.id) : null,
     factura_numero: numero, factura_cufe: d.stamp?.cufe ?? null, factura_url: d.public_url ?? null,
-    factura_at: new Date().toISOString(), factura_detalle: { enviado: cuerpo, respuesta: d },
+    factura_at: new Date().toISOString(), factura_detalle: { enviado: cuerpo, respuesta: d, intentos },
   })
   return { ok: true, estado: 'emitida', tipo: clase, numero, cufe: d.stamp?.cufe ?? null, url: d.public_url ?? null }
 }
