@@ -246,6 +246,23 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     setFoliosVersion(v => v + 1);
     if (!r?.ok) alert(r?.error ?? 'No se pudo emitir la factura.');
   };
+  // Emitir a mano el documento de un movimiento completado que quedó sin
+  // él (antes de activar, omitido por la regla, o sin comprobante).
+  const [emitiendo, setEmitiendo] = useState<string | null>(null);
+  const emitirMovimiento = async (txId: string) => {
+    setEmitiendo(txId);
+    const r = await llamarFuncion('facturacion', { action: 'emitir_movimiento', transactionId: txId }, 60000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    setEmitiendo(null);
+    setFoliosVersion(v => v + 1);
+    if (!r?.ok) alert(r?.error ?? 'No se pudo emitir el documento.');
+  };
+  const botonEmitir = (txId: string) => (
+    <button onClick={() => emitirMovimiento(txId)} disabled={emitiendo === txId}
+      title="Emitir ahora el documento en Siigo con la configuración actual"
+      style={{ fontFamily: FONT, fontSize: 11, fontWeight: 700, color: C.text, background: 'rgba(255,255,255,0.06)', border: `1px solid ${C.borde}`, borderRadius: 6, padding: '3px 8px', cursor: 'pointer', opacity: emitiendo === txId ? 0.5 : 1 }}>
+      {emitiendo === txId ? '…' : 'Emitir'}
+    </button>
+  );
 
   // Todos los asientos de la cuenta.
   const asientos = useMemo(() => (transactions ?? []).filter(t => t.userId === userId).flatMap(asientosDe), [transactions, userId]);
@@ -453,7 +470,21 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                     <td style={{ padding: '11px 20px', fontSize: 12, borderBottom: `1px solid ${C.borde}`, whiteSpace: 'nowrap' }} onClick={e => e.stopPropagation()}>
                       {(() => {
                         const fa = f?.factura;
-                        if (!f || !fa?.estado) return <span style={{ color: C.tenue }}>{f && facturacionActiva ? 'pendiente' : '—'}</span>;
+                        const completado = a.estado === 'Completado';
+                        const txId = String((a.tx as any)?.id ?? '');
+                        // Sin documento y completado: se puede emitir a mano.
+                        if (!f || !fa?.estado) return (
+                          <span className="flex items-center" style={{ gap: 6 }}>
+                            <span style={{ color: C.tenue }}>{f && facturacionActiva ? 'pendiente' : '—'}</span>
+                            {completado && facturacionActiva && txId && botonEmitir(txId)}
+                          </span>
+                        );
+                        if (fa.estado === 'omitida' || fa.estado === 'pendiente') return (
+                          <span className="flex items-center" style={{ gap: 6 }} title={fa.error ?? ''}>
+                            <span style={{ color: C.tenue }}>{fa.estado === 'omitida' ? 'no aplica' : fa.estado}</span>
+                            {completado && facturacionActiva && txId && botonEmitir(txId)}
+                          </span>
+                        );
                         // "DS" delante cuando lo que salió fue un documento
                         // soporte, no una factura: son dos cosas distintas.
                         const rotulo = fa.tipo === 'DS' ? 'DS · ' : '';

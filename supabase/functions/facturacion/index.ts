@@ -421,8 +421,13 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
   // regla decide: documento soporte con el ítem que se ligó, o nada.
   const motivoTx = String((comp as any)?.detalle?.raw_data?.motivo ?? '')
   const reglaMotivo = motivoTx && cfg.motivos && typeof cfg.motivos === 'object' ? (cfg.motivos as any)[motivoTx] : null
-  let clase: 'FV' | 'DS' = regla ?? 'FV'
-  let cfgEmision: any = cfg
+  // Sin regla (emisión forzada a mano): por la dirección de la plata. Una
+  // salida es documento soporte; una entrada, factura de venta.
+  const esSalida = ['dispersion', 'send', 'pay_sent', 'otc_withdraw'].includes(tipo)
+  let clase: 'FV' | 'DS' = regla ?? (esSalida ? 'DS' : 'FV')
+  // El documento soporte siempre es UN ítem por el monto total (el del
+  // motivo, o el general de terceros), aunque el modelo sea rotación.
+  let cfgEmision: any = clase === 'DS' ? { ...cfg, modelo: 'psp' } : cfg
   if (reglaMotivo) {
     if (reglaMotivo.emite === 'DS' && reglaMotivo.item) {
       clase = 'DS'
@@ -682,6 +687,36 @@ Deno.serve(async (req) => {
       const { data: comp } = await db.from('comprobantes').select('user_id').eq('folio', folio).maybeSingle()
       if (!comp || String((comp as any).user_id) !== userId) return json({ ok: false, error: 'comprobante_no_encontrado' }, 404)
       return json(await emitir(folio, { forzar: true }))
+    }
+
+    // ── Emitir a mano el documento de UN movimiento ──────────────────
+    // Para los que quedaron sin documento: completados antes de activar,
+    // omitidos por la regla, o sin comprobante todavía. Si el movimiento no
+    // tiene comprobante, se le crea acá (mismo formato que al completarse).
+    if (accion === 'emitir_movimiento') {
+      const txId = String(body.transactionId ?? '')
+      if (!txId) return json({ ok: false, error: 'falta_transactionId' }, 400)
+      const { data: tx } = await db.from('transactions').select('id, user_id, type, amount, currency, status, raw_data').eq('id', txId).maybeSingle()
+      if (!tx || String((tx as any).user_id) !== userId) return json({ ok: false, error: 'movimiento_no_encontrado' }, 404)
+      if (String((tx as any).status) !== 'Completado') return json({ ok: false, error: `La operación está en "${(tx as any).status}". Solo se emite cuando queda Completada.` })
+      let { data: comp } = await db.from('comprobantes').select('folio').eq('transaction_id', txId).maybeSingle()
+      if (!comp) {
+        const rd = ((tx as any).raw_data ?? {}) as Record<string, any>
+        const t = String((tx as any).type)
+        const contraparte = (t === 'dispersion' || t === 'send') ? (rd.beneficiary ?? rd.bank ?? null)
+          : t === 'pay_received' ? (rd.senderName ?? null) : t === 'pay_sent' ? (rd.recipientName ?? null)
+            : t === 'load' ? (rd.method ?? rd.bank ?? null) : null
+        const fila = {
+          transaction_id: txId, user_id: userId, tipo: t, monto: String((tx as any).amount), moneda: (tx as any).currency,
+          contraparte, estado_al_emitir: (tx as any).status,
+          detalle: { id: txId, type: t, amount: (tx as any).amount, currency: (tx as any).currency, status: (tx as any).status, raw_data: rd },
+        }
+        const ins = await db.from('comprobantes').insert(fila).select('folio').maybeSingle()
+        if (ins.error && ins.error.code !== '23505') return json({ ok: false, error: `No se pudo crear el comprobante: ${ins.error.message}` }, 500)
+        comp = ins.data ?? (await db.from('comprobantes').select('folio').eq('transaction_id', txId).maybeSingle()).data
+        if (!comp) return json({ ok: false, error: 'No se pudo crear el comprobante del movimiento.' }, 500)
+      }
+      return json(await emitir(Number((comp as any).folio), { forzar: true }))
     }
 
     if (accion === 'facturas') {
