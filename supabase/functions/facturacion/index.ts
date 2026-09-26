@@ -498,6 +498,11 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
       document: { id: Number(cfg.ds_document_id) },
       date: hoy,
       supplier: { identification: cp.identification, branch_office: 0 },
+      // Siigo exige en compras la referencia del documento del proveedor,
+      // también para el documento soporte ("The field provider_invoice is
+      // required"). Un beneficiario que no factura no tiene una; va el
+      // comprobante de Lincoin, que es el soporte real y es trazable.
+      provider_invoice: { prefix: 'LC', number: String(folio) },
       observations, items,
       payments: [{ id: Number(cfg.ds_payment_id), value: total, due_date: hoy }],
     }
