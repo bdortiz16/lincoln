@@ -172,15 +172,35 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
   const conectado = !!cfg?.ultimo_test_ok && !!cfg?.tieneAccessKey;
   const utilidad = Number(form.utilidad_pct) || 0;
   const impuestos: any[] = cat?.impuestos ?? [];
-  const iva = form.iva_tax_id ? impuestos.find((t: any) => String(t.id) === String(form.iva_tax_id)) : null;
-  const tarifa = iva ? (Number(iva.percentage) || 0) / 100 : 0;
+  // Lo que cada producto tiene configurado EN SIIGO. Es lo que Siigo va a
+  // aplicar, diga lo que diga la etiqueta de acá: si el ítem de terceros
+  // tiene IVA, la factura sale con IVA. Por eso se mira y se avisa.
+  const productoDe = (code: string) => (cat?.productos ?? []).find((p: any) => String(p.code) === String(code)) ?? null;
+  const ivaDelProducto = (code: string): { id: number; name: string; percentage: number } | null => {
+    const taxes: any[] = productoDe(code)?.taxes ?? [];
+    const conValor = taxes.filter(t => (Number(t.percentage) || 0) > 0);
+    const t = conValor.find(x => /iva/i.test(String(x.name ?? '')) || /iva/i.test(String(x.type ?? ''))) ?? conValor[0];
+    return t ? { id: Number(t.id), name: String(t.name ?? ''), percentage: Number(t.percentage) || 0 } : null;
+  };
+  const prodTerceros = productoDe(form.item_terceros);
+  const prodComision = productoDe(form.item_comision);
+  const ivaTerceros = form.item_terceros ? ivaDelProducto(form.item_terceros) : null;
+  const ivaComisionProd = form.item_comision ? ivaDelProducto(form.item_comision) : null;
+  const ivaElegido = form.iva_tax_id ? impuestos.find((t: any) => String(t.id) === String(form.iva_tax_id)) : null;
+  // El IVA de la comisión: el del ítem en Siigo manda; si el ítem no tiene,
+  // el elegido acá (se manda en la línea para que aplique).
+  const iva = ivaComisionProd ?? (ivaElegido ? { id: Number(ivaElegido.id), name: String(ivaElegido.name ?? ''), percentage: Number(ivaElegido.percentage) || 0 } : null);
+  const tarifa = iva ? iva.percentage / 100 : 0;
   const faltantes = [
     !credOk ? 'credenciales' : '',
     !modelo ? 'el modelo de negocio' : '',
     modelo && !ops.length ? 'qué operaciones emiten' : '',
     modelo === 'rotacion' && !(utilidad > 0) ? 'el porcentaje de utilidad' : '',
     modelo && !form.item_terceros ? 'el ítem de servicio para terceros' : '',
+    modelo && ivaTerceros ? 'un ítem de servicio para terceros SIN IVA (el elegido tiene IVA en Siigo)' : '',
+    modelo && prodTerceros && prodTerceros.active === false ? 'un ítem de servicio para terceros activo en Siigo' : '',
     modelo === 'rotacion' && !form.item_comision ? 'el ítem de comisión' : '',
+    modelo === 'rotacion' && prodComision && prodComision.active === false ? 'un ítem de comisión activo en Siigo' : '',
     modelo === 'rotacion' && !(form.document_id && form.seller_id && form.payment_id) ? 'el comprobante, vendedor y forma de pago de la factura' : '',
     modelo === 'psp' && !(form.ds_document_id && form.ds_payment_id) ? 'el comprobante y forma de pago del documento soporte' : '',
   ].filter(Boolean);
@@ -203,19 +223,26 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
 
   // El ejemplo con 15.000.000, calculado igual que el servidor: la misma
   // fórmula a la vista, no una promesa.
+  // Si el ítem de terceros tiene IVA en Siigo, el ejemplo lo muestra: así
+  // saldría la factura. Y el total deja de cuadrar, en ámbar.
+  const tarifaTerceros = ivaTerceros ? ivaTerceros.percentage / 100 : 0;
   const ejemplo = (() => {
-    if (modelo === 'psp') return { lineas: [{ n: nombreProducto(form.item_terceros) || 'Servicio para terceros', v: EJEMPLO, iva: 0 }], total: EJEMPLO };
+    if (modelo === 'psp') {
+      const ivaT = r2(EJEMPLO * tarifaTerceros);
+      return { lineas: [{ n: nombreProducto(form.item_terceros) || 'Servicio para terceros', v: EJEMPLO, iva: ivaT, rotulo: ivaTerceros ? `${ivaTerceros.name || 'IVA'} ${ivaTerceros.percentage} %` : 'sin IVA' }], total: r2(EJEMPLO + ivaT) };
+    }
     if (modelo !== 'rotacion') return null;
     const util = r2(EJEMPLO * utilidad / 100);
     const base = r2(util / (1 + tarifa));
     const ivaV = r2(base * tarifa);
     const terceros = r2(EJEMPLO - base - ivaV);
+    const ivaT = r2(terceros * tarifaTerceros);
     return {
       lineas: [
-        { n: nombreProducto(form.item_terceros) || 'Servicio para terceros', v: terceros, iva: 0 },
-        { n: nombreProducto(form.item_comision) || 'Comisión', v: base, iva: ivaV },
+        { n: nombreProducto(form.item_terceros) || 'Servicio para terceros', v: terceros, iva: ivaT, rotulo: ivaTerceros ? `${ivaTerceros.name || 'IVA'} ${ivaTerceros.percentage} %` : 'sin IVA' },
+        { n: nombreProducto(form.item_comision) || 'Comisión', v: base, iva: ivaV, rotulo: iva ? `${iva.name || 'IVA'} ${iva.percentage} %` : 'sin IVA' },
       ],
-      total: r2(terceros + base + ivaV), util,
+      total: r2(terceros + ivaT + base + ivaV), util,
     };
   })();
   const sinCatalogoDs = !!cat && !Array.isArray(cat.documentos_ds);
@@ -355,17 +382,47 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                         <input type="number" min={0} max={100} step={0.01} value={form.utilidad_pct ?? ''} onChange={e => set('utilidad_pct', e.target.value)} placeholder="1" inputMode="decimal" style={entrada} />
                       </Campo>
                     )}
-                    <Campo rot="ÍTEM · SERVICIO PARA TERCEROS" ayuda={cat?.fuentes?.productos?.motivo ?? `El producto de Siigo para el dinero de terceros. Sin IVA.${cat ? ` ${productos.length} productos traídos el ${fecha(cat.traido_at)}; si creaste uno nuevo, dale a «Actualizar catálogos».` : ''}`}>
-                      {select('item_terceros', productos, 'Siigo no devolvió productos')}
-                    </Campo>
+                    <div>
+                      <Campo rot="ÍTEM · SERVICIO PARA TERCEROS" ayuda={cat?.fuentes?.productos?.motivo ?? `El producto de Siigo para el dinero de terceros. Tiene que estar SIN IVA en Siigo.${cat ? ` ${productos.length} productos traídos el ${fecha(cat.traido_at)}; si creaste uno nuevo, dale a «Actualizar catálogos».` : ''}`}>
+                        {select('item_terceros', productos, 'Siigo no devolvió productos')}
+                      </Campo>
+                      {ivaTerceros && (
+                        <p style={{ fontSize: 11.5, color: C.ambar, margin: '6px 0 0', lineHeight: 1.5 }}>
+                          Este ítem tiene {ivaTerceros.name || 'IVA'} {ivaTerceros.percentage} % en Siigo, y el servicio para terceros va sin IVA. Si se usa así, la factura sale con IVA sobre todo el monto. Elegí otro ítem o quitale el impuesto en Siigo.
+                        </p>
+                      )}
+                      {prodTerceros && prodTerceros.active === false && (
+                        <p style={{ fontSize: 11.5, color: C.ambar, margin: '6px 0 0', lineHeight: 1.5 }}>Este ítem está inactivo en Siigo. Activalo allá o elegí otro.</p>
+                      )}
+                      {prodTerceros && !ivaTerceros && prodTerceros.active !== false && (
+                        <p style={{ fontSize: 11.5, color: C.verde, margin: '6px 0 0', lineHeight: 1.5 }}>Sin IVA en Siigo, activo. Correcto.</p>
+                      )}
+                    </div>
                     {modelo === 'rotacion' && (
                       <>
-                        <Campo rot="ÍTEM · COMISIÓN" ayuda="El producto de Siigo para tu comisión. Lleva IVA.">
-                          {select('item_comision', productos, 'Siigo no devolvió productos')}
-                        </Campo>
-                        <Campo rot="IVA DE LA COMISIÓN" ayuda={cat?.fuentes?.impuestos?.motivo ?? 'Con esta tarifa se calcula la base: base + IVA = utilidad.'}>
-                          {select('iva_tax_id', impuestos.map((t: any) => ({ v: t.id, t: `${t.name}${t.percentage ? ` · ${t.percentage} %` : ''}` })), 'Siigo no devolvió impuestos')}
-                        </Campo>
+                        <div>
+                          <Campo rot="ÍTEM · COMISIÓN" ayuda="El producto de Siigo para tu comisión. Tiene que tener IVA en Siigo.">
+                            {select('item_comision', productos, 'Siigo no devolvió productos')}
+                          </Campo>
+                          {ivaComisionProd && (
+                            <p style={{ fontSize: 11.5, color: C.verde, margin: '6px 0 0', lineHeight: 1.5 }}>
+                              Con {ivaComisionProd.name || 'IVA'} {ivaComisionProd.percentage} % en Siigo. Con esa tarifa se calcula la base: base + IVA = utilidad.
+                            </p>
+                          )}
+                          {prodComision && !ivaComisionProd && (
+                            <p style={{ fontSize: 11.5, color: C.ambar, margin: '6px 0 0', lineHeight: 1.5 }}>
+                              Este ítem no tiene IVA en Siigo. La comisión lleva IVA: ponéselo en Siigo, o elegí abajo el impuesto y se manda en la línea.
+                            </p>
+                          )}
+                          {prodComision && prodComision.active === false && (
+                            <p style={{ fontSize: 11.5, color: C.ambar, margin: '6px 0 0', lineHeight: 1.5 }}>Este ítem está inactivo en Siigo. Activalo allá o elegí otro.</p>
+                          )}
+                        </div>
+                        {prodComision && !ivaComisionProd && (
+                          <Campo rot="IVA DE LA COMISIÓN" ayuda={cat?.fuentes?.impuestos?.motivo ?? 'Solo porque el ítem no trae IVA desde Siigo. Se manda en la línea de la factura.'}>
+                            {select('iva_tax_id', impuestos.map((t: any) => ({ v: t.id, t: `${t.name}${t.percentage ? ` · ${t.percentage} %` : ''}` })), 'Siigo no devolvió impuestos')}
+                          </Campo>
+                        )}
                       </>
                     )}
                   </div>
@@ -381,7 +438,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                       <div style={{ marginTop: 8, maxHeight: 220, overflowY: 'auto', border: `1px solid ${C.bordeSuave}`, borderRadius: 10 }}>
                         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                           <thead>
-                            <tr>{['CÓDIGO', 'NOMBRE', 'TIPO', 'ESTADO'].map(h => <th key={h} style={{ textAlign: 'left', padding: '7px 10px', fontSize: 10, letterSpacing: '1px', color: C.sub, borderBottom: `1px solid ${C.bordeSuave}` }}>{h}</th>)}</tr>
+                            <tr>{['CÓDIGO', 'NOMBRE', 'TIPO', 'IMPUESTOS', 'ESTADO'].map(h => <th key={h} style={{ textAlign: 'left', padding: '7px 10px', fontSize: 10, letterSpacing: '1px', color: C.sub, borderBottom: `1px solid ${C.bordeSuave}` }}>{h}</th>)}</tr>
                           </thead>
                           <tbody>
                             {(cat.productos ?? []).map((p: any) => (
@@ -389,10 +446,11 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                                 <td style={{ padding: '6px 10px', fontFamily: 'ui-monospace, monospace', color: C.text }}>{p.code}</td>
                                 <td style={{ padding: '6px 10px', color: C.text }}>{p.name}</td>
                                 <td style={{ padding: '6px 10px', color: C.sub }}>{p.type ?? '—'}</td>
+                                <td style={{ padding: '6px 10px', color: C.sub }}>{(p.taxes ?? []).length ? (p.taxes ?? []).map((t: any) => `${t.name}${t.percentage ? ` ${t.percentage} %` : ''}`).join(', ') : 'sin impuestos'}</td>
                                 <td style={{ padding: '6px 10px', color: p.active === false ? C.ambar : C.sub }}>{p.active === false ? 'inactivo' : 'activo'}</td>
                               </tr>
                             ))}
-                            {!(cat.productos ?? []).length && <tr><td colSpan={4} style={{ padding: '8px 10px', color: C.tenue }}>Siigo no devolvió ningún producto.</td></tr>}
+                            {!(cat.productos ?? []).length && <tr><td colSpan={5} style={{ padding: '8px 10px', color: C.tenue }}>Siigo no devolvió ningún producto.</td></tr>}
                           </tbody>
                         </table>
                       </div>
@@ -467,7 +525,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                             <tr key={i}>
                               <td style={{ padding: '5px 0', color: C.text }}>{l.n}</td>
                               <td style={{ padding: '5px 0', textAlign: 'right', color: C.text, fontFamily: 'ui-monospace, monospace' }}>{fmtCop(l.v)}</td>
-                              <td style={{ padding: '5px 0 5px 12px', textAlign: 'right', color: C.sub, fontFamily: 'ui-monospace, monospace', whiteSpace: 'nowrap' }}>{l.iva ? `IVA ${fmtCop(l.iva)}` : 'sin IVA'}</td>
+                              <td style={{ padding: '5px 0 5px 12px', textAlign: 'right', color: l.iva && l.n === (nombreProducto(form.item_terceros) || 'Servicio para terceros') ? C.ambar : C.sub, fontFamily: 'ui-monospace, monospace', whiteSpace: 'nowrap' }}>{l.iva ? `${l.rotulo} · ${fmtCop(l.iva)}` : l.rotulo}</td>
                             </tr>
                           ))}
                           <tr>
@@ -477,7 +535,9 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                         </tbody>
                       </table>
                       {modelo === 'rotacion' && !(utilidad > 0) && <p style={{ fontSize: 11.5, color: C.ambar, margin: '8px 0 0' }}>Poné tu utilidad para ver la comisión.</p>}
-                      {modelo === 'rotacion' && utilidad > 0 && !iva && <p style={{ fontSize: 11.5, color: C.ambar, margin: '8px 0 0' }}>Sin IVA elegido, la comisión va sin impuesto. Elegí el IVA arriba.</p>}
+                      {modelo === 'rotacion' && utilidad > 0 && !iva && <p style={{ fontSize: 11.5, color: C.ambar, margin: '8px 0 0' }}>La comisión va sin impuesto: el ítem no tiene IVA en Siigo y no elegiste uno.</p>}
+                      {ivaTerceros && <p style={{ fontSize: 11.5, color: C.ambar, margin: '8px 0 0' }}>El total no cuadra con el monto porque el ítem de terceros tiene IVA en Siigo. Así saldría la factura; por eso no se puede activar con ese ítem.</p>}
+                      {ejemplo.total === EJEMPLO && <p style={{ fontSize: 11.5, color: C.tenue, margin: '8px 0 0' }}>Los impuestos son los que cada ítem tiene en tu Siigo, no una etiqueta de acá.</p>}
                     </div>
                   )}
                 </Seccion>

@@ -197,7 +197,13 @@ async function traerCatalogos(token: string, partner: string) {
   const vendedores = lista(usr).map((u: any) => ({ id: u.id, nombre: [u.first_name, u.last_name].filter(Boolean).join(' ') || u.username || String(u.id), username: u.username, activo: u.active }))
   const pagos = lista(pag).map((p: any) => ({ id: p.id, name: p.name, type: p.type }))
   const pagos_ds = lista(pagFc).map((p: any) => ({ id: p.id, name: p.name, type: p.type }))
-  const productos = lista(prod).map((p: any) => ({ id: p.id, code: p.code, name: p.name, type: p.type, active: p.active }))
+  // Con los IMPUESTOS de cada producto: el IVA lo decide el ítem en Siigo,
+  // no una etiqueta nuestra. Sin esto se le decía "sin IVA" a un ítem que
+  // en Siigo tiene IVA, y la factura salía con IVA igual.
+  const productos = lista(prod).map((p: any) => ({
+    id: p.id, code: p.code, name: p.name, type: p.type, active: p.active,
+    taxes: (Array.isArray(p.taxes) ? p.taxes : []).map((t: any) => ({ id: t.id, name: t.name, type: t.type, percentage: Number(t.percentage) || 0 })),
+  }))
   const impuestos = lista(imp).map((t: any) => ({ id: t.id, name: t.name, type: t.type, percentage: Number(t.percentage) || 0 }))
   anota('documentos', doc, documentos); anota('vendedores', usr, vendedores); anota('pagos', pag, pagos); anota('productos', prod, productos)
   // Para el documento soporte basta con que UNA de las dos listas haya
@@ -247,12 +253,27 @@ const r2 = (n: number) => Math.round(n * 100) / 100
 //  SALIDA sale un documento soporte al beneficiario por el monto total, con
 //  el ítem de servicio para terceros, sin IVA. La factura de la comisión al
 //  cliente de quien vino el negocio la hace el usuario en Siigo.
-function itemsDelModelo(cfg: any, monto: number, ctx: Record<string, string>): { items: any[]; total: number } | null {
+// El impuesto que un producto tiene configurado EN SIIGO. Es el que Siigo
+// va a aplicar, se le mande lo que se le mande.
+function ivaDelProducto(cfg: any, code: string): { id: number; name: string; percentage: number } | null {
+  const productos: any[] = Array.isArray(cfg.catalogos?.productos) ? cfg.catalogos.productos : []
+  const p = productos.find((x: any) => String(x.code) === String(code))
+  const taxes: any[] = Array.isArray(p?.taxes) ? p.taxes : []
+  const conValor = taxes.filter(t => (Number(t.percentage) || 0) > 0)
+  const iva = conValor.find(t => /iva/i.test(String(t.name ?? '')) || /iva/i.test(String(t.type ?? ''))) ?? conValor[0]
+  return iva ? { id: Number(iva.id), name: String(iva.name ?? ''), percentage: Number(iva.percentage) || 0 } : null
+}
+
+function itemsDelModelo(cfg: any, monto: number, ctx: Record<string, string>): { items: any[]; total: number; error?: string } | null {
   const modelo = String(cfg.modelo ?? '')
   if (modelo !== 'rotacion' && modelo !== 'psp') return null
   const plantilla = (s: string) => s.replace(/\{(\w+)\}/g, (_m, k) => ctx[k] ?? `{${k}}`)
   const terceros = String(cfg.item_terceros ?? '').trim()
   if (!terceros) return { items: [], total: 0 }
+  // El servicio para terceros NO lleva IVA. Si el ítem elegido tiene IVA en
+  // Siigo, Siigo se lo va a cobrar sí o sí: no se emite y se dice por qué.
+  const ivaTerceros = ivaDelProducto(cfg, terceros)
+  if (ivaTerceros) return { items: [], total: 0, error: `El ítem de servicio para terceros (${terceros}) tiene ${ivaTerceros.name || 'IVA'} ${ivaTerceros.percentage} % en Siigo, y ese servicio va sin IVA. Elegí otro ítem en Configuración o quitale el impuesto en Siigo.` }
   const descT = plantilla(cfg.desc_terceros || 'Servicio para terceros · {contraparte} · Comprobante Lincoin {numero}').slice(0, 500)
 
   if (modelo === 'psp') {
@@ -262,9 +283,12 @@ function itemsDelModelo(cfg: any, monto: number, ctx: Record<string, string>): {
   const comision = String(cfg.item_comision ?? '').trim()
   const pct = Number(cfg.utilidad_pct) || 0
   if (!comision || pct <= 0) return { items: [], total: 0 }
+  // El IVA de la comisión: el del ítem en Siigo. Si el ítem no tiene, el que
+  // se eligió en Configuración (y se manda en la línea para que aplique).
   const impuestos: any[] = Array.isArray(cfg.catalogos?.impuestos) ? cfg.catalogos.impuestos : []
-  const iva = cfg.iva_tax_id ? impuestos.find((t: any) => Number(t.id) === Number(cfg.iva_tax_id)) : null
-  const tarifa = iva ? (Number(iva.percentage) || 0) / 100 : 0
+  const ivaElegido = cfg.iva_tax_id ? impuestos.find((t: any) => Number(t.id) === Number(cfg.iva_tax_id)) : null
+  const iva = ivaDelProducto(cfg, comision) ?? (ivaElegido ? { id: Number(ivaElegido.id), name: String(ivaElegido.name ?? ''), percentage: Number(ivaElegido.percentage) || 0 } : null)
+  const tarifa = iva ? iva.percentage / 100 : 0
   const utilidad = r2(monto * pct / 100)
   const baseComision = r2(utilidad / (1 + tarifa))
   const ivaComision = r2(baseComision * tarifa)
@@ -274,13 +298,13 @@ function itemsDelModelo(cfg: any, monto: number, ctx: Record<string, string>): {
   return {
     items: [
       { code: terceros, description: descT, quantity: 1, price: valorTerceros },
-      { code: comision, description: descC, quantity: 1, price: baseComision, ...(cfg.iva_tax_id ? { taxes: [{ id: Number(cfg.iva_tax_id) }] } : {}) },
+      { code: comision, description: descC, quantity: 1, price: baseComision, ...(iva ? { taxes: [{ id: iva.id }] } : {}) },
     ],
     total: r2(valorTerceros + baseComision + ivaComision),
   }
 }
 
-function itemsDe(cfg: any, monto: number, ctx: Record<string, string>): { items: any[]; total: number } {
+function itemsDe(cfg: any, monto: number, ctx: Record<string, string>): { items: any[]; total: number; error?: string } {
   const delModelo = itemsDelModelo(cfg, monto, ctx)
   if (delModelo) return delModelo
   const lista: ItemCfg[] = Array.isArray(cfg.items) && cfg.items.length ? cfg.items
@@ -416,7 +440,8 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
     monto: monto.toLocaleString('es-CO', { maximumFractionDigits: 2 }), fecha: hoy,
     utilidad: String(Number(cfg.utilidad_pct) || 0),
   }
-  const { items, total } = itemsDe(cfg, monto, ctx)
+  const { items, total, error: errorItems } = itemsDe(cfg, monto, ctx)
+  if (errorItems) { await marcar({ factura_estado: 'error', factura_error: errorItems, factura_tipo: clase }); return { ok: false, error: errorItems } }
   if (!items.length) { const e = 'No hay ítems configurados para el documento (Configuración → ítems).'; await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: clase }); return { ok: false, error: e } }
   if (total <= 0) { const e = 'Los ítems suman cero: revisá el valor de cada uno en Configuración.'; await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: clase }); return { ok: false, error: e } }
   const observations = [cfg.observaciones, `Comprobante Lincoin ${(comp as any).numero}`].filter(Boolean).join(' · ').slice(0, 500)
