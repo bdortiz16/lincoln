@@ -517,7 +517,18 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
   const ruta = clase === 'FV' ? '/v1/invoices' : '/v1/purchases'
   const r = await siigo('POST', ruta, { token: t.token, partner, body: cuerpo })
   if (!r.ok) {
-    const e = `Siigo rechazó ${clase === 'FV' ? 'la factura' : 'el documento soporte'} — ${motivoDe(r)}`
+    let e = `Siigo rechazó ${clase === 'FV' ? 'la factura' : 'el documento soporte'} — ${motivoDe(r)}`
+    // Si el problema es el tipo de comprobante, decir cuál se mandó y cuáles
+    // otros hay: la lista de Siigo trae varios y el id de uno no sirve para
+    // el endpoint del otro.
+    if (/document\.id|invalid_document/i.test(e)) {
+      const lista: any[] = clase === 'FV' ? (cfg.catalogos?.documentos ?? []) : (cfg.catalogos?.documentos_ds ?? [])
+      const idEnviado = clase === 'FV' ? cfg.document_id : cfg.ds_document_id
+      const usado = lista.find((d: any) => String(d.id) === String(idEnviado))
+      const otros = lista.filter((d: any) => String(d.id) !== String(idEnviado)).map((d: any) => `${d.clase ? d.clase + ' · ' : ''}${d.code ? d.code + ' · ' : ''}${d.name} (id ${d.id})`)
+      e += ` · Se envió el comprobante ${usado ? `«${usado.clase ? usado.clase + ' · ' : ''}${usado.code ? usado.code + ' · ' : ''}${usado.name}» (id ${usado.id})` : `id ${idEnviado}`}.`
+      e += otros.length ? ` Otros que devolvió Siigo: ${otros.join('; ')}. Elegí otro en Configuración.` : ' Siigo no devolvió otro comprobante de ese tipo.'
+    }
     await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: clase, factura_detalle: { enviado: cuerpo, respuesta: r.data ?? r.texto } })
     return { ok: false, error: e }
   }

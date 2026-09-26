@@ -649,6 +649,39 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                           </Campo>
                         </div>
                       )}
+                      {/* Lo que Siigo devolvió, tal cual: para saber qué
+                          comprobante se está mandando cuando Siigo dice que
+                          el id no sirve. */}
+                      {cat && Array.isArray(cat.documentos_ds) && (
+                        <details style={{ marginTop: 10 }}>
+                          <summary style={{ fontSize: 11.5, color: C.sub, cursor: 'pointer' }}>
+                            Ver los {cat.documentos_ds.length} comprobantes de compra / documento soporte que devolvió Siigo
+                            {cat.fuentes?.documentos_ds ? ` (HTTP ${cat.fuentes.documentos_ds.status}${cat.fuentes.documentos_ds.ok ? '' : ` · ${cat.fuentes.documentos_ds.motivo}`})` : ''}
+                          </summary>
+                          <div style={{ marginTop: 8, maxHeight: 220, overflowY: 'auto', border: `1px solid ${C.bordeSuave}`, borderRadius: 10 }}>
+                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                              <thead>
+                                <tr>{['CLASE', 'ID', 'CÓDIGO', 'NOMBRE', 'ELECTRÓNICO'].map(h => <th key={h} style={{ textAlign: 'left', padding: '7px 10px', fontSize: 10, letterSpacing: '1px', color: C.sub, borderBottom: `1px solid ${C.bordeSuave}` }}>{h}</th>)}</tr>
+                              </thead>
+                              <tbody>
+                                {cat.documentos_ds.map((d: any) => (
+                                  <tr key={`${d.clase}-${d.id}`} style={{ background: String(d.id) === String(form.ds_document_id) ? 'rgba(74,222,128,0.06)' : 'transparent' }}>
+                                    <td style={{ padding: '6px 10px', color: C.text }}>{d.clase}</td>
+                                    <td style={{ padding: '6px 10px', fontFamily: 'ui-monospace, monospace', color: C.text }}>{d.id}</td>
+                                    <td style={{ padding: '6px 10px', fontFamily: 'ui-monospace, monospace', color: C.text }}>{d.code ?? '—'}</td>
+                                    <td style={{ padding: '6px 10px', color: C.text }}>{d.name}</td>
+                                    <td style={{ padding: '6px 10px', color: C.sub }}>{d.electronic == null ? '—' : String(d.electronic)}</td>
+                                  </tr>
+                                ))}
+                                {!cat.documentos_ds.length && <tr><td colSpan={5} style={{ padding: '8px 10px', color: C.tenue }}>Siigo no devolvió ninguno.</td></tr>}
+                              </tbody>
+                            </table>
+                          </div>
+                          <p style={{ fontSize: 11, color: C.tenue, margin: '6px 0 0', lineHeight: 1.5 }}>
+                            El documento soporte sale por el endpoint de compras de Siigo. Si Siigo dice que el id no es válido, probá con el otro comprobante de la lista y volvé a emitir.
+                          </p>
+                        </details>
+                      )}
                     </>
                   )}
 
