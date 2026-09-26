@@ -499,6 +499,17 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
       observations, items,
       payments: [{ id: Number(cfg.ds_payment_id), value: total, due_date: hoy }],
     }
+  // En compras (documento soporte) Siigo exige el TIPO de cada ítem:
+  // "Product" o "Service". Sale del catálogo, que trae el tipo de cada
+  // producto tal como está en Siigo.
+  if (clase === 'DS') {
+    const productos: any[] = Array.isArray(cfg.catalogos?.productos) ? cfg.catalogos.productos : []
+    for (const it of (cuerpo as any).items) {
+      const p = productos.find((x: any) => String(x.code) === String(it.code))
+      const t = String(p?.type ?? '')
+      it.type = /service|servicio/i.test(t) ? 'Service' : 'Product'
+    }
+  }
   const ruta = clase === 'FV' ? '/v1/invoices' : '/v1/purchases'
   const r = await siigo('POST', ruta, { token: t.token, partner, body: cuerpo })
   if (!r.ok) {
