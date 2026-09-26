@@ -505,6 +505,9 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
       provider_invoice: { prefix: 'LC', number: String(folio) },
       observations, items,
       payments: [{ id: Number(cfg.ds_payment_id), value: total, due_date: hoy }],
+      // Documento soporte ELECTRÓNICO: "stamp" en true lo reporta a la DIAN.
+      // Si no se manda, Siigo lo deja en false y no lo transmite.
+      stamp: { send: cfg.stamp !== false },
     }
   // En compras (documento soporte) Siigo exige el TIPO de cada línea, y no
   // es el tipo del producto: es cómo se contabiliza la línea. "Product" vale
@@ -520,7 +523,11 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
   // las rutas candidatas en orden y se queda la que responda. Un endpoint
   // inexistente contesta 404 y no crea nada; un 400 de validación tampoco.
   // Cada intento queda en factura_detalle, para ver qué dijo cada uno.
-  const RUTAS_DS = ['/v1/purchases', '/v1/support-documents', '/v1/supporting-documents', '/v1/documents-support']
+  // Confirmado en el portal de clientes de Siigo ("Gestionar documentos
+  // soporte en API"): POST /v1/purchase-support-documents, con el tipo de
+  // comprobante de GET /v1/document-types?type=DS. /v1/purchases queda de
+  // respaldo por si una cuenta vieja lo resolviera así.
+  const RUTAS_DS = ['/v1/purchase-support-documents', '/v1/purchases']
   const intentos: { ruta: string; status: number; respuesta: any }[] = []
   let r: Resp
   if (clase === 'FV') {
