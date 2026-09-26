@@ -366,14 +366,26 @@ type Direccion = { address: string; city: { country_code: string; state_code: st
 type Contraparte = { identification: string; check_digit?: string; nombre: string; esDefault: boolean; esEmpresa: boolean; direccion: Direccion | null }
 // Sin calle no se inventa una: Siigo exige texto en address y la DIAN solo
 // valida el país, así que va dicho tal cual.
-const SIN_CALLE = 'Sin dirección informada'
+const SIN_CALLE = 'Sin direccion informada'
+// Siigo rechaza la dirección con caracteres fuera de su alfabeto
+// ("invalid_alphanumeric_value · The field Address has an invalid
+// characters"): tildes, ñ, el punto medio. Se deja letras, números, espacio
+// y la puntuación de una dirección colombiana (# - . , ).
+function limpiarDireccion(s: string): string {
+  return String(s ?? '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[ñÑ]/g, m => m === 'ñ' ? 'n' : 'N')
+    .replace(/[·•|/]/g, '-')
+    .replace(/[^A-Za-z0-9 #.,\-]+/g, ' ')
+    .replace(/\s+/g, ' ').trim().slice(0, 256)
+}
 function direccionDe(rd: Record<string, any>): Direccion | null {
   const r = rd?.recipient && typeof rd.recipient === 'object' ? rd.recipient : {}
   const address = String(r.address ?? rd.address ?? '').trim()
   const city = String(r.cityCode ?? rd.cityCode ?? '').replace(/\D/g, '').padStart(5, '0')
   const state = String(r.stateCode ?? rd.stateCode ?? city.slice(0, 2)).replace(/\D/g, '').padStart(2, '0')
   if (city.length !== 5 || city === '00000') return null
-  return { address: (address || SIN_CALLE).slice(0, 256), city: { country_code: 'Co', state_code: state, city_code: city } }
+  return { address: limpiarDireccion(address || SIN_CALLE) || SIN_CALLE, city: { country_code: 'Co', state_code: state, city_code: city } }
 }
 // La dirección del beneficiario inscrito con ese documento (raw_data
 // .mouvContacts del usuario). El NIT puede estar inscrito con dígito de
@@ -388,7 +400,7 @@ async function direccionDelBeneficiario(userId: string, identification: string, 
   const hit = contactos.find(c => mismoDoc(String(c?.docNumber ?? '').replace(/\D/g, '')))
   const deFicha = hit ? direccionDe({ recipient: { address: hit.address, cityCode: hit.cityCode, stateCode: hit.stateCode } }) : null
   if (deFicha) return deFicha
-  const calle = String(hit?.address ?? '').trim().slice(0, 200) || SIN_CALLE
+  const calle = limpiarDireccion(String(hit?.address ?? '').trim().slice(0, 200)) || SIN_CALLE
   // Sin ciudad en la ficha: la del lugar de expedición de la cédula, que
   // la Registraduría devolvió en la consulta de antecedentes (TusDatos).
   const benef: Record<string, any> = raw.tusdatos?.beneficiarios ?? {}
@@ -420,7 +432,7 @@ async function direccionDelBeneficiario(userId: string, identification: string, 
       ?? municipioPorNombre(raw?.companyCity) ?? municipioPorNombre(raw?.city)
       ?? municipioPorCodigo('11001')!
     ultimoDiagnosticoLugar = ''
-    return { address: `${calle} · Cédula expedida en ${lugar}`.slice(0, 256), city: { country_code: 'Co', state_code: ext.depto, city_code: ext.codigo } }
+    return { address: limpiarDireccion(`${calle} - Cedula expedida en ${lugar}`), city: { country_code: 'Co', state_code: ext.depto, city_code: ext.codigo } }
   }
   return null
 }
