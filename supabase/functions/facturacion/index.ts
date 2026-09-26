@@ -209,7 +209,62 @@ function documentosDe(cfg: any): Record<string, 'FV' | 'DS'> {
 // y el VALOR: el monto de la operación, un porcentaje de él, o un fijo. Con
 // impuesto, el total que se paga incluye el impuesto (Siigo lo exige así).
 type ItemCfg = { code: string; description?: string; quantity?: number; valor?: 'monto' | 'porcentaje' | 'fijo'; porcentaje?: number; fijo?: number; tax_id?: number | null }
+const r2 = (n: number) => Math.round(n * 100) / 100
+
+// ── Los dos modelos de negocio ───────────────────────────────────
+//
+//  ROTACIÓN DE CAPITAL. El cliente recibe plata de terceros, la rota y cobra
+//  una comisión. Por cada ENTRADA sale una factura de venta con DOS ítems que
+//  suman exacto lo recibido:
+//    · "Servicio para terceros", sin IVA: el monto menos la utilidad.
+//    · "Comisión", con IVA: la base que, más el IVA, da la utilidad.
+//  Con 15.000.000 y 1 %: utilidad 150.000 → terceros 14.850.000; comisión
+//  126.050,42 + IVA 23.949,58 = 150.000. Total 15.000.000.
+//
+//  El IVA se calcula acá, con la misma tarifa que se le manda a Siigo en el
+//  ítem, y el ítem de terceros absorbe el redondeo: así el total de la
+//  factura es el monto de la operación al centavo, y el pago cuadra.
+//
+//  PSP (PASARELA). El cliente paga a terceros por cuenta de alguien. Por cada
+//  SALIDA sale un documento soporte al beneficiario por el monto total, con
+//  el ítem de servicio para terceros, sin IVA. La factura de la comisión al
+//  cliente de quien vino el negocio la hace el usuario en Siigo.
+function itemsDelModelo(cfg: any, monto: number, ctx: Record<string, string>): { items: any[]; total: number } | null {
+  const modelo = String(cfg.modelo ?? '')
+  if (modelo !== 'rotacion' && modelo !== 'psp') return null
+  const plantilla = (s: string) => s.replace(/\{(\w+)\}/g, (_m, k) => ctx[k] ?? `{${k}}`)
+  const terceros = String(cfg.item_terceros ?? '').trim()
+  if (!terceros) return { items: [], total: 0 }
+  const descT = plantilla(cfg.desc_terceros || 'Servicio para terceros · {contraparte} · Comprobante Lincoin {numero}').slice(0, 500)
+
+  if (modelo === 'psp') {
+    return { items: [{ code: terceros, description: descT, quantity: 1, price: r2(monto) }], total: r2(monto) }
+  }
+
+  const comision = String(cfg.item_comision ?? '').trim()
+  const pct = Number(cfg.utilidad_pct) || 0
+  if (!comision || pct <= 0) return { items: [], total: 0 }
+  const impuestos: any[] = Array.isArray(cfg.catalogos?.impuestos) ? cfg.catalogos.impuestos : []
+  const iva = cfg.iva_tax_id ? impuestos.find((t: any) => Number(t.id) === Number(cfg.iva_tax_id)) : null
+  const tarifa = iva ? (Number(iva.percentage) || 0) / 100 : 0
+  const utilidad = r2(monto * pct / 100)
+  const baseComision = r2(utilidad / (1 + tarifa))
+  const ivaComision = r2(baseComision * tarifa)
+  // El de terceros absorbe la diferencia de redondeo: total = monto exacto.
+  const valorTerceros = r2(monto - baseComision - ivaComision)
+  const descC = plantilla(cfg.desc_comision || 'Comisión {utilidad} % · Comprobante Lincoin {numero}').slice(0, 500)
+  return {
+    items: [
+      { code: terceros, description: descT, quantity: 1, price: valorTerceros },
+      { code: comision, description: descC, quantity: 1, price: baseComision, ...(cfg.iva_tax_id ? { taxes: [{ id: Number(cfg.iva_tax_id) }] } : {}) },
+    ],
+    total: r2(valorTerceros + baseComision + ivaComision),
+  }
+}
+
 function itemsDe(cfg: any, monto: number, ctx: Record<string, string>): { items: any[]; total: number } {
+  const delModelo = itemsDelModelo(cfg, monto, ctx)
+  if (delModelo) return delModelo
   const lista: ItemCfg[] = Array.isArray(cfg.items) && cfg.items.length ? cfg.items
     : cfg.product_code ? [{ code: cfg.product_code, description: cfg.product_description, quantity: 1, valor: 'monto' }] : []
   const impuestos: any[] = Array.isArray(cfg.catalogos?.impuestos) ? cfg.catalogos.impuestos : []
@@ -341,6 +396,7 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
   const ctx = {
     tipo: DISPARADORES[tipo] ?? tipo, numero: String((comp as any).numero ?? ''), contraparte: cp.nombre,
     monto: monto.toLocaleString('es-CO', { maximumFractionDigits: 2 }), fecha: hoy,
+    utilidad: String(Number(cfg.utilidad_pct) || 0),
   }
   const { items, total } = itemsDe(cfg, monto, ctx)
   if (!items.length) { const e = 'No hay ítems configurados para el documento (Configuración → ítems).'; await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: clase }); return { ok: false, error: e } }
@@ -412,6 +468,19 @@ Deno.serve(async (req) => {
       for (const k of ['document_id', 'seller_id', 'payment_id', 'ds_document_id', 'ds_payment_id']) if (k in c) fila[k] = c[k] == null || c[k] === '' ? null : Number(c[k])
       for (const k of ['activo', 'crear_clientes', 'stamp', 'mail']) if (k in c) fila[k] = !!c[k]
       if (Array.isArray(c.disparadores)) fila.disparadores = c.disparadores.filter((d: any) => typeof d === 'string' && d in DISPARADORES)
+      // El modelo de negocio y sus parámetros.
+      if ('modelo' in c) fila.modelo = c.modelo === 'rotacion' || c.modelo === 'psp' ? c.modelo : null
+      if ('utilidad_pct' in c) fila.utilidad_pct = c.utilidad_pct == null || c.utilidad_pct === '' ? null : Math.max(0, Number(c.utilidad_pct) || 0)
+      for (const k of ['item_terceros', 'item_comision', 'desc_terceros', 'desc_comision']) if (k in c) fila[k] = c[k] == null || c[k] === '' ? null : String(c[k]).trim().slice(0, 500)
+      if ('iva_tax_id' in c) fila.iva_tax_id = c.iva_tax_id == null || c.iva_tax_id === '' ? null : Number(c.iva_tax_id)
+      // Con modelo, qué documento sale se deriva: rotación → factura de venta
+      // por cada entrada marcada; PSP → documento soporte por cada salida.
+      if (Array.isArray(c.operaciones) && (fila.modelo === 'rotacion' || fila.modelo === 'psp')) {
+        const d: Record<string, string> = {}
+        for (const k of c.operaciones) if (typeof k === 'string' && k in DISPARADORES) d[k] = fila.modelo === 'rotacion' ? 'FV' : 'DS'
+        fila.documentos = d
+        fila.disparadores = Object.keys(d)
+      }
       // Qué documento sale por cada operación. Los disparadores viejos se
       // mantienen en sincronía: son las claves con documento.
       if (c.documentos && typeof c.documentos === 'object' && !Array.isArray(c.documentos)) {
@@ -455,11 +524,21 @@ Deno.serve(async (req) => {
         if (!actual.access_key_enc) faltan.push('access key')
         const reglas = documentosDe(actual)
         const clases = new Set(Object.values(reglas))
-        if (!Object.keys(reglas).length) faltan.push('qué documento sale por cada operación')
+        const modelo = String(actual.modelo ?? '')
+        if (!modelo) faltan.push('el modelo de negocio')
+        if (!Object.keys(reglas).length) faltan.push('qué operaciones emiten')
         if (clases.has('FV')) for (const k of ['document_id', 'seller_id', 'payment_id']) if (!actual[k]) faltan.push(`${k} (factura de venta)`)
         if (clases.has('DS')) for (const k of ['ds_document_id', 'ds_payment_id']) if (!actual[k]) faltan.push(`${k} (documento soporte)`)
-        const items = Array.isArray(actual.items) ? actual.items : []
-        if (!items.length && !actual.product_code) faltan.push('al menos un ítem')
+        if (modelo === 'rotacion') {
+          if (!(Number(actual.utilidad_pct) > 0)) faltan.push('el porcentaje de utilidad')
+          if (!actual.item_terceros) faltan.push('el ítem de servicio para terceros')
+          if (!actual.item_comision) faltan.push('el ítem de comisión')
+        } else if (modelo === 'psp') {
+          if (!actual.item_terceros) faltan.push('el ítem de servicio para terceros')
+        } else {
+          const items = Array.isArray(actual.items) ? actual.items : []
+          if (!items.length && !actual.product_code) faltan.push('al menos un ítem')
+        }
         if (faltan.length) return json({ ok: false, error: `Para activar falta: ${faltan.join(', ')}.` }, 400)
       }
       const { error } = await db.from('facturacion_config').upsert(fila, { onConflict: 'user_id' })

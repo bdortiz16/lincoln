@@ -1,31 +1,32 @@
 // ══════════════════════════════════════════════════════════════════
 //  Configuración de la facturación automática — Lincoin Empresas
 //
-//  El cliente conecta SU cuenta de Siigo: pone el usuario y la access key de
-//  la API, prueba la conexión, y desde ahí configura qué sale por cada
-//  operación completada:
+//  El cliente conecta SU cuenta de Siigo y elige su MODELO DE NEGOCIO. Desde
+//  ahí, apenas una operación se completa, se emite el documento que ese
+//  modelo manda, con los datos de la operación (quién, cuánto, cuándo).
 //
-//    1. Credenciales.
-//    2. QUÉ DOCUMENTO sale por cada tipo de operación: factura de venta
-//       (plata que entra), documento soporte (plata que sale a alguien que
-//       no factura), o nada.
-//    3. Qué comprobantes de su Siigo usa cada documento (tipo, vendedor,
-//       forma de pago). Se eligen de los catálogos que devolvió Siigo.
-//    4. LOS ÍTEMS: las líneas del documento. Producto de Siigo, descripción,
-//       cantidad, cómo se calcula el valor (el monto de la operación, un
-//       porcentaje, o un fijo) e impuesto.
-//    5. La contraparte por defecto, DIAN y correo.
+//    1. Credenciales. Cuando conectan, se pliegan: queda una línea que dice
+//       con qué usuario y cuándo, y un botón para cambiarlas.
+//    2. El modelo:
+//       · ROTACIÓN DE CAPITAL — recibe plata de terceros, la rota y cobra
+//         una comisión. Por cada entrada, una factura de venta con dos ítems
+//         que suman exacto lo recibido: servicio para terceros (sin IVA) y
+//         comisión (con IVA).
+//       · PSP — paga a terceros por cuenta de alguien. Por cada salida, un
+//         documento soporte al beneficiario por el monto total, con el ítem
+//         de servicio para terceros, sin IVA.
+//    3. Los parámetros del modelo: utilidad, qué producto de Siigo es cada
+//       ítem, IVA, qué operaciones, y los comprobantes de su Siigo.
+//    4. Contraparte, DIAN y correo.
+//
+//  LOS ÍTEMS LOS CREA EL CLIENTE EN SIIGO. Acá solo se eligen de la lista
+//  que Siigo devolvió. Nada de ids inventados.
 //
 //  LA ACCESS KEY NO VUELVE A LA PANTALLA. Se manda una vez, el servidor la
-//  cifra, y acá solo se ve "hay una guardada". Para cambiarla se escribe
-//  otra. Un campo que muestre el secreto guardado es un secreto que ya no lo
-//  es.
-//
-//  NADA DE IDS INVENTADOS. Los selectores se llenan con lo que Siigo devolvió
-//  al probar la conexión. Si no se ha probado, están vacíos y lo dicen.
+//  cifra, y acá solo se ve "hay una guardada".
 // ══════════════════════════════════════════════════════════════════
 import React, { useEffect, useState } from 'react';
-import { X, Plus, Trash2 } from 'lucide-react';
+import { X } from 'lucide-react';
 import { llamarFuncion } from '../lib/edge';
 
 const FONT = 'Archivo, system-ui, sans-serif';
@@ -35,14 +36,15 @@ const C = {
   campo: '#121413', elevado: '#121413',
 };
 
-type Item = { code: string; description: string; quantity: number; valor: 'monto' | 'porcentaje' | 'fijo'; porcentaje: number; fijo: number; tax_id: number | null };
 type Cfg = {
   existe: boolean; activo: boolean; username?: string | null; tieneAccessKey: boolean; partner_id?: string | null;
   access_key_pista?: { largo: number; inicio: string; fin: string } | null;
+  modelo?: 'rotacion' | 'psp' | null; utilidad_pct?: number | null;
+  item_terceros?: string | null; item_comision?: string | null; iva_tax_id?: number | null;
+  desc_terceros?: string | null; desc_comision?: string | null;
   document_id?: number | null; seller_id?: number | null; payment_id?: number | null;
   ds_document_id?: number | null; ds_payment_id?: number | null;
-  product_code?: string | null; product_description?: string | null;
-  documentos?: Record<string, 'FV' | 'DS'> | null; items?: Item[] | null;
+  documentos?: Record<string, 'FV' | 'DS'> | null;
   cliente_default_nit?: string | null; cliente_default_nombre?: string | null; crear_clientes: boolean;
   disparadores: string[]; stamp: boolean; mail: boolean; observaciones?: string | null;
   ultimo_test_at?: string | null; ultimo_test_ok?: boolean | null; ultimo_error?: string | null;
@@ -65,12 +67,13 @@ const Seccion: React.FC<{ n: string; t: string; children: React.ReactNode }> = (
   </div>
 );
 
-// Las entradas de plata emiten factura de venta por defecto. Las salidas no
-// emiten nada hasta que el cliente lo decida: un envío puede ser una compra a
-// alguien que factura (y entonces no va documento soporte) o a alguien que no.
-const ENTRADAS = new Set(['load', 'pay_received', 'otc_deposit']);
-const itemVacio = (code = '', description = ''): Item => ({ code, description, quantity: 1, valor: 'monto', porcentaje: 100, fijo: 0, tax_id: null });
-const fmtCop = (n: number) => n.toLocaleString('es-CO', { maximumFractionDigits: 0 });
+// Qué operaciones aplican a cada modelo: la rotación factura lo que ENTRA;
+// la pasarela documenta lo que SALE.
+const ENTRADAS = ['load', 'pay_received', 'otc_deposit'];
+const SALIDAS = ['dispersion', 'send', 'pay_sent'];
+const fmtCop = (n: number) => n.toLocaleString('es-CO', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+const r2 = (n: number) => Math.round(n * 100) / 100;
+const EJEMPLO = 15_000_000;
 
 export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar }) => {
   const [cfg, setCfg] = useState<Cfg | null>(null);
@@ -81,6 +84,8 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
   const [guardando, setGuardando] = useState(false);
   const [probando, setProbando] = useState(false);
   const [aviso, setAviso] = useState<{ ok: boolean; texto: string } | null>(null);
+  // Las credenciales se pliegan cuando ya conectaron. "Cambiar" las abre.
+  const [credAbiertas, setCredAbiertas] = useState(false);
 
   const cargar = async () => {
     setCargando(true);
@@ -89,19 +94,22 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
     if (!r?.ok) { setAviso({ ok: false, texto: r?.error ?? r?.mensaje ?? 'No se pudo leer la configuración.' }); return; }
     const c: Cfg = r.config;
     setCfg(c); setDisparadores(r.disparadores ?? {});
-    // Lo nuevo si está; si no, lo viejo traducido: disparadores marcados →
-    // factura de venta; producto elegido → un ítem por el monto.
-    const documentos: Record<string, string> = c.documentos && typeof c.documentos === 'object'
-      ? { ...c.documentos }
-      : Object.fromEntries((c.disparadores ?? ['load', 'pay_received']).map(k => [k, 'FV']));
-    const items: Item[] = Array.isArray(c.items) && c.items.length
-      ? c.items.map(i => ({ ...itemVacio(), ...i }))
-      : c.product_code ? [itemVacio(c.product_code, c.product_description ?? '')] : [];
+    setCredAbiertas(!(c.ultimo_test_ok && c.tieneAccessKey));
+    const modelo = c.modelo === 'rotacion' || c.modelo === 'psp' ? c.modelo : '';
+    const docs = c.documentos && typeof c.documentos === 'object' ? c.documentos : {};
+    const operaciones = Object.keys(docs).length
+      ? Object.keys(docs)
+      : modelo === 'psp' ? ['dispersion'] : ['load', 'pay_received'];
+    // El IVA por defecto: el del catálogo que diga 19 %, si hay.
+    const iva19 = (c.catalogos?.impuestos ?? []).find((t: any) => Number(t.percentage) === 19);
     setForm({
       username: c.username ?? '', partner_id: c.partner_id ?? '',
+      modelo, utilidad_pct: c.utilidad_pct ?? '', item_terceros: c.item_terceros ?? '', item_comision: c.item_comision ?? '',
+      iva_tax_id: c.iva_tax_id ?? (iva19 ? iva19.id : ''),
+      desc_terceros: c.desc_terceros ?? '', desc_comision: c.desc_comision ?? '',
+      operaciones,
       document_id: c.document_id ?? '', seller_id: c.seller_id ?? '', payment_id: c.payment_id ?? '',
       ds_document_id: c.ds_document_id ?? '', ds_payment_id: c.ds_payment_id ?? '',
-      documentos, items,
       cliente_default_nit: c.cliente_default_nit ?? '222222222222', cliente_default_nombre: c.cliente_default_nombre ?? 'Consumidor final',
       crear_clientes: c.crear_clientes ?? true,
       stamp: c.stamp ?? true, mail: c.mail ?? true, observaciones: c.observaciones ?? '', activo: c.activo ?? false,
@@ -115,14 +123,12 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
   }, [onCerrar]);
 
   const set = (k: string, v: any) => setForm((f: any) => ({ ...f, [k]: v }));
-  const setDoc = (tipo: string, v: string) => setForm((f: any) => {
-    const d = { ...(f.documentos ?? {}) };
-    if (v === 'FV' || v === 'DS') d[tipo] = v; else delete d[tipo];
-    return { ...f, documentos: d };
+  const elegirModelo = (m: 'rotacion' | 'psp') => setForm((f: any) => {
+    const validas = m === 'rotacion' ? ENTRADAS : SALIDAS;
+    const actuales = (f.operaciones ?? []).filter((k: string) => validas.includes(k));
+    return { ...f, modelo: m, operaciones: actuales.length ? actuales : (m === 'rotacion' ? ['load', 'pay_received'] : ['dispersion']) };
   });
-  const setItem = (i: number, patch: Partial<Item>) => setForm((f: any) => ({ ...f, items: (f.items ?? []).map((it: Item, j: number) => j === i ? { ...it, ...patch } : it) }));
-  const quitarItem = (i: number) => setForm((f: any) => ({ ...f, items: (f.items ?? []).filter((_: Item, j: number) => j !== i) }));
-  const agregarItem = () => setForm((f: any) => ({ ...f, items: [...(f.items ?? []), itemVacio()] }));
+  const toggleOp = (k: string, on: boolean) => setForm((f: any) => ({ ...f, operaciones: on ? [...new Set([...(f.operaciones ?? []), k])] : (f.operaciones ?? []).filter((x: string) => x !== k) }));
 
   const guardar = async (extra: Record<string, any> = {}) => {
     setGuardando(true); setAviso(null);
@@ -146,28 +152,35 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
     setProbando(false);
     if (r?.config) setCfg(r.config);
     if (!r?.ok) { setAviso({ ok: false, texto: r?.error ?? 'Siigo no respondió.' }); return; }
-    setAviso({ ok: true, texto: r.aviso ? `Conectó con Siigo, pero: ${r.aviso}` : 'Conectó con Siigo. Ahora elegí qué sale por cada operación, los comprobantes y los ítems.' });
+    // Conectó: las credenciales se pliegan y sigue el modelo.
+    setCredAbiertas(false);
+    if (!form.iva_tax_id) {
+      const iva19 = (r.config?.catalogos?.impuestos ?? []).find((t: any) => Number(t.percentage) === 19);
+      if (iva19) set('iva_tax_id', iva19.id);
+    }
+    setAviso({ ok: true, texto: r.aviso ? `Conectó con Siigo, pero: ${r.aviso}` : 'Conectó con Siigo. Ahora elegí el modelo de negocio y sus parámetros.' });
   };
 
   const cat = cfg?.catalogos;
-  const docs: Record<string, string> = form.documentos ?? {};
-  const usaFV = Object.values(docs).includes('FV');
-  const usaDS = Object.values(docs).includes('DS');
-  const items: Item[] = form.items ?? [];
-  const itemsOk = items.length > 0 && items.every(i => !!i.code);
+  const modelo: string = form.modelo ?? '';
+  const ops: string[] = form.operaciones ?? [];
   const credOk = !!form.username && !!(cfg?.tieneAccessKey || accessKey.trim());
-  const listo = credOk
-    && Object.keys(docs).length > 0
-    && (!usaFV || (!!form.document_id && !!form.seller_id && !!form.payment_id))
-    && (!usaDS || (!!form.ds_document_id && !!form.ds_payment_id))
-    && itemsOk;
-  const queFalta = [
+  const conectado = !!cfg?.ultimo_test_ok && !!cfg?.tieneAccessKey;
+  const utilidad = Number(form.utilidad_pct) || 0;
+  const impuestos: any[] = cat?.impuestos ?? [];
+  const iva = form.iva_tax_id ? impuestos.find((t: any) => String(t.id) === String(form.iva_tax_id)) : null;
+  const tarifa = iva ? (Number(iva.percentage) || 0) / 100 : 0;
+  const faltantes = [
     !credOk ? 'credenciales' : '',
-    !Object.keys(docs).length ? 'qué documento sale por cada operación' : '',
-    usaFV && !(form.document_id && form.seller_id && form.payment_id) ? 'comprobantes de la factura de venta' : '',
-    usaDS && !(form.ds_document_id && form.ds_payment_id) ? 'comprobantes del documento soporte' : '',
-    !itemsOk ? 'los ítems' : '',
-  ].filter(Boolean).join(', ');
+    !modelo ? 'el modelo de negocio' : '',
+    modelo && !ops.length ? 'qué operaciones emiten' : '',
+    modelo === 'rotacion' && !(utilidad > 0) ? 'el porcentaje de utilidad' : '',
+    modelo && !form.item_terceros ? 'el ítem de servicio para terceros' : '',
+    modelo === 'rotacion' && !form.item_comision ? 'el ítem de comisión' : '',
+    modelo === 'rotacion' && !(form.document_id && form.seller_id && form.payment_id) ? 'el comprobante, vendedor y forma de pago de la factura' : '',
+    modelo === 'psp' && !(form.ds_document_id && form.ds_payment_id) ? 'el comprobante y forma de pago del documento soporte' : '',
+  ].filter(Boolean);
+  const listo = faltantes.length === 0;
   const fecha = (s?: string | null) => s ? new Date(s).toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' }) : '—';
   const chk = (k: string, rot: string, ayuda?: string) => (
     <label className="flex items-start" style={{ gap: 9, cursor: 'pointer' }}>
@@ -181,17 +194,41 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
       {opciones.map(o => <option key={String(o.v)} value={String(o.v)}>{o.t}</option>)}
     </select>
   );
-  // Ejemplo con una operación de un millón, para que se vea qué produce
-  // cada regla sin tener que esperar una operación real.
-  const EJEMPLO = 1_000_000;
-  const valorEjemplo = (i: Item) => {
-    const base = i.valor === 'porcentaje' ? EJEMPLO * (Number(i.porcentaje) || 0) / 100 : i.valor === 'fijo' ? (Number(i.fijo) || 0) : EJEMPLO;
-    const tax = i.tax_id ? (cat?.impuestos ?? []).find((t: any) => Number(t.id) === Number(i.tax_id)) : null;
-    const pct = tax ? Number(tax.percentage) || 0 : 0;
-    return base * (Number(i.quantity) || 1) * (1 + pct / 100);
-  };
-  const totalEjemplo = items.reduce((s, i) => s + valorEjemplo(i), 0);
+  const productos = (cat?.productos ?? []).map((p: any) => ({ v: p.code, t: `${p.code} · ${p.name}` }));
+  const nombreProducto = (code: string) => { const p = (cat?.productos ?? []).find((x: any) => x.code === code); return p ? p.name : code; };
+
+  // El ejemplo con 15.000.000, calculado igual que el servidor: la misma
+  // fórmula a la vista, no una promesa.
+  const ejemplo = (() => {
+    if (modelo === 'psp') return { lineas: [{ n: nombreProducto(form.item_terceros) || 'Servicio para terceros', v: EJEMPLO, iva: 0 }], total: EJEMPLO };
+    if (modelo !== 'rotacion') return null;
+    const util = r2(EJEMPLO * utilidad / 100);
+    const base = r2(util / (1 + tarifa));
+    const ivaV = r2(base * tarifa);
+    const terceros = r2(EJEMPLO - base - ivaV);
+    return {
+      lineas: [
+        { n: nombreProducto(form.item_terceros) || 'Servicio para terceros', v: terceros, iva: 0 },
+        { n: nombreProducto(form.item_comision) || 'Comisión', v: base, iva: ivaV },
+      ],
+      total: r2(terceros + base + ivaV), util,
+    };
+  })();
   const sinCatalogoDs = !!cat && !Array.isArray(cat.documentos_ds);
+
+  const tarjetaModelo = (m: 'rotacion' | 'psp', titulo: string, texto: string, ejemploTxt: string) => {
+    const on = modelo === m;
+    return (
+      <button onClick={() => elegirModelo(m)} style={{ textAlign: 'left', padding: '13px 14px', borderRadius: 12, cursor: 'pointer', fontFamily: FONT, background: on ? 'rgba(74,222,128,0.06)' : 'transparent', border: `1px solid ${on ? 'rgba(74,222,128,0.4)' : C.borde}` }}>
+        <span className="flex items-center" style={{ gap: 8 }}>
+          <span style={{ width: 14, height: 14, borderRadius: '50%', border: `2px solid ${on ? C.verde : 'rgba(255,255,255,0.25)'}`, background: on ? C.verde : 'transparent', flexShrink: 0 }} />
+          <span style={{ fontSize: 13.5, fontWeight: 800, color: C.text }}>{titulo}</span>
+        </span>
+        <span style={{ display: 'block', fontSize: 12, color: C.sub, marginTop: 6, lineHeight: 1.55 }}>{texto}</span>
+        <span style={{ display: 'block', fontSize: 11, color: C.tenue, marginTop: 6, lineHeight: 1.5 }}>{ejemploTxt}</span>
+      </button>
+    );
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" style={{ background: 'rgba(4,5,5,0.78)' }} onClick={onCerrar}>
@@ -200,7 +237,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
           <div>
             <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: C.sub, margin: 0 }}>CONFIGURACIÓN</p>
             <h3 style={{ fontSize: 17, fontWeight: 800, color: C.text, margin: '3px 0 0', letterSpacing: '-0.3px' }}>Facturación automática con Siigo</h3>
-            <p style={{ fontSize: 12, color: C.sub, margin: '3px 0 0', lineHeight: 1.5 }}>Apenas una operación se completa, se emite el documento en tu Siigo, con tus credenciales. Lincoin no factura nada por vos: opera tu cuenta.</p>
+            <p style={{ fontSize: 12, color: C.sub, margin: '3px 0 0', lineHeight: 1.5 }}>Apenas una operación se completa, se emite el documento en tu Siigo con los datos de la operación. Lincoin no factura nada por vos: opera tu cuenta.</p>
           </div>
           <button onClick={onCerrar} style={{ color: C.sub, flexShrink: 0, background: 'none', border: 'none', cursor: 'pointer' }} className="hover:text-[#F4F4F2] transition-colors"><X size={18} /></button>
         </div>
@@ -217,207 +254,206 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                       {cfg?.activo ? 'Activa: cada operación completada emite su documento' : 'Pausada: no se emite ningún documento'}
                     </p>
                     <p style={{ fontSize: 11.5, color: C.sub, margin: '4px 0 0' }}>
-                      {cfg?.ultimo_test_at ? `Última prueba ${fecha(cfg.ultimo_test_at)} · ${cfg.ultimo_test_ok ? 'conectó' : 'falló'}` : 'Todavía no se probó la conexión'}
+                      {cfg?.modelo === 'rotacion' ? 'Modelo: rotación de capital' : cfg?.modelo === 'psp' ? 'Modelo: PSP / pasarela' : 'Sin modelo elegido'}
                       {cfg?.resumen && cfg.resumen.comprobantes > 0 ? ` · ${cfg.resumen.emitidas} emitidos · ${cfg.resumen.errores} con error` : ''}
                     </p>
                   </div>
                   <button onClick={() => guardar({ activo: !form.activo })} disabled={guardando || (!form.activo && !listo)}
-                    title={!form.activo && !listo ? `Falta: ${queFalta}` : undefined}
+                    title={!form.activo && !listo ? `Falta: ${faltantes.join(', ')}` : undefined}
                     style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, padding: '8px 14px', borderRadius: 9, cursor: 'pointer', border: 'none', opacity: (!form.activo && !listo) ? 0.5 : 1,
                       background: form.activo ? 'rgba(255,255,255,0.06)' : C.text, color: form.activo ? C.text : '#0A0A0A' }}>
                     {guardando ? '…' : form.activo ? 'Pausar' : 'Activar'}
                   </button>
                 </div>
-                {!form.activo && !listo && queFalta && (
-                  <p style={{ fontSize: 11.5, color: C.tenue, margin: '8px 0 0', lineHeight: 1.5 }}>Para activar falta: {queFalta}.</p>
+                {!form.activo && !listo && (
+                  <p style={{ fontSize: 11.5, color: C.tenue, margin: '8px 0 0', lineHeight: 1.5 }}>Para activar falta: {faltantes.join(', ')}.</p>
                 )}
                 {cfg?.ultimo_error && <p style={{ fontSize: 11.5, color: cfg.ultimo_test_ok ? C.ambar : C.rojo, margin: '8px 0 0', lineHeight: 1.5, wordBreak: 'break-word' }}>{cfg.ultimo_error}</p>}
-                {/* Siigo dice "invalid_value: access_key" cuando la clave no es
-                    la de ese usuario. Casi siempre es una de tres cosas, y se
-                    dicen acá para no adivinar. */}
                 {cfg?.ultimo_error && /access_key|username|invalid_value|401/i.test(cfg.ultimo_error) && !cfg.ultimo_test_ok && (
                   <p style={{ fontSize: 11.5, color: C.sub, margin: '6px 0 0', lineHeight: 1.55 }}>
                     Siigo no reconoce esa access key para ese usuario. No es la contraseña de Siigo Nube: es la clave que genera el
                     portal de clientes en «Generar credenciales API», para ese mismo correo. Generala de nuevo, pegala completa y
-                    probá otra vez. Abajo se ve cuántos caracteres tiene la guardada, para compararla con la del portal.
+                    probá otra vez.
                   </p>
                 )}
               </div>
 
-              {/* 1. Credenciales */}
-              <Seccion n="1" t="Credenciales de la API de Siigo">
-                <p style={{ fontSize: 12, color: C.sub, margin: '0 0 12px', lineHeight: 1.55 }}>
-                  Se generan en el portal de clientes de Siigo, en «Generar credenciales API». El usuario es el correo de la cuenta; la access key es la clave que Siigo genera para la API (no la contraseña de entrar).
-                </p>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
-                  <Campo rot="USUARIO (CORREO)"><input value={form.username ?? ''} onChange={e => set('username', e.target.value)} placeholder="cuenta@empresa.com" autoComplete="off" style={entrada} /></Campo>
-                  <Campo rot="ACCESS KEY" ayuda={cfg?.tieneAccessKey
-                    ? `Hay una guardada${cfg.access_key_pista ? `: ${cfg.access_key_pista.largo} caracteres, empieza «${cfg.access_key_pista.inicio}…» y termina «…${cfg.access_key_pista.fin}»` : ''}. Dejá esto vacío para conservarla; escribí otra para reemplazarla.`
-                    : 'No se muestra después de guardarla.'}>
-                    <input type="password" value={accessKey} onChange={e => setAccessKey(e.target.value)} placeholder={cfg?.tieneAccessKey ? '••••••••••••' : 'Pegá la access key'} autoComplete="new-password" style={entrada} />
-                  </Campo>
-                  <Campo rot="PARTNER ID" ayuda="El nombre con que Siigo identifica la integración. Si no te dieron uno, dejá Lincoin.">
-                    <input value={form.partner_id ?? ''} onChange={e => set('partner_id', e.target.value)} placeholder="Lincoin" style={entrada} />
-                  </Campo>
-                </div>
-                <div className="flex items-center flex-wrap" style={{ gap: 8, marginTop: 12 }}>
-                  <button onClick={probar} disabled={probando || guardando || !credOk}
-                    className="lincoin-btn-white" style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, padding: '9px 14px', borderRadius: 9, border: 'none', cursor: 'pointer', opacity: (probando || !credOk) ? 0.5 : 1 }}>
-                    {probando ? 'Conectando con Siigo…' : 'Guardar y probar conexión'}
-                  </button>
-                  <span style={{ fontSize: 11.5, color: C.tenue }}>Trae de tu cuenta los comprobantes, vendedores, formas de pago, productos e impuestos.</span>
-                </div>
-              </Seccion>
-
-              {/* 2. Qué documento sale */}
-              <Seccion n="2" t="Qué documento sale por cada operación">
-                <p style={{ fontSize: 12, color: C.sub, margin: '0 0 12px', lineHeight: 1.55 }}>
-                  <b style={{ color: C.text }}>Factura de venta</b> cuando te <b style={{ color: C.text }}>entra</b> plata: le facturás a quien te pagó.{' '}
-                  <b style={{ color: C.text }}>Documento soporte</b> cuando te <b style={{ color: C.text }}>sale</b> plata hacia alguien que no está obligado a facturar: es el documento que la DIAN exige por esa compra. Si el que recibe sí te factura, no emitas nada.
-                </p>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 8 }}>
-                  {Object.entries(disparadores).map(([k, rot]) => {
-                    const v = docs[k] ?? '';
-                    return (
-                      <div key={k} className="flex items-center justify-between" style={{ gap: 10, padding: '9px 12px', borderRadius: 10, border: `1px solid ${v ? 'rgba(74,222,128,0.28)' : C.bordeSuave}`, background: v ? 'rgba(74,222,128,0.04)' : 'transparent' }}>
-                        <span style={{ fontSize: 13, color: C.text }}>
-                          {rot}
-                          <span style={{ display: 'block', fontSize: 10.5, color: C.tenue, marginTop: 1 }}>{ENTRADAS.has(k) ? 'plata que entra' : k === 'convert' ? 'cambio de moneda' : 'plata que sale'}</span>
-                        </span>
-                        <select value={v} onChange={e => setDoc(k, e.target.value)} style={{ ...selectEstilo, width: 'auto', minWidth: 170, padding: '7px 10px', fontSize: 12.5 }}>
-                          <option value="">No emitir nada</option>
-                          <option value="FV">Factura de venta</option>
-                          <option value="DS">Documento soporte</option>
-                        </select>
-                      </div>
-                    );
-                  })}
-                </div>
-              </Seccion>
-
-              {/* 3. Comprobantes de Siigo */}
-              <Seccion n="3" t="Comprobantes de tu Siigo">
-                {!cat ? (
-                  <p style={{ fontSize: 12.5, color: C.tenue, margin: 0 }}>Probá la conexión para traer los catálogos de tu Siigo. Sin eso no hay nada que elegir: los ids son de tu cuenta, no se pueden adivinar.</p>
-                ) : !usaFV && !usaDS ? (
-                  <p style={{ fontSize: 12.5, color: C.tenue, margin: 0 }}>Elegí arriba qué documento sale por cada operación; acá se configura cada uno.</p>
+              {/* 1. Credenciales: plegadas cuando ya conectaron */}
+              <Seccion n="1" t="Cuenta de Siigo">
+                {conectado && !credAbiertas ? (
+                  <div className="flex items-center justify-between flex-wrap" style={{ gap: 10, padding: '11px 14px', borderRadius: 12, border: `1px solid rgba(74,222,128,0.28)`, background: 'rgba(74,222,128,0.04)' }}>
+                    <div>
+                      <p className="flex items-center" style={{ gap: 8, fontSize: 13, fontWeight: 700, color: C.text, margin: 0 }}>
+                        <span style={{ width: 7, height: 7, borderRadius: '50%', background: C.verde }} />
+                        Conectada como {cfg?.username}
+                      </p>
+                      <p style={{ fontSize: 11.5, color: C.sub, margin: '3px 0 0' }}>Última conexión {fecha(cfg?.ultimo_test_at)}{cat?.traido_at ? ` · catálogos del ${fecha(cat.traido_at)}` : ''}</p>
+                    </div>
+                    <div className="flex items-center" style={{ gap: 6 }}>
+                      <button onClick={probar} disabled={probando} style={{ fontFamily: FONT, fontSize: 12, fontWeight: 700, color: C.sub, background: 'transparent', border: `1px solid ${C.borde}`, borderRadius: 8, padding: '7px 11px', cursor: 'pointer', opacity: probando ? 0.5 : 1 }}>
+                        {probando ? 'Actualizando…' : 'Actualizar catálogos'}
+                      </button>
+                      <button onClick={() => setCredAbiertas(true)} style={{ fontFamily: FONT, fontSize: 12, fontWeight: 700, color: C.sub, background: 'transparent', border: `1px solid ${C.borde}`, borderRadius: 8, padding: '7px 11px', cursor: 'pointer' }}>
+                        Cambiar credenciales
+                      </button>
+                    </div>
+                  </div>
                 ) : (
                   <>
-                    {usaFV && (
-                      <div style={{ marginBottom: usaDS ? 16 : 0 }}>
-                        <p style={{ fontSize: 11, fontWeight: 700, letterSpacing: '1.2px', color: C.verde, margin: '0 0 10px' }}>FACTURA DE VENTA</p>
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
-                          <Campo rot="TIPO DE COMPROBANTE (FV)" ayuda={cat.fuentes?.documentos?.motivo ?? undefined}>
-                            {select('document_id', (cat.documentos ?? []).map((d: any) => ({ v: d.id, t: `${d.code ? d.code + ' · ' : ''}${d.name}` })), 'Siigo no devolvió tipos de factura')}
-                          </Campo>
-                          <Campo rot="VENDEDOR" ayuda={cat.fuentes?.vendedores?.motivo ?? undefined}>
-                            {select('seller_id', (cat.vendedores ?? []).map((u: any) => ({ v: u.id, t: u.nombre })), 'Siigo no devolvió vendedores')}
-                          </Campo>
-                          <Campo rot="FORMA DE PAGO" ayuda={cat.fuentes?.pagos?.motivo ?? undefined}>
-                            {select('payment_id', (cat.pagos ?? []).map((p: any) => ({ v: p.id, t: p.name })), 'Siigo no devolvió formas de pago')}
-                          </Campo>
-                        </div>
-                      </div>
-                    )}
-                    {usaDS && (
-                      <div>
-                        <p style={{ fontSize: 11, fontWeight: 700, letterSpacing: '1.2px', color: C.verde, margin: '0 0 10px' }}>DOCUMENTO SOPORTE</p>
-                        {sinCatalogoDs ? (
-                          <p style={{ fontSize: 12.5, color: C.ambar, margin: 0 }}>Los catálogos guardados son de antes de esta opción. Volvé a «Guardar y probar conexión» para traer los comprobantes de documento soporte.</p>
-                        ) : (
-                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
-                            <Campo rot="TIPO DE COMPROBANTE (DS)" ayuda={cat.fuentes?.documentos_ds?.motivo ?? 'El comprobante que en tu Siigo está configurado como documento soporte. Si no aparece, crealo en Siigo (Configuración → Comprobantes) y volvé a probar la conexión.'}>
-                              {select('ds_document_id', (cat.documentos_ds ?? []).map((d: any) => ({ v: d.id, t: `${d.clase} · ${d.code ? d.code + ' · ' : ''}${d.name}` })), 'Siigo no devolvió comprobantes de documento soporte')}
-                            </Campo>
-                            <Campo rot="FORMA DE PAGO (DS)" ayuda={cat.fuentes?.pagos_ds?.motivo ?? undefined}>
-                              {select('ds_payment_id', (cat.pagos_ds ?? []).map((p: any) => ({ v: p.id, t: p.name })), 'Siigo no devolvió formas de pago de compra')}
-                            </Campo>
-                          </div>
-                        )}
-                      </div>
-                    )}
+                    <p style={{ fontSize: 12, color: C.sub, margin: '0 0 12px', lineHeight: 1.55 }}>
+                      Se generan en el portal de clientes de Siigo, en «Generar credenciales API». El usuario es el correo de la cuenta; la access key es la clave que Siigo genera para la API (no la contraseña de entrar).
+                    </p>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+                      <Campo rot="USUARIO (CORREO)"><input value={form.username ?? ''} onChange={e => set('username', e.target.value)} placeholder="cuenta@empresa.com" autoComplete="off" style={entrada} /></Campo>
+                      <Campo rot="ACCESS KEY" ayuda={cfg?.tieneAccessKey
+                        ? `Hay una guardada${cfg.access_key_pista ? `: ${cfg.access_key_pista.largo} caracteres, empieza «${cfg.access_key_pista.inicio}…» y termina «…${cfg.access_key_pista.fin}»` : ''}. Dejá esto vacío para conservarla; escribí otra para reemplazarla.`
+                        : 'No se muestra después de guardarla.'}>
+                        <input type="password" value={accessKey} onChange={e => setAccessKey(e.target.value)} placeholder={cfg?.tieneAccessKey ? '••••••••••••' : 'Pegá la access key'} autoComplete="new-password" style={entrada} />
+                      </Campo>
+                      <Campo rot="PARTNER ID" ayuda="El nombre con que Siigo identifica la integración. Si no te dieron uno, dejá Lincoin.">
+                        <input value={form.partner_id ?? ''} onChange={e => set('partner_id', e.target.value)} placeholder="Lincoin" style={entrada} />
+                      </Campo>
+                    </div>
+                    <div className="flex items-center flex-wrap" style={{ gap: 8, marginTop: 12 }}>
+                      <button onClick={probar} disabled={probando || guardando || !credOk}
+                        className="lincoin-btn-white" style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, padding: '9px 14px', borderRadius: 9, border: 'none', cursor: 'pointer', opacity: (probando || !credOk) ? 0.5 : 1 }}>
+                        {probando ? 'Conectando con Siigo…' : 'Guardar y probar conexión'}
+                      </button>
+                      {conectado && <button onClick={() => setCredAbiertas(false)} style={{ fontFamily: FONT, fontSize: 12, fontWeight: 700, color: C.sub, background: 'transparent', border: 'none', cursor: 'pointer' }}>Cancelar</button>}
+                      <span style={{ fontSize: 11.5, color: C.tenue }}>Trae de tu cuenta los productos, impuestos, comprobantes, vendedores y formas de pago.</span>
+                    </div>
                   </>
                 )}
-                {cat?.traido_at && <p style={{ fontSize: 11, color: C.tenue, margin: '10px 0 0' }}>Catálogos traídos el {fecha(cat.traido_at)}. Si cambiaste algo en Siigo, volvé a probar la conexión.</p>}
               </Seccion>
 
-              {/* 4. Ítems */}
-              <Seccion n="4" t="Ítems del documento">
-                <p style={{ fontSize: 12, color: C.sub, margin: '0 0 12px', lineHeight: 1.55 }}>
-                  Las líneas que lleva cada factura o documento soporte. El valor de cada una se calcula a partir del monto de la operación: todo el monto, un porcentaje, o un valor fijo. En la descripción podés usar {'{tipo}'}, {'{numero}'}, {'{contraparte}'}, {'{monto}'} y {'{fecha}'}.
-                </p>
-                {!cat && <p style={{ fontSize: 12, color: C.ambar, margin: '0 0 10px' }}>Sin probar la conexión no hay productos que elegir: se puede escribir el código a mano, pero tiene que existir en tu Siigo.</p>}
-                <div style={{ display: 'grid', gap: 10 }}>
-                  {items.map((it, i) => (
-                    <div key={i} style={{ padding: '12px 12px 10px', borderRadius: 12, border: `1px solid ${it.code ? C.borde : 'rgba(251,191,36,0.4)'}`, background: C.elevado }}>
-                      <div className="flex items-center justify-between" style={{ gap: 8, marginBottom: 10 }}>
-                        <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub }}>ÍTEM {i + 1}</span>
-                        <button onClick={() => quitarItem(i)} title="Quitar ítem" style={{ background: 'none', border: 'none', color: C.sub, cursor: 'pointer', padding: 2 }} className="hover:text-[#F87171] transition-colors"><Trash2 size={14} /></button>
-                      </div>
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10 }}>
-                        <Campo rot="PRODUCTO O SERVICIO DE SIIGO" ayuda={!it.code ? 'Obligatorio.' : undefined}>
-                          {cat?.productos?.length ? (
-                            <select value={it.code} onChange={e => setItem(i, { code: e.target.value })} style={selectEstilo}>
-                              <option value="">Elegir…</option>
-                              {(cat.productos ?? []).map((p: any) => <option key={p.code} value={p.code}>{p.code} · {p.name}</option>)}
-                            </select>
-                          ) : (
-                            <input value={it.code} onChange={e => setItem(i, { code: e.target.value })} placeholder="Código del producto en Siigo" style={entrada} />
-                          )}
+              {/* 2. Modelo */}
+              <Seccion n="2" t="Tu modelo de negocio">
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 10 }}>
+                  {tarjetaModelo('rotacion', 'Rotación de capital',
+                    'Recibís plata de terceros, la rotás y cobrás una comisión. Por cada entrada se emite una factura de venta con dos ítems que suman exacto lo recibido: el servicio para terceros (sin IVA) y tu comisión (con IVA).',
+                    'Con 15.000.000 y 1 % de utilidad: terceros 14.850.000 · comisión 126.050,42 + IVA 23.949,58 · total 15.000.000.')}
+                  {tarjetaModelo('psp', 'PSP / pasarela',
+                    'Pagás a terceros por cuenta de un cliente. Por cada envío se emite un documento soporte al beneficiario por el monto total, con el ítem de servicio para terceros, sin IVA. La factura de tu comisión al cliente la hacés vos en Siigo.',
+                    'Con un envío de 15.000.000: documento soporte al beneficiario por 15.000.000.')}
+                </div>
+              </Seccion>
+
+              {/* 3. Parámetros del modelo */}
+              {modelo && (
+                <Seccion n="3" t={modelo === 'rotacion' ? 'Cómo se arma la factura' : 'Cómo se arma el documento soporte'}>
+                  {!cat && <p style={{ fontSize: 12.5, color: C.ambar, margin: '0 0 12px' }}>Conectá la cuenta de Siigo primero: los ítems, impuestos y comprobantes se eligen de lo que devuelva tu Siigo.</p>}
+                  <p style={{ fontSize: 12, color: C.sub, margin: '0 0 12px', lineHeight: 1.55 }}>
+                    Los ítems son productos o servicios que creás en tu Siigo (Inventario → Productos). Acá solo se elige cuál es cuál.
+                  </p>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+                    {modelo === 'rotacion' && (
+                      <Campo rot="TU UTILIDAD (%)" ayuda="Lo que ganás sobre lo que entra: 1, 0,5, 0,1…">
+                        <input type="number" min={0} max={100} step={0.01} value={form.utilidad_pct ?? ''} onChange={e => set('utilidad_pct', e.target.value)} placeholder="1" inputMode="decimal" style={entrada} />
+                      </Campo>
+                    )}
+                    <Campo rot="ÍTEM · SERVICIO PARA TERCEROS" ayuda={cat?.fuentes?.productos?.motivo ?? 'El producto de Siigo para el dinero de terceros. Sin IVA.'}>
+                      {select('item_terceros', productos, 'Siigo no devolvió productos')}
+                    </Campo>
+                    {modelo === 'rotacion' && (
+                      <>
+                        <Campo rot="ÍTEM · COMISIÓN" ayuda="El producto de Siigo para tu comisión. Lleva IVA.">
+                          {select('item_comision', productos, 'Siigo no devolvió productos')}
                         </Campo>
-                        <Campo rot="CANTIDAD">
-                          <input type="number" min={1} step={1} value={it.quantity} onChange={e => setItem(i, { quantity: Math.max(1, Number(e.target.value) || 1) })} style={entrada} />
+                        <Campo rot="IVA DE LA COMISIÓN" ayuda={cat?.fuentes?.impuestos?.motivo ?? 'Con esta tarifa se calcula la base: base + IVA = utilidad.'}>
+                          {select('iva_tax_id', impuestos.map((t: any) => ({ v: t.id, t: `${t.name}${t.percentage ? ` · ${t.percentage} %` : ''}` })), 'Siigo no devolvió impuestos')}
                         </Campo>
-                        <div style={{ gridColumn: '1 / -1' }}>
-                          <Campo rot="DESCRIPCIÓN">
-                            <input value={it.description} onChange={e => setItem(i, { description: e.target.value })} placeholder="{tipo} · Comprobante Lincoin {numero}" style={entrada} />
-                          </Campo>
-                        </div>
-                        <Campo rot="VALOR">
-                          <select value={it.valor} onChange={e => setItem(i, { valor: e.target.value as Item['valor'] })} style={selectEstilo}>
-                            <option value="monto">El monto de la operación</option>
-                            <option value="porcentaje">Un porcentaje del monto</option>
-                            <option value="fijo">Un valor fijo</option>
-                          </select>
-                        </Campo>
-                        {it.valor === 'porcentaje' && (
-                          <Campo rot="PORCENTAJE (%)">
-                            <input type="number" min={0} max={100} step={0.01} value={it.porcentaje} onChange={e => setItem(i, { porcentaje: Number(e.target.value) || 0 })} style={entrada} />
-                          </Campo>
-                        )}
-                        {it.valor === 'fijo' && (
-                          <Campo rot="VALOR FIJO (COP)">
-                            <input type="number" min={0} step={1} value={it.fijo} onChange={e => setItem(i, { fijo: Number(e.target.value) || 0 })} style={entrada} />
-                          </Campo>
-                        )}
-                        <Campo rot="IMPUESTO" ayuda={cat?.fuentes?.impuestos?.motivo ?? undefined}>
-                          <select value={it.tax_id ?? ''} onChange={e => setItem(i, { tax_id: e.target.value ? Number(e.target.value) : null })} style={selectEstilo} disabled={!cat?.impuestos?.length}>
-                            <option value="">{cat?.impuestos?.length ? 'Sin impuesto (el del producto)' : 'Sin impuestos en el catálogo'}</option>
-                            {(cat?.impuestos ?? []).map((t: any) => <option key={t.id} value={t.id}>{t.name}{t.percentage ? ` · ${t.percentage} %` : ''}</option>)}
-                          </select>
-                        </Campo>
-                      </div>
-                      <p style={{ fontSize: 11, color: C.tenue, margin: '10px 0 0' }}>
-                        Con una operación de {fmtCop(EJEMPLO)} COP, este ítem va por <b style={{ color: C.text }}>{fmtCop(valorEjemplo(it))}</b>{it.tax_id ? ' con impuesto' : ''}.
-                      </p>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Qué operaciones */}
+                  <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '16px 0 8px' }}>{modelo === 'rotacion' ? 'QUÉ ENTRADAS FACTURAN' : 'QUÉ SALIDAS LLEVAN DOCUMENTO SOPORTE'}</p>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 8 }}>
+                    {(modelo === 'rotacion' ? ENTRADAS : SALIDAS).filter(k => k in disparadores).map(k => (
+                      <label key={k} className="flex items-center" style={{ gap: 9, cursor: 'pointer' }}>
+                        <input type="checkbox" checked={ops.includes(k)} onChange={e => toggleOp(k, e.target.checked)} style={{ width: 15, height: 15, accentColor: C.verde }} />
+                        <span style={{ fontSize: 13, color: C.text }}>{disparadores[k]}</span>
+                      </label>
+                    ))}
+                  </div>
+
+                  {/* Comprobantes de Siigo */}
+                  <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '16px 0 8px' }}>{modelo === 'rotacion' ? 'COMPROBANTE DE LA FACTURA EN TU SIIGO' : 'COMPROBANTE DEL DOCUMENTO SOPORTE EN TU SIIGO'}</p>
+                  {!cat ? (
+                    <p style={{ fontSize: 12.5, color: C.tenue, margin: 0 }}>Se eligen después de conectar.</p>
+                  ) : modelo === 'rotacion' ? (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+                      <Campo rot="TIPO DE COMPROBANTE (FV)" ayuda={cat.fuentes?.documentos?.motivo ?? undefined}>
+                        {select('document_id', (cat.documentos ?? []).map((d: any) => ({ v: d.id, t: `${d.code ? d.code + ' · ' : ''}${d.name}` })), 'Siigo no devolvió tipos de factura')}
+                      </Campo>
+                      <Campo rot="VENDEDOR" ayuda={cat.fuentes?.vendedores?.motivo ?? undefined}>
+                        {select('seller_id', (cat.vendedores ?? []).map((u: any) => ({ v: u.id, t: u.nombre })), 'Siigo no devolvió vendedores')}
+                      </Campo>
+                      <Campo rot="FORMA DE PAGO" ayuda={cat.fuentes?.pagos?.motivo ?? undefined}>
+                        {select('payment_id', (cat.pagos ?? []).map((p: any) => ({ v: p.id, t: p.name })), 'Siigo no devolvió formas de pago')}
+                      </Campo>
                     </div>
-                  ))}
-                </div>
-                <div className="flex items-center justify-between flex-wrap" style={{ gap: 10, marginTop: 10 }}>
-                  <button onClick={agregarItem} className="flex items-center hover:bg-white/[0.06] transition-colors" style={{ gap: 6, fontFamily: FONT, fontSize: 12.5, fontWeight: 700, color: C.text, background: 'transparent', border: `1px solid ${C.borde}`, borderRadius: 9, padding: '8px 12px', cursor: 'pointer' }}>
-                    <Plus size={14} /> Agregar ítem
-                  </button>
-                  {items.length > 0 && (
-                    <span style={{ fontSize: 11.5, color: C.sub }}>Total de ejemplo: <b style={{ color: C.text }}>{fmtCop(totalEjemplo)} COP</b> por una operación de {fmtCop(EJEMPLO)}.</span>
+                  ) : sinCatalogoDs ? (
+                    <p style={{ fontSize: 12.5, color: C.ambar, margin: 0 }}>Los catálogos guardados son de antes de esta opción. Dale a «Actualizar catálogos» arriba para traer los comprobantes de documento soporte.</p>
+                  ) : (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+                      <Campo rot="TIPO DE COMPROBANTE (DS)" ayuda={cat.fuentes?.documentos_ds?.motivo ?? 'El comprobante que en tu Siigo está configurado como documento soporte. Si no aparece, crealo en Siigo y actualizá los catálogos.'}>
+                        {select('ds_document_id', (cat.documentos_ds ?? []).map((d: any) => ({ v: d.id, t: `${d.clase} · ${d.code ? d.code + ' · ' : ''}${d.name}` })), 'Siigo no devolvió comprobantes de documento soporte')}
+                      </Campo>
+                      <Campo rot="FORMA DE PAGO (DS)" ayuda={cat.fuentes?.pagos_ds?.motivo ?? undefined}>
+                        {select('ds_payment_id', (cat.pagos_ds ?? []).map((p: any) => ({ v: p.id, t: p.name })), 'Siigo no devolvió formas de pago de compra')}
+                      </Campo>
+                    </div>
                   )}
-                </div>
-                {!items.length && <p style={{ fontSize: 12, color: C.ambar, margin: '10px 0 0' }}>Sin ítems no se puede emitir nada. Agregá al menos uno.</p>}
-              </Seccion>
 
-              {/* 5. Contraparte y envío */}
-              <Seccion n="5" t="Contraparte, DIAN y correo">
+                  {/* Descripciones (opcional) */}
+                  <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '16px 0 8px' }}>DESCRIPCIÓN DE CADA ÍTEM (OPCIONAL)</p>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+                    <Campo rot="SERVICIO PARA TERCEROS" ayuda="Podés usar {contraparte}, {numero}, {monto}, {fecha}, {tipo}.">
+                      <input value={form.desc_terceros ?? ''} onChange={e => set('desc_terceros', e.target.value)} placeholder="Servicio para terceros · {contraparte} · Comprobante Lincoin {numero}" style={entrada} />
+                    </Campo>
+                    {modelo === 'rotacion' && (
+                      <Campo rot="COMISIÓN" ayuda="También {utilidad}, el porcentaje.">
+                        <input value={form.desc_comision ?? ''} onChange={e => set('desc_comision', e.target.value)} placeholder="Comisión {utilidad} % · Comprobante Lincoin {numero}" style={entrada} />
+                      </Campo>
+                    )}
+                  </div>
+
+                  {/* Ejemplo */}
+                  {ejemplo && (
+                    <div style={{ marginTop: 16, padding: '12px 14px', borderRadius: 12, border: `1px solid ${C.bordeSuave}`, background: C.elevado }}>
+                      <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '0 0 8px' }}>
+                        ASÍ QUEDA CON UNA OPERACIÓN DE {fmtCop(EJEMPLO)} COP{modelo === 'rotacion' ? ` Y ${utilidad || 0} % DE UTILIDAD` : ''}
+                      </p>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+                        <tbody>
+                          {ejemplo.lineas.map((l, i) => (
+                            <tr key={i}>
+                              <td style={{ padding: '5px 0', color: C.text }}>{l.n}</td>
+                              <td style={{ padding: '5px 0', textAlign: 'right', color: C.text, fontFamily: 'ui-monospace, monospace' }}>{fmtCop(l.v)}</td>
+                              <td style={{ padding: '5px 0 5px 12px', textAlign: 'right', color: C.sub, fontFamily: 'ui-monospace, monospace', whiteSpace: 'nowrap' }}>{l.iva ? `IVA ${fmtCop(l.iva)}` : 'sin IVA'}</td>
+                            </tr>
+                          ))}
+                          <tr>
+                            <td style={{ padding: '7px 0 0', color: C.text, fontWeight: 800, borderTop: `1px solid ${C.bordeSuave}` }}>Total</td>
+                            <td colSpan={2} style={{ padding: '7px 0 0', textAlign: 'right', fontWeight: 800, borderTop: `1px solid ${C.bordeSuave}`, fontFamily: 'ui-monospace, monospace', color: ejemplo.total === EJEMPLO ? C.verde : C.ambar }}>{fmtCop(ejemplo.total)}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                      {modelo === 'rotacion' && !(utilidad > 0) && <p style={{ fontSize: 11.5, color: C.ambar, margin: '8px 0 0' }}>Poné tu utilidad para ver la comisión.</p>}
+                      {modelo === 'rotacion' && utilidad > 0 && !iva && <p style={{ fontSize: 11.5, color: C.ambar, margin: '8px 0 0' }}>Sin IVA elegido, la comisión va sin impuesto. Elegí el IVA arriba.</p>}
+                    </div>
+                  )}
+                </Seccion>
+              )}
+
+              {/* 4. Contraparte y envío */}
+              <Seccion n="4" t="Contraparte, DIAN y correo">
+                <p style={{ fontSize: 12, color: C.sub, margin: '0 0 12px', lineHeight: 1.55 }}>
+                  El documento sale a nombre de quien aparece en la operación: nombre y documento del que pagó o del beneficiario. Si no existe en tu Siigo, se crea. Cuando la operación no trae documento (un depósito, por ejemplo), va al cliente por defecto.
+                </p>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
-                  <Campo rot="NIT DEL CLIENTE POR DEFECTO" ayuda="Cuando la operación no trae documento de la contraparte (un depósito, por ejemplo). 222222222222 es consumidor final.">
+                  <Campo rot="NIT DEL CLIENTE POR DEFECTO" ayuda="222222222222 es consumidor final.">
                     <input value={form.cliente_default_nit ?? ''} onChange={e => set('cliente_default_nit', e.target.value.replace(/\D/g, ''))} inputMode="numeric" style={entrada} />
                   </Campo>
                   <Campo rot="NOMBRE DEL CLIENTE POR DEFECTO">
@@ -426,8 +462,8 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                 </div>
                 <div style={{ display: 'grid', gap: 10, marginTop: 14 }}>
                   {chk('crear_clientes', 'Crear la contraparte en Siigo si no existe', 'Con el documento y el nombre de la operación. Apagado, el documento queda en error hasta que la crees vos.')}
-                  {chk('stamp', 'Enviar la factura de venta a la DIAN (factura electrónica)', 'Apagado, Siigo la guarda sin validarla ante la DIAN. El documento soporte se envía según cómo esté configurado el comprobante en tu Siigo.')}
-                  {chk('mail', 'Que Siigo mande la factura por correo al cliente')}
+                  {modelo !== 'psp' && chk('stamp', 'Enviar la factura a la DIAN (factura electrónica)', 'Apagado, Siigo la guarda sin validarla ante la DIAN.')}
+                  {modelo !== 'psp' && chk('mail', 'Que Siigo mande la factura por correo al cliente')}
                 </div>
                 <div style={{ marginTop: 14 }}>
                   <Campo rot="OBSERVACIONES EN EL DOCUMENTO (OPCIONAL)">
