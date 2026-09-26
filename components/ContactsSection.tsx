@@ -5,6 +5,7 @@ import { useSystemConfig } from '../context/SystemConfigContext';
 import { supabase } from '../lib/supabaseClient';
 import { llamarFuncion } from '../lib/edge';
 import { validarNit, completarNit, nitSinDv } from '../lib/nit';
+import { MUNICIPIOS, municipioPorCodigo } from '../lib/municipios';
 import { FlagImg } from './FlagImg';
 import { callFinity } from './FinitySection';
 import { ContabilidadDashboard } from './ContabilidadDashboard';
@@ -111,6 +112,13 @@ export interface MouvContact {
     // Contacto opcional del destinatario — SOLO notificaciones, no mueve dinero.
     notifyEmail?: string;
     notifyPhone?: string;
+    // Ciudad (código DANE) y dirección del beneficiario en Colombia. Van al
+    // tercero en Siigo: la DIAN rechaza el documento soporte si el tercero
+    // no tiene país/ciudad ("Falta o es inválido el país del tercero").
+    cityCode?: string;
+    cityName?: string;
+    stateCode?: string;
+    address?: string;
 }
 
 // Tipos de llave Bre-B (igual que la consola de Mouv).
@@ -289,6 +297,39 @@ const emptyForm = {
     brebKey: '',
     notifyEmail: '',
     notifyPhone: '',
+    // Ciudad (código DANE) y dirección: solo Colombia, van al tercero en Siigo.
+    cityCode: '',
+    address: '',
+};
+
+// Ciudad y dirección del beneficiario en Colombia, como van al contacto.
+// Las dos son obligatorias: sin ellas el tercero queda sin país en Siigo y
+// la DIAN rechaza el documento soporte.
+const direccionDelForm = (f: { cityCode: string; address: string }): { cityCode: string; cityName: string; stateCode: string; address: string } | { error: string } => {
+    const m = municipioPorCodigo(f.cityCode);
+    if (!m) return { error: 'Elige la ciudad del beneficiario. Va en el documento soporte que se emite en Siigo.' };
+    const address = f.address.trim();
+    if (address.length < 4) return { error: 'Escribe la dirección del beneficiario. Va en el documento soporte que se emite en Siigo.' };
+    return { cityCode: m.codigo, cityName: `${m.nombre}, ${m.deptoNombre}`, stateCode: m.depto, address: address.slice(0, 256) };
+};
+
+// Selector de ciudad (municipios DANE agrupados por departamento).
+const CiudadSelect: React.FC<{ value: string; onChange: (codigo: string) => void; style: React.CSSProperties }> = ({ value, onChange, style }) => {
+    const grupos = useMemo(() => {
+        const g = new Map<string, typeof MUNICIPIOS>();
+        for (const m of MUNICIPIOS) { const l = g.get(m.deptoNombre) ?? []; l.push(m); g.set(m.deptoNombre, l); }
+        return Array.from(g.entries());
+    }, []);
+    return (
+        <select value={value} onChange={e => onChange(e.target.value)} style={style}>
+            <option value="">Selecciona…</option>
+            {grupos.map(([depto, lista]) => (
+                <optgroup key={depto} label={depto}>
+                    {lista.map(m => <option key={m.codigo} value={m.codigo}>{m.nombre}</option>)}
+                </optgroup>
+            ))}
+        </select>
+    );
 };
 
 const WALLET_ADDR_RX: Record<string, RegExp> = {
@@ -691,6 +732,21 @@ export const ContactsSection: React.FC<{
     };
     // Contacto abierto en el modal de detalle (clic sobre la fila)
     const [detail, setDetail] = useState<MouvContact | null>(null);
+    // Completar ciudad y dirección de un beneficiario ya inscrito (los de
+    // antes no las tienen, y sin ellas el documento soporte sale rechazado).
+    const [dirEdit, setDirEdit] = useState<{ cityCode: string; address: string; guardando: boolean; error: string | null } | null>(null);
+    const guardarDireccion = async (c: MouvContact) => {
+        if (!dirEdit) return;
+        const d = direccionDelForm(dirEdit);
+        if ('error' in d) { setDirEdit({ ...dirEdit, error: d.error }); return; }
+        setDirEdit({ ...dirEdit, guardando: true, error: null });
+        const actualizado: MouvContact = { ...c, ...d };
+        const ok = await persistBanks(bankContacts.map(x => x.id === c.id ? actualizado : x));
+        if (!ok) { setDirEdit({ ...dirEdit, guardando: false, error: 'No se pudo guardar (sesión vencida o permisos). Vuelve a entrar e inténtalo otra vez.' }); return; }
+        setDirEdit(null);
+        setDetail(actualizado);
+    };
+    useEffect(() => { setDirEdit(null); }, [detail?.id]);
     // Los hallazgos van PLEGADOS. Treinta y cinco renglones empujan el resto
     // de la ficha fuera de la pantalla y esconden lo que de verdad importa:
     // el veredicto y los botones.
@@ -826,6 +882,8 @@ export const ContactsSection: React.FC<{
             const keyNorm = f.brebKey.trim().toLowerCase();
             const dupK = bankContacts.find(c => c.destKind === 'breb' && (c.brebKey ?? '').trim().toLowerCase() === keyNorm);
             if (dupK) { setNotice({ ok: false, text: `Ya tienes esta llave inscrita como “${dupK.name}”.` }); return; }
+            const dirK = direccionDelForm(f);
+            if ('error' in dirK) { setNotice({ ok: false, text: dirK.error }); return; }
             setSaving(true); setNotice(null);
             // Bre-B no exige inscripción previa vía API: Mouv resuelve la llave
             // (resolve-key, SARLAFT) al momento del envío. El destinatario
@@ -839,6 +897,7 @@ export const ContactsSection: React.FC<{
                 status: 'aprobada', createdAt: new Date().toISOString(), lastError: null,
                 destKind: 'breb', brebKeyType: f.brebKeyType, brebKey: f.brebKey.trim(),
                 notifyEmail: f.notifyEmail.trim() || undefined, notifyPhone: f.notifyPhone.trim() || undefined,
+                ...dirK,
             };
             const okK = await persistBanks([brebContact, ...bankContacts]);
             setSaving(false); setFormOpen(false); setForm({ ...emptyForm });
@@ -860,6 +919,8 @@ export const ContactsSection: React.FC<{
         const bAcc = normAccount(f.accountNumber, false);
         const dupB = bankContacts.find(c => normAccount(c.accountNumber, false) === bAcc && (c.bank || '').toLowerCase() === f.bank.toLowerCase() && (c.country || 'Colombia') === f.country);
         if (dupB) { setNotice({ ok: false, text: `Ya tienes esta cuenta de ${f.bank} inscrita como “${dupB.name}”. No es necesario inscribirla de nuevo.` }); return; }
+        const dirB = f.country === 'Colombia' ? direccionDelForm(f) : {};
+        if ('error' in dirB) { setNotice({ ok: false, text: dirB.error }); return; }
         setSaving(true);
         setNotice(null);
 
@@ -913,6 +974,7 @@ export const ContactsSection: React.FC<{
             createdAt: new Date().toISOString(),
             lastError,
             destKind: 'ach',
+            ...dirB,
         };
         const okB = await persistBanks([contact, ...bankContacts]);
         setSaving(false);
@@ -1678,6 +1740,16 @@ export const ContactsSection: React.FC<{
                                         placeholder={form.docType === 'NIT' ? '10 dígitos, con el de verificación' : undefined} />
                                 </div>
                             </div>
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label style={LBL}>Ciudad</label>
+                                    <CiudadSelect value={form.cityCode} onChange={c => setForm(fm => ({ ...fm, cityCode: c }))} style={INP} />
+                                </div>
+                                <div>
+                                    <label style={LBL}>Dirección</label>
+                                    <input value={form.address} onChange={e => setForm(fm => ({ ...fm, address: e.target.value }))} placeholder="Calle 10 # 20-30" style={INP} />
+                                </div>
+                            </div>
                         </>
                     ) : (
                     /* ── Rama ACH / otros países: cuenta bancaria ── */
@@ -1723,6 +1795,18 @@ export const ContactsSection: React.FC<{
                             <label style={LBL}>Número de cuenta</label>
                             <input value={form.accountNumber} onChange={e => setForm(fm => ({ ...fm, accountNumber: e.target.value.replace(/[^\d-]/g, '') }))} inputMode="numeric" style={INP} />
                         </div>
+                        {form.country === 'Colombia' && (
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label style={LBL}>Ciudad</label>
+                                    <CiudadSelect value={form.cityCode} onChange={c => setForm(fm => ({ ...fm, cityCode: c }))} style={INP} />
+                                </div>
+                                <div>
+                                    <label style={LBL}>Dirección</label>
+                                    <input value={form.address} onChange={e => setForm(fm => ({ ...fm, address: e.target.value }))} placeholder="Calle 10 # 20-30" style={INP} />
+                                </div>
+                            </div>
+                        )}
                     </>
                     )}
 
@@ -2208,6 +2292,35 @@ export const ContactsSection: React.FC<{
                     { l: 'Banco', v: `${detail.bank} · ${detail.accountType === 'checking' ? 'Corriente' : 'Ahorros'} · ${(detail.country ?? 'Colombia') === 'Colombia' ? 'COP' : 'Local'}` },
                     { l: 'Documento del titular', v: `${detail.docType ?? ''} ${detail.docNumber ?? ''}`.trim() || '—' },
                 ];
+                // Ciudad y dirección (Colombia): van al tercero en Siigo. Si
+                // faltan, se completan acá mismo.
+                const esColombia = !isWallet && (detail.country ?? 'Colombia') === 'Colombia';
+                const tieneDir = !!(detail.cityCode && detail.address);
+                if (esColombia && tieneDir && !dirEdit) {
+                    rows.push({ l: 'Ciudad', v: detail.cityName ?? municipioPorCodigo(detail.cityCode)?.nombre ?? detail.cityCode ?? '' });
+                    rows.push({ l: 'Dirección', v: <span>{detail.address} <button onClick={() => setDirEdit({ cityCode: detail.cityCode ?? '', address: detail.address ?? '', guardando: false, error: null })} style={{ marginLeft: 6, color: '#878E88', fontSize: 11.5, fontWeight: 700, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer' }}>Editar</button></span> });
+                }
+                const dirForm = esColombia && (!tieneDir || dirEdit) ? (
+                    <div style={{ marginTop: 10, border: '1px solid rgba(255,255,255,0.1)', borderLeft: '2px solid #F59E0B', background: 'rgba(255,255,255,0.03)', borderRadius: 10, padding: '12px 14px' }}>
+                        <p style={{ fontSize: 12, color: '#F4F4F2', fontWeight: 700 }}>{tieneDir ? 'Editar ciudad y dirección' : 'Falta la ciudad y la dirección'}</p>
+                        <p style={{ fontSize: 11.5, color: '#878E88', lineHeight: 1.5, marginTop: 3 }}>Van al tercero en Siigo. Sin ellas la DIAN rechaza el documento soporte («Falta o es inválido el país del tercero»).</p>
+                        <div className="grid grid-cols-2 gap-3" style={{ marginTop: 10 }}>
+                            <div>
+                                <label style={LBL}>Ciudad</label>
+                                <CiudadSelect value={dirEdit?.cityCode ?? ''} onChange={c => setDirEdit(e => ({ cityCode: c, address: e?.address ?? '', guardando: false, error: null }))} style={INP} />
+                            </div>
+                            <div>
+                                <label style={LBL}>Dirección</label>
+                                <input value={dirEdit?.address ?? ''} onChange={ev => setDirEdit(e => ({ cityCode: e?.cityCode ?? '', address: ev.target.value, guardando: false, error: null }))} placeholder="Calle 10 # 20-30" style={INP} />
+                            </div>
+                        </div>
+                        {dirEdit?.error && <p style={{ fontSize: 11.5, color: '#F87171', marginTop: 8 }}>{dirEdit.error}</p>}
+                        <div className="flex" style={{ gap: 8, marginTop: 10 }}>
+                            <button onClick={() => guardarDireccion(detail)} disabled={!dirEdit || dirEdit.guardando} className="lincoin-btn-white transition-colors" style={{ flex: 1, padding: '9px 0', borderRadius: 9, fontSize: 12.5, fontWeight: 700, border: 'none', opacity: !dirEdit || dirEdit.guardando ? 0.5 : 1 }}>{dirEdit?.guardando ? 'Guardando…' : 'Guardar'}</button>
+                            {tieneDir && <button onClick={() => setDirEdit(null)} style={{ flex: 1, padding: '9px 0', borderRadius: 9, fontSize: 12.5, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)' }}>Cancelar</button>}
+                        </div>
+                    </div>
+                ) : null;
                 return (
                 // El overlay NO desplaza: el que desplaza es el cuerpo de la
                 // ficha. Con overflow acá y el diálogo centrado, en cuanto la
@@ -2286,6 +2399,7 @@ export const ContactsSection: React.FC<{
                                     </div>
                                 ))}
                             </div>
+                            {dirForm}
 
                             {/* Cumplimiento: acá sí cabe explicar qué significa
                                 la insignia y desde cuándo. En la fila solo hay

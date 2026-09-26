@@ -86,7 +86,7 @@ async function quienLlama(req: Request): Promise<{ userId: string | null; servic
 // Devuelve SIEMPRE qué pasó: estado HTTP y cuerpo. Un error tragado acá se
 // convierte en "no se facturó" sin motivo, que es lo que se quiere evitar.
 type Resp = { ok: boolean; status: number; data: any; texto: string }
-async function siigo(metodo: 'GET' | 'POST', ruta: string, opts: { token?: string; partner?: string; body?: unknown }): Promise<Resp> {
+async function siigo(metodo: 'GET' | 'POST' | 'PUT', ruta: string, opts: { token?: string; partner?: string; body?: unknown }): Promise<Resp> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' }
   if (opts.partner) headers['Partner-Id'] = opts.partner
   if (opts.token) headers['Authorization'] = `Bearer ${opts.token}`
@@ -357,7 +357,20 @@ function partirNit(doc: string): { identification: string; check_digit?: string 
 }
 
 // ── La contraparte de una operación ──────────────────────────────
-type Contraparte = { identification: string; check_digit?: string; nombre: string; esDefault: boolean; esEmpresa: boolean }
+// Dirección del tercero como la pide Siigo: calle, y la ciudad con códigos
+// DANE (state_code = departamento, city_code = municipio) y país. La DIAN
+// rechaza el documento soporte si el tercero no tiene país ("Falta o es
+// inválido el país del tercero", regla vista en DS-1-10).
+type Direccion = { address: string; city: { country_code: string; state_code: string; city_code: string } }
+type Contraparte = { identification: string; check_digit?: string; nombre: string; esDefault: boolean; esEmpresa: boolean; direccion: Direccion | null }
+function direccionDe(rd: Record<string, any>): Direccion | null {
+  const r = rd?.recipient && typeof rd.recipient === 'object' ? rd.recipient : {}
+  const address = String(r.address ?? rd.address ?? '').trim()
+  const city = String(r.cityCode ?? rd.cityCode ?? '').replace(/\D/g, '').padStart(5, '0')
+  const state = String(r.stateCode ?? rd.stateCode ?? city.slice(0, 2)).replace(/\D/g, '').padStart(2, '0')
+  if (!address || city.length !== 5 || city === '00000') return null
+  return { address: address.slice(0, 256), city: { country_code: 'Co', state_code: state, city_code: city } }
+}
 function contraparteDe(comp: any, cfg: any): Contraparte {
   const rd = comp?.detalle?.raw_data ?? {}
   const doc = String(rd.docNumber ?? rd.documentNumber ?? rd.beneficiaryDoc ?? rd.beneficiaryDocument ?? rd.senderDoc ?? '').replace(/\D/g, '')
@@ -368,16 +381,46 @@ function contraparteDe(comp: any, cfg: any): Contraparte {
     // cédula no llega a 9 dígitos salvo las muy nuevas, que van a 10).
     const esEmpresa = tipoDoc ? tipoDoc === 'NIT' : doc.length === 9
     const partes = esEmpresa ? partirNit(doc) : { identification: doc }
-    return { ...partes, nombre: nombre || doc, esDefault: false, esEmpresa }
+    return { ...partes, nombre: nombre || doc, esDefault: false, esEmpresa, direccion: direccionDe(rd) }
   }
-  return { identification: String(cfg.cliente_default_nit || '222222222222').replace(/\D/g, ''), nombre: cfg.cliente_default_nombre || 'Consumidor final', esDefault: true, esEmpresa: false }
+  return { identification: String(cfg.cliente_default_nit || '222222222222').replace(/\D/g, ''), nombre: cfg.cliente_default_nombre || 'Consumidor final', esDefault: true, esEmpresa: false, direccion: null }
 }
+
+const SIN_DIRECCION = (cp: Contraparte, donde: string) =>
+  `El beneficiario ${cp.nombre} (${cp.identification}) no tiene ciudad ni dirección ${donde}, y la DIAN rechaza el documento soporte sin el país del tercero («Falta o es inválido el país del tercero»). Completalas en Beneficiarios → abrí la ficha → Ciudad y dirección, y emití de nuevo.`
 
 async function asegurarCliente(token: string, partner: string, cfg: any, cp: Contraparte, rol: 'Customer' | 'Supplier' = 'Customer'): Promise<{ ok: true } | { ok: false; error: string }> {
   const busca = await siigo('GET', `/v1/customers?identification=${encodeURIComponent(cp.identification)}`, { token, partner })
-  const hay = Array.isArray(busca.data?.results) ? busca.data.results.length > 0 : Array.isArray(busca.data) ? busca.data.length > 0 : false
-  if (busca.ok && hay) return { ok: true }
+  const lista: any[] = Array.isArray(busca.data?.results) ? busca.data.results : Array.isArray(busca.data) ? busca.data : []
   if (!busca.ok) return { ok: false, error: `Buscando al cliente en Siigo — ${motivoDe(busca)}` }
+  const existente = lista.find(x => String(x?.identification ?? '') === cp.identification) ?? lista[0]
+  if (existente) {
+    // Ya existe. Si no tiene país (los que se crearon antes de saber que la
+    // DIAN lo exige), se le completa con la dirección del beneficiario.
+    const conPais = !!existente.address?.city?.country_code
+    if (conPais || rol !== 'Supplier') return { ok: true }
+    if (!cp.direccion) return { ok: false, error: SIN_DIRECCION(cp, 'en Siigo') }
+    const idType = existente.id_type?.code ?? existente.id_type ?? (cp.esEmpresa ? '31' : '13')
+    const cuerpo: Record<string, unknown> = {
+      type: existente.type ?? rol, person_type: existente.person_type ?? (cp.esEmpresa ? 'Company' : 'Person'), id_type: String(idType),
+      identification: existente.identification ?? cp.identification,
+      ...(existente.check_digit ? { check_digit: String(existente.check_digit) } : {}),
+      name: Array.isArray(existente.name) ? existente.name : [String(existente.name ?? cp.nombre)],
+      ...(existente.commercial_name ? { commercial_name: existente.commercial_name } : {}),
+      branch_office: existente.branch_office ?? 0, active: existente.active ?? true,
+      vat_responsible: existente.vat_responsible ?? false,
+      fiscal_responsibilities: (Array.isArray(existente.fiscal_responsibilities) && existente.fiscal_responsibilities.length ? existente.fiscal_responsibilities : [{ code: 'R-99-PN' }]).map((f: any) => ({ code: f.code ?? f })),
+      address: cp.direccion,
+      ...(Array.isArray(existente.phones) && existente.phones.length ? { phones: existente.phones.map((p: any) => ({ ...(p.indicative ? { indicative: p.indicative } : {}), ...(p.number ? { number: p.number } : {}), ...(p.extension ? { extension: p.extension } : {}) })) } : {}),
+      ...(Array.isArray(existente.contacts) && existente.contacts.length ? { contacts: existente.contacts.map((k: any) => ({ first_name: k.first_name ?? cp.nombre, ...(k.last_name ? { last_name: k.last_name } : {}), ...(k.email ? { email: k.email } : {}), ...(k.phone ? { phone: k.phone } : {}) })) } : {}),
+    }
+    const upd = await siigo('PUT', `/v1/customers/${encodeURIComponent(String(existente.id))}`, { token, partner, body: cuerpo })
+    if (!upd.ok) return { ok: false, error: `Completando la ciudad del tercero ${cp.identification} en Siigo — ${motivoDe(upd)}` }
+    return { ok: true }
+  }
+  // El documento soporte necesita el país del tercero: sin dirección no se
+  // crea un tercero incompleto que la DIAN va a rechazar.
+  if (rol === 'Supplier' && !cp.direccion) return { ok: false, error: SIN_DIRECCION(cp, 'inscritas') }
   // Si no existe, se crea SIEMPRE con los datos de la operación: el flujo es
   // "toma los datos de la transferencia, guarda al tercero y emite". Una
   // casilla para apagarlo solo producía documentos en error.
@@ -393,12 +436,14 @@ async function asegurarCliente(token: string, partner: string, cfg: any, cp: Con
       identification: cp.identification, ...(cp.check_digit ? { check_digit: cp.check_digit } : {}),
       name: [cp.nombre], commercial_name: cp.nombre, branch_office: 0, active: true,
       vat_responsible: false, fiscal_responsibilities: [{ code: 'R-99-PN' }],
+      ...(cp.direccion ? { address: cp.direccion } : {}),
     }
     : {
       type: rol, person_type: 'Person', id_type: '13',
       identification: cp.identification,
       name: [partes[0] ?? cp.nombre, partes.slice(1).join(' ') || '.'], branch_office: 0, active: true,
       vat_responsible: false, fiscal_responsibilities: [{ code: 'R-99-PN' }],
+      ...(cp.direccion ? { address: cp.direccion } : {}),
     }
   const crea = await siigo('POST', '/v1/customers', { token, partner, body: cuerpo })
   if (!crea.ok) return { ok: false, error: `Creando al cliente ${cp.identification} en Siigo — ${motivoDe(crea)}` }

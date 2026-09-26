@@ -624,6 +624,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
         name: sendForm.beneficiaryName, docType: sendForm.documentType, docNumber: sendForm.documentNumber,
         bank: sendForm.bankName, accountType: sendForm.accountType, accountNumber: sendForm.accountNumber,
         brebKey: undefined as string | undefined, brebKeyType: undefined as string | undefined,
+        address: undefined as string | undefined, cityCode: undefined as string | undefined, cityName: undefined as string | undefined, stateCode: undefined as string | undefined,
         esInscrito: false, coherente: true,
       };
     }
@@ -641,6 +642,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       name: c.name, docType: c.docType, docNumber: c.docNumber,
       bank: c.bank, accountType: c.accountType, accountNumber: c.accountNumber,
       brebKey: llave, brebKeyType: c.brebKeyType,
+      // Ciudad y dirección del beneficiario: van al tercero en Siigo.
+      address: c.address, cityCode: c.cityCode, cityName: c.cityName, stateCode: c.stateCode,
       esInscrito: true, coherente,
     };
   }, [sendContact, sendForm.beneficiaryName, sendForm.documentType, sendForm.documentNumber, sendForm.bankName, sendForm.accountType, sendForm.accountNumber]);
@@ -2073,9 +2076,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               showToast('Elige el motivo del envío antes de confirmar.', 5000, 'error');
               return;
           }
+          // Ciudad y dirección del beneficiario: quedan en el movimiento y
+          // de ahí van al tercero en Siigo (documento soporte).
+          const direccion = d.cityCode && d.address ? { address: d.address, cityCode: d.cityCode, cityName: d.cityName, stateCode: d.stateCode } : {};
           const recipient = isBreb
-              ? { keyType: d.brebKeyType ?? 'celular', key: d.brebKey ?? d.accountNumber, holderName: d.name, documentNumber: d.docNumber, reference: sendForm.reason, motivo: sendForm.motivo }
-              : { bankCode: d.bank, accountType: (d.accountType === 'checking' ? 'corriente' : 'ahorros'), accountNumber: d.accountNumber, documentType: d.docType, documentNumber: d.docNumber, holderName: d.name, reference: sendForm.reason, motivo: sendForm.motivo, ...(sendContact?.finityId ? { finityId: sendContact.finityId } : {}) };
+              ? { keyType: d.brebKeyType ?? 'celular', key: d.brebKey ?? d.accountNumber, holderName: d.name, documentNumber: d.docNumber, reference: sendForm.reason, motivo: sendForm.motivo, ...direccion }
+              : { bankCode: d.bank, accountType: (d.accountType === 'checking' ? 'corriente' : 'ahorros'), accountNumber: d.accountNumber, documentType: d.docType, documentNumber: d.docNumber, holderName: d.name, reference: sendForm.reason, motivo: sendForm.motivo, ...(sendContact?.finityId ? { finityId: sendContact.finityId } : {}), ...direccion };
           try {
               const r = await Promise.race([
                   callMouvProxy({ action: isBreb ? 'payout_breb' : 'payout_ach', userId: currentUser.id, amount, recipient, otp: sentOtpRef.current }),
