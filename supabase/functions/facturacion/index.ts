@@ -151,27 +151,67 @@ async function traerCatalogos(token: string, partner: string) {
   return { documentos, vendedores, pagos, productos, fuentes, traido_at: new Date().toISOString() }
 }
 
-// ── La contraparte de una operación ──────────────────────────────
-function contraparteDe(comp: any, cfg: any): { identification: string; nombre: string; esDefault: boolean } {
-  const rd = comp?.detalle?.raw_data ?? {}
-  const doc = String(rd.docNumber ?? rd.documentNumber ?? rd.beneficiaryDoc ?? rd.beneficiaryDocument ?? rd.senderDoc ?? '').replace(/\D/g, '')
-  const nombre = String(rd.beneficiary ?? rd.beneficiaryName ?? rd.senderName ?? rd.recipientName ?? comp?.contraparte ?? '').trim()
-  if (doc) return { identification: doc, nombre: nombre || doc, esDefault: false }
-  return { identification: String(cfg.cliente_default_nit || '222222222222').replace(/\D/g, ''), nombre: cfg.cliente_default_nombre || 'Consumidor final', esDefault: true }
+// ── NIT: el dígito de verificación (módulo 11 de la DIAN) ────────
+// En Lincoin el NIT se inscribe COMPLETO (10 dígitos). Siigo lo quiere
+// partido: `identification` con los 9 base y `check_digit` aparte. Solo se
+// parte si el décimo dígito es de verdad el DV de los otros nueve.
+const PESOS_NIT = [3, 7, 13, 17, 19, 23, 29, 37, 41, 43, 47, 53, 59, 67, 71]
+function dvNit(base: string): number | null {
+  const d = String(base ?? '').replace(/\D/g, '')
+  if (!d.length || d.length > 15) return null
+  let suma = 0
+  for (let i = 0; i < d.length; i++) suma += Number(d[d.length - 1 - i]) * PESOS_NIT[i]
+  const r = suma % 11
+  return r > 1 ? 11 - r : r
+}
+function partirNit(doc: string): { identification: string; check_digit?: string } {
+  if (doc.length === 10 && dvNit(doc.slice(0, 9)) === Number(doc[9])) return { identification: doc.slice(0, 9), check_digit: doc[9] }
+  if (doc.length === 9) { const dv = dvNit(doc); return dv === null ? { identification: doc } : { identification: doc, check_digit: String(dv) } }
+  return { identification: doc }
 }
 
-async function asegurarCliente(token: string, partner: string, cfg: any, cp: { identification: string; nombre: string }): Promise<{ ok: true } | { ok: false; error: string }> {
+// ── La contraparte de una operación ──────────────────────────────
+type Contraparte = { identification: string; check_digit?: string; nombre: string; esDefault: boolean; esEmpresa: boolean }
+function contraparteDe(comp: any, cfg: any): Contraparte {
+  const rd = comp?.detalle?.raw_data ?? {}
+  const doc = String(rd.docNumber ?? rd.documentNumber ?? rd.beneficiaryDoc ?? rd.beneficiaryDocument ?? rd.senderDoc ?? '').replace(/\D/g, '')
+  const tipoDoc = String(rd.docType ?? rd.documentType ?? rd.beneficiaryDocType ?? '').toUpperCase()
+  const nombre = String(rd.beneficiary ?? rd.beneficiaryName ?? rd.senderName ?? rd.recipientName ?? comp?.contraparte ?? '').trim()
+  if (doc) {
+    // Es empresa si el tipo dice NIT; si no hay tipo, por la longitud (una
+    // cédula no llega a 9 dígitos salvo las muy nuevas, que van a 10).
+    const esEmpresa = tipoDoc ? tipoDoc === 'NIT' : doc.length === 9
+    const partes = esEmpresa ? partirNit(doc) : { identification: doc }
+    return { ...partes, nombre: nombre || doc, esDefault: false, esEmpresa }
+  }
+  return { identification: String(cfg.cliente_default_nit || '222222222222').replace(/\D/g, ''), nombre: cfg.cliente_default_nombre || 'Consumidor final', esDefault: true, esEmpresa: false }
+}
+
+async function asegurarCliente(token: string, partner: string, cfg: any, cp: Contraparte): Promise<{ ok: true } | { ok: false; error: string }> {
   const busca = await siigo('GET', `/v1/customers?identification=${encodeURIComponent(cp.identification)}`, { token, partner })
   const hay = Array.isArray(busca.data?.results) ? busca.data.results.length > 0 : Array.isArray(busca.data) ? busca.data.length > 0 : false
   if (busca.ok && hay) return { ok: true }
   if (!busca.ok) return { ok: false, error: `Buscando al cliente en Siigo — ${motivoDe(busca)}` }
   if (!cfg.crear_clientes) return { ok: false, error: `El cliente ${cp.identification} no existe en Siigo y "crear clientes" está apagado.` }
-  // NIT (9-10 dígitos) → empresa; cédula → persona.
-  const esNit = cp.identification.length >= 9 && cp.identification !== '222222222222'
+  // Empresa (NIT, id_type 31, con dígito de verificación aparte) o persona
+  // (cédula, id_type 13). Se crea con lo mínimo que Siigo exige y sin
+  // inventar lo que no se sabe: la responsabilidad fiscal va en "no
+  // responsable" (R-99-PN), que es lo que aplica mientras nadie diga otra
+  // cosa. Si Siigo pide más, lo dice y se ve en la columna FACTURA.
   const partes = cp.nombre.split(/\s+/).filter(Boolean)
-  const cuerpo = esNit
-    ? { type: 'Customer', person_type: 'Company', id_type: '31', identification: cp.identification, name: [cp.nombre], active: true, vat_responsible: false }
-    : { type: 'Customer', person_type: 'Person', id_type: '13', identification: cp.identification, name: [partes[0] ?? cp.nombre, partes.slice(1).join(' ') || '.'], active: true, vat_responsible: false }
+  const cuerpo = cp.esEmpresa && !cp.esDefault
+    ? {
+      type: 'Customer', person_type: 'Company', id_type: '31',
+      identification: cp.identification, ...(cp.check_digit ? { check_digit: cp.check_digit } : {}),
+      name: [cp.nombre], commercial_name: cp.nombre, branch_office: 0, active: true,
+      vat_responsible: false, fiscal_responsibilities: [{ code: 'R-99-PN' }],
+    }
+    : {
+      type: 'Customer', person_type: 'Person', id_type: '13',
+      identification: cp.identification,
+      name: [partes[0] ?? cp.nombre, partes.slice(1).join(' ') || '.'], branch_office: 0, active: true,
+      vat_responsible: false, fiscal_responsibilities: [{ code: 'R-99-PN' }],
+    }
   const crea = await siigo('POST', '/v1/customers', { token, partner, body: cuerpo })
   if (!crea.ok) return { ok: false, error: `Creando al cliente ${cp.identification} en Siigo — ${motivoDe(crea)}` }
   return { ok: true }
