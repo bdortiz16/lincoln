@@ -1450,8 +1450,20 @@ Deno.serve(async (req: Request) => {
         }
       }
       if (!e.lugar) recorrer(det.crudo, '', 0)
+      // Empresa: las secciones donde puede estar el domicilio, tal cual
+      // (recortadas), para ver de una vez qué traen. RUES = Cámara de
+      // Comercio; RUT = la DIAN, que nombra la "dirección seccional"
+      // (Impuestos de Pereira…), de la que sale la ciudad.
+      const secciones: Record<string, string> = {}
+      if (esEmpresa && det.crudo && typeof det.crudo === 'object') {
+        for (const k of ['rues', 'rut', 'rut_estado', 'supersociedades', 'contaduria_data']) {
+          const v = (det.crudo as Record<string, unknown>)[k]
+          if (v === undefined) continue
+          secciones[k] = (typeof v === 'string' ? v : JSON.stringify(v)).slice(0, 1500)
+        }
+      }
       await guardarBeneficiario(uid, clave!, { lugarBuscado: true, ...(e.lugar ? { lugarExpedicion: e.lugar } : {}), ...(m ? { lugarExpedicionCodigo: m.codigo } : {}), ...(e.fecha ? { fechaExpedicionDoc: e.fecha } : {}) } as Ficha)
-      return json({ ok: true, lugarExpedicion: e.lugar ?? null, lugarExpedicionCodigo: m?.codigo ?? null, municipio: m ? `${m.nombre}, ${m.deptoNombre}` : null, fechaExpedicion: e.fecha ?? null, claves, esEmpresa, seccionesReporte: det.crudo && typeof det.crudo === 'object' ? Object.keys(det.crudo as object) : [] })
+      return json({ ok: true, lugarExpedicion: e.lugar ?? null, lugarExpedicionCodigo: m?.codigo ?? null, municipio: m ? `${m.nombre}, ${m.deptoNombre}` : null, fechaExpedicion: e.fecha ?? null, claves, esEmpresa, secciones, seccionesReporte: det.crudo && typeof det.crudo === 'object' ? Object.keys(det.crudo as object) : [] })
     }
 
     if (accion === 'estado') {

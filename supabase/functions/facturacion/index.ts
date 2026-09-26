@@ -457,8 +457,9 @@ async function lugarDeExpedicion(userId: string, documento: string): Promise<{ c
       : `La Registraduría dice que la cédula se expidió en «${lugar}», y ese nombre corresponde a más de un municipio de la lista DANE (o a ninguno).` }
     const claves: string[] = Array.isArray(d.claves) ? d.claves : []
     const secciones: string[] = Array.isArray(d.seccionesReporte) ? d.seccionesReporte : []
+    const vol = d.secciones && typeof d.secciones === 'object' ? Object.entries(d.secciones as Record<string, string>).map(([k, v]) => `${k}: ${v}`).join(' ‖ ') : ''
     return { codigo: null, lugar: '', diagnostico: d.esEmpresa
-      ? `Es una empresa: la ciudad saldría del domicilio de la Cámara de Comercio (RUES), y el reporte de antecedentes no lo trae bajo una clave reconocible. Claves parecidas: ${claves.length ? claves.slice(0, 40).join(' · ') : 'ninguna'}. Secciones del reporte: ${secciones.join(', ') || 'ninguna'}.`
+      ? `Es una empresa: la ciudad saldría del domicilio de la Cámara de Comercio (RUES) o de la dirección seccional del RUT (DIAN), y el reporte de antecedentes no lo trae bajo una clave reconocible. Claves parecidas: ${claves.length ? claves.slice(0, 40).join(' · ') : 'ninguna'}. Contenido de las secciones: ${vol || 'ninguna'}.`
       : `El reporte de antecedentes no trae el lugar de expedición bajo una clave reconocible. Claves parecidas: ${claves.length ? claves.slice(0, 12).join(' · ') : 'ninguna'}. Secciones del reporte: ${secciones.join(', ') || 'ninguna'}.` }
   } catch (e) {
     return { codigo: null, lugar: '', diagnostico: `No se pudo consultar antecedentes: ${(e as Error)?.message ?? e}.` }
