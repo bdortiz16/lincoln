@@ -351,7 +351,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                         <input type="number" min={0} max={100} step={0.01} value={form.utilidad_pct ?? ''} onChange={e => set('utilidad_pct', e.target.value)} placeholder="1" inputMode="decimal" style={entrada} />
                       </Campo>
                     )}
-                    <Campo rot="ÍTEM · SERVICIO PARA TERCEROS" ayuda={cat?.fuentes?.productos?.motivo ?? 'El producto de Siigo para el dinero de terceros. Sin IVA.'}>
+                    <Campo rot="ÍTEM · SERVICIO PARA TERCEROS" ayuda={cat?.fuentes?.productos?.motivo ?? `El producto de Siigo para el dinero de terceros. Sin IVA.${cat ? ` ${productos.length} productos traídos el ${fecha(cat.traido_at)}; si creaste uno nuevo, dale a «Actualizar catálogos».` : ''}`}>
                       {select('item_terceros', productos, 'Siigo no devolvió productos')}
                     </Campo>
                     {modelo === 'rotacion' && (

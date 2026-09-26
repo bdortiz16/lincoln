@@ -155,6 +155,24 @@ async function resumenDe(userId: string) {
 // ── Catálogos ─────────────────────────────────────────────────────
 async function traerCatalogos(token: string, partner: string) {
   const lista = (r: Resp): any[] => Array.isArray(r.data) ? r.data : Array.isArray(r.data?.results) ? r.data.results : []
+  // Los productos vienen paginados. Se traen TODAS las páginas: un producto
+  // creado ayer puede quedar en la segunda, y "no me sale el ítem nuevo" es
+  // exactamente lo que pasa cuando solo se lee la primera.
+  const todasLasPaginas = async (ruta: string, max = 20): Promise<Resp> => {
+    const acumulado: any[] = []
+    let ultima: Resp | null = null
+    for (let page = 1; page <= max; page++) {
+      const r = await siigo('GET', `${ruta}${ruta.includes('?') ? '&' : '?'}page=${page}&page_size=100`, { token, partner })
+      ultima = r
+      if (!r.ok) break
+      const parte = lista(r)
+      acumulado.push(...parte)
+      const total = Number(r.data?.pagination?.total_results)
+      if (parte.length < 100 || (Number.isFinite(total) && acumulado.length >= total)) break
+    }
+    if (!ultima) return { ok: false, status: 0, data: null, texto: 'sin respuesta' }
+    return { ...ultima, ok: ultima.ok || acumulado.length > 0, data: acumulado }
+  }
   const [doc, docDs, docFc, usr, pag, pagFc, prod, imp] = await Promise.all([
     siigo('GET', '/v1/document-types?type=FV', { token, partner }),
     // El documento soporte: Siigo lo lista como su propio tipo (DS) o, según
@@ -166,7 +184,7 @@ async function traerCatalogos(token: string, partner: string) {
     siigo('GET', '/v1/users', { token, partner }),
     siigo('GET', '/v1/payment-types?document_type=FV', { token, partner }),
     siigo('GET', '/v1/payment-types?document_type=FC', { token, partner }),
-    siigo('GET', '/v1/products?page=1&page_size=100', { token, partner }),
+    todasLasPaginas('/v1/products'),
     siigo('GET', '/v1/taxes', { token, partner }),
   ])
   const fuentes: Record<string, { ok: boolean; status: number; motivo: string | null; n: number }> = {}
