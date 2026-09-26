@@ -192,7 +192,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   const [filtroDir, setFiltroDir] = useState<'todos' | 'in' | 'out' | 'conv'>('todos');
   const [busca, setBusca] = useState('');
   const [limite, setLimite] = useState(25);
-  const [folios, setFolios] = useState<Record<string, { folio: number; numero: string; enviado: boolean; factura?: { estado: string | null; numero: string | null; url: string | null; error: string | null } }>>({});
+  const [folios, setFolios] = useState<Record<string, { folio: number; numero: string; enviado: boolean; factura?: { estado: string | null; numero: string | null; url: string | null; error: string | null; tipo: string | null } }>>({});
   const [foliosEstado, setFoliosEstado] = useState<'cargando' | 'ok' | 'sin_tabla' | 'error'>('cargando');
   const [configAbierta, setConfigAbierta] = useState(false);
   const [facturacionActiva, setFacturacionActiva] = useState<boolean | null>(null);
@@ -214,15 +214,18 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     if (!userId) return;
     let vivo = true;
     (async () => {
+      // `*` a propósito: si una columna nueva (factura_tipo) todavía no
+      // existe porque falta correr su migración, nombrarla rompería toda la
+      // consulta y la columna COMPROBANTE quedaría vacía.
       const { data, error } = await supabase.from('comprobantes')
-        .select('folio, transaction_id, numero, enviado_at, factura_estado, factura_numero, factura_url, factura_error')
+        .select('*')
         .eq('user_id', userId).limit(2000);
       if (!vivo) return;
       if (error) { setFoliosEstado(/does not exist|42P01|schema cache/i.test(error.message) ? 'sin_tabla' : 'error'); return; }
       const m: typeof folios = {};
       for (const r of (data ?? []) as any[]) m[String(r.transaction_id)] = {
         folio: Number(r.folio), numero: String(r.numero), enviado: !!r.enviado_at,
-        factura: { estado: r.factura_estado ?? null, numero: r.factura_numero ?? null, url: r.factura_url ?? null, error: r.factura_error ?? null },
+        factura: { estado: r.factura_estado ?? null, numero: r.factura_numero ?? null, url: r.factura_url ?? null, error: r.factura_error ?? null, tipo: r.factura_tipo ?? null },
       };
       setFolios(m); setFoliosEstado('ok');
     })();
@@ -451,9 +454,12 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                       {(() => {
                         const fa = f?.factura;
                         if (!f || !fa?.estado) return <span style={{ color: C.tenue }}>{f && facturacionActiva ? 'pendiente' : '—'}</span>;
+                        // "DS" delante cuando lo que salió fue un documento
+                        // soporte, no una factura: son dos cosas distintas.
+                        const rotulo = fa.tipo === 'DS' ? 'DS · ' : '';
                         if (fa.estado === 'emitida') return fa.url
-                          ? <a href={fa.url} target="_blank" rel="noopener noreferrer" style={{ color: C.text, fontFamily: 'ui-monospace, monospace', textDecoration: 'underline', textUnderlineOffset: 3 }}>{fa.numero ?? 'ver'}</a>
-                          : <span style={{ color: C.text, fontFamily: 'ui-monospace, monospace' }}>{fa.numero ?? 'emitida'}</span>;
+                          ? <a href={fa.url} target="_blank" rel="noopener noreferrer" title={fa.tipo === 'DS' ? 'Documento soporte' : 'Factura de venta'} style={{ color: C.text, fontFamily: 'ui-monospace, monospace', textDecoration: 'underline', textUnderlineOffset: 3 }}>{rotulo}{fa.numero ?? 'ver'}</a>
+                          : <span title={fa.tipo === 'DS' ? 'Documento soporte' : 'Factura de venta'} style={{ color: C.text, fontFamily: 'ui-monospace, monospace' }}>{rotulo}{fa.numero ?? 'emitida'}</span>;
                         if (fa.estado === 'error') return (
                           <span className="flex items-center" style={{ gap: 6 }} title={fa.error ?? ''}>
                             <span style={{ color: '#F87171', fontWeight: 700 }}>error</span>

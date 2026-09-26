@@ -30,8 +30,19 @@
 //    GET  /v1/products                   productos/servicios
 //    GET  /v1/customers?identification=  ¿existe la contraparte?
 //    POST /v1/customers                  crearla
-//    POST /v1/invoices                   emitir (stamp = DIAN, mail = correo)
+//    POST /v1/invoices                   FACTURA DE VENTA (stamp = DIAN, mail = correo)
+//    GET  /v1/document-types?type=DS|FC  tipos de documento soporte / compra
+//    GET  /v1/payment-types?document_type=FC
+//    GET  /v1/taxes                      impuestos, para los ítems
+//    POST /v1/purchases                  DOCUMENTO SOPORTE (compra a no obligado a facturar)
 //  Los ids de esos catálogos son de CADA cuenta: no hay valores por defecto.
+//
+//  QUÉ SALE POR CADA OPERACIÓN
+//    `documentos` = { tipoDeOperacion: 'FV' | 'DS' }. Plata que ENTRA → factura
+//    de venta a quien pagó. Plata que SALE a alguien que no factura → documento
+//    soporte a quien se le pagó. Lo decide el cliente, por tipo de operación.
+//    `items` = las líneas del documento, con el valor calculado a partir del
+//    monto de la operación (todo, un porcentaje, o un valor fijo).
 // ══════════════════════════════════════════════════════════════════
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { encField, decField, KeyMismatchError } from '../_shared/field-crypto.ts'
@@ -144,20 +155,82 @@ async function resumenDe(userId: string) {
 // ── Catálogos ─────────────────────────────────────────────────────
 async function traerCatalogos(token: string, partner: string) {
   const lista = (r: Resp): any[] => Array.isArray(r.data) ? r.data : Array.isArray(r.data?.results) ? r.data.results : []
-  const [doc, usr, pag, prod] = await Promise.all([
+  const [doc, docDs, docFc, usr, pag, pagFc, prod, imp] = await Promise.all([
     siigo('GET', '/v1/document-types?type=FV', { token, partner }),
+    // El documento soporte: Siigo lo lista como su propio tipo (DS) o, según
+    // la cuenta, entre los comprobantes de compra (FC). Se piden los dos y
+    // el cliente elige el que en SU Siigo está configurado como documento
+    // soporte. No se adivina cuál es.
+    siigo('GET', '/v1/document-types?type=DS', { token, partner }),
+    siigo('GET', '/v1/document-types?type=FC', { token, partner }),
     siigo('GET', '/v1/users', { token, partner }),
     siigo('GET', '/v1/payment-types?document_type=FV', { token, partner }),
+    siigo('GET', '/v1/payment-types?document_type=FC', { token, partner }),
     siigo('GET', '/v1/products?page=1&page_size=100', { token, partner }),
+    siigo('GET', '/v1/taxes', { token, partner }),
   ])
   const fuentes: Record<string, { ok: boolean; status: number; motivo: string | null; n: number }> = {}
   const anota = (k: string, r: Resp, arr: any[]) => { fuentes[k] = { ok: r.ok, status: r.status, motivo: r.ok ? null : motivoDe(r), n: arr.length } }
-  const documentos = lista(doc).map((d: any) => ({ id: d.id, code: d.code, name: d.name, electronic: d.electronic_type ?? d.electronic ?? null }))
+  const tipoDoc = (d: any, clase: string) => ({ id: d.id, code: d.code, name: d.name, clase, electronic: d.electronic_type ?? d.electronic ?? null })
+  const documentos = lista(doc).map((d: any) => tipoDoc(d, 'FV'))
+  const vistos = new Set<string>()
+  const documentos_ds = [...lista(docDs).map((d: any) => tipoDoc(d, 'DS')), ...lista(docFc).map((d: any) => tipoDoc(d, 'FC'))]
+    .filter(d => { const k = String(d.id); if (vistos.has(k)) return false; vistos.add(k); return true })
   const vendedores = lista(usr).map((u: any) => ({ id: u.id, nombre: [u.first_name, u.last_name].filter(Boolean).join(' ') || u.username || String(u.id), username: u.username, activo: u.active }))
   const pagos = lista(pag).map((p: any) => ({ id: p.id, name: p.name, type: p.type }))
+  const pagos_ds = lista(pagFc).map((p: any) => ({ id: p.id, name: p.name, type: p.type }))
   const productos = lista(prod).map((p: any) => ({ id: p.id, code: p.code, name: p.name, type: p.type, active: p.active }))
+  const impuestos = lista(imp).map((t: any) => ({ id: t.id, name: t.name, type: t.type, percentage: Number(t.percentage) || 0 }))
   anota('documentos', doc, documentos); anota('vendedores', usr, vendedores); anota('pagos', pag, pagos); anota('productos', prod, productos)
-  return { documentos, vendedores, pagos, productos, fuentes, traido_at: new Date().toISOString() }
+  // Para el documento soporte basta con que UNA de las dos listas haya
+  // respondido; si ninguna, se guarda el motivo de la de compras.
+  anota('documentos_ds', docDs.ok || docFc.ok ? { ...docFc, ok: true } : docFc, documentos_ds)
+  anota('pagos_ds', pagFc, pagos_ds); anota('impuestos', imp, impuestos)
+  return { documentos, documentos_ds, vendedores, pagos, pagos_ds, productos, impuestos, fuentes, traido_at: new Date().toISOString() }
+}
+
+// ── Qué documento sale por cada tipo de operación ─────────────────
+// Lo nuevo (`documentos`) manda. Si no está, la regla vieja: los
+// disparadores marcados emitían factura de venta.
+function documentosDe(cfg: any): Record<string, 'FV' | 'DS'> {
+  const d = cfg?.documentos
+  if (d && typeof d === 'object' && !Array.isArray(d)) {
+    const out: Record<string, 'FV' | 'DS'> = {}
+    for (const [k, v] of Object.entries(d)) if (k in DISPARADORES && (v === 'FV' || v === 'DS')) out[k] = v
+    return out
+  }
+  const out: Record<string, 'FV' | 'DS'> = {}
+  for (const k of Array.isArray(cfg?.disparadores) ? cfg.disparadores : []) if (k in DISPARADORES) out[k] = 'FV'
+  return out
+}
+
+// ── Los ítems del documento ──────────────────────────────────────
+// Cada línea: un producto de Siigo, una descripción con plantilla, cantidad,
+// y el VALOR: el monto de la operación, un porcentaje de él, o un fijo. Con
+// impuesto, el total que se paga incluye el impuesto (Siigo lo exige así).
+type ItemCfg = { code: string; description?: string; quantity?: number; valor?: 'monto' | 'porcentaje' | 'fijo'; porcentaje?: number; fijo?: number; tax_id?: number | null }
+function itemsDe(cfg: any, monto: number, ctx: Record<string, string>): { items: any[]; total: number } {
+  const lista: ItemCfg[] = Array.isArray(cfg.items) && cfg.items.length ? cfg.items
+    : cfg.product_code ? [{ code: cfg.product_code, description: cfg.product_description, quantity: 1, valor: 'monto' }] : []
+  const impuestos: any[] = Array.isArray(cfg.catalogos?.impuestos) ? cfg.catalogos.impuestos : []
+  const plantilla = (s: string) => s.replace(/\{(\w+)\}/g, (_m, k) => ctx[k] ?? `{${k}}`)
+  let total = 0
+  const items = lista.filter(i => i && String(i.code ?? '').trim()).map(i => {
+    const qty = Math.max(1, Number(i.quantity) || 1)
+    const valor = i.valor ?? 'monto'
+    const precio = valor === 'porcentaje' ? monto * (Number(i.porcentaje) || 0) / 100 : valor === 'fijo' ? (Number(i.fijo) || 0) : monto
+    const price = Math.round(precio * 100) / 100
+    const tax = i.tax_id ? impuestos.find((t: any) => Number(t.id) === Number(i.tax_id)) : null
+    const pct = tax ? Number(tax.percentage) || 0 : 0
+    total += price * qty * (1 + pct / 100)
+    return {
+      code: String(i.code).trim(),
+      description: plantilla(i.description || `${ctx.tipo} · Lincoin`).slice(0, 500),
+      quantity: qty, price,
+      ...(i.tax_id ? { taxes: [{ id: Number(i.tax_id) }] } : {}),
+    }
+  })
+  return { items, total: Math.round(total * 100) / 100 }
 }
 
 // ── NIT: el dígito de verificación (módulo 11 de la DIAN) ────────
@@ -196,7 +269,7 @@ function contraparteDe(comp: any, cfg: any): Contraparte {
   return { identification: String(cfg.cliente_default_nit || '222222222222').replace(/\D/g, ''), nombre: cfg.cliente_default_nombre || 'Consumidor final', esDefault: true, esEmpresa: false }
 }
 
-async function asegurarCliente(token: string, partner: string, cfg: any, cp: Contraparte): Promise<{ ok: true } | { ok: false; error: string }> {
+async function asegurarCliente(token: string, partner: string, cfg: any, cp: Contraparte, rol: 'Customer' | 'Supplier' = 'Customer'): Promise<{ ok: true } | { ok: false; error: string }> {
   const busca = await siigo('GET', `/v1/customers?identification=${encodeURIComponent(cp.identification)}`, { token, partner })
   const hay = Array.isArray(busca.data?.results) ? busca.data.results.length > 0 : Array.isArray(busca.data) ? busca.data.length > 0 : false
   if (busca.ok && hay) return { ok: true }
@@ -210,13 +283,13 @@ async function asegurarCliente(token: string, partner: string, cfg: any, cp: Con
   const partes = cp.nombre.split(/\s+/).filter(Boolean)
   const cuerpo = cp.esEmpresa && !cp.esDefault
     ? {
-      type: 'Customer', person_type: 'Company', id_type: '31',
+      type: rol, person_type: 'Company', id_type: '31',
       identification: cp.identification, ...(cp.check_digit ? { check_digit: cp.check_digit } : {}),
       name: [cp.nombre], commercial_name: cp.nombre, branch_office: 0, active: true,
       vat_responsible: false, fiscal_responsibilities: [{ code: 'R-99-PN' }],
     }
     : {
-      type: 'Customer', person_type: 'Person', id_type: '13',
+      type: rol, person_type: 'Person', id_type: '13',
       identification: cp.identification,
       name: [partes[0] ?? cp.nombre, partes.slice(1).join(' ') || '.'], branch_office: 0, active: true,
       vat_responsible: false, fiscal_responsibilities: [{ code: 'R-99-PN' }],
@@ -236,54 +309,77 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
     await db.from('comprobantes').update({ ...patch, factura_intentos: Number((comp as any).factura_intentos ?? 0) + 1 }).eq('folio', folio)
   }
   if (!cfg || !cfg.activo) { await marcar({ factura_estado: 'omitida', factura_error: 'Facturación automática no activa.' }); return { ok: true, estado: 'omitida' } }
-  const dispara = Array.isArray(cfg.disparadores) ? cfg.disparadores : []
   const tipo = String((comp as any).tipo ?? '')
-  if (!opts.forzar && !dispara.includes(tipo)) { await marcar({ factura_estado: 'omitida', factura_error: `El tipo "${DISPARADORES[tipo] ?? tipo}" no está entre los que se facturan.` }); return { ok: true, estado: 'omitida' } }
+  const reglas = documentosDe(cfg)
+  const regla = reglas[tipo] ?? null
+  if (!opts.forzar && !regla) { await marcar({ factura_estado: 'omitida', factura_error: `El tipo "${DISPARADORES[tipo] ?? tipo}" no emite documento (Configuración → qué sale por cada operación).` }); return { ok: true, estado: 'omitida' } }
+  // Reintentado a mano sin regla: se asume factura de venta, que es lo que
+  // toda cuenta tiene configurado.
+  const clase: 'FV' | 'DS' = regla ?? 'FV'
   // Ya emitida: no se emite dos veces.
   if ((comp as any).factura_estado === 'emitida' && (comp as any).factura_numero) return { ok: true, estado: 'emitida', numero: (comp as any).factura_numero }
-  const faltan = ['document_id', 'seller_id', 'payment_id', 'product_code'].filter(k => !cfg[k])
-  if (faltan.length) { const e = `Falta elegir en Configuración: ${faltan.join(', ')}.`; await marcar({ factura_estado: 'error', factura_error: e }); return { ok: false, error: e } }
+  // El documento en Siigo va en pesos. Una operación en otra moneda no se
+  // convierte con una tasa inventada.
+  const moneda = String((comp as any).moneda ?? '').toUpperCase()
+  if (moneda && !/^COP/.test(moneda)) { const e = `La operación es en ${moneda} y el documento en Siigo va en pesos. No hay tasa de cambio configurada.`; await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: clase }); return { ok: false, error: e } }
+  const necesarios = clase === 'FV' ? ['document_id', 'seller_id', 'payment_id'] : ['ds_document_id', 'ds_payment_id']
+  const faltan = necesarios.filter(k => !cfg[k])
+  if (faltan.length) { const e = `Falta elegir en Configuración (${clase === 'FV' ? 'factura de venta' : 'documento soporte'}): ${faltan.join(', ')}.`; await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: clase }); return { ok: false, error: e } }
 
   const partner = cfg.partner_id || 'Lincoin'
   const t = await tokenDe(userId, cfg)
-  if ('error' in t) { await marcar({ factura_estado: 'error', factura_error: t.error }); return { ok: false, error: t.error } }
+  if ('error' in t) { await marcar({ factura_estado: 'error', factura_error: t.error, factura_tipo: clase }); return { ok: false, error: t.error } }
 
   const cp = contraparteDe(comp, cfg)
-  const cli = await asegurarCliente(t.token, partner, cfg, cp)
-  if (!cli.ok) { await marcar({ factura_estado: 'error', factura_error: cli.error }); return { ok: false, error: cli.error } }
+  const cli = await asegurarCliente(t.token, partner, cfg, cp, clase === 'DS' ? 'Supplier' : 'Customer')
+  if (!cli.ok) { await marcar({ factura_estado: 'error', factura_error: cli.error, factura_tipo: clase }); return { ok: false, error: cli.error } }
 
   // El monto como número para Siigo, desde el texto que guardó el comprobante.
   const monto = Number(String((comp as any).monto ?? '0').replace(/,/g, ''))
-  if (!Number.isFinite(monto) || monto <= 0) { const e = `Monto inválido en el comprobante: ${(comp as any).monto}`; await marcar({ factura_estado: 'error', factura_error: e }); return { ok: false, error: e } }
+  if (!Number.isFinite(monto) || monto <= 0) { const e = `Monto inválido en el comprobante: ${(comp as any).monto}`; await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: clase }); return { ok: false, error: e } }
   const hoy = new Date().toISOString().slice(0, 10)
-  const descripcion = (cfg.product_description || `${DISPARADORES[tipo] ?? tipo} · Lincoin`)
-    .replace('{numero}', String((comp as any).numero)).replace('{tipo}', DISPARADORES[tipo] ?? tipo).replace('{contraparte}', cp.nombre)
-  const cuerpo = {
-    document: { id: Number(cfg.document_id) },
-    date: hoy,
-    customer: { identification: cp.identification, branch_office: 0 },
-    seller: Number(cfg.seller_id),
-    stamp: { send: !!cfg.stamp },
-    mail: { send: !!cfg.mail },
-    observations: [cfg.observaciones, `Comprobante Lincoin ${(comp as any).numero}`].filter(Boolean).join(' · ').slice(0, 500),
-    items: [{ code: String(cfg.product_code), description: descripcion.slice(0, 500), quantity: 1, price: monto }],
-    payments: [{ id: Number(cfg.payment_id), value: monto, due_date: hoy }],
+  const ctx = {
+    tipo: DISPARADORES[tipo] ?? tipo, numero: String((comp as any).numero ?? ''), contraparte: cp.nombre,
+    monto: monto.toLocaleString('es-CO', { maximumFractionDigits: 2 }), fecha: hoy,
   }
-  const r = await siigo('POST', '/v1/invoices', { token: t.token, partner, body: cuerpo })
+  const { items, total } = itemsDe(cfg, monto, ctx)
+  if (!items.length) { const e = 'No hay ítems configurados para el documento (Configuración → ítems).'; await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: clase }); return { ok: false, error: e } }
+  if (total <= 0) { const e = 'Los ítems suman cero: revisá el valor de cada uno en Configuración.'; await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: clase }); return { ok: false, error: e } }
+  const observations = [cfg.observaciones, `Comprobante Lincoin ${(comp as any).numero}`].filter(Boolean).join(' · ').slice(0, 500)
+  const cuerpo = clase === 'FV'
+    ? {
+      document: { id: Number(cfg.document_id) },
+      date: hoy,
+      customer: { identification: cp.identification, branch_office: 0 },
+      seller: Number(cfg.seller_id),
+      stamp: { send: !!cfg.stamp },
+      mail: { send: !!cfg.mail },
+      observations, items,
+      payments: [{ id: Number(cfg.payment_id), value: total, due_date: hoy }],
+    }
+    : {
+      document: { id: Number(cfg.ds_document_id) },
+      date: hoy,
+      supplier: { identification: cp.identification, branch_office: 0 },
+      observations, items,
+      payments: [{ id: Number(cfg.ds_payment_id), value: total, due_date: hoy }],
+    }
+  const ruta = clase === 'FV' ? '/v1/invoices' : '/v1/purchases'
+  const r = await siigo('POST', ruta, { token: t.token, partner, body: cuerpo })
   if (!r.ok) {
-    const e = `Siigo rechazó la factura — ${motivoDe(r)}`
-    await marcar({ factura_estado: 'error', factura_error: e, factura_detalle: { enviado: cuerpo, respuesta: r.data ?? r.texto } })
+    const e = `Siigo rechazó ${clase === 'FV' ? 'la factura' : 'el documento soporte'} — ${motivoDe(r)}`
+    await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: clase, factura_detalle: { enviado: cuerpo, respuesta: r.data ?? r.texto } })
     return { ok: false, error: e }
   }
   const d = r.data ?? {}
   const numero = d.name ?? (d.number != null ? `${d.prefix ?? ''}${d.number}` : null) ?? String(d.id ?? '')
   await marcar({
-    factura_estado: 'emitida', factura_error: null,
+    factura_estado: 'emitida', factura_error: null, factura_tipo: clase,
     factura_proveedor: 'siigo', factura_id: d.id != null ? String(d.id) : null,
     factura_numero: numero, factura_cufe: d.stamp?.cufe ?? null, factura_url: d.public_url ?? null,
     factura_at: new Date().toISOString(), factura_detalle: { enviado: cuerpo, respuesta: d },
   })
-  return { ok: true, estado: 'emitida', numero, cufe: d.stamp?.cufe ?? null, url: d.public_url ?? null }
+  return { ok: true, estado: 'emitida', tipo: clase, numero, cufe: d.stamp?.cufe ?? null, url: d.public_url ?? null }
 }
 
 Deno.serve(async (req) => {
@@ -313,9 +409,35 @@ Deno.serve(async (req) => {
       const fila: Record<string, unknown> = { user_id: userId, proveedor: 'siigo', updated_at: new Date().toISOString() }
       const copiar = ['username', 'partner_id', 'product_code', 'product_description', 'cliente_default_nit', 'cliente_default_nombre', 'observaciones']
       for (const k of copiar) if (k in c) fila[k] = c[k] == null || c[k] === '' ? null : String(c[k]).trim()
-      for (const k of ['document_id', 'seller_id', 'payment_id']) if (k in c) fila[k] = c[k] == null || c[k] === '' ? null : Number(c[k])
+      for (const k of ['document_id', 'seller_id', 'payment_id', 'ds_document_id', 'ds_payment_id']) if (k in c) fila[k] = c[k] == null || c[k] === '' ? null : Number(c[k])
       for (const k of ['activo', 'crear_clientes', 'stamp', 'mail']) if (k in c) fila[k] = !!c[k]
       if (Array.isArray(c.disparadores)) fila.disparadores = c.disparadores.filter((d: any) => typeof d === 'string' && d in DISPARADORES)
+      // Qué documento sale por cada operación. Los disparadores viejos se
+      // mantienen en sincronía: son las claves con documento.
+      if (c.documentos && typeof c.documentos === 'object' && !Array.isArray(c.documentos)) {
+        const d: Record<string, string> = {}
+        for (const [k, v] of Object.entries(c.documentos)) if (k in DISPARADORES && (v === 'FV' || v === 'DS')) d[k] = v
+        fila.documentos = d
+        fila.disparadores = Object.keys(d)
+      }
+      // Los ítems del documento, saneados uno por uno.
+      if (Array.isArray(c.items)) {
+        const items = c.items
+          .filter((i: any) => i && typeof i.code === 'string' && i.code.trim())
+          .slice(0, 20)
+          .map((i: any) => ({
+            code: String(i.code).trim(),
+            description: String(i.description ?? '').slice(0, 500),
+            quantity: Math.max(1, Number(i.quantity) || 1),
+            valor: ['monto', 'porcentaje', 'fijo'].includes(i.valor) ? i.valor : 'monto',
+            porcentaje: Math.max(0, Number(i.porcentaje) || 0),
+            fijo: Math.max(0, Number(i.fijo) || 0),
+            tax_id: i.tax_id ? Number(i.tax_id) : null,
+          }))
+        fila.items = items
+        // El primero también en el campo viejo, para lo que todavía lo lea.
+        if (items.length) { fila.product_code = items[0].code; fila.product_description = items[0].description || null }
+      }
       // La access key solo se toca si viene una nueva. Vacío = se conserva.
       // Sin NINGÚN espacio: una access key pegada desde un correo o un PDF
       // suele traer un salto de línea en el medio, y Siigo la rechaza entera.
@@ -328,8 +450,16 @@ Deno.serve(async (req) => {
       // solo produce facturas en error.
       if (fila.activo === true) {
         const actual = { ...(await leerConfig(userId) ?? {}), ...fila }
-        const faltan = ['username', 'document_id', 'seller_id', 'payment_id', 'product_code'].filter(k => !actual[k])
-        if (!actual.access_key_enc) faltan.unshift('access_key')
+        const faltan: string[] = []
+        if (!actual.username) faltan.push('usuario')
+        if (!actual.access_key_enc) faltan.push('access key')
+        const reglas = documentosDe(actual)
+        const clases = new Set(Object.values(reglas))
+        if (!Object.keys(reglas).length) faltan.push('qué documento sale por cada operación')
+        if (clases.has('FV')) for (const k of ['document_id', 'seller_id', 'payment_id']) if (!actual[k]) faltan.push(`${k} (factura de venta)`)
+        if (clases.has('DS')) for (const k of ['ds_document_id', 'ds_payment_id']) if (!actual[k]) faltan.push(`${k} (documento soporte)`)
+        const items = Array.isArray(actual.items) ? actual.items : []
+        if (!items.length && !actual.product_code) faltan.push('al menos un ítem')
         if (faltan.length) return json({ ok: false, error: `Para activar falta: ${faltan.join(', ')}.` }, 400)
       }
       const { error } = await db.from('facturacion_config').upsert(fila, { onConflict: 'user_id' })
@@ -369,7 +499,7 @@ Deno.serve(async (req) => {
 
     if (accion === 'facturas') {
       const { data } = await db.from('comprobantes')
-        .select('folio, numero, transaction_id, tipo, monto, moneda, emitido_at, factura_estado, factura_numero, factura_cufe, factura_url, factura_error, factura_at, factura_intentos')
+        .select('folio, numero, transaction_id, tipo, monto, moneda, emitido_at, factura_estado, factura_tipo, factura_numero, factura_cufe, factura_url, factura_error, factura_at, factura_intentos')
         .eq('user_id', userId).order('emitido_at', { ascending: false }).limit(2000)
       return json({ ok: true, facturas: data ?? [] })
     }
