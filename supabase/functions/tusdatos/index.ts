@@ -1432,18 +1432,26 @@ Deno.serve(async (req: Request) => {
       const m = e.lugar ? municipioPorNombre(e.lugar) : null
       // Claves del reporte que suenan a lugar/expedición/Registraduría, con
       // su ruta, para ver dónde viene el dato si no se encontró.
+      // Para una empresa (NIT) lo que sirve es el domicilio de la Cámara de
+      // Comercio (RUES): se miran también claves y valores que suenen a
+      // domicilio, dirección, departamento, sede.
+      const esEmpresa = /^(31|NIT)$/i.test(String(f.tipoDocumento ?? '')) || doc.length === 9
+      const patronClave = esEmpresa
+        ? /exped|lugar|registrad|ciudad|municip|rues|camara|domicil|direcc|dpto|depart|mpio|city|address|ubicac|sede|matric/i
+        : /exped|lugar|registrad|cedul|ciudad|municip/i
       const claves: string[] = []
       const recorrer = (x: unknown, ruta: string, prof: number) => {
-        if (!x || typeof x !== 'object' || prof > 8 || claves.length >= 40) return
+        if (!x || typeof x !== 'object' || prof > 8 || claves.length >= 80) return
         for (const [k, v] of Object.entries(x as Record<string, unknown>)) {
           const r = ruta ? `${ruta}.${k}` : k
-          if (/exped|lugar|registrad|cedul|ciudad|municip/i.test(k)) claves.push(`${r}${typeof v === 'string' ? ` = «${v.slice(0, 60)}»` : Array.isArray(v) ? ` [${v.length}]` : ''}`)
+          const valorSuena = typeof v === 'string' && esEmpresa && /domicil|direcc|municip|ciudad/i.test(v)
+          if (patronClave.test(k) || valorSuena) claves.push(`${r}${typeof v === 'string' ? ` = «${v.slice(0, 80)}»` : Array.isArray(v) ? ` [${v.length}]` : typeof v === 'object' && v ? ` {${Object.keys(v as object).slice(0, 12).join(',')}}` : ''}`)
           if (v && typeof v === 'object') recorrer(v, r, prof + 1)
         }
       }
       if (!e.lugar) recorrer(det.crudo, '', 0)
       await guardarBeneficiario(uid, clave!, { lugarBuscado: true, ...(e.lugar ? { lugarExpedicion: e.lugar } : {}), ...(m ? { lugarExpedicionCodigo: m.codigo } : {}), ...(e.fecha ? { fechaExpedicionDoc: e.fecha } : {}) } as Ficha)
-      return json({ ok: true, lugarExpedicion: e.lugar ?? null, lugarExpedicionCodigo: m?.codigo ?? null, municipio: m ? `${m.nombre}, ${m.deptoNombre}` : null, fechaExpedicion: e.fecha ?? null, claves, seccionesReporte: det.crudo && typeof det.crudo === 'object' ? Object.keys(det.crudo as object).slice(0, 40) : [] })
+      return json({ ok: true, lugarExpedicion: e.lugar ?? null, lugarExpedicionCodigo: m?.codigo ?? null, municipio: m ? `${m.nombre}, ${m.deptoNombre}` : null, fechaExpedicion: e.fecha ?? null, claves, esEmpresa, seccionesReporte: det.crudo && typeof det.crudo === 'object' ? Object.keys(det.crudo as object) : [] })
     }
 
     if (accion === 'estado') {
