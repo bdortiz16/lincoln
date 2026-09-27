@@ -932,7 +932,24 @@ async function emitirComision(userId: string, txId: string, d: { identification:
   if (!Number.isFinite(monto) || monto <= 0) return falla(`Monto inválido en el comprobante: ${(comp as any).monto}`)
   const impuestos: any[] = Array.isArray(cfg.catalogos?.impuestos) ? cfg.catalogos.impuestos : []
   const ivaElegido = cfg.iva_tax_id ? impuestos.find((x: any) => Number(x.id) === Number(cfg.iva_tax_id)) : null
-  const iva = ivaDelProducto(cfg, item) ?? (ivaElegido ? { id: Number(ivaElegido.id), name: String(ivaElegido.name ?? ''), percentage: Number(ivaElegido.percentage) || 0 } : null)
+  // El impuesto del ítem, EN VIVO desde Siigo (GET /v1/products?code=): el
+  // catálogo guardado puede ser de antes de ponerle el IVA. Si Siigo no
+  // contesta, se usa el catálogo.
+  let ivaVivo: { id: number; name: string; percentage: number } | null = null
+  let notaVivo = ''
+  {
+    const rp = await siigo('GET', `/v1/products?code=${encodeURIComponent(item)}`, { token: t.token, partner })
+    const lista: any[] = Array.isArray(rp.data?.results) ? rp.data.results : Array.isArray(rp.data) ? rp.data : []
+    const p = lista.find((x: any) => String(x.code) === item) ?? lista[0]
+    if (rp.ok && p) {
+      const taxes: any[] = Array.isArray(p.taxes) ? p.taxes : []
+      const conValor = taxes.filter(x => (Number(x.percentage) || 0) > 0)
+      const tx0 = conValor.find(x => /iva/i.test(String(x.name ?? '')) || /iva/i.test(String(x.type ?? ''))) ?? conValor[0]
+      if (tx0) ivaVivo = { id: Number(tx0.id), name: String(tx0.name ?? ''), percentage: Number(tx0.percentage) || 0 }
+      notaVivo = `Siigo (en vivo) dice que el ítem ${item} tiene ${taxes.length ? taxes.map(x => `${x.name} ${x.percentage ?? 0} %`).join(', ') : 'ningún impuesto'}${p.tax_classification ? ` (clasificación ${p.tax_classification})` : ''}.`
+    } else notaVivo = `No se pudo leer el ítem ${item} en vivo (${motivoDe(rp)}); se usó el catálogo guardado.`
+  }
+  const iva = ivaVivo ?? ivaDelProducto(cfg, item) ?? (ivaElegido ? { id: Number(ivaElegido.id), name: String(ivaElegido.name ?? ''), percentage: Number(ivaElegido.percentage) || 0 } : null)
   const tarifaCatalogo = iva ? iva.percentage / 100 : 0
   const comision = r2(monto * pct / 100)
   const hoy = new Date().toISOString().slice(0, 10)
@@ -953,7 +970,7 @@ async function emitirComision(userId: string, txId: string, d: { identification:
     const base = r2(comision / (1 + tarifa))
     const ivaV = r2(base * tarifa)
     const total = r2(base + ivaV)
-    const items = [{ code: item, description: descripcion, quantity: 1, price: base, ...(iva && !ivaDelProducto(cfg, item) ? { taxes: [{ id: iva.id }] } : {}) }]
+    const items = [{ code: item, description: descripcion, quantity: 1, price: base, ...(iva && !ivaVivo && !ivaDelProducto(cfg, item) ? { taxes: [{ id: iva.id }] } : {}) }]
     const cuerpo = {
       document: { id: Number(cfg.document_id) }, date: hoy,
       customer: { identification: cp.identification, branch_office: 0 },
@@ -983,7 +1000,7 @@ async function emitirComision(userId: string, txId: string, d: { identification:
     }
   }
   const { base, ivaV, total, cuerpo } = arm
-  if (!r.ok) return falla(`Siigo rechazó la factura de comisión — ${motivoDe(r)}${intentos.length > 1 ? ` · Se reintentó con la tarifa que Siigo aplica (${(tarifa * 100).toFixed(2)} %) y tampoco.` : ''}`, { factura_detalle: { enviado: cuerpo, intentos, comision: { pct, comision, base, iva: ivaV, total, tarifa, cliente: { identification: cp.identification, nombre: cp.nombre } } } })
+  if (!r.ok) return falla(`Siigo rechazó la factura de comisión — ${motivoDe(r)} · Se mandó base ${base} con tarifa ${(tarifa * 100).toFixed(2)} % (${intentos.length} intento${intentos.length === 1 ? '' : 's'}). ${notaVivo}${intentos.length > 1 ? ' Se reintentó con la tarifa que Siigo aplica y tampoco.' : ''}`, { factura_detalle: { enviado: cuerpo, intentos, comision: { pct, comision, base, iva: ivaV, total, tarifa, cliente: { identification: cp.identification, nombre: cp.nombre } } } })
   const resp = r.data ?? {}
   const numero = resp.name ?? (resp.number != null ? `${resp.prefix ?? ''}${resp.number}` : null) ?? String(resp.id ?? '')
   await marcar({
