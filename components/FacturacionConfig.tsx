@@ -374,6 +374,9 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                 <p style={lineaResumen}>Envíos con documento soporte: {motivosDS.map(m => `${m.l} → ${nombreProducto(String(motivos[m.v]?.item ?? '')) || '—'}`).join(' · ')}</p>
               )}
               {modelo === 'psp' && !motivosDS.length && <p style={{ ...lineaResumen, color: C.ambar }}>Ningún motivo de envío emite documento soporte todavía.</p>}
+              {modelo === 'psp' && (
+                <p style={lineaResumen}>Depósitos (a mano): comisión <b style={{ color: C.text }}>{utilidad || '—'} %</b> IVA incluido · ítem <b style={{ color: C.text }}>{nombreProducto(form.item_comision) || '—'}</b>{iva ? ` (${iva.name || 'IVA'} ${iva.percentage} %)` : ''} · comprobante FV: {nombreDoc(cat?.documentos, form.document_id)}</p>
+              )}
               {usaDS && <p style={lineaResumen}>Comprobante DS: {nombreDoc(cat?.documentos_ds, form.ds_document_id)} · pago {nombrePago(cat?.pagos_ds, form.ds_payment_id)}</p>}
               {!listo && <p style={{ ...lineaResumen, color: C.ambar }}>Falta: {faltantes.join(', ')}.</p>}
             </div>
@@ -495,8 +498,8 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                     'Recibís plata de terceros, la rotás y cobrás una comisión. Por cada entrada se emite una factura de venta con dos ítems que suman exacto lo recibido: el servicio para terceros (sin IVA) y tu comisión (con IVA).',
                     'Con 15.000.000 y 1 % de utilidad: terceros 14.850.000 · comisión 126.050,42 + IVA 23.949,58 · total 15.000.000.')}
                   {tarjetaModelo('psp', 'PSP / pasarela',
-                    'Pagás a terceros por cuenta de un cliente. Según el motivo de cada envío, se emite un documento soporte al beneficiario por el monto total, con el ítem de Siigo que ligues a ese motivo. La factura de tu comisión al cliente la hacés vos en Siigo.',
-                    'Con un envío de 15.000.000: documento soporte al beneficiario por 15.000.000.')}
+                    'Pagás a terceros por cuenta de un cliente. Según el motivo de cada envío, se emite un documento soporte al beneficiario por el monto total, con el ítem de Siigo que ligues a ese motivo. Por cada depósito que recibís, facturás a mano tu comisión (IVA incluido) al cliente que te mandó la plata: elegís el cliente y se emite.',
+                    'Envío de 15.000.000: documento soporte al beneficiario por 15.000.000. Depósito de 10.000.000 con 0,6 %: factura de 60.000 (base 50.420,17 + IVA 9.579,83).')}
                 </div>
               </Seccion>
 
@@ -614,10 +617,53 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                   </p>
                   {tablaMotivos}
 
-                  {/* Comprobantes de Siigo */}
-                  {modelo === 'rotacion' && (
+                  {/* PSP: la factura de comisión por cada depósito. Es a mano
+                      (hay que elegir el cliente), pero el porcentaje, el ítem
+                      y el comprobante se dejan listos acá. */}
+                  {modelo === 'psp' && (
                     <>
-                      <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '16px 0 8px' }}>COMPROBANTE DE LA FACTURA EN TU SIIGO</p>
+                      <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '18px 0 4px' }}>DEPÓSITOS: FACTURA DE COMISIÓN (A MANO)</p>
+                      <p style={{ fontSize: 12, color: C.sub, margin: '0 0 10px', lineHeight: 1.55 }}>
+                        Un depósito no se factura por el monto: se factura tu comisión al cliente que te mandó la plata, y ese cliente se elige al emitir (Contabilidad → «Emitir factura» en el depósito). El porcentaje es <b style={{ color: C.text }}>con IVA incluido</b>: con 10.000.000 y 0,6 % la factura es de 60.000 en total, no 60.000 + IVA.
+                      </p>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+                        <Campo rot="COMISIÓN SOBRE DEPÓSITOS (%)" ayuda="Porcentaje sobre el depósito, IVA incluido. Se puede cambiar al emitir.">
+                          <input type="number" min={0} max={100} step={0.01} value={form.utilidad_pct ?? ''} onChange={e => set('utilidad_pct', e.target.value)} placeholder="0,6" inputMode="decimal" style={entrada} />
+                        </Campo>
+                        <div>
+                          <Campo rot="ÍTEM · COMISIÓN" ayuda="El producto de Siigo para tu comisión. Tiene que tener IVA en Siigo.">
+                            {select('item_comision', productos, 'Siigo no devolvió productos')}
+                          </Campo>
+                          {ivaComisionProd && <p style={{ fontSize: 11.5, color: C.verde, margin: '6px 0 0', lineHeight: 1.5 }}>Con {ivaComisionProd.name || 'IVA'} {ivaComisionProd.percentage} % en Siigo. Con esa tarifa se calcula la base: base + IVA = comisión.</p>}
+                          {prodComision && !ivaComisionProd && <p style={{ fontSize: 11.5, color: C.ambar, margin: '6px 0 0', lineHeight: 1.5 }}>Este ítem no tiene IVA en Siigo. La comisión lleva IVA: ponéselo en Siigo, o elegí al lado el impuesto y se manda en la línea.</p>}
+                          {prodComision && prodComision.active === false && <p style={{ fontSize: 11.5, color: C.ambar, margin: '6px 0 0', lineHeight: 1.5 }}>Este ítem está inactivo en Siigo.</p>}
+                        </div>
+                        {prodComision && !ivaComisionProd && (
+                          <Campo rot="IVA DE LA COMISIÓN" ayuda="Solo porque el ítem no trae IVA desde Siigo.">
+                            {select('iva_tax_id', impuestos.map((t: any) => ({ v: t.id, t: `${t.name}${t.percentage ? ` · ${t.percentage} %` : ''}` })), 'Siigo no devolvió impuestos')}
+                          </Campo>
+                        )}
+                      </div>
+                      {utilidad > 0 && (
+                        <div style={{ marginTop: 12, padding: '10px 14px', borderRadius: 12, border: `1px solid ${C.bordeSuave}`, background: C.elevado }}>
+                          {(() => {
+                            const M = 10_000_000; const com = r2(M * utilidad / 100); const b = r2(com / (1 + tarifa)); const iv = r2(b * tarifa);
+                            return (
+                              <p style={{ fontSize: 12.5, color: C.text, margin: 0, lineHeight: 1.6 }}>
+                                Depósito de {fmtCop(M)} · comisión {utilidad} % = <b>{fmtCop(com)}</b>: {nombreProducto(form.item_comision) || 'comisión'} {fmtCop(b)} + {iva ? `${iva.name || 'IVA'} ${iva.percentage} %` : 'IVA'} {fmtCop(iv)} = <b style={{ color: r2(b + iv) === com ? C.verde : C.ambar }}>{fmtCop(r2(b + iv))}</b>.
+                                {!iva && <span style={{ color: C.ambar }}> Sin IVA en el ítem: la factura saldría sin impuesto.</span>}
+                              </p>
+                            );
+                          })()}
+                        </div>
+                      )}
+                    </>
+                  )}
+
+                  {/* Comprobantes de Siigo */}
+                  {(modelo === 'rotacion' || modelo === 'psp') && (
+                    <>
+                      <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '16px 0 8px' }}>{modelo === 'psp' ? 'COMPROBANTE DE LA FACTURA DE COMISIÓN EN TU SIIGO' : 'COMPROBANTE DE LA FACTURA EN TU SIIGO'}</p>
                       {!cat ? (
                         <p style={{ fontSize: 12.5, color: C.tenue, margin: 0 }}>Se eligen después de conectar.</p>
                       ) : (
@@ -694,9 +740,9 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                     <Campo rot="SERVICIO PARA TERCEROS" ayuda="Podés usar {contraparte}, {numero}, {monto}, {fecha}, {tipo}.">
                       <input value={form.desc_terceros ?? ''} onChange={e => set('desc_terceros', e.target.value)} placeholder="Servicio para terceros · {contraparte} · Comprobante Lincoin {numero}" style={entrada} />
                     </Campo>
-                    {modelo === 'rotacion' && (
+                    {(modelo === 'rotacion' || modelo === 'psp') && (
                       <Campo rot="COMISIÓN" ayuda="También {utilidad}, el porcentaje.">
-                        <input value={form.desc_comision ?? ''} onChange={e => set('desc_comision', e.target.value)} placeholder="Comisión {utilidad} % · Comprobante Lincoin {numero}" style={entrada} />
+                        <input value={form.desc_comision ?? ''} onChange={e => set('desc_comision', e.target.value)} placeholder={modelo === 'psp' ? 'Comisión {utilidad} % sobre {monto} · Comprobante Lincoin {numero}' : 'Comisión {utilidad} % · Comprobante Lincoin {numero}'} style={entrada} />
                       </Campo>
                     )}
                   </div>
@@ -737,6 +783,9 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                   <p style={{ fontSize: 12.5, color: C.text, margin: 0, lineHeight: 1.6 }}>
                     {modelo === 'psp' || (modelo === 'rotacion' && motivosDS.length > 0) ? (
                       <><b>Documento soporte:</b> a nombre del <b>beneficiario del envío</b>, con el nombre y el documento con que se le envió. Nada se escribe a mano. </>
+                    ) : null}
+                    {modelo === 'psp' ? (
+                      <><b>Factura de comisión por depósitos:</b> a mano, al cliente que elijas al emitir, por la comisión con IVA incluido. </>
                     ) : null}
                     {modelo === 'rotacion' ? (
                       <><b>Factura de venta:</b> a nombre de <b>quien pagó</b>, con el documento que trae la operación. </>

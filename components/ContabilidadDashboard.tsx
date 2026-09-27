@@ -92,6 +92,137 @@ type Props = {
   onVerMovimiento?: (tx: any) => void;
 };
 
+// ── Factura de comisión por un depósito (modelo PSP) ─────────────────
+// El depósito no se factura por el monto: se factura la COMISIÓN, con IVA
+// incluido dentro del porcentaje, al cliente que mandó la plata. Ese cliente
+// hay que elegirlo (por eso es a mano): se busca en el Siigo del usuario o
+// se escribe. El cálculo de acá es el mismo que hace el servidor.
+const r2 = (n: number) => Math.round(n * 100) / 100;
+const fmtCop2 = (n: number) => n.toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const FacturaComisionModal: React.FC<{ asiento: Asiento; cfg: any; onCerrar: () => void; onEmitida: () => void }> = ({ asiento, cfg, onCerrar, onEmitida }) => {
+  const monto = Number(asiento.monto) || 0;
+  const [pct, setPct] = useState<string>(cfg?.utilidad_pct != null && cfg.utilidad_pct !== '' ? String(cfg.utilidad_pct) : '');
+  const [q, setQ] = useState('');
+  const [buscando, setBuscando] = useState(false);
+  const [resultados, setResultados] = useState<any[] | null>(null);
+  const [errorBusqueda, setErrorBusqueda] = useState<string | null>(null);
+  const [cliente, setCliente] = useState<{ identification: string; nombre: string; esEmpresa: boolean } | null>(null);
+  const [manual, setManual] = useState<{ doc: string; nombre: string; esEmpresa: boolean }>({ doc: '', nombre: '', esEmpresa: true });
+  const [emitiendo, setEmitiendo] = useState(false);
+  const [resultado, setResultado] = useState<{ ok: boolean; texto: string } | null>(null);
+  // El IVA del ítem de comisión, tal como está en Siigo (o el elegido en Configuración).
+  const item = String(cfg?.item_comision ?? '');
+  const prod = (cfg?.catalogos?.productos ?? []).find((p: any) => String(p.code) === item) ?? null;
+  const taxes: any[] = prod?.taxes ?? [];
+  const conValor = taxes.filter(t => (Number(t.percentage) || 0) > 0);
+  const ivaProd = conValor.find(t => /iva/i.test(String(t.name ?? ''))) ?? conValor[0] ?? null;
+  const ivaElegido = cfg?.iva_tax_id ? (cfg?.catalogos?.impuestos ?? []).find((t: any) => String(t.id) === String(cfg.iva_tax_id)) : null;
+  const iva = ivaProd ?? ivaElegido ?? null;
+  const tarifa = iva ? (Number(iva.percentage) || 0) / 100 : 0;
+  const p = Number(String(pct).replace(',', '.')) || 0;
+  const comision = r2(monto * p / 100);
+  const base = r2(comision / (1 + tarifa));
+  const ivaV = r2(base * tarifa);
+  const total = r2(base + ivaV);
+  const elegido = cliente ?? (manual.doc.replace(/\D/g, '').length >= 5 ? { identification: manual.doc.replace(/\D/g, ''), nombre: manual.nombre.trim(), esEmpresa: manual.esEmpresa } : null);
+  const buscar = async () => {
+    if (!q.trim()) return;
+    setBuscando(true); setErrorBusqueda(null); setResultados(null);
+    const r = await llamarFuncion('facturacion', { action: 'buscar_clientes', q: q.trim() }, 60000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    setBuscando(false);
+    if (!r?.ok) { setErrorBusqueda(r?.error ?? 'No se pudo buscar.'); return; }
+    setResultados(r.clientes ?? []);
+  };
+  const emitir = async () => {
+    if (!elegido || !(p > 0)) return;
+    setEmitiendo(true); setResultado(null);
+    const r = await llamarFuncion('facturacion', { action: 'emitir_comision', transactionId: String(asiento.tx.id), clienteIdentification: elegido.identification, clienteNombre: elegido.nombre, clienteEsEmpresa: elegido.esEmpresa, comisionPct: p }, 130000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    setEmitiendo(false);
+    if (!r?.ok) { setResultado({ ok: false, texto: r?.error ?? 'No se pudo emitir.' }); return; }
+    setResultado({ ok: true, texto: `Factura ${r.numero ?? ''} emitida por ${fmtCop2(Number(r.total ?? total))} COP.` });
+    setTimeout(onEmitida, 900);
+  };
+  const campo: React.CSSProperties = { fontFamily: FONT, width: '100%', fontSize: 13.5, color: C.text, background: '#121413', border: `1px solid ${C.borde}`, borderRadius: 9, padding: '9px 11px', outline: 'none' };
+  const fila = (l: string, v: string, fuerte = false) => (
+    <div className="flex items-center justify-between" style={{ padding: '6px 0', borderTop: `1px solid ${C.borde}` }}>
+      <span style={{ fontSize: 12.5, color: fuerte ? C.text : C.sub, fontWeight: fuerte ? 800 : 400 }}>{l}</span>
+      <span style={{ fontSize: 12.5, color: C.text, fontWeight: fuerte ? 800 : 600, fontFamily: 'ui-monospace, monospace' }}>{v}</span>
+    </div>
+  );
+  return (
+    <div className="fixed inset-0 z-[110] p-4" style={{ background: 'rgba(4,5,4,0.85)', display: 'grid', placeItems: 'center' }} onClick={onCerrar}>
+      <div role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} style={{ width: '100%', maxWidth: 520, maxHeight: '92vh', overflowY: 'auto', background: '#0C0E0D', border: `1px solid rgba(255,255,255,0.12)`, borderRadius: 18, fontFamily: FONT, padding: '20px 22px' }}>
+        <div className="flex items-start justify-between" style={{ gap: 12 }}>
+          <div>
+            <p style={{ fontSize: 15, fontWeight: 800, color: C.text, margin: 0 }}>Factura de comisión</p>
+            <p style={{ fontSize: 12, color: C.sub, margin: '3px 0 0' }}>{asiento.tipo} · {asiento.contraparte || '—'} · {fmtCop2(monto)} COP</p>
+          </div>
+          <button onClick={onCerrar} aria-label="Cerrar" style={{ width: 30, height: 30, borderRadius: 8, border: `1px solid ${C.borde}`, background: 'transparent', color: C.sub, fontSize: 16, cursor: 'pointer' }}>×</button>
+        </div>
+
+        <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '18px 0 6px' }}>A QUIÉN SE LE FACTURA</p>
+        {cliente ? (
+          <div className="flex items-center justify-between" style={{ gap: 10, padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(74,222,128,0.35)', background: 'rgba(74,222,128,0.06)' }}>
+            <span style={{ fontSize: 13, color: C.text }}><b>{cliente.nombre || cliente.identification}</b> · {cliente.esEmpresa ? 'NIT' : 'CC'} {cliente.identification}</span>
+            <button onClick={() => setCliente(null)} style={{ fontSize: 11.5, fontWeight: 700, color: C.sub, background: 'transparent', border: 'none', cursor: 'pointer' }}>Cambiar</button>
+          </div>
+        ) : (
+          <>
+            <div className="flex" style={{ gap: 8 }}>
+              <input value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') buscar(); }} placeholder="Buscar en tu Siigo por NIT o nombre" style={campo} />
+              <button onClick={buscar} disabled={buscando || !q.trim()} style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, color: C.text, background: 'rgba(255,255,255,0.06)', border: `1px solid ${C.borde}`, borderRadius: 9, padding: '0 14px', cursor: 'pointer', opacity: buscando || !q.trim() ? 0.5 : 1, whiteSpace: 'nowrap' }}>{buscando ? '…' : 'Buscar'}</button>
+            </div>
+            {errorBusqueda && <p style={{ fontSize: 11.5, color: '#F87171', margin: '6px 0 0' }}>{errorBusqueda}</p>}
+            {resultados && (
+              <div style={{ marginTop: 8, maxHeight: 180, overflowY: 'auto', border: `1px solid ${C.borde}`, borderRadius: 10 }}>
+                {resultados.length === 0 && <p style={{ fontSize: 12, color: C.tenue, margin: 0, padding: '10px 12px' }}>Siigo no devolvió clientes con eso. Escribilo abajo y se crea en Siigo al emitir.</p>}
+                {resultados.map((c: any, i: number) => (
+                  <button key={`${c.identification}-${i}`} onClick={() => setCliente({ identification: c.identification, nombre: c.nombre, esEmpresa: !!c.esEmpresa })}
+                    className="w-full text-left hover:bg-white/[0.05] transition-colors" style={{ display: 'block', padding: '9px 12px', borderTop: i ? `1px solid ${C.borde}` : 'none', background: 'transparent', border: 'none', cursor: 'pointer', fontFamily: FONT }}>
+                    <span style={{ fontSize: 13, color: C.text, fontWeight: 600 }}>{c.nombre || c.comercial || c.identification}</span>
+                    <span style={{ fontSize: 11.5, color: C.sub, marginLeft: 8 }}>{c.esEmpresa ? 'NIT' : 'CC'} {c.identification}{c.activo === false ? ' · inactivo' : ''}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            <p style={{ fontSize: 11.5, color: C.sub, margin: '10px 0 6px' }}>O escribilo (si no existe en Siigo, se crea al emitir):</p>
+            <div className="grid grid-cols-3 gap-2">
+              <input value={manual.doc} onChange={e => setManual(m => ({ ...m, doc: e.target.value }))} placeholder={manual.esEmpresa ? 'NIT (9 dígitos)' : 'Cédula'} inputMode="numeric" style={campo} />
+              <input value={manual.nombre} onChange={e => setManual(m => ({ ...m, nombre: e.target.value }))} placeholder={manual.esEmpresa ? 'Razón social' : 'Nombre completo'} style={{ ...campo, gridColumn: 'span 2' }} />
+            </div>
+            <label className="flex items-center" style={{ gap: 8, marginTop: 8, fontSize: 12.5, color: C.sub, cursor: 'pointer' }}>
+              <input type="checkbox" checked={manual.esEmpresa} onChange={e => setManual(m => ({ ...m, esEmpresa: e.target.checked }))} style={{ accentColor: C.entra }} /> Es empresa (NIT)
+            </label>
+          </>
+        )}
+
+        <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '18px 0 6px' }}>COMISIÓN (% SOBRE EL DEPÓSITO, IVA INCLUIDO)</p>
+        <div className="flex items-center" style={{ gap: 10 }}>
+          <input type="number" min={0} max={100} step={0.01} value={pct} onChange={e => setPct(e.target.value)} placeholder="0,6" inputMode="decimal" style={{ ...campo, width: 120 }} />
+          <span style={{ fontSize: 12, color: C.sub }}>{cfg?.utilidad_pct ? `Configurado: ${cfg.utilidad_pct} %` : 'Ponelo en Configuración para no escribirlo cada vez'}</span>
+        </div>
+        {!item && <p style={{ fontSize: 11.5, color: '#F59E0B', margin: '8px 0 0' }}>Falta elegir en Configuración el ítem de comisión (con IVA). Sin eso no se puede emitir.</p>}
+        <div style={{ marginTop: 12 }}>
+          {fila(`Comisión ${p || 0} % sobre ${fmtCop2(monto)}`, `${fmtCop2(comision)} COP`, true)}
+          {fila(`Base gravable (${prod?.name ?? (item || 'ítem de comisión')})`, `${fmtCop2(base)} COP`)}
+          {fila(iva ? `${iva.name || 'IVA'} ${iva.percentage} %` : 'IVA (el ítem no tiene impuesto en Siigo)', `${fmtCop2(ivaV)} COP`)}
+          {fila('Total de la factura', `${fmtCop2(total)} COP`, true)}
+        </div>
+        <p style={{ fontSize: 11, color: C.tenue, margin: '8px 0 0', lineHeight: 1.5 }}>La factura no es {fmtCop2(comision)} + IVA: la base se calcula para que base + IVA dé la comisión. Siigo liquida el IVA con la tarifa del ítem; puede haber un centavo de redondeo.</p>
+
+        {resultado && <p style={{ fontSize: 12.5, color: resultado.ok ? C.entra : '#F87171', margin: '12px 0 0', lineHeight: 1.5, wordBreak: 'break-word' }}>{resultado.texto}</p>}
+        <div className="flex" style={{ gap: 9, marginTop: 16 }}>
+          <button onClick={onCerrar} style={{ flex: 1, fontFamily: FONT, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.borde}`, cursor: 'pointer' }}>Cancelar</button>
+          <button onClick={emitir} disabled={emitiendo || !elegido || !(p > 0) || !item} className="lincoin-btn-white"
+            style={{ flex: 1.4, fontFamily: FONT, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 700, border: 'none', cursor: 'pointer', opacity: emitiendo || !elegido || !(p > 0) || !item ? 0.45 : 1 }}>
+            {emitiendo ? 'Emitiendo en Siigo…' : `Emitir factura por ${fmtCop2(total)}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const Tarjeta: React.FC<{ children: React.ReactNode; style?: React.CSSProperties; className?: string }> = ({ children, style, className }) => (
   <div className={className} style={{ background: C.tarjeta, border: `1px solid ${C.borde}`, borderRadius: 14, padding: '18px 20px', minWidth: 0, ...style }}>{children}</div>
 );
@@ -236,6 +367,10 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   // movimientos completados que nunca recibieron comprobante (señal de que
   // el aviso automático de la base no está llegando).
   const [chequeo, setChequeo] = useState<{ sinComprobante: number; ultimos: number } | null>(null);
+  const [cfgFact, setCfgFact] = useState<any>(null);
+  // Factura de comisión (PSP): el movimiento (depósito) al que se le está
+  // emitiendo, con el modal abierto.
+  const [comisionPara, setComisionPara] = useState<any>(null);
   const [cambiandoAuto, setCambiandoAuto] = useState(false);
   const [reconciliando, setReconciliando] = useState(false);
   const [reconciliadoMsg, setReconciliadoMsg] = useState<string | null>(null);
@@ -250,7 +385,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   useEffect(() => {
     if (!userId) return;
     llamarFuncion('facturacion', { action: 'config_get' }, 20000)
-      .then((r: any) => { setFacturacionActiva(!!r?.config?.activo); setChequeo(r?.chequeo ?? null); })
+      .then((r: any) => { setFacturacionActiva(!!r?.config?.activo); setChequeo(r?.chequeo ?? null); setCfgFact(r?.config ?? null); })
       .catch(() => setFacturacionActiva(null));
   }, [userId, configAbierta, foliosVersion]);
   // El interruptor: activar exige la configuración completa; el servidor
@@ -287,6 +422,17 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
       {emitiendo === txId ? '…' : 'Emitir'}
     </button>
   );
+  // PSP: un depósito se factura por la COMISIÓN, a mano, eligiendo el
+  // cliente. Este botón abre ese paso en vez de emitir de una.
+  const esPsp = String(cfgFact?.modelo ?? '') === 'psp';
+  const botonFacturaComision = (a: Asiento) => (
+    <button onClick={() => setComisionPara(a)}
+      title="Factura de venta por tu comisión sobre este depósito (IVA incluido), al cliente que elijas"
+      style={{ fontFamily: FONT, fontSize: 11, fontWeight: 700, color: C.text, background: 'rgba(74,222,128,0.10)', border: '1px solid rgba(74,222,128,0.35)', borderRadius: 6, padding: '3px 8px', cursor: 'pointer' }}>
+      Emitir factura
+    </button>
+  );
+  const botonSegunTipo = (a: Asiento, txId: string) => (esPsp && a.dir === 'in' && ENTRA.has(String(a.tx?.type)) ? botonFacturaComision(a) : botonEmitir(txId));
 
   // Todos los asientos de la cuenta.
   const asientos = useMemo(() => (transactions ?? []).filter(t => t.userId === userId).flatMap(asientosDe), [transactions, userId]);
@@ -412,6 +558,9 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
         </div>
       </div>
       {configAbierta && <FacturacionConfig onCerrar={() => setConfigAbierta(false)} />}
+      {comisionPara && cfgFact && (
+        <FacturaComisionModal asiento={comisionPara} cfg={cfgFact} onCerrar={() => setComisionPara(null)} onEmitida={() => { setComisionPara(null); setFoliosVersion(v => v + 1); }} />
+      )}
       {/* Aviso: operaciones completadas sin comprobante = el aviso automático
           de la base (trigger) no llegó a la función para esas. El servidor
           las pone al día solo (crea el comprobante y, con la automática
@@ -525,7 +674,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                         if (!f || !fa?.estado) return (
                           <span className="flex items-center" style={{ gap: 6 }}>
                             <span style={{ color: C.tenue }}>{f && facturacionActiva ? 'pendiente' : '—'}</span>
-                            {completado && facturacionActiva && txId && botonEmitir(txId)}
+                            {completado && facturacionActiva && txId && botonSegunTipo(a, txId)}
                           </span>
                         );
                         if (fa.estado === 'omitida' || fa.estado === 'pendiente' || fa.estado === 'anulada') return (
@@ -535,7 +684,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                                 ? <button onClick={() => onVerMovimiento?.(a.tx)} style={{ fontFamily: FONT, fontSize: 12, color: C.tenue, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', textDecoration: 'line-through' }}>{fa.tipo === 'DS' ? 'DS · ' : ''}{fa.numero ?? 'anulado'}</button>
                                 : <span style={{ color: C.tenue }}>{fa.estado === 'omitida' ? 'no aplica' : fa.estado}</span>}
                               {fa.estado === 'anulada' && <span style={{ color: C.tenue, fontSize: 11 }}>anulado</span>}
-                              {completado && facturacionActiva && txId && botonEmitir(txId)}
+                              {completado && facturacionActiva && txId && botonSegunTipo(a, txId)}
                             </span>
                             {/* El porqué, a la vista: "no aplica" sin motivo obliga a adivinar. */}
                             {fa.estado === 'omitida' && fa.error && <span style={{ fontSize: 10.5, color: C.tenue, whiteSpace: 'normal', maxWidth: 260, lineHeight: 1.35 }}>{fa.error}</span>}

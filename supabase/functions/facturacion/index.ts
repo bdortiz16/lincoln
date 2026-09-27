@@ -700,6 +700,14 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
   // Sin regla (emisión forzada a mano): por la dirección de la plata. Una
   // salida es documento soporte; una entrada, factura de venta.
   const esSalida = ['dispersion', 'send', 'pay_sent', 'otc_withdraw'].includes(tipo)
+  // PSP: un depósito no se factura por el monto. Se factura la COMISIÓN, a
+  // mano, porque hay que elegir a qué cliente (el que mandó la plata) va la
+  // factura. Eso lo hace «Emitir factura» en Contabilidad (emitir_comision).
+  if (String(cfg.modelo ?? '') === 'psp' && !esSalida) {
+    const e = 'En PSP los depósitos se facturan a mano: la factura es por tu comisión (IVA incluido) y hay que elegir el cliente. Usá «Emitir factura» en el movimiento.'
+    if (!opts.forzar) { await marcar({ factura_estado: 'omitida', factura_error: e }); return { ok: true, estado: 'omitida' } }
+    return { ok: false, error: e }
+  }
   let clase: 'FV' | 'DS' = regla ?? (esSalida ? 'DS' : 'FV')
   // El documento soporte siempre es UN ítem por el monto total (el del
   // motivo, o el general de terceros), aunque el modelo sea rotación.
@@ -864,6 +872,128 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
     factura_at: new Date().toISOString(), factura_detalle: { enviado: cuerpo, respuesta: d, intentos },
   })
   return { ok: true, estado: 'emitida', tipo: clase, numero, cufe: d.stamp?.cufe ?? null, url: d.public_url ?? null }
+}
+
+// ── Factura de COMISIÓN por un depósito (modelo PSP), a mano ─────────────
+// El cliente elige a quién se le factura (quien mandó la plata) y el
+// porcentaje (por defecto el de Configuración). La factura lleva UN ítem: el
+// de comisión, con el IVA que tiene en Siigo. Y la comisión es con IVA
+// INCLUIDO: con 10.000.000 y 0,6 % la comisión es 60.000, y la factura se
+// arma para que base + IVA = 60.000 (base 50.420,17 + IVA 9.579,83), no
+// 60.000 + IVA. Siigo calcula el IVA sobre la base que se le manda, con la
+// tarifa del ítem, así que el total puede diferir del objetivo en un
+// centavo de redondeo; el pago va por lo que Siigo va a calcular.
+async function emitirComision(userId: string, txId: string, d: { identification: string; nombre?: string; esEmpresa?: boolean; pct?: number }): Promise<any> {
+  const cfg = await leerConfig(userId)
+  if (!cfg) return { ok: false, error: 'Primero configurá Siigo en Contabilidad → Configuración.' }
+  const { data: tx } = await db.from('transactions').select('id, user_id, type, amount, currency, status, raw_data').eq('id', txId).maybeSingle()
+  if (!tx || String((tx as any).user_id) !== userId) return { ok: false, error: 'movimiento_no_encontrado' }
+  if (String((tx as any).status) !== 'Completado') return { ok: false, error: `La operación está en "${(tx as any).status}". Solo se factura cuando queda Completada.` }
+  const c = await asegurarComprobante(tx, userId)
+  if ('error' in c) return { ok: false, error: c.error }
+  const { data: comp } = await db.from('comprobantes').select('*').eq('folio', c.folio).maybeSingle()
+  if (!comp) return { ok: false, error: 'comprobante_no_encontrado' }
+  if ((comp as any).factura_estado === 'emitida' && (comp as any).factura_numero) return { ok: false, error: `Este movimiento ya tiene la factura ${(comp as any).factura_numero}.` }
+  const marcar = async (patch: Record<string, unknown>) => {
+    await db.from('comprobantes').update({ ...patch, factura_intentos: Number((comp as any).factura_intentos ?? 0) + 1 }).eq('folio', c.folio)
+  }
+  const falla = async (e: string, extra: Record<string, unknown> = {}) => { await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: 'FV', ...extra }); return { ok: false, error: e } }
+
+  const moneda = String((comp as any).moneda ?? '').toUpperCase()
+  if (moneda && !/^COP/.test(moneda)) return falla(`La operación es en ${moneda} y la factura en Siigo va en pesos.`)
+  const faltan = ['document_id', 'seller_id', 'payment_id'].filter(k => !cfg[k])
+  if (faltan.length) return falla(`Falta elegir en Configuración (factura de venta): ${faltan.join(', ')}.`)
+  const item = String(cfg.item_comision ?? '').trim()
+  if (!item) return falla('Falta elegir en Configuración el ítem de comisión (con IVA).')
+  const pct = Number(d.pct ?? cfg.utilidad_pct) || 0
+  if (!(pct > 0)) return falla('Falta el porcentaje de comisión (Configuración → comisión sobre depósitos, o escribilo al emitir).')
+  const identification = String(d.identification ?? '').replace(/\D/g, '')
+  if (!identification) return falla('Falta el documento del cliente al que se le factura.')
+
+  const partner = cfg.partner_id || 'Lincoin'
+  const t = await tokenDe(userId, cfg)
+  if ('error' in t) return falla(t.error)
+
+  // El cliente de la factura: si ya existe en Siigo se usa tal cual; si no,
+  // se crea con nombre, documento y la ciudad que se encuentre (ficha del
+  // beneficiario, RUES para empresas, o el respaldo).
+  const esEmpresa = d.esEmpresa ?? (identification.length === 9)
+  const partes = esEmpresa ? partirNit(identification) : { identification }
+  const cp: Contraparte = { ...partes, nombre: String(d.nombre ?? '').trim() || identification, esDefault: false, esEmpresa, direccion: null }
+  cp.direccion = await direccionDelBeneficiario(userId, cp.identification, cfg, cp.esEmpresa)
+  const cli = await asegurarCliente(t.token, partner, cfg, cp, 'Customer')
+  if (!cli.ok) return falla(cli.error)
+
+  const monto = Number(String((comp as any).monto ?? '0').replace(/,/g, ''))
+  if (!Number.isFinite(monto) || monto <= 0) return falla(`Monto inválido en el comprobante: ${(comp as any).monto}`)
+  const impuestos: any[] = Array.isArray(cfg.catalogos?.impuestos) ? cfg.catalogos.impuestos : []
+  const ivaElegido = cfg.iva_tax_id ? impuestos.find((x: any) => Number(x.id) === Number(cfg.iva_tax_id)) : null
+  const iva = ivaDelProducto(cfg, item) ?? (ivaElegido ? { id: Number(ivaElegido.id), name: String(ivaElegido.name ?? ''), percentage: Number(ivaElegido.percentage) || 0 } : null)
+  const tarifa = iva ? iva.percentage / 100 : 0
+  const comision = r2(monto * pct / 100)
+  const base = r2(comision / (1 + tarifa))
+  const ivaV = r2(base * tarifa)
+  const total = r2(base + ivaV)
+  const hoy = new Date().toISOString().slice(0, 10)
+  const ctx: Record<string, string> = {
+    tipo: DISPARADORES[String((comp as any).tipo)] ?? String((comp as any).tipo), numero: String((comp as any).numero ?? ''), contraparte: cp.nombre,
+    monto: monto.toLocaleString('es-CO', { maximumFractionDigits: 2 }), fecha: hoy, utilidad: String(pct),
+  }
+  const plantilla = (s: string) => s.replace(/\{(\w+)\}/g, (_m, k) => ctx[k] ?? `{${k}}`)
+  const descripcion = plantilla(cfg.desc_comision || 'Comisión {utilidad} % sobre {monto} · Comprobante Lincoin {numero}').slice(0, 500)
+  const items = [{ code: item, description: descripcion, quantity: 1, price: base, ...(iva && !ivaDelProducto(cfg, item) ? { taxes: [{ id: iva.id }] } : {}) }]
+  const observations = [cfg.observaciones, `Comprobante Lincoin ${(comp as any).numero}`, `Comisión ${pct} % sobre ${ctx.monto} COP (IVA incluido)`].filter(Boolean).join(' · ').slice(0, 500)
+  const cuerpo = {
+    document: { id: Number(cfg.document_id) }, date: hoy,
+    customer: { identification: cp.identification, branch_office: 0 },
+    seller: Number(cfg.seller_id),
+    stamp: { send: !!cfg.stamp }, mail: { send: !!cfg.mail },
+    observations, items,
+    payments: [{ id: Number(cfg.payment_id), value: total, due_date: hoy }],
+  }
+  const r = await siigo('POST', '/v1/invoices', { token: t.token, partner, body: cuerpo, ms: 70000 })
+  const intentos = [{ ruta: '/v1/invoices', status: r.status, respuesta: r.data ?? r.texto, enviado: cuerpo }]
+  if (!r.ok) return falla(`Siigo rechazó la factura de comisión — ${motivoDe(r)}`, { factura_detalle: { enviado: cuerpo, intentos, comision: { pct, comision, base, iva: ivaV, total, cliente: { identification: cp.identification, nombre: cp.nombre } } } })
+  const resp = r.data ?? {}
+  const numero = resp.name ?? (resp.number != null ? `${resp.prefix ?? ''}${resp.number}` : null) ?? String(resp.id ?? '')
+  await marcar({
+    factura_estado: 'emitida', factura_error: null, factura_tipo: 'FV',
+    factura_proveedor: 'siigo', factura_id: resp.id != null ? String(resp.id) : null,
+    factura_numero: numero, factura_cufe: resp.stamp?.cufe ?? null, factura_url: resp.public_url ?? null,
+    factura_at: new Date().toISOString(),
+    factura_detalle: { enviado: cuerpo, respuesta: resp, respuesta_creacion: resp, intentos, comision: { pct, comision, base, iva: ivaV, total, cliente: { identification: cp.identification, nombre: cp.nombre } } },
+  })
+  return { ok: true, estado: 'emitida', tipo: 'FV', numero, total, base, iva: ivaV, comision, cufe: resp.stamp?.cufe ?? null, url: resp.public_url ?? null }
+}
+
+// Clientes de Siigo, para elegir a quién se le factura la comisión. Por
+// documento la API filtra; por nombre no, así que se traen páginas y se
+// filtra acá (tope razonable).
+async function buscarClientes(userId: string, q: string): Promise<{ ok: boolean; clientes?: any[]; error?: string }> {
+  const cfg = await leerConfig(userId)
+  if (!cfg) return { ok: false, error: 'Primero configurá Siigo.' }
+  const partner = cfg.partner_id || 'Lincoin'
+  const t = await tokenDe(userId, cfg)
+  if ('error' in t) return { ok: false, error: t.error }
+  const fila = (x: any) => ({ id: x.id ?? null, identification: String(x.identification ?? ''), nombre: Array.isArray(x.name) ? x.name.join(' ') : String(x.name ?? x.commercial_name ?? ''), comercial: x.commercial_name ?? null, esEmpresa: String(x.person_type ?? '') === 'Company' || String(x.id_type?.code ?? x.id_type ?? '') === '31', activo: x.active !== false })
+  const digitos = q.replace(/\D/g, '')
+  if (digitos.length >= 5 && digitos.length === q.replace(/[\s.\-]/g, '').length) {
+    const r = await siigo('GET', `/v1/customers?identification=${encodeURIComponent(digitos.length === 10 ? digitos.slice(0, 9) : digitos)}`, { token: t.token, partner })
+    if (!r.ok) return { ok: false, error: `Siigo — ${motivoDe(r)}` }
+    const lista: any[] = Array.isArray(r.data?.results) ? r.data.results : Array.isArray(r.data) ? r.data : []
+    return { ok: true, clientes: lista.map(fila) }
+  }
+  const n = q.trim().toLowerCase()
+  const out: any[] = []
+  for (let page = 1; page <= 8 && out.length < 30; page++) {
+    const r = await siigo('GET', `/v1/customers?page=${page}&page_size=100`, { token: t.token, partner })
+    if (!r.ok) return { ok: false, error: `Siigo — ${motivoDe(r)}` }
+    const lista: any[] = Array.isArray(r.data?.results) ? r.data.results : []
+    for (const x of lista) { const f = fila(x); if (!n || f.nombre.toLowerCase().includes(n) || String(f.comercial ?? '').toLowerCase().includes(n) || f.identification.includes(n)) out.push(f) }
+    const total = Number(r.data?.pagination?.total_results ?? 0)
+    if (!lista.length || page * 100 >= total) break
+  }
+  return { ok: true, clientes: out.slice(0, 30) }
 }
 
 Deno.serve(async (req) => {
@@ -1075,6 +1205,20 @@ Deno.serve(async (req) => {
     //    no alcanzó a crear ──────────────────────────────────────────────
     if (accion === 'reconciliar') {
       return json({ ok: true, ...(await reconciliar(userId)) })
+    }
+
+    // ── Factura de comisión por un depósito (PSP), a mano ──────────────
+    if (accion === 'emitir_comision') {
+      const txId = String(body.transactionId ?? '')
+      if (!txId) return json({ ok: false, error: 'falta_transactionId' }, 400)
+      return json(await emitirComision(userId, txId, {
+        identification: String(body.clienteIdentification ?? ''), nombre: body.clienteNombre ? String(body.clienteNombre) : undefined,
+        esEmpresa: typeof body.clienteEsEmpresa === 'boolean' ? body.clienteEsEmpresa : undefined,
+        pct: body.comisionPct != null && body.comisionPct !== '' ? Number(body.comisionPct) : undefined,
+      }))
+    }
+    if (accion === 'buscar_clientes') {
+      return json(await buscarClientes(userId, String(body.q ?? '')))
     }
 
     // ── El documento de UN movimiento, para verlo desde el detalle ──────
