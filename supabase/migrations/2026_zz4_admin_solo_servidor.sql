@@ -61,6 +61,11 @@ DECLARE
     'kyc_status',           'pending'
   );
 BEGIN
+  -- El SQL Editor de Supabase entra como postgres, sin JWT: ahi auth.uid()
+  -- es NULL y sin esta linea el guardia revertiria hasta la correccion que
+  -- hace el dueno a mano. session_user (no current_user): dentro de una
+  -- funcion SECURITY DEFINER current_user es siempre el dueno de la funcion.
+  IF session_user IN ('postgres', 'supabase_admin') THEN privilegiado := true; END IF;
   BEGIN
     IF auth.role() = 'service_role' THEN privilegiado := true; END IF;
   EXCEPTION WHEN OTHERS THEN NULL; END;
@@ -130,6 +135,11 @@ DECLARE
   vieja jsonb;
   k     text;
 BEGIN
+  -- El SQL Editor de Supabase entra como postgres, sin JWT: ahi auth.uid()
+  -- es NULL y sin esta linea el guardia revertiria hasta la correccion que
+  -- hace el dueno a mano. session_user (no current_user): dentro de una
+  -- funcion SECURITY DEFINER current_user es siempre el dueno de la funcion.
+  IF session_user IN ('postgres', 'supabase_admin') THEN privilegiado := true; END IF;
   BEGIN
     IF auth.role() = 'service_role' THEN privilegiado := true; END IF;
   EXCEPTION WHEN OTHERS THEN NULL; END;
@@ -173,6 +183,11 @@ AS $guard_delete$
 DECLARE
   privilegiado boolean := false;
 BEGIN
+  -- El SQL Editor de Supabase entra como postgres, sin JWT: ahi auth.uid()
+  -- es NULL y sin esta linea el guardia revertiria hasta la correccion que
+  -- hace el dueno a mano. session_user (no current_user): dentro de una
+  -- funcion SECURITY DEFINER current_user es siempre el dueno de la funcion.
+  IF session_user IN ('postgres', 'supabase_admin') THEN privilegiado := true; END IF;
   BEGIN
     IF auth.role() = 'service_role' THEN privilegiado := true; END IF;
   EXCEPTION WHEN OTHERS THEN NULL; END;
