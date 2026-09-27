@@ -2131,7 +2131,9 @@ Deno.serve(async (req: Request) => {
         } catch (e) { /* si Auth admin falla, seguimos con lo de public.users */ }
         // Actividad reciente con IP (logins + acciones sensibles).
         const { data: acts } = await db.from('audit_log').select('*').order('created_at', { ascending: false }).limit(100)
-        const withIp = (acts ?? []).filter((a: any) => a?.metadata?.ip || a?.action === 'auth.admin_login')
+        // "Ingresos de administrador": solo los ingresos de admin verificados
+        // y las acciones del panel. Un login de cliente con IP no va acá.
+        const withIp = (acts ?? []).filter((a: any) => a?.action === 'auth.admin_login' || (typeof a?.action === 'string' && a.action.startsWith('admin.') && a?.metadata?.ip))
           .map((a: any) => ({ action: a.action, at: a.metadata?.at ?? a.created_at, byEmail: a.metadata?.byEmail ?? null, ip: a.metadata?.ip ?? null, userAgent: a.metadata?.userAgent ?? null, hadSession: a.metadata?.hadSession }))
         return json({ ok: true, admins, activity: withIp })
       }
@@ -2370,8 +2372,14 @@ Deno.serve(async (req: Request) => {
         const dias = Math.min(Math.max(Number(body.dias ?? 30) || 30, 1), 90)
         const desde = new Date(Date.now() - dias * 86400_000).toISOString()
 
-        const ADMIN = ['auth.admin_login', 'auth.login_2fa_completo', 'auth.login_passkey']
-        const CLIENTE = ['auth.aviso_ingreso']
+        // Un ingreso "de admin" es SOLO auth.admin_login: se escribe después
+        // de verifyAdmin, o sea con el rol admin comprobado en public.users.
+        // Los otros dos eventos (2FA completo, passkey) los genera cualquier
+        // cliente que entra con su código; contarlos como admin hacía que el
+        // mapa mostrara a empresas y personas como "Admins", y eso se leía
+        // como una escalada de privilegios que no existía.
+        const ADMIN = ['auth.admin_login']
+        const CLIENTE = ['auth.aviso_ingreso', 'auth.login_2fa_completo', 'auth.login_passkey']
         const FALLO = ['auth.failed_login', 'auth.mfa_failed']
         const { data: ev } = await db.from('audit_log')
           .select('action, metadata, created_at, user_id')
@@ -2385,6 +2393,7 @@ Deno.serve(async (req: Request) => {
           rol?: 'admin' | 'empresa' | 'personal' | null
           ciudad?: string | null; pais?: string | null; isp?: string | null
           lat?: number | null; lon?: number | null; motivo?: string | null
+          adminReal?: boolean
         }
         const porIp = new Map<string, Punto>()
         const orden = { bloqueada: 3, admin: 2, usuario: 1, fallido: 0 } as const
@@ -2405,6 +2414,7 @@ Deno.serve(async (req: Request) => {
               // mapa muestra "Admins" para todo, que es lo que no deja saber
               // si la IP es del equipo o de una empresa.
               correo: r?.metadata?.byEmail ?? r?.metadata?.email ?? null,
+              adminReal: tipo === 'admin',
             })
           } else {
             if (!y.correo) y.correo = r?.metadata?.byEmail ?? r?.metadata?.email ?? null
@@ -2412,6 +2422,7 @@ Deno.serve(async (req: Request) => {
             y.sesiones++
             if (r.created_at < y.primera) y.primera = r.created_at
             if (r.created_at > y.ultima) y.ultima = r.created_at
+            if (tipo === 'admin') y.adminReal = true
             // Manda el tipo más relevante: una IP con ingresos de admin es de
             // admin aunque también tenga fallos.
             if (orden[tipo] > orden[y.tipo]) y.tipo = tipo
@@ -2462,6 +2473,16 @@ Deno.serve(async (req: Request) => {
           }
         }
 
+        // El tipo final lo decide el ROL REAL del titular en public.users, no
+        // el evento: un punto es "admin" solo si la cuenta es admin o si hubo
+        // un auth.admin_login (que ya pasó por verifyAdmin). Una cuenta
+        // empresa o personal que entró con su código es "usuario", siempre.
+        for (const p of porIp.values()) {
+          if (p.tipo === 'bloqueada' || p.tipo === 'fallido') continue
+          p.tipo = (p.rol === 'admin' || p.adminReal) ? 'admin' : 'usuario'
+        }
+        for (const p of porIp.values()) delete p.adminReal
+
         // Geolocalización: se limita a las más recientes para no encadenar
         // cientos de consultas externas en una sola petición.
         const lista = [...porIp.values()].sort((a, b) => String(b.ultima).localeCompare(String(a.ultima))).slice(0, 80)
@@ -2485,7 +2506,8 @@ Deno.serve(async (req: Request) => {
         const desde = new Date(Date.now() - 13 * 86400_000)
         desde.setHours(0, 0, 0, 0)
         const FALLOS = ['auth.failed_login', 'auth.mfa_failed']
-        const EXITOS = ['auth.admin_login', 'auth.login_2fa_completo', 'auth.login_passkey']
+        // Solo el ingreso de admin verificado cuenta como acceso de admin.
+        const EXITOS = ['auth.admin_login']
         const { data } = await db.from('audit_log').select('action, created_at')
           .in('action', [...FALLOS, ...EXITOS])
           .gte('created_at', desde.toISOString()).limit(5000)

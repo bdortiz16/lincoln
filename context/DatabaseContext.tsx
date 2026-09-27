@@ -495,10 +495,10 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             } else {
               // Truly new user — create profile
               const id = session.user.id;
-              const isAdminOAuth = session.user.email === SEED_ADMIN_EMAIL;
               // Esta web es EXCLUSIVAMENTE el producto EMPRESAS (el personal
               // vive en la app móvil, en otra base). Toda cuenta nueva que se
-              // cree aquí es business — salvo el admin semilla.
+              // cree aquí es business. Nunca admin: ese rol no lo decide el
+              // cliente por un correo, lo pone el servidor o la base.
               //
               // Antes se deducía el rol de user_metadata y de "pistas" en
               // localStorage (cuypay_oauth_role / cuypay_register_role). Con
@@ -508,7 +508,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
               // 'personal' aunque el registro fuera por Empresas — luego no
               // salía en el admin y mostraba KYC. Se ignoran esas pistas y se
               // fuerza business para que no vuelva a pasar.
-              const pendingRole = isAdminOAuth ? 'admin' : 'business';
+              const pendingRole = 'business';
               localStorage.removeItem('cuypay_oauth_role');
               localStorage.removeItem('cuypay_register_role');
               const newProfile = {
@@ -518,7 +518,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
                   || session.user.email!.split('@')[0],
                 role: pendingRole,
                 balances: { USD: 0, COP: 0, CLP: 0, MXN: 0, PEN: 0 },
-                kyc_status: isAdminOAuth ? 'approved' : 'pending',
+                kyc_status: 'pending',
                 raw_data: { notifications: [], ownReferralCode: id.slice(-6).toUpperCase() },
               };
               await supabase.from('users').insert(newProfile);
@@ -1463,13 +1463,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         //
         // Si el servidor de login no contesta, no se entra. Es lo correcto:
         // un fallo de autenticación no puede tener una puerta de atrás.
-        // Not found in Supabase DB — user may have been created in offline/localStorage mode
-        const localUsers = lsGetUsers();
-        const localMatch = localUsers.find(u => u.email === email && u.password === pass);
-        if (localMatch) {
-          setCurrentUser(localMatch);
-          return localMatch;
-        }
+        // (Antes había un respaldo que aceptaba un usuario guardado en
+        // localStorage, con el rol que trajera —incluido admin—. Se quitó:
+        // una lista en el navegador no autentica a nadie.)
       }
       // Ninguna vía reconoció las credenciales → queda registrado con IP.
       if (!loginErrorRef.current) setLoginError('Correo o contraseña incorrectos. [ninguna vía reconoció las credenciales]');
@@ -1484,8 +1480,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       profileTimeout,
     ]) as any;
 
-    const isAdminEmail = data.user.email === SEED_ADMIN_EMAIL;
-
+    // El rol de admin NUNCA se decide por el correo desde el cliente: un
+    // perfil que se crea al entrar es de cliente, y punto. Si hace falta un
+    // admin, se pone el rol en la base.
     if (!profile) {
       // ⚠️ Antes se creaba un perfil NUEVO de una vez. Si ya existía una fila
       // con ese correo pero con OTRO id (pasa al recrear la cuenta de acceso),
@@ -1508,9 +1505,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         id,
         email: data.user.email!,
         full_name: data.user.email!.split('@')[0],
-        role: isAdminEmail ? 'admin' : 'personal',
+        role: 'personal',
         balances: { USD: 0, COP: 0, CLP: 0, MXN: 0, PEN: 0 },
-        kyc_status: isAdminEmail ? 'approved' : 'pending',
+        kyc_status: 'pending',
         raw_data: { notifications: [], ownReferralCode: id.slice(-6).toUpperCase() },
       };
       supabase.from('users').insert(newProfile);
@@ -2067,14 +2064,18 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     // Embed role in user_metadata so onAuthStateChange can read it reliably without
     // relying on localStorage (which is prone to race conditions with hashPassword async gap).
     // Keep localStorage as a secondary fallback for email-confirmation redirects.
-    localStorage.setItem('cuypay_register_role', data.role || 'business');
+    // El rol que se pide desde el cliente SOLO puede ser personal o business.
+    // 'admin' nunca sale de acá: el rol de admin lo pone el servidor (o la
+    // base, por un admin), y el guardia de la base lo rechaza igual.
+    const rolPedido: 'personal' | 'business' = data.role === 'personal' ? 'personal' : 'business';
+    localStorage.setItem('cuypay_register_role', rolPedido);
 
     const { data: authData, error } = await supabase.auth.signUp({
       email: data.email,
       password: data.password,
       options: {
         data: {
-          role: data.role || 'business',
+          role: rolPedido,
           full_name: data.name || 'Usuario',
         },
         ...(data.captchaToken ? { captchaToken: data.captchaToken } : {}),
@@ -2084,7 +2085,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     if (!authData.user) return { error: 'No se pudo crear la cuenta.' };
 
     const id = authData.user.id;
-    const intendedRole = data.role || 'business';
+    const intendedRole = rolPedido;
 
     // Build profile WITHOUT hash first — insert IMMEDIATELY before hashPassword's async gap
     // so onAuthStateChange's profile fetch finds our row with the correct role.
