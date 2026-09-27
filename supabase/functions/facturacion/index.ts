@@ -165,6 +165,23 @@ async function resumenDe(userId: string) {
   return { emitidas: n('emitida'), errores: n('error'), pendientes: n('pendiente'), omitidas: n('omitida'), comprobantes: filas.length }
 }
 
+// ¿Está llegando el aviso automático? Cada operación que se completa debe
+// tener comprobante (lo crea notify-transaction al recibir el trigger de la
+// base). Si las últimas completadas no lo tienen, el trigger no está
+// llamando a la función, y sin eso nada se emite solo.
+async function chequeoAutomatico(userId: string): Promise<{ sinComprobante: number; ultimos: number } | null> {
+  try {
+    const desde = new Date(Date.now() - 14 * 86400000).toISOString()
+    const { data: txs } = await db.from('transactions').select('id').eq('user_id', userId).eq('status', 'Completado')
+      .in('type', Object.keys(DISPARADORES)).gte('created_at', desde).order('created_at', { ascending: false }).limit(20)
+    const ids = ((txs ?? []) as any[]).map(t => String(t.id))
+    if (!ids.length) return { sinComprobante: 0, ultimos: 0 }
+    const { data: comps } = await db.from('comprobantes').select('transaction_id').in('transaction_id', ids)
+    const con = new Set(((comps ?? []) as any[]).map(c => String(c.transaction_id)))
+    return { sinComprobante: ids.filter(i => !con.has(i)).length, ultimos: ids.length }
+  } catch { return null }
+}
+
 // ── Catálogos ─────────────────────────────────────────────────────
 async function traerCatalogos(token: string, partner: string) {
   const lista = (r: Resp): any[] => Array.isArray(r.data) ? r.data : Array.isArray(r.data?.results) ? r.data.results : []
@@ -806,7 +823,7 @@ Deno.serve(async (req) => {
     const userId = yo.userId
 
     if (accion === 'config_get') {
-      return json({ ok: true, config: await publica(await leerConfig(userId), await resumenDe(userId)), disparadores: DISPARADORES })
+      return json({ ok: true, config: await publica(await leerConfig(userId), await resumenDe(userId)), disparadores: DISPARADORES, chequeo: await chequeoAutomatico(userId) })
     }
 
     if (accion === 'config_set') {

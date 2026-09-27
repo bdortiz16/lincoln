@@ -619,7 +619,10 @@ Deno.serve(async (req) => {
 async function facturar(folio: number): Promise<void> {
   try {
     const ctrl = new AbortController()
-    const reloj = setTimeout(() => ctrl.abort(), 40000)
+    // Emitir puede tardar: consulta al RUES/antecedentes por la ciudad del
+    // tercero, crea el tercero y el documento en Siigo (hasta 70 s). Cortar
+    // antes dejaba la emisión automática a medias.
+    const reloj = setTimeout(() => ctrl.abort(), 120000)
     const r = await fetch(`${SUPABASE_URL}/functions/v1/facturacion`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },

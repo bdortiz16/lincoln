@@ -232,13 +232,27 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     return () => { vivo = false; };
   }, [userId, foliosVersion]);
   // ¿Tiene la facturación automática activa? Solo para decidir qué dice la
-  // columna FACTURA y el botón de configuración.
+  // columna FACTURA y el botón de configuración. Y el chequeo del servidor:
+  // movimientos completados que nunca recibieron comprobante (señal de que
+  // el aviso automático de la base no está llegando).
+  const [chequeo, setChequeo] = useState<{ sinComprobante: number; ultimos: number } | null>(null);
+  const [cambiandoAuto, setCambiandoAuto] = useState(false);
   useEffect(() => {
     if (!userId) return;
     llamarFuncion('facturacion', { action: 'config_get' }, 20000)
-      .then((r: any) => setFacturacionActiva(!!r?.config?.activo))
+      .then((r: any) => { setFacturacionActiva(!!r?.config?.activo); setChequeo(r?.chequeo ?? null); })
       .catch(() => setFacturacionActiva(null));
-  }, [userId, configAbierta]);
+  }, [userId, configAbierta, foliosVersion]);
+  // El interruptor: activar exige la configuración completa; el servidor
+  // dice qué falta, y eso se muestra tal cual.
+  const alternarAutomatica = async () => {
+    if (facturacionActiva == null) return;
+    setCambiandoAuto(true);
+    const r = await llamarFuncion('facturacion', { action: 'config_set', config: { activo: !facturacionActiva } }, 30000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    setCambiandoAuto(false);
+    if (!r?.ok) { alert(r?.error ?? 'No se pudo cambiar.'); return; }
+    setFacturacionActiva(!!r?.config?.activo);
+  };
   const reintentarFactura = async (folio: number) => {
     setReintentando(folio);
     const r = await llamarFuncion('facturacion', { action: 'reintentar', folio }, 130000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
@@ -368,6 +382,16 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
           )}
         </div>
         <div className="flex items-center" style={{ gap: 8 }}>
+          {facturacionActiva != null && (
+            <button onClick={alternarAutomatica} disabled={cambiandoAuto}
+              title={facturacionActiva ? 'La facturación automática está activa: cada operación completada emite su documento en Siigo. Tocá para pausar.' : 'La facturación automática está pausada: nada se emite solo. Tocá para activar (la configuración debe estar completa).'}
+              style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '10px 14px', borderRadius: 9, cursor: 'pointer', color: facturacionActiva ? C.entra : C.sub, background: facturacionActiva ? 'rgba(74,222,128,0.10)' : 'rgba(255,255,255,0.05)', border: `1px solid ${facturacionActiva ? 'rgba(74,222,128,0.35)' : C.borde}`, display: 'inline-flex', alignItems: 'center', gap: 8, opacity: cambiandoAuto ? 0.6 : 1 }}>
+              <span style={{ width: 28, height: 16, borderRadius: 999, background: facturacionActiva ? C.entra : 'rgba(255,255,255,0.18)', position: 'relative', flexShrink: 0 }}>
+                <span style={{ position: 'absolute', top: 2, left: facturacionActiva ? 14 : 2, width: 12, height: 12, borderRadius: '50%', background: '#0C0E0D', transition: 'left .15s' }} />
+              </span>
+              {cambiandoAuto ? '…' : facturacionActiva ? 'Automática' : 'Automática apagada'}
+            </button>
+          )}
           <button onClick={() => setConfigAbierta(true)}
             style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '10px 16px', borderRadius: 9, cursor: 'pointer', color: C.text, background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.borde}`, display: 'inline-flex', alignItems: 'center', gap: 8 }}
             className="hover:border-[rgba(255,255,255,0.22)] transition-colors">
@@ -378,6 +402,14 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
         </div>
       </div>
       {configAbierta && <FacturacionConfig onCerrar={() => setConfigAbierta(false)} />}
+      {/* Aviso: operaciones completadas sin comprobante = el aviso automático
+          de la base (trigger) no llegó a la función. Sin eso, nada se emite
+          solo aunque la automática esté activa. */}
+      {chequeo && chequeo.sinComprobante > 0 && (
+        <div style={{ padding: '11px 14px', borderRadius: 10, border: '1px solid rgba(245,158,11,0.35)', background: 'rgba(245,158,11,0.08)', fontFamily: FONT, fontSize: 12.5, color: C.text, lineHeight: 1.55 }}>
+          <b>{chequeo.sinComprobante} de tus últimas {chequeo.ultimos} operaciones completadas no recibieron comprobante.</b> Eso quiere decir que el aviso automático de la base (trigger <code>trg_cuypay_notify_tx</code>) no está llegando a la función, y sin él nada se emite solo aunque la automática esté activa. Hay que revisar el trigger en Supabase (ver <code>supabase/migrations/2026_comprobantes.sql</code>, sección final). Mientras tanto, el botón Emitir de cada fila sí funciona.
+        </div>
+      )}
 
       {/* 2. KPIs */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 12 }}>
@@ -480,12 +512,16 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                           </span>
                         );
                         if (fa.estado === 'omitida' || fa.estado === 'pendiente' || fa.estado === 'anulada') return (
-                          <span className="flex items-center" style={{ gap: 6 }} title={fa.error ?? ''}>
-                            {fa.estado === 'anulada'
-                              ? <button onClick={() => onVerMovimiento?.(a.tx)} style={{ fontFamily: FONT, fontSize: 12, color: C.tenue, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', textDecoration: 'line-through' }}>{fa.tipo === 'DS' ? 'DS · ' : ''}{fa.numero ?? 'anulado'}</button>
-                              : <span style={{ color: C.tenue }}>{fa.estado === 'omitida' ? 'no aplica' : fa.estado}</span>}
-                            {fa.estado === 'anulada' && <span style={{ color: C.tenue, fontSize: 11 }}>anulado</span>}
-                            {completado && facturacionActiva && txId && botonEmitir(txId)}
+                          <span className="flex flex-col" style={{ gap: 3 }}>
+                            <span className="flex items-center" style={{ gap: 6 }} title={fa.error ?? ''}>
+                              {fa.estado === 'anulada'
+                                ? <button onClick={() => onVerMovimiento?.(a.tx)} style={{ fontFamily: FONT, fontSize: 12, color: C.tenue, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', textDecoration: 'line-through' }}>{fa.tipo === 'DS' ? 'DS · ' : ''}{fa.numero ?? 'anulado'}</button>
+                                : <span style={{ color: C.tenue }}>{fa.estado === 'omitida' ? 'no aplica' : fa.estado}</span>}
+                              {fa.estado === 'anulada' && <span style={{ color: C.tenue, fontSize: 11 }}>anulado</span>}
+                              {completado && facturacionActiva && txId && botonEmitir(txId)}
+                            </span>
+                            {/* El porqué, a la vista: "no aplica" sin motivo obliga a adivinar. */}
+                            {fa.estado === 'omitida' && fa.error && <span style={{ fontSize: 10.5, color: C.tenue, whiteSpace: 'normal', maxWidth: 260, lineHeight: 1.35 }}>{fa.error}</span>}
                           </span>
                         );
                         // "DS" delante cuando lo que salió fue un documento
