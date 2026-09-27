@@ -933,11 +933,8 @@ async function emitirComision(userId: string, txId: string, d: { identification:
   const impuestos: any[] = Array.isArray(cfg.catalogos?.impuestos) ? cfg.catalogos.impuestos : []
   const ivaElegido = cfg.iva_tax_id ? impuestos.find((x: any) => Number(x.id) === Number(cfg.iva_tax_id)) : null
   const iva = ivaDelProducto(cfg, item) ?? (ivaElegido ? { id: Number(ivaElegido.id), name: String(ivaElegido.name ?? ''), percentage: Number(ivaElegido.percentage) || 0 } : null)
-  const tarifa = iva ? iva.percentage / 100 : 0
+  const tarifaCatalogo = iva ? iva.percentage / 100 : 0
   const comision = r2(monto * pct / 100)
-  const base = r2(comision / (1 + tarifa))
-  const ivaV = r2(base * tarifa)
-  const total = r2(base + ivaV)
   const hoy = new Date().toISOString().slice(0, 10)
   const ctx: Record<string, string> = {
     tipo: DISPARADORES[String((comp as any).tipo)] ?? String((comp as any).tipo), numero: String((comp as any).numero ?? ''), contraparte: cp.nombre,
@@ -945,19 +942,48 @@ async function emitirComision(userId: string, txId: string, d: { identification:
   }
   const plantilla = (s: string) => s.replace(/\{(\w+)\}/g, (_m, k) => ctx[k] ?? `{${k}}`)
   const descripcion = plantilla(cfg.desc_comision || 'Comisión {utilidad} % sobre {monto} · Comprobante Lincoin {numero}').slice(0, 500)
-  const items = [{ code: item, description: descripcion, quantity: 1, price: base, ...(iva && !ivaDelProducto(cfg, item) ? { taxes: [{ id: iva.id }] } : {}) }]
   const observations = [cfg.observaciones, `Comprobante Lincoin ${(comp as any).numero}`, `Comisión ${pct} % sobre ${ctx.monto} COP (IVA incluido)`].filter(Boolean).join(' · ').slice(0, 500)
-  const cuerpo = {
-    document: { id: Number(cfg.document_id) }, date: hoy,
-    customer: { identification: cp.identification, branch_office: 0 },
-    seller: Number(cfg.seller_id),
-    stamp: { send: !!cfg.stamp }, mail: { send: !!cfg.mail },
-    observations, items,
-    payments: [{ id: Number(cfg.payment_id), value: total, due_date: hoy }],
+  // La tarifa que manda es la que SIIGO aplica al ítem, no la del catálogo
+  // guardado (puede estar viejo, o Siigo no devolver el impuesto en la lista
+  // de productos). Se arma con la del catálogo; si Siigo rechaza el pago
+  // porque su total es otro ("The total invoice calculated is X"), de ese X
+  // se deduce la tarifa real, se recalcula la base para que base + IVA siga
+  // dando la comisión, y se reintenta una vez.
+  const armar = (tarifa: number) => {
+    const base = r2(comision / (1 + tarifa))
+    const ivaV = r2(base * tarifa)
+    const total = r2(base + ivaV)
+    const items = [{ code: item, description: descripcion, quantity: 1, price: base, ...(iva && !ivaDelProducto(cfg, item) ? { taxes: [{ id: iva.id }] } : {}) }]
+    const cuerpo = {
+      document: { id: Number(cfg.document_id) }, date: hoy,
+      customer: { identification: cp.identification, branch_office: 0 },
+      seller: Number(cfg.seller_id),
+      stamp: { send: !!cfg.stamp }, mail: { send: !!cfg.mail },
+      observations, items,
+      payments: [{ id: Number(cfg.payment_id), value: total, due_date: hoy }],
+    }
+    return { base, ivaV, total, cuerpo }
   }
-  const r = await siigo('POST', '/v1/invoices', { token: t.token, partner, body: cuerpo, ms: 70000 })
-  const intentos = [{ ruta: '/v1/invoices', status: r.status, respuesta: r.data ?? r.texto, enviado: cuerpo }]
-  if (!r.ok) return falla(`Siigo rechazó la factura de comisión — ${motivoDe(r)}`, { factura_detalle: { enviado: cuerpo, intentos, comision: { pct, comision, base, iva: ivaV, total, cliente: { identification: cp.identification, nombre: cp.nombre } } } })
+  const intentos: any[] = []
+  let tarifa = tarifaCatalogo
+  let arm = armar(tarifa)
+  let r = await siigo('POST', '/v1/invoices', { token: t.token, partner, body: arm.cuerpo, ms: 70000 })
+  intentos.push({ ruta: '/v1/invoices', status: r.status, respuesta: r.data ?? r.texto, enviado: arm.cuerpo, tarifa })
+  if (!r.ok) {
+    const m = /total invoice calculated is\s*([\d.,]+)/i.exec(motivoDe(r))
+    const totalSiigo = m ? Number(m[1].replace(/,/g, '')) : NaN
+    if (Number.isFinite(totalSiigo) && arm.base > 0) {
+      const tarifaReal = Math.round((totalSiigo / arm.base - 1) * 10000) / 10000
+      if (tarifaReal >= 0 && tarifaReal < 1 && Math.abs(tarifaReal - tarifa) > 0.0001) {
+        tarifa = tarifaReal
+        arm = armar(tarifa)
+        r = await siigo('POST', '/v1/invoices', { token: t.token, partner, body: arm.cuerpo, ms: 70000 })
+        intentos.push({ ruta: '/v1/invoices', status: r.status, respuesta: r.data ?? r.texto, enviado: arm.cuerpo, tarifa, nota: `Tarifa deducida del total que calculó Siigo (${totalSiigo})` })
+      }
+    }
+  }
+  const { base, ivaV, total, cuerpo } = arm
+  if (!r.ok) return falla(`Siigo rechazó la factura de comisión — ${motivoDe(r)}${intentos.length > 1 ? ` · Se reintentó con la tarifa que Siigo aplica (${(tarifa * 100).toFixed(2)} %) y tampoco.` : ''}`, { factura_detalle: { enviado: cuerpo, intentos, comision: { pct, comision, base, iva: ivaV, total, tarifa, cliente: { identification: cp.identification, nombre: cp.nombre } } } })
   const resp = r.data ?? {}
   const numero = resp.name ?? (resp.number != null ? `${resp.prefix ?? ''}${resp.number}` : null) ?? String(resp.id ?? '')
   await marcar({
@@ -965,9 +991,9 @@ async function emitirComision(userId: string, txId: string, d: { identification:
     factura_proveedor: 'siigo', factura_id: resp.id != null ? String(resp.id) : null,
     factura_numero: numero, factura_cufe: resp.stamp?.cufe ?? null, factura_url: resp.public_url ?? null,
     factura_at: new Date().toISOString(),
-    factura_detalle: { enviado: cuerpo, respuesta: resp, respuesta_creacion: resp, intentos, comision: { pct, comision, base, iva: ivaV, total, cliente: { identification: cp.identification, nombre: cp.nombre } } },
+    factura_detalle: { enviado: cuerpo, respuesta: resp, respuesta_creacion: resp, intentos, comision: { pct, comision, base, iva: ivaV, total, tarifa, cliente: { identification: cp.identification, nombre: cp.nombre } } },
   })
-  return { ok: true, estado: 'emitida', tipo: 'FV', numero, total, base, iva: ivaV, comision, cufe: resp.stamp?.cufe ?? null, url: resp.public_url ?? null }
+  return { ok: true, estado: 'emitida', tipo: 'FV', numero, total, base, iva: ivaV, comision, tarifa, cufe: resp.stamp?.cufe ?? null, url: resp.public_url ?? null }
 }
 
 // Clientes de Siigo, para elegir a quién se le factura la comisión. Por
