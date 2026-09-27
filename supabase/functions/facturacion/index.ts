@@ -406,8 +406,12 @@ async function direccionDelBeneficiario(userId: string, identification: string, 
   // Una empresa no tiene lugar de expedición; su ciudad es donde se
   // matriculó. Se consulta por NIT (Datos Abiertos y el portal RUES) y, si
   // aparece, queda guardado en la ficha del beneficiario para no volver a
-  // consultarlo y para que se vea en Beneficiarios.
-  if (esEmpresa) {
+  // consultarlo y para que se vea en Beneficiarios. Se intenta primero para
+  // una empresa y, como respaldo, para cualquiera cuando la cédula no da
+  // ciudad: una persona inscrita con tipo equivocado, o un comerciante
+  // natural matriculado, también están en el RUES.
+  let diagRUES = ''
+  const porRUES = async (): Promise<Direccion | null> => {
     const r = await domicilioEmpresa(base)
     if (r.domicilio?.municipio) {
       const m = r.domicilio.municipio
@@ -418,7 +422,13 @@ async function direccionDelBeneficiario(userId: string, identification: string, 
       }
       return { address: direccion, city: { country_code: 'Co', state_code: m.depto, city_code: m.codigo } }
     }
-    ultimoDiagnosticoLugar = `Es una empresa: la ciudad sale del domicilio de la Cámara de Comercio (RUES), y no se pudo obtener — ${r.diagnostico}`
+    diagRUES = r.diagnostico
+    return null
+  }
+  if (esEmpresa) {
+    const d = await porRUES()
+    if (d) return d
+    ultimoDiagnosticoLugar = `Es una empresa: la ciudad sale del domicilio de la Cámara de Comercio (RUES), y no se pudo obtener — ${diagRUES}`
     return null
   }
   // Sin ciudad en la ficha: la del lugar de expedición de la cédula, que
@@ -454,6 +464,11 @@ async function direccionDelBeneficiario(userId: string, identification: string, 
     ultimoDiagnosticoLugar = ''
     return { address: limpiarDireccion(`${calle} - Cedula expedida en ${lugar}`), city: { country_code: 'Co', state_code: ext.depto, city_code: ext.codigo } }
   }
+  // Respaldo: el RUES también para quien no se reconoció como empresa.
+  const diagCedula = ultimoDiagnosticoLugar
+  const d = await porRUES()
+  if (d) return d
+  ultimoDiagnosticoLugar = `${diagCedula}${diagCedula ? ' ' : ''}Tampoco aparece en el registro mercantil (RUES): ${diagRUES}`
   return null
 }
 // Qué contestó la consulta del lugar de expedición, para ponerlo en el error
@@ -492,8 +507,11 @@ function contraparteDe(comp: any, cfg: any): Contraparte {
   const nombre = String(rd.beneficiary ?? rd.beneficiaryName ?? rd.senderName ?? rd.recipientName ?? comp?.contraparte ?? '').trim()
   if (doc) {
     // Es empresa si el tipo dice NIT; si no hay tipo, por la longitud (una
-    // cédula no llega a 9 dígitos salvo las muy nuevas, que van a 10).
-    const esEmpresa = tipoDoc ? tipoDoc === 'NIT' : doc.length === 9
+    // cédula no llega a 9 dígitos salvo las muy nuevas, que van a 10). Y si
+    // el nombre es una razón social (SAS, LTDA, S.A.…), es empresa aunque
+    // se haya inscrito con el tipo equivocado.
+    const pareceRazonSocial = /\b(S\.?\s?A\.?\s?S\.?|LTDA\.?|S\.?\s?A\.?|E\.?\s?U\.?|S\.?\s?C\.?\s?A\.?|S\.?\s?EN\s?C\.?|SOCIEDAD|COMPANIA|COMPAÑIA|CIA\.?|CORPORACION|FUNDACION|ASOCIACION|COOPERATIVA)\b\.?$/i.test(nombre.replace(/[.,]+$/, '').trim()) || /\bS\.?A\.?S\b/i.test(nombre)
+    const esEmpresa = tipoDoc === 'NIT' || (!tipoDoc && doc.length === 9) || (doc.length === 9 && pareceRazonSocial)
     const partes = esEmpresa ? partirNit(doc) : { identification: doc }
     return { ...partes, nombre: nombre || doc, esDefault: false, esEmpresa, direccion: direccionDe(rd) }
   }
