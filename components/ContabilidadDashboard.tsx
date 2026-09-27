@@ -237,6 +237,16 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   // el aviso automático de la base no está llegando).
   const [chequeo, setChequeo] = useState<{ sinComprobante: number; ultimos: number } | null>(null);
   const [cambiandoAuto, setCambiandoAuto] = useState(false);
+  const [reconciliando, setReconciliando] = useState(false);
+  const [reconciliadoMsg, setReconciliadoMsg] = useState<string | null>(null);
+  const reconciliarAhora = async () => {
+    setReconciliando(true); setReconciliadoMsg(null);
+    const r = await llamarFuncion('facturacion', { action: 'reconciliar' }, 240000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    setReconciliando(false);
+    if (!r?.ok) { setReconciliadoMsg(r?.error ?? 'No se pudo.'); return; }
+    setReconciliadoMsg(`Comprobantes creados: ${r.creados} · documentos emitidos: ${r.emitidos}${r.pendientes ? ` · quedan ${r.pendientes} para la próxima vuelta` : ''}${r.errores?.length ? ` · errores: ${r.errores.join(' | ')}` : ''}`);
+    setFoliosVersion(v => v + 1);
+  };
   useEffect(() => {
     if (!userId) return;
     llamarFuncion('facturacion', { action: 'config_get' }, 20000)
@@ -403,11 +413,18 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
       </div>
       {configAbierta && <FacturacionConfig onCerrar={() => setConfigAbierta(false)} />}
       {/* Aviso: operaciones completadas sin comprobante = el aviso automático
-          de la base (trigger) no llegó a la función. Sin eso, nada se emite
-          solo aunque la automática esté activa. */}
+          de la base (trigger) no llegó a la función para esas. El servidor
+          las pone al día solo (crea el comprobante y, con la automática
+          activa, emite); acá se dice y se ofrece hacerlo ya. */}
       {chequeo && chequeo.sinComprobante > 0 && (
         <div style={{ padding: '11px 14px', borderRadius: 10, border: '1px solid rgba(245,158,11,0.35)', background: 'rgba(245,158,11,0.08)', fontFamily: FONT, fontSize: 12.5, color: C.text, lineHeight: 1.55 }}>
-          <b>{chequeo.sinComprobante} de tus últimas {chequeo.ultimos} operaciones completadas no recibieron comprobante.</b> Eso quiere decir que el aviso automático de la base (trigger <code>trg_cuypay_notify_tx</code>) no está llegando a la función, y sin él nada se emite solo aunque la automática esté activa. Hay que revisar el trigger en Supabase (ver <code>supabase/migrations/2026_comprobantes.sql</code>, sección final). Mientras tanto, el botón Emitir de cada fila sí funciona.
+          <b>{chequeo.sinComprobante} de tus últimas {chequeo.ultimos} operaciones completadas no tenían comprobante.</b> Para esas, el aviso automático de la base (trigger <code>trg_cuypay_notify_tx</code>) no llegó a la función. Se están poniendo al día ahora: se les crea el comprobante y, con la automática activa, se emite el documento (de a pocas por vez; recargá en un minuto).
+          {' '}Si esto se repite en cada operación nueva, hay que revisar el trigger en Supabase (ver <code>supabase/migrations/2026_comprobantes.sql</code>, sección final).
+          <button onClick={reconciliarAhora} disabled={reconciliando}
+            style={{ marginLeft: 10, fontFamily: FONT, fontSize: 11.5, fontWeight: 700, color: C.text, background: 'rgba(255,255,255,0.06)', border: `1px solid ${C.borde}`, borderRadius: 6, padding: '4px 10px', cursor: 'pointer', opacity: reconciliando ? 0.5 : 1 }}>
+            {reconciliando ? 'Poniendo al día…' : 'Ponerse al día ahora'}
+          </button>
+          {reconciliadoMsg && <span style={{ display: 'block', marginTop: 6, color: C.sub }}>{reconciliadoMsg}</span>}
         </div>
       )}
 

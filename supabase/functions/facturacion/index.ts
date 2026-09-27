@@ -171,15 +171,77 @@ async function resumenDe(userId: string) {
 // llamando a la función, y sin eso nada se emite solo.
 async function chequeoAutomatico(userId: string): Promise<{ sinComprobante: number; ultimos: number } | null> {
   try {
-    const desde = new Date(Date.now() - 14 * 86400000).toISOString()
+    const ids = (await completadasSinComprobante(userId)).sin.map(t => String(t.id))
     const { data: txs } = await db.from('transactions').select('id').eq('user_id', userId).eq('status', 'Completado')
-      .in('type', Object.keys(DISPARADORES)).gte('created_at', desde).order('created_at', { ascending: false }).limit(20)
-    const ids = ((txs ?? []) as any[]).map(t => String(t.id))
-    if (!ids.length) return { sinComprobante: 0, ultimos: 0 }
-    const { data: comps } = await db.from('comprobantes').select('transaction_id').in('transaction_id', ids)
-    const con = new Set(((comps ?? []) as any[]).map(c => String(c.transaction_id)))
-    return { sinComprobante: ids.filter(i => !con.has(i)).length, ultimos: ids.length }
+      .in('type', Object.keys(DISPARADORES)).gte('created_at', new Date(Date.now() - 14 * 86400000).toISOString()).limit(20)
+    return { sinComprobante: ids.length, ultimos: ((txs ?? []) as any[]).length }
   } catch { return null }
+}
+
+// Las operaciones completadas de los últimos 14 días que no tienen
+// comprobante: son las que el aviso automático (trigger → notify-transaction)
+// no alcanzó. El comprobante lo crea notify-transaction al completarse; si
+// no está, nada más se disparó para esa operación.
+async function completadasSinComprobante(userId: string): Promise<{ sin: any[] }> {
+  const desde = new Date(Date.now() - 14 * 86400000).toISOString()
+  const { data: txs } = await db.from('transactions').select('id, user_id, type, amount, currency, status, raw_data, created_at').eq('user_id', userId).eq('status', 'Completado')
+    .in('type', Object.keys(DISPARADORES)).gte('created_at', desde).order('created_at', { ascending: false }).limit(20)
+  const lista = (txs ?? []) as any[]
+  if (!lista.length) return { sin: [] }
+  const { data: comps } = await db.from('comprobantes').select('transaction_id').in('transaction_id', lista.map(t => String(t.id)))
+  const con = new Set(((comps ?? []) as any[]).map(c => String(c.transaction_id)))
+  return { sin: lista.filter(t => !con.has(String(t.id))) }
+}
+
+// El comprobante de una operación completada, creándolo si no existe (mismo
+// formato que notify-transaction). Devuelve el folio.
+async function asegurarComprobante(tx: any, userId: string): Promise<{ folio: number } | { error: string }> {
+  const txId = String(tx.id)
+  const { data: comp } = await db.from('comprobantes').select('folio').eq('transaction_id', txId).maybeSingle()
+  if (comp) return { folio: Number((comp as any).folio) }
+  const rd = (tx.raw_data ?? {}) as Record<string, any>
+  const t = String(tx.type)
+  const contraparte = (t === 'dispersion' || t === 'send') ? (rd.beneficiary ?? rd.bank ?? null)
+    : t === 'pay_received' ? (rd.senderName ?? null) : t === 'pay_sent' ? (rd.recipientName ?? null)
+      : t === 'load' ? (rd.method ?? rd.bank ?? null) : null
+  const fila = {
+    transaction_id: txId, user_id: userId, tipo: t, monto: String(tx.amount), moneda: tx.currency,
+    contraparte, estado_al_emitir: tx.status,
+    detalle: { id: txId, type: t, amount: tx.amount, currency: tx.currency, status: tx.status, raw_data: rd },
+  }
+  const ins = await db.from('comprobantes').insert(fila).select('folio').maybeSingle()
+  if (ins.error && ins.error.code !== '23505') return { error: `No se pudo crear el comprobante: ${ins.error.message}` }
+  const otra = ins.data ?? (await db.from('comprobantes').select('folio').eq('transaction_id', txId).maybeSingle()).data
+  return otra ? { folio: Number((otra as any).folio) } : { error: 'No se pudo crear el comprobante del movimiento.' }
+}
+
+// Ponerse al día: a cada operación completada sin comprobante se le crea el
+// comprobante y, si la facturación automática está activa, se emite con las
+// reglas normales (motivo del envío, tipo de operación). Así el documento
+// sale aunque el trigger de la base haya fallado para esa operación. Se
+// hace de a pocas por vuelta: cada emisión puede tardar un minuto.
+async function reconciliar(userId: string, tope = 3): Promise<{ creados: number; emitidos: number; errores: string[]; pendientes: number }> {
+  const cfg = await leerConfig(userId)
+  const { sin } = await completadasSinComprobante(userId)
+  const out = { creados: 0, emitidos: 0, errores: [] as string[], pendientes: 0 }
+  let hechos = 0
+  for (const tx of sin) {
+    if (hechos >= tope) { out.pendientes++; continue }
+    const c = await asegurarComprobante(tx, userId)
+    if ('error' in c) { out.errores.push(c.error); continue }
+    out.creados++
+    if (cfg?.activo) {
+      // Reclamar la emisión: si otra vuelta (el botón y la carga de la
+      // pantalla a la vez) ya la tomó, no se emite dos veces.
+      const { data: mio } = await db.from('comprobantes').update({ factura_estado: 'pendiente', factura_error: 'En emisión…' }).eq('folio', c.folio).is('factura_estado', null).select('folio')
+      if (!mio || !(mio as any[]).length) continue
+      hechos++
+      const r = await emitir(c.folio)
+      if (r?.ok && r.estado === 'emitida') out.emitidos++
+      else if (r && !r.ok) out.errores.push(String(r.error ?? 'error'))
+    }
+  }
+  return out
 }
 
 // ── Catálogos ─────────────────────────────────────────────────────
@@ -823,7 +885,16 @@ Deno.serve(async (req) => {
     const userId = yo.userId
 
     if (accion === 'config_get') {
-      return json({ ok: true, config: await publica(await leerConfig(userId), await resumenDe(userId)), disparadores: DISPARADORES, chequeo: await chequeoAutomatico(userId) })
+      const chequeo = await chequeoAutomatico(userId)
+      // Si hay operaciones completadas sin comprobante, se ponen al día en
+      // segundo plano (el runtime de Supabase deja terminar la promesa
+      // después de responder). La pantalla, al recargar, ya las ve.
+      if (chequeo && chequeo.sinComprobante > 0) {
+        const p = reconciliar(userId).then(r => console.log('[facturacion] reconciliar', userId, JSON.stringify(r)), e => console.error('[facturacion] reconciliar', String((e as Error)?.message ?? e)))
+        const rt = (globalThis as any).EdgeRuntime
+        if (rt && typeof rt.waitUntil === 'function') rt.waitUntil(p)
+      }
+      return json({ ok: true, config: await publica(await leerConfig(userId), await resumenDe(userId)), disparadores: DISPARADORES, chequeo })
     }
 
     if (accion === 'config_set') {
@@ -995,24 +1066,15 @@ Deno.serve(async (req) => {
       const { data: tx } = await db.from('transactions').select('id, user_id, type, amount, currency, status, raw_data').eq('id', txId).maybeSingle()
       if (!tx || String((tx as any).user_id) !== userId) return json({ ok: false, error: 'movimiento_no_encontrado' }, 404)
       if (String((tx as any).status) !== 'Completado') return json({ ok: false, error: `La operación está en "${(tx as any).status}". Solo se emite cuando queda Completada.` })
-      let { data: comp } = await db.from('comprobantes').select('folio').eq('transaction_id', txId).maybeSingle()
-      if (!comp) {
-        const rd = ((tx as any).raw_data ?? {}) as Record<string, any>
-        const t = String((tx as any).type)
-        const contraparte = (t === 'dispersion' || t === 'send') ? (rd.beneficiary ?? rd.bank ?? null)
-          : t === 'pay_received' ? (rd.senderName ?? null) : t === 'pay_sent' ? (rd.recipientName ?? null)
-            : t === 'load' ? (rd.method ?? rd.bank ?? null) : null
-        const fila = {
-          transaction_id: txId, user_id: userId, tipo: t, monto: String((tx as any).amount), moneda: (tx as any).currency,
-          contraparte, estado_al_emitir: (tx as any).status,
-          detalle: { id: txId, type: t, amount: (tx as any).amount, currency: (tx as any).currency, status: (tx as any).status, raw_data: rd },
-        }
-        const ins = await db.from('comprobantes').insert(fila).select('folio').maybeSingle()
-        if (ins.error && ins.error.code !== '23505') return json({ ok: false, error: `No se pudo crear el comprobante: ${ins.error.message}` }, 500)
-        comp = ins.data ?? (await db.from('comprobantes').select('folio').eq('transaction_id', txId).maybeSingle()).data
-        if (!comp) return json({ ok: false, error: 'No se pudo crear el comprobante del movimiento.' }, 500)
-      }
-      return json(await emitir(Number((comp as any).folio), { forzar: true }))
+      const r = await asegurarComprobante(tx, userId)
+      if ('error' in r) return json({ ok: false, error: r.error }, 500)
+      return json(await emitir(r.folio, { forzar: true }))
+    }
+
+    // ── Ponerse al día: comprobantes y documentos que el aviso automático
+    //    no alcanzó a crear ──────────────────────────────────────────────
+    if (accion === 'reconciliar') {
+      return json({ ok: true, ...(await reconciliar(userId)) })
     }
 
     // ── El documento de UN movimiento, para verlo desde el detalle ──────
