@@ -127,18 +127,46 @@ function campo(reg: Record<string, unknown>, patrones: RegExp[]): string | null 
   }
   return null
 }
+// Cámaras cuyo nombre no es el de su ciudad sede: el municipio de la sede,
+// por código DANE. Las demás llevan el nombre de la ciudad.
+const SEDE_CAMARA: Record<string, string> = {
+  'ABURRA SUR': '05360',            // Itagüí
+  'ORIENTE ANTIOQUENO': '05615',    // Rionegro
+  'URABA': '05045',                 // Apartadó
+  'MAGDALENA MEDIO Y NORDESTE ANTIOQUENO': '05579', // Puerto Berrío
+  'SUR Y ORIENTE DEL TOLIMA': '73268', // Espinal
+  'PIEDEMONTE ARAUCANO': '81736',   // Saravena
+  'CASANARE': '85001',              // Yopal
+  'PUTUMAYO': '86001',              // Mocoa
+  'AMAZONAS': '91001',              // Leticia
+  'CHOCO': '27001',                 // Quibdó
+  'LA GUAJIRA': '44001',            // Riohacha
+  'SAN ANDRES': '88001',            // San Andrés
+  'CAUCA': '19001',                 // Popayán
+  'SAN JOSE': '95001',              // San José del Guaviare
+}
+const sinTildes = (s: string) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/\s+/g, ' ').trim()
+
 function normalizarRegistro(reg: Record<string, unknown>, fuente: DomicilioEmpresa['fuente']): DomicilioEmpresa {
   const muniTxt = campo(reg, [/^(nom_?)?municipio(_comercial)?$/i, /^ciudad(_comercial)?$/i, /municipio|ciudad/i])
   const deptoTxt = campo(reg, [/^(nom_?)?departamento(_comercial)?$/i, /^dpto/i, /departamento|dpto/i])
   const codMuni = campo(reg, [/^cod(igo)?_?(dane_?)?(municipio|mpio|ciudad)/i, /^(municipio|mpio)_?(codigo|cod)$/i])
+  const camara = campo(reg, [/^camara_?(de_?)?comercio$/i, /camara/i])
+  // El extracto del registro mercantil (c82u-588k) no trae municipio: trae
+  // la CÁMARA DE COMERCIO donde se matriculó, que lleva el nombre de su
+  // ciudad ("MANIZALES", "BOGOTA", "MEDELLIN PARA ANTIOQUIA"). Es el
+  // domicilio de la matrícula, y de ahí sale la ciudad si no hay otra.
+  const ciudadCamara = camara ? camara.replace(/\s+(PARA|DE)\s+.*$/i, '').trim() : ''
   const muni = (codMuni && /^\d{5}$/.test(codMuni.replace(/\D/g, '')) ? municipioPorCodigo(codMuni.replace(/\D/g, '')) : null)
     ?? (muniTxt ? municipioPorNombre(deptoTxt ? `${muniTxt} - ${deptoTxt}` : muniTxt) : null)
+    ?? (camara ? municipioPorCodigo(SEDE_CAMARA[sinTildes(camara)] ?? SEDE_CAMARA[sinTildes(ciudadCamara)] ?? '') : null)
+    ?? (ciudadCamara ? municipioPorNombre(ciudadCamara) : null)
   return {
     fuente,
     razonSocial: campo(reg, [/^razon_?social$/i, /^nombre(_empresa)?$/i, /razon|nombre/i]),
-    municipio: muni, municipioTexto: muniTxt, departamentoTexto: deptoTxt,
+    municipio: muni, municipioTexto: muniTxt ?? (muni && ciudadCamara ? `cámara de ${ciudadCamara}` : null), departamentoTexto: deptoTxt,
     direccion: campo(reg, [/^dir(eccion)?_?comercial$/i, /^direccion$/i, /direcc|^dir_/i]),
-    camara: campo(reg, [/camara/i]),
+    camara,
     matricula: campo(reg, [/^(num_?|numero_?)?matricula$/i, /^matricula/i]),
     estado: campo(reg, [/^estado(_matricula)?$/i, /estado/i]),
   }
@@ -150,18 +178,36 @@ async function conTiempo(url: string, init: RequestInit, ms = 15000): Promise<Re
   try { return await fetch(url, { ...init, signal: ctrl.signal }) } finally { clearTimeout(t) }
 }
 
-// 1. Datos Abiertos (Socrata). El NIT va sin dígito de verificación.
-async function datosAbiertos(nit: string): Promise<{ ok: true; d: DomicilioEmpresa; crudo: string } | { ok: false; motivo: string }> {
-  const r = await conTiempo(`https://www.datos.gov.co/resource/c82u-588k.json?nit=${encodeURIComponent(nit)}&$limit=5`, { headers: { Accept: 'application/json' } }).catch(e => ({ ok: false, status: 0, text: async () => String((e as Error)?.message ?? e) }) as unknown as Response)
+// 1. Datos Abiertos (Socrata). El NIT va sin dígito de verificación. Dos
+//    extractos del RUES: el registro mercantil (c82u-588k: razón social,
+//    cámara, matrícula) y el de establecimientos, agencias y sucursales
+//    (nb3d-v3n7: municipio y dirección comercial del establecimiento).
+async function socrata(recurso: string, nit: string): Promise<{ ok: true; regs: Record<string, unknown>[] } | { ok: false; motivo: string }> {
+  const r = await conTiempo(`https://www.datos.gov.co/resource/${recurso}.json?nit=${encodeURIComponent(nit)}&$limit=10`, { headers: { Accept: 'application/json' } }).catch(e => ({ ok: false, status: 0, text: async () => String((e as Error)?.message ?? e) }) as unknown as Response)
   const texto = await r.text().catch(() => '')
   if (!r.ok) return { ok: false, motivo: `HTTP ${r.status}${texto ? `: ${texto.slice(0, 160)}` : ''}` }
   let lista: unknown
   try { lista = JSON.parse(texto) } catch { return { ok: false, motivo: `respuesta no es JSON: ${texto.slice(0, 120)}` } }
   if (!Array.isArray(lista) || !lista.length) return { ok: false, motivo: 'sin registros para ese NIT' }
+  return { ok: true, regs: lista.filter(x => x && typeof x === 'object') as Record<string, unknown>[] }
+}
+async function datosAbiertos(nit: string): Promise<{ ok: true; d: DomicilioEmpresa; crudo: string } | { ok: false; motivo: string }> {
+  const rm = await socrata('c82u-588k', nit)
+  if (!rm.ok) return rm
   // Si hay varios (sucursales), el que tenga matrícula activa primero.
-  const regs = lista.filter(x => x && typeof x === 'object') as Record<string, unknown>[]
-  const activo = regs.find(x => /activ/i.test(String(campo(x, [/estado/i]) ?? ''))) ?? regs[0]
-  return { ok: true, d: normalizarRegistro(activo, 'datos.gov.co'), crudo: JSON.stringify(activo).slice(0, 1200) }
+  const activo = rm.regs.find(x => /activ/i.test(String(campo(x, [/estado/i]) ?? ''))) ?? rm.regs[0]
+  const d = normalizarRegistro(activo, 'datos.gov.co')
+  // El establecimiento principal aporta municipio y dirección comercial.
+  const est = await socrata('nb3d-v3n7', nit).catch(() => ({ ok: false, motivo: 'error' }) as const)
+  let crudoEst = ''
+  if (est.ok) {
+    const e = normalizarRegistro(est.regs.find(x => /activ/i.test(String(campo(x, [/estado/i]) ?? ''))) ?? est.regs[0], 'datos.gov.co')
+    crudoEst = JSON.stringify(est.regs[0]).slice(0, 600)
+    if (!d.municipio && e.municipio) d.municipio = e.municipio
+    if (!d.municipioTexto && e.municipioTexto) d.municipioTexto = e.municipioTexto
+    if (!d.direccion && e.direccion) d.direccion = e.direccion
+  }
+  return { ok: true, d, crudo: `${JSON.stringify(activo).slice(0, 900)}${crudoEst ? ` ‖ establecimiento: ${crudoEst}` : ''}` }
 }
 
 // 2. El buscador del portal RUES, con el cuerpo cifrado como lo cifra el
