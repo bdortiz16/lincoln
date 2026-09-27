@@ -26,6 +26,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { llamarFuncion } from '../lib/edge';
+import { descargarXlsx } from '../lib/xlsx';
 import { FacturacionConfig } from './FacturacionConfig';
 
 const FONT = 'Archivo, system-ui, sans-serif';
@@ -498,13 +499,45 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     .sort((x, y) => y.ts - x.ts);
   const mostrados = lista.slice(0, limite);
 
-  const csv = () => {
-    const esc = (v: any) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const lineas = [['Fecha', 'Tipo', 'Dirección', 'Contraparte', 'Monto', 'Moneda', 'Estado', 'Comprobante', 'Referencia', 'Id'].map(esc).join(',')];
-    for (const a of lista) lineas.push([new Date(a.ts).toISOString(), a.tipo, a.dir === 'in' ? 'entrada' : 'salida', a.contraparte, a.dir === 'in' ? a.monto : -a.monto, a.moneda, a.estado, folios[String(a.tx.id)]?.numero ?? '', a.tx.providerRef ?? a.tx.reference ?? a.tx.txHash ?? '', a.tx.id].map(esc).join(','));
-    const url = URL.createObjectURL(new Blob(['﻿' + lineas.join('\n')], { type: 'text/csv;charset=utf-8' }));
-    const el = document.createElement('a'); el.href = url; el.download = `lincoin-contabilidad-${moneda}-${periodo}-${new Date().toISOString().slice(0, 10)}.csv`; el.click();
-    setTimeout(() => URL.revokeObjectURL(url), 30000);
+  // Excel con dos hojas: los movimientos listados (con el filtro y la búsqueda
+  // que estén puestos) y un resumen del periodo. Fechas y montos van como
+  // fecha y número reales, no como texto, para que Excel pueda sumar y filtrar.
+  const excel = () => {
+    const estadoDoc = (f: { estado: string | null; numero: string | null; tipo: string | null } | undefined) => {
+      if (!f?.estado) return '';
+      const tipo = f.tipo === 'FV' ? 'Factura' : f.tipo === 'DS' ? 'Doc. soporte' : '';
+      const rot = f.estado === 'emitida' ? 'Emitida' : f.estado === 'anulada' ? 'Anulada' : f.estado === 'omitida' ? 'Omitida' : f.estado === 'pendiente' ? 'Pendiente' : f.estado === 'error' ? 'Error' : f.estado;
+      return [tipo, rot].filter(Boolean).join(' · ');
+    };
+    const movimientos: (string | number | Date)[][] = [
+      ['Fecha', 'Tipo', 'Dirección', 'Contraparte', 'Monto', 'Moneda', 'Estado', 'Comprobante', 'Documento Siigo', 'Nº Siigo', 'Referencia', 'Id'],
+    ];
+    for (const a of lista) {
+      const f = folios[String(a.tx.id)];
+      movimientos.push([
+        new Date(a.ts), a.tipo, a.dir === 'in' ? 'Entrada' : 'Salida', a.contraparte,
+        a.dir === 'in' ? a.monto : -a.monto, a.moneda, a.estado,
+        f?.numero ?? '', estadoDoc(f?.factura), f?.factura?.numero ?? '',
+        String(a.tx.providerRef ?? a.tx.reference ?? a.tx.txHash ?? ''), String(a.tx.id),
+      ]);
+    }
+    const rotP = periodo === 'mes' ? `${MESES_L[ahora.getMonth()]} ${ahora.getFullYear()}` : periodo === 'anio' ? String(ahora.getFullYear()) : 'Histórico';
+    const resumen: (string | number | Date)[][] = [
+      ['Concepto', 'Valor'],
+      ['Periodo', rotP],
+      ['Moneda', moneda],
+      ['Recibido', recibido],
+      ['Enviado', enviado],
+      ['Neto', neto],
+      ['Movimientos de entrada', nIn],
+      ['Movimientos de salida', nOut],
+      ['Movimientos en la hoja', lista.length],
+      ['Generado', new Date()],
+    ];
+    descargarXlsx(`lincoin-contabilidad-${moneda}-${periodo}-${new Date().toISOString().slice(0, 10)}.xlsx`, [
+      { nombre: 'Movimientos', filas: movimientos, anchos: [18, 16, 10, 34, 16, 8, 12, 14, 22, 12, 30, 38] },
+      { nombre: 'Resumen', filas: resumen, anchos: [26, 20] },
+    ]);
   };
 
   const rotPeriodo = periodo === 'mes' ? 'este mes' : periodo === 'anio' ? 'este año' : 'histórico';
@@ -554,7 +587,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
             <span style={{ width: 7, height: 7, borderRadius: '50%', background: facturacionActiva ? C.entra : 'rgba(255,255,255,0.18)', flexShrink: 0 }} />
             Configuración
           </button>
-          <button onClick={csv} className="lincoin-btn-white" style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '10px 18px', borderRadius: 9, border: 'none', cursor: 'pointer' }}>Descargar CSV</button>
+          <button onClick={excel} className="lincoin-btn-white" style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '10px 18px', borderRadius: 9, border: 'none', cursor: 'pointer' }}>Descargar Excel</button>
         </div>
       </div>
       {configAbierta && <FacturacionConfig onCerrar={() => setConfigAbierta(false)} />}
