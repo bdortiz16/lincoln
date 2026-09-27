@@ -2310,6 +2310,10 @@ export const ContactsSection: React.FC<{
                 const esColombia = !isWallet && (detail.country ?? 'Colombia') === 'Colombia';
                 const tieneDir = !!detail.cityCode;
                 const lugarExp = String(amlDe(detail)?.lugarExpedicion ?? '');
+                const lugarFuente = String(amlDe(detail)?.lugarFuente ?? 'registraduria');
+                const textoCiudadCedula = lugarFuente === 'registraduria'
+                    ? `La Registraduría dice que la cédula se expidió en ${lugarExp || 'esta ciudad'}. Se usa como ciudad del tercero en Siigo; si vive en otra, cámbiala.`
+                    : `Según el ${lugarFuente} (de la consulta de antecedentes), la persona está en ${lugarExp || 'esta ciudad'}. Se usa como ciudad del tercero en Siigo; si vive en otra, cámbiala.`;
                 if (esColombia && tieneDir && !dirEdit) {
                     rows.push({ l: 'Ciudad', v: detail.cityName ?? municipioPorCodigo(detail.cityCode)?.nombre ?? detail.cityCode ?? '' });
                     rows.push({ l: 'Dirección', v: <span>{detail.address || 'Sin dirección informada'} <button onClick={() => setDirEdit({ cityCode: detail.cityCode ?? '', address: detail.address ?? '', guardando: false, error: null })} style={{ marginLeft: 6, color: '#878E88', fontSize: 11.5, fontWeight: 700, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer' }}>Editar</button></span> });
@@ -2319,7 +2323,7 @@ export const ContactsSection: React.FC<{
                         <p style={{ fontSize: 12, color: '#F4F4F2', fontWeight: 700 }}>{tieneDir ? 'Editar ciudad y dirección' : dirEdit?.cityCode ? 'Ciudad tomada de la cédula' : 'Falta la ciudad'}</p>
                         <p style={{ fontSize: 11.5, color: '#878E88', lineHeight: 1.5, marginTop: 3 }}>
                             {!tieneDir && dirEdit?.cityCode
-                                ? `La Registraduría dice que la cédula se expidió en ${lugarExp || 'esta ciudad'}. Se usa como ciudad del tercero en Siigo; si vive en otra, cámbiala. La dirección es opcional: si no la sabes, va «Sin dirección informada».`
+                                ? `${textoCiudadCedula} La dirección es opcional: si no la sabes, va «Sin dirección informada».`
                                 : lugarExp
                                     ? `La cédula se expidió en ${lugarExp}, y de ahí no sale un municipio colombiano (consulado o nombre repetido). Si no eliges ciudad, el tercero en Siigo va con la ciudad configurada en Contabilidad → Configuración (o la de tu empresa) y el lugar de expedición queda escrito en la dirección. La dirección es opcional.`
                                     : 'Va al tercero en Siigo. Sin ciudad, la DIAN rechaza el documento soporte («Falta o es inválido el país del tercero»). La dirección es opcional.'}

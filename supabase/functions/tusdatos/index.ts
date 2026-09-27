@@ -39,7 +39,7 @@
 // ════════════════════════════════════════════════════════
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
-import { municipioPorNombre } from '../_shared/municipios.ts'
+import { municipioPorNombre, municipioPorCodigo } from '../_shared/municipios.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -268,6 +268,9 @@ type Ficha = {
   // que va al tercero en Siigo cuando el beneficiario no tiene dirección.
   lugarExpedicion?: string
   lugarExpedicionCodigo?: string
+  // De dónde salió: 'registraduria' (lugar de expedición), 'RUI', 'Sisbén'
+  // o 'RUES' (municipio de la persona según ese registro).
+  lugarFuente?: string
   fechaExpedicionDoc?: string
   lugarBuscado?: boolean
   lugarBuscadoV?: number
@@ -286,8 +289,8 @@ type Ficha = {
 // «PEREIRA - RISARALDA»` y `fecha_exp` al lado. Esa sección va primero; el
 // resto del JSON solo si no está (y sin mirar RUNT ni RUAF, que traen
 // "fecha_expedicion" de licencias y afiliaciones, que no es esto).
-function extraerExpedicion(obj: unknown): { lugar?: string; fecha?: string } {
-  const out: { lugar?: string; fecha?: string } = {}
+function extraerExpedicion(obj: unknown): { lugar?: string; fecha?: string; fuente?: string; codigo?: string } {
+  const out: { lugar?: string; fecha?: string; fuente?: string; codigo?: string } = {}
   const norm = (k: string) => k.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
   const esLugar = (k: string) => /lugar.{0,6}exp/.test(norm(k))
   const esFecha = (k: string) => /fecha.{0,6}exp/.test(norm(k))
@@ -302,7 +305,7 @@ function extraerExpedicion(obj: unknown): { lugar?: string; fecha?: string } {
   const raiz = obj && typeof obj === 'object' ? (obj as Record<string, unknown>) : {}
   const cert = Object.entries(raiz).find(([k]) => /registrad.*cert|cert.*registrad/.test(norm(k)))?.[1]
   toma(cert)
-  if (out.lugar) return out
+  if (out.lugar) { out.fuente = 'registraduria'; return out }
   const visitar = (x: unknown, prof: number) => {
     if (!x || typeof x !== 'object' || prof > 8 || (out.lugar && out.fecha)) return
     for (const [k, v] of Object.entries(x as Record<string, unknown>)) {
@@ -314,15 +317,38 @@ function extraerExpedicion(obj: unknown): { lugar?: string; fecha?: string } {
     }
   }
   visitar(raiz, 0)
+  if (out.lugar) { out.fuente = 'registraduria'; return out }
+  // Sin certificado de la Registraduría: el municipio de la persona según
+  // otros registros que TusDatos consulta. Visto en reportes reales:
+  //   rui.codigo_municipio = «66001», rui.municipio = «PEREIRA»
+  //   sisben.Municipio = «PEREIRA»
+  //   rues.municipio = «PEREIRA / RISARALDA»  (comerciante matriculado)
+  // El RUI trae código DANE (sin ambigüedad); los otros, el nombre.
+  const seccion = (nombre: string) => { const e = Object.entries(raiz).find(([k]) => norm(k) === nombre); return e && e[1] && typeof e[1] === 'object' ? e[1] as Record<string, unknown> : null }
+  const texto = (o: Record<string, unknown> | null, re: RegExp) => { if (!o) return ''; const e = Object.entries(o).find(([k, v]) => re.test(norm(k)) && typeof v === 'string' && (v as string).trim()); return e ? String(e[1]).trim().slice(0, 120) : '' }
+  const rui = seccion('rui')
+  const codRui = texto(rui, /^cod(igo)?_?municipio$/).replace(/\D/g, '')
+  if (/^\d{5}$/.test(codRui)) { out.codigo = codRui; out.lugar = texto(rui, /^municipio$/) || codRui; out.fuente = 'RUI'; return out }
+  for (const [nombre, etiqueta] of [['sisben', 'Sisbén'], ['rui', 'RUI'], ['rues', 'RUES']] as const) {
+    const s = seccion(nombre)
+    const muni = texto(s, /^municipio$/)
+    if (muni) {
+      const dep = texto(s, /^departamento$/)
+      out.lugar = dep && !muni.includes('/') ? `${muni} - ${dep}` : muni.replace(/\s*\/\s*/g, ' - ')
+      out.fuente = etiqueta
+      return out
+    }
+  }
   return out
 }
 function conExpedicion(ficha: Ficha, crudo: unknown): Ficha {
   const e = extraerExpedicion(crudo)
-  const m = e.lugar ? municipioPorNombre(e.lugar) : null
+  const m = (e.codigo ? municipioPorCodigo(e.codigo) : null) ?? (e.lugar ? municipioPorNombre(e.lugar) : null)
   return {
     ...ficha,
     ...(e.lugar ? { lugarExpedicion: e.lugar } : {}),
     ...(m ? { lugarExpedicionCodigo: m.codigo } : {}),
+    ...(e.fuente ? { lugarFuente: e.fuente } : {}),
     ...(e.fecha ? { fechaExpedicionDoc: e.fecha } : {}),
     lugarBuscado: true,
   }
@@ -336,10 +362,10 @@ async function completarLugares(uid: string, raw: any, c: Config, tope = 4): Pro
     if (hechos >= tope) break
     // Las que se buscaron con la clave vieja (que no reconocía "lugar_exp")
     // y quedaron sin lugar se vuelven a mirar.
-    if (!f || f.estado !== 'finalizado' || !f.reportId || (f.lugarBuscado && (f.lugarExpedicion || f.lugarBuscadoV === 2))) continue
+    if (!f || f.estado !== 'finalizado' || !f.reportId || (f.lugarBuscado && (f.lugarExpedicion || f.lugarBuscadoV === 3))) continue
     const det = await detalle(c, String(f.reportId))
     const parche = conExpedicion({ documento: doc } as Ficha, det?.crudo ?? null)
-    await guardarBeneficiario(uid, doc, { lugarBuscado: true, lugarBuscadoV: 2, ...(parche.lugarExpedicion ? { lugarExpedicion: parche.lugarExpedicion } : {}), ...(parche.lugarExpedicionCodigo ? { lugarExpedicionCodigo: parche.lugarExpedicionCodigo } : {}), ...(parche.fechaExpedicionDoc ? { fechaExpedicionDoc: parche.fechaExpedicionDoc } : {}) } as Ficha)
+    await guardarBeneficiario(uid, doc, { lugarBuscado: true, lugarBuscadoV: 3, ...(parche.lugarExpedicion ? { lugarExpedicion: parche.lugarExpedicion } : {}), ...(parche.lugarExpedicionCodigo ? { lugarExpedicionCodigo: parche.lugarExpedicionCodigo } : {}), ...(parche.lugarFuente ? { lugarFuente: parche.lugarFuente } : {}), ...(parche.fechaExpedicionDoc ? { fechaExpedicionDoc: parche.fechaExpedicionDoc } : {}) } as Ficha)
     hechos++
   }
   return hechos
@@ -1429,7 +1455,7 @@ Deno.serve(async (req: Request) => {
       const det = await detalle(c, String(f.reportId))
       if (!det) return json({ ok: false, motivo: 'TusDatos no devolvió el reporte.' })
       const e = extraerExpedicion(det.crudo)
-      const m = e.lugar ? municipioPorNombre(e.lugar) : null
+      const m = (e.codigo ? municipioPorCodigo(e.codigo) : null) ?? (e.lugar ? municipioPorNombre(e.lugar) : null)
       // Claves del reporte que suenan a lugar/expedición/Registraduría, con
       // su ruta, para ver dónde viene el dato si no se encontró.
       // Para una empresa (NIT) lo que sirve es el domicilio de la Cámara de
@@ -1462,8 +1488,8 @@ Deno.serve(async (req: Request) => {
           secciones[k] = (typeof v === 'string' ? v : JSON.stringify(v)).slice(0, 1500)
         }
       }
-      await guardarBeneficiario(uid, clave!, { lugarBuscado: true, ...(e.lugar ? { lugarExpedicion: e.lugar } : {}), ...(m ? { lugarExpedicionCodigo: m.codigo } : {}), ...(e.fecha ? { fechaExpedicionDoc: e.fecha } : {}) } as Ficha)
-      return json({ ok: true, lugarExpedicion: e.lugar ?? null, lugarExpedicionCodigo: m?.codigo ?? null, municipio: m ? `${m.nombre}, ${m.deptoNombre}` : null, fechaExpedicion: e.fecha ?? null, claves, esEmpresa, secciones, seccionesReporte: det.crudo && typeof det.crudo === 'object' ? Object.keys(det.crudo as object) : [] })
+      await guardarBeneficiario(uid, clave!, { lugarBuscado: true, lugarBuscadoV: 3, ...(e.lugar ? { lugarExpedicion: e.lugar } : {}), ...(m ? { lugarExpedicionCodigo: m.codigo } : {}), ...(e.fuente ? { lugarFuente: e.fuente } : {}), ...(e.fecha ? { fechaExpedicionDoc: e.fecha } : {}) } as Ficha)
+      return json({ ok: true, lugarExpedicion: e.lugar ?? null, lugarExpedicionCodigo: m?.codigo ?? null, lugarFuente: e.fuente ?? null, municipio: m ? `${m.nombre}, ${m.deptoNombre}` : null, fechaExpedicion: e.fecha ?? null, claves, esEmpresa, secciones, seccionesReporte: det.crudo && typeof det.crudo === 'object' ? Object.keys(det.crudo as object) : [] })
     }
 
     if (accion === 'estado') {
