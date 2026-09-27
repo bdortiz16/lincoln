@@ -47,6 +47,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { encField, decField, KeyMismatchError } from '../_shared/field-crypto.ts'
 import { municipioPorCodigo, municipioPorNombre, lugarFueraDeColombia } from '../_shared/municipios.ts'
+import { domicilioEmpresa } from '../_shared/rues.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -390,7 +391,7 @@ function direccionDe(rd: Record<string, any>): Direccion | null {
 // La dirección del beneficiario inscrito con ese documento (raw_data
 // .mouvContacts del usuario). El NIT puede estar inscrito con dígito de
 // verificación y acá venir sin él: se compara por los dígitos base.
-async function direccionDelBeneficiario(userId: string, identification: string, cfg: any): Promise<Direccion | null> {
+async function direccionDelBeneficiario(userId: string, identification: string, cfg: any, esEmpresa = false): Promise<Direccion | null> {
   ultimoDiagnosticoLugar = ''
   const { data } = await db.from('users').select('raw_data, city, company_city').eq('id', userId).maybeSingle()
   const raw = (data as any)?.raw_data ?? {}
@@ -401,6 +402,25 @@ async function direccionDelBeneficiario(userId: string, identification: string, 
   const deFicha = hit ? direccionDe({ recipient: { address: hit.address, cityCode: hit.cityCode, stateCode: hit.stateCode } }) : null
   if (deFicha) return deFicha
   const calle = limpiarDireccion(String(hit?.address ?? '').trim().slice(0, 200)) || SIN_CALLE
+  // ── Empresa: el domicilio de la Cámara de Comercio (RUES) ────────────
+  // Una empresa no tiene lugar de expedición; su ciudad es donde se
+  // matriculó. Se consulta por NIT (Datos Abiertos y el portal RUES) y, si
+  // aparece, queda guardado en la ficha del beneficiario para no volver a
+  // consultarlo y para que se vea en Beneficiarios.
+  if (esEmpresa) {
+    const r = await domicilioEmpresa(base)
+    if (r.domicilio?.municipio) {
+      const m = r.domicilio.municipio
+      const direccion = limpiarDireccion(r.domicilio.direccion ?? '') || calle
+      if (hit) {
+        const actualizado = { ...hit, cityCode: m.codigo, cityName: `${m.nombre}, ${m.deptoNombre}`, stateCode: m.depto, ...(hit.address ? {} : { address: direccion }), direccionFuente: `${r.domicilio.fuente} (Cámara de Comercio${r.domicilio.camara ? ` de ${r.domicilio.camara}` : ''})` }
+        await db.from('users').update({ raw_data: { ...raw, mouvContacts: contactos.map(c => c === hit ? actualizado : c) } }).eq('id', userId).then(() => {}, () => {})
+      }
+      return { address: direccion, city: { country_code: 'Co', state_code: m.depto, city_code: m.codigo } }
+    }
+    ultimoDiagnosticoLugar = `Es una empresa: la ciudad sale del domicilio de la Cámara de Comercio (RUES), y no se pudo obtener — ${r.diagnostico}`
+    return null
+  }
   // Sin ciudad en la ficha: la del lugar de expedición de la cédula, que
   // la Registraduría devolvió en la consulta de antecedentes (TusDatos).
   const benef: Record<string, any> = raw.tusdatos?.beneficiarios ?? {}
@@ -481,7 +501,7 @@ function contraparteDe(comp: any, cfg: any): Contraparte {
 }
 
 const SIN_DIRECCION = (cp: Contraparte, donde: string) =>
-  `El beneficiario ${cp.nombre} (${cp.identification}) no tiene ciudad ${donde}, y la DIAN rechaza el documento soporte sin el país del tercero («Falta o es inválido el país del tercero»). Tampoco se pudo tomar del lugar de expedición de la cédula${ultimoDiagnosticoLugar ? ` — ${ultimoDiagnosticoLugar}` : ''} Elegí la ciudad en Beneficiarios → abrí la ficha → Ciudad y dirección, y emití de nuevo.`
+  `El beneficiario ${cp.nombre} (${cp.identification}) no tiene ciudad ${donde}, y la DIAN rechaza el documento soporte sin el país del tercero («Falta o es inválido el país del tercero»). ${cp.esEmpresa ? '' : 'Tampoco se pudo tomar del lugar de expedición de la cédula'}${ultimoDiagnosticoLugar ? `${cp.esEmpresa ? '' : ' — '}${ultimoDiagnosticoLugar}` : ''} Elegí la ciudad en Beneficiarios → abrí la ficha → Ciudad y dirección, y emití de nuevo.`
 
 async function asegurarCliente(token: string, partner: string, cfg: any, cp: Contraparte, rol: 'Customer' | 'Supplier' = 'Customer'): Promise<{ ok: true } | { ok: false; error: string }> {
   const busca = await siigo('GET', `/v1/customers?identification=${encodeURIComponent(cp.identification)}`, { token, partner })
@@ -601,7 +621,7 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
   // Si el envío no trae la dirección (se hizo antes de que el beneficiario
   // la tuviera), se toma de la lista de beneficiarios, por documento. Así
   // completar la ficha alcanza para emitir de nuevo un envío viejo.
-  if (!cp.direccion && !cp.esDefault) cp.direccion = await direccionDelBeneficiario(userId, cp.identification, cfg)
+  if (!cp.direccion && !cp.esDefault) cp.direccion = await direccionDelBeneficiario(userId, cp.identification, cfg, cp.esEmpresa)
   // El documento soporte va A NOMBRE DEL BENEFICIARIO del envío, con el
   // nombre y documento con que se le envió. Nunca a un "consumidor final":
   // si el envío no trae documento, no se emite y se dice.
