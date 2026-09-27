@@ -500,7 +500,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const emitirDeNuevoSiigo = async (txId: string) => {
     setDocEmitiendo(true);
     try {
-      const r = await llamarFuncion('facturacion', { action: 'emitir_movimiento', transactionId: txId }, 60000);
+      const r = await llamarFuncion('facturacion', { action: 'emitir_movimiento', transactionId: txId }, 130000);
       if (!r?.ok) showToast(String(r?.error ?? 'No se pudo emitir el documento.'), 12000, 'error');
       else showToast(`Documento emitido: ${r.numero ?? r.estado ?? 'ok'}`);
     } catch (e: any) { showToast(`No se pudo emitir: ${String(e?.message ?? e)}`, 8000, 'error'); }

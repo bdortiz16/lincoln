@@ -88,13 +88,15 @@ async function quienLlama(req: Request): Promise<{ userId: string | null; servic
 // Devuelve SIEMPRE qué pasó: estado HTTP y cuerpo. Un error tragado acá se
 // convierte en "no se facturó" sin motivo, que es lo que se quiere evitar.
 type Resp = { ok: boolean; status: number; data: any; texto: string }
-async function siigo(metodo: 'GET' | 'POST' | 'PUT', ruta: string, opts: { token?: string; partner?: string; body?: unknown }): Promise<Resp> {
+async function siigo(metodo: 'GET' | 'POST' | 'PUT', ruta: string, opts: { token?: string; partner?: string; body?: unknown; ms?: number }): Promise<Resp> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' }
   if (opts.partner) headers['Partner-Id'] = opts.partner
   if (opts.token) headers['Authorization'] = `Bearer ${opts.token}`
   try {
     const ctrl = new AbortController()
-    const reloj = setTimeout(() => ctrl.abort(), 25000)
+    // Crear un documento (y más con envío a la DIAN) puede tardar bastante
+    // más que una consulta: el que llama fija el tiempo cuando hace falta.
+    const reloj = setTimeout(() => ctrl.abort(), opts.ms ?? 25000)
     const r = await fetch(`${SIIGO}${ruta}`, { method: metodo, headers, body: opts.body ? JSON.stringify(opts.body) : undefined, signal: ctrl.signal })
     clearTimeout(reloj)
     const texto = await r.text().catch(() => '')
@@ -108,7 +110,9 @@ async function siigo(metodo: 'GET' | 'POST' | 'PUT', ruta: string, opts: { token
 
 // El motivo de Siigo, en una línea legible.
 function motivoDe(r: Resp): string {
-  if (r.status === 0) return `No se pudo llegar a Siigo: ${r.texto}`
+  if (r.status === 0) return /abort/i.test(r.texto)
+    ? 'Siigo no contestó a tiempo (se esperó más de un minuto). OJO: el documento puede haberse creado igual en Siigo. Antes de emitir de nuevo, revisá en Siigo Nube si ya existe, para no duplicarlo.'
+    : `No se pudo llegar a Siigo: ${r.texto}`
   const d = r.data
   const errs = Array.isArray(d?.Errors) ? d.Errors : Array.isArray(d?.errors) ? d.errors : null
   if (errs?.length) return `HTTP ${r.status}: ${errs.map((e: any) => [e.Code ?? e.code, e.Message ?? e.message, e.Params?.join?.(',') ?? e.params?.join?.(',')].filter(Boolean).join(' · ')).join(' | ')}`.slice(0, 600)
@@ -726,7 +730,7 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
   const intentos: { ruta: string; status: number; respuesta: any }[] = []
   let r: Resp
   if (clase === 'FV') {
-    r = await siigo('POST', '/v1/invoices', { token: t.token, partner, body: cuerpo })
+    r = await siigo('POST', '/v1/invoices', { token: t.token, partner, body: cuerpo, ms: 70000 })
     intentos.push({ ruta: '/v1/invoices', status: r.status, respuesta: r.data ?? r.texto })
   } else {
     const rutas = [cfg.ds_ruta, ...RUTAS_DS].filter((x, i, a) => x && a.indexOf(x) === i) as string[]
@@ -738,7 +742,7 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
       // dato, nombre distinto según la ruta.
       const { provider_invoice, ...resto } = cuerpo as any
       const cuerpoRuta = ruta.includes('support') ? { ...resto, supplier_receipt_number: provider_invoice } : cuerpo
-      r = await siigo('POST', ruta, { token: t.token, partner, body: cuerpoRuta })
+      r = await siigo('POST', ruta, { token: t.token, partner, body: cuerpoRuta, ms: 70000 })
       intentos.push({ ruta, status: r.status, respuesta: r.data ?? r.texto, enviado: cuerpoRuta } as any)
       if (r.ok) {
         if (cfg.ds_ruta !== ruta) await db.from('facturacion_config').update({ ds_ruta: ruta }).eq('user_id', userId).then(() => {}, () => {})

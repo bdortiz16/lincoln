@@ -241,7 +241,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   }, [userId, configAbierta]);
   const reintentarFactura = async (folio: number) => {
     setReintentando(folio);
-    const r = await llamarFuncion('facturacion', { action: 'reintentar', folio }, 60000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    const r = await llamarFuncion('facturacion', { action: 'reintentar', folio }, 130000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
     setReintentando(null);
     setFoliosVersion(v => v + 1);
     if (!r?.ok) alert(r?.error ?? 'No se pudo emitir la factura.');
@@ -251,7 +251,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   const [emitiendo, setEmitiendo] = useState<string | null>(null);
   const emitirMovimiento = async (txId: string) => {
     setEmitiendo(txId);
-    const r = await llamarFuncion('facturacion', { action: 'emitir_movimiento', transactionId: txId }, 60000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    const r = await llamarFuncion('facturacion', { action: 'emitir_movimiento', transactionId: txId }, 130000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
     setEmitiendo(null);
     setFoliosVersion(v => v + 1);
     if (!r?.ok) alert(r?.error ?? 'No se pudo emitir el documento.');
