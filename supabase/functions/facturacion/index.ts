@@ -294,6 +294,10 @@ async function traerCatalogos(token: string, partner: string) {
   // en Siigo tiene IVA, y la factura salía con IVA igual.
   const productos = lista(prod).map((p: any) => ({
     id: p.id, code: p.code, name: p.name, type: p.type, active: p.active,
+    // Cómo lo clasifica Siigo (Taxed / Exempt / Excluded) y si el precio ya
+    // trae el impuesto: se guardan para mostrarlos cuando "sin IVA" no cuadra
+    // con lo que el usuario ve en su Siigo.
+    tax_classification: p.tax_classification ?? null, tax_included: p.tax_included ?? null,
     taxes: (Array.isArray(p.taxes) ? p.taxes : []).map((t: any) => ({ id: t.id, name: t.name, type: t.type, percentage: Number(t.percentage) || 0 })),
   }))
   const impuestos = lista(imp).map((t: any) => ({ id: t.id, name: t.name, type: t.type, percentage: Number(t.percentage) || 0 }))

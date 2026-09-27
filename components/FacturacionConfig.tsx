@@ -266,6 +266,20 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
   );
   const productos = (cat?.productos ?? []).map((p: any) => ({ v: p.code, t: `${p.code} · ${p.name}` }));
   const nombreProducto = (code: string) => { const p = (cat?.productos ?? []).find((x: any) => x.code === code); return p ? p.name : code; };
+  // "Sin IVA" sale del catálogo que se trajo de Siigo, no de Siigo en vivo.
+  // Si el ítem tiene IVA en Siigo y acá dice que no, o el catálogo es de
+  // antes de ponérselo, o Siigo lo devuelve sin impuestos en su API. Se
+  // muestra qué devolvió y de cuándo, con el botón de actualizar al lado.
+  const notaSinIva = (p: any) => {
+    const impuestosTxt = (p?.taxes ?? []).length ? (p.taxes as any[]).map(t => `${t.name}${t.percentage ? ` ${t.percentage} %` : ' (0 %)'}`).join(', ') : 'ningún impuesto';
+    return (
+      <p style={{ fontSize: 11.5, color: C.ambar, margin: '6px 0 0', lineHeight: 1.5 }}>
+        Según el catálogo traído de Siigo el {fecha(cat?.traido_at)}, este ítem tiene <b>{impuestosTxt}</b>{p?.tax_classification ? ` (clasificación «${p.tax_classification}»)` : ''}. La comisión lleva IVA. Si le pusiste el IVA en Siigo después de esa fecha, actualizá:{' '}
+        <button onClick={() => probar(true)} disabled={probando} style={{ fontFamily: FONT, fontSize: 11.5, fontWeight: 700, color: C.text, background: 'transparent', border: `1px solid ${C.borde}`, borderRadius: 6, padding: '2px 8px', cursor: 'pointer', opacity: probando ? 0.5 : 1 }}>{probando ? 'Actualizando…' : 'Actualizar catálogos'}</button>
+        {' '}Si después de actualizar sigue sin IVA, Siigo no lo está devolviendo por su API para este ítem: elegí al lado el impuesto y se manda en la línea de la factura.
+      </p>
+    );
+  };
 
   // El ejemplo con 15.000.000, calculado igual que el servidor: la misma
   // fórmula a la vista, no una promesa.
@@ -543,11 +557,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                               Con {ivaComisionProd.name || 'IVA'} {ivaComisionProd.percentage} % en Siigo. Con esa tarifa se calcula la base: base + IVA = utilidad.
                             </p>
                           )}
-                          {prodComision && !ivaComisionProd && (
-                            <p style={{ fontSize: 11.5, color: C.ambar, margin: '6px 0 0', lineHeight: 1.5 }}>
-                              Este ítem no tiene IVA en Siigo. La comisión lleva IVA: ponéselo en Siigo, o elegí abajo el impuesto y se manda en la línea.
-                            </p>
-                          )}
+                          {prodComision && !ivaComisionProd && notaSinIva(prodComision)}
                           {prodComision && prodComision.active === false && (
                             <p style={{ fontSize: 11.5, color: C.ambar, margin: '6px 0 0', lineHeight: 1.5 }}>Este ítem está inactivo en Siigo. Activalo allá o elegí otro.</p>
                           )}
@@ -572,7 +582,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                       <div style={{ marginTop: 8, maxHeight: 220, overflowY: 'auto', border: `1px solid ${C.bordeSuave}`, borderRadius: 10 }}>
                         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                           <thead>
-                            <tr>{['CÓDIGO', 'NOMBRE', 'TIPO', 'IMPUESTOS', 'ESTADO'].map(h => <th key={h} style={{ textAlign: 'left', padding: '7px 10px', fontSize: 10, letterSpacing: '1px', color: C.sub, borderBottom: `1px solid ${C.bordeSuave}` }}>{h}</th>)}</tr>
+                            <tr>{['CÓDIGO', 'NOMBRE', 'TIPO', 'IMPUESTOS', 'CLASIFICACIÓN', 'ESTADO'].map(h => <th key={h} style={{ textAlign: 'left', padding: '7px 10px', fontSize: 10, letterSpacing: '1px', color: C.sub, borderBottom: `1px solid ${C.bordeSuave}` }}>{h}</th>)}</tr>
                           </thead>
                           <tbody>
                             {(cat.productos ?? []).map((p: any) => (
@@ -581,10 +591,11 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                                 <td style={{ padding: '6px 10px', color: C.text }}>{p.name}</td>
                                 <td style={{ padding: '6px 10px', color: C.sub }}>{p.type ?? '—'}</td>
                                 <td style={{ padding: '6px 10px', color: C.sub }}>{(p.taxes ?? []).length ? (p.taxes ?? []).map((t: any) => `${t.name}${t.percentage ? ` ${t.percentage} %` : ''}`).join(', ') : 'sin impuestos'}</td>
+                                <td style={{ padding: '6px 10px', color: C.sub }}>{p.tax_classification ?? '—'}</td>
                                 <td style={{ padding: '6px 10px', color: p.active === false ? C.ambar : C.sub }}>{p.active === false ? 'inactivo' : 'activo'}</td>
                               </tr>
                             ))}
-                            {!(cat.productos ?? []).length && <tr><td colSpan={5} style={{ padding: '8px 10px', color: C.tenue }}>Siigo no devolvió ningún producto.</td></tr>}
+                            {!(cat.productos ?? []).length && <tr><td colSpan={6} style={{ padding: '8px 10px', color: C.tenue }}>Siigo no devolvió ningún producto.</td></tr>}
                           </tbody>
                         </table>
                       </div>
@@ -635,7 +646,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                             {select('item_comision', productos, 'Siigo no devolvió productos')}
                           </Campo>
                           {ivaComisionProd && <p style={{ fontSize: 11.5, color: C.verde, margin: '6px 0 0', lineHeight: 1.5 }}>Con {ivaComisionProd.name || 'IVA'} {ivaComisionProd.percentage} % en Siigo. Con esa tarifa se calcula la base: base + IVA = comisión.</p>}
-                          {prodComision && !ivaComisionProd && <p style={{ fontSize: 11.5, color: C.ambar, margin: '6px 0 0', lineHeight: 1.5 }}>Este ítem no tiene IVA en Siigo. La comisión lleva IVA: ponéselo en Siigo, o elegí al lado el impuesto y se manda en la línea.</p>}
+                          {prodComision && !ivaComisionProd && notaSinIva(prodComision)}
                           {prodComision && prodComision.active === false && <p style={{ fontSize: 11.5, color: C.ambar, margin: '6px 0 0', lineHeight: 1.5 }}>Este ítem está inactivo en Siigo.</p>}
                         </div>
                         {prodComision && !ivaComisionProd && (
