@@ -425,11 +425,23 @@ async function direccionDelBeneficiario(userId: string, identification: string, 
     diagRUES = r.diagnostico
     return null
   }
+  // Último recurso, para no frenar la emisión (decisión del cliente): la
+  // ciudad configurada, si no la de la empresa, si no Bogotá D.C., y en la
+  // dirección queda dicho que la ciudad no se verificó. No se guarda en la
+  // ficha: si la persona da su ciudad, se pone y manda.
+  const ultimoRecurso = (): Direccion => {
+    const u = data as any
+    const ext = municipioPorCodigo(cfg?.ciudad_exterior)
+      ?? municipioPorNombre(u?.company_city) ?? municipioPorNombre(u?.city)
+      ?? municipioPorNombre(raw?.companyCity) ?? municipioPorNombre(raw?.city)
+      ?? municipioPorCodigo('11001')!
+    return { address: limpiarDireccion(`${calle} - Ciudad no verificada`), city: { country_code: 'Co', state_code: ext.depto, city_code: ext.codigo } }
+  }
   if (esEmpresa) {
     const d = await porRUES()
     if (d) return d
     ultimoDiagnosticoLugar = `Es una empresa: la ciudad sale del domicilio de la Cámara de Comercio (RUES), y no se pudo obtener — ${diagRUES}`
-    return null
+    return ultimoRecurso()
   }
   // Sin ciudad en la ficha: la del lugar de expedición de la cédula, que
   // la Registraduría devolvió en la consulta de antecedentes (TusDatos).
@@ -468,8 +480,10 @@ async function direccionDelBeneficiario(userId: string, identification: string, 
   const diagCedula = ultimoDiagnosticoLugar
   const d = await porRUES()
   if (d) return d
+  // Sin ciudad en ninguna fuente (ni Registraduría, ni RUI, Sisbén o RUES,
+  // ni registro mercantil): último recurso.
   ultimoDiagnosticoLugar = `${diagCedula}${diagCedula ? ' ' : ''}Tampoco aparece en el registro mercantil (RUES): ${diagRUES}`
-  return null
+  return ultimoRecurso()
 }
 // Qué contestó la consulta del lugar de expedición, para ponerlo en el error
 // cuando no alcanza: dice si la Registraduría no lo trajo, si trajo un
