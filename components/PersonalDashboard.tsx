@@ -1334,8 +1334,15 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       if (!tx || !currentUser?.id) return;
       if (tx.type !== 'dispersion' || tx.status !== 'Rechazado' || tx.currency !== 'COP_ACH') return;
       if (tx.providerError || tx.raw_data?.providerError) return;
-      callMouvProxy({ action: 'reconcile_ach', userId: currentUser.id })
-          .then(r => { if ((r?.results ?? []).some((x: any) => x.result === 'motivo_anotado')) refreshData?.(); })
+      callMouvProxy({ action: 'reconcile_ach', userId: currentUser.id, txId: String(tx.id) })
+          .then(r => {
+              const hit = (r?.results ?? []).find((x: any) => String(x.id) === String(tx.id));
+              if (hit?.motivo) {
+                  // Se muestra de una, sin esperar el refresco de la lista.
+                  setSelectedTx((prev: any) => (prev && String(prev.id) === String(tx.id)) ? { ...prev, providerError: hit.motivo } : prev);
+                  refreshData?.();
+              }
+          })
           .catch(() => { /* silencioso */ });
       // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedTx?.id]);

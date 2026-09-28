@@ -1365,26 +1365,39 @@ serve(async (req: Request) => {
     // Rechazos recientes que quedaron SIN motivo (antes no se guardaba): se
     // les pide el detalle a Finity una vez y se anota. No toca saldos.
     const hace30d = new Date(Date.now() - 30 * 86_400_000).toISOString()
-    const VERSION_BUSQUEDA = '2'
-    const { data: sinMotivo } = await db.from('transactions')
-      .select('id, user_id, amount, currency, status, raw_data')
-      .eq('type', 'dispersion').eq('user_id', userId).eq('status', 'Rechazado').gte('created_at', hace30d)
-      .filter('raw_data->>providerError', 'is', null)
-      .or(`raw_data->>motivoBuscadoV.is.null,raw_data->>motivoBuscadoV.neq.${VERSION_BUSQUEDA}`)
-      .limit(8)
-    for (const tx of (sinMotivo ?? []) as any[]) {
+    const VERSION_BUSQUEDA = '3'
+    // Con `txId` (el detalle del envío lo manda) se consulta ESE movimiento
+    // sí o sí, aunque ya se haya buscado antes. Sin txId, los rechazos
+    // recientes que aún no se buscaron con esta versión.
+    const txIdPedido = String(payload?.txId ?? '')
+    let sinMotivo: any[] = []
+    if (txIdPedido) {
+      const { data: fila } = await db.from('transactions').select('id, user_id, amount, currency, status, raw_data')
+        .eq('id', txIdPedido).eq('user_id', userId).eq('type', 'dispersion').maybeSingle()
+      if (fila && String((fila as any).status) === 'Rechazado') sinMotivo = [fila]
+    } else {
+      const { data: candidatas } = await db.from('transactions')
+        .select('id, user_id, amount, currency, status, raw_data')
+        .eq('type', 'dispersion').eq('user_id', userId).eq('status', 'Rechazado').gte('created_at', hace30d)
+        .order('created_at', { ascending: false }).limit(30)
+      sinMotivo = ((candidatas ?? []) as any[])
+        .filter(t => !t.raw_data?.providerError && String(t.raw_data?.motivoBuscadoV ?? '') !== VERSION_BUSQUEDA)
+        .slice(0, 8)
+    }
+    for (const tx of sinMotivo) {
       const rd = (tx.raw_data ?? {}) as Record<string, any>
       const ref = String(rd.providerRef ?? '')
-      if (!ref) continue
+      if (!ref) { out.push({ id: tx.id, result: 'sin_referencia' }); continue }
       const st = await finityCall('withdrawal_status', String(userId), { id: ref })
       // Se excava en TODA la respuesta (movimiento + orden de retiro).
       const motivo = digMotivoRechazo(st)
       // Si no hay motivo, quedan anotadas las CLAVES que devolvió Finity (sin
       // valores) para saber en cuál viene y ajustar la lectura por SQL.
-      const diag = motivo ? undefined : clavesDe(st).slice(0, 600)
+      const diag = motivo ? undefined : clavesDe(st).slice(0, 600) || `sin cuerpo (ok=${String(st?.ok)} status=${String(st?.status)})`
       await db.from('transactions').update({ raw_data: { ...rd, motivoBuscado: new Date().toISOString(), motivoBuscadoV: VERSION_BUSQUEDA, ...(motivo ? { providerError: motivo } : {}), ...(diag ? { motivoDiag: diag } : {}) } }).eq('id', tx.id)
-      out.push({ id: tx.id, result: motivo ? 'motivo_anotado' : 'sin_motivo' })
+      out.push({ id: tx.id, result: motivo ? 'motivo_anotado' : 'sin_motivo', motivo: motivo ?? null, diag: diag ?? null })
     }
+    if (txIdPedido) return json(200, { ok: true, checked: sinMotivo.length, results: out })
     for (const tx of (rows ?? []) as any[]) {
       const rd = (tx.raw_data ?? {}) as Record<string, any>
       const ref = String(rd.providerRef ?? '')
