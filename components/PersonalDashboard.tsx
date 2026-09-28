@@ -4151,6 +4151,17 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       { label: providerOpRef ? providerRefLabel : 'Referencia', value: truncMid(providerOpRef || String(tx.id)), mono: true, copy: providerOpRef || String(tx.id) },
       ...(!isCredit ? [{ label: 'Costo del envío', value: feeCop > 0 ? `${formatMoney(feeCop, 'COP')} COP` : 'Gratis', green: feeCop <= 0 }] : []),
     ];
+    // Por qué se rechazó, con las palabras del operador del riel (Finity o
+    // Mouv). Lo que la base guardó al conciliar: providerError; si no,
+    // errorMessage (rechazo inmediato) o rejectReason (rechazo de la mesa).
+    const motivoRechazo: string | null = (st === 'Rechazado' || st === 'Fallido')
+      ? (() => {
+          const c = [tx.providerError, rawData.providerError, tx.errorMessage, rawData.errorMessage, tx.rejectReason, rawData.rejectReason, typeof tx.error === 'string' ? tx.error : null]
+            .map(v => (typeof v === 'string' ? v.trim() : ''))
+            .find(v => v && !/[{}\[\]]|http\s*\d|status\s*code/i.test(v));
+          return c || null;
+        })()
+      : null;
     const repeatSend = () => { setSelectedTx(null); openSendMoney(); };
     return (
       <div className="fixed inset-0 z-[100] p-4" style={{ background: 'rgba(4,5,4,0.85)', display: 'grid', placeItems: 'center' }} onClick={() => setSelectedTx(null)}>
@@ -4187,6 +4198,14 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   </p>
                 </div>
                 {isDispersion && <button onClick={() => { setSelectedTx(null); setActiveView('contactos'); }} style={{ fontSize: 12, fontWeight: 600, color: '#878E88', flexShrink: 0 }} className="hover:text-[#F4F4F2] transition-colors">Ver</button>}
+              </div>
+            )}
+            {/* Rechazado: por qué, con las palabras del operador del riel. */}
+            {(st === 'Rechazado' || st === 'Fallido') && (
+              <div style={{ border: '1px solid rgba(248,113,113,0.35)', borderRadius: 12, background: 'rgba(248,113,113,0.06)', padding: '12px 14px', marginBottom: 16 }}>
+                <p style={{ fontSize: 10.5, fontWeight: 700, color: '#F87171', letterSpacing: 0.4 }}>MOTIVO DEL RECHAZO</p>
+                <p style={{ fontSize: 13, fontWeight: 600, color: '#F4F4F2', marginTop: 4, lineHeight: 1.45 }}>{motivoRechazo ?? 'El operador del riel no entregó el motivo. Se consulta de nuevo al abrir Movimientos; si sigue sin aparecer, escríbenos a soporte con la referencia.'}</p>
+                {(tx.refunded || rawData.refunded) && <p style={{ fontSize: 12, color: '#878E88', marginTop: 6 }}>El dinero ya está de vuelta en tu saldo.</p>}
               </div>
             )}
             {/* Filas de detalle */}
@@ -4326,11 +4345,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                 </div>
               );
             })()}
-            <button onClick={descargarPdf}
-              className="w-full flex items-center justify-center hover:bg-white/[0.09] transition-colors"
-              style={{ gap: 7, marginTop: 14, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.11)' }}>
-              <FileText size={15} /> Comprobante en PDF
-            </button>
+            {/* (El botón "Comprobante en PDF" se quitó: el comprobante es el
+                de la botonera de abajo. descargarPdf sigue disponible por si
+                vuelve a hacer falta.) */}
             {/* EL COMPROBANTE DEL PROVEEDOR NO VA AL CLIENTE.
                 Ese PDF lo emite y lo firma nuestro proveedor de pagos, con su
                 marca y su nombre encima. El cliente no tiene por qué saber con

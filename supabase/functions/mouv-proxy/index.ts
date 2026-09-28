@@ -482,6 +482,39 @@ async function mouvPayout(
 // Este normalizador clasifica cualquier estado (español o inglés) de Mouv en
 // un veredicto accionable, para no marcar Completado algo que fue devuelto.
 type MouvVerdict = 'completed' | 'returned' | 'pending' | 'unknown'
+
+// El MOTIVO humano de un rechazo, tal como lo escribe el operador del riel
+// (Finity: "CUENTA Y NIT NO CORRESPONDEN"). Cada endpoint lo pone en una
+// clave y un nivel distintos, así que se busca en todo el cuerpo: primero
+// las claves que SOLO significan motivo de rechazo; si no hay, las genéricas
+// (reason/description/message) que a veces traen el texto. Nunca devuelve
+// JSON ni códigos: si lo que hay no parece una frase, no se muestra.
+const CLAVES_MOTIVO = ['rejectionreason', 'rejection_reason', 'rejectreason', 'reject_reason', 'rejectedreason', 'rejected_reason', 'failurereason', 'failure_reason', 'failedreason', 'failed_reason', 'statusreason', 'status_reason', 'statusdetail', 'status_detail', 'statusdescription', 'status_description', 'errormessage', 'error_message', 'errordescription', 'error_description', 'declinereason', 'decline_reason', 'motivo', 'motivo_rechazo', 'motivorechazo', 'motivo_de_rechazo', 'observation', 'observations', 'observacion', 'observaciones', 'cause', 'causa', 'detail', 'details']
+const CLAVES_MOTIVO_DEBIL = ['reason', 'description', 'message', 'mensaje', 'note', 'notes']
+function digMotivoRechazo(o: any): string | null {
+  const limpio = (v: unknown): string | null => {
+    if (typeof v !== 'string') return null
+    const s = v.trim()
+    if (s.length < 3 || s.length > 300) return null
+    if (/[{}\[\]]|http\s*\d|status\s*code|\bnull\b|undefined/i.test(s)) return null
+    return s
+  }
+  let debil: string | null = null
+  const seen = new Set<any>(); const stack = [o]
+  while (stack.length) {
+    const c = stack.pop()
+    if (!c || typeof c !== 'object' || seen.has(c)) continue
+    seen.add(c)
+    for (const [k, v] of Object.entries(c)) {
+      const key = k.toLowerCase()
+      if (CLAVES_MOTIVO.includes(key)) { const s = limpio(v); if (s) return s }
+      if (!debil && CLAVES_MOTIVO_DEBIL.includes(key)) debil = limpio(v)
+      if (v && typeof v === 'object') stack.push(v)
+    }
+  }
+  return debil
+}
+
 function normalizeMouvState(raw: any): { verdict: MouvVerdict; state: string } {
   const pickState = (o: any): string => {
     if (o == null) return ''
@@ -1315,6 +1348,23 @@ serve(async (req: Request) => {
       .eq('type', 'dispersion').eq('user_id', userId).eq('status', 'Procesando')
       .limit(20)
     const out: any[] = []
+    // Rechazos recientes que quedaron SIN motivo (antes no se guardaba): se
+    // les pide el detalle a Finity una vez y se anota. No toca saldos.
+    const hace30d = new Date(Date.now() - 30 * 86_400_000).toISOString()
+    const { data: sinMotivo } = await db.from('transactions')
+      .select('id, user_id, amount, currency, status, raw_data')
+      .eq('type', 'dispersion').eq('user_id', userId).eq('status', 'Rechazado').gte('created_at', hace30d)
+      .filter('raw_data->>providerError', 'is', null).filter('raw_data->>motivoBuscado', 'is', null)
+      .limit(8)
+    for (const tx of (sinMotivo ?? []) as any[]) {
+      const rd = (tx.raw_data ?? {}) as Record<string, any>
+      const ref = String(rd.providerRef ?? '')
+      if (!ref) continue
+      const st = await finityCall('withdrawal_status', String(userId), { id: ref })
+      const motivo = digMotivoRechazo(st?.data)
+      await db.from('transactions').update({ raw_data: { ...rd, motivoBuscado: new Date().toISOString(), ...(motivo ? { providerError: motivo } : {}) } }).eq('id', tx.id)
+      out.push({ id: tx.id, result: motivo ? 'motivo_anotado' : 'sin_motivo' })
+    }
     for (const tx of (rows ?? []) as any[]) {
       const rd = (tx.raw_data ?? {}) as Record<string, any>
       const ref = String(rd.providerRef ?? '')
@@ -1343,13 +1393,16 @@ serve(async (req: Request) => {
         // CAS: reclamar el reembolso ANTES de tocar el saldo. Si el webhook (o
         // una ejecución paralela de reconcile_ach) ya reclamó, claimed viene
         // vacío y NO se acredita de nuevo — evita el doble reembolso.
+        // El MOTIVO que da el operador ("CUENTA Y NIT NO CORRESPONDEN") se
+        // guarda con el rechazo: el cliente lo ve en el detalle del envío.
+        const motivoProveedor = digMotivoRechazo(d)
         const { data: claimed } = await db.from('transactions').update({
           status: 'Rechazado',
-          raw_data: { ...rd, refunded: true, refundCop: refund, providerStatus: s, reconciledAt: new Date().toISOString() },
+          raw_data: { ...rd, refunded: true, refundCop: refund, providerStatus: s, providerError: motivoProveedor, reconciledAt: new Date().toISOString() },
         }).eq('id', tx.id).neq('status', 'Rechazado').filter('raw_data->>refunded', 'is', null).select('id')
         if (!claimed?.length) { out.push({ id: tx.id, result: 'refund_already_claimed' }); continue }
         await creditBalanceAtomic(userId, railCol, refund)   // atómico (pentest #3)
-        out.push({ id: tx.id, result: 'refunded', refund })
+        out.push({ id: tx.id, result: 'refunded', refund, motivo: motivoProveedor })
       } else {
         out.push({ id: tx.id, result: 'still_processing', providerStatus: s || null })
       }

@@ -185,6 +185,35 @@ async function getFinityToken(): Promise<string> {
   throw new Error(`finity_auth_failed:401:{"message":"Ningún servidor aceptó las credenciales (${candidates.join(', ')})"}`)
 }
 
+// El MOTIVO humano de un rechazo, tal como lo escribe Finity ("CUENTA Y NIT
+// NO CORRESPONDEN"). Se busca en todo el cuerpo: primero las claves que solo
+// significan motivo; si no, las genéricas. Nunca devuelve JSON ni códigos.
+const CLAVES_MOTIVO = ['rejectionreason', 'rejection_reason', 'rejectreason', 'reject_reason', 'rejectedreason', 'rejected_reason', 'failurereason', 'failure_reason', 'failedreason', 'failed_reason', 'statusreason', 'status_reason', 'statusdetail', 'status_detail', 'statusdescription', 'status_description', 'errormessage', 'error_message', 'errordescription', 'error_description', 'declinereason', 'decline_reason', 'motivo', 'motivo_rechazo', 'motivorechazo', 'motivo_de_rechazo', 'observation', 'observations', 'observacion', 'observaciones', 'cause', 'causa', 'detail', 'details']
+const CLAVES_MOTIVO_DEBIL = ['reason', 'description', 'message', 'mensaje', 'note', 'notes']
+function digMotivoRechazo(o: any): string | null {
+  const limpio = (v: unknown): string | null => {
+    if (typeof v !== 'string') return null
+    const s = v.trim()
+    if (s.length < 3 || s.length > 300) return null
+    if (/[{}\[\]]|http\s*\d|status\s*code|\bnull\b|undefined/i.test(s)) return null
+    return s
+  }
+  let debil: string | null = null
+  const seen = new Set<any>(); const stack = [o]
+  while (stack.length) {
+    const c = stack.pop()
+    if (!c || typeof c !== 'object' || seen.has(c)) continue
+    seen.add(c)
+    for (const [k, v] of Object.entries(c)) {
+      const key = k.toLowerCase()
+      if (CLAVES_MOTIVO.includes(key)) { const s = limpio(v); if (s) return s }
+      if (!debil && CLAVES_MOTIVO_DEBIL.includes(key)) debil = limpio(v)
+      if (v && typeof v === 'object') stack.push(v)
+    }
+  }
+  return debil
+}
+
 async function finityFetch(path: string, init: RequestInit = {}): Promise<Response> {
   return finityFetchAbs(`${FINITY_BASE}${path}`, init)
 }
@@ -925,10 +954,12 @@ Deno.serve(async (req) => {
 
         // 2) Estado real desde Finity.
         let realState: string | null = null
+        let motivoProveedor: string | null = null
         try {
           const r = await finityFetch(`${base}/${encodeURIComponent(oid)}`)
           const d = await r.json().catch(() => null) as any
           realState = d?.state ?? d?.status ?? d?.data?.state ?? d?.data?.status ?? d?.order?.state ?? d?.order?.status ?? null
+          motivoProveedor = digMotivoRechazo(d)
         } catch { /* si Finity no responde, no se toca el estado */ }
         if (realState == null) {
           results.push({ oid, kept: keep.id, deleted: dupIds.length, note: 'sin_respuesta_finity' })
@@ -947,7 +978,7 @@ Deno.serve(async (req) => {
             // llamada pero NO idempotente; el claim es lo que da idempotencia.
             const krd = (keep.raw_data ?? {}) as Record<string, unknown>
             const { data: claimed } = await db.from('transactions')
-              .update({ status: 'Rechazado', raw_data: { ...krd, refunded: true, reconciledAt: new Date().toISOString(), finityState: realState } })
+              .update({ status: 'Rechazado', raw_data: { ...krd, refunded: true, reconciledAt: new Date().toISOString(), finityState: realState, providerError: motivoProveedor } })
               .eq('id', keep.id).neq('status', 'Rechazado').filter('raw_data->>refunded', 'is', null)
               .select('id')
             if (claimed?.length) {
