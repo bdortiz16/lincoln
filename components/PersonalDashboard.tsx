@@ -1307,7 +1307,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   useEffect(() => {
       const relevant = activeView === 'movements' || (activeView === 'wallet-detail' && selectedWalletCode === 'COP') || activeView === 'dashboard';
       if (!relevant || !currentUser?.id) return;
-      const hasProcessing = (movements || []).some((t: any) => t.type === 'dispersion' && t.status === 'Procesando');
+      // También si hay rechazos ACH sin motivo anotado: la conciliación se lo
+      // pide a Finity y lo guarda para el detalle del envío.
+      const hasProcessing = (movements || []).some((t: any) => t.type === 'dispersion' && (t.status === 'Procesando' || (t.status === 'Rechazado' && t.currency === 'COP_ACH' && !t.providerError && !t.raw_data?.providerError)));
       if (!hasProcessing) return;
       if (Date.now() - achReconcileAtRef.current < 60000) return;
       achReconcileAtRef.current = Date.now();
@@ -1323,6 +1325,20 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           .catch(() => { /* silencioso */ });
       // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeView, selectedWalletCode, currentUser?.id]);
+
+  // Al abrir el detalle de un envío ACH rechazado sin motivo, se le pide a
+  // Finity en ese momento (sin esperar a Movimientos ni al minuto de espera)
+  // y se refrescan los datos para que el recuadro lo muestre.
+  useEffect(() => {
+      const tx: any = selectedTx;
+      if (!tx || !currentUser?.id) return;
+      if (tx.type !== 'dispersion' || tx.status !== 'Rechazado' || tx.currency !== 'COP_ACH') return;
+      if (tx.providerError || tx.raw_data?.providerError) return;
+      callMouvProxy({ action: 'reconcile_ach', userId: currentUser.id })
+          .then(r => { if ((r?.results ?? []).some((x: any) => x.result === 'motivo_anotado')) refreshData?.(); })
+          .catch(() => { /* silencioso */ });
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTx?.id]);
 
   // ── Conciliación Bre-B (Mouv) sin webhook ──
   // El 200 de Mouv al enviar sólo significa "aceptada": puede DEVOLVERSE
@@ -3717,7 +3733,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
   const renderTxDetail = () => {
     if (!selectedTx) return null;
-    const tx = selectedTx;
+    // La versión FRESCA del movimiento: si la lista se refrescó mientras el
+    // detalle estaba abierto (p. ej. llegó el motivo del rechazo), se muestra
+    // lo nuevo, no la copia con la que se abrió.
+    const tx = (movements || []).find((m: any) => String(m.id) === String(selectedTx.id)) ?? selectedTx;
     const dt = tx.createdAt ? new Date(tx.createdAt) : null;
     const dateStr = dt ? dt.toLocaleDateString('es-CO', { day: '2-digit', month: 'long', year: 'numeric' }) : (tx.date || '');
     const timeStr = dt ? dt.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }) : '';

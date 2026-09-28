@@ -851,14 +851,24 @@ Deno.serve(async (req) => {
         ...(CANDIDATES.withdrawalOrders ?? []),
       ]
       let lastStatus = 0, lastData: any = null
+      // Se leen TODOS los detalles que respondan (movimiento y orden de
+      // retiro): el estado suele venir en el movimiento, pero el MOTIVO del
+      // rechazo puede venir solo en la orden. El primero va en `data` (como
+      // siempre) y los demás en `extra`, para quien quiera excavar en todos.
+      const cuerpos: { path: string; data: any }[] = []
       for (const base of detailBases) {
         const r = await finityFetch(`${base}/${enc}`)
         if (r.status === 404 || r.status === 405 || r.status === 0) continue
         const data = await r.json().catch(() => null)
         if (r.ok && data && typeof data === 'object') {
-          return json(200, { ok: true, status: r.status, path: `${base}/{id}`, data })
+          cuerpos.push({ path: `${base}/{id}`, data })
+          if (cuerpos.length >= 2) break
+          continue
         }
         lastStatus = r.status; lastData = data
+      }
+      if (cuerpos.length) {
+        return json(200, { ok: true, status: 200, path: cuerpos[0].path, data: cuerpos[0].data, extra: cuerpos.slice(1) })
       }
       // Respaldo: buscar el movimiento por id en la LISTA de movimientos
       // (endpoint confirmado que ya usa reconcile_payin).

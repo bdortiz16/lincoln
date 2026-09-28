@@ -514,6 +514,20 @@ function digMotivoRechazo(o: any): string | null {
   }
   return debil
 }
+// Las rutas de las claves de un cuerpo (sin valores), para diagnosticar en
+// qué campo manda el operador el motivo. Los valores NO se copian: traen
+// datos del beneficiario.
+function clavesDe(o: any, prefijo = '', out: string[] = [], nivel = 0): string {
+  if (nivel > 4 || !o || typeof o !== 'object') return out.join(',')
+  for (const [k, v] of Object.entries(o)) {
+    const p = prefijo ? `${prefijo}.${k}` : k
+    if (v && typeof v === 'object' && !Array.isArray(v)) clavesDe(v, p, out, nivel + 1)
+    else if (Array.isArray(v)) { out.push(`${p}[${v.length}]`); if (v[0] && typeof v[0] === 'object') clavesDe(v[0], `${p}[0]`, out, nivel + 1) }
+    else out.push(`${p}:${typeof v === 'string' ? `s${v.length}` : typeof v}`)
+    if (out.length > 80) break
+  }
+  return out.join(',')
+}
 
 function normalizeMouvState(raw: any): { verdict: MouvVerdict; state: string } {
   const pickState = (o: any): string => {
@@ -1351,18 +1365,24 @@ serve(async (req: Request) => {
     // Rechazos recientes que quedaron SIN motivo (antes no se guardaba): se
     // les pide el detalle a Finity una vez y se anota. No toca saldos.
     const hace30d = new Date(Date.now() - 30 * 86_400_000).toISOString()
+    const VERSION_BUSQUEDA = '2'
     const { data: sinMotivo } = await db.from('transactions')
       .select('id, user_id, amount, currency, status, raw_data')
       .eq('type', 'dispersion').eq('user_id', userId).eq('status', 'Rechazado').gte('created_at', hace30d)
-      .filter('raw_data->>providerError', 'is', null).filter('raw_data->>motivoBuscado', 'is', null)
+      .filter('raw_data->>providerError', 'is', null)
+      .or(`raw_data->>motivoBuscadoV.is.null,raw_data->>motivoBuscadoV.neq.${VERSION_BUSQUEDA}`)
       .limit(8)
     for (const tx of (sinMotivo ?? []) as any[]) {
       const rd = (tx.raw_data ?? {}) as Record<string, any>
       const ref = String(rd.providerRef ?? '')
       if (!ref) continue
       const st = await finityCall('withdrawal_status', String(userId), { id: ref })
-      const motivo = digMotivoRechazo(st?.data)
-      await db.from('transactions').update({ raw_data: { ...rd, motivoBuscado: new Date().toISOString(), ...(motivo ? { providerError: motivo } : {}) } }).eq('id', tx.id)
+      // Se excava en TODA la respuesta (movimiento + orden de retiro).
+      const motivo = digMotivoRechazo(st)
+      // Si no hay motivo, quedan anotadas las CLAVES que devolvió Finity (sin
+      // valores) para saber en cuál viene y ajustar la lectura por SQL.
+      const diag = motivo ? undefined : clavesDe(st).slice(0, 600)
+      await db.from('transactions').update({ raw_data: { ...rd, motivoBuscado: new Date().toISOString(), motivoBuscadoV: VERSION_BUSQUEDA, ...(motivo ? { providerError: motivo } : {}), ...(diag ? { motivoDiag: diag } : {}) } }).eq('id', tx.id)
       out.push({ id: tx.id, result: motivo ? 'motivo_anotado' : 'sin_motivo' })
     }
     for (const tx of (rows ?? []) as any[]) {
@@ -1395,10 +1415,10 @@ serve(async (req: Request) => {
         // vacío y NO se acredita de nuevo — evita el doble reembolso.
         // El MOTIVO que da el operador ("CUENTA Y NIT NO CORRESPONDEN") se
         // guarda con el rechazo: el cliente lo ve en el detalle del envío.
-        const motivoProveedor = digMotivoRechazo(d)
+        const motivoProveedor = digMotivoRechazo(st)
         const { data: claimed } = await db.from('transactions').update({
           status: 'Rechazado',
-          raw_data: { ...rd, refunded: true, refundCop: refund, providerStatus: s, providerError: motivoProveedor, reconciledAt: new Date().toISOString() },
+          raw_data: { ...rd, refunded: true, refundCop: refund, providerStatus: s, providerError: motivoProveedor, ...(motivoProveedor ? {} : { motivoDiag: clavesDe(st).slice(0, 600) }), reconciledAt: new Date().toISOString() },
         }).eq('id', tx.id).neq('status', 'Rechazado').filter('raw_data->>refunded', 'is', null).select('id')
         if (!claimed?.length) { out.push({ id: tx.id, result: 'refund_already_claimed' }); continue }
         await creditBalanceAtomic(userId, railCol, refund)   // atómico (pentest #3)
