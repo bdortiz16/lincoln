@@ -8,8 +8,9 @@ import { OnboardingWizard } from './components/OnboardingWizard';
 import { PersonalOnboardingWizard } from './components/PersonalOnboardingWizard';
 import { LandingPage } from './components/LandingPage';
 import { RoleSelection } from './components/RoleSelection';
-import { DownloadAppModal } from './components/DownloadAppModal';
 import { PersonalDashboard } from './components/PersonalDashboard';
+import { PersonaDashboard } from './components/PersonaDashboard';
+import { ContadorDashboard } from './components/ContadorDashboard';
 import { AdminDashboard } from './components/AdminDashboard';
 import { ToastProvider } from './components/AdminPersonas/lib/toast';
 import { StaticPage } from './components/StaticPage'; // New Import
@@ -23,8 +24,13 @@ import { isSupabaseConfigured } from './lib/supabaseClient';
 import { X, WifiOff } from 'lucide-react';
 
 // Added 'static-page' to ViewState
-type ViewState = 'landing' | 'role-selection' | 'login' | 'register' | 'confirmation' | 'onboarding-intro' | 'onboarding-wizard' | 'personal-onboarding-wizard' | 'dashboard' | 'personal-dashboard' | 'admin-dashboard' | 'static-page';
-type UserRole = 'business' | 'personal' | 'admin';
+type ViewState = 'landing' | 'role-selection' | 'login' | 'register' | 'confirmation' | 'onboarding-intro' | 'onboarding-wizard' | 'personal-onboarding-wizard' | 'dashboard' | 'personal-dashboard' | 'persona-dashboard' | 'contador-dashboard' | 'admin-dashboard' | 'static-page';
+// 'contador': cuenta de solo lectura atada a una empresa (Empresas → Contabilidad).
+type UserRole = 'business' | 'personal' | 'contador' | 'admin';
+
+// Cada rol tiene su panel. Persona y contador NO entran al de empresas.
+const vistaDelRol = (role?: string): ViewState =>
+  role === 'personal' ? 'persona-dashboard' : role === 'contador' ? 'contador-dashboard' : 'personal-dashboard';
 
 const LEGACY_BLUES = ['#2563eb', '#1d4ed8', '#3b82f6', '#60a5fa', '#0ea5e9', '#06b6d4', '#7dd3fc', '#4f46e5', '#4b9fe1', '#1e40af'];
 
@@ -229,7 +235,6 @@ const App: React.FC = () => {
   
   // Marketing Modal State
   const [showMarketingModal, setShowMarketingModal] = useState(false);
-  const [showPersonalDownloadModal, setShowPersonalDownloadModal] = useState(false);
 
   const { currentUser, isAuthLoading, logoutUser, isPasswordRecovery, setNewPassword, mfaPending } = useDatabase();
   const { config } = useSystemConfig();
@@ -314,26 +319,20 @@ const App: React.FC = () => {
       // Check if we are currently in a registration flow to prevent premature redirection.
       const isInAuthFlow = ['register', 'confirmation', 'role-selection'].includes(currentView);
       
+      const vista = vistaDelRol(currentUser.role);
       if (currentUser.kycStatus === 'pending' || currentUser.kycStatus === 'in_progress' || currentUser.kycStatus === 'in_review' || currentUser.kycStatus === 'rejected') {
-          // Both personal and business users go straight to their dashboard.
-          // The KYC/KYB banner inside the dashboard handles verification.
-          // Dashboard UNIFICADO: empresas y personas usan la misma vista
-          // (personal-dashboard) — el badge BUSINESS distingue a las empresas.
-          const safeViews = ['dashboard', 'personal-dashboard'];
-          if (!safeViews.includes(currentView)) {
-              setCurrentView('personal-dashboard');
-          }
+          // Cada rol va derecho a SU panel; el banner de KYC/KYB vive adentro.
+          if (currentView !== vista) setCurrentView(vista);
           return;
       }
 
       // Allow staying on static pages even if logged in, otherwise redirect to dashboard
       if ((currentView === 'landing' || currentView === 'login' || !isInAuthFlow) && currentView !== 'static-page') {
-          // Dashboard unificado para personas y empresas
-          setCurrentView('personal-dashboard');
+          if (currentView !== vista) setCurrentView(vista);
       }
     } else if (!isAuthLoading) {
         // Only redirect if auth has fully settled (not in the middle of session restore)
-        const protectedViews = ['dashboard', 'personal-dashboard', 'admin-dashboard', 'onboarding-wizard', 'onboarding-intro', 'personal-onboarding-wizard'];
+        const protectedViews = ['dashboard', 'personal-dashboard', 'persona-dashboard', 'contador-dashboard', 'admin-dashboard', 'onboarding-wizard', 'onboarding-intro', 'personal-onboarding-wizard'];
         if (protectedViews.includes(currentView)) {
             const t = setTimeout(() => setCurrentView('landing'), 1500);
             return () => clearTimeout(t);
@@ -353,11 +352,8 @@ const App: React.FC = () => {
 
   // Navigation handlers
   const navigateToRegister = (role?: UserRole) => {
-    // Personal accounts only via mobile app — show download modal instead
-    if (role === 'personal') {
-        setShowPersonalDownloadModal(true);
-        return;
-    }
+    // Un contador no se registra: lo crea la empresa desde Contabilidad.
+    if (role === 'contador') { setUserRole('contador'); setCurrentView('login'); return; }
     if (role && role !== 'admin') setUserRole(role);
 
     if (currentUser) {
@@ -384,9 +380,17 @@ const App: React.FC = () => {
     setCurrentView('login');
   };
   
+  // Personas entra por la web como cualquier cuenta: su panel es el de
+  // Persona (solo COP por ahora). Antes mandaba a descargar la app.
   const handlePersonalSelected = () => {
-    // Personal accounts only via mobile app — show download modal instead
-    setShowPersonalDownloadModal(true);
+    setUserRole('personal');
+    setCurrentView('login');
+  };
+
+  // Empresas → Contabilidad: el contador entra con su propia cuenta.
+  const handleContadorSelected = () => {
+    setUserRole('contador');
+    setCurrentView('login');
   };
 
   const handleRegisterSuccess = (registeredEmail: string) => {
@@ -403,11 +407,11 @@ const App: React.FC = () => {
       window.location.replace('/admin-empresas');
       return;
     }
-    setCurrentView('personal-dashboard');
+    setCurrentView(vistaDelRol(role));
   };
 
   const handleEmailValidated = () => {
-    setCurrentView('personal-dashboard');
+    setCurrentView(vistaDelRol(currentUser?.role ?? userRole));
   };
 
   const handleIntroContinue = () => {
@@ -416,8 +420,7 @@ const App: React.FC = () => {
 
   const handleOnboardingComplete = () => {
     setShowDashboardBanner(true);
-    // Dashboard unificado para todos los roles no-admin
-    setCurrentView('personal-dashboard');
+    setCurrentView(vistaDelRol(currentUser?.role ?? userRole));
   };
 
   const [loggingOut, setLoggingOut] = useState(false);
@@ -471,7 +474,9 @@ const App: React.FC = () => {
               />
               <RoleSelection 
                  onSelectBusiness={handleBusinessSelected}
+                 onSelectContador={handleContadorSelected}
                  onSelectPersonal={handlePersonalSelected}
+                 onRegisterPersonal={() => navigateToRegister('personal')}
                  onClose={navigateToLanding}
               />
             </>
@@ -488,7 +493,7 @@ const App: React.FC = () => {
         case 'register':
           return (
             <Register 
-              userRole={userRole !== 'admin' ? userRole : 'business'}
+              userRole={userRole === 'personal' ? 'personal' : 'business'}
               onSuccess={handleRegisterSuccess} 
               onLoginClick={navigateToLogin}
               onBack={navigateToLanding}
@@ -499,7 +504,7 @@ const App: React.FC = () => {
             <EmailConfirmation 
               email={email}
               onValidated={handleEmailValidated}
-              onBack={() => navigateToRegister(userRole !== 'admin' ? userRole : 'business')}
+              onBack={() => navigateToRegister(userRole === 'personal' ? 'personal' : 'business')}
             />
           );
         case 'onboarding-intro':
@@ -523,6 +528,14 @@ const App: React.FC = () => {
         case 'personal-dashboard':
             return (
                 <PersonalDashboard onLogout={handleLogout} />
+            );
+        case 'persona-dashboard':
+            return (
+                <PersonaDashboard onLogout={handleLogout} />
+            );
+        case 'contador-dashboard':
+            return (
+                <ContadorDashboard onLogout={handleLogout} />
             );
         case 'admin-dashboard':
             return (
@@ -581,11 +594,6 @@ const App: React.FC = () => {
             <WifiOff size={14} />
             <span>Modo offline — las variables de entorno de Supabase no están configuradas. Las transacciones solo se guardan localmente.</span>
           </div>
-        )}
-
-        {/* DOWNLOAD APP MODAL — when user tries to access Personas via web */}
-        {showPersonalDownloadModal && (
-            <DownloadAppModal onClose={() => setShowPersonalDownloadModal(false)} />
         )}
 
         {/* GLOBAL MARKETING MODAL */}

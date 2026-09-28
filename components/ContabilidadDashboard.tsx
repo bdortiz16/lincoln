@@ -28,6 +28,7 @@ import { supabase } from '../lib/supabaseClient';
 import { llamarFuncion } from '../lib/edge';
 import { descargarXlsx } from '../lib/xlsx';
 import { FacturacionConfig } from './FacturacionConfig';
+import { AccesoContadorModal } from './AccesoContadorModal';
 
 const FONT = 'Archivo, system-ui, sans-serif';
 const C = {
@@ -91,6 +92,10 @@ type Props = {
   transactions: any[];
   userId?: string | null;
   onVerMovimiento?: (tx: any) => void;
+  /** Modo contador: la misma pantalla, sin nada que escriba. Los comprobantes
+   *  llegan de afuera (el servidor los entrega tras verificar el vínculo). */
+  soloLectura?: boolean;
+  comprobantesExternos?: any[] | null;
 };
 
 // ── Factura de comisión por un depósito (modelo PSP) ─────────────────
@@ -318,7 +323,8 @@ const Barras: React.FC<{ cubos: Cubo[]; titulo: string; moneda: Moneda }> = ({ c
   );
 };
 
-export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, onVerMovimiento }) => {
+export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, onVerMovimiento, soloLectura = false, comprobantesExternos = null }) => {
+  const [contadorAbierto, setContadorAbierto] = useState(false);
   const [periodo, setPeriodo] = useState<Periodo>('mes');
   const [monedaSel, setMonedaSel] = useState<Moneda | null>(null);
   const [filtroDir, setFiltroDir] = useState<'todos' | 'in' | 'out' | 'conv'>('todos');
@@ -342,8 +348,18 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
 
   // Los comprobantes emitidos por el servidor, para ponerle número a cada
   // movimiento. Si la tabla no existe todavía, la columna dice por qué.
+  const mapaFolios = (filas: any[]): typeof folios => {
+    const m: typeof folios = {};
+    for (const r of filas) m[String(r.transaction_id)] = {
+      folio: Number(r.folio), numero: String(r.numero), enviado: !!r.enviado_at,
+      factura: { estado: r.factura_estado ?? null, numero: r.factura_numero ?? null, url: r.factura_url ?? null, error: r.factura_error ?? null, tipo: r.factura_tipo ?? null },
+    };
+    return m;
+  };
   useEffect(() => {
-    if (!userId) return;
+    // Modo contador: los comprobantes ya vienen del servidor.
+    if (comprobantesExternos) { setFolios(mapaFolios(comprobantesExternos)); setFoliosEstado('ok'); return; }
+    if (!userId || soloLectura) return;
     let vivo = true;
     (async () => {
       // `*` a propósito: si una columna nueva (factura_tipo) todavía no
@@ -354,15 +370,10 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
         .eq('user_id', userId).limit(2000);
       if (!vivo) return;
       if (error) { setFoliosEstado(/does not exist|42P01|schema cache/i.test(error.message) ? 'sin_tabla' : 'error'); return; }
-      const m: typeof folios = {};
-      for (const r of (data ?? []) as any[]) m[String(r.transaction_id)] = {
-        folio: Number(r.folio), numero: String(r.numero), enviado: !!r.enviado_at,
-        factura: { estado: r.factura_estado ?? null, numero: r.factura_numero ?? null, url: r.factura_url ?? null, error: r.factura_error ?? null, tipo: r.factura_tipo ?? null },
-      };
-      setFolios(m); setFoliosEstado('ok');
+      setFolios(mapaFolios((data ?? []) as any[])); setFoliosEstado('ok');
     })();
     return () => { vivo = false; };
-  }, [userId, foliosVersion]);
+  }, [userId, foliosVersion, soloLectura, comprobantesExternos]);
   // ¿Tiene la facturación automática activa? Solo para decidir qué dice la
   // columna FACTURA y el botón de configuración. Y el chequeo del servidor:
   // movimientos completados que nunca recibieron comprobante (señal de que
@@ -384,7 +395,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     setFoliosVersion(v => v + 1);
   };
   useEffect(() => {
-    if (!userId) return;
+    if (!userId || soloLectura) return;
     llamarFuncion('facturacion', { action: 'config_get' }, 20000)
       .then((r: any) => { setFacturacionActiva(!!r?.config?.activo); setChequeo(r?.chequeo ?? null); setCfgFact(r?.config ?? null); })
       .catch(() => setFacturacionActiva(null));
@@ -581,16 +592,26 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
               {cambiandoAuto ? '…' : facturacionActiva ? 'Automática' : 'Automática apagada'}
             </button>
           )}
-          <button onClick={() => setConfigAbierta(true)}
-            style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '10px 16px', borderRadius: 9, cursor: 'pointer', color: C.text, background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.borde}`, display: 'inline-flex', alignItems: 'center', gap: 8 }}
-            className="hover:border-[rgba(255,255,255,0.22)] transition-colors">
-            <span style={{ width: 7, height: 7, borderRadius: '50%', background: facturacionActiva ? C.entra : 'rgba(255,255,255,0.18)', flexShrink: 0 }} />
-            Configuración
-          </button>
+          {!soloLectura && (
+            <button onClick={() => setContadorAbierto(true)} title="Dale acceso de solo lectura a tu contador: entra por Empresas → Contabilidad con su propio correo."
+              style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '10px 16px', borderRadius: 9, cursor: 'pointer', color: C.text, background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.borde}`, display: 'inline-flex', alignItems: 'center', gap: 8 }}
+              className="hover:border-[rgba(255,255,255,0.22)] transition-colors">
+              Contador
+            </button>
+          )}
+          {!soloLectura && (
+            <button onClick={() => setConfigAbierta(true)}
+              style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '10px 16px', borderRadius: 9, cursor: 'pointer', color: C.text, background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.borde}`, display: 'inline-flex', alignItems: 'center', gap: 8 }}
+              className="hover:border-[rgba(255,255,255,0.22)] transition-colors">
+              <span style={{ width: 7, height: 7, borderRadius: '50%', background: facturacionActiva ? C.entra : 'rgba(255,255,255,0.18)', flexShrink: 0 }} />
+              Configuración
+            </button>
+          )}
           <button onClick={excel} className="lincoin-btn-white" style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '10px 18px', borderRadius: 9, border: 'none', cursor: 'pointer' }}>Descargar Excel</button>
         </div>
       </div>
-      {configAbierta && <FacturacionConfig onCerrar={() => setConfigAbierta(false)} />}
+      {configAbierta && !soloLectura && <FacturacionConfig onCerrar={() => setConfigAbierta(false)} />}
+      {contadorAbierto && !soloLectura && <AccesoContadorModal onCerrar={() => setContadorAbierto(false)} />}
       {comisionPara && cfgFact && (
         <FacturaComisionModal asiento={comisionPara} cfg={cfgFact} onCerrar={() => setComisionPara(null)} onEmitida={() => { setComisionPara(null); setFoliosVersion(v => v + 1); }} />
       )}
@@ -742,10 +763,10 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                         if (fa.estado === 'error') return (
                           <span className="flex items-center" style={{ gap: 6 }} title={fa.error ?? ''}>
                             <span style={{ color: '#F87171', fontWeight: 700 }}>error</span>
-                            <button onClick={() => reintentarFactura(f.folio)} disabled={reintentando === f.folio}
+                            {!soloLectura && <button onClick={() => reintentarFactura(f.folio)} disabled={reintentando === f.folio}
                               style={{ fontFamily: FONT, fontSize: 11, fontWeight: 700, color: C.sub, background: 'transparent', border: `1px solid ${C.borde}`, borderRadius: 6, padding: '3px 8px', cursor: 'pointer', opacity: reintentando === f.folio ? 0.5 : 1 }}>
                               {reintentando === f.folio ? '…' : 'Reintentar'}
-                            </button>
+                            </button>}
                           </span>
                         );
                         return <span style={{ color: C.tenue }} title={fa.error ?? ''}>{fa.estado === 'omitida' ? 'no aplica' : fa.estado}</span>;

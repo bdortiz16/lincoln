@@ -12,7 +12,7 @@ interface LoginProps {
   onRegisterClick: () => void;
   onLoginSuccess: (role?: 'business' | 'personal' | 'admin') => void;
   onBack: () => void;
-  userRole?: 'business' | 'personal';
+  userRole?: 'business' | 'personal' | 'contador';
 }
 
 export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, onBack, userRole = 'business' }) => {
@@ -84,7 +84,9 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
         setErrorMsg(
           user.role === 'personal'
             ? 'Tu cuenta es de tipo Personal. Por favor inicia sesión en la sección de Personas.'
-            : 'Tu cuenta es de tipo Empresas. Por favor inicia sesión en la sección de Empresas.'
+            : user.role === 'contador'
+              ? 'Tu cuenta es de contador. Entra por Empresas → Contabilidad.'
+              : 'Tu cuenta es de tipo Empresas. Por favor inicia sesión en Empresas → Usuario.'
         );
         return;
       }
@@ -207,7 +209,9 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
       </div>
 
       <h1 className="text-2xl font-bold text-[#0C0E0D] text-center mb-10 anim-fade-up">
-        ¡Te damos la bienvenida a Lincoin{userRole === 'business' ? <><br />empresas!</> : '!'}
+        {userRole === 'business' ? <>¡Te damos la bienvenida a Lincoin<br />empresas!</>
+          : userRole === 'contador' ? <>Contabilidad de tu empresa<br /><span className="text-base font-semibold text-slate-600">Entra con el correo que te dio la empresa</span></>
+          : <>¡Te damos la bienvenida a Lincoin!</>}
       </h1>
 
       {config.maintenanceMode && (
@@ -272,6 +276,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
           {isLoading ? 'Iniciando sesión...' : 'Iniciar sesión'}
         </button>
 
+        {userRole !== 'contador' && (<>
         <div className="flex items-center gap-3">
           <div className="flex-1 h-px bg-slate-200" />
           <span className="text-xs text-slate-800 font-medium">o continúa con</span>
@@ -279,7 +284,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
         </div>
 
         <button
-          onClick={() => loginWithGoogle(userRole !== 'admin' ? userRole : 'business')}
+          onClick={() => loginWithGoogle(userRole === 'personal' ? 'personal' : 'business')}
           type="button"
           disabled={captchaEnabled && !captchaToken}
           title={captchaEnabled && !captchaToken ? 'Espera la verificación anti-bot' : undefined}
@@ -293,10 +298,13 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
           </svg>
           Continuar con Google
         </button>
+        </>)}
 
         <div className="flex justify-between items-center text-sm pt-2">
           <div className="text-slate-900">
-            ¿Eres nuevo? <button onClick={onRegisterClick} className="text-[#0C0E0D] font-bold hover:underline">Regístrate</button>
+            {userRole === 'contador'
+              ? <span className="text-slate-600">La empresa crea tu acceso desde Contabilidad.</span>
+              : <>¿Eres nuevo? <button onClick={onRegisterClick} className="text-[#0C0E0D] font-bold hover:underline">Regístrate</button></>}
           </div>
           <button onClick={() => setIsForgotModalOpen(true)} className="text-slate-800 hover:text-[#0C0E0D] transition-colors">
             Recuperar contraseña

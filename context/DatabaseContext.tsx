@@ -508,7 +508,15 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
               // 'personal' aunque el registro fuera por Empresas — luego no
               // salía en el admin y mostraba KYC. Se ignoran esas pistas y se
               // fuerza business para que no vuelva a pasar.
-              const pendingRole = 'business';
+              //
+              // Desde que Personas entra por la web, la pista de Google SÍ
+              // se lee, pero solo si se puso para ESTE intento (menos de 15
+              // minutos) y solo para 'personal'. Una pista vieja no cuenta.
+              let pendingRole: 'business' | 'personal' = 'business';
+              try {
+                const pista = JSON.parse(localStorage.getItem('cuypay_oauth_role') || 'null');
+                if (pista?.role === 'personal' && Date.now() - Number(pista.at || 0) < 15 * 60_000) pendingRole = 'personal';
+              } catch { /* pista ilegible: business */ }
               localStorage.removeItem('cuypay_oauth_role');
               localStorage.removeItem('cuypay_register_role');
               const newProfile = {
@@ -1984,8 +1992,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   const loginWithGoogle = async (role: 'personal' | 'business' = 'business') => {
     if (!isSupabaseConfigured) return;
-    // Persist role so it survives the OAuth redirect
-    localStorage.setItem('cuypay_oauth_role', role);
+    // Persist role so it survives the OAuth redirect. Con fecha: solo vale
+    // para este intento, así una pista vieja no decide el rol de otro registro.
+    localStorage.setItem('cuypay_oauth_role', JSON.stringify({ role, at: Date.now() }));
     await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: { redirectTo: window.location.origin },
