@@ -60,6 +60,26 @@ async function empresaPorId(id: string) {
   return data && data.role === 'business' ? data : null
 }
 
+// Aviso al usuario: en la campana del panel (raw_data.notifications) y en
+// el teléfono (función push). Es un extra: si falla, el vínculo ya quedó.
+async function notificar(userId: string, titulo: string, mensaje: string, tipo: 'info' | 'success' = 'info', url = '/empresas_contabilidad') {
+  try {
+    const { data: cur } = await db.from('users').select('raw_data').eq('id', userId).single()
+    const raw = { ...((cur?.raw_data as any) ?? {}) }
+    const lista: any[] = Array.isArray(raw.notifications) ? raw.notifications : []
+    raw.notifications = [...lista, { id: Date.now(), type: tipo, title: titulo, message: mensaje, read: false, date: new Date().toLocaleDateString('es-CO') }].slice(-60)
+    await db.from('users').update({ raw_data: raw }).eq('id', userId)
+  } catch { /* la campana es un extra */ }
+  try {
+    await fetch(`${SUPABASE_URL}/functions/v1/push`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+      body: JSON.stringify({ action: 'enviar', user_ids: [userId], titulo, cuerpo: mensaje, tag: `contador-${userId}`, url, insistir: true }),
+      signal: AbortSignal.timeout(8000),
+    })
+  } catch { /* el push es un extra */ }
+}
+
 // Escribe SOLO las dos claves del vínculo, sobre la fila fresca.
 async function guardarVinculos(empresaId: string, contadores: Vinculo[], solicitudes: Vinculo[]) {
   const { data: cur } = await db.from('users').select('raw_data').eq('id', empresaId).single()
@@ -97,6 +117,8 @@ Deno.serve(async (req) => {
         const err = await guardarVinculos(String(emp.id), aprobados, pendientes.slice(0, 20))
         if (err) return json({ ok: false, error: `No se pudo guardar la solicitud: ${err}` }, 500)
         await db.from('audit_log').insert({ user_id: emp.id, action: 'empresa.contador_solicitud', metadata: { contadorId: yo.id, email: yo.email, at: new Date().toISOString() } })
+        // La empresa se entera en el momento: campana del panel y teléfono.
+        await notificar(String(emp.id), 'Tu contador pide acceso', `${yo.nombre || yo.email} (${yo.email}) pide ver tu contabilidad. Apruébalo o recházalo en Contabilidad → Contador.`)
       }
       return json({ ok: true, estado: 'pendiente', empresa: { id: String(emp.id), nombre: nombreEmpresa(emp) } })
     }
@@ -163,13 +185,16 @@ Deno.serve(async (req) => {
       const err = await guardarVinculos(yo.id, contadores, solicitudes)
       if (err) return json({ ok: false, error: err }, 500)
       await db.from('audit_log').insert({ user_id: yo.id, action: 'empresa.contador_aprobado', metadata: { contadorId, email: s.email, at: new Date().toISOString() } })
+      await notificar(contadorId, 'Acceso aprobado', `${nombreEmpresa(emp)} aprobó tu acceso a su contabilidad. Entra por Empresas → Contabilidad.`, 'success', '/portal_contabilidad')
       return json({ ok: true, contadores, solicitudes })
     }
 
     if (accion === 'rechazar') {
+      const s = solicitudes.find(c => c.id === contadorId)
       solicitudes = solicitudes.filter(c => c.id !== contadorId)
       const err = await guardarVinculos(yo.id, contadores, solicitudes)
       if (err) return json({ ok: false, error: err }, 500)
+      if (s) await notificar(contadorId, 'Solicitud rechazada', `${nombreEmpresa(emp)} no aprobó tu acceso a su contabilidad.`, 'info', '/portal_contabilidad')
       return json({ ok: true, contadores, solicitudes })
     }
 
@@ -186,6 +211,7 @@ Deno.serve(async (req) => {
         await db.auth.admin.deleteUser(contadorId).catch(() => {})
       }
       await db.from('audit_log').insert({ user_id: yo.id, action: 'empresa.contador_revocado', metadata: { contadorId, email: c?.email ?? null, at: new Date().toISOString() } })
+      if (c) await notificar(contadorId, 'Acceso retirado', `${nombreEmpresa(emp)} retiró tu acceso a su contabilidad.`, 'info', '/portal_contabilidad')
       return json({ ok: true, contadores, solicitudes })
     }
 

@@ -64,6 +64,26 @@ async function empresaPorId(id: string) {
   return data && data.role === 'business' ? data : null
 }
 
+// Aviso al usuario: campana del panel (raw_data.notifications) y teléfono
+// (función push). Es un extra: si falla, el vínculo ya quedó guardado.
+async function notificar(userId: string, titulo: string, mensaje: string, tipo: 'info' | 'success' = 'info', url = '/empresas_personas_autorizadas') {
+  try {
+    const { data: cur } = await db.from('users').select('raw_data').eq('id', userId).single()
+    const raw = { ...((cur?.raw_data as any) ?? {}) }
+    const lista: any[] = Array.isArray(raw.notifications) ? raw.notifications : []
+    raw.notifications = [...lista, { id: Date.now(), type: tipo, title: titulo, message: mensaje, read: false, date: new Date().toLocaleDateString('es-CO') }].slice(-60)
+    await db.from('users').update({ raw_data: raw }).eq('id', userId)
+  } catch { /* la campana es un extra */ }
+  try {
+    await fetch(`${SUPABASE_URL}/functions/v1/push`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+      body: JSON.stringify({ action: 'enviar', user_ids: [userId], titulo, cuerpo: mensaje, tag: `autorizacion-${userId}`, url, insistir: true }),
+      signal: AbortSignal.timeout(8000),
+    })
+  } catch { /* el push es un extra */ }
+}
+
 // Escribe SOLO las claves del vínculo, sobre la fila fresca.
 async function guardarEmpresa(empresaId: string, autorizadas: Autorizada[], solicitudes: Solicitud[]) {
   const { data: cur } = await db.from('users').select('raw_data').eq('id', empresaId).single()
@@ -139,6 +159,7 @@ Deno.serve(async (req) => {
       // El nombre y el documento quedan también en el perfil de la persona.
       await db.from('users').update({ full_name: nombre }).eq('id', yo.id)
       await db.from('audit_log').insert({ user_id: emp.id, action: 'empresa.persona_solicitud', metadata: { personaId: yo.id, email: yo.email, nombre, docType, docNumber, at: sol.at } })
+      await notificar(String(emp.id), 'Una persona pide tu autorización', `${nombre} (${docType} ${docNumber}) pide operar con tu empresa. Revisa su foto y apruébala o recházala en Personas autorizadas.`)
       return json({ ok: true, estado: 'pendiente', empresa: { id: String(emp.id), nombre: nombreEmpresa(emp) } })
     }
 
@@ -198,6 +219,7 @@ Deno.serve(async (req) => {
         autorizacion: { estado: 'autorizada', empresaId: yo.id, empresaNombre: nombreEmpresa(emp), nombre: s.nombre, docType: s.docType, docNumber: s.docNumber, at: new Date().toISOString() },
       }, undefined, 'approved')
       await db.from('audit_log').insert({ user_id: yo.id, action: 'empresa.persona_aprobada', metadata: { personaId, email: s.email, topeMensual: tope, at: new Date().toISOString() } })
+      await notificar(personaId, 'Autorización aprobada', `${nombreEmpresa(emp)} te autorizó. Ya puedes recibir dinero de la empresa${tope ? ` y retirar hasta $ ${tope.toLocaleString('es-CO')} COP al mes` : ''}.`, 'success', '/portal_personas')
       return json({ ok: true, autorizadas, solicitudes })
     }
 
@@ -211,6 +233,7 @@ Deno.serve(async (req) => {
         const otra = await empresaDe(personaId)
         if (!otra) await guardarPersona(personaId, { autorizacion: { ...(s as any), estado: 'rechazada', empresaId: yo.id, empresaNombre: nombreEmpresa(emp) } })
         await db.from('audit_log').insert({ user_id: yo.id, action: 'empresa.persona_rechazada', metadata: { personaId, email: s.email, at: new Date().toISOString() } })
+        await notificar(personaId, 'Solicitud rechazada', `${nombreEmpresa(emp)} no aprobó tu solicitud. Revisa tus datos y tu foto, y vuelve a pedirla.`, 'info', '/portal_personas')
       }
       return json({ ok: true, autorizadas, solicitudes })
     }
@@ -224,6 +247,7 @@ Deno.serve(async (req) => {
         const otra = await empresaDe(personaId)
         if (!otra) await guardarPersona(personaId, { empresaAutorizante: null, autorizacion: { ...(a as any), estado: 'revocada' } }, undefined, 'pending')
         await db.from('audit_log').insert({ user_id: yo.id, action: 'empresa.persona_revocada', metadata: { personaId, email: a.email, at: new Date().toISOString() } })
+        await notificar(personaId, 'Autorización retirada', `${nombreEmpresa(emp)} retiró tu autorización. Puedes pedirla a otra empresa desde Mi perfil.`, 'info', '/portal_personas')
       }
       return json({ ok: true, autorizadas, solicitudes })
     }
