@@ -764,6 +764,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       bumpLocalBalance,
       addLocalTx,
   } = useDatabase();
+  // ID Lincoin: los 6 últimos caracteres del id. Si la fila no lo trae en
+  // raw_data, se calcula igual; nunca se muestra "generando".
+  const idLincoin = String((currentUser as any)?.ownReferralCode || String(currentUser?.id ?? '').slice(-6)).toUpperCase();
 
   const isKycVerified = currentUser?.kycStatus === 'verified';
   const isInReview = currentUser?.kycStatus === 'in_review';
@@ -2508,16 +2511,16 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           </div>
 
           {/* Lincoin ID chip — share to receive PAY transfers */}
-          {currentUser?.ownReferralCode && (
+          {idLincoin && (
               <div className="flex items-center gap-2">
                   <div
                       className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg cursor-pointer transition-all hover:border-[rgba(74,222,128,0.4)]"
                       style={{ background: '#121413', border: '1px solid rgba(255,255,255,0.09)' }}
-                      onClick={() => { navigator.clipboard.writeText(currentUser.ownReferralCode || ''); showToast('ID Lincoin copiado'); }}
+                      onClick={() => { navigator.clipboard.writeText(idLincoin); showToast('ID Lincoin copiado'); }}
                   >
                       <Zap size={13} style={{ color: '#4ADE80' }} />
                       <span className="text-[10px] font-bold uppercase tracking-wider" style={{ color: '#878E88' }}>Mi ID Lincoin:</span>
-                      <span className="font-mono font-extrabold tracking-widest text-sm" style={{ color: '#F4F4F2' }}>{currentUser.ownReferralCode}</span>
+                      <span className="font-mono font-extrabold tracking-widest text-sm" style={{ color: '#F4F4F2' }}>{idLincoin}</span>
                       <Copy size={11} style={{ color: '#878E88' }} />
                   </div>
               </div>
@@ -3704,9 +3707,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               <h3 className="text-xl font-bold text-slate-800">{currentUser?.name}</h3>
               <p className="text-slate-500">{currentUser?.email}</p>
               
-              <div className="mt-4 inline-flex items-center gap-2 bg-slate-50 border border-slate-200 px-4 py-2 rounded-lg cursor-pointer hover:bg-slate-100 transition-colors" onClick={() => {navigator.clipboard.writeText(currentUser?.ownReferralCode || ''); showToast("Código copiado")}}>
+              <div className="mt-4 inline-flex items-center gap-2 bg-slate-50 border border-slate-200 px-4 py-2 rounded-lg cursor-pointer hover:bg-slate-100 transition-colors" onClick={() => {navigator.clipboard.writeText(idLincoin); showToast("Código copiado")}}>
                   <span className="text-xs text-slate-500 font-bold uppercase">ID Usuario:</span>
-                  <span className="font-mono font-bold text-[#0C0E0D] text-lg">{currentUser?.ownReferralCode || 'GENERANDO...'}</span>
+                  <span className="font-mono font-bold text-[#0C0E0D] text-lg">{idLincoin}</span>
                   <Copy size={14} className="text-[#0C0E0D]" />
               </div>
 
@@ -3874,7 +3877,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       const lang = raw.lang ?? 'Español';
       const name = currentUser?.name || 'Mi cuenta';
       const initial = name.trim().charAt(0).toUpperCase() || 'L';
-      const acctId = currentUser?.ownReferralCode || '—';
+      const acctId = idLincoin || '—';
       // Envíos de este mes (débitos COP/USDT) para la barra de límites.
       const now = new Date();
       const monthUsed = (movements || []).filter((t: any) => {
@@ -4080,8 +4083,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                        <br/>Además, recibe <span className="text-[#4ADE80] font-bold">{config.referralCommission}%</span> de cada operación de por vida.
                    </p>
                    <div className="bg-white/10 p-4 rounded-xl max-w-md mx-auto flex items-center gap-4 backdrop-blur-sm border border-white/20">
-                       <code className="flex-1 font-mono text-xl font-bold text-white tracking-widest">{currentUser?.ownReferralCode || 'GENERANDO...'}</code>
-                       <button onClick={() => {navigator.clipboard.writeText(currentUser?.ownReferralCode || ''); showToast("Código copiado")}} className="bg-white text-[#0C0E0D] px-4 py-2 rounded-lg font-bold text-sm hover:bg-slate-50">Copiar</button>
+                       <code className="flex-1 font-mono text-xl font-bold text-white tracking-widest">{idLincoin}</code>
+                       <button onClick={() => {navigator.clipboard.writeText(idLincoin); showToast("Código copiado")}} className="bg-white text-[#0C0E0D] px-4 py-2 rounded-lg font-bold text-sm hover:bg-slate-50">Copiar</button>
                    </div>
                </div>
                <div className="absolute top-0 right-0 w-64 h-64 bg-[#4ADE80]/20 rounded-full blur-3xl translate-x-1/2 -translate-y-1/2"></div>
