@@ -24,6 +24,7 @@ import { useExchangeRates } from '../context/ExchangeRateContext';
 import { llamarFuncion } from '../lib/edge';
 import { descargarXlsx } from '../lib/xlsx';
 import { ConfirmarModal } from './ConfirmarModal';
+import { ContactsSection, MouvContact } from './ContactsSection';
 
 // ─── Marca ───────────────────────────────────────────────────────────
 const FONT = 'Archivo, system-ui, sans-serif';
@@ -65,14 +66,17 @@ const ROTULO: Record<string, string> = {
 };
 const ENTRA = new Set(['pay_received', 'load', 'adjustment', 'referral_payout', 'receive']);
 
-type Beneficiario = { id: string; name: string; via: 'lincoin' | 'nequi' | 'breb' | 'banco'; detail: string; bank?: string };
-const VIA_TXT: Record<Beneficiario['via'], string> = { lincoin: 'ID Lincoin', nequi: 'Nequi', breb: 'Llave Bre-B', banco: 'Cuenta bancaria' };
+// Los beneficiarios son LOS MISMOS que en Empresas: mismo formulario, misma
+// inscripción en el riel, misma verificación de antecedentes (AML). Viven en
+// raw_data.mouvContacts / walletContacts y los administra ContactsSection.
+type Beneficiario = { id: string; name: string; via: string; contacto: MouvContact };
+const viaDe = (c: MouvContact): string => c.accountKind === 'wallet' ? `${c.walletCoin ?? 'USDT'} · ${c.walletNetwork ?? ''}`.trim() : c.destKind === 'breb' ? 'Llave Bre-B' : (c.bank || 'Cuenta bancaria');
 
 type Vista = 'inicio' | 'movimientos' | 'beneficiarios' | 'ayuda';
 const RUTA_VISTA: Record<Vista, string> = { inicio: '/portal_personas', movimientos: '/personas_movimientos', beneficiarios: '/personas_beneficiarios', ayuda: '/personas_ayuda' };
 const VISTA_RUTA: Record<string, Vista> = Object.fromEntries(Object.entries(RUTA_VISTA).map(([v, p]) => [p, v as Vista]));
 
-type Panel = 'enviar' | 'recargar' | 'convertir' | 'beneficiario' | 'seguridad' | 'tasas' | 'limites' | 'notificaciones' | 'invita' | 'ayuda' | 'cobrar' | null;
+type Panel = 'enviar' | 'recargar' | 'convertir' | 'seguridad' | 'tasas' | 'limites' | 'notificaciones' | 'invita' | 'ayuda' | 'cobrar' | null;
 
 // ─── Piezas ──────────────────────────────────────────────────────────
 const Tarjeta: React.FC<{ children: React.ReactNode; style?: React.CSSProperties; grande?: boolean }> = ({ children, style, grande }) => (
@@ -176,11 +180,12 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
   const hayNuevas = notifs.some(n => !n?.read);
   const [notifAbierto, setNotifAbierto] = useState(false);
 
-  // Beneficiarios (agenda propia de la persona)
-  const beneficiarios: Beneficiario[] = useMemo(() => Array.isArray(cu.raw_data?.beneficiariosPersona) ? cu.raw_data.beneficiariosPersona : Array.isArray(cu.beneficiariosPersona) ? cu.beneficiariosPersona : [], [cu]);
-  const guardarBeneficiarios = async (lista: Beneficiario[]) => { const ok = await updateUserRawData(cu.id, { beneficiariosPersona: lista }); if (!ok) avisar('No se pudo guardar.', true); return ok; };
-  const [benForm, setBenForm] = useState<{ name: string; via: Beneficiario['via']; detail: string; bank: string }>({ name: '', via: 'lincoin', detail: '', bank: '' });
-  const [benQuitar, setBenQuitar] = useState<Beneficiario | null>(null);
+  // Beneficiarios: la misma lista que administra ContactsSection.
+  const beneficiarios: Beneficiario[] = useMemo(() => {
+    const raw = cu.raw_data ?? cu;
+    const lista: MouvContact[] = [...(Array.isArray(raw?.walletContacts) ? raw.walletContacts : []), ...(Array.isArray(raw?.mouvContacts) ? raw.mouvContacts : [])];
+    return lista.filter(c => c && c.id && c.status !== 'rechazada').map(c => ({ id: String(c.id), name: c.name, via: viaDe(c), contacto: c }));
+  }, [cu]);
 
   // Movimientos
   const movs = useMemo(() => (transactions ?? [])
@@ -206,9 +211,11 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
   const [envBanco, setEnvBanco] = useState({ tipo: 'breb', valor: '', nombre: '' });
   const abrirEnviar = (b?: Beneficiario) => {
     setEnvPaso('datos'); setEnvError(null); setEnvMonto(''); setEnvCodigo(''); setEnvDest(null);
-    if (b?.via === 'lincoin') { setEnvModo('lincoin'); setEnvId(b.detail.toUpperCase()); buscarDestino(b.detail); }
-    else if (b) { setEnvModo('banco'); setEnvBanco({ tipo: b.via === 'nequi' ? 'celular' : b.via === 'breb' ? 'breb' : 'cuenta', valor: b.detail, nombre: b.name }); }
-    else { setEnvModo('lincoin'); setEnvId(''); }
+    if (b) {
+      const c = b.contacto;
+      setEnvModo('banco');
+      setEnvBanco({ tipo: c.destKind === 'breb' ? 'breb' : 'cuenta', valor: c.destKind === 'breb' ? (c.brebKey ?? '') : (c.accountNumber ?? ''), nombre: c.name });
+    } else { setEnvModo('lincoin'); setEnvId(''); }
     setPanel('enviar');
   };
   const buscarDestino = async (id: string) => {
@@ -480,9 +487,9 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
               <div className="flex items-center justify-between" style={{ gap: 14 }}>
                 <div>
                   <p style={{ fontSize: 16, fontWeight: 700, margin: 0 }}>Cuenta para retiros</p>
-                  <p style={{ fontSize: 14, color: C.sub, margin: '6px 0 0', lineHeight: 1.5 }}>{beneficiarios.some(b => b.via !== 'lincoin') ? `${beneficiarios.filter(b => b.via !== 'lincoin').length} cuenta(s) guardada(s)` : 'Aún no agregas una cuenta bancaria o llave Bre-B'}</p>
+                  <p style={{ fontSize: 14, color: C.sub, margin: '6px 0 0', lineHeight: 1.5 }}>{beneficiarios.length ? `${beneficiarios.length} beneficiario(s) inscrito(s)` : 'Aún no agregas una cuenta bancaria o llave Bre-B'}</p>
                 </div>
-                <BotonSecundario onClick={() => { setBenForm({ name: nombre, via: 'breb', detail: '', bank: '' }); setPanel('beneficiario'); }} style={{ padding: '13px 22px' }}>Agregar</BotonSecundario>
+                <BotonSecundario onClick={() => setVista('beneficiarios')} style={{ padding: '13px 22px' }}>Agregar</BotonSecundario>
               </div>
             </Tarjeta>
             <Tarjeta>
@@ -503,7 +510,7 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
               <button onClick={() => setVista('beneficiarios')} style={{ fontFamily: FONT, fontSize: 15, fontWeight: 700, color: C.verde, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer' }}>Ver todos →</button>
             </div>
             <div className="flex items-start" style={{ gap: 28, marginTop: 24, overflowX: 'auto', paddingBottom: 4 }}>
-              <button onClick={() => { setBenForm({ name: '', via: 'lincoin', detail: '', bank: '' }); setPanel('beneficiario'); }} className="persona-ben" style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontFamily: FONT, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, minWidth: 90 }}>
+              <button onClick={() => setVista('beneficiarios')} className="persona-ben" style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontFamily: FONT, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, minWidth: 90 }}>
                 <span className="persona-ben-av" style={{ width: 50, height: 50, borderRadius: '50%', border: `1px dashed ${C.medio}`, display: 'grid', placeItems: 'center', color: C.text }}><Plus size={18} /></span>
                 <span style={{ fontSize: 14, fontWeight: 700, color: C.text }}>Nuevo</span>
               </button>
@@ -511,7 +518,7 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
                 <button key={b.id} onClick={() => abrirEnviar(b)} className="persona-ben" style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontFamily: FONT, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, minWidth: 90 }}>
                   <span className="persona-ben-av" style={{ width: 50, height: 50, borderRadius: '50%', background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.bordeFuerte}`, display: 'grid', placeItems: 'center', fontSize: 14, fontWeight: 800, color: C.text }}>{iniciales(b.name)}</span>
                   <span style={{ fontSize: 14, fontWeight: 700, color: C.text, maxWidth: 110, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.name}</span>
-                  <span style={{ fontSize: 12, color: C.sub, marginTop: -6 }}>{b.via === 'banco' && b.bank ? b.bank : VIA_TXT[b.via]}</span>
+                  <span style={{ fontSize: 12, color: C.sub, marginTop: -6, maxWidth: 110, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.via}</span>
                 </button>
               ))}
             </div>
@@ -563,30 +570,15 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
           </Tarjeta>
         )}
 
+        {/* Beneficiarios: la MISMA sección que Empresas — inscripción, AML y
+            verificación idénticas. Enviar desde ahí abre el panel con el
+            beneficiario cargado. */}
         {vista === 'beneficiarios' && (
-          <Tarjeta>
-            <div className="flex items-center justify-between" style={{ gap: 10 }}>
-              <div><h1 style={{ fontSize: 24, fontWeight: 800, letterSpacing: '-0.5px', margin: 0 }}>Beneficiarios</h1><p style={{ fontSize: 14, color: C.sub, margin: '4px 0 0' }}>Personas Lincoin, cuentas y llaves a las que envías seguido.</p></div>
-              <BotonPrimario onClick={() => { setBenForm({ name: '', via: 'lincoin', detail: '', bank: '' }); setPanel('beneficiario'); }} style={{ padding: '11px 20px', display: 'inline-flex', alignItems: 'center', gap: 8 }}><Plus size={15} /> Nuevo</BotonPrimario>
-            </div>
-            {beneficiarios.length === 0 ? (
-              <p style={{ fontSize: 14, color: C.tenue, margin: '24px 0 8px', lineHeight: 1.5 }}>Todavía no tienes beneficiarios. Agrega el ID Lincoin de una persona, un Nequi, una llave Bre-B o una cuenta bancaria.</p>
-            ) : (
-              <div style={{ marginTop: 18, display: 'flex', flexDirection: 'column' }}>
-                {beneficiarios.map(b => (
-                  <div key={b.id} className="flex items-center" style={{ gap: 14, padding: '14px 0', borderTop: `1px solid ${C.borde}` }}>
-                    <span style={{ width: 44, height: 44, borderRadius: '50%', background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.bordeFuerte}`, display: 'grid', placeItems: 'center', fontSize: 13, fontWeight: 800 }}>{iniciales(b.name)}</span>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <p style={{ fontSize: 15, fontWeight: 700, margin: 0 }}>{b.name}</p>
-                      <p style={{ fontSize: 13, color: C.sub, margin: '2px 0 0' }}>{b.via === 'banco' && b.bank ? `${b.bank} · ` : `${VIA_TXT[b.via]} · `}<span style={{ fontFamily: b.via === 'lincoin' ? MONO : FONT }}>{b.detail}</span></p>
-                    </div>
-                    <BotonSecundario onClick={() => abrirEnviar(b)} style={{ padding: '9px 14px', fontSize: 13 }}>Enviar</BotonSecundario>
-                    <button onClick={() => setBenQuitar(b)} title="Quitar" style={{ background: 'transparent', border: `1px solid ${C.bordeFuerte}`, color: C.sub, borderRadius: 10, padding: '9px 10px', cursor: 'pointer' }}><X size={14} /></button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </Tarjeta>
+          <ContactsSection
+            vista="beneficiarios"
+            onBack={() => setVista('inicio')}
+            onSendTo={(c: MouvContact) => abrirEnviar({ id: String(c.id), name: c.name, via: viaDe(c), contacto: c })}
+          />
         )}
 
         {vista === 'ayuda' && (
@@ -746,24 +738,6 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
         </Drawer>
       )}
 
-      {panel === 'beneficiario' && (
-        <Drawer titulo="Nuevo beneficiario" sub="Queda guardado para enviarle en dos toques." onCerrar={() => setPanel(null)}>
-          <form onSubmit={async e => { e.preventDefault(); if (!benForm.name.trim() || !benForm.detail.trim()) return; const ok = await guardarBeneficiarios([{ id: crypto.randomUUID(), name: benForm.name.trim(), via: benForm.via, detail: benForm.detail.trim(), bank: benForm.bank.trim() || undefined }, ...beneficiarios]); if (ok) { setPanel(null); avisar('Beneficiario guardado.'); } }} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            <div><Etiqueta>NOMBRE</Etiqueta><Campo value={benForm.name} onChange={e => setBenForm({ ...benForm, name: e.target.value })} placeholder="Ej. Mamá" autoFocus /></div>
-            <div><Etiqueta>VÍA</Etiqueta>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                {(Object.keys(VIA_TXT) as Beneficiario['via'][]).map(v => (
-                  <button key={v} type="button" onClick={() => setBenForm({ ...benForm, via: v })} style={{ fontFamily: FONT, fontSize: 13.5, fontWeight: 700, color: C.text, background: benForm.via === v ? 'rgba(255,255,255,0.07)' : 'transparent', border: `1px solid ${benForm.via === v ? C.text : C.bordeFuerte}`, borderRadius: 10, padding: '11px', cursor: 'pointer' }}>{VIA_TXT[v]}</button>
-                ))}
-              </div>
-            </div>
-            <div><Etiqueta>{benForm.via === 'lincoin' ? 'ID LINCOIN' : benForm.via === 'nequi' ? 'CELULAR' : benForm.via === 'breb' ? 'LLAVE BRE-B' : 'NÚMERO DE CUENTA'}</Etiqueta><Campo value={benForm.detail} onChange={e => setBenForm({ ...benForm, detail: benForm.via === 'lincoin' ? e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8) : e.target.value })} placeholder={benForm.via === 'lincoin' ? 'Ej. C10ED1' : ''} style={benForm.via === 'lincoin' ? { fontFamily: MONO, letterSpacing: '3px', fontWeight: 700 } : undefined} /></div>
-            {benForm.via === 'banco' && <div><Etiqueta>BANCO</Etiqueta><Campo value={benForm.bank} onChange={e => setBenForm({ ...benForm, bank: e.target.value })} placeholder="Ej. Bancolombia" /></div>}
-            <BotonPrimario type="submit" disabled={!benForm.name.trim() || !benForm.detail.trim()}>Guardar</BotonPrimario>
-          </form>
-        </Drawer>
-      )}
-
       {panel === 'seguridad' && (
         <Drawer titulo="Seguridad" sub="Verificación en dos pasos con tu app de autenticación." onCerrar={() => setPanel(null)}>
           {mfaRespaldo ? (
@@ -862,7 +836,6 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
         </Drawer>
       )}
 
-      {benQuitar && <ConfirmarModal titulo={`¿Quitar a ${benQuitar.name}?`} texto="Solo sale de tu lista de beneficiarios." confirmar="Quitar" peligro onConfirmar={async () => { await guardarBeneficiarios(beneficiarios.filter(x => x.id !== benQuitar.id)); setBenQuitar(null); }} onCancelar={() => setBenQuitar(null)} />}
       {confirmarSalir && <ConfirmarModal titulo="¿Cerrar sesión?" texto="Para volver a entrar necesitarás tu correo y tu contraseña." confirmar="Cerrar sesión" onConfirmar={() => { setConfirmarSalir(false); onLogout(); }} onCancelar={() => setConfirmarSalir(false)} />}
     </div>
   );
