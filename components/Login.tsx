@@ -13,13 +13,28 @@ interface LoginProps {
   onLoginSuccess: (role?: 'business' | 'personal' | 'admin') => void;
   onBack: () => void;
   userRole?: 'business' | 'personal' | 'contador';
+  /** Mensaje que trae App (p. ej. Google entró con una cuenta del otro portal). */
+  errorInicial?: string | null;
 }
 
-export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, onBack, userRole = 'business' }) => {
+// Cada portal es para SU tipo de cuenta: Personas para cuentas Persona,
+// Empresas → Usuario para cuentas Empresa. Por Contabilidad entra cualquier
+// cuenta que no sea admin (el vínculo se resuelve adentro con el ID). Si la
+// cuenta no corresponde al portal, NO entra: se cierra la sesión y se dice
+// por dónde debe entrar. Devuelve el mensaje, o null si sí corresponde.
+export const errorDePortal = (portal: string, rolCuenta?: string): string | null => {
+  if (!rolCuenta || rolCuenta === 'admin' || portal === 'contador' || rolCuenta === portal) return null;
+  if (rolCuenta === 'personal') return 'Esta cuenta es de Personas. Este es el portal de Empresas: entra por Personas en lincoin.me/ingresar_personas.';
+  if (rolCuenta === 'contador') return 'Esta cuenta es de contador. Entra por Empresas → Contabilidad.';
+  return 'Esta cuenta es de Empresas. Este es el portal de Personas: entra por Empresas → Usuario en lincoin.me/ingresar_empresas.';
+};
+
+export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, onBack, userRole = 'business', errorInicial = null }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(errorInicial);
+  useEffect(() => { if (errorInicial) setErrorMsg(errorInicial); }, [errorInicial]);
   const [isLoading, setIsLoading] = useState(false);
 
   // Forgot Password State
@@ -79,19 +94,8 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
         return;
       }
 
-      // Por Contabilidad entra cualquier cuenta que no sea admin: el vínculo
-      // con la empresa se resuelve adentro, con el ID.
-      if (user && userRole !== 'admin' && userRole !== 'contador' && user.role !== 'admin' && user.role !== userRole) {
-        logoutUser();
-        setErrorMsg(
-          user.role === 'personal'
-            ? 'Tu cuenta es de tipo Personal. Por favor inicia sesión en la sección de Personas.'
-            : user.role === 'contador'
-              ? 'Tu cuenta es de contador. Entra por Empresas → Contabilidad.'
-              : 'Tu cuenta es de tipo Empresas. Por favor inicia sesión en Empresas → Usuario.'
-        );
-        return;
-      }
+      const malPortal = errorDePortal(userRole, user.role);
+      if (malPortal) { logoutUser(); setErrorMsg(malPortal); return; }
 
       if (config.maintenanceMode && user!.role !== 'admin') {
         logoutUser();
@@ -118,6 +122,14 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
       setMfaError('Código incorrecto o expirado. Intenta nuevamente.');
       setMfaCode('');
       return;
+    }
+    // La misma regla que sin 2FA: el código correcto no abre el portal
+    // equivocado. Antes este camino se saltaba la revisión y una cuenta de
+    // Empresas con 2FA entraba por Personas.
+    const malPortal = errorDePortal(userRole, user.role);
+    if (malPortal) { await logoutUser(); setMfaCode(''); setErrorMsg(malPortal); return; }
+    if (config.maintenanceMode && user.role !== 'admin') {
+      await logoutUser(); setMfaCode(''); setErrorMsg('El sistema se encuentra en mantenimiento. Solo administradores pueden ingresar.'); return;
     }
     onLoginSuccess(user.role as 'business' | 'personal' | 'admin');
   };

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Dashboard } from './components/Dashboard';
-import { Login } from './components/Login';
+import { Login, errorDePortal } from './components/Login';
 import { Register } from './components/Register';
 import { EmailConfirmation } from './components/EmailConfirmation';
 import { OnboardingIntro } from './components/OnboardingIntro';
@@ -38,6 +38,17 @@ const vistaDelRol = (role?: string): ViewState => {
   if (role !== 'admin' && (role === 'contador' || portalActual() === 'contabilidad')) return 'contador-dashboard';
   return role === 'personal' ? 'persona-dashboard' : 'personal-dashboard';
 };
+// Con Google la página vuelve a "/" y se pierde por qué portal se entró; la
+// pista queda en localStorage (la escribe loginWithGoogle) y vale 15 minutos.
+const PISTA_OAUTH = 'cuypay_oauth_role';
+const portalDeGoogle = (): 'business' | 'personal' | null => {
+  try {
+    const p = JSON.parse(localStorage.getItem(PISTA_OAUTH) || 'null');
+    if ((p?.role === 'personal' || p?.role === 'business') && Date.now() - Number(p.at || 0) < 15 * 60_000) return p.role;
+  } catch { /* pista ilegible */ }
+  return null;
+};
+const borrarPistaGoogle = () => { try { localStorage.removeItem(PISTA_OAUTH); } catch { /* */ } };
 
 // Direcciones de las pantallas que maneja App (las del portal de empresas
 // las maneja el propio panel con el prefijo empresas_). La barra del
@@ -271,6 +282,9 @@ const App: React.FC = () => {
     if (r?.role === 'contador' || r?.view === 'contador-dashboard') fijarPortal('contabilidad');
     return r?.role ?? 'business';
   });
+  // Mensaje del portal equivocado ("esta cuenta es de Empresas…"): lo pone
+  // la guarda de abajo y lo muestra la pantalla de Login.
+  const [errorPortal, setErrorPortal] = useState<string | null>(null);
 
   // Vista ↔ dirección para las pantallas de App. El portal de empresas
   // escribe las suyas (empresas_*); acá no se toca esa vista.
@@ -387,9 +401,34 @@ const App: React.FC = () => {
         return;
       }
 
+      // ── GUARDA DE PORTAL ──────────────────────────────────────────────
+      // Cada portal es para su tipo de cuenta. La sesión la abre el listener
+      // de Supabase ANTES de que la pantalla de Login pueda revisar el rol,
+      // y este efecto mandaba derecho al panel del rol: una cuenta de
+      // Empresas que entraba por Personas (con o sin 2FA, o con Google)
+      // terminaba adentro. Ahora, si hay una pantalla de ingreso de un
+      // portal en curso —o se acaba de volver de Google con la pista del
+      // portal—, se compara con el rol de la cuenta y, si no corresponde,
+      // se cierra la sesión y se muestra por dónde debe entrar.
+      const pistaGoogle = portalDeGoogle();
+      const portalEnCurso: UserRole | null = currentView === 'login' ? userRole : pistaGoogle;
+      if (portalEnCurso && portalEnCurso !== 'admin') {
+        const mal = errorDePortal(portalEnCurso, currentUser.role);
+        if (mal) {
+          borrarPistaGoogle();
+          fijarPortal(null);
+          setErrorPortal(mal);
+          setUserRole(portalEnCurso);
+          setCurrentView('login');
+          logoutUser();
+          return;
+        }
+      }
+      if (pistaGoogle) borrarPistaGoogle();
+
       // Check if we are currently in a registration flow to prevent premature redirection.
       const isInAuthFlow = ['register', 'confirmation', 'role-selection'].includes(currentView);
-      
+
       const vista = vistaDelRol(currentUser.role);
       if (currentUser.kycStatus === 'pending' || currentUser.kycStatus === 'in_progress' || currentUser.kycStatus === 'in_review' || currentUser.kycStatus === 'rejected') {
           // Cada rol va derecho a SU panel; el banner de KYC/KYB vive adentro.
@@ -433,9 +472,9 @@ const App: React.FC = () => {
     }
   };
   
-  const navigateToLogin = () => setCurrentView('role-selection');
-  
-  const navigateToLanding = () => setCurrentView('landing');
+  const navigateToLogin = () => { setErrorPortal(null); setCurrentView('role-selection'); };
+
+  const navigateToLanding = () => { setErrorPortal(null); setCurrentView('landing'); };
 
   // Handler to navigate to static pages
   const navigateToStaticPage = (pageKey: string) => {
@@ -446,6 +485,7 @@ const App: React.FC = () => {
   
   const handleBusinessSelected = () => {
     fijarPortal(null);
+    setErrorPortal(null);
     setUserRole('business');
     setCurrentView('login');
   };
@@ -454,6 +494,7 @@ const App: React.FC = () => {
   // Persona (solo COP por ahora). Antes mandaba a descargar la app.
   const handlePersonalSelected = () => {
     fijarPortal(null);
+    setErrorPortal(null);
     setUserRole('personal');
     setCurrentView('login');
   };
@@ -463,6 +504,7 @@ const App: React.FC = () => {
   // que la sesión caiga en Contabilidad y no en el panel de su cuenta.
   const handleContadorSelected = () => {
     fijarPortal('contabilidad');
+    setErrorPortal(null);
     setUserRole('contador');
     setCurrentView('login');
   };
@@ -481,6 +523,11 @@ const App: React.FC = () => {
       window.location.replace('/admin-empresas');
       return;
     }
+    // Segunda barrera (la primera es la guarda del efecto de sesión): el
+    // portal por el que se entró tiene que ser el de la cuenta.
+    const mal = userRole !== 'admin' ? errorDePortal(userRole, role) : null;
+    if (mal) { setErrorPortal(mal); setCurrentView('login'); logoutUser(); return; }
+    setErrorPortal(null);
     setCurrentView(vistaDelRol(role));
   };
 
@@ -519,6 +566,7 @@ const App: React.FC = () => {
         return (
           <Login
             userRole={userRole !== 'admin' ? userRole : 'business'}
+            errorInicial={errorPortal}
             onRegisterClick={() => navigateToRegister(userRole !== 'admin' ? userRole : 'business')}
             onLoginSuccess={handleLoginSuccess}
             onBack={navigateToLanding}
@@ -560,9 +608,10 @@ const App: React.FC = () => {
           );
         case 'login':
           return (
-            <Login 
+            <Login
               userRole={userRole !== 'admin' ? userRole : 'business'}
-              onRegisterClick={() => navigateToRegister(userRole !== 'admin' ? userRole : 'business')} 
+              errorInicial={errorPortal}
+              onRegisterClick={() => navigateToRegister(userRole !== 'admin' ? userRole : 'business')}
               onLoginSuccess={handleLoginSuccess}
               onBack={navigateToLanding}
             />
