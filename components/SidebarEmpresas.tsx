@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { ConfirmarModal } from './ConfirmarModal';
 
 // ─────────────────────────────────────────────────────────────
 // SidebarEmpresas — la barra lateral de la app de empresas.
@@ -116,6 +117,8 @@ export const SidebarEmpresas: React.FC<Props> = ({
   irA, onEnviar, onConvertir, onPerfil, onLogout, abiertaMovil, cerrarMovil,
 }) => {
   const ir = (v: string) => () => { irA(v); cerrarMovil(); };
+  // "¿Cerrar sesión?" con la cara de Lincoin, no el cuadro del navegador.
+  const [confirmarSalir, setConfirmarSalir] = useState(false);
   const inicial = String(nombre || 'L').trim().charAt(0).toUpperCase();
 
   const principales: Item[] = [
@@ -223,10 +226,20 @@ export const SidebarEmpresas: React.FC<Props> = ({
 
           <Fila it={{
             clave: 'logout', etiqueta: 'Cerrar sesión', icono: I.puerta,
-            onClick: () => { if (window.confirm('¿Cerrar sesión?')) onLogout(); },
+            onClick: () => setConfirmarSalir(true),
           }} />
         </div>
       </aside>
+
+      {confirmarSalir && (
+        <ConfirmarModal
+          titulo="¿Cerrar sesión?"
+          texto="Para volver a entrar necesitarás tu correo, tu contraseña y el código de verificación."
+          confirmar="Cerrar sesión"
+          onConfirmar={() => { setConfirmarSalir(false); onLogout(); }}
+          onCancelar={() => setConfirmarSalir(false)}
+        />
+      )}
 
       <style>{`
         .lincoin-sidebar { height: 100vh; position: sticky; top: 0; }

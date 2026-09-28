@@ -7,7 +7,7 @@
 //  verificar el vínculo raw_data.contadorDe.
 // ══════════════════════════════════════════════════════════════════
 import React, { useEffect, useMemo, useState } from 'react';
-import { LogOut, RefreshCw, X } from 'lucide-react';
+import { LogOut, RefreshCw, X, Search, Clock, Building2 } from 'lucide-react';
 import { useDatabase } from '../context/DatabaseContext';
 import { llamarFuncion } from '../lib/edge';
 import { ContabilidadDashboard } from './ContabilidadDashboard';
@@ -35,21 +35,54 @@ const mapTx = (t: any) => ({
 
 type Datos = { empresa: { id: string; nombre: string; email: string; nit: string }; transactions: any[]; comprobantes: any[]; comprobantesError: string | null };
 
+type Vinculo = { id: string; nombre: string };
+
 export const ContadorDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const { currentUser } = useDatabase();
   const [datos, setDatos] = useState<Datos | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cargando, setCargando] = useState(true);
   const [detalle, setDetalle] = useState<any | null>(null);
+  // Vínculos del contador: empresas que lo aprobaron y solicitudes en espera.
+  const [aprobadas, setAprobadas] = useState<Vinculo[] | null>(null);
+  const [pendientes, setPendientes] = useState<Vinculo[]>([]);
+  const [empresaSel, setEmpresaSel] = useState<string | null>(null);
+  const [codigo, setCodigo] = useState('');
+  const [pidiendo, setPidiendo] = useState(false);
+  const [avisoPedido, setAvisoPedido] = useState<string | null>(null);
 
-  const cargar = async () => {
+  const cargarDatos = async (empresaId: string) => {
     setCargando(true); setError(null);
-    const r = await llamarFuncion('contador', { action: 'datos' }, 60000);
+    const r = await llamarFuncion('contador', { action: 'datos', empresaId }, 60000);
     setCargando(false);
     if (!r?.ok) { setError(r?.error ?? 'No se pudo cargar la contabilidad.'); return; }
     setDatos({ empresa: r.empresa, transactions: (r.transactions ?? []).map(mapTx), comprobantes: r.comprobantes ?? [], comprobantesError: r.comprobantesError ?? null });
   };
-  useEffect(() => { cargar(); }, []);
+  const cargarEstado = async () => {
+    setCargando(true); setError(null);
+    const r = await llamarFuncion('contador', { action: 'estado' }, 30000);
+    if (!r?.ok) { setCargando(false); setError(r?.error ?? 'No se pudo consultar tu acceso.'); setAprobadas([]); return; }
+    const ap: Vinculo[] = r.aprobadas ?? [];
+    setAprobadas(ap); setPendientes(r.pendientes ?? []);
+    const elegida = empresaSel && ap.some(e => e.id === empresaSel) ? empresaSel : ap[0]?.id ?? null;
+    setEmpresaSel(elegida);
+    if (elegida) await cargarDatos(elegida); else { setDatos(null); setCargando(false); }
+  };
+  useEffect(() => { cargarEstado(); }, []);
+  const cargar = () => (empresaSel ? cargarDatos(empresaSel) : cargarEstado());
+
+  const pedirAcceso = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const c = codigo.trim().toUpperCase();
+    if (c.length < 4 || pidiendo) return;
+    setPidiendo(true); setError(null); setAvisoPedido(null);
+    const r = await llamarFuncion('contador', { action: 'solicitar', codigoEmpresa: c }, 30000);
+    setPidiendo(false);
+    if (!r?.ok) { setError(r?.error ?? 'No se pudo enviar la solicitud.'); return; }
+    setCodigo('');
+    setAvisoPedido(r.estado === 'aprobado' ? `Ya tienes acceso a ${r.empresa?.nombre}.` : `Listo. ${r.empresa?.nombre} tiene que aprobarte desde su Contabilidad. Cuando lo haga, entra aquí y verás sus cuentas.`);
+    cargarEstado();
+  };
 
   const empresaId = datos?.empresa.id ?? null;
   const transactions = useMemo(() => datos?.transactions ?? [], [datos]);
@@ -66,7 +99,14 @@ export const ContadorDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout
         <div className="flex items-center" style={{ gap: 10, flexWrap: 'wrap' }}>
           {datos && (
             <div style={{ textAlign: 'right' }}>
-              <p style={{ fontSize: 13.5, fontWeight: 700, margin: 0 }}>{datos.empresa.nombre || datos.empresa.email}</p>
+              {(aprobadas?.length ?? 0) > 1 ? (
+                <select value={empresaSel ?? ''} onChange={e => { setEmpresaSel(e.target.value); cargarDatos(e.target.value); }}
+                  style={{ fontFamily: FONT, fontSize: 13, fontWeight: 700, color: C.text, background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.borde}`, borderRadius: 9, padding: '7px 10px' }}>
+                  {aprobadas!.map(e => <option key={e.id} value={e.id} style={{ color: '#000' }}>{e.nombre}</option>)}
+                </select>
+              ) : (
+                <p style={{ fontSize: 13.5, fontWeight: 700, margin: 0 }}>{datos.empresa.nombre || datos.empresa.email}</p>
+              )}
               <p style={{ fontSize: 11.5, color: C.sub, margin: '1px 0 0' }}>Solo lectura · {currentUser?.name || currentUser?.email}</p>
             </div>
           )}
@@ -89,7 +129,43 @@ export const ContadorDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout
         {datos?.comprobantesError && (
           <p style={{ fontSize: 12, color: C.tenue, margin: '0 0 12px' }}>Los comprobantes no se pudieron leer: {datos.comprobantesError}</p>
         )}
-        {!datos && cargando && <p style={{ fontSize: 13, color: C.sub }}>Cargando la contabilidad…</p>}
+        {!datos && cargando && <p style={{ fontSize: 13, color: C.sub }}>Cargando…</p>}
+
+        {/* Sin empresa aprobada: se pide acceso con el ID de la empresa. */}
+        {!datos && !cargando && aprobadas != null && (
+          <div style={{ maxWidth: 560, margin: '30px auto 0' }}>
+            <div style={{ background: `linear-gradient(135deg, #161A17 0%, ${C.tarjeta} 70%)`, border: `1px solid ${C.borde}`, borderRadius: 18, padding: '26px 24px', position: 'relative', overflow: 'hidden' }}>
+              <div style={{ position: 'absolute', top: -70, right: -50, width: 220, height: 220, borderRadius: '50%', background: 'radial-gradient(circle, rgba(74,222,128,0.14), transparent 65%)', pointerEvents: 'none' }} />
+              <Building2 size={26} color={C.verde} />
+              <h1 style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.5px', margin: '12px 0 0' }}>Conéctate a la empresa</h1>
+              <p style={{ fontSize: 13.5, color: C.sub, margin: '8px 0 0', lineHeight: 1.55 }}>
+                Escribe el <b style={{ color: C.text }}>ID Lincoin</b> de la empresa (se lo pides a ellos: está en su Contabilidad → Contador). Ellos aprueban tu acceso y desde ese momento ves su contabilidad aquí.
+              </p>
+              <form onSubmit={pedirAcceso} className="flex items-center flex-wrap" style={{ gap: 8, marginTop: 18 }}>
+                <div style={{ position: 'relative', flex: '1 1 200px' }}>
+                  <Search size={15} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.sub }} />
+                  <input value={codigo} onChange={e => setCodigo(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8))} placeholder="ID de la empresa" maxLength={8} autoFocus
+                    style={{ fontFamily: 'ui-monospace, monospace', width: '100%', background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.borde}`, color: C.text, borderRadius: 10, padding: '12px 12px 12px 36px', fontSize: 16, fontWeight: 700, letterSpacing: '3px', outline: 'none' }} />
+                </div>
+                <button type="submit" disabled={pidiendo || codigo.length < 4} className="lincoin-btn-white" style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, padding: '12px 18px', borderRadius: 10, border: 'none', cursor: 'pointer', opacity: pidiendo || codigo.length < 4 ? 0.6 : 1 }}>
+                  {pidiendo ? 'Enviando…' : 'Pedir acceso'}
+                </button>
+              </form>
+              {avisoPedido && <p style={{ fontSize: 13, color: C.verde, margin: '12px 0 0', lineHeight: 1.5 }}>{avisoPedido}</p>}
+            </div>
+
+            {pendientes.length > 0 && (
+              <div style={{ marginTop: 14, background: C.tarjeta, border: `1px solid ${C.borde}`, borderRadius: 14, padding: '14px 18px' }}>
+                <p style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '1.2px', color: C.sub, margin: 0 }}>EN ESPERA DE APROBACIÓN</p>
+                {pendientes.map(p => (
+                  <p key={p.id} className="flex items-center" style={{ fontSize: 13.5, fontWeight: 700, margin: '8px 0 0', gap: 8 }}><Clock size={14} color={C.sub} /> {p.nombre}</p>
+                ))}
+                <p style={{ fontSize: 12, color: C.tenue, margin: '10px 0 0', lineHeight: 1.5 }}>La empresa te aprueba desde su Contabilidad → Contador. Toca "Actualizar" arriba cuando te avisen.</p>
+              </div>
+            )}
+          </div>
+        )}
+
         {datos && (
           <ContabilidadDashboard
             transactions={transactions}

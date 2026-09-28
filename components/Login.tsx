@@ -79,7 +79,9 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
         return;
       }
 
-      if (user && userRole !== 'admin' && user.role !== 'admin' && user.role !== userRole) {
+      // Por Contabilidad entra cualquier cuenta que no sea admin: el vínculo
+      // con la empresa se resuelve adentro, con el ID.
+      if (user && userRole !== 'admin' && userRole !== 'contador' && user.role !== 'admin' && user.role !== userRole) {
         logoutUser();
         setErrorMsg(
           user.role === 'personal'
@@ -210,7 +212,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
 
       <h1 className="text-2xl font-bold text-[#0C0E0D] text-center mb-10 anim-fade-up">
         {userRole === 'business' ? <>¡Te damos la bienvenida a Lincoin<br />empresas!</>
-          : userRole === 'contador' ? <>Contabilidad de tu empresa<br /><span className="text-base font-semibold text-slate-600">Entra con el correo que te dio la empresa</span></>
+          : userRole === 'contador' ? <>Contabilidad<br /><span className="text-base font-semibold text-slate-600">Entra con tu cuenta y luego escribe el ID de la empresa</span></>
           : <>¡Te damos la bienvenida a Lincoin!</>}
       </h1>
 
@@ -302,9 +304,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
 
         <div className="flex justify-between items-center text-sm pt-2">
           <div className="text-slate-900">
-            {userRole === 'contador'
-              ? <span className="text-slate-600">La empresa crea tu acceso desde Contabilidad.</span>
-              : <>¿Eres nuevo? <button onClick={onRegisterClick} className="text-[#0C0E0D] font-bold hover:underline">Regístrate</button></>}
+            ¿Eres nuevo? <button onClick={onRegisterClick} className="text-[#0C0E0D] font-bold hover:underline">{userRole === 'contador' ? 'Crea tu cuenta de contador' : 'Regístrate'}</button>
           </div>
           <button onClick={() => setIsForgotModalOpen(true)} className="text-slate-800 hover:text-[#0C0E0D] transition-colors">
             Recuperar contraseña

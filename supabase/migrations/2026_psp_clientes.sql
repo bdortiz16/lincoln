@@ -79,7 +79,7 @@ BEGIN
   SELECT id::text, full_name, role, COALESCE(balances, '{}'::jsonb)
     INTO v_cliente_id, v_cliente_nombre, v_cliente_rol, v_cliente_bal
     FROM public.users
-   WHERE raw_data->>'ownReferralCode' = upper(btrim(p_codigo))
+   WHERE COALESCE(NULLIF(raw_data->>'ownReferralCode', ''), upper(right(id::text, 6))) = upper(btrim(p_codigo))
    LIMIT 1;
 
   IF v_cliente_id IS NULL THEN
@@ -170,5 +170,10 @@ $psp$;
 
 REVOKE ALL ON FUNCTION public.lincoin_cargar_cliente(TEXT, NUMERIC, TEXT) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.lincoin_cargar_cliente(TEXT, NUMERIC, TEXT) TO authenticated;
+
+-- Toda cuenta queda con su ID Lincoin guardado (las filas viejas no lo traían).
+UPDATE public.users
+   SET raw_data = COALESCE(raw_data, '{}'::jsonb) || jsonb_build_object('ownReferralCode', upper(right(id::text, 6)))
+ WHERE COALESCE(raw_data->>'ownReferralCode', '') = '';
 
 NOTIFY pgrst, 'reload schema';

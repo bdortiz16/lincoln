@@ -29,8 +29,15 @@ type ViewState = 'landing' | 'role-selection' | 'login' | 'register' | 'confirma
 type UserRole = 'business' | 'personal' | 'contador' | 'admin';
 
 // Cada rol tiene su panel. Persona y contador NO entran al de empresas.
-const vistaDelRol = (role?: string): ViewState =>
-  role === 'personal' ? 'persona-dashboard' : role === 'contador' ? 'contador-dashboard' : 'personal-dashboard';
+// El portal de Contabilidad no es un rol: es POR DÓNDE entró la cuenta
+// (Empresas → Contabilidad). Se recuerda en la sesión del navegador.
+const PORTAL_KEY = 'lincoin_portal';
+const portalActual = (): string => { try { return sessionStorage.getItem(PORTAL_KEY) ?? ''; } catch { return ''; } };
+const fijarPortal = (p: 'contabilidad' | null) => { try { if (p) sessionStorage.setItem(PORTAL_KEY, p); else sessionStorage.removeItem(PORTAL_KEY); } catch { /* sin storage */ } };
+const vistaDelRol = (role?: string): ViewState => {
+  if (role !== 'admin' && (role === 'contador' || portalActual() === 'contabilidad')) return 'contador-dashboard';
+  return role === 'personal' ? 'persona-dashboard' : 'personal-dashboard';
+};
 
 // Direcciones de las pantallas que maneja App (las del portal de empresas
 // las maneja el propio panel con el prefijo empresas_). La barra del
@@ -256,7 +263,11 @@ const App: React.FC = () => {
   const [staticPageKey, setStaticPageKey] = useState<string>('privacy'); // State for static page content
   const [email, setEmail] = useState('');
   const [showDashboardBanner, setShowDashboardBanner] = useState(false);
-  const [userRole, setUserRole] = useState<UserRole>(() => rutaInicial()?.role ?? 'business');
+  const [userRole, setUserRole] = useState<UserRole>(() => {
+    const r = rutaInicial();
+    if (r?.role === 'contador' || r?.view === 'contador-dashboard') fijarPortal('contabilidad');
+    return r?.role ?? 'business';
+  });
 
   // Vista ↔ dirección para las pantallas de App. El portal de empresas
   // escribe las suyas (empresas_*); acá no se toca esa vista.
@@ -400,8 +411,6 @@ const App: React.FC = () => {
 
   // Navigation handlers
   const navigateToRegister = (role?: UserRole) => {
-    // Un contador no se registra: lo crea la empresa desde Contabilidad.
-    if (role === 'contador') { setUserRole('contador'); setCurrentView('login'); return; }
     if (role && role !== 'admin') setUserRole(role);
 
     if (currentUser) {
@@ -424,6 +433,7 @@ const App: React.FC = () => {
   };
   
   const handleBusinessSelected = () => {
+    fijarPortal(null);
     setUserRole('business');
     setCurrentView('login');
   };
@@ -431,12 +441,16 @@ const App: React.FC = () => {
   // Personas entra por la web como cualquier cuenta: su panel es el de
   // Persona (solo COP por ahora). Antes mandaba a descargar la app.
   const handlePersonalSelected = () => {
+    fijarPortal(null);
     setUserRole('personal');
     setCurrentView('login');
   };
 
-  // Empresas → Contabilidad: el contador entra con su propia cuenta.
+  // Empresas → Contabilidad: el contador entra con su propia cuenta (la que
+  // sea) y luego escribe el ID de la empresa. Se recuerda el portal para
+  // que la sesión caiga en Contabilidad y no en el panel de su cuenta.
   const handleContadorSelected = () => {
+    fijarPortal('contabilidad');
     setUserRole('contador');
     setCurrentView('login');
   };
@@ -479,6 +493,7 @@ const App: React.FC = () => {
     setLoggingOut(false);
     // Al salir, la dirección vuelve al inicio: no se queda en /empresas_….
     try { window.history.replaceState({}, '', '/'); } catch { /* sin history */ }
+    fijarPortal(null);
     setCurrentView('landing');
   };
 
@@ -543,7 +558,8 @@ const App: React.FC = () => {
         case 'register':
           return (
             <Register 
-              userRole={userRole === 'personal' ? 'personal' : 'business'}
+              userRole={userRole === 'business' ? 'business' : 'personal'}
+              esContador={userRole === 'contador'}
               onSuccess={handleRegisterSuccess} 
               onLoginClick={navigateToLogin}
               onBack={navigateToLanding}
@@ -554,7 +570,7 @@ const App: React.FC = () => {
             <EmailConfirmation 
               email={email}
               onValidated={handleEmailValidated}
-              onBack={() => navigateToRegister(userRole === 'personal' ? 'personal' : 'business')}
+              onBack={() => navigateToRegister(userRole !== 'admin' ? userRole : 'business')}
             />
           );
         case 'onboarding-intro':

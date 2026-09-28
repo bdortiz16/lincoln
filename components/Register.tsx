@@ -19,6 +19,8 @@ interface RegisterProps {
   onLoginClick: () => void;
   onBack: () => void;
   userRole?: 'business' | 'personal';
+  /** Registro desde Empresas → Contabilidad: misma cuenta simple, otro título. */
+  esContador?: boolean;
 }
 
 const countries = [
@@ -51,7 +53,7 @@ const simulationData = [
   },
 ];
 
-export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onBack, userRole = 'business' }) => {
+export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onBack, userRole = 'business', esContador = false }) => {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [email, setEmail] = useState('');
@@ -227,7 +229,7 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
             /* PERSONAL FORM */
             <div className="space-y-6 max-w-lg mx-auto lg:mx-0 w-full animate-in fade-in duration-500">
                 <h1 className="text-2xl font-bold text-[#0C0E0D] text-center lg:text-left mb-4">
-                  Regístrate a Lincoin Personas
+                  {esContador ? 'Crea tu cuenta para Contabilidad' : 'Regístrate a Lincoin Personas'}
                 </h1>
 
                 {/* Google OAuth */}

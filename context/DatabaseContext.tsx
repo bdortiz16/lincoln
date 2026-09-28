@@ -1242,6 +1242,16 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     }
   };
 
+  // ID Lincoin: toda cuenta tiene uno (los 6 últimos caracteres de su id).
+  // Algunas filas viejas no lo traen en raw_data y la pantalla decía
+  // "GENERANDO…" para siempre, y nadie podía encontrarlas por ID. Apenas
+  // entra una cuenta sin código, se lo guarda.
+  useEffect(() => {
+    const cu: any = currentUser;
+    if (!cu?.id || cu.ownReferralCode || cu.role === 'admin' || !isSupabaseConfigured) return;
+    updateUserRawData(cu.id, { ownReferralCode: String(cu.id).slice(-6).toUpperCase() }).catch(() => { /* se reintenta en la próxima entrada */ });
+  }, [currentUser?.id, (currentUser as any)?.ownReferralCode]);
+
   const saveTx = async (tx: any) => {
     const { userId, type, amount, currency, status, ...rest } = tx;
 

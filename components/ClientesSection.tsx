@@ -16,6 +16,7 @@ import { Search, UserPlus, Trash2, X, Wallet, ArrowUpRight } from 'lucide-react'
 import { useDatabase } from '../context/DatabaseContext';
 import { supabase } from '../lib/supabaseClient';
 import { llamarFuncion } from '../lib/edge';
+import { ConfirmarModal } from './ConfirmarModal';
 
 const FONT = 'Archivo, system-ui, sans-serif';
 const C = {
@@ -72,8 +73,9 @@ export const ClientesSection: React.FC<Props> = ({ showToast, handleActionRestri
     if (clientes.some(x => x.id === c.id)) return true;
     return guardarLista([{ id: c.id, code: c.code, name: c.name, addedAt: new Date().toISOString() }, ...clientes]);
   };
+  const [quitarA, setQuitarA] = useState<ClientePsp | null>(null);
   const quitar = async (c: ClientePsp) => {
-    if (!window.confirm(`¿Quitar a ${c.name} de tu lista de clientes? Su saldo no cambia.`)) return;
+    setQuitarA(null);
     await guardarLista(clientes.filter(x => x.id !== c.id));
   };
 
@@ -217,7 +219,7 @@ export const ClientesSection: React.FC<Props> = ({ showToast, handleActionRestri
                       <td style={{ padding: '11px 18px', borderBottom: `1px solid ${C.borde}`, whiteSpace: 'nowrap', textAlign: 'right' }}>
                         <div className="flex items-center justify-end" style={{ gap: 6 }}>
                           <button onClick={() => abrirCarga(c)} className="lincoin-btn-white" style={{ fontFamily: FONT, fontWeight: 700, fontSize: 12, padding: '7px 12px', borderRadius: 8, border: 'none', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}><Wallet size={12} /> Cargar saldo</button>
-                          <button onClick={() => quitar(c)} title="Quitar de la lista" style={{ ...botonSec, padding: '7px 9px', color: C.sub }}><Trash2 size={13} /></button>
+                          <button onClick={() => setQuitarA(c)} title="Quitar de la lista" style={{ ...botonSec, padding: '7px 9px', color: C.sub }}><Trash2 size={13} /></button>
                         </div>
                       </td>
                     </tr>
@@ -249,6 +251,11 @@ export const ClientesSection: React.FC<Props> = ({ showToast, handleActionRestri
           </div>
         )}
       </section>
+
+      {quitarA && (
+        <ConfirmarModal titulo={`¿Quitar a ${quitarA.name} de tus clientes?`} texto="Solo sale de tu lista. Su saldo y sus movimientos no cambian." confirmar="Quitar" peligro
+          onConfirmar={() => quitar(quitarA)} onCancelar={() => setQuitarA(null)} />
+      )}
 
       {/* Modal de carga */}
       {cargaPara && (

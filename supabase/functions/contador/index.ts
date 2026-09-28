@@ -1,29 +1,34 @@
 // ══════════════════════════════════════════════════════════════════
 //  contador — acceso de solo lectura a la contabilidad de una empresa
 //
-//  La empresa, desde Contabilidad, le da acceso a su contador con un correo.
-//  Se le crea una cuenta aparte (role = 'contador') atada a la empresa por
-//  raw_data.contadorDe. El contador entra por "Empresas → Contabilidad" con
-//  su propio correo y contraseña y ve SOLO la contabilidad de esa empresa:
-//  movimientos, comprobantes, facturas. Nada de saldos operables, nada de
-//  enviar, nada de configurar.
+//  El contador tiene SU cuenta en Lincoin (la que sea, menos admin). Entra
+//  por "Empresas → Contabilidad", escribe el ID Lincoin de la empresa y
+//  queda como solicitud. La empresa, desde su Contabilidad (botón
+//  "Contador"), aprueba o rechaza. Aprobado, el contador ve la contabilidad
+//  de esa empresa: movimientos, comprobantes, facturas. Nada operable.
 //
-//  Por qué pasa por acá y no por RLS: las políticas de transactions y
-//  comprobantes son "lo mío". El contador no es el dueño de nada; lo que ve
-//  se lo entrega este servidor después de verificar el vínculo, y es solo
-//  lectura por construcción: no hay acción de escritura sobre la empresa.
+//  El vínculo vive en la fila de la EMPRESA (raw_data.contadores y
+//  raw_data.contadoresSolicitudes) y solo lo escribe este servidor. Que viva
+//  del lado de la empresa importa: el contador puede editar su propio
+//  raw_data desde el navegador, así que su fila no sirve como prueba de nada.
+//
+//  Por qué la aprobación: el ID Lincoin son 6 caracteres que la empresa
+//  reparte a sus clientes. Sin aprobación, cualquiera que lo tuviera —o lo
+//  adivinara— leería la contabilidad completa.
 //
 //  Acciones (todas con JWT):
-//    crear_acceso   {email, nombre, origen}   — la empresa crea al contador
-//    listar_accesos {}                        — la empresa ve sus contadores
-//    revocar_acceso {contadorId}              — la empresa lo elimina
-//    datos          {}                        — el contador pide la contabilidad
+//    solicitar      {codigoEmpresa}   — el contador pide acceso
+//    estado         {}                — el contador ve sus vínculos
+//    datos          {empresaId?}      — el contador pide la contabilidad
+//    listar_accesos {}                — la empresa ve solicitudes y contadores
+//    aprobar        {contadorId}      — la empresa aprueba una solicitud
+//    rechazar       {contadorId}      — la empresa la descarta
+//    revocar_acceso {contadorId}      — la empresa quita un acceso aprobado
 // ══════════════════════════════════════════════════════════════════
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-const APP_URL      = (Deno.env.get('APP_BASE_URL') || 'https://www.lincoin.me').replace(/\/+$/, '')
 const db = createClient(SUPABASE_URL, SERVICE_KEY)
 
 const CORS = {
@@ -34,6 +39,7 @@ const CORS = {
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...CORS, 'Content-Type': 'application/json' } })
 
 type Quien = { id: string; email: string; role: string; nombre: string; raw: Record<string, unknown> }
+type Vinculo = { id: string; email: string; nombre: string; at: string }
 
 async function quienLlama(req: Request): Promise<Quien | null> {
   const jwt = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
@@ -45,26 +51,21 @@ async function quienLlama(req: Request): Promise<Quien | null> {
   return { id: String(fila.id), email: String(fila.email ?? user.email ?? ''), role: String(fila.role ?? ''), nombre: String(fila.full_name ?? ''), raw: (fila.raw_data ?? {}) as Record<string, unknown> }
 }
 
-// A dónde vuelve el contador desde el correo para ponerse contraseña. Solo
-// se acepta el propio dominio: un redirectTo arbitrario sería una puerta
-// para mandar el enlace de recuperación a un sitio ajeno.
-function origenSeguro(o: unknown): string {
-  const s = String(o ?? '').replace(/\/+$/, '')
-  try {
-    const u = new URL(s)
-    const host = u.hostname.toLowerCase()
-    if (u.protocol === 'https:' && (host === 'lincoin.me' || host.endsWith('.lincoin.me') || host.endsWith('.vercel.app'))) return `${u.protocol}//${u.host}`
-    if (host === 'localhost' || host === '127.0.0.1') return `${u.protocol}//${u.host}`
-  } catch { /* sin origen válido */ }
-  return APP_URL
+const codigoDe = (fila: any): string => String(fila?.raw_data?.ownReferralCode || String(fila?.id ?? '').slice(-6)).toUpperCase()
+const nombreEmpresa = (fila: any): string => String(fila?.company_name || fila?.full_name || fila?.email || '')
+const lista = (raw: any, k: string): Vinculo[] => Array.isArray(raw?.[k]) ? raw[k].filter((x: any) => x && x.id) : []
+
+async function empresaPorId(id: string) {
+  const { data } = await db.from('users').select('*').eq('id', id).maybeSingle()
+  return data && data.role === 'business' ? data : null
 }
 
-const correoValido = (e: string) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(e)
-
-async function contadoresDe(empresaId: string) {
-  const { data } = await db.from('users').select('id, email, full_name, created_at, raw_data')
-    .eq('role', 'contador').filter('raw_data->>contadorDe', 'eq', empresaId)
-  return (data ?? []).map((r: any) => ({ id: String(r.id), email: String(r.email ?? ''), nombre: String(r.full_name ?? ''), creadoEn: r.created_at ?? r.raw_data?.createdAt ?? null }))
+// Escribe SOLO las dos claves del vínculo, sobre la fila fresca.
+async function guardarVinculos(empresaId: string, contadores: Vinculo[], solicitudes: Vinculo[]) {
+  const { data: cur } = await db.from('users').select('raw_data').eq('id', empresaId).single()
+  const raw = { ...((cur?.raw_data as any) ?? {}), contadores, contadoresSolicitudes: solicitudes }
+  const { error } = await db.from('users').update({ raw_data: raw }).eq('id', empresaId)
+  return error ? error.message : null
 }
 
 Deno.serve(async (req) => {
@@ -77,104 +78,115 @@ Deno.serve(async (req) => {
 
   const yo = await quienLlama(req)
   if (!yo) return json({ ok: false, error: 'Sesión inválida' }, 401)
+  if (yo.role === 'admin') return json({ ok: false, error: 'El panel de administración no entra por acá' }, 403)
 
   try {
-    // ── La EMPRESA administra sus contadores ─────────────────────────────
-    if (accion === 'listar_accesos') {
-      if (yo.role !== 'business') return json({ ok: false, error: 'Solo una cuenta Empresa' }, 403)
-      return json({ ok: true, contadores: await contadoresDe(yo.id) })
+    // ── EL CONTADOR ──────────────────────────────────────────────────────
+    if (accion === 'solicitar') {
+      const codigo = String(body.codigoEmpresa ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '')
+      if (codigo.length < 4) return json({ ok: false, error: 'Escribe el ID Lincoin de la empresa' }, 400)
+      const { data: emp } = await db.from('users').select('*').eq('role', 'business').eq('raw_data->>ownReferralCode', codigo).limit(1).maybeSingle()
+      if (!emp) return json({ ok: false, error: 'No hay una empresa con ese ID. Pídele a la empresa que lo copie de su panel (Contabilidad → Contador).' }, 404)
+      if (String(emp.id) === yo.id) return json({ ok: false, error: 'Ese es tu propio ID' }, 400)
+
+      const aprobados = lista(emp.raw_data, 'contadores')
+      if (aprobados.some(c => c.id === yo.id)) return json({ ok: true, estado: 'aprobado', empresa: { id: String(emp.id), nombre: nombreEmpresa(emp) } })
+      const pendientes = lista(emp.raw_data, 'contadoresSolicitudes')
+      if (!pendientes.some(c => c.id === yo.id)) {
+        pendientes.unshift({ id: yo.id, email: yo.email, nombre: yo.nombre || yo.email, at: new Date().toISOString() })
+        const err = await guardarVinculos(String(emp.id), aprobados, pendientes.slice(0, 20))
+        if (err) return json({ ok: false, error: `No se pudo guardar la solicitud: ${err}` }, 500)
+        await db.from('audit_log').insert({ user_id: emp.id, action: 'empresa.contador_solicitud', metadata: { contadorId: yo.id, email: yo.email, at: new Date().toISOString() } })
+      }
+      return json({ ok: true, estado: 'pendiente', empresa: { id: String(emp.id), nombre: nombreEmpresa(emp) } })
     }
 
-    if (accion === 'crear_acceso') {
-      if (yo.role !== 'business') return json({ ok: false, error: 'Solo una cuenta Empresa puede dar acceso a un contador' }, 403)
-      const email = String(body.email ?? '').trim().toLowerCase()
-      const nombre = String(body.nombre ?? '').trim().slice(0, 80)
-      if (!correoValido(email)) return json({ ok: false, error: 'Correo inválido' }, 400)
-      if (!nombre) return json({ ok: false, error: 'Falta el nombre del contador' }, 400)
-      if (email === yo.email.toLowerCase()) return json({ ok: false, error: 'Ese es tu propio correo. El contador necesita uno distinto.' }, 400)
-
-      const existentes = await contadoresDe(yo.id)
-      if (existentes.length >= 5) return json({ ok: false, error: 'Ya tienes 5 accesos de contador. Elimina uno para crear otro.' }, 400)
-      if (existentes.some(c => c.email === email)) return json({ ok: false, error: 'Ese correo ya tiene acceso a tu contabilidad' }, 400)
-
-      // Correo ya registrado en Lincoin (como empresa, persona u otro
-      // contador): no se toca. Un acceso de contador es una cuenta propia.
-      const { data: yaExiste } = await db.from('users').select('id').ilike('email', email).maybeSingle()
-      if (yaExiste) return json({ ok: false, error: 'Ese correo ya tiene una cuenta en Lincoin. El contador necesita un correo que no esté registrado.' }, 400)
-
-      // Contraseña temporal que nadie conoce: el contador la fija desde el
-      // enlace del correo. Si el correo no llega, "¿Olvidaste tu contraseña?"
-      // en el login hace lo mismo.
-      const temporal = crypto.randomUUID() + crypto.randomUUID()
-      const { data: creado, error: eAuth } = await db.auth.admin.createUser({
-        email, password: temporal, email_confirm: true,
-        user_metadata: { full_name: nombre, role: 'contador', contadorDe: yo.id },
-      })
-      if (eAuth || !creado?.user) return json({ ok: false, error: `No se pudo crear la cuenta: ${eAuth?.message ?? 'sin detalle'}` }, 500)
-      const uid = creado.user.id
-
-      const fila = {
-        id: uid, email, full_name: nombre, role: 'contador', kyc_status: 'approved',
-        balances: {}, raw_data: {
-          contadorDe: yo.id, empresaNombre: yo.nombre, empresaEmail: yo.email,
-          ownReferralCode: uid.slice(-6).toUpperCase(), createdAt: new Date().toISOString(),
-          creadoPor: yo.id,
-        },
+    if (accion === 'estado') {
+      const [ap, pe] = await Promise.all([
+        db.from('users').select('id, full_name, company_name, email').eq('role', 'business').contains('raw_data', { contadores: [{ id: yo.id }] }),
+        db.from('users').select('id, full_name, company_name, email').eq('role', 'business').contains('raw_data', { contadoresSolicitudes: [{ id: yo.id }] }),
+      ])
+      const aprobadas = (ap.data ?? []).map((e: any) => ({ id: String(e.id), nombre: nombreEmpresa(e) }))
+      // Accesos creados con el esquema anterior (cuenta con rol contador).
+      const legado = String(yo.raw.contadorDe ?? '')
+      if (yo.role === 'contador' && legado && !aprobadas.some(a => a.id === legado)) {
+        const emp = await empresaPorId(legado)
+        if (emp) aprobadas.push({ id: legado, nombre: nombreEmpresa(emp) })
       }
-      const { error: ePerfil } = await db.from('users').insert(fila)
-      if (ePerfil) {
-        // Sin perfil no hay vínculo con la empresa: se deshace la cuenta.
-        await db.auth.admin.deleteUser(uid).catch(() => {})
-        return json({ ok: false, error: `No se pudo guardar el perfil: ${ePerfil.message}` }, 500)
-      }
-
-      let correoEnviado = true
-      let motivoCorreo = ''
-      const { error: eReset } = await db.auth.resetPasswordForEmail(email, { redirectTo: origenSeguro(body.origen) })
-      if (eReset) { correoEnviado = false; motivoCorreo = eReset.message }
-
-      await db.from('audit_log').insert({ user_id: yo.id, action: 'empresa.contador_creado', metadata: { contadorId: uid, email, nombre, at: new Date().toISOString() } })
-      return json({ ok: true, contador: { id: uid, email, nombre, creadoEn: fila.raw_data.createdAt }, correoEnviado, motivoCorreo })
+      return json({ ok: true, aprobadas, pendientes: (pe.data ?? []).map((e: any) => ({ id: String(e.id), nombre: nombreEmpresa(e) })) })
     }
 
-    if (accion === 'revocar_acceso') {
-      if (yo.role !== 'business') return json({ ok: false, error: 'Solo una cuenta Empresa' }, 403)
-      const contadorId = String(body.contadorId ?? '')
-      const { data: c } = await db.from('users').select('id, email, role, raw_data').eq('id', contadorId).maybeSingle()
-      if (!c || c.role !== 'contador' || String((c.raw_data as any)?.contadorDe ?? '') !== yo.id) {
-        return json({ ok: false, error: 'Ese acceso no es tuyo o ya no existe' }, 404)
-      }
-      // Fuera del todo: sin sesión, sin cuenta, sin perfil. Es una cuenta que
-      // solo existía para leer tu contabilidad.
-      await db.from('users').delete().eq('id', contadorId)
-      const { error: eDel } = await db.auth.admin.deleteUser(contadorId)
-      if (eDel) return json({ ok: false, error: `Se quitó el vínculo pero no se pudo borrar la cuenta: ${eDel.message}` }, 500)
-      await db.from('audit_log').insert({ user_id: yo.id, action: 'empresa.contador_revocado', metadata: { contadorId, email: c.email, at: new Date().toISOString() } })
-      return json({ ok: true })
-    }
-
-    // ── El CONTADOR lee la contabilidad de su empresa ────────────────────
     if (accion === 'datos') {
-      if (yo.role !== 'contador') return json({ ok: false, error: 'Esta entrada es solo para contadores' }, 403)
-      const empresaId = String(yo.raw.contadorDe ?? '')
-      if (!empresaId) return json({ ok: false, error: 'Tu acceso no está vinculado a ninguna empresa. Pídele a la empresa que lo cree de nuevo.' }, 403)
-
-      const { data: emp } = await db.from('users').select('*').eq('id', empresaId).maybeSingle()
-      if (!emp || emp.role !== 'business') return json({ ok: false, error: 'La empresa de este acceso ya no existe' }, 404)
+      let empresaId = String(body.empresaId ?? '')
+      if (!empresaId) {
+        const { data: ap } = await db.from('users').select('id').eq('role', 'business').contains('raw_data', { contadores: [{ id: yo.id }] }).limit(1)
+        empresaId = String(ap?.[0]?.id ?? (yo.role === 'contador' ? (yo.raw.contadorDe ?? '') : ''))
+      }
+      if (!empresaId) return json({ ok: false, error: 'Todavía no tienes acceso aprobado a ninguna empresa.' }, 403)
+      const emp = await empresaPorId(empresaId)
+      if (!emp) return json({ ok: false, error: 'La empresa ya no existe' }, 404)
+      const aprobado = lista(emp.raw_data, 'contadores').some(c => c.id === yo.id) || (yo.role === 'contador' && String(yo.raw.contadorDe ?? '') === empresaId)
+      if (!aprobado) return json({ ok: false, error: 'La empresa no ha aprobado tu acceso.' }, 403)
 
       const [tx, comps] = await Promise.all([
         db.from('transactions').select('*').eq('user_id', empresaId).order('created_at', { ascending: false }).limit(5000),
         db.from('comprobantes').select('*').eq('user_id', empresaId).limit(5000),
       ])
       if (tx.error) return json({ ok: false, error: `Movimientos: ${tx.error.message}` }, 500)
-
       return json({
         ok: true,
-        empresa: { id: String(emp.id), nombre: String((emp as any).company_name || emp.full_name || ''), email: String(emp.email ?? ''), nit: String((emp as any).tax_id ?? (emp as any).nit ?? (emp as any).raw_data?.nit ?? '') },
+        empresa: { id: String(emp.id), nombre: nombreEmpresa(emp), email: String(emp.email ?? ''), nit: String((emp as any).tax_id ?? (emp as any).nit ?? (emp as any).raw_data?.nit ?? '') },
         transactions: tx.data ?? [],
         comprobantes: comps.error ? [] : (comps.data ?? []),
         comprobantesError: comps.error ? comps.error.message : null,
       })
+    }
+
+    // ── LA EMPRESA ───────────────────────────────────────────────────────
+    if (yo.role !== 'business') return json({ ok: false, error: 'Solo una cuenta Empresa' }, 403)
+    const emp = await empresaPorId(yo.id)
+    if (!emp) return json({ ok: false, error: 'No se encontró tu empresa' }, 404)
+    let contadores = lista(emp.raw_data, 'contadores')
+    let solicitudes = lista(emp.raw_data, 'contadoresSolicitudes')
+
+    if (accion === 'listar_accesos') {
+      return json({ ok: true, miId: codigoDe(emp), contadores, solicitudes })
+    }
+
+    const contadorId = String(body.contadorId ?? '')
+    if (accion === 'aprobar') {
+      const s = solicitudes.find(c => c.id === contadorId)
+      if (!s) return json({ ok: false, error: 'Esa solicitud ya no está' }, 404)
+      if (contadores.length >= 5) return json({ ok: false, error: 'Ya tienes 5 contadores con acceso. Quita uno para aprobar otro.' }, 400)
+      solicitudes = solicitudes.filter(c => c.id !== contadorId)
+      if (!contadores.some(c => c.id === contadorId)) contadores = [{ ...s, at: new Date().toISOString() }, ...contadores]
+      const err = await guardarVinculos(yo.id, contadores, solicitudes)
+      if (err) return json({ ok: false, error: err }, 500)
+      await db.from('audit_log').insert({ user_id: yo.id, action: 'empresa.contador_aprobado', metadata: { contadorId, email: s.email, at: new Date().toISOString() } })
+      return json({ ok: true, contadores, solicitudes })
+    }
+
+    if (accion === 'rechazar') {
+      solicitudes = solicitudes.filter(c => c.id !== contadorId)
+      const err = await guardarVinculos(yo.id, contadores, solicitudes)
+      if (err) return json({ ok: false, error: err }, 500)
+      return json({ ok: true, contadores, solicitudes })
+    }
+
+    if (accion === 'revocar_acceso') {
+      const c = contadores.find(x => x.id === contadorId)
+      contadores = contadores.filter(x => x.id !== contadorId)
+      const err = await guardarVinculos(yo.id, contadores, solicitudes)
+      if (err) return json({ ok: false, error: err }, 500)
+      // Cuenta del esquema anterior (creada por la empresa, rol contador):
+      // solo existía para esto, se elimina del todo.
+      const { data: u } = await db.from('users').select('id, role, raw_data').eq('id', contadorId).maybeSingle()
+      if (u && u.role === 'contador' && String((u.raw_data as any)?.contadorDe ?? '') === yo.id) {
+        await db.from('users').delete().eq('id', contadorId)
+        await db.auth.admin.deleteUser(contadorId).catch(() => {})
+      }
+      await db.from('audit_log').insert({ user_id: yo.id, action: 'empresa.contador_revocado', metadata: { contadorId, email: c?.email ?? null, at: new Date().toISOString() } })
+      return json({ ok: true, contadores, solicitudes })
     }
 
     return json({ ok: false, error: `Acción desconocida: ${accion}` }, 400)
