@@ -78,7 +78,7 @@ interface DatabaseContextType {
   updateUserRawData: (id: string, patch: Record<string, any>) => Promise<boolean>;
   loginUser: (email: string, pass?: string, captchaToken?: string, portal?: 'personal' | 'business') => Promise<User | null | 'MFA_REQUIRED'>;
   loginWithGoogle: (role?: 'personal' | 'business') => Promise<void>;
-  logoutUser: () => void;
+  logoutUser: (motivo?: string) => Promise<void>;
   getBalance: (curr: string) => number;
   bumpLocalBalance: (currency: string, delta: number) => void;
   addLocalTx: (tx: Record<string, any>) => void;
@@ -136,6 +136,8 @@ interface DatabaseContextType {
   resendEmailCode: () => Promise<boolean>;
   startEmailStep: (userId: string) => Promise<boolean>;
   cancelMFALogin: () => void;
+  /** Motivo del último cierre de sesión (últimos 15 s), para explicarlo en el Login. */
+  ultimoCierre: () => string | null;
   enrollMFA: () => Promise<{ qrCode: string; secret: string; factorId: string } | null>;
   verifyMFAEnrollment: (factorId: string, code: string, secret?: string) => Promise<{ ok: boolean; error?: string; backupCodes?: string[] }>;
   unenrollMFA: (factorId: string) => Promise<boolean>;
@@ -543,6 +545,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           // Debounce: wait before logging out — token refresh fires SIGNED_OUT then SIGNED_IN
           signOutTimer = setTimeout(() => {
             sessionStorage.removeItem('cuypay_admin_session');
+            if (currentUserRef.current) anotarCierre('Supabase avisó SIGNED_OUT (la sesión de acceso se cerró o venció)');
             setCurrentUser(null);
           }, 500);
         }
@@ -2042,7 +2045,15 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     });
   };
 
-  const logoutUser = async () => {
+  // Por qué se cerró la última sesión. Lo lee App cuando una sesión
+  // desaparece estando en un panel, para decirlo en vez de mandar al inicio
+  // sin explicación ("coloco el código y me manda al inicio").
+  const ultimoCierreRef = useRef<{ motivo: string; at: number } | null>(null);
+  const anotarCierre = (motivo: string) => { ultimoCierreRef.current = { motivo, at: Date.now() }; try { console.warn('[lincoin] sesión cerrada:', motivo); } catch { /* */ } };
+  const ultimoCierre = (): string | null => { const c = ultimoCierreRef.current; return c && Date.now() - c.at < 15_000 ? c.motivo : null; };
+
+  const logoutUser = async (motivo = 'cierre de sesión') => {
+    anotarCierre(motivo);
     // Increment before any await so in-flight SIGNED_IN handlers abort instead of re-setting the user
     logoutCounterRef.current++;
     sessionStorage.removeItem('cuypay_admin_session');
@@ -2748,7 +2759,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       bankingOptions, treasuryAccounts, getAllUsers, getAllTransactions, updateTxStatus, getAllPendingDeposits, getAllPendingWithdrawals,
       getTransactionHistory, getAdminTeam, addAdminUser, updateAdminUser, deleteAdminUser, deleteUser, registerInternalMovement,
       updateBankList, restoreDatabase, sendPasswordReset, isPasswordRecovery, setNewPassword, sendCuypayPayment,
-      mfaPending, mfaErrorDetail, loginErrorDetail, completeMFALogin, cancelMFALogin,
+      mfaPending, mfaErrorDetail, loginErrorDetail, completeMFALogin, cancelMFALogin, ultimoCierre,
       getLoginError: () => loginErrorRef.current, getMfaError: () => mfaErrorRef.current,
       emailStepPending, completeEmailLogin, resendEmailCode, startEmailStep, accountLocked,
       passkeyPending, mfaPasos, loginConPasskey,

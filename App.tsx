@@ -285,6 +285,14 @@ const App: React.FC = () => {
   // Mensaje del portal equivocado ("esta cuenta es de Empresas…"): lo pone
   // la guarda de abajo y lo muestra la pantalla de Login.
   const [errorPortal, setErrorPortal] = useState<string | null>(null);
+  // Momento del último rechazo por portal. Sirve para que nada que venga
+  // "atrasado" del ingreso (el aviso de éxito del 2FA, el salto al panel)
+  // pise la pantalla del mensaje y termine en el inicio sin explicación.
+  const rechazoPortalRef = useRef(0);
+  const rechazoReciente = () => Date.now() - rechazoPortalRef.current < 10_000;
+  // Portal por el que se está entrando: la pantalla de ingreso lo sabe; al
+  // volver de Google (la página cae en "/") lo dice la pista guardada.
+  const portalEnCursoAhora = (): UserRole => (currentView === 'login' ? userRole : (portalDeGoogle() ?? userRole));
 
   // Vista ↔ dirección para las pantallas de App. El portal de empresas
   // escribe las suyas (empresas_*); acá no se toca esa vista.
@@ -315,7 +323,7 @@ const App: React.FC = () => {
   // Marketing Modal State
   const [showMarketingModal, setShowMarketingModal] = useState(false);
 
-  const { currentUser, isAuthLoading, logoutUser, isPasswordRecovery, setNewPassword, mfaPending } = useDatabase();
+  const { currentUser, isAuthLoading, logoutUser, isPasswordRecovery, setNewPassword, mfaPending, ultimoCierre } = useDatabase();
   const { config } = useSystemConfig();
   // Verificación por correo (2 pasos) tras el login. Se pasa una vez por
   // sesión; "recordar dispositivo" la evita por 30 días en este navegador.
@@ -384,8 +392,9 @@ const App: React.FC = () => {
     // 'landing', que es justo la condición del splash: se veía "Verificando
     // sesión" en el momento en que la sesión se estaba cerrando — lo contrario
     // de lo que pasaba.
-    await logoutUser();
+    await logoutUser('inactividad');
     setUserRole(portal === 'contabilidad' ? 'contador' : rol === 'personal' ? 'personal' : 'business');
+    setErrorPortal('Tu sesión se cerró por inactividad. Vuelve a entrar.');
     // Y se va al LOGIN, no a la portada: si la sesión venció hay que volver a
     // entrar con correo y contraseña (o Google), y eso se pide acá.
     setCurrentView('login');
@@ -415,12 +424,13 @@ const App: React.FC = () => {
       if (portalEnCurso && portalEnCurso !== 'admin') {
         const mal = errorDePortal(portalEnCurso, currentUser.role);
         if (mal) {
+          rechazoPortalRef.current = Date.now();
           borrarPistaGoogle();
           fijarPortal(null);
           setErrorPortal(mal);
           setUserRole(portalEnCurso);
           setCurrentView('login');
-          logoutUser();
+          logoutUser('portal equivocado');
           return;
         }
       }
@@ -444,7 +454,20 @@ const App: React.FC = () => {
         // Only redirect if auth has fully settled (not in the middle of session restore)
         const protectedViews = ['dashboard', 'personal-dashboard', 'persona-dashboard', 'contador-dashboard', 'admin-dashboard', 'onboarding-wizard', 'onboarding-intro', 'personal-onboarding-wizard'];
         if (protectedViews.includes(currentView)) {
-            const t = setTimeout(() => setCurrentView('landing'), 1500);
+            // La sesión desapareció estando en un panel. NUNCA se manda al
+            // inicio en silencio: se vuelve al Login del portal de ese panel
+            // y se dice por qué (portal equivocado, inactividad, o lo que
+            // haya anotado el cierre). Antes caía en la portada sin
+            // explicación y parecía que "no deja entrar".
+            const portalDelPanel: UserRole = currentView === 'persona-dashboard' ? 'personal' : currentView === 'contador-dashboard' ? 'contador' : 'business';
+            const motivo = ultimoCierre();
+            const t = setTimeout(() => {
+              if (!rechazoReciente()) {
+                setUserRole(portalDelPanel);
+                setErrorPortal(prev => prev ?? `Tu sesión se cerró antes de abrir el panel${motivo ? ` (${motivo})` : ''}. Vuelve a entrar; si se repite, escríbenos a soporte.`);
+              }
+              setCurrentView('login');
+            }, rechazoReciente() ? 0 : 800);
             return () => clearTimeout(t);
         }
     }
@@ -518,6 +541,10 @@ const App: React.FC = () => {
   // (el badge BUSINESS distingue a las empresas). Solo admin va aparte.
   const handleLoginSuccess = (role?: UserRole) => {
     setShowDashboardBanner(false);
+    // La guarda de portal ya rechazó este ingreso: este aviso llega tarde
+    // (el 2FA avisa "éxito" después de que la sesión ya se cerró). No abre
+    // ningún panel; se queda en el Login con el mensaje.
+    if (rechazoReciente()) { setCurrentView('login'); return; }
     if (role === 'admin') {
       // El login de clientes no abre el panel admin: portal dedicado.
       window.location.replace('/admin-empresas');
@@ -525,8 +552,9 @@ const App: React.FC = () => {
     }
     // Segunda barrera (la primera es la guarda del efecto de sesión): el
     // portal por el que se entró tiene que ser el de la cuenta.
-    const mal = userRole !== 'admin' ? errorDePortal(userRole, role) : null;
-    if (mal) { setErrorPortal(mal); setCurrentView('login'); logoutUser(); return; }
+    const portal = portalEnCursoAhora();
+    const mal = portal !== 'admin' ? errorDePortal(portal, role) : null;
+    if (mal) { rechazoPortalRef.current = Date.now(); borrarPistaGoogle(); setErrorPortal(mal); setUserRole(portal); setCurrentView('login'); logoutUser('portal equivocado'); return; }
     setErrorPortal(null);
     setCurrentView(vistaDelRol(role));
   };
@@ -563,9 +591,14 @@ const App: React.FC = () => {
       // vista estemos. Antes, tras el redirect de Google caía en 'landing' y el
       // 2FA no se montaba, así que había que darle "Ingresar" otra vez.
       if (mfaPending) {
+        // Al volver de Google la página cae en "/" y userRole es el de
+        // siempre (Empresas): el portal real lo dice la pista de Google.
+        // Sin esto, la pantalla del código revisaba el rol contra el portal
+        // equivocado y dejaba pasar (o mandaba al inicio sin mensaje).
+        const portalMfa = portalEnCursoAhora();
         return (
           <Login
-            userRole={userRole !== 'admin' ? userRole : 'business'}
+            userRole={portalMfa !== 'admin' ? portalMfa : 'business'}
             errorInicial={errorPortal}
             onRegisterClick={() => navigateToRegister(userRole !== 'admin' ? userRole : 'business')}
             onLoginSuccess={handleLoginSuccess}

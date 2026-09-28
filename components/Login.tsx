@@ -95,7 +95,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
       }
 
       const malPortal = errorDePortal(userRole, user.role);
-      if (malPortal) { logoutUser(); setErrorMsg(malPortal); return; }
+      if (malPortal) { logoutUser('portal equivocado'); setErrorMsg(malPortal); return; }
 
       if (config.maintenanceMode && user!.role !== 'admin') {
         logoutUser();
@@ -127,9 +127,9 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
     // equivocado. Antes este camino se saltaba la revisión y una cuenta de
     // Empresas con 2FA entraba por Personas.
     const malPortal = errorDePortal(userRole, user.role);
-    if (malPortal) { await logoutUser(); setMfaCode(''); setErrorMsg(malPortal); return; }
+    if (malPortal) { await logoutUser('portal equivocado'); setMfaCode(''); setErrorMsg(malPortal); return; }
     if (config.maintenanceMode && user.role !== 'admin') {
-      await logoutUser(); setMfaCode(''); setErrorMsg('El sistema se encuentra en mantenimiento. Solo administradores pueden ingresar.'); return;
+      await logoutUser('mantenimiento'); setMfaCode(''); setErrorMsg('El sistema se encuentra en mantenimiento. Solo administradores pueden ingresar.'); return;
     }
     onLoginSuccess(user.role as 'business' | 'personal' | 'admin');
   };
