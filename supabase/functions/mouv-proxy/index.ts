@@ -2857,6 +2857,38 @@ serve(async (req: Request) => {
     }
     const totalDebit = Number((amount + feeCop).toFixed(2))
 
+    // ── Cuentas PERSONA: su COP llega al Saldo Lincoin ('COP'), no a un
+    //    riel. Antes de debitar el riel del envío se cubre lo que falte desde
+    //    'COP' y, si aún falta, desde el otro riel. Es un movimiento interno
+    //    atómico (adjust_balances rechaza dejar cualquier saldo en negativo);
+    //    si el envío después falla, el reintegro cae en el riel y sigue
+    //    contando en su total en pesos. Las empresas mueven rieles a mano
+    //    desde su panel, así que para ellas no cambia nada.
+    try {
+      const { data: pu } = await db.from('users').select('role, balances').eq('id', userId).maybeSingle()
+      if ((pu as any)?.role === 'personal') {
+        const bals = (((pu as any)?.balances ?? {}) as Record<string, unknown>)
+        const en = (k: string) => Number(bals[k] ?? 0) || 0
+        let falta = Number((totalDebit - en(railCol)).toFixed(2))
+        if (falta > 0) {
+          const mov: Record<string, number> = {}
+          for (const f of ['COP', railCol === 'COP_BREB' ? 'COP_ACH' : 'COP_BREB']) {
+            if (falta <= 0) break
+            const disp = en(f)
+            if (disp <= 0) continue
+            const toma = Number(Math.min(disp, falta).toFixed(2))
+            mov[f] = -toma
+            falta = Number((falta - toma).toFixed(2))
+          }
+          if (Object.keys(mov).length) {
+            const total = Number((-Object.values(mov).reduce((s, v) => s + v, 0)).toFixed(2))
+            const { data: adj, error: adjErr } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { ...mov, [railCol]: total } })
+            if (adjErr || (adj as any)?.error) return json(400, { error: 'fondeo_riel', message: 'No se pudo preparar tu saldo en pesos para este envío. Intenta de nuevo.' })
+          }
+        }
+      }
+    } catch { /* si la lectura falla, el chequeo de saldo de abajo decide */ }
+
     // 2-3) Debitar monto + comisión de forma ATÓMICA (bloqueo de fila) — así
     //      una operación concurrente no puede "restaurar" el riel debitado y
     //      duplicar fondos (pentest #4). Fallback a read-check-write si la RPC

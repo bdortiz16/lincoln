@@ -25,6 +25,7 @@ import { llamarFuncion } from '../lib/edge';
 import { descargarXlsx } from '../lib/xlsx';
 import { ConfirmarModal } from './ConfirmarModal';
 import { ContactsSection, MouvContact } from './ContactsSection';
+import { MOTIVOS_ENVIO } from '../lib/motivosEnvio';
 
 // ─── Marca ───────────────────────────────────────────────────────────
 const FONT = 'Archivo, system-ui, sans-serif';
@@ -198,24 +199,35 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
     descargarXlsx(`lincoin-extracto-${new Date().toISOString().slice(0, 10)}.xlsx`, [{ nombre: 'Movimientos', filas, anchos: [18, 24, 30, 16, 8, 12, 30, 38] }]);
   };
 
-  // ── Enviar ─────────────────────────────────────────────────────────
-  const [envModo, setEnvModo] = useState<'lincoin' | 'banco'>('lincoin');
+  // ── Enviar: el MISMO flujo que Empresas ────────────────────────────
+  // A persona Lincoin (por ID, gratis) o a un beneficiario INSCRITO y
+  // verificado (Bre-B o cuenta bancaria). Nada de escribir una cuenta a
+  // mano aquí: el destino se inscribe en Beneficiarios, pasa por la
+  // validación del banco y los antecedentes, y solo entonces se le envía.
+  // El envío lo ejecuta el riel de pagos con las mismas llamadas que usa
+  // el panel de empresas (payout_breb / payout_ach), con motivo y 2FA.
+  const [envModo, setEnvModo] = useState<'lincoin' | 'beneficiario'>('lincoin');
   const [envId, setEnvId] = useState('');
   const [envDest, setEnvDest] = useState<{ id: string; name: string } | null>(null);
   const [envBuscando, setEnvBuscando] = useState(false);
+  const [envBenef, setEnvBenef] = useState<MouvContact | null>(null);
   const [envMonto, setEnvMonto] = useState('');
+  const [envMotivo, setEnvMotivo] = useState('');
+  const [envRef, setEnvRef] = useState('');
   const [envCodigo, setEnvCodigo] = useState('');
-  const [envPaso, setEnvPaso] = useState<'datos' | 'codigo' | 'listo'>('datos');
+  const [envPaso, setEnvPaso] = useState<'datos' | 'confirmar' | 'codigo' | 'listo'>('datos');
   const [envError, setEnvError] = useState<string | null>(null);
   const [envOcupado, setEnvOcupado] = useState(false);
-  const [envBanco, setEnvBanco] = useState({ tipo: 'breb', valor: '', nombre: '' });
+  const [envResultado, setEnvResultado] = useState<{ ok: boolean; mensaje?: string; ref?: string | null } | null>(null);
+  const totalCop = ['COP', 'COP_BREB', 'COP_ACH'].reduce((t, k) => t + saldo(k), 0);
+  const esBreb = (c: MouvContact | null) => (c?.destKind ?? 'ach') === 'breb';
+  const comisionDe = (c: MouvContact | null) => (c ? (esBreb(c) ? 1200 : 2500) : 0);
+  const inscritos = beneficiarios.map(b => b.contacto).filter(c => c.accountKind !== 'wallet');
+
   const abrirEnviar = (b?: Beneficiario) => {
-    setEnvPaso('datos'); setEnvError(null); setEnvMonto(''); setEnvCodigo(''); setEnvDest(null);
-    if (b) {
-      const c = b.contacto;
-      setEnvModo('banco');
-      setEnvBanco({ tipo: c.destKind === 'breb' ? 'breb' : 'cuenta', valor: c.destKind === 'breb' ? (c.brebKey ?? '') : (c.accountNumber ?? ''), nombre: c.name });
-    } else { setEnvModo('lincoin'); setEnvId(''); }
+    setEnvPaso('datos'); setEnvError(null); setEnvMonto(''); setEnvCodigo(''); setEnvDest(null); setEnvMotivo(''); setEnvRef(''); setEnvResultado(null);
+    if (b) { setEnvModo('beneficiario'); setEnvBenef(b.contacto); }
+    else { setEnvModo('lincoin'); setEnvId(''); setEnvBenef(null); }
     setPanel('enviar');
   };
   const buscarDestino = async (id: string) => {
@@ -230,20 +242,46 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
   const envMontoNum = numero(envMonto);
   const continuarEnvio = (e: React.FormEvent) => {
     e.preventDefault(); setEnvError(null);
-    if (envModo === 'banco') { setEnvError('El retiro a banco o Bre-B para cuentas Persona se habilita pronto. Por ahora puedes enviar a otra persona Lincoin con su ID.'); return; }
-    if (wa.pronto) { setEnvError(`La billetera ${wa.code} todavía no está disponible.`); return; }
-    if (!envDest) { setEnvError('Escribe un ID Lincoin válido.'); return; }
     if (envMontoNum <= 0) { setEnvError('Escribe el monto.'); return; }
-    if (envMontoNum > saldo(wa.code)) { setEnvError(`Tienes ${fmt(saldo(wa.code), wa.code)} ${wa.code} disponibles.`); return; }
-    if (mfaActivo) setEnvPaso('codigo'); else ejecutarEnvio();
+    if (envModo === 'lincoin') {
+      if (wa.pronto) { setEnvError(`La billetera ${wa.code} todavía no está disponible.`); return; }
+      if (!envDest) { setEnvError('Escribe un ID Lincoin válido.'); return; }
+      if (envMontoNum > saldo(wa.code)) { setEnvError(`Tienes ${fmt(saldo(wa.code), wa.code)} ${wa.code} disponibles.`); return; }
+    } else {
+      if (wa.code !== 'COP') { setEnvError('Los envíos a banco o Bre-B salen de tu billetera COP. Cambia a COP.'); return; }
+      if (!envBenef) { setEnvError('Elige un beneficiario inscrito.'); return; }
+      if (envBenef.status !== 'aprobada') { setEnvError('Ese beneficiario todavía está en validación. Cuando quede aprobado podrás enviarle.'); return; }
+      if (!envMotivo) { setEnvError('Elige el motivo del envío.'); return; }
+      if (envMontoNum + comisionDe(envBenef) > totalCop) { setEnvError(`Necesitas ${fmt(envMontoNum + comisionDe(envBenef), 'COP')} COP (monto + comisión). Tienes ${fmt(totalCop, 'COP')}.`); return; }
+    }
+    setEnvPaso('confirmar');
+  };
+  const confirmarEnvio = () => {
+    if (!mfaActivo) { setEnvError('Para enviar dinero activa primero la verificación en dos pasos, en Seguridad.'); return; }
+    setEnvPaso('codigo');
   };
   const ejecutarEnvio = async () => {
-    if (!envDest || envOcupado) return;
+    if (envOcupado) return;
     setEnvOcupado(true); setEnvError(null);
     try {
-      if (mfaActivo) { const ok = await verifyMfaCode(envCodigo); if (!ok) { setEnvError('Código incorrecto.'); setEnvCodigo(''); return; } }
-      const r = await sendCuypayPayment(envId.toUpperCase(), envMontoNum, wa.code);
-      if (r?.error) { setEnvError(r.error); setEnvPaso('datos'); return; }
+      const ok = await verifyMfaCode(envCodigo);
+      if (!ok) { setEnvError('Código incorrecto.'); setEnvCodigo(''); return; }
+      if (envModo === 'lincoin') {
+        if (!envDest) return;
+        const r = await sendCuypayPayment(envId.toUpperCase(), envMontoNum, wa.code);
+        if (r?.error) { setEnvError(r.error); setEnvPaso('datos'); return; }
+        setEnvResultado({ ok: true });
+      } else {
+        const d = envBenef!;
+        const breb = esBreb(d);
+        const direccion = d.cityCode ? { address: d.address ?? '', cityCode: d.cityCode, cityName: d.cityName, stateCode: d.stateCode } : {};
+        const recipient = breb
+          ? { keyType: d.brebKeyType ?? 'celular', key: d.brebKey ?? d.accountNumber, holderName: d.name, documentNumber: d.docNumber, reference: envRef, motivo: envMotivo, ...direccion }
+          : { bankCode: d.bank, accountType: (d.accountType === 'checking' ? 'corriente' : 'ahorros'), accountNumber: d.accountNumber, documentType: d.docType, documentNumber: d.docNumber, holderName: d.name, reference: envRef, motivo: envMotivo, ...(d.finityId ? { finityId: d.finityId } : {}), ...direccion };
+        const r = await llamarFuncion('mouv-proxy', { action: breb ? 'payout_breb' : 'payout_ach', userId: cu.id, amount: envMontoNum, recipient, otp: envCodigo }, 65000);
+        if (!r?.ok) { setEnvResultado({ ok: false, mensaje: String(r?.message || r?.error || 'El envío no se pudo completar. No se descontó tu saldo.') }); setEnvPaso('listo'); refreshData().catch(() => {}); return; }
+        setEnvResultado({ ok: true, ref: r?.providerRef ?? null });
+      }
       setEnvPaso('listo');
       refreshData().catch(() => {});
     } finally { setEnvOcupado(false); }
@@ -597,7 +635,7 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
               <Rotulo>PREGUNTAS FRECUENTES</Rotulo>
               {[
                 ['¿Cómo recibo saldo?', 'Copia tu ID Lincoin y dáselo a la empresa o a la persona que te va a enviar. Te llega al instante y sin comisión.'],
-                ['¿Puedo retirar a mi banco?', 'Pronto. Por ahora puedes enviar tu saldo a otra persona Lincoin y convertir entre billeteras.'],
+                ['¿Puedo retirar a mi banco?', 'Sí: inscribe tu cuenta o tu llave Bre-B en Beneficiarios, espera la validación, y envíale desde Enviar → A banco o Bre-B.'],
                 ['¿Qué es el Nivel 2?', 'Un tope de retiro mensual más alto. Se sube verificando tu identidad y tu dirección.'],
               ].map(([q, a]) => (
                 <div key={q} style={{ padding: '14px 0', borderTop: `1px solid ${C.borde}` }}><p style={{ fontSize: 15, fontWeight: 700, margin: 0 }}>{q}</p><p style={{ fontSize: 14, color: C.sub, margin: '4px 0 0', lineHeight: 1.5 }}>{a}</p></div>
@@ -609,29 +647,44 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
 
       {/* ── Paneles laterales ── */}
       {panel === 'enviar' && (
-        <Drawer titulo="Enviar" sub={`Desde tu billetera ${wa.code} · disponible ${fmt(saldo(wa.code), wa.code)}`} onCerrar={() => setPanel(null)}>
+        <Drawer titulo="Enviar" sub={envModo === 'lincoin' ? `Desde tu billetera ${wa.code} · disponible ${fmt(saldo(wa.code), wa.code)}` : `Desde tus pesos · disponible ${fmt(totalCop, 'COP')} COP`} onCerrar={() => setPanel(null)}>
           {envPaso === 'listo' ? (
             <div style={{ textAlign: 'center', padding: '30px 0' }}>
-              <span style={{ width: 64, height: 64, borderRadius: '50%', background: 'rgba(74,222,128,0.12)', display: 'grid', placeItems: 'center', margin: '0 auto' }}><Check size={28} color={C.verde} /></span>
-              <p style={{ fontSize: 20, fontWeight: 800, margin: '18px 0 0' }}>Enviado</p>
-              <p style={{ fontSize: 14, color: C.sub, margin: '6px 0 0', lineHeight: 1.5 }}>{fmt(envMontoNum, wa.code)} {wa.code} a {envDest?.name}. Ya está en su cuenta.</p>
+              <span style={{ width: 64, height: 64, borderRadius: '50%', background: envResultado?.ok ? 'rgba(74,222,128,0.12)' : 'rgba(255,255,255,0.06)', display: 'grid', placeItems: 'center', margin: '0 auto' }}>{envResultado?.ok ? <Check size={28} color={C.verde} /> : <X size={28} color={C.text} />}</span>
+              <p style={{ fontSize: 20, fontWeight: 800, margin: '18px 0 0' }}>{envResultado?.ok ? (envModo === 'lincoin' ? 'Enviado' : 'Envío en camino') : 'No salió'}</p>
+              <p style={{ fontSize: 14, color: C.sub, margin: '6px 0 0', lineHeight: 1.5 }}>
+                {envResultado?.ok
+                  ? envModo === 'lincoin' ? `${fmt(envMontoNum, wa.code)} ${wa.code} a ${envDest?.name}. Ya está en su cuenta.` : `${fmt(envMontoNum, 'COP')} COP a ${envBenef?.name}. Llega en minutos; lo ves en Movimientos${envResultado.ref ? ` · ref ${String(envResultado.ref).slice(-8)}` : ''}.`
+                  : envResultado?.mensaje}
+              </p>
               <BotonPrimario onClick={() => setPanel(null)} style={{ marginTop: 24 }}>Listo</BotonPrimario>
             </div>
           ) : envPaso === 'codigo' ? (
             <form onSubmit={e => { e.preventDefault(); ejecutarEnvio(); }} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              <div style={{ background: 'rgba(255,255,255,0.04)', border: `1px solid ${C.borde}`, borderRadius: 12, padding: '14px 16px' }}>
-                <div className="flex justify-between"><span style={{ fontSize: 13, color: C.sub }}>Para</span><b style={{ fontSize: 14 }}>{envDest?.name}</b></div>
-                <div className="flex justify-between" style={{ marginTop: 6 }}><span style={{ fontSize: 13, color: C.sub }}>Monto</span><b style={{ fontSize: 14, fontVariantNumeric: 'tabular-nums' }}>{fmt(envMontoNum, wa.code)} {wa.code}</b></div>
-              </div>
               <div><Etiqueta>CÓDIGO DE TU APP DE AUTENTICACIÓN</Etiqueta><Campo value={envCodigo} onChange={e => setEnvCodigo(e.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" placeholder="000000" autoFocus style={{ fontFamily: MONO, fontSize: 22, letterSpacing: '6px', textAlign: 'center' }} /></div>
               {envError && <p style={{ fontSize: 13, color: C.medio, margin: 0 }}>{envError}</p>}
               <BotonPrimario type="submit" disabled={envOcupado || envCodigo.length !== 6}>{envOcupado ? 'Enviando…' : 'Confirmar envío'}</BotonPrimario>
+              <BotonSecundario type="button" onClick={() => setEnvPaso('confirmar')} disabled={envOcupado}>Atrás</BotonSecundario>
             </form>
+          ) : envPaso === 'confirmar' ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div style={{ background: 'rgba(255,255,255,0.04)', border: `1px solid ${C.borde}`, borderRadius: 12, padding: '14px 16px', fontSize: 13.5 }}>
+                <div className="flex justify-between"><span style={{ color: C.sub }}>Para</span><b>{envModo === 'lincoin' ? envDest?.name : envBenef?.name}</b></div>
+                <div className="flex justify-between" style={{ marginTop: 6 }}><span style={{ color: C.sub }}>Vía</span><b>{envModo === 'lincoin' ? 'ID Lincoin' : esBreb(envBenef) ? `Llave Bre-B · ${envBenef?.brebKey ?? ''}` : `${envBenef?.bank ?? ''} · ${envBenef?.accountNumber ?? ''}`}</b></div>
+                {envModo === 'beneficiario' && <div className="flex justify-between" style={{ marginTop: 6 }}><span style={{ color: C.sub }}>Motivo</span><b>{MOTIVOS_ENVIO.find(m => m.v === envMotivo)?.l}</b></div>}
+                <div className="flex justify-between" style={{ marginTop: 6 }}><span style={{ color: C.sub }}>Monto</span><b style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(envMontoNum, envModo === 'lincoin' ? wa.code : 'COP')} {envModo === 'lincoin' ? wa.code : 'COP'}</b></div>
+                <div className="flex justify-between" style={{ marginTop: 6 }}><span style={{ color: C.sub }}>Comisión</span><b>{envModo === 'lincoin' ? 'Sin comisión' : `${fmt(comisionDe(envBenef), 'COP')} COP`}</b></div>
+                <div className="flex justify-between" style={{ marginTop: 6, paddingTop: 6, borderTop: `1px solid ${C.borde}` }}><span style={{ color: C.sub }}>Se descuenta</span><b style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(envMontoNum + (envModo === 'lincoin' ? 0 : comisionDe(envBenef)), envModo === 'lincoin' ? wa.code : 'COP')}</b></div>
+              </div>
+              {envError && <p style={{ fontSize: 13.5, color: C.medio, margin: 0, lineHeight: 1.5 }}>{envError}</p>}
+              <BotonPrimario onClick={confirmarEnvio}>Confirmar con mi código</BotonPrimario>
+              <BotonSecundario onClick={() => { setEnvPaso('datos'); setEnvError(null); }}>Atrás</BotonSecundario>
+            </div>
           ) : (
             <form onSubmit={continuarEnvio} style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                {([['lincoin', 'A persona Lincoin', 'Gratis y al instante', User], ['banco', 'A banco o Bre-B', 'Llega en minutos', Landmark]] as const).map(([k, t, d, Ic]) => (
-                  <button key={k} type="button" onClick={() => setEnvModo(k)} style={{ fontFamily: FONT, textAlign: 'left', background: envModo === k ? 'rgba(255,255,255,0.07)' : 'transparent', border: `1px solid ${envModo === k ? C.text : C.bordeFuerte}`, borderRadius: 12, padding: '14px', cursor: 'pointer', color: C.text }}>
+                {([['lincoin', 'A persona Lincoin', 'Gratis y al instante', User], ['beneficiario', 'A banco o Bre-B', 'Beneficiario inscrito', Landmark]] as const).map(([k, t, d, Ic]) => (
+                  <button key={k} type="button" onClick={() => { setEnvModo(k); setEnvError(null); }} style={{ fontFamily: FONT, textAlign: 'left', background: envModo === k ? 'rgba(255,255,255,0.07)' : 'transparent', border: `1px solid ${envModo === k ? C.text : C.bordeFuerte}`, borderRadius: 12, padding: '14px', cursor: 'pointer', color: C.text }}>
                     <Ic size={18} /><p style={{ fontSize: 14, fontWeight: 700, margin: '10px 0 0' }}>{t}</p><p style={{ fontSize: 12, color: C.sub, margin: '2px 0 0' }}>{d}</p>
                   </button>
                 ))}
@@ -647,29 +700,57 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
                 </div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                  <div><Etiqueta>DESTINO</Etiqueta>
-                    <select value={envBanco.tipo} onChange={e => setEnvBanco({ ...envBanco, tipo: e.target.value })} style={{ fontFamily: FONT, width: '100%', background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.bordeFuerte}`, color: C.text, borderRadius: 11, padding: '12px 14px', fontSize: 14 }}>
-                      <option value="breb" style={{ color: '#000' }}>Llave Bre-B</option><option value="celular" style={{ color: '#000' }}>Celular (Nequi / Daviplata)</option><option value="cedula" style={{ color: '#000' }}>Cédula</option><option value="cuenta" style={{ color: '#000' }}>Número de cuenta</option>
-                    </select></div>
-                  <div><Etiqueta>{envBanco.tipo === 'breb' ? 'LLAVE' : envBanco.tipo === 'celular' ? 'CELULAR' : envBanco.tipo === 'cedula' ? 'CÉDULA' : 'NÚMERO DE CUENTA'}</Etiqueta><Campo value={envBanco.valor} onChange={e => setEnvBanco({ ...envBanco, valor: e.target.value })} placeholder="Escríbelo tal cual" /></div>
-                  <div><Etiqueta>NOMBRE DEL TITULAR</Etiqueta><Campo value={envBanco.nombre} onChange={e => setEnvBanco({ ...envBanco, nombre: e.target.value })} placeholder="Como aparece en su cuenta" /></div>
+                  <div>
+                    <Etiqueta>BENEFICIARIO</Etiqueta>
+                    {inscritos.length === 0 ? (
+                      <div style={{ background: 'rgba(255,255,255,0.04)', border: `1px dashed ${C.bordeFuerte}`, borderRadius: 12, padding: '14px 16px' }}>
+                        <p style={{ fontSize: 13.5, color: C.sub, margin: 0, lineHeight: 1.5 }}>Todavía no tienes beneficiarios inscritos. Se inscriben una vez, pasan por la validación del banco y los antecedentes, y desde ahí les envías en dos toques.</p>
+                        <BotonSecundario type="button" onClick={() => { setPanel(null); setVista('beneficiarios'); }} style={{ marginTop: 12, padding: '10px 16px', fontSize: 13 }}>Inscribir beneficiario</BotonSecundario>
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 260, overflowY: 'auto' }}>
+                        {inscritos.map(c => {
+                          const ok = c.status === 'aprobada';
+                          const sel = envBenef?.id === c.id;
+                          return (
+                            <button key={c.id} type="button" onClick={() => setEnvBenef(c)} style={{ fontFamily: FONT, textAlign: 'left', display: 'flex', alignItems: 'center', gap: 12, background: sel ? 'rgba(255,255,255,0.07)' : 'transparent', border: `1px solid ${sel ? C.text : C.bordeFuerte}`, borderRadius: 12, padding: '10px 12px', cursor: 'pointer', color: C.text, opacity: ok ? 1 : 0.7 }}>
+                              <span style={{ width: 36, height: 36, borderRadius: '50%', background: 'rgba(255,255,255,0.06)', display: 'grid', placeItems: 'center', fontSize: 12, fontWeight: 800, flexShrink: 0 }}>{iniciales(c.name)}</span>
+                              <span style={{ flex: 1, minWidth: 0 }}>
+                                <span style={{ display: 'block', fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</span>
+                                <span style={{ display: 'block', fontSize: 12, color: C.sub, marginTop: 1 }}>{viaDe(c)} · {esBreb(c) ? (c.brebKey ?? '') : (c.accountNumber ?? '')}</span>
+                              </span>
+                              <span style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: '1px', color: ok ? C.verde : C.sub, border: `1px solid ${ok ? 'rgba(74,222,128,0.4)' : C.bordeFuerte}`, borderRadius: 999, padding: '3px 8px', whiteSpace: 'nowrap' }}>{ok ? 'VERIFICADO' : c.status === 'rechazada' ? 'RECHAZADO' : 'EN VALIDACIÓN'}</span>
+                            </button>
+                          );
+                        })}
+                        <button type="button" onClick={() => { setPanel(null); setVista('beneficiarios'); }} style={{ fontFamily: FONT, fontSize: 13, fontWeight: 700, color: C.verde, background: 'transparent', border: 'none', padding: '6px 0', cursor: 'pointer', textAlign: 'left' }}>+ Inscribir otro beneficiario</button>
+                      </div>
+                    )}
+                  </div>
+                  <div>
+                    <Etiqueta>MOTIVO</Etiqueta>
+                    <select value={envMotivo} onChange={e => setEnvMotivo(e.target.value)} style={{ fontFamily: FONT, width: '100%', background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.bordeFuerte}`, color: envMotivo ? C.text : C.sub, borderRadius: 11, padding: '12px 14px', fontSize: 14 }}>
+                      <option value="" style={{ color: '#000' }}>Elige el motivo</option>
+                      {MOTIVOS_ENVIO.map(m => <option key={m.v} value={m.v} style={{ color: '#000' }}>{m.l}</option>)}
+                    </select>
+                  </div>
+                  <div><Etiqueta>REFERENCIA (OPCIONAL)</Etiqueta><Campo value={envRef} onChange={e => setEnvRef(e.target.value.slice(0, 60))} placeholder="Lo que verá el banco" /></div>
                 </div>
               )}
               <div>
-                <Etiqueta>MONTO EN {wa.code}</Etiqueta>
+                <Etiqueta>MONTO EN {envModo === 'lincoin' ? wa.code : 'COP'}</Etiqueta>
                 <div style={{ position: 'relative' }}>
-                  <span style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: C.sub, fontWeight: 700 }}>{wa.simbolo}</span>
-                  <Campo value={envMonto} onChange={e => setEnvMonto(e.target.value.replace(/[^\d.,]/g, ''))} inputMode="decimal" placeholder="0" style={{ paddingLeft: 14 + 10 * wa.simbolo.length + 8, fontSize: 22, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }} />
+                  <span style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: C.sub, fontWeight: 700 }}>{envModo === 'lincoin' ? wa.simbolo : '$'}</span>
+                  <Campo value={envMonto} onChange={e => setEnvMonto(e.target.value.replace(/[^\d.,]/g, ''))} inputMode="decimal" placeholder="0" style={{ paddingLeft: 34, fontSize: 22, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }} />
                 </div>
-                <p style={{ fontSize: 13, color: C.tenue, margin: '8px 0 0' }}>Disponible: {fmt(saldo(wa.code), wa.code)} {wa.code}</p>
+                <p style={{ fontSize: 13, color: C.tenue, margin: '8px 0 0' }}>Disponible: {envModo === 'lincoin' ? `${fmt(saldo(wa.code), wa.code)} ${wa.code}` : `${fmt(totalCop, 'COP')} COP`}</p>
               </div>
               <div style={{ background: 'rgba(255,255,255,0.04)', border: `1px solid ${C.borde}`, borderRadius: 12, padding: '12px 16px', fontSize: 13.5 }}>
-                <div className="flex justify-between"><span style={{ color: C.sub }}>Comisión</span><b>{envModo === 'lincoin' ? 'Sin comisión' : 'Según el destino'}</b></div>
+                <div className="flex justify-between"><span style={{ color: C.sub }}>Comisión</span><b>{envModo === 'lincoin' ? 'Sin comisión' : envBenef ? `${fmt(comisionDe(envBenef), 'COP')} COP` : 'Bre-B $ 1.200 · banco $ 2.500'}</b></div>
                 <div className="flex justify-between" style={{ marginTop: 6 }}><span style={{ color: C.sub }}>Tiempo</span><b>{envModo === 'lincoin' ? 'Al instante' : 'Minutos'}</b></div>
-                {envMontoNum > 0 && <div className="flex justify-between" style={{ marginTop: 6, paddingTop: 6, borderTop: `1px solid ${C.borde}` }}><span style={{ color: C.sub }}>Recibe</span><b style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(envMontoNum, wa.code)} {wa.code}</b></div>}
               </div>
               {envError && <p style={{ fontSize: 13.5, color: C.medio, margin: 0, lineHeight: 1.5 }}>{envError}</p>}
-              <BotonPrimario type="submit" disabled={envOcupado}>{envOcupado ? 'Enviando…' : 'Continuar'}</BotonPrimario>
+              <BotonPrimario type="submit" disabled={envOcupado}>Continuar</BotonPrimario>
             </form>
           )}
         </Drawer>
