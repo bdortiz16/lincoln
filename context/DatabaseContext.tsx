@@ -76,7 +76,7 @@ interface DatabaseContextType {
   registerUser: (data: any) => Promise<{ error?: string }>;
   updateUserProfile: (id: string, data: any) => Promise<void>;
   updateUserRawData: (id: string, patch: Record<string, any>) => Promise<boolean>;
-  loginUser: (email: string, pass?: string, captchaToken?: string) => Promise<User | null | 'MFA_REQUIRED'>;
+  loginUser: (email: string, pass?: string, captchaToken?: string, portal?: 'personal' | 'business') => Promise<User | null | 'MFA_REQUIRED'>;
   loginWithGoogle: (role?: 'personal' | 'business') => Promise<void>;
   logoutUser: () => void;
   getBalance: (curr: string) => number;
@@ -981,10 +981,14 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     } catch { return ''; }
   };
 
-  const saveUser = async (u: User) => {
+  // `conRol`: solo cuando quien guarda pidió EXPLÍCITAMENTE cambiar el rol
+  // (la edición de cliente del admin). En cualquier otro guardado el rol NO
+  // viaja: la sesión puede tenerlo mal en memoria (una empresa que entró con
+  // el rol equivocado) y mandarlo la convertía en Persona en la base.
+  const saveUser = async (u: User, conRol = false) => {
     if (!isSupabaseConfigured) { lsUpsertUser(u); fetchData(); return; }
     const {
-      id, email, role, name, balances, kycStatus, password: _pw,
+      id, email, role: rolMemoria, name, balances, kycStatus, password: _pw,
       firstName, lastName, birthDate, nationality, profession,
       docType, docNumber, countryOfIssue,
       country, city, address, zipCode,
@@ -995,6 +999,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       documents,
       ...rest
     } = u;
+    const rolCampo = conRol ? { role: rolMemoria } : {};
 
     // Keepalive PATCH — fires immediately and survives page reload / tab close on mobile
     // Uses token from localStorage (synchronous) so it never hangs
@@ -1092,7 +1097,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       const rawDataField = haveDbRaw ? { raw_data: safeRest } : {};
       const result = await Promise.race([
         supabase.from('users').upsert({
-          id, email, role,
+          id, email, ...rolCampo,
           full_name: name,
           balances: fiatBalances,
           crypto_balances: cryptoBalances,
@@ -1155,7 +1160,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             body: JSON.stringify({
               action: 'save_user',
               user: {
-                id, email, role, full_name: name,
+                id, email, ...rolCampo, full_name: name,
                 balances: fiatBalances, crypto_balances: cryptoBalances,
                 kyc_status: kycStatus,
                 first_name: firstName, last_name: lastName, birth_date: birthDate,
@@ -1328,7 +1333,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   // --- AUTH ---
 
-  const loginUser = async (email: string, pass?: string, captchaToken?: string): Promise<User | null | 'MFA_REQUIRED'> => {
+  // `portal`: por dónde está entrando (Personas o Empresas). Solo se usa si
+  // la cuenta de acceso no tiene fila de perfil y hay que crearla.
+  const loginUser = async (email: string, pass?: string, captchaToken?: string, portal: 'personal' | 'business' = 'business'): Promise<User | null | 'MFA_REQUIRED'> => {
     const isSeedAdminEmail = !!SEED_ADMIN_EMAIL && email === SEED_ADMIN_EMAIL;
     // Cada login EXPLÍCITO vuelve a exigir 2FA: se borra la marca 'mfa_ok' (que
     // solo debe durar mientras la sesión ya verificada se refresca). Sin esto,
@@ -1497,11 +1504,22 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     }
     if (!data.user) { setLoginError('El servidor aceptó la petición pero no devolvió la cuenta. Reintenta.'); return null; }
 
-    const profileTimeout = new Promise<{ data: null }>(resolve => setTimeout(() => resolve({ data: null }), 6000));
-    let { data: profile } = await Promise.race([
+    // "No hubo respuesta" NO es "no existe". Antes un timeout (red lenta) se
+    // trataba como perfil inexistente y se inventaba uno con rol 'personal'
+    // EN MEMORIA: una empresa entraba al portal de Personas y, al guardar
+    // cualquier cosa, ese rol inventado llegaba a la base. Ahora, sin
+    // respuesta, no se entra: se pide reintentar.
+    const profileTimeout = new Promise<'__timeout__'>(resolve => setTimeout(() => resolve('__timeout__'), 8000));
+    const perfilRes = await Promise.race([
       supabase.from('users').select('*').eq('id', data.user.id).single(),
       profileTimeout,
     ]) as any;
+    if (perfilRes === '__timeout__') {
+      setLoginError('El servidor tardó demasiado en responder. Revisa tu conexión e intenta de nuevo.');
+      await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
+      return null;
+    }
+    let profile = perfilRes?.data ?? null;
 
     // El rol de admin NUNCA se decide por el correo desde el cliente: un
     // perfil que se crea al entrar es de cliente, y punto. Si hace falta un
@@ -1523,18 +1541,26 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           return null;
         }
       } catch { /* si la consulta falla, se sigue al alta normal */ }
+      // Cuenta de acceso sin fila de perfil: se crea con el rol del portal
+      // por el que está entrando (antes era 'personal' a ciegas), y solo
+      // cuenta si la inserción realmente quedó en la base.
       const id = data.user.id;
       const newProfile = {
         id,
         email: data.user.email!,
         full_name: data.user.email!.split('@')[0],
-        role: 'personal',
+        role: portal === 'personal' ? 'personal' : 'business',
         balances: { USD: 0, COP: 0, CLP: 0, MXN: 0, PEN: 0 },
         kyc_status: 'pending',
         raw_data: { notifications: [], ownReferralCode: id.slice(-6).toUpperCase() },
       };
-      supabase.from('users').insert(newProfile);
-      profile = newProfile;
+      const { data: insertada, error: errIns } = await supabase.from('users').insert(newProfile).select('*').maybeSingle();
+      if (errIns || !insertada) {
+        setLoginError('Tu cuenta de acceso existe pero no tiene perfil y no se pudo crear. Escríbenos a soporte.');
+        await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
+        return null;
+      }
+      profile = insertada;
     }
     // ⚠️ SECURITY: removido el auto-promote a admin desde el cliente.
     // El trigger guard_users_sensitive_cols en DB ahora bloquea estos
@@ -2204,7 +2230,8 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     if (id === currentUser.id) setCurrentUser(updated);
     setUsers(prev => prev.map(u => u.id === id ? updated : u));
     try {
-      await saveUser(updated);
+      // El rol solo viaja si este guardado lo pidió a propósito (admin).
+      await saveUser(updated, Object.prototype.hasOwnProperty.call(data ?? {}, 'role') && currentUser.role === 'admin');
     } catch (e) {
       console.error('saveUser failed, in-memory state is updated:', e);
     }

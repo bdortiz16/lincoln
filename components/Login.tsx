@@ -81,7 +81,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
     const safetyTimer = setTimeout(() => setIsLoading(false), 20000);
     try {
       await getRecaptchaToken();
-      const result = await loginUser(email, password, captchaToken || undefined);
+      const result = await loginUser(email, password, captchaToken || undefined, userRole === 'personal' ? 'personal' : 'business');
       setCaptchaToken(''); setCaptchaKey(k => k + 1);
 
       // 2FA pendiente: la contraseña FUE correcta; se muestra la pantalla del

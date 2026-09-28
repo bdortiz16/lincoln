@@ -1348,7 +1348,17 @@ Deno.serve(async (req: Request) => {
         // legacy de retiro del cliente aún los persiste por esta vía.
         const userRow = { ...selfServiceBody.user }
         if (!(await verifyAdmin(req)).ok) {
-          if (userRow.role != null && !['personal', 'business'].includes(String(userRow.role))) delete (userRow as any).role
+          // El ROL no lo cambia el propio usuario, nunca. Antes se aceptaba
+          // personal/business "para el onboarding", pero la fila ya existe
+          // desde el registro con su rol: lo único que hacía era dejar que
+          // una sesión con el rol mal en memoria convirtiera una empresa en
+          // Persona en la base (este upsert corre con service-role y el
+          // guardia de la base no lo frena). Solo se acepta si la fila NO
+          // existe todavía (alta), y aun ahí solo personal/business.
+          if (userRow.role != null) {
+            const { data: yaExiste } = await db.from('users').select('id').eq('id', selfServiceBody.user.id).maybeSingle()
+            if (yaExiste || !['personal', 'business'].includes(String(userRow.role))) delete (userRow as any).role
+          }
           if (userRow.kyc_status != null && !['pending', 'in_review', 'not_started', 'incomplete', 'rejected'].includes(String(userRow.kyc_status))) delete (userRow as any).kyc_status
           for (const k of ['is_blocked', 'is_admin', 'limits', 'status']) delete (userRow as any)[k]
 
