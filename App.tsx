@@ -360,16 +360,22 @@ const App: React.FC = () => {
   const INACTIVE_WARNING_MS = 60 * 1000;   // avisa cuando falta 1 minuto
 
   const cerrarPorInactividad = useCallback(async () => {
+    // El login al que se vuelve es el del PORTAL en el que estabas: una
+    // persona vuelve a Personas y un contador a Contabilidad. Antes caía
+    // siempre en el de Empresas, porque ese es el rol por defecto.
+    const rol = currentUser?.role;
+    const portal = portalActual();
     // Se ESPERA a que la sesión quede cerrada antes de cambiar de vista. Si se
     // hacen las dos cosas a la vez, por un momento hay usuario y la vista es
     // 'landing', que es justo la condición del splash: se veía "Verificando
     // sesión" en el momento en que la sesión se estaba cerrando — lo contrario
     // de lo que pasaba.
     await logoutUser();
+    setUserRole(portal === 'contabilidad' ? 'contador' : rol === 'personal' ? 'personal' : 'business');
     // Y se va al LOGIN, no a la portada: si la sesión venció hay que volver a
     // entrar con correo y contraseña (o Google), y eso se pide acá.
     setCurrentView('login');
-  }, [logoutUser]);
+  }, [logoutUser, currentUser?.role]);
 
   // Restore Session Logic with Enhanced KYC Routing
   useEffect(() => {
