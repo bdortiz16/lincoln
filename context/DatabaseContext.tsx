@@ -432,14 +432,15 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             // a role/kyc_status desde el cliente. Si el seed admin perdió su
             // rol, se restaura desde Supabase Dashboard, no desde el frontend.
             //
-            // Si user_metadata.role viene del signUp y difiere, sincronizamos
-            // SOLO si es business/personal (NO admin — admin solo por seed).
-            const metaRoleOnFound = session.user.user_metadata?.role as string | undefined;
-            if ((metaRoleOnFound === 'business' || metaRoleOnFound === 'personal') && metaRoleOnFound !== profile.role) {
-              await supabase.from('users').update({ role: metaRoleOnFound }).eq('id', profile.id);
-              if (logoutCounterRef.current !== snapshotLogoutCount) return;
-              profile = { ...profile, role: metaRoleOnFound };
-            }
+            // El rol es el de la fila en `users`, y solo ese. Antes, si
+            // user_metadata.role (lo que se pidió al registrarse, quizá hace
+            // años por otro flujo) no coincidía, el cliente intentaba cambiar
+            // la fila —el guardia de la base lo revierte en silencio— y aun
+            // así se quedaba con el rol de los metadatos EN LA SESIÓN. Una
+            // empresa verificada con metadatos 'personal' entraba al portal
+            // de Personas (veía "identificación pendiente" y podía activar
+            // cosas ahí) y la guarda de portal la echaba de Empresas. Los
+            // metadatos de Auth no deciden nada: se ignoran.
             // GATE 2FA: si la cuenta tiene 2FA custom activo y aún no se verificó
             // el código EN ESTA sesión, NO se entra — se deja pendiente el código.
             // (Antes este listener seteaba currentUser directo y saltaba el 2FA.)
@@ -516,6 +517,10 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
               try {
                 const pista = JSON.parse(localStorage.getItem('cuypay_oauth_role') || 'null');
                 if (pista?.role === 'personal' && Date.now() - Number(pista.at || 0) < 15 * 60_000) pendingRole = 'personal';
+                // Registro por correo desde Personas: la marca la pone
+                // registerUser justo antes del signUp y la quita al insertar
+                // la fila. Si este listener llega primero, respeta el portal.
+                if (localStorage.getItem('cuypay_register_role') === 'personal') pendingRole = 'personal';
               } catch { /* pista ilegible: business */ }
               localStorage.removeItem('cuypay_oauth_role');
               localStorage.removeItem('cuypay_register_role');
