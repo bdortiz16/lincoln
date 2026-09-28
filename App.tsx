@@ -32,6 +32,31 @@ type UserRole = 'business' | 'personal' | 'contador' | 'admin';
 const vistaDelRol = (role?: string): ViewState =>
   role === 'personal' ? 'persona-dashboard' : role === 'contador' ? 'contador-dashboard' : 'personal-dashboard';
 
+// Direcciones de las pantallas que maneja App (las del portal de empresas
+// las maneja el propio panel con el prefijo empresas_). La barra del
+// navegador dice dónde estás: /ingresar_personas, /portal_personas…
+const RUTAS_APP: Record<string, { view: ViewState; role?: UserRole }> = {
+  '/ingresar':               { view: 'role-selection' },
+  '/ingresar_personas':      { view: 'login', role: 'personal' },
+  '/ingresar_empresas':      { view: 'login', role: 'business' },
+  '/ingresar_contabilidad':  { view: 'login', role: 'contador' },
+  '/registro_personas':      { view: 'register', role: 'personal' },
+  '/registro_empresas':      { view: 'register', role: 'business' },
+  '/confirmar_correo':       { view: 'confirmation' },
+  '/portal_personas':        { view: 'persona-dashboard' },
+  '/portal_contabilidad':    { view: 'contador-dashboard' },
+};
+const rutaDeVista = (view: ViewState, role: UserRole): string | null => {
+  if (view === 'landing') return '/';
+  if (view === 'login') return role === 'personal' ? '/ingresar_personas' : role === 'contador' ? '/ingresar_contabilidad' : '/ingresar_empresas';
+  if (view === 'register') return role === 'personal' ? '/registro_personas' : '/registro_empresas';
+  const hallada = Object.entries(RUTAS_APP).find(([, r]) => r.view === view && !r.role);
+  return hallada ? hallada[0] : null;
+};
+const rutaInicial = (): { view: ViewState; role?: UserRole } | null => {
+  try { return RUTAS_APP[window.location.pathname] ?? null; } catch { return null; }
+};
+
 const LEGACY_BLUES = ['#2563eb', '#1d4ed8', '#3b82f6', '#60a5fa', '#0ea5e9', '#06b6d4', '#7dd3fc', '#4f46e5', '#4b9fe1', '#1e40af'];
 
 const ThemeInjector: React.FC = () => {
@@ -227,11 +252,34 @@ const App: React.FC = () => {
   // Nota: el routing de /admin-personas Y /admin-empresas se maneja en
   // index.tsx (apps aisladas con su propio login) — acá solo llega el
   // flujo de clientes.
-  const [currentView, setCurrentView] = useState<ViewState>('landing');
+  const [currentView, setCurrentView] = useState<ViewState>(() => rutaInicial()?.view ?? 'landing');
   const [staticPageKey, setStaticPageKey] = useState<string>('privacy'); // State for static page content
   const [email, setEmail] = useState('');
   const [showDashboardBanner, setShowDashboardBanner] = useState(false);
-  const [userRole, setUserRole] = useState<UserRole>('business');
+  const [userRole, setUserRole] = useState<UserRole>(() => rutaInicial()?.role ?? 'business');
+
+  // Vista ↔ dirección para las pantallas de App. El portal de empresas
+  // escribe las suyas (empresas_*); acá no se toca esa vista.
+  useEffect(() => {
+    const path = rutaDeVista(currentView, userRole);
+    if (!path) return;
+    try {
+      // 'landing' es la vista inicial mientras se restaura la sesión: si la
+      // dirección es la de una pantalla del portal (/empresas_movimientos…),
+      // se deja quieta para que la recarga caiga donde estabas.
+      if (currentView === 'landing' && !RUTAS_APP[window.location.pathname]) return;
+      if (window.location.pathname !== path) window.history.pushState({ view: currentView }, '', path);
+    } catch { /* sin history */ }
+  }, [currentView, userRole]);
+  useEffect(() => {
+    const onPop = () => {
+      const r = RUTAS_APP[window.location.pathname];
+      if (r) { if (r.role) setUserRole(r.role); setCurrentView(r.view); }
+      else if (window.location.pathname === '/') setCurrentView(v => (['role-selection', 'login', 'register'].includes(v) ? 'landing' : v));
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
   
   // Marketing Modal State
   const [showMarketingModal, setShowMarketingModal] = useState(false);
@@ -429,6 +477,8 @@ const App: React.FC = () => {
     setLoggingOut(true);
     await logoutUser();
     setLoggingOut(false);
+    // Al salir, la dirección vuelve al inicio: no se queda en /empresas_….
+    try { window.history.replaceState({}, '', '/'); } catch { /* sin history */ }
     setCurrentView('landing');
   };
 

@@ -265,22 +265,33 @@ function esConvertAcreditado(t: any): boolean {
     return !(t.targetCurrency ?? rd.targetCurrency);
 }
 
+// Direcciones del portal de EMPRESAS: el inicio es /portal_empresas y cada
+// sección lleva el prefijo empresas_. Así la barra del navegador dice en qué
+// portal estás (Personas tiene /portal_personas; el contador,
+// /portal_contabilidad). Las direcciones viejas (/inicio, /movimientos…)
+// siguen abriendo su pantalla, para no romper enlaces guardados.
 const VIEW_PATHS: Record<string, string> = {
-  dashboard: '/inicio',
-  movements: '/movimientos',
-  'wallet-detail': '/billetera',
-  profile: '/perfil',
-  notifications: '/notificaciones',
-  referrals: '/invita',
-  affiliates: '/aliados',
-  settings: '/ajustes',
-  servicios: '/servicios',
-  mouv: '/mesa-otc',
-  contactos: '/beneficiarios',
-  clientes: '/clientes',
-  contabilidad: '/contabilidad',
-  compliance: '/compliance',
-  walletsGasfree: '/wallets',
+  dashboard: '/portal_empresas',
+  movements: '/empresas_movimientos',
+  'wallet-detail': '/empresas_billetera',
+  profile: '/empresas_perfil',
+  notifications: '/empresas_notificaciones',
+  referrals: '/empresas_invita',
+  affiliates: '/empresas_aliados',
+  settings: '/empresas_ajustes',
+  servicios: '/empresas_servicios',
+  mouv: '/empresas_mesa-otc',
+  contactos: '/empresas_beneficiarios',
+  clientes: '/empresas_clientes',
+  contabilidad: '/empresas_contabilidad',
+  compliance: '/empresas_compliance',
+  walletsGasfree: '/empresas_wallets',
+};
+const RUTAS_VIEJAS: Record<string, string> = {
+  '/inicio': 'dashboard', '/movimientos': 'movements', '/billetera': 'wallet-detail', '/perfil': 'profile',
+  '/notificaciones': 'notifications', '/invita': 'referrals', '/aliados': 'affiliates', '/ajustes': 'settings',
+  '/servicios': 'servicios', '/beneficiarios': 'contactos', '/clientes': 'clientes', '/contabilidad': 'contabilidad',
+  '/compliance': 'compliance', '/wallets': 'walletsGasfree',
 };
 // 'mouv' es la unica vista con DOS entradas distintas —Dispersar por Bre-B y
 // la Mesa OTC— y, dentro de la mesa, tres rieles. Todo eso vivia solo en
@@ -299,6 +310,11 @@ const VIEW_PATHS: Record<string, string> = {
 // escribir la direccion a mano volvia a abrir la misma pantalla. Esconder una
 // puerta no es cerrarla -- es el mismo razonamiento que el horario de la mesa.
 const RUTAS_MOUV: Record<string, { mouvMode: 'full' | 'converter'; otcRail: 'ach' | 'breb' | 'manual' | null }> = {
+  '/empresas_mesa-otc':        { mouvMode: 'converter', otcRail: null },
+  '/empresas_mesa-otc/manual': { mouvMode: 'converter', otcRail: 'manual' },
+  '/empresas_mesa-otc/ach':    { mouvMode: 'converter', otcRail: 'ach' },
+  '/empresas_mesa-otc/breb':   { mouvMode: 'converter', otcRail: 'breb' },
+  // Direcciones viejas de la mesa.
   '/mesa-otc':        { mouvMode: 'converter', otcRail: null },
   '/mesa-otc/manual': { mouvMode: 'converter', otcRail: 'manual' },
   '/mesa-otc/ach':    { mouvMode: 'converter', otcRail: 'ach' },
@@ -307,9 +323,10 @@ const RUTAS_MOUV: Record<string, { mouvMode: 'full' | 'converter'; otcRail: 'ach
 // Ya no hay modo 'full' alcanzable desde la app: si por algun camino se llegara,
 // la direccion que se escribe es la de la mesa, no una ruta que ya no existe.
 const rutaMouv = (_mouvMode: 'full' | 'converter', otcRail: 'ach' | 'breb' | 'manual' | null): string =>
-  otcRail ? `/mesa-otc/${otcRail}` : '/mesa-otc';
+  otcRail ? `/empresas_mesa-otc/${otcRail}` : '/empresas_mesa-otc';
 
 const PATH_VIEWS: Record<string, string> = {
+  ...RUTAS_VIEJAS,
   ...Object.fromEntries(Object.entries(VIEW_PATHS).map(([view, path]) => [path, view])),
   ...Object.fromEntries(Object.keys(RUTAS_MOUV).map(p => [p, 'mouv'])),
 };
@@ -341,7 +358,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   });
   useEffect(() => {
     try {
-      const path = activeView === 'mouv' ? rutaMouv(mouvMode, otcRail) : (VIEW_PATHS[activeView] || '/inicio');
+      const path = activeView === 'mouv' ? rutaMouv(mouvMode, otcRail) : (VIEW_PATHS[activeView] || '/portal_empresas');
       if (window.location.pathname !== path) window.history.pushState({ view: activeView }, '', path);
     } catch { /* entorno sin history */ }
   }, [activeView, mouvMode, otcRail]);
