@@ -51,6 +51,9 @@ const RUTAS_APP: Record<string, { view: ViewState; role?: UserRole }> = {
   '/registro_empresas':      { view: 'register', role: 'business' },
   '/confirmar_correo':       { view: 'confirmation' },
   '/portal_personas':        { view: 'persona-dashboard' },
+  '/personas_movimientos':   { view: 'persona-dashboard' },
+  '/personas_beneficiarios': { view: 'persona-dashboard' },
+  '/personas_ayuda':         { view: 'persona-dashboard' },
   '/portal_contabilidad':    { view: 'contador-dashboard' },
 };
 const rutaDeVista = (view: ViewState, role: UserRole): string | null => {
@@ -279,6 +282,9 @@ const App: React.FC = () => {
       // dirección es la de una pantalla del portal (/empresas_movimientos…),
       // se deja quieta para que la recarga caiga donde estabas.
       if (currentView === 'landing' && !RUTAS_APP[window.location.pathname]) return;
+      // La dirección actual ya es una pantalla de esta misma vista (p. ej.
+      // /personas_movimientos dentro del portal Personas): se respeta.
+      if (RUTAS_APP[window.location.pathname]?.view === currentView) return;
       if (window.location.pathname !== path) window.history.pushState({ view: currentView }, '', path);
     } catch { /* sin history */ }
   }, [currentView, userRole]);
