@@ -89,6 +89,7 @@ import { CodeInput } from './CodeInput';
 import { ServiciosSection } from './ServiciosSection';
 import { supabase } from '../lib/supabaseClient';
 import { FlagImg, FlagSelect, flagUrl } from './FlagImg';
+import { CuentaBrasilTarjeta } from './CuentaBrasilTarjeta';
 import { useExchangeRates } from '../context/ExchangeRateContext';
 import { useSystemConfig } from '../context/SystemConfigContext'; 
 import { useDatabase } from '../context/DatabaseContext';
@@ -2244,6 +2245,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                 ];
                 return OTROS.filter(o => cs[o.pais] === 'on').map(o => {
                   const saldo = getBalance(o.code);
+                  // Brasil ya tiene riel: la tarjeta pide la cuenta, muestra
+                  // el estado de la solicitud y los datos para recibir PIX.
+                  if (o.code === 'BRL') return (
+                    <CuentaBrasilTarjeta key={o.code} saldo={saldo} verificada={isKycVerified || currentUser?.kycStatus === 'approved'}
+                      empresa={(currentUser as any)?.companyName || currentUser?.name} taxId={(currentUser as any)?.taxId} showToast={showToast} />
+                  );
                   return (
                     <div key={o.code} style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 14, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
                       <div style={{ padding: '18px 18px 16px', flex: 1 }}>

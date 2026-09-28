@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { pedirMouv } from './adminApi';
+import { CuentaBrasilCliente, SolicitudesBrasil } from './AdminCuentasBrasil';
 import { useDatabase } from '../context/DatabaseContext';
 
 // ─────────────────────────────────────────────────────────────
@@ -133,7 +134,8 @@ export const AdminClientes: React.FC<{
   const [busquedaViva, setBusquedaViva] = useState('');
   const [chip, setChip] = useState<'todos' | 'empresas' | 'pendientes'>('todos');
   const [selId, setSelId] = useState<string | null>(null);
-  const [tab, setTab] = useState<'resumen' | 'movimientos' | 'kyc' | 'limites' | 'auditoria'>('resumen');
+  const [tab, setTab] = useState<'resumen' | 'movimientos' | 'kyc' | 'brasil' | 'limites' | 'auditoria'>('resumen');
+  const [brasilAbierto, setBrasilAbierto] = useState(false);
   const [sincronizando, setSincronizando] = useState(false);
   // El resultado de la última sincronización, FIJO en pantalla.
   // Estaba solo en un toast: se esfumaba antes de poder leerlo, y justo en el
@@ -336,6 +338,7 @@ export const AdminClientes: React.FC<{
           {onLiberarCorreo && (
             <button onClick={onLiberarCorreo} style={btnSec}>Liberar correo</button>
           )}
+          <button onClick={() => setBrasilAbierto(true)} style={btnSec}>Cuentas Brasil</button>
           <button onClick={() => showToast?.('Invitar cliente: próximamente.')} style={btnPri}>
             <Ico d={I.mas} /> Invitar cliente
           </button>
@@ -521,7 +524,7 @@ export const AdminClientes: React.FC<{
               <div style={{ display: 'flex', gap: 4, borderBottom: `1px solid ${C.b1}`, marginTop: 18, overflowX: 'auto' }}>
                 {([
                   ['resumen', 'Resumen'], ['movimientos', 'Movimientos'], ['kyc', 'KYC y documentos'],
-                  ['limites', 'Límites y comisiones'], ['auditoria', 'Auditoría'],
+                  ['brasil', 'Cuenta Brasil'], ['limites', 'Límites y comisiones'], ['auditoria', 'Auditoría'],
                 ] as const).map(([k, l]) => (
                   <button key={k} onClick={() => setTab(k)}
                     style={{
@@ -544,12 +547,18 @@ export const AdminClientes: React.FC<{
                 <Movimientos movs={movsDe(sel.id)} onSondear={sondear} sondeando={sondeando} />
               </>}
               {tab === 'kyc' && <Kyc sel={sel} verifyUser={verifyUser} refreshData={refreshData} showToast={showToast} verificado={verificado} />}
+              {tab === 'brasil' && <CuentaBrasilCliente sel={sel} showToast={showToast} />}
               {tab === 'limites' && <Limites sel={sel} movs={movsDe(sel.id)} updateUserRawData={updateUserRawData} refreshData={refreshData} showToast={showToast} />}
               {tab === 'auditoria' && <Auditoria sel={sel} movs={movsDe(sel.id)} />}
             </>
           )}
         </div>
       </div>
+
+      {brasilAbierto && (
+        <SolicitudesBrasil onCerrar={() => setBrasilAbierto(false)}
+          onAbrir={(id) => { setBrasilAbierto(false); elegir(id); setTab('brasil'); }} />
+      )}
 
       {/* Doble confirmación escribiendo el nombre. Un "¿seguro?" se acepta sin
           leer; escribir el nombre obliga a mirar sobre quién se está actuando. */}
