@@ -98,7 +98,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
       if (malPortal) { logoutUser('portal equivocado'); setErrorMsg(malPortal); return; }
 
       if (config.maintenanceMode && user!.role !== 'admin') {
-        logoutUser();
+        logoutUser('mantenimiento');
         setErrorMsg("El sistema se encuentra en mantenimiento. Solo administradores pueden ingresar.");
         return;
       }

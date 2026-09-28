@@ -3523,7 +3523,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               </div>
                               {!showDeleteAccountConfirm
                                   ? <button onClick={() => setShowDeleteAccountConfirm(true)} style={{ ...secBtn, color: '#878E88' }} className="hover:bg-white/[0.09] transition-colors">Iniciar</button>
-                                  : <button onClick={async () => { if (!currentUser) return; setIsDeletingAccount(true); await Promise.race([deleteUser(currentUser.id), new Promise(r => setTimeout(r, 12000))]).catch(() => {}); logoutUser(); }} disabled={isDeletingAccount} style={{ ...secBtn, color: '#F4F4F2' }}>{isDeletingAccount ? 'Cerrando…' : 'Confirmar cierre'}</button>}
+                                  : <button onClick={async () => { if (!currentUser) return; setIsDeletingAccount(true); await Promise.race([deleteUser(currentUser.id), new Promise(r => setTimeout(r, 12000))]).catch(() => {}); logoutUser('cierre de cuenta'); }} disabled={isDeletingAccount} style={{ ...secBtn, color: '#F4F4F2' }}>{isDeletingAccount ? 'Cerrando…' : 'Confirmar cierre'}</button>}
                           </div>
                           {showDeleteAccountConfirm && !isDeletingAccount && (
                               <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 4 }}>Esta acción es permanente. <button onClick={() => setShowDeleteAccountConfirm(false)} style={{ color: '#F4F4F2', textDecoration: 'underline' }}>Cancelar</button></p>

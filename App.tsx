@@ -460,11 +460,12 @@ const App: React.FC = () => {
             // haya anotado el cierre). Antes caía en la portada sin
             // explicación y parecía que "no deja entrar".
             const portalDelPanel: UserRole = currentView === 'persona-dashboard' ? 'personal' : currentView === 'contador-dashboard' ? 'contador' : 'business';
-            const motivo = ultimoCierre();
+            const panel = currentView === 'persona-dashboard' ? 'Personas' : currentView === 'contador-dashboard' ? 'Contabilidad' : currentView === 'personal-dashboard' ? 'Empresas' : currentView;
+            const motivo = `${ultimoCierre() ?? 'sin motivo anotado'} · panel ${panel}`;
             const t = setTimeout(() => {
               if (!rechazoReciente()) {
                 setUserRole(portalDelPanel);
-                setErrorPortal(prev => prev ?? `Tu sesión se cerró antes de abrir el panel${motivo ? ` (${motivo})` : ''}. Vuelve a entrar; si se repite, escríbenos a soporte.`);
+                setErrorPortal(prev => prev ?? `Tu sesión se cerró antes de abrir el panel (${motivo}). Vuelve a entrar; si se repite, escríbenos a soporte.`);
               }
               setCurrentView('login');
             }, rechazoReciente() ? 0 : 800);
@@ -488,7 +489,7 @@ const App: React.FC = () => {
     if (role && role !== 'admin') setUserRole(role);
 
     if (currentUser) {
-        logoutUser();
+        logoutUser('ir al registro con sesión abierta');
         setTimeout(() => setCurrentView('register'), 50);
     } else {
         setCurrentView('register');
@@ -576,7 +577,7 @@ const App: React.FC = () => {
 
   const handleLogout = async () => {
     setLoggingOut(true);
-    await logoutUser();
+    await logoutUser('botón Salir del panel');
     setLoggingOut(false);
     // Al salir, la dirección vuelve al inicio: no se queda en /empresas_….
     try { window.history.replaceState({}, '', '/'); } catch { /* sin history */ }
@@ -727,7 +728,7 @@ const App: React.FC = () => {
             userId={currentUser!.id}
             email={currentUser!.email}
             onVerified={() => setOtpPassed(true)}
-            onLogout={logoutUser}
+            onLogout={() => logoutUser('salir desde la verificación por correo')}
           />
         ) : renderView()}
 
