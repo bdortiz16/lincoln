@@ -1118,6 +1118,34 @@ export const ContactsSection: React.FC<{
     // fallidas). Solo actualiza estados — NUNCA borra contactos.
     useEffect(() => { syncStatuses(true); }, [currentUser?.id]);
 
+    // Mientras haya algo EN PROCESO (la cuenta en validación con el banco o la
+    // consulta de antecedentes sin veredicto), se vuelve a preguntar solo cada
+    // 15 s: el estado bancario al proveedor y el AML al servidor. Antes eso
+    // pasaba una sola vez al entrar y, si la verificación no "corría" para la
+    // cuenta, nunca más: había que recargar la página para ver el cambio.
+    // Se detiene solo cuando ya no queda nada pendiente, o a los 10 minutos.
+    const hayEnProceso = bankContacts.some(c => c.status === 'en_proceso')
+        || Object.values(amlBenef).some((k: any) => String(k?.estado ?? '') === 'procesando')
+        || bankContacts.some(c => { const d = String(c.docNumber ?? '').replace(/\D/g, ''); return d && !amlBenef[d]; });
+    useEffect(() => {
+        const uid = currentUser?.id;
+        if (!uid || !hayEnProceso) return;
+        let vivo = true;
+        let vueltas = 0;
+        const t = setInterval(async () => {
+            vueltas += 1;
+            if (vueltas > 40) { clearInterval(t); return; }
+            if (!vivo) return;
+            await leerTusdatos(uid);
+            if (!vivo) return;
+            await syncStatuses(true);
+            if (!vivo) return;
+            refreshData?.();
+        }, 15000);
+        return () => { vivo = false; clearInterval(t); };
+        /* eslint-disable-next-line react-hooks/exhaustive-deps */
+    }, [currentUser?.id, hayEnProceso, leerTusdatos]);
+
     // ── El AML llega después ─────────────────────────────────────────────
     // La consulta a Kumplo tarda: al entrar, un beneficiario recién inscrito
     // todavía no tiene veredicto. Sin esto la columna se quedaba en
