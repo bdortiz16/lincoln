@@ -43,24 +43,68 @@ function slimRawData(rd: unknown, limit = 2000): unknown {
 // NO pueda volver a haber tres copias que se desincronicen.
 
 // ── Códigos de respaldo ───────────────────────────────────────────────────
-// Se guardan HASHEADOS (SHA-256), no cifrados. Un hash no depende de ninguna
-// llave, así que aunque FIELD_ENC_KEY cambie o se pierda, estos códigos
-// SIEMPRE siguen sirviendo para entrar. Es la red que faltaba: hasta ahora la
-// única vía de acceso dependía de una llave reversible.
+// Se guardan HASHEADOS, no cifrados. Un hash no depende de ninguna llave, así
+// que aunque FIELD_ENC_KEY cambie o se pierda, estos códigos SIEMPRE siguen
+// sirviendo para entrar.
+//
+// INCIDENTE DE SEPTIEMBRE 2026 — por qué ya no es un SHA-256 a secas:
+// mientras public.users fue legible para cualquier sesión, alguien copió los
+// hashes de respaldo de la cuenta admin. Eran SHA-256 sin sal de un código de
+// 8 símbolos sobre 32 posibles (2^40): una tarjeta gráfica los rompe en
+// minutos. El 5 de septiembre entraron al panel con dos de esos códigos.
+//
+// Ahora: el código tiene 10 símbolos (2^50) y el hash es PBKDF2-SHA256 con
+// sal propia y 150.000 vueltas. Romper UN código por fuerza bruta pasa de
+// minutos a siglos. Los hashes viejos (64 hex) se siguen reconociendo para
+// no dejar a nadie afuera, pero el tablero de seguridad pide regenerarlos.
 const BACKUP_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'   // sin O/0/I/1
+const BACKUP_LEN = 10
+const BACKUP_ITER = 150_000
 function normalizeBackup(c: string): string {
   return String(c ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '')
 }
+const hex = (b: ArrayBuffer | Uint8Array) => Array.from(new Uint8Array(b)).map(x => x.toString(16).padStart(2, '0')).join('')
+const unhex = (s: string) => new Uint8Array((s.match(/../g) ?? []).map(h => parseInt(h, 16)))
+async function pbkdf2Backup(code: string, salt: Uint8Array, iter: number): Promise<string> {
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode('lincoin-backup:' + normalizeBackup(code)), 'PBKDF2', false, ['deriveBits'])
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: iter }, key, 256)
+  return hex(bits)
+}
 async function hashBackup(code: string): Promise<string> {
+  const salt = crypto.getRandomValues(new Uint8Array(16))
+  return `pbkdf2$${BACKUP_ITER}$${hex(salt)}$${await pbkdf2Backup(code, salt, BACKUP_ITER)}`
+}
+// Hash del formato viejo (SHA-256 sin sal). Solo para RECONOCER los que ya
+// existen; nunca se vuelve a generar uno así.
+async function hashBackupLegacy(code: string): Promise<string> {
   const raw = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('lincoin-backup:' + normalizeBackup(code)))
-  return Array.from(new Uint8Array(raw)).map(b => b.toString(16).padStart(2, '0')).join('')
+  return hex(raw)
+}
+const esHashLegacy = (h: string) => /^[0-9a-f]{64}$/i.test(String(h ?? ''))
+// Devuelve la posición del hash que corresponde al código, o -1.
+async function matchBackup(code: string, hashes: string[]): Promise<number> {
+  let legacy: string | null = null
+  for (let i = 0; i < hashes.length; i++) {
+    const h = String(hashes[i] ?? '')
+    if (esHashLegacy(h)) {
+      legacy ??= await hashBackupLegacy(code)
+      if (h.toLowerCase() === legacy) return i
+      continue
+    }
+    const partes = h.split('$')
+    if (partes.length !== 4 || partes[0] !== 'pbkdf2') continue
+    const iter = parseInt(partes[1], 10)
+    if (!(iter > 0) || !/^[0-9a-f]{32}$/i.test(partes[2])) continue
+    if ((await pbkdf2Backup(code, unhex(partes[2]), iter)) === partes[3].toLowerCase()) return i
+  }
+  return -1
 }
 function newBackupCodes(n = 8): string[] {
   const out: string[] = []
   for (let i = 0; i < n; i++) {
-    const bytes = crypto.getRandomValues(new Uint8Array(8))
+    const bytes = crypto.getRandomValues(new Uint8Array(BACKUP_LEN))
     const s = Array.from(bytes).map(b => BACKUP_ALPHABET[b % BACKUP_ALPHABET.length]).join('')
-    out.push(s.slice(0, 4) + '-' + s.slice(4))
+    out.push(s.slice(0, BACKUP_LEN / 2) + '-' + s.slice(BACKUP_LEN / 2))
   }
   return out
 }
@@ -1579,9 +1623,9 @@ Deno.serve(async (req: Request) => {
         // caso para el que existe. Es de un solo uso: al acertar se consume.
         const hashes: string[] = Array.isArray(raw.mfaBackupHashes) ? raw.mfaBackupHashes : []
         const normalized = normalizeBackup(code)
-        if (hashes.length && normalized.length === 8 && !/^\d{6}$/.test(code.trim())) {
-          const h = await hashBackup(code)
-          const idx = hashes.indexOf(h)
+        // 8 símbolos: códigos emitidos antes de septiembre 2026. 10: los nuevos.
+        if (hashes.length && (normalized.length === 8 || normalized.length === BACKUP_LEN) && !/^\d{6}$/.test(code.trim())) {
+          const idx = await matchBackup(code, hashes)
           if (idx >= 0) {
             const rest = hashes.filter((_, i) => i !== idx)
             await db.from('users').update({ raw_data: { ...raw, mfaBackupHashes: rest } }).eq('id', selfServiceBody.userId)
@@ -1942,7 +1986,10 @@ Deno.serve(async (req: Request) => {
           if (!raw.mfaEnabled) continue
           const hashes: string[] = Array.isArray(raw.mfaBackupHashes) ? raw.mfaBackupHashes : []
           const malo = affected.find(a => a.email === r.email)
-          cuentas.push({ email: String(r.email ?? ''), conRespaldo: hashes.length > 0, problema: malo ? malo.motivo : null })
+          // Códigos del formato viejo (SHA-256 sin sal): rompibles por fuerza
+          // bruta si alguien copió la fila. Hay que regenerarlos.
+          const debil = hashes.some(esHashLegacy)
+          cuentas.push({ email: String(r.email ?? ''), conRespaldo: hashes.length > 0, problema: malo ? malo.motivo : (debil ? 'respaldo débil: regenerar' : null) })
         }
         return json({ ok: true, total, unreadable, keyMismatch, noBackup, legacyPlain, affected: affected.slice(0, 25), cuentas: cuentas.slice(0, 200) })
       }

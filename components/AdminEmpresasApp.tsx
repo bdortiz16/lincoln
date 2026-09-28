@@ -161,10 +161,11 @@ const AdminEmpresasInner: React.FC = () => {
     };
 
     // Se acepta el código de 6 dígitos de la app O un código de respaldo
-    // (8 caracteres, formato XXXX-XXXX). El de respaldo existe justo para
-    // cuando la app o el secreto ya no sirven.
+    // (10 caracteres, formato XXXXX-XXXXX; los emitidos antes de septiembre
+    // de 2026 tienen 8). El de respaldo existe justo para cuando la app o el
+    // secreto ya no sirven.
     const codeReady = useBackup
-        ? mfaCode.replace(/[^A-Za-z0-9]/g, '').length === 8
+        ? [8, 10].includes(mfaCode.replace(/[^A-Za-z0-9]/g, '').length)
         : mfaCode.length === 6;
 
     // Paso 2: el código que llegó al correo.
@@ -335,13 +336,13 @@ const AdminEmpresasInner: React.FC = () => {
                             <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl p-2.5">
                                 <ShieldCheck size={16} className="text-[#16A34A]" />
                                 <p className="text-xs text-slate-600">{useBackup
-                                    ? 'Ingresa uno de tus códigos de respaldo (formato XXXX-XXXX). Cada uno sirve una sola vez.'
+                                    ? 'Ingresa uno de tus códigos de respaldo (formato XXXXX-XXXXX). Cada uno sirve una sola vez.'
                                     : `Verificación 2 de ${mfaPasos}. Ingresa el código de 6 dígitos.`}</p>
                             </div>
                             <input
                                 value={mfaCode}
                                 onChange={e => setMfaCode(useBackup
-                                    ? e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, '').slice(0, 9)
+                                    ? e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, '').slice(0, 11)
                                     : e.target.value.replace(/\D/g, '').slice(0, 6))}
                                 autoFocus
                                 inputMode={useBackup ? 'text' : 'numeric'}
