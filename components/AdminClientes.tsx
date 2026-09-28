@@ -1059,6 +1059,39 @@ const Kyc: React.FC<any> = ({ sel, verifyUser, refreshData, showToast, verificad
           </div>
         )}
       </Tarjeta>
+
+      {/* Personas autorizadas por esta empresa (modelo PSP): a quiénes les
+          puede cargar saldo y pagar, con el tope mensual que les fijó. Lo
+          escribe el servidor (función autorizaciones); acá solo se lee. */}
+      {(Array.isArray(raw.personasAutorizadas) && raw.personasAutorizadas.length > 0) || (Array.isArray(raw.personasSolicitudes) && raw.personasSolicitudes.length > 0) ? (
+        <Tarjeta>
+          <p style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>Personas autorizadas</p>
+          <p style={{ fontSize: 12, color: C.sub, margin: '4px 0 0' }}>Personas a las que esta empresa puede cargar saldo y pagar, y su tope mensual de retiro.</p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 12 }}>
+            {(raw.personasAutorizadas ?? []).map((a: any) => (
+              <div key={a.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, background: C.elev, border: `1px solid ${C.b1}`, borderRadius: 10, padding: '9px 12px' }}>
+                <div style={{ minWidth: 0 }}>
+                  <p style={{ fontSize: 13, fontWeight: 700, margin: 0, color: C.text }}>{a.nombre} <span style={{ fontFamily: MONO, fontSize: 11, color: C.sub }}>{a.codigo ?? ''}</span></p>
+                  <p style={{ fontSize: 11.5, color: C.sub, margin: '2px 0 0' }}>{a.docType} {a.docNumber} · {a.email}</p>
+                </div>
+                <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                  <p style={{ fontSize: 12.5, fontWeight: 700, margin: 0, color: C.text }}>{a.topeMensual ? `${Number(a.topeMensual).toLocaleString('es-CO')} COP/mes` : 'Sin tope'}</p>
+                  <p style={{ fontSize: 11, color: C.sub, margin: '2px 0 0' }}>desde {fecha(a.at)}</p>
+                </div>
+              </div>
+            ))}
+            {(raw.personasSolicitudes ?? []).map((s: any) => (
+              <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, background: 'transparent', border: `1px dashed ${C.b2}`, borderRadius: 10, padding: '9px 12px' }}>
+                <div style={{ minWidth: 0 }}>
+                  <p style={{ fontSize: 13, fontWeight: 700, margin: 0, color: C.text }}>{s.nombre}</p>
+                  <p style={{ fontSize: 11.5, color: C.sub, margin: '2px 0 0' }}>{s.docType} {s.docNumber} · {s.email}</p>
+                </div>
+                <p style={{ fontSize: 11, fontWeight: 800, letterSpacing: '1px', color: C.sub, margin: 0 }}>PENDIENTE</p>
+              </div>
+            ))}
+          </div>
+        </Tarjeta>
+      ) : null}
     </div>
   );
 };

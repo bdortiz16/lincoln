@@ -77,7 +77,38 @@ type Vista = 'inicio' | 'movimientos' | 'beneficiarios' | 'ayuda';
 const RUTA_VISTA: Record<Vista, string> = { inicio: '/portal_personas', movimientos: '/personas_movimientos', beneficiarios: '/personas_beneficiarios', ayuda: '/personas_ayuda' };
 const VISTA_RUTA: Record<string, Vista> = Object.fromEntries(Object.entries(RUTA_VISTA).map(([v, p]) => [p, v as Vista]));
 
-type Panel = 'recargar' | 'convertir' | 'seguridad' | 'tasas' | 'limites' | 'notificaciones' | 'invita' | 'ayuda' | 'cobrar' | null;
+type Panel = 'recargar' | 'convertir' | 'seguridad' | 'tasas' | 'limites' | 'notificaciones' | 'invita' | 'ayuda' | 'cobrar' | 'autorizacion' | 'perfil' | null;
+
+// ─── Autorización por una empresa ────────────────────────────────────
+// La persona solo puede recibir dinero de UNA empresa registrada que la haya
+// autorizado. Pide la autorización con el ID de la empresa, su nombre, su
+// documento y una foto sosteniéndolo; la empresa aprueba y le fija el tope
+// mensual de retiro. Todo lo escribe el servidor (función `autorizaciones`).
+type EstadoAuth = {
+  autorizada: { id: string; nombre: string; topeMensual: number | null } | null;
+  pendiente: { id: string; nombre: string } | null;
+  usadoMes: number;
+  datos: { estado?: string; empresaNombre?: string; nombre?: string; docType?: string; docNumber?: string; at?: string } | null;
+};
+const TIPOS_DOC: Array<[string, string]> = [['CC', 'Cédula de ciudadanía'], ['CE', 'Cédula de extranjería'], ['PAS', 'Pasaporte'], ['PPT', 'Permiso por protección temporal']];
+// La foto se reduce en el navegador (lado mayor 1280 px, JPEG) para que pese
+// poco y suba rápido; el servidor rechaza más de 2,5 MB.
+const comprimirFoto = (file: File): Promise<string> => new Promise((res, rej) => {
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => {
+    try {
+      const k = Math.min(1, 1280 / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(img.width * k)); c.height = Math.max(1, Math.round(img.height * k));
+      c.getContext('2d')!.drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      res(c.toDataURL('image/jpeg', 0.82));
+    } catch (e) { rej(e); }
+  };
+  img.onerror = () => { URL.revokeObjectURL(url); rej(new Error('No se pudo leer la imagen')); };
+  img.src = url;
+});
 
 // ─── Piezas ──────────────────────────────────────────────────────────
 const Tarjeta: React.FC<{ children: React.ReactNode; style?: React.CSSProperties; grande?: boolean }> = ({ children, style, grande }) => (
@@ -86,8 +117,9 @@ const Tarjeta: React.FC<{ children: React.ReactNode; style?: React.CSSProperties
 const Rotulo: React.FC<{ children: React.ReactNode; style?: React.CSSProperties }> = ({ children, style }) => (
   <p style={{ fontSize: 11, fontWeight: 700, letterSpacing: '2.5px', color: C.sub, margin: 0, ...style }}>{children}</p>
 );
-const Pill: React.FC<{ children: React.ReactNode; verde?: boolean }> = ({ children, verde }) => (
-  <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '1.5px', color: verde ? C.verde : C.sub, border: `1px solid ${verde ? 'rgba(74,222,128,0.4)' : C.bordeFuerte}`, borderRadius: 999, padding: '6px 12px', whiteSpace: 'nowrap' }}>{children}</span>
+const NARANJA = '#FB923C';
+const Pill: React.FC<{ children: React.ReactNode; verde?: boolean; naranja?: boolean; onClick?: () => void }> = ({ children, verde, naranja, onClick }) => (
+  <span onClick={onClick} role={onClick ? 'button' : undefined} style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '1.5px', color: verde ? C.verde : naranja ? NARANJA : C.sub, border: `1px solid ${verde ? 'rgba(74,222,128,0.4)' : naranja ? 'rgba(251,146,60,0.5)' : C.bordeFuerte}`, background: naranja ? 'rgba(251,146,60,0.08)' : 'transparent', borderRadius: 999, padding: '6px 12px', whiteSpace: 'nowrap', cursor: onClick ? 'pointer' : 'default' }}>{children}</span>
 );
 const BotonPrimario: React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>> = ({ style, children, ...p }) => (
   <button {...p} className="lincoin-btn-white" style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, border: 'none', borderRadius: 11, padding: '13px 18px', cursor: 'pointer', opacity: p.disabled ? 0.55 : 1, ...style }}>{children}</button>
@@ -199,10 +231,64 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
     descargarXlsx(`lincoin-extracto-${new Date().toISOString().slice(0, 10)}.xlsx`, [{ nombre: 'Movimientos', filas, anchos: [18, 24, 30, 16, 8, 12, 30, 38] }]);
   };
 
+  // ── Autorización ───────────────────────────────────────────────────
+  const [auth, setAuth] = useState<EstadoAuth | null>(null);
+  const cargarEstado = async () => {
+    const r = await llamarFuncion('autorizaciones', { action: 'estado' }, 30000);
+    if (r?.ok) setAuth({ autorizada: r.autorizada ?? null, pendiente: r.pendiente ?? null, usadoMes: Number(r.usadoMes) || 0, datos: r.datos ?? null });
+  };
+  useEffect(() => { if (cu.id) cargarEstado(); }, [cu.id]);
+  // Mientras la empresa revisa, el estado se refresca solo (sin recargar).
+  useEffect(() => {
+    if (!auth?.pendiente) return;
+    const t = setInterval(cargarEstado, 20000);
+    return () => clearInterval(t);
+  }, [auth?.pendiente?.id]);
+  const autorizada = auth?.autorizada ?? null;
+  const pendiente = auth?.pendiente ?? null;
+  const estadoTxt = autorizada ? `AUTORIZADA · ${autorizada.nombre.toUpperCase()}` : pendiente ? 'AUTORIZACIÓN EN REVISIÓN' : auth?.datos?.estado === 'rechazada' ? 'SOLICITUD RECHAZADA' : auth?.datos?.estado === 'revocada' ? 'AUTORIZACIÓN RETIRADA' : 'IDENTIFICACIÓN PENDIENTE';
+
+  const [solEmpresa, setSolEmpresa] = useState('');
+  const [solNombre, setSolNombre] = useState('');
+  const [solDocType, setSolDocType] = useState('CC');
+  const [solDocNumber, setSolDocNumber] = useState('');
+  const [solFoto, setSolFoto] = useState<string | null>(null);
+  const [solOcupado, setSolOcupado] = useState(false);
+  const [solError, setSolError] = useState<string | null>(null);
+  const [solListo, setSolListo] = useState<string | null>(null);
+  const abrirAutorizacion = () => {
+    const d = auth?.datos;
+    setSolEmpresa(''); setSolNombre(d?.nombre || String(cu.name || cu.fullName || '')); setSolDocType(d?.docType || 'CC'); setSolDocNumber(d?.docNumber || '');
+    setSolFoto(null); setSolError(null); setSolListo(null); setPanel('autorizacion');
+  };
+  const elegirFoto = async (f?: File | null) => {
+    if (!f) return;
+    setSolError(null);
+    try { setSolFoto(await comprimirFoto(f)); } catch { setSolError('No se pudo leer la foto. Intenta con otra.'); }
+  };
+  const enviarSolicitud = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (solOcupado) return;
+    setSolError(null);
+    const id = solEmpresa.trim().toUpperCase();
+    if (id.length < 4) { setSolError('Escribe el ID Lincoin de la empresa.'); return; }
+    if (solNombre.trim().length < 5 || !solNombre.trim().includes(' ')) { setSolError('Escribe tu nombre completo, como aparece en el documento.'); return; }
+    if (solDocNumber.replace(/[^0-9A-Za-z]/g, '').length < 5) { setSolError('Escribe el número de tu documento.'); return; }
+    if (!solFoto) { setSolError('Falta la foto sosteniendo tu documento.'); return; }
+    setSolOcupado(true);
+    const r = await llamarFuncion('autorizaciones', { action: 'solicitar', codigoEmpresa: id, nombre: solNombre.trim(), docType: solDocType, docNumber: solDocNumber, foto: solFoto }, 90000);
+    setSolOcupado(false);
+    if (!r?.ok) { setSolError(r?.error ?? 'No se pudo enviar la solicitud. Intenta de nuevo.'); return; }
+    setSolListo(String(r.empresa?.nombre ?? id));
+    await cargarEstado();
+    refreshData().catch(() => {});
+  };
+
   // ── Enviar: el MISMO modal que Empresas (EnviarDineroModal) ─────────
   const enviarRef = useRef<EnviarHandle>(null);
   const totalCop = ['COP', 'COP_BREB', 'COP_ACH'].reduce((t, k) => t + saldo(k), 0);
   const abrirEnviar = (b?: Beneficiario) => {
+    if (auth && !autorizada) { avisar(pendiente ? 'Tu empresa todavía no aprueba tu autorización. Cuando lo haga, puedes enviar.' : 'Para enviar dinero primero necesitas la autorización de una empresa registrada en Lincoin.', true); if (!pendiente) abrirAutorizacion(); return; }
     if (!mfaActivo) { avisar('Para enviar dinero activa primero la verificación en dos pasos, en Seguridad.', true); abrirSeguridad(); return; }
     enviarRef.current?.abrir(b ? prefillDeContacto(b.contacto) : undefined);
   };
@@ -283,15 +369,18 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
   const prefs = { correo: true, whatsapp: false, alertas: true, ...(cu.raw_data?.prefsNotificaciones ?? cu.prefsNotificaciones ?? {}) };
   const togglePref = (k: keyof typeof prefs) => updateUserRawData(cu.id, { prefsNotificaciones: { ...prefs, [k]: !prefs[k] } });
 
-  const limiteMensual = 10_000_000;
-  const retiradoMes = useMemo(() => { const d = new Date(); const ini = new Date(d.getFullYear(), d.getMonth(), 1).getTime(); return movs.filter((t: any) => t.type === 'send' && t.status === 'Completado' && new Date(t.createdAt ?? 0).getTime() >= ini).reduce((s: number, t: any) => s + (Number(t.amount) || 0), 0); }, [movs]);
+  // El tope mensual de retiro lo fija la empresa que autoriza; el consumo
+  // del mes lo calcula el servidor (retiros a banco/Bre-B).
+  const limiteMensual = autorizada?.topeMensual ?? null;
+  const retiradoMes = auth?.usadoMes ?? 0;
 
   const avatarRef = useRef<HTMLDivElement>(null);
   const funciones: Array<{ icono: React.ElementType; titulo: string; desc: string; abrir: () => void }> = [
     { icono: Link2, titulo: 'Cobrar con link', desc: 'Comparte un link y te pagan en tu billetera', abrir: () => setPanel('cobrar') },
     { icono: TrendingUp, titulo: 'Tasas de cambio', desc: 'COP, BRL, PEN, CLP, MXN en vivo', abrir: () => setPanel('tasas') },
     { icono: FileText, titulo: 'Extractos y certificados', desc: 'PDF mensual y certificado de cuenta', abrir: extracto },
-    { icono: BarChart3, titulo: 'Límites y nivel', desc: 'Nivel 1 · sube a Nivel 2', abrir: () => setPanel('limites') },
+    { icono: BarChart3, titulo: 'Límites', desc: autorizada ? (limiteMensual ? `${fmt(limiteMensual, 'COP')} COP al mes` : 'Sin tope fijado por tu empresa') : 'Los fija la empresa que te autoriza', abrir: () => setPanel('limites') },
+    { icono: User, titulo: 'Mi perfil', desc: autorizada ? `Autorizada por ${autorizada.nombre}` : 'Nombre, documento y empresa', abrir: () => setPanel('perfil') },
     { icono: Shield, titulo: 'Seguridad', desc: 'Contraseña, 2 pasos y dispositivos', abrir: abrirSeguridad },
     { icono: Gift, titulo: 'Invita y gana', desc: 'Gana por cada amigo que se registre', abrir: () => setPanel('invita') },
     { icono: Bell, titulo: 'Notificaciones', desc: 'Correo, WhatsApp y alertas', abrir: () => setPanel('notificaciones') },
@@ -346,7 +435,7 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
               </div>
             )}
           </div>
-          <div ref={avatarRef} className="flex items-center" style={{ gap: 12, border: `1px solid ${C.bordeFuerte}`, borderRadius: 14, padding: '8px 18px 8px 8px' }}>
+          <div ref={avatarRef} onClick={() => setPanel('perfil')} title="Mi perfil" className="flex items-center persona-sec" style={{ gap: 12, border: `1px solid ${C.bordeFuerte}`, borderRadius: 14, padding: '8px 18px 8px 8px', cursor: 'pointer' }}>
             <span style={{ width: 38, height: 38, borderRadius: 10, background: 'rgba(255,255,255,0.08)', display: 'grid', placeItems: 'center', fontSize: 13, fontWeight: 800 }}>{iniciales(nombre)}</span>
             <span style={{ fontSize: 16, fontWeight: 700 }}>{nombre.split(' ')[0]}</span>
           </div>
@@ -364,11 +453,24 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
               <p style={{ fontSize: 15, color: C.sub, margin: 0 }}>Hola,</p>
               <h1 style={{ fontSize: 28, fontWeight: 800, letterSpacing: '-0.6px', margin: '4px 0 0' }}>{nombre}</h1>
             </div>
-            <div className="flex items-center" style={{ gap: 10 }}>
-              <Pill verde={kycOk}>{kycOk ? 'IDENTIDAD VERIFICADA' : 'IDENTIDAD PENDIENTE'}</Pill>
-              <Pill>NIVEL 1</Pill>
+            <div className="flex items-center flex-wrap" style={{ gap: 10 }}>
+              <Pill verde={!!autorizada} naranja={!autorizada && !pendiente} onClick={() => (autorizada || pendiente ? setPanel('perfil') : abrirAutorizacion())}>{auth ? estadoTxt : kycOk ? 'IDENTIDAD VERIFICADA' : 'IDENTIFICACIÓN PENDIENTE'}</Pill>
             </div>
           </div>
+
+          {/* Aviso: sin empresa que la autorice, la cuenta no puede recibir ni enviar. */}
+          {auth && !autorizada && (
+            <div className="flex items-center justify-between flex-wrap" style={{ gap: 14, background: 'rgba(251,146,60,0.06)', border: '1px solid rgba(251,146,60,0.35)', borderRadius: R, padding: '16px 20px' }}>
+              <div style={{ flex: '1 1 320px' }}>
+                <p style={{ fontSize: 16, fontWeight: 700, margin: 0 }}>{pendiente ? `${pendiente.nombre} está revisando tu solicitud` : 'Pide la autorización de tu empresa'}</p>
+                <p style={{ fontSize: 14, color: C.sub, margin: '4px 0 0', lineHeight: 1.5 }}>
+                  {pendiente ? 'Cuando la apruebe, tu cuenta queda activa y ves aquí tu tope mensual. Esta pantalla se actualiza sola.'
+                    : 'Solo puedes recibir dinero de una empresa registrada en Lincoin. Escribe su ID, tu nombre y tu documento, y toma una foto sosteniéndolo.'}
+                </p>
+              </div>
+              {pendiente ? <Pill onClick={() => setPanel('perfil')}>VER DATOS</Pill> : <BotonPrimario onClick={abrirAutorizacion} style={{ padding: '13px 22px' }}>Pedir autorización</BotonPrimario>}
+            </div>
+          )}
 
           {/* 2. Fila principal */}
           <div className="persona-grid-principal" style={{ display: 'grid', gridTemplateColumns: '1.55fr 1fr', gap: 24 }}>
@@ -434,13 +536,13 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 24 }}>
             <Tarjeta>
               <div className="flex items-center justify-between" style={{ gap: 10 }}>
-                <p style={{ fontSize: 16, fontWeight: 700, margin: 0 }}>Límite de retiro mensual</p>
-                <p style={{ fontSize: 15, color: C.sub, margin: 0, fontVariantNumeric: 'tabular-nums' }}>{fmt(retiradoMes, 'COP')} / {fmt(limiteMensual, 'COP')}</p>
+                <p style={{ fontSize: 16, fontWeight: 700, margin: 0 }}>Tope de retiro mensual</p>
+                <p style={{ fontSize: 15, color: C.sub, margin: 0, fontVariantNumeric: 'tabular-nums' }}>{autorizada ? (limiteMensual ? `${fmt(retiradoMes, 'COP')} / ${fmt(limiteMensual, 'COP')}` : `${fmt(retiradoMes, 'COP')} · sin tope`) : '—'}</p>
               </div>
               <div style={{ height: 6, borderRadius: 999, background: 'rgba(255,255,255,0.08)', marginTop: 20, overflow: 'hidden' }}>
-                <div style={{ width: `${Math.min(100, Math.max(1.5, (retiradoMes / limiteMensual) * 100))}%`, height: '100%', background: C.verde, borderRadius: 999 }} />
+                <div style={{ width: `${autorizada && limiteMensual ? Math.min(100, Math.max(1.5, (retiradoMes / limiteMensual) * 100)) : 0}%`, height: '100%', background: retiradoMes >= (limiteMensual ?? Infinity) ? NARANJA : C.verde, borderRadius: 999 }} />
               </div>
-              <button onClick={() => setPanel('limites')} style={{ fontFamily: FONT, fontSize: 15, fontWeight: 700, color: C.verde, background: 'transparent', border: 'none', padding: 0, marginTop: 18, cursor: 'pointer' }}>Subir a Nivel 2 →</button>
+              <p style={{ fontSize: 14, color: C.sub, margin: '18px 0 0', lineHeight: 1.5 }}>{autorizada ? `Lo fija ${autorizada.nombre}.` : 'Lo fija la empresa que te autorice.'}</p>
             </Tarjeta>
             <Tarjeta>
               <div className="flex items-center justify-between" style={{ gap: 14 }}>
@@ -557,7 +659,8 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
               {[
                 ['¿Cómo recibo saldo?', 'Copia tu ID Lincoin y dáselo a la empresa o a la persona que te va a enviar. Te llega al instante y sin comisión.'],
                 ['¿Puedo retirar a mi banco?', 'Sí: inscribe tu cuenta o tu llave Bre-B en Beneficiarios, espera la validación, y envíale desde Enviar → A banco o Bre-B.'],
-                ['¿Qué es el Nivel 2?', 'Un tope de retiro mensual más alto. Se sube verificando tu identidad y tu dirección.'],
+                ['¿Quién fija mi tope de retiro?', 'La empresa que te autoriza. Si necesitas uno más alto, pídeselo: ella lo cambia desde su panel y aquí se actualiza solo.'],
+                ['¿Puedo cambiar de empresa?', 'Sí. En Mi perfil escribes el ID de la nueva empresa y mandas tus datos; cuando ella apruebe, reemplaza a la anterior. Nunca te quedas sin empresa por el camino.'],
               ].map(([q, a]) => (
                 <div key={q} style={{ padding: '14px 0', borderTop: `1px solid ${C.borde}` }}><p style={{ fontSize: 15, fontWeight: 700, margin: 0 }}>{q}</p><p style={{ fontSize: 14, color: C.sub, margin: '4px 0 0', lineHeight: 1.5 }}>{a}</p></div>
               ))}
@@ -682,16 +785,115 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
       )}
 
       {panel === 'limites' && (
-        <Drawer titulo="Límites y nivel" sub="Lo que puedes mover al mes según tu nivel." onCerrar={() => setPanel(null)}>
-          {[['Nivel 1', 'Identidad verificada', `${fmt(limiteMensual, 'COP')} COP de retiro al mes`, true], ['Nivel 2', 'Identidad + dirección + origen de fondos', 'Retiro mensual ampliado y cuenta en dólares cuando esté', false]].map(([n, req, top, act]) => (
-            <div key={String(n)} style={{ background: act ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.03)', border: `1px solid ${act ? 'rgba(74,222,128,0.3)' : C.borde}`, borderRadius: 12, padding: '16px', marginBottom: 12 }}>
-              <div className="flex items-center justify-between"><p style={{ fontSize: 16, fontWeight: 800, margin: 0 }}>{n}</p>{act && <Pill verde>TU NIVEL</Pill>}</div>
-              <p style={{ fontSize: 13.5, color: C.sub, margin: '6px 0 0' }}>{req}</p>
-              <p style={{ fontSize: 13.5, color: C.medio, margin: '4px 0 0' }}>{top}</p>
+        <Drawer titulo="Límites" sub="Lo que puedes retirar al mes a banco o Bre-B." onCerrar={() => setPanel(null)}>
+          <div style={{ background: autorizada ? 'rgba(74,222,128,0.06)' : 'rgba(251,146,60,0.06)', border: `1px solid ${autorizada ? 'rgba(74,222,128,0.3)' : 'rgba(251,146,60,0.35)'}`, borderRadius: 12, padding: '16px' }}>
+            <div className="flex items-center justify-between" style={{ gap: 10 }}><p style={{ fontSize: 16, fontWeight: 800, margin: 0 }}>Tope mensual</p>{autorizada ? <Pill verde>ACTIVO</Pill> : <Pill naranja>PENDIENTE</Pill>}</div>
+            <p style={{ fontSize: 22, fontWeight: 800, margin: '10px 0 0', fontVariantNumeric: 'tabular-nums' }}>{autorizada ? (limiteMensual ? `${fmt(limiteMensual, 'COP')} COP` : 'Sin tope') : '—'}</p>
+            {autorizada && <p style={{ fontSize: 13.5, color: C.sub, margin: '6px 0 0' }}>Usado este mes: <b style={{ color: C.text, fontVariantNumeric: 'tabular-nums' }}>{fmt(retiradoMes, 'COP')} COP</b>{limiteMensual ? ` · te quedan ${fmt(Math.max(0, limiteMensual - retiradoMes), 'COP')}` : ''}</p>}
+          </div>
+          <p style={{ fontSize: 13.5, color: C.sub, lineHeight: 1.55, margin: '16px 0 0' }}>
+            {autorizada ? `El tope lo fija ${autorizada.nombre}, la empresa que te autoriza. Si necesitas uno más alto, pídeselo directamente: ella lo cambia desde su panel y aquí se actualiza solo.`
+              : 'El tope lo fija la empresa que te autorice. Mientras no tengas una empresa, no puedes recibir ni retirar dinero.'}
+          </p>
+          <p style={{ fontSize: 13.5, color: C.sub, lineHeight: 1.55, margin: '10px 0 0' }}>El tope cuenta los retiros a banco y Bre-B del mes calendario. Enviar a otra persona Lincoin y convertir entre billeteras no lo consumen.</p>
+          {!autorizada && !pendiente && <BotonPrimario onClick={abrirAutorizacion} style={{ marginTop: 16, width: '100%' }}>Pedir autorización</BotonPrimario>}
+        </Drawer>
+      )}
+
+      {panel === 'perfil' && (
+        <Drawer titulo="Mi perfil" sub="Tus datos y la empresa que te autoriza." onCerrar={() => setPanel(null)}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+            {([['Nombre', auth?.datos?.nombre || nombre], ['Correo', String(cu.email ?? '')], ['ID Lincoin', codigo], ['Documento', auth?.datos?.docType ? `${TIPOS_DOC.find(t => t[0] === auth?.datos?.docType)?.[1] ?? auth?.datos?.docType} ${auth?.datos?.docNumber ?? ''}` : 'Sin registrar']] as const).map(([k, v]) => (
+              <div key={k} className="flex items-center justify-between" style={{ gap: 12, padding: '13px 0', borderBottom: `1px solid ${C.borde}` }}>
+                <span style={{ fontSize: 13.5, color: C.sub }}>{k}</span>
+                <span style={{ fontSize: 14, fontWeight: 700, textAlign: 'right', fontFamily: k === 'ID Lincoin' ? MONO : FONT, letterSpacing: k === 'ID Lincoin' ? '2px' : 0 }}>{v}</span>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ marginTop: 22 }}>
+            <Etiqueta>EMPRESA QUE TE AUTORIZA</Etiqueta>
+            <div style={{ background: autorizada ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.03)', border: `1px solid ${autorizada ? 'rgba(74,222,128,0.3)' : C.borde}`, borderRadius: 12, padding: '14px 16px' }}>
+              {autorizada ? (<>
+                <div className="flex items-center justify-between" style={{ gap: 10 }}><p style={{ fontSize: 16, fontWeight: 800, margin: 0 }}>{autorizada.nombre}</p><Pill verde>AUTORIZADA</Pill></div>
+                <p style={{ fontSize: 13.5, color: C.sub, margin: '6px 0 0' }}>Tope mensual: <b style={{ color: C.text }}>{limiteMensual ? `${fmt(limiteMensual, 'COP')} COP` : 'sin tope'}</b> · usado {fmt(retiradoMes, 'COP')}</p>
+                {auth?.datos?.at && <p style={{ fontSize: 12.5, color: C.tenue, margin: '4px 0 0' }}>Desde {fecha(auth.datos.at)}</p>}
+              </>) : pendiente ? (<>
+                <div className="flex items-center justify-between" style={{ gap: 10 }}><p style={{ fontSize: 16, fontWeight: 800, margin: 0 }}>{pendiente.nombre}</p><Pill>EN REVISIÓN</Pill></div>
+                <p style={{ fontSize: 13.5, color: C.sub, margin: '6px 0 0', lineHeight: 1.5 }}>La empresa está revisando tu nombre, tu documento y tu foto. Cuando apruebe, aquí aparece tu tope.</p>
+              </>) : (<>
+                <div className="flex items-center justify-between" style={{ gap: 10 }}><p style={{ fontSize: 16, fontWeight: 800, margin: 0 }}>Ninguna todavía</p><Pill naranja>PENDIENTE</Pill></div>
+                <p style={{ fontSize: 13.5, color: C.sub, margin: '6px 0 0', lineHeight: 1.5 }}>{auth?.datos?.estado === 'rechazada' ? `${auth.datos.empresaNombre ?? 'La empresa'} rechazó tu solicitud. Revisa tus datos y vuelve a pedirla.` : auth?.datos?.estado === 'revocada' ? `${auth.datos.empresaNombre ?? 'La empresa'} retiró tu autorización. Puedes pedirla a otra empresa.` : 'Solo puedes recibir dinero de una empresa registrada que te haya autorizado.'}</p>
+              </>)}
             </div>
-          ))}
-          <p style={{ fontSize: 13.5, color: C.sub, lineHeight: 1.5, margin: '8px 0 0' }}>Para subir a Nivel 2 escríbenos por el chat de soporte: te pedimos un comprobante de dirección y una breve declaración del origen de tus fondos.</p>
-          <BotonPrimario onClick={() => { setPanel(null); setVista('ayuda'); }} style={{ marginTop: 16, width: '100%' }}>Pedir Nivel 2</BotonPrimario>
+            {pendiente && autorizada && <p style={{ fontSize: 12.5, color: C.sub, margin: '10px 0 0', lineHeight: 1.5 }}>También pediste autorización a <b style={{ color: C.text }}>{pendiente.nombre}</b>. Cuando apruebe, reemplaza a {autorizada.nombre}.</p>}
+          </div>
+
+          <div style={{ marginTop: 22 }}>
+            {autorizada ? (<>
+              <BotonSecundario onClick={abrirAutorizacion} style={{ width: '100%' }}>Cambiar de empresa</BotonSecundario>
+              <p style={{ fontSize: 12.5, color: C.tenue, margin: '10px 0 0', lineHeight: 1.55 }}>Para operar con otra empresa escribes su ID y la nueva empresa te aprueba; en ese momento reemplaza a {autorizada.nombre}. No puedes quitar tu empresa actual sin haber puesto la nueva: nunca te quedas sin empresa por el camino.</p>
+            </>) : (
+              <BotonPrimario onClick={abrirAutorizacion} style={{ width: '100%' }}>{pendiente ? 'Pedir a otra empresa' : 'Pedir autorización'}</BotonPrimario>
+            )}
+          </div>
+
+          <div className="flex items-center justify-between" style={{ gap: 12, marginTop: 22, paddingTop: 16, borderTop: `1px solid ${C.borde}` }}>
+            <div><p style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>Verificación en dos pasos</p><p style={{ fontSize: 12.5, color: C.sub, margin: '2px 0 0' }}>{mfaActivo ? 'Activa' : 'Sin activar'}</p></div>
+            {mfaActivo ? <Pill verde>ACTIVA</Pill> : <BotonSecundario onClick={abrirSeguridad} style={{ padding: '10px 16px', fontSize: 13 }}>Activar</BotonSecundario>}
+          </div>
+        </Drawer>
+      )}
+
+      {panel === 'autorizacion' && (
+        <Drawer titulo={autorizada ? 'Cambiar de empresa' : 'Pedir autorización'} sub={autorizada ? `Hoy te autoriza ${autorizada.nombre}. La nueva empresa la reemplaza cuando apruebe.` : 'La empresa revisa tus datos y tu foto, y te aprueba con un tope mensual.'} onCerrar={() => setPanel(null)}>
+          {solListo ? (
+            <div style={{ textAlign: 'center', padding: '30px 0' }}>
+              <span style={{ width: 64, height: 64, borderRadius: '50%', background: 'rgba(74,222,128,0.12)', display: 'grid', placeItems: 'center', margin: '0 auto' }}><Check size={28} color={C.verde} /></span>
+              <p style={{ fontSize: 20, fontWeight: 800, margin: '18px 0 0' }}>Solicitud enviada</p>
+              <p style={{ fontSize: 14, color: C.sub, margin: '8px 0 0', lineHeight: 1.5 }}>{solListo} ya la tiene. Cuando la apruebe, tu cuenta se actualiza sola; no hace falta recargar.</p>
+              <BotonPrimario onClick={() => setPanel(null)} style={{ marginTop: 24 }}>Listo</BotonPrimario>
+            </div>
+          ) : (
+            <form onSubmit={enviarSolicitud} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div>
+                <Etiqueta>ID LINCOIN DE LA EMPRESA</Etiqueta>
+                <Campo value={solEmpresa} onChange={e => setSolEmpresa(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8))} placeholder="Ej. A1B2C3" autoFocus style={{ fontFamily: MONO, fontSize: 20, fontWeight: 700, letterSpacing: '3px' }} />
+                <p style={{ fontSize: 12.5, color: C.tenue, margin: '6px 0 0' }}>La empresa lo copia desde su panel, en "Personas autorizadas".</p>
+              </div>
+              <div>
+                <Etiqueta>TU NOMBRE COMPLETO</Etiqueta>
+                <Campo value={solNombre} onChange={e => setSolNombre(e.target.value.slice(0, 120))} placeholder="Como aparece en tu documento" autoComplete="name" />
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: 10 }}>
+                <div>
+                  <Etiqueta>DOCUMENTO</Etiqueta>
+                  <select value={solDocType} onChange={e => setSolDocType(e.target.value)} style={{ fontFamily: FONT, width: '100%', background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.bordeFuerte}`, color: C.text, borderRadius: 11, padding: '12px 12px', fontSize: 14, fontWeight: 700 }}>
+                    {TIPOS_DOC.map(([k, n]) => <option key={k} value={k} style={{ color: '#000' }}>{k} · {n}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <Etiqueta>NÚMERO</Etiqueta>
+                  <Campo value={solDocNumber} onChange={e => setSolDocNumber(e.target.value.replace(/[^0-9A-Za-z]/g, '').slice(0, 30))} inputMode="numeric" placeholder="Sin puntos" />
+                </div>
+              </div>
+              <div>
+                <Etiqueta>FOTO SOSTENIENDO TU DOCUMENTO</Etiqueta>
+                <label className="persona-sec" style={{ display: 'block', border: `1px dashed ${C.bordeFuerte}`, borderRadius: 12, padding: solFoto ? 8 : '22px 16px', textAlign: 'center', cursor: 'pointer', background: 'rgba(255,255,255,0.03)' }}>
+                  <input type="file" accept="image/*" capture="user" onChange={e => elegirFoto(e.target.files?.[0])} style={{ display: 'none' }} />
+                  {solFoto ? <img src={solFoto} alt="Tu foto sosteniendo el documento" style={{ maxWidth: '100%', maxHeight: 260, borderRadius: 8, display: 'block', margin: '0 auto' }} /> : (<>
+                    <User size={26} color={C.sub} strokeWidth={1.6} style={{ margin: '0 auto' }} />
+                    <p style={{ fontSize: 14, fontWeight: 700, margin: '10px 0 0' }}>Tomar o subir la foto</p>
+                    <p style={{ fontSize: 12.5, color: C.sub, margin: '4px 0 0', lineHeight: 1.5 }}>Tu cara y el documento al frente, con buena luz. Que se lea el nombre y el número.</p>
+                  </>)}
+                </label>
+                {solFoto && <button type="button" onClick={() => setSolFoto(null)} style={{ fontFamily: FONT, fontSize: 13, fontWeight: 700, color: C.sub, background: 'transparent', border: 'none', padding: 0, marginTop: 8, cursor: 'pointer' }}>Tomar otra</button>}
+              </div>
+              {solError && <p style={{ fontSize: 13.5, color: NARANJA, margin: 0, lineHeight: 1.5 }}>{solError}</p>}
+              <BotonPrimario type="submit" disabled={solOcupado}>{solOcupado ? 'Enviando…' : 'Enviar solicitud'}</BotonPrimario>
+              <p style={{ fontSize: 12, color: C.tenue, margin: 0, lineHeight: 1.5 }}>Tu foto solo la ve la empresa a la que le pides autorización.</p>
+            </form>
+          )}
         </Drawer>
       )}
 

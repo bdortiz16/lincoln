@@ -46,8 +46,8 @@ const I = {
   regalo: 'M3 9.5h14v7a1 1 0 01-1 1H4a1 1 0 01-1-1zM2.5 6.5h15v3h-15zM10 6.5v11M10 6.5S8.8 3 7 3a1.8 1.8 0 000 3.5zM10 6.5S11.2 3 13 3a1.8 1.8 0 010 3.5z',
   eslabon: 'M8.5 11.5a3 3 0 004.2 0l2.3-2.3a3 3 0 00-4.2-4.2l-.6.6M11.5 8.5a3 3 0 00-4.2 0L5 10.8a3 3 0 004.2 4.2l.6-.6',
   puerta: 'M12.5 6V4.5a1 1 0 00-1-1h-6a1 1 0 00-1 1v11a1 1 0 001 1h6a1 1 0 001-1V14M8.5 10h9m0 0l-2.5-2.5M17.5 10L15 12.5',
-  // Persona con un más: los clientes de la empresa (cuentas Persona a las
-  // que se les carga saldo).
+  // Persona con un más: las personas autorizadas por la empresa (cuentas
+  // Persona a las que se les carga saldo).
   clientes: 'M8 9.5a2.8 2.8 0 100-5.6 2.8 2.8 0 000 5.6zM2.5 17c0-2.6 2.5-4.2 5.5-4.2s5.5 1.6 5.5 4.2M15.5 6.5v5M13 9h5',
   // Libro mayor: la contabilidad.
   libro: 'M4 3.5h9.5a1.5 1.5 0 011.5 1.5v11.5H5.5A1.5 1.5 0 014 15zM4 15a1.5 1.5 0 011.5-1.5H15M7 7h5M7 10h5',
@@ -128,7 +128,7 @@ export const SidebarEmpresas: React.FC<Props> = ({
     { clave: 'movements', etiqueta: 'Movimientos', icono: I.reloj, activo: activeView === 'movements', onClick: ir('movements') },
     { clave: 'contactos', etiqueta: 'Beneficiarios', icono: I.personas, activo: activeView === 'contactos', onClick: ir('contactos') },
     // Clientes (PSP): las personas a las que la empresa les carga saldo por su ID Lincoin.
-    { clave: 'clientes', etiqueta: 'Clientes', icono: I.clientes, activo: activeView === 'clientes', onClick: ir('clientes') },
+    { clave: 'clientes', etiqueta: 'Personas autorizadas', icono: I.clientes, activo: activeView === 'clientes', onClick: ir('clientes') },
     // Contabilidad y Compliance: las dos lecturas de la lista de beneficiarios
     // — cuánta plata se le movió a cada quien, y quién puede recibirla.
     { clave: 'contabilidad', etiqueta: 'Contabilidad', icono: I.libro, activo: activeView === 'contabilidad', onClick: ir('contabilidad') },

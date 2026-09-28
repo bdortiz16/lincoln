@@ -2857,6 +2857,33 @@ serve(async (req: Request) => {
     }
     const totalDebit = Number((amount + feeCop).toFixed(2))
 
+    // ── Cuentas PERSONA: solo operan si una empresa registrada las autorizó,
+    //    y dentro del tope mensual que esa empresa les fijó. La regla vive
+    //    aquí, donde sale el dinero: la pantalla solo la cuenta.
+    try {
+      const { data: pr } = await db.from('users').select('role').eq('id', userId).maybeSingle()
+      if ((pr as any)?.role === 'personal') {
+        const { data: emps } = await db.from('users').select('id, full_name, company_name, raw_data').eq('role', 'business')
+          .contains('raw_data', { personasAutorizadas: [{ id: userId }] }).limit(1)
+        const emp = emps?.[0]
+        if (!emp) return json(403, { error: 'sin_autorizacion', message: 'Tu cuenta todavía no está autorizada por una empresa. Pide la autorización con el ID de la empresa desde tu portal.' })
+        const aut = ((emp as any).raw_data?.personasAutorizadas ?? []).find((x: any) => x?.id === userId)
+        const tope = aut?.topeMensual == null ? null : Number(aut.topeMensual)
+        if (tope != null && tope > 0) {
+          const ini = new Date(); ini.setDate(1); ini.setHours(0, 0, 0, 0)
+          const { data: tx } = await db.from('transactions').select('amount, status').eq('user_id', userId).eq('type', 'dispersion').gte('created_at', ini.toISOString())
+          const usado = (tx ?? []).filter((t: any) => ['Completado', 'Procesando', 'Pendiente'].includes(String(t.status))).reduce((s: number, t: any) => s + (Number(t.amount) || 0), 0)
+          if (usado + amount > tope) {
+            const resta = Math.max(0, tope - usado)
+            return json(403, { error: 'tope_mensual', message: `Este envío supera tu tope mensual de ${tope.toLocaleString('es-CO')} COP fijado por ${String((emp as any).company_name || (emp as any).full_name || 'tu empresa')}. Te quedan ${resta.toLocaleString('es-CO')} COP este mes.` })
+          }
+        }
+      }
+    } catch (e) {
+      // Si la regla no se pudo evaluar, NO sale el dinero: falla cerrado.
+      return json(500, { error: 'autorizacion_no_verificada', message: 'No se pudo verificar tu autorización. Intenta de nuevo.' })
+    }
+
     // ── Cuentas PERSONA: su COP llega al Saldo Lincoin ('COP'), no a un
     //    riel. Antes de debitar el riel del envío se cubre lo que falte desde
     //    'COP' y, si aún falta, desde el otro riel. Es un movimiento interno
