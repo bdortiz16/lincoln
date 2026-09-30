@@ -400,6 +400,19 @@ function itemsDelModelo(cfg: any, monto: number, ctx: Record<string, string>): {
   }
 }
 
+// Factura de venta de un envío (PSP, por motivo): una línea con el ítem del
+// motivo y el total igual al monto enviado. Si el ítem tiene IVA en Siigo,
+// el IVA va INCLUIDO en ese monto (base = monto / (1 + tarifa)).
+function itemsFacturaMotivo(cfg: any, code: string, monto: number, ctx: Record<string, string>): { items: any[]; total: number; error?: string } {
+  const plantilla = (s: string) => s.replace(/\{(\w+)\}/g, (_m, k) => ctx[k] ?? `{${k}}`)
+  const iva = ivaDelProducto(cfg, code)
+  const tarifa = iva ? iva.percentage / 100 : 0
+  const base = r2(monto / (1 + tarifa))
+  const ivaV = r2(base * tarifa)
+  const desc = plantilla(cfg.desc_terceros || '{tipo} · {contraparte} · Comprobante Lincoin {numero}').slice(0, 500)
+  return { items: [{ code, description: desc, quantity: 1, price: base, ...(iva ? { taxes: [{ id: iva.id }] } : {}) }], total: r2(base + ivaV) }
+}
+
 function itemsDe(cfg: any, monto: number, ctx: Record<string, string>): { items: any[]; total: number; error?: string } {
   const delModelo = itemsDelModelo(cfg, monto, ctx)
   if (delModelo) return delModelo
@@ -716,10 +729,16 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
   // El documento soporte siempre es UN ítem por el monto total (el del
   // motivo, o el general de terceros), aunque el modelo sea rotación.
   let cfgEmision: any = clase === 'DS' ? { ...cfg, modelo: 'psp' } : cfg
+  // Factura de venta por motivo: al beneficiario del envío, por el monto
+  // total, con el ítem ligado al motivo (IVA incluido si el ítem lo tiene).
+  let itemFacturaMotivo: string | null = null
   if (reglaMotivo) {
     if (reglaMotivo.emite === 'DS' && reglaMotivo.item) {
       clase = 'DS'
       cfgEmision = { ...cfg, modelo: 'psp', item_terceros: reglaMotivo.item }
+    } else if (reglaMotivo.emite === 'FV' && reglaMotivo.item) {
+      clase = 'FV'
+      itemFacturaMotivo = String(reglaMotivo.item)
     } else if (!opts.forzar) {
       await marcar({ factura_estado: 'omitida', factura_error: `El motivo "${MOTIVOS_ENVIO[motivoTx] ?? motivoTx}" está configurado para no emitir documento.` })
       return { ok: true, estado: 'omitida' }
@@ -752,8 +771,8 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
   // El documento soporte va A NOMBRE DEL BENEFICIARIO del envío, con el
   // nombre y documento con que se le envió. Nunca a un "consumidor final":
   // si el envío no trae documento, no se emite y se dice.
-  if (clase === 'DS' && cp.esDefault) {
-    const e = 'El envío no trae el documento del beneficiario, y el documento soporte va a su nombre. Revisá el beneficiario en la lista.'
+  if ((clase === 'DS' || itemFacturaMotivo) && cp.esDefault) {
+    const e = `El envío no trae el documento del beneficiario, y ${clase === 'DS' ? 'el documento soporte' : 'la factura'} va a su nombre. Revisá el beneficiario en la lista.`
     await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: clase }); return { ok: false, error: e }
   }
   const cli = await asegurarCliente(t.token, partner, cfg, cp, clase === 'DS' ? 'Supplier' : 'Customer')
@@ -768,7 +787,7 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
     monto: monto.toLocaleString('es-CO', { maximumFractionDigits: 2 }), fecha: hoy,
     utilidad: String(Number(cfg.utilidad_pct) || 0),
   }
-  const { items, total, error: errorItems } = itemsDe(cfgEmision, monto, ctx)
+  const { items, total, error: errorItems } = itemFacturaMotivo ? itemsFacturaMotivo(cfg, itemFacturaMotivo, monto, ctx) : itemsDe(cfgEmision, monto, ctx)
   if (errorItems) { await marcar({ factura_estado: 'error', factura_error: errorItems, factura_tipo: clase }); return { ok: false, error: errorItems } }
   if (!items.length) { const e = 'No hay ítems configurados para el documento (Configuración → ítems).'; await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: clase }); return { ok: false, error: e } }
   if (total <= 0) { const e = 'Los ítems suman cero: revisá el valor de cada uno en Configuración.'; await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: clase }); return { ok: false, error: e } }
@@ -1150,10 +1169,10 @@ Deno.serve(async (req) => {
       }
       // Por motivo del envío: documento soporte con qué ítem, o nada.
       if (c.motivos && typeof c.motivos === 'object' && !Array.isArray(c.motivos)) {
-        const m: Record<string, { emite: 'DS' | 'no'; item: string | null }> = {}
+        const m: Record<string, { emite: 'DS' | 'FV' | 'no'; item: string | null }> = {}
         for (const [k, v] of Object.entries(c.motivos as Record<string, any>)) {
           if (!(k in MOTIVOS_ENVIO) || !v || typeof v !== 'object') continue
-          m[k] = { emite: v.emite === 'DS' ? 'DS' : 'no', item: v.item ? String(v.item).trim().slice(0, 100) : null }
+          m[k] = { emite: v.emite === 'DS' ? 'DS' : v.emite === 'FV' ? 'FV' : 'no', item: v.item ? String(v.item).trim().slice(0, 100) : null }
         }
         fila.motivos = m
         // El ítem general de terceros, si no lo hay, toma el del primer
@@ -1211,9 +1230,11 @@ Deno.serve(async (req) => {
         // comprobante DS aunque el modelo sea rotación.
         const motivosCfg: Record<string, any> = actual.motivos && typeof actual.motivos === 'object' ? actual.motivos : {}
         const motivosDS = Object.entries(motivosCfg).filter(([, v]) => v?.emite === 'DS')
+        const motivosFV = Object.entries(motivosCfg).filter(([, v]) => v?.emite === 'FV')
         if (motivosDS.length) clases.add('DS')
-        for (const [k, v] of motivosDS) if (!v.item) faltan.push(`el ítem del motivo "${MOTIVOS_ENVIO[k] ?? k}"`)
-        if (!Object.keys(reglas).length && !motivosDS.length) faltan.push('qué operaciones emiten')
+        if (motivosFV.length) clases.add('FV')
+        for (const [k, v] of [...motivosDS, ...motivosFV]) if (!v.item) faltan.push(`el ítem del motivo "${MOTIVOS_ENVIO[k] ?? k}"`)
+        if (!Object.keys(reglas).length && !motivosDS.length && !motivosFV.length) faltan.push('qué operaciones emiten')
         if (clases.has('FV')) for (const k of ['document_id', 'seller_id', 'payment_id']) if (!actual[k]) faltan.push(`${k} (factura de venta)`)
         if (clases.has('DS')) for (const k of ['ds_document_id', 'ds_payment_id']) if (!actual[k]) faltan.push(`${k} (documento soporte)`)
         if (modelo === 'rotacion') {
@@ -1223,7 +1244,7 @@ Deno.serve(async (req) => {
         } else if (modelo === 'psp') {
           // En PSP el ítem va por motivo: basta con que un motivo emita
           // documento soporte con su ítem (ya validado arriba).
-          if (!motivosDS.length) faltan.push('al menos un motivo de envío con documento soporte')
+          if (!motivosDS.length && !motivosFV.length) faltan.push('al menos un motivo de envío con documento soporte o factura')
         } else {
           const items = Array.isArray(actual.items) ? actual.items : []
           if (!items.length && !actual.product_code) faltan.push('al menos un ítem')

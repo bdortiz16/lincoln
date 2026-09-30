@@ -47,7 +47,7 @@ type Cfg = {
   document_id?: number | null; seller_id?: number | null; payment_id?: number | null;
   ds_document_id?: number | null; ds_payment_id?: number | null;
   documentos?: Record<string, 'FV' | 'DS'> | null;
-  motivos?: Record<string, { emite: 'DS' | 'no'; item?: string | null }> | null;
+  motivos?: Record<string, { emite: 'DS' | 'FV' | 'no'; item?: string | null }> | null;
   cliente_default_nit?: string | null; cliente_default_nombre?: string | null; crear_clientes: boolean;
   ciudad_exterior?: string | null;
   disparadores: string[]; stamp: boolean; mail: boolean; observaciones?: string | null;
@@ -235,7 +235,11 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
   // Por motivo del envío: qué sale y con qué ítem.
   const motivos: Record<string, { emite: string; item?: string | null }> = form.motivos ?? {};
   const motivosDS = MOTIVOS_ENVIO.filter(m => motivos[m.v]?.emite === 'DS');
-  const motivosSinItem = motivosDS.filter(m => !motivos[m.v]?.item);
+  const motivosFV = MOTIVOS_ENVIO.filter(m => motivos[m.v]?.emite === 'FV');
+  const motivosDoc = [...motivosDS, ...motivosFV];
+  const motivosSinItem = motivosDoc.filter(m => !motivos[m.v]?.item);
+  // Solo el documento soporte exige ítem sin IVA; la factura de venta lleva
+  // el IVA del ítem (incluido en el monto del envío).
   const motivosConIva = motivosDS.filter(m => motivos[m.v]?.item && ivaDelProducto(String(motivos[m.v].item)));
   // Hay documento soporte si el modelo es PSP o si algún motivo lo emite.
   const usaDS = modelo === 'psp' || motivosDS.length > 0;
@@ -243,7 +247,8 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
     !credOk ? 'credenciales' : '',
     !modelo ? 'el modelo de negocio' : '',
     modelo === 'rotacion' && !ops.length ? 'qué entradas facturan' : '',
-    modelo === 'psp' && !motivosDS.length ? 'al menos un motivo de envío con documento soporte' : '',
+    modelo === 'psp' && !motivosDoc.length ? 'al menos un motivo de envío con documento soporte o factura' : '',
+    motivosFV.length && !(form.document_id && form.seller_id && form.payment_id) ? 'el comprobante, vendedor y forma de pago de la factura de venta' : '',
     modelo === 'rotacion' && !(utilidad > 0) ? 'el porcentaje de utilidad' : '',
     modelo === 'rotacion' && !form.item_terceros ? 'el ítem de servicio para terceros' : '',
     modelo === 'rotacion' && ivaTerceros ? 'un ítem de servicio para terceros SIN IVA (el elegido tiene IVA en Siigo)' : '',
@@ -294,11 +299,16 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
   const ejemplo = (() => {
     if (modelo === 'psp') {
       // El ejemplo del PSP: el primer motivo con documento soporte.
-      const m0 = motivosDS[0];
+      const m0 = motivosDoc[0];
       const item0 = m0 ? String(motivos[m0.v]?.item ?? '') : '';
       const iva0 = item0 ? ivaDelProducto(item0) : null;
-      const ivaT = r2(EJEMPLO * (iva0 ? iva0.percentage / 100 : 0));
-      return { lineas: [{ n: nombreProducto(item0) || 'Servicio para terceros', v: EJEMPLO, iva: ivaT, rotulo: iva0 ? `${iva0.name || 'IVA'} ${iva0.percentage} %` : 'sin IVA' }], total: r2(EJEMPLO + ivaT), motivo: m0?.l };
+      const esFV0 = !!m0 && motivos[m0.v]?.emite === 'FV';
+      // Factura: IVA incluido en el monto. Documento soporte: sobre el monto
+      // (y por eso se avisa, porque debería ir sin IVA).
+      const t0 = iva0 ? iva0.percentage / 100 : 0;
+      const base0 = esFV0 ? r2(EJEMPLO / (1 + t0)) : EJEMPLO;
+      const ivaT = r2(base0 * t0);
+      return { lineas: [{ n: nombreProducto(item0) || 'Servicio para terceros', v: base0, iva: ivaT, rotulo: iva0 ? `${iva0.name || 'IVA'} ${iva0.percentage} %` : 'sin IVA' }], total: r2(base0 + ivaT), motivo: m0?.l };
     }
     if (modelo !== 'rotacion') return null;
     const util = r2(EJEMPLO * utilidad / 100);
@@ -323,18 +333,34 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
       {MOTIVOS_ENVIO.map(m => {
         const r = motivos[m.v] ?? { emite: 'no', item: '' };
         const esDS = r.emite === 'DS';
+        const esFV = r.emite === 'FV';
+        const conDoc = esDS || esFV;
         const item = String(r.item ?? '');
-        const ivaM = esDS && item ? ivaDelProducto(item) : null;
+        const ivaItem = item ? ivaDelProducto(item) : null;
+        const ivaM = esDS ? ivaItem : null;
         const prodM = item ? productoDe(item) : null;
         return (
-          <div key={m.v} style={{ padding: '10px 12px', borderRadius: 10, border: `1px solid ${esDS ? 'rgba(74,222,128,0.28)' : C.bordeSuave}`, background: esDS ? 'rgba(74,222,128,0.04)' : 'transparent' }}>
+          <div key={m.v} style={{ padding: '10px 12px', borderRadius: 10, border: `1px solid ${conDoc ? 'rgba(74,222,128,0.28)' : C.bordeSuave}`, background: conDoc ? 'rgba(74,222,128,0.04)' : 'transparent' }}>
             <div className="flex items-center justify-between flex-wrap" style={{ gap: 10 }}>
               <span style={{ fontSize: 13, color: C.text }}>{m.l}</span>
-              <select value={esDS ? 'DS' : 'no'} onChange={e => setMotivo(m.v, { emite: e.target.value })} style={{ ...selectEstilo, width: 'auto', minWidth: 190, padding: '7px 10px', fontSize: 12.5 }}>
+              <select value={esDS ? 'DS' : esFV ? 'FV' : 'no'} onChange={e => setMotivo(m.v, { emite: e.target.value })} style={{ ...selectEstilo, width: 'auto', minWidth: 190, padding: '7px 10px', fontSize: 12.5 }}>
                 <option value="no">No emitir nada</option>
                 <option value="DS">Documento soporte</option>
+                <option value="FV">Factura de venta</option>
               </select>
             </div>
+            {esFV && (
+              <div style={{ marginTop: 8 }}>
+                <select value={item} onChange={e => setMotivo(m.v, { item: e.target.value })} style={selectEstilo} disabled={!productos.length}>
+                  <option value="">{productos.length ? 'Elegir el ítem de Siigo…' : 'Conectá Siigo para elegir el ítem'}</option>
+                  {productos.map((p: any) => <option key={String(p.v)} value={String(p.v)}>{p.t}</option>)}
+                </select>
+                {prodM && prodM.active === false && <p style={{ fontSize: 11.5, color: C.ambar, margin: '6px 0 0', lineHeight: 1.5 }}>Este ítem está inactivo en Siigo.</p>}
+                <p style={{ fontSize: 11.5, color: C.sub, margin: '6px 0 0', lineHeight: 1.5 }}>
+                  Factura de venta al beneficiario del envío por el monto total{item ? (ivaItem ? `, con ${ivaItem.name || 'IVA'} ${ivaItem.percentage} % incluido en ese monto` : ', sin IVA (el ítem no tiene impuesto en Siigo)') : ''}. Usa el comprobante, vendedor y forma de pago de la factura de venta.
+                </p>
+              </div>
+            )}
             {esDS && (
               <div style={{ marginTop: 8 }}>
                 <select value={item} onChange={e => setMotivo(m.v, { item: e.target.value })} style={selectEstilo} disabled={!productos.length}>
@@ -392,7 +418,10 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
               {motivosDS.length > 0 && (
                 <p style={lineaResumen}>Envíos con documento soporte: {motivosDS.map(m => `${m.l} → ${nombreProducto(String(motivos[m.v]?.item ?? '')) || '—'}`).join(' · ')}</p>
               )}
-              {modelo === 'psp' && !motivosDS.length && <p style={{ ...lineaResumen, color: C.ambar }}>Ningún motivo de envío emite documento soporte todavía.</p>}
+              {motivosFV.length > 0 && (
+                <p style={lineaResumen}>Envíos con factura de venta: {motivosFV.map(m => `${m.l} → ${nombreProducto(String(motivos[m.v]?.item ?? '')) || '—'}`).join(' · ')}</p>
+              )}
+              {modelo === 'psp' && !motivosDoc.length && <p style={{ ...lineaResumen, color: C.ambar }}>Ningún motivo de envío emite documento todavía.</p>}
               {modelo === 'psp' && (
                 <p style={lineaResumen}>Depósitos (a mano): comisión <b style={{ color: C.text }}>{utilidad || '—'} %</b> IVA incluido · ítem <b style={{ color: C.text }}>{nombreProducto(form.item_comision) || '—'}</b>{iva ? ` (${iva.name || 'IVA'} ${iva.percentage} %)` : ''} · comprobante FV: {nombreDoc(cat?.documentos, form.document_id)}</p>
               )}
@@ -517,7 +546,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                     'Recibís plata de terceros, la rotás y cobrás una comisión. Por cada entrada se emite una factura de venta con dos ítems que suman exacto lo recibido: el servicio para terceros (sin IVA) y tu comisión (con IVA).',
                     'Con 15.000.000 y 1 % de utilidad: terceros 14.850.000 · comisión 126.050,42 + IVA 23.949,58 · total 15.000.000.')}
                   {tarjetaModelo('psp', 'PSP / pasarela',
-                    'Pagás a terceros por cuenta de un cliente. Según el motivo de cada envío, se emite un documento soporte al beneficiario por el monto total, con el ítem de Siigo que ligues a ese motivo. Por cada depósito que recibís, facturás a mano tu comisión (IVA incluido) al cliente que te mandó la plata: elegís el cliente y se emite.',
+                    'Pagás a terceros por cuenta de un cliente. Según el motivo de cada envío, se emite un documento soporte o una factura de venta al beneficiario por el monto total, con el ítem de Siigo que ligues a ese motivo. Por cada depósito que recibís, facturás a mano tu comisión (IVA incluido) al cliente que te mandó la plata: elegís el cliente y se emite.',
                     'Envío de 15.000.000: documento soporte al beneficiario por 15.000.000. Depósito de 10.000.000 con 0,6 %: factura de 60.000 (base 50.420,17 + IVA 9.579,83).')}
                 </div>
               </Seccion>
@@ -629,7 +658,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                       opcional: un envío puede necesitar documento soporte. */}
                   <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '16px 0 4px' }}>{modelo === 'psp' ? 'ENVÍOS: QUÉ SALE SEGÚN EL MOTIVO' : 'ENVÍOS: DOCUMENTO SOPORTE SEGÚN EL MOTIVO (OPCIONAL)'}</p>
                   <p style={{ fontSize: 12, color: C.sub, margin: '0 0 10px', lineHeight: 1.55 }}>
-                    Al confirmar cada envío se pregunta el motivo, y se le manda al banco con la orden. Acá decidís, motivo por motivo, si sale documento soporte al beneficiario por el monto total y con qué ítem de tu Siigo.
+                    Al confirmar cada envío se pregunta el motivo, y se le manda al banco con la orden. Acá decidís, motivo por motivo, si sale documento soporte o factura de venta al beneficiario por el monto total, y con qué ítem de tu Siigo.
                   </p>
                   {tablaMotivos}
 
