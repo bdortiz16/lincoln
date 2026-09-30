@@ -626,7 +626,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       sendCuypayPayment,
       currentUser,
       updateUserProfile,
-      updateUserRawData,
+      updateUserRawData, actualizarListaRaw,
       bankingOptions,
       getAllUsers,
       sendPasswordReset,
@@ -1475,6 +1475,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   return null;
               };
               let changed = false;
+              const cambios: Record<string, string> = {};
               const next = bankList.map((c: any) => {
                   if (!pending.some(p => p.id === c.id)) return c;
                   const cid = String(c.finityId ?? c.mouvId ?? '');
@@ -1487,11 +1488,15 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   });
                   if (!row) return c;
                   const st = norm(row.verification_status ?? row.status ?? row.estado ?? row.state);
-                  if (st && st !== c.status) { changed = true; return { ...c, status: st }; }
+                  if (st && st !== c.status) { changed = true; cambios[c.id] = st; return { ...c, status: st }; }
                   return c;
               });
               if (changed) {
-                  const ok = await updateUserRawData(uid, { mouvContacts: next });
+                  // Sobre la lista FRESCA de la base, solo el estado de las
+                  // cuentas que cambiaron: con la lista en memoria se borraba
+                  // un beneficiario inscrito mientras esto corría.
+                  void next;
+                  const ok = await actualizarListaRaw(uid, 'mouvContacts', l => l.map((x: any) => (x?.id && cambios[x.id]) ? { ...x, status: cambios[x.id] } : x));
                   // refreshData → el observador de contactos genera la
                   // notificación "Cuenta aprobada" + toast + campana.
                   if (ok) refreshData?.();

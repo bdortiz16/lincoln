@@ -76,6 +76,12 @@ interface DatabaseContextType {
   registerUser: (data: any) => Promise<{ error?: string }>;
   updateUserProfile: (id: string, data: any) => Promise<void>;
   updateUserRawData: (id: string, patch: Record<string, any>) => Promise<boolean>;
+  /** Cambia UNA lista de raw_data (p. ej. mouvContacts) sobre la versión
+   *  FRESCA de la base: `cambio` recibe la lista recién leída y devuelve la
+   *  nueva. Así un proceso con una copia vieja (la sincronización cada 15 s)
+   *  no borra lo que otro agregó entretanto. Sin lectura fresca usa
+   *  `respaldo` si se da; si no, no escribe. */
+  actualizarListaRaw: (id: string, clave: string, cambio: (lista: any[]) => any[], respaldo?: any[] | null) => Promise<boolean>;
   loginUser: (email: string, pass?: string, captchaToken?: string, portal?: 'personal' | 'business') => Promise<User | null | 'MFA_REQUIRED'>;
   loginWithGoogle: (role?: 'personal' | 'business' | 'contador') => Promise<void>;
   logoutUser: (motivo?: string) => Promise<void>;
@@ -1255,6 +1261,25 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       console.error('[updateUserRawData] threw:', e);
       return false;
     }
+  };
+
+  const actualizarListaRaw = async (id: string, clave: string, cambio: (lista: any[]) => any[], respaldo: any[] | null = null): Promise<boolean> => {
+    let fresca: any[] | null = null;
+    if (isSupabaseConfigured) {
+      try {
+        const { data } = await Promise.race([
+          supabase.from('users').select('raw_data').eq('id', id).single(),
+          new Promise<{ data: null }>(resolve => setTimeout(() => resolve({ data: null }), 6000)),
+        ]) as any;
+        if (data && data.raw_data && typeof data.raw_data === 'object') fresca = Array.isArray(data.raw_data[clave]) ? data.raw_data[clave] : [];
+      } catch { /* sin lectura fresca */ }
+    } else {
+      const u: any = users.find(x => x.id === id);
+      fresca = Array.isArray(u?.raw_data?.[clave]) ? u.raw_data[clave] : Array.isArray(u?.[clave]) ? u[clave] : [];
+    }
+    const base = fresca ?? respaldo;
+    if (!base) return false;
+    return updateUserRawData(id, { [clave]: cambio(base) });
   };
 
   // ID Lincoin: toda cuenta tiene uno (los 6 últimos caracteres de su id).
@@ -2753,7 +2778,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   return (
     <DatabaseContext.Provider value={{
-      currentUser, isAuthLoading, users, transactions, syncError, registerUser, updateUserProfile, updateUserRawData, loginUser, loginWithGoogle, logoutUser,
+      currentUser, isAuthLoading, users, transactions, syncError, registerUser, updateUserProfile, updateUserRawData, actualizarListaRaw, loginUser, loginWithGoogle, logoutUser,
       getBalance, bumpLocalBalance, addLocalTx, getPersonalMovements, getUserNotifications, markNotificationsRead,
       mergeNotifications, deleteNotification, clearNotifications,
       requestDeposit, requestWithdrawal, performConversion, approveDeposit, rejectDeposit,

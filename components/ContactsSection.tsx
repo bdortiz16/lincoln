@@ -363,7 +363,7 @@ export const ContactsSection: React.FC<{
     // en el dashboard principal. Contabilidad lo necesita para "Ver".
     onVerMovimiento?: (tx: any) => void;
 }> = ({ onBack, onSendTo, vista = 'beneficiarios', onVerMovimiento }) => {
-    const { currentUser, updateUserRawData, transactions, refreshData } = useDatabase();
+    const { currentUser, updateUserRawData, actualizarListaRaw, transactions, refreshData } = useDatabase();
     const { config: sysConfig } = useSystemConfig();
     // Menú "···" del modal de detalle
     const [detailMenu, setDetailMenu] = useState(false);
@@ -744,7 +744,7 @@ export const ContactsSection: React.FC<{
         if (!d.cityCode) { setDirEdit({ ...dirEdit, error: 'Elige la ciudad.' }); return; }
         setDirEdit({ ...dirEdit, guardando: true, error: null });
         const actualizado: MouvContact = { ...c, ...d, address: d.address ?? '' };
-        const ok = await persistBanks(bankContacts.map(x => x.id === c.id ? actualizado : x));
+        const ok = await cambiarContactos({ [c.id]: { ...d, address: d.address ?? '' } });
         if (!ok) { setDirEdit({ ...dirEdit, guardando: false, error: 'No se pudo guardar (sesión vencida o permisos). Vuelve a entrar e inténtalo otra vez.' }); return; }
         setDirEdit(null);
         setDetail(actualizado);
@@ -816,18 +816,28 @@ export const ContactsSection: React.FC<{
     // la edge function escribe raw_data sin pasar por RLS ni el candado —
     // así se acabó el "se guarda en memoria y desaparece al recargar".
     // Actualiza el estado local con lo que la base confirma que quedó.
-    const persistKey = async (key: 'mouvContacts' | 'walletContacts', list: MouvContact[]): Promise<boolean> => {
+    // Cada cambio se aplica sobre la lista FRESCA de la base (no sobre la copia
+    // en memoria): la sincronización con el banco corre cada 15 s con la lista
+    // que había al arrancar, y cuando guardaba la lista completa borraba al
+    // beneficiario que se acababa de inscribir. Ahora se agrega, se cambia o
+    // se quita UN contacto por id, y lo demás queda como está en la base.
+    const listaDe = (c: any): 'mouvContacts' | 'walletContacts' =>
+        rawBankList.some((b: any) => b?.id === c?.id) ? 'mouvContacts' : c?.accountKind === 'wallet' ? 'walletContacts' : 'mouvContacts';
+    const agregarContacto = async (c: MouvContact): Promise<boolean> => {
         if (!currentUser?.id) return false;
-        // Guardado DIRIGIDO: escribe SOLO raw_data.<key> (merge server-side).
-        // Antes iba por updateUserProfile, que escribe el perfil COMPLETO
-        // (balances incluidos) — el candado de columnas sensibles rechazaba
-        // TODO el update cuando los saldos en memoria estaban desactualizados
-        // (p. ej. tras un cargue del admin) y el contacto se perdía al
-        // recargar. Devuelve true solo si la base confirmó el write.
-        return updateUserRawData(currentUser.id, { [key]: list });
+        const key = c.accountKind === 'wallet' ? 'walletContacts' : 'mouvContacts';
+        const local = key === 'walletContacts' ? readList('walletContacts') : rawBankList;
+        return actualizarListaRaw(currentUser.id, key, l => [c, ...l.filter((x: any) => x?.id !== c.id)], local);
     };
-    const persistBanks = (list: MouvContact[]) => persistKey('mouvContacts', list.filter((c: any) => c?.accountKind !== 'wallet'));
-    const persistWallets = (list: MouvContact[]) => persistKey('walletContacts', list.filter((c: any) => c?.accountKind === 'wallet'));
+    const cambiarContactos = async (cambios: Record<string, Partial<MouvContact>>, key: 'mouvContacts' | 'walletContacts' = 'mouvContacts'): Promise<boolean> => {
+        if (!currentUser?.id) return false;
+        if (!Object.keys(cambios).length) return true;
+        return actualizarListaRaw(currentUser.id, key, l => l.map((x: any) => (x?.id && cambios[x.id]) ? { ...x, ...cambios[x.id] } : x));
+    };
+    const quitarContacto = async (c: MouvContact): Promise<boolean> => {
+        if (!currentUser?.id) return false;
+        return actualizarListaRaw(currentUser.id, listaDe(c), l => l.filter((x: any) => x?.id !== c.id));
+    };
 
     // Normaliza un número de cuenta / dirección para comparar (solo dígitos en
     // bancos; minúsculas y sin espacios en wallets) → detectar duplicados.
@@ -869,7 +879,7 @@ export const ContactsSection: React.FC<{
                 walletCoin: f.walletCoin,
                 walletNetwork: f.walletNetwork,
             };
-            const okW = await persistWallets([wc, ...walletContacts]);
+            const okW = await agregarContacto(wc);
             setSaving(false);
             setFormOpen(false);
             setForm({ ...emptyForm });
@@ -908,7 +918,7 @@ export const ContactsSection: React.FC<{
                 notifyEmail: f.notifyEmail.trim() || undefined, notifyPhone: f.notifyPhone.trim() || undefined,
                 ...dirK,
             };
-            const okK = await persistBanks([brebContact, ...bankContacts]);
+            const okK = await agregarContacto(brebContact);
             setSaving(false); setFormOpen(false); setForm({ ...emptyForm });
             if (!okK) { setNotice({ ok: false, text: '⚠ El destinatario NO quedó guardado en el servidor (sesión vencida o permisos). Vuelve a entrar e inscríbelo otra vez.' }); return; }
             setNotice({ ok: true, text: `✅ Destinatario Bre-B inscrito (${brebContact.name}). Ya puedes dispersarle.` });
@@ -985,7 +995,7 @@ export const ContactsSection: React.FC<{
             destKind: 'ach',
             ...dirB,
         };
-        const okB = await persistBanks([contact, ...bankContacts]);
+        const okB = await agregarContacto(contact);
         setSaving(false);
         setFormOpen(false);
         setForm({ ...emptyForm });
@@ -1013,6 +1023,7 @@ export const ContactsSection: React.FC<{
             // 0) Reintentar la inscripción de cuentas ACH que quedaron sin ID
             //    de Finity (la primera inscripción falló — auth o red).
             let retried = bankContacts;
+            const cambiosReg: Record<string, Partial<MouvContact>> = {};
             const pendingReg = bankContacts.filter(c => isFinityAch(c) && !(c.finityId ?? c.mouvId));
             for (const c of pendingReg) {
                 try {
@@ -1022,20 +1033,19 @@ export const ContactsSection: React.FC<{
                     const dd = (rr?.data ?? {}) as any;
                     const fid = dd.id ?? dd.external_account_id ?? dd.account_id ?? dd?.account?.id ?? null;
                     if (rr?.ok && fid) {
-                        retried = retried.map(x => x.id === c.id
-                            ? { ...x, mouvId: String(fid), finityId: String(fid), status: estadoDeFila(dd) === 'rechazada' ? 'rechazada' : 'en_proceso', lastError: null }
-                            : x);
+                        cambiosReg[c.id] = { mouvId: String(fid), finityId: String(fid), status: estadoDeFila(dd) === 'rechazada' ? 'rechazada' : 'en_proceso', lastError: null };
                     } else {
                         // Guardar el rechazo de Finity — visible en el detalle del contacto
-                        const err = `[${new Date().toLocaleTimeString('es-CO')}] HTTP ${rr?.status ?? '—'} en ${rr?.path ?? '¿?'}: ${JSON.stringify(rr?.data ?? rr).slice(0, 260)}`;
-                        retried = retried.map(x => x.id === c.id ? { ...x, lastError: err } : x);
+                        cambiosReg[c.id] = { lastError: `[${new Date().toLocaleTimeString('es-CO')}] HTTP ${rr?.status ?? '—'} en ${rr?.path ?? '¿?'}: ${JSON.stringify(rr?.data ?? rr).slice(0, 260)}` };
                     }
                 } catch (e: any) {
-                    const err = String(e?.message ?? e);
-                    retried = retried.map(x => x.id === c.id ? { ...x, lastError: err } : x);
+                    cambiosReg[c.id] = { lastError: String(e?.message ?? e) };
                 }
             }
-            if (retried !== bankContacts) await persistBanks(retried);
+            if (Object.keys(cambiosReg).length) {
+                retried = retried.map(x => cambiosReg[x.id] ? { ...x, ...cambiosReg[x.id] } as MouvContact : x);
+                await cambiarContactos(cambiosReg);
+            }
 
             const r = await callFinity('external_accounts', currentUser.id);
             setListRaw({ status: r?.status, path: r?.path, data: r?.data });
@@ -1059,6 +1069,7 @@ export const ContactsSection: React.FC<{
             }
             if (rows.length > 0) {
                 let changed = false;
+                const cambiosSync: Record<string, Partial<MouvContact>> = {};
                 const newlyApproved: MouvContact[] = [];
                 const next = retried.map(c => {
                     if (!isFinityAch(c)) return c;
@@ -1083,14 +1094,17 @@ export const ContactsSection: React.FC<{
                     if ((st && st !== contactStatus(c)) || (fid && fid !== c.mouvId) || crudo !== (c as any).providerStatus) {
                         changed = true;
                         const wasApproved = contactStatus(c) === 'aprobada';
-                        const updated = { ...c, status: st ?? contactStatus(c), providerStatus: crudo, mouvId: fid ? String(fid) : c.mouvId, finityId: fid ? String(fid) : (c.finityId ?? c.mouvId) };
+                        const cambio = { status: st ?? contactStatus(c), providerStatus: crudo, mouvId: fid ? String(fid) : c.mouvId, finityId: fid ? String(fid) : (c.finityId ?? c.mouvId) } as Partial<MouvContact>;
+                        cambiosSync[c.id] = cambio;
+                        const updated = { ...c, ...cambio } as MouvContact;
                         if (st === 'aprobada' && !wasApproved) newlyApproved.push(updated);
                         return updated;
                     }
                     return c;
                 });
                 if (changed) {
-                    await persistBanks(next);
+                    void next;
+                    await cambiarContactos(cambiosSync);
                     // Correo "Contacto aprobado" — server-side, al correo del
                     // propio usuario. Solo en la TRANSICIÓN a aprobada (la
                     // persistencia evita reenviarlo en cada sincronización).
@@ -1244,9 +1258,8 @@ export const ContactsSection: React.FC<{
         }
         const isWallet = walletContacts.some(c => c.id === id);
         // 1) Quitar de la lista local del usuario (cada tipo de SU lista).
-        const removedOk = isWallet
-            ? await persistWallets(walletContacts.filter(c => c.id !== id))
-            : await persistBanks(bankContacts.filter(c => c.id !== id));
+        void isWallet;
+        const removedOk = target ? await quitarContacto(target) : false;
         if (!removedOk) { setNotice({ ok: false, text: 'No se pudo eliminar el contacto. Reintenta.' }); return; }
         // 2) Des-inscribir en Finity (solo cuentas ACH de Colombia con id).
         //    El backend verifica que NINGÚN otro usuario la siga usando antes de
