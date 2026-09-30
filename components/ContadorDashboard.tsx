@@ -9,11 +9,12 @@
 //  el vínculo.
 // ══════════════════════════════════════════════════════════════════
 import React, { useEffect, useMemo, useState } from 'react';
-import { RefreshCw, X, Search, Clock, Building2, ArrowRight, Menu } from 'lucide-react';
+import { RefreshCw, Search, Clock, Building2, ArrowRight, Menu } from 'lucide-react';
 import { useDatabase } from '../context/DatabaseContext';
 import { llamarFuncion } from '../lib/edge';
 import { ContabilidadDashboard } from './ContabilidadDashboard';
 import { ConfirmarModal } from './ConfirmarModal';
+import { ContadorDetalleMovimiento } from './ContadorDetalleMovimiento';
 
 const FONT = 'Archivo, system-ui, sans-serif';
 const C = {
@@ -139,8 +140,6 @@ export const ContadorDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout
   const miNombre = currentUser?.name || currentUser?.email || 'Mi cuenta';
   const inicial = String(miNombre).trim().charAt(0).toUpperCase();
   const primerNombre = String(currentUser?.name || '').trim().split(/\s+/)[0];
-
-  const fmt = (v: any, cur: any) => `${Number(v ?? 0).toLocaleString('es-CO', { maximumFractionDigits: String(cur ?? '').startsWith('COP') ? 0 : 2 })} ${String(cur ?? '').split('_')[0]}`;
 
   const botonSec: React.CSSProperties = { fontFamily: FONT, fontSize: 12.5, fontWeight: 700, color: C.sub, background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.borde}`, borderRadius: 9, padding: '9px 12px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 };
   const etiqueta: React.CSSProperties = { fontSize: 10.5, fontWeight: 800, letterSpacing: '1.2px', color: C.sub, margin: 0 };
@@ -304,33 +303,14 @@ export const ContadorDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout
         </main>
       </div>
 
-      {/* Detalle mínimo de un movimiento: lo que ya trae el registro. */}
-      {detalle && (
-        <div onClick={() => setDetalle(null)} style={{ position: 'fixed', inset: 0, zIndex: 80, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
-          <div onClick={e => e.stopPropagation()} style={{ width: '100%', maxWidth: 520, background: C.tarjeta, border: `1px solid ${C.borde}`, borderRadius: 16, padding: 22, maxHeight: '90vh', overflowY: 'auto' }}>
-            <div className="flex items-start justify-between" style={{ gap: 12 }}>
-              <p style={{ fontSize: 16, fontWeight: 800, margin: 0 }}>{detalle.title || detalle.type}</p>
-              <button onClick={() => setDetalle(null)} aria-label="Cerrar" style={{ background: 'transparent', border: 'none', color: C.sub, cursor: 'pointer', padding: 4 }}><X size={18} /></button>
-            </div>
-            <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {([
-                ['Fecha', detalle.createdAt ? new Date(detalle.createdAt).toLocaleString('es-CO') : '—'],
-                ['Tipo', detalle.type],
-                ['Monto', fmt(detalle.amount, detalle.currency)],
-                ['Estado', detalle.status],
-                ['Contraparte', detalle.beneficiary ?? detalle.beneficiaryName ?? detalle.counterpartyName ?? detalle.senderName ?? detalle.recipientName ?? detalle.pagador ?? '—'],
-                ['Referencia', detalle.providerRef ?? detalle.reference ?? detalle.txHash ?? '—'],
-                ['Nota', detalle.note ?? detalle.reason ?? '—'],
-                ['Id', detalle.id],
-              ] as [string, any][]).map(([k, v]) => (
-                <div key={k} className="flex items-start justify-between" style={{ gap: 12, borderBottom: `1px solid ${C.borde}`, paddingBottom: 6 }}>
-                  <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '1px', color: C.sub }}>{k.toUpperCase()}</span>
-                  <span style={{ fontSize: 13, color: C.text, textAlign: 'right', wordBreak: 'break-all' }}>{String(v ?? '—')}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
+      {/* Detalle completo: movimiento, comprobante y documento de Siigo. */}
+      {detalle && datos && (
+        <ContadorDetalleMovimiento
+          tx={detalle}
+          empresaId={datos.empresa.id}
+          comprobante={datos.comprobantes.find((c: any) => String(c.transaction_id) === String(detalle.id)) ?? null}
+          onCerrar={() => setDetalle(null)}
+        />
       )}
 
       {confirmarSalir && (

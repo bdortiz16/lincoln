@@ -1043,6 +1043,18 @@ async function buscarClientes(userId: string, q: string): Promise<{ ok: boolean;
   return { ok: true, clientes: out.slice(0, 30) }
 }
 
+async function esContadorDe(contadorId: string, empresaId: string): Promise<boolean> {
+  const [{ data: emp }, { data: yo }] = await Promise.all([
+    db.from('users').select('role, raw_data').eq('id', empresaId).maybeSingle(),
+    db.from('users').select('role, raw_data').eq('id', contadorId).maybeSingle(),
+  ])
+  if (!emp || (emp as any).role !== 'business') return false
+  const lista: any[] = Array.isArray((emp as any).raw_data?.contadores) ? (emp as any).raw_data.contadores : []
+  if (lista.some(c => c && String(c.id) === contadorId)) return true
+  // Accesos del esquema anterior (cuenta con rol contador).
+  return (yo as any)?.role === 'contador' && String((yo as any)?.raw_data?.contadorDe ?? '') === empresaId
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
   try {
@@ -1059,7 +1071,17 @@ Deno.serve(async (req) => {
     }
 
     if (!yo.userId) return json({ error: 'no_autorizado' }, 401)
-    const userId = yo.userId
+    let userId = yo.userId
+
+    // Contador con acceso aprobado: puede CONSULTAR el documento de un
+    // movimiento de la empresa (nada más). El vínculo se lee de la fila de
+    // la empresa, que solo escribe la función `contador`.
+    const empresaPedida = String(body.empresaId ?? '')
+    if (empresaPedida && empresaPedida !== userId) {
+      if (accion !== 'documento' && accion !== 'documento_pdf') return json({ ok: false, error: 'no_autorizado' }, 403)
+      if (!(await esContadorDe(userId, empresaPedida))) return json({ ok: false, error: 'La empresa no ha aprobado tu acceso.' }, 403)
+      userId = empresaPedida
+    }
 
     if (accion === 'config_get') {
       const chequeo = await chequeoAutomatico(userId)
