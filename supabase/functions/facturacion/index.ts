@@ -817,6 +817,14 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
   // soporte en API"): POST /v1/purchase-support-documents, con el tipo de
   // comprobante de GET /v1/document-types?type=DS. /v1/purchases queda de
   // respaldo por si una cuenta vieja lo resolviera así.
+  // Última revisión de la pausa, justo antes de mandar a Siigo: armar el
+  // documento (tercero, RUES, catálogos) puede tardar más de un minuto, y
+  // una pausa puesta en ese rato tiene que frenar este envío.
+  const vigente = await leerConfig(userId)
+  if (!vigente?.activo) {
+    await marcar({ factura_estado: 'omitida', factura_error: 'Facturación pausada antes de enviar el documento a Siigo.' })
+    return { ok: true, estado: 'omitida' }
+  }
   const RUTAS_DS = ['/v1/purchase-support-documents', '/v1/purchases']
   const intentos: { ruta: string; status: number; respuesta: any }[] = []
   let r: Resp
@@ -1111,7 +1119,13 @@ Deno.serve(async (req) => {
       }
       for (const k of copiar) if (k in c) fila[k] = c[k] == null || c[k] === '' ? null : String(c[k]).trim()
       for (const k of ['document_id', 'seller_id', 'payment_id', 'ds_document_id', 'ds_payment_id']) if (k in c) fila[k] = c[k] == null || c[k] === '' ? null : Number(c[k])
-      for (const k of ['activo', 'crear_clientes', 'stamp', 'mail']) if (k in c) fila[k] = !!c[k]
+      // `activo` solo cambia cuando se pide a propósito (el botón Activar /
+      // Pausar manda cambiarActivo). Un guardado cualquiera de la ventana de
+      // configuración traía el `activo` que había al abrirla, y si alguien la
+      // tenía abierta desde antes de pausar, al guardar la volvía a activar.
+      const cambiaActivo = body.cambiarActivo === true && 'activo' in c
+      if (cambiaActivo) fila.activo = !!c.activo
+      for (const k of ['crear_clientes', 'stamp', 'mail']) if (k in c) fila[k] = !!c[k]
       if (Array.isArray(c.disparadores)) fila.disparadores = c.disparadores.filter((d: any) => typeof d === 'string' && d in DISPARADORES)
       // El modelo de negocio y sus parámetros.
       if ('modelo' in c) {
@@ -1224,6 +1238,9 @@ Deno.serve(async (req) => {
         if (/relation .* does not exist|42P01/i.test(error.message)) return json({ ok: false, error: 'Falta correr la migración 2026_facturacion.sql en la base.' }, 500)
         if (/column|schema cache|PGRST204/i.test(error.message)) return json({ ok: false, error: `Falta correr la migración 2026_facturacion_modelo.sql en la base (${error.message}).` }, 500)
         return json({ ok: false, error: error.message }, 500)
+      }
+      if (cambiaActivo) {
+        await db.from('audit_log').insert({ user_id: userId, action: fila.activo ? 'facturacion.activada' : 'facturacion.pausada', metadata: { at: new Date().toISOString() } }).then(() => {}, () => {})
       }
       return json({ ok: true, config: await publica(await leerConfig(userId), await resumenDe(userId)) })
     }

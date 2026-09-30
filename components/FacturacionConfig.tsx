@@ -154,12 +154,17 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
   const guardar = async (extra: Record<string, any> = {}) => {
     setGuardando(true); setAviso(null);
     const llave = accessKey.replace(/\s+/g, '');
-    const config = { ...form, ...extra, ...(llave ? { access_key: llave } : {}) };
-    const r = await llamarFuncion('facturacion', { action: 'config_set', config }, 30000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    // El estado activo/pausado NO viaja en un guardado normal: el formulario
+    // lo tiene como estaba al abrir la ventana y reactivaba la facturación.
+    // Solo el botón Activar/Pausar lo manda, y con cambiarActivo.
+    const { activo: _activoForm, ...resto } = form;
+    const cambiarActivo = 'activo' in extra;
+    const config = { ...resto, ...extra, ...(llave ? { access_key: llave } : {}) };
+    const r = await llamarFuncion('facturacion', { action: 'config_set', config, ...(cambiarActivo ? { cambiarActivo: true } : {}) }, 30000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
     setGuardando(false);
     if (!r?.ok) { setAviso({ ok: false, texto: r?.error ?? 'No se pudo guardar.' }); return false; }
     setCfg(r.config); setAccessKey('');
-    if ('activo' in extra) set('activo', extra.activo);
+    set('activo', !!r.config?.activo);
     // Guardado con modelo: se pliega al resumen.
     if (!('activo' in extra) && config.modelo) setModeloAbierto(false);
     setAviso({ ok: true, texto: 'activo' in extra ? (extra.activo ? 'Facturación automática activada.' : 'Facturación automática pausada.') : 'Guardado.' });

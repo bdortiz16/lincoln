@@ -405,7 +405,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   const alternarAutomatica = async () => {
     if (facturacionActiva == null) return;
     setCambiandoAuto(true);
-    const r = await llamarFuncion('facturacion', { action: 'config_set', config: { activo: !facturacionActiva } }, 30000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    const r = await llamarFuncion('facturacion', { action: 'config_set', config: { activo: !facturacionActiva }, cambiarActivo: true }, 30000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
     setCambiandoAuto(false);
     if (!r?.ok) { alert(r?.error ?? 'No se pudo cambiar.'); return; }
     setFacturacionActiva(!!r?.config?.activo);
