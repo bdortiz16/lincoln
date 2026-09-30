@@ -77,7 +77,7 @@ interface DatabaseContextType {
   updateUserProfile: (id: string, data: any) => Promise<void>;
   updateUserRawData: (id: string, patch: Record<string, any>) => Promise<boolean>;
   loginUser: (email: string, pass?: string, captchaToken?: string, portal?: 'personal' | 'business') => Promise<User | null | 'MFA_REQUIRED'>;
-  loginWithGoogle: (role?: 'personal' | 'business') => Promise<void>;
+  loginWithGoogle: (role?: 'personal' | 'business' | 'contador') => Promise<void>;
   logoutUser: (motivo?: string) => Promise<void>;
   getBalance: (curr: string) => number;
   bumpLocalBalance: (currency: string, delta: number) => void;
@@ -518,7 +518,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
               let pendingRole: 'business' | 'personal' = 'business';
               try {
                 const pista = JSON.parse(localStorage.getItem('cuypay_oauth_role') || 'null');
-                if (pista?.role === 'personal' && Date.now() - Number(pista.at || 0) < 15 * 60_000) pendingRole = 'personal';
+                // Contabilidad crea la cuenta del contador como Persona, igual que
+                // su registro por correo: no es una empresa ni tiene saldo propio.
+                if ((pista?.role === 'personal' || pista?.role === 'contador') && Date.now() - Number(pista.at || 0) < 15 * 60_000) pendingRole = 'personal';
                 // Registro por correo desde Personas: la marca la pone
                 // registerUser justo antes del signUp y la quita al insertar
                 // la fila. Si este listener llega primero, respeta el portal.
@@ -2034,7 +2036,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     return { enrolled: false };
   };
 
-  const loginWithGoogle = async (role: 'personal' | 'business' = 'business') => {
+  const loginWithGoogle = async (role: 'personal' | 'business' | 'contador' = 'business') => {
     if (!isSupabaseConfigured) return;
     // Persist role so it survives the OAuth redirect. Con fecha: solo vale
     // para este intento, así una pista vieja no decide el rol de otro registro.

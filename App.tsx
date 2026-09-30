@@ -41,10 +41,10 @@ const vistaDelRol = (role?: string): ViewState => {
 // Con Google la página vuelve a "/" y se pierde por qué portal se entró; la
 // pista queda en localStorage (la escribe loginWithGoogle) y vale 15 minutos.
 const PISTA_OAUTH = 'cuypay_oauth_role';
-const portalDeGoogle = (): 'business' | 'personal' | null => {
+const portalDeGoogle = (): 'business' | 'personal' | 'contador' | null => {
   try {
     const p = JSON.parse(localStorage.getItem(PISTA_OAUTH) || 'null');
-    if ((p?.role === 'personal' || p?.role === 'business') && Date.now() - Number(p.at || 0) < 15 * 60_000) return p.role;
+    if ((p?.role === 'personal' || p?.role === 'business' || p?.role === 'contador') && Date.now() - Number(p.at || 0) < 15 * 60_000) return p.role;
   } catch { /* pista ilegible */ }
   return null;
 };
@@ -420,6 +420,9 @@ const App: React.FC = () => {
       // portal—, se compara con el rol de la cuenta y, si no corresponde,
       // se cierra la sesión y se muestra por dónde debe entrar.
       const pistaGoogle = portalDeGoogle();
+      // Volviendo de Google por Contabilidad: la sesión va al portal del
+      // contador, no al panel de su cuenta (cualquier cuenta no admin entra).
+      if (pistaGoogle === 'contador') fijarPortal('contabilidad');
       const portalEnCurso: UserRole | null = currentView === 'login' ? userRole : pistaGoogle;
       if (portalEnCurso && portalEnCurso !== 'admin') {
         const mal = errorDePortal(portalEnCurso, currentUser.role);

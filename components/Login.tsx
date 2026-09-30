@@ -290,7 +290,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
           {isLoading ? 'Iniciando sesión...' : 'Iniciar sesión'}
         </button>
 
-        {userRole !== 'contador' && (<>
+        <>
         <div className="flex items-center gap-3">
           <div className="flex-1 h-px bg-slate-200" />
           <span className="text-xs text-slate-800 font-medium">o continúa con</span>
@@ -298,7 +298,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
         </div>
 
         <button
-          onClick={() => loginWithGoogle(userRole === 'personal' ? 'personal' : 'business')}
+          onClick={() => loginWithGoogle(userRole === 'personal' ? 'personal' : userRole === 'contador' ? 'contador' : 'business')}
           type="button"
           disabled={captchaEnabled && !captchaToken}
           title={captchaEnabled && !captchaToken ? 'Espera la verificación anti-bot' : undefined}
@@ -312,7 +312,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
           </svg>
           Continuar con Google
         </button>
-        </>)}
+        </>
 
         <div className="flex justify-between items-center text-sm pt-2">
           <div className="text-slate-900">
