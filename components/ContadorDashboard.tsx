@@ -308,6 +308,7 @@ export const ContadorDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout
         <ContadorDetalleMovimiento
           tx={detalle}
           empresaId={datos.empresa.id}
+          empresa={{ nombre: datos.empresa.nombre || datos.empresa.email, nit: datos.empresa.nit }}
           comprobante={datos.comprobantes.find((c: any) => String(c.transaction_id) === String(detalle.id)) ?? null}
           onCerrar={() => setDetalle(null)}
         />

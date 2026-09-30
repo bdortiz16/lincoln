@@ -520,18 +520,39 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
       const rot = f.estado === 'emitida' ? 'Emitida' : f.estado === 'anulada' ? 'Anulada' : f.estado === 'omitida' ? 'Omitida' : f.estado === 'pendiente' ? 'Pendiente' : f.estado === 'error' ? 'Error' : f.estado;
       return [tipo, rot].filter(Boolean).join(' · ');
     };
-    const movimientos: (string | number | Date)[][] = [
-      ['Fecha', 'Tipo', 'Dirección', 'Contraparte', 'Monto', 'Moneda', 'Estado', 'Comprobante', 'Documento Siigo', 'Nº Siigo', 'Referencia', 'Id'],
+    // Saldo en cada momento: se acumula con TODOS los movimientos de la
+    // moneda desde el primero (no solo los del periodo o el filtro), así el
+    // saldo de cada fila es el que tenía la cuenta justo después de esa
+    // operación. Lo rechazado no mueve el saldo.
+    const saldoTras = new Map<Asiento, number>();
+    let acumulado = 0;
+    for (const x of asientos.filter(x => x.moneda === moneda).sort((p, q) => p.ts - q.ts)) {
+      if (cuenta(x.tx)) acumulado += x.dir === 'in' ? x.monto : -x.monto;
+      saldoTras.set(x, acumulado);
+    }
+    const filasHoja = [...lista].sort((p, q) => p.ts - q.ts);
+    const primera = filasHoja[0];
+    const saldoInicial = primera ? (saldoTras.get(primera) ?? 0) - (cuenta(primera.tx) ? (primera.dir === 'in' ? primera.monto : -primera.monto) : 0) : 0;
+    let totEntradas = 0, totSalidas = 0;
+    const movimientos: (string | number | Date | null)[][] = [
+      ['Fecha', 'Tipo', 'Contraparte', 'Entrada', 'Salida', 'Saldo', 'Moneda', 'Estado', 'Comprobante', 'Documento Siigo', 'Nº Siigo', 'Referencia', 'Id'],
+      [primera ? new Date(primera.ts) : null, 'Saldo inicial', '', null, null, saldoInicial, moneda, '', '', '', '', '', ''],
     ];
-    for (const a of lista) {
+    for (const a of filasHoja) {
       const f = folios[String(a.tx.id)];
+      const suma = cuenta(a.tx);
+      if (suma) { if (a.dir === 'in') totEntradas += a.monto; else totSalidas += a.monto; }
       movimientos.push([
-        new Date(a.ts), a.tipo, a.dir === 'in' ? 'Entrada' : 'Salida', a.contraparte,
-        a.dir === 'in' ? a.monto : -a.monto, a.moneda, a.estado,
+        new Date(a.ts), a.tipo, a.contraparte,
+        a.dir === 'in' ? (suma ? a.monto : null) : null,
+        a.dir === 'out' ? (suma ? a.monto : null) : null,
+        saldoTras.get(a) ?? null, a.moneda, a.estado,
         f?.numero ?? '', estadoDoc(f?.factura), f?.factura?.numero ?? '',
         String(a.tx.providerRef ?? a.tx.reference ?? a.tx.txHash ?? ''), String(a.tx.id),
       ]);
     }
+    const saldoFinal = filasHoja.length ? (saldoTras.get(filasHoja[filasHoja.length - 1]) ?? saldoInicial) : saldoInicial;
+    movimientos.push([null, 'Totales', '', totEntradas, totSalidas, saldoFinal, moneda, '', '', '', '', '', '']);
     const rotP = periodo === 'mes' ? `${MESES_L[ahora.getMonth()]} ${ahora.getFullYear()}` : periodo === 'anio' ? String(ahora.getFullYear()) : 'Histórico';
     const resumen: (string | number | Date)[][] = [
       ['Concepto', 'Valor'],
@@ -540,14 +561,19 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
       ['Recibido', recibido],
       ['Enviado', enviado],
       ['Neto', neto],
+      ['Saldo al inicio de la hoja', saldoInicial],
+      ['Entradas en la hoja', totEntradas],
+      ['Salidas en la hoja', totSalidas],
+      ['Saldo al final de la hoja', saldoFinal],
+      ['Cómo se calcula el saldo', 'Suma de entradas menos salidas completadas o en proceso, desde el primer movimiento en Lincoin. Los rechazados no mueven el saldo.'],
       ['Movimientos de entrada', nIn],
       ['Movimientos de salida', nOut],
       ['Movimientos en la hoja', lista.length],
       ['Generado', new Date()],
     ];
     descargarXlsx(`lincoin-contabilidad-${moneda}-${periodo}-${new Date().toISOString().slice(0, 10)}.xlsx`, [
-      { nombre: 'Movimientos', filas: movimientos, anchos: [18, 16, 10, 34, 16, 8, 12, 14, 22, 12, 30, 38] },
-      { nombre: 'Resumen', filas: resumen, anchos: [26, 20] },
+      { nombre: 'Movimientos', filas: movimientos, anchos: [18, 16, 34, 16, 16, 18, 8, 12, 14, 22, 12, 30, 38] },
+      { nombre: 'Resumen', filas: resumen, anchos: [30, 40] },
     ]);
   };
 

@@ -57,11 +57,79 @@ const Pastilla: React.FC<{ texto: string; color: string; borde: string }> = ({ t
   <span style={{ border: `1px solid ${borde}`, color, fontSize: 9.5, fontWeight: 700, padding: '3px 9px', borderRadius: 999, whiteSpace: 'nowrap', letterSpacing: 0.3 }}>{texto}</span>
 );
 
-export const ContadorDetalleMovimiento: React.FC<{ tx: any; comprobante: any | null; empresaId: string; onCerrar: () => void }> = ({ tx, comprobante, empresaId, onCerrar }) => {
+
+// ── Hoja imprimible (comprobante y documento) ──────────────────────
+// Fondo blanco: el logo va en #15181A con el punto #22A35C, sin cuadro.
+// "Descargar PDF" imprime solo la hoja (el navegador ofrece Guardar como
+// PDF); el nombre del archivo sale del título de la página.
+const P = { text: '#15181A', sub: '#5B625D', linea: '#E3E5E2', suave: '#F4F5F3', verde: '#22A35C', rojo: '#B42318' };
+type Dato = [string, string];
+const Bloque: React.FC<{ titulo: string; datos: Dato[] }> = ({ titulo, datos }) => (
+  <div style={{ marginTop: 18 }}>
+    <p style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: '1.4px', color: P.sub, margin: '0 0 6px' }}>{titulo}</p>
+    {datos.filter(([, v]) => v).map(([k, v]) => (
+      <div key={k} style={{ display: 'flex', justifyContent: 'space-between', gap: 16, padding: '6px 0', borderTop: `1px solid ${P.linea}` }}>
+        <span style={{ fontSize: 11.5, color: P.sub, flexShrink: 0 }}>{k}</span>
+        <span style={{ fontSize: 11.5, fontWeight: 600, color: P.text, textAlign: 'right', wordBreak: 'break-word' }}>{v}</span>
+      </div>
+    ))}
+  </div>
+);
+
+const Hoja: React.FC<{ nombreArchivo: string; onCerrar: () => void; children: React.ReactNode }> = ({ nombreArchivo, onCerrar, children }) => {
+  const imprimir = () => {
+    const antes = document.title;
+    document.title = nombreArchivo;
+    const volver = () => { document.title = antes; window.removeEventListener('afterprint', volver); };
+    window.addEventListener('afterprint', volver);
+    window.print();
+    setTimeout(volver, 4000);
+  };
+  return (
+    <div className="lincoin-hoja-capa" onClick={onCerrar} style={{ position: 'fixed', inset: 0, zIndex: 95, background: 'rgba(4,5,4,0.88)', overflowY: 'auto', padding: '20px 12px', fontFamily: FONT }}>
+      <div onClick={e => e.stopPropagation()} style={{ maxWidth: 720, margin: '0 auto' }}>
+        <div className="lincoin-hoja-barra flex items-center justify-end" style={{ gap: 8, marginBottom: 10 }}>
+          <button onClick={imprimir} className="lincoin-btn-white" style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '9px 14px', borderRadius: 9, border: 'none', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}><Download size={14} /> Descargar PDF</button>
+          <button onClick={onCerrar} style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '9px 14px', borderRadius: 9, cursor: 'pointer', color: C.text, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.14)', display: 'inline-flex', alignItems: 'center', gap: 6 }}><X size={14} /> Cerrar</button>
+        </div>
+        <div className="lincoin-hoja" style={{ background: '#FFFFFF', color: P.text, borderRadius: 10, padding: '34px 38px 30px', fontFamily: FONT }}>
+          {children}
+        </div>
+      </div>
+      <style>{`
+        @media print {
+          @page { size: letter; margin: 14mm; }
+          body * { visibility: hidden !important; }
+          .lincoin-hoja, .lincoin-hoja * { visibility: visible !important; }
+          .lincoin-hoja-capa { position: static !important; background: #fff !important; padding: 0 !important; overflow: visible !important; }
+          .lincoin-hoja { position: absolute; left: 0; top: 0; width: 100%; border-radius: 0 !important; padding: 0 !important; }
+          .lincoin-hoja-barra { display: none !important; }
+        }
+      `}</style>
+    </div>
+  );
+};
+
+const Encabezado: React.FC<{ titulo: string; subtitulo: string; numero: string }> = ({ titulo, subtitulo, numero }) => (
+  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, paddingBottom: 16, borderBottom: `2px solid ${P.text}` }}>
+    <div>
+      <p style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.6px', margin: 0, lineHeight: 1, color: P.text }}>Lincoin<span style={{ color: P.verde }}>.</span></p>
+      <p style={{ fontSize: 10.5, color: P.sub, margin: '8px 0 0' }}>lincoin.me</p>
+    </div>
+    <div style={{ textAlign: 'right' }}>
+      <p style={{ fontSize: 15, fontWeight: 800, margin: 0, color: P.text }}>{titulo}</p>
+      <p style={{ fontSize: 10.5, color: P.sub, margin: '3px 0 0', maxWidth: 300 }}>{subtitulo}</p>
+      <p style={{ fontSize: 13, fontWeight: 700, margin: '8px 0 0', fontFamily: MONO, color: P.text }}>{numero}</p>
+    </div>
+  </div>
+);
+
+export const ContadorDetalleMovimiento: React.FC<{ tx: any; comprobante: any | null; empresaId: string; empresa: { nombre: string; nit: string }; onCerrar: () => void }> = ({ tx, comprobante, empresaId, empresa, onCerrar }) => {
   const [consulta, setConsulta] = useState<{ estado: 'cargando' | 'ok' | 'error'; documento?: any; comprobante?: any; error?: string }>({ estado: 'cargando' });
   const [pdfBajando, setPdfBajando] = useState(false);
   const [aviso, setAviso] = useState<string | null>(null);
   const [crudaAbierta, setCrudaAbierta] = useState(false);
+  const [hoja, setHoja] = useState<'comprobante' | 'documento' | null>(null);
 
   useEffect(() => {
     let vivo = true;
@@ -72,10 +140,10 @@ export const ContadorDetalleMovimiento: React.FC<{ tx: any; comprobante: any | n
   }, [tx.id, empresaId]);
 
   useEffect(() => {
-    const k = (e: KeyboardEvent) => { if (e.key === 'Escape') onCerrar(); };
+    const k = (e: KeyboardEvent) => { if (e.key === 'Escape') { if (hoja) setHoja(null); else onCerrar(); } };
     window.addEventListener('keydown', k);
     return () => window.removeEventListener('keydown', k);
-  }, [onCerrar]);
+  }, [onCerrar, hoja]);
 
   const copiar = (t: string) => { navigator.clipboard.writeText(t).then(() => { setAviso('Copiado'); setTimeout(() => setAviso(null), 1500); }).catch(() => {}); };
 
@@ -224,6 +292,7 @@ export const ContadorDetalleMovimiento: React.FC<{ tx: any; comprobante: any | n
                 {st === 'Completado' ? 'Este movimiento todavía no tiene comprobante.' : 'El comprobante se emite cuando la operación queda completada.'}
               </p>
             )}
+            <button onClick={() => setHoja('comprobante')} className="w-full flex items-center justify-center" style={{ gap: 6, marginTop: 10, padding: '10px 0', borderRadius: 9, fontSize: 12.5, fontWeight: 700, color: C.text, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.14)', cursor: 'pointer', fontFamily: FONT }}><FileText size={14} /> {compNumero ? 'Ver comprobante' : 'Ver constancia de la operación'}</button>
           </Seccion>
 
           {/* Documento en Siigo: factura de venta o documento soporte */}
@@ -259,13 +328,14 @@ export const ContadorDetalleMovimiento: React.FC<{ tx: any; comprobante: any | n
             {doc && (doc.estado === 'error' || doc.estado === 'omitida' || doc.estado === 'anulada') && doc.error && (
               <p style={{ fontSize: 12, color: doc.estado === 'error' ? C.rojo : C.sub, lineHeight: 1.45, margin: '8px 0 0' }}>{doc.error}</p>
             )}
+            {doc && conDoc && <button onClick={() => setHoja('documento')} className="w-full flex items-center justify-center" style={{ gap: 6, marginTop: 10, padding: '10px 0', borderRadius: 9, fontSize: 12.5, fontWeight: 700, color: C.text, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.14)', cursor: 'pointer', fontFamily: FONT }}><FileText size={14} /> Ver {esDS ? 'documento soporte' : 'factura'}</button>}
             {doc?.estado === 'emitida' && (doc.url || doc.pdf_api) && (
               <div className="flex" style={{ gap: 8, marginTop: 10 }}>
-                {doc.url && <a href={doc.url} target="_blank" rel="noopener noreferrer" className="flex-1 flex items-center justify-center" style={{ gap: 6, padding: '9px 0', borderRadius: 9, fontSize: 12, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.11)', textDecoration: 'none' }}><ExternalLink size={13} /> Ver documento</a>}
+                {doc.url && <a href={doc.url} target="_blank" rel="noopener noreferrer" className="flex-1 flex items-center justify-center" style={{ gap: 6, padding: '9px 0', borderRadius: 9, fontSize: 12, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.11)', textDecoration: 'none' }}><ExternalLink size={13} /> Abrir en Siigo</a>}
                 {doc.pdf_api && (
                   <button onClick={() => descargarPdf(`${doc.numero ?? tituloDoc}.pdf`)} disabled={pdfBajando} className="flex-1 flex items-center justify-center"
                     style={{ gap: 6, padding: '9px 0', borderRadius: 9, fontSize: 12, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.11)', cursor: 'pointer', fontFamily: FONT, opacity: pdfBajando ? 0.6 : 1 }}>
-                    <Download size={13} /> {pdfBajando ? 'Pidiendo el PDF…' : 'Descargar PDF'}
+                    <Download size={13} /> {pdfBajando ? 'Pidiendo el PDF…' : 'PDF de Siigo'}
                   </button>
                 )}
               </div>
@@ -285,6 +355,101 @@ export const ContadorDetalleMovimiento: React.FC<{ tx: any; comprobante: any | n
           {aviso && <p style={{ fontSize: 12, color: aviso === 'Copiado' ? C.verde : C.rojo, margin: '12px 0 0', lineHeight: 1.45 }}>{aviso}</p>}
         </div>
       </div>
+
+      {hoja === 'comprobante' && (
+        <Hoja nombreArchivo={`${compNumero ?? 'Constancia'} - ${empresa.nombre}`} onCerrar={() => setHoja(null)}>
+          <Encabezado
+            titulo={compNumero ? 'Comprobante de operación' : 'Constancia de operación'}
+            subtitulo={compNumero ? `Emitido ${fechaLarga(compEmitido)}` : 'Esta operación no tiene comprobante numerado'}
+            numero={compNumero ? String(compNumero) : corta(String(tx.id), 8, 6)} />
+          <div style={{ textAlign: 'center', padding: '22px 0 6px' }}>
+            <p style={{ fontSize: 10, fontWeight: 800, letterSpacing: '1.4px', color: P.sub, margin: 0 }}>{entra ? 'MONTO RECIBIDO' : 'MONTO ENVIADO'}</p>
+            <p style={{ fontSize: 30, fontWeight: 800, letterSpacing: '-1px', margin: '6px 0 0', color: P.text }}>{partes}</p>
+            <p style={{ fontSize: 11.5, fontWeight: 700, margin: '6px 0 0', color: pill.c === C.rojo ? P.rojo : pill.c === C.verde ? P.verde : P.sub }}>{pill.t}</p>
+          </div>
+          <Bloque titulo="TITULAR DE LA CUENTA" datos={[['Empresa', empresa.nombre], ['NIT', empresa.nit]]} />
+          <Bloque titulo="OPERACIÓN" datos={[
+            ['Tipo', TIPOS[tipo] ?? tipo],
+            ['Fecha', fechaLarga(tx.createdAt)],
+            ['Riel', riel],
+            ['Motivo del pago', motivoPago],
+            ['Nota', nota && nota !== motivoPago ? nota : ''],
+            ['Costo del envío', !entra && fee > 0 ? fmt(fee, 'COP') : ''],
+            ['Referencia de la operación', ref],
+            ['Id Lincoin', String(tx.id)],
+          ]} />
+          <Bloque titulo={entra ? 'PAGADOR' : 'BENEFICIARIO'} datos={[
+            ['Nombre', contraparte],
+            ['Documento', docNum ? `${docTipo || 'CC'} ${docNum}` : ''],
+            ['Banco', banco],
+            [tx.currency === 'COP_BREB' ? 'Llave' : 'Cuenta', cuenta],
+          ]} />
+          {motivoRechazo && <Bloque titulo="MOTIVO DEL RECHAZO" datos={[['Motivo', motivoRechazo]]} />}
+          {doc && conDoc && <Bloque titulo="DOCUMENTO ASOCIADO" datos={[[tituloDoc, String(doc.numero ?? '')], [esDS ? 'CUDS' : 'CUFE', cude]]} />}
+          <p style={{ fontSize: 9.5, color: P.sub, margin: '22px 0 0', lineHeight: 1.5 }}>Documento generado por Lincoin a partir del registro de la operación en la plataforma. Consultado el {new Date().toLocaleString('es-CO')}.</p>
+        </Hoja>
+      )}
+
+      {hoja === 'documento' && doc && (() => {
+        const filasItems = items.map((it: any) => {
+          const cant = Number(it.quantity ?? 1);
+          const unit = it.price != null ? Number(it.price) : null;
+          const total = it.total != null ? Number(it.total) : unit != null ? unit * cant : null;
+          const imp = Array.isArray(it.taxes) ? it.taxes.map((t: any) => [t.name, t.percentage != null ? `${t.percentage}%` : ''].filter(Boolean).join(' ')).filter(Boolean).join(', ') : '';
+          return { codigo: String(it.code ?? ''), desc: String(it.description ?? ''), cant, unit, total, imp };
+        });
+        const subtotal = filasItems.reduce((a, f) => a + (f.unit != null ? f.unit * f.cant : 0), 0);
+        const impuestos = items.reduce((a: number, it: any) => a + (Array.isArray(it.taxes) ? it.taxes.reduce((b: number, t: any) => b + (Number(t.value) || 0), 0) : 0), 0);
+        const totalDoc = sg?.total != null && Number(sg.total) > 0 ? Number(sg.total) : doc.enviado?.total != null ? Number(doc.enviado.total) : null;
+        const th: React.CSSProperties = { fontSize: 9, fontWeight: 800, letterSpacing: '1px', color: P.sub, textAlign: 'left', padding: '7px 6px', borderBottom: `1px solid ${P.text}` };
+        const td: React.CSSProperties = { fontSize: 11, color: P.text, padding: '7px 6px', borderBottom: `1px solid ${P.linea}`, verticalAlign: 'top' };
+        return (
+          <Hoja nombreArchivo={`${doc.numero ?? tituloDoc} - ${empresa.nombre}`} onCerrar={() => setHoja(null)}>
+            <Encabezado
+              titulo={esDS ? 'Documento soporte' : 'Factura electrónica de venta'}
+              subtitulo={esDS ? 'En adquisiciones efectuadas a sujetos no obligados a expedir factura' : 'Emitida en Siigo'}
+              numero={String(doc.numero ?? '')} />
+            {doc.estado === 'anulada' && <p style={{ fontSize: 12, fontWeight: 800, color: P.rojo, margin: '14px 0 0' }}>ANULADO EN SIIGO</p>}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', columnGap: 28 }}>
+              <Bloque titulo={esDS ? 'ADQUIRIENTE' : 'EMISOR'} datos={[['Razón social', empresa.nombre], ['NIT', empresa.nit]]} />
+              <Bloque titulo={esDS ? 'PROVEEDOR' : 'CLIENTE'} datos={[['Nombre', String(nombreContra ?? '')], ['Identificación', String(sg?.contraparte?.identification ?? '')]]} />
+            </div>
+            <Bloque titulo="DOCUMENTO" datos={[
+              ['Fecha', fechaCorta(doc.fecha ?? sg?.fecha)],
+              ['Estado DIAN', sello],
+              [esDS ? 'CUDS' : 'CUFE', cude],
+              ['Operación Lincoin', compNumero ? String(compNumero) : String(tx.id)],
+            ]} />
+            {filasItems.length > 0 && (
+              <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 20 }}>
+                <thead><tr>
+                  <th style={th}>CÓDIGO</th><th style={th}>DESCRIPCIÓN</th><th style={{ ...th, textAlign: 'right' }}>CANT.</th><th style={{ ...th, textAlign: 'right' }}>VALOR UNIT.</th><th style={th}>IMPUESTOS</th><th style={{ ...th, textAlign: 'right' }}>TOTAL</th>
+                </tr></thead>
+                <tbody>{filasItems.map((f, i) => (
+                  <tr key={i}>
+                    <td style={{ ...td, fontFamily: MONO }}>{f.codigo}</td>
+                    <td style={td}>{f.desc}</td>
+                    <td style={{ ...td, textAlign: 'right' }}>{f.cant}</td>
+                    <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>{f.unit != null ? fmt(f.unit, 'COP') : ''}</td>
+                    <td style={td}>{f.imp}</td>
+                    <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap', fontWeight: 700 }}>{f.total != null ? fmt(f.total, 'COP') : ''}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            )}
+            <div style={{ marginLeft: 'auto', maxWidth: 300 }}>
+              <Bloque titulo="TOTALES" datos={[
+                ['Subtotal', subtotal > 0 ? fmt(subtotal, 'COP') : ''],
+                ['Impuestos', impuestos > 0 ? fmt(impuestos, 'COP') : ''],
+                ['Total', totalDoc != null ? fmt(totalDoc, 'COP') : ''],
+              ]} />
+            </div>
+            <p style={{ fontSize: 9.5, color: P.sub, margin: '22px 0 0', lineHeight: 1.5 }}>
+              Resumen generado por Lincoin con los datos del documento registrado en Siigo. La representación gráfica oficial ante la DIAN se descarga en Siigo Nube{esDS ? ' (Compras → Documento soporte)' : ' (Ventas → Facturas)'}. Consultado el {new Date().toLocaleString('es-CO')}.
+            </p>
+          </Hoja>
+        );
+      })()}
     </div>
   );
 };
