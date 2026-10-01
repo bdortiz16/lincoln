@@ -132,7 +132,25 @@ export const AdminClientes: React.FC<{
 
   const [busqueda, setBusqueda] = useState('');
   const [busquedaViva, setBusquedaViva] = useState('');
-  const [chip, setChip] = useState<'todos' | 'empresas' | 'pendientes'>('todos');
+  const [chip, setChip] = useState<'todos' | 'empresas' | 'personas' | 'contadores' | 'pendientes'>('todos');
+  // Qué es cada cuenta: Empresa (rol business), Contador (rol contador, o con
+  // acceso aprobado o pedido a la contabilidad de alguna empresa) o Persona.
+  const idsContadores = useMemo(() => {
+    const set = new Set<string>();
+    for (const u of todos as any[]) {
+      if (u.role === 'contador') set.add(String(u.id));
+      if (u.role !== 'business') continue;
+      const raw = u.raw_data ?? u;
+      for (const k of ['contadores', 'contadoresSolicitudes']) {
+        const l = Array.isArray(raw?.[k]) ? raw[k] : Array.isArray(u?.[k]) ? u[k] : [];
+        for (const c of l) if (c?.id) set.add(String(c.id));
+      }
+    }
+    return set;
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, [todos.length, todos]);
+  const tipoDe = (u: any): 'empresa' | 'contador' | 'persona' => u?.role === 'business' ? 'empresa' : idsContadores.has(String(u?.id)) ? 'contador' : 'persona';
+  const ROT_TIPO = { empresa: 'EMPRESA', contador: 'CONTADOR', persona: 'PERSONA' } as const;
   const [selId, setSelId] = useState<string | null>(null);
   const [tab, setTab] = useState<'resumen' | 'movimientos' | 'kyc' | 'brasil' | 'limites' | 'auditoria'>('resumen');
   const [brasilAbierto, setBrasilAbierto] = useState(false);
@@ -207,7 +225,9 @@ export const AdminClientes: React.FC<{
   const lista = useMemo(() => {
     const q = busquedaViva.trim().toLowerCase();
     return todos.filter((u: any) => {
-      if (chip === 'empresas' && u.role !== 'business') return false;
+      if (chip === 'empresas' && tipoDe(u) !== 'empresa') return false;
+      if (chip === 'personas' && tipoDe(u) !== 'persona') return false;
+      if (chip === 'contadores' && tipoDe(u) !== 'contador') return false;
       if (chip === 'pendientes' && !pendiente(u)) return false;
       if (!q) return true;
       const raw = u.raw_data ?? {};
@@ -215,7 +235,7 @@ export const AdminClientes: React.FC<{
         .some(x => String(x ?? '').toLowerCase().includes(q));
     });
     /* eslint-disable-next-line react-hooks/exhaustive-deps */
-  }, [todos, busquedaViva, chip]);
+  }, [todos, busquedaViva, chip, idsContadores]);
 
   // El seleccionado se lee SIEMPRE de la lista viva: cualquier refresco se
   // refleja al instante en los saldos que se están mirando.
@@ -366,7 +386,9 @@ export const AdminClientes: React.FC<{
 
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 11 }}>
               <button onClick={() => setChip('todos')} style={chipStyle(chip === 'todos')}>Todos · {todos.length}</button>
-              <button onClick={() => setChip('empresas')} style={chipStyle(chip === 'empresas')}>Empresas · {todos.filter((u: any) => u.role === 'business').length}</button>
+              <button onClick={() => setChip('empresas')} style={chipStyle(chip === 'empresas')}>Empresas · {todos.filter((u: any) => tipoDe(u) === 'empresa').length}</button>
+              <button onClick={() => setChip('personas')} style={chipStyle(chip === 'personas')}>Personas · {todos.filter((u: any) => tipoDe(u) === 'persona').length}</button>
+              <button onClick={() => setChip('contadores')} style={chipStyle(chip === 'contadores')}>Contadores · {todos.filter((u: any) => tipoDe(u) === 'contador').length}</button>
               <button onClick={() => setChip('pendientes')} style={chipStyle(chip === 'pendientes')}>Pendientes · {nPendientes}</button>
             </div>
 
@@ -394,7 +416,9 @@ export const AdminClientes: React.FC<{
                     }}>{iniciales(u.name || u.email)}</div>
                     <div style={{ minWidth: 0, flex: 1 }}>
                       <p style={{ fontSize: 13.5, fontWeight: 700, color: C.text, margin: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{u.name || 'Sin nombre'}</p>
-                      <p style={{ fontSize: 11.5, color: C.sub, margin: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{u.email}</p>
+                      <p style={{ fontSize: 11.5, color: C.sub, margin: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        <span style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: '0.8px', color: tipoDe(u) === 'empresa' ? C.text : C.sub }}>{ROT_TIPO[tipoDe(u)]}</span> · {u.email}
+                      </p>
                     </div>
                     <div style={{ textAlign: 'right', flexShrink: 0 }}>
                       {bloqueado(u) ? <Pill tono="mal">SUSPENDIDA</Pill>
@@ -437,7 +461,7 @@ export const AdminClientes: React.FC<{
                       {bloqueado(sel) ? <Pill tono="mal">SUSPENDIDA</Pill>
                         : verificado(sel) ? <Pill tono="ok">KYC VERIFICADO</Pill>
                           : <Pill>KYC PENDIENTE</Pill>}
-                      <Pill>{sel.role === 'business' ? 'EMPRESA' : 'PERSONA'}</Pill>
+                      <Pill>{ROT_TIPO[tipoDe(sel)]}</Pill>
                     </div>
                     <p style={{ fontSize: 12.5, color: C.sub, margin: '4px 0 0' }}>
                       {sel.email} · Cliente desde {fecha(sel.createdAt ?? sel.created_at)} · Último acceso {fechaHora(sel.lastLogin ?? sel.raw_data?.lastLoginAt)}
