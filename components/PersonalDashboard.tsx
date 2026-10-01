@@ -3855,6 +3855,21 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     // actualiza el nombre/tipo, los comprobantes reflejan el nombre nuevo (antes
     // se congelaba el que quedó grabado en la transacción). Respaldo: el nombre
     // grabado en la transacción.
+    // Cargue liquidado desde USDT (admin · contabilidad del cargue): lo que
+    // el cliente mandó, la comisión de red, la tasa y el COP resultante. Solo
+    // lo que le corresponde al cliente: la tasa de venta y la utilidad de
+    // Lincoin NO se muestran.
+    const acctC: any = (tx as any).acct ?? rawData.acct ?? null;
+    const hasAcct = !!acctC && Number(acctC.usdtGross) > 0 && Number(acctC.clientRate) > 0;
+    const fmtU = (n: any) => Number(n || 0).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const acctBase = hasAcct ? (acctC.feeBearer === 'cliente' ? Number(acctC.usdtNet) : Number(acctC.usdtGross)) : 0;
+    const acctFilas: { label: string; value: string; green?: boolean }[] = hasAcct ? [
+      { label: 'USDT enviados', value: `${fmtU(acctC.usdtGross)} USDT` },
+      ...(Number(acctC.feeUsdt) > 0 ? [{ label: 'Comisión de red', value: acctC.feeBearer === 'cliente' ? `− ${fmtU(acctC.feeUsdt)} USDT` : `${fmtU(acctC.feeUsdt)} USDT · la asume Lincoin` }] : []),
+      { label: 'USDT liquidados', value: `${fmtU(acctBase)} USDT` },
+      { label: 'Tasa', value: `1 USDT = ${Number(acctC.clientRate).toLocaleString('es-CO', { maximumFractionDigits: 2 })} COP` },
+      { label: 'Valor en COP', value: `${formatMoney(Number(acctC.copToClient ?? Math.round(acctBase * Number(acctC.clientRate))), 'COP')} COP` },
+    ] : [];
     const emisorName: string = String(
       (currentUser as any)?.companyName ?? currentUser?.name ?? (tx as any).userName ?? rawData.userName ?? ''
     ).trim();
@@ -3875,6 +3890,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       ...(isDispersion && tx.bank ? [{ label: 'Método', value: tx.bank }] : []),
       { label: 'Estado', value: tx.status },
       { label: 'Fecha', value: timeStr ? `${dateStr} · ${timeStr}` : dateStr },
+      ...(hasAcct ? [{ label: 'Par de conversión', value: 'USDT → COP' }, ...acctFilas.map(f => ({ label: f.label, value: f.value })), { label: 'Acreditado', value: `${formatMoney(tx.amount, tx.currency)} COP` }] : []),
       ...(isCrypto && networkLabel ? [{ label: 'Red', value: networkLabel }] : []),
       ...(isCrypto && cryptoAddress ? [{ label: tx.type === 'otc_withdraw' ? 'Dirección destino' : 'Dirección de depósito', value: cryptoAddress, copyable: true, mono: true }] : []),
       ...(isCrypto && txHash ? [{ label: 'TxID', value: txHash, copyable: true, link: explorerUrl, mono: true }] : []),
@@ -4173,6 +4189,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     // Filas de detalle del rediseño
     const rows2: { label: string; value: string; mono?: boolean; copy?: string; green?: boolean }[] = [
       { label: 'Riel', value: railLabel },
+      ...acctFilas,
+      ...(hasAcct && !showCargueBreakdown ? [{ label: 'Acreditado a tu saldo', value: `${formatMoney(tx.amount, tx.currency)} COP`, green: true }] : []),
       ...(showCargueBreakdown ? [
         { label: 'Monto recibido', value: `${formatMoney(grossCop, 'COP')} COP` },
         { label: feePct > 0 ? `${feeConcept} (${feePct}%)` : feeConcept, value: `− ${formatMoney(feeCop, 'COP')} COP` },
