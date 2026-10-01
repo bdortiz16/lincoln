@@ -26,6 +26,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { llamarFuncion } from '../lib/edge';
+import { useDatabase } from '../context/DatabaseContext';
 import { descargarXlsx } from '../lib/xlsx';
 import { FacturacionConfig } from './FacturacionConfig';
 import { AccesoContadorModal } from './AccesoContadorModal';
@@ -112,7 +113,16 @@ const FacturaComisionModal: React.FC<{ asiento: Asiento; cfg: any; onCerrar: () 
   const [buscando, setBuscando] = useState(false);
   const [resultados, setResultados] = useState<any[] | null>(null);
   const [errorBusqueda, setErrorBusqueda] = useState<string | null>(null);
-  const [cliente, setCliente] = useState<{ identification: string; nombre: string; esEmpresa: boolean } | null>(null);
+  // Ordenantes de Configuración (modelo Comisión) para elegir con un clic. Si
+  // el envío ya trae el suyo (se eligió al enviar), viene puesto.
+  const { currentUser } = useDatabase();
+  const rawU: any = (currentUser as any)?.raw_data ?? currentUser ?? {};
+  const ordenantes: { id: string; nombre: string; docTipo: string; doc: string }[] = Array.isArray(rawU?.ordenantes) ? rawU.ordenantes.filter((o: any) => o && o.doc) : [];
+  const txAny: any = asiento.tx ?? {};
+  const ordTx: any = txAny?.recipient?.ordenante ?? txAny?.raw_data?.recipient?.ordenante ?? txAny?.ordenante ?? null;
+  const [cliente, setCliente] = useState<{ identification: string; nombre: string; esEmpresa: boolean } | null>(
+    ordTx?.doc ? { identification: String(ordTx.doc).replace(/\D/g, ''), nombre: String(ordTx.nombre ?? ''), esEmpresa: String(ordTx.docTipo ?? '') === 'NIT' } : null,
+  );
   const [manual, setManual] = useState<{ doc: string; nombre: string; esEmpresa: boolean }>({ doc: '', nombre: '', esEmpresa: true });
   const [emitiendo, setEmitiendo] = useState(false);
   const [resultado, setResultado] = useState<{ ok: boolean; texto: string } | null>(null);
@@ -167,6 +177,23 @@ const FacturaComisionModal: React.FC<{ asiento: Asiento; cfg: any; onCerrar: () 
         </div>
 
         <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '18px 0 6px' }}>A QUIÉN SE LE FACTURA</p>
+        {ordTx?.doc && cliente && String(ordTx.doc).replace(/\D/g, '') === cliente.identification && (
+          <p style={{ fontSize: 11.5, color: C.entra, margin: '0 0 6px' }}>Ordenante elegido al hacer el envío.</p>
+        )}
+        {!cliente && ordenantes.length > 0 && (
+          <div style={{ marginBottom: 10 }}>
+            <p style={{ fontSize: 11.5, color: C.sub, margin: '0 0 6px' }}>Tus ordenantes:</p>
+            <div className="flex flex-wrap" style={{ gap: 6 }}>
+              {ordenantes.map(o => (
+                <button key={o.id ?? o.doc} onClick={() => setCliente({ identification: String(o.doc).replace(/\D/g, ''), nombre: o.nombre, esEmpresa: o.docTipo === 'NIT' })}
+                  style={{ fontFamily: FONT, textAlign: 'left', fontSize: 12.5, color: C.text, background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.borde}`, borderRadius: 9, padding: '7px 11px', cursor: 'pointer' }}>
+                  <b>{o.nombre}</b> <span style={{ color: C.sub }}>· {o.docTipo} {o.doc}</span>
+                </button>
+              ))}
+            </div>
+            <p style={{ fontSize: 11.5, color: C.sub, margin: '10px 0 0' }}>O busca otro cliente:</p>
+          </div>
+        )}
         {cliente ? (
           <div className="flex items-center justify-between" style={{ gap: 10, padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(74,222,128,0.35)', background: 'rgba(74,222,128,0.06)' }}>
             <span style={{ fontSize: 13, color: C.text }}><b>{cliente.nombre || cliente.identification}</b> · {cliente.esEmpresa ? 'NIT' : 'CC'} {cliente.identification}</span>
@@ -202,7 +229,7 @@ const FacturaComisionModal: React.FC<{ asiento: Asiento; cfg: any; onCerrar: () 
           </>
         )}
 
-        <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '18px 0 6px' }}>COMISIÓN (% SOBRE EL DEPÓSITO, IVA INCLUIDO)</p>
+        <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '18px 0 6px' }}>COMISIÓN (% SOBRE {asiento.dir === 'in' ? 'EL DEPÓSITO' : 'EL MOVIMIENTO'}, IVA INCLUIDO)</p>
         <div className="flex items-center" style={{ gap: 10 }}>
           <input type="number" min={0} max={100} step={0.01} value={pct} onChange={e => setPct(e.target.value)} placeholder="0,6" inputMode="decimal" style={{ ...campo, width: 120 }} />
           <span style={{ fontSize: 12, color: C.sub }}>{cfg?.utilidad_pct ? `Configurado: ${cfg.utilidad_pct} %` : 'Ponelo en Configuración para no escribirlo cada vez'}</span>
