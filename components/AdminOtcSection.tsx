@@ -3,6 +3,7 @@ import { ArrowLeftRight, Search, Power, Pencil, Check, X, ArrowDownToLine, Arrow
 import { useDatabase } from '../context/DatabaseContext';
 import { callFinity, extractRate } from './FinitySection';
 import { llamarFuncion } from '../lib/edge';
+import { descargarXlsx } from '../lib/xlsx';
 
 // ─────────────────────────────────────────────
 // AdminOtcSection — Panel "Contabilidad OTC" del admin de Empresas.
@@ -301,6 +302,63 @@ export const AdminOtcSection: React.FC = () => {
         });
         return Array.from(map.values()).sort((a, b) => achBalanceOf(b.user) - achBalanceOf(a.user));
     }, [otcTxs, businesses]);
+
+    // ── Por cliente y por mes ────────────────────────────────────────
+    // Cuánto convirtió cada cliente en cada mes: USDT recibido, COP
+    // acreditado, operaciones y tasa promedio (COP / USDT). Lo rechazado no
+    // cuenta. Los meses son los que tienen movimientos, el más reciente
+    // primero.
+    const claveMes = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const rotMes = (k: string) => { const [y, m] = k.split('-').map(Number); return new Date(y, m - 1, 1).toLocaleDateString('es-CO', { month: 'long', year: 'numeric' }); };
+    const porMes = useMemo(() => {
+        const m = new Map<string, Map<string, { usdt: number; cop: number; count: number }>>();
+        otcTxs.forEach((t: any) => {
+            if (t.status === 'Rechazado' || !t.createdAt) return;
+            const k = claveMes(new Date(t.createdAt));
+            if (!m.has(k)) m.set(k, new Map());
+            const porCli = m.get(k)!;
+            const e = porCli.get(t.userId) ?? { usdt: 0, cop: 0, count: 0 };
+            e.usdt += Number(t.usdtOut ?? t.fromAmount ?? 0);
+            e.cop += Number(t.amount ?? 0);
+            e.count++;
+            porCli.set(t.userId, e);
+        });
+        return m;
+    }, [otcTxs]);
+    const mesesConDatos = useMemo(() => Array.from(porMes.keys()).sort().reverse(), [porMes]);
+    const [mesSel, setMesSel] = useState<string>('');
+    const mesActivo = mesSel && porMes.has(mesSel) ? mesSel : (mesesConDatos[0] ?? claveMes(new Date()));
+    const filasMes = useMemo(() => {
+        const porCli = porMes.get(mesActivo) ?? new Map();
+        return Array.from(porCli.entries())
+            .map(([uid, v]) => ({ uid, user: usersById.get(uid), ...v }))
+            .sort((a, b) => b.cop - a.cop);
+    }, [porMes, mesActivo, usersById]);
+    const totalMes = filasMes.reduce((a, f) => ({ usdt: a.usdt + f.usdt, cop: a.cop + f.cop, count: a.count + f.count }), { usdt: 0, cop: 0, count: 0 });
+    const nombreCli = (uid: string) => { const u: any = usersById.get(uid); return u?.name || u?.company_name || u?.email || uid; };
+    const excelPorMes = () => {
+        const meses = [...mesesConDatos].reverse();
+        const clientes = Array.from(new Set<string>(otcTxs.map((t: any) => String(t.userId)))).filter(uid => meses.some(k => porMes.get(k)?.has(uid)));
+        const filas: (string | number | null)[][] = [['Mes', 'Cliente', 'Correo', 'Operaciones', 'USDT recibido', 'COP acreditado', 'Tasa promedio (COP/USDT)']];
+        for (const k of meses) {
+            for (const uid of clientes) {
+                const v = porMes.get(k)?.get(uid);
+                if (!v) continue;
+                const u: any = usersById.get(uid);
+                filas.push([rotMes(k), nombreCli(uid), u?.email ?? '', v.count, Math.round(v.usdt * 100) / 100, Math.round(v.cop), v.usdt > 0 ? Math.round((v.cop / v.usdt) * 100) / 100 : null]);
+            }
+        }
+        // Matriz: un cliente por fila, COP de cada mes en columnas.
+        const matriz: (string | number | null)[][] = [['Cliente', ...meses.map(rotMes), 'Total']];
+        for (const uid of clientes) {
+            const vals = meses.map(k => Math.round(porMes.get(k)?.get(uid)?.cop ?? 0));
+            matriz.push([nombreCli(uid), ...vals, vals.reduce((a, b) => a + b, 0)]);
+        }
+        descargarXlsx(`lincoin-otc-por-cliente-y-mes-${new Date().toISOString().slice(0, 10)}.xlsx`, [
+            { nombre: 'Por cliente y mes', filas, anchos: [18, 34, 30, 12, 16, 18, 22] },
+            { nombre: 'COP por mes', filas: matriz, anchos: [34, ...meses.map(() => 18), 18] },
+        ]);
+    };
 
     const dailyData = useMemo(() => {
         const now = new Date();
@@ -898,6 +956,57 @@ export const AdminOtcSection: React.FC = () => {
                             ))}
                             {perUserReport.length === 0 && (
                                 <tr><td colSpan={4} className="px-4 py-10 text-center text-slate-400 text-sm">Sin clientes registrados todavía.</td></tr>
+                            )}
+                        </tbody>
+                    </table>
+                </div>
+
+
+                {/* Por cliente y por mes */}
+                <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+                    <div className="px-4 py-3 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-xs font-bold text-slate-500 uppercase tracking-wide">Por cliente · {rotMes(mesActivo)}</p>
+                        <div className="flex flex-wrap items-center gap-2">
+                            <select value={mesActivo} onChange={e => setMesSel(e.target.value)} className="text-xs font-bold text-slate-700 border border-slate-200 rounded-lg px-2.5 py-1.5 bg-white">
+                                {(mesesConDatos.length ? mesesConDatos : [mesActivo]).map(k => <option key={k} value={k}>{rotMes(k)}</option>)}
+                            </select>
+                            <button onClick={excelPorMes} disabled={!mesesConDatos.length} className="text-xs font-bold text-slate-700 border border-slate-200 rounded-lg px-3 py-1.5 hover:bg-slate-50 disabled:opacity-40">Descargar Excel (todos los meses)</button>
+                        </div>
+                    </div>
+                    <table className="w-full text-sm">
+                        <thead className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wider">
+                            <tr>
+                                <th className="text-left px-4 py-3">Empresa</th>
+                                <th className="text-right px-4 py-3">Operaciones</th>
+                                <th className="text-right px-4 py-3">USDT recibido</th>
+                                <th className="text-right px-4 py-3">COP acreditado</th>
+                                <th className="text-right px-4 py-3">Tasa promedio</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {filasMes.map(f => (
+                                <tr key={f.uid} className="border-t border-slate-100">
+                                    <td className="px-4 py-3">
+                                        <p className="font-bold text-slate-800">{nombreCli(f.uid)}</p>
+                                        <p className="text-xs text-slate-400">{(f.user as any)?.email ?? ''}</p>
+                                    </td>
+                                    <td className="px-4 py-3 text-right tabular-nums text-slate-600">{f.count}</td>
+                                    <td className="px-4 py-3 text-right tabular-nums text-slate-700">{fmtUsdt(f.usdt)}</td>
+                                    <td className="px-4 py-3 text-right tabular-nums font-bold text-slate-800">${fmtCop(f.cop)}</td>
+                                    <td className="px-4 py-3 text-right tabular-nums text-slate-600">{f.usdt > 0 ? `$${(f.cop / f.usdt).toLocaleString('es-CO', { maximumFractionDigits: 2 })}` : '—'}</td>
+                                </tr>
+                            ))}
+                            {filasMes.length > 0 && (
+                                <tr className="border-t-2 border-slate-200 bg-slate-50">
+                                    <td className="px-4 py-3 font-black text-slate-800">Total del mes</td>
+                                    <td className="px-4 py-3 text-right tabular-nums font-bold text-slate-800">{totalMes.count}</td>
+                                    <td className="px-4 py-3 text-right tabular-nums font-bold text-slate-800">{fmtUsdt(totalMes.usdt)}</td>
+                                    <td className="px-4 py-3 text-right tabular-nums font-black text-slate-800">${fmtCop(totalMes.cop)}</td>
+                                    <td className="px-4 py-3 text-right tabular-nums text-slate-600">{totalMes.usdt > 0 ? `$${(totalMes.cop / totalMes.usdt).toLocaleString('es-CO', { maximumFractionDigits: 2 })}` : '—'}</td>
+                                </tr>
+                            )}
+                            {filasMes.length === 0 && (
+                                <tr><td colSpan={5} className="px-4 py-10 text-center text-slate-400 text-sm">Sin conversiones OTC en {rotMes(mesActivo)}.</td></tr>
                             )}
                         </tbody>
                     </table>
