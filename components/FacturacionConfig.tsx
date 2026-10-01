@@ -41,7 +41,7 @@ const C = {
 type Cfg = {
   existe: boolean; activo: boolean; username?: string | null; tieneAccessKey: boolean; partner_id?: string | null;
   access_key_pista?: { largo: number; inicio: string; fin: string } | null;
-  modelo?: 'rotacion' | 'psp' | null; utilidad_pct?: number | null;
+  modelo?: 'rotacion' | 'psp' | 'comision' | null; utilidad_pct?: number | null;
   item_terceros?: string | null; item_comision?: string | null; iva_tax_id?: number | null;
   desc_terceros?: string | null; desc_comision?: string | null;
   document_id?: number | null; seller_id?: number | null; payment_id?: number | null;
@@ -101,12 +101,12 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
     const c: Cfg = r.config;
     setCfg(c); setDisparadores(r.disparadores ?? {});
     setCredAbiertas(!(c.ultimo_test_ok && c.tieneAccessKey));
-    const modelo = c.modelo === 'rotacion' || c.modelo === 'psp' ? c.modelo : '';
+    const modelo = c.modelo === 'rotacion' || c.modelo === 'psp' || c.modelo === 'comision' ? c.modelo : '';
     setModeloAbierto(!modelo);
     const docs = c.documentos && typeof c.documentos === 'object' ? c.documentos : {};
     const operaciones = Object.keys(docs).length
       ? Object.keys(docs)
-      : modelo === 'psp' ? ['dispersion'] : ['load', 'pay_received'];
+      : modelo === 'psp' ? ['dispersion'] : modelo === 'comision' ? [...SALIDAS] : ['load', 'pay_received'];
     // El IVA por defecto: el del catálogo que diga 19 %, si hay.
     const iva19 = (c.catalogos?.impuestos ?? []).find((t: any) => Number(t.percentage) === 19);
     // Por motivo del envío. Si nunca se configuró, en PSP arranca con "pago
@@ -136,7 +136,13 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
   }, [onCerrar]);
 
   const set = (k: string, v: any) => setForm((f: any) => ({ ...f, [k]: v }));
-  const elegirModelo = (m: 'rotacion' | 'psp') => setForm((f: any) => {
+  const elegirModelo = (m: 'rotacion' | 'psp' | 'comision') => setForm((f: any) => {
+    // Comisión: una factura por la comisión de cada movimiento marcado. Los
+    // motivos de envío no aplican (no sale documento por el monto).
+    if (m === 'comision') {
+      const actuales = (f.operaciones ?? []).filter((k: string) => SALIDAS.includes(k) || ENTRADAS.includes(k));
+      return { ...f, modelo: m, operaciones: actuales.length ? actuales : [...SALIDAS], motivos: {} };
+    }
     // En PSP el documento soporte lo decide el MOTIVO de cada envío, así
     // que todas las salidas quedan en juego; en rotación, las entradas.
     if (m === 'psp') {
@@ -248,6 +254,12 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
     !modelo ? 'el modelo de negocio' : '',
     modelo === 'rotacion' && !ops.length ? 'qué entradas facturan' : '',
     modelo === 'psp' && !motivosDoc.length ? 'al menos un motivo de envío con documento soporte o factura' : '',
+    modelo === 'comision' && !ops.length ? 'qué movimientos cobran comisión' : '',
+    modelo === 'comision' && !(utilidad > 0) ? 'el porcentaje de comisión' : '',
+    modelo === 'comision' && !form.item_comision ? 'el ítem de comisión' : '',
+    modelo === 'comision' && prodComision && prodComision.active === false ? 'un ítem de comisión activo en Siigo' : '',
+    modelo === 'comision' && !iva ? 'el IVA de la comisión (el ítem no trae impuesto)' : '',
+    modelo === 'comision' && !(form.document_id && form.seller_id && form.payment_id) ? 'el comprobante, vendedor y forma de pago de la factura' : '',
     motivosFV.length && !(form.document_id && form.seller_id && form.payment_id) ? 'el comprobante, vendedor y forma de pago de la factura de venta' : '',
     modelo === 'rotacion' && !(utilidad > 0) ? 'el porcentaje de utilidad' : '',
     modelo === 'rotacion' && !form.item_terceros ? 'el ítem de servicio para terceros' : '',
@@ -378,7 +390,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
     </div>
   );
 
-  const tarjetaModelo = (m: 'rotacion' | 'psp', titulo: string, texto: string, ejemploTxt: string) => {
+  const tarjetaModelo = (m: 'rotacion' | 'psp' | 'comision', titulo: string, texto: string, ejemploTxt: string) => {
     const on = modelo === m;
     return (
       <button onClick={() => elegirModelo(m)} style={{ textAlign: 'left', padding: '13px 14px', borderRadius: 12, cursor: 'pointer', fontFamily: FONT, background: on ? 'rgba(74,222,128,0.06)' : 'transparent', border: `1px solid ${on ? 'rgba(74,222,128,0.4)' : C.borde}` }}>
@@ -405,7 +417,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
           <div style={{ minWidth: 0, flex: 1 }}>
             <p className="flex items-center" style={{ gap: 8, fontSize: 13.5, fontWeight: 800, color: C.text, margin: 0 }}>
               <span style={{ width: 7, height: 7, borderRadius: '50%', background: C.verde }} />
-              {modelo === 'rotacion' ? 'Rotación de capital' : 'PSP / pasarela'}
+              {modelo === 'rotacion' ? 'Rotación de capital' : modelo === 'comision' ? 'Comisión' : 'PSP / pasarela'}
             </p>
             <div style={{ marginTop: 6 }}>
               {modelo === 'rotacion' && (
@@ -422,6 +434,13 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                 <p style={lineaResumen}>Envíos con factura de venta: {motivosFV.map(m => `${m.l} → ${nombreProducto(String(motivos[m.v]?.item ?? '')) || '—'}`).join(' · ')}</p>
               )}
               {modelo === 'psp' && !motivosDoc.length && <p style={{ ...lineaResumen, color: C.ambar }}>Ningún motivo de envío emite documento todavía.</p>}
+              {modelo === 'comision' && (
+                <>
+                  <p style={lineaResumen}>Comisión <b style={{ color: C.text }}>{utilidad || 0} %</b> IVA incluido por cada: {ops.map(k => disparadores[k] ?? k).join(', ') || '—'}</p>
+                  <p style={lineaResumen}>Ítem <b style={{ color: C.text }}>{nombreProducto(form.item_comision) || '—'}</b>{iva ? ` (${iva.name || 'IVA'} ${iva.percentage} %)` : ''} · factura a la contraparte del movimiento</p>
+                  <p style={lineaResumen}>Comprobante FV: {nombreDoc(cat?.documentos, form.document_id)} · vendedor {nombreVendedor(form.seller_id)} · pago {nombrePago(cat?.pagos, form.payment_id)}</p>
+                </>
+              )}
               {modelo === 'psp' && (
                 <p style={lineaResumen}>Depósitos (a mano): comisión <b style={{ color: C.text }}>{utilidad || '—'} %</b> IVA incluido · ítem <b style={{ color: C.text }}>{nombreProducto(form.item_comision) || '—'}</b>{iva ? ` (${iva.name || 'IVA'} ${iva.percentage} %)` : ''} · comprobante FV: {nombreDoc(cat?.documentos, form.document_id)}</p>
               )}
@@ -548,12 +567,15 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                   {tarjetaModelo('psp', 'PSP / pasarela',
                     'Pagás a terceros por cuenta de un cliente. Según el motivo de cada envío, se emite un documento soporte o una factura de venta al beneficiario por el monto total, con el ítem de Siigo que ligues a ese motivo. Por cada depósito que recibís, facturás a mano tu comisión (IVA incluido) al cliente que te mandó la plata: elegís el cliente y se emite.',
                     'Envío de 15.000.000: documento soporte al beneficiario por 15.000.000. Depósito de 10.000.000 con 0,6 %: factura de 60.000 (base 50.420,17 + IVA 9.579,83).')}
+                  {tarjetaModelo('comision', 'Comisión',
+                    'Cobrás una comisión por cada movimiento. Al completarse, se emite una factura de venta solo por tu comisión, con el IVA INCLUIDO en ella: la base se calcula para que base + IVA dé exacto la comisión. Va a la contraparte del movimiento.',
+                    'Pago de 2.000.000 con 1 %: comisión 20.000 = base 16.806,72 + IVA 19 % 3.193,28. No 20.000 + IVA.')}
                 </div>
               </Seccion>
 
               {/* 3. Parámetros del modelo */}
               {modelo && (
-                <Seccion n="3" t={modelo === 'rotacion' ? 'Cómo se arma la factura' : 'Cómo se arma el documento soporte'}>
+                <Seccion n="3" t={modelo === 'rotacion' ? 'Cómo se arma la factura' : modelo === 'comision' ? 'Cómo se arma la factura de comisión' : 'Cómo se arma el documento soporte'}>
                   {!cat && <p style={{ fontSize: 12.5, color: C.ambar, margin: '0 0 12px' }}>Conectá la cuenta de Siigo primero: los ítems, impuestos y comprobantes se eligen de lo que devuelva tu Siigo.</p>}
                   <p style={{ fontSize: 12, color: C.sub, margin: '0 0 12px', lineHeight: 1.55 }}>
                     Los ítems son productos o servicios que creás en tu Siigo (Inventario → Productos). Acá solo se elige cuál es cuál.
@@ -656,23 +678,42 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
 
                   {/* Envíos, por motivo. En PSP es lo central; en rotación,
                       opcional: un envío puede necesitar documento soporte. */}
+                  {modelo !== 'comision' && (<>
                   <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '16px 0 4px' }}>{modelo === 'psp' ? 'ENVÍOS: QUÉ SALE SEGÚN EL MOTIVO' : 'ENVÍOS: DOCUMENTO SOPORTE SEGÚN EL MOTIVO (OPCIONAL)'}</p>
                   <p style={{ fontSize: 12, color: C.sub, margin: '0 0 10px', lineHeight: 1.55 }}>
                     Al confirmar cada envío se pregunta el motivo, y se le manda al banco con la orden. Acá decidís, motivo por motivo, si sale documento soporte o factura de venta al beneficiario por el monto total, y con qué ítem de tu Siigo.
                   </p>
                   {tablaMotivos}
+                  </>)}
+
+                  {/* Comisión: qué movimientos la cobran. */}
+                  {modelo === 'comision' && (
+                    <>
+                      <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '16px 0 8px' }}>QUÉ MOVIMIENTOS COBRAN COMISIÓN</p>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 8 }}>
+                        {[...SALIDAS, ...ENTRADAS].filter(k => k in disparadores).map(k => (
+                          <label key={k} className="flex items-center" style={{ gap: 9, cursor: 'pointer' }}>
+                            <input type="checkbox" checked={ops.includes(k)} onChange={e => toggleOp(k, e.target.checked)} style={{ width: 15, height: 15, accentColor: C.verde }} />
+                            <span style={{ fontSize: 13, color: C.text }}>{disparadores[k]}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </>
+                  )}
 
                   {/* PSP: la factura de comisión por cada depósito. Es a mano
                       (hay que elegir el cliente), pero el porcentaje, el ítem
                       y el comprobante se dejan listos acá. */}
-                  {modelo === 'psp' && (
+                  {(modelo === 'psp' || modelo === 'comision') && (
                     <>
-                      <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '18px 0 4px' }}>DEPÓSITOS: FACTURA DE COMISIÓN (A MANO)</p>
+                      <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '18px 0 4px' }}>{modelo === 'comision' ? 'FACTURA DE COMISIÓN POR MOVIMIENTO (AUTOMÁTICA)' : 'DEPÓSITOS: FACTURA DE COMISIÓN (A MANO)'}</p>
                       <p style={{ fontSize: 12, color: C.sub, margin: '0 0 10px', lineHeight: 1.55 }}>
-                        Un depósito no se factura por el monto: se factura tu comisión al cliente que te mandó la plata, y ese cliente se elige al emitir (Contabilidad → «Emitir factura» en el depósito). El porcentaje es <b style={{ color: C.text }}>con IVA incluido</b>: con 10.000.000 y 0,6 % la factura es de 60.000 en total, no 60.000 + IVA.
+                        {modelo === 'comision'
+                          ? <>Cada movimiento completado de los tipos marcados emite una factura de venta solo por tu comisión, a la contraparte (el beneficiario del envío o quien mandó el depósito). El porcentaje es <b style={{ color: C.text }}>con IVA incluido</b>: un pago de 2.000.000 con 1 % da una factura de 20.000 en total (base 16.806,72 + IVA 3.193,28), no 20.000 + IVA. Si una factura debe ir a otro cliente o con otro porcentaje, se emite a mano desde el movimiento.</>
+                          : <>Un depósito no se factura por el monto: se factura tu comisión al cliente que te mandó la plata, y ese cliente se elige al emitir (Contabilidad → «Emitir factura» en el depósito). El porcentaje es <b style={{ color: C.text }}>con IVA incluido</b>: con 10.000.000 y 0,6 % la factura es de 60.000 en total, no 60.000 + IVA.</>}
                       </p>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
-                        <Campo rot="COMISIÓN SOBRE DEPÓSITOS (%)" ayuda="Porcentaje sobre el depósito, IVA incluido. Se puede cambiar al emitir.">
+                        <Campo rot={modelo === 'comision' ? 'COMISIÓN POR MOVIMIENTO (%)' : 'COMISIÓN SOBRE DEPÓSITOS (%)'} ayuda={modelo === 'comision' ? 'Porcentaje sobre el monto de cada movimiento, IVA incluido: 1, 0,5, 0,1…' : 'Porcentaje sobre el depósito, IVA incluido. Se puede cambiar al emitir.'}>
                           <input type="number" min={0} max={100} step={0.01} value={form.utilidad_pct ?? ''} onChange={e => set('utilidad_pct', e.target.value)} placeholder="0,6" inputMode="decimal" style={entrada} />
                         </Campo>
                         <div>
@@ -692,10 +733,10 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                       {utilidad > 0 && (
                         <div style={{ marginTop: 12, padding: '10px 14px', borderRadius: 12, border: `1px solid ${C.bordeSuave}`, background: C.elevado }}>
                           {(() => {
-                            const M = 10_000_000; const com = r2(M * utilidad / 100); const b = r2(com / (1 + tarifa)); const iv = r2(b * tarifa);
+                            const M = modelo === 'comision' ? 2_000_000 : 10_000_000; const com = r2(M * utilidad / 100); const b = r2(com / (1 + tarifa)); const iv = r2(b * tarifa);
                             return (
                               <p style={{ fontSize: 12.5, color: C.text, margin: 0, lineHeight: 1.6 }}>
-                                Depósito de {fmtCop(M)} · comisión {utilidad} % = <b>{fmtCop(com)}</b>: {nombreProducto(form.item_comision) || 'comisión'} {fmtCop(b)} + {iva ? `${iva.name || 'IVA'} ${iva.percentage} %` : 'IVA'} {fmtCop(iv)} = <b style={{ color: r2(b + iv) === com ? C.verde : C.ambar }}>{fmtCop(r2(b + iv))}</b>.
+                                {modelo === 'comision' ? 'Movimiento' : 'Depósito'} de {fmtCop(M)} · comisión {utilidad} % = <b>{fmtCop(com)}</b>: {nombreProducto(form.item_comision) || 'comisión'} {fmtCop(b)} + {iva ? `${iva.name || 'IVA'} ${iva.percentage} %` : 'IVA'} {fmtCop(iv)} = <b style={{ color: r2(b + iv) === com ? C.verde : C.ambar }}>{fmtCop(r2(b + iv))}</b>.
                                 {!iva && <span style={{ color: C.ambar }}> Sin IVA en el ítem: la factura saldría sin impuesto.</span>}
                               </p>
                             );
@@ -706,9 +747,9 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                   )}
 
                   {/* Comprobantes de Siigo */}
-                  {(modelo === 'rotacion' || modelo === 'psp') && (
+                  {(modelo === 'rotacion' || modelo === 'psp' || modelo === 'comision') && (
                     <>
-                      <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '16px 0 8px' }}>{modelo === 'psp' ? 'COMPROBANTE DE LA FACTURA DE COMISIÓN EN TU SIIGO' : 'COMPROBANTE DE LA FACTURA EN TU SIIGO'}</p>
+                      <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '16px 0 8px' }}>{modelo === 'rotacion' ? 'COMPROBANTE DE LA FACTURA EN TU SIIGO' : 'COMPROBANTE DE LA FACTURA DE COMISIÓN EN TU SIIGO'}</p>
                       {!cat ? (
                         <p style={{ fontSize: 12.5, color: C.tenue, margin: 0 }}>Se eligen después de conectar.</p>
                       ) : (

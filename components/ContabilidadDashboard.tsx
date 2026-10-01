@@ -444,7 +444,10 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
       Emitir factura
     </button>
   );
-  const botonSegunTipo = (a: Asiento, txId: string) => (esPsp && a.dir === 'in' && ENTRA.has(String(a.tx?.type)) ? botonFacturaComision(a) : botonEmitir(txId));
+  // Modelo Comisión: cualquier movimiento se factura a mano con el mismo
+  // modal (elegir cliente y porcentaje), por si la automática no aplicaba.
+  const esComision = String(cfgFact?.modelo ?? '') === 'comision';
+  const botonSegunTipo = (a: Asiento, txId: string) => ((esComision || (esPsp && a.dir === 'in' && ENTRA.has(String(a.tx?.type)))) ? botonFacturaComision(a) : botonEmitir(txId));
 
   // Todos los asientos de la cuenta.
   const asientos = useMemo(() => (transactions ?? []).filter(t => t.userId === userId).flatMap(asientosDe), [transactions, userId]);

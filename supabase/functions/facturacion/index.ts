@@ -717,6 +717,23 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
   // Sin regla (emisión forzada a mano): por la dirección de la plata. Una
   // salida es documento soporte; una entrada, factura de venta.
   const esSalida = ['dispersion', 'send', 'pay_sent', 'otc_withdraw'].includes(tipo)
+  // MODELO COMISIÓN: por cada movimiento marcado, una factura de venta solo
+  // por la comisión (% de Configuración), IVA INCLUIDO (base + IVA = la
+  // comisión), a la contraparte del movimiento. La arma emitirComision, que
+  // lee el IVA del ítem en vivo y reintenta con la tarifa que aplica Siigo.
+  if (String(cfg.modelo ?? '') === 'comision') {
+    if (!opts.forzar && !regla) {
+      await marcar({ factura_estado: 'omitida', factura_error: `El tipo "${DISPARADORES[tipo] ?? tipo}" no cobra comisión (Configuración → qué movimientos cobran comisión).` })
+      return { ok: true, estado: 'omitida' }
+    }
+    if ((comp as any).factura_estado === 'emitida' && (comp as any).factura_numero) return { ok: true, estado: 'emitida', numero: (comp as any).factura_numero }
+    const cpC = contraparteDe(comp, cfg)
+    if (cpC.esDefault) {
+      const e = 'El movimiento no trae el documento de la contraparte, y la factura de comisión va a su nombre. Emitila a mano eligiendo el cliente.'
+      await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: 'FV' }); return { ok: false, error: e }
+    }
+    return emitirComision(userId, String((comp as any).transaction_id), { identification: cpC.identification, nombre: cpC.nombre, esEmpresa: cpC.esEmpresa, auto: !opts.forzar })
+  }
   // PSP: un depósito no se factura por el monto. Se factura la COMISIÓN, a
   // mano, porque hay que elegir a qué cliente (el que mandó la plata) va la
   // factura. Eso lo hace «Emitir factura» en Contabilidad (emitir_comision).
@@ -914,7 +931,7 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
 // 60.000 + IVA. Siigo calcula el IVA sobre la base que se le manda, con la
 // tarifa del ítem, así que el total puede diferir del objetivo en un
 // centavo de redondeo; el pago va por lo que Siigo va a calcular.
-async function emitirComision(userId: string, txId: string, d: { identification: string; nombre?: string; esEmpresa?: boolean; pct?: number }): Promise<any> {
+async function emitirComision(userId: string, txId: string, d: { identification: string; nombre?: string; esEmpresa?: boolean; pct?: number; auto?: boolean }): Promise<any> {
   const cfg = await leerConfig(userId)
   if (!cfg) return { ok: false, error: 'Primero configurá Siigo en Contabilidad → Configuración.' }
   const { data: tx } = await db.from('transactions').select('id, user_id, type, amount, currency, status, raw_data').eq('id', txId).maybeSingle()
@@ -1007,6 +1024,12 @@ async function emitirComision(userId: string, txId: string, d: { identification:
       payments: [{ id: Number(cfg.payment_id), value: total, due_date: hoy }],
     }
     return { base, ivaV, total, cuerpo }
+  }
+  // Automática (modelo Comisión): la pausa se revisa de nuevo justo antes de
+  // mandar la factura a Siigo.
+  if (d.auto) {
+    const vigente = await leerConfig(userId)
+    if (!vigente?.activo) { await marcar({ factura_estado: 'omitida', factura_error: 'Facturación pausada antes de enviar la factura a Siigo.' }); return { ok: true, estado: 'omitida' } }
   }
   const intentos: any[] = []
   let tarifa = tarifaCatalogo
@@ -1148,7 +1171,7 @@ Deno.serve(async (req) => {
       if (Array.isArray(c.disparadores)) fila.disparadores = c.disparadores.filter((d: any) => typeof d === 'string' && d in DISPARADORES)
       // El modelo de negocio y sus parámetros.
       if ('modelo' in c) {
-        fila.modelo = c.modelo === 'rotacion' || c.modelo === 'psp' ? c.modelo : null
+        fila.modelo = c.modelo === 'rotacion' || c.modelo === 'psp' || c.modelo === 'comision' ? c.modelo : null
         // Quitar el modelo con la facturación activa dejaría una activación
         // sin reglas. Primero se pausa.
         if (!fila.modelo && fila.activo !== false) {
@@ -1161,9 +1184,9 @@ Deno.serve(async (req) => {
       if ('iva_tax_id' in c) fila.iva_tax_id = c.iva_tax_id == null || c.iva_tax_id === '' ? null : Number(c.iva_tax_id)
       // Con modelo, qué documento sale se deriva: rotación → factura de venta
       // por cada entrada marcada; PSP → documento soporte por cada salida.
-      if (Array.isArray(c.operaciones) && (fila.modelo === 'rotacion' || fila.modelo === 'psp')) {
+      if (Array.isArray(c.operaciones) && (fila.modelo === 'rotacion' || fila.modelo === 'psp' || fila.modelo === 'comision')) {
         const d: Record<string, string> = {}
-        for (const k of c.operaciones) if (typeof k === 'string' && k in DISPARADORES) d[k] = fila.modelo === 'rotacion' ? 'FV' : 'DS'
+        for (const k of c.operaciones) if (typeof k === 'string' && k in DISPARADORES) d[k] = fila.modelo === 'psp' ? 'DS' : 'FV'
         fila.documentos = d
         fila.disparadores = Object.keys(d)
       }
@@ -1241,6 +1264,10 @@ Deno.serve(async (req) => {
           if (!(Number(actual.utilidad_pct) > 0)) faltan.push('el porcentaje de utilidad')
           if (!actual.item_terceros) faltan.push('el ítem de servicio para terceros')
           if (!actual.item_comision) faltan.push('el ítem de comisión')
+        } else if (modelo === 'comision') {
+          if (!(Number(actual.utilidad_pct) > 0)) faltan.push('el porcentaje de comisión')
+          if (!actual.item_comision) faltan.push('el ítem de comisión')
+          if (!Object.keys(reglas).length) faltan.push('qué movimientos cobran comisión')
         } else if (modelo === 'psp') {
           // En PSP el ítem va por motivo: basta con que un motivo emita
           // documento soporte con su ítem (ya validado arriba).
