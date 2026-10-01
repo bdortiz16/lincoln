@@ -120,6 +120,25 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
     const ok = await actualizarListaRaw(currentUser.id, 'ordenantes', l => [...l.filter((x: any) => x?.doc !== doc), nuevo], ordenantes);
     setNuevoOrd(ok ? { nombre: '', docTipo: 'NIT', doc: '', correo: '', error: null, guardando: false } : { ...nuevoOrd, guardando: false, error: 'No se pudo guardar. Vuelve a intentarlo.' });
   };
+  // Buscar el ordenante entre los clientes de Siigo (por nombre o documento).
+  const [busqOrd, setBusqOrd] = useState<{ q: string; cargando: boolean; resultados: any[] | null; error: string | null }>({ q: '', cargando: false, resultados: null, error: null });
+  const buscarEnSiigo = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    const q = busqOrd.q.trim();
+    if (q.length < 2 || busqOrd.cargando) return;
+    setBusqOrd(b => ({ ...b, cargando: true, error: null }));
+    const r = await llamarFuncion('facturacion', { action: 'buscar_clientes', q }, 60000).catch((err: any) => ({ ok: false, error: String(err?.message ?? err) }));
+    setBusqOrd(b => ({ ...b, cargando: false, resultados: r?.ok ? (r.clientes ?? []) : null, error: r?.ok ? null : String(r?.error ?? 'No se pudo buscar en Siigo.') }));
+  };
+  const agregarDesdeSiigo = async (c: any) => {
+    if (!currentUser?.id) return;
+    const doc = String(c.identification ?? '').replace(/\D/g, '');
+    if (!doc) return;
+    if (ordenantes.some(o => o.doc === doc || o.doc.slice(0, 9) === doc)) { setBusqOrd(b => ({ ...b, error: `${c.nombre} ya está en la lista.` })); return; }
+    const nuevo: Ordenante = { id: `ord_${Math.random().toString(36).slice(2, 10)}`, nombre: String(c.comercial || c.nombre || doc).trim(), docTipo: c.esEmpresa ? 'NIT' : 'CC', doc };
+    const ok = await actualizarListaRaw(currentUser.id, 'ordenantes', l => [...l.filter((x: any) => x?.doc !== doc), nuevo], ordenantes);
+    if (!ok) setBusqOrd(b => ({ ...b, error: 'No se pudo guardar. Vuelve a intentarlo.' }));
+  };
   const quitarOrdenante = async (id: string) => {
     if (!currentUser?.id) return;
     await actualizarListaRaw(currentUser.id, 'ordenantes', l => l.filter((x: any) => x?.id !== id));
@@ -801,6 +820,38 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                         ))}
                         {!ordenantes.length && <p style={{ fontSize: 12, color: C.ambar, margin: 0 }}>Todavía no hay ordenantes. Agrega al menos uno.</p>}
                       </div>
+                      {/* Buscador conectado a Siigo: el ordenante ya es cliente allá. */}
+                      <form onSubmit={buscarEnSiigo} className="flex items-end flex-wrap" style={{ gap: 8 }}>
+                        <div style={{ flex: '1 1 260px' }}>
+                          <Campo rot="BUSCAR CLIENTE EN SIIGO">
+                            <input value={busqOrd.q} onChange={e => setBusqOrd(b => ({ ...b, q: e.target.value }))} placeholder="Nombre, razón social o NIT / cédula" style={entrada} />
+                          </Campo>
+                        </div>
+                        <button type="submit" disabled={busqOrd.cargando || busqOrd.q.trim().length < 2 || !cat} className="lincoin-btn-white" style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, padding: '10px 14px', borderRadius: 9, border: 'none', cursor: 'pointer', opacity: (busqOrd.cargando || busqOrd.q.trim().length < 2 || !cat) ? 0.5 : 1 }}>
+                          {busqOrd.cargando ? 'Buscando en Siigo…' : 'Buscar'}
+                        </button>
+                      </form>
+                      {!cat && <p style={{ fontSize: 11.5, color: C.tenue, margin: '6px 0 0' }}>Conecta la cuenta de Siigo para buscar sus clientes.</p>}
+                      {busqOrd.error && <p style={{ fontSize: 12, color: C.rojo, margin: '6px 0 0' }}>{busqOrd.error}</p>}
+                      {busqOrd.resultados && (
+                        <div style={{ marginTop: 8, maxHeight: 240, overflowY: 'auto', border: `1px solid ${C.bordeSuave}`, borderRadius: 10 }}>
+                          {busqOrd.resultados.length === 0 && <p style={{ fontSize: 12, color: C.tenue, margin: 0, padding: '10px 12px' }}>Siigo no devolvió clientes con «{busqOrd.q}». Agrégalo a mano abajo.</p>}
+                          {busqOrd.resultados.map((c: any) => {
+                            const doc = String(c.identification ?? '').replace(/\D/g, '');
+                            const ya = ordenantes.some(o => o.doc === doc || o.doc.slice(0, 9) === doc);
+                            return (
+                              <div key={`${c.id ?? doc}`} className="flex items-center justify-between" style={{ gap: 10, padding: '9px 12px', borderBottom: `1px solid ${C.bordeSuave}` }}>
+                                <span style={{ minWidth: 0 }}>
+                                  <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: C.text }}>{c.comercial || c.nombre}</span>
+                                  <span style={{ display: 'block', fontSize: 11.5, color: C.sub }}>{c.esEmpresa ? 'NIT' : 'CC'} {doc}{c.comercial && c.nombre && c.comercial !== c.nombre ? ` · ${c.nombre}` : ''}{c.activo === false ? ' · inactivo en Siigo' : ''}</span>
+                                </span>
+                                <button onClick={() => agregarDesdeSiigo(c)} disabled={ya} style={{ fontFamily: FONT, fontSize: 11.5, fontWeight: 700, color: ya ? C.tenue : C.text, background: 'rgba(255,255,255,0.06)', border: `1px solid ${C.borde}`, borderRadius: 7, padding: '5px 10px', cursor: ya ? 'default' : 'pointer', flexShrink: 0 }}>{ya ? 'Agregado' : 'Agregar'}</button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                      <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '14px 0 6px' }}>O AGRÉGALO A MANO</p>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 8, alignItems: 'end' }}>
                         <Campo rot="NOMBRE O RAZÓN SOCIAL"><input value={nuevoOrd.nombre} onChange={e => setNuevoOrd(o => ({ ...o, nombre: e.target.value, error: null }))} placeholder="Empresa S.A.S." style={entrada} /></Campo>
                         <Campo rot="TIPO">
