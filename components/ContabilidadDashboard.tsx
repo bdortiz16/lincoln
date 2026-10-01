@@ -257,6 +257,28 @@ const FacturaComisionModal: React.FC<{ asiento: Asiento; cfg: any; onCerrar: () 
   );
 };
 
+// Datos del tercero de un movimiento para el extracto: nombre, documento y
+// a qué banco y cuenta fue (o de dónde vino). Solo lo que el movimiento
+// guardó; lo que no está queda vacío, no se supone.
+const TIPOS_DOC: Record<string, string> = { CC: 'CC', CE: 'CE', NIT: 'NIT', PP: 'Pasaporte', PPT: 'PPT', TI: 'TI', cc: 'CC', ce: 'CE', nit: 'NIT', passport: 'Pasaporte' };
+function datosTercero(tx: any, contraparte: string): { nombre: string; docTipo: string; docNum: string; banco: string; tipoCuenta: string; cuenta: string } {
+  const rd = tx?.raw_data && typeof tx.raw_data === 'object' ? tx.raw_data : {};
+  const v = (k: string) => tx?.[k] ?? rd?.[k];
+  const rec = (v('recipient') && typeof v('recipient') === 'object') ? v('recipient') : {};
+  const breb = tx?.currency === 'COP_BREB' || v('rail') === 'BREB' || !!rec.keyType;
+  const nombre = String(v('beneficiary') ?? rec.holderName ?? v('beneficiaryName') ?? v('senderName') ?? v('pagador') ?? v('payerName') ?? v('recipientName') ?? contraparte ?? '').trim();
+  const tipoRaw = String(v('documentType') ?? rec.documentType ?? rec.docType ?? v('payerDocumentType') ?? '').trim();
+  const docNum = String(v('documentNumber') ?? rec.documentNumber ?? rec.docNumber ?? v('payerDocument') ?? v('senderDocument') ?? '').trim();
+  const banco = breb ? 'Bre-B' : String(rec.bankName ?? rec.bankCode ?? (v('bank') && v('bank') !== 'ACH' ? v('bank') : (v('payerBank') ?? ''))).split('·')[0].trim();
+  const tc = String(rec.accountType ?? v('accountType') ?? '').toLowerCase();
+  const llaves: Record<string, string> = { celular: 'Celular', cedula: 'Cédula', correo: 'Correo', alfanumerico: 'Alfanumérica' };
+  const tipoCuenta = breb
+    ? (rec.keyType ? `Llave ${llaves[String(rec.keyType).toLowerCase()] ?? rec.keyType}` : 'Llave Bre-B')
+    : /corriente|checking/.test(tc) ? 'Corriente' : /ahorro|saving/.test(tc) ? 'Ahorros' : '';
+  const cuenta = String((breb ? (rec.key ?? v('account')) : (rec.accountNumber ?? v('account'))) ?? '').trim();
+  return { nombre, docTipo: TIPOS_DOC[tipoRaw] ?? tipoRaw, docNum, banco, tipoCuenta, cuenta };
+}
+
 const Tarjeta: React.FC<{ children: React.ReactNode; style?: React.CSSProperties; className?: string }> = ({ children, style, className }) => (
   <div className={className} style={{ background: C.tarjeta, border: `1px solid ${C.borde}`, borderRadius: 14, padding: '18px 20px', minWidth: 0, ...style }}>{children}</div>
 );
@@ -569,15 +591,16 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     const saldoInicial = primera ? (saldoTras.get(primera) ?? 0) - (cuenta(primera.tx) ? (primera.dir === 'in' ? primera.monto : -primera.monto) : 0) : 0;
     let totEntradas = 0, totSalidas = 0;
     const movimientos: (string | number | Date | null)[][] = [
-      ['Fecha', 'Tipo', 'Contraparte', 'Entrada', 'Salida', 'Saldo', 'Moneda', 'Estado', 'Comprobante', 'Documento Siigo', 'Nº Siigo', 'Referencia', 'Id'],
-      [primera ? new Date(primera.ts) : null, 'Saldo inicial', '', null, null, saldoInicial, moneda, '', '', '', '', '', ''],
+      ['Fecha', 'Tipo', 'Nombre', 'Tipo de documento', 'Número de documento', 'Banco', 'Tipo de cuenta', 'Cuenta / llave', 'Entrada', 'Salida', 'Saldo', 'Moneda', 'Estado', 'Comprobante', 'Documento Siigo', 'Nº Siigo', 'Referencia', 'Id'],
+      [primera ? new Date(primera.ts) : null, 'Saldo inicial', '', '', '', '', '', '', null, null, saldoInicial, moneda, '', '', '', '', '', ''],
     ];
     for (const a of filasHoja) {
       const f = folios[String(a.tx.id)];
       const suma = cuenta(a.tx);
       if (suma) { if (a.dir === 'in') totEntradas += a.monto; else totSalidas += a.monto; }
+      const ter = datosTercero(a.tx, a.contraparte);
       movimientos.push([
-        new Date(a.ts), a.tipo, a.contraparte,
+        new Date(a.ts), a.tipo, ter.nombre, ter.docTipo, ter.docNum, ter.banco, ter.tipoCuenta, ter.cuenta,
         a.dir === 'in' ? (suma ? a.monto : null) : null,
         a.dir === 'out' ? (suma ? a.monto : null) : null,
         saldoTras.get(a) ?? null, a.moneda, a.estado,
@@ -586,7 +609,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
       ]);
     }
     const saldoFinal = filasHoja.length ? (saldoTras.get(filasHoja[filasHoja.length - 1]) ?? saldoInicial) : saldoInicial;
-    movimientos.push([null, 'Totales', '', totEntradas, totSalidas, saldoFinal, moneda, '', '', '', '', '', '']);
+    movimientos.push([null, 'Totales', '', '', '', '', '', '', totEntradas, totSalidas, saldoFinal, moneda, '', '', '', '', '', '']);
     const rotP = periodo === 'mes' ? `${MESES_L[ahora.getMonth()]} ${ahora.getFullYear()}` : periodo === 'anio' ? String(ahora.getFullYear()) : 'Histórico';
     const resumen: (string | number | Date)[][] = [
       ['Concepto', 'Valor'],
@@ -606,7 +629,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
       ['Generado', new Date()],
     ];
     descargarXlsx(`lincoin-contabilidad-${moneda}-${periodo}-${new Date().toISOString().slice(0, 10)}.xlsx`, [
-      { nombre: 'Movimientos', filas: movimientos, anchos: [18, 16, 34, 16, 16, 18, 8, 12, 14, 22, 12, 30, 38] },
+      { nombre: 'Movimientos', filas: movimientos, anchos: [18, 16, 34, 16, 18, 22, 16, 22, 16, 16, 18, 8, 12, 14, 22, 12, 30, 38] },
       { nombre: 'Resumen', filas: resumen, anchos: [30, 40] },
     ]);
   };
