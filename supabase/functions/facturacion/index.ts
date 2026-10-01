@@ -1027,7 +1027,10 @@ async function emitirComision(userId: string, txId: string, d: { identification:
     const base = r2(comision / (1 + tarifa))
     const ivaV = r2(base * tarifa)
     const total = r2(base + ivaV)
-    const items = [{ code: item, description: descripcion, quantity: 1, price: base, ...(iva && !ivaVivo && !ivaDelProducto(cfg, item) ? { taxes: [{ id: iva.id }] } : {}) }]
+    // El impuesto va SIEMPRE en la línea cuando hay tarifa: Siigo no aplica
+    // por su cuenta el IVA del producto en una factura por API (con 60.000
+    // calculó el total sin IVA y rechazó el pago).
+    const items = [{ code: item, description: descripcion, quantity: 1, price: base, ...(iva && tarifa > 0 ? { taxes: [{ id: iva.id }] } : {}) }]
     const cuerpo = {
       document: { id: Number(cfg.document_id) }, date: hoy,
       customer: { identification: cp.identification, branch_office: 0 },
@@ -1054,7 +1057,10 @@ async function emitirComision(userId: string, txId: string, d: { identification:
     const totalSiigo = m ? Number(m[1].replace(/,/g, '')) : NaN
     if (Number.isFinite(totalSiigo) && arm.base > 0) {
       const tarifaReal = Math.round((totalSiigo / arm.base - 1) * 10000) / 10000
-      if (tarifaReal >= 0 && tarifaReal < 1 && Math.abs(tarifaReal - tarifa) > 0.0001) {
+      // Nunca se cae a "sin IVA" si el ítem tiene IVA: eso facturaría la
+      // comisión entera como base (60.000 sin impuesto). Solo se ajusta a
+      // otra tarifa positiva que Siigo diga aplicar.
+      if (tarifaReal > 0.0001 && tarifaReal < 1 && Math.abs(tarifaReal - tarifa) > 0.0001) {
         tarifa = tarifaReal
         arm = armar(tarifa)
         r = await siigo('POST', '/v1/invoices', { token: t.token, partner, body: arm.cuerpo, ms: 70000 })
