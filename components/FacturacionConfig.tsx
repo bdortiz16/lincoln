@@ -220,6 +220,13 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
     const r = await llamarFuncion('facturacion', { action: 'config_set', config, ...(cambiarActivo ? { cambiarActivo: true } : {}) }, 30000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
     setGuardando(false);
     if (!r?.ok) { setAviso({ ok: false, texto: r?.error ?? 'No se pudo guardar.' }); return false; }
+    // El servidor guarda solo lo que conoce: si devuelve otro modelo que el
+    // elegido, no quedó guardado y se dice, en vez de aparentar que sí.
+    if (config.modelo && (r.config?.modelo ?? null) !== config.modelo) {
+      setCfg(r.config);
+      setAviso({ ok: false, texto: `El modelo «${config.modelo === 'comision' ? 'Comisión' : config.modelo}» NO quedó guardado: el servidor de facturación todavía no tiene esta versión publicada. Se guarda apenas se publique (falta el despliegue de las funciones).` });
+      return false;
+    }
     setCfg(r.config); setAccessKey('');
     set('activo', !!r.config?.activo);
     // El envío pregunta el ordenante solo si el servidor confirmó el modelo Comisión.
