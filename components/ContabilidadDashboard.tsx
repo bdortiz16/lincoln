@@ -116,8 +116,9 @@ const FacturaComisionModal: React.FC<{ asiento: Asiento; cfg: any; onCerrar: () 
   // Ordenantes de Configuración (modelo Comisión) para elegir con un clic. Si
   // el envío ya trae el suyo (se eligió al enviar), viene puesto.
   const { currentUser } = useDatabase();
-  const rawU: any = (currentUser as any)?.raw_data ?? currentUser ?? {};
-  const ordenantes: { id: string; nombre: string; docTipo: string; doc: string }[] = Array.isArray(rawU?.ordenantes) ? rawU.ordenantes.filter((o: any) => o && o.doc) : [];
+  const cuU: any = currentUser ?? {};
+  const listaOrd = Array.isArray(cuU?.raw_data?.ordenantes) ? cuU.raw_data.ordenantes : Array.isArray(cuU?.ordenantes) ? cuU.ordenantes : [];
+  const ordenantes: { id: string; nombre: string; docTipo: string; doc: string }[] = listaOrd.filter((o: any) => o && o.doc);
   const txAny: any = asiento.tx ?? {};
   const ordTx: any = txAny?.recipient?.ordenante ?? txAny?.raw_data?.recipient?.ordenante ?? txAny?.ordenante ?? null;
   const [cliente, setCliente] = useState<{ identification: string; nombre: string; esEmpresa: boolean } | null>(
@@ -392,9 +393,12 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
       // `*` a propósito: si una columna nueva (factura_tipo) todavía no
       // existe porque falta correr su migración, nombrarla rompería toda la
       // consulta y la columna COMPROBANTE quedaría vacía.
-      const { data, error } = await supabase.from('comprobantes')
-        .select('*')
-        .eq('user_id', userId).limit(2000);
+      // Solo las columnas de la tabla (sin factura_detalle, que trae las
+      // respuestas completas de Siigo y hacía lenta cada recarga). Si una
+      // columna nueva todavía no existe (falta su migración), se cae a '*'.
+      const cols = 'transaction_id, folio, numero, enviado_at, factura_estado, factura_numero, factura_url, factura_error, factura_tipo';
+      let { data, error } = await supabase.from('comprobantes').select(cols).eq('user_id', userId).limit(2000);
+      if (error && /column|schema cache|PGRST/i.test(error.message)) ({ data, error } = await supabase.from('comprobantes').select('*').eq('user_id', userId).limit(2000));
       if (!vivo) return;
       if (error) { setFoliosEstado(/does not exist|42P01|schema cache/i.test(error.message) ? 'sin_tabla' : 'error'); return; }
       setFolios(mapaFolios((data ?? []) as any[])); setFoliosEstado('ok');

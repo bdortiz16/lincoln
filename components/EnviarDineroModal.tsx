@@ -81,9 +81,10 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
   const { showToast, mfaEnrolled, displayBalance, callGasfree, refreshGasfreeBal, movements, onIrA, onVerMovimiento, saldoUnificado = false, mfaFactorId, mfaTotpSecret, onMoverEntreCuentas } = props;
   const { currentUser, getBalance: getBalanceCtx, requestWithdrawal, sendCuypayPayment, getAllUsers, verifyMfaCode, refreshData } = useDatabase();
   // Modelo Comisión de facturación: cada envío pide el ordenante.
-  const rawCu: any = (currentUser as any)?.raw_data ?? currentUser ?? {};
-  const pideOrdenante = rawCu?.facturacionModelo === 'comision';
-  const ordenantes: { id: string; nombre: string; docTipo: string; doc: string; correo?: string }[] = Array.isArray(rawCu?.ordenantes) ? rawCu.ordenantes.filter((o: any) => o && o.id && o.doc) : [];
+  const cuE: any = currentUser ?? {};
+  const pideOrdenante = (cuE?.raw_data?.facturacionModelo ?? cuE?.facturacionModelo) === 'comision';
+  const listaOrdE = Array.isArray(cuE?.raw_data?.ordenantes) ? cuE.raw_data.ordenantes : Array.isArray(cuE?.ordenantes) ? cuE.ordenantes : [];
+  const ordenantes: { id: string; nombre: string; docTipo: string; doc: string; correo?: string }[] = listaOrdE.filter((o: any) => o && o.id && o.doc);
   const { config } = useSystemConfig();
   const displayCurrency = (c?: string): string => String(c || '').split('_')[0];
   const setSelectedWalletCode = (_c: string) => { /* lo maneja el panel */ };

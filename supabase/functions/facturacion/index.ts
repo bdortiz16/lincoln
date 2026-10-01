@@ -981,9 +981,20 @@ async function emitirComision(userId: string, txId: string, d: { identification:
   const esEmpresa = d.esEmpresa ?? (identification.length === 9)
   const partes = esEmpresa ? partirNit(identification) : { identification }
   const cp: Contraparte = { ...partes, nombre: String(d.nombre ?? '').trim() || identification, esDefault: false, esEmpresa, direccion: null }
-  cp.direccion = await direccionDelBeneficiario(userId, cp.identification, cfg, cp.esEmpresa)
-  const cli = await asegurarCliente(t.token, partner, cfg, cp, 'Customer')
-  if (!cli.ok) return falla(cli.error)
+  // En paralelo: ¿el cliente ya existe en Siigo? y el ítem en vivo. La
+  // dirección (que puede pedir el RUES, lento) solo se busca si hay que
+  // CREAR al cliente: uno que ya existe no la necesita para la factura.
+  const [buscaCli, rpProd] = await Promise.all([
+    siigo('GET', `/v1/customers?identification=${encodeURIComponent(cp.identification)}`, { token: t.token, partner }),
+    siigo('GET', `/v1/products?code=${encodeURIComponent(item)}`, { token: t.token, partner }),
+  ])
+  const listaCli: any[] = Array.isArray(buscaCli.data?.results) ? buscaCli.data.results : Array.isArray(buscaCli.data) ? buscaCli.data : []
+  const yaExiste = buscaCli.ok && listaCli.some(x => String(x?.identification ?? '') === cp.identification)
+  if (!yaExiste) {
+    cp.direccion = await direccionDelBeneficiario(userId, cp.identification, cfg, cp.esEmpresa)
+    const cli = await asegurarCliente(t.token, partner, cfg, cp, 'Customer')
+    if (!cli.ok) return falla(cli.error)
+  }
 
   const monto = Number(String((comp as any).monto ?? '0').replace(/,/g, ''))
   if (!Number.isFinite(monto) || monto <= 0) return falla(`Monto inválido en el comprobante: ${(comp as any).monto}`)
@@ -995,7 +1006,7 @@ async function emitirComision(userId: string, txId: string, d: { identification:
   let ivaVivo: { id: number; name: string; percentage: number } | null = null
   let notaVivo = ''
   {
-    const rp = await siigo('GET', `/v1/products?code=${encodeURIComponent(item)}`, { token: t.token, partner })
+    const rp = rpProd
     const lista: any[] = Array.isArray(rp.data?.results) ? rp.data.results : Array.isArray(rp.data) ? rp.data : []
     const p = lista.find((x: any) => String(x.code) === item) ?? lista[0]
     if (rp.ok && p) {
