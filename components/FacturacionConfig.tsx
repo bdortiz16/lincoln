@@ -30,6 +30,18 @@ import { X } from 'lucide-react';
 import { llamarFuncion } from '../lib/edge';
 import { MOTIVOS_ENVIO } from '../lib/motivosEnvio';
 import { MUNICIPIOS } from '../lib/municipios';
+import { useDatabase } from '../context/DatabaseContext';
+import { validarNit } from '../lib/nit';
+
+// ── Ordenantes (modelo Comisión) ──────────────────────────────────────
+// El ordenante es el cliente por cuenta de quien se hace cada envío. Al
+// enviar se elige de esta lista, viaja con la orden y la factura de la
+// comisión sale a su nombre. La lista vive en el perfil de la empresa.
+export type Ordenante = { id: string; nombre: string; docTipo: 'NIT' | 'CC' | 'CE' | 'PP'; doc: string; correo?: string };
+const leerOrdenantes = (u: any): Ordenante[] => {
+  const l = u?.raw_data?.ordenantes ?? u?.ordenantes;
+  return Array.isArray(l) ? l.filter((o: any) => o && o.id && o.doc) : [];
+};
 
 const FONT = 'Archivo, system-ui, sans-serif';
 const C = {
@@ -92,6 +104,26 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
   const [credAbiertas, setCredAbiertas] = useState(false);
   // El modelo también: guardado, queda un resumen con "Editar" y "Eliminar".
   const [modeloAbierto, setModeloAbierto] = useState(true);
+  const { currentUser, actualizarListaRaw, updateUserRawData } = useDatabase();
+  const ordenantes = leerOrdenantes(currentUser);
+  const [nuevoOrd, setNuevoOrd] = useState<{ nombre: string; docTipo: Ordenante['docTipo']; doc: string; correo: string; error: string | null; guardando: boolean }>({ nombre: '', docTipo: 'NIT', doc: '', correo: '', error: null, guardando: false });
+  const agregarOrdenante = async () => {
+    if (!currentUser?.id) return;
+    const nombre = nuevoOrd.nombre.trim();
+    const doc = nuevoOrd.doc.replace(/\D/g, '');
+    if (nombre.length < 3) { setNuevoOrd(o => ({ ...o, error: 'Escribe el nombre o la razón social.' })); return; }
+    if (nuevoOrd.docTipo === 'NIT') { const v = validarNit(doc); if (!v.ok) { setNuevoOrd(o => ({ ...o, error: v.texto })); return; } }
+    else if (doc.length < 5) { setNuevoOrd(o => ({ ...o, error: 'Escribe el número de documento.' })); return; }
+    if (ordenantes.some(o => o.doc === doc)) { setNuevoOrd(o => ({ ...o, error: 'Ese documento ya está en la lista.' })); return; }
+    setNuevoOrd(o => ({ ...o, guardando: true, error: null }));
+    const nuevo: Ordenante = { id: `ord_${Math.random().toString(36).slice(2, 10)}`, nombre, docTipo: nuevoOrd.docTipo, doc, ...(nuevoOrd.correo.trim() ? { correo: nuevoOrd.correo.trim() } : {}) };
+    const ok = await actualizarListaRaw(currentUser.id, 'ordenantes', l => [...l.filter((x: any) => x?.doc !== doc), nuevo], ordenantes);
+    setNuevoOrd(ok ? { nombre: '', docTipo: 'NIT', doc: '', correo: '', error: null, guardando: false } : { ...nuevoOrd, guardando: false, error: 'No se pudo guardar. Vuelve a intentarlo.' });
+  };
+  const quitarOrdenante = async (id: string) => {
+    if (!currentUser?.id) return;
+    await actualizarListaRaw(currentUser.id, 'ordenantes', l => l.filter((x: any) => x?.id !== id));
+  };
 
   const cargar = async () => {
     setCargando(true);
@@ -171,6 +203,8 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
     if (!r?.ok) { setAviso({ ok: false, texto: r?.error ?? 'No se pudo guardar.' }); return false; }
     setCfg(r.config); setAccessKey('');
     set('activo', !!r.config?.activo);
+    // El envío pregunta el ordenante solo si el servidor confirmó el modelo Comisión.
+    if (currentUser?.id && (currentUser as any)?.raw_data?.facturacionModelo !== (r.config?.modelo ?? null)) updateUserRawData(currentUser.id, { facturacionModelo: r.config?.modelo ?? null }).catch(() => {});
     // Guardado con modelo: se pliega al resumen.
     if (!('activo' in extra) && config.modelo) setModeloAbierto(false);
     setAviso({ ok: true, texto: 'activo' in extra ? (extra.activo ? 'Facturación automática activada.' : 'Facturación automática pausada.') : 'Guardado.' });
@@ -255,6 +289,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
     modelo === 'rotacion' && !ops.length ? 'qué entradas facturan' : '',
     modelo === 'psp' && !motivosDoc.length ? 'al menos un motivo de envío con documento soporte o factura' : '',
     modelo === 'comision' && !ops.length ? 'qué movimientos cobran comisión' : '',
+    modelo === 'comision' && !ordenantes.length ? 'al menos un ordenante' : '',
     modelo === 'comision' && !(utilidad > 0) ? 'el porcentaje de comisión' : '',
     modelo === 'comision' && !form.item_comision ? 'el ítem de comisión' : '',
     modelo === 'comision' && prodComision && prodComision.active === false ? 'un ítem de comisión activo en Siigo' : '',
@@ -437,7 +472,8 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
               {modelo === 'comision' && (
                 <>
                   <p style={lineaResumen}>Comisión <b style={{ color: C.text }}>{utilidad || 0} %</b> IVA incluido por cada: {ops.map(k => disparadores[k] ?? k).join(', ') || '—'}</p>
-                  <p style={lineaResumen}>Ítem <b style={{ color: C.text }}>{nombreProducto(form.item_comision) || '—'}</b>{iva ? ` (${iva.name || 'IVA'} ${iva.percentage} %)` : ''} · factura a la contraparte del movimiento</p>
+                  <p style={lineaResumen}>Ítem <b style={{ color: C.text }}>{nombreProducto(form.item_comision) || '—'}</b>{iva ? ` (${iva.name || 'IVA'} ${iva.percentage} %)` : ''} · envíos: factura al ordenante · depósitos: a quien mandó la plata</p>
+                  <p style={lineaResumen}>Ordenantes: {ordenantes.length ? ordenantes.map(o => o.nombre).join(' · ') : '—'}</p>
                   <p style={lineaResumen}>Comprobante FV: {nombreDoc(cat?.documentos, form.document_id)} · vendedor {nombreVendedor(form.seller_id)} · pago {nombrePago(cat?.pagos, form.payment_id)}</p>
                 </>
               )}
@@ -743,6 +779,40 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                           })()}
                         </div>
                       )}
+                    </>
+                  )}
+
+                  {/* Comisión: los ordenantes (a quién se factura cada envío). */}
+                  {modelo === 'comision' && (
+                    <>
+                      <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '18px 0 4px' }}>ORDENANTES</p>
+                      <p style={{ fontSize: 12, color: C.sub, margin: '0 0 10px', lineHeight: 1.55 }}>
+                        El ordenante es el cliente por cuenta de quien haces el pago. Al hacer cada transferencia se pregunta el ordenante, y la factura de la comisión sale a su nombre. En los depósitos, la factura va a quien mandó la plata.
+                      </p>
+                      <div style={{ display: 'grid', gap: 6, marginBottom: 10 }}>
+                        {ordenantes.map(o => (
+                          <div key={o.id} className="flex items-center justify-between" style={{ gap: 10, padding: '9px 12px', borderRadius: 10, border: `1px solid ${C.bordeSuave}` }}>
+                            <span style={{ minWidth: 0 }}>
+                              <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: C.text }}>{o.nombre}</span>
+                              <span style={{ display: 'block', fontSize: 11.5, color: C.sub }}>{o.docTipo} {o.doc}{o.correo ? ` · ${o.correo}` : ''}</span>
+                            </span>
+                            <button onClick={() => quitarOrdenante(o.id)} style={{ fontFamily: FONT, fontSize: 11.5, fontWeight: 700, color: C.rojo, background: 'transparent', border: '1px solid rgba(248,113,113,0.35)', borderRadius: 7, padding: '5px 10px', cursor: 'pointer' }}>Quitar</button>
+                          </div>
+                        ))}
+                        {!ordenantes.length && <p style={{ fontSize: 12, color: C.ambar, margin: 0 }}>Todavía no hay ordenantes. Agrega al menos uno.</p>}
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 8, alignItems: 'end' }}>
+                        <Campo rot="NOMBRE O RAZÓN SOCIAL"><input value={nuevoOrd.nombre} onChange={e => setNuevoOrd(o => ({ ...o, nombre: e.target.value, error: null }))} placeholder="Empresa S.A.S." style={entrada} /></Campo>
+                        <Campo rot="TIPO">
+                          <select value={nuevoOrd.docTipo} onChange={e => setNuevoOrd(o => ({ ...o, docTipo: e.target.value as Ordenante['docTipo'], error: null }))} style={selectEstilo}>
+                            <option value="NIT">NIT</option><option value="CC">CC</option><option value="CE">CE</option><option value="PP">Pasaporte</option>
+                          </select>
+                        </Campo>
+                        <Campo rot={nuevoOrd.docTipo === 'NIT' ? 'NIT (CON DV)' : 'NÚMERO'}><input value={nuevoOrd.doc} onChange={e => setNuevoOrd(o => ({ ...o, doc: e.target.value, error: null }))} placeholder={nuevoOrd.docTipo === 'NIT' ? '9001234567' : '1020304050'} inputMode="numeric" style={entrada} /></Campo>
+                        <Campo rot="CORREO (OPCIONAL)"><input value={nuevoOrd.correo} onChange={e => setNuevoOrd(o => ({ ...o, correo: e.target.value }))} placeholder="facturas@empresa.com" style={entrada} /></Campo>
+                        <button onClick={agregarOrdenante} disabled={nuevoOrd.guardando} className="lincoin-btn-white" style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, padding: '10px 14px', borderRadius: 9, border: 'none', cursor: 'pointer', opacity: nuevoOrd.guardando ? 0.6 : 1 }}>{nuevoOrd.guardando ? 'Guardando…' : 'Agregar ordenante'}</button>
+                      </div>
+                      {nuevoOrd.error && <p style={{ fontSize: 12, color: C.rojo, margin: '6px 0 0' }}>{nuevoOrd.error}</p>}
                     </>
                   )}
 

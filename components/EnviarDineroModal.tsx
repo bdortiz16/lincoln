@@ -27,7 +27,7 @@ export type EnviarPrefill = {
   rail?: 'COP' | 'COP_BREB' | 'COP_ACH';
   form?: Partial<{
     destinationCountry: string; destinationCurrency: string; amount: string; beneficiaryType: 'personal' | 'business';
-    beneficiaryName: string; documentType: string; documentNumber: string; bankName: string; accountType: string; accountNumber: string; reason: string; motivo: string;
+    beneficiaryName: string; documentType: string; documentNumber: string; bankName: string; accountType: string; accountNumber: string; reason: string; motivo: string; ordenanteId: string;
   }>;
   step?: number;
 };
@@ -80,6 +80,10 @@ export const prefillDeContacto = (c: any): EnviarPrefill => {
 export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function EnviarDineroModal(props, ref) {
   const { showToast, mfaEnrolled, displayBalance, callGasfree, refreshGasfreeBal, movements, onIrA, onVerMovimiento, saldoUnificado = false, mfaFactorId, mfaTotpSecret, onMoverEntreCuentas } = props;
   const { currentUser, getBalance: getBalanceCtx, requestWithdrawal, sendCuypayPayment, getAllUsers, verifyMfaCode, refreshData } = useDatabase();
+  // Modelo Comisión de facturación: cada envío pide el ordenante.
+  const rawCu: any = (currentUser as any)?.raw_data ?? currentUser ?? {};
+  const pideOrdenante = rawCu?.facturacionModelo === 'comision';
+  const ordenantes: { id: string; nombre: string; docTipo: string; doc: string; correo?: string }[] = Array.isArray(rawCu?.ordenantes) ? rawCu.ordenantes.filter((o: any) => o && o.id && o.doc) : [];
   const { config } = useSystemConfig();
   const displayCurrency = (c?: string): string => String(c || '').split('_')[0];
   const setSelectedWalletCode = (_c: string) => { /* lo maneja el panel */ };
@@ -125,6 +129,9 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
       // El motivo del envío: se pregunta al confirmar, se le manda a Finity
       // con la orden, y decide qué documento sale en Siigo.
       motivo: '',
+      // Modelo Comisión: el cliente por cuenta de quien se paga (id de la
+      // lista de ordenantes de Configuración). La comisión se le factura a él.
+      ordenanteId: '',
   });
   // Billetera de ORIGEN para envíos COP: los 3 rieles son saldos SEPARADOS
   // (Saldo Lincoin / Bre-B / ACH). El cliente elige de cuál sale el dinero;
@@ -548,12 +555,21 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
               showToast('Elige el motivo del envío antes de confirmar.', 5000, 'error');
               return;
           }
+          const ord = pideOrdenante ? ordenantes.find(o => o.id === sendForm.ordenanteId) : null;
+          if (pideOrdenante && !ord) {
+              sendingRef.current = false; setIsSending(false);
+              showToast('Elige el ordenante del envío antes de confirmar.', 5000, 'error');
+              return;
+          }
+          // Viaja dentro del destinatario: el servidor lo guarda tal cual en
+          // el movimiento, y la facturación lo lee de ahí.
+          const ordenante = ord ? { ordenante: { id: ord.id, nombre: ord.nombre, docTipo: ord.docTipo, doc: ord.doc, ...(ord.correo ? { correo: ord.correo } : {}) } } : {};
           // Ciudad y dirección del beneficiario: quedan en el movimiento y
           // de ahí van al tercero en Siigo (documento soporte).
           const direccion = d.cityCode ? { address: d.address ?? '', cityCode: d.cityCode, cityName: d.cityName, stateCode: d.stateCode } : {};
           const recipient = isBreb
-              ? { keyType: d.brebKeyType ?? 'celular', key: d.brebKey ?? d.accountNumber, holderName: d.name, documentNumber: d.docNumber, reference: sendForm.reason, motivo: sendForm.motivo, ...direccion }
-              : { bankCode: d.bank, accountType: (d.accountType === 'checking' ? 'corriente' : 'ahorros'), accountNumber: d.accountNumber, documentType: d.docType, documentNumber: d.docNumber, holderName: d.name, reference: sendForm.reason, motivo: sendForm.motivo, ...(sendContact?.finityId ? { finityId: sendContact.finityId } : {}), ...direccion };
+              ? { keyType: d.brebKeyType ?? 'celular', key: d.brebKey ?? d.accountNumber, holderName: d.name, documentNumber: d.docNumber, reference: sendForm.reason, motivo: sendForm.motivo, ...ordenante, ...direccion }
+              : { bankCode: d.bank, accountType: (d.accountType === 'checking' ? 'corriente' : 'ahorros'), accountNumber: d.accountNumber, documentType: d.docType, documentNumber: d.docNumber, holderName: d.name, reference: sendForm.reason, motivo: sendForm.motivo, ...ordenante, ...(sendContact?.finityId ? { finityId: sendContact.finityId } : {}), ...direccion };
           try {
               const r = await Promise.race([
                   callMouvProxy({ action: isBreb ? 'payout_breb' : 'payout_ach', userId: currentUser.id, amount, recipient, otp: sentOtpRef.current }),
@@ -1381,6 +1397,19 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                   </select>
                                   <p style={{ fontSize: 11, color: '#6b716c', marginTop: 6, lineHeight: 1.45 }}>Va con la orden al banco y define qué documento se emite en tu contabilidad.</p>
                               </div>
+                              {/* ORDENANTE (modelo Comisión): por cuenta de quién
+                                  se hace el pago. La comisión se le factura. */}
+                              {pideOrdenante && (
+                                  <div style={{ border: `1px solid ${sendForm.ordenanteId ? 'rgba(255,255,255,0.1)' : 'rgba(251,191,36,0.4)'}`, borderRadius: 13, padding: '13px 16px', background: 'rgba(255,255,255,0.025)' }}>
+                                      <span style={{ color: '#878E88', fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px' }}>ORDENANTE</span>
+                                      <select value={sendForm.ordenanteId} onChange={e => setSendForm(f => ({ ...f, ordenanteId: e.target.value }))}
+                                          style={{ width: '100%', marginTop: 8, fontSize: 13.5, color: sendForm.ordenanteId ? '#F4F4F2' : '#878E88', background: '#121413', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 9, padding: '10px 12px', outline: 'none', appearance: 'auto' }}>
+                                          <option value="">{ordenantes.length ? '¿Por cuenta de quién es este pago?' : 'No hay ordenantes: agrégalos en Contabilidad → Configuración'}</option>
+                                          {ordenantes.map(o => <option key={o.id} value={o.id}>{o.nombre} · {o.docTipo} {o.doc}</option>)}
+                                      </select>
+                                      <p style={{ fontSize: 11, color: '#6b716c', marginTop: 6, lineHeight: 1.45 }}>La factura de tu comisión por este envío sale a su nombre.</p>
+                                  </div>
+                              )}
                               {/* Aviso antes de confirmar */}
                               <div className="flex items-start" style={{ gap: 11, border: '1px solid rgba(255,255,255,0.1)', borderLeft: '2px solid #4ADE80', background: 'rgba(255,255,255,0.03)', borderRadius: 10, padding: '12px 15px' }}>
                                   <Clock size={16} style={{ color: '#878E88', flexShrink: 0, marginTop: 1 }} strokeWidth={1.5} />
@@ -1395,7 +1424,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                               ) : (
                                   <div className="flex" style={{ gap: 9 }}>
                                       <button onClick={() => setSendStep(3)} disabled={isSending} style={{ flex: 1, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 14, padding: '13px 0', borderRadius: 10, opacity: isSending ? 0.5 : 1 }} className="hover:bg-white/[0.09] transition-colors">Corregir</button>
-                                      <button onClick={requestSendConfirm} disabled={isSending || !sendForm.motivo} title={!sendForm.motivo ? 'Elige el motivo del envío' : undefined} className="lincoin-btn-white transition-colors flex items-center justify-center gap-2" style={{ flex: 1.5, fontWeight: 700, fontSize: 14, padding: '13px 0', borderRadius: 10, border: 'none', opacity: (isSending || !sendForm.motivo) ? 0.45 : 1 }}>
+                                      <button onClick={requestSendConfirm} disabled={isSending || !sendForm.motivo || (pideOrdenante && !sendForm.ordenanteId)} title={!sendForm.motivo ? 'Elige el motivo del envío' : (pideOrdenante && !sendForm.ordenanteId) ? 'Elige el ordenante' : undefined} className="lincoin-btn-white transition-colors flex items-center justify-center gap-2" style={{ flex: 1.5, fontWeight: 700, fontSize: 14, padding: '13px 0', borderRadius: 10, border: 'none', opacity: (isSending || !sendForm.motivo || (pideOrdenante && !sendForm.ordenanteId)) ? 0.45 : 1 }}>
                                           {isSending ? <><Loader2 className="animate-spin" size={16} /> Procesando…</> : 'Confirmar envío'}
                                       </button>
                                   </div>

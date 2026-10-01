@@ -727,9 +727,22 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
       return { ok: true, estado: 'omitida' }
     }
     if ((comp as any).factura_estado === 'emitida' && (comp as any).factura_numero) return { ok: true, estado: 'emitida', numero: (comp as any).factura_numero }
+    // A quién: en un ENVÍO, al ordenante (el cliente por cuenta de quien se
+    // pagó), que se elige al enviar y viaja en raw_data.recipient.ordenante.
+    // En un DEPÓSITO, a quien mandó la plata (la contraparte).
+    const rdC: any = (comp as any)?.detalle?.raw_data ?? {}
+    const ord: any = rdC?.recipient?.ordenante ?? rdC?.ordenante ?? null
+    if (esSalida) {
+      const docOrd = String(ord?.doc ?? '').replace(/\D/g, '')
+      if (!docOrd) {
+        const e = 'El envío no tiene ordenante, y la factura de la comisión va a su nombre. Emitila a mano eligiendo el cliente.'
+        await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: 'FV' }); return { ok: false, error: e }
+      }
+      return emitirComision(userId, String((comp as any).transaction_id), { identification: docOrd, nombre: String(ord?.nombre ?? ''), esEmpresa: String(ord?.docTipo ?? '') === 'NIT', auto: !opts.forzar })
+    }
     const cpC = contraparteDe(comp, cfg)
     if (cpC.esDefault) {
-      const e = 'El movimiento no trae el documento de la contraparte, y la factura de comisión va a su nombre. Emitila a mano eligiendo el cliente.'
+      const e = 'El depósito no trae el documento de quien mandó la plata, y la factura de comisión va a su nombre. Emitila a mano eligiendo el cliente.'
       await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: 'FV' }); return { ok: false, error: e }
     }
     return emitirComision(userId, String((comp as any).transaction_id), { identification: cpC.identification, nombre: cpC.nombre, esEmpresa: cpC.esEmpresa, auto: !opts.forzar })
