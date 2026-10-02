@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { Suspense } from 'react';
 import ReactDOM from 'react-dom/client';
 import './index.css';
 import App from './App';
@@ -6,13 +6,16 @@ import { ExchangeRateProvider } from './context/ExchangeRateContext';
 import { SystemConfigProvider } from './context/SystemConfigContext';
 import { DatabaseProvider } from './context/DatabaseContext';
 import { ThemeProvider } from './context/ThemeContext';
-import { PersonasAdminApp } from './components/AdminPersonas/PersonasAdminApp';
-import { AdminEmpresasApp } from './components/AdminEmpresasApp';
+import { lazyNamed } from './lib/lazyRetry';
 import { registrarSW } from './components/pushLincoin';
 
 // Service worker: lo único que hace es recibir notificaciones push con la app
 // cerrada. No cachea nada a propósito — ver public/sw.js.
 registrarSW();
+
+// Los paneles de admin se descargan solo en sus rutas: un cliente no los baja.
+const PersonasAdminApp = lazyNamed(() => import('./components/AdminPersonas/PersonasAdminApp'), 'PersonasAdminApp');
+const AdminEmpresasApp = lazyNamed(() => import('./components/AdminEmpresasApp'), 'AdminEmpresasApp');
 
 // Hidden admin URL: /admin-personas — runs in TOTAL isolation,
 // no Empresas providers, no Empresas auth.
@@ -71,6 +74,7 @@ const root = ReactDOM.createRoot(rootElement);
 root.render(
   <React.StrictMode>
     <ErrorBoundary>
+      <Suspense fallback={<div style={{ minHeight: '100vh', background: '#070808' }} />}>
       {isPersonasAdminRoute ? (
         // 🔒 Admin Personas: independiente, sin providers de Empresas
         <PersonasAdminApp />
@@ -90,6 +94,7 @@ root.render(
           </SystemConfigProvider>
         </ThemeProvider>
       )}
+      </Suspense>
     </ErrorBoundary>
   </React.StrictMode>
 );

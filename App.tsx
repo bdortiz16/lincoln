@@ -1,27 +1,32 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Dashboard } from './components/Dashboard';
+import React, { useState, useEffect, useRef, useCallback, Suspense } from 'react';
+import { lazyNamed } from './lib/lazyRetry';
 import { Login, errorDePortal } from './components/Login';
 import { Register } from './components/Register';
 import { EmailConfirmation } from './components/EmailConfirmation';
 import { OnboardingIntro } from './components/OnboardingIntro';
-import { OnboardingWizard } from './components/OnboardingWizard';
-import { PersonalOnboardingWizard } from './components/PersonalOnboardingWizard';
 import { LandingPage } from './components/LandingPage';
 import { RoleSelection } from './components/RoleSelection';
-import { PersonalDashboard } from './components/PersonalDashboard';
-import { PersonaDashboard } from './components/PersonaDashboard';
-import { ContadorDashboard } from './components/ContadorDashboard';
-import { AdminDashboard } from './components/AdminDashboard';
 import { ToastProvider } from './components/AdminPersonas/lib/toast';
-import { StaticPage } from './components/StaticPage'; // New Import
 import { EmailOtpGate, deviceId, recuerdoLocal } from './components/EmailOtpGate';
 import { IdleGuard } from './components/IdleGuard';
-import { LogoConcepts } from './components/LogoConcepts';
 import { useDatabase } from './context/DatabaseContext';
 import { useSystemConfig } from './context/SystemConfigContext';
 import { useTheme } from './context/ThemeContext';
 import { isSupabaseConfigured } from './lib/supabaseClient';
 import { X, WifiOff } from 'lucide-react';
+
+// Los paneles se descargan solo al abrirse: la portada y el ingreso cargan
+// primero, livianos. Antes todo iba en un único archivo de 3 MB que en redes
+// lentas no terminaba de llegar y la página quedaba en negro.
+const Dashboard = lazyNamed(() => import('./components/Dashboard'), 'Dashboard');
+const OnboardingWizard = lazyNamed(() => import('./components/OnboardingWizard'), 'OnboardingWizard');
+const PersonalOnboardingWizard = lazyNamed(() => import('./components/PersonalOnboardingWizard'), 'PersonalOnboardingWizard');
+const PersonalDashboard = lazyNamed(() => import('./components/PersonalDashboard'), 'PersonalDashboard');
+const PersonaDashboard = lazyNamed(() => import('./components/PersonaDashboard'), 'PersonaDashboard');
+const ContadorDashboard = lazyNamed(() => import('./components/ContadorDashboard'), 'ContadorDashboard');
+const AdminDashboard = lazyNamed(() => import('./components/AdminDashboard'), 'AdminDashboard');
+const StaticPage = lazyNamed(() => import('./components/StaticPage'), 'StaticPage');
+const LogoConcepts = lazyNamed(() => import('./components/LogoConcepts'), 'LogoConcepts');
 
 // Added 'static-page' to ViewState
 type ViewState = 'landing' | 'role-selection' | 'login' | 'register' | 'confirmation' | 'onboarding-intro' | 'onboarding-wizard' | 'personal-onboarding-wizard' | 'dashboard' | 'personal-dashboard' | 'persona-dashboard' | 'contador-dashboard' | 'admin-dashboard' | 'static-page';
@@ -714,7 +719,7 @@ const App: React.FC = () => {
 
   // Página de bocetos de marca. Solo en desarrollo: es material de trabajo
   // interno, no algo que deba servirse en el dominio de una fintech.
-  if (import.meta.env.DEV && window.location.pathname === '/logos') return <LogoConcepts />;
+  if (import.meta.env.DEV && window.location.pathname === '/logos') return <Suspense fallback={<SplashScreen />}><LogoConcepts /></Suspense>;
 
   // Show branded splash while auth loads OR while transitioning from landing → dashboard
   if (isAuthLoading || (currentUser && currentView === 'landing') || (!!currentUser && currentUser.role !== 'admin' && deviceTrusted === null)) {
@@ -733,7 +738,7 @@ const App: React.FC = () => {
             onVerified={() => setOtpPassed(true)}
             onLogout={() => logoutUser('salir desde la verificación por correo')}
           />
-        ) : renderView()}
+        ) : <Suspense fallback={<SplashScreen />}>{renderView()}</Suspense>}
 
         {/* LOGOUT OVERLAY */}
         {loggingOut && (

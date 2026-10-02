@@ -24,6 +24,24 @@ export default defineConfig(({ mode }) => {
         alias: {
           '@': path.resolve(__dirname, '.'),
         }
-      }
+      },
+      // Librerías en archivos propios: varios archivos chicos bajan en
+      // paralelo y quedan en caché entre despliegues (su nombre no cambia si
+      // la librería no cambia). Un solo archivo grande se cortaba en redes
+      // lentas y la página no cargaba.
+      build: {
+        rollupOptions: {
+          output: {
+            manualChunks(id: string) {
+              if (!id.includes('node_modules')) return undefined;
+              if (/node_modules\/(react|react-dom|scheduler)\//.test(id)) return 'vendor-react';
+              if (id.includes('@supabase')) return 'vendor-supabase';
+              if (/node_modules\/(d3-|topojson)/.test(id)) return 'vendor-mapa';
+              if (id.includes('lucide-react')) return 'vendor-iconos';
+              return 'vendor';
+            },
+          },
+        },
+      },
     };
 });
