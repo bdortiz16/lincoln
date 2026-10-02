@@ -140,7 +140,14 @@ const FacturaComisionModal: React.FC<{ asiento: Asiento; cfg: any; onCerrar: () 
   const comision = r2(monto * p / 100);
   const base = r2(comision / (1 + tarifa));
   const ivaV = r2(base * tarifa);
-  const total = r2(base + ivaV);
+  // Modelo Comisión = factura de mandato por el total del movimiento:
+  // ítem 1 ingresos para terceros (sin IVA) + ítem 2 comisión con IVA incluido.
+  const mandato = String(cfg?.modelo ?? '') === 'comision';
+  const itemTerceros = String(cfg?.item_terceros ?? '');
+  const prodTerceros = (cfg?.catalogos?.productos ?? []).find((x: any) => String(x.code) === itemTerceros) ?? null;
+  const terceros = mandato ? r2(monto - base - ivaV) : 0;
+  const total = r2(terceros + base + ivaV);
+  const faltaItem = !item || (mandato && !itemTerceros);
   const elegido = cliente ?? (manual.doc.replace(/\D/g, '').length >= 5 ? { identification: manual.doc.replace(/\D/g, ''), nombre: manual.nombre.trim(), esEmpresa: manual.esEmpresa } : null);
   const buscar = async () => {
     if (!q.trim()) return;
@@ -151,7 +158,7 @@ const FacturaComisionModal: React.FC<{ asiento: Asiento; cfg: any; onCerrar: () 
     setResultados(r.clientes ?? []);
   };
   const emitir = async () => {
-    if (!elegido || !(p > 0)) return;
+    if (!elegido || !(p > 0) || faltaItem) return;
     setEmitiendo(true); setResultado(null);
     const r = await llamarFuncion('facturacion', { action: 'emitir_comision', transactionId: String(asiento.tx.id), clienteIdentification: elegido.identification, clienteNombre: elegido.nombre, clienteEsEmpresa: elegido.esEmpresa, comisionPct: p }, 130000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
     setEmitiendo(false);
@@ -236,19 +243,22 @@ const FacturaComisionModal: React.FC<{ asiento: Asiento; cfg: any; onCerrar: () 
           <span style={{ fontSize: 12, color: C.sub }}>{cfg?.utilidad_pct ? `Configurado: ${cfg.utilidad_pct} %` : 'Ponelo en Configuración para no escribirlo cada vez'}</span>
         </div>
         {!item && <p style={{ fontSize: 11.5, color: '#F59E0B', margin: '8px 0 0' }}>Falta elegir en Configuración el ítem de comisión (con IVA). Sin eso no se puede emitir.</p>}
+        {mandato && !itemTerceros && <p style={{ fontSize: 11.5, color: '#F59E0B', margin: '8px 0 0' }}>Falta elegir en Configuración el ítem de ingresos recibidos para terceros (sin IVA). Sin eso no se puede emitir.</p>}
         <div style={{ marginTop: 12 }}>
           {fila(`Comisión ${p || 0} % sobre ${fmtCop2(monto)}`, `${fmtCop2(comision)} COP`, true)}
-          {fila(`Base gravable (${prod?.name ?? (item || 'ítem de comisión')})`, `${fmtCop2(base)} COP`)}
+          {mandato && fila(`1 · Ingresos recibidos para terceros (${prodTerceros?.name ?? (itemTerceros || 'ítem sin IVA')}) · sin IVA`, `${fmtCop2(terceros)} COP`)}
+          {fila(`${mandato ? '2 · Comisión, base gravable' : 'Base gravable'} (${prod?.name ?? (item || 'ítem de comisión')})`, `${fmtCop2(base)} COP`)}
           {fila(iva ? `${iva.name || 'IVA'} ${iva.percentage} %` : 'IVA (el ítem no tiene impuesto en Siigo)', `${fmtCop2(ivaV)} COP`)}
           {fila('Total de la factura', `${fmtCop2(total)} COP`, true)}
         </div>
-        <p style={{ fontSize: 11, color: C.tenue, margin: '8px 0 0', lineHeight: 1.5 }}>La factura no es {fmtCop2(comision)} + IVA: la base se calcula para que base + IVA dé la comisión. Siigo liquida el IVA con la tarifa del ítem; puede haber un centavo de redondeo.</p>
+        {mandato && <p style={{ fontSize: 11, color: C.tenue, margin: '8px 0 0', lineHeight: 1.5 }}>Factura de mandato por el total del movimiento: terceros + base + IVA = {fmtCop2(monto)} COP. Los ingresos para terceros no son ingreso propio y van sin IVA.</p>}
+        <p style={{ fontSize: 11, color: C.tenue, margin: '8px 0 0', lineHeight: 1.5 }}>La comisión no es {fmtCop2(comision)} + IVA: la base se calcula para que base + IVA dé la comisión. Siigo liquida el IVA con la tarifa del ítem; puede haber un centavo de redondeo.</p>
 
         {resultado && <p style={{ fontSize: 12.5, color: resultado.ok ? C.entra : '#F87171', margin: '12px 0 0', lineHeight: 1.5, wordBreak: 'break-word' }}>{resultado.texto}</p>}
         <div className="flex" style={{ gap: 9, marginTop: 16 }}>
           <button onClick={onCerrar} style={{ flex: 1, fontFamily: FONT, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.borde}`, cursor: 'pointer' }}>Cancelar</button>
-          <button onClick={emitir} disabled={emitiendo || !elegido || !(p > 0) || !item} className="lincoin-btn-white"
-            style={{ flex: 1.4, fontFamily: FONT, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 700, border: 'none', cursor: 'pointer', opacity: emitiendo || !elegido || !(p > 0) || !item ? 0.45 : 1 }}>
+          <button onClick={emitir} disabled={emitiendo || !elegido || !(p > 0) || faltaItem} className="lincoin-btn-white"
+            style={{ flex: 1.4, fontFamily: FONT, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 700, border: 'none', cursor: 'pointer', opacity: emitiendo || !elegido || !(p > 0) || faltaItem ? 0.45 : 1 }}>
             {emitiendo ? 'Emitiendo en Siigo…' : `Emitir factura por ${fmtCop2(total)}`}
           </button>
         </div>

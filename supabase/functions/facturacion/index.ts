@@ -1036,8 +1036,24 @@ async function emitirComision(userId: string, txId: string, d: { identification:
     monto: monto.toLocaleString('es-CO', { maximumFractionDigits: 2 }), fecha: hoy, utilidad: String(pct),
   }
   const plantilla = (s: string) => s.replace(/\{(\w+)\}/g, (_m, k) => ctx[k] ?? `{${k}}`)
-  const descripcion = plantilla(cfg.desc_comision || 'Comisión {utilidad} % sobre {monto} · Comprobante Lincoin {numero}').slice(0, 500)
-  const observations = [cfg.observaciones, `Comprobante Lincoin ${(comp as any).numero}`, `Comisión ${pct} % sobre ${ctx.monto} COP (IVA incluido)`].filter(Boolean).join(' · ').slice(0, 500)
+  // MODELO COMISIÓN = factura de MANDATO por el valor TOTAL del movimiento,
+  // con dos ítems (como la FEV 723 que hizo el cliente a mano):
+  //   1) Ingresos recibidos para terceros = monto − comisión, sin IVA.
+  //   2) Comisión por intermediación: base tal que base + IVA = comisión.
+  // 10.000.000 con 100.000 de comisión → 9.900.000 + 84.033,61 + IVA
+  // 15.966,39 = 10.000.000. En PSP (depósito a mano) sigue solo la comisión.
+  const mandato = String(cfg.modelo ?? '') === 'comision'
+  const itemTerceros = String(cfg.item_terceros ?? '').trim()
+  if (mandato && !itemTerceros) return falla('Falta elegir en Configuración el ítem de ingresos recibidos para terceros (sin IVA).')
+  if (mandato) {
+    const ivaT = ivaDelProducto(cfg, itemTerceros)
+    if (ivaT) return falla(`El ítem de ingresos para terceros (${itemTerceros}) tiene ${ivaT.name || 'IVA'} ${ivaT.percentage} % en Siigo, y va sin IVA. Elegí otro ítem o quitale el impuesto en Siigo.`)
+  }
+  const descripcion = plantilla(cfg.desc_comision || (mandato ? 'Comisión por intermediación en recaudo y dispersión' : 'Comisión {utilidad} % sobre {monto} · Comprobante Lincoin {numero}')).slice(0, 500)
+  const descTerceros = plantilla(cfg.desc_terceros || 'Ingresos recibidos para terceros').slice(0, 500)
+  const observations = (mandato
+    ? [cfg.observaciones || `Factura en desarrollo del contrato de mandato con ${cp.nombre}. Ítem 1: ingresos recibidos para terceros por cuenta del mandante; no constituyen ingreso propio (art. 29 ET). Ítem 2: comisión por intermediación en recaudo y dispersión de pagos, gravada con IVA.`, `Operación según liquidación Lincoin ${(comp as any).numero}`]
+    : [cfg.observaciones, `Comprobante Lincoin ${(comp as any).numero}`, `Comisión ${pct} % sobre ${ctx.monto} COP (IVA incluido)`]).filter(Boolean).join(' · ').slice(0, 500)
   // La tarifa que manda es la que SIIGO aplica al ítem, no la del catálogo
   // guardado (puede estar viejo, o Siigo no devolver el impuesto en la lista
   // de productos). Se arma con la del catálogo; si Siigo rechaza el pago
@@ -1047,11 +1063,16 @@ async function emitirComision(userId: string, txId: string, d: { identification:
   const armar = (tarifa: number) => {
     const base = r2(comision / (1 + tarifa))
     const ivaV = r2(base * tarifa)
-    const total = r2(base + ivaV)
+    // Mandato: los terceros absorben el redondeo, así el total es el monto exacto.
+    const terceros = mandato ? r2(monto - base - ivaV) : 0
+    const total = r2(terceros + base + ivaV)
     // El impuesto va SIEMPRE en la línea cuando hay tarifa: Siigo no aplica
     // por su cuenta el IVA del producto en una factura por API (con 60.000
     // calculó el total sin IVA y rechazó el pago).
-    const items = [{ code: item, description: descripcion, quantity: 1, price: base, ...(iva && tarifa > 0 ? { taxes: [{ id: iva.id }] } : {}) }]
+    const items = [
+      ...(mandato ? [{ code: itemTerceros, description: descTerceros, quantity: 1, price: terceros }] : []),
+      { code: item, description: descripcion, quantity: 1, price: base, ...(iva && tarifa > 0 ? { taxes: [{ id: iva.id }] } : {}) },
+    ]
     const cuerpo = {
       document: { id: Number(cfg.document_id) }, date: hoy,
       customer: { identification: cp.identification, branch_office: 0 },
@@ -1060,7 +1081,7 @@ async function emitirComision(userId: string, txId: string, d: { identification:
       observations, items,
       payments: [{ id: Number(cfg.payment_id), value: total, due_date: hoy }],
     }
-    return { base, ivaV, total, cuerpo }
+    return { base, ivaV, total, terceros, cuerpo }
   }
   // Automática (modelo Comisión): la pausa se revisa de nuevo justo antes de
   // mandar la factura a Siigo.
@@ -1077,7 +1098,7 @@ async function emitirComision(userId: string, txId: string, d: { identification:
     const m = /total invoice calculated is\s*([\d.,]+)/i.exec(motivoDe(r))
     const totalSiigo = m ? Number(m[1].replace(/,/g, '')) : NaN
     if (Number.isFinite(totalSiigo) && arm.base > 0) {
-      const tarifaReal = Math.round((totalSiigo / arm.base - 1) * 10000) / 10000
+      const tarifaReal = Math.round(((totalSiigo - arm.terceros) / arm.base - 1) * 10000) / 10000
       // Nunca se cae a "sin IVA" si el ítem tiene IVA: eso facturaría la
       // comisión entera como base (60.000 sin impuesto). Solo se ajusta a
       // otra tarifa positiva que Siigo diga aplicar.
@@ -1307,6 +1328,7 @@ Deno.serve(async (req) => {
         } else if (modelo === 'comision') {
           if (!(Number(actual.utilidad_pct) > 0)) faltan.push('el porcentaje de comisión')
           if (!actual.item_comision) faltan.push('el ítem de comisión')
+          if (!actual.item_terceros) faltan.push('el ítem de ingresos recibidos para terceros')
           if (!Object.keys(reglas).length) faltan.push('qué movimientos cobran comisión')
         } else if (modelo === 'psp') {
           // En PSP el ítem va por motivo: basta con que un motivo emita
