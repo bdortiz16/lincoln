@@ -428,7 +428,10 @@ export const ContactsSection: React.FC<{
         if (!amlActivo) return null;
         const doc = String(c?.docNumber ?? '').replace(/\D/g, '');
         if (!doc) return null;
-        return amlBenef[doc] ?? { estado: 'procesando' };
+        const f = amlBenef[doc];
+        // 'archivado' = la consulta de un beneficiario borrado (queda en el
+        // archivo de cumplimiento). Si vuelve a aparecer, espera una nueva.
+        return (!f || String(f.estado ?? '') === 'archivado') ? { estado: 'procesando' } : f;
     };
     // El veredicto que frena. UN SOLO criterio, el mismo que aplica el
     // servidor en mouv-proxy, para que la insignia y el envío no se
@@ -1249,18 +1252,27 @@ export const ContactsSection: React.FC<{
     }, [confirmar]);
     const pedirEliminar = (c: MouvContact) => setConfirmar({
         titulo: `¿Eliminar a ${prettyName(c.name)}?`,
-        cuerpo: 'Se quita de tu lista y se des-inscribe la cuenta. Para volver a transferirle tendrás que inscribirla otra vez y esperar la validación del banco.',
+        cuerpo: amlEsEvidencia(c)
+            ? 'Se quita de tu lista. El resultado de antecedentes no se borra: queda archivado para cumplimiento. Si lo inscribiste con el tipo de documento equivocado (por ejemplo cédula cuando era NIT), inscríbelo otra vez con el correcto y se hará una consulta nueva.'
+            : 'Se quita de tu lista y se des-inscribe la cuenta. Para volver a transferirle tendrás que inscribirla otra vez y esperar la validación del banco.',
         onOk: () => { setDetail(null); removeContact(c.id); },
     });
 
     const removeContact = async (id: string) => {
         const target = contacts.find(c => c.id === id);
-        // Cinturón: los botones ya no ofrecen borrar a quien es evidencia de
-        // cumplimiento, pero esta función también se llama desde otros lados.
-        // Un registro que motivó un bloqueo no se borra desde la interfaz.
+        // Un beneficiario con resultado de cumplimiento (riesgo alto, documento
+        // no vigente) SÍ se puede quitar —pasa cuando se inscribió con el tipo
+        // de documento equivocado—, pero antes su consulta se ARCHIVA en el
+        // servidor: el registro no se pierde y la inscripción nueva arranca
+        // limpia. Si no se pudo archivar, no se borra.
         if (target && amlEsEvidencia(target)) {
-            setNotice({ ok: false, text: 'Este beneficiario no se puede eliminar: el resultado de cumplimiento queda registrado.' });
-            return;
+            const doc = String(target.docNumber ?? '').replace(/\D/g, '');
+            const otroConMismoDoc = contacts.some(x => x.id !== target.id && String(x.docNumber ?? '').replace(/\D/g, '') === doc);
+            if (doc && !otroConMismoDoc) {
+                const r = await callTusdatos({ action: 'archivar_beneficiario', userId: currentUser!.id, documento: doc, motivo: `eliminado por el cliente (${target.docType ?? 'documento'} ${doc})` });
+                if (!r?.ok) { setNotice({ ok: false, text: r?.message ?? 'No se pudo archivar el resultado de antecedentes. Reintenta.' }); return; }
+                if (currentUser?.id) leerTusdatos(currentUser.id);
+            }
         }
         const isWallet = walletContacts.some(c => c.id === id);
         // 1) Quitar de la lista local del usuario (cada tipo de SU lista).
@@ -2294,7 +2306,7 @@ export const ContactsSection: React.FC<{
                                         </p>
                                         {amlEsEvidencia(c) && (
                                             <p style={{ fontSize: 11.5, color: '#878E88', lineHeight: 1.5 }}>
-                                                Este beneficiario no se puede eliminar: el resultado de cumplimiento queda registrado.
+                                                Si lo eliminas, el resultado de antecedentes queda archivado para cumplimiento. Si el tipo de documento estaba mal, inscríbelo otra vez con el correcto.
                                             </p>
                                         )}
 
@@ -2699,12 +2711,7 @@ export const ContactsSection: React.FC<{
                             <button onClick={() => setDetailMenu(v => !v)} style={{ width: 44, height: 44, borderRadius: 10, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#878E88', fontWeight: 700, fontSize: 16, flexShrink: 0 }} className="hover:bg-white/[0.09] transition-colors">···</button>
                             {detailMenu && (
                                 <div style={{ position: 'absolute', left: 24, bottom: 72, zIndex: 20, background: '#121413', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10, overflow: 'hidden', minWidth: 200, maxWidth: 260, boxShadow: '0 12px 30px rgba(0,0,0,0.5)' }}>
-                                    {amlEsEvidencia(detail) ? (
-                                        <div style={{ padding: '11px 14px', fontSize: 11.5, color: '#878E88', lineHeight: 1.45 }}>
-                                            Este beneficiario no se puede eliminar: el resultado de cumplimiento queda registrado.
-                                        </div>
-                                    ) : (
-                                        <>
+                                    <>
                                             <button onClick={() => { setDetailMenu(false); pedirEliminar(detail); }}
                                                 className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '11px 14px', fontSize: 12.5, color: '#F4F4F2' }}>Eliminar beneficiario</button>
                                             {amlDe(detail)?.nombreCoincide === false && (
@@ -2712,8 +2719,7 @@ export const ContactsSection: React.FC<{
                                                     Elimínalo e inscríbelo otra vez con el nombre que aparece en el documento.
                                                 </div>
                                             )}
-                                        </>
-                                    )}
+                                    </>
                                 </div>
                             )}
                             <button onClick={copyKey} className="flex items-center justify-center gap-2 hover:bg-white/[0.09] transition-colors"
@@ -2762,13 +2768,7 @@ export const ContactsSection: React.FC<{
                             fontFamily: "'Archivo', system-ui, sans-serif",
                         }}>
                             <button onClick={() => { setMenuFor(null); setDetail(c); }} className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '10px 14px', fontSize: 12.5, color: '#F4F4F2' }}>Ver detalle</button>
-                            {amlEsEvidencia(c) ? (
-                                <div style={{ padding: '10px 14px', fontSize: 11.5, color: '#878E88', borderTop: '1px solid rgba(255,255,255,0.07)', lineHeight: 1.45, maxWidth: 230 }}>
-                                    No se puede eliminar: queda registrado por cumplimiento.
-                                </div>
-                            ) : (
-                                <button onClick={() => { setMenuFor(null); pedirEliminar(c); }} className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '10px 14px', fontSize: 12.5, color: '#F87171', borderTop: '1px solid rgba(255,255,255,0.07)' }}>Eliminar</button>
-                            )}
+                            <button onClick={() => { setMenuFor(null); pedirEliminar(c); }} className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '10px 14px', fontSize: 12.5, color: '#F87171', borderTop: '1px solid rgba(255,255,255,0.07)' }}>Eliminar</button>
                         </div>
                     </>
                 );

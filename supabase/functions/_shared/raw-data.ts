@@ -23,6 +23,9 @@ export async function mergeRaw(db: any, userId: string, patch: Record<string, un
 
 export async function setRawPath(db: any, userId: string, path: string[], value: unknown, merge = true): Promise<string | null> {
   if (!userId || !path.length) return 'sin_ruta'
+  // Un NULL de SQL en jsonb_set anula raw_data ENTERO. Para "borrar" se
+  // escribe una marca (p. ej. { estado: 'archivado' }), nunca null.
+  if (value === null || value === undefined) return 'valor_vacio'
   const { error } = await db.rpc('raw_data_set_path', { p_user: userId, p_path: path, p_value: value, p_merge: merge })
   if (!error) return null
   if (!sinFuncion(String(error.message ?? ''))) return String(error.message)

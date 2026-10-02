@@ -1362,6 +1362,45 @@ Deno.serve(async (req: Request) => {
       return json(r.ok ? { ok: true, beneficiario: r.ficha } : r)
     }
 
+    // ── Archivar la consulta de un beneficiario que el cliente borra ─────
+    // Caso real: se inscribió con cédula cuando era NIT, la consulta dio
+    // riesgo alto por eso, y el beneficiario no se podía borrar. Ahora se
+    // puede: la consulta NO se pierde — pasa a beneficiariosArchivados con
+    // fecha y quién la archivó (y queda en audit_log) — y en su lugar queda
+    // una marca 'archivado' sin veredicto. Así:
+    //  - una inscripción nueva arranca limpia (la ficha se guarda fusionando
+    //    y arrastraba hallazgos y bloqueos de la consulta vieja);
+    //  - mientras no haya consulta nueva no sale plata a ese documento: el
+    //    control de envíos exige una consulta 'finalizado';
+    //  - si se vuelve a inscribir con el MISMO documento, Lincoin Risk
+    //    devuelve el mismo veredicto: borrar no sirve para saltarse un bloqueo.
+    if (accion === 'archivar_beneficiario') {
+      const uid = String(body.userId ?? yo.userId ?? '')
+      if (!uid || (!yo.esAdmin && yo.userId !== uid)) return json({ error: 'No autorizado' }, 401)
+      const doc = String(body.documento ?? '').replace(/\D/g, '')
+      if (!doc) return json({ ok: false, error: 'sin_documento', message: 'Falta el número de documento.' })
+      const raw = await leerRaw(uid)
+      const ahora = new Date().toISOString()
+      const previa = ((raw?.tusdatos ?? {}).beneficiarios ?? {})[doc]
+      const previaKumplo = ((raw?.kumplo ?? {}).beneficiarios ?? {})[doc]
+      if (previa && String(previa.estado ?? '') !== 'archivado') {
+        const e1 = await setRawPath(db, uid, ['tusdatos', 'beneficiariosArchivados', `${doc}_${Date.now()}`], { ...previa, archivadoAt: ahora, archivadoPor: yo.userId ?? 'admin', motivo: String(body.motivo ?? 'beneficiario eliminado por el cliente').slice(0, 200) }, false)
+        if (e1) return json({ ok: false, error: 'no_archivado', message: 'No se pudo archivar la consulta. Reintenta.' })
+        const e2 = await setRawPath(db, uid, ['tusdatos', 'beneficiarios', doc], { estado: 'archivado', archivadoAt: ahora }, false)
+        if (e2) return json({ ok: false, error: 'no_archivado', message: 'No se pudo archivar la consulta. Reintenta.' })
+      }
+      if (previaKumplo && String(previaKumplo.estado ?? '') !== 'archivado') {
+        await setRawPath(db, uid, ['kumplo', 'beneficiariosArchivados', `${doc}_${Date.now()}`], { ...previaKumplo, archivadoAt: ahora }, false)
+        await setRawPath(db, uid, ['kumplo', 'beneficiarios', doc], { estado: 'archivado', riesgo: 'desconocido', archivadoAt: ahora }, false)
+      }
+      await auditar('tusdatos.beneficiario_archivado', {
+        userId: uid, por: yo.userId ?? 'admin', documento: doc,
+        categoria: previa?.categoria ?? null, operable: previa?.operable ?? null,
+        motivo: body.motivo ?? null,
+      })
+      return json({ ok: true })
+    }
+
     // ── Recoger resultados que quedaron procesando ───────────────────────
     // El webhook es el camino principal; esto es el respaldo, por si un envío
     // se pierde. Sin respaldo, una consulta perdida deja a alguien en
