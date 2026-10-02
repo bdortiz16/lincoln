@@ -2683,6 +2683,26 @@ serve(async (req: Request) => {
       {
         const lista: any[] = Array.isArray(rawU?.mouvContacts) ? rawU.mouvContacts : []
         const soloDig = (v: unknown) => String(v ?? '').replace(/\D/g, '')
+        // El mismo documento escrito distinto: un NIT puede venir con o sin
+        // dígito de verificación (901234567 / 9012345678) y con ceros a la
+        // izquierda. El proveedor de Bre-B lo devuelve de una forma y el
+        // cliente lo inscribe de otra: comparar el texto bloqueaba pagos a la
+        // MISMA empresa ("la llave pertenece a GRUPO LALIBELA" siendo Grupo
+        // Lalibela). El dígito extra solo se acepta si es el DV correcto.
+        const dvNit = (base: string) => {
+          const pesos = [3, 7, 13, 17, 19, 23, 29, 37, 41, 43, 47, 53, 59, 67, 71]
+          let suma = 0
+          for (let i = 0; i < base.length && i < pesos.length; i++) suma += Number(base[base.length - 1 - i]) * pesos[i]
+          const r = suma % 11
+          return r > 1 ? 11 - r : r
+        }
+        const mismoDoc = (x: unknown, y: unknown) => {
+          const a = soloDig(x).replace(/^0+/, ''), b = soloDig(y).replace(/^0+/, '')
+          if (!a || !b) return false
+          if (a === b) return true
+          const [largo, corto] = a.length > b.length ? [a, b] : [b, a]
+          return largo.length === corto.length + 1 && corto.length >= 8 && largo.startsWith(corto) && Number(largo[largo.length - 1]) === dvNit(corto)
+        }
         // Las llaves de celular viajan en varios formatos (3001234567,
         // +573001234567, 57 300 123 4567) y Mouv las empareja todas. Si acá no
         // se emparejan igual, el contacto no se encuentra, no hay corte y el
@@ -2712,7 +2732,7 @@ serve(async (req: Request) => {
         const hit = cands[0]
         const docInscrito = soloDig(hit?.docNumber)
         if (docInscrito) {
-          if (docDest && docDest !== docInscrito) {
+          if (docDest && !mismoDoc(docDest, docInscrito)) {
             await logAudit(userId, 'mouv.destinatario_incoherente', {
               rail, docEnviado: docDest, docInscrito, beneficiario: hit?.name ?? null,
             })
@@ -2736,7 +2756,7 @@ serve(async (req: Request) => {
           try {
             const rrPrev = await mouvResolveBrebKey(String((payload.recipient as any)?.key ?? ''), String((payload.recipient as any)?.keyType ?? ''))
             const docReal = soloDig(rrPrev?.idValue)
-            if (rrPrev?.found && docReal && docReal !== docDest) {
+            if (rrPrev?.found && docReal && !mismoDoc(docReal, docDest)) {
               await logAudit(userId, 'mouv.titular_llave_no_coincide', {
                 docVerificado: docDest, docTitular: docReal, titular: rrPrev.fullName ?? null,
               })
