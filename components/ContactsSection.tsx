@@ -810,7 +810,13 @@ export const ContactsSection: React.FC<{
         ...rawBankList.filter((c: any) => c?.accountKind === 'wallet'),
     ];
     // Vista combinada (lista e interfaz)
-    const contacts: MouvContact[] = [...walletContacts, ...bankContacts];
+    // Lo más reciente primero: una cuenta recién inscrita aparece arriba,
+    // sin depender del orden en que quedó guardada la lista.
+    const fechaDe = (c: any) => { const t = Date.parse(String(c?.createdAt ?? '')); return Number.isFinite(t) ? t : 0; };
+    const contacts: MouvContact[] = [...walletContacts, ...bankContacts]
+        .map((c, i) => ({ c, i }))
+        .sort((a, b) => (fechaDe(b.c) - fechaDe(a.c)) || (a.i - b.i))
+        .map(x => x.c);
 
     // Guarda UNA lista bajo SU llave a TRAVÉS DEL SERVIDOR (service-role):
     // la edge function escribe raw_data sin pasar por RLS ni el candado —

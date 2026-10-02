@@ -518,7 +518,17 @@ async function direccionDelBeneficiario(userId: string, identification: string, 
       const direccion = limpiarDireccion(r.domicilio.direccion ?? '') || calle
       if (hit) {
         const actualizado = { ...hit, cityCode: m.codigo, cityName: `${m.nombre}, ${m.deptoNombre}`, stateCode: m.depto, ...(hit.address ? {} : { address: direccion }), direccionFuente: `${r.domicilio.fuente} (Cámara de Comercio${r.domicilio.camara ? ` de ${r.domicilio.camara}` : ''})` }
-        await db.from('users').update({ raw_data: { ...raw, mouvContacts: contactos.map(c => c === hit ? actualizado : c) } }).eq('id', userId).then(() => {}, () => {})
+        // Se relee la fila JUSTO antes de guardar: entre la lectura de arriba y
+        // acá pasó la consulta al RUES (segundos), y guardar la copia vieja
+        // borraba los beneficiarios inscritos en ese rato. Solo se cambia ESTE
+        // contacto, por id, sobre la lista fresca.
+        const { data: fresca } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
+        const rawF = ((fresca as any)?.raw_data ?? {}) as Record<string, any>
+        const listaF: any[] = Array.isArray(rawF.mouvContacts) ? rawF.mouvContacts : []
+        if (listaF.some(c => c?.id && c.id === hit.id)) {
+          const { cityCode, cityName, stateCode, direccionFuente } = actualizado as any
+          await db.from('users').update({ raw_data: { ...rawF, mouvContacts: listaF.map(c => c?.id === hit.id ? { ...c, cityCode, cityName, stateCode, direccionFuente, ...(c.address ? {} : { address: direccion }) } : c) } }).eq('id', userId).then(() => {}, () => {})
+        }
       }
       return { address: direccion, city: { country_code: 'Co', state_code: m.depto, city_code: m.codigo } }
     }
