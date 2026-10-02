@@ -230,8 +230,29 @@
             + '<pre id="lc-fallo-det" style="font-size:11px;color:rgba(244,244,242,0.6);background:#121413;border-radius:10px;padding:10px;white-space:pre-wrap;word-break:break-all;max-height:180px;overflow:auto;margin:0 0 14px"></pre>'
             + '<button onclick="location.reload()" style="width:100%;padding:12px;border:none;border-radius:10px;background:#F4F4F2;color:#0C0E0D;font-weight:700;font-size:14px;cursor:pointer">Recargar</button></div>';
           document.body.appendChild(d);
-          document.getElementById('lc-fallo-det').textContent = (errores.length ? errores.slice(-6) : ['Sin errores registrados.']).concat(info, [navigator.userAgent, new Date().toISOString()]).join('\n');
-          var i = setInterval(function () { if (montada()) { d.remove(); clearInterval(i); } }, 1000);
+          // Prueba directa del archivo principal: cuánto llega, cada segundo.
+          // Distingue "lento", "detenido" y "el servidor respondió con error".
+          var prueba = 'Probando la descarga…';
+          var sc = document.querySelector('script[type="module"][src]');
+          var url = sc && sc.src;
+          if (url && window.fetch) {
+            var t0 = Date.now(), bytes = 0;
+            fetch(url + (url.indexOf('?') < 0 ? '?' : '&') + 'diag=' + t0, { cache: 'no-store' }).then(function (res) {
+              prueba = 'HTTP ' + res.status + ' · ' + (res.headers.get('content-type') || '?') + ' · ' + (res.headers.get('content-length') || '?') + ' B esperados';
+              var base = prueba;
+              if (!res.body || !res.body.getReader) return res.text().then(function (x) { prueba = base + ' · llegó ' + x.length + ' B en ' + (Date.now() - t0) + ' ms'; });
+              var rd = res.body.getReader();
+              var paso = function () { return rd.read().then(function (r) { if (r.done) { prueba = base + ' · COMPLETO ' + bytes + ' B en ' + (Date.now() - t0) + ' ms'; return; } bytes += r.value.length; prueba = base + ' · van ' + bytes + ' B en ' + Math.round((Date.now() - t0) / 1000) + ' s'; return paso(); }); };
+              return paso();
+            }).catch(function (e) { prueba = 'La descarga falló: ' + (e && e.message || e) + ' tras ' + (Date.now() - t0) + ' ms'; });
+          }
+          var pintar = function () {
+            var js2 = (performance.getEntriesByType ? performance.getEntriesByType('resource') : []).filter(function (x) { return /\/assets\//.test(x.name); }).map(function (x) { return x.name.split('/').pop() + ' · ' + Math.round(x.duration) + ' ms · ' + (x.transferSize || x.encodedBodySize || 0) + ' B'; });
+            document.getElementById('lc-fallo-det').textContent = (errores.length ? errores.slice(-6) : ['Sin errores registrados.'])
+              .concat(js2.length ? js2 : info, ['Archivo: ' + (url ? url.split('/').pop() : 'no encontrado'), prueba, navigator.userAgent, 'Inicio ' + new Date(performance.timeOrigin || Date.now()).toISOString(), 'Ahora ' + new Date().toISOString()]).join('\n');
+          };
+          pintar();
+          var i = setInterval(function () { if (montada()) { d.remove(); clearInterval(i); return; } pintar(); }, 1000);
         }
         setTimeout(mostrar, 12000);
       })();
