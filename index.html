@@ -206,8 +206,23 @@
     <script>
       (function () {
         var errores = [];
+        // Reintento automático: si un archivo de la app no llega (red lenta que
+        // corta la descarga), se recarga sola hasta 4 veces. Lo que ya bajó
+        // queda en caché (los /assets/ son inmutables), así que cada intento
+        // solo trae lo que faltó.
+        var CLAVE = 'lc_boot_retry', MAX = 4, recargando = false;
+        function intentos() { try { return +(sessionStorage.getItem(CLAVE) || 0); } catch (x) { return MAX; } }
+        function reintentar() {
+          if (recargando) return;
+          var n = intentos();
+          if (n >= MAX) return;
+          recargando = true;
+          try { sessionStorage.setItem(CLAVE, String(n + 1)); } catch (x) { return; }
+          setTimeout(function () { location.reload(); }, 1500);
+        }
         window.addEventListener('error', function (e) {
           var t = e && e.target;
+          if (t && t !== window && (t.src || t.href) && /\/assets\//.test(t.src || t.href || '')) reintentar();
           if (t && t !== window && (t.src || t.href)) errores.push('No cargó: ' + (t.src || t.href));
           else errores.push((e.message || 'Error') + (e.filename ? ' (' + e.filename.split('/').pop() + ':' + e.lineno + ')' : ''));
         }, true);
@@ -215,6 +230,8 @@
           var r = e && e.reason;
           errores.push('Promesa: ' + (r && (r.message || r)));
         });
+        // La app arrancó: se limpia el contador para la próxima vez.
+        var limpiar = setInterval(function () { if (montada()) { try { sessionStorage.removeItem(CLAVE); } catch (x) { /* */ } clearInterval(limpiar); } }, 1000);
         function montada() { var r = document.getElementById('root'); return !!(r && r.childElementCount > 0 && (r.innerText || '').trim().length > 0); }
         function mostrar() {
           if (montada() || document.getElementById('lc-fallo')) return;
@@ -226,9 +243,9 @@
           d.innerHTML = '<div style="max-width:440px;width:100%;background:#0C0E0D;border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:24px">'
             + '<div style="font-weight:800;letter-spacing:-0.6px;font-size:22px">Lincoin<span style="color:#4ADE80">.</span></div>'
             + '<p style="font-size:15px;font-weight:700;margin:16px 0 6px">La página no terminó de cargar</p>'
-            + '<p style="font-size:13px;color:#878E88;margin:0 0 14px;line-height:1.5">Recarga la página. Si sigue igual, envía una captura de esta pantalla a soporte.</p>'
+            + '<p style="font-size:13px;color:#878E88;margin:0 0 14px;line-height:1.5">' + (intentos() >= MAX ? 'Se intentó ' + MAX + ' veces. Tu conexión está cortando la descarga: prueba con otra red (datos móviles u otro Wi-Fi). Si sigue igual, envía una captura de esta pantalla a soporte.' : 'Recarga la página. Si sigue igual, envía una captura de esta pantalla a soporte.') + '</p>'
             + '<pre id="lc-fallo-det" style="font-size:11px;color:rgba(244,244,242,0.6);background:#121413;border-radius:10px;padding:10px;white-space:pre-wrap;word-break:break-all;max-height:180px;overflow:auto;margin:0 0 14px"></pre>'
-            + '<button onclick="location.reload()" style="width:100%;padding:12px;border:none;border-radius:10px;background:#F4F4F2;color:#0C0E0D;font-weight:700;font-size:14px;cursor:pointer">Recargar</button></div>';
+            + '<button onclick="try{sessionStorage.removeItem(\'lc_boot_retry\')}catch(x){};location.reload()" style="width:100%;padding:12px;border:none;border-radius:10px;background:#F4F4F2;color:#0C0E0D;font-weight:700;font-size:14px;cursor:pointer">Recargar</button></div>';
           document.body.appendChild(d);
           // Prueba directa del archivo principal: cuánto llega, cada segundo.
           // Distingue "lento", "detenido" y "el servidor respondió con error".
