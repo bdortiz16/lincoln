@@ -199,6 +199,43 @@
 </head>
   <body>
     <div id="root"></div>
+    <!-- Red de seguridad: si la app no llega a pintar nada (error al cargar el
+         código, archivo que no llegó), en vez de una pantalla negra muda se
+         muestra qué pasó y un botón para recargar. Va antes del bundle para
+         capturar también los errores de carga del propio bundle. -->
+    <script>
+      (function () {
+        var errores = [];
+        window.addEventListener('error', function (e) {
+          var t = e && e.target;
+          if (t && t !== window && (t.src || t.href)) errores.push('No cargó: ' + (t.src || t.href));
+          else errores.push((e.message || 'Error') + (e.filename ? ' (' + e.filename.split('/').pop() + ':' + e.lineno + ')' : ''));
+        }, true);
+        window.addEventListener('unhandledrejection', function (e) {
+          var r = e && e.reason;
+          errores.push('Promesa: ' + (r && (r.message || r)));
+        });
+        function montada() { var r = document.getElementById('root'); return !!(r && r.childElementCount > 0 && (r.innerText || '').trim().length > 0); }
+        function mostrar() {
+          if (montada() || document.getElementById('lc-fallo')) return;
+          var js = (performance.getEntriesByType ? performance.getEntriesByType('resource') : []).filter(function (x) { return /\/assets\/.*\.js/.test(x.name); });
+          var info = js.length ? js.map(function (x) { return x.name.split('/').pop() + ' · ' + Math.round(x.duration) + ' ms · ' + (x.transferSize || x.encodedBodySize || 0) + ' B'; }) : ['El código de la app no llegó a descargarse.'];
+          var d = document.createElement('div');
+          d.id = 'lc-fallo';
+          d.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px;background:#070808;font-family:Archivo,system-ui,sans-serif;color:#F4F4F2';
+          d.innerHTML = '<div style="max-width:440px;width:100%;background:#0C0E0D;border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:24px">'
+            + '<div style="font-weight:800;letter-spacing:-0.6px;font-size:22px">Lincoin<span style="color:#4ADE80">.</span></div>'
+            + '<p style="font-size:15px;font-weight:700;margin:16px 0 6px">La página no terminó de cargar</p>'
+            + '<p style="font-size:13px;color:#878E88;margin:0 0 14px;line-height:1.5">Recarga la página. Si sigue igual, envía una captura de esta pantalla a soporte.</p>'
+            + '<pre id="lc-fallo-det" style="font-size:11px;color:rgba(244,244,242,0.6);background:#121413;border-radius:10px;padding:10px;white-space:pre-wrap;word-break:break-all;max-height:180px;overflow:auto;margin:0 0 14px"></pre>'
+            + '<button onclick="location.reload()" style="width:100%;padding:12px;border:none;border-radius:10px;background:#F4F4F2;color:#0C0E0D;font-weight:700;font-size:14px;cursor:pointer">Recargar</button></div>';
+          document.body.appendChild(d);
+          document.getElementById('lc-fallo-det').textContent = (errores.length ? errores.slice(-6) : ['Sin errores registrados.']).concat(info, [navigator.userAgent, new Date().toISOString()]).join('\n');
+          var i = setInterval(function () { if (montada()) { d.remove(); clearInterval(i); } }, 1000);
+        }
+        setTimeout(mostrar, 12000);
+      })();
+    </script>
     <script type="module" src="/index.tsx?v=20260629d"></script>
   </body>
 </html>
