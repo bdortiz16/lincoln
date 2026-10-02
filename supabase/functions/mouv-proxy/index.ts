@@ -21,6 +21,7 @@
 // ─────────────────────────────────────────────
 import { serve } from 'https://deno.land/std@0.192.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { mergeRaw } from '../_shared/raw-data.ts'
 import { FIELD_ENC_KEY, decField } from '../_shared/field-crypto.ts'
 // Verificación TOTP en el SERVIDOR (2FA), con Web Crypto NATIVO (sin
 // dependencias externas que pudieran no cargar y tumbar el proxy). Mismo
@@ -1992,7 +1993,7 @@ serve(async (req: Request) => {
       cuentaNo = String((Number(count ?? 0) + 1) * 2 + 30).padStart(4, '0')
     }
 
-    await db.from('users').update({ raw_data: { ...rd, breb: llave, cuentaNo } }).eq('id', userId)
+    await mergeRaw(db, userId, { breb: llave, cuentaNo })
     await logAudit(userId, 'mouv.breb_llave.emitida', { llave: llave.valor, id: llave.id, idempotente: !!d.idempotent })
     return json(200, { ok: true, llave, cuenta: cuentaNo, idempotente: !!d.idempotent })
   }
@@ -3351,7 +3352,7 @@ serve(async (req: Request) => {
         const raw4 = (u4?.raw_data ?? {}) as Record<string, any>
         const list = Array.isArray(raw4.mouvContacts) ? raw4.mouvContacts : []
         const next = list.map((c: any) => String(c?.accountNumber ?? '').replace(/\D/g, '') === accKey ? { ...c, finityId: fin.destinationId } : c)
-        if (JSON.stringify(next) !== JSON.stringify(list)) await db.from('users').update({ raw_data: { ...raw4, mouvContacts: next } }).eq('id', userId)
+        if (JSON.stringify(next) !== JSON.stringify(list)) await mergeRaw(db, userId, { mouvContacts: next })
       } catch { /* best-effort — nunca bloquea la operación */ }
     }
 

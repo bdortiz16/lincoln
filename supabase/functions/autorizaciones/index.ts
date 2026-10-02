@@ -29,6 +29,7 @@
 //    Admin:    admin_listar {empresaId}
 // ══════════════════════════════════════════════════════════════════
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { mergeRaw } from '../_shared/raw-data.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -72,7 +73,7 @@ async function notificar(userId: string, titulo: string, mensaje: string, tipo: 
     const raw = { ...((cur?.raw_data as any) ?? {}) }
     const lista: any[] = Array.isArray(raw.notifications) ? raw.notifications : []
     raw.notifications = [...lista, { id: Date.now(), type: tipo, title: titulo, message: mensaje, read: false, date: new Date().toLocaleDateString('es-CO') }].slice(-60)
-    await db.from('users').update({ raw_data: raw }).eq('id', userId)
+    await mergeRaw(db, userId, { notifications: raw.notifications })
   } catch { /* la campana es un extra */ }
   try {
     await fetch(`${SUPABASE_URL}/functions/v1/push`, {
@@ -86,10 +87,7 @@ async function notificar(userId: string, titulo: string, mensaje: string, tipo: 
 
 // Escribe SOLO las claves del vínculo, sobre la fila fresca.
 async function guardarEmpresa(empresaId: string, autorizadas: Autorizada[], solicitudes: Solicitud[]) {
-  const { data: cur } = await db.from('users').select('raw_data').eq('id', empresaId).single()
-  const raw = { ...((cur?.raw_data as any) ?? {}), personasAutorizadas: autorizadas, personasSolicitudes: solicitudes }
-  const { error } = await db.from('users').update({ raw_data: raw }).eq('id', empresaId)
-  return error ? error.message : null
+  return mergeRaw(db, empresaId, { personasAutorizadas: autorizadas, personasSolicitudes: solicitudes })
 }
 async function guardarPersona(personaId: string, patchRaw: Record<string, unknown>, patchDocs?: Record<string, unknown>, kyc?: string) {
   const { data: cur } = await db.from('users').select('raw_data, documents').eq('id', personaId).single()

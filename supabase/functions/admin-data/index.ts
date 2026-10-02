@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { mergeRaw } from '../_shared/raw-data.ts'
 import { FIELD_ENC_KEY, encField, decField, keyFp, KeyMismatchError } from '../_shared/field-crypto.ts'
 
 // La librería de passkeys se carga SOLO cuando se usa. Con un import normal,
@@ -181,7 +182,7 @@ async function rememberMfaSession(req: Request, userId: string, stage: 'email' |
     const list: any[] = Array.isArray(raw.mfaSessions) ? raw.mfaSessions : []
     const rest = list.filter((x: any) => x?.sid !== sid)
     raw.mfaSessions = [{ sid, at: new Date().toISOString(), stage }, ...rest].slice(0, 5)
-    await db.from('users').update({ raw_data: raw }).eq('id', userId)
+    await mergeRaw(db, userId, { mfaSessions: raw.mfaSessions })
   } catch { /* si no se puede anotar, la acción sensible pedirá 2FA de nuevo */ }
 }
 
@@ -251,7 +252,7 @@ async function requireAdminOtp(adminUserId: string | undefined, code: unknown): 
   if (counter < 0) return 'Código incorrecto o vencido.'
   const last = Number(raw.mfaLastCounter ?? -1)
   if (Number.isFinite(last) && counter <= last) return 'Ese código ya se usó. Espera al siguiente que muestre tu app.'
-  await db.from('users').update({ raw_data: { ...raw, mfaLastCounter: counter } }).eq('id', adminUserId)
+  await mergeRaw(db, adminUserId, { mfaLastCounter: counter })
   return null
 }
 
@@ -1638,7 +1639,7 @@ Deno.serve(async (req: Request) => {
           const idx = await matchBackup(code, hashes)
           if (idx >= 0) {
             const rest = hashes.filter((_, i) => i !== idx)
-            await db.from('users').update({ raw_data: { ...raw, mfaBackupHashes: rest } }).eq('id', selfServiceBody.userId)
+            await mergeRaw(db, selfServiceBody.userId, { mfaBackupHashes: rest })
             await auditAdmin(req, 'mfa_backup_code_used', { userId: selfServiceBody.userId, remaining: rest.length })
             if (String(selfServiceBody.stage ?? '') === 'login') {
               const { data: rr } = await db.from('users').select('role').eq('id', uidV).single()
@@ -1691,7 +1692,7 @@ Deno.serve(async (req: Request) => {
           await noteMfaFail('código ya utilizado')
           return json({ ok: false, error: 'code_reused', message: 'Ese código ya se usó. Espera al siguiente que muestre tu app.' })
         }
-        await db.from('users').update({ raw_data: { ...raw, mfaLastCounter: counter } }).eq('id', uidV)
+        await mergeRaw(db, uidV, { mfaLastCounter: counter })
         // Un acierto BORRA los fallos recientes: quien acaba de demostrar que
         // es el dueño no debe arrastrar un contador que lo bloquee después.
         try { await db.from('audit_log').delete().eq('action', 'auth.mfa_failed').gte('created_at', sinceMfa).contains('metadata', { userId: uidV }) } catch { /* el límite se vence solo */ }

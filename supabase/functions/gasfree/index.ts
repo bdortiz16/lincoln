@@ -23,6 +23,7 @@
 // ════════════════════════════════════════════════════════
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { mergeRaw } from '../_shared/raw-data.ts'
 import { FIELD_ENC_KEY, decField } from '../_shared/field-crypto.ts'
 import { ethers } from 'https://esm.sh/ethers@6.13.5'
 
@@ -944,7 +945,7 @@ async function persistIndexToRows(rows: any[], idx: number, source = 'auto') {
     // coincida) para que un pin/reset/reconciliación no lo deje desfasado.
     await writeDurableIndex(r.id, rowEmail, idx)
     if (prev === idx) continue
-    await db.from('users').update({ raw_data: { ...raw, gasfreeIndex: idx } }).eq('id', r.id)
+    await mergeRaw(db, r.id, { gasfreeIndex: idx })
     // Guarda en el archivo las DIRECCIONES reales (no solo el índice) para que
     // el admin pueda ver la wallet anterior y la nueva.
     const [oldAddress, newAddress] = await Promise.all([addressForIndex(prev), addressForIndex(idx)])
@@ -961,7 +962,7 @@ async function persistIndexToRows(rows: any[], idx: number, source = 'auto') {
 async function mergeUserRaw(userId: string, patch: Record<string, any>) {
   const { data: fresh } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
   const raw = (fresh?.raw_data ?? {}) as Record<string, any>
-  await db.from('users').update({ raw_data: { ...raw, ...patch } }).eq('id', userId)
+  await mergeRaw(db, userId, patch)
 }
 
 // AUDITORÍA: detecta wallets colisionadas (un mismo índice HD compartido por
@@ -1840,7 +1841,7 @@ async function myConvertSettle(
     }
   }
   const onchainAfter = Math.max(0, parseFloat((bal - value - fee).toFixed(dec)))
-  await db.from('users').update({ raw_data: { ...raw, gasfreeCredited: onchainAfter } }).eq('id', userId)
+  await mergeRaw(db, userId, { gasfreeCredited: onchainAfter })
 
   await logTreasuryMovement({
     direction: 'in', amount: value, fromAddress: acct.gasFreeAddress, fromUserEmail: u.email,

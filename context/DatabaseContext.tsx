@@ -1217,6 +1217,24 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       return true;
     }
     try {
+      // Primero, ATÓMICO en la base (migración 2026_raw_data_atomico.sql):
+      // solo las claves del parche, bajo bloqueo de fila. Leer el blob,
+      // mezclar y guardarlo entero pisaba lo que el servidor escribía en el
+      // medio (antecedentes, avisos) y viceversa: así se perdían beneficiarios.
+      // Solo para la PROPIA fila: la función escribe en la cuenta de quien
+      // llama. Un admin que edita a otro cliente sigue por el camino de abajo.
+      if (currentUser?.id === id) try {
+        const { data: okRpc, error: errRpc } = await Promise.race([
+          supabase.rpc('raw_data_merge_self', { p_patch: patch }),
+          new Promise<{ data: null; error: any }>(resolve => setTimeout(() => resolve({ data: null, error: { message: 'timeout' } }), 8000)),
+        ]) as any;
+        if (!errRpc && okRpc === true) {
+          pendingWriteUntilRef.current = Date.now() + 10000;
+          setUsers(prev => prev.map(x => x.id === id ? { ...x, ...patch } as any : x));
+          if (currentUser?.id === id) setCurrentUser(prev => prev ? { ...prev, ...patch } as any : prev);
+          return true;
+        }
+      } catch { /* sin la función todavía: sigue el camino de siempre */ }
       // Merge contra la fila REAL para no pisar campos de otros flujos.
       const { data: cur } = await Promise.race([
         supabase.from('users').select('raw_data').eq('id', id).single(),

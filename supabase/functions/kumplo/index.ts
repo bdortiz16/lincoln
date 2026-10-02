@@ -25,6 +25,7 @@
 // ════════════════════════════════════════════════════════
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { mergeRaw, setRawPath } from '../_shared/raw-data.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -185,23 +186,17 @@ async function leerEstado(userId: string): Promise<EstadoKumplo> {
 }
 
 async function guardarEstado(userId: string, parche: EstadoKumplo) {
-  const { data } = await db.from('users').select('raw_data').eq('id', userId).single()
-  const raw = { ...((data as any)?.raw_data ?? {}) }
-  raw.kumplo = { ...(raw.kumplo ?? {}), ...parche, at: new Date().toISOString() }
-  await db.from('users').update({ raw_data: raw }).eq('id', userId)
-  return raw.kumplo as EstadoKumplo
+  const prev = await leerEstado(userId)
+  const cambio = { ...parche, at: new Date().toISOString() }
+  await setRawPath(db, userId, ['kumplo'], cambio, true)
+  return { ...prev, ...cambio } as EstadoKumplo
 }
 
 // Los beneficiarios cuelgan de raw_data.kumplo, que ya es escritura solo del
 // servidor. Así no hace falta proteger otra clave: si el cliente pudiera
 // escribirla, se aprobaría solo a quien quisiera.
 async function guardarBeneficiario(userId: string, documento: string, ficha: unknown) {
-  const { data } = await db.from('users').select('raw_data').eq('id', userId).single()
-  const raw = { ...((data as any)?.raw_data ?? {}) }
-  const k = { ...(raw.kumplo ?? {}) }
-  k.beneficiarios = { ...(k.beneficiarios ?? {}), [documento]: ficha }
-  raw.kumplo = k
-  await db.from('users').update({ raw_data: raw }).eq('id', userId)
+  await setRawPath(db, userId, ['kumplo', 'beneficiarios', documento], ficha as any, false)
 }
 
 async function auditar(accion: string, meta: unknown) {

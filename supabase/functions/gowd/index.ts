@@ -25,6 +25,7 @@
 //    equivocado es plata que le llega a quien no es.
 // ══════════════════════════════════════════════════════════════════
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { mergeRaw } from '../_shared/raw-data.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -161,7 +162,7 @@ async function notificarCliente(userId: string, titulo: string, mensaje: string,
     const raw = { ...((cur?.raw_data as any) ?? {}) }
     const lista: any[] = Array.isArray(raw.notifications) ? raw.notifications : []
     raw.notifications = [...lista, { id: Date.now(), type: tipo, title: titulo, message: mensaje, read: false, date: new Date().toLocaleDateString('es-CO') }].slice(-60)
-    await db.from('users').update({ raw_data: raw }).eq('id', userId)
+    await mergeRaw(db, userId, { notifications: raw.notifications })
   } catch { /* la campana es un extra */ }
   await push({ user_ids: [userId], titulo, cuerpo: mensaje, tag: `brasil-${userId}`, url: '/portal_empresas' })
 }

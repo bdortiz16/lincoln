@@ -39,6 +39,7 @@
 // ════════════════════════════════════════════════════════
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { mergeRaw, setRawPath } from '../_shared/raw-data.ts'
 import { municipioPorNombre, municipioPorCodigo } from '../_shared/municipios.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
@@ -581,22 +582,21 @@ async function leerRaw(userId: string): Promise<any> {
 
 async function guardarTitular(userId: string, parche: Ficha): Promise<Ficha> {
   if (!userId) return parche   // consulta del monitoreo: no es de nadie
-  const raw = { ...(await leerRaw(userId)) }
-  const prev = raw.tusdatos ?? {}
-  raw.tusdatos = { ...prev, ...parche, beneficiarios: prev.beneficiarios ?? {}, at: new Date().toISOString() }
-  await db.from('users').update({ raw_data: raw }).eq('id', userId)
-  return raw.tusdatos as Ficha
+  // Solo la ficha del titular, sin tocar el resto de raw_data (ni sus
+  // beneficiarios): guardar el blob entero borraba lo escrito en el medio.
+  const prev = ((await leerRaw(userId))?.tusdatos ?? {}) as any
+  const { beneficiarios: _b, ...sinBenef } = (parche ?? {}) as any
+  const cambio = { ...sinBenef, at: new Date().toISOString() }
+  await setRawPath(db, userId, ['tusdatos'], cambio, true)
+  return { ...prev, ...cambio } as Ficha
 }
 
 async function guardarBeneficiario(userId: string, documento: string, ficha: Ficha) {
   // El monitoreo cierra consultas SIN cuenta: el resultado va al padrón y de
   // ahí baja a todas. Sin esta guarda se haría un update contra un id vacío.
   if (!userId) return
-  const raw = { ...(await leerRaw(userId)) }
-  const td = { ...(raw.tusdatos ?? {}) }
-  td.beneficiarios = { ...(td.beneficiarios ?? {}), [documento]: { ...(td.beneficiarios?.[documento] ?? {}), ...ficha } }
-  raw.tusdatos = td
-  await db.from('users').update({ raw_data: raw }).eq('id', userId)
+  // Solo ESTE beneficiario, en su ruta, bajo bloqueo de fila.
+  await setRawPath(db, userId, ['tusdatos', 'beneficiarios', documento], ficha as any, true)
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -739,12 +739,9 @@ async function riskPropagar(tipoDoc: string, documento: string, cambios: Partial
       const benefs = u.raw_data?.tusdatos?.beneficiarios ?? {}
       const f = benefs[doc]
       if (!f) continue
-      const raw = { ...u.raw_data }
-      raw.tusdatos = {
-        ...raw.tusdatos,
-        beneficiarios: { ...benefs, [doc]: { ...f, ...cambios, fuente: 'monitoreo', at: new Date().toISOString() } },
-      }
-      await db.from('users').update({ raw_data: raw }).eq('id', u.id)
+      // Solo la ficha de ese documento: la lectura de arriba puede tener
+      // minutos (son muchas cuentas) y guardar el blob pisaba lo nuevo.
+      await setRawPath(db, u.id, ['tusdatos', 'beneficiarios', doc], { ...cambios, fuente: 'monitoreo', at: new Date().toISOString() }, true)
       tocadas++
     }
   } catch { /* se registra abajo en auditoría */ }
@@ -1875,8 +1872,7 @@ Deno.serve(async (req: Request) => {
         for (const [doc, f] of Object.entries(benefs)) benefs[doc] = rejuzgar(f)
         const titular = rejuzgar({ ...td, beneficiarios: undefined })
         if (cambio) {
-          raw.tusdatos = { ...td, ...titular, beneficiarios: benefs }
-          await db.from('users').update({ raw_data: raw }).eq('id', u.id)
+          await setRawPath(db, u.id, ['tusdatos'], { ...titular, beneficiarios: benefs }, true)
         }
       }
       await auditar('tusdatos.recalculo_nombres', { por: yo.userId, revisados, liberados })
