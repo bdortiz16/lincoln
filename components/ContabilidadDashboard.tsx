@@ -390,12 +390,14 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   const [filtroDir, setFiltroDir] = useState<'todos' | 'in' | 'out' | 'conv'>('todos');
   const [busca, setBusca] = useState('');
   const [limite, setLimite] = useState(25);
-  const [folios, setFolios] = useState<Record<string, { folio: number; numero: string; enviado: boolean; factura?: { estado: string | null; numero: string | null; url: string | null; error: string | null; tipo: string | null } }>>({});
+  const [folios, setFolios] = useState<Record<string, { folio: number; numero: string; enviado: boolean; factura?: { estado: string | null; numero: string | null; url: string | null; error: string | null; tipo: string | null; at?: string | null } }>>({});
   const [foliosEstado, setFoliosEstado] = useState<'cargando' | 'ok' | 'sin_tabla' | 'error'>('cargando');
   const [configAbierta, setConfigAbierta] = useState(false);
   const [facturacionActiva, setFacturacionActiva] = useState<boolean | null>(null);
   const [reintentando, setReintentando] = useState<number | null>(null);
   const [foliosVersion, setFoliosVersion] = useState(0);
+  // Relectura liviana de los comprobantes (sin pedir la configuración otra vez).
+  const [pulsoFolios, setPulsoFolios] = useState(0);
 
   const ahora = useMemo(() => new Date(), []);
   const inicioMes = new Date(ahora.getFullYear(), ahora.getMonth(), 1).getTime();
@@ -412,7 +414,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     const m: typeof folios = {};
     for (const r of filas) m[String(r.transaction_id)] = {
       folio: Number(r.folio), numero: String(r.numero), enviado: !!r.enviado_at,
-      factura: { estado: r.factura_estado ?? null, numero: r.factura_numero ?? null, url: r.factura_url ?? null, error: r.factura_error ?? null, tipo: r.factura_tipo ?? null },
+      factura: { estado: r.factura_estado ?? null, numero: r.factura_numero ?? null, url: r.factura_url ?? null, error: r.factura_error ?? null, tipo: r.factura_tipo ?? null, at: r.factura_at ?? null },
     };
     return m;
   };
@@ -428,7 +430,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
       // Solo las columnas de la tabla (sin factura_detalle, que trae las
       // respuestas completas de Siigo y hacía lenta cada recarga). Si una
       // columna nueva todavía no existe (falta su migración), se cae a '*'.
-      const cols = 'transaction_id, folio, numero, enviado_at, factura_estado, factura_numero, factura_url, factura_error, factura_tipo';
+      const cols = 'transaction_id, folio, numero, enviado_at, factura_estado, factura_numero, factura_url, factura_error, factura_tipo, factura_at';
       let { data, error } = await supabase.from('comprobantes').select(cols).eq('user_id', userId).limit(2000);
       if (error && /column|schema cache|PGRST/i.test(error.message)) ({ data, error } = await supabase.from('comprobantes').select('*').eq('user_id', userId).limit(2000));
       if (!vivo) return;
@@ -436,7 +438,18 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
       setFolios(mapaFolios((data ?? []) as any[])); setFoliosEstado('ok');
     })();
     return () => { vivo = false; };
-  }, [userId, foliosVersion, soloLectura, comprobantesExternos]);
+  }, [userId, foliosVersion, pulsoFolios, soloLectura, comprobantesExternos]);
+  // Las facturas las emite el servidor (automáticas, o una manual que tardó
+  // más que la conexión): se vuelven a leer al volver a la pestaña y cada
+  // 30 s, para no mostrar "pendiente" en una que ya salió.
+  useEffect(() => {
+    if (!userId || soloLectura || comprobantesExternos) return;
+    const otraVez = () => { if (document.visibilityState === 'visible') setPulsoFolios(v => v + 1); };
+    const t = setInterval(otraVez, 30000);
+    document.addEventListener('visibilitychange', otraVez);
+    window.addEventListener('focus', otraVez);
+    return () => { clearInterval(t); document.removeEventListener('visibilitychange', otraVez); window.removeEventListener('focus', otraVez); };
+  }, [userId, soloLectura, comprobantesExternos]);
   // ¿Tiene la facturación automática activa? Solo para decidir qué dice la
   // columna FACTURA y el botón de configuración. Y el chequeo del servidor:
   // movimientos completados que nunca recibieron comprobante (señal de que
@@ -510,7 +523,12 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   // Modelo Comisión: cualquier movimiento se factura a mano con el mismo
   // modal (elegir cliente y porcentaje), por si la automática no aplicaba.
   const esComision = String(cfgFact?.modelo ?? '') === 'comision';
-  const botonSegunTipo = (a: Asiento, txId: string) => ((esComision || (esPsp && a.dir === 'in' && ENTRA.has(String(a.tx?.type)))) ? botonFacturaComision(a) : botonEmitir(txId));
+  // Comisión: solo los envíos se facturan (un cargue/depósito no lleva
+  // factura en ese modelo). PSP: los depósitos, a mano.
+  const botonSegunTipo = (a: Asiento, txId: string) => {
+    if (esComision) return a.dir === 'out' ? botonFacturaComision(a) : null;
+    return (esPsp && a.dir === 'in' && ENTRA.has(String(a.tx?.type))) ? botonFacturaComision(a) : botonEmitir(txId);
+  };
 
   // Todos los asientos de la cuenta.
   const asientos = useMemo(() => (transactions ?? []).filter(t => t.userId === userId).flatMap(asientosDe), [transactions, userId]);
@@ -818,7 +836,14 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                         const completado = a.estado === 'Completado';
                         const txId = String((a.tx as any)?.id ?? '');
                         // Sin documento y completado: se puede emitir a mano.
-                        if (!f || !fa?.estado) return (
+                        // Mientras no llegan los comprobantes no se sabe si ya
+                        // hay factura: ofrecer «Emitir» ahí invitaba a emitirla
+                        // dos veces (se veía "pendiente" en una ya emitida).
+                        if (foliosEstado === 'cargando') return <span style={{ color: C.tenue }}>cargando…</span>;
+                        // 'emitiendo' de más de 3 min = se cayó a mitad: se ofrece otra vez.
+                        const emitiendo = fa?.estado === 'emitiendo' && (!fa.at || Date.now() - new Date(fa.at).getTime() < 180000);
+                        if (emitiendo) return <span style={{ color: C.sub }} title="Siigo está procesando la factura">emitiendo…</span>;
+                        if (!f || !fa?.estado || fa.estado === 'emitiendo') return (
                           <span className="flex items-center" style={{ gap: 6 }}>
                             <span style={{ color: C.tenue }}>{f && facturacionActiva ? 'pendiente' : '—'}</span>
                             {completado && facturacionActiva && txId && botonSegunTipo(a, txId)}

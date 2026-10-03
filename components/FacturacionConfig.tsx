@@ -191,7 +191,9 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
     // Comisión: una factura por la comisión de cada movimiento marcado. Los
     // motivos de envío no aplican (no sale documento por el monto).
     if (m === 'comision') {
-      const actuales = (f.operaciones ?? []).filter((k: string) => SALIDAS.includes(k) || ENTRADAS.includes(k));
+      // Solo envíos: la factura de mandato es por plata que sale a terceros.
+      // Un cargue/depósito no se factura en este modelo.
+      const actuales = (f.operaciones ?? []).filter((k: string) => SALIDAS.includes(k));
       return { ...f, modelo: m, operaciones: actuales.length ? actuales : [...SALIDAS], motivos: {} };
     }
     // En PSP el documento soporte lo decide el MOTIVO de cada envío, así
@@ -753,9 +755,10 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                   {/* Comisión: qué movimientos la cobran. */}
                   {modelo === 'comision' && (
                     <>
-                      <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '16px 0 8px' }}>QUÉ MOVIMIENTOS COBRAN COMISIÓN</p>
+                      <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '16px 0 8px' }}>QUÉ ENVÍOS COBRAN COMISIÓN</p>
+                      <p style={{ fontSize: 11.5, color: C.sub, margin: '-4px 0 8px', lineHeight: 1.5 }}>Solo los envíos se facturan. Los cargues y depósitos no generan factura en este modelo.</p>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 8 }}>
-                        {[...SALIDAS, ...ENTRADAS].filter(k => k in disparadores).map(k => (
+                        {SALIDAS.filter(k => k in disparadores).map(k => (
                           <label key={k} className="flex items-center" style={{ gap: 9, cursor: 'pointer' }}>
                             <input type="checkbox" checked={ops.includes(k)} onChange={e => toggleOp(k, e.target.checked)} style={{ width: 15, height: 15, accentColor: C.verde }} />
                             <span style={{ fontSize: 13, color: C.text }}>{disparadores[k]}</span>

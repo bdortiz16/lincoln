@@ -738,9 +738,8 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
       return { ok: true, estado: 'omitida' }
     }
     if ((comp as any).factura_estado === 'emitida' && (comp as any).factura_numero) return { ok: true, estado: 'emitida', numero: (comp as any).factura_numero }
-    // A quién: en un ENVÍO, al ordenante (el cliente por cuenta de quien se
-    // pagó), que se elige al enviar y viaja en raw_data.recipient.ordenante.
-    // En un DEPÓSITO, a quien mandó la plata (la contraparte).
+    // A quién: al ordenante (el cliente por cuenta de quien se pagó), que se
+    // elige al enviar y viaja en raw_data.recipient.ordenante.
     const rdC: any = (comp as any)?.detalle?.raw_data ?? {}
     const ord: any = rdC?.recipient?.ordenante ?? rdC?.ordenante ?? null
     if (esSalida) {
@@ -751,12 +750,11 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
       }
       return emitirComision(userId, String((comp as any).transaction_id), { identification: docOrd, nombre: String(ord?.nombre ?? ''), esEmpresa: String(ord?.docTipo ?? '') === 'NIT', auto: !opts.forzar })
     }
-    const cpC = contraparteDe(comp, cfg)
-    if (cpC.esDefault) {
-      const e = 'El depósito no trae el documento de quien mandó la plata, y la factura de comisión va a su nombre. Emitila a mano eligiendo el cliente.'
-      await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: 'FV' }); return { ok: false, error: e }
+    // Solo envíos: en el modelo Comisión un cargue o depósito no se factura.
+    {
+      const e = 'En el modelo Comisión solo se facturan los envíos; los cargues y depósitos no llevan factura.'
+      await marcar({ factura_estado: 'omitida', factura_error: e }); return { ok: true, estado: 'omitida' }
     }
-    return emitirComision(userId, String((comp as any).transaction_id), { identification: cpC.identification, nombre: cpC.nombre, esEmpresa: cpC.esEmpresa, auto: !opts.forzar })
   }
   // PSP: un depósito no se factura por el monto. Se factura la COMISIÓN, a
   // mano, porque hay que elegir a qué cliente (el que mandó la plata) va la
@@ -966,6 +964,9 @@ async function emitirComision(userId: string, txId: string, d: { identification:
   const { data: comp } = await db.from('comprobantes').select('*').eq('folio', c.folio).maybeSingle()
   if (!comp) return { ok: false, error: 'comprobante_no_encontrado' }
   if ((comp as any).factura_estado === 'emitida' && (comp as any).factura_numero) return { ok: false, error: `Este movimiento ya tiene la factura ${(comp as any).factura_numero}.` }
+  if (String(cfg.modelo ?? '') === 'comision' && !['dispersion', 'send', 'pay_sent', 'otc_withdraw'].includes(String((tx as any).type))) {
+    return { ok: false, error: 'En el modelo Comisión solo se facturan los envíos; los cargues y depósitos no llevan factura.' }
+  }
   const marcar = async (patch: Record<string, unknown>) => {
     await db.from('comprobantes').update({ ...patch, factura_intentos: Number((comp as any).factura_intentos ?? 0) + 1 }).eq('folio', c.folio)
   }
@@ -1107,6 +1108,21 @@ async function emitirComision(userId: string, txId: string, d: { identification:
   if (d.auto) {
     const vigente = await leerConfig(userId)
     if (!vigente?.activo) { await marcar({ factura_estado: 'omitida', factura_error: 'Facturación pausada antes de enviar la factura a Siigo.' }); return { ok: true, estado: 'omitida' } }
+  }
+  // CANDADO: dos clics (o el automático y uno a mano) no pueden emitir dos
+  // facturas del mismo movimiento ante la DIAN. Se toma el comprobante en
+  // 'emitiendo' solo si nadie lo tiene; un 'emitiendo' de hace más de 3 min
+  // se da por caído. Al terminar queda 'emitida' o 'error'.
+  {
+    const hace3 = new Date(Date.now() - 180000).toISOString()
+    const { data: tomado, error: eLock } = await db.from('comprobantes')
+      .update({ factura_estado: 'emitiendo', factura_error: null, factura_at: new Date().toISOString() })
+      .eq('folio', c.folio)
+      .or(`factura_estado.is.null,factura_estado.in.(error,omitida,pendiente,anulada),and(factura_estado.eq.emitiendo,factura_at.lt.${hace3})`)
+      .select('folio')
+    if (!eLock && Array.isArray(tomado) && tomado.length === 0) {
+      return { ok: false, error: 'Esta factura ya se está emitiendo o ya salió. Espera un momento y recarga.' }
+    }
   }
   const intentos: any[] = []
   let tarifa = tarifaCatalogo
