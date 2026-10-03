@@ -163,7 +163,7 @@ const FacturaComisionModal: React.FC<{ asiento: Asiento; cfg: any; onCerrar: () 
     const r = await llamarFuncion('facturacion', { action: 'emitir_comision', transactionId: String(asiento.tx.id), clienteIdentification: elegido.identification, clienteNombre: elegido.nombre, clienteEsEmpresa: elegido.esEmpresa, comisionPct: p }, 130000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
     setEmitiendo(false);
     if (!r?.ok) { setResultado({ ok: false, texto: r?.error ?? 'No se pudo emitir.' }); return; }
-    setResultado({ ok: true, texto: `Factura ${r.numero ?? ''} emitida por ${fmtCop2(Number(r.total ?? total))} COP.` });
+    setResultado({ ok: true, texto: `Factura ${r.numero ?? ''} emitida por ${fmtCop2(Number(r.total ?? total))} COP.${r.aviso ? ` ${r.aviso}` : ''}` });
     setTimeout(onEmitida, 900);
   };
   const campo: React.CSSProperties = { fontFamily: FONT, width: '100%', fontSize: 13.5, color: C.text, background: '#121413', border: `1px solid ${C.borde}`, borderRadius: 9, padding: '9px 11px', outline: 'none' };

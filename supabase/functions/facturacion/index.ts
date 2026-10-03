@@ -626,9 +626,10 @@ async function lugarDeExpedicion(userId: string, documento: string): Promise<{ c
 }
 function contraparteDe(comp: any, cfg: any): Contraparte {
   const rd = comp?.detalle?.raw_data ?? {}
-  const doc = String(rd.docNumber ?? rd.documentNumber ?? rd.beneficiaryDoc ?? rd.beneficiaryDocument ?? rd.senderDoc ?? '').replace(/\D/g, '')
-  const tipoDoc = String(rd.docType ?? rd.documentType ?? rd.beneficiaryDocType ?? '').toUpperCase()
-  const nombre = String(rd.beneficiary ?? rd.beneficiaryName ?? rd.senderName ?? rd.recipientName ?? comp?.contraparte ?? '').trim()
+  const rc = rd.recipient ?? {}
+  const doc = String(rd.docNumber ?? rd.documentNumber ?? rd.beneficiaryDoc ?? rd.beneficiaryDocument ?? rd.senderDoc ?? rc.documentNumber ?? rc.docNumber ?? '').replace(/\D/g, '')
+  const tipoDoc = String(rd.docType ?? rd.documentType ?? rd.beneficiaryDocType ?? rc.documentType ?? rc.docType ?? '').toUpperCase()
+  const nombre = String(rd.beneficiary ?? rd.beneficiaryName ?? rd.senderName ?? rd.recipientName ?? rc.holderName ?? rc.name ?? comp?.contraparte ?? '').trim()
   if (doc) {
     // Es empresa si el tipo dice NIT; si no hay tipo, por la longitud (una
     // cédula no llega a 9 dígitos salvo las muy nuevas, que van a 10). Y si
@@ -1049,6 +1050,24 @@ async function emitirComision(userId: string, txId: string, d: { identification:
     const ivaT = ivaDelProducto(cfg, itemTerceros)
     if (ivaT) return falla(`El ítem de ingresos para terceros (${itemTerceros}) tiene ${ivaT.name || 'IVA'} ${ivaT.percentage} % en Siigo, y va sin IVA. Elegí otro ítem o quitale el impuesto en Siigo.`)
   }
+  // El TERCERO de la línea de ingresos para terceros es a quien se le
+  // transfirió la plata (el beneficiario del envío), con su nombre y
+  // documento — no el cliente de la factura. Siigo lo permite por ítem
+  // (items[].customer) cuando el tipo de documento tiene "customer_by_item".
+  // La comisión queda a nombre del cliente. Si el beneficiario no existe en
+  // Siigo se crea, igual que al cliente. Sin documento del beneficiario, o si
+  // es el mismo cliente (un depósito), la línea queda con el cliente.
+  let terceroLinea: { identification: string; branch_office: number } | null = null
+  let notaTercero = ''
+  if (mandato) {
+    const benef = contraparteDe(comp, cfg)
+    if (!benef.esDefault && benef.identification && benef.identification !== cp.identification) {
+      const cliB = await asegurarCliente(t.token, partner, cfg, benef, 'Customer')
+      if (cliB.ok) terceroLinea = { identification: benef.identification, branch_office: 0 }
+      else notaTercero = `No se pudo registrar en Siigo al beneficiario ${benef.nombre} (${benef.identification}) como tercero de la línea: ${cliB.error}`
+      ctx.beneficiario = benef.nombre
+    }
+  }
   const descripcion = plantilla(cfg.desc_comision || (mandato ? 'Comisión por intermediación en recaudo y dispersión' : 'Comisión {utilidad} % sobre {monto} · Comprobante Lincoin {numero}')).slice(0, 500)
   const descTerceros = plantilla(cfg.desc_terceros || 'Ingresos recibidos para terceros').slice(0, 500)
   const observations = (mandato
@@ -1070,7 +1089,7 @@ async function emitirComision(userId: string, txId: string, d: { identification:
     // por su cuenta el IVA del producto en una factura por API (con 60.000
     // calculó el total sin IVA y rechazó el pago).
     const items = [
-      ...(mandato ? [{ code: itemTerceros, description: descTerceros, quantity: 1, price: terceros }] : []),
+      ...(mandato ? [{ code: itemTerceros, description: descTerceros, quantity: 1, price: terceros, ...(terceroLinea ? { customer: terceroLinea } : {}) }] : []),
       { code: item, description: descripcion, quantity: 1, price: base, ...(iva && tarifa > 0 ? { taxes: [{ id: iva.id }] } : {}) },
     ]
     const cuerpo = {
@@ -1110,6 +1129,13 @@ async function emitirComision(userId: string, txId: string, d: { identification:
       }
     }
   }
+  if (!r.ok && terceroLinea && /customer_by_item|items?\.?\[?\d*\]?\.?customer|customer.*item/i.test(motivoDe(r))) {
+    notaTercero = `El tipo de documento de Siigo no admite tercero por ítem (activá "Manejar terceros por ítem" en la configuración del documento); la línea de terceros quedó a nombre del cliente.`
+    terceroLinea = null
+    arm = armar(tarifa)
+    r = await siigo('POST', '/v1/invoices', { token: t.token, partner, body: arm.cuerpo, ms: 70000 })
+    intentos.push({ ruta: '/v1/invoices', status: r.status, respuesta: r.data ?? r.texto, enviado: arm.cuerpo, tarifa, nota: 'Sin tercero por ítem' })
+  }
   const { base, ivaV, total, cuerpo } = arm
   if (!r.ok) return falla(`Siigo rechazó la factura de comisión — ${motivoDe(r)} · Se mandó base ${base} con tarifa ${(tarifa * 100).toFixed(2)} % (${intentos.length} intento${intentos.length === 1 ? '' : 's'}). ${notaVivo}${intentos.length > 1 ? ' Se reintentó con la tarifa que Siigo aplica y tampoco.' : ''}`, { factura_detalle: { enviado: cuerpo, intentos, comision: { pct, comision, base, iva: ivaV, total, tarifa, cliente: { identification: cp.identification, nombre: cp.nombre } } } })
   const resp = r.data ?? {}
@@ -1121,7 +1147,7 @@ async function emitirComision(userId: string, txId: string, d: { identification:
     factura_at: new Date().toISOString(),
     factura_detalle: { enviado: cuerpo, respuesta: resp, respuesta_creacion: resp, intentos, comision: { pct, comision, base, iva: ivaV, total, tarifa, cliente: { identification: cp.identification, nombre: cp.nombre } } },
   })
-  return { ok: true, estado: 'emitida', tipo: 'FV', numero, total, base, iva: ivaV, comision, tarifa, cufe: resp.stamp?.cufe ?? null, url: resp.public_url ?? null }
+  return { ok: true, estado: 'emitida', tipo: 'FV', numero, total, base, iva: ivaV, comision, tarifa, cufe: resp.stamp?.cufe ?? null, url: resp.public_url ?? null, ...(notaTercero ? { aviso: notaTercero } : {}) }
 }
 
 // Clientes de Siigo, para elegir a quién se le factura la comisión. Por
