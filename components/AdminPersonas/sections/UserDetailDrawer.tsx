@@ -110,7 +110,7 @@ export const UserDetailDrawer: React.FC<Props> = ({ userId, onClose, profile }) 
         });
         if (!ok) return;
         // ⚠️ SECURITY: antes usábamos kyc_status='rejected' como proxy de
-        // "bloqueado" — corrompía el estado real del KYC y mentía a Didit.
+        // "bloqueado" — corrompía el estado real del KYC.
         // Ahora usamos la columna dedicada is_blocked (migración 2026_user_block.sql).
         // El trigger guard_users_sensitive_cols solo permite cambiar is_blocked
         // desde un admin con admin_role IS NOT NULL.

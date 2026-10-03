@@ -13,6 +13,18 @@ export const formatDate = (iso: string | null | undefined) => {
     } catch { return String(iso); }
 };
 
+// De dónde salió el estado KYC de una cuenta.
+// Las cuentas viejas traen guardado el nombre del proveedor externo que ya no
+// usamos. No lo mostramos como si siguiera vigente, pero TAMPOCO lo hacemos
+// pasar por una aprobación manual: esas verificaciones ocurrieron de verdad y
+// el expediente tiene que poder distinguirlas de las que aprobó una persona.
+export const origenKyc = (provider: string | null | undefined): string => {
+    const p = (provider ?? '').trim();
+    if (!p) return 'Sin aprobar';
+    if (p === 'Didit') return 'Proveedor externo (retirado)';
+    return p;
+};
+
 export const formatAmount = (amount: number | null, currency: string | null) => {
     if (amount == null) return '—';
     return `${currency ?? ''} ${amount.toLocaleString('es-CO', { minimumFractionDigits: 2 })}`.trim();

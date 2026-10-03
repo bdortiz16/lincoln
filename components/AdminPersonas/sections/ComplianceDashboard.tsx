@@ -159,7 +159,7 @@ export const ComplianceDashboard: React.FC = () => {
         <div className="space-y-5">
             <div className="flex items-center justify-between">
                 <div>
-                    <h2 className="text-lg md:text-xl font-bold" style={{ color: NAVY }}>Centro de Compliance</h2>
+                    <h2 className="text-lg md:text-xl font-bold" style={{ color: NAVY }}>Centro de cumplimiento</h2>
                     <p className="text-xs text-slate-500">KYC, alertas, distribución geográfica y monitoreo</p>
                 </div>
                 <button onClick={load} className="p-2 rounded-lg hover:bg-slate-100 text-slate-500">

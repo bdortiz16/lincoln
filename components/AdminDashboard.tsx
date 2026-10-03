@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { CodeInput } from './CodeInput';
 import { 
   Users, 
   FileText, 
@@ -47,6 +48,7 @@ import {
   Tag, 
   DollarSign, 
   ChevronDown, 
+  ChevronUp, 
   Link as LinkIcon, 
   Bitcoin, 
   Filter, 
@@ -81,8 +83,25 @@ import { Logo } from './Logo';
 import { RatesPanel } from './AdminPersonas/sections/RatesPanel';
 import { AdminGasFreeSection } from './AdminGasFreeSection';
 import { AdminMonitor } from './AdminMonitor';
+import { AdminTreasuryPanel } from './AdminTreasuryPanel';
+import { AdminSecurityCenter } from './AdminSecurityCenter';
+import { AdminCommandCenter } from './AdminCommandCenter';
+import { AdminAccessPolicy } from './AdminAccessPolicy';
+import { AdminPasskeys } from './AdminPasskeys';
+import { AdminStepUp } from './AdminStepUp';
+import { AdminLoginAlerts } from './AdminLoginAlerts';
+import { AdminKumplo } from './AdminKumplo';
+import { AdminTusdatos } from './AdminTusdatos';
+import { AdminCompliance } from './AdminCompliance';
+import { AdminLincoinRisk } from './AdminLincoinRisk';
+import { AdminClientes } from './AdminClientes';
+import { AdminReconcile } from './AdminReconcile';
 import { AdminOtcSection } from './AdminOtcSection';
-import { Zap, ArrowLeftRight, Info, ChevronRight, Activity } from 'lucide-react';
+import { AdminOtcCierres } from './AdminOtcCierres';
+import { sonarCampana, campanaActiva } from './campanaOtc';
+import { Zap, ArrowLeftRight, ArrowLeft, Info, ChevronRight, Activity, Link2, MessageSquare } from 'lucide-react';
+import { pedirAdmin } from './adminApi';
+import { AdminEquipo } from './AdminEquipo';
 import { CollectionWalletCard } from './CollectionWalletCard';
 import type { AdminProfile } from './AdminPersonas/lib/adminAuth';
 import { FlagImg, flagUrl } from './FlagImg';
@@ -90,6 +109,9 @@ import { PaletteChooser } from './PaletteChooser';
 import { useExchangeRates } from '../context/ExchangeRateContext'; 
 import { useSystemConfig, Coupon } from '../context/SystemConfigContext'; 
 import { useDatabase, AdminUser, BankDetail, Transaction, User, TreasuryAccount } from '../context/DatabaseContext';
+
+const SURL_ADMIN = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+const SKEY_ADMIN = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
 
 interface AdminDashboardProps {
   onLogout: () => void;
@@ -198,74 +220,277 @@ const fileToBase64 = (file: File): Promise<string> => {
     });
 };
 
-// Admin panel for Didit KYC — sync session by providing Didit internal session ID
-const DiditAdminPanel: React.FC<{ client: any; showToast: (m: string) => void }> = ({ client, showToast }) => {
-  const [syncId, setSyncId] = React.useState('');
-  const [syncing, setSyncing] = React.useState(false);
-  const [result, setResult] = React.useState<any>(null);
+// Nombre que se MUESTRA para cada pestaña. Sin esto la cabecera pintaba la
+// clave interna en inglés ("Clients", "Treasury"…).
+// Las dos secciones que agrupan varias pantallas. El orden es el de las
+// pestañas: primero la pantalla que da el panorama, después el detalle.
+const GRUPO_SEG = ['security', 'comando', 'monitoreo', 'auditoria', 'team'];
+const GRUPO_CUMP = ['compliance', 'risk', 'tusdatos', 'kumplo'];
 
-  const handleSync = async () => {
-    setSyncing(true);
-    setResult(null);
-    try {
-      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
-      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-      const r = await fetch(`${SURL}/functions/v1/didit-kyc`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': `Bearer ${SKEY}` },
-        body: JSON.stringify({ action: 'admin_sync_session', userId: client.id }),
-      });
-      const d = await r.json();
-      setResult(d);
-      if (d.status === 'verified') showToast(`✅ Usuario verificado (${client.name})`);
-      else if (d.error) showToast(`Error: ${d.error}`);
-      else showToast(`Lincoin: ${d.status ?? 'sin estado'}${d.raw ? ` (raw: "${d.raw}")` : ''}`);
-    } catch (e: any) {
-      showToast('Error al sincronizar: ' + e.message);
-    }
-    setSyncing(false);
-  };
+const TAB_TITLES: Record<string, string> = {
+  overview: 'Dashboard', clients: 'Clientes', treasury: 'Tesorería', cargues: 'Cargues',
+  team: 'Equipo Admin', reports: 'Reportes', marketing: 'Marketing', config: 'Configuración',
+  banks: 'Bancos', rates: 'Tasas de Cambio', security: 'Seguridad', design: 'Diseño y Apariencia',
+  gasfree: 'Custodia USDT', otcConfig: 'Contabilidad OTC', fallos: 'Fallos',
+  auditoria: 'Auditoría', monitoreo: 'Monitoreo', kumplo: 'Kumplo', comando: 'Centro de Comando',
+  tusdatos: 'TusDatos', compliance: 'Cumplimiento', risk: 'Lincoin Risk',
+  otcCierres: 'Cierres OTC',
+};
 
-  return (
-    <div className={`border rounded-xl p-4 space-y-3 ${client.kycStatus === 'verified' ? 'bg-green-50 border-green-200' : client.kycStatus === 'rejected' ? 'bg-red-50 border-red-200' : 'bg-yellow-50 border-yellow-200'}`}>
-      <h3 className="font-bold text-sm flex items-center gap-2">🔐 Verificación Lincoin</h3>
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        {[
-          { label: 'Estado Lincoin', val: client.kycStatus },
-          { label: 'Session ID guardado', val: client.raw_data?.diditSessionId ? client.raw_data.diditSessionId.slice(0, 16) + '...' : null },
-          { label: 'Vendor Data (userId)', val: client.id?.slice(0, 16) + '...' },
-          { label: 'Verificado el', val: client.raw_data?.verifiedAt ? new Date(client.raw_data.verifiedAt).toLocaleDateString('es-CO') : null },
-        ].filter(r => r.val).map(({ label, val }) => (
-          <div key={label} className="bg-white/70 rounded p-2">
-            <p className="text-[10px] font-bold text-slate-400 uppercase">{label}</p>
-            <p className="font-medium text-slate-700 break-all">{val}</p>
-          </div>
-        ))}
-      </div>
-      {client.kycStatus !== 'verified' && (
-        <div className="space-y-2 pt-2 border-t border-yellow-200">
-          <p className="text-[11px] text-slate-600 font-medium">Sincronizar estado desde Lincoin automáticamente:</p>
-          <p className="text-[10px] text-slate-400">Busca todas las sesiones de este usuario en Lincoin y actualiza el estado si hay una aprobada.</p>
-          <button onClick={handleSync} disabled={syncing}
-            className="w-full px-4 py-2 bg-yellow-500 text-white text-xs font-bold rounded-lg hover:bg-yellow-600 disabled:opacity-50">
-            {syncing ? 'Consultando Lincoin...' : '🔄 Sincronizar estado desde Lincoin'}
-          </button>
-          {result && (
-            <div className={`text-xs p-2 rounded-lg font-mono ${result.status === 'verified' ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600'}`}>
-              Estado: <strong>{result.status}</strong>
-              {result.raw ? ` (raw: "${result.raw}")` : ''}
-              {result.sessionId ? ` · ID: ${result.sessionId.slice(0, 12)}...` : ''}
-              {result.error ? ` · Error: ${result.error}` : ''}
-            </div>
-          )}
+// Cómo se llama cada pestaña DENTRO de su sección. La primera no puede
+// repetir el nombre de la sección ("Seguridad › Seguridad" no dice nada):
+// se nombra por lo que realmente muestra.
+const SUBTAB_TITLES: Record<string, string> = {
+  security: 'Cuentas y accesos',
+  compliance: 'Bandeja de casos',
+};
+
+
+// ─── Resultado de la conciliación Bre-B ─────────────────────────────
+// Esto vivía en un window.alert del navegador: texto plano, blanco sobre gris,
+// en una pantalla negra, y truncado justo donde estaba el dato que servía. Un
+// resultado que se lee tres veces seguidas mientras se persigue una falla tiene
+// que poder leerse.
+//
+// El detalle técnico va PLEGADO. Lo que importa arriba es cuánta plata se
+// devolvió y cuántos envíos quedaron sin confirmar; el crudo del proveedor
+// importa sólo cuando algo no cuadra, y entonces se abre.
+// ── Aviso: correos que NO están llegando ──────────────────────────────
+//
+// Cuando una dirección rebota en duro o alguien marca un correo como spam,
+// Resend la suprime y deja de mandarle -- pero a nosotros nos sigue
+// contestando que aceptó el envío. La app le dice a esa persona "revisá tu
+// correo" para un correo que nunca va a salir, y ella no puede avisarnos:
+// el correo es justo el canal que se rompió.
+//
+// Por eso esto va ARRIBA Y EN ROJO, no escondido en una pestaña. Nos pasó
+// con la cuenta de admin y tardamos horas en darnos cuenta; a un cliente le
+// pasa igual y no tiene cómo contarlo.
+const AvisoCorreos: React.FC = () => {
+    const [lista, setLista] = useState<any[]>([]);
+    const [abierto, setAbierto] = useState(false);
+
+    const cargar = useCallback(async () => {
+        try {
+            const r = await pedirAdmin({ action: 'email_incidencias' });
+            if (r?.ok && Array.isArray(r.incidencias)) setLista(r.incidencias);
+        } catch { /* que no se caiga el panel por esto */ }
+    }, []);
+
+    useEffect(() => {
+        cargar();
+        // Cada 5 min. No hace falta más: una dirección rota lo sigue estando.
+        const t = setInterval(cargar, 5 * 60 * 1000);
+        return () => clearInterval(t);
+    }, [cargar]);
+
+    const resolver = async (email: string) => {
+        // Optimista a propósito: el admin acaba de hacer el paso manual en
+        // Resend y quiere ver que la fila se va. Si falla, vuelve en la
+        // próxima carga.
+        setLista((l) => l.filter((x) => String(x.email).toLowerCase() !== email.toLowerCase()));
+        try { await pedirAdmin({ action: 'email_incidencia_resuelta', email }); } catch { cargar(); }
+    };
+
+    if (!lista.length) return null;
+    const duros = lista.filter((x) => x.dureza === 'hard').length;
+
+    return (
+        <div className="mb-6 rounded-xl border border-red-200 bg-red-50 overflow-hidden">
+            <button onClick={() => setAbierto((v) => !v)} className="w-full flex items-center gap-3 px-4 py-3 text-left">
+                <AlertTriangle size={18} className="text-red-600 shrink-0" />
+                <div className="flex-1 min-w-0">
+                    <p className="text-sm font-bold text-red-900">
+                        {lista.length === 1
+                            ? 'Hay 1 dirección que no está recibiendo correos'
+                            : `Hay ${lista.length} direcciones que no están recibiendo correos`}
+                    </p>
+                    <p className="text-xs text-red-700 mt-0.5">
+                        {duros > 0
+                            ? `${duros} con rebote definitivo. Esas personas no pueden recibir su código de acceso.`
+                            : 'No pueden recibir su código de acceso.'}
+                    </p>
+                </div>
+                <ChevronRight size={16} className={`text-red-500 shrink-0 transition-transform ${abierto ? 'rotate-90' : ''}`} />
+            </button>
+
+            {abierto && (
+                <div className="border-t border-red-200 bg-white/60 px-4 py-3">
+                    <p className="text-xs text-slate-600 mb-3">
+                        Para reactivar una dirección hay que sacarla de la lista de supresión en
+                        Resend (<span className="font-mono text-[11px]">Emails → Suppressions</span>) y después
+                        marcarla acá. Este panel no lo hace solo: ese paso es manual en Resend.
+                    </p>
+                    <div className="space-y-1.5">
+                        {lista.map((x) => (
+                            <div key={x.email} className="flex items-center gap-3 py-1.5 border-b border-slate-100 last:border-0">
+                                <div className="flex-1 min-w-0">
+                                    <p className="text-sm font-medium text-slate-900 truncate">{x.email}</p>
+                                    <p className="text-[11px] text-slate-500 truncate">
+                                        {x.dureza === 'hard' ? 'Rebote definitivo' : x.tipo === 'complained' ? 'Marcado como spam' : x.dureza === 'soft' ? 'Rebote pasajero' : x.tipo}
+                                        {x.veces > 1 ? ` · ${x.veces} veces` : ''}
+                                        {x.motivo ? ` · ${x.motivo}` : ''}
+                                    </p>
+                                </div>
+                                <button
+                                    onClick={() => resolver(x.email)}
+                                    className="text-xs font-semibold text-slate-600 hover:text-slate-900 border border-slate-300 rounded-lg px-2.5 py-1 shrink-0"
+                                >
+                                    Ya la reactivé
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
         </div>
-      )}
-    </div>
-  );
+    );
+};
+
+const PanelConciliacion: React.FC<{ datos: any; onCerrar: () => void }> = ({ datos, onCerrar }) => {
+    // Si el listado vino vacío, el crudo del proveedor es EL dato que hace
+    // falta — no puede estar plegado esperando que a alguien se le ocurra
+    // abrirlo.
+    const [tecnico, setTecnico] = useState(!!datos?.listado && datos.listado.salidasBreb === 0);
+    useEffect(() => {
+        const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') onCerrar(); };
+        window.addEventListener('keydown', esc);
+        return () => window.removeEventListener('keydown', esc);
+    }, [onCerrar]);
+
+    const TXT = '#F4F4F2', TXT2 = '#878E88', TXT3 = 'rgba(244,244,242,0.45)';
+    const BORDE = 'rgba(255,255,255,0.09)', BORDE2 = 'rgba(255,255,255,0.14)';
+    const VERDE = '#4ADE80', AMBAR = '#FBBF24', ROJO = '#F87171';
+    const nf = (n: any) => Number(n ?? 0).toLocaleString('es-CO');
+
+    const Cifra: React.FC<{ n: any; rotulo: string; color?: string }> = ({ n, rotulo, color }) => (
+        <div style={{ flex: '1 1 110px', background: 'rgba(255,255,255,0.03)', border: `1px solid ${BORDE}`, borderRadius: 11, padding: '12px 13px' }}>
+            <div style={{ fontSize: 21, fontWeight: 800, color: color ?? TXT, letterSpacing: '-0.5px' }}>{n}</div>
+            <div style={{ fontSize: 10.5, color: TXT2, marginTop: 3, lineHeight: 1.35 }}>{rotulo}</div>
+        </div>
+    );
+
+    return (
+        <div onClick={onCerrar}
+            style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'rgba(0,0,0,0.72)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+            <div onClick={e => e.stopPropagation()}
+                style={{
+                    width: '100%', maxWidth: 560, maxHeight: '86vh', overflowY: 'auto',
+                    background: '#0C0E0D', border: `1px solid ${BORDE2}`, borderRadius: 16,
+                    boxShadow: '0 24px 70px rgba(0,0,0,0.7)', fontFamily: "'Archivo', system-ui, sans-serif",
+                }}>
+                <div style={{ padding: '18px 20px', borderBottom: `1px solid ${BORDE}`, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+                    <div>
+                        <h3 style={{ fontSize: 15.5, fontWeight: 800, color: TXT, margin: 0, letterSpacing: '-0.3px' }}>
+                            {datos.error ? 'No se pudo conciliar'
+                                : datos.automatica ? 'Se devolvió un envío' : 'Conciliación Bre-B'}
+                        </h3>
+                        {!datos.error && (
+                            <p style={{ fontSize: 12, color: TXT2, margin: '5px 0 0' }}>
+                                {nf(datos.revisados)} envíos revisados contra el proveedor.
+                            </p>
+                        )}
+                    </div>
+                    <button onClick={onCerrar} aria-label="Cerrar"
+                        style={{ width: 32, height: 32, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: TXT2, background: 'rgba(255,255,255,0.05)', border: `1px solid ${BORDE}`, borderRadius: 9, cursor: 'pointer' }}>
+                        <X size={15} />
+                    </button>
+                </div>
+
+                {datos.error ? (
+                    <p style={{ padding: '18px 20px', fontSize: 13, color: ROJO, lineHeight: 1.6, margin: 0 }}>{datos.error}</p>
+                ) : (
+                    <div style={{ padding: '16px 20px 20px' }}>
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                            <Cifra n={nf(datos.completados)} rotulo="confirmados como pagados" color={datos.completados ? VERDE : TXT} />
+                            <Cifra n={nf(datos.devueltos)} rotulo="devueltos y reembolsados" color={datos.devueltos ? ROJO : TXT} />
+                            <Cifra n={nf(datos.enCurso)} rotulo="siguen sin confirmar" color={datos.enCurso ? AMBAR : TXT} />
+                        </div>
+
+                        {datos.esperaFirma > 0 && (
+                            <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 11, border: `1px solid ${AMBAR}44`, background: `${AMBAR}10` }}>
+                                <div style={{ fontSize: 13.5, fontWeight: 700, color: TXT }}>
+                                    {datos.esperaFirma} esperando firma
+                                </div>
+                                <div style={{ fontSize: 11.5, color: TXT2, marginTop: 3, lineHeight: 1.5 }}>
+                                    Tu cuenta tiene firma múltiple activa: estos envíos no salen hasta que alguien
+                                    los firme en el panel del proveedor. A las 24 h expiran y se revierten solos.
+                                </div>
+                            </div>
+                        )}
+
+                        {datos.devueltos > 0 && (
+                            <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 11, border: `1px solid ${ROJO}33`, background: `${ROJO}10` }}>
+                                <div style={{ fontSize: 13.5, fontWeight: 700, color: TXT }}>
+                                    {nf(datos.plata)} COP reintegrados
+                                </div>
+                                <div style={{ fontSize: 11.5, color: TXT2, marginTop: 3, lineHeight: 1.5 }}>
+                                    Monto y comisión volvieron al riel de cada cliente. Ya les llegó el aviso.
+                                </div>
+                            </div>
+                        )}
+
+                        {datos.vias.length > 0 && (
+                            <div style={{ marginTop: 14 }}>
+                                <p style={{ fontSize: 9.5, fontWeight: 700, color: TXT3, letterSpacing: '0.6px', textTransform: 'uppercase', margin: '0 0 7px' }}>
+                                    Cómo se encontró cada envío
+                                </p>
+                                {datos.vias.map(([via, n]: [string, number]) => (
+                                    <div key={via} style={{ display: 'flex', alignItems: 'baseline', gap: 8, fontSize: 12.5, color: TXT2, padding: '3px 0' }}>
+                                        <span style={{ color: TXT, fontWeight: 700, minWidth: 26 }}>{n}</span>
+                                        <span>{via}</span>
+                                    </div>
+                                ))}
+                                <p style={{ fontSize: 11, color: TXT3, margin: '7px 0 0', lineHeight: 1.5 }}>
+                                    Los que dicen “solo por monto” se emparejaron porque había un único movimiento
+                                    con ese importe exacto. Vale la pena mirarlos.
+                                </p>
+                            </div>
+                        )}
+
+                        {datos.motivos.length > 0 && (
+                            <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${BORDE}` }}>
+                                <p style={{ fontSize: 9.5, fontWeight: 700, color: TXT3, letterSpacing: '0.6px', textTransform: 'uppercase', margin: '0 0 7px' }}>
+                                    Por qué no se pudo confirmar el resto
+                                </p>
+                                {datos.motivos.map(([m, n]: [string, number]) => (
+                                    <div key={m} style={{ display: 'flex', gap: 8, fontSize: 12, color: TXT2, padding: '4px 0', lineHeight: 1.5 }}>
+                                        <span style={{ color: AMBAR, fontWeight: 700, minWidth: 26, flexShrink: 0 }}>{n}</span>
+                                        <span style={{ wordBreak: 'break-word' }}>{m}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {(datos.listado || datos.muestra) && (
+                            <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${BORDE}` }}>
+                                <button onClick={() => setTecnico(v => !v)}
+                                    style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, fontWeight: 700, color: TXT2, background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}>
+                                    {tecnico ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                                    Respuesta cruda del proveedor
+                                </button>
+                                {tecnico && (
+                                    <pre style={{
+                                        marginTop: 9, padding: '11px 12px', borderRadius: 9,
+                                        background: '#070808', border: `1px solid ${BORDE}`, color: TXT2,
+                                        fontSize: 10.5, lineHeight: 1.55, whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+                                        fontFamily: 'ui-monospace, Menlo, monospace', maxHeight: 240, overflowY: 'auto',
+                                    }}>
+{datos.listado ? `GET /wallets/transactions → ${datos.listado.ok ? 'OK' : 'FALLÓ'}\nsalidas Bre-B encontradas: ${datos.listado.salidasBreb}\n\n${datos.listado.crudo ?? '(sin cuerpo)'}` : ''}
+{datos.muestra?.cuerpo ? `\n\nUna fila sin emparejar:\n${datos.muestra.cuerpo}` : ''}
+                                    </pre>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                )}
+            </div>
+        </div>
+    );
 };
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'tusdatos' | 'compliance' | 'comando' | 'otcCierres'>('overview');
   const [auditRows, setAuditRows] = useState<any[] | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
   const [adminLogins, setAdminLogins] = useState<{ admins: any[]; activity: any[] } | null>(null);
@@ -358,7 +583,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   // Mouv apifica el conversor: el pago llega por el grupo cerrado y aquí se
   // refleja en el riel que corresponda: Saldo Lincoin / Bre-B / ACH).
   const [carguesSearch, setCarguesSearch] = useState('');
-  const [carguesClient, setCarguesClient] = useState<User | null>(null);
+  // Se guarda el ID, no una copia del cliente: si se guardaba el objeto, la
+  // tarjeta seguía mostrando el saldo del momento en que se seleccionó y no se
+  // actualizaba tras un cargue (había que recargar la página). El objeto vivo
+  // se deriva de allUsers más abajo.
+  const [carguesClientId, setCarguesClientId] = useState<string | null>(null);
   const [carguesRail, setCarguesRail] = useState<'COP' | 'COP_BREB' | 'COP_ACH'>('COP');
   const [carguesAmount, setCarguesAmount] = useState('');
   const [carguesNote, setCarguesNote] = useState('');
@@ -370,6 +599,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   // "Cargar de todos modos" cuando el cargue excede lo disponible en la bolsa
   // (protección contra sobre-acreditar más de lo que respalda el proveedor).
   const [carguesOverride, setCarguesOverride] = useState(false);
+  // Contabilidad del cargue: el COP se DERIVA de la operación real en vez de
+  // escribirse a mano, y la utilidad queda como dato del movimiento.
+  const [acctOn, setAcctOn] = useState(true);
+  const [acctUsdtGross, setAcctUsdtGross] = useState('');
+  const [acctUsdtNet, setAcctUsdtNet] = useState('');
+  const [acctSellRate, setAcctSellRate] = useState('');
+  const [acctClientRate, setAcctClientRate] = useState('');
+  const [acctFeeBearer, setAcctFeeBearer] = useState<'lincoin' | 'cliente'>('lincoin');
+  const [cargueOtp, setCargueOtp] = useState('');
   // Saldo REAL de la wallet compartida de Mouv (lo que hay disponible para
   // cargar a los clientes). Se lee del endpoint confirmado /wallets/balance.
   const [mouvPool, setMouvPool] = useState<{ loading: boolean; total?: number | null; breb?: number | null; ach?: number | null; error?: string } | null>(null);
@@ -454,6 +692,208 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     }
   };
 
+  // ── Resolver una dispersión sin confirmar ────────────────────────────────
+  // Mientras la consulta de estado del proveedor no funcione, la única fuente
+  // de verdad es su consola, y quien la mira es una persona. Estos dos botones
+  // son lo que convierte eso en algo de un clic en vez de una llamada a la API
+  // armada a mano — que es lo que hizo que un reembolso quedara sin hacer.
+  const [resolviendo, setResolviendo] = useState<string | null>(null);
+
+  const llamarMouv = async (cuerpo: Record<string, unknown>) => {
+    const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+    const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+    let jwt: string | null = null;
+    try {
+      const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
+      if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; }
+    } catch { /* sin sesión */ }
+    // CON try/catch Y TIMEOUT. Sin esto, un corte de red dejaba la promesa
+    // rechazada sin atrapar: `resolviendo`/`conciliando` nunca volvían a false y
+    // los botones de esa fila -- Sí se pagó, Vincular ID, Reembolsar, Ya la
+    // devolví -- quedaban en gris y deshabilitados hasta recargar la página,
+    // sin un solo mensaje que dijera qué pasó.
+    try {
+      const r = await fetch(`${SURL}/functions/v1/mouv-proxy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}` },
+        body: JSON.stringify(cuerpo),
+        signal: AbortSignal.timeout(90000),
+      });
+      const t = await r.text();
+      if (!t) return { ok: false, message: 'El servicio no respondió. Probá de nuevo.' };
+      try { return JSON.parse(t); } catch { return { ok: false, message: `Respuesta no válida del servicio (HTTP ${r.status}).` }; }
+    } catch (e: any) {
+      return {
+        ok: false,
+        message: e?.name === 'TimeoutError'
+          ? 'El proveedor tardó demasiado. No se cambió nada; volvé a intentarlo.'
+          : `No se pudo conectar: ${String(e?.message ?? e)}`,
+      };
+    }
+  };
+
+  const devolverDispersion = async (t: any) => {
+    const ref = t.providerRef ?? t.raw_data?.providerRef ?? '';
+    const motivo = window.prompt(
+      `Reembolsar ${Number(t.amount).toLocaleString('es-CO')} al cliente y marcar la dispersión como rechazada.\n\n` +
+      `Hacelo SOLO si la viste devuelta en la consola del proveedor. Si en realidad se pagó, ` +
+      `estarías devolviendo plata por una transferencia que sí salió: el cliente cobraría dos veces.\n\n` +
+      `Motivo (queda auditado):`,
+      ref ? `Devuelta por el proveedor · ref ${ref}` : 'Devuelta por el proveedor');
+    if (!motivo) return;
+    setResolviendo(t.id);
+    const r = await llamarMouv({ action: 'force_return', txId: t.id, reason: motivo });
+    setResolviendo(null);
+    if (r?.ok) { alert(r.already ? 'Ya estaba reembolsada.' : `Reembolsados ${Number(r.refundCop ?? 0).toLocaleString('es-CO')} al riel del cliente.`); refreshData?.(); }
+    else alert(r?.error ? `No se pudo: ${r.error}` : 'No se pudo completar la devolución.');
+  };
+
+  // Conciliar TODOS los envíos Bre-B contra Mouv, sin esperar a que cada
+  // cliente abra su app. Consulta GET /wallets/transactions/:id por cada uno y
+  // aplica el veredicto real: completa los exitosos y REEMBOLSA los devueltos.
+  const [conciliando, setConciliando] = useState(false);
+  const [resConciliar, setResConciliar] = useState<any>(null);
+  const conciliarBreb = async () => {
+    setConciliando(true);
+    const r = await llamarMouv({ action: 'reconcile_breb', todos: true });
+    setConciliando(false);
+    if (!r?.ok) { setResConciliar({ error: r?.message || r?.error || 'No se pudo conciliar.' }); return; }
+
+    const res = (r.results ?? []) as any[];
+    const dev = res.filter(x => x.result === 'refunded');
+    const comp = res.filter(x => x.result === 'completed');
+    const quedan = res.filter(x => x.result === 'still_processing' || x.result === 'sin_confirmar_revisar');
+    // Esperando firma es un caso aparte y accionable: hay que ir a firmar al
+    // panel del proveedor, y si nadie firma en 24 h el envío expira solo.
+    const firma = res.filter(x => x.result === 'espera_firma').length;
+
+    // CÓMO se emparejó cada uno. No es lo mismo la referencia exacta que
+    // "único con ese monto": lo segundo hay que poder mirarlo antes de confiar.
+    const vias = new Map<string, number>();
+    for (const x of res) if (x?.campoRef && x.campoRef !== 'providerRef') vias.set(x.campoRef, (vias.get(x.campoRef) ?? 0) + 1);
+
+    // POR QUÉ no hubo veredicto. "Sin respuesta del proveedor" a secas tapa por
+    // igual una ruta caída, una llave sin permiso, un id que Mouv no reconoce y
+    // una fila nuestra incompleta — cuatro problemas con cuatro arreglos.
+    const motivos = new Map<string, number>();
+    let muestra: any = null;
+    for (const x of res) {
+      if (!x?.diag?.motivo) continue;
+      motivos.set(x.diag.motivo, (motivos.get(x.diag.motivo) ?? 0) + 1);
+      if (!muestra) muestra = x;
+    }
+
+    setResConciliar({
+      revisados: r.checked ?? res.length,
+      esperaFirma: firma,
+      completados: comp.length,
+      devueltos: dev.length,
+      plata: dev.reduce((n, x) => n + Number(x.refund ?? 0), 0),
+      enCurso: quedan.length,
+      vias: [...vias.entries()],
+      motivos: [...motivos.entries()],
+      listado: r.listado ?? null,
+      muestra: muestra?.diag ?? null,
+    });
+    refreshData?.();
+  };
+
+  // Pegar el ID que muestra la consola del proveedor (TX-PG-483AC9). No cambia
+  // el estado ni mueve plata: solo vincula, y de paso consulta el estado real.
+  const vincularRef = async (t: any) => {
+    const ref = window.prompt(
+      'Pegá el ID de este envío tal como aparece en la consola del proveedor.\n\n' +
+      'Ejemplo: TX-PG-483AC9\n\n' +
+      'Esto NO confirma ni devuelve nada: solo deja el envío enlazado para poder ' +
+      'consultar su estado y bajar su comprobante.', '');
+    if (!ref || !ref.trim()) return;
+    setResolviendo(t.id);
+    const r = await llamarMouv({ action: 'vincular_referencia', txId: t.id, providerRef: ref.trim() });
+    setResolviendo(null);
+    if (!r?.ok) { alert(r?.message || r?.error || 'No se pudo vincular.'); return; }
+    const est = r.estadoProveedor
+      ? `El proveedor lo reporta como: ${r.estadoProveedor}.`
+      : 'Vinculado, pero el proveedor todavía no devuelve su estado.';
+    alert(`ID guardado.\n\n${est}`);
+    refreshData?.();
+  };
+
+  // Para las que ya se devolvieron A MANO. Cierra el caso SIN acreditar nada:
+  // la plata ya la movió una persona, y acreditar acá sería el doble reembolso
+  // que esto viene a evitar.
+  const marcarReembolsada = async (t: any) => {
+    const motivo = window.prompt(
+      `Dar por cerrada esta dispersión de ${Number(t.amount).toLocaleString('es-CO')} porque ya le devolviste el saldo al cliente por fuera del sistema.\n\n` +
+      `NO se acredita nada acá — se asume que ya lo hiciste vos. Sirve para que la conciliación ` +
+      `no vuelva a reembolsarlo cuando el proveedor confirme que fue devuelta.\n\n` +
+      `Motivo (queda auditado):`,
+      'Devuelta por el proveedor · saldo ya reintegrado a mano');
+    if (!motivo) return;
+    setResolviendo(t.id);
+    const r = await llamarMouv({ action: 'marcar_reembolso_externo', txId: t.id, reason: motivo });
+    setResolviendo(null);
+    if (r?.ok) { alert(r.already ? 'Ya estaba marcada.' : 'Marcada. La conciliación ya no la va a tocar.'); refreshData?.(); }
+    else alert(r?.message || r?.error || 'No se pudo marcar.');
+  };
+
+  // ── Conciliación automática de Bre-B ──────────────────────────────
+  // NADIE estaba corriendo esto. La conciliación por cliente depende de que
+  // ESE cliente abra su app, y el botón depende de que alguien se acuerde de
+  // apretarlo. Con el listado de Mouv llegando con retraso, un clic único casi
+  // siempre cae temprano y no encuentra nada — que es exactamente lo que pasó.
+  //
+  // Corre sola cada 3 minutos con el panel abierto, en silencio. Solo
+  // interrumpe si movió plata: un reembolso automático es algo que el operador
+  // tiene que enterarse el mismo momento, lo demás es ruido.
+  const autoConcAt = useRef(0);
+  useEffect(() => {
+    let vivo = true;
+    const correr = async () => {
+      if (document.hidden) return;
+      if (Date.now() - autoConcAt.current < 170000) return;
+      autoConcAt.current = Date.now();
+      const r = await llamarMouv({ action: 'reconcile_breb', todos: true });
+      if (!vivo || !r?.ok) return;
+      const res = (r.results ?? []) as any[];
+      const dev = res.filter((x: any) => x.result === 'refunded');
+      const comp = res.filter((x: any) => x.result === 'completed');
+      if (dev.length || comp.length) refreshData?.();
+      // Solo la plata devuelta justifica cortarle la pantalla a alguien.
+      if (dev.length) {
+        setResConciliar({
+          revisados: r.checked ?? res.length,
+          completados: comp.length,
+          devueltos: dev.length,
+          plata: dev.reduce((n: number, x: any) => n + Number(x.refund ?? 0), 0),
+          enCurso: res.filter((x: any) => x.result === 'still_processing' || x.result === 'sin_confirmar_revisar').length,
+          esperaFirma: res.filter((x: any) => x.result === 'espera_firma').length,
+          vias: [], motivos: [], listado: r.listado ?? null, muestra: null,
+          automatica: true,
+        });
+      }
+    };
+    const t = setInterval(correr, 180000);
+    const alVolver = () => { correr(); };
+    document.addEventListener('visibilitychange', alVolver);
+    correr();
+    return () => { vivo = false; clearInterval(t); document.removeEventListener('visibilitychange', alVolver); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const confirmarDispersion = async (t: any) => {
+    const ref = t.providerRef ?? t.raw_data?.providerRef ?? '';
+    if (!window.confirm(
+      `Marcar esta dispersión como pagada.\n\n` +
+      `Hacelo solo si la viste exitosa en la consola del proveedor${ref ? ` (ref ${ref})` : ''}.\n\n` +
+      `Queda registrada como confirmación manual, con tu usuario: un pagado puesto por una persona ` +
+      `no es lo mismo que uno confirmado por el proveedor.`)) return;
+    setResolviendo(t.id);
+    const r = await llamarMouv({ action: 'confirmar_dispersion', txId: t.id });
+    setResolviendo(null);
+    if (r?.ok) { alert(r.already ? `Ya estaba en ${r.already}.` : 'Marcada como completada.'); refreshData?.(); }
+    else alert(r?.error ? `No se pudo: ${r.error}` : 'No se pudo confirmar.');
+  };
+
   const loadFinityPool = async () => {
     setFinityPool({ loading: true });
     try {
@@ -522,9 +962,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const railLabelOf = (r: string) => (r === 'COP' ? 'Saldo Lincoin' : r === 'COP_BREB' ? 'Bre-B' : 'ACH');
 
   // Paso 1: validar y abrir la ventana de confirmación propia.
+  // Cuenta de la operación. Se calcula igual que en el servidor solo para
+  // MOSTRARLA; la cifra que se acredita la vuelve a calcular el servidor.
+  const acctCalc = (() => {
+    const n = (v: string) => { const x = parseFloat(String(v).replace(/[^\d.]/g, '')); return Number.isFinite(x) ? x : 0; };
+    const usdtGross = n(acctUsdtGross), usdtNet = n(acctUsdtNet);
+    const sellRate = n(acctSellRate), clientRate = n(acctClientRate);
+    const listo = usdtGross > 0 && usdtNet > 0 && sellRate > 0 && clientRate > 0 && usdtNet <= usdtGross;
+    const feeUsdt = Math.max(0, Number((usdtGross - usdtNet).toFixed(6)));
+    const base = acctFeeBearer === 'lincoin' ? usdtGross : usdtNet;
+    const revenueCop = Math.round(usdtNet * sellRate);
+    const copToClient = Math.round(base * clientRate);
+    const feeCostCop = Math.round(feeUsdt * sellRate);
+    // La comisión Bre-B (0,10%) se descuenta de lo que recibe el cliente.
+    const feeBreb = carguesRail === 'COP_BREB' && carguesDir === 'credit' && !carguesRecordOnly
+      ? Math.round(copToClient * 0.10 / 100) : 0;
+    const creditedCop = copToClient - feeBreb;
+    return { listo, usdtGross, usdtNet, feeUsdt, sellRate, clientRate, revenueCop, copToClient, feeCostCop, feeBreb, creditedCop, utilityCop: revenueCop - creditedCop };
+  })();
+  const usandoAcct = acctOn && carguesDir === 'credit' && !carguesRecordOnly;
+
   const requestCargue = () => {
     if (!carguesClient) return;
-    const raw = parseFloat((carguesAmount || '').replace(/[^\d.]/g, ''));
+    if (usandoAcct && !acctCalc.listo) { setCarguesMsg({ ok: false, text: 'Completa los cuatro datos de la operación (USDT enviados, USDT recibidos y las dos tasas).' }); return; }
+    const raw = usandoAcct ? acctCalc.copToClient : parseFloat((carguesAmount || '').replace(/[^\d.]/g, ''));
     if (!isFinite(raw) || raw <= 0) { setCarguesMsg({ ok: false, text: 'Ingresa un monto válido.' }); return; }
     setCarguesMsg(null);
     setCarguesOverride(false);
@@ -550,7 +1011,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       const r = await fetch(`${SURL}/functions/v1/admin-data`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: authHeader },
-        body: JSON.stringify({ action: 'admin_credit_balance', userId: carguesClient.id, currency: carguesRail, amount: delta, note: carguesNote.trim() || undefined, ...(carguesRecordOnly ? { recordOnly: true } : {}) }),
+        body: JSON.stringify({
+          action: 'admin_credit_balance', userId: carguesClient.id, currency: carguesRail,
+          amount: delta, note: carguesNote.trim() || undefined,
+          ...(carguesRecordOnly ? { recordOnly: true } : { otp: cargueOtp.trim() }),
+          ...(usandoAcct ? { acct: {
+            usdtGross: acctCalc.usdtGross, usdtNet: acctCalc.usdtNet,
+            sellRate: acctCalc.sellRate, clientRate: acctCalc.clientRate,
+            feeBearer: acctFeeBearer,
+          } } : {}),
+        }),
       });
       const d = await r.json();
       if (d?.success) {
@@ -559,7 +1029,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
           : d.feeCop > 0
           ? `✅ ${railLabel} actualizado. Cargue ${formatMoney(d.grossCop ?? raw, '')} − comisión ${formatMoney(d.feeCop, '')} (${d.feePct}%) = ${formatMoney(d.netCop ?? 0, '')} acreditados. Nuevo saldo: ${formatMoney(d.newBalance ?? 0, '')} COP`
           : `✅ ${railLabel} actualizado. Nuevo saldo: ${formatMoney(d.newBalance ?? 0, '')} COP` });
-        setCarguesAmount(''); setCarguesNote('');
+        setCarguesAmount(''); setCarguesNote(''); setCargueOtp('');
+        setAcctUsdtGross(''); setAcctUsdtNet(''); setAcctSellRate(''); setAcctClientRate('');
         showToast(`Cargue aplicado a ${carguesClient.name}`);
         refreshData();
       } else {
@@ -680,7 +1151,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const [newCouponDiscount, setNewCouponDiscount] = useState('');
 
   const { exchangeRates, updateRate, updateFee, toggleMode, apiStatus, forceRefresh, getRate } = useExchangeRates();
-  const { config: systemConfig, updateConfig: updateSystemConfig, addCoupon, removeCoupon, toggleCoupon, setThemePreset } = useSystemConfig();
+  const { config: systemConfig, updateConfig: updateSystemConfig, configError, addCoupon, removeCoupon, toggleCoupon, setThemePreset } = useSystemConfig();
   const { 
       getAllPendingDeposits, 
       getAllPendingWithdrawals, 
@@ -711,6 +1182,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       currentUser,
       enrollMFA,
       verifyMFAEnrollment,
+    syncError,
   } = useDatabase();
 
   // ── 2FA del propio admin (protege el cambio de proveedor de tesorería) ──
@@ -718,7 +1190,37 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const [mfaCode, setMfaCode] = useState('');
   const [mfaBusy, setMfaBusy] = useState(false);
   const [mfaMsg, setMfaMsg] = useState<string | null>(null);
+  const [mfaBackupCodes, setMfaBackupCodes] = useState<string[] | null>(null);
+  const [mfaHealth, setMfaHealth] = useState<any>(null);
+  const [mfaHealthBusy, setMfaHealthBusy] = useState(false);
+
+  // Revisa TODAS las cuentas con 2FA y reporta cuáles tienen el secreto
+  // ilegible (llave distinta) o se quedaron sin códigos de respaldo. Sirve
+  // para enterarse ANTES de que alguien no pueda entrar.
+  const runMfaHealth = async () => {
+    setMfaHealthBusy(true);
+    try {
+      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+      let jwt: string | null = null;
+      try { const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token')); if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; } } catch { /* */ }
+      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}` },
+        body: JSON.stringify({ action: 'mfa_health' }),
+      });
+      setMfaHealth(await r.json());
+    } catch { setMfaHealth({ error: 'No se pudo revisar. Reintenta.' }); }
+    setMfaHealthBusy(false);
+  };
   const adminMfaOn = !!((currentUser as any)?.mfaEnabled || (currentUser as any)?.raw_data?.mfaEnabled);
+
+  // Tesorería no se abre solo con la sesión: exige volver a probar el correo y
+  // el código de la app (y la llave, si la cuenta tiene alguna). Se vuelve a
+  // pedir cada vez que se entra a la sección — salir y volver a entrar no es
+  // un rodeo válido.
+  const [tesoreriaOk, setTesoreriaOk] = useState(false);
+  useEffect(() => { if (activeTab !== 'treasury') setTesoreriaOk(false); }, [activeTab]);
   const startMfaEnroll = async () => {
     setMfaBusy(true); setMfaMsg(null);
     try {
@@ -732,8 +1234,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     if (!mfaEnroll || mfaCode.length !== 6) return;
     setMfaBusy(true); setMfaMsg(null);
     try {
-      const { ok, error } = await verifyMFAEnrollment(mfaEnroll.factorId, mfaCode, mfaEnroll.secret);
-      if (ok) { setMfaMsg('✅ 2FA activado. Ahora el cambio de proveedor exige tu código.'); setMfaEnroll(null); setMfaCode(''); }
+      const { ok, error, backupCodes } = await verifyMFAEnrollment(mfaEnroll.factorId, mfaCode, mfaEnroll.secret);
+      if (ok) {
+        setMfaMsg('✅ 2FA activado. Ahora el cambio de proveedor exige tu código.');
+        setMfaEnroll(null); setMfaCode('');
+        // Se muestran una ÚNICA vez: en la base solo queda su hash.
+        if (backupCodes?.length) setMfaBackupCodes(backupCodes);
+      }
       else setMfaMsg(error ?? 'Código incorrecto. Intenta de nuevo.');
     } catch (e: any) { setMfaMsg(e?.message ?? 'Error'); }
     setMfaBusy(false);
@@ -755,6 +1262,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const pendingWithdrawals = getAllPendingWithdrawals().filter(isBusinessTx);
   const historyTransactions = getTransactionHistory().filter(isBusinessTx);
   const allUsers = rawUsers.filter((u: any) => u.role !== 'admin');
+  // Cliente seleccionado en Cargues, SIEMPRE leído de la lista viva: cualquier
+  // refreshData() se refleja al instante en los saldos que se muestran.
+  const carguesClient: User | null = carguesClientId
+    ? (allUsers.find((u: any) => u.id === carguesClientId) ?? null)
+    : null;
   const adminTeam = getAdminTeam();
 
   // ── Panel de Fallos ──────────────────────────────────────────────────────
@@ -764,7 +1276,78 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const failuresList = (getTransactionHistory() as any[])
     .filter(t => ['Fallido', 'Rechazado'].includes(String(t.status)))
     .sort((a, b) => new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime());
-  const failuresCount = failuresList.length;
+
+  // Dispersiones ACEPTADAS por el proveedor pero NUNCA confirmadas.
+  //
+  // Antes no hacía falta mirarlas porque el servidor las marcaba Completado a
+  // ciegas — y así fue como un cliente pagó por un envío que el proveedor
+  // había rechazado. Ahora se quedan en Procesando, que es la verdad, pero una
+  // verdad que nadie ve es igual de inútil: si nadie las revisa, el cliente
+  // espera y no se entera nadie. Por eso salen acá y cuentan en el badge.
+  //
+  // Bre-B liquida en segundos; pasados 15 minutos sin confirmación ya no es
+  // "en curso", es algo que alguien tiene que cotejar contra la consola del
+  // proveedor.
+  const sinConfirmarList = (getTransactionHistory() as any[])
+    .filter(t => {
+      if (String(t.type) !== 'dispersion' || String(t.status) !== 'Procesando') return false;
+      const ts = new Date(t.createdAt ?? 0).getTime();
+      return Number.isFinite(ts) && Date.now() - ts >= 15 * 60 * 1000;
+    })
+    .sort((a, b) => new Date(a.createdAt ?? 0).getTime() - new Date(b.createdAt ?? 0).getTime());
+
+  const failuresCount = failuresList.length + sinConfirmarList.length;
+
+  // Cierres OTC que esperan a la mesa. El conteo lo hace el servidor (accion
+  // `resumen`) y no esta pantalla: contar aca obligaria a traerse la bandeja
+  // entera solo para pintar un numero en el sidebar.
+  const [otcPend, setOtcPend] = useState(0);
+  // Cuantos habia la vez anterior. La campana suena desde ACA y no solo desde
+  // la bandeja: el aviso existe justamente para cuando el operador NO esta
+  // mirando esa pantalla.
+  const otcPrev = useRef<number | null>(null);
+  useEffect(() => {
+    let vivo = true;
+    const leer = async () => {
+      try {
+        let token = SKEY_ADMIN;
+        const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
+        if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) token = d.access_token; }
+        const r = await fetch(`${SURL_ADMIN}/functions/v1/otc-mesa`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SKEY_ADMIN, Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ action: 'resumen' }),
+        });
+        const d = await r.json().catch(() => null);
+        if (vivo && d?.ok) {
+          const n = Number(d.abiertas ?? 0);
+          setOtcPend(n);
+          // La PRIMERA lectura solo toma nota: sonar ahi repicaria al entrar al
+          // panel por cierres que ya estaban esperando.
+          if (otcPrev.current != null && n > otcPrev.current && campanaActiva()) sonarCampana();
+          otcPrev.current = n;
+        }
+      } catch { /* el badge no puede tumbar el panel */ }
+    };
+    leer();
+    // Cada 10 s: este es el que hace sonar la campana cuando el operador NO
+    // esta en la bandeja, asi que enterarse medio minuto tarde de que alguien
+    // esta esperando es justo lo que se queria evitar.
+    //
+    // Pausado con la pestana oculta y releido al volver: preguntar cada 10 s
+    // por una pantalla que nadie mira es gasto, y al volver lo que importa es
+    // el estado de AHORA.
+    let t: any = setInterval(() => { if (!document.hidden) leer(); }, 10000);
+    const alVolver = () => { if (!document.hidden) leer(); };
+    document.addEventListener('visibilitychange', alVolver);
+    window.addEventListener('focus', alVolver);
+    return () => {
+      vivo = false;
+      clearInterval(t);
+      document.removeEventListener('visibilitychange', alVolver);
+      window.removeEventListener('focus', alVolver);
+    };
+  }, []);
 
   // Una cuenta BLOQUEADA o en LISTA NEGRA no cuenta como pendiente: no hay nada
   // que aprobarle (ya le negaste el acceso), y aparecer ahí solo ensucia la
@@ -817,7 +1400,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
           const newAlerts: SystemAlert[] = [];
           if (apiStatus === 'error') newAlerts.push({ id: 'api-error', type: 'error', title: 'Error de Conexión API', description: 'No se pueden obtener tasas de cambio en tiempo real.' });
           
-          if (!isOnline) newAlerts.push({ id: 'db-offline', type: 'error', title: 'Base de Datos Desconectada', description: 'La app está en modo local. Configura Supabase.' });
+          if (!isOnline) newAlerts.push({ id: 'db-offline', type: 'error', title: 'Base de Datos Desconectada', description: 'La app está en modo local. Revisa la conexión del servidor.' });
 
           const totalPendingTx = pendingDeposits.length + pendingWithdrawals.length;
           if (pendingClientsCount > 0) newAlerts.push({ id: 'kyc-pending', type: 'info', title: 'Verificación de Clientes', description: `Hay ${pendingClientsCount} usuarios esperando validación KYC.`, action: 'clients' });
@@ -828,7 +1411,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
           const limit = systemConfig.volumeLimit || 10000;
           let usersOverLimit = 0;
           allUsers.forEach(u => { const { totalUSD } = getUserVolume(u.id); if (totalUSD > limit) usersOverLimit++; });
-          if (usersOverLimit > 0) newAlerts.push({ id: 'volume-risk', type: 'warning', title: 'Límite de Volumen Excedido', description: `${usersOverLimit} clientes superaron el límite de $${limit.toLocaleString()}. Revisar Compliance.`, action: 'clients' });
+          if (usersOverLimit > 0) newAlerts.push({ id: 'volume-risk', type: 'warning', title: 'Límite de Volumen Excedido', description: `${usersOverLimit} clientes superaron el límite de $${limit.toLocaleString()}. Revisar Cumplimiento.`, action: 'clients' });
 
           setActiveAlerts(newAlerts);
       };
@@ -1148,6 +1731,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       const ageStr = (d?: string) => {
           if (!d) return '';
           const ms = Date.now() - new Date(d).getTime();
+          if (!Number.isFinite(ms)) return '';   // fecha ilegible → sin "hace NaN d"
           const m = Math.floor(ms / 60000);
           if (m < 1) return 'recién';
           if (m < 60) return `hace ${m} min`;
@@ -1280,305 +1864,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   
   // NOTE: For the sake of the XML response, I will output the *entire* file content including the unchanged renderers to ensure the user can just copy-paste without errors.
   
-  const renderClients = () => {
-      // No se filtra por rol: esta base es SOLO de Empresas (el personal vive
-      // en otra base). Antes se exigía role === 'business' y las cuentas que
-      // quedaron como 'personal' (registro por Google con pista vieja, cuentas
-      // previas al arreglo) no salían en "Empresas" → RESULTADOS (0). allUsers
-      // ya excluye a los admins/equipo, así que aquí van todos los clientes.
-      const filteredUsers = allUsers.filter(u =>
-          (clientKycFilter === 'all' || u.kycStatus === 'pending' || u.kycStatus === 'in_review') &&
-          ((u.name ?? '').toLowerCase().includes(clientSearch.toLowerCase()) || (u.email ?? '').toLowerCase().includes(clientSearch.toLowerCase()))
-      );
-
-      const handleRefreshClients = async () => {
-        setClientRefreshing(true);
-        await refreshData();
-        setClientRefreshing(false);
-      };
-
-      return (
-          <div className="space-y-6 animate-in fade-in duration-300">
-              <div className="flex flex-wrap gap-3 items-center justify-between bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-                  <div className="flex gap-2">
-                      {/* Solo empresas en este admin — personas van en /admin-personas */}
-                      <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
-                          <span style={{ color: '#FFFFFF' }} className="px-4 py-2 rounded-lg text-sm font-bold bg-[#0C0E0D] shadow-md">Empresas</span>
-                      </div>
-                      <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
-                          <button onClick={() => setClientKycFilter('all')} className={`px-3 py-2 rounded-lg text-sm font-bold transition-all ${clientKycFilter === 'all' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>Todos</button>
-                          <button onClick={() => setClientKycFilter('pending')} className={`px-3 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-1 ${clientKycFilter === 'pending' ? 'bg-orange-500 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>
-                              Pendientes {pendingClientsCount > 0 && <span className="bg-white text-orange-600 text-[10px] rounded-full px-1.5 font-bold">{pendingClientsCount}</span>}
-                          </button>
-                      </div>
-                  </div>
-                  <div className="flex gap-2">
-                      <div className="relative w-48">
-                          <Search className="absolute left-3 top-2.5 text-slate-400" size={16} />
-                          <input
-                              type="text"
-                              placeholder="Buscar cliente..."
-                              value={clientSearch}
-                              onChange={(e) => setClientSearch(e.target.value)}
-                              className="w-full pl-9 pr-4 py-2 border border-slate-200 rounded-lg text-sm focus:border-[#0C0E0D] outline-none"
-                          />
-                      </div>
-                      <button onClick={handleRefreshClients} disabled={clientRefreshing} className="flex items-center gap-1 px-3 py-2 bg-[#0C0E0D] rounded-lg text-sm font-bold hover:bg-[#152e52] disabled:opacity-60 transition-colors">
-                          <RefreshCw size={14} className={clientRefreshing ? 'animate-spin' : ''} /> Actualizar
-                      </button>
-                      <button onClick={() => setShowOrphanTool(v => !v)} className="flex items-center gap-1 px-3 py-2 border border-slate-200 rounded-lg text-sm font-bold text-slate-600 hover:bg-slate-50 transition-colors">
-                          <Trash2 size={14} /> Liberar correo huérfano
-                      </button>
-                  </div>
-              </div>
-
-              {showOrphanTool && (
-                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 space-y-2">
-                      <p className="text-sm font-bold text-amber-800">Liberar correo huérfano</p>
-                      <p className="text-xs text-amber-700">
-                          Úsalo cuando alguien eliminó su cuenta pero un registro nuevo con el <b>mismo correo</b> nunca se crea
-                          (ej. pasar de Personal a Empresa) — pasa cuando el perfil se borró pero la cuenta de acceso de Supabase
-                          quedó "atascada" con ese correo. Esto borra cualquier rastro que quede de ese correo, permanentemente.
-                      </p>
-                      <div className="flex gap-2 flex-wrap items-center">
-                          <input
-                              type="email"
-                              value={orphanEmail}
-                              onChange={e => setOrphanEmail(e.target.value)}
-                              placeholder="correo@empresa.com"
-                              className="flex-1 min-w-[220px] px-3 py-2 rounded-lg border border-amber-300 text-sm outline-none focus:border-amber-500"
-                          />
-                          <button onClick={freeOrphanEmail} disabled={orphanBusy || !orphanEmail.trim()} style={{ color: '#FFFFFF' }} className="px-4 py-2 text-sm font-bold bg-amber-600 rounded-lg hover:bg-amber-700 disabled:opacity-50">
-                              {orphanBusy ? 'Liberando…' : 'Liberar correo'}
-                          </button>
-                      </div>
-                      {orphanMsg && <p className="text-xs font-semibold text-slate-700">{orphanMsg}</p>}
-                  </div>
-              )}
-
-              <div className="flex gap-6 h-[600px]">
-                  {/* List */}
-                  <div className="w-1/3 bg-white border border-slate-200 rounded-xl overflow-hidden flex flex-col">
-                      <div className="p-4 border-b border-slate-100 bg-slate-50 text-xs font-bold text-slate-500 uppercase">
-                          Resultados ({filteredUsers.length})
-                      </div>
-                      <div className="flex-1 overflow-y-auto divide-y divide-slate-50">
-                          {filteredUsers.map(client => (
-                              <div 
-                                  key={client.id} 
-                                  onClick={() => { setSelectedClient(client); setShowDeleteConfirm(false); setShowBlockInput(false); }}
-                                  className={`p-4 cursor-pointer hover:bg-slate-50 transition-colors ${selectedClient?.id === client.id ? 'bg-slate-50 border-l-4 border-[#0C0E0D]' : ''}`}
-                              >
-                                  <div className="flex items-center gap-3">
-                                      <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-white text-sm ${client.kycStatus === 'verified' ? 'bg-green-500' : client.kycStatus === 'rejected' ? 'bg-red-500' : 'bg-orange-400'}`}>
-                                          {(client.name ?? client.email ?? '?').charAt(0).toUpperCase()}
-                                      </div>
-                                      <div>
-                                          <p className="font-bold text-slate-800 text-sm truncate w-40">{client.name || client.email}</p>
-                                          <p className="text-xs text-slate-500 truncate w-40">{client.email}</p>
-                                      </div>
-                                  </div>
-                                  {isBlacklisted(client)
-                                    ? <span className="text-[10px] font-bold mt-1 inline-block px-1.5 py-0.5 rounded bg-[#0C0E0D] text-white">🚫 LISTA NEGRA</span>
-                                    : client.isBlocked && <span className="text-[10px] text-red-500 font-bold mt-1 block">BLOQUEADO</span>}
-                              </div>
-                          ))}
-                      </div>
-                  </div>
-
-                  {/* Detail */}
-                  <div className="flex-1 bg-white border border-slate-200 rounded-xl overflow-hidden flex flex-col">
-                      {selectedClient ? (
-                          <div className="flex flex-col h-full">
-                              <div className="p-6 border-b border-slate-100 flex justify-between items-start bg-slate-50">
-                                  <div>
-                                      <h2 className="text-xl font-bold text-slate-800">{selectedClient.name}</h2>
-                                      <p className="text-sm text-slate-500">{selectedClient.email}</p>
-                                      <div className="flex gap-2 mt-2">
-                                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${selectedClient.kycStatus === 'verified' ? 'bg-green-100 text-green-700' : selectedClient.kycStatus === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-orange-100 text-orange-700'}`}>
-                                              KYC: {selectedClient.kycStatus}
-                                          </span>
-                                          <span className="bg-slate-200 text-slate-600 px-2 py-0.5 rounded text-[10px] font-bold uppercase">{selectedClient.role}</span>
-                                      </div>
-                                  </div>
-                                  <div className="flex gap-2 flex-wrap justify-end">
-                                      <button onClick={openEditClient} className="bg-slate-800 text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-slate-900 transition-colors flex items-center gap-1">
-                                          <Edit2 size={14}/> Editar
-                                      </button>
-                                      {selectedClient.kycStatus !== 'verified' && (
-                                          <button onClick={handleApproveKYC} className="bg-green-600 text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-green-700 transition-colors flex items-center gap-1">
-                                              <CheckCircle size={14}/> Aprobar
-                                          </button>
-                                      )}
-                                      <button onClick={() => setShowBlockInput(!showBlockInput)} className="bg-red-100 text-red-700 border border-red-200 px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-red-200 transition-colors flex items-center gap-1">
-                                          <Ban size={14}/> {selectedClient.isBlocked ? 'Desbloquear' : 'Bloquear'}
-                                      </button>
-                                      <button onClick={handleBlacklistUser} title="Bloqueo reforzado: el servidor rechaza TODAS sus operaciones y desaparece de las listas operativas" className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors flex items-center gap-1 ${(selectedClient as any).blacklisted ? 'bg-slate-200 text-slate-700 hover:bg-slate-300' : 'bg-[#0C0E0D] text-white hover:bg-black'}`}>
-                                          <Shield size={14}/> {(selectedClient as any).blacklisted ? 'Sacar de lista negra' : 'Lista negra'}
-                                      </button>
-                                      <button onClick={() => { setShowDeleteConfirm(true); setShowBlockInput(false); }} className="bg-red-600 text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-red-700 transition-colors flex items-center gap-1">
-                                          <Trash2 size={14}/> Eliminar
-                                      </button>
-                                      <button onClick={() => handleSyncCrypto(selectedClient.id, selectedClient.name)} className="bg-[#4ADE80] text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-[#22C55E] transition-colors flex items-center gap-1">
-                                          <RefreshCw size={14}/> Sincronizar Cripto
-                                      </button>
-                                      {selectedClient.role === 'business' && (
-                                          <button
-                                              onClick={() => {
-                                                  updateUserProfile(selectedClient.id, { otcEnabled: !selectedClient.otcEnabled });
-                                                  setSelectedClient({ ...selectedClient, otcEnabled: !selectedClient.otcEnabled });
-                                                  showToast(selectedClient.otcEnabled ? 'OTC desactivado' : 'OTC activado');
-                                              }}
-                                              className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors flex items-center gap-1 ${selectedClient.otcEnabled ? 'bg-emerald-100 text-emerald-700 border-emerald-200 hover:bg-emerald-200' : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'}`}
-                                          >
-                                              <TrendingUp size={14}/> OTC {selectedClient.otcEnabled ? 'ON' : 'OFF'}
-                                          </button>
-                                      )}
-                                  </div>
-                              </div>
-                              
-                              {editClientOpen && (
-                                  <div className="p-4 bg-slate-50 border-b border-slate-200 animate-in fade-in slide-in-from-top-2 space-y-3">
-                                      <div>
-                                          <label className="block text-[11px] font-bold uppercase text-slate-500 mb-1">Nombre {editClientRole === 'business' ? '/ Razón social' : 'completo'}</label>
-                                          <input value={editClientName} onChange={e => setEditClientName(e.target.value)} className="w-full h-10 px-3 rounded-lg border border-slate-300 text-sm text-slate-800 outline-none focus:border-slate-800" placeholder="Nombre del cliente" />
-                                      </div>
-                                      <div>
-                                          <label className="block text-[11px] font-bold uppercase text-slate-500 mb-1">Tipo de cuenta</label>
-                                          <div className="flex gap-2">
-                                              <button onClick={() => setEditClientRole('personal')} className={`flex-1 h-10 rounded-lg text-sm font-bold border transition-colors ${editClientRole === 'personal' ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-100'}`}>Persona</button>
-                                              <button onClick={() => setEditClientRole('business')} className={`flex-1 h-10 rounded-lg text-sm font-bold border transition-colors ${editClientRole === 'business' ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-100'}`}>Empresa</button>
-                                          </div>
-                                      </div>
-                                      <div className="flex gap-2">
-                                          <button onClick={() => setEditClientOpen(false)} className="flex-1 h-10 rounded-lg text-sm font-bold border border-slate-300 text-slate-600 hover:bg-slate-100">Cancelar</button>
-                                          <button onClick={saveEditClient} disabled={editClientSaving} className="flex-1 h-10 rounded-lg text-sm font-bold bg-[#0C0E0D] text-white hover:bg-slate-800 disabled:opacity-60">{editClientSaving ? 'Guardando…' : 'Guardar cambios'}</button>
-                                      </div>
-                                  </div>
-                              )}
-                              {showBlockInput && (
-                                  <div className="p-4 bg-red-50 border-b border-red-100 flex gap-2 animate-in fade-in slide-in-from-top-2">
-                                      <input
-                                          type="text"
-                                          value={blockReason}
-                                          onChange={(e) => setBlockReason(e.target.value)}
-                                          placeholder="Motivo del bloqueo / desbloqueo..."
-                                          className="flex-1 border border-red-200 rounded px-3 text-sm focus:outline-none focus:border-red-400"
-                                      />
-                                      <button onClick={handleBlockUser} className="bg-red-600 text-white px-4 py-2 rounded text-xs font-bold hover:bg-red-700">Confirmar</button>
-                                  </div>
-                              )}
-
-                              {showDeleteConfirm && (
-                                  <div className="p-4 bg-red-50 border-b border-red-200 animate-in fade-in slide-in-from-top-2">
-                                      <p className="text-sm font-bold text-red-800 mb-1">⚠️ Eliminar cuenta permanentemente</p>
-                                      <p className="text-xs text-red-700 mb-3">Se eliminarán el perfil, todas las transacciones y el acceso de <span className="font-bold">{selectedClient.email}</span>. Esta acción no se puede deshacer.</p>
-                                      <div className="flex gap-2">
-                                          <button onClick={handleDeleteUser} disabled={deletingUser} className="bg-red-600 text-white px-4 py-2 rounded text-xs font-bold hover:bg-red-700 disabled:opacity-60 flex items-center gap-1">
-                                              {deletingUser ? <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin inline-block"/> : <Trash2 size={12}/>}
-                                              {deletingUser ? 'Eliminando...' : 'Sí, eliminar'}
-                                          </button>
-                                          <button onClick={() => setShowDeleteConfirm(false)} className="px-4 py-2 rounded text-xs font-bold text-slate-600 bg-white border border-slate-200 hover:bg-slate-50">Cancelar</button>
-                                      </div>
-                                  </div>
-                              )}
-
-                              <div className="flex-1 overflow-y-auto p-6 space-y-6">
-                                  {/* Info Grid */}
-                                  <div className="grid grid-cols-2 gap-4">
-                                      <div className="p-3 border border-slate-100 rounded-lg">
-                                          <p className="text-xs text-slate-400 font-bold uppercase">ID Cliente</p>
-                                          <p className="text-sm font-mono text-slate-700">{selectedClient.id}</p>
-                                      </div>
-                                      <div className="p-3 border border-slate-100 rounded-lg">
-                                          <p className="text-xs text-slate-400 font-bold uppercase">País</p>
-                                          <p className="text-sm font-bold text-slate-700">{selectedClient.country || selectedClient.companyCountry || 'N/A'}</p>
-                                      </div>
-                                      <div className="p-3 border border-slate-100 rounded-lg">
-                                          <p className="text-xs text-slate-400 font-bold uppercase">NIT / Documento</p>
-                                          <p className="text-sm font-bold text-slate-700">{selectedClient.taxId || selectedClient.docNumber || 'N/A'}</p>
-                                      </div>
-                                      <div className="p-3 border border-slate-100 rounded-lg">
-                                          <p className="text-xs text-slate-400 font-bold uppercase">Tipo ID</p>
-                                          <p className="text-sm font-bold text-slate-700">{selectedClient.taxIdType || selectedClient.docType || 'N/A'}</p>
-                                      </div>
-                                  </div>
-
-                                  {/* Didit Verification Result */}
-                                  <DiditAdminPanel client={selectedClient} showToast={showToast} />
-
-                                  {/* Business KYC Data */}
-                                  {selectedClient.role === 'business' && (
-                                      <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
-                                          <h3 className="font-bold text-[#0C0E0D] text-sm flex items-center gap-2">
-                                              <Building2 size={16}/> Datos KYC Empresa
-                                          </h3>
-                                          <div className="grid grid-cols-2 gap-3">
-                                              {[
-                                                  { label: 'Razón Social', val: selectedClient.companyName || selectedClient.name },
-                                                  { label: 'Ciudad', val: selectedClient.companyCity },
-                                                  { label: 'Dirección', val: selectedClient.companyAddress || selectedClient.address },
-                                                  { label: 'Rep. Legal', val: selectedClient.repLegalName || `${selectedClient.repFirstName ?? ''} ${selectedClient.repLastName ?? ''}`.trim() },
-                                                  { label: 'Doc. Rep', val: selectedClient.repDocNumber },
-                                                  { label: 'Tipo Doc. Rep', val: selectedClient.repDocType },
-                                                  { label: 'Nacionalidad Rep', val: selectedClient.repNationality },
-                                                  { label: 'PEP', val: selectedClient.isPep ? 'Sí' : 'No' },
-                                              ].map(({ label, val }) => (
-                                                  <div key={label} className="bg-white rounded-lg p-2 border border-slate-200">
-                                                      <p className="text-[10px] font-bold text-[#4ADE80] uppercase">{label}</p>
-                                                      <p className="text-sm text-slate-700 font-medium">{val || 'N/A'}</p>
-                                                  </div>
-                                              ))}
-                                          </div>
-                                      </div>
-                                  )}
-
-                                  {/* Documents */}
-                                  <div>
-                                      <h3 className="font-bold text-slate-800 mb-3 flex items-center gap-2"><FileText size={16}/> Documentación</h3>
-                                      {selectedClient.documents ? (
-                                          <div className="grid grid-cols-2 gap-4">
-                                              {Object.entries(selectedClient.documents).map(([key, val]) => (
-                                                  <div key={key} className="border border-slate-200 rounded-lg p-2">
-                                                      <p className="text-xs font-bold text-slate-500 uppercase mb-2">{key}</p>
-                                                      {typeof val === 'string' && val.startsWith('data:image') ? (
-                                                          <img src={val} alt={key} className="w-full h-32 object-cover rounded bg-slate-100 cursor-pointer hover:opacity-90" onClick={() => {const w = window.open(""); w?.document.write(`<img src="${val}"/>`)}}/>
-                                                      ) : (
-                                                          <a href={val as string} download className="text-[#4ADE80] text-xs underline truncate block">{val ? 'Descargar Archivo' : 'Sin archivo'}</a>
-                                                      )}
-                                                  </div>
-                                              ))}
-                                          </div>
-                                      ) : (
-                                          <div className="p-4 bg-slate-50 rounded text-center text-slate-400 text-sm">No hay documentos cargados.</div>
-                                      )}
-                                  </div>
-
-                                  {/* Balances */}
-                                  <div>
-                                      <h3 className="font-bold text-slate-800 mb-3 flex items-center gap-2"><Wallet size={16}/> Balances</h3>
-                                      <div className="flex gap-2 flex-wrap">
-                                          {Object.entries(selectedClient.balances).map(([curr, amount]) => (
-                                              <div key={curr} className="px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg">
-                                                  <span className="text-xs font-bold text-slate-400 block">{curr}</span>
-                                                  <span className="font-bold text-slate-800">${formatMoney(amount as number, curr)}</span>
-                                              </div>
-                                          ))}
-                                      </div>
-                                  </div>
-                              </div>
-                          </div>
-                      ) : (
-                          <div className="flex-1 flex flex-col items-center justify-center text-slate-300">
-                              <UserCheck size={64} className="mb-4 opacity-50"/>
-                              <p className="text-lg font-medium text-slate-400">Selecciona un cliente para ver detalles</p>
-                          </div>
-                      )}
-                  </div>
-              </div>
-          </div>
-      );
-  };
+  // La vista de clientes vive ahora en components/AdminClientes.tsx
+  // (maestro-detalle). Acá quedaba una segunda lista con sus propios
+  // botones; dos pantallas para lo mismo se separan en cuanto una cambia.
 
   const renderMarketing = () => (
       <div className="space-y-6 animate-in fade-in duration-300">
@@ -1606,7 +1894,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                           placeholder="20"
                       />
                   </div>
-                  <button onClick={handleAddCoupon} className="bg-[#0C0E0D] px-6 py-2 rounded-lg font-bold text-sm hover:bg-[#152e52] h-[38px] flex items-center gap-2">
+                  <button onClick={handleAddCoupon} className="bg-[#0C0E0D] px-6 py-2 rounded-lg font-bold text-sm hover:bg-[#161A17] h-[38px] flex items-center gap-2">
                       <Plus size={16}/> Crear
                   </button>
               </div>
@@ -1690,6 +1978,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
 
       return (
         <div className="space-y-6 animate-in fade-in duration-300">
+          {/* Se entra por Tesorería → Billeteras → COP, así que el regreso
+              tiene que estar aquí: ya no hay ítem en el menú lateral. */}
+          <button onClick={() => navTo('treasury')}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-bold"
+            style={{ backgroundColor: '#121413', color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.12)' }}>
+            <ArrowLeft size={14} /> Tesorería · Billetera COP
+          </button>
           {/* Aviso: proceso temporal */}
           <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start gap-3">
             <Info size={18} className="text-amber-600 mt-0.5 flex-shrink-0" />
@@ -1880,7 +2175,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                   return (
                     <button
                       key={u.id}
-                      onClick={() => { setCarguesClient(u); setCarguesMsg(null); }}
+                      onClick={() => { setCarguesClientId(u.id); setCarguesMsg(null); }}
                       className="w-full text-left p-3 rounded-lg transition-colors flex items-center gap-3"
                       style={{
                         border: active ? '1.5px solid #4ADE80' : '1px solid rgba(255,255,255,0.10)',
@@ -1964,14 +2259,102 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                     <button onClick={() => setCarguesDir('credit')} className={`flex-1 py-1.5 text-sm font-bold rounded transition-colors ${carguesDir === 'credit' ? 'bg-green-600 text-white' : 'text-slate-500'}`}>Acreditar (+)</button>
                     <button onClick={() => setCarguesDir('debit')} className={`flex-1 py-1.5 text-sm font-bold rounded transition-colors ${carguesDir === 'debit' ? 'bg-red-500 text-white' : 'text-slate-500'}`}>Descontar (−)</button>
                   </div>
-                  <label className="block text-xs font-semibold text-slate-500 mb-1">Monto (COP)</label>
+                  {/* ── Contabilidad de la operación ──────────────────────
+                      El COP no se escribe a mano: sale de la operación real.
+                      Así la utilidad es un dato del cargue y no "lo que
+                      sobró" al final del día. */}
+                  {carguesDir === 'credit' && !carguesRecordOnly && (
+                    <div className="rounded-xl p-3 mb-3" style={{ backgroundColor: '#121413', border: '1px solid rgba(74,222,128,0.22)' }}>
+                      <label className="flex items-center gap-2 cursor-pointer select-none mb-2">
+                        <input type="checkbox" checked={acctOn} onChange={e => setAcctOn(e.target.checked)} style={{ width: 15, height: 15, accentColor: '#4ADE80' }} />
+                        <span className="text-xs font-bold" style={{ color: '#F4F4F2' }}>Calcular desde la operación (USDT y tasas)</span>
+                      </label>
+
+                      {acctOn ? (<>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-[10px] font-bold uppercase tracking-wide mb-1" style={{ color: '#878E88' }}>USDT que envió</label>
+                            <input inputMode="decimal" placeholder="50000" value={acctUsdtGross}
+                              onChange={e => setAcctUsdtGross(e.target.value.replace(/[^\d.]/g, ''))}
+                              className="w-full px-2.5 py-2 rounded-lg text-sm font-bold outline-none"
+                              style={{ backgroundColor: '#0C0E0D', color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.12)' }} />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-bold uppercase tracking-wide mb-1" style={{ color: '#878E88' }}>USDT que llegaron</label>
+                            <input inputMode="decimal" placeholder="49995" value={acctUsdtNet}
+                              onChange={e => setAcctUsdtNet(e.target.value.replace(/[^\d.]/g, ''))}
+                              className="w-full px-2.5 py-2 rounded-lg text-sm font-bold outline-none"
+                              style={{ backgroundColor: '#0C0E0D', color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.12)' }} />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-bold uppercase tracking-wide mb-1" style={{ color: '#878E88' }}>A cómo vendí (COP/USDT)</label>
+                            <input inputMode="decimal" placeholder="3900" value={acctSellRate}
+                              onChange={e => setAcctSellRate(e.target.value.replace(/[^\d.]/g, ''))}
+                              className="w-full px-2.5 py-2 rounded-lg text-sm font-bold outline-none"
+                              style={{ backgroundColor: '#0C0E0D', color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.12)' }} />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-bold uppercase tracking-wide mb-1" style={{ color: '#878E88' }}>A cómo le pago (COP/USDT)</label>
+                            <input inputMode="decimal" placeholder="3850" value={acctClientRate}
+                              onChange={e => setAcctClientRate(e.target.value.replace(/[^\d.]/g, ''))}
+                              className="w-full px-2.5 py-2 rounded-lg text-sm font-bold outline-none"
+                              style={{ backgroundColor: '#0C0E0D', color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.12)' }} />
+                          </div>
+                        </div>
+
+                        <div className="flex gap-1 p-1 rounded-lg mt-2" style={{ backgroundColor: '#0C0E0D' }}>
+                          {([['lincoin', 'El fee lo asumo yo'], ['cliente', 'El fee lo asume el cliente']] as const).map(([k, lbl]) => (
+                            <button key={k} onClick={() => setAcctFeeBearer(k)}
+                              className="flex-1 py-1.5 text-[11px] font-bold rounded transition-colors"
+                              style={acctFeeBearer === k ? { backgroundColor: '#4ADE80', color: '#0C0E0D' } : { color: '#878E88' }}>{lbl}</button>
+                          ))}
+                        </div>
+
+                        {acctCalc.listo ? (
+                          <div className="mt-2.5 rounded-lg p-2.5 space-y-1" style={{ backgroundColor: '#0C0E0D', border: '1px solid rgba(255,255,255,0.08)' }}>
+                            {[
+                              ['Entró por la venta', `${acctCalc.revenueCop.toLocaleString('es-CO')} COP`, '#F4F4F2', `${acctCalc.usdtNet.toLocaleString('es-CO')} USDT × ${acctCalc.sellRate.toLocaleString('es-CO')}`],
+                              ['Fee de red perdido', `${acctCalc.feeUsdt.toLocaleString('es-CO')} USDT`, '#FBBF24', `≈ ${acctCalc.feeCostCop.toLocaleString('es-CO')} COP a tu tasa de venta`],
+                              ['Se le acredita al cliente', `${acctCalc.creditedCop.toLocaleString('es-CO')} COP`, '#F4F4F2', acctCalc.feeBreb > 0 ? `${acctCalc.copToClient.toLocaleString('es-CO')} − ${acctCalc.feeBreb.toLocaleString('es-CO')} de comisión Bre-B` : `${(acctFeeBearer === 'lincoin' ? acctCalc.usdtGross : acctCalc.usdtNet).toLocaleString('es-CO')} USDT × ${acctCalc.clientRate.toLocaleString('es-CO')}`],
+                            ].map(([l, v, c, sub]: any) => (
+                              <div key={l} className="flex items-start justify-between gap-3">
+                                <div><p className="text-[11px] m-0" style={{ color: '#878E88' }}>{l}</p><p className="text-[10px] m-0" style={{ color: 'rgba(244,244,242,0.45)' }}>{sub}</p></div>
+                                <span className="text-xs font-bold whitespace-nowrap" style={{ color: c, fontVariantNumeric: 'tabular-nums' }}>{v}</span>
+                              </div>
+                            ))}
+                            <div className="flex items-center justify-between pt-1.5 mt-1" style={{ borderTop: '1px solid rgba(255,255,255,0.10)' }}>
+                              <span className="text-xs font-bold" style={{ color: '#F4F4F2' }}>Tu utilidad</span>
+                              <span className="text-base font-bold" style={{ color: acctCalc.utilityCop >= 0 ? '#4ADE80' : '#F87171', fontVariantNumeric: 'tabular-nums' }}>
+                                {acctCalc.utilityCop.toLocaleString('es-CO')} COP
+                              </span>
+                            </div>
+                            {acctCalc.utilityCop < 0 && (
+                              <p className="text-[10px] m-0 pt-1" style={{ color: '#F87171' }}>Estás pagando más de lo que recibiste: revisa las tasas antes de aplicar.</p>
+                            )}
+                          </div>
+                        ) : (
+                          <p className="text-[11px] mt-2 mb-0" style={{ color: 'rgba(244,244,242,0.45)' }}>Completa los cuatro datos para ver el cálculo.</p>
+                        )}
+                      </>) : (
+                        <p className="text-[11px] m-0" style={{ color: '#878E88' }}>Desactivado: se acredita el monto que escribas abajo y el cargue queda sin contabilidad.</p>
+                      )}
+                    </div>
+                  )}
+
+                  <label className="block text-xs font-semibold text-slate-500 mb-1">
+                    {usandoAcct ? 'Monto (COP) — calculado' : 'Monto (COP)'}
+                  </label>
                   <input
                     type="text"
                     inputMode="numeric"
                     placeholder="0"
-                    value={carguesAmount ? Number(carguesAmount).toLocaleString('es-CO') : ''}
+                    readOnly={usandoAcct}
+                    value={usandoAcct
+                      ? (acctCalc.listo ? acctCalc.copToClient.toLocaleString('es-CO') : '')
+                      : (carguesAmount ? Number(carguesAmount).toLocaleString('es-CO') : '')}
                     onChange={(e) => setCarguesAmount(e.target.value.replace(/\D/g, ''))}
                     className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-lg font-bold text-slate-800 focus:border-[#0C0E0D] outline-none mb-3"
+                    style={usandoAcct ? { opacity: 0.75, cursor: 'not-allowed' } : undefined}
                   />
                   <label className="block text-xs font-semibold text-slate-500 mb-1">Nota (opcional)</label>
                   <input
@@ -1995,17 +2378,112 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                     </div>
                   )}
 
+                  {/* El 2FA ya NO se pide acá. Se pide en la ventana de
+                      confirmación, DESPUÉS de ver el desglose: un código que
+                      se escribe antes de revisar la cifra autoriza a ciegas. */}
                   <button
                     onClick={requestCargue}
-                    disabled={carguesBusy || !carguesAmount}
-                    className="w-full py-3 rounded-lg text-sm font-bold text-white bg-[#0C0E0D] hover:bg-[#152e52] disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+                    disabled={carguesBusy || (usandoAcct ? !acctCalc.listo : !carguesAmount)}
+                    className="w-full py-3 rounded-lg text-sm font-bold text-white bg-[#0C0E0D] hover:bg-[#161A17] disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
                   >
-                    {carguesBusy ? <><RefreshCw size={15} className="animate-spin" /> Aplicando…</> : <>{carguesDir === 'credit' ? 'Acreditar' : 'Descontar'} saldo</>}
+                    {carguesBusy ? <><RefreshCw size={15} className="animate-spin" /> Aplicando…</> : <>Revisar y {carguesDir === 'credit' ? 'acreditar' : 'descontar'}</>}
                   </button>
                 </>
               )}
             </div>
           </div>
+
+          {/* ── Cargues hechos a este cliente ──
+              Antes no había dónde mirarlos: para saber si un cargue se
+              aplicó bien había que ir a Movimientos y buscar. Acá está la
+              lista de lo que se le acreditó y descontó a mano, con el
+              desglose contable que se guardó, y un botón para revertir que
+              deja el descuento listo —igual pide revisar y 2FA—. */}
+          {carguesClient && (() => {
+            const fechaDe = (t: any): Date | null => {
+              const v = t?.creditedAt ?? t?.createdAt ?? t?.created_at ?? t?.date;
+              const s = String(v ?? '').trim(); if (!s) return null;
+              const dmy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+              const d = dmy ? new Date(Number(dmy[3]), Number(dmy[2]) - 1, Number(dmy[1])) : new Date(s);
+              return isNaN(d.getTime()) ? null : d;
+            };
+            const cargues = (getTransactionHistory() as any[])
+              .filter(t => t.userId === carguesClient.id && (t.source === 'admin_cargue' || t.source === 'admin_backfill' || t.type === 'adjustment' || (t.type === 'load' && t.rail)))
+              .map(t => ({ t, d: fechaDe(t) }))
+              .sort((a, b) => (b.d?.getTime() ?? 0) - (a.d?.getTime() ?? 0));
+            const fmt = (v: any) => Math.round(Number(v) || 0).toLocaleString('es-CO');
+            const revertir = (t: any) => {
+              const esCredito = (t.direction ?? (t.type === 'load' ? 'credit' : 'debit')) === 'credit';
+              const monto = Math.round(Number(t.grossCop ?? t.amount) || 0);
+              setCarguesRail((t.rail ?? t.currency ?? 'COP') as any);
+              setCarguesDir(esCredito ? 'debit' : 'credit');
+              setCarguesRecordOnly(false);
+              setAcctOn(false);
+              setCarguesAmount(String(monto));
+              setCarguesNote(`Reversa del ${esCredito ? 'cargue' : 'descuento'} del ${fechaDe(t)?.toLocaleDateString('es-CO') ?? '—'} · ${fmt(t.amount)} COP${t.note ? ` · ${String(t.note).slice(0, 60)}` : ''}`);
+              setCarguesMsg({ ok: true, text: `Reversa preparada: ${esCredito ? 'descontar' : 'acreditar'} ${fmt(monto)} COP en ${railLabelOf(t.rail ?? t.currency ?? 'COP')}. Revisá y autorizá arriba.` });
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            };
+            return (
+              <div className="mt-6 rounded-xl" style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)' }}>
+                <div className="flex items-center justify-between flex-wrap gap-2" style={{ padding: '14px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                  <div>
+                    <p style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2', margin: 0 }}>Cargues a {carguesClient.name}</p>
+                    <p style={{ fontSize: 12, color: '#878E88', margin: '2px 0 0' }}>{cargues.length} {cargues.length === 1 ? 'movimiento manual' : 'movimientos manuales'} · lo más reciente primero</p>
+                  </div>
+                </div>
+                {cargues.length === 0 ? (
+                  <p style={{ fontSize: 12.5, color: '#878E88', padding: '16px 18px', margin: 0 }}>Todavía no se le ha hecho ningún cargue manual.</p>
+                ) : (
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 820 }}>
+                      <thead><tr>{['FECHA', 'RIEL', 'MOVIMIENTO', 'NETO', 'CONTABILIDAD', 'NOTA', ''].map((h, i) => (
+                        <th key={h || 'acc'} style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1.2px', color: 'rgba(244,244,242,0.45)', textAlign: i === 3 ? 'right' : 'left', padding: '9px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)', whiteSpace: 'nowrap' }}>{h}</th>
+                      ))}</tr></thead>
+                      <tbody>
+                        {cargues.slice(0, 60).map(({ t, d }) => {
+                          const esCredito = (t.direction ?? (t.type === 'load' ? 'credit' : 'debit')) === 'credit';
+                          const backfill = t.source === 'admin_backfill' || t.recordOnly === true;
+                          const a = t.acct;
+                          return (
+                            <tr key={t.id}>
+                              <td style={{ padding: '10px 18px', fontSize: 12, color: '#b9beba', borderBottom: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>{d ? d.toLocaleString('es-CO', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'}</td>
+                              <td style={{ padding: '10px 18px', fontSize: 12.5, color: '#F4F4F2', borderBottom: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap' }}>{railLabelOf(t.rail ?? t.currency ?? 'COP')}</td>
+                              <td style={{ padding: '10px 18px', borderBottom: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap' }}>
+                                <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '3px 8px', borderRadius: 999, border: `1px solid ${backfill ? 'rgba(251,191,36,0.35)' : esCredito ? 'rgba(74,222,128,0.35)' : 'rgba(248,113,113,0.35)'}`, color: backfill ? '#FBBF24' : esCredito ? '#4ADE80' : '#F87171' }}>
+                                  {backfill ? 'SOLO REGISTRO' : esCredito ? 'ACREDITADO' : 'DESCONTADO'}
+                                </span>
+                              </td>
+                              <td style={{ padding: '10px 18px', fontSize: 13, fontWeight: 700, textAlign: 'right', color: esCredito ? '#4ADE80' : '#F87171', borderBottom: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+                                {esCredito ? '+' : '−'}{fmt(t.amount)} COP
+                                {t.feeCop > 0 && <p style={{ fontSize: 10.5, color: '#878E88', margin: '2px 0 0', fontWeight: 500 }}>bruto {fmt(t.grossCop)} − fee {fmt(t.feeCop)}</p>}
+                              </td>
+                              <td style={{ padding: '10px 18px', fontSize: 11.5, color: '#b9beba', borderBottom: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap' }}>
+                                {a ? (
+                                  <>
+                                    <span style={{ fontVariantNumeric: 'tabular-nums' }}>{Number(a.usdtGross).toLocaleString('es-CO')} USDT · venta {Number(a.sellRate).toLocaleString('es-CO')} · cliente {Number(a.clientRate).toLocaleString('es-CO')}</span>
+                                    <p style={{ margin: '2px 0 0', fontWeight: 700, color: Number(a.utilityCop) >= 0 ? '#4ADE80' : '#F87171' }}>utilidad {fmt(a.utilityCop)} COP</p>
+                                  </>
+                                ) : <span style={{ color: 'rgba(244,244,242,0.45)' }}>sin contabilidad</span>}
+                              </td>
+                              <td style={{ padding: '10px 18px', fontSize: 11.5, color: '#878E88', borderBottom: '1px solid rgba(255,255,255,0.06)', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.note ?? ''}>{t.note ?? '—'}</td>
+                              <td style={{ padding: '10px 18px', borderBottom: '1px solid rgba(255,255,255,0.06)', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                                {!backfill && (
+                                  <button onClick={() => revertir(t)} title="Prepara el movimiento contrario por el mismo monto. Igual pide revisar y 2FA."
+                                    style={{ fontSize: 11.5, fontWeight: 700, color: '#878E88', background: 'transparent', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 7, padding: '5px 10px', cursor: 'pointer' }}
+                                    className="hover:text-[#F4F4F2] hover:border-[rgba(255,255,255,0.25)] transition-colors">Revertir</button>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Ventana de confirmación del cargue (tema Lincoin) */}
           {carguesConfirm && carguesClient && (
@@ -2061,6 +2539,45 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                       {Math.max(0, Number((carguesClient.balances as any)?.[carguesRail] ?? 0) + deltaNet).toLocaleString('es-CO')} COP
                     </span>
                   </div>
+                  {/* ── El desglose de la operación ──
+                      Antes la confirmación mostraba el monto y el saldo, y
+                      nada más: las tasas, el fee de red y la utilidad se veían
+                      en el formulario y desaparecían justo cuando había que
+                      autorizarlas. Acá va todo lo que el servidor va a usar. */}
+                  {usandoAcct && acctCalc.listo && (
+                    <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid rgba(255,255,255,0.10)' }}>
+                      <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1.2px', color: '#878E88', margin: '0 0 8px' }}>CÓMO SE CALCULÓ</p>
+                      {[
+                        ['USDT que envió el cliente', `${acctCalc.usdtGross.toLocaleString('es-CO')} USDT`],
+                        ['USDT que llegaron', `${acctCalc.usdtNet.toLocaleString('es-CO')} USDT`],
+                        ['Fee de red', `${acctCalc.feeUsdt.toLocaleString('es-CO')} USDT · ${acctFeeBearer === 'lincoin' ? 'lo asume Lincoin' : 'lo asume el cliente'}`],
+                        ['Tasa de venta', `${acctCalc.sellRate.toLocaleString('es-CO')} COP/USDT`],
+                        ['Tasa al cliente', `${acctCalc.clientRate.toLocaleString('es-CO')} COP/USDT`],
+                        ['Entró por la venta', `${acctCalc.revenueCop.toLocaleString('es-CO')} COP`],
+                        ['Al cliente, antes de comisión', `${acctCalc.copToClient.toLocaleString('es-CO')} COP`],
+                      ].map(([l, v]) => (
+                        <div key={l} className="flex items-center justify-between" style={{ gap: 12, padding: '4px 0' }}>
+                          <span style={{ fontSize: 12, color: '#878E88' }}>{l}</span>
+                          <span style={{ fontSize: 12.5, fontWeight: 700, color: '#F4F4F2', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>{v}</span>
+                        </div>
+                      ))}
+                      <div className="flex items-center justify-between" style={{ gap: 12, paddingTop: 8, marginTop: 4, borderTop: '1px solid rgba(255,255,255,0.10)' }}>
+                        <span style={{ fontSize: 12.5, fontWeight: 700, color: '#F4F4F2' }}>Tu utilidad</span>
+                        <span style={{ fontSize: 15, fontWeight: 800, color: acctCalc.utilityCop >= 0 ? '#4ADE80' : '#F87171', fontVariantNumeric: 'tabular-nums' }}>{acctCalc.utilityCop.toLocaleString('es-CO')} COP</span>
+                      </div>
+                      {acctCalc.utilityCop < 0 && <p style={{ fontSize: 11, color: '#F87171', margin: '6px 0 0' }}>Estás pagando más de lo que recibiste. Revisá las tasas antes de autorizar.</p>}
+                    </div>
+                  )}
+                  {!usandoAcct && !carguesRecordOnly && carguesDir === 'credit' && (
+                    <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', marginTop: 10, lineHeight: 1.5 }}>
+                      Sin contabilidad: este cargue no registra USDT ni tasas, así que no tendrá utilidad calculada.
+                    </p>
+                  )}
+                  {carguesRecordOnly && (
+                    <p style={{ fontSize: 11.5, color: '#FBBF24', marginTop: 10, lineHeight: 1.5, fontWeight: 600 }}>
+                      Solo registro histórico: el saldo NO cambia y no se cobra comisión.
+                    </p>
+                  )}
                   {carguesNote.trim() && <p style={{ fontSize: 12, color: '#878E88', marginTop: 12, fontStyle: 'italic' }}>“{carguesNote.trim()}”</p>}
                 </div>
                   );
@@ -2077,17 +2594,32 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                     </label>
                   </div>
                 )}
+                {/* El 2FA, al final: después de leer el desglose y justo
+                    antes del botón. Cada código sirve una sola vez. */}
+                {!carguesRecordOnly && (
+                  <div style={{ margin: '0 24px 14px', padding: '12px 14px', background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 12 }}>
+                    <label className="block text-[10px] font-bold uppercase tracking-wide mb-1.5" style={{ color: '#878E88' }}>Tu código 2FA para autorizar</label>
+                    <CodeInput value={cargueOtp} onChange={setCargueOtp} tone="dark" aria="Tu código 2FA para autorizar el cargue" />
+                    <p className="text-[10px] mt-1.5 mb-0" style={{ color: 'rgba(244,244,242,0.45)' }}>Se pide en cada cargue, no solo al entrar.</p>
+                  </div>
+                )}
+                {(() => {
+                  const bloqueado = carguesBusy || (cargueExceeds && !carguesOverride) || (!carguesRecordOnly && cargueOtp.length !== 6);
+                  return (
                 <div style={{ display: 'flex', gap: 10, padding: '4px 24px 22px' }}>
                   <button onClick={() => { setCarguesConfirm(null); setCarguesOverride(false); }} disabled={carguesBusy}
                     style={{ flex: 1, padding: '12px', borderRadius: 11, fontSize: 14, fontWeight: 700, color: '#F4F4F2', background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', cursor: carguesBusy ? 'default' : 'pointer' }}>
                     Cancelar
                   </button>
-                  <button onClick={submitCargue} disabled={carguesBusy || (cargueExceeds && !carguesOverride)}
+                  <button onClick={submitCargue} disabled={bloqueado}
+                    title={!carguesRecordOnly && cargueOtp.length !== 6 ? 'Escribí tu código 2FA para autorizar' : undefined}
                     style={{ flex: 1.4, padding: '12px', borderRadius: 11, fontSize: 14, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-                      color: '#0A0C0B', background: (carguesBusy || (cargueExceeds && !carguesOverride)) ? 'rgba(74,222,128,0.4)' : '#4ADE80', border: 'none', cursor: (carguesBusy || (cargueExceeds && !carguesOverride)) ? 'not-allowed' : 'pointer' }}>
-                    {carguesBusy ? <><RefreshCw size={15} className="animate-spin" /> Aplicando…</> : <>Confirmar {carguesDir === 'credit' ? 'cargue' : 'descuento'}</>}
+                      color: '#0A0C0B', background: bloqueado ? 'rgba(74,222,128,0.4)' : '#4ADE80', border: 'none', cursor: bloqueado ? 'not-allowed' : 'pointer' }}>
+                    {carguesBusy ? <><RefreshCw size={15} className="animate-spin" /> Aplicando…</> : <>Autorizar {carguesDir === 'credit' ? 'cargue' : 'descuento'}</>}
                   </button>
                 </div>
+                  );
+                })()}
               </div>
             </div>
           )}
@@ -2096,6 +2628,59 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   };
 
   const renderTreasury = () => {
+      // ── Datos REALES para el panel de cabecera de Tesorería ──
+      const nowD = new Date();
+      const isEntrada = (t: any) => /carga|dep[óo]sito|load/i.test(String(t.title ?? t.type ?? ''));
+      // Las transacciones guardan la fecha en DD/MM/YYYY (así la escribe la
+      // base) y otras en ISO. new Date('04/09/2026') lo lee como MM/DD o como
+      // Invalid Date según el caso, y de ahí salían NaN que reventaban el
+      // panel. Se parsea explícitamente y se devuelve null si no se puede.
+      const txDate = (t: any): Date | null => {
+        const v = t?.date ?? t?.createdAt;
+        if (v instanceof Date) return isNaN(v.getTime()) ? null : v;
+        const s = String(v ?? '').trim();
+        if (!s) return null;
+        const dmy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+        if (dmy) {
+          const d = new Date(Number(dmy[3]), Number(dmy[2]) - 1, Number(dmy[1]));
+          return isNaN(d.getTime()) ? null : d;
+        }
+        const d = new Date(s);
+        return isNaN(d.getTime()) ? null : d;
+      };
+      let inflow = 0, outflow = 0, monthVolume = 0, monthOps = 0;
+      for (const t of historyTransactions) {
+        const d = txDate(t);
+        if (!d) continue;
+        if (d.getMonth() !== nowD.getMonth() || d.getFullYear() !== nowD.getFullYear()) continue;
+        const amt = Math.abs(Number(t.amount) || 0);
+        monthVolume += amt; monthOps++;
+        if (isEntrada(t)) inflow += amt; else outflow += amt;
+      }
+      // Flujo diario de los últimos 14 días (entradas vs salidas).
+      const flow14 = new Array(14).fill(0).map(() => ({ in: 0, out: 0 }));
+      for (const t of historyTransactions) {
+        const dt = txDate(t);
+        if (!dt) continue;
+        const daysAgo = Math.floor((Date.now() - dt.getTime()) / 86400000);
+        // OJO: un NaN aquí pasaba las DOS comparaciones y caía en flow14[NaN],
+        // que es undefined — de ahí el "Cannot read properties of undefined".
+        if (!Number.isFinite(daysAgo) || daysAgo < 0 || daysAgo > 13) continue;
+        const slot = flow14[13 - daysAgo];
+        if (!slot) continue;
+        const amt = Math.abs(Number(t.amount) || 0);
+        if (isEntrada(t)) slot.in += amt; else slot.out += amt;
+      }
+      // Retenidos por revisión: retiros > 3× el promedio histórico del cliente.
+      const byUser: Record<string, number[]> = {};
+      const rets = historyTransactions.filter(t => /retiro|withdraw|dispersi[óo]n/i.test(String(t.title ?? t.type ?? '')));
+      for (const w of rets) (byUser[w.userId] ??= []).push(Math.abs(Number(w.amount) || 0));
+      const heldForReview = rets.filter(w => {
+        const arr = byUser[w.userId] || []; if (arr.length < 3) return false;
+        const avg = arr.reduce((a, b) => a + b, 0) / arr.length;
+        return avg > 0 && Math.abs(Number(w.amount) || 0) > avg * 3;
+      }).length;
+
       const CRYPTO_TYPES = ['otc_withdraw', 'otc_withdraw_request', 'otc_deposit', 'admin_hot_withdrawal', 'otc_convert_request'];
       const cryptoTxs = historyTransactions.filter(tx => CRYPTO_TYPES.includes(tx.type))
         .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
@@ -2145,8 +2730,26 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       }, 0);
 
       const pendingRailMoves = (getAllTransactions() as any[]).filter(t => t.type === 'rail_move' && t.status === 'Pendiente');
+      const copBalance = treasuryAccounts.filter(a => a.currency === 'COP').reduce((s, a) => s + Number(a.amount || 0), 0);
+      const usdtBalance = treasuryAccounts.filter(a => a.currency === 'USD' || a.currency === 'USDT').reduce((s, a) => s + Number(a.amount || 0), 0);
       return (
       <div className="space-y-8 animate-in fade-in duration-300">
+          {/* Cabecera del dashboard de Tesorería. COP (Mouv · Bre-B) y USDT
+              (GasFree) son billeteras SEPARADAS — se eligen en el modal. */}
+          <AdminTreasuryPanel
+              pendingLoads={pendingDeposits.length}
+              pendingWithdrawals={pendingWithdrawals.length}
+              monthVolume={monthVolume}
+              monthOps={monthOps}
+              heldForReview={heldForReview}
+              inflow={inflow}
+              outflow={outflow}
+              flow14={flow14}
+              copBalance={copBalance}
+              usdtBalance={usdtBalance}
+              onPickWallet={(w) => navTo(w === 'USDT' ? 'gasfree' : 'cargues')}
+              onRegisterMovement={() => setShowInternalMovementModal(true)}
+          />
           {/* ── Solicitudes "Saldo Lincoin → ACH" (aprobación manual) ──
               El cliente ya quedó debitado; antes de aprobar, mueve el
               respaldo al proveedor y luego dale Aprobar (acredita su ACH). */}
@@ -2187,7 +2790,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
               </div>
               <button 
                   onClick={() => setShowInternalMovementModal(true)}
-                  className="bg-[#0C0E0D] hover:bg-[#152e52] px-5 py-2.5 rounded-xl font-bold text-sm shadow-lg flex items-center gap-2 transition-all"
+                  className="bg-[#0C0E0D] hover:bg-[#161A17] px-5 py-2.5 rounded-xl font-bold text-sm shadow-lg flex items-center gap-2 transition-all"
               >
                   <RefreshCw size={16} /> Registrar Movimiento
               </button>
@@ -2465,8 +3068,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const renderReports = () => {
       // Filter logic for User Reports
       const filteredReportUsers = allUsers.filter(u => 
-          u.name.toLowerCase().includes(reportUserSearch.toLowerCase()) || 
-          u.email.toLowerCase().includes(reportUserSearch.toLowerCase()) ||
+          (u.name ?? '').toLowerCase().includes(reportUserSearch.toLowerCase()) || 
+          (u.email ?? '').toLowerCase().includes(reportUserSearch.toLowerCase()) ||
           u.id.includes(reportUserSearch)
       );
 
@@ -2718,7 +3321,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                               <p className="text-slate-500 text-sm mb-8 px-4">
                                   Descarga un archivo JSON encriptado con toda la información de usuarios, historial, configuración y tesorería.
                               </p>
-                              <button onClick={downloadDatabase} className="w-full bg-[#0C0E0D] py-3 rounded-xl font-bold hover:bg-[#152e52] transition-colors flex items-center justify-center gap-2">
+                              <button onClick={downloadDatabase} className="w-full bg-[#0C0E0D] py-3 rounded-xl font-bold hover:bg-[#161A17] transition-colors flex items-center justify-center gap-2">
                                   <Download size={18}/> Descargar Base de Datos
                               </button>
                           </div>
@@ -2764,7 +3367,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
             className="flex-1 border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-[#0C0E0D]/20"
           />
           <button onClick={handleSave}
-            className={`px-5 py-2.5 rounded-xl font-bold text-sm transition-all flex items-center gap-2 ${saved ? 'bg-green-600' : 'bg-[#0C0E0D] hover:bg-[#152e52]'}`}>
+            className={`px-5 py-2.5 rounded-xl font-bold text-sm transition-all flex items-center gap-2 ${saved ? 'bg-green-600' : 'bg-[#0C0E0D] hover:bg-[#161A17]'}`}>
             {saved ? <><CheckCircle size={15}/> Guardado</> : <><Save size={15}/> Guardar</>}
           </button>
         </div>
@@ -2781,6 +3384,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
         <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
             <h3 className="font-bold text-slate-800 mb-2 flex items-center gap-2"><Landmark size={20}/> Países y monedas</h3>
             <p className="text-xs text-slate-500 mb-5">Cada país opera su riel local contra USDT (nunca fiat→fiat directo). Activa un país solo cuando su riel esté conectado.</p>
+            {/* Si el guardado falló, se dice ACA. Antes el interruptor se
+                quedaba puesto aunque no se hubiera guardado en ningún lado, y
+                los clientes nunca veían el cambio. */}
+            {configError && (
+                <div className="mb-3 flex items-start gap-2.5 bg-red-50 border border-red-200 rounded-lg px-3 py-2.5">
+                    <AlertTriangle size={15} className="text-red-600 shrink-0 mt-0.5" />
+                    <div>
+                        <p className="text-xs font-bold text-red-900">El cambio no se guardó</p>
+                        <p className="text-[11px] text-red-700 mt-0.5">{configError}</p>
+                    </div>
+                </div>
+            )}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 {([
                     { name: 'Colombia', rail: 'Bre-B · ACH · COP', def: 'on' },
@@ -2914,7 +3529,7 @@ const renderBanks = () => (
                     </div>
                 </div>
                 <div className="flex items-end">
-                    <button onClick={() => { setEditingBank(null); setBankForm({ id: '', name: '', type: 'bank', accountNumber: '', accountType: '', beneficiary: '', taxId: '', taxIdType: '', logoColor: 'bg-slate-100 text-slate-500', logoText: '', qrImageUrl: '' }); setShowBankModal(true); }} className="bg-[#0C0E0D] px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 h-10 shadow-lg hover:bg-[#152e52] transition-colors">
+                    <button onClick={() => { setEditingBank(null); setBankForm({ id: '', name: '', type: 'bank', accountNumber: '', accountType: '', beneficiary: '', taxId: '', taxIdType: '', logoColor: 'bg-slate-100 text-slate-500', logoText: '', qrImageUrl: '' }); setShowBankModal(true); }} className="bg-[#0C0E0D] px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 h-10 shadow-lg hover:bg-[#161A17] transition-colors">
                         <Plus size={16}/> Agregar Cuenta
                     </button>
                 </div>
@@ -3065,7 +3680,7 @@ const renderBanks = () => (
                             </div>
                         </div>
 
-                        <button onClick={handleBankSave} className="w-full h-12 bg-[#0C0E0D] font-bold rounded-lg hover:bg-[#152e52] shadow-lg mt-4">
+                        <button onClick={handleBankSave} className="w-full h-12 bg-[#0C0E0D] font-bold rounded-lg hover:bg-[#161A17] shadow-lg mt-4">
                             Guardar Cuenta
                         </button>
                     </div>
@@ -3105,87 +3720,10 @@ const renderRates = () => {
   );
 };
 
-const renderTeam = () => (
-    <div className="space-y-6 animate-in fade-in duration-300">
-        <div className="flex justify-between items-center">
-            <h3 className="font-bold text-slate-800">Gestión de Equipo</h3>
-            <button onClick={() => { setEditingUserId(null); setNewUserForm({name:'', email:'', role:'Soporte L1', status:'Activo'}); setShowAddUserModal(true); }} className="bg-[#0C0E0D] px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2">
-                <UserPlus size={16}/> Nuevo Usuario
-            </button>
-        </div>
-
-        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
-            <table className="w-full text-left text-sm">
-                <thead className="bg-slate-50 text-slate-500 font-bold uppercase text-[10px]">
-                    <tr>
-                        <th className="px-6 py-4">Usuario</th>
-                        <th className="px-6 py-4">Rol</th>
-                        <th className="px-6 py-4">Estado</th>
-                        <th className="px-6 py-4">Último Acceso</th>
-                        <th className="px-6 py-4 text-right">Acciones</th>
-                    </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                    {adminTeam.map(admin => (
-                        <tr key={admin.id} className="hover:bg-slate-50">
-                            <td className="px-6 py-4">
-                                <div className="flex items-center gap-3">
-                                    <div className="w-8 h-8 rounded-full bg-[#0C0E0D] text-white flex items-center justify-center font-bold text-xs">{admin?.name?.charAt(0) ?? "?"}</div>
-                                    <div>
-                                        <p className="font-bold text-slate-800">{admin.name}</p>
-                                        <p className="text-xs text-slate-400">{admin.email}</p>
-                                    </div>
-                                </div>
-                            </td>
-                            <td className="px-6 py-4">
-                                <span className="bg-slate-100 text-slate-600 px-2 py-1 rounded text-xs font-bold">{admin.role}</span>
-                            </td>
-                            <td className="px-6 py-4">
-                                <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${admin.status === 'Activo' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                                    {admin.status}
-                                </span>
-                            </td>
-                            <td className="px-6 py-4 text-xs text-slate-500">{admin.lastAccess}</td>
-                            <td className="px-6 py-4 text-right">
-                                <div className="flex justify-end gap-2">
-                                    <button onClick={() => { setEditingUserId(admin.id); setNewUserForm(admin); setShowAddUserModal(true); }} className="text-[#4ADE80] hover:bg-slate-50 p-1.5 rounded"><Edit2 size={16}/></button>
-                                    <button onClick={() => { if(confirm('Eliminar usuario?')) deleteAdminUser(admin.id); }} className="text-red-600 hover:bg-red-50 p-1.5 rounded"><Trash2 size={16}/></button>
-                                </div>
-                            </td>
-                        </tr>
-                    ))}
-                </tbody>
-            </table>
-        </div>
-
-        {/* Add User Modal */}
-        {showAddUserModal && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-                <div className="bg-white rounded-xl w-full max-w-sm p-6">
-                    <h3 className="font-bold text-lg mb-4">{editingUserId ? 'Editar' : 'Nuevo'} Administrador</h3>
-                    <div className="space-y-4">
-                        <input type="text" placeholder="Nombre" value={newUserForm.name} onChange={(e) => setNewUserForm({...newUserForm, name: e.target.value})} className="w-full border p-2 rounded" />
-                        <input type="email" placeholder="Email" value={newUserForm.email} onChange={(e) => setNewUserForm({...newUserForm, email: e.target.value})} className="w-full border p-2 rounded" />
-                        <select value={newUserForm.role} onChange={(e) => setNewUserForm({...newUserForm, role: e.target.value as any})} className="w-full border p-2 rounded">
-                            <option value="Soporte L1">Soporte L1</option>
-                            <option value="Tesorero">Tesorero</option>
-                            <option value="Auditor">Auditor</option>
-                            <option value="Super Admin">Super Admin</option>
-                        </select>
-                        <select value={newUserForm.status} onChange={(e) => setNewUserForm({...newUserForm, status: e.target.value as any})} className="w-full border p-2 rounded">
-                            <option value="Activo">Activo</option>
-                            <option value="Inactivo">Inactivo</option>
-                        </select>
-                        <div className="flex justify-end gap-2 mt-2">
-                            <button onClick={() => setShowAddUserModal(false)} className="px-4 py-2 text-slate-500">Cancelar</button>
-                            <button onClick={handleTeamSave} className="px-4 py-2 bg-[#0C0E0D] rounded font-bold">Guardar</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        )}
-    </div>
-);
+// renderTeam() se eliminó: guardaba nombres en un JSON de configuración y no
+// creaba ni restringía ningún acceso. Dejarla, aunque fuera sin usar, invitaba
+// a que alguien la volviera a conectar creyendo que administraba permisos. El
+// equipo de verdad está en AdminEquipo, contra admin_miembros.
 
 const renderDesign = () => (
       <div className="space-y-8 animate-in fade-in duration-300 max-w-4xl">
@@ -3367,8 +3905,8 @@ const renderDesign = () => (
         ? allUsers.filter((u: any) => (u.otcEnabled || u.raw_data?.otcEnabled))
         : allUsers;
       const filteredUsers = baseUsers.filter(u =>
-          u.name.toLowerCase().includes(securitySearch.toLowerCase()) ||
-          u.email.toLowerCase().includes(securitySearch.toLowerCase()) ||
+          (u.name ?? '').toLowerCase().includes(securitySearch.toLowerCase()) ||
+          (u.email ?? '').toLowerCase().includes(securitySearch.toLowerCase()) ||
           u.id.includes(securitySearch)
       );
 
@@ -3376,6 +3914,29 @@ const renderDesign = () => (
 
       return (
         <div className="space-y-6 animate-in fade-in duration-300">
+          {/* Centro de Seguridad: el tablero. Todo lo que muestra sale de
+              datos reales — un tablero con cifras de ejemplo da confianza
+              sobre algo que nadie verificó. */}
+          {currentUser?.id && <AdminSecurityCenter userId={currentUser.id} />}
+
+          {/* Los editores completos van PLEGADOS. El tablero de arriba ya
+              muestra el acceso y las llaves; dejarlos también sueltos acá
+              hacía que la misma información apareciera dos veces y no
+              quedara claro cuál manda. Se abren cuando hay que configurar a
+              fondo — quitar un país, borrar una llave, probar el aviso—,
+              que no es lo de todos los días. */}
+          <details style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 16 }}>
+            <summary style={{ cursor: 'pointer', listStyle: 'none', padding: '14px 18px', fontFamily: 'Archivo, system-ui, sans-serif', fontWeight: 800, fontSize: 14, color: '#F4F4F2', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+              <span>Configuración avanzada</span>
+              <span style={{ fontSize: 11.5, fontWeight: 600, color: 'rgba(244,244,242,0.45)' }}>
+                acceso · llaves · aviso de ingreso · 2FA
+              </span>
+            </summary>
+            <div style={{ padding: '0 14px 14px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <AdminAccessPolicy userId={currentUser?.id} />
+              {currentUser?.id && <AdminPasskeys userId={currentUser.id} />}
+              {currentUser?.id && <AdminLoginAlerts userId={currentUser.id} />}
+
           {/* Tu propio 2FA — protege el cambio de proveedor de tesorería */}
           <div className={`rounded-xl border p-4 ${adminMfaOn ? 'border-green-200 bg-green-50/50' : 'border-amber-300 bg-amber-50/60'}`}>
             <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -3386,7 +3947,7 @@ const renderDesign = () => (
               <span className={`text-xs font-bold px-3 py-1.5 rounded-full ${adminMfaOn ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>{adminMfaOn ? '✅ Activo' : '⚠ Inactivo'}</span>
             </div>
             {!adminMfaOn && !mfaEnroll && (
-              <button onClick={startMfaEnroll} disabled={mfaBusy} className="mt-3 px-4 py-2 text-sm font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#152e52] disabled:opacity-60">{mfaBusy ? 'Generando…' : 'Activar 2FA ahora'}</button>
+              <button onClick={startMfaEnroll} disabled={mfaBusy} className="mt-3 px-4 py-2 text-sm font-bold rounded-lg bg-[#0C0E0D] text-white hover:bg-[#161A17] disabled:opacity-60">{mfaBusy ? 'Generando…' : 'Activar 2FA ahora'}</button>
             )}
             {mfaEnroll && (
               <div className="mt-3 grid md:grid-cols-2 gap-4 items-start">
@@ -3407,7 +3968,71 @@ const renderDesign = () => (
               </div>
             )}
             {mfaMsg && <p className={`mt-2 text-xs font-semibold ${mfaMsg.startsWith('✅') ? 'text-green-700' : 'text-red-700'}`}>{mfaMsg}</p>}
+
+            {/* Salud del 2FA de TODAS las cuentas (clientes incluidos). */}
+            <div className="mt-3">
+              <button onClick={runMfaHealth} disabled={mfaHealthBusy}
+                      className="px-3 py-2 text-xs font-bold rounded-lg disabled:opacity-60"
+                      style={{ backgroundColor: '#121413', color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.12)' }}>
+                {mfaHealthBusy ? 'Revisando…' : '🩺 Revisar salud del 2FA de todas las cuentas'}
+              </button>
+              {mfaHealth && (
+                <div className="mt-2 rounded-xl p-3" style={{ backgroundColor: '#121413', border: '1px solid rgba(255,255,255,0.10)' }}>
+                  {mfaHealth.error ? (
+                    <p className="text-xs" style={{ color: '#F87171' }}>{String(mfaHealth.error)}</p>
+                  ) : (
+                    <>
+                      <p className="text-sm font-bold" style={{ color: mfaHealth.unreadable > 0 ? '#F87171' : '#4ADE80' }}>
+                        {mfaHealth.unreadable > 0
+                          ? `⚠ ${mfaHealth.unreadable} de ${mfaHealth.total} cuentas con 2FA no pueden entrar`
+                          : `✅ Las ${mfaHealth.total} cuentas con 2FA están sanas`}
+                      </p>
+                      <p className="text-xs mt-1" style={{ color: '#878E88' }}>
+                        Cifradas con otra llave: <b style={{ color: '#F4F4F2' }}>{mfaHealth.keyMismatch ?? 0}</b> ·
+                        {' '}Sin códigos de respaldo: <b style={{ color: '#F4F4F2' }}>{mfaHealth.noBackup ?? 0}</b> ·
+                        {' '}En texto plano (legacy): <b style={{ color: '#F4F4F2' }}>{mfaHealth.legacyPlain ?? 0}</b>
+                      </p>
+                      {Array.isArray(mfaHealth.affected) && mfaHealth.affected.length > 0 && (
+                        <ul className="mt-2 space-y-1">
+                          {mfaHealth.affected.map((a: any) => (
+                            <li key={a.email} className="text-xs font-mono" style={{ color: '#FBBF24' }}>{a.email} — {a.motivo}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Códigos de respaldo — se muestran UNA sola vez, al activar. */}
+            {mfaBackupCodes && (
+              <div className="mt-3 rounded-xl p-4" style={{ backgroundColor: '#121413', border: '1px solid rgba(74,222,128,0.25)' }}>
+                <p className="text-sm font-bold" style={{ color: '#F4F4F2' }}>Guarda estos códigos de respaldo</p>
+                <p className="text-xs mt-1" style={{ color: '#878E88' }}>
+                  Cada uno sirve <b style={{ color: '#F4F4F2' }}>una vez</b> para entrar si pierdes el teléfono o el 2FA deja de
+                  validar. Es la única vía que no depende de la app ni de la Bóveda.
+                  <b style={{ color: '#FBBF24' }}> No se vuelven a mostrar.</b>
+                </p>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3">
+                  {mfaBackupCodes.map(c => (
+                    <span key={c} className="font-mono text-sm text-center rounded-lg py-2"
+                          style={{ color: '#F4F4F2', backgroundColor: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', letterSpacing: '1px' }}>{c}</span>
+                  ))}
+                </div>
+                <div className="flex gap-2 mt-3 flex-wrap">
+                  <button onClick={() => { navigator.clipboard?.writeText(mfaBackupCodes.join('\n')); }}
+                          className="px-3 py-2 text-xs font-bold rounded-lg"
+                          style={{ backgroundColor: '#4ADE80', color: '#0C0E0D' }}>Copiar los 8</button>
+                  <button onClick={() => setMfaBackupCodes(null)}
+                          className="px-3 py-2 text-xs font-bold rounded-lg"
+                          style={{ backgroundColor: 'transparent', color: '#878E88', border: '1px solid rgba(255,255,255,0.12)' }}>Ya los guardé</button>
+                </div>
+              </div>
+            )}
           </div>
+            </div>
+          </details>
 
           <div className="flex h-[calc(100vh-260px)]">
               {/* Left Panel: User List */}
@@ -3596,26 +4221,157 @@ const renderDesign = () => (
       if (c.startsWith('USD')) return 'USDT';
       return c || '—';
     };
-    const errText = (t: any): string => {
+    // El error del proveedor llega como objeto {step, httpStatus, path, body}.
+    // Mostrarlo como un JSON pegado y cortado obligaba a adivinar; se desglosa
+    // en QUÉ paso falló, con qué código HTTP y qué respondió el proveedor —
+    // que es lo único que permite distinguir "dato mal mapeado" de "el
+    // proveedor rechazó la operación".
+    const errParts = (t: any): { paso?: string; http?: string; cuerpo?: string; texto: string } => {
+      const raw = t.error ?? t.raw_data?.error;
+      let obj: any = raw;
+      if (typeof raw === 'string') { try { obj = JSON.parse(raw); } catch { obj = null; } }
       const em = t.errorMessage ?? t.raw_data?.errorMessage;
-      if (em) return String(em);
-      const e = t.error ?? t.raw_data?.error;
-      let s = '';
-      try { s = typeof e === 'string' ? e : (e ? JSON.stringify(e) : ''); } catch { s = String(e ?? ''); }
+      if (!obj && em) { try { obj = JSON.parse(String(em)); } catch { /* texto plano */ } }
+      const PASOS: Record<string, string> = { destino: 'Registrar la cuenta destino', retiro: 'Crear la orden de retiro' };
+      if (obj && typeof obj === 'object') {
+        let cuerpo = '';
+        try { cuerpo = obj.body ? JSON.stringify(obj.body, null, 1) : ''; } catch { cuerpo = String(obj.body ?? ''); }
+        return {
+          paso: obj.step ? (PASOS[String(obj.step)] ?? String(obj.step)) : undefined,
+          http: obj.httpStatus ? `HTTP ${obj.httpStatus}` : undefined,
+          cuerpo: cuerpo || undefined,
+          texto: em ? String(em) : JSON.stringify(obj),
+        };
+      }
       const http = t.httpStatus ?? t.raw_data?.httpStatus;
-      return [http ? `HTTP ${http}` : '', s].filter(Boolean).join(' · ') || 'Sin detalle técnico';
+      return { http: http ? `HTTP ${http}` : undefined, texto: em ? String(em) : 'Sin detalle técnico' };
     };
+    const errText = (t: any): string => errParts(t).texto;
     const emailOf = (t: any): string => allUsers.find((u: any) => u.id === t.userId)?.email ?? t.userName ?? t.raw_data?.userName ?? t.userId ?? '—';
-    const fmtDate = (d: any) => { try { return new Date(d).toLocaleString('es-CO', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }); } catch { return '—'; } };
+    // new Date(undefined) no lanza: devuelve una fecha inválida y toLocaleString
+    // imprime "Invalid Date". El try/catch no atrapaba nada. Se comprueba el
+    // valor, y se aceptan las dos formas en que llega la fecha.
+    const fmtDate = (d: any) => {
+      const t = new Date(d ?? '');
+      if (!d || Number.isNaN(t.getTime())) return '—';
+      return t.toLocaleString('es-CO', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+    };
+    const fechaDe = (t: any) => t?.createdAt ?? t?.created_at ?? t?.raw_data?.requestedAt ?? t?.requestedAt ?? null;
     return (
       <div className="space-y-4">
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div>
             <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2"><AlertTriangle size={18} className="text-red-500" /> Fallos de operaciones</h2>
-            <p className="text-sm text-slate-500">Envíos/retiros que fallaron o fueron rechazados, con el error técnico real. Al cliente solo se le muestra un mensaje amable.</p>
+            <p className="text-sm text-slate-500">Operaciones que necesitan una decisión: las que quedaron sin confirmar con el proveedor, y las que fallaron o fueron rechazadas con su error técnico real. Al cliente solo se le muestra un mensaje amable.</p>
           </div>
-          <span className="text-xs font-bold px-3 py-1.5 rounded-full bg-red-50 text-red-700 border border-red-200">{failuresCount} {failuresCount === 1 ? 'fallo' : 'fallos'}</span>
+          <span className="text-xs font-bold px-3 py-1.5 rounded-full bg-red-50 text-red-700 border border-red-200">{failuresCount} {failuresCount === 1 ? 'caso' : 'casos'}</span>
         </div>
+
+        {/* PENDIENTES DE VERIFICAR — no son fallos.
+            En un fallo la plata ya volvió al cliente y el caso está cerrado.
+            Acá la plata salió de la cuenta y no sabemos si llegó, porque el
+            proveedor no expone un estado consultable. La mayoría habrá salido
+            bien; hay que cotejarlas contra su consola.
+
+            Va en la paleta de la app —negro, bordes translúcidos, ámbar solo
+            como acento fino— y no en un bloque crema: un panel de color claro
+            metido en una pantalla oscura se lee como un error de maquetación,
+            no como una advertencia. */}
+        {sinConfirmarList.length > 0 && (
+          <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, overflow: 'hidden' }}>
+            <div style={{ padding: '16px 18px', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+              <div className="flex items-center" style={{ gap: 9 }}>
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#FBBF24', flexShrink: 0 }} />
+                <h3 style={{ fontSize: 14.5, fontWeight: 800, color: '#F4F4F2', margin: 0 }}>
+                  Pendientes de verificar con el proveedor
+                </h3>
+                <span style={{ fontSize: 11, fontWeight: 700, color: '#878E88', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 999, padding: '2px 8px' }}>
+                  {sinConfirmarList.length}
+                </span>
+              </div>
+              <p style={{ fontSize: 12.5, color: '#878E88', margin: '8px 0 0', lineHeight: 1.6, maxWidth: 720 }}>
+                Estos envíos siguen sin un estado confirmado por el proveedor. Probá primero{' '}
+                <span style={{ color: '#F4F4F2' }}>Conciliar ahora</span>: consulta el estado real de cada uno
+                y cierra solo los que Mouv confirma, reembolsando los devueltos. Lo que quede acá después
+                de eso es lo que hay que cotejar a mano en su consola por la referencia.
+              </p>
+              <button
+                onClick={conciliarBreb}
+                disabled={conciliando}
+                style={{
+                  marginTop: 12, fontSize: 12.5, fontWeight: 700, color: '#0A0A0A', background: '#4ADE80',
+                  border: 'none', borderRadius: 9, padding: '9px 15px', cursor: conciliando ? 'default' : 'pointer',
+                  opacity: conciliando ? 0.5 : 1,
+                }}>
+                {conciliando ? 'Consultando al proveedor…' : 'Conciliar ahora con el proveedor'}
+              </button>
+            </div>
+
+            {sinConfirmarList.map((t: any) => (
+              <div key={t.id} className="flex items-start justify-between flex-wrap"
+                style={{ gap: 14, padding: '14px 18px', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                <div style={{ minWidth: 0, flex: '1 1 300px' }}>
+                  <div className="flex items-center flex-wrap" style={{ gap: 8 }}>
+                    <span style={{ fontSize: 15, fontWeight: 800, color: '#F4F4F2' }}>
+                      {Number(t.amount).toLocaleString('es-CO')}
+                      <span style={{ fontSize: 11.5, color: '#878E88', fontWeight: 600 }}> {String(t.currency ?? '').split('_')[0]}</span>
+                    </span>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: '#878E88', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 999, padding: '2px 8px' }}>
+                      {railLabel(t.currency)}
+                    </span>
+                    <span style={{ fontSize: 11.5, color: 'rgba(244,244,242,0.45)' }}>{fmtDate(fechaDe(t))}</span>
+                  </div>
+                  <p style={{ fontSize: 12.5, color: '#878E88', margin: '6px 0 0' }}>
+                    {t.beneficiary ?? '—'}{t.account ? ` · ${t.account}` : ''}
+                  </p>
+                  <p style={{ fontSize: 11.5, color: 'rgba(244,244,242,0.45)', margin: '3px 0 0' }}>
+                    {emailOf(t)}
+                    {(t.providerRef ?? t.raw_data?.providerRef) && (
+                      <> · <span style={{ fontFamily: 'ui-monospace, Menlo, monospace' }}>{t.providerRef ?? t.raw_data?.providerRef}</span></>
+                    )}
+                  </p>
+                </div>
+                {/* Confirmar primero: es el desenlace de la mayoría. Poner
+                    "Reembolsar" como acción principal en diez filas donde nueve
+                    salieron bien invita a devolver plata que sí se pagó. */}
+                <div className="flex items-center" style={{ gap: 8, flexShrink: 0 }}>
+                  <button
+                    onClick={() => confirmarDispersion(t)}
+                    disabled={resolviendo === t.id}
+                    style={{ fontSize: 12.5, fontWeight: 700, color: '#0A0A0A', background: '#F4F4F2', border: 'none', borderRadius: 9, padding: '9px 15px', cursor: 'pointer', opacity: resolviendo === t.id ? 0.5 : 1, whiteSpace: 'nowrap' }}>
+                    {resolviendo === t.id ? 'Procesando…' : 'Sí se pagó'}
+                  </button>
+                  <button
+                    onClick={() => vincularRef(t)}
+                    disabled={resolviendo === t.id}
+                    title="Pegar el ID que muestra la consola del proveedor"
+                    style={{ fontSize: 12.5, fontWeight: 700, color: '#878E88', background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 9, padding: '9px 13px', cursor: 'pointer', opacity: resolviendo === t.id ? 0.5 : 1, whiteSpace: 'nowrap' }}>
+                    Vincular ID
+                  </button>
+                  <button
+                    onClick={() => devolverDispersion(t)}
+                    disabled={resolviendo === t.id}
+                    style={{ fontSize: 12.5, fontWeight: 700, color: '#F87171', background: 'transparent', border: '1px solid rgba(248,113,113,0.35)', borderRadius: 9, padding: '9px 15px', cursor: 'pointer', opacity: resolviendo === t.id ? 0.5 : 1, whiteSpace: 'nowrap' }}>
+                    Reembolsar
+                  </button>
+                  <button
+                    onClick={() => marcarReembolsada(t)}
+                    disabled={resolviendo === t.id}
+                    title="Ya le devolviste el saldo por fuera del sistema"
+                    style={{ fontSize: 12.5, fontWeight: 700, color: '#878E88', background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 9, padding: '9px 13px', cursor: 'pointer', opacity: resolviendo === t.id ? 0.5 : 1, whiteSpace: 'nowrap' }}>
+                    Ya la devolví
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {sinConfirmarList.length > 0 && failuresList.length > 0 && (
+          <p style={{ fontSize: 11, fontWeight: 700, letterSpacing: '1.6px', color: '#878E88', margin: '26px 0 10px' }}>
+            FALLOS Y RECHAZOS
+          </p>
+        )}
         {failuresList.length === 0 ? (
           <div className="bg-white rounded-xl border border-slate-200 p-10 text-center">
             <p className="text-slate-700 font-semibold">Sin fallos recientes</p>
@@ -3630,7 +4386,7 @@ const renderDesign = () => (
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{railLabel(t.currency)}</span>
                       <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-200">{String(t.status).toUpperCase()}</span>
-                      <span className="text-xs text-slate-400">{fmtDate(t.createdAt)}</span>
+                      <span className="text-xs text-slate-400">{fmtDate(fechaDe(t))}</span>
                     </div>
                     <p className="text-sm font-bold text-slate-800 mt-1.5">{Number(t.amount).toLocaleString('es-CO')} <span className="text-slate-400 font-medium">{String(t.currency ?? '').split('_')[0]}</span></p>
                     <p className="text-xs text-slate-500 mt-0.5">Cliente: <span className="font-semibold text-slate-700">{emailOf(t)}</span></p>
@@ -3643,9 +4399,27 @@ const renderDesign = () => (
                     className="text-xs font-semibold text-slate-500 hover:text-slate-800 flex items-center gap-1 shrink-0"
                   ><Copy size={13} /> Copiar</button>
                 </div>
-                <div className="mt-2.5 rounded-lg bg-slate-900 text-slate-100 p-3 overflow-x-auto">
-                  <code className="text-[11px] leading-relaxed whitespace-pre-wrap break-words" style={{ fontFamily: 'ui-monospace, Menlo, monospace' }}>{errText(t)}</code>
-                </div>
+                {(() => {
+                  const p = errParts(t);
+                  return (
+                    <div className="mt-2.5 rounded-lg p-3 overflow-x-auto" style={{ backgroundColor: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)' }}>
+                      {(p.paso || p.http) && (
+                        <div className="flex items-center gap-2 flex-wrap mb-2">
+                          {p.paso && <span className="text-[10px] font-bold px-2 py-0.5 rounded" style={{ backgroundColor: 'rgba(251,191,36,0.14)', color: '#FBBF24' }}>Falló al: {p.paso}</span>}
+                          {p.http && <span className="text-[10px] font-bold px-2 py-0.5 rounded" style={{ backgroundColor: 'rgba(248,113,113,0.14)', color: '#F87171' }}>{p.http}</span>}
+                        </div>
+                      )}
+                      <code className="text-[11px] leading-relaxed whitespace-pre-wrap break-words" style={{ fontFamily: 'ui-monospace, Menlo, monospace', color: '#F4F4F2' }}>
+                        {p.cuerpo ?? p.texto}
+                      </code>
+                      {p.cuerpo && (
+                        <p className="text-[10px] mt-2 mb-0" style={{ color: '#878E88' }}>
+                          Respuesta literal del proveedor. Si el paso es «Registrar la cuenta destino», el rechazo es por los datos del beneficiario, no por el monto ni por la bolsa.
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             ))}
           </div>
@@ -3700,7 +4474,7 @@ const renderDesign = () => (
                     <p className="text-[11px] text-slate-400">Cuenta creada: {a.created_at ? new Date(a.created_at).toLocaleString('es-CO') : '—'}</p>
                   </div>
                 ))}
-                {(adminLogins.admins ?? []).length === 0 && <p className="text-xs text-slate-400">No se pudo leer la fecha de ingreso desde Supabase Auth.</p>}
+                {(adminLogins.admins ?? []).length === 0 && <p className="text-xs text-slate-400">No se pudo leer la fecha del último ingreso.</p>}
               </div>
               {(adminLogins.activity ?? []).length > 0 && (
                 <div>
@@ -3722,7 +4496,7 @@ const renderDesign = () => (
                   </div>
                 </div>
               )}
-              <p className="text-[11px] text-slate-400">"Último ingreso" viene de Supabase Auth (fecha única). La actividad con IP se registra de aquí en adelante — los ingresos anteriores no quedaron con IP.</p>
+              <p className="text-[11px] text-slate-400">"Último ingreso" es una fecha única del servidor de acceso. La actividad con IP se registra de aquí en adelante — los ingresos anteriores no quedaron con IP.</p>
             </div>
           )}
         </div>
@@ -3788,10 +4562,45 @@ const renderDesign = () => (
   const navTo = (tab: string) => { setActiveTab(tab as any); closeSidebar(); };
   // El Dashboard/Monitoreo usan el tema oscuro Lincoin (AdminMonitor trae su
   // propio header); el resto de secciones mantienen su lienzo claro actual.
-  const isDark = activeTab === 'overview' || activeTab === 'monitoreo';
+  const isDark = activeTab === 'overview' || activeTab === 'monitoreo' || activeTab === 'comando' || activeTab === 'security';
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] font-sans text-slate-900 flex">
+        {/* Va ACÁ, fuera de renderFallos(): la conciliación automática corre cada
+            3 min desde cualquier pestaña y puede REEMBOLSAR plata. Montado sólo
+            dentro de Fallos, ese aviso no se veía nunca salvo que el operador
+            estuviera justo en esa pestaña — o sea, casi nunca. Se devolvía
+            dinero y en pantalla no pasaba nada. */}
+        {resConciliar && <PanelConciliacion datos={resConciliar} onCerrar={() => setResConciliar(null)} />}
+        {/* Correos que no están llegando. Va suelto y fijo arriba a la derecha
+            porque el aviso tiene que verse desde CUALQUIER pestaña: quien no
+            recibe el código no puede escribirnos para contarlo. */}
+        <div className="fixed top-3 right-3 z-40 w-[min(26rem,calc(100vw-1.5rem))] space-y-2">
+            {/* DATOS VIEJOS EN PANTALLA.
+                El panel hidrata desde un caché del navegador para no quedarse
+                en cero mientras la edge function arranca en frío. Si el
+                refresco falla, ese puente se vuelve permanente -- y el panel
+                mostraba "Procesando" en un envío que el cliente ya veía
+                "Completado". Dos pantallas afirmando cosas distintas del mismo
+                movimiento, sin que ninguna admitiera no saber. */}
+            {syncError && (
+                <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 flex items-start gap-2.5 shadow-sm">
+                    <AlertTriangle size={16} className="text-amber-600 shrink-0 mt-0.5" />
+                    <div className="min-w-0">
+                        <p className="text-sm font-bold text-amber-900">Estás viendo datos guardados</p>
+                        <p className="text-xs text-amber-800 mt-0.5 leading-snug">
+                            {syncError.motivo} Lo que ves es de las {new Date(syncError.at).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })} y
+                            puede estar desactualizado — un movimiento puede figurar en otro estado del que tiene de verdad.
+                        </p>
+                        <button onClick={() => window.location.reload()}
+                            className="text-xs font-bold text-amber-900 underline mt-1.5">
+                            Reintentar
+                        </button>
+                    </div>
+                </div>
+            )}
+            <AvisoCorreos />
+        </div>
         {/* Mobile overlay — tap outside sidebar to close */}
         {isSidebarOpen && (
           <div className="fixed inset-0 z-20 bg-black/50 lg:hidden" onClick={closeSidebar}/>
@@ -3817,14 +4626,16 @@ const renderDesign = () => (
                 </button>
 
                 {(() => {
-                    const operacionBadge = (pendingClientsCount || 0) + pendingDeposits.length + pendingWithdrawals.length + (failuresCount || 0);
+                    const operacionBadge = (pendingClientsCount || 0) + pendingDeposits.length + pendingWithdrawals.length + (failuresCount || 0) + (otcPend || 0);
                     const groups: { key: string; title: string; badge?: number; items: React.ReactNode }[] = [
                         { key: 'operacion', title: 'Operación', badge: operacionBadge, items: <>
                             <AdminSidebarItem icon={Users} label="Clientes" active={activeTab === 'clients'} badge={pendingClientsCount > 0 ? pendingClientsCount : undefined} onClick={() => navTo('clients')} />
                             <AdminSidebarItem icon={Landmark} label="Tesorería" active={activeTab === 'treasury'} badge={pendingDeposits.length + pendingWithdrawals.length > 0 ? pendingDeposits.length + pendingWithdrawals.length : undefined} onClick={() => navTo('treasury')} />
-                            <AdminSidebarItem icon={Wallet} label="Cargues" active={activeTab === 'cargues'} onClick={() => navTo('cargues')} />
+                            {/* Cargues (COP) y GasFree (USDT) ya NO van sueltos aquí:
+                                se entra por Tesorería → Billeteras, que es donde se
+                                elige con qué moneda se opera. */}
+                            <AdminSidebarItem icon={MessageSquare} label="Cierres OTC" active={activeTab === 'otcCierres'} badge={otcPend > 0 ? otcPend : undefined} onClick={() => navTo('otcCierres')} />
                             <AdminSidebarItem icon={AlertTriangle} label="Fallos" active={activeTab === 'fallos'} badge={failuresCount > 0 ? failuresCount : undefined} onClick={() => navTo('fallos')} />
-                            <AdminSidebarItem icon={Zap} label="GasFree USDT" active={activeTab === 'gasfree'} onClick={() => navTo('gasfree')} />
                         </> },
                         { key: 'finanzas', title: 'Finanzas', items: <>
                             <AdminSidebarItem icon={FileText} label="Reportes" active={activeTab === 'reports'} onClick={() => navTo('reports')} />
@@ -3833,10 +4644,11 @@ const renderDesign = () => (
                             <AdminSidebarItem icon={ArrowLeftRight} label="Contabilidad OTC" active={activeTab === 'otcConfig'} onClick={() => navTo('otcConfig')} />
                         </> },
                         { key: 'sistema', title: 'Sistema', items: <>
-                            <AdminSidebarItem icon={Shield} label="Seguridad" active={activeTab === 'security'} onClick={() => navTo('security')} />
-                            <AdminSidebarItem icon={Shield} label="Auditoría" active={activeTab === 'auditoria'} onClick={() => navTo('auditoria')} />
-                            <AdminSidebarItem icon={Activity} label="Monitoreo" active={activeTab === 'monitoreo'} onClick={() => navTo('monitoreo')} />
-                            <AdminSidebarItem icon={UserCheck} label="Equipo Admin" active={activeTab === 'team'} onClick={() => navTo('team')} />
+                            {/* Seguridad y Cumplimiento son una entrada cada
+                                una: adentro llevan sus pestañas. Antes eran
+                                siete renglones sueltos. */}
+                            <AdminSidebarItem icon={Shield} label="Seguridad" active={GRUPO_SEG.includes(activeTab)} onClick={() => navTo('security')} />
+                            <AdminSidebarItem icon={ShieldAlert} label="Cumplimiento" active={GRUPO_CUMP.includes(activeTab)} onClick={() => navTo('compliance')} />
                             <AdminSidebarItem icon={Megaphone} label="Marketing" active={activeTab === 'marketing'} onClick={() => navTo('marketing')} />
                             <AdminSidebarItem icon={Palette} label="Diseño" active={activeTab === 'design'} onClick={() => navTo('design')} />
                             <AdminSidebarItem icon={Settings} label="Configuración" active={activeTab === 'config'} onClick={() => navTo('config')} />
@@ -3884,7 +4696,9 @@ const renderDesign = () => (
             <header className="h-20 bg-white border-b border-slate-200 flex items-center justify-between px-8">
                 <div className="flex items-center gap-4">
                     <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="lg:hidden text-slate-500"><Menu size={24}/></button>
-                    <h1 className="text-xl font-bold text-slate-800 capitalize">{activeTab === 'design' ? 'Diseño y Apariencia' : activeTab}</h1>
+                    {/* El título salía del nombre INTERNO de la pestaña ('clients',
+                        'treasury'…), por eso se leía en inglés en pantalla. */}
+                    <h1 className="text-lg sm:text-xl font-bold text-slate-800 truncate">{TAB_TITLES[activeTab] ?? activeTab}</h1>
                 </div>
                 <div className="flex items-center gap-4">
                     <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold ${!isOnline ? 'bg-red-50 text-red-700' : dataReady ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700'}`}>
@@ -3896,21 +4710,115 @@ const renderDesign = () => (
             )}
 
             <div className={`flex-1 overflow-y-auto ${isDark ? 'p-6' : 'p-8'}`}>
+                {/* ── Pestañas de las dos secciones agrupadas ──────────────
+                    La barra lateral tenía catorce entradas sueltas en Sistema
+                    y cuatro de ellas eran la misma cosa —quién entra, qué hace
+                    y quién puede— mientras TusDatos y Kumplo son las dos
+                    mitades del mismo control. Se agrupan bajo Seguridad y
+                    Cumplimiento, que es como se piensan.
+
+                    Cada subpantalla CONSERVA su propia clave de vista, así que
+                    los enlaces directos que alguien ya tenga guardados siguen
+                    funcionando y entran con su pestaña marcada. */}
+                {(GRUPO_SEG.includes(activeTab) || GRUPO_CUMP.includes(activeTab)) && (() => {
+                    const tabs = GRUPO_SEG.includes(activeTab) ? GRUPO_SEG : GRUPO_CUMP;
+                    return (
+                        <div className="flex flex-wrap gap-1.5 mb-5">
+                            {tabs.map(t => {
+                                const on = activeTab === t;
+                                return (
+                                    <button key={t} onClick={() => navTo(t)}
+                                        className="transition-colors"
+                                        style={{
+                                            fontSize: 12.5, fontWeight: on ? 700 : 600,
+                                            padding: '7px 13px', borderRadius: 9,
+                                            color: on ? '#F4F4F2' : '#878E88',
+                                            background: on ? 'rgba(255,255,255,0.08)' : 'transparent',
+                                            border: `1px solid ${on ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.08)'}`,
+                                        }}>
+                                        {SUBTAB_TITLES[t] ?? TAB_TITLES[t] ?? t}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    );
+                })()}
                 {activeTab === 'overview' && <AdminMonitor />}
-                {activeTab === 'monitoreo' && <AdminMonitor />}
-                {activeTab === 'clients' && renderClients()}
+                {activeTab === 'monitoreo' && (
+                  <div className="space-y-4">
+                    {/* Cruza los envíos contra los movimientos que ve el
+                        cliente. Va primero: si algo salió sin dejar registro,
+                        es lo que hay que atender antes que nada. */}
+                    <AdminReconcile />
+                    <AdminMonitor />
+                  </div>
+                )}
+                {activeTab === 'clients' && (
+                  <div className="animate-in fade-in duration-300">
+                    {/* La herramienta de correo huérfano vive acá y no dentro de
+                        la vista de clientes: usa el estado del panel y duplicarla
+                        seria tener dos copias de algo que borra cuentas. */}
+                    {showOrphanTool && (
+                      <div style={{ background: '#0C0E0D', border: '1px solid rgba(251,191,36,0.28)', borderRadius: 14, padding: '15px 17px', marginBottom: 16, fontFamily: 'Archivo, system-ui, sans-serif' }}>
+                        <div className="flex items-start justify-between gap-3 flex-wrap">
+                          <div style={{ maxWidth: 640 }}>
+                            <p style={{ fontSize: 13.5, fontWeight: 700, color: '#FBBF24', margin: 0 }}>Liberar correo huérfano</p>
+                            <p style={{ fontSize: 12, color: '#878E88', margin: '5px 0 0', lineHeight: 1.55 }}>
+                              Para cuando alguien eliminó su cuenta y un registro nuevo con el <b style={{ color: '#F4F4F2' }}>mismo correo</b> nunca llega a crearse
+                              — el perfil se borró pero la cuenta de acceso quedó atascada con ese correo. Borra cualquier rastro que quede, de forma permanente.
+                            </p>
+                          </div>
+                          <button onClick={() => setShowOrphanTool(false)} style={{ background: 'transparent', border: 'none', color: '#878E88', cursor: 'pointer', fontSize: 18, lineHeight: 1 }}>×</button>
+                        </div>
+                        <div className="flex gap-2 flex-wrap items-center" style={{ marginTop: 13 }}>
+                          <input type="email" value={orphanEmail} onChange={e => setOrphanEmail(e.target.value)}
+                            placeholder="correo@empresa.com"
+                            style={{ flex: 1, minWidth: 220, height: 40, background: '#121413', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 9, padding: '0 13px', color: '#F4F4F2', fontSize: 13, outline: 'none', fontFamily: 'inherit' }} />
+                          <button onClick={freeOrphanEmail} disabled={orphanBusy || !orphanEmail.trim()}
+                            style={{ height: 40, padding: '0 16px', borderRadius: 9, background: 'transparent', border: '1px solid rgba(248,113,113,0.34)', color: '#F87171', fontSize: 12.5, fontWeight: 700, cursor: orphanBusy || !orphanEmail.trim() ? 'not-allowed' : 'pointer', opacity: orphanBusy || !orphanEmail.trim() ? 0.5 : 1, fontFamily: 'inherit' }}>
+                            {orphanBusy ? 'Liberando…' : 'Liberar correo'}
+                          </button>
+                        </div>
+                        {orphanMsg && <p style={{ fontSize: 12, color: '#878E88', margin: '9px 0 0' }}>{orphanMsg}</p>}
+                      </div>
+                    )}
+                    <AdminClientes showToast={showToast} onSincronizarCripto={handleSyncCrypto} onLiberarCorreo={() => setShowOrphanTool(v => !v)} />
+                  </div>
+                )}
                 {activeTab === 'marketing' && renderMarketing()}
-                {activeTab === 'treasury' && renderTreasury()}
+                {activeTab === 'treasury' && (tesoreriaOk ? renderTreasury() : (
+                  <div className="py-8">
+                    <AdminStepUp
+                      userId={currentUser?.id ?? ''}
+                      motivo="Para entrar a Tesorería"
+                      onListo={() => setTesoreriaOk(true)}
+                    />
+                  </div>
+                ))}
                 {activeTab === 'cargues' && renderCargues()}
                 {activeTab === 'reports' && renderReports()}
                 {activeTab === 'config' && renderConfig()}
                 {activeTab === 'design' && renderDesign()}
                 {activeTab === 'banks' && renderBanks()}
                 {activeTab === 'rates' && renderRates()}
-                {activeTab === 'team' && renderTeam()}
+                {activeTab === 'team' && <AdminEquipo />}
+                {activeTab === 'comando' && <div className="animate-in fade-in duration-300"><AdminCommandCenter /></div>}
                 {activeTab === 'security' && renderSecurity()}
-                {activeTab === 'gasfree' && <AdminGasFreeSection />}
+                {activeTab === 'tusdatos' && <div className="animate-in fade-in duration-300"><AdminTusdatos /></div>}
+                {activeTab === 'compliance' && <div className="animate-in fade-in duration-300"><AdminCompliance /></div>}
+                {activeTab === 'kumplo' && <div className="animate-in fade-in duration-300"><AdminKumplo /></div>}
+                {activeTab === 'risk' && <div className="animate-in fade-in duration-300"><AdminLincoinRisk /></div>}
+                {activeTab === 'gasfree' && (<>
+                  {/* Igual que Cargues: se entra por Tesorería → Billeteras → USDT. */}
+                  <button onClick={() => navTo('treasury')}
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-bold mb-4"
+                    style={{ backgroundColor: '#121413', color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.12)' }}>
+                    <ArrowLeft size={14} /> Tesorería · Billetera USDT
+                  </button>
+                  <AdminGasFreeSection />
+                </>)}
                 {activeTab === 'otcConfig' && <AdminOtcSection />}
+                {activeTab === 'otcCierres' && <AdminOtcCierres />}
                 {activeTab === 'fallos' && renderFallos()}
                 {activeTab === 'auditoria' && renderAuditoria()}
             </div>

@@ -1,0 +1,7 @@
+# Estado de Terraform: puede contener el secreto del proxy en claro.
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+# El zip se regenera en cada apply.
+.gowd-proxy.zip

@@ -1230,7 +1230,7 @@ export const FinitySection: React.FC<{
                                     ) : (
                                         <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-center">
                                             <p className="text-xs font-semibold text-amber-700">No se pudo obtener la tasa en vivo (el riel está lento).</p>
-                                            <button onClick={load} className="mt-2 px-4 py-1.5 rounded-lg bg-[#0C0E0D] text-white text-xs font-bold hover:bg-[#152e52]">Reintentar</button>
+                                            <button onClick={load} className="mt-2 px-4 py-1.5 rounded-lg bg-[#0C0E0D] text-white text-xs font-bold hover:bg-[#161A17]">Reintentar</button>
                                         </div>
                                     )}
                                     <div className="flex flex-col sm:flex-row gap-2 sm:items-end">

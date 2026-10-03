@@ -37,7 +37,13 @@ const CURRENCIES = ['USD', 'COP', 'CLP', 'PEN', 'MXN', 'BRL', 'VES']
 
 Deno.serve(async (req) => {
   try {
-    if (CRON_SECRET) {
+    // Falla CERRADO. Antes el guardia era `if (CRON_SECRET)`: sin la variable
+    // puesta, el endpoint quedaba abierto a internet y cualquiera podía
+    // dispararlo en bucle y escribir tasas con service role.
+    if (!CRON_SECRET) {
+      return new Response(JSON.stringify({ error: 'not_configured', message: 'Falta CRON_SECRET.' }), { status: 503 })
+    }
+    {
       const url = new URL(req.url)
       if (url.searchParams.get('key') !== CRON_SECRET) {
         return new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401 })
