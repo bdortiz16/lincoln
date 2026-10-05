@@ -28,7 +28,9 @@
 //   No hay lógica de negocio de Gowd todavía — no hay cuentas en BRL ni
 //   órdenes que conciliar. Cuando la haya, entra por confirmado_api.
 //
-//   Con GOWD_WEBHOOK_SECRET puesto, la firma se EXIGE: un aviso que no valida
+//   El secreto lo guarda solo Admin → Gowd → Webhooks → "Rotar secreto" (tabla
+//   gowd_config); GOWD_WEBHOOK_SECRET en Supabase queda como respaldo.
+//   Con secreto puesto, la firma se EXIGE: un aviso que no valida
 //   se guarda como 'rechazado' y se contesta 401. Sin el secreto, se guarda
 //   como no verificado y se contesta 200 (sirve para probar en sandbox).
 //
@@ -88,14 +90,102 @@ type Verdicto = { ok: boolean; metodo: string }
 // Exactamente como lo documenta Gowd: X-Signature-SHA256 = "sha256=" + hex
 // del HMAC-SHA256 del cuerpo crudo. Nada de adivinar cabeceras ni formatos:
 // si la firma no es esa, no es de ellos.
+// El secreto vigente: el que guardó Admin → Gowd al rotarlo (gowd_config),
+// o el de los secretos de Supabase si nunca se rotó desde el panel. El de la
+// tabla manda porque es el último que Gowd entregó: al rotar, el anterior
+// deja de valer en ese mismo instante.
+let secretoCache: { valor: string; at: number } | null = null
+async function secretoVigente(): Promise<string> {
+  if (secretoCache && Date.now() - secretoCache.at < 60_000) return secretoCache.valor
+  let valor = SECRET
+  try {
+    const { data } = await db.from('gowd_config').select('valor').eq('clave', 'webhook_secret').maybeSingle()
+    if (data?.valor) valor = String(data.valor).trim()
+  } catch { /* sin la tabla, queda el de los secretos */ }
+  secretoCache = { valor, at: Date.now() }
+  return valor
+}
+
 async function verificar(headers: Record<string, string>, crudo: Uint8Array): Promise<Verdicto> {
   // Sin secreto configurado no se puede verificar nada. Se guarda y se marca
   // como no verificado — que es exactamente lo que es — y no acredita nada.
-  if (!SECRET) return { ok: false, metodo: 'sin_secreto' }
+  const secreto = await secretoVigente()
+  if (!secreto) return { ok: false, metodo: 'sin_secreto' }
   const recibida = (headers['x-signature-sha256'] ?? '').trim().replace(/^sha256=/i, '').toLowerCase()
   if (!recibida) return { ok: false, metodo: 'rechazado' }
-  const esperada = await hmacHex(crudo, SECRET)
+  const esperada = await hmacHex(crudo, secreto)
   return igual(recibida, esperada) ? { ok: true, metodo: 'hmac_sha256' } : { ok: false, metodo: 'rechazado' }
+}
+
+const textoMotivo = (r: unknown): string | null => {
+  if (r == null || r === '') return null
+  return (typeof r === 'string' ? r : JSON.stringify(r)).slice(0, 900)
+}
+
+async function avisarAdmins(titulo: string, cuerpo: string, tag: string) {
+  try {
+    await fetch(`${SUPABASE_URL}/functions/v1/push`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+      body: JSON.stringify({ action: 'enviar', rol: 'admin', titulo, cuerpo, tag, url: '/admin' }),
+      signal: AbortSignal.timeout(8000),
+    })
+  } catch { /* el aviso es un extra */ }
+}
+
+// ACCOUNT.CREATED {accountId, requestId, status, bankData?}
+// ACCOUNT.REJECTED {requestId, status: REJECTED, reason}
+// ACCOUNT.PENDING_DOCUMENTS {requestId, status: PENDING_DOCUMENTS, reason}
+// ACCOUNT.STATUS_CHANGED {accountId, status, previousStatus, reason}
+async function aplicarEventoCuenta(j: Record<string, any>) {
+  const ev = String(j.event)
+  const reqId = j.requestId ? String(j.requestId) : null
+  const accId = j.accountId ? String(j.accountId) : null
+  let fila: any = null
+  if (reqId) fila = (await db.from('gowd_cuentas').select('*').eq('solicitud_id', reqId).maybeSingle()).data
+  if (!fila && accId) fila = (await db.from('gowd_cuentas').select('*').eq('account_id', accId).maybeSingle()).data
+  if (!fila) return
+  const ahora = new Date().toISOString()
+  const cambios: Record<string, unknown> = { actualizado_at: ahora }
+
+  if (ev === 'ACCOUNT.CREATED') {
+    Object.assign(cambios, { account_id: accId ?? fila.account_id, estado_solicitud: 'APPROVED', estado_cuenta: j.status ?? 'ACTIVE', motivo: null })
+    const b = j.bankData ?? {}
+    if (b.accountNumber) Object.assign(cambios, { ispb: b.ispb ?? null, banco: b.bankNumber ?? null, agencia: b.branchNumber ?? null, conta: b.accountNumber, conta_tipo: b.accountType ?? null })
+    await avisarAdmins('Cuenta de Brasil aprobada', `${fila.titular}: la cuenta quedó abierta. Asígnala desde Admin → Gowd.`, `gowd-cuenta-${fila.id}`)
+  } else if (ev === 'ACCOUNT.REJECTED') {
+    Object.assign(cambios, { estado_solicitud: 'REPROVED', motivo: textoMotivo(j.reason) })
+    await avisarAdmins('Cuenta de Brasil rechazada', `${fila.titular}: ${textoMotivo(j.reason) ?? 'sin motivo'}`.slice(0, 300), `gowd-cuenta-${fila.id}`)
+  } else if (ev === 'ACCOUNT.PENDING_DOCUMENTS') {
+    Object.assign(cambios, { estado_solicitud: 'PENDING_DOCUMENTS', motivo: textoMotivo(j.reason) })
+    await avisarAdmins('Gowd pide documentos', `${fila.titular}: ${textoMotivo(j.reason) ?? 'revisa la solicitud'}`.slice(0, 300), `gowd-cuenta-${fila.id}`)
+  } else if (ev === 'ACCOUNT.STATUS_CHANGED') {
+    Object.assign(cambios, { estado_cuenta: j.status ?? null, motivo: textoMotivo(j.reason) })
+    // Una cuenta que dejó de estar activa no se le sigue mostrando al
+    // cliente: un PIX a una cuenta inactiva o cerrada no llega.
+    if (j.status && j.status !== 'ACTIVE' && fila.user_id && fila.account_id) {
+      await db.from('cuentas_brasil').update({ estado: 'suspendida', actualizado_at: ahora, nota_interna: `Gowd: la cuenta pasó a ${j.status}.` })
+        .eq('user_id', fila.user_id).eq('gowd_account_id', fila.account_id).eq('estado', 'activa')
+    }
+    await avisarAdmins('Cambio de estado en cuenta de Brasil', `${fila.titular}: ${j.previousStatus ?? '?'} → ${j.status ?? '?'}`, `gowd-cuenta-${fila.id}`)
+  } else return
+
+  await db.from('gowd_cuentas').update(cambios).eq('id', fila.id)
+}
+
+async function aplicarEventoOrden(j: Record<string, any>) {
+  const id = j.id ? String(j.id) : null
+  const code = j.code ? String(j.code) : null
+  let fila: any = null
+  if (id) fila = (await db.from('gowd_operaciones').select('id, tipo').eq('gowd_id', id).limit(1).maybeSingle()).data
+  if (!fila && code) fila = (await db.from('gowd_operaciones').select('id, tipo').eq('external_id', code).limit(1).maybeSingle()).data
+  if (!fila) return
+  // Un reembolso llega como evento del cobro con type REFUND: si el registro
+  // es del cobro, no se le pisa el estado con el del reembolso.
+  if (j.type === 'REFUND' && fila.tipo !== 'reembolso') return
+  await db.from('gowd_operaciones').update({
+    estado: j.status ?? null, end_to_end: j.endToEndId ?? null, actualizado_at: new Date().toISOString(),
+  }).eq('id', fila.id)
 }
 
 Deno.serve(async (req) => {
@@ -169,7 +259,7 @@ Deno.serve(async (req) => {
     monto_moneda: txt(monto.currency),
     actualizado_at: txt(j.updatedAt),
     nota: verdicto.metodo === 'sin_secreto'
-      ? 'Sin verificar: falta GOWD_WEBHOOK_SECRET (se obtiene con POST /order/v1/webhook/rotate-secret). Este aviso NO confirma nada — hay que preguntarle a la API de Gowd por este id antes de mover un saldo.'
+      ? 'Sin verificar: falta el secreto del webhook (Admin → Gowd → Webhooks → Rotar secreto). Este aviso NO confirma nada — hay que preguntarle a la API de Gowd por este id antes de mover un saldo.'
       : null,
   })
 
@@ -185,6 +275,19 @@ Deno.serve(async (req) => {
     // dice qué falló.
     console.warn('[gowd-webhook] firma inválida')
     return json(401, { error: 'no_autorizado' })
+  }
+
+  // Avisos de cuentas Banking: solo si la firma validó. Se actualiza el
+  // estado en gowd_cuentas; los datos bancarios los trae el admin con
+  // "Actualizar" (la API confirma). Idempotente: el mismo aviso 5 veces deja
+  // la fila igual.
+  if (verdicto.ok && typeof j.event === 'string' && j.event.startsWith('ACCOUNT.')) {
+    try { await aplicarEventoCuenta(j) } catch (e) { console.error('[gowd-webhook] evento de cuenta:', (e as Error).message) }
+  }
+  // Cobros, envíos y reembolsos creados desde Admin → Gowd: se actualiza el
+  // estado que muestra el registro. No mueve saldos de nadie.
+  if (verdicto.ok && typeof j.event === 'string' && /^ORDER-(PAYIN|PAYOUT)\./.test(j.event)) {
+    try { await aplicarEventoOrden(j) } catch (e) { console.error('[gowd-webhook] evento de orden:', (e as Error).message) }
   }
 
   // Exactamente lo que su documentación dice que esperan. Si no ven esto,

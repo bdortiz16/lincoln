@@ -98,6 +98,7 @@ import { AdminClientes } from './AdminClientes';
 import { AdminReconcile } from './AdminReconcile';
 import { AdminOtcSection } from './AdminOtcSection';
 import { AdminOtcCierres } from './AdminOtcCierres';
+import { AdminGowd } from './AdminGowd';
 import { sonarCampana, campanaActiva } from './campanaOtc';
 import { Zap, ArrowLeftRight, ArrowLeft, Info, ChevronRight, Activity, Link2, MessageSquare } from 'lucide-react';
 import { pedirAdmin } from './adminApi';
@@ -234,7 +235,7 @@ const TAB_TITLES: Record<string, string> = {
   gasfree: 'Custodia USDT', otcConfig: 'Contabilidad OTC', fallos: 'Fallos',
   auditoria: 'Auditoría', monitoreo: 'Monitoreo', kumplo: 'Kumplo', comando: 'Centro de Comando',
   tusdatos: 'TusDatos', compliance: 'Cumplimiento', risk: 'Lincoin Risk',
-  otcCierres: 'Cierres OTC',
+  otcCierres: 'Cierres OTC', gowd: 'Gowd · Brasil',
 };
 
 // Cómo se llama cada pestaña DENTRO de su sección. La primera no puede
@@ -490,7 +491,7 @@ const PanelConciliacion: React.FC<{ datos: any; onCerrar: () => void }> = ({ dat
 };
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'tusdatos' | 'compliance' | 'comando' | 'otcCierres'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'tusdatos' | 'compliance' | 'comando' | 'otcCierres' | 'gowd'>('overview');
   const [auditRows, setAuditRows] = useState<any[] | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
   const [adminLogins, setAdminLogins] = useState<{ admins: any[]; activity: any[] } | null>(null);
@@ -4635,6 +4636,7 @@ const renderDesign = () => (
                                 se entra por Tesorería → Billeteras, que es donde se
                                 elige con qué moneda se opera. */}
                             <AdminSidebarItem icon={MessageSquare} label="Cierres OTC" active={activeTab === 'otcCierres'} badge={otcPend > 0 ? otcPend : undefined} onClick={() => navTo('otcCierres')} />
+                            <AdminSidebarItem icon={Landmark} label="Gowd" active={activeTab === 'gowd'} onClick={() => navTo('gowd')} />
                             <AdminSidebarItem icon={AlertTriangle} label="Fallos" active={activeTab === 'fallos'} badge={failuresCount > 0 ? failuresCount : undefined} onClick={() => navTo('fallos')} />
                         </> },
                         { key: 'finanzas', title: 'Finanzas', items: <>
@@ -4818,6 +4820,7 @@ const renderDesign = () => (
                   <AdminGasFreeSection />
                 </>)}
                 {activeTab === 'otcConfig' && <AdminOtcSection />}
+                {activeTab === 'gowd' && <AdminGowd />}
                 {activeTab === 'otcCierres' && <AdminOtcCierres />}
                 {activeTab === 'fallos' && renderFallos()}
                 {activeTab === 'auditoria' && renderAuditoria()}

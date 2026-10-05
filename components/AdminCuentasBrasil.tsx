@@ -204,7 +204,6 @@ export const CuentaBrasilCliente: React.FC<{ sel: any; showToast?: (m: string) =
               <button onClick={() => setModo('asignar')} style={btnPri}>Asignar cuenta</button>
             )}
             {actual?.estado === 'solicitada' && <>
-              <button onClick={() => accion('admin_crear_api', {}, 'Cuenta pedida al aliado.')} disabled={ocupado} style={btnSec}>Crear con el aliado (API)</button>
               <button onClick={() => setModo('rechazar')} style={btnSec}>Rechazar</button>
             </>}
             {actual?.estado === 'activa' && <>
@@ -216,6 +215,7 @@ export const CuentaBrasilCliente: React.FC<{ sel: any; showToast?: (m: string) =
             )}
           </div>
         )}
+        {esEmpresa && puede && modo === 'ver' && actual?.estado === 'solicitada' && <p style={{ fontSize: 11.5, color: C.dim, margin: '10px 0 0', lineHeight: 1.45 }}>Para abrirla por API: Admin → Gowd → Nueva cuenta. Ya abierta, se asigna a este cliente desde ahí.</p>}
         {esEmpresa && datos && !puede && !error && <p style={{ fontSize: 11.5, color: C.dim, margin: '12px 0 0' }}>Tu rol puede ver esta cuenta, no modificarla.</p>}
 
         {modo === 'asignar' && (

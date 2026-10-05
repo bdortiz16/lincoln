@@ -244,9 +244,11 @@ export const handler = async (event) => {
     return responder(405, { error: 'metodo_no_permitido' });
   }
 
-  const cuerpo = event.isBase64Encoded && event.body
-    ? Buffer.from(event.body, 'base64').toString('utf8')
-    : event.body;
+  // En bytes, sin pasar por texto: un multipart con un PDF o una foto se
+  // corrompe si se decodifica como utf8.
+  const cuerpo = event.body
+    ? (event.isBase64Encoded ? Buffer.from(event.body, 'base64') : Buffer.from(event.body, 'utf8'))
+    : null;
 
   // Se carga acá, antes de cualquier llamada, para poder distinguir
   // "no tenemos certificado" (culpa nuestra, 503) de "el banco no contestó".
@@ -269,10 +271,10 @@ export const handler = async (event) => {
     for (const k of ['content-type', 'idempotency-key']) {
       if (headers[k]) aEnviar[k] = headers[k];
     }
-    const conCuerpo = !['GET', 'DELETE'].includes(metodo) && cuerpo;
+    const conCuerpo = !['GET', 'DELETE'].includes(metodo) && cuerpo && cuerpo.length > 0;
     if (conCuerpo) {
       if (!aEnviar['content-type']) aEnviar['content-type'] = 'application/json';
-      aEnviar['content-length'] = Buffer.byteLength(cuerpo);
+      aEnviar['content-length'] = cuerpo.length;
     }
     return pedir(`${GOWD_BASE}${ruta}`, {
       method: metodo,
