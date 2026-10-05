@@ -3,41 +3,34 @@
 //
 // A GOWD SE LE DA ESTA URL, NO LA DE SUPABASE:
 //   https://lincoin.me/webhooks/gowd
-// (vercel.json la reenvía acá. Ver el comentario de ese archivo: cambiar la
-// URL de un webhook con un banco es un trámite de semanas, no un deploy.)
+// (vercel.json —o el worker de Cloudflare, cloudflare/worker.js— la reenvía
+// acá con el cuerpo intacto. Cambiar la URL de un webhook con un banco es un
+// trámite, no un deploy.)
 //
 // LO QUE GOWD ESPERA DE NOSOTROS (de su documentación)
 //   HTTP 200 con { "returnCode": "SUCCESS" }. Si no lo recibe, REINTENTA 4
 //   VECES MAS. O sea que el mismo evento puede llegar hasta 5 veces: lo que
 //   procese esto tiene que ser idempotente, sí o sí.
 //
-// UN POSTBACK NO ES UNA PRUEBA — ESTO ES LO IMPORTANTE
-//   Su documentación describe el cuerpo del postback con todo detalle, y NO
-//   DESCRIBE NINGUNA FIRMA NI SECRETO. Por lo que está escrito, cualquiera que
-//   descubra esta URL puede mandarnos "ORDER-PAYIN.PAID" por el monto que se
-//   le ocurra, y si acreditáramos sobre eso, acabamos de regalar la plata.
+// LA FIRMA (de su documentación, "Webhook signature")
+//   Cada aviso trae  X-Signature-SHA256: sha256=<hex>  = HMAC-SHA256 del
+//   cuerpo CRUDO (tal cual llega, antes de parsear) con el secreto del
+//   webhook. El secreto es por ambiente y se obtiene con
+//   POST /order/v1/webhook/rotate-secret (solo se muestra esa vez). Va en
+//   Supabase → Edge Functions → Secrets como GOWD_WEBHOOK_SECRET.
+//   Firma que no valida → 401 (ellos reintentan; un 2xx es "recibido").
 //
-//   Por eso la regla, que no se negocia:
-//
-//     EL POSTBACK AVISA. LA API CONFIRMA.
-//
-//   Al recibir un aviso se guarda y se despierta a quien corresponda, pero
-//   antes de mover un peso hay que preguntarle a Gowd por ese id (a través del
-//   proxy mTLS, que es el único que puede hablarles) y creerle a la respuesta.
-//   Esa confirmación es la columna confirmado_api.
+//   Aun firmado, la regla se mantiene:  EL POSTBACK AVISA. LA API CONFIRMA.
+//   Antes de mover un peso se consulta el id a Gowd (por el proxy mTLS) y se
+//   cree a esa respuesta. Esa confirmación es la columna confirmado_api.
 //
 // ESTADO HOY: RECIBE, GUARDA Y CONTESTA. NO ACREDITA NADA.
 //   No hay lógica de negocio de Gowd todavía — no hay cuentas en BRL ni
 //   órdenes que conciliar. Cuando la haya, entra por confirmado_api.
 //
-//   Tenerla arriba desde hoy sirve igual: CAPTURA SUS CABECERAS. Si mandan
-//   alguna firma que no está documentada, la primera llamada de prueba nos la
-//   muestra sin esperar a que alguien la escriba en un correo.
-//
-// SI APARECE UNA FIRMA
-//   Se setea GOWD_WEBHOOK_SECRET en Supabase → Edge Functions → Secrets.
-//   Desde ese momento se EXIGE: un evento que no valide se guarda como
-//   'rechazado' y se contesta 401.
+//   Con GOWD_WEBHOOK_SECRET puesto, la firma se EXIGE: un aviso que no valida
+//   se guarda como 'rechazado' y se contesta 401. Sin el secreto, se guarda
+//   como no verificado y se contesta 200 (sirve para probar en sandbox).
 //
 // LO QUE NO SE GUARDA
 //   El valor de las cabeceras que son credenciales. Se guarda su NOMBRE y una
@@ -55,7 +48,7 @@ const db = createClient(SUPABASE_URL, SERVICE_KEY)
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, content-type, apikey, x-api-key, x-signature, x-hub-signature-256, x-gowd-signature, x-webhook-secret',
+  'Access-Control-Allow-Headers': 'authorization, content-type, apikey, x-api-key, x-signature-sha256',
 }
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { ...CORS, 'Content-Type': 'application/json' } })
@@ -63,7 +56,7 @@ const json = (status: number, body: unknown) =>
 // Cabeceras que pueden traer una credencial: de estas se guarda huella, no valor.
 const SENSIBLES = [
   'authorization', 'x-api-key', 'apikey', 'x-webhook-secret', 'x-secret',
-  'x-signature', 'x-gowd-signature', 'x-hub-signature', 'x-hub-signature-256',
+  'x-signature', 'x-signature-sha256', 'x-gowd-signature', 'x-hub-signature', 'x-hub-signature-256',
   'signature', 'cookie',
 ]
 
@@ -83,46 +76,26 @@ function igual(a: string, b: string): boolean {
   return dif === 0
 }
 
-async function hmacDe(cuerpo: string, secreto: string): Promise<{ hex: string; b64: string }> {
+async function hmacHex(crudo: Uint8Array, secreto: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     'raw', new TextEncoder().encode(secreto), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'],
   )
-  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(cuerpo)))
-  return { hex: hex(sig), b64: btoa(String.fromCharCode(...sig)) }
+  return hex(new Uint8Array(await crypto.subtle.sign('HMAC', key, crudo)))
 }
-
-// Algunos proveedores mandan "sha256=abc..." en vez de "abc...".
-const limpiar = (v: string) => v.trim().replace(/^(sha256|hmac-sha256|sha-256)[=\s]/i, '').trim()
 
 type Verdicto = { ok: boolean; metodo: string }
 
-async function verificar(headers: Record<string, string>, cuerpo: string): Promise<Verdicto> {
-  // Sin secreto configurado no se puede verificar nada. Se acepta y se marca
-  // como no verificado — que es exactamente lo que es.
+// Exactamente como lo documenta Gowd: X-Signature-SHA256 = "sha256=" + hex
+// del HMAC-SHA256 del cuerpo crudo. Nada de adivinar cabeceras ni formatos:
+// si la firma no es esa, no es de ellos.
+async function verificar(headers: Record<string, string>, crudo: Uint8Array): Promise<Verdicto> {
+  // Sin secreto configurado no se puede verificar nada. Se guarda y se marca
+  // como no verificado — que es exactamente lo que es — y no acredita nada.
   if (!SECRET) return { ok: false, metodo: 'sin_secreto' }
-
-  // (a) El secreto viajando tal cual en alguna cabecera.
-  for (const h of ['x-webhook-secret', 'x-api-key', 'x-secret', 'apikey', 'x-gowd-secret']) {
-    if (headers[h] && igual(limpiar(headers[h]), SECRET)) return { ok: true, metodo: 'header' }
-  }
-  if (headers['authorization']) {
-    const v = headers['authorization'].replace(/^Bearer\s+/i, '').trim()
-    if (igual(v, SECRET)) return { ok: true, metodo: 'header' }
-  }
-
-  // (b) HMAC-SHA256 del cuerpo, en hex o base64. No se asume cuál de las dos
-  // formas usan: se prueban las dos contra todas las cabeceras de firma.
-  if (cuerpo) {
-    const firma = await hmacDe(cuerpo, SECRET)
-    for (const h of ['x-signature', 'x-gowd-signature', 'x-hub-signature-256', 'signature', 'x-webhook-signature']) {
-      const v = headers[h] ? limpiar(headers[h]) : ''
-      if (!v) continue
-      if (igual(v.toLowerCase(), firma.hex)) return { ok: true, metodo: 'hmac_hex' }
-      if (igual(v, firma.b64)) return { ok: true, metodo: 'hmac_b64' }
-    }
-  }
-
-  return { ok: false, metodo: 'rechazado' }
+  const recibida = (headers['x-signature-sha256'] ?? '').trim().replace(/^sha256=/i, '').toLowerCase()
+  if (!recibida) return { ok: false, metodo: 'rechazado' }
+  const esperada = await hmacHex(crudo, SECRET)
+  return igual(recibida, esperada) ? { ok: true, metodo: 'hmac_sha256' } : { ok: false, metodo: 'rechazado' }
 }
 
 Deno.serve(async (req) => {
@@ -138,14 +111,17 @@ Deno.serve(async (req) => {
   const headers: Record<string, string> = {}
   for (const [k, v] of req.headers.entries()) headers[k.toLowerCase()] = v
 
-  let cuerpo = ''
+  // La firma va sobre los bytes tal cual llegaron: decodificar y volver a
+  // codificar podría cambiarlos y hacer fallar un aviso legítimo.
+  let crudo = new Uint8Array()
   try {
-    cuerpo = await req.text()
+    crudo = new Uint8Array(await req.arrayBuffer())
   } catch {
-    cuerpo = ''
+    crudo = new Uint8Array()
   }
+  const cuerpo = new TextDecoder().decode(crudo)
 
-  const verdicto = await verificar(headers, cuerpo)
+  const verdicto = await verificar(headers, crudo)
 
   // Lo que se guarda de las cabeceras: valor si es inocuo, huella si no.
   const headersGuardables: Record<string, string> = {}
@@ -193,7 +169,7 @@ Deno.serve(async (req) => {
     monto_moneda: txt(monto.currency),
     actualizado_at: txt(j.updatedAt),
     nota: verdicto.metodo === 'sin_secreto'
-      ? 'Sin firma: su documentación no define ninguna. Este aviso NO confirma nada — hay que preguntarle a la API de Gowd por este id antes de mover un saldo.'
+      ? 'Sin verificar: falta GOWD_WEBHOOK_SECRET (se obtiene con POST /order/v1/webhook/rotate-secret). Este aviso NO confirma nada — hay que preguntarle a la API de Gowd por este id antes de mover un saldo.'
       : null,
   })
 
