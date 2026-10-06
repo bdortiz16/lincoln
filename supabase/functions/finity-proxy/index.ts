@@ -127,15 +127,30 @@ async function finityTry(resource: string, init: RequestInit = {}, qs = ''): Pro
     ...(CANDIDATES[resource] ?? []).filter(p => p !== WORKING[resource]),
   ]
   let last: { res: Response; path: string } | null = null
+  // Se recuerda una ruta SOLO si respondió bien (2xx). Antes se recordaba la
+  // primera que no fuera 404/405: si la buena fallaba un momento, la
+  // siguiente candidata (que no existe y contesta 403 Forbidden) quedaba
+  // fijada y TODAS las inscripciones de esa instancia rebotaban con 403,
+  // mientras las conversiones (ruta fija) seguían funcionando.
+  // 403 = ruta inexistente o sin permiso: se suelta la caché y se prueba la
+  // siguiente. 400/409/5xx = la ruta existe y esa es la respuesta real.
+  let primera: { res: Response; path: string } | null = null
   for (const path of list) {
     const res = await finityFetch(`${path}${qs}`, init)
     last = { res, path }
-    if (res.status !== 404 && res.status !== 405) {
+    if (res.ok) {
       WORKING[resource] = path
       return last
     }
+    if (res.status === 404 || res.status === 405) continue
+    if (res.status === 403) {
+      if (WORKING[resource] === path) delete WORKING[resource]
+      primera ??= last
+      continue
+    }
+    return last
   }
-  return last!
+  return primera ?? last!
 }
 
 // ─── Token OAuth con caché en memoria (se renueva solo) ───
