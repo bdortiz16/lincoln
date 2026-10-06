@@ -32,7 +32,10 @@ export async function callFinity(action: string, userId: string, extra: Record<s
             // cliente resuelve como él mismo (inscribir cuenta externa). Sin
             // JWT cae a la anon key. Antes iba siempre con la anon key, lo que
             // permitía crear retiros con solo la llave pública + un user_id.
-            headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: myAuthHeader() },
+            // Con sesión VIGENTE: el token guardado puede estar vencido (app
+            // en segundo plano en el celular) y el proxy contestaba
+            // "unauthorized" — la inscripción no le llegaba a Finity.
+            headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: await authVigente() },
             body: JSON.stringify({ action, user_id: userId, ...extra }),
             signal: AbortSignal.timeout(30000),
         });
@@ -55,6 +58,20 @@ function myAuthHeader(): string {
         }
     } catch { /* sin sesión supabase */ }
     return `Bearer ${SKEY}`;
+}
+// Igual que myAuthHeader, pero renueva la sesión si el token vence en menos
+// de un minuto. Si no hay cliente de sesión, cae al token guardado.
+async function authVigente(): Promise<string> {
+    try {
+        const { data } = await supabase.auth.getSession();
+        let s = data?.session;
+        if (s?.expires_at && s.expires_at * 1000 - Date.now() < 60_000) {
+            const r = await supabase.auth.refreshSession();
+            if (r.data?.session) s = r.data.session;
+        }
+        if (s?.access_token) return `Bearer ${s.access_token}`;
+    } catch { /* sin sesión: el token guardado */ }
+    return myAuthHeader();
 }
 async function callGasfree(body: Record<string, unknown>): Promise<any> {
     // Timeout largo: el asentamiento espera confirmaciones on-chain (hasta ~90s).
