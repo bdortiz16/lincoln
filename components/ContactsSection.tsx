@@ -181,7 +181,10 @@ const buildMouvAccountBody = (c: { name: string; docType: string; docNumber: str
         account_holder_fullname: c.name,
         // Enum de Mouv: CC | CE | NIT (PAS no existe → se envía como CE)
         account_holder_id_type: c.docType === 'PAS' ? 'CE' : c.docType,
-        account_holder_id_number: c.docNumber,
+        // Solo dígitos: Finity rechaza (400) un NIT con guion o puntos
+        // ("901258216-0"). Con el dígito de verificación pegado, igual que
+        // lo arma mouv-proxy al dispersar.
+        account_holder_id_number: String(c.docNumber ?? '').replace(/\D/g, ''),
     },
 });
 
@@ -198,7 +201,7 @@ const buildMouvBrebBody = (c: { name: string; brebKeyType: string; brebKey: stri
         breb_key: c.brebKey,
         account_holder_fullname: c.name,
         ...(c.docType ? { account_holder_id_type: c.docType === 'PAS' ? 'CE' : c.docType } : {}),
-        ...(c.docNumber ? { account_holder_id_number: c.docNumber } : {}),
+        ...(c.docNumber && c.docNumber.replace(/\D/g, '') ? { account_holder_id_number: c.docNumber.replace(/\D/g, '') } : {}),
     },
 });
 
