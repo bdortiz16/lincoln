@@ -75,6 +75,13 @@ async function callKumplo(cuerpo: Record<string, unknown>): Promise<any> {
 //   Bre-B (Mouv), wallets y otros países → aprobación AUTOMÁTICA al inscribir.
 export type ContactStatus = 'en_proceso' | 'aprobada' | 'rechazada';
 
+// El documento se guarda y se escribe SIN guiones, puntos ni espacios: el
+// banco lo exige solo con dígitos ("personal_id_number debe ser solo
+// dígitos") y un NIT escrito 901258216-0 rebotaba. El pasaporte puede traer
+// letras: ahí solo se quitan los separadores.
+export const limpiarDoc = (v: string, tipo?: string): string =>
+    tipo === 'PAS' ? String(v ?? '').replace(/[^0-9A-Za-z]/g, '').toUpperCase() : String(v ?? '').replace(/\D/g, '');
+
 // Cada cuánto se reintenta sola la inscripción de una cuenta que el
 // proveedor no aceptó. Antes se reintentaba en cada sincronización (cada
 // 15 s con algo en proceso): cientos de llamadas por hora al mismo
@@ -943,7 +950,7 @@ export const ContactsSection: React.FC<{
             const brebContact: MouvContact = {
                 id: `ct_${Math.random().toString(36).slice(2, 10)}`,
                 mouvId: null, kind: f.kind, name: f.name.trim(),
-                docType: f.docType, docNumber: f.docNumber.trim() || '—',
+                docType: f.docType, docNumber: limpiarDoc(f.docNumber, f.docType) || '—',
                 country: 'Colombia', bank: f.bank.trim() || `Bre-B · ${brebKeyLabel(f.brebKeyType)}`,
                 accountType: 'savings', accountNumber: f.brebKey.trim(),
                 status: 'aprobada', createdAt: new Date().toISOString(), lastError: null,
@@ -988,7 +995,7 @@ export const ContactsSection: React.FC<{
         if (isColombiaAch) {
             try {
                 const rr = await callFinity('create_external_account', currentUser.id, {
-                    data: buildMouvAccountBody({ ...f, name: f.name.trim(), docNumber: f.docNumber.trim(), accountNumber: f.accountNumber.trim() }),
+                    data: buildMouvAccountBody({ ...f, name: f.name.trim(), docNumber: limpiarDoc(f.docNumber, f.docType), accountNumber: f.accountNumber.trim() }),
                 });
                 const dd = (rr?.data ?? {}) as any;
                 const fid = dd.id ?? dd.external_account_id ?? dd.account_id ?? dd?.account?.id ?? null;
@@ -1017,7 +1024,7 @@ export const ContactsSection: React.FC<{
             kind: f.kind,
             name: f.name.trim(),
             docType: f.docType,
-            docNumber: f.docNumber.trim(),
+            docNumber: limpiarDoc(f.docNumber, f.docType),
             country: f.country,
             bank: f.bank,
             accountType: f.accountType,
@@ -1831,7 +1838,7 @@ export const ContactsSection: React.FC<{
                                 </div>
                                 <div>
                                     <label style={LBL}>Número de documento</label>
-                                    <input value={form.docNumber} onChange={e => setForm(fm => ({ ...fm, docNumber: e.target.value }))} inputMode="numeric" style={INP}
+                                    <input value={form.docNumber} onChange={e => setForm(fm => ({ ...fm, docNumber: limpiarDoc(e.target.value, fm.docType) }))} inputMode="numeric" style={INP}
                                         placeholder={form.docType === 'NIT' ? '10 dígitos, con el de verificación' : undefined} />
                                 </div>
                             </div>
@@ -1863,7 +1870,7 @@ export const ContactsSection: React.FC<{
                             </div>
                             <div>
                                 <label style={LBL}>Número de documento</label>
-                                <input value={form.docNumber} onChange={e => setForm(fm => ({ ...fm, docNumber: e.target.value }))} inputMode="numeric" style={INP}
+                                <input value={form.docNumber} onChange={e => setForm(fm => ({ ...fm, docNumber: limpiarDoc(e.target.value, fm.docType) }))} inputMode="numeric" style={INP}
                                     placeholder={form.docType === 'NIT' ? '10 dígitos, con el de verificación' : undefined} />
                             </div>
                         </div>
