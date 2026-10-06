@@ -75,6 +75,22 @@ async function callKumplo(cuerpo: Record<string, unknown>): Promise<any> {
 //   Bre-B (Mouv), wallets y otros países → aprobación AUTOMÁTICA al inscribir.
 export type ContactStatus = 'en_proceso' | 'aprobada' | 'rechazada';
 
+// Cada cuánto se reintenta sola la inscripción de una cuenta que el
+// proveedor no aceptó. Antes se reintentaba en cada sincronización (cada
+// 15 s con algo en proceso): cientos de llamadas por hora al mismo
+// endpoint, que es lo que hace que un proveedor bloquee (403). Un 400/409/
+// 422 es un dato que hay que corregir y no se arregla insistiendo.
+const ESPERA_REGISTRO_MS = (http?: number | null): number => {
+    if (http === 400 || http === 409 || http === 422) return 6 * 3600_000;
+    if (http === 401 || http === 403 || http === 429) return 30 * 60_000;
+    return 5 * 60_000;
+};
+function puedeReintentarRegistro(c: { regIntentoAt?: string | null; regHttp?: number | null }): boolean {
+    if (!c.regIntentoAt) return true;
+    const t = new Date(c.regIntentoAt).getTime();
+    return !Number.isFinite(t) || Date.now() - t >= ESPERA_REGISTRO_MS(c.regHttp);
+}
+
 export interface MouvContact {
     id: string;
     mouvId: string | null;   // id de la external account en el proveedor (null = pendiente)
@@ -99,6 +115,11 @@ export interface MouvContact {
     // Última respuesta de Mouv al intentar inscribir (null = ok). Visible
     // en el detalle para diagnosticar rechazos de campos/validación.
     lastError?: string | null;
+    // Último intento automático de inscribirla en el proveedor y el código
+    // HTTP que devolvió: con eso se espacian los reintentos (ver
+    // puedeReintentarRegistro).
+    regIntentoAt?: string | null;
+    regHttp?: number | null;
     // El estado TAL CUAL lo dijo el proveedor, sin traducir. Sirve para
     // rastrear una discrepancia entre lo que muestra su portal y lo que
     // muestra Lincoin, sin tener que adivinar qué campo se leyó.
@@ -1033,8 +1054,11 @@ export const ContactsSection: React.FC<{
             //    de Finity (la primera inscripción falló — auth o red).
             let retried = bankContacts;
             const cambiosReg: Record<string, Partial<MouvContact>> = {};
-            const pendingReg = bankContacts.filter(c => isFinityAch(c) && !(c.finityId ?? c.mouvId));
+            const pendingReg = bankContacts
+                .filter(c => isFinityAch(c) && !(c.finityId ?? c.mouvId) && puedeReintentarRegistro(c))
+                .slice(0, 3);
             for (const c of pendingReg) {
+                const intentoAt = new Date().toISOString();
                 try {
                     const rr = await callFinity('create_external_account', currentUser.id, {
                         data: buildMouvAccountBody(c),
@@ -1042,13 +1066,13 @@ export const ContactsSection: React.FC<{
                     const dd = (rr?.data ?? {}) as any;
                     const fid = dd.id ?? dd.external_account_id ?? dd.account_id ?? dd?.account?.id ?? null;
                     if (rr?.ok && fid) {
-                        cambiosReg[c.id] = { mouvId: String(fid), finityId: String(fid), status: estadoDeFila(dd) === 'rechazada' ? 'rechazada' : 'en_proceso', lastError: null };
+                        cambiosReg[c.id] = { mouvId: String(fid), finityId: String(fid), status: estadoDeFila(dd) === 'rechazada' ? 'rechazada' : 'en_proceso', lastError: null, regIntentoAt: intentoAt, regHttp: Number(rr?.status) || 201 };
                     } else {
                         // Guardar el rechazo de Finity — visible en el detalle del contacto
-                        cambiosReg[c.id] = { lastError: `[${new Date().toLocaleTimeString('es-CO')}] HTTP ${rr?.status ?? '—'} en ${rr?.path ?? '¿?'}: ${JSON.stringify(rr?.data ?? rr).slice(0, 260)}` };
+                        cambiosReg[c.id] = { lastError: `[${new Date().toLocaleTimeString('es-CO')}] HTTP ${rr?.status ?? '—'} en ${rr?.path ?? '¿?'}: ${JSON.stringify(rr?.data ?? rr).slice(0, 260)}`, regIntentoAt: intentoAt, regHttp: Number(rr?.status) || 0 };
                     }
                 } catch (e: any) {
-                    cambiosReg[c.id] = { lastError: String(e?.message ?? e) };
+                    cambiosReg[c.id] = { lastError: String(e?.message ?? e), regIntentoAt: intentoAt, regHttp: 0 };
                 }
             }
             if (Object.keys(cambiosReg).length) {
