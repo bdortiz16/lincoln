@@ -906,13 +906,23 @@ const BANK_CODES_CO: Record<string, string> = {
   'Coopcentral': '1066', 'Lulo Bank': '1070', 'Nequi': '1507', 'Daviplata': '1551',
   'Movii': '1801', 'Nu Colombia': '1809', 'Nu': '1809',
 }
+// Sin respuesta legible NO es "falló": es "no sabemos". Quien llama decide
+// qué hacer con desenlaceDesconocido (en un retiro: NO reembolsar).
 async function finityCall(action: string, userId: string, extra: Record<string, unknown> = {}): Promise<any> {
-  const r = await fetch(`${SUPABASE_URL}/functions/v1/finity-proxy`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SERVICE_KEY}` },
-    body: JSON.stringify({ action, user_id: userId, ...extra }),
-  })
-  return r.json().catch(() => null)
+  let r: Response
+  try {
+    r = await fetch(`${SUPABASE_URL}/functions/v1/finity-proxy`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SERVICE_KEY}` },
+      body: JSON.stringify({ action, user_id: userId, ...extra }),
+      signal: AbortSignal.timeout(70000),
+    })
+  } catch (e) {
+    return { ok: false, status: 0, desenlaceDesconocido: true, error: String((e as Error)?.name ?? e) }
+  }
+  const body = await r.json().catch(() => null)
+  if (body == null) return { ok: false, status: r.status, desenlaceDesconocido: r.status === 0 || r.status >= 500, error: 'respuesta_ilegible' }
+  return body
 }
 // Precio por transferencia ACH que SE COBRA AL CLIENTE: $2.500 COP por
 // envío (override con el secret ACH_FEE_COP). Finity no devuelve costs en
@@ -1084,9 +1094,17 @@ async function finityPayoutAch(userId: string, recipient: Record<string, any>, a
   const od: any = w?.data ?? {}
   // El error DEBE conservar status/path/cuerpo — con '{}' pelado es
   // imposible saber si fue ruta (404), auth (401) o validación (400).
-  if (!w?.ok || !od.id) return {
-    ok: false, feeCop: 0, destinationId: destId ?? undefined,
-    error: { step: 'retiro', httpStatus: w?.status ?? null, path: w?.path ?? null, body: (od && Object.keys(od).length > 0) ? od : (w?.data ?? w ?? null) },
+  if (!w?.ok || !od.id) {
+    // ¿Finity dijo que NO (4xx), o no sabemos? Un timeout, un 5xx o una
+    // respuesta ilegible pueden esconder un retiro que SÍ se creó. Un token
+    // rechazado (finity_auth_failed) es un no: la orden ni se mandó.
+    const hs = Number(w?.status ?? 0)
+    const desconocido = w?.error !== 'finity_auth_failed' && w?.error !== 'forbidden'
+      && (!!w?.desenlaceDesconocido || !w || hs === 0 || hs >= 500 || (w?.ok && !od.id))
+    return {
+      ok: false, feeCop: 0, destinationId: destId ?? undefined,
+      error: { step: 'retiro', httpStatus: w?.status ?? null, path: w?.path ?? null, desenlaceDesconocido: desconocido, body: (od && Object.keys(od).length > 0) ? od : (w?.data ?? w ?? null) },
+    }
   }
   // CONTROL DE MONTO (post-orden): si Finity ecoa un amount y NO coincide
   // con lo pedido (±1 peso; también se detecta el patrón ×100 / ÷100), se
@@ -3390,7 +3408,29 @@ serve(async (req: Request) => {
       await notifyTx(txId) // correo "recibimos tu envío · en proceso"
       return json(200, { ok: true, provider: 'finity', providerRef: fin.providerRef ?? null, feeCop: fin.feeCop, newBalance })
     }
-    // Finity falló → REINTEGRAR monto + comisión (atómico; fallback read-write).
+    // ── SIN RESPUESTA CLARA DE FINITY: NO SE REEMBOLSA ──────────────
+    // Igual que en Bre-B: un timeout o un 5xx no significan "no salió". Si
+    // se devolviera el saldo y el retiro sí se creó, el cliente cobra dos
+    // veces. Queda en Procesando para revisión y se avisa a los admins.
+    if ((fin.error as any)?.desenlaceDesconocido) {
+      await asentarTx('Procesando', {
+        ...prettyBase, feeProvider: 'finity', feeCop: fin.feeCop,
+        desenlaceDesconocido: true, revisionManual: true,
+        httpStatus: (fin.error as any)?.httpStatus ?? null,
+        error: (fin.error as any)?.body ?? 'sin_respuesta',
+        sinConfirmarDesde: new Date().toISOString(),
+      })
+      await logAudit(userId, `finity.${action}.desenlace_desconocido`, { txId, amount, httpStatus: (fin.error as any)?.httpStatus ?? null })
+      await avisarAdminSinConfirmar({ id: txId, user_id: userId, amount, currency: railCol, raw_data: prettyBase })
+      await notifyTx(txId)
+      return json(200, {
+        ok: true, status: 'Procesando', confirmada: false, desenlaceDesconocido: true,
+        message: 'No pudimos confirmar el envío con el banco. NO lo reintentes: lo estamos verificando y te avisamos en minutos.',
+        feeCop: fin.feeCop, newBalance: afterDebit,
+      })
+    }
+
+    // Finity dijo que NO (rechazo claro) → REINTEGRAR monto + comisión.
     let restored5 = 0
     const { data: adjR5, error: adjR5Err } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { [railCol]: totalDebit } })
     if (!adjR5Err && !(adjR5 as any)?.error) {

@@ -889,13 +889,23 @@ Deno.serve(async (req) => {
       // cliente) o un admin real (JWT con role='admin' / AdminBypass). Un
       // cliente con anon-key + user_id ya NO puede drenar la tesorería.
       if (!caller.internal) return json(403, { error: 'forbidden', message: 'Operación restringida.' })
-      const { res, path } = await finityTry('withdrawalOrders', {
-        method: 'POST',
-        body: JSON.stringify(payload.data ?? {}),
-      })
+      // UNA sola ruta, la confirmada, y un solo intento. Antes un 404 hacía
+      // probar /v0/withdrawals, /payouts, /transfers… con el MISMO cuerpo:
+      // hasta 9 POST de plata por un envío. Y con 45 s de espera: Finity ya
+      // tardó 9 s en crear una cuenta, y cortar a los 15 s convertía un
+      // retiro lento pero hecho en un "falló" que se reembolsaba.
+      const path = WORKING['withdrawalOrders'] ?? '/v0/withdrawal-orders'
+      let res: Response
+      try {
+        res = await finityFetch(path, { method: 'POST', body: JSON.stringify(payload.data ?? {}), signal: AbortSignal.timeout(45000) })
+      } catch (e) {
+        const desconocido = (e as Error)?.name === 'TimeoutError' || (e as Error)?.name === 'AbortError' || !String((e as Error)?.message ?? '').startsWith('finity_auth_failed')
+        await logAudit(caller.userId!, 'finity.withdrawal.create', { status: 0, path, data: payload.data, error: String((e as Error)?.message ?? e).slice(0, 200), desenlaceDesconocido: desconocido })
+        return json(200, { ok: false, status: 0, path, desenlaceDesconocido: desconocido, error: desconocido ? 'sin_respuesta' : 'finity_auth_failed' })
+      }
       const data = await res.json().catch(() => null)
       await logAudit(caller.userId!, 'finity.withdrawal.create', { status: res.status, path, data: payload.data, response: data })
-      return json(200, { ok: res.ok, status: res.status, path, data })
+      return json(200, { ok: res.ok, status: res.status, path, data, ...(res.status >= 500 ? { desenlaceDesconocido: true } : {}) })
     }
 
     if (action === 'withdrawal_status') {
