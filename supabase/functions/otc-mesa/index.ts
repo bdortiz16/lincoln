@@ -308,7 +308,7 @@ type Cotizacion = {
 // proveedor no responde, el cierre se puede pedir igual (la mesa lo cotiza a
 // mano) pero se guarda SIN tasa y se dice por que — no se inventa un numero
 // que despues alguien va a leer como un precio acordado.
-async function tasaUsdCop(userId?: string): Promise<Cotizacion> {
+async function tasaUsdCop(userId?: string, side: string = 'vende_usdt'): Promise<Cotizacion> {
   const margenPct = await margenDe(userId)
   const vacia = (motivo: string, crudo?: string): Cotizacion =>
     ({ referencia: null, rate: null, margenPct, ajusteCop: 0, fuente: 'finity', motivo, crudo })
@@ -346,9 +346,18 @@ async function tasaUsdCop(userId?: string): Promise<Cotizacion> {
         JSON.stringify(d ?? null).slice(0, 400),
       )
     }
+    const ajusteCop = Number(d?.ajusteCop) > 0 ? Number(d.ajusteCop) : 0
+    // El margen va SIEMPRE a favor de Lincoin. Cuando el cliente VENDE USDT
+    // recibe COP = monto × tasa: la tasa baja. Cuando COMPRA USDT recibe
+    // USDT = COP ÷ tasa: la tasa tiene que SUBIR. Antes se bajaba en los dos
+    // casos y en la compra el cliente se llevaba el margen (y los puntos).
+    if (side === 'compra_usdt') {
+      const bruta = Number(d?.rateBruta) > 0 ? Number(d.rateBruta) : Number(referencia) + ajusteCop
+      const ref = bruta + ajusteCop
+      return { referencia: ref, rate: ref * (1 + margenPct / 100), margenPct, ajusteCop, fuente: 'finity' }
+    }
     const ref = Number(referencia)
     const rate = ref * (1 - margenPct / 100)
-    const ajusteCop = Number(d?.ajusteCop) > 0 ? Number(d.ajusteCop) : 0
     return { referencia: ref, rate, margenPct, ajusteCop, fuente: 'finity' }
   } catch (e: any) {
     return vacia(`no se pudo consultar la tasa: ${e?.message ?? 'error de red'}`)
@@ -525,6 +534,12 @@ Deno.serve(async (req) => {
 
     const caller = await validCaller(req, payload)
     if (!caller.ok) return json(401, { ok: false, error: 'unauthorized' })
+    // Con la llave pública + el id de otra persona se podían leer sus
+    // órdenes y comprobantes, escribirle mensajes o cancelarle cierres. Fuera
+    // de la cotización indicativa, todo exige una sesión real.
+    if (action !== 'cotizar' && !caller.viaJwt) {
+      return json(401, { ok: false, error: 'sesion_requerida', message: 'Tu sesión venció. Vuelve a iniciar sesión.' })
+    }
 
     // Acciones que solo puede hacer la mesa.
     const SOLO_MESA = new Set(['lista', 'tomar', 'fijar_tasa', 'completar', 'cancelar_mesa', 'notas', 'resumen', 'config_get', 'config_set'])
@@ -536,7 +551,7 @@ Deno.serve(async (req) => {
     if (action === 'cotizar') {
       const side = String(payload.side ?? 'vende_usdt')
       const monto = num(payload.fromAmount)
-      const c = await tasaUsdCop(String(payload.user_id ?? caller.userId ?? ''))
+      const c = await tasaUsdCop(String(caller.viaJwt ? caller.userId ?? '' : payload.user_id ?? ''), side)
       if (c.rate == null) {
         const emSinTasa = await estadoMesa()
         return json(200, {
@@ -621,7 +636,7 @@ Deno.serve(async (req) => {
 
       // La tasa se resuelve EN EL SERVIDOR. Si viniera del body, el cliente
       // elegiria su propio precio.
-      const c = await tasaUsdCop(uid)
+      const c = await tasaUsdCop(uid, side)
       const rate = c.rate
       const motivo = c.motivo
       const from_currency = side === 'vende_usdt' ? 'USDT' : 'COP'

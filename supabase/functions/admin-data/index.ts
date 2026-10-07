@@ -232,7 +232,11 @@ async function requireMfaSession(req: Request, userId: string | undefined): Prom
       return 'La verificación en dos pasos de esta sesión venció. Vuelve a iniciar sesión.'
     }
     return null
-  } catch { return null }
+  } catch {
+    // Si no se pudo comprobar, NO se deja pasar: una acción sensible con el
+    // 2FA sin verificar es peor que pedir que se reintente.
+    return 'No pudimos comprobar la verificación en dos pasos. Intenta de nuevo.'
+  }
 }
 
 // Exige el código 2FA del admin para ESTA operación concreta (no basta con
@@ -1559,6 +1563,13 @@ Deno.serve(async (req: Request) => {
         const factorId = String(selfServiceBody.factorId ?? 'local')
         const { data: u } = await db.from('users').select('raw_data').eq('id', selfServiceBody.userId).single()
         const raw = { ...((u as any)?.raw_data ?? {}) }
+        // Si YA tiene 2FA, reemplazarlo exige una sesión que lo haya pasado.
+        // Antes bastaba la contraseña: con ella se ponía un secreto propio,
+        // se "verificaba" y quedaba la sesión completa — el 2FA no protegía.
+        if (raw.mfaEnabled) {
+          const falta = await requireMfaSession(req, String(selfServiceBody.userId))
+          if (falta) return json({ error: 'Para cambiar tu verificación en dos pasos, primero ingresa con tu código actual.' }, 403)
+        }
         try { raw.totpSecretEnc = await encField(secret) }
         catch { return json({ error: 'La Bóveda no está disponible para guardar el secreto. No se activó el 2FA.' }, 503) }
         raw.mfaEnabled = true
@@ -1701,15 +1712,15 @@ Deno.serve(async (req: Request) => {
         // El código del correo es el paso indispensable. Este es el segundo:
         // solo se acepta si el del correo ya se superó en esta misma sesión,
         // así el orden no se puede saltar llamando directo a este paso.
+        // ⚠️ La verificación doble (correo + app) es SOLO para el panel de
+        // administración. Un cliente con 2FA entra con el código de su app,
+        // como siempre: exigirle un paso que su pantalla no tiene lo dejaba
+        // encerrado sin manera de avanzar.
+        const esAdmin = String((raw as any)?.__role ?? '') === 'admin' ||
+          await (async () => {
+            try { const { data } = await db.from('users').select('role').eq('id', uidV).single(); return (data as any)?.role === 'admin' } catch { return false }
+          })()
         if (String(selfServiceBody.stage ?? '') === 'login') {
-          // ⚠️ La verificación doble (correo + app) es SOLO para el panel de
-          // administración. Un cliente con 2FA entra con el código de su app,
-          // como siempre: exigirle un paso que su pantalla no tiene lo dejaba
-          // encerrado sin manera de avanzar.
-          const esAdmin = String((raw as any)?.__role ?? '') === 'admin' ||
-            await (async () => {
-              try { const { data } = await db.from('users').select('role').eq('id', uidV).single(); return (data as any)?.role === 'admin' } catch { return false }
-            })()
           if (esAdmin && !(await emailStagePassed(req, uidV))) {
             return json({ ok: false, error: 'email_step_missing', message: 'Completa la verificación anterior.' })
           }
@@ -1728,7 +1739,14 @@ Deno.serve(async (req: Request) => {
         }
 
         // Queda constancia de QUÉ sesión superó el 2FA: es lo que después
-        // exigen las acciones sensibles.
+        // exigen las acciones sensibles. Un ADMIN sin stage (re-verificación
+        // dentro del panel) solo REFRESCA una sesión que ya era completa: si
+        // no, llamar sin 'login' dejaba la sesión completa saltándose el
+        // correo y la llave.
+        if (esAdmin && (await requireMfaSession(req, uidV)) !== null) {
+          await marcarFactor(req, uidV, 'app')
+          return json({ ok: false, error: 'login_incompleto', message: 'Inicia sesión completa (correo, app y llave) antes de esta verificación.' })
+        }
         await rememberMfaSession(req, uidV)
         await marcarFactor(req, uidV, 'app')
         return json({ ok: true })

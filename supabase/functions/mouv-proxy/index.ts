@@ -1068,6 +1068,20 @@ async function finityPayoutAch(userId: string, recipient: Record<string, any>, a
       const acc = String(r?.account_number ?? r?.account?.account_number ?? '').replace(/\D/g, '')
       return !!acc && acc === accDigits
     })
+    // El id de destino que trae el pedido lo manda el navegador: tiene que
+    // ser la MISMA cuenta que se verificó (AML, documento). Si en Finity ese
+    // id es otra cuenta, el envío no sale — si no, se podía verificar una
+    // cuenta limpia y mandar la plata a otra.
+    if (fila && destId) {
+      const accFila = String(fila?.account_number ?? fila?.account?.account_number ?? '').replace(/\D/g, '')
+      const docFila = String(fila?.account_holder_id_number ?? fila?.account?.account_holder_id_number ?? '').replace(/\D/g, '')
+      const docPedido = String(recipient.documentNumber ?? '').replace(/\D/g, '')
+      const otraCuenta = (accFila && accDigits && accFila !== accDigits) || (docFila && docPedido && docFila !== docPedido && !docFila.startsWith(docPedido) && !docPedido.startsWith(docFila))
+      if (otraCuenta) {
+        await logAudit(userId, 'finity.payout.destino_no_coincide', { destId, accPedido: accDigits.slice(-4), accFila: accFila.slice(-4) })
+        return { ok: false, feeCop: 0, error: { step: 'destino', httpStatus: null, path: null, body: { message: 'La cuenta destino no coincide con el beneficiario verificado. Vuelve a inscribirlo.' } } }
+      }
+    }
     if (fila) {
       const textos = [fila.verification_status, fila.estado, fila.state, fila.status]
         .filter((v: unknown) => v !== undefined && v !== null && String(v).trim() !== '')
