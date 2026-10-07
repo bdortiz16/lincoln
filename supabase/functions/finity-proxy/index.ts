@@ -767,7 +767,13 @@ Deno.serve(async (req) => {
       //    cuenta y documento. Si está, se devuelve esa: ni se duplica ni se
       //    gasta una llamada de creación.
       if (accDigits) {
-        const lista = await listaCuentasFinity()
+        // La lista puede ser grande y lenta. Si no contesta en 12 s se sigue
+        // sin ella: antes su espera más la de la creación pasaban del límite
+        // del navegador y la inscripción se perdía sin dejar rastro.
+        const lista = await Promise.race([
+          listaCuentasFinity().catch(() => null),
+          new Promise<null>(r => setTimeout(() => r(null), 12_000)),
+        ]) ?? { ok: false, status: 0, path: '', data: null, cache: false }
         const filas = filasDe(lista.data)
         const docDigits = String(cuenta.account_holder_id_number ?? '').replace(/\D/g, '')
         const ya = filas.find((x: any) => {
@@ -789,17 +795,40 @@ Deno.serve(async (req) => {
           .gte('created_at', new Date(Date.now() - 10 * 60_000).toISOString())
           .order('created_at', { ascending: false }).limit(1).maybeSingle()
         const st = Number((previo as any)?.metadata?.status ?? 0)
-        if (previo && st >= 400) {
+        // Solo si se manda EXACTAMENTE lo mismo: si el cliente corrigió el
+        // documento o el nombre, eso sí tiene que llegar a Finity.
+        // jsonb reordena las claves: se compara con las claves ordenadas.
+        const canon = (v: any): any => Array.isArray(v) ? v.map(canon)
+          : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map(k => [k, canon(v[k])])) : v
+        const igual = (a: any, b: any) => JSON.stringify(canon(a ?? null)) === JSON.stringify(canon(b ?? null))
+        if (previo && st >= 400 && st !== 403 && st !== 429 && igual((previo as any).metadata?.enviado, payload.data)) {
           let dataPrev: any = null
           try { dataPrev = JSON.parse(String((previo as any).metadata?.respuesta ?? 'null')) } catch { /* */ }
           return json(200, { ok: false, status: st, repetida: true, path: (previo as any).metadata?.path ?? null, data: dataPrev ?? { message: 'Rechazada hace menos de 10 minutos; se reintenta más tarde.' } })
         }
       }
 
-      const { res, path } = await finityTry('externalAccounts', {
-        method: 'POST',
-        body: JSON.stringify(payload.data ?? {}),
-      })
+      // Una sola ruta y 40 s: Finity tarda ~9 s en crear y a veces mucho más
+      // (valida con el banco). Con el corte de 15 s de antes, la creación se
+      // abortaba a medias y no quedaba ni rastro en la auditoría.
+      const path = WORKING['externalAccounts'] ?? '/v0/external-accounts'
+      let res: Response
+      try {
+        res = await finityFetch(path, {
+          method: 'POST',
+          body: JSON.stringify(payload.data ?? {}),
+          signal: AbortSignal.timeout(40_000),
+        })
+      } catch (e) {
+        // Sin respuesta: Finity PUDO haberla creado. Se invalida la lista para
+        // que el próximo intento la encuentre ahí en vez de duplicarla.
+        listaCache = null
+        await logAudit(caller.userId!, 'finity.external_account.create', {
+          status: 0, path, ok: false, enviado: payload.data, idCreado: null,
+          error: String((e as Error)?.message ?? e).slice(0, 200),
+        })
+        return json(200, { ok: false, status: 0, path, sinRespuesta: true, data: { message: 'Finity no respondió a tiempo. Se reintenta solo en unos minutos.' } })
+      }
       const data = await res.json().catch(() => null)
       if (res.status === 403 || res.status === 429) await ponerFrenoInscripciones(res.status)
       if (res.ok) listaCache = null

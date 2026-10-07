@@ -1556,6 +1556,74 @@ Deno.serve(async (req: Request) => {
       // El cliente verifica el primer código localmente (prueba que configuró
       // bien su app) y aquí solo se almacena el secreto cifrado con la llave
       // del servidor. Se borra cualquier totpSecret plano previo.
+      // ── Mover saldo entre rieles del propio cliente (atómico) ────────────
+      // Antes el navegador calculaba los saldos nuevos y los guardaba con
+      // save_user, que solo acepta BAJADAS: al mover COP → Bre-B se aplicaba
+      // la resta y se perdía la suma, y un saldo viejo en memoria podía borrar
+      // un crédito reciente. Ahora es un solo ajuste en la base, con deltas.
+      if (selfServiceBody.action === 'mover_saldo' && selfServiceBody.userId) {
+        const uidM = String(selfServiceBody.userId)
+        if (!(await verifySelfOrAdmin(req, uidM))) return json({ error: 'No autorizado' }, 401)
+        const op = String(selfServiceBody.op ?? '')
+        const ahora = new Date().toISOString()
+        if (op === 'breb') {
+          const monto = Math.round(Number(selfServiceBody.amount))
+          const dir = String(selfServiceBody.dir ?? '')
+          if (!(monto > 0) || !['to_breb', 'from_breb'].includes(dir)) return json({ ok: false, error: 'Monto o dirección inválidos.' }, 400)
+          const delta = dir === 'to_breb' ? { COP: -monto, COP_BREB: monto } : { COP: monto, COP_BREB: -monto }
+          const { data: adj, error: eAdj } = await db.rpc('adjust_balances', { p_user_id: uidM, p_fiat: delta })
+          if (eAdj) return json({ ok: false, error: 'No se pudo mover el saldo. No se descontó nada.' }, 500)
+          if ((adj as any)?.error) return json({ ok: false, error: (adj as any).error === 'insufficient' ? 'Saldo insuficiente en la cuenta de origen.' : String((adj as any).error) }, 400)
+          const { data: u } = await db.from('users').select('full_name').eq('id', uidM).maybeSingle()
+          await db.from('transactions').insert({
+            user_id: uidM, type: 'breb_move', amount: monto, currency: 'COP', status: 'Completado',
+            raw_data: { initials: 'BB', title: dir === 'to_breb' ? 'Peso Lincoin → BreB Lincoin' : 'BreB Lincoin → Peso Lincoin', date: new Date().toLocaleDateString('es-CO'), createdAt: ahora, userName: (u as any)?.full_name ?? null, servidor: true },
+          })
+          return json({ ok: true, balances: (adj as any)?.balances ?? null })
+        }
+        if (op === 'consolidar_usdt') {
+          // Los montos salen de la BASE, no del navegador.
+          const { data: u } = await db.from('users').select('balances, full_name').eq('id', uidM).maybeSingle()
+          const bal = ((u as any)?.balances ?? {}) as Record<string, any>
+          const claves = ['USDT_TRON', 'USDT_BSC', 'USDT']
+          const delta: Record<string, number> = {}
+          let total = 0
+          for (const k of claves) { const v = Number(bal[k] ?? 0); if (v > 0) { delta[k] = -v; total += v } }
+          if (!(total > 0.000001)) return json({ ok: true, total: 0 })
+          delta.USD = Number(total.toFixed(8))
+          const { data: adj, error: eAdj } = await db.rpc('adjust_balances', { p_user_id: uidM, p_fiat: delta })
+          if (eAdj || (adj as any)?.error) return json({ ok: false, error: 'No se pudo consolidar. No se movió nada.' }, 500)
+          await db.from('transactions').insert({
+            user_id: uidM, type: 'load', amount: total, currency: 'USD', status: 'Completado',
+            raw_data: { initials: '₮', title: 'USDT acreditados al Dólar digital', date: new Date().toLocaleDateString('es-CO'), createdAt: ahora, userName: (u as any)?.full_name ?? null, source: 'USDT_CONSOLIDATION', servidor: true },
+          })
+          return json({ ok: true, total, balances: (adj as any)?.balances ?? null })
+        }
+        if (op === 'debitar_solicitud') {
+          // Débito de una solicitud que ya quedó registrada (p. ej. paso de
+          // saldo a ACH en aprobación): se exige la fila y que sea del cliente.
+          const txId = String(selfServiceBody.txId ?? '')
+          const { data: tx } = await db.from('transactions').select('id, user_id, amount, currency, status, raw_data').eq('id', txId).maybeSingle()
+          if (!tx || String((tx as any).user_id) !== uidM) return json({ ok: false, error: 'Solicitud no encontrada.' }, 404)
+          if ((tx as any).raw_data?.debitado) return json({ ok: true, ya: true })
+          const col = String(selfServiceBody.currency ?? 'COP')
+          const monto = Number((tx as any).amount ?? 0)
+          if (!(monto > 0)) return json({ ok: false, error: 'Monto inválido.' }, 400)
+          // Marca primero (CAS) para no debitar dos veces la misma solicitud.
+          const { data: marcada } = await db.from('transactions')
+            .update({ raw_data: { ...((tx as any).raw_data ?? {}), debitado: true, debitadoCol: col, debitadoAt: ahora } })
+            .eq('id', txId).filter('raw_data->>debitado', 'is', null).select('id')
+          if (!marcada?.length) return json({ ok: true, ya: true })
+          const { data: adj, error: eAdj } = await db.rpc('adjust_balances', { p_user_id: uidM, p_fiat: { [col]: -monto } })
+          if (eAdj || (adj as any)?.error) {
+            await db.from('transactions').update({ raw_data: { ...((tx as any).raw_data ?? {}) }, status: 'Rechazado' }).eq('id', txId)
+            return json({ ok: false, error: (adj as any)?.error === 'insufficient' ? 'Saldo insuficiente.' : 'No se pudo descontar el saldo.' }, 400)
+          }
+          return json({ ok: true, balances: (adj as any)?.balances ?? null })
+        }
+        return json({ ok: false, error: 'Operación inválida.' }, 400)
+      }
+
       if (selfServiceBody.action === 'mfa_set' && selfServiceBody.userId) {
         if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
         const secret = String(selfServiceBody.secret ?? '')

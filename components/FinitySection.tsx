@@ -37,7 +37,10 @@ export async function callFinity(action: string, userId: string, extra: Record<s
             // "unauthorized" — la inscripción no le llegaba a Finity.
             headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: await authVigente() },
             body: JSON.stringify({ action, user_id: userId, ...extra }),
-            signal: AbortSignal.timeout(30000),
+            // Inscribir una cuenta puede tardar: lista + creación en Finity
+            // (hasta ~55 s en el peor caso). Con 30 s el navegador cortaba
+            // antes que el servidor y la inscripción quedaba a medias.
+            signal: AbortSignal.timeout(action === 'create_external_account' ? 65000 : 30000),
         });
         const t = await r.text();
         if (!t) return { ok: false, status: r.status, error: 'Respuesta vacía del servicio (posible timeout). Reintenta.' };

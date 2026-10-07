@@ -992,6 +992,7 @@ export const ContactsSection: React.FC<{
         let finityId: string | null = null;
         let status: ContactStatus = isColombiaAch ? 'en_proceso' : 'aprobada';
         let lastError: string | null = null;
+        let regHttp: number | null = null;
         if (isColombiaAch) {
             try {
                 const rr = await callFinity('create_external_account', currentUser.id, {
@@ -1011,9 +1012,11 @@ export const ContactsSection: React.FC<{
                     status = st0 === 'rechazada' ? 'rechazada' : 'en_proceso';
                 } else {
                     lastError = `[registro bancario] HTTP ${rr?.status ?? '—'}: ${JSON.stringify(rr?.data ?? rr).slice(0, 260)}`;
+                    regHttp = Number(rr?.status) || 0;
                 }
             } catch (e: any) {
                 lastError = `[registro bancario] ${String(e?.message ?? e)}`;
+                regHttp = 0;
             }
         }
 
@@ -1032,6 +1035,9 @@ export const ContactsSection: React.FC<{
             status,
             createdAt: new Date().toISOString(),
             lastError,
+            // Si falló, el reintento automático respeta la espera según el
+            // código (5 min sin respuesta; 30 min si Finity frenó).
+            ...(regHttp !== null ? { regIntentoAt: new Date().toISOString(), regHttp } : {}),
             destKind: 'ach',
             ...dirB,
         };
@@ -1054,10 +1060,14 @@ export const ContactsSection: React.FC<{
     const [listRaw, setListRaw] = useState<any>(null);
     const isFinityAch = (c: MouvContact) =>
         (c.country ?? 'Colombia') === 'Colombia' && c.destKind !== 'breb' && c.accountKind !== 'wallet';
+    // Candado real (no el estado de React): el reloj de 15 s guarda una copia
+    // vieja de 'syncing' y podía lanzar dos sincronizaciones a la vez.
+    const syncEnCurso = useRef(false);
     const syncStatuses = async (silent = false) => {
-        if (!currentUser?.id || syncing) return;
+        if (!currentUser?.id || syncEnCurso.current) return;
         const targets = bankContacts.filter(isFinityAch);
         if (targets.length === 0) return;
+        syncEnCurso.current = true;
         setSyncing(true);
         try {
             // 0) Reintentar la inscripción de cuentas ACH que quedaron sin ID
@@ -1167,8 +1177,14 @@ export const ContactsSection: React.FC<{
                 setNotice({ ok: false, text: `El banco no devolvió cuentas para comparar. Respuesta (${r?.status ?? '—'}): ${JSON.stringify(r?.data ?? r).slice(0, 220)}` });
             }
         } catch { /* red flaky: se reintenta en la próxima visita */ }
+        syncEnCurso.current = false;
         setSyncing(false);
     };
+    // El reloj llama SIEMPRE a la versión más reciente (con los contactos
+    // actuales): antes usaba la de cuando arrancó y un contacto agregado
+    // después no se reintentaba hasta recargar la página.
+    const syncRef = useRef(syncStatuses);
+    syncRef.current = syncStatuses;
 
     // Sincronización automática con Finity al entrar: trae la aprobación de
     // las cuentas ACH que quedaron en verificación (y reintenta inscripciones
@@ -1198,7 +1214,7 @@ export const ContactsSection: React.FC<{
             // Con Finity, una vez por minuto (no cada 15 s): cada navegador
             // abierto sumaba llamadas a la misma ruta y Finity terminó
             // bloqueando las inscripciones.
-            if (vueltas % 4 === 0) await syncStatuses(true);
+            if (vueltas % 4 === 0) await syncRef.current(true);
             if (!vivo) return;
             refreshData?.();
         }, 15000);
