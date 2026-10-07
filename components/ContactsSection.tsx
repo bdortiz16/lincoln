@@ -92,8 +92,13 @@ const ESPERA_REGISTRO_MS = (http?: number | null): number => {
     if (http === 401 || http === 403 || http === 429) return 30 * 60_000;
     return 5 * 60_000;
 };
-function puedeReintentarRegistro(c: { regIntentoAt?: string | null; regHttp?: number | null }): boolean {
+function puedeReintentarRegistro(c: { regIntentoAt?: string | null; regHttp?: number | null; lastError?: string | null; accountNumber?: string }): boolean {
     if (!c.regIntentoAt) return true;
+    // Rechazada por guiones o espacios en el número de cuenta: ahora se envía
+    // solo con dígitos, así que el reintento ya no es el mismo envío.
+    const num = String(c.accountNumber ?? '');
+    if (c.regHttp === 400 && /bank_account_number/i.test(c.lastError ?? '') && /\D/.test(num)
+        && /^\d{6,20}$/.test(num.replace(/\D/g, ''))) return true;
     const t = new Date(c.regIntentoAt).getTime();
     return !Number.isFinite(t) || Date.now() - t >= ESPERA_REGISTRO_MS(c.regHttp);
 }
@@ -183,7 +188,9 @@ const buildMouvAccountBody = (c: { name: string; docType: string; docNumber: str
     account: {
         geo: 'CO',
         account_type: c.accountType,
-        account_number: c.accountNumber,
+        // Solo dígitos: Finity rechaza (400) "bank_account_number debe
+        // contener solo dígitos (6-20 caracteres)" si va con guiones o espacios.
+        account_number: String(c.accountNumber ?? '').replace(/\D/g, ''),
         financial_institution_code: BANK_CODES_CO[c.bank] ?? '',
         account_holder_fullname: c.name,
         // Enum de Mouv: CC | CE | NIT (PAS no existe → se envía como CE)
@@ -886,7 +893,7 @@ export const ContactsSection: React.FC<{
 
     const saveContact = async () => {
         if (!currentUser?.id || saving) return;
-        const f = form;
+        let f = form;
 
         // ── Wallet (solo USD): validar dirección y guardar aprobada ──
         if (f.accountKind === 'wallet') {
@@ -968,6 +975,11 @@ export const ContactsSection: React.FC<{
         if (!f.name.trim() || !f.docNumber.trim() || !f.bank.trim() || !f.accountNumber.trim()) {
             setNotice({ ok: false, text: 'Completa nombre, documento, banco y número de cuenta.' });
             return;
+        }
+        if (f.country === 'Colombia') {
+            const nd = f.accountNumber.replace(/\D/g, '');
+            if (nd.length < 6 || nd.length > 20) { setNotice({ ok: false, text: 'El número de cuenta debe tener entre 6 y 20 dígitos, sin guiones ni espacios.' }); return; }
+            f = { ...f, accountNumber: nd };
         }
         // Un NIT va completo: 10 dígitos, con el de verificación, y que cuadre.
         if (f.docType === 'NIT') {
@@ -1077,8 +1089,13 @@ export const ContactsSection: React.FC<{
             const pendingReg = bankContacts
                 .filter(c => isFinityAch(c) && !(c.finityId ?? c.mouvId) && puedeReintentarRegistro(c))
                 .slice(0, 3);
-            for (const c of pendingReg) {
+            for (const c0 of pendingReg) {
                 const intentoAt = new Date().toISOString();
+                // El número queda guardado ya limpio: así ese reintento por
+                // guiones ocurre una sola vez, nunca en bucle.
+                const numLimpio = String(c0.accountNumber ?? '').replace(/\D/g, '');
+                const c = numLimpio && numLimpio !== c0.accountNumber ? { ...c0, accountNumber: numLimpio } : c0;
+                if (c !== c0) cambiosReg[c.id] = { accountNumber: numLimpio };
                 try {
                     const rr = await callFinity('create_external_account', currentUser.id, {
                         data: buildMouvAccountBody(c),
@@ -1086,13 +1103,13 @@ export const ContactsSection: React.FC<{
                     const dd = (rr?.data ?? {}) as any;
                     const fid = rr?.id ?? dd.id ?? dd.external_account_id ?? dd.account_id ?? dd?.account?.id ?? dd?.data?.id ?? null;
                     if (rr?.ok && fid) {
-                        cambiosReg[c.id] = { mouvId: String(fid), finityId: String(fid), status: estadoDeFila(dd) === 'rechazada' ? 'rechazada' : 'en_proceso', lastError: null, regIntentoAt: intentoAt, regHttp: Number(rr?.status) || 201 };
+                        cambiosReg[c.id] = { ...cambiosReg[c.id], mouvId: String(fid), finityId: String(fid), status: estadoDeFila(dd) === 'rechazada' ? 'rechazada' : 'en_proceso', lastError: null, regIntentoAt: intentoAt, regHttp: Number(rr?.status) || 201 };
                     } else {
                         // Guardar el rechazo de Finity — visible en el detalle del contacto
-                        cambiosReg[c.id] = { lastError: `[${new Date().toLocaleTimeString('es-CO')}] HTTP ${rr?.status ?? '—'} en ${rr?.path ?? '¿?'}: ${JSON.stringify(rr?.data ?? rr).slice(0, 260)}`, regIntentoAt: intentoAt, regHttp: Number(rr?.status) || 0 };
+                        cambiosReg[c.id] = { ...cambiosReg[c.id], lastError: `[${new Date().toLocaleTimeString('es-CO')}] HTTP ${rr?.status ?? '—'} en ${rr?.path ?? '¿?'}: ${JSON.stringify(rr?.data ?? rr).slice(0, 260)}`, regIntentoAt: intentoAt, regHttp: Number(rr?.status) || 0 };
                     }
                 } catch (e: any) {
-                    cambiosReg[c.id] = { lastError: String(e?.message ?? e), regIntentoAt: intentoAt, regHttp: 0 };
+                    cambiosReg[c.id] = { ...cambiosReg[c.id], lastError: String(e?.message ?? e), regIntentoAt: intentoAt, regHttp: 0 };
                 }
             }
             if (Object.keys(cambiosReg).length) {
@@ -1915,7 +1932,7 @@ export const ContactsSection: React.FC<{
                         </div>
                         <div>
                             <label style={LBL}>Número de cuenta</label>
-                            <input value={form.accountNumber} onChange={e => setForm(fm => ({ ...fm, accountNumber: e.target.value.replace(/[^\d-]/g, '') }))} inputMode="numeric" style={INP} />
+                            <input value={form.accountNumber} onChange={e => setForm(fm => ({ ...fm, accountNumber: fm.country === 'Colombia' ? e.target.value.replace(/\D/g, '').slice(0, 20) : e.target.value.replace(/[^\d-]/g, '') }))} inputMode="numeric" style={INP} />
                         </div>
                         {form.country === 'Colombia' && (
                             <>
