@@ -222,13 +222,29 @@
         // solo trae lo que faltó.
         var CLAVE = 'lc_boot_retry', MAX = 4, recargando = false;
         function intentos() { try { return +(sessionStorage.getItem(CLAVE) || 0); } catch (x) { return MAX; } }
+        // Copia MALA en la caché del navegador: si alguna vez el servidor
+        // respondió a un /assets/ con la página HTML (archivo de otra versión,
+        // justo durante un despliegue) y esa respuesta quedó guardada como
+        // "inmutable", recargar no sirve: el navegador vuelve a usar la copia
+        // mala sin preguntar. Se piden de nuevo a la red todos los archivos de
+        // la app con cache:'reload', que reemplaza la copia guardada, y recién
+        // después se recarga.
+        function refrescarCache() {
+          var urls = [];
+          var els = document.querySelectorAll('script[src*="/assets/"], link[href*="/assets/"]');
+          for (var i = 0; i < els.length; i++) urls.push(els[i].src || els[i].href);
+          if (!window.fetch || !window.Promise || !urls.length) return Promise.resolve();
+          var todos = Promise.all(urls.map(function (u) { return fetch(u, { cache: 'reload', credentials: 'same-origin' }).then(function (r) { return r.arrayBuffer(); }).catch(function () { /* */ }); }));
+          return Promise.race([todos, new Promise(function (ok) { setTimeout(ok, 25000); })]);
+        }
+        window.__lcRefrescar = refrescarCache;
         function reintentar() {
           if (recargando) return;
           var n = intentos();
           if (n >= MAX) return;
           recargando = true;
           try { sessionStorage.setItem(CLAVE, String(n + 1)); } catch (x) { return; }
-          setTimeout(function () { location.reload(); }, 1500);
+          refrescarCache().then(function () { setTimeout(function () { location.reload(); }, 300); });
         }
         window.addEventListener('error', function (e) {
           var t = e && e.target;
@@ -267,7 +283,7 @@
             + '<p style="font-size:15px;font-weight:700;margin:16px 0 6px">La página no terminó de cargar</p>'
             + '<p style="font-size:13px;color:#878E88;margin:0 0 14px;line-height:1.5">' + (intentos() >= MAX ? 'Se intentó ' + MAX + ' veces. Tu conexión está cortando la descarga: prueba con otra red (datos móviles u otro Wi-Fi). Si sigue igual, envía una captura de esta pantalla a soporte.' : 'Recarga la página. Si sigue igual, envía una captura de esta pantalla a soporte.') + '</p>'
             + '<pre id="lc-fallo-det" style="font-size:11px;color:rgba(244,244,242,0.6);background:#121413;border-radius:10px;padding:10px;white-space:pre-wrap;word-break:break-all;max-height:180px;overflow:auto;margin:0 0 14px"></pre>'
-            + '<button onclick="try{sessionStorage.removeItem(\'lc_boot_retry\')}catch(x){};location.reload()" style="width:100%;padding:12px;border:none;border-radius:10px;background:#F4F4F2;color:#0C0E0D;font-weight:700;font-size:14px;cursor:pointer">Recargar</button></div>';
+            + '<button onclick="try{sessionStorage.removeItem(\'lc_boot_retry\')}catch(x){};this.disabled=true;this.textContent=\'Recargando…\';(window.__lcRefrescar?window.__lcRefrescar():Promise.resolve()).then(function(){location.reload()})"style="width:100%;padding:12px;border:none;border-radius:10px;background:#F4F4F2;color:#0C0E0D;font-weight:700;font-size:14px;cursor:pointer">Recargar</button></div>';
           document.body.appendChild(d);
           // Prueba directa del archivo principal: cuánto llega, cada segundo.
           // Distingue "lento", "detenido" y "el servidor respondió con error".

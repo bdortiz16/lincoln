@@ -7,6 +7,22 @@ const WEBHOOKS = { '/webhooks/gowd': 'gowd-webhook', '/webhooks/resend': 'resend
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    // Un /assets/ que no existe (de otra versión) NO puede responder con la
+    // página: el navegador la guardaba un año como si fuera el código de la
+    // app y la página quedaba rota en ese celular aunque se recargara.
+    if (url.pathname.startsWith('/assets/')) {
+      const res = await env.ASSETS.fetch(request);
+      const tipo = res.headers.get('content-type') || '';
+      if (res.status === 200 && tipo.includes('text/html')) {
+        return new Response('Not found', { status: 404, headers: { 'content-type': 'text/plain', 'cache-control': 'no-store' } });
+      }
+      if (!res.ok && res.status !== 304) {
+        const h = new Headers(res.headers);
+        h.set('cache-control', 'no-store');
+        return new Response(res.body, { status: res.status, headers: h });
+      }
+      return res;
+    }
     const funcion = WEBHOOKS[url.pathname];
     if (!funcion) return env.ASSETS.fetch(request);
     const headers = new Headers(request.headers);
