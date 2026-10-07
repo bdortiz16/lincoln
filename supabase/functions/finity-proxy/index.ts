@@ -716,8 +716,12 @@ Deno.serve(async (req) => {
     }
 
     if (action === 'external_accounts') {
-      const { res, path } = await finityTry('externalAccounts')
-      const data = await res.json().catch(() => null)
+      // La lista es UNA sola (Finity es una cuenta de empresa): se sirve de
+      // caché 45 s para todos. Antes cada navegador abierto la pedía cada
+      // 15 s, cientos de llamadas por hora a la misma ruta de Finity.
+      const lista = await listaCuentasFinity()
+      if (lista.cache) return json(200, { ok: lista.ok, status: lista.status, path: lista.path, data: lista.data, cache: true })
+      const { res, path, data } = { res: { ok: lista.ok, status: lista.status }, path: lista.path, data: lista.data }
       // Se audita un RESUMEN de los estados que devuelve el proveedor: qué
       // campos trae cada cuenta y con qué valor. Sin esto no se puede resolver
       // una discrepancia entre su portal y Lincoin más que adivinando qué
@@ -748,11 +752,57 @@ Deno.serve(async (req) => {
     }
 
     if (action === 'create_external_account') {
+      const cuenta = (payload.data as any)?.account ?? {}
+      const accDigits = String(cuenta.account_number ?? '').replace(/\D/g, '')
+
+      // 1) FRENO GENERAL. Si Finity ya contestó 403/429 hace poco, no se le
+      //    vuelve a pegar hasta que pase la espera: insistir es justo lo que
+      //    hace que un proveedor bloquee (pasó el 6 y el 7 de octubre).
+      const freno = await leerFrenoInscripciones()
+      if (freno) {
+        return json(200, { ok: false, status: 429, frenado: true, path: null, data: { message: `Inscripciones en pausa hasta ${new Date(freno.hasta).toISOString()} (Finity respondió ${freno.http}). Se reintenta sola.` } })
+      }
+
+      // 2) ¿YA ESTÁ INSCRITA? Se busca en la lista (de caché) por número de
+      //    cuenta y documento. Si está, se devuelve esa: ni se duplica ni se
+      //    gasta una llamada de creación.
+      if (accDigits) {
+        const lista = await listaCuentasFinity()
+        const filas = filasDe(lista.data)
+        const docDigits = String(cuenta.account_holder_id_number ?? '').replace(/\D/g, '')
+        const ya = filas.find((x: any) => {
+          const n = String(x?.account_number ?? x?.account?.account_number ?? '').replace(/\D/g, '')
+          if (!n || n !== accDigits) return false
+          const d = String(x?.account_holder_id_number ?? x?.account?.account_holder_id_number ?? '').replace(/\D/g, '')
+          return !docDigits || !d || d === docDigits
+        })
+        if (ya) return json(200, { ok: true, status: 200, path: lista.path, data: ya, reutilizada: true })
+      }
+
+      // 3) La MISMA cuenta rechazada hace menos de 10 min no se vuelve a
+      //    mandar: la respuesta va a ser la misma.
+      if (accDigits) {
+        const { data: previo } = await db.from('admin_actions')
+          .select('created_at, metadata')
+          .eq('action', 'finity.external_account.create')
+          .filter('metadata->enviado->account->>account_number', 'eq', String(cuenta.account_number ?? ''))
+          .gte('created_at', new Date(Date.now() - 10 * 60_000).toISOString())
+          .order('created_at', { ascending: false }).limit(1).maybeSingle()
+        const st = Number((previo as any)?.metadata?.status ?? 0)
+        if (previo && st >= 400) {
+          let dataPrev: any = null
+          try { dataPrev = JSON.parse(String((previo as any).metadata?.respuesta ?? 'null')) } catch { /* */ }
+          return json(200, { ok: false, status: st, repetida: true, path: (previo as any).metadata?.path ?? null, data: dataPrev ?? { message: 'Rechazada hace menos de 10 minutos; se reintenta más tarde.' } })
+        }
+      }
+
       const { res, path } = await finityTry('externalAccounts', {
         method: 'POST',
         body: JSON.stringify(payload.data ?? {}),
       })
       const data = await res.json().catch(() => null)
+      if (res.status === 403 || res.status === 429) await ponerFrenoInscripciones(res.status)
+      if (res.ok) listaCache = null
       // Se audita también LA RESPUESTA, no solo lo enviado. Sin esto, una
       // cuenta que se quedaba "en validación" no se podía diagnosticar: había
       // registro de lo que se mandó y ninguno de lo que contestó el banco.
@@ -1281,6 +1331,56 @@ Deno.serve(async (req) => {
 })
 
 // Toda dispersión queda en el audit trail (admin_actions) — plata que sale.
+
+// ─── Protección de la ruta de cuentas externas ─────────────────────────────
+// Finity bloqueó la creación de cuentas (403) después de ráfagas de llamadas.
+// Tres frenos, todos del lado del servidor (el navegador de cada cliente no
+// sabe lo que hacen los demás):
+//   · la lista se sirve de caché 45 s para todos;
+//   · antes de crear se mira si ya existe en esa lista;
+//   · un 403/429 pone en pausa TODAS las creaciones 30 min (system_config),
+//     y se avisa a los admins una sola vez.
+let listaCache: { at: number; ok: boolean; status: number; path: string; data: any } | null = null
+async function listaCuentasFinity(): Promise<{ ok: boolean; status: number; path: string; data: any; cache: boolean }> {
+  if (listaCache && Date.now() - listaCache.at < 45_000) return { ...listaCache, cache: true }
+  const { res, path } = await finityTry('externalAccounts')
+  const data = await res.json().catch(() => null)
+  if (res.ok) listaCache = { at: Date.now(), ok: true, status: res.status, path, data }
+  return { ok: res.ok, status: res.status, path, data, cache: false }
+}
+function filasDe(d: any): any[] {
+  if (Array.isArray(d)) return d
+  for (const k of ['data', 'results', 'items', 'accounts', 'external_accounts']) if (Array.isArray(d?.[k])) return d[k]
+  return []
+}
+const FRENO_KEY = 'finity_inscripciones_freno'
+async function leerFrenoInscripciones(): Promise<{ hasta: number; http: number } | null> {
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', FRENO_KEY).maybeSingle()
+    const v = data?.value ? JSON.parse(data.value) : null
+    return v && Number(v.hasta) > Date.now() ? { hasta: Number(v.hasta), http: Number(v.http) } : null
+  } catch { return null }
+}
+async function ponerFrenoInscripciones(http: number) {
+  const ahora = Date.now()
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', FRENO_KEY).maybeSingle()
+    const prev = data?.value ? JSON.parse(data.value) : null
+    // Cada bloqueo seguido dobla la espera: 30 min, 1 h, 2 h… hasta 6 h.
+    const seguidos = prev && ahora - Number(prev.hasta ?? 0) < 60 * 60_000 ? Number(prev.seguidos ?? 0) + 1 : 0
+    const espera = Math.min(30 * 60_000 * 2 ** seguidos, 6 * 3600_000)
+    await db.from('system_config').upsert({ key: FRENO_KEY, value: JSON.stringify({ hasta: ahora + espera, http, desde: ahora, seguidos }) }, { onConflict: 'key' })
+    if (!prev || Number(prev.hasta ?? 0) < ahora) {
+      await fetch(`${SUPABASE_URL}/functions/v1/push`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+        body: JSON.stringify({ action: 'enviar', rol: 'admin', titulo: 'Finity bloqueó las inscripciones', cuerpo: `Finity respondió ${http} al inscribir cuentas. Lincoin pausó los intentos ${Math.round(espera / 60000)} min. Inscríbelas a mano en el portal mientras tanto.`, tag: 'finity-freno', url: '/admin' }),
+        signal: AbortSignal.timeout(8000),
+      }).catch(() => {})
+    }
+  } catch { /* el freno es una protección; si falla, no tumba la llamada */ }
+}
+
 async function logAudit(userId: string, action: string, metadata: Record<string, unknown>) {
   try {
     const { data: u } = await db.from('users').select('email, admin_role').eq('id', userId).maybeSingle()

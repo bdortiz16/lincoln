@@ -1195,7 +1195,10 @@ export const ContactsSection: React.FC<{
             if (!vivo) return;
             await leerTusdatos(uid);
             if (!vivo) return;
-            await syncStatuses(true);
+            // Con Finity, una vez por minuto (no cada 15 s): cada navegador
+            // abierto sumaba llamadas a la misma ruta y Finity terminó
+            // bloqueando las inscripciones.
+            if (vueltas % 4 === 0) await syncStatuses(true);
             if (!vivo) return;
             refreshData?.();
         }, 15000);
