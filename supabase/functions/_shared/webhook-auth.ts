@@ -69,10 +69,37 @@ export function autorizarWebhook(req: Request): ResultadoAuth {
  * Deja constancia del rechazo — un webhook legítimo mal configurado tiene que
  * verse, no desaparecer.
  */
+// ¿Supabase acepta este token como llave de servicio? Se le pregunta a la
+// API de administración de Auth, que solo responde a una llave de servicio
+// (el JWT service_role de siempre o la nueva sb_secret_…). Así un webhook
+// que manda la llave en el otro formato del que tiene la función no deja a
+// los clientes sin correos, y nadie sin esa llave pasa: la valida Supabase.
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
+const validadas = new Map<string, number>()
+async function esLlaveDeServicio(token: string): Promise<boolean> {
+  if (!token || token.length < 20 || !SUPABASE_URL) return false
+  const hit = validadas.get(token)
+  if (hit && Date.now() - hit < 10 * 60_000) return true
+  try {
+    const r = await fetch(`${SUPABASE_URL}/auth/v1/admin/users?page=1&per_page=1`, {
+      headers: { apikey: token, Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(5000),
+    })
+    await r.body?.cancel()
+    if (r.ok) { validadas.set(token, Date.now()); return true }
+  } catch { /* sin respuesta: no se da por válida */ }
+  return false
+}
+
 export async function exigirWebhook(
   req: Request, fuente: string, db: any,
 ): Promise<Response | null> {
-  const r = autorizarWebhook(req)
+  let r = autorizarWebhook(req)
+  if (!r.ok) {
+    const token = (req.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
+      || (req.headers.get('apikey') ?? '').trim()
+    if (await esLlaveDeServicio(token)) r = { ok: true, via: 'service_key_validada' }
+  }
   if (r.ok) return null
   try {
     await db.from('audit_log').insert({
