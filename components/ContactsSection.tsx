@@ -998,7 +998,7 @@ export const ContactsSection: React.FC<{
                     data: buildMouvAccountBody({ ...f, name: f.name.trim(), docNumber: limpiarDoc(f.docNumber, f.docType), accountNumber: f.accountNumber.trim() }),
                 });
                 const dd = (rr?.data ?? {}) as any;
-                const fid = dd.id ?? dd.external_account_id ?? dd.account_id ?? dd?.account?.id ?? null;
+                const fid = rr?.id ?? dd.id ?? dd.external_account_id ?? dd.account_id ?? dd?.account?.id ?? dd?.data?.id ?? null;
                 if (rr?.ok && fid) {
                     finityId = String(fid);
                     // La respuesta de CREACIÓN puede venir con un estado
@@ -1074,7 +1074,7 @@ export const ContactsSection: React.FC<{
                         data: buildMouvAccountBody(c),
                     });
                     const dd = (rr?.data ?? {}) as any;
-                    const fid = dd.id ?? dd.external_account_id ?? dd.account_id ?? dd?.account?.id ?? null;
+                    const fid = rr?.id ?? dd.id ?? dd.external_account_id ?? dd.account_id ?? dd?.account?.id ?? dd?.data?.id ?? null;
                     if (rr?.ok && fid) {
                         cambiosReg[c.id] = { mouvId: String(fid), finityId: String(fid), status: estadoDeFila(dd) === 'rechazada' ? 'rechazada' : 'en_proceso', lastError: null, regIntentoAt: intentoAt, regHttp: Number(rr?.status) || 201 };
                     } else {

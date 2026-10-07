@@ -990,7 +990,7 @@ async function finityPayoutAch(userId: string, recipient: Record<string, any>, a
       },
     }
     const ea = await finityCall('create_external_account', userId, body)
-    destId = ea?.data?.id ?? ea?.data?.external_account_id ?? ea?.data?.account_id ?? null
+    destId = ea?.id ?? ea?.data?.id ?? ea?.data?.external_account_id ?? ea?.data?.account_id ?? ea?.data?.data?.id ?? null
 
     // La cuenta YA estaba inscrita en Finity. Pasaba siempre que un intento
     // anterior creó el destino y luego falló el retiro: el id no se guardaba

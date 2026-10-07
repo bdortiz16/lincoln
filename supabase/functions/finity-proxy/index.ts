@@ -776,7 +776,7 @@ Deno.serve(async (req) => {
           const d = String(x?.account_holder_id_number ?? x?.account?.account_holder_id_number ?? '').replace(/\D/g, '')
           return !docDigits || !d || d === docDigits
         })
-        if (ya) return json(200, { ok: true, status: 200, path: lista.path, data: ya, reutilizada: true })
+        if (ya) return json(200, { ok: true, status: 200, path: lista.path, data: ya, id: idDeCuenta(ya), reutilizada: true })
       }
 
       // 3) La MISMA cuenta rechazada hace menos de 10 min no se vuelve a
@@ -806,14 +806,18 @@ Deno.serve(async (req) => {
       // Se audita también LA RESPUESTA, no solo lo enviado. Sin esto, una
       // cuenta que se quedaba "en validación" no se podía diagnosticar: había
       // registro de lo que se mandó y ninguno de lo que contestó el banco.
-      const idCreado = (data as any)?.id ?? (data as any)?.external_account_id ?? (data as any)?.account_id ?? (data as any)?.account?.id ?? null
+      const idCreado = idDeCuenta(data)
       await logAudit(caller.userId!, 'finity.external_account.create', {
         status: res.status, path, ok: res.ok,
         enviado: payload.data,
         idCreado,
         respuesta: JSON.stringify(data ?? {}).slice(0, 600),
       })
-      return json(200, { ok: res.ok, status: res.status, path, data })
+      // El id va también arriba, ya resuelto: si Finity lo anida
+      // ({ data: { id } }) y el navegador no lo encuentra, cree que la cuenta
+      // sigue sin inscribir y la vuelve a crear — así quedaron cuentas
+      // creadas 20 y 41 veces y Finity bloqueó la API.
+      return json(200, { ok: res.ok, status: res.status, path, data, id: idCreado })
     }
 
     // Des-inscribir una cuenta destino en Finity al eliminar el contacto.
@@ -1332,6 +1336,13 @@ Deno.serve(async (req) => {
 
 // Toda dispersión queda en el audit trail (admin_actions) — plata que sale.
 
+
+// El id de una cuenta externa, venga como venga en la respuesta de Finity.
+function idDeCuenta(d: any): string | null {
+  const c = [d?.id, d?.external_account_id, d?.account_id, d?.account?.id, d?.data?.id, d?.data?.external_account_id, d?.data?.account?.id, d?.result?.id]
+  const v = c.find(x => x != null && String(x).trim() !== '')
+  return v != null ? String(v) : null
+}
 // ─── Protección de la ruta de cuentas externas ─────────────────────────────
 // Finity bloqueó la creación de cuentas (403) después de ráfagas de llamadas.
 // Tres frenos, todos del lado del servidor (el navegador de cada cliente no
