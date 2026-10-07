@@ -753,6 +753,18 @@ Deno.serve(async (req) => {
 
     if (action === 'create_external_account') {
       const cuenta = (payload.data as any)?.account ?? {}
+      // Limpieza en el SERVIDOR, venga de donde venga (app vieja en caché,
+      // panel admin): Finity exige solo dígitos, de 6 a 20. Guiones, puntos
+      // y espacios se quitan aquí, y lo que no alcanza ni se envía.
+      if ((payload.data as any)?.account) {
+        cuenta.account_number = String(cuenta.account_number ?? '').replace(/\D/g, '')
+        if (['CC', 'NIT'].includes(String(cuenta.account_holder_id_type ?? '').toUpperCase())) {
+          cuenta.account_holder_id_number = String(cuenta.account_holder_id_number ?? '').replace(/\D/g, '')
+        }
+        if (cuenta.account_number.length < 6 || cuenta.account_number.length > 20) {
+          return json(200, { ok: false, status: 400, path: null, data: { message: `El número de cuenta debe tener entre 6 y 20 dígitos (tiene ${cuenta.account_number.length}). Revísalo con el banco.` } })
+        }
+      }
       const accDigits = String(cuenta.account_number ?? '').replace(/\D/g, '')
 
       // 1) FRENO GENERAL. Si Finity ya contestó 403/429 hace poco, no se le
