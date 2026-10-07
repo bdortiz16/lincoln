@@ -883,6 +883,21 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
     await marcar({ factura_estado: 'omitida', factura_error: 'Facturación pausada antes de enviar el documento a Siigo.' })
     return { ok: true, estado: 'omitida' }
   }
+  // CANDADO, igual que en emitirComision: el automático y un «reintentar» a
+  // mano (o un segundo aviso de la misma operación) no pueden mandar dos
+  // documentos a la DIAN por el mismo comprobante. Un 'emitiendo' de más de
+  // 3 min se da por caído.
+  {
+    const hace3 = new Date(Date.now() - 180000).toISOString()
+    const { data: tomado, error: eLock } = await db.from('comprobantes')
+      .update({ factura_estado: 'emitiendo', factura_error: null, factura_at: new Date().toISOString() })
+      .eq('folio', folio)
+      .or(`factura_estado.is.null,factura_estado.in.(error,omitida,pendiente,anulada),and(factura_estado.eq.emitiendo,factura_at.lt.${hace3})`)
+      .select('folio')
+    if (!eLock && Array.isArray(tomado) && tomado.length === 0) {
+      return { ok: false, error: 'Este documento ya se está emitiendo o ya salió. Espera un momento y recarga.' }
+    }
+  }
   const RUTAS_DS = ['/v1/purchase-support-documents', '/v1/purchases']
   const intentos: { ruta: string; status: number; respuesta: any }[] = []
   let r: Resp
@@ -917,7 +932,11 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
       const util = [...intentos].reverse().find(i => i.status !== 404 && i.status !== 405) ?? intentos[0]
       r = { ok: false, status: util.status, data: typeof util.respuesta === 'object' ? util.respuesta : null, texto: typeof util.respuesta === 'string' ? util.respuesta : JSON.stringify(util.respuesta ?? '') }
     }
-    let e = `Siigo rechazó ${clase === 'FV' ? 'la factura' : 'el documento soporte'} — ${motivoDe(r)}`
+    let e = r.status === 0
+      // Sin respuesta: Siigo pudo haberlo creado. Antes de reintentar hay que
+      // buscarlo en Siigo, o sale duplicado ante la DIAN.
+      ? `Siigo no respondió a tiempo: ${clase === 'FV' ? 'la factura' : 'el documento soporte'} PUDO haberse creado. Revisa en Siigo antes de reintentar.`
+      : `Siigo rechazó ${clase === 'FV' ? 'la factura' : 'el documento soporte'} — ${motivoDe(r)}`
     // Si el problema es el tipo de comprobante, decir cuál se mandó y cuáles
     // otros hay: la lista de Siigo trae varios y el id de uno no sirve para
     // el endpoint del otro.

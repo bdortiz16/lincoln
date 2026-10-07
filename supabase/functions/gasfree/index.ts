@@ -829,10 +829,33 @@ async function writeDurableIndex(userId: string, email: string | null | undefine
   if (email) { try { await saveSystemConfig(idxKeyForEmail(email), String(idx)) } catch { /* no bloquea */ } }
 }
 
+// El correo que ancla la billetera sale de Supabase Auth, NO de
+// public.users.email: esa columna la puede editar el propio usuario, y con
+// poner el correo de otro cliente se quedaba con su billetera (su llave, sus
+// depósitos y su historial). El correo de Auth solo cambia con confirmación.
+const correoCache = new Map<string, { e: string | null; at: number }>()
+async function correoVerificado(userId: string): Promise<string | null> {
+  const hit = correoCache.get(userId)
+  if (hit && Date.now() - hit.at < 5 * 60_000) return hit.e
+  try {
+    const { data } = await db.auth.admin.getUserById(userId)
+    const e = String(data?.user?.email ?? '').trim().toLowerCase() || null
+    correoCache.set(userId, { e, at: Date.now() })
+    return e
+  } catch { return null }
+}
+// ¿Ese índice ya es la billetera de OTRA persona? (almacén durable por id)
+async function indiceDeOtro(userId: string, idx: number): Promise<boolean> {
+  try {
+    const { data } = await db.from('system_config').select('key').like('key', 'gasfree_idx_u:%').eq('value', String(idx)).limit(5)
+    return (data ?? []).some((r: any) => String(r.key) !== idxKeyForUser(userId))
+  } catch { return false }
+}
+
 async function userIndex(userId: string): Promise<number> {
   const { data: primary } = await db.from('users').select('id, email, raw_data').eq('id', userId).maybeSingle()
   const praw = (primary?.raw_data ?? {}) as Record<string, any>
-  const email = primary?.email ?? null
+  const email = await correoVerificado(userId)
 
   // FUENTE DE VERDAD #1: el almacén durable (system_config, no escribible por el
   // cliente). Si existe, MANDA — sobrevive a cualquier borrado de raw_data, así
@@ -854,16 +877,29 @@ async function userIndex(userId: string): Promise<number> {
   //    La divergencia admin↔cliente ahora se corrige de forma DELIBERADA con
   //    el botón "Fijar wallet real" (pin_address), no automáticamente.
   if (typeof praw.gasfreeIndex === 'number') {
-    await writeDurableIndex(userId, email, praw.gasfreeIndex)
-    return praw.gasfreeIndex
+    // raw_data lo puede escribir el cliente: un índice que ya es de otra
+    // persona no se acepta (sería tomar su billetera).
+    if (await indiceDeOtro(userId, praw.gasfreeIndex)) {
+      console.error(`[gasfree] ${userId} trae en raw_data un índice ajeno (${praw.gasfreeIndex}); se ignora`)
+      try { await db.from('audit_log').insert({ user_id: userId, action: 'gasfree.indice_ajeno', metadata: { idx: praw.gasfreeIndex, at: new Date().toISOString() } }) } catch { /* */ }
+    } else {
+      await writeDurableIndex(userId, email, praw.gasfreeIndex)
+      return praw.gasfreeIndex
+    }
   }
 
   // Resolver hermanos por correo (half-auth / duplicados): el índice puede
   // estar en otra fila del mismo correo.
   let rows: any[] = primary ? [primary] : []
   if (email) {
-    const { data: sibs } = await db.from('users').select('id, email, raw_data').eq('email', email)
-    if (Array.isArray(sibs) && sibs.length) rows = sibs
+    const { data: sibs } = await db.from('users').select('id, email, raw_data').ilike('email', email)
+    // Un "hermano" cuenta solo si su correo VERIFICADO (Auth) es el mismo:
+    // cualquiera puede escribir otro correo en su propia fila de users.
+    const validos: any[] = []
+    for (const r of (sibs ?? []) as any[]) {
+      if (String(r.id) === String(userId) || (await correoVerificado(String(r.id))) === email) validos.push(r)
+    }
+    if (validos.length) rows = validos
   }
 
   // Reusar un índice YA asignado en cualquier fila hermana (estabilidad).

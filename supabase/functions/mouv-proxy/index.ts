@@ -87,6 +87,32 @@ function json(status: number, body: unknown): Response {
 // que habia funcionado -- marcaban la fila como reembolsada y seguian. Si el
 // ajuste fallaba, la fila quedaba marcada, el CAS impedia reintentarla, y el
 // cliente perdia el reembolso de forma definitiva y sin rastro.
+// ── FIRMA DEL SERVIDOR EN LAS FILAS QUE MUEVEN PLATA ──────────────────
+// Un cliente puede insertar filas en `transactions` con su propia sesión
+// (RLS lo permite para algunos tipos). Una fila 'dispersion' en Procesando
+// inventada, con el providerRef de un envío real rechazado, se reembolsaba
+// en la conciliación — con el monto que el atacante quisiera. Las filas que
+// crea ESTE servidor llevan una firma (HMAC con la llave de servicio, que el
+// navegador no tiene). Sin firma válida no hay reembolso ni crédito
+// automático: queda para revisión de un admin.
+async function firmaFila(userId: string, type: string, amount: number, currency: string): Promise<string> {
+  const k = await crypto.subtle.importKey('raw', new TextEncoder().encode(SERVICE_KEY), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', k, new TextEncoder().encode(`${userId}|${type}|${Number(amount)}|${currency}`)))
+  return Array.from(sig.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+async function filaFirmada(tx: any, type: string): Promise<boolean> {
+  const f = String(tx?.raw_data?.firmaServidor ?? '')
+  if (!f) return false
+  return f === await firmaFila(String(tx.user_id), type, Number(tx.amount ?? 0), String(tx.currency ?? ''))
+}
+async function aRevisionSinFirma(tx: any, origen: string) {
+  try {
+    await db.from('transactions').update({ raw_data: { ...(tx.raw_data ?? {}), revisionManual: true, sinFirmaServidor: true, sinFirmaVistaAt: new Date().toISOString() } }).eq('id', tx.id)
+    await logAudit(String(tx.user_id), 'mouv.fila_sin_firma', { txId: tx.id, origen, amount: tx.amount, currency: tx.currency })
+    await avisarAdminSinConfirmar({ id: tx.id, user_id: tx.user_id, amount: tx.amount, currency: tx.currency, raw_data: tx.raw_data })
+  } catch { /* la revisión manual es el resguardo; el aviso es un extra */ }
+}
+
 async function creditBalanceAtomic(userId: string, col: string, delta: number): Promise<boolean> {
   // `adjust_balances` devuelve {error:'not_found'} o {error:'insufficient'}
   // como respuesta EXITOSA (200, sin error de transporte). Mirar solo `error`
@@ -1222,6 +1248,7 @@ serve(async (req: Request) => {
         if (dtx.status === 'Rechazado' || drd.refunded) return json(200, { ok: true, already: 'refunded' })
         const st = await mouvTransferStatus(String(transferId))
         if (st.found && st.verdict === 'returned') {
+          if (!(await filaFirmada(dtx, 'dispersion'))) { await aRevisionSinFirma(dtx, 'mouv_webhook'); return json(200, { ok: true, revision: 'sin_firma' }) }
           const refund = Number(dtx.amount ?? 0) + Number(drd.feeCop ?? 0)
           const railCol = String(dtx.currency ?? 'COP_BREB')
           const { data: claimed } = await db.from('transactions').update({
@@ -1271,6 +1298,7 @@ serve(async (req: Request) => {
         if (chk.ok) { const cs = String((chk.data as any)?.status ?? (chk.data as any)?.state ?? '').toUpperCase(); if (/APPROVED|APROBAD|COMPLETED|SUCCESS|PAID|CONFIRM|ACCEPTED|OK/.test(cs)) { verified = true; break } }
       }
       if (!verified) return json(200, { ok: true, unverified: true, ref, note: 'no se pudo verificar con Mouv — sin acreditar' })
+      if (!(await filaFirmada(tx, 'load'))) { await aRevisionSinFirma(tx, 'payin_pse'); return json(200, { ok: true, revision: 'sin_firma', ref }) }
       // CAS: reclamar la acreditación antes de tocar el saldo (idempotente).
       const { data: claimed } = await db.from('transactions').update({
         status: 'Completado', raw_data: { ...rd, payinStatus: status, paidAt: new Date().toISOString(), verified: true },
@@ -1440,6 +1468,7 @@ serve(async (req: Request) => {
         out.push({ id: tx.id, result: 'completed' })
       } else if (/FAILED|FALLID|REJECT|RECHAZ|CANCEL|ANUL|DECLIN|RETURN|DEVUEL/.test(s)) {
         if (rd.refunded) { out.push({ id: tx.id, result: 'already_refunded' }); continue }
+        if (!(await filaFirmada(tx, 'dispersion'))) { if (!rd.sinFirmaServidor) await aRevisionSinFirma(tx, 'reconcile_ach'); out.push({ id: tx.id, result: 'revision_sin_firma' }); continue }
         const refund = Number(tx.amount ?? 0) + Number(rd.feeCop ?? 0)
         const railCol = String(tx.currency ?? 'COP_ACH')
         // CAS: reclamar el reembolso ANTES de tocar el saldo. Si el webhook (o
@@ -1641,6 +1670,7 @@ serve(async (req: Request) => {
         // El motivo que da Mouv (`errorMessage` de /wallets/transactions/:id)
         // se guarda: "fue devuelto" sin decir por que obliga a abrir la consola
         // del proveedor para contestarle al cliente lo mas basico.
+        if (!(await filaFirmada(tx, 'dispersion'))) { if (!rd.sinFirmaServidor) await aRevisionSinFirma(tx, 'reconcile_breb'); out.push({ id: tx.id, result: 'revision_sin_firma' }); continue }
         const motivoProveedor = (() => {
           const m = (st.raw as any)?.errorMessage ?? (st.raw as any)?.data?.errorMessage
           return typeof m === 'string' && m.trim() ? m.trim().slice(0, 300) : null
@@ -2584,7 +2614,7 @@ serve(async (req: Request) => {
         try {
           await db.from('transactions').insert({
             user_id: userId, type: 'load', amount: Math.round(amount), currency: railCol, status: 'Pendiente',
-            raw_data: { source: 'mouv_payin_pse', method: 'PSE', reference, providerRef, link, title: 'Recaudo PSE (link)', createdAt: new Date().toISOString() },
+            raw_data: { source: 'mouv_payin_pse', method: 'PSE', reference, providerRef, link, title: 'Recaudo PSE (link)', createdAt: new Date().toISOString(), firmaServidor: await firmaFila(userId, 'load', Math.round(amount), railCol) },
           })
         } catch { /* best-effort */ }
         await logAudit(userId, 'mouv.payin_pse.created', { amount, reference, providerRef, path: p })
@@ -3087,6 +3117,9 @@ serve(async (req: Request) => {
     // dinero salía y el movimiento NO EXISTÍA en ninguna parte. Para el cliente
     // eso se ve como "hice la transferencia y no me aparece" — sin rastro,
     // porque nadie se enteró de que la fila nunca se escribió.
+    // La firma va DENTRO de prettyBase: todas las escrituras posteriores de
+    // la fila (asentarTx) parten de prettyBase y así no se pierde.
+    ;(prettyBase as any).firmaServidor = await firmaFila(userId, 'dispersion', amount, railCol)
     const filaTx = {
       user_id: userId, type: 'dispersion', amount, currency: railCol, status: 'Procesando',
       raw_data: { ...prettyBase, ...feeDetail, requestedAt: new Date().toISOString() },

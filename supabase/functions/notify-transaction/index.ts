@@ -489,15 +489,29 @@ Deno.serve(async (req) => {
     const completed = String(tx.status) === 'Completado'
     const dedupFlag = failed ? 'notified_failed' : completed ? 'notified_completed' : 'notified'
 
-    // Atomic deduplication (por flag).
-    const { data: claimed } = await db
-      .from('transactions')
-      .update({ raw_data: { ...(tx.raw_data ?? {}), [dedupFlag]: true } })
-      .eq('id', tx.id)
-      .filter(`raw_data->>${dedupFlag}`, 'is', null)
-      .select('id')
+    // Deduplicación atómica por flag. NUNCA se escribe raw_data entero desde
+    // `payload.record`: es la fila como era cuando disparó el trigger, y
+    // pisaba lo que mouv-proxy había escrito después (providerRef, refunded,
+    // reversado, notified_completed…). Se marca solo el flag, en SQL.
+    let claimed: boolean
+    const { data: marcado, error: errMarca } = await db.rpc('tx_marcar_flag', { p_tx: tx.id, p_flag: dedupFlag })
+    if (!errMarca) {
+      claimed = marcado === true
+    } else {
+      // Sin la función todavía (falta correr 2026_tx_marcar_flag.sql): se
+      // lee la fila ACTUAL —no la del trigger— y se marca sobre esa.
+      const { data: actual } = await db.from('transactions').select('raw_data').eq('id', tx.id).maybeSingle()
+      const raw = (actual?.raw_data ?? {}) as Record<string, unknown>
+      if (raw[dedupFlag]) claimed = false
+      else {
+        const { data: upd } = await db.from('transactions')
+          .update({ raw_data: { ...raw, [dedupFlag]: true } })
+          .eq('id', tx.id).filter(`raw_data->>${dedupFlag}`, 'is', null).select('id')
+        claimed = !!upd?.length
+      }
+    }
 
-    if (!claimed || claimed.length === 0) {
+    if (!claimed) {
       console.log('[notify] duplicate — tx', tx.id, `already ${dedupFlag}, skipping`)
       return new Response('duplicate', { status: 200 })
     }
