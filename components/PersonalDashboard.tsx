@@ -645,6 +645,19 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // raw_data, se calcula igual; nunca se muestra "generando".
   const idLincoin = String((currentUser as any)?.ownReferralCode || String(currentUser?.id ?? '').slice(-6)).toUpperCase();
 
+  // Tope por envío ACH de ESTA cuenta (lo fija el admin; lo aplica el
+  // servidor). Se muestra en la tarjeta del riel para no prometer otro número.
+  const [achMaxEnvio, setAchMaxEnvio] = useState<number | null>(null);
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    let vivo = true;
+    llamarFuncion('mouv-proxy', { action: 'limite_envio', user_id: currentUser.id }, 15000)
+      .then((r: any) => { if (vivo && r?.ok && Number(r.achMax) > 0) setAchMaxEnvio(Number(r.achMax)); })
+      .catch(() => {});
+    return () => { vivo = false; };
+  }, [currentUser?.id]);
+  const millones = (n: number) => n >= 1e9 ? `${(n / 1e9).toLocaleString('es-CO', { maximumFractionDigits: 2 })} mil M` : `${(n / 1e6).toLocaleString('es-CO', { maximumFractionDigits: 2 })} M`;
+
   const isKycVerified = currentUser?.kycStatus === 'verified';
   const isInReview = currentUser?.kycStatus === 'in_review';
 
@@ -3044,7 +3057,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9, fontWeight: 700, letterSpacing: '0.7px', padding: '3px 7px', borderRadius: 999, whiteSpace: 'nowrap' }}>HORARIO</span>
                               </div>
                               <p style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-1px', color: '#F4F4F2', marginTop: 16 }}>{Math.round(achBal).toLocaleString('es-CO')}</p>
-                              <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '8px 0 0' }}>Dispersa a cualquier cuenta en Colombia por el riel ACH tradicional. Hasta 50 M por envío.</p>
+                              <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '8px 0 0' }}>Dispersa a cualquier cuenta en Colombia por el riel ACH tradicional.{achMaxEnvio ? ` Hasta ${millones(achMaxEnvio)} por envío.` : ''}</p>
                               <div className="flex items-center" style={{ gap: 7, marginTop: 12 }}>
                                   <span style={{ width: 6, height: 6, borderRadius: '50%', background: achOpen ? '#4ADE80' : '#878E88' }} />
                                   <span style={{ fontSize: 11.5, color: '#878E88' }}>L–V 7:00–18:00 · {achOpen ? 'operativo ahora' : 'fuera de horario'}</span>

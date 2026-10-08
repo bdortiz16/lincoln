@@ -1172,6 +1172,37 @@ async function logAudit(userId: string | null, action: string, metadata: Record<
 
 // Valida quién llama: admin-bypass (header compartido) o un usuario real con
 // JWT válido. Balance y payouts son sensibles → siempre requieren caller.
+// ── TOPE POR ENVÍO ACH ────────────────────────────────────────────
+// Lo fija el admin (Configuración → Límites de envío) y vive en
+// system_config, que solo lee el servidor:
+//   'limites_envio'          → { achEmpresa, achPersona, achProveedor }
+//   'limite_envio:<userId>'  → { achMax } (excepción para un cliente)
+// El del cliente manda sobre el general; el del PROVEEDOR (lo que Finity
+// acepta por transferencia) es el techo de todo: ningún tope lo pasa.
+const LIMITES_DEF = { achEmpresa: 500_000_000, achPersona: 50_000_000, achProveedor: null as number | null }
+async function limitesEnvio(): Promise<typeof LIMITES_DEF> {
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', 'limites_envio').maybeSingle()
+    const v = (data as any)?.value ? JSON.parse((data as any).value) : {}
+    const n = (x: any, def: number | null) => { const k = Number(x); return Number.isFinite(k) && k > 0 ? k : def }
+    return { achEmpresa: n(v.achEmpresa, LIMITES_DEF.achEmpresa)!, achPersona: n(v.achPersona, LIMITES_DEF.achPersona)!, achProveedor: n(v.achProveedor, null) }
+  } catch { return { ...LIMITES_DEF } }
+}
+async function topeAchDe(userId: string): Promise<{ max: number; origen: 'cliente' | 'empresa' | 'persona'; proveedor: number | null }> {
+  const g = await limitesEnvio()
+  const { data: u } = await db.from('users').select('role').eq('id', userId).maybeSingle()
+  const esEmpresa = (u as any)?.role === 'business'
+  let propio: number | null = null
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', `limite_envio:${userId}`).maybeSingle()
+    const k = Number((data as any)?.value ? JSON.parse((data as any).value)?.achMax : NaN)
+    if (Number.isFinite(k) && k > 0) propio = k
+  } catch { /* sin excepción: aplica el general */ }
+  let max = propio ?? (esEmpresa ? g.achEmpresa : g.achPersona)
+  if (g.achProveedor) max = Math.min(max, g.achProveedor)
+  return { max, origen: propio != null ? 'cliente' : esEmpresa ? 'empresa' : 'persona', proveedor: g.achProveedor }
+}
+
 async function validCaller(req: Request, payload: any): Promise<{ ok: boolean; userId: string | null; admin: boolean; viaJwt: boolean }> {
   const authHeader = req.headers.get('Authorization') ?? ''
   // (El "AdminBypass <password>" se eliminó: secreto compartido que se filtraba
@@ -1351,6 +1382,16 @@ serve(async (req: Request) => {
     const rr = await mouvResolveBrebKey(rawKey, String((payload as any).keyType ?? ''))
     if (!rr.found) return json(200, { ok: true, found: false, message: 'La llave Bre-B no existe o no está activa.', debug: rr.raw ?? null })
     return json(200, { ok: true, found: true, matchedKey: rr.matchedKey, fullName: rr.fullName ?? null, idValue: rr.idValue ?? null, keyType: rr.keyType ?? null, bank: rr.bank ?? null })
+  }
+
+  // ── El tope por envío del propio cliente, para mostrarlo en su pantalla.
+  //    Solo lectura y solo el suyo (sesión probada).
+  if (action === 'limite_envio') {
+    const dueno = requireOwner(caller, payload)
+    if (!dueno) return json(403, { error: 'forbidden' })
+    const t = await topeAchDe(dueno)
+    const BREB_MAX = Number(Deno.env.get('BREB_MAX_COP') ?? '12000000') || 12000000
+    return json(200, { ok: true, achMax: t.max, brebMax: BREB_MAX })
   }
 
   // ── ping / balance: saldo de la wallet COMPARTIDA — SOLO ADMIN ──
@@ -2969,14 +3010,14 @@ serve(async (req: Request) => {
     //     20M y un envío de 12–20M pasaba la app y fallaba en Mouv). ACH usa el
     //     tope general. Ambos overridables por secret.
     const BREB_MAX_COP   = Number(Deno.env.get('BREB_MAX_COP')   ?? '12000000') || 12000000
-    // ACH permite hasta $50.000.000 por transferencia (Finity). Bre-B sigue en
-    // $12.000.000 (tope de Mouv por transferencia). Ambos overridables por secret.
-    const ACH_MAX_COP    = Number(Deno.env.get('ACH_MAX_COP')    ?? '50000000') || 50000000
-    const perOpMax = rail === 'BREB' ? BREB_MAX_COP : ACH_MAX_COP
+    // ACH: el tope lo fija el admin — por defecto 500 M para empresas y 50 M
+    // para personas, con excepciones por cliente y siempre por debajo del
+    // tope del proveedor (ver topeAchDe). Bre-B sigue en el límite de Mouv.
+    const perOpMax = rail === 'BREB' ? BREB_MAX_COP : (await topeAchDe(userId)).max
     if (amount > perOpMax) {
       return json(400, { error: 'over_limit', message: rail === 'BREB'
         ? `Bre-B permite máximo ${perOpMax.toLocaleString('es-CO')} COP por transferencia. Divide el envío en varias operaciones o usa la Mesa OTC.`
-        : `El monto supera el límite por operación (${perOpMax.toLocaleString('es-CO')} COP). Para montos mayores usa la Mesa OTC.` })
+        : `El monto supera tu límite por envío ACH (${perOpMax.toLocaleString('es-CO')} COP). Divide el envío o pide un aumento a soporte.` })
     }
     // (2) Idempotencia / anti doble-clic: si YA existe una dispersión idéntica
     //     (mismo usuario, riel y monto) creada hace menos de 2 minutos y que

@@ -97,6 +97,7 @@ import { AdminLincoinRisk } from './AdminLincoinRisk';
 import { AdminClientes } from './AdminClientes';
 import { AdminReconcile } from './AdminReconcile';
 import { AdminOtcSection } from './AdminOtcSection';
+import { AdminLimitesEnvio } from './AdminLimitesEnvio';
 import { AdminOtcCierres } from './AdminOtcCierres';
 import { AdminGowd } from './AdminGowd';
 import { sonarCampana, campanaActiva } from './campanaOtc';
@@ -3379,6 +3380,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
 
   const renderConfig = () => (
     <div className="space-y-6 animate-in fade-in duration-300">
+        <AdminLimitesEnvio />
         {/* Países habilitados — modelo hub multi-país. Controla qué países ven
             los clientes en Enviar/Beneficiarios (Activo), cuáles aparecen como
             "Próximamente" en el inicio, y cuáles quedan ocultos. */}

@@ -996,6 +996,7 @@ const PERMISO_DE_ACCION: Record<string, string> = {
   get_tx_proof: 'plata.ver',
   conciliar_movimientos: 'plata.mover',
   otc_ajuste_get: 'plata.ver',
+  limites_envio_get: 'plata.ver',
   email_incidencias: 'clientes.ver',
   email_incidencia_resuelta: 'clientes.editar',
 
@@ -1006,6 +1007,8 @@ const PERMISO_DE_ACCION: Record<string, string> = {
   approve_rail_move: 'plata.mover',
   reject_rail_move: 'plata.mover',
   otc_ajuste_set: 'plata.mover',
+  limites_envio_set: 'plata.mover',
+  limite_cliente_set: 'plata.mover',
 
   // Clientes
   set_kyc_status: 'cumplimiento',
@@ -2835,6 +2838,84 @@ Deno.serve(async (req: Request) => {
         if (error) return json({ error: error.message }, 500)
         await auditAdmin(req, 'otc.ajuste_tasa', { finityCop, mouvCop })
         return json({ ok: true, ajuste: valor })
+      }
+
+      // ── Límites por envío ACH ──────────────────────────────────────────
+      // General por tipo de cuenta + excepciones por cliente. Los aplica
+      // mouv-proxy (topeAchDe) en el momento del envío; acá solo se guardan.
+      // El tope del PROVEEDOR es el techo: ningún otro puede pasarlo.
+      if (body.action === 'limites_envio_get') {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        const { data } = await db.from('system_config').select('value').eq('key', 'limites_envio').maybeSingle()
+        let v: any = {}
+        try { v = (data as any)?.value ? JSON.parse((data as any).value) : {} } catch { v = {} }
+        const n = (x: any) => { const k = Number(x); return Number.isFinite(k) && k > 0 ? k : null }
+        const { data: filas } = await db.from('system_config').select('key, value').like('key', 'limite_envio:%')
+        const ids = (filas ?? []).map((f: any) => String(f.key).slice('limite_envio:'.length))
+        const { data: us } = ids.length ? await db.from('users').select('id, email, full_name, company_name, role').in('id', ids) : { data: [] as any[] }
+        const porId = new Map((us ?? []).map((u: any) => [u.id, u]))
+        const excepciones = (filas ?? []).map((f: any) => {
+          const id = String(f.key).slice('limite_envio:'.length)
+          let x: any = {}
+          try { x = JSON.parse(f.value) } catch { /* */ }
+          const u: any = porId.get(id) ?? {}
+          return { userId: id, achMax: n(x.achMax), nota: x.nota ?? null, at: x.at ?? null, email: u.email ?? null, nombre: u.company_name || u.full_name || null, tipo: u.role === 'business' ? 'empresa' : 'persona' }
+        }).filter((e: any) => e.achMax)
+        return json({ ok: true, limites: { achEmpresa: n(v.achEmpresa) ?? 500_000_000, achPersona: n(v.achPersona) ?? 50_000_000, achProveedor: n(v.achProveedor), at: v.at ?? null }, excepciones })
+      }
+
+      if (body.action === 'limites_envio_set' || body.action === 'limite_cliente_set') {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        const mfaErr = await requireMfaSession(req, auth.userId)
+        if (mfaErr) return json({ error: mfaErr, needs2fa: true }, 403)
+        // Pesos enteros, al menos el mínimo por envío. El techo de 10.000 M
+        // es contra el dedazo (un cero de más), no una regla del negocio.
+        const lee = (x: any): number | null => {
+          if (x === null || x === undefined || String(x).trim() === '') return null
+          const k = Number(String(x).replace(/[^\d]/g, ''))
+          return Number.isFinite(k) && k > 0 ? k : NaN
+        }
+        const valido = (k: number | null) => k === null || (Number.isFinite(k) && k >= 5000 && k <= 10_000_000_000)
+        const { data: prev } = await db.from('system_config').select('value').eq('key', 'limites_envio').maybeSingle()
+        let g: any = {}
+        try { g = (prev as any)?.value ? JSON.parse((prev as any).value) : {} } catch { g = {} }
+
+        if (body.action === 'limites_envio_set') {
+          const achEmpresa = lee(body.achEmpresa), achPersona = lee(body.achPersona), achProveedor = lee(body.achProveedor)
+          if (!valido(achEmpresa) || !valido(achPersona) || !valido(achProveedor) || achEmpresa === null || achPersona === null) {
+            return json({ error: 'Escribe montos en pesos entre 5.000 y 10.000.000.000.' }, 400)
+          }
+          if (achProveedor && (achEmpresa > achProveedor || achPersona > achProveedor)) {
+            return json({ error: `Ningún tope puede pasar el del proveedor (${achProveedor.toLocaleString('es-CO')} COP).` }, 400)
+          }
+          const valor = { achEmpresa, achPersona, achProveedor, at: new Date().toISOString(), por: String(auth.userId ?? '') }
+          const { error } = await db.from('system_config').upsert({ key: 'limites_envio', value: JSON.stringify(valor) }, { onConflict: 'key' })
+          if (error) return json({ error: error.message }, 500)
+          await auditAdmin(req, 'limites.envio_general', { antes: g, despues: valor })
+          return json({ ok: true, limites: valor })
+        }
+
+        // Excepción de UN cliente. achMax vacío = quitarla (vuelve al general).
+        const uid = String(body.userId ?? '')
+        if (!uid) return json({ error: 'Falta el cliente.' }, 400)
+        const { data: cli } = await db.from('users').select('id, email').eq('id', uid).maybeSingle()
+        if (!cli) return json({ error: 'Cliente no encontrado.' }, 404)
+        const achMax = lee(body.achMax)
+        if (!valido(achMax)) return json({ error: 'Escribe un monto en pesos entre 5.000 y 10.000.000.000.' }, 400)
+        const prov = Number(g.achProveedor) > 0 ? Number(g.achProveedor) : null
+        if (achMax && prov && achMax > prov) {
+          return json({ error: `No puede pasar el tope del proveedor (${prov.toLocaleString('es-CO')} COP).` }, 400)
+        }
+        const key = `limite_envio:${uid}`
+        if (achMax === null) {
+          await db.from('system_config').delete().eq('key', key)
+        } else {
+          const valor = { achMax, nota: String(body.nota ?? '').slice(0, 200) || null, at: new Date().toISOString(), por: String(auth.userId ?? '') }
+          const { error } = await db.from('system_config').upsert({ key, value: JSON.stringify(valor) }, { onConflict: 'key' })
+          if (error) return json({ error: error.message }, 500)
+        }
+        await auditAdmin(req, 'limites.envio_cliente', { userId: uid, email: (cli as any).email ?? null, achMax })
+        return json({ ok: true })
       }
 
       if (body.action === 'access_policy_get') {
