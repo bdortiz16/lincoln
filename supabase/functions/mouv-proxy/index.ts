@@ -1203,6 +1203,19 @@ async function topeAchDe(userId: string): Promise<{ max: number; origen: 'client
   return { max, origen: propio != null ? 'cliente' : esEmpresa ? 'empresa' : 'persona', proveedor: g.achProveedor }
 }
 
+// Aprobación manual de cumplimiento sobre una ficha de antecedentes
+// (Admin → Cumplimiento → Aprobar). Vale solo contra el veredicto que el
+// admin tuvo a la vista: si una consulta nueva cambia la categoría o la
+// identidad, deja de valer. Misma regla que tusdatos (aprobacionVigente).
+function aprobacionAmlVigente(f: any): boolean {
+  const d = f?.decisionManual
+  if (!d || d.decision !== 'aprobar') return false
+  if ((d.categoriaEntonces ?? null) !== (f?.categoria ?? null)) return false
+  if ('nombreCoincideEntonces' in d && (d.nombreCoincideEntonces ?? null) !== (f?.nombreCoincide ?? null)) return false
+  if ('documentoVigenteEntonces' in d && (d.documentoVigenteEntonces ?? null) !== (f?.documentoVigente ?? null)) return false
+  return true
+}
+
 async function validCaller(req: Request, payload: any): Promise<{ ok: boolean; userId: string | null; admin: boolean; viaJwt: boolean }> {
   const authHeader = req.headers.get('Authorization') ?? ''
   // (El "AdminBypass <password>" se eliminó: secreto compartido que se filtraba
@@ -2874,6 +2887,7 @@ serve(async (req: Request) => {
       // La consulta de antecedentes la hacemos NOSOTROS (TusDatos). Este es
       // el control que manda; el de Kumplo queda debajo como respaldo para
       // los veredictos que ya estaban guardados de antes.
+      let aprobadoAml = false
       if (docDest) {
         try {
           const { data: tdRow } = await db.from('system_config').select('value').eq('key', 'tusdatos_config').maybeSingle()
@@ -2930,7 +2944,16 @@ serve(async (req: Request) => {
             // pintar BLOQUEADO, así que insignia y envío no se contradicen.
             const noOperable = cerrado && f?.operable === false
             const medio = cerrado && cat === 'medio' && tdCfg?.soloBloquearAlto !== true && tdCfg?.bloquear !== false
-            const bloquea = duro || noOperable || medio
+            // Cumplimiento lo revisó y lo APROBÓ contra este mismo veredicto
+            // (p. ej. un falso positivo de la fuente): pasa, y queda anotado.
+            aprobadoAml = cerrado && aprobacionAmlVigente(f)
+            const bloquea = !aprobadoAml && (duro || noOperable || medio)
+            if (aprobadoAml && (duro || noOperable || medio)) {
+              await logAudit(userId, 'tusdatos.envio_aprobado_manual', {
+                documento: docDest, categoria: cat, aprobadoPor: f?.decisionManual?.por ?? null,
+                aprobadoEl: f?.decisionManual?.at ?? null, reportId: f?.reportId ?? null,
+              })
+            }
             if (bloquea) {
               await logAudit(userId, 'tusdatos.envio_bloqueado', {
                 documento: docDest, categoria: cat, motivo: f?.bloqueo ?? null,
@@ -2958,7 +2981,9 @@ serve(async (req: Request) => {
         try {
           const { data: cfgRow } = await db.from('system_config').select('value').eq('key', 'kumplo_config').maybeSingle()
           const cfg = (cfgRow as any)?.value ? JSON.parse((cfgRow as any).value) : null
-          if (cfg?.activo && cfg?.bloquearEnAlto !== false) {
+          // Con la aprobación de cumplimiento vigente, el veredicto viejo de
+          // Kumplo (respaldo) no la contradice.
+          if (cfg?.activo && cfg?.bloquearEnAlto !== false && !aprobadoAml) {
             const b = (rawU?.kumplo?.beneficiarios ?? {})[docDest]
             // Un veredicto DE VERDAD: o Kumplo dijo operable sí/no, o dio un
             // nivel de riesgo real. 'desconocido' NO es un veredicto — es

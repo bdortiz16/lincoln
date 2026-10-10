@@ -1026,6 +1026,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                               // negativo con la plata ya enviada, el control no
                               // sirvió de nada. Tarda cerca de un minuto.
                               if (k.estado !== 'finalizado') return true;
+                              if (k.aprobadoManual === true) return false;
                               return k.operable === false || k.categoria === 'alto'
                                   || k.nombreCoincide === false || k.documentoVigente === false;
                           };
@@ -1051,6 +1052,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                               // la que la fila está deshabilitada.
                               if (est === 'procesando' || !est) return { t: 'AML · CONSULTANDO · ESPERA', tono: 'gris' };
                               if (est !== 'finalizado') return { t: 'AML · SIN RESULTADO · ESPERA', tono: 'gris' };
+                              if (k.aprobadoManual === true) return { t: 'AML · APROBADO', tono: 'verde' };
                               const frena = amlFrena(c);
                               const fin = (s: string) => frena ? `${s} · BLOQUEADO` : s;
                               if (k.nombreCoincide === false) return { t: `AML · ${fin('NOMBRE INCORRECTO')}`, tono: 'rojo' };

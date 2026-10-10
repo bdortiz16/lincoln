@@ -493,6 +493,8 @@ export const ContactsSection: React.FC<{
         //
         // La consulta tarda cerca de un minuto. Se espera.
         if (est !== 'finalizado') return true;
+        // Cumplimiento lo revisó y lo aprobó: el servidor lo deja pasar.
+        if (k.aprobadoManual === true) return false;
         return k.operable === false
             || String(k.categoria ?? '') === 'alto'
             || k.nombreCoincide === false
@@ -561,6 +563,9 @@ export const ContactsSection: React.FC<{
         } else if (est !== 'finalizado') {
             estado = 'SIN RESULTADO';
             ayuda = 'La consulta no pudo completarse. No impide transferirle; se vuelve a intentar.';
+        } else if (k.aprobadoManual === true) {
+            tono = VERDE; estado = 'APROBADO';
+            ayuda = 'Revisado y aprobado por el equipo de cumplimiento de Lincoin. Se puede transferir.';
         } else if (k.nombreCoincide === false) {
             // La identidad va ANTES que los antecedentes: si el nombre no es el
             // del documento, saber que otra persona está limpia no sirve de nada.
@@ -1452,7 +1457,7 @@ export const ContactsSection: React.FC<{
         if (!k) return 'sin_consulta';
         if (amlEsperando(c)) return 'esperando';
         if (amlFrena(c)) return 'bloqueado';
-        if (String(k.categoria ?? '') === 'medio' || k.operable === false) return 'revision';
+        if (k.aprobadoManual !== true && (String(k.categoria ?? '') === 'medio' || k.operable === false)) return 'revision';
         return 'limpio';
     };
     useEffect(() => {
@@ -2566,6 +2571,7 @@ export const ContactsSection: React.FC<{
                                     est === 'procesando' || !est ? 'Estamos consultando los antecedentes de esta persona contra las fuentes oficiales. Suele tardar alrededor de un minuto.'
                                     : est === 'sin_autorizacion' ? 'El titular del documento no autoriza la consulta de su información, un derecho que le ampara la ley de protección de datos. Esto no impide transferirle.'
                                     : est !== 'finalizado' ? 'La consulta no pudo completarse. Se vuelve a intentar; mientras tanto no impide transferirle.'
+                                    : k.aprobadoManual === true ? 'Revisado y aprobado por el equipo de cumplimiento de Lincoin. Se puede transferir a esta persona.'
                                     : k.nombreCoincide === false ? `El nombre inscrito no corresponde a ese documento. Según la Registraduría la cédula pertenece a ${k.nombreReal ?? 'otra persona'}. No se le puede transferir hasta corregirlo.`
                                     : k.documentoVigente === false ? `El documento no está vigente${k.estadoDocumento ? `: ${k.estadoDocumento}` : ''}. No se le puede transferir.`
                                     : cat === 'alto' ? 'La consulta encontró hallazgos de riesgo alto. No se puede transferir a esta persona.'

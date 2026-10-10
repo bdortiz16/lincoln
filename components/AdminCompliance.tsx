@@ -48,6 +48,7 @@ const ALERTA: Record<string, { texto: string; explica: string; fuerte?: boolean 
   consulta_fallida: { texto: 'CONSULTA FALLIDA', explica: 'La consulta no se completó. No bloquea; conviene volver a lanzarla.' },
   sin_autorizacion: { texto: 'SIN AUTORIZACIÓN', explica: 'El titular del documento no autoriza la consulta de su información. Es un derecho suyo y no bloquea.' },
   en_curso: { texto: 'EN CURSO', explica: 'La consulta está corriendo. Suele tardar cerca de un minuto.' },
+  aprobado_manual: { texto: 'APROBADO', explica: 'Cumplimiento lo revisó y lo aprobó contra este veredicto: se le puede transferir. Si una consulta nueva cambia el resultado, vuelve a la bandeja.' },
 };
 
 const fmt = (n: number) => Number(n || 0).toLocaleString('es-CO');
@@ -103,6 +104,9 @@ export const AdminCompliance: React.FC = () => {
   const [decidiendo, setDecidiendo] = useState<{ caso: any; decision: 'aprobar' | 'mantener' } | null>(null);
   const [motivo, setMotivo] = useState('');
   const [guardando, setGuardando] = useState(false);
+  // El error de la decisión va DENTRO de la ventana: antes salía arriba de la
+  // página, tapado por la ventana, y parecía que Aprobar no hacía nada.
+  const [errDecision, setErrDecision] = useState<string | null>(null);
 
   const cargar = async () => {
     setBusy(true);
@@ -143,16 +147,17 @@ export const AdminCompliance: React.FC = () => {
 
   const confirmarDecision = async () => {
     if (!decidiendo || guardando) return;
-    if (!motivo.trim()) { setMsg({ ok: false, texto: 'Escribe por qué tomas esta decisión.' }); return; }
-    setGuardando(true);
+    if (!motivo.trim()) { setErrDecision('Escribe por qué tomas esta decisión.'); return; }
+    setGuardando(true); setErrDecision(null);
     const r = await call({
       action: 'decidir', userId: decidiendo.caso.userId,
       documento: decidiendo.caso.documento, decision: decidiendo.decision, motivo: motivo.trim(),
     });
     setGuardando(false);
-    if (!r?.ok) { setMsg({ ok: false, texto: r?.error ?? 'No se pudo guardar la decisión.' }); return; }
+    if (!r?.ok) { setErrDecision(r?.error ?? 'No se pudo guardar la decisión. Revisa tu conexión e inténtalo de nuevo.'); return; }
+    const aprobo = decidiendo.decision === 'aprobar';
     setDecidiendo(null); setMotivo('');
-    setMsg({ ok: true, texto: 'Decisión guardada y registrada en auditoría.' });
+    setMsg({ ok: true, texto: aprobo ? 'Aprobado. Quedó archivado en "Aprobados" y ya se le puede transferir.' : 'Decisión guardada y registrada en auditoría.' });
     cargar();
   };
 
@@ -196,7 +201,8 @@ export const AdminCompliance: React.FC = () => {
   const visibles = useMemo(() => {
     const t = q.trim().toLowerCase();
     return casos.filter(c => {
-      if (filtro !== 'todo' && c.alerta !== filtro) return false;
+      // "Todo" es la bandeja de PENDIENTES: lo aprobado queda archivado aparte.
+      if (filtro === 'todo' ? c.alerta === 'aprobado_manual' : c.alerta !== filtro) return false;
       if (!t) return true;
       return [c.nombreInscrito, c.nombreReal, c.documento, c.cliente?.nombre, c.cliente?.email, c.cliente?.documento]
         .some(v => String(v ?? '').toLowerCase().includes(t));
@@ -237,8 +243,9 @@ export const AdminCompliance: React.FC = () => {
     { k: 'riesgo_alto', t: 'Riesgo alto' },
     { k: 'riesgo_medio', t: 'Riesgo medio' },
     { k: 'en_curso', t: 'En curso' },
+    { k: 'aprobado_manual', t: 'Aprobados' },
   ];
-  const cuenta = (k: string) => k === 'todo' ? casos.length : casos.filter(c => c.alerta === k).length;
+  const cuenta = (k: string) => k === 'todo' ? casos.filter(c => c.alerta !== 'aprobado_manual').length : casos.filter(c => c.alerta === k).length;
 
   return (
     <div style={{ fontFamily: FONT, display: 'flex', flexWrap: 'wrap', gap: 14, alignItems: 'flex-start' }}>
@@ -360,7 +367,7 @@ export const AdminCompliance: React.FC = () => {
                       {c.cliente?.email ? ` · ${c.cliente.email}` : ''} · {hace(c.at)}
                     </span>
                   </span>
-                  <Pill tono={a.fuerte ? 'fuerte' : 'suave'} titulo={a.explica}>{a.texto}</Pill>
+                  <Pill tono={c.alerta === 'aprobado_manual' ? 'ok' : a.fuerte ? 'fuerte' : 'suave'} titulo={a.explica}>{a.texto}</Pill>
                   <ChevronDown size={15} style={{ color: C.sub, flexShrink: 0, transform: ab ? 'rotate(180deg)' : 'none', transition: 'transform 150ms' }} />
                 </button>
 
@@ -441,13 +448,13 @@ export const AdminCompliance: React.FC = () => {
                     {/* Acciones */}
                     <div style={{ gridColumn: '1 / -1' }}>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                        <button onClick={() => { setDecidiendo({ caso: c, decision: 'aprobar' }); setMotivo(''); }} className="cmp-foco hover:opacity-90 transition-opacity"
+                        {c.alerta !== 'aprobado_manual' && <button onClick={() => { setDecidiendo({ caso: c, decision: 'aprobar' }); setMotivo(''); setErrDecision(null); }} className="cmp-foco hover:opacity-90 transition-opacity"
                           style={{ fontSize: 12.5, fontWeight: 700, color: '#0A0A0A', background: C.text, border: 'none', padding: '8px 14px', borderRadius: 9 }}>
                           Aprobar
-                        </button>
-                        <button onClick={() => { setDecidiendo({ caso: c, decision: 'mantener' }); setMotivo(''); }} className="cmp-foco hover:bg-white/[0.09] transition-colors"
+                        </button>}
+                        <button onClick={() => { setDecidiendo({ caso: c, decision: 'mantener' }); setMotivo(''); setErrDecision(null); }} className="cmp-foco hover:bg-white/[0.09] transition-colors"
                           style={{ fontSize: 12.5, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.border2}`, padding: '8px 14px', borderRadius: 9 }}>
-                          Mantener bloqueado
+                          {c.alerta === 'aprobado_manual' ? 'Quitar aprobación y bloquear' : 'Mantener bloqueado'}
                         </button>
                         <button onClick={() => reintentar(c)} className="cmp-foco hover:bg-white/[0.09] transition-colors"
                           style={{ fontSize: 12.5, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.border2}`, padding: '8px 14px', borderRadius: 9 }}>
@@ -573,6 +580,9 @@ export const AdminCompliance: React.FC = () => {
                 placeholder="Queda guardado con tu usuario y la fecha."
                 style={{ width: '100%', padding: '9px 11px', borderRadius: 9, background: C.doc, border: `1px solid ${C.border2}`, color: C.text, fontSize: 12.5, fontFamily: FONT, outline: 'none', resize: 'vertical' }} />
             </label>
+            {errDecision && (
+              <p role="alert" style={{ fontSize: 12, color: '#F87171', margin: '10px 0 0', lineHeight: 1.45 }}>{errDecision}</p>
+            )}
             <div style={{ display: 'flex', gap: 9, marginTop: 14 }}>
               <button onClick={() => setDecidiendo(null)} disabled={guardando} className="cmp-foco hover:bg-white/[0.09] transition-colors"
                 style={{ flex: 1, padding: '10px 0', borderRadius: 9, fontSize: 13, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.border2}` }}>

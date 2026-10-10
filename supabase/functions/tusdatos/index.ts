@@ -591,6 +591,20 @@ async function guardarTitular(userId: string, parche: Ficha): Promise<Ficha> {
   return { ...prev, ...cambio } as Ficha
 }
 
+// ¿La ficha tiene una APROBACIÓN MANUAL que sigue valiendo? Cumplimiento
+// puede aprobar a alguien que el sistema marcó (un falso positivo de la
+// fuente). La aprobación vale contra el veredicto que se tuvo a la vista: si
+// una consulta nueva cambia la categoría o la identidad, deja de valer y el
+// caso vuelve a la bandeja. Misma regla en mouv-proxy, donde sale la plata.
+function aprobacionVigente(f: any): boolean {
+  const d = f?.decisionManual
+  if (!d || d.decision !== 'aprobar') return false
+  if ((d.categoriaEntonces ?? null) !== (f?.categoria ?? null)) return false
+  if ('nombreCoincideEntonces' in d && (d.nombreCoincideEntonces ?? null) !== (f?.nombreCoincide ?? null)) return false
+  if ('documentoVigenteEntonces' in d && (d.documentoVigenteEntonces ?? null) !== (f?.documentoVigente ?? null)) return false
+  return true
+}
+
 async function guardarBeneficiario(userId: string, documento: string, ficha: Ficha) {
   // El monitoreo cierra consultas SIN cuenta: el resultado va al padrón y de
   // ahí baja a todas. Sin esta guarda se haría un update contra un id vacío.
@@ -1546,10 +1560,20 @@ Deno.serve(async (req: Request) => {
         if (await completarLugares(uid, raw, c) > 0) raw = await leerRaw(uid)
       } catch (e) { console.warn('[tusdatos] lugares de expedición', String((e as any)?.message ?? e)) }
       const td = raw?.tusdatos ?? {}
+      // La aprobación de cumplimiento va resuelta (aprobadoManual) para que la
+      // pantalla no frene lo que el servidor deja pasar. El motivo y quién
+      // decidió son notas internas: al cliente no le llegan.
+      const verFicha = (f: any) => {
+        if (!f || typeof f !== 'object') return f
+        const { decisionManual, historialDecisiones, ...resto } = f
+        return { ...resto, aprobadoManual: aprobacionVigente(f), ...(yo.esAdmin ? { decisionManual, historialDecisiones } : {}) }
+      }
+      const benefs: Record<string, any> = {}
+      for (const [k, f] of Object.entries(td.beneficiarios ?? {})) benefs[k] = verFicha(f)
       return json({
         ok: true, activo: c.activo, enLaPrueba: enLaPrueba(c, uid),
-        titular: { ...td, beneficiarios: undefined },
-        beneficiarios: td.beneficiarios ?? {},
+        titular: verFicha({ ...td, beneficiarios: undefined }),
+        beneficiarios: benefs,
       })
     }
 
@@ -1684,8 +1708,10 @@ Deno.serve(async (req: Request) => {
           const cat = String(f.categoria ?? '')
           const est = String(f.estado ?? '')
           // Qué merece la atención de un humano.
-          const alerta =
-            f.nombreCoincide === false ? 'nombre_no_coincide'
+          // Aprobado por cumplimiento contra este mismo veredicto: sale de la
+          // bandeja de pendientes y queda archivado en "Aprobados".
+          const alerta = aprobacionVigente(f) ? 'aprobado_manual'
+            : f.nombreCoincide === false ? 'nombre_no_coincide'
               : f.documentoVigente === false ? 'documento_no_vigente'
                 : cat === 'alto' ? 'riesgo_alto'
                   : cat === 'medio' ? 'riesgo_medio'
@@ -1729,7 +1755,7 @@ Deno.serve(async (req: Request) => {
 
       const peso: Record<string, number> = {
         nombre_no_coincide: 0, documento_no_vigente: 1, riesgo_alto: 2, riesgo_medio: 3,
-        sin_validar: 4, consulta_fallida: 5, sin_autorizacion: 6, en_curso: 7,
+        sin_validar: 4, consulta_fallida: 5, sin_autorizacion: 6, en_curso: 7, aprobado_manual: 8,
       }
       const conAlerta = casos.filter(x => x.alerta).sort((a, b) =>
         (peso[a.alerta] ?? 9) - (peso[b.alerta] ?? 9) || String(b.at ?? '').localeCompare(String(a.at ?? '')))
@@ -1747,11 +1773,13 @@ Deno.serve(async (req: Request) => {
         },
         resumen: {
           total: casos.length,
-          bloqueados: casos.filter(x => x.operable === false).length,
-          nombreNoCoincide: casos.filter(x => x.nombreCoincide === false).length,
-          documentoNoVigente: casos.filter(x => x.documentoVigente === false).length,
-          alto: casos.filter(x => x.categoria === 'alto').length,
-          medio: casos.filter(x => x.categoria === 'medio').length,
+          // Los aprobados por cumplimiento ya no cuentan como pendientes.
+          bloqueados: casos.filter(x => x.alerta !== 'aprobado_manual' && x.operable === false).length,
+          nombreNoCoincide: casos.filter(x => x.alerta !== 'aprobado_manual' && x.nombreCoincide === false).length,
+          documentoNoVigente: casos.filter(x => x.alerta !== 'aprobado_manual' && x.documentoVigente === false).length,
+          alto: casos.filter(x => x.alerta !== 'aprobado_manual' && x.categoria === 'alto').length,
+          medio: casos.filter(x => x.alerta !== 'aprobado_manual' && x.categoria === 'medio').length,
+          aprobados: casos.filter(x => x.alerta === 'aprobado_manual').length,
           enCurso: casos.filter(x => x.estado === 'procesando').length,
           enOrden: enOrden.length,
         },
@@ -1987,36 +2015,45 @@ Deno.serve(async (req: Request) => {
       const doc = String(body.documento ?? '').replace(/\D/g, '')
       const fallo = String(body.decision ?? '')   // 'aprobar' | 'mantener'
       const motivo = String(body.motivo ?? '').slice(0, 500)
-      if (!uid || !doc || !['aprobar', 'mantener'].includes(fallo)) {
+      if (!uid || !String(body.documento ?? '').trim() || !['aprobar', 'mantener'].includes(fallo)) {
         return json({ error: 'Faltan datos de la decisión.' }, 400)
       }
       if (!motivo.trim()) return json({ error: 'Escribe por qué tomas esta decisión.' }, 400)
 
-      const { data: fila } = await db.from('users').select('raw_data').eq('id', uid).maybeSingle()
-      const raw = ((fila as any)?.raw_data ?? {}) as Record<string, any>
+      const raw = await leerRaw(uid)
       const td = raw.tusdatos ?? {}
-      const benefs = { ...(td.beneficiarios ?? {}) }
-      const previa = benefs[doc]
-      if (!previa) return json({ error: 'Ese beneficiario no tiene consulta guardada.' }, 404)
+      const benefs: Record<string, any> = td.beneficiarios ?? {}
+      // La ficha puede ser de un BENEFICIARIO (bajo beneficiarios, con la
+      // llave tal como se guardó) o del TITULAR de la cuenta. Antes solo se
+      // buscaba entre los beneficiarios y por dígitos: la decisión sobre el
+      // titular, o sobre una llave guardada con guion, fallaba con un 404 que
+      // la pantalla mostraba fuera de la ventana — parecía que no guardaba.
+      const llaveCruda = String(body.documento ?? '').trim()
+      const llave = [llaveCruda, doc].find(k => k && benefs[k] && typeof benefs[k] === 'object')
+        ?? Object.keys(benefs).find(k => k.replace(/\D/g, '') === doc)
+      const esTitular = !llave && String(td.documento ?? '').replace(/\D/g, '') === doc
+      const previa = llave ? benefs[llave] : esTitular ? td : null
+      if (!previa) return json({ error: 'No hay una consulta guardada para ese documento.' }, 404)
 
       const decision = {
         por: yo.userId ?? null, decision: fallo, motivo,
         at: new Date().toISOString(),
-        // Se guarda CONTRA QUÉ se decidió: si mañana el veredicto cambia, se
-        // puede saber qué tenía a la vista quien decidió.
+        // Se guarda CONTRA QUÉ se decidió: si mañana el veredicto cambia, la
+        // aprobación deja de valer (aprobacionVigente) y el caso vuelve.
         categoriaEntonces: previa.categoria ?? null,
+        nombreCoincideEntonces: previa.nombreCoincide ?? null,
+        documentoVigenteEntonces: previa.documentoVigente ?? null,
         operableEntonces: previa.operable ?? null,
       }
-      benefs[doc] = {
-        ...previa,
-        operable: fallo === 'aprobar' ? true : false,
+      const cambio = {
+        operable: fallo === 'aprobar',
         decisionManual: decision,
         historialDecisiones: [...(Array.isArray(previa.historialDecisiones) ? previa.historialDecisiones : []), decision].slice(-20),
       }
-      const { error } = await db.from('users')
-        .update({ raw_data: { ...raw, tusdatos: { ...td, beneficiarios: benefs } } })
-        .eq('id', uid)
-      if (error) return json({ error: error.message }, 500)
+      // Solo ESA ficha, en su ruta y bajo bloqueo de fila: reescribir raw_data
+      // entero pisaba lo que otro proceso hubiera guardado en el medio.
+      const err = await setRawPath(db, uid, llave ? ['tusdatos', 'beneficiarios', llave] : ['tusdatos'], cambio, true)
+      if (err) return json({ error: err }, 500)
 
       await auditar('tusdatos.decision_cumplimiento', {
         adminId: yo.userId, clienteId: uid, documento: doc,
