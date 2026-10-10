@@ -86,13 +86,13 @@ export const FeatureCarousel: React.FC = () => {
       {/* Prev / Next */}
       <button
         onClick={handlePrev}
-        className="absolute left-[-12px] top-1/2 -translate-y-1/2 w-8 h-8 bg-[#0C0E0D] rounded-full flex items-center justify-center shadow-lg hover:bg-[#152e52] transition-colors"
+        className="absolute left-[-12px] top-1/2 -translate-y-1/2 w-8 h-8 bg-[#0C0E0D] rounded-full flex items-center justify-center shadow-lg hover:bg-[#161A17] transition-colors"
       >
         <ChevronLeft size={16} />
       </button>
       <button
         onClick={handleNext}
-        className="absolute right-[-12px] top-1/2 -translate-y-1/2 w-8 h-8 bg-[#0C0E0D] rounded-full flex items-center justify-center shadow-lg hover:bg-[#152e52] transition-colors"
+        className="absolute right-[-12px] top-1/2 -translate-y-1/2 w-8 h-8 bg-[#0C0E0D] rounded-full flex items-center justify-center shadow-lg hover:bg-[#161A17] transition-colors"
       >
         <ChevronRight size={16} />
       </button>

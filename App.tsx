@@ -1,29 +1,87 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Dashboard } from './components/Dashboard';
-import { Login } from './components/Login';
+import React, { useState, useEffect, useRef, useCallback, Suspense } from 'react';
+import { lazyNamed } from './lib/lazyRetry';
+import { Login, errorDePortal } from './components/Login';
 import { Register } from './components/Register';
 import { EmailConfirmation } from './components/EmailConfirmation';
 import { OnboardingIntro } from './components/OnboardingIntro';
-import { OnboardingWizard } from './components/OnboardingWizard';
-import { PersonalOnboardingWizard } from './components/PersonalOnboardingWizard';
 import { LandingPage } from './components/LandingPage';
 import { RoleSelection } from './components/RoleSelection';
-import { DownloadAppModal } from './components/DownloadAppModal';
-import { PersonalDashboard } from './components/PersonalDashboard';
-import { AdminDashboard } from './components/AdminDashboard';
 import { ToastProvider } from './components/AdminPersonas/lib/toast';
-import { StaticPage } from './components/StaticPage'; // New Import
-import { EmailOtpGate, isOtpRemembered } from './components/EmailOtpGate';
-import { LogoConcepts } from './components/LogoConcepts';
+import { EmailOtpGate, deviceId, recuerdoLocal } from './components/EmailOtpGate';
+import { IdleGuard } from './components/IdleGuard';
 import { useDatabase } from './context/DatabaseContext';
 import { useSystemConfig } from './context/SystemConfigContext';
 import { useTheme } from './context/ThemeContext';
 import { isSupabaseConfigured } from './lib/supabaseClient';
 import { X, WifiOff } from 'lucide-react';
 
+// Los paneles se descargan solo al abrirse: la portada y el ingreso cargan
+// primero, livianos. Antes todo iba en un único archivo de 3 MB que en redes
+// lentas no terminaba de llegar y la página quedaba en negro.
+const Dashboard = lazyNamed(() => import('./components/Dashboard'), 'Dashboard');
+const OnboardingWizard = lazyNamed(() => import('./components/OnboardingWizard'), 'OnboardingWizard');
+const PersonalOnboardingWizard = lazyNamed(() => import('./components/PersonalOnboardingWizard'), 'PersonalOnboardingWizard');
+const PersonalDashboard = lazyNamed(() => import('./components/PersonalDashboard'), 'PersonalDashboard');
+const PersonaDashboard = lazyNamed(() => import('./components/PersonaDashboard'), 'PersonaDashboard');
+const ContadorDashboard = lazyNamed(() => import('./components/ContadorDashboard'), 'ContadorDashboard');
+const AdminDashboard = lazyNamed(() => import('./components/AdminDashboard'), 'AdminDashboard');
+const StaticPage = lazyNamed(() => import('./components/StaticPage'), 'StaticPage');
+const LogoConcepts = lazyNamed(() => import('./components/LogoConcepts'), 'LogoConcepts');
+
 // Added 'static-page' to ViewState
-type ViewState = 'landing' | 'role-selection' | 'login' | 'register' | 'confirmation' | 'onboarding-intro' | 'onboarding-wizard' | 'personal-onboarding-wizard' | 'dashboard' | 'personal-dashboard' | 'admin-dashboard' | 'static-page';
-type UserRole = 'business' | 'personal' | 'admin';
+type ViewState = 'landing' | 'role-selection' | 'login' | 'register' | 'confirmation' | 'onboarding-intro' | 'onboarding-wizard' | 'personal-onboarding-wizard' | 'dashboard' | 'personal-dashboard' | 'persona-dashboard' | 'contador-dashboard' | 'admin-dashboard' | 'static-page';
+// 'contador': cuenta de solo lectura atada a una empresa (Empresas → Contabilidad).
+type UserRole = 'business' | 'personal' | 'contador' | 'admin';
+
+// Cada rol tiene su panel. Persona y contador NO entran al de empresas.
+// El portal de Contabilidad no es un rol: es POR DÓNDE entró la cuenta
+// (Empresas → Contabilidad). Se recuerda en la sesión del navegador.
+const PORTAL_KEY = 'lincoin_portal';
+const portalActual = (): string => { try { return sessionStorage.getItem(PORTAL_KEY) ?? ''; } catch { return ''; } };
+const fijarPortal = (p: 'contabilidad' | null) => { try { if (p) sessionStorage.setItem(PORTAL_KEY, p); else sessionStorage.removeItem(PORTAL_KEY); } catch { /* sin storage */ } };
+const vistaDelRol = (role?: string): ViewState => {
+  if (role !== 'admin' && (role === 'contador' || portalActual() === 'contabilidad')) return 'contador-dashboard';
+  return role === 'personal' ? 'persona-dashboard' : 'personal-dashboard';
+};
+// Con Google la página vuelve a "/" y se pierde por qué portal se entró; la
+// pista queda en localStorage (la escribe loginWithGoogle) y vale 15 minutos.
+const PISTA_OAUTH = 'cuypay_oauth_role';
+const portalDeGoogle = (): 'business' | 'personal' | 'contador' | null => {
+  try {
+    const p = JSON.parse(localStorage.getItem(PISTA_OAUTH) || 'null');
+    if ((p?.role === 'personal' || p?.role === 'business' || p?.role === 'contador') && Date.now() - Number(p.at || 0) < 15 * 60_000) return p.role;
+  } catch { /* pista ilegible */ }
+  return null;
+};
+const borrarPistaGoogle = () => { try { localStorage.removeItem(PISTA_OAUTH); } catch { /* */ } };
+
+// Direcciones de las pantallas que maneja App (las del portal de empresas
+// las maneja el propio panel con el prefijo empresas_). La barra del
+// navegador dice dónde estás: /ingresar_personas, /portal_personas…
+const RUTAS_APP: Record<string, { view: ViewState; role?: UserRole }> = {
+  '/ingresar':               { view: 'role-selection' },
+  '/ingresar_personas':      { view: 'login', role: 'personal' },
+  '/ingresar_empresas':      { view: 'login', role: 'business' },
+  '/ingresar_contabilidad':  { view: 'login', role: 'contador' },
+  '/registro_personas':      { view: 'register', role: 'personal' },
+  '/registro_empresas':      { view: 'register', role: 'business' },
+  '/confirmar_correo':       { view: 'confirmation' },
+  '/portal_personas':        { view: 'persona-dashboard' },
+  '/personas_movimientos':   { view: 'persona-dashboard' },
+  '/personas_beneficiarios': { view: 'persona-dashboard' },
+  '/personas_ayuda':         { view: 'persona-dashboard' },
+  '/portal_contabilidad':    { view: 'contador-dashboard' },
+};
+const rutaDeVista = (view: ViewState, role: UserRole): string | null => {
+  if (view === 'landing') return '/';
+  if (view === 'login') return role === 'personal' ? '/ingresar_personas' : role === 'contador' ? '/ingresar_contabilidad' : '/ingresar_empresas';
+  if (view === 'register') return role === 'personal' ? '/registro_personas' : '/registro_empresas';
+  const hallada = Object.entries(RUTAS_APP).find(([, r]) => r.view === view && !r.role);
+  return hallada ? hallada[0] : null;
+};
+const rutaInicial = (): { view: ViewState; role?: UserRole } | null => {
+  try { return RUTAS_APP[window.location.pathname] ?? null; } catch { return null; }
+};
 
 const LEGACY_BLUES = ['#2563eb', '#1d4ed8', '#3b82f6', '#60a5fa', '#0ea5e9', '#06b6d4', '#7dd3fc', '#4f46e5', '#4b9fe1', '#1e40af'];
 
@@ -220,59 +278,132 @@ const App: React.FC = () => {
   // Nota: el routing de /admin-personas Y /admin-empresas se maneja en
   // index.tsx (apps aisladas con su propio login) — acá solo llega el
   // flujo de clientes.
-  const [currentView, setCurrentView] = useState<ViewState>('landing');
+  const [currentView, setCurrentView] = useState<ViewState>(() => rutaInicial()?.view ?? 'landing');
   const [staticPageKey, setStaticPageKey] = useState<string>('privacy'); // State for static page content
   const [email, setEmail] = useState('');
   const [showDashboardBanner, setShowDashboardBanner] = useState(false);
-  const [userRole, setUserRole] = useState<UserRole>('business');
+  const [userRole, setUserRole] = useState<UserRole>(() => {
+    const r = rutaInicial();
+    if (r?.role === 'contador' || r?.view === 'contador-dashboard') fijarPortal('contabilidad');
+    return r?.role ?? 'business';
+  });
+  // Mensaje del portal equivocado ("esta cuenta es de Empresas…"): lo pone
+  // la guarda de abajo y lo muestra la pantalla de Login.
+  const [errorPortal, setErrorPortal] = useState<string | null>(null);
+  // Momento del último rechazo por portal. Sirve para que nada que venga
+  // "atrasado" del ingreso (el aviso de éxito del 2FA, el salto al panel)
+  // pise la pantalla del mensaje y termine en el inicio sin explicación.
+  const rechazoPortalRef = useRef(0);
+  const rechazoReciente = () => Date.now() - rechazoPortalRef.current < 10_000;
+  // Portal por el que se está entrando: la pantalla de ingreso lo sabe; al
+  // volver de Google (la página cae en "/") lo dice la pista guardada.
+  const portalEnCursoAhora = (): UserRole => (currentView === 'login' ? userRole : (portalDeGoogle() ?? userRole));
+
+  // Vista ↔ dirección para las pantallas de App. El portal de empresas
+  // escribe las suyas (empresas_*); acá no se toca esa vista.
+  useEffect(() => {
+    const path = rutaDeVista(currentView, userRole);
+    if (!path) return;
+    try {
+      // 'landing' es la vista inicial mientras se restaura la sesión: si la
+      // dirección es la de una pantalla del portal (/empresas_movimientos…),
+      // se deja quieta para que la recarga caiga donde estabas.
+      if (currentView === 'landing' && !RUTAS_APP[window.location.pathname]) return;
+      // La dirección actual ya es una pantalla de esta misma vista (p. ej.
+      // /personas_movimientos dentro del portal Personas): se respeta.
+      if (RUTAS_APP[window.location.pathname]?.view === currentView) return;
+      if (window.location.pathname !== path) window.history.pushState({ view: currentView }, '', path);
+    } catch { /* sin history */ }
+  }, [currentView, userRole]);
+  useEffect(() => {
+    const onPop = () => {
+      const r = RUTAS_APP[window.location.pathname];
+      if (r) { if (r.role) setUserRole(r.role); setCurrentView(r.view); }
+      else if (window.location.pathname === '/') setCurrentView(v => (['role-selection', 'login', 'register'].includes(v) ? 'landing' : v));
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
   
   // Marketing Modal State
   const [showMarketingModal, setShowMarketingModal] = useState(false);
-  const [showPersonalDownloadModal, setShowPersonalDownloadModal] = useState(false);
 
-  const { currentUser, isAuthLoading, logoutUser, isPasswordRecovery, setNewPassword, mfaPending } = useDatabase();
+  const { currentUser, isAuthLoading, logoutUser, isPasswordRecovery, setNewPassword, mfaPending, ultimoCierre } = useDatabase();
   const { config } = useSystemConfig();
   // Verificación por correo (2 pasos) tras el login. Se pasa una vez por
   // sesión; "recordar dispositivo" la evita por 30 días en este navegador.
+  // ¿Hay que pedir el código del correo? Lo decide el SERVIDOR, que lleva la
+  // lista de dispositivos de confianza. Antes lo decidía una fecha guardada en
+  // el navegador, y bastaba con que algo limpiara el almacenamiento para que
+  // el código se pidiera otra vez en cada ingreso.
+  //
+  // 'null' = todavía no se sabe. Mientras no se sepa NO se muestra la puerta:
+  // enseñarla y quitarla medio segundo después es peor que esperar, y además
+  // dispararía el envío de un código que no hacía falta.
   const [otpPassed, setOtpPassed] = useState(false);
-  useEffect(() => { setOtpPassed(false); }, [currentUser?.id]);
-  const needsEmailOtp = !!currentUser && currentUser.role !== 'admin' && !otpPassed && !isOtpRemembered(currentUser.id);
-  const [inactivityWarning, setInactivityWarning] = useState(false);
-  const inactivityTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const warningTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const INACTIVE_LOGOUT_MS = 5 * 60 * 1000;   // 5 minutes
-  const INACTIVE_WARNING_MS = 4 * 60 * 1000;   // warn at 4 minutes
-
-  const resetInactivityTimer = useCallback(() => {
-    if (!currentUser) return;
-    setInactivityWarning(false);
-    if (inactivityTimer.current) clearTimeout(inactivityTimer.current);
-    if (warningTimer.current) clearTimeout(warningTimer.current);
-    warningTimer.current = setTimeout(() => setInactivityWarning(true), INACTIVE_WARNING_MS);
-    inactivityTimer.current = setTimeout(() => {
-      logoutUser();
-      setCurrentView('landing');
-      setInactivityWarning(false);
-    }, INACTIVE_LOGOUT_MS);
-  }, [currentUser, logoutUser]);
-
+  const [deviceTrusted, setDeviceTrusted] = useState<boolean | null>(null);
   useEffect(() => {
-    if (!currentUser) {
-      if (inactivityTimer.current) clearTimeout(inactivityTimer.current);
-      if (warningTimer.current) clearTimeout(warningTimer.current);
-      setInactivityWarning(false);
-      return;
-    }
-    const events = ['mousemove', 'keydown', 'click', 'scroll', 'touchstart'];
-    events.forEach(e => window.addEventListener(e, resetInactivityTimer, { passive: true }));
-    resetInactivityTimer();
-    return () => {
-      events.forEach(e => window.removeEventListener(e, resetInactivityTimer));
-      if (inactivityTimer.current) clearTimeout(inactivityTimer.current);
-      if (warningTimer.current) clearTimeout(warningTimer.current);
-    };
-  }, [currentUser, resetInactivityTimer]);
+    setOtpPassed(false);
+    const uid = currentUser?.id;
+    if (!uid || currentUser?.role === 'admin') { setDeviceTrusted(true); return; }
+    let vivo = true;
+    setDeviceTrusted(null);
+    (async () => {
+      try {
+        const SURL = (import.meta as any).env?.VITE_SUPABASE_URL || '';
+        const SKEY = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '';
+        const r = await fetch(`${SURL}/functions/v1/email-otp`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${SKEY}` },
+          body: JSON.stringify({ action: 'is_trusted', userId: uid, email: currentUser?.email, deviceId: deviceId() }),
+        });
+        const d = await r.json();
+        if (!vivo) return;
+        // Si el servidor NO conoce esta acción, la versión desplegada es
+        // anterior a este cambio: entonces manda la marca local de siempre.
+        // Sin esto, el navegador nuevo contra el servidor viejo pedía el
+        // código en cada ingreso — el arreglo empeoraba el problema.
+        if (d?.error === 'bad_action' || !r.ok) { setDeviceTrusted(recuerdoLocal(uid)); return; }
+        setDeviceTrusted(!!d?.trusted);
+      } catch {
+        // Sin respuesta, el respaldo local. Si tampoco hay marca, se pide el
+        // código: no saber si el dispositivo es de confianza no es lo mismo
+        // que saber que lo es.
+        if (vivo) setDeviceTrusted(recuerdoLocal(uid));
+      }
+    })();
+    return () => { vivo = false; };
+  }, [currentUser?.id, currentUser?.role, currentUser?.email]);
+  const needsEmailOtp = !!currentUser && currentUser.role !== 'admin' && !otpPassed && deviceTrusted === false;
+  // Inactividad. El reloj y el aviso viven en IdleGuard: acá solo se dice
+  // cuánto se espera y qué hacer cuando se acaba.
+  //
+  // Lo que había eran dos setTimeout en memoria, y por eso la sesión no se
+  // cerraba nunca: el navegador congela los temporizadores de las pestañas de
+  // fondo (en el móvil basta con bloquear la pantalla), así que el que iba a
+  // cerrar a los cinco minutos no llegaba a disparar; y si se cerraba la
+  // pestaña, desaparecía — al volver, la sesión se restauraba como si nada.
+  const INACTIVE_LOGOUT_MS = 5 * 60 * 1000;
+  const INACTIVE_WARNING_MS = 60 * 1000;   // avisa cuando falta 1 minuto
+
+  const cerrarPorInactividad = useCallback(async () => {
+    // El login al que se vuelve es el del PORTAL en el que estabas: una
+    // persona vuelve a Personas y un contador a Contabilidad. Antes caía
+    // siempre en el de Empresas, porque ese es el rol por defecto.
+    const rol = currentUser?.role;
+    const portal = portalActual();
+    // Se ESPERA a que la sesión quede cerrada antes de cambiar de vista. Si se
+    // hacen las dos cosas a la vez, por un momento hay usuario y la vista es
+    // 'landing', que es justo la condición del splash: se veía "Verificando
+    // sesión" en el momento en que la sesión se estaba cerrando — lo contrario
+    // de lo que pasaba.
+    await logoutUser('inactividad');
+    setUserRole(portal === 'contabilidad' ? 'contador' : rol === 'personal' ? 'personal' : 'business');
+    setErrorPortal('Tu sesión se cerró por inactividad. Vuelve a entrar.');
+    // Y se va al LOGIN, no a la portada: si la sesión venció hay que volver a
+    // entrar con correo y contraseña (o Google), y eso se pide acá.
+    setCurrentView('login');
+  }, [logoutUser, currentUser?.role]);
 
   // Restore Session Logic with Enhanced KYC Routing
   useEffect(() => {
@@ -284,31 +415,68 @@ const App: React.FC = () => {
         return;
       }
 
+      // ── GUARDA DE PORTAL ──────────────────────────────────────────────
+      // Cada portal es para su tipo de cuenta. La sesión la abre el listener
+      // de Supabase ANTES de que la pantalla de Login pueda revisar el rol,
+      // y este efecto mandaba derecho al panel del rol: una cuenta de
+      // Empresas que entraba por Personas (con o sin 2FA, o con Google)
+      // terminaba adentro. Ahora, si hay una pantalla de ingreso de un
+      // portal en curso —o se acaba de volver de Google con la pista del
+      // portal—, se compara con el rol de la cuenta y, si no corresponde,
+      // se cierra la sesión y se muestra por dónde debe entrar.
+      const pistaGoogle = portalDeGoogle();
+      // Volviendo de Google por Contabilidad: la sesión va al portal del
+      // contador, no al panel de su cuenta (cualquier cuenta no admin entra).
+      if (pistaGoogle === 'contador') fijarPortal('contabilidad');
+      const portalEnCurso: UserRole | null = currentView === 'login' ? userRole : pistaGoogle;
+      if (portalEnCurso && portalEnCurso !== 'admin') {
+        const mal = errorDePortal(portalEnCurso, currentUser.role);
+        if (mal) {
+          rechazoPortalRef.current = Date.now();
+          borrarPistaGoogle();
+          fijarPortal(null);
+          setErrorPortal(mal);
+          setUserRole(portalEnCurso);
+          setCurrentView('login');
+          logoutUser('portal equivocado');
+          return;
+        }
+      }
+      if (pistaGoogle) borrarPistaGoogle();
+
       // Check if we are currently in a registration flow to prevent premature redirection.
       const isInAuthFlow = ['register', 'confirmation', 'role-selection'].includes(currentView);
-      
+
+      const vista = vistaDelRol(currentUser.role);
       if (currentUser.kycStatus === 'pending' || currentUser.kycStatus === 'in_progress' || currentUser.kycStatus === 'in_review' || currentUser.kycStatus === 'rejected') {
-          // Both personal and business users go straight to their dashboard.
-          // The KYC/KYB banner inside the dashboard handles verification.
-          // Dashboard UNIFICADO: empresas y personas usan la misma vista
-          // (personal-dashboard) — el badge BUSINESS distingue a las empresas.
-          const safeViews = ['dashboard', 'personal-dashboard'];
-          if (!safeViews.includes(currentView)) {
-              setCurrentView('personal-dashboard');
-          }
+          // Cada rol va derecho a SU panel; el banner de KYC/KYB vive adentro.
+          if (currentView !== vista) setCurrentView(vista);
           return;
       }
 
       // Allow staying on static pages even if logged in, otherwise redirect to dashboard
       if ((currentView === 'landing' || currentView === 'login' || !isInAuthFlow) && currentView !== 'static-page') {
-          // Dashboard unificado para personas y empresas
-          setCurrentView('personal-dashboard');
+          if (currentView !== vista) setCurrentView(vista);
       }
     } else if (!isAuthLoading) {
         // Only redirect if auth has fully settled (not in the middle of session restore)
-        const protectedViews = ['dashboard', 'personal-dashboard', 'admin-dashboard', 'onboarding-wizard', 'onboarding-intro', 'personal-onboarding-wizard'];
+        const protectedViews = ['dashboard', 'personal-dashboard', 'persona-dashboard', 'contador-dashboard', 'admin-dashboard', 'onboarding-wizard', 'onboarding-intro', 'personal-onboarding-wizard'];
         if (protectedViews.includes(currentView)) {
-            const t = setTimeout(() => setCurrentView('landing'), 1500);
+            // La sesión desapareció estando en un panel. NUNCA se manda al
+            // inicio en silencio: se vuelve al Login del portal de ese panel
+            // y se dice por qué (portal equivocado, inactividad, o lo que
+            // haya anotado el cierre). Antes caía en la portada sin
+            // explicación y parecía que "no deja entrar".
+            const portalDelPanel: UserRole = currentView === 'persona-dashboard' ? 'personal' : currentView === 'contador-dashboard' ? 'contador' : 'business';
+            const panel = currentView === 'persona-dashboard' ? 'Personas' : currentView === 'contador-dashboard' ? 'Contabilidad' : currentView === 'personal-dashboard' ? 'Empresas' : currentView;
+            const motivo = `${ultimoCierre() ?? 'sin motivo anotado'} · panel ${panel}`;
+            const t = setTimeout(() => {
+              if (!rechazoReciente()) {
+                setUserRole(portalDelPanel);
+                setErrorPortal(prev => prev ?? `Tu sesión se cerró antes de abrir el panel (${motivo}). Vuelve a entrar; si se repite, escríbenos a soporte.`);
+              }
+              setCurrentView('login');
+            }, rechazoReciente() ? 0 : 800);
             return () => clearTimeout(t);
         }
     }
@@ -326,24 +494,19 @@ const App: React.FC = () => {
 
   // Navigation handlers
   const navigateToRegister = (role?: UserRole) => {
-    // Personal accounts only via mobile app — show download modal instead
-    if (role === 'personal') {
-        setShowPersonalDownloadModal(true);
-        return;
-    }
     if (role && role !== 'admin') setUserRole(role);
 
     if (currentUser) {
-        logoutUser();
+        logoutUser('ir al registro con sesión abierta');
         setTimeout(() => setCurrentView('register'), 50);
     } else {
         setCurrentView('register');
     }
   };
   
-  const navigateToLogin = () => setCurrentView('role-selection');
-  
-  const navigateToLanding = () => setCurrentView('landing');
+  const navigateToLogin = () => { setErrorPortal(null); setCurrentView('role-selection'); };
+
+  const navigateToLanding = () => { setErrorPortal(null); setCurrentView('landing'); };
 
   // Handler to navigate to static pages
   const navigateToStaticPage = (pageKey: string) => {
@@ -353,13 +516,29 @@ const App: React.FC = () => {
   };
   
   const handleBusinessSelected = () => {
+    fijarPortal(null);
+    setErrorPortal(null);
     setUserRole('business');
     setCurrentView('login');
   };
   
+  // Personas entra por la web como cualquier cuenta: su panel es el de
+  // Persona (solo COP por ahora). Antes mandaba a descargar la app.
   const handlePersonalSelected = () => {
-    // Personal accounts only via mobile app — show download modal instead
-    setShowPersonalDownloadModal(true);
+    fijarPortal(null);
+    setErrorPortal(null);
+    setUserRole('personal');
+    setCurrentView('login');
+  };
+
+  // Empresas → Contabilidad: el contador entra con su propia cuenta (la que
+  // sea) y luego escribe el ID de la empresa. Se recuerda el portal para
+  // que la sesión caiga en Contabilidad y no en el panel de su cuenta.
+  const handleContadorSelected = () => {
+    fijarPortal('contabilidad');
+    setErrorPortal(null);
+    setUserRole('contador');
+    setCurrentView('login');
   };
 
   const handleRegisterSuccess = (registeredEmail: string) => {
@@ -371,16 +550,26 @@ const App: React.FC = () => {
   // (el badge BUSINESS distingue a las empresas). Solo admin va aparte.
   const handleLoginSuccess = (role?: UserRole) => {
     setShowDashboardBanner(false);
+    // La guarda de portal ya rechazó este ingreso: este aviso llega tarde
+    // (el 2FA avisa "éxito" después de que la sesión ya se cerró). No abre
+    // ningún panel; se queda en el Login con el mensaje.
+    if (rechazoReciente()) { setCurrentView('login'); return; }
     if (role === 'admin') {
       // El login de clientes no abre el panel admin: portal dedicado.
       window.location.replace('/admin-empresas');
       return;
     }
-    setCurrentView('personal-dashboard');
+    // Segunda barrera (la primera es la guarda del efecto de sesión): el
+    // portal por el que se entró tiene que ser el de la cuenta.
+    const portal = portalEnCursoAhora();
+    const mal = portal !== 'admin' ? errorDePortal(portal, role) : null;
+    if (mal) { rechazoPortalRef.current = Date.now(); borrarPistaGoogle(); setErrorPortal(mal); setUserRole(portal); setCurrentView('login'); logoutUser('portal equivocado'); return; }
+    setErrorPortal(null);
+    setCurrentView(vistaDelRol(role));
   };
 
   const handleEmailValidated = () => {
-    setCurrentView('personal-dashboard');
+    setCurrentView(vistaDelRol(currentUser?.role ?? userRole));
   };
 
   const handleIntroContinue = () => {
@@ -389,16 +578,18 @@ const App: React.FC = () => {
 
   const handleOnboardingComplete = () => {
     setShowDashboardBanner(true);
-    // Dashboard unificado para todos los roles no-admin
-    setCurrentView('personal-dashboard');
+    setCurrentView(vistaDelRol(currentUser?.role ?? userRole));
   };
 
   const [loggingOut, setLoggingOut] = useState(false);
 
   const handleLogout = async () => {
     setLoggingOut(true);
-    await logoutUser();
+    await logoutUser('botón Salir del panel');
     setLoggingOut(false);
+    // Al salir, la dirección vuelve al inicio: no se queda en /empresas_….
+    try { window.history.replaceState({}, '', '/'); } catch { /* sin history */ }
+    fijarPortal(null);
     setCurrentView('landing');
   };
 
@@ -409,9 +600,15 @@ const App: React.FC = () => {
       // vista estemos. Antes, tras el redirect de Google caía en 'landing' y el
       // 2FA no se montaba, así que había que darle "Ingresar" otra vez.
       if (mfaPending) {
+        // Al volver de Google la página cae en "/" y userRole es el de
+        // siempre (Empresas): el portal real lo dice la pista de Google.
+        // Sin esto, la pantalla del código revisaba el rol contra el portal
+        // equivocado y dejaba pasar (o mandaba al inicio sin mensaje).
+        const portalMfa = portalEnCursoAhora();
         return (
           <Login
-            userRole={userRole !== 'admin' ? userRole : 'business'}
+            userRole={portalMfa !== 'admin' ? portalMfa : 'business'}
+            errorInicial={errorPortal}
             onRegisterClick={() => navigateToRegister(userRole !== 'admin' ? userRole : 'business')}
             onLoginSuccess={handleLoginSuccess}
             onBack={navigateToLanding}
@@ -444,16 +641,19 @@ const App: React.FC = () => {
               />
               <RoleSelection 
                  onSelectBusiness={handleBusinessSelected}
+                 onSelectContador={handleContadorSelected}
                  onSelectPersonal={handlePersonalSelected}
+                 onRegisterPersonal={() => navigateToRegister('personal')}
                  onClose={navigateToLanding}
               />
             </>
           );
         case 'login':
           return (
-            <Login 
+            <Login
               userRole={userRole !== 'admin' ? userRole : 'business'}
-              onRegisterClick={() => navigateToRegister(userRole !== 'admin' ? userRole : 'business')} 
+              errorInicial={errorPortal}
+              onRegisterClick={() => navigateToRegister(userRole !== 'admin' ? userRole : 'business')}
               onLoginSuccess={handleLoginSuccess}
               onBack={navigateToLanding}
             />
@@ -461,7 +661,8 @@ const App: React.FC = () => {
         case 'register':
           return (
             <Register 
-              userRole={userRole !== 'admin' ? userRole : 'business'}
+              userRole={userRole === 'business' ? 'business' : 'personal'}
+              esContador={userRole === 'contador'}
               onSuccess={handleRegisterSuccess} 
               onLoginClick={navigateToLogin}
               onBack={navigateToLanding}
@@ -497,6 +698,14 @@ const App: React.FC = () => {
             return (
                 <PersonalDashboard onLogout={handleLogout} />
             );
+        case 'persona-dashboard':
+            return (
+                <PersonaDashboard onLogout={handleLogout} />
+            );
+        case 'contador-dashboard':
+            return (
+                <ContadorDashboard onLogout={handleLogout} />
+            );
         case 'admin-dashboard':
             return (
                 <ToastProvider>
@@ -508,10 +717,12 @@ const App: React.FC = () => {
       }
   };
 
-  if (window.location.pathname === '/logos') return <LogoConcepts />;
+  // Página de bocetos de marca. Solo en desarrollo: es material de trabajo
+  // interno, no algo que deba servirse en el dominio de una fintech.
+  if (import.meta.env.DEV && window.location.pathname === '/logos') return <Suspense fallback={<SplashScreen />}><LogoConcepts /></Suspense>;
 
   // Show branded splash while auth loads OR while transitioning from landing → dashboard
-  if (isAuthLoading || (currentUser && currentView === 'landing')) {
+  if (isAuthLoading || (currentUser && currentView === 'landing') || (!!currentUser && currentUser.role !== 'admin' && deviceTrusted === null)) {
     return <SplashScreen />;
   }
 
@@ -525,9 +736,9 @@ const App: React.FC = () => {
             userId={currentUser!.id}
             email={currentUser!.email}
             onVerified={() => setOtpPassed(true)}
-            onLogout={logoutUser}
+            onLogout={() => logoutUser('salir desde la verificación por correo')}
           />
-        ) : renderView()}
+        ) : <Suspense fallback={<SplashScreen />}>{renderView()}</Suspense>}
 
         {/* LOGOUT OVERLAY */}
         {loggingOut && (
@@ -537,14 +748,13 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* INACTIVITY WARNING BANNER */}
-        {inactivityWarning && currentUser && (
-          <div className="fixed bottom-0 left-0 right-0 z-[200] bg-amber-500 text-white text-sm text-center py-3 px-4 flex items-center justify-center gap-3 shadow-lg">
-            <span>⚠️ Tu sesión se cerrará en 1 minuto por inactividad.</span>
-            <button onClick={resetInactivityTimer} className="bg-white text-amber-600 font-bold px-3 py-1 rounded-lg text-xs hover:bg-amber-50 transition-colors">
-              Continuar sesión
-            </button>
-          </div>
+        {/* Cierre por inactividad. Solo con sesión abierta. */}
+        {currentUser && (
+          <IdleGuard
+            limiteMs={INACTIVE_LOGOUT_MS}
+            avisoMs={INACTIVE_WARNING_MS}
+            onCerrar={cerrarPorInactividad}
+          />
         )}
 
         {/* OFFLINE MODE BANNER — shown when VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY are not set */}
@@ -553,11 +763,6 @@ const App: React.FC = () => {
             <WifiOff size={14} />
             <span>Modo offline — las variables de entorno de Supabase no están configuradas. Las transacciones solo se guardan localmente.</span>
           </div>
-        )}
-
-        {/* DOWNLOAD APP MODAL — when user tries to access Personas via web */}
-        {showPersonalDownloadModal && (
-            <DownloadAppModal onClose={() => setShowPersonalDownloadModal(false)} />
         )}
 
         {/* GLOBAL MARKETING MODAL */}

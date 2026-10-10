@@ -71,15 +71,18 @@
     <!-- Tailwind ahora se COMPILA en el build de Vite (tailwind.config.js
          + index.css). Nada de cdn.tailwindcss.com: los estilos viajan en
          el bundle y funcionan igual en redes corporativas filtradas. -->
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <!-- Las fuentes no frenan el primer pintado: se aplican cuando llegan. -->
+    <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
     <!-- reCAPTCHA v3 — desactivado hasta registrar una llave válida para el
          dominio de Lincoin. Si se quiere activar: crear site key en
          https://www.google.com/recaptcha/admin para lincoln-psi.vercel.app y
          cargar el script con esa llave (o setearla en el admin → recaptchaSiteKey). -->
     <style>
       body {
-        font-family: 'Inter', sans-serif;
+        font-family: 'Archivo', system-ui, sans-serif;
         background-color: #070808;
         color: #F4F4F2;
       }
@@ -93,7 +96,7 @@
       /* Custom scrollbar for sidebar */
       .sidebar-scroll::-webkit-scrollbar { width: 6px; }
       .sidebar-scroll::-webkit-scrollbar-track { background: transparent; }
-      .sidebar-scroll::-webkit-scrollbar-thumb { background-color: #cbd5e1; border-radius: 20px; }
+      .sidebar-scroll::-webkit-scrollbar-thumb { background-color: rgba(255,255,255,0.12); border-radius: 20px; }
 
       /* ── Scroll reveal ── */
       .reveal {
@@ -191,20 +194,132 @@
       /* Number counter glow */
       .stat-glow { text-shadow: 0 0 20px rgba(45,212,191,.4); }
     </style>
-  <script type="importmap">
-{
-  "imports": {
-    "react": "https://esm.sh/react@^19.2.3",
-    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
-    "react/": "https://esm.sh/react@^19.2.3/",
-    "lucide-react": "https://esm.sh/lucide-react@^0.561.0",
-    "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@2"
-  }
-}
-</script>
+    <!-- Acá había un importmap que apuntaba react, react-dom, lucide-react y
+         supabase-js a esm.sh. El bundle no lo usa (Vite resuelve todo en el
+         build), pero seguía publicado: cualquier import dinámico de un
+         especificador suelto habría cargado código de un tercero con acceso
+         total a la página, token de sesión incluido. -->
 </head>
   <body>
-    <div id="root"></div>
+    <!-- Pantalla de carga en HTML puro: se ve apenas llega la página, antes
+         de que baje el código de la app (en redes lentas eso tarda). React la
+         reemplaza al montar. El contador lo actualiza el script de abajo. -->
+    <div id="root"><div id="lc-splash" style="position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;background:#0C0E0D">
+      <div style="font-family:Archivo,system-ui,sans-serif;font-weight:800;letter-spacing:-1px;font-size:clamp(44px,12vw,64px);line-height:1;color:#F4F4F2">Lincoin<span style="color:#4ADE80">.</span></div>
+      <div id="lc-splash-txt" style="font-family:Archivo,system-ui,sans-serif;font-size:12px;letter-spacing:2px;text-transform:uppercase;color:rgba(244,244,242,0.45)">Cargando</div>
+      <div style="width:160px;height:3px;border-radius:3px;background:rgba(255,255,255,0.08);overflow:hidden"><div id="lc-splash-bar" style="width:4%;height:100%;background:#4ADE80;transition:width .4s ease"></div></div>
+    </div></div>
+    <!-- Red de seguridad: si la app no llega a pintar nada (error al cargar el
+         código, archivo que no llegó), en vez de una pantalla negra muda se
+         muestra qué pasó y un botón para recargar. Va antes del bundle para
+         capturar también los errores de carga del propio bundle. -->
+    <script>
+      (function () {
+        var errores = [];
+        // Reintento automático: si un archivo de la app no llega (red lenta que
+        // corta la descarga), se recarga sola hasta 4 veces. Lo que ya bajó
+        // queda en caché (los /assets/ son inmutables), así que cada intento
+        // solo trae lo que faltó.
+        var CLAVE = 'lc_boot_retry', MAX = 4, recargando = false;
+        function intentos() { try { return +(sessionStorage.getItem(CLAVE) || 0); } catch (x) { return MAX; } }
+        // Copia MALA en la caché del navegador: si alguna vez el servidor
+        // respondió a un /assets/ con la página HTML (archivo de otra versión,
+        // justo durante un despliegue) y esa respuesta quedó guardada como
+        // "inmutable", recargar no sirve: el navegador vuelve a usar la copia
+        // mala sin preguntar. Se piden de nuevo a la red todos los archivos de
+        // la app con cache:'reload', que reemplaza la copia guardada, y recién
+        // después se recarga.
+        function refrescarCache() {
+          var urls = [];
+          var els = document.querySelectorAll('script[src*="/assets/"], link[href*="/assets/"]');
+          for (var i = 0; i < els.length; i++) urls.push(els[i].src || els[i].href);
+          if (!window.fetch || !window.Promise || !urls.length) return Promise.resolve();
+          var todos = Promise.all(urls.map(function (u) { return fetch(u, { cache: 'reload', credentials: 'same-origin' }).then(function (r) { return r.arrayBuffer(); }).catch(function () { /* */ }); }));
+          return Promise.race([todos, new Promise(function (ok) { setTimeout(ok, 25000); })]);
+        }
+        window.__lcRefrescar = refrescarCache;
+        function reintentar() {
+          if (recargando) return;
+          var n = intentos();
+          if (n >= MAX) return;
+          recargando = true;
+          try { sessionStorage.setItem(CLAVE, String(n + 1)); } catch (x) { return; }
+          refrescarCache().then(function () { setTimeout(function () { location.reload(); }, 300); });
+        }
+        window.addEventListener('error', function (e) {
+          var t = e && e.target;
+          if (t && t !== window && (t.src || t.href) && /\/assets\//.test(t.src || t.href || '')) reintentar();
+          if (t && t !== window && (t.src || t.href)) errores.push('No cargó: ' + (t.src || t.href));
+          else errores.push((e.message || 'Error') + (e.filename ? ' (' + e.filename.split('/').pop() + ':' + e.lineno + ')' : ''));
+        }, true);
+        window.addEventListener('unhandledrejection', function (e) {
+          var r = e && e.reason;
+          errores.push('Promesa: ' + (r && (r.message || r)));
+        });
+        // La app arrancó: se limpia el contador para la próxima vez.
+        var limpiar = setInterval(function () { if (montada()) { try { sessionStorage.removeItem(CLAVE); } catch (x) { /* */ } clearInterval(limpiar); } }, 1000);
+        function montada() { var r = document.getElementById('root'); return !!(r && r.childElementCount > 0 && !document.getElementById('lc-splash') && (r.innerText || '').trim().length > 0); }
+        // Avance de la descarga en la pantalla de carga: archivos de la app
+        // que ya llegaron sobre los que pide la página.
+        var avance = setInterval(function () {
+          var txt = document.getElementById('lc-splash-txt'), bar = document.getElementById('lc-splash-bar');
+          if (!txt || !bar) { clearInterval(avance); return; }
+          var pedidos = document.querySelectorAll('script[type="module"][src*="/assets/"], link[rel="modulepreload"][href*="/assets/"]').length || 1;
+          var listos = (performance.getEntriesByType ? performance.getEntriesByType('resource') : []).filter(function (x) { return /\/assets\/.*\.js/.test(x.name) && x.responseEnd > 0 && !/diag=/.test(x.name); }).length;
+          listos = Math.min(listos, pedidos);
+          var n = intentos();
+          txt.textContent = 'Cargando ' + listos + ' de ' + pedidos + (n ? ' · intento ' + (n + 1) : '');
+          bar.style.width = Math.max(4, Math.round(listos / pedidos * 100)) + '%';
+        }, 400);
+        function mostrar() {
+          if (montada() || document.getElementById('lc-fallo')) return;
+          var js = (performance.getEntriesByType ? performance.getEntriesByType('resource') : []).filter(function (x) { return /\/assets\/.*\.js/.test(x.name); });
+          var info = js.length ? js.map(function (x) { return x.name.split('/').pop() + ' · ' + Math.round(x.duration) + ' ms · ' + (x.transferSize || x.encodedBodySize || 0) + ' B'; }) : ['El código de la app no llegó a descargarse.'];
+          var d = document.createElement('div');
+          d.id = 'lc-fallo';
+          d.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px;background:#070808;font-family:Archivo,system-ui,sans-serif;color:#F4F4F2';
+          d.innerHTML = '<div style="max-width:440px;width:100%;background:#0C0E0D;border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:24px">'
+            + '<div style="font-weight:800;letter-spacing:-0.6px;font-size:22px">Lincoin<span style="color:#4ADE80">.</span></div>'
+            + '<p style="font-size:15px;font-weight:700;margin:16px 0 6px">La página no terminó de cargar</p>'
+            + '<p style="font-size:13px;color:#878E88;margin:0 0 14px;line-height:1.5">' + (intentos() >= MAX ? 'Se intentó ' + MAX + ' veces. Tu conexión está cortando la descarga: prueba con otra red (datos móviles u otro Wi-Fi). Si sigue igual, envía una captura de esta pantalla a soporte.' : 'Recarga la página. Si sigue igual, envía una captura de esta pantalla a soporte.') + '</p>'
+            + '<pre id="lc-fallo-det" style="font-size:11px;color:rgba(244,244,242,0.6);background:#121413;border-radius:10px;padding:10px;white-space:pre-wrap;word-break:break-all;max-height:180px;overflow:auto;margin:0 0 14px"></pre>'
+            + '<button onclick="try{sessionStorage.removeItem(\'lc_boot_retry\')}catch(x){};this.disabled=true;this.textContent=\'Recargando…\';(window.__lcRefrescar?window.__lcRefrescar():Promise.resolve()).then(function(){location.reload()})"style="width:100%;padding:12px;border:none;border-radius:10px;background:#F4F4F2;color:#0C0E0D;font-weight:700;font-size:14px;cursor:pointer">Recargar</button></div>';
+          document.body.appendChild(d);
+          // Prueba directa del archivo principal: cuánto llega, cada segundo.
+          // Distingue "lento", "detenido" y "el servidor respondió con error".
+          var prueba = 'Probando la descarga…';
+          var sc = document.querySelector('script[type="module"][src]');
+          var url = sc && sc.src;
+          if (url && window.fetch) {
+            var t0 = Date.now(), bytes = 0;
+            fetch(url + (url.indexOf('?') < 0 ? '?' : '&') + 'diag=' + t0, { cache: 'no-store' }).then(function (res) {
+              prueba = 'HTTP ' + res.status + ' · ' + (res.headers.get('content-type') || '?') + ' · ' + (res.headers.get('content-length') || '?') + ' B esperados';
+              var base = prueba;
+              if (!res.body || !res.body.getReader) return res.text().then(function (x) { prueba = base + ' · llegó ' + x.length + ' B en ' + (Date.now() - t0) + ' ms'; });
+              var rd = res.body.getReader();
+              var paso = function () { return rd.read().then(function (r) { if (r.done) { prueba = base + ' · COMPLETO ' + bytes + ' B en ' + (Date.now() - t0) + ' ms'; return; } bytes += r.value.length; prueba = base + ' · van ' + bytes + ' B en ' + Math.round((Date.now() - t0) / 1000) + ' s'; return paso(); }); };
+              return paso();
+            }).catch(function (e) { prueba = 'La descarga falló: ' + (e && e.message || e) + ' tras ' + (Date.now() - t0) + ' ms'; });
+          }
+          var pintar = function () {
+            var js2 = (performance.getEntriesByType ? performance.getEntriesByType('resource') : []).filter(function (x) { return /\/assets\//.test(x.name); }).map(function (x) { return x.name.split('/').pop() + ' · ' + Math.round(x.duration) + ' ms · ' + (x.transferSize || x.encodedBodySize || 0) + ' B'; });
+            document.getElementById('lc-fallo-det').textContent = (errores.length ? errores.slice(-6) : ['Sin errores registrados.'])
+              .concat(js2.length ? js2 : info, ['Archivo: ' + (url ? url.split('/').pop() : 'no encontrado'), prueba, navigator.userAgent, 'Inicio ' + new Date(performance.timeOrigin || Date.now()).toISOString(), 'Ahora ' + new Date().toISOString()]).join('\n');
+          };
+          pintar();
+          var i = setInterval(function () { if (montada()) { d.remove(); clearInterval(i); return; } pintar(); }, 1000);
+        }
+        // El cuadro de error sale solo si la carga de verdad falló: se agotaron
+        // los reintentos, o pasaron 90 s sin que la app arranque. Una red lenta
+        // que sí avanza sigue mostrando la pantalla de carga con su avance.
+        var t0 = Date.now();
+        var vigia = setInterval(function () {
+          if (montada()) { clearInterval(vigia); return; }
+          var fallo = intentos() >= MAX && errores.some(function (x) { return /^No cargó/.test(x); });
+          if (fallo || Date.now() - t0 > 90000) { clearInterval(vigia); mostrar(); }
+        }, 2000);
+      })();
+    </script>
     <script type="module" src="/index.tsx?v=20260629d"></script>
   </body>
 </html>

@@ -32,9 +32,15 @@ export async function callFinity(action: string, userId: string, extra: Record<s
             // cliente resuelve como él mismo (inscribir cuenta externa). Sin
             // JWT cae a la anon key. Antes iba siempre con la anon key, lo que
             // permitía crear retiros con solo la llave pública + un user_id.
-            headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: myAuthHeader() },
+            // Con sesión VIGENTE: el token guardado puede estar vencido (app
+            // en segundo plano en el celular) y el proxy contestaba
+            // "unauthorized" — la inscripción no le llegaba a Finity.
+            headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: await authVigente() },
             body: JSON.stringify({ action, user_id: userId, ...extra }),
-            signal: AbortSignal.timeout(30000),
+            // Inscribir una cuenta puede tardar: lista + creación en Finity
+            // (hasta ~55 s en el peor caso). Con 30 s el navegador cortaba
+            // antes que el servidor y la inscripción quedaba a medias.
+            signal: AbortSignal.timeout(action === 'create_external_account' ? 65000 : 30000),
         });
         const t = await r.text();
         if (!t) return { ok: false, status: r.status, error: 'Respuesta vacía del servicio (posible timeout). Reintenta.' };
@@ -55,6 +61,20 @@ function myAuthHeader(): string {
         }
     } catch { /* sin sesión supabase */ }
     return `Bearer ${SKEY}`;
+}
+// Igual que myAuthHeader, pero renueva la sesión si el token vence en menos
+// de un minuto. Si no hay cliente de sesión, cae al token guardado.
+async function authVigente(): Promise<string> {
+    try {
+        const { data } = await supabase.auth.getSession();
+        let s = data?.session;
+        if (s?.expires_at && s.expires_at * 1000 - Date.now() < 60_000) {
+            const r = await supabase.auth.refreshSession();
+            if (r.data?.session) s = r.data.session;
+        }
+        if (s?.access_token) return `Bearer ${s.access_token}`;
+    } catch { /* sin sesión: el token guardado */ }
+    return myAuthHeader();
 }
 async function callGasfree(body: Record<string, unknown>): Promise<any> {
     // Timeout largo: el asentamiento espera confirmaciones on-chain (hasta ~90s).
@@ -1230,7 +1250,7 @@ export const FinitySection: React.FC<{
                                     ) : (
                                         <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-center">
                                             <p className="text-xs font-semibold text-amber-700">No se pudo obtener la tasa en vivo (el riel está lento).</p>
-                                            <button onClick={load} className="mt-2 px-4 py-1.5 rounded-lg bg-[#0C0E0D] text-white text-xs font-bold hover:bg-[#152e52]">Reintentar</button>
+                                            <button onClick={load} className="mt-2 px-4 py-1.5 rounded-lg bg-[#0C0E0D] text-white text-xs font-bold hover:bg-[#161A17]">Reintentar</button>
                                         </div>
                                     )}
                                     <div className="flex flex-col sm:flex-row gap-2 sm:items-end">

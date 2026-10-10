@@ -28,7 +28,11 @@ type Candle = {
     rate: number; captured_at: string; source: string;
 };
 
-export const FinityRateChart: React.FC<{ from?: string; to?: string }> = ({ from = 'USD', to = 'COP' }) => {
+// `ajusteCop`: pesos que se le restan a la tasa del proveedor para llegar a la
+// que ve el cliente. Los snapshots guardan la tasa BRUTA, asi que sin esto el
+// grafico y la tasa de referencia mostraban dos numeros distintos para lo
+// mismo en la misma pantalla — y el que manda es el segundo.
+export const FinityRateChart: React.FC<{ from?: string; to?: string; ajusteCop?: number }> = ({ from = 'USD', to = 'COP', ajusteCop = 0 }) => {
     const [range, setRange] = useState<'5m' | '1h' | '24h' | '7d' | '30d'>('24h');
     const [chartType, setChartType] = useState<'candles' | 'line'>('line');
     const [hideOutliers, setHideOutliers] = useState(true);
@@ -64,7 +68,17 @@ export const FinityRateChart: React.FC<{ from?: string; to?: string }> = ({ from
                 ]) as any;
                 if (cancelled) return;
                 if (error) { setError(error.message === 'timeout' ? null : error.message); setRows([]); }
-                else setRows((data ?? []) as any);
+                else {
+                    // Se resta al LEER y no al pintar: asi el precio grande, el
+                    // porcentaje de cambio, los ejes y el tooltip salen todos
+                    // de la misma serie. Restarlo solo en un lugar volveria a
+                    // dejar dos numeros que no coinciden.
+                    const aj = Number(ajusteCop) > 0 ? Number(ajusteCop) : 0;
+                    const crudas = (data ?? []) as any[];
+                    setRows(aj > 0
+                        ? crudas.map(r => ({ ...r, rate: Number(r.rate) - aj }))
+                        : crudas);
+                }
             } catch (e: any) {
                 if (!cancelled) { setError(null); setRows([]); }
             } finally {
@@ -72,7 +86,7 @@ export const FinityRateChart: React.FC<{ from?: string; to?: string }> = ({ from
             }
         })();
         return () => { cancelled = true; };
-    }, [from, to, range]);
+    }, [from, to, range, ajusteCop]);
 
     const bucketMs = range === '5m' ? 15 * 1000
         : range === '1h' ? 60 * 1000

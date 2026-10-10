@@ -74,3 +74,54 @@ export const supabasePersonas = createClient(validPersonasUrl, validPersonasKey,
         headers: { 'x-my-custom-header': 'lincoin-personas' },
     },
 });
+
+// =====================================================
+// SESIÓN VIGENTE EN TODAS LAS LLAMADAS A SUPABASE
+// =====================================================
+// Muchas pantallas arman su propio fetch a /functions/v1 o /rest/v1 con el
+// token guardado en localStorage. Ese token puede estar vencido: el navegador
+// deja de renovarlo con la pestaña oculta y, al volver, lo renueva tarde. El
+// resultado eran 401 sueltos — una inscripción que no llegaba, una
+// conversión que caía al camino de error. En vez de tocar cada llamada, se
+// intercepta acá: si el token de usuario que viaja vence en menos de un
+// minuto, se renueva la sesión y se manda el nuevo.
+let renovando: Promise<string | null> | null = null;
+function vencePronto(token: string): boolean {
+    try {
+        const p = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+        if (p?.role !== 'authenticated' || !p?.exp) return false;
+        return Number(p.exp) * 1000 - Date.now() < 60_000;
+    } catch { return false; }
+}
+function renovarUnaVez(): Promise<string | null> {
+    if (!renovando) {
+        renovando = supabase.auth.refreshSession()
+            .then(r => r.data?.session?.access_token ?? null)
+            .catch(() => null)
+            .finally(() => { setTimeout(() => { renovando = null; }, 5000); });
+    }
+    return renovando;
+}
+if (typeof window !== 'undefined' && isSupabaseConfigured && !(window as any).__lcFetchSesion) {
+    (window as any).__lcFetchSesion = true;
+    const fetchOriginal = window.fetch.bind(window);
+    window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        try {
+            const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url;
+            if (url.startsWith(SUPABASE_URL) && (url.includes('/functions/v1/') || url.includes('/rest/v1/'))) {
+                const h = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+                const auth = h.get('Authorization') ?? h.get('authorization') ?? '';
+                const tok = auth.replace(/^Bearer\s+/i, '');
+                if (tok && vencePronto(tok)) {
+                    const nuevo = await renovarUnaVez();
+                    if (nuevo) {
+                        h.set('Authorization', `Bearer ${nuevo}`);
+                        if (input instanceof Request) return fetchOriginal(new Request(input, { ...init, headers: h }));
+                        return fetchOriginal(input, { ...init, headers: h });
+                    }
+                }
+            }
+        } catch { /* ante cualquier duda, la llamada sale tal cual */ }
+        return fetchOriginal(input as any, init);
+    };
+}

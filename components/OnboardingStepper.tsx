@@ -87,7 +87,7 @@ export const OnboardingStepper: React.FC = () => {
 
         <button 
           onClick={handleContinue}
-          className="bg-[#0C0E0D] hover:bg-[#152e52] px-8 py-3 rounded-lg font-bold shadow-lg shadow-green-900/10 transition-all transform active:scale-95 flex items-center gap-2 border-b-2 border-cuypay-accent"
+          className="bg-[#0C0E0D] hover:bg-[#161A17] px-8 py-3 rounded-lg font-bold shadow-lg shadow-green-900/10 transition-all transform active:scale-95 flex items-center gap-2 border-b-2 border-cuypay-accent"
         >
           {currentStep === stepsData.length ? 'Finalizar' : 'Continuar registro'}
           {currentStep !== stepsData.length && <ChevronRight size={18} />}

@@ -1,16 +1,22 @@
-import React from 'react';
-import { X, User, Building2, ChevronRight, Download } from 'lucide-react';
+import React, { useState } from 'react';
+import { X, User, Building2, ChevronRight, ChevronLeft, BookOpen } from 'lucide-react';
 import { Logo } from './Logo';
 
 interface RoleSelectionProps {
   onSelectPersonal: () => void;
   onSelectBusiness: () => void;
+  /** Empresas → Contabilidad: la entrada del contador, con su propia cuenta. */
+  onSelectContador: () => void;
+  /** "Abre tu cuenta aquí": registro de una cuenta Persona. */
+  onRegisterPersonal?: () => void;
   onClose: () => void;
 }
 
 const ARCHIVO = "'Archivo', system-ui, sans-serif";
 
-export const RoleSelection: React.FC<RoleSelectionProps> = ({ onSelectPersonal, onSelectBusiness, onClose }) => {
+export const RoleSelection: React.FC<RoleSelectionProps> = ({ onSelectPersonal, onSelectBusiness, onSelectContador, onRegisterPersonal, onClose }) => {
+  // Al tocar Empresas se abre un segundo paso con las dos entradas.
+  const [paso, setPaso] = useState<'roles' | 'empresas'>('roles');
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center p-4 animate-in fade-in duration-300"
@@ -49,6 +55,43 @@ export const RoleSelection: React.FC<RoleSelectionProps> = ({ onSelectPersonal, 
 
         {/* Contenido */}
         <div className="rs-content px-6 py-10 md:px-14 md:py-14 flex flex-col items-center overflow-y-auto relative z-10">
+          {paso === 'empresas' ? (<>
+          <h2 className="text-center" style={{ fontFamily: ARCHIVO, fontWeight: 800, letterSpacing: '-1px', color: '#F4F4F2', fontSize: 'clamp(24px, 4vw, 40px)', marginBottom: 12 }}>
+            Empresas
+          </h2>
+          <p className="text-center" style={{ color: '#8F8F8A', fontSize: 15, maxWidth: 520, marginBottom: 40 }}>
+            ¿Cómo quieres entrar?
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 w-full max-w-2xl">
+            <button onClick={onSelectBusiness} className="role-card group relative flex flex-col items-center text-center transition-all duration-300" style={cardStyle}>
+              <div className="rc-circle flex items-center justify-center rounded-full transition-all duration-300 group-hover:scale-105" style={circleStyle}>
+                <User className="transition-colors duration-300" style={{ width: 34, height: 34, color: '#F4F4F2' }} strokeWidth={1.8} />
+              </div>
+              <h3 style={{ fontFamily: ARCHIVO, fontWeight: 700, fontSize: 22, color: '#F4F4F2', marginBottom: 8 }}>Usuario</h3>
+              <p style={{ color: '#8F8F8A', fontSize: 13.5, lineHeight: 1.5, marginBottom: 20 }}>
+                La cuenta de la empresa: saldos, envíos, beneficiarios, clientes y contabilidad.
+              </p>
+              <span className="mt-auto flex items-center gap-2" style={{ color: '#4ADE80', fontWeight: 700, fontSize: 14 }}>
+                Ingresar <ChevronRight size={15} />
+              </span>
+            </button>
+            <button onClick={onSelectContador} className="role-card group relative flex flex-col items-center text-center transition-all duration-300" style={cardStyle}>
+              <div className="rc-circle flex items-center justify-center rounded-full transition-all duration-300 group-hover:scale-105" style={circleStyle}>
+                <BookOpen className="transition-colors duration-300" style={{ width: 34, height: 34, color: '#F4F4F2' }} strokeWidth={1.8} />
+              </div>
+              <h3 style={{ fontFamily: ARCHIVO, fontWeight: 700, fontSize: 22, color: '#F4F4F2', marginBottom: 8 }}>Contabilidad</h3>
+              <p style={{ color: '#8F8F8A', fontSize: 13.5, lineHeight: 1.5, marginBottom: 20 }}>
+                Para el contador: revisa la contabilidad de la empresa con el acceso que ella te dio.
+              </p>
+              <span className="mt-auto flex items-center gap-2" style={{ color: '#4ADE80', fontWeight: 700, fontSize: 14 }}>
+                Ingresar <ChevronRight size={15} />
+              </span>
+            </button>
+          </div>
+          <button onClick={() => setPaso('roles')} className="flex items-center gap-1 hover:underline" style={{ color: '#8F8F8A', fontSize: 13.5, fontWeight: 600, marginTop: 26, background: 'transparent', border: 'none', cursor: 'pointer' }}>
+            <ChevronLeft size={15} /> Volver
+          </button>
+          </>) : (<>
           <h2 className="text-center" style={{ fontFamily: ARCHIVO, fontWeight: 800, letterSpacing: '-1px', color: '#F4F4F2', fontSize: 'clamp(24px, 4vw, 40px)', marginBottom: 12 }}>
             ¡Hola! ¿A dónde quieres ingresar?
           </h2>
@@ -59,21 +102,21 @@ export const RoleSelection: React.FC<RoleSelectionProps> = ({ onSelectPersonal, 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 w-full max-w-2xl">
             {/* PERSONAS */}
             <button onClick={onSelectPersonal} className="role-card group relative flex flex-col items-center text-center transition-all duration-300" style={cardStyle}>
-              <span className="absolute top-4 right-4" style={badgeStyle}>📱 APP MÓVIL</span>
               <div className="rc-circle flex items-center justify-center rounded-full transition-all duration-300 group-hover:scale-105" style={circleStyle}>
                 <User className="transition-colors duration-300" style={{ width: 34, height: 34, color: '#F4F4F2' }} strokeWidth={1.8} />
               </div>
               <h3 style={{ fontFamily: ARCHIVO, fontWeight: 700, fontSize: 22, color: '#F4F4F2', marginBottom: 8 }}>Personas</h3>
               <p style={{ color: '#8F8F8A', fontSize: 13.5, lineHeight: 1.5, marginBottom: 20 }}>
-                Realiza transferencias, cambios de divisa y pagos personales desde tu celular.
+                Tu cuenta en pesos. Recibe saldo de las empresas con las que trabajas usando tu ID Lincoin.
               </p>
               <span className="mt-auto flex items-center gap-2" style={{ color: '#4ADE80', fontWeight: 700, fontSize: 14 }}>
-                <Download size={15} /> Descargar app
+                Ingresar <ChevronRight size={15} />
               </span>
             </button>
 
-            {/* EMPRESAS */}
-            <button onClick={onSelectBusiness} className="role-card group relative flex flex-col items-center text-center transition-all duration-300" style={cardStyle}>
+            {/* EMPRESAS: al tocar, se abre el paso con las dos entradas —
+                Usuario (la cuenta de la empresa) y Contabilidad (el contador). */}
+            <button onClick={() => setPaso('empresas')} className="role-card group relative flex flex-col items-center text-center transition-all duration-300" style={cardStyle}>
               <div className="rc-circle flex items-center justify-center rounded-full transition-all duration-300 group-hover:scale-105" style={circleStyle}>
                 <Building2 className="transition-colors duration-300" style={{ width: 34, height: 34, color: '#F4F4F2' }} strokeWidth={1.8} />
               </div>
@@ -86,12 +129,13 @@ export const RoleSelection: React.FC<RoleSelectionProps> = ({ onSelectPersonal, 
               </span>
             </button>
           </div>
+          </>)}
         </div>
 
         {/* Footer */}
         <div className="py-4 px-6 text-center shrink-0 relative z-10" style={{ borderTop: '1px solid rgba(255,255,255,0.08)', color: 'rgba(244,244,242,0.45)', fontSize: 12.5 }}>
           ¿No eres cliente?{' '}
-          <button onClick={onSelectPersonal} style={{ color: '#4ADE80', fontWeight: 700 }} className="hover:underline">Abre tu cuenta aquí</button>
+          <button onClick={onRegisterPersonal ?? onSelectPersonal} style={{ color: '#4ADE80', fontWeight: 700 }} className="hover:underline">Abre tu cuenta aquí</button>
         </div>
       </div>
 
