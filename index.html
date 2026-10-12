@@ -73,6 +73,9 @@
          el bundle y funcionan igual en redes corporativas filtradas. -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <!-- La app consulta Supabase apenas arranca: la conexión (DNS + TLS) se abre
+         ya, mientras baja el código, y no después. -->
+    <link rel="preconnect" href="https://wqleypebmfiaygrurnrc.supabase.co" crossorigin>
     <!-- Las fuentes no frenan el primer pintado: se aplican cuando llegan. -->
     <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">

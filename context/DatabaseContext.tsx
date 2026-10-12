@@ -371,6 +371,10 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   // Unique per-session channel name avoids StrictMode double-invoke conflicts where
   // React tears down and re-creates the effect before Supabase finishes closing the channel.
   const channelNameRef = useRef(`db_sync_${Math.random().toString(36).slice(2, 8)}`);
+  const lecturaEnCursoRef = useRef<Promise<void> | null>(null);
+  const lecturaEnColaRef = useRef<Promise<void> | null>(null);
+  const ultimaLecturaRef = useRef(0);
+  const ultimaEdgeRef = useRef(0);
 
   // Seed admin on first run (offline mode)
   useEffect(() => {
@@ -572,7 +576,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     };
   }, []);
 
-  const fetchData = useCallback(async () => {
+  const fetchDataReal = useCallback(async () => {
     if (!isSupabaseConfigured) {
       const localUsers = lsGetUsers();
       const localTxs = lsGetTransactions();
@@ -589,6 +593,10 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     setIsOnline(true);
     try {
       const cu = currentUserRef.current;
+      // Sin sesión no hay nada propio que leer. Antes se consultaba igual
+      // —users y transactions con un id VACÍO— en cada vuelta del refresco:
+      // la página de inicio de un visitante hacía peticiones inútiles.
+      if (!cu?.id) return;
 
       // Admin path: call the 'admin-data' edge function which uses the service-role key
       // server-side — this bypasses RLS without any SQL migration required.
@@ -752,7 +760,13 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
       let edgeTxs: any[] = [];
       let edgeDebug: any = null;
-      if (cu?.id) {
+      // La lectura por la edge (ids hermanos, estado más fresco) es una
+      // función del servidor: en cada vuelta de 10 s era una invocación por
+      // cliente conectado. Se pide como mucho una vez por minuto, salvo que el
+      // SELECT directo no haya traído nada.
+      const tocaEdge = !rpcTxs.length || Date.now() - ultimaEdgeRef.current > 60_000;
+      if (cu?.id && tocaEdge) {
+        ultimaEdgeRef.current = Date.now();
         const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
         const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
         const tok = getStoredToken();
@@ -825,6 +839,30 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // UNA lectura a la vez. En una red lenta cada vuelta tardaba más de 10 s y
+  // se encimaban: tres, cuatro lecturas completas en paralelo peleándose por
+  // la misma conexión — eso es lo que se sentía como "todo lento". Si llega
+  // un pedido mientras otra corre, se encola UNO solo y corre al terminar;
+  // así lo que se pide después de una operación siempre trae lo nuevo.
+  const fetchData = useCallback((): Promise<void> => {
+    if (!lecturaEnCursoRef.current) {
+      const p: Promise<void> = fetchDataReal().finally(() => {
+        if (lecturaEnCursoRef.current === p) lecturaEnCursoRef.current = null;
+        ultimaLecturaRef.current = Date.now();
+      });
+      lecturaEnCursoRef.current = p;
+      return p;
+    }
+    if (!lecturaEnColaRef.current) {
+      lecturaEnColaRef.current = lecturaEnCursoRef.current.catch(() => {}).then(() => {
+        lecturaEnColaRef.current = null;
+        return fetchData();
+      });
+    }
+    return lecturaEnColaRef.current;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchDataReal]);
+
   // Apenas se identifica el usuario (o cambia): (1) hidratar movimientos del
   // caché local para que se vean AL INSTANTE aunque la red falle, y (2)
   // refrescar de inmediato desde el servidor (sin esperar el poll de 10s).
@@ -860,10 +898,27 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     // A los 9 s se libera la UI igual (mostrará lo que haya cargado y seguirá
     // reintentando con el poll/realtime).
     const readyGuard = setTimeout(() => setDataReady(true), 9000);
-    if (!isSupabaseConfigured) { clearTimeout(readyGuard); return; }
+    return () => clearTimeout(readyGuard);
+  }, [fetchData]);
 
-    // Realtime handles live updates; poll as a fallback for missed events (10s)
-    const interval = setInterval(fetchData, 10000);
+  // Refresco y tiempo real: SOLO con alguien adentro y con la pestaña a la
+  // vista. Antes corría también para el visitante de la página de inicio y
+  // con la pestaña en segundo plano. Al volver a la pestaña se refresca ya.
+  const hayUsuario = !!currentUser?.id;
+  const esAdminUsuario = currentUser?.role === 'admin';
+  useEffect(() => {
+    if (!isSupabaseConfigured || !hayUsuario) return;
+    const visible = () => typeof document === 'undefined' || document.visibilityState !== 'hidden';
+    // Admin trae la base entera en cada lectura: cada 30 s basta, el tiempo
+    // real avisa lo urgente. Un cliente lee solo lo suyo: cada 10 s.
+    const cada = esAdminUsuario ? 30000 : 10000;
+    const interval = setInterval(() => {
+      if (!visible() || lecturaEnCursoRef.current) return;
+      if (Date.now() - ultimaLecturaRef.current < cada - 1000) return;
+      fetchData();
+    }, 5000);
+    const alVolver = () => { if (visible() && Date.now() - ultimaLecturaRef.current > 3000) fetchData(); };
+    document.addEventListener('visibilitychange', alVolver);
     // Debounce realtime: coalesce rapid-fire events into a single fetchData call (500ms)
     // This prevents web+mobile sessions from conflicting when both receive the same event burst
     let realtimeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -876,8 +931,8 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions' }, debouncedFetch)
       .subscribe();
 
-    return () => { clearTimeout(readyGuard); clearInterval(interval); if (realtimeTimer) clearTimeout(realtimeTimer); supabase.removeChannel(channel); };
-  }, [fetchData]);
+    return () => { clearInterval(interval); document.removeEventListener('visibilitychange', alVolver); if (realtimeTimer) clearTimeout(realtimeTimer); supabase.removeChannel(channel); };
+  }, [fetchData, hayUsuario, esAdminUsuario]);
 
   // --- STORAGE HELPERS ---
 
