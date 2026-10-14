@@ -58,6 +58,10 @@ export const AdminLincoinRisk: React.FC = () => {
   // y se mantiene lo último que sí cargó (y el buscador, para corregir).
   const [aviso, setAviso] = useState<{ ok: boolean; t: string } | null>(null);
   const [borrando, setBorrando] = useState<string | null>(null);
+  // Ventana propia para confirmar (antes: confirm()/prompt() del navegador,
+  // que dicen "lincoin.me dice" y no se ven como el panel).
+  const [confirmar, setConfirmar] = useState<{ tipo: 'una'; p: any } | { tipo: 'todas' } | null>(null);
+  const [escrito, setEscrito] = useState('');
   const turno = useRef(0);
 
   const cargar = async (buscar = q) => {
@@ -86,7 +90,7 @@ export const AdminLincoinRisk: React.FC = () => {
   }, [q]);
 
   const borrarUna = async (p: any) => {
-    if (!window.confirm(`¿Eliminar del padrón a ${p.nombreReal || 'esta persona'} (${p.tipoDocumento} ${p.documento})?\n\nLa próxima vez que alguien la inscriba o se reintente su consulta, se volverá a preguntar a TusDatos (y se paga la consulta).`)) return;
+    setConfirmar(null);
     const id = `${p.tipoDocumento}:${p.documento}`;
     setBorrando(id);
     const r = await llamarFuncion('tusdatos', { action: 'risk_borrar', tipoDocumento: p.tipoDocumento, documento: p.documento }).catch(() => null);
@@ -97,9 +101,8 @@ export const AdminLincoinRisk: React.FC = () => {
     cargar();
   };
   const borrarTodas = async () => {
-    const escrito = window.prompt('Esto elimina TODAS las consultas del padrón. Desde ahí, cada persona se vuelve a consultar (y se paga) la próxima vez que se inscriba.\n\nPara confirmar escribe ELIMINAR:');
-    if (escrito === null) return;
-    if (escrito.trim() !== 'ELIMINAR') { setAviso({ ok: false, t: 'No se eliminó nada: había que escribir ELIMINAR.' }); return; }
+    if (escrito.trim() !== 'ELIMINAR') return;
+    setConfirmar(null); setEscrito('');
     setBorrando('*');
     const r = await llamarFuncion('tusdatos', { action: 'risk_borrar', todos: true, confirmacion: 'ELIMINAR' }).catch(() => null);
     setBorrando(null);
@@ -157,7 +160,7 @@ export const AdminLincoinRisk: React.FC = () => {
             </p>
           </div>
           <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-            <button onClick={borrarTodas} disabled={busy || borrando !== null}
+            <button onClick={() => { setEscrito(''); setConfirmar({ tipo: 'todas' }); }} disabled={busy || borrando !== null}
               className="hover:bg-white/[0.09] transition-colors"
               style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.border2}`, padding: '8px 13px', borderRadius: 9, opacity: borrando === '*' ? 0.6 : 1 }}>
               <Trash2 size={13} /> {borrando === '*' ? 'Eliminando…' : 'Eliminar todas'}
@@ -269,7 +272,7 @@ export const AdminLincoinRisk: React.FC = () => {
                       ))}
                     </div>
                     <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end' }}>
-                      <button onClick={() => borrarUna(p)} disabled={borrando !== null}
+                      <button onClick={() => setConfirmar({ tipo: 'una', p })} disabled={borrando !== null}
                         className="hover:bg-white/[0.09] transition-colors"
                         style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.border2}`, padding: '7px 12px', borderRadius: 9, opacity: borrando === id ? 0.6 : 1 }}>
                         <Trash2 size={12} /> {borrando === id ? 'Eliminando…' : 'Eliminar del padrón'}
@@ -297,6 +300,69 @@ export const AdminLincoinRisk: React.FC = () => {
           </div>
         )}
       </div>
+      {/* ══ Confirmar eliminación ══ */}
+      {confirmar && (
+        <div onClick={() => setConfirmar(null)}
+          style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'rgba(4,5,4,0.72)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true"
+            onKeyDown={e => { if (e.key === 'Escape') setConfirmar(null); }}
+            style={{ width: '100%', maxWidth: 460, background: C.card, border: `1px solid ${C.border2}`, borderRadius: 16, padding: '20px 22px', fontFamily: FONT }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ width: 34, height: 34, borderRadius: 10, background: 'rgba(255,255,255,0.055)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                <Trash2 size={16} color={C.text} />
+              </span>
+              <p style={{ fontSize: 16, fontWeight: 800, color: C.text, margin: 0 }}>
+                {confirmar.tipo === 'una' ? '¿Eliminar del padrón?' : '¿Eliminar todas las consultas?'}
+              </p>
+            </div>
+
+            {confirmar.tipo === 'una' ? (
+              <>
+                <div style={{ marginTop: 14, background: C.elev, border: `1px solid ${C.border}`, borderRadius: 11, padding: '11px 13px' }}>
+                  <p style={{ fontSize: 13.5, fontWeight: 700, color: C.text, margin: 0, overflowWrap: 'anywhere' }}>{confirmar.p.nombreReal || 'Sin nombre en el documento'}</p>
+                  <p style={{ fontSize: 11.5, color: C.sub, fontFamily: MONO, margin: '3px 0 0' }}>{confirmar.p.tipoDocumento} {confirmar.p.documento}</p>
+                </div>
+                <p style={{ fontSize: 12.5, color: C.sub, margin: '12px 0 0', lineHeight: 1.55 }}>
+                  La próxima vez que alguien la inscriba o se reintente su consulta, se le volverá a preguntar a TusDatos y se paga la consulta (1.400 COP).
+                  Lo que ya quedó guardado en cada cuenta no cambia.
+                </p>
+              </>
+            ) : (
+              <>
+                <p style={{ fontSize: 12.5, color: C.sub, margin: '12px 0 0', lineHeight: 1.55 }}>
+                  Se eliminan las <b style={{ color: C.text }}>{num(r.personas ?? 0)}</b> consultas del padrón. Desde ahí, cada persona se vuelve a consultar
+                  (y se paga, 1.400 COP) la próxima vez que se inscriba. Lo que ya quedó guardado en cada cuenta no cambia.
+                </p>
+                <label style={{ display: 'block', marginTop: 14 }}>
+                  <span style={{ display: 'block', fontSize: 11.5, color: C.sub, marginBottom: 5 }}>Para confirmar escribe <b style={{ color: C.text }}>ELIMINAR</b></span>
+                  <input value={escrito} onChange={e => setEscrito(e.target.value)} autoFocus
+                    onKeyDown={e => { if (e.key === 'Enter' && escrito.trim() === 'ELIMINAR') borrarTodas(); }}
+                    style={{ width: '100%', height: 38, padding: '0 11px', borderRadius: 9, background: C.elev, border: `1px solid ${C.border2}`, color: C.text, fontSize: 13, fontFamily: MONO, outline: 'none' }} />
+                </label>
+              </>
+            )}
+
+            <div style={{ display: 'flex', gap: 9, marginTop: 16 }}>
+              <button onClick={() => setConfirmar(null)} autoFocus={confirmar.tipo === 'una'}
+                className="hover:bg-white/[0.09] transition-colors"
+                style={{ flex: 1, padding: '10px 0', borderRadius: 9, fontSize: 13, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.border2}`, cursor: 'pointer' }}>
+                Cancelar
+              </button>
+              {(() => {
+                const listo = confirmar.tipo === 'una' || escrito.trim() === 'ELIMINAR';
+                return (
+                  <button disabled={!listo}
+                    onClick={() => { if (confirmar.tipo === 'una') borrarUna(confirmar.p); else borrarTodas(); }}
+                    className="hover:opacity-90 transition-opacity"
+                    style={{ flex: 1.3, padding: '10px 0', borderRadius: 9, fontSize: 13, fontWeight: 700, color: '#0A0A0A', background: C.text, border: 'none', opacity: listo ? 1 : 0.4, cursor: listo ? 'pointer' : 'not-allowed' }}>
+                    {confirmar.tipo === 'una' ? 'Eliminar' : 'Eliminar todas'}
+                  </button>
+                );
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
