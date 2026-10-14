@@ -1624,11 +1624,47 @@ Deno.serve(async (req: Request) => {
     // después lo que está a la espera. Una bandeja donde lo urgente aparece
     // mezclado con lo rutinario se deja de revisar en una semana.
     // ── LINCOIN RISK: el padrón ──────────────────────────────────────────
+    // ── Borrar del padrón: una consulta, o todas ─────────────────────────
+    // Borra la FICHA COMPARTIDA, no los veredictos que ya quedaron guardados
+    // en cada cuenta (esos deciden si un envío sale). Sirve para forzar una
+    // consulta nueva: la próxima inscripción o «Reintentar consulta» de esa
+    // persona vuelve a preguntarle a TusDatos (y se paga) en vez de reusar
+    // lo guardado acá.
+    if (accion === 'risk_borrar') {
+      if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      if (body.todos === true) {
+        if (String(body.confirmacion ?? '') !== 'ELIMINAR') return json({ error: 'Para borrar todo el padrón escribe ELIMINAR.' }, 400)
+        const { count } = await db.from('risk_registry').select('*', { count: 'exact', head: true })
+        const { error } = await db.from('risk_registry').delete().neq('doc_number', '')
+        if (error) return json({ error: error.message }, 500)
+        await auditar('tusdatos.risk_borrado', { adminId: yo.userId, todos: true, filas: count ?? null })
+        return json({ ok: true, borradas: count ?? null })
+      }
+      const tipo = RISK_TIPO(String(body.tipoDocumento ?? 'CC'))
+      const doc = String(body.documento ?? '').trim()
+      if (!doc) return json({ error: 'Falta el documento.' }, 400)
+      const { data: fuera, error } = await db.from('risk_registry').delete().eq('doc_type', tipo).eq('doc_number', doc).select('doc_number')
+      if (error) return json({ error: error.message }, 500)
+      await auditar('tusdatos.risk_borrado', { adminId: yo.userId, tipo, documento: doc, filas: (fuera ?? []).length })
+      return json({ ok: true, borradas: (fuera ?? []).length })
+    }
+
     if (accion === 'risk') {
       if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
-      const q = String(body.q ?? '').replace(/\D/g, '')
+      // Búsqueda por DOCUMENTO o por NOMBRE. Antes solo por dígitos: un nombre
+      // escrito no buscaba nada, y un NIT con su dígito de verificación (10
+      // dígitos) no aparecía porque el padrón lo guarda por los 9 base.
+      const qCrudo = String(body.q ?? '').trim().slice(0, 80)
+      const qDig = qCrudo.replace(/\D/g, '')
+      const qTexto = qCrudo.replace(/[^\p{L}\s]/gu, ' ').replace(/\s+/g, ' ').trim()
       let sel = db.from('risk_registry').select('*').order('actualizado_at', { ascending: false }).limit(300)
-      if (q) sel = sel.ilike('doc_number', `%${q}%`)
+      if (qDig.length >= 3) {
+        const ors = [`doc_number.ilike.%${qDig}%`]
+        if (qDig.length === 10) ors.push(`doc_number.eq.${qDig.slice(0, 9)}`)
+        sel = sel.or(ors.join(','))
+      } else if (qTexto.length >= 2) {
+        sel = sel.ilike('nombre_real', `%${qTexto}%`)
+      }
       const { data: filas, error } = await sel
       if (error) {
         // Cuando el padrón no responde hay DOS causas que se leen igual: la

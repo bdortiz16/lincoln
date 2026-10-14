@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { Database, RefreshCw, Search, ChevronDown } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Database, RefreshCw, Search, ChevronDown, Trash2 } from 'lucide-react';
 import { llamarFuncion } from '../lib/edge';
 
 // ─────────────────────────────────────────────────────────────
@@ -54,14 +54,60 @@ export const AdminLincoinRisk: React.FC = () => {
   const [busy, setBusy] = useState(false);
   const [q, setQ] = useState('');
   const [abierto, setAbierto] = useState<string | null>(null);
+  // Un error de búsqueda ya no reemplaza la pantalla entera: se avisa arriba
+  // y se mantiene lo último que sí cargó (y el buscador, para corregir).
+  const [aviso, setAviso] = useState<{ ok: boolean; t: string } | null>(null);
+  const [borrando, setBorrando] = useState<string | null>(null);
+  const turno = useRef(0);
 
   const cargar = async (buscar = q) => {
+    const mio = ++turno.current;
     setBusy(true);
     const r = await llamarFuncion('tusdatos', { action: 'risk', q: buscar }).catch(() => null);
-    setD(r ?? { error: 'Sin respuesta.' });
+    if (mio !== turno.current) return;   // llegó tarde: ya se pidió otra búsqueda
     setBusy(false);
+    if (!r || r.error) {
+      if (!d) setD(r ?? { error: 'Sin respuesta.' });
+      else setAviso({ ok: false, t: `No se pudo buscar: ${r?.error ?? 'sin respuesta del servidor'}.` });
+      return;
+    }
+    setAviso(null);
+    setD(r);
   };
   useEffect(() => { cargar(''); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  // Busca solo mientras se escribe (con una pausa corta), sin tener que
+  // apretar Enter.
+  const primera = useRef(true);
+  useEffect(() => {
+    if (primera.current) { primera.current = false; return; }
+    const t = setTimeout(() => cargar(q), 400);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q]);
+
+  const borrarUna = async (p: any) => {
+    if (!window.confirm(`¿Eliminar del padrón a ${p.nombreReal || 'esta persona'} (${p.tipoDocumento} ${p.documento})?\n\nLa próxima vez que alguien la inscriba o se reintente su consulta, se volverá a preguntar a TusDatos (y se paga la consulta).`)) return;
+    const id = `${p.tipoDocumento}:${p.documento}`;
+    setBorrando(id);
+    const r = await llamarFuncion('tusdatos', { action: 'risk_borrar', tipoDocumento: p.tipoDocumento, documento: p.documento }).catch(() => null);
+    setBorrando(null);
+    if (!r?.ok) { setAviso({ ok: false, t: r?.error ?? 'No se pudo eliminar.' }); return; }
+    setAviso({ ok: true, t: 'Consulta eliminada del padrón.' });
+    setAbierto(null);
+    cargar();
+  };
+  const borrarTodas = async () => {
+    const escrito = window.prompt('Esto elimina TODAS las consultas del padrón. Desde ahí, cada persona se vuelve a consultar (y se paga) la próxima vez que se inscriba.\n\nPara confirmar escribe ELIMINAR:');
+    if (escrito === null) return;
+    if (escrito.trim() !== 'ELIMINAR') { setAviso({ ok: false, t: 'No se eliminó nada: había que escribir ELIMINAR.' }); return; }
+    setBorrando('*');
+    const r = await llamarFuncion('tusdatos', { action: 'risk_borrar', todos: true, confirmacion: 'ELIMINAR' }).catch(() => null);
+    setBorrando(null);
+    if (!r?.ok) { setAviso({ ok: false, t: r?.error ?? 'No se pudo eliminar.' }); return; }
+    setAviso({ ok: true, t: `Padrón vaciado${r.borradas != null ? `: ${r.borradas} consultas eliminadas` : ''}.` });
+    setQ('');
+    cargar('');
+  };
 
   if (!d) {
     return <div style={{ fontFamily: FONT, background: C.card, border: `1px solid ${C.border2}`, borderRadius: 16, padding: 18, color: C.sub, fontSize: 13 }}>Cargando el padrón…</div>;
@@ -110,11 +156,18 @@ export const AdminLincoinRisk: React.FC = () => {
               se reutiliza. Se busca <b style={{ color: C.text }}>por documento</b>, nunca por nombre.
             </p>
           </div>
-          <button onClick={() => cargar()} disabled={busy}
-            className="hover:opacity-90 transition-opacity"
-            style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, fontWeight: 700, color: '#0A0A0A', background: C.text, border: 'none', padding: '8px 13px', borderRadius: 9, opacity: busy ? 0.6 : 1, flexShrink: 0 }}>
-            <RefreshCw size={13} className={busy ? 'animate-spin' : ''} /> Actualizar
-          </button>
+          <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+            <button onClick={borrarTodas} disabled={busy || borrando !== null}
+              className="hover:bg-white/[0.09] transition-colors"
+              style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.border2}`, padding: '8px 13px', borderRadius: 9, opacity: borrando === '*' ? 0.6 : 1 }}>
+              <Trash2 size={13} /> {borrando === '*' ? 'Eliminando…' : 'Eliminar todas'}
+            </button>
+            <button onClick={() => cargar()} disabled={busy}
+              className="hover:opacity-90 transition-opacity"
+              style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, fontWeight: 700, color: '#0A0A0A', background: C.text, border: 'none', padding: '8px 13px', borderRadius: 9, opacity: busy ? 0.6 : 1 }}>
+              <RefreshCw size={13} className={busy ? 'animate-spin' : ''} /> Actualizar
+            </button>
+          </div>
         </div>
         {d.config && (
           <p style={{ fontSize: 11.5, color: C.dim, margin: '10px 0 0' }}>
@@ -141,14 +194,19 @@ export const AdminLincoinRisk: React.FC = () => {
         ))}
       </div>
 
-      {/* Buscador por documento */}
+      {aviso && (
+        <div role="status" style={{ background: C.card, border: `1px solid ${aviso.ok ? C.greenB : C.border2}`, borderRadius: 11, padding: '10px 13px', fontSize: 12.5, color: aviso.ok ? C.green : C.text }}>
+          {aviso.t}
+        </div>
+      )}
+
+      {/* Buscador: documento (también NIT con o sin dígito de verificación) o nombre */}
       <div style={{ position: 'relative' }}>
         <Search size={14} style={{ position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)', color: C.sub }} />
         <input value={q}
-          onChange={e => setQ(e.target.value.replace(/\D/g, ''))}
+          onChange={e => setQ(e.target.value.slice(0, 80))}
           onKeyDown={e => { if (e.key === 'Enter') cargar(); }}
-          inputMode="numeric"
-          placeholder="Buscar por número de documento y Enter…"
+          placeholder="Buscar por documento o nombre…"
           style={{ width: '100%', height: 38, paddingLeft: 34, paddingRight: 12, borderRadius: 10, background: C.card, border: `1px solid ${C.border}`, color: C.text, fontSize: 13, outline: 'none', fontFamily: FONT }} />
       </div>
 
@@ -157,7 +215,7 @@ export const AdminLincoinRisk: React.FC = () => {
         {personas.length === 0 && (
           <p style={{ padding: 20, fontSize: 12.5, color: C.sub, margin: 0, lineHeight: 1.6 }}>
             {q
-              ? 'Ese documento no está en el padrón. La próxima vez que alguien lo inscriba se consultará y quedará acá.'
+              ? 'No hay nadie en el padrón con ese documento o nombre. La próxima vez que alguien lo inscriba se consultará y quedará acá.'
               : 'El padrón está vacío. Se va llenando solo con cada consulta que se hace.'}
           </p>
         )}
@@ -209,6 +267,13 @@ export const AdminLincoinRisk: React.FC = () => {
                           <p style={{ fontSize: 12.5, color: C.text, fontWeight: 600, margin: '2px 0 0' }}>{v}</p>
                         </div>
                       ))}
+                    </div>
+                    <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end' }}>
+                      <button onClick={() => borrarUna(p)} disabled={borrando !== null}
+                        className="hover:bg-white/[0.09] transition-colors"
+                        style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.border2}`, padding: '7px 12px', borderRadius: 9, opacity: borrando === id ? 0.6 : 1 }}>
+                        <Trash2 size={12} /> {borrando === id ? 'Eliminando…' : 'Eliminar del padrón'}
+                      </button>
                     </div>
                     {Array.isArray(p.hallazgos) && p.hallazgos.length > 0 && (
                       <div style={{ marginTop: 12, borderTop: `1px solid ${C.border}`, paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 7 }}>
