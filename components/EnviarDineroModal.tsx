@@ -199,7 +199,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
   }, [sendContact, sendForm.beneficiaryName, sendForm.documentType, sendForm.documentNumber, sendForm.bankName, sendForm.accountType, sendForm.accountNumber]);
 
   // Método elegido en el paso 2 del flujo (diseño Flujo Enviar): lista radio.
-  const [sendMethodSel, setSendMethodSel] = useState<'breb' | 'breb2' | 'ach' | 'pay' | 'cash' | null>(null);
+  const [sendMethodSel, setSendMethodSel] = useState<'breb' | 'breb2' | 'brebX' | 'ach' | 'pay' | 'cash' | null>(null);
   // Cotización de la comisión del proveedor para el paso Confirmar:
   // Bre-B → Mouv (fija + variable + IVA, cotizada en vivo y cobrada al
   // cliente) · ACH → Finity (precio fijo por transferencia, se descuenta al
@@ -941,18 +941,70 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                           // muestra el SALDO de cada una y solo se puede elegir la
                           // que cubra el monto + su comisión.
                           const amtStep2 = getRawAmount(sendForm.amount);
+                          // Bre-B es UNA opción; al elegirla se pregunta de qué
+                          // cuenta sale: la 1 paga con el saldo Bre-B y la 2 con
+                          // el saldo ACH. 'brebX' = Bre-B elegido, cuenta aún no.
+                          const BREB_CUENTAS = [
+                              { key: 'breb', n: 1, rail: 'COP_BREB', railLabel: 'Bre-B', fee: 1200 },
+                              { key: 'breb2', n: 2, rail: 'COP_ACH', railLabel: 'ACH', fee: 1200 },
+                          ] as const;
                           const METHODS = [
-                              { key: 'breb', title: 'Bre-B · Cuenta 1', pill: 'SEGUNDOS', time: 'Por llave a cualquier banco · en segundos', rail: 'COP_BREB', railLabel: 'Bre-B', fee: 1200 },
-                              { key: 'breb2', title: 'Bre-B · Cuenta 2', pill: 'SEGUNDOS', time: 'Por llave a cualquier banco · sale de tu saldo ACH', rail: 'COP_ACH', railLabel: 'ACH', fee: 1200 },
                               { key: 'ach', title: 'ACH tradicional', pill: null, time: `Ciclos ACH · L–V sin festivos · ${achEtaShort()}`, rail: 'COP_ACH', railLabel: 'ACH', fee: 2500 },
                               { key: 'pay', title: 'A otro usuario de Lincoin', pill: 'SIN COMISIÓN', time: 'Por ID o correo · instantáneo, 24/7', rail: 'COP', railLabel: 'Saldo Lincoin', fee: 0 },
                               { key: 'cash', title: 'Retiro en punto físico', pill: null, time: 'Efectivo en corresponsales aliados', rail: 'COP', railLabel: 'Saldo Lincoin', fee: 0 },
                           ] as const;
-                          const selMeta = METHODS.find(x => x.key === sendMethodSel);
+                          const selMeta = [...BREB_CUENTAS, ...METHODS].find(x => x.key === sendMethodSel);
                           const selOk = !!selMeta && getBalance(selMeta.rail) >= amtStep2 + selMeta.fee;
+                          const brebSel = sendMethodSel === 'breb' || sendMethodSel === 'breb2' || sendMethodSel === 'brebX';
+                          const brebAlcanza = BREB_CUENTAS.some(c => getBalance(c.rail) >= amtStep2 + c.fee);
+                          const radio = (on: boolean) => <span style={{ width: 17, height: 17, borderRadius: '50%', flexShrink: 0, border: on ? '5px solid #4ADE80' : '1.5px solid rgba(255,255,255,0.25)' }} />;
                           return (
                           <div className="space-y-4">
                               <div className="space-y-2">
+                                  <button type="button" onClick={() => { if (brebAlcanza && !brebSel) setSendMethodSel('brebX'); }}
+                                      className="w-full flex items-center gap-3 text-left transition-colors"
+                                      style={{ padding: '13px 15px', borderRadius: 12, opacity: brebAlcanza ? 1 : 0.55, cursor: brebAlcanza ? 'pointer' : 'not-allowed',
+                                          border: brebSel ? '1px solid rgba(74,222,128,0.35)' : '1px solid rgba(255,255,255,0.1)', background: brebSel ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.025)' }}>
+                                      <span className="flex-1 min-w-0">
+                                          <span className="flex items-center gap-2">
+                                              <span style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>Bre-B</span>
+                                              <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 8.5, fontWeight: 700, letterSpacing: '0.6px', padding: '2px 6px', borderRadius: 999, whiteSpace: 'nowrap' }}>SEGUNDOS</span>
+                                          </span>
+                                          <span style={{ display: 'block', fontSize: 11.5, color: '#878E88', marginTop: 2 }}>
+                                              Por llave a cualquier banco · en segundos · ${BREB_CUENTAS[0].fee.toLocaleString('es-CO')} por envío
+                                          </span>
+                                          <span style={{ display: 'block', fontSize: 11.5, marginTop: 3, fontWeight: 600, color: brebAlcanza ? '#4ADE80' : '#878E88' }}>
+                                              {brebSel ? 'Elige de qué cuenta sale' : '2 cuentas · Cuenta 1 y Cuenta 2'}
+                                          </span>
+                                      </span>
+                                      {radio(brebSel)}
+                                  </button>
+                                  {brebSel && (
+                                      <div className="space-y-2" style={{ marginLeft: 14, paddingLeft: 12, borderLeft: '1px solid rgba(74,222,128,0.25)' }}>
+                                          <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88', paddingTop: 2 }}>¿DESDE QUÉ CUENTA BRE-B?</p>
+                                          {BREB_CUENTAS.map(c => {
+                                              const bal = getBalance(c.rail);
+                                              const need = amtStep2 + c.fee;
+                                              const enough = bal >= need;
+                                              const sel = sendMethodSel === c.key;
+                                              return (
+                                                  <button key={c.key} type="button" onClick={() => { if (enough) setSendMethodSel(c.key); }}
+                                                      className="w-full flex items-center gap-3 text-left transition-colors"
+                                                      style={{ padding: '11px 14px', borderRadius: 11, opacity: enough ? 1 : 0.55, cursor: enough ? 'pointer' : 'not-allowed',
+                                                          border: sel ? '1px solid rgba(74,222,128,0.35)' : '1px solid rgba(255,255,255,0.1)', background: sel ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.025)' }}>
+                                                      <span className="flex-1 min-w-0">
+                                                          <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>Bre-B · Cuenta {c.n}</span>
+                                                          <span style={{ display: 'block', fontSize: 11.5, marginTop: 2, fontWeight: 600, color: enough ? '#4ADE80' : '#878E88' }}>
+                                                              Saldo {c.railLabel}: ${Math.round(bal).toLocaleString('es-CO')}
+                                                              {!enough && amtStep2 > 0 ? ` · te faltan $${Math.ceil(need - bal).toLocaleString('es-CO')}` : ''}
+                                                          </span>
+                                                      </span>
+                                                      {radio(sel)}
+                                                  </button>
+                                              );
+                                          })}
+                                      </div>
+                                  )}
                                   {METHODS.map(m => {
                                       const bal = getBalance(m.rail);
                                       const need = amtStep2 + m.fee;
@@ -976,7 +1028,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                                       {!enough && amtStep2 > 0 ? ` · te faltan $${Math.ceil(need - bal).toLocaleString('es-CO')}` : ''}
                                                   </span>
                                               </span>
-                                              <span style={{ width: 17, height: 17, borderRadius: '50%', flexShrink: 0, border: sel ? '5px solid #4ADE80' : '1.5px solid rgba(255,255,255,0.25)' }} />
+                                              {radio(sel)}
                                           </button>
                                       );
                                   })}
@@ -993,7 +1045,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                   <button onClick={() => setSendStep(1)} style={{ flex: 1, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 14, padding: '13px 0', borderRadius: 10 }} className="hover:bg-white/[0.09] transition-colors">Atrás</button>
                                   <button
                                       onClick={() => {
-                                          if (!sendMethodSel) return;
+                                          if (!sendMethodSel || sendMethodSel === 'brebX') return;
                                           if (sendMethodSel === 'breb' || sendMethodSel === 'breb2' || sendMethodSel === 'ach') {
                                               setSendMode('bank');
                                               setBrebCuenta(sendMethodSel === 'breb2' ? 2 : 1);
