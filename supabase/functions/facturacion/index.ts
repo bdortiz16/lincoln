@@ -743,6 +743,15 @@ async function asegurarCliente(token: string, partner: string, cfg: any, cp: Con
   return { ok: true }
 }
 
+// Siigo rechaza con 409 "duplicated_document" un documento muy parecido a
+// otro emitido segundos antes (mismo cliente, mismo valor, mismo día), aunque
+// sean dos operaciones distintas — p. ej. dos envíos del mismo monto a
+// beneficiarios diferentes. No es un error de configuración: pasado un rato
+// lo acepta. Se deja 'pendiente' y ponerse_al_dia lo reintenta solo, hasta 4
+// intentos; después queda en error para que alguien lo mire.
+const esDuplicadoSiigo = (motivo: string) => /duplicated_document/i.test(motivo)
+const REINTENTOS_DUPLICADO = 4
+
 // ── Emitir la factura de UN comprobante ──────────────────────────
 async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<any> {
   const { data: comp } = await db.from('comprobantes').select('*').eq('folio', folio).maybeSingle()
@@ -985,6 +994,11 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
       e += otros.length ? ` Otros que devolvió Siigo: ${otros.join('; ')}. Elegí otro en Configuración.` : ' Siigo no devolvió otro comprobante de ese tipo.'
     }
     if (intentos.length > 1) e += ` · Rutas probadas: ${intentos.map(i => `${i.ruta} → HTTP ${i.status}`).join(', ')}.`
+    if (r.status === 409 && esDuplicadoSiigo(motivoDe(r)) && Number((comp as any).factura_intentos ?? 0) + 1 < REINTENTOS_DUPLICADO) {
+      const espera = `Siigo lo tomó como duplicado de otro documento parecido emitido segundos antes. Se reintenta solo en unos minutos. (${e})`
+      await marcar({ factura_estado: 'pendiente', factura_error: espera, factura_tipo: clase, factura_detalle: { enviado: cuerpo, intentos } })
+      return { ok: false, error: espera, reintento: true }
+    }
     await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: clase, factura_detalle: { enviado: cuerpo, intentos } })
     return { ok: false, error: e }
   }
@@ -1208,6 +1222,11 @@ async function emitirComision(userId: string, txId: string, d: { identification:
     intentos.push({ ruta: '/v1/invoices', status: r.status, respuesta: r.data ?? r.texto, enviado: arm.cuerpo, tarifa, nota: 'Sin tercero por ítem' })
   }
   const { base, ivaV, total, cuerpo } = arm
+  if (!r.ok && r.status === 409 && esDuplicadoSiigo(motivoDe(r)) && Number((comp as any).factura_intentos ?? 0) + 1 < REINTENTOS_DUPLICADO) {
+    const espera = `Siigo la tomó como duplicado de otra factura parecida emitida segundos antes (mismo cliente y valor). Se reintenta sola en unos minutos.`
+    await marcar({ factura_estado: 'pendiente', factura_error: espera, factura_tipo: 'FV', factura_detalle: { enviado: cuerpo, intentos } })
+    return { ok: false, error: espera, reintento: true }
+  }
   if (!r.ok) return falla(`Siigo rechazó la factura de comisión — ${motivoDe(r)} · Se mandó base ${base} con tarifa ${(tarifa * 100).toFixed(2)} % (${intentos.length} intento${intentos.length === 1 ? '' : 's'}). ${notaVivo}${intentos.length > 1 ? ' Se reintentó con la tarifa que Siigo aplica y tampoco.' : ''}`, { factura_detalle: { enviado: cuerpo, intentos, comision: { pct, comision, base, iva: ivaV, total, tarifa, cliente: { identification: cp.identification, nombre: cp.nombre } } } })
   const resp = r.data ?? {}
   const numero = resp.name ?? (resp.number != null ? `${resp.prefix ?? ''}${resp.number}` : null) ?? String(resp.id ?? '')
