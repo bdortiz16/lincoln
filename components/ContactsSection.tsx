@@ -993,7 +993,15 @@ export const ContactsSection: React.FC<{
         }
         // Deduplicar: mismo banco + mismo número de cuenta ya inscrito → no repetir.
         const bAcc = normAccount(f.accountNumber, false);
-        const dupB = bankContacts.find(c => normAccount(c.accountNumber, false) === bAcc && (c.bank || '').toLowerCase() === f.bank.toLowerCase() && (c.country || 'Colombia') === f.country);
+        // Solo contra otras cuentas BANCARIAS (ACH). Un beneficiario Bre-B
+        // guarda su LLAVE en accountNumber y el banco de la llave (p. ej.
+        // Nequi): con la llave de celular @3234197556 y la cuenta Nequi
+        // 3234197556 —el mismo número— la regla creía que era la misma cuenta
+        // y no dejaba inscribir por ACH a quien ya estaba por Bre-B. Una misma
+        // persona puede tener Bre-B y varias cuentas (Nequi, Daviplata,
+        // Davivienda…); lo que no se repite es el mismo banco + número.
+        const dupB = bankContacts.find(c => c.destKind !== 'breb' && c.accountKind !== 'wallet'
+            && normAccount(c.accountNumber, false) === bAcc && (c.bank || '').toLowerCase() === f.bank.toLowerCase() && (c.country || 'Colombia') === f.country);
         if (dupB) { setNotice({ ok: false, text: `Ya tienes esta cuenta de ${f.bank} inscrita como “${dupB.name}”. No es necesario inscribirla de nuevo.` }); return; }
         const dirB: ReturnType<typeof direccionDelForm> = f.country === 'Colombia' ? direccionDelForm(f) : {};
         if ('error' in dirB) { setNotice({ ok: false, text: dirB.error }); return; }
