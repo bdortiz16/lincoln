@@ -22,6 +22,7 @@
 import { serve } from 'https://deno.land/std@0.192.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { mergeRaw } from '../_shared/raw-data.ts'
+import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
 import { FIELD_ENC_KEY, decField } from '../_shared/field-crypto.ts'
 // Verificación TOTP en el SERVIDOR (2FA), con Web Crypto NATIVO (sin
 // dependencias externas que pudieran no cargar y tumbar el proxy). Mismo
@@ -1328,6 +1329,74 @@ function aprobacionAmlVigente(f: any): boolean {
   return true
 }
 
+// ── Conciliar UNA dispersión que salió por Finity (ACH o Bre-B · Cuenta 2) ──
+// Le pregunta a Finity el estado del movimiento y:
+//   · rechazado / devuelto / vencido → Rechazado + REEMBOLSO de monto y
+//     comisión al riel de donde salió (COP_ACH);
+//   · completado → Completado (solo si estaba Procesando).
+// La usan la app del cliente (reconcile_ach) y el vigilante del servidor
+// (vigilar_finity), así que las dos hacen exactamente lo mismo.
+//
+// El rechazo se mira PRIMERO: una devolución tardía llega sobre un envío que
+// ya figuraba completado, y es justo la que no puede quedar sin reembolsar.
+const RE_FINITY_FALLO = /FAILED|FALLID|REJECT|RECHAZ|CANCEL|ANUL|DECLIN|RETURN|DEVUEL|REVERS|EXPIR|VENCID|UNSUCCESS/
+const RE_FINITY_OK = /COMPLET|SETTLE|LIQUID|PAGAD|\bPAID\b|SUCCESS|FINALIZ|DISPERSAD|EXITOS|APROBAD|APPROVED/
+async function conciliarFilaFinity(tx: any, origen: string): Promise<Record<string, unknown>> {
+  const rd = (tx.raw_data ?? {}) as Record<string, any>
+  const ref = String(rd.providerRef ?? '')
+  const dueno = String(tx.user_id ?? '')
+  if (!ref || !dueno) return { id: tx.id, result: 'sin_referencia' }
+  if (rd.refunded) return { id: tx.id, result: 'already_refunded' }
+  const st = await finityCall('withdrawal_status', dueno, { id: ref })
+  const d = (st?.data ?? {}) as any
+  // Finity devuelve el estado en distintos niveles según el endpoint; se
+  // excava en todos (antes sólo leía d.status/d.state y, si venía anidado,
+  // quedaba vacío → la dispersión se atascaba en 'Procesando').
+  const s = String(
+    d?.status ?? d?.state ?? d?.data?.status ?? d?.data?.state ??
+    d?.order?.status ?? d?.order?.state ?? d?.attributes?.status ?? d?.attributes?.state ?? ''
+  ).toUpperCase()
+  if (RE_FINITY_FALLO.test(s)) {
+    if (!(await filaFirmada(tx, 'dispersion'))) { if (!rd.sinFirmaServidor) await aRevisionSinFirma(tx, origen); return { id: tx.id, result: 'revision_sin_firma' } }
+    const refund = Number(tx.amount ?? 0) + Number(rd.feeCop ?? 0)
+    const railCol = String(tx.currency ?? 'COP_ACH')
+    // CAS: reclamar el reembolso ANTES de tocar el saldo. Si el webhook (o
+    // una ejecución paralela) ya reclamó, claimed viene vacío y NO se
+    // acredita de nuevo — evita el doble reembolso.
+    // El MOTIVO que da el operador ("CUENTA Y NIT NO CORRESPONDEN") se
+    // guarda con el rechazo: el cliente lo ve en el detalle del envío.
+    const motivoProveedor = digMotivoRechazo(st)
+    const ahora = new Date().toISOString()
+    const { data: claimed } = await db.from('transactions').update({
+      status: 'Rechazado',
+      raw_data: { ...rd, refunded: true, refundCop: refund, providerStatus: s, providerError: motivoProveedor, ...(motivoProveedor ? {} : { motivoDiag: clavesDe(st).slice(0, 600) }), reconciledAt: ahora, ...(tx.status === 'Completado' ? { devolucionTardia: true } : {}) },
+    }).eq('id', tx.id).neq('status', 'Rechazado').filter('raw_data->>refunded', 'is', null).select('id')
+    if (!claimed?.length) return { id: tx.id, result: 'refund_already_claimed' }
+    const acreditado = await creditBalanceAtomic(dueno, railCol, refund)   // atómico (pentest #3)
+    if (!acreditado) {
+      // El saldo NO volvió. Se deshace el reclamo para que la próxima vuelta
+      // lo reintente: un envío rechazado no puede quedar marcado como
+      // devuelto sin que la plata haya vuelto.
+      await db.from('transactions').update({ status: tx.status, raw_data: { ...rd, reembolsoPendiente: true, reembolsoFallidoAt: ahora } })
+        .eq('id', tx.id).eq('status', 'Rechazado').filter('raw_data->>refunded', 'eq', 'true')
+      await logAudit(dueno, 'finity.reconcile.reembolso_fallido', { txId: tx.id, refund, railCol, providerRef: ref, origen })
+      await avisarAdminSinConfirmar({ id: tx.id, user_id: dueno, amount: tx.amount, currency: railCol, raw_data: rd })
+      return { id: tx.id, result: 'reembolso_fallido' }
+    }
+    await logAudit(dueno, 'finity.reconcile.reembolso', { txId: tx.id, refund, railCol, providerRef: ref, providerStatus: s, origen, tardia: tx.status === 'Completado' })
+    return { id: tx.id, result: 'refunded', refund, motivo: motivoProveedor }
+  }
+  if (RE_FINITY_OK.test(s)) {
+    if (tx.status === 'Completado') return { id: tx.id, result: 'sigue_completado' }
+    await db.from('transactions').update({
+      status: 'Completado',
+      raw_data: { ...rd, providerStatus: s, reconciledAt: new Date().toISOString() },
+    }).eq('id', tx.id).eq('status', 'Procesando')
+    return { id: tx.id, result: 'completed' }
+  }
+  return { id: tx.id, result: 'still_processing', providerStatus: s || null }
+}
+
 async function validCaller(req: Request, payload: any): Promise<{ ok: boolean; userId: string | null; admin: boolean; viaJwt: boolean }> {
   const authHeader = req.headers.get('Authorization') ?? ''
   // (El "AdminBypass <password>" se eliminó: secreto compartido que se filtraba
@@ -1487,6 +1556,51 @@ serve(async (req: Request) => {
     return json(200, { ok: true, pending: true, ref, status })
   }
 
+  // ── VIGILANTE FINITY (lo llama la base con pg_cron) ─────────────────
+  // Un envío por Finity (ACH o Bre-B · Cuenta 2) puede rechazarse minutos
+  // DESPUÉS de confirmado. Hasta ahora eso solo se detectaba cuando alguien
+  // tenía la app abierta; si el cliente la cerraba, el saldo quedaba
+  // descontado sin envío. Esto lo revisa el servidor solo:
+  //   · cada corrida: las dispersiones de Finity que siguen Procesando;
+  //   · con barrido: además los Bre-B · Cuenta 2 completados de los últimos
+  //     3 días, por si el banco los devuelve tarde.
+  // Lo autoriza la clave que la base genera para sí misma (aviso_secret) o la
+  // service key. Nadie tiene que copiar llaves.
+  if (action === 'vigilar_finity') {
+    const bearer = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim()
+    const autorizado = (!!SERVICE_KEY && bearer === SERVICE_KEY) || await traeSecretoDeLaBase(req, db)
+    if (!autorizado) return json(403, { error: 'forbidden' })
+    const ahora = Date.now()
+    const { data: vivas } = await db.from('transactions')
+      .select('id, user_id, amount, currency, status, raw_data, created_at')
+      .eq('type', 'dispersion').eq('status', 'Procesando').eq('currency', 'COP_ACH')
+      .not('raw_data->>providerRef', 'is', null)
+      .gte('created_at', new Date(ahora - 10 * 86_400_000).toISOString())
+      .lte('created_at', new Date(ahora - 30_000).toISOString())
+      .order('created_at', { ascending: false }).limit(30)
+    let tardias: any[] = []
+    if (payload?.barrido === true) {
+      const { data } = await db.from('transactions')
+        .select('id, user_id, amount, currency, status, raw_data, created_at')
+        .eq('type', 'dispersion').eq('status', 'Completado').eq('currency', 'COP_ACH')
+        .eq('raw_data->>rail', 'BREB')
+        .not('raw_data->>providerRef', 'is', null)
+        .gte('created_at', new Date(ahora - 3 * 86_400_000).toISOString())
+        .order('created_at', { ascending: false }).limit(40)
+      tardias = (data ?? []) as any[]
+    }
+    const results: Record<string, unknown>[] = []
+    for (const tx of [...((vivas ?? []) as any[]), ...tardias]) {
+      try { results.push(await conciliarFilaFinity(tx, 'vigilar_finity')) }
+      catch (e) { results.push({ id: tx.id, result: 'error', error: String((e as Error)?.message ?? e).slice(0, 160) }) }
+    }
+    const resumen = results.reduce((m: Record<string, number>, r) => { const k = String(r.result); m[k] = (m[k] ?? 0) + 1; return m }, {})
+    if (results.some(r => r.result === 'refunded' || r.result === 'completed' || r.result === 'reembolso_fallido')) {
+      await logAudit(null, 'finity.vigilante', { revisadas: results.length, resumen })
+    }
+    return json(200, { ok: true, revisadas: results.length, resumen, results })
+  }
+
   const caller = await validCaller(req, payload)
   if (!caller.ok) return json(401, { error: 'unauthorized', message: 'Tu sesión expiró. Vuelve a iniciar sesión.' })
 
@@ -1632,47 +1746,8 @@ serve(async (req: Request) => {
     }
     if (txIdPedido) return json(200, { ok: true, checked: sinMotivo.length, results: out })
     for (const tx of (rows ?? []) as any[]) {
-      const rd = (tx.raw_data ?? {}) as Record<string, any>
-      const ref = String(rd.providerRef ?? '')
-      if (!ref) continue
-      const st = await finityCall('withdrawal_status', String(userId), { id: ref })
-      const d = (st?.data ?? {}) as any
-      // Finity devuelve el estado en distintos niveles según el endpoint; se
-      // excava en todos (antes sólo leía d.status/d.state y, si venía anidado,
-      // quedaba vacío → la dispersión se atascaba en 'Procesando').
-      const s = String(
-        d?.status ?? d?.state ?? d?.data?.status ?? d?.data?.state ??
-        d?.order?.status ?? d?.order?.state ?? d?.attributes?.status ?? d?.attributes?.state ?? ''
-      ).toUpperCase()
-      // Estados terminales de Finity (incluye variantes en español que antes no
-      // se reconocían y dejaban la dispersión atascada en 'Procesando').
-      if (/COMPLET|SETTLE|LIQUID|PAGAD|\bPAID\b|SUCCESS|FINALIZ|DISPERSAD|EXITOS|APROBAD|APPROVED/.test(s)) {
-        await db.from('transactions').update({
-          status: 'Completado',
-          raw_data: { ...rd, providerStatus: s, reconciledAt: new Date().toISOString() },
-        }).eq('id', tx.id).neq('status', 'Rechazado')
-        out.push({ id: tx.id, result: 'completed' })
-      } else if (/FAILED|FALLID|REJECT|RECHAZ|CANCEL|ANUL|DECLIN|RETURN|DEVUEL/.test(s)) {
-        if (rd.refunded) { out.push({ id: tx.id, result: 'already_refunded' }); continue }
-        if (!(await filaFirmada(tx, 'dispersion'))) { if (!rd.sinFirmaServidor) await aRevisionSinFirma(tx, 'reconcile_ach'); out.push({ id: tx.id, result: 'revision_sin_firma' }); continue }
-        const refund = Number(tx.amount ?? 0) + Number(rd.feeCop ?? 0)
-        const railCol = String(tx.currency ?? 'COP_ACH')
-        // CAS: reclamar el reembolso ANTES de tocar el saldo. Si el webhook (o
-        // una ejecución paralela de reconcile_ach) ya reclamó, claimed viene
-        // vacío y NO se acredita de nuevo — evita el doble reembolso.
-        // El MOTIVO que da el operador ("CUENTA Y NIT NO CORRESPONDEN") se
-        // guarda con el rechazo: el cliente lo ve en el detalle del envío.
-        const motivoProveedor = digMotivoRechazo(st)
-        const { data: claimed } = await db.from('transactions').update({
-          status: 'Rechazado',
-          raw_data: { ...rd, refunded: true, refundCop: refund, providerStatus: s, providerError: motivoProveedor, ...(motivoProveedor ? {} : { motivoDiag: clavesDe(st).slice(0, 600) }), reconciledAt: new Date().toISOString() },
-        }).eq('id', tx.id).neq('status', 'Rechazado').filter('raw_data->>refunded', 'is', null).select('id')
-        if (!claimed?.length) { out.push({ id: tx.id, result: 'refund_already_claimed' }); continue }
-        await creditBalanceAtomic(userId, railCol, refund)   // atómico (pentest #3)
-        out.push({ id: tx.id, result: 'refunded', refund, motivo: motivoProveedor })
-      } else {
-        out.push({ id: tx.id, result: 'still_processing', providerStatus: s || null })
-      }
+      if (!String(tx?.raw_data?.providerRef ?? '')) continue
+      out.push(await conciliarFilaFinity(tx, 'reconcile_ach'))
     }
     return json(200, { ok: true, checked: (rows ?? []).length, results: out })
   }
