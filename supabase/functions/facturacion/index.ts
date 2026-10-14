@@ -244,6 +244,42 @@ async function reconciliar(userId: string, tope = 3): Promise<{ creados: number;
   return out
 }
 
+// Ponerse al día de verdad: además de las operaciones SIN comprobante
+// (reconciliar), los comprobantes que quedaron sin emitir —estado vacío o
+// 'pendiente'— porque el aviso automático se cortó a mitad (el correo falló,
+// la función se reinició, Siigo tardó). Antes esos no los reintentaba nadie:
+// solo se veían si alguien entraba a Contabilidad y apretaba Reintentar.
+// No toca 'error' (casi siempre falta configurar algo: reintentar no lo
+// arregla) ni 'emitiendo' (Siigo pudo haberlo creado: se revisa a mano para
+// no duplicar ante la DIAN). Tope por vuelta y por tiempo: cada emisión
+// puede tardar un minuto.
+async function ponerseAlDia(userId: string, opts: { tope?: number; hastaMs?: number } = {}): Promise<{ creados: number; emitidos: number; reintentados: number; errores: string[] }> {
+  const fin = opts.hastaMs ?? Date.now() + 100_000
+  const tope = opts.tope ?? 3
+  const cfg = await leerConfig(userId)
+  const out = { creados: 0, emitidos: 0, reintentados: 0, errores: [] as string[] }
+  if (!cfg?.activo) return out
+  const r = await reconciliar(userId, tope)
+  out.creados = r.creados; out.emitidos = r.emitidos; out.errores.push(...r.errores)
+  let hechos = r.emitidos + r.errores.length
+  const desde = new Date(Date.now() - 14 * 86400000).toISOString()
+  const reposo = new Date(Date.now() - 5 * 60_000).toISOString()   // no pisar un aviso que está corriendo
+  const { data: atascados } = await db.from('comprobantes').select('folio, factura_estado')
+    .eq('user_id', userId).in('tipo', Object.keys(DISPARADORES))
+    .or('factura_estado.is.null,factura_estado.eq.pendiente')
+    .gte('emitido_at', desde).lt('emitido_at', reposo)
+    .order('emitido_at', { ascending: true }).limit(20)
+  for (const c of (atascados ?? []) as any[]) {
+    if (hechos >= tope || Date.now() > fin) break
+    hechos++
+    out.reintentados++
+    const e = await emitir(Number(c.folio))
+    if (e?.ok && e.estado === 'emitida') out.emitidos++
+    else if (e && !e.ok) out.errores.push(String(e.error ?? 'error'))
+  }
+  return out
+}
+
 // ── Catálogos ─────────────────────────────────────────────────────
 async function traerCatalogos(token: string, partner: string) {
   const lista = (r: Resp): any[] => Array.isArray(r.data) ? r.data : Array.isArray(r.data?.results) ? r.data.results : []
@@ -1242,6 +1278,27 @@ Deno.serve(async (req) => {
       return json(await emitir(folio))
     }
 
+    // ── Ponerse al día (sistema): lo llama notify-transaction después de
+    //    cada operación completada, y sirve para un cron. Con userId, solo
+    //    esa cuenta; sin él, todas las que tienen la facturación activa.
+    if (accion === 'ponerse_al_dia') {
+      if (!yo.servicio) return json({ error: 'no_autorizado' }, 401)
+      const hastaMs = Date.now() + 110_000
+      const uid = String(body.userId ?? '')
+      let ids: string[] = uid ? [uid] : []
+      if (!uid) {
+        const { data: activos } = await db.from('facturacion_config').select('user_id').eq('activo', true).limit(200)
+        ids = ((activos ?? []) as any[]).map(a => String(a.user_id))
+      }
+      const resultados: Record<string, unknown> = {}
+      for (const id of ids) {
+        if (Date.now() > hastaMs) break
+        try { resultados[id] = await ponerseAlDia(id, { tope: uid ? 3 : 2, hastaMs }) }
+        catch (e) { resultados[id] = { error: String((e as Error)?.message ?? e) } }
+      }
+      return json({ ok: true, cuentas: ids.length, resultados })
+    }
+
     if (!yo.userId) return json({ error: 'no_autorizado' }, 401)
     let userId = yo.userId
 
@@ -1257,11 +1314,15 @@ Deno.serve(async (req) => {
 
     if (accion === 'config_get') {
       const chequeo = await chequeoAutomatico(userId)
-      // Si hay operaciones completadas sin comprobante, se ponen al día en
-      // segundo plano (el runtime de Supabase deja terminar la promesa
-      // después de responder). La pantalla, al recargar, ya las ve.
-      if (chequeo && chequeo.sinComprobante > 0) {
-        const p = reconciliar(userId).then(r => console.log('[facturacion] reconciliar', userId, JSON.stringify(r)), e => console.error('[facturacion] reconciliar', String((e as Error)?.message ?? e)))
+      // Si hay operaciones sin comprobante o comprobantes que quedaron sin
+      // emitir, se ponen al día en segundo plano (el runtime de Supabase deja
+      // terminar la promesa después de responder). La pantalla, al recargar,
+      // ya las ve.
+      const { count: sinEmitir } = await db.from('comprobantes').select('folio', { count: 'exact', head: true })
+        .eq('user_id', userId).in('tipo', Object.keys(DISPARADORES)).or('factura_estado.is.null,factura_estado.eq.pendiente')
+        .lt('emitido_at', new Date(Date.now() - 5 * 60_000).toISOString())
+      if ((chequeo && chequeo.sinComprobante > 0) || (sinEmitir ?? 0) > 0) {
+        const p = ponerseAlDia(userId).then(r => console.log('[facturacion] ponerse al día', userId, JSON.stringify(r)), e => console.error('[facturacion] ponerse al día', String((e as Error)?.message ?? e)))
         const rt = (globalThis as any).EdgeRuntime
         if (rt && typeof rt.waitUntil === 'function') rt.waitUntil(p)
       }

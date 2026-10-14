@@ -538,9 +538,14 @@ Deno.serve(async (req) => {
     let comprobante: { numero: string; folio: number } | null = null
     if (completed && !failed) comprobante = await emitirComprobante(tx, user?.email ?? null)
 
-    // Sin correo o con los correos apagados, la factura igual tiene que
-    // salir: es contable, no depende del aviso.
-    if (!user?.email) { if (comprobante) await facturar(comprobante.folio); return new Response('no_email', { status: 200 }) }
+    // LA FACTURA SALE SIEMPRE que haya comprobante, pase lo que pase con el
+    // correo. Antes se pedía DESPUÉS de mandarlo: si Resend fallaba, la
+    // función salía con error y la factura no se pedía nunca. Va en segundo
+    // plano para no demorar el correo, y de paso pone al día las facturas
+    // atrasadas de la misma cuenta.
+    if (comprobante) await enSegundoPlano(facturarYPonerseAlDia(comprobante.folio, tx.user_id))
+
+    if (!user?.email) return new Response('no_email', { status: 200 })
 
     const prefs = user.raw_data ?? {}
     const prefMap: Record<string, string> = {
@@ -557,7 +562,6 @@ Deno.serve(async (req) => {
     const prefKey = prefMap[tx.type]
     if (prefKey && prefs[prefKey] === false) {
       console.log('[notify] user disabled', prefKey, '— skipping')
-      if (comprobante) await facturar(comprobante.folio)
       return new Response('pref_off', { status: 200 })
     }
 
@@ -616,7 +620,6 @@ Deno.serve(async (req) => {
         .update({ enviado_at: new Date().toISOString(), correo: user.email })
         .eq('folio', comprobante.folio)
         .then(({ error }) => { if (error) console.error('[notify] comprobante enviado_at:', error.message) })
-      await facturar(comprobante.folio)
     }
     return new Response('sent', { status: 200 })
   } catch (e) {
@@ -648,6 +651,33 @@ async function facturar(folio: number): Promise<void> {
     console.log('[notify] facturacion', folio, r.status, t.slice(0, 300))
   } catch (e) {
     console.error('[notify] facturacion no respondió:', (e as Error)?.message)
+  }
+}
+
+// Corre una tarea DESPUÉS de responder (EdgeRuntime.waitUntil). Si el runtime
+// no lo ofrece, se espera acá: mejor un correo un poco más lento que una
+// factura que no se pidió.
+async function enSegundoPlano(p: Promise<unknown>): Promise<void> {
+  const rt = (globalThis as any).EdgeRuntime
+  const seguro = p.catch(e => console.error('[notify] tarea en segundo plano:', (e as Error)?.message))
+  if (rt && typeof rt.waitUntil === 'function') { rt.waitUntil(seguro); return }
+  await seguro
+}
+
+async function facturarYPonerseAlDia(folio: number, userId: string): Promise<void> {
+  await facturar(folio)
+  // Las que quedaron atrasadas de esta misma cuenta (comprobantes sin
+  // emitir, operaciones sin comprobante): las retoma facturacion.
+  try {
+    const r = await fetch(`${SUPABASE_URL}/functions/v1/facturacion`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+      body: JSON.stringify({ action: 'ponerse_al_dia', userId }),
+      signal: AbortSignal.timeout(130000),
+    })
+    console.log('[notify] facturacion ponerse_al_dia', userId, r.status, (await r.text().catch(() => '')).slice(0, 300))
+  } catch (e) {
+    console.error('[notify] ponerse_al_dia no respondió:', (e as Error)?.message)
   }
 }
 
