@@ -105,7 +105,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
   const [sendStep, setSendStep] = useState(1);
   // Resultado del envío para el paso 5 ("Envío en camino" / fallo): datos
   // reales de la dispersión — referencia del proveedor, costo, riel, hora.
-  const [sendResult, setSendResult] = useState<{ ok: boolean; message?: string; providerRef?: string | null; feeCop?: number; rail?: string; at?: string } | null>(null);
+  const [sendResult, setSendResult] = useState<{ ok: boolean; message?: string; providerRef?: string | null; feeCop?: number; rail?: string; at?: string; viaBreb?: boolean; cuentaBreb?: 1 | 2 } | null>(null);
   // Buscador del selector de contactos inscritos (envíos COP · banco)
   const [contactSearch, setContactSearch] = useState('');
   // ID de la external account de Mouv del contacto elegido — con él la
@@ -138,6 +138,11 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
   // (Saldo Lincoin / Bre-B / ACH). El cliente elige de cuál sale el dinero;
   // el disponible, la validación y el débito salen de ese riel.
   const [sendSourceRail, setSendSourceRail] = useState<'COP' | 'COP_BREB' | 'COP_ACH'>('COP');
+  // Bre-B tiene dos cuentas: la 1 paga con el saldo Bre-B y la 2 con el
+  // saldo ACH. El beneficiario y la llave son los mismos; cambia de qué
+  // saldo sale y por dónde viaja.
+  const [brebCuenta, setBrebCuenta] = useState<1 | 2>(1);
+  const vigilarCuenta2 = useRef(false);
   // Contacto elegido para el envío COP (trae destKind/brebKey/banco para la
   // dispersión REAL inline de Mouv).
   const [sendContact, setSendContact] = useState<any>(null);
@@ -191,7 +196,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
   }, [sendContact, sendForm.beneficiaryName, sendForm.documentType, sendForm.documentNumber, sendForm.bankName, sendForm.accountType, sendForm.accountNumber]);
 
   // Método elegido en el paso 2 del flujo (diseño Flujo Enviar): lista radio.
-  const [sendMethodSel, setSendMethodSel] = useState<'breb' | 'ach' | 'pay' | 'cash' | null>(null);
+  const [sendMethodSel, setSendMethodSel] = useState<'breb' | 'breb2' | 'ach' | 'pay' | 'cash' | null>(null);
   // Cotización de la comisión del proveedor para el paso Confirmar:
   // Bre-B → Mouv (fija + variable + IVA, cotizada en vivo y cobrada al
   // cliente) · ACH → Finity (precio fijo por transferencia, se descuenta al
@@ -293,14 +298,14 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
   // Cotizar la comisión del riel al entrar a Confirmar (paso 4 · banco).
   useEffect(() => {
       if (!(sendStep === 4 && sendMode === 'bank' && currentUser?.id)) { setPayoutQuote(null); return; }
-      const isBrebM = (sendContact?.destKind ?? (sendSourceRail === 'COP_BREB' ? 'breb' : 'ach')) === 'breb';
+      const isBrebM = (sendContact?.destKind ?? (sendSourceRail === 'COP_BREB' || brebCuenta === 2 ? 'breb' : 'ach')) === 'breb';
       const amt = getRawAmount(sendForm.amount);
       setPayoutQuote({ loading: true });
-      callMouvProxy({ action: 'payout_quote', userId: currentUser.id, rail: isBrebM ? 'BREB' : 'ACH', amount: amt, ...(isBrebM ? { keyValue: sendContact?.brebKey ?? sendForm.accountNumber } : {}) })
-          .then(r => setPayoutQuote(r?.ok ? { loading: false, feeCop: Number(r.feeCop ?? 0), provider: isBrebM ? 'mouv' : 'finity' } : { loading: false, error: r?.message ?? 'No se pudo cotizar' }))
+      callMouvProxy({ action: 'payout_quote', userId: currentUser.id, rail: isBrebM ? (brebCuenta === 2 ? 'BREB2' : 'BREB') : 'ACH', amount: amt, ...(isBrebM ? { keyValue: sendContact?.brebKey ?? sendForm.accountNumber } : {}) })
+          .then(r => setPayoutQuote(r?.ok ? { loading: false, feeCop: Number(r.feeCop ?? 0), provider: isBrebM && brebCuenta !== 2 ? 'mouv' : 'finity' } : { loading: false, error: r?.message ?? 'No se pudo cotizar' }))
           .catch(e => setPayoutQuote({ loading: false, error: String(e?.message ?? e) }));
       // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sendStep, sendMode, currentUser?.id]);
+  }, [sendStep, sendMode, currentUser?.id, brebCuenta]);
 
   const [gasfreeFeePreview, setGasfreeFeePreview] = useState<{ loading: boolean; feeUsdt?: number; transferFeeUsdt?: number; activateFeeUsdt?: number; error?: string }>({ loading: false });
   useEffect(() => {
@@ -320,7 +325,10 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
       const t = setInterval(async () => {
           if (Date.now() > vigilarHasta.current) return;
           if (document.hidden) return;
-          const r = await callMouvProxy({ action: 'reconcile_breb', userId: currentUser.id, recientesMin: 20 }).catch(() => null);
+          // La Cuenta 2 sale por el mismo proveedor que ACH: se concilia por ahí.
+          const r = await callMouvProxy(vigilarCuenta2.current
+              ? { action: 'reconcile_ach', userId: currentUser.id }
+              : { action: 'reconcile_breb', userId: currentUser.id, recientesMin: 20 }).catch(() => null);
           const cambios = (r?.results ?? []).filter((x: any) => x.result === 'refunded' || x.result === 'completed');
           if (!cambios.length) return;
           vigilarHasta.current = 0;   // ya se resolvió: dejar de insistir
@@ -523,7 +531,9 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
       // que NUNCA queda saldo descontado sin transferencia.
       if (sendMode === 'bank' && sendForm.destinationCurrency === 'COP' && currentUser?.id) {
           const isBreb = (sendContact?.destKind ?? 'ach') === 'breb';
-          const rail = isBreb ? 'COP_BREB' : 'COP_ACH';
+          // Bre-B · Cuenta 2 paga con el saldo ACH.
+          const cuenta2 = isBreb && brebCuenta === 2;
+          const rail = isBreb && !cuenta2 ? 'COP_BREB' : 'COP_ACH';
           // Comisión estimada para el pre-chequeo de saldo. Bre-B = fijo $1.200
           // ($800 de Mouv + $400 de utilidad); el 0,10% NO va aquí (ya se cobró
           // en el cargue). ACH = fijo $2.500. Si el servidor ya cotizó
@@ -533,7 +543,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
               : 2500;
           if (getBalance(rail) < amount + feeCop) {
               sendingRef.current = false; setIsSending(false);
-              showToast(`Saldo insuficiente en ${isBreb ? 'Bre-B' : 'ACH'}: necesitas ${(amount + feeCop).toLocaleString('es-CO')} COP (monto + comisión ${feeCop.toLocaleString('es-CO')}).`, 7000, 'error');
+              showToast(`Saldo insuficiente en ${rail === 'COP_BREB' ? 'Bre-B' : 'ACH'}: necesitas ${(amount + feeCop).toLocaleString('es-CO')} COP (monto + comisión ${feeCop.toLocaleString('es-CO')}).`, 7000, 'error');
               return;
           }
           // UNA SOLA FUENTE. Antes la llave salía de sendContact y el nombre y
@@ -573,14 +583,19 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
               : { bankCode: d.bank, accountType: (d.accountType === 'checking' ? 'corriente' : 'ahorros'), accountNumber: d.accountNumber, documentType: d.docType, documentNumber: d.docNumber, holderName: d.name, reference: sendForm.reason, motivo: sendForm.motivo, ...ordenante, ...(sendContact?.finityId ? { finityId: sendContact.finityId } : {}), ...direccion };
           try {
               const r = await Promise.race([
-                  callMouvProxy({ action: isBreb ? 'payout_breb' : 'payout_ach', userId: currentUser.id, amount, recipient, otp: sentOtpRef.current }),
-                  new Promise<any>((_, rej) => setTimeout(() => rej(new Error('timeout')), 60000)),
+                  callMouvProxy({ action: isBreb ? (cuenta2 ? 'payout_breb2' : 'payout_breb') : 'payout_ach', userId: currentUser.id, amount, recipient, otp: sentOtpRef.current }),
+                  // La Cuenta 2 hace dos llamadas al proveedor (crear y
+                  // confirmar): se le da más margen antes de declarar
+                  // "no sabemos si salió".
+                  new Promise<any>((_, rej) => setTimeout(() => rej(new Error('timeout')), cuenta2 ? 120000 : 60000)),
               ]);
+              const cuentaBreb = isBreb ? (cuenta2 ? 2 : 1) as 1 | 2 : undefined;
               if (r?.ok) {
-                  setSendResult({ ok: true, providerRef: r?.providerRef ?? null, feeCop: Number(r?.feeCop ?? (isBreb ? 1200 : 2500)), rail, at: new Date().toISOString() });
+                  setSendResult({ ok: true, providerRef: r?.providerRef ?? null, feeCop: Number(r?.feeCop ?? (isBreb ? 1200 : 2500)), rail, viaBreb: isBreb, cuentaBreb, at: new Date().toISOString() });
                   // Arranca la vigilancia rápida: 4 minutos preguntando cada 12 s
                   // por el desenlace de ESTE envío. Si se devolvió, el cliente
                   // se entera mientras todavía está en la pantalla.
+                  vigilarCuenta2.current = cuenta2;
                   vigilarHasta.current = Date.now() + 4 * 60 * 1000;
                   sendingRef.current = false; setIsSending(false); setSendStep(5);
                   refreshData?.();
@@ -589,7 +604,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
               // Falló o aún sin cablear → el edge YA reintegró el saldo (refunded).
               sendingRef.current = false; setIsSending(false);
               const msg = r?.message || r?.error || 'La dispersión no se pudo completar.';
-              setSendResult({ ok: false, message: String(msg), rail, at: new Date().toISOString() });
+              setSendResult({ ok: false, message: String(msg), rail, viaBreb: isBreb, cuentaBreb, at: new Date().toISOString() });
               setSendStep(5);
               if (r?.refunded) refreshData?.();
               return;
@@ -686,6 +701,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
       setSendSourceRail('COP');
       setSendContact(null);
       setSendMethodSel(null);
+      setBrebCuenta(1);
   };
 
   const abrir = (p?: EnviarPrefill) => {
@@ -762,7 +778,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                               <p style={{ fontSize: 12.5, color: '#878E88', marginTop: 3 }}>
                                   {sendStep === 1 && (sendForm.destinationCurrency === 'USD' ? 'Desde tu billetera USDT' : 'Desde tu cuenta en pesos colombianos')}
                                   {sendStep === 2 && <>Enviando <span style={{ color: '#F4F4F2', fontWeight: 700 }}>{formatMoney(getRawAmount(sendForm.amount), sendForm.destinationCurrency)} {displayCurrency(sendForm.destinationCurrency)}</span> · <button onClick={() => setSendStep(1)} style={{ textDecoration: 'underline', color: '#F4F4F2' }}>cambiar</button></>}
-                                  {sendStep === 3 && sendMode === 'bank' && <>{formatMoney(getRawAmount(sendForm.amount), 'COP')} COP · {sendSourceRail === 'COP_ACH' ? 'ACH' : 'Bre-B'} · solo beneficiarios inscritos</>}
+                                  {sendStep === 3 && sendMode === 'bank' && <>{formatMoney(getRawAmount(sendForm.amount), 'COP')} COP · {brebCuenta === 2 ? 'Bre-B · Cuenta 2' : sendSourceRail === 'COP_ACH' ? 'ACH' : 'Bre-B'} · solo beneficiarios inscritos</>}
                                   {sendStep === 4 && sendMode !== 'pay' && 'Revisa los datos antes de confirmar'}
                               </p>
                           </div>
@@ -918,7 +934,8 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                           // que cubra el monto + su comisión.
                           const amtStep2 = getRawAmount(sendForm.amount);
                           const METHODS = [
-                              { key: 'breb', title: 'Bre-B a cuenta bancaria', pill: 'SEGUNDOS', time: 'Por llave a cualquier banco · en segundos', rail: 'COP_BREB', railLabel: 'Bre-B', fee: 1200 },
+                              { key: 'breb', title: 'Bre-B · Cuenta 1', pill: 'SEGUNDOS', time: 'Por llave a cualquier banco · en segundos', rail: 'COP_BREB', railLabel: 'Bre-B', fee: 1200 },
+                              { key: 'breb2', title: 'Bre-B · Cuenta 2', pill: 'SEGUNDOS', time: 'Por llave a cualquier banco · sale de tu saldo ACH', rail: 'COP_ACH', railLabel: 'ACH', fee: 1200 },
                               { key: 'ach', title: 'ACH tradicional', pill: null, time: `Ciclos ACH · L–V sin festivos · ${achEtaShort()}`, rail: 'COP_ACH', railLabel: 'ACH', fee: 2500 },
                               { key: 'pay', title: 'A otro usuario de Lincoin', pill: 'SIN COMISIÓN', time: 'Por ID o correo · instantáneo, 24/7', rail: 'COP', railLabel: 'Saldo Lincoin', fee: 0 },
                               { key: 'cash', title: 'Retiro en punto físico', pill: null, time: 'Efectivo en corresponsales aliados', rail: 'COP', railLabel: 'Saldo Lincoin', fee: 0 },
@@ -969,8 +986,9 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                   <button
                                       onClick={() => {
                                           if (!sendMethodSel) return;
-                                          if (sendMethodSel === 'breb' || sendMethodSel === 'ach') {
+                                          if (sendMethodSel === 'breb' || sendMethodSel === 'breb2' || sendMethodSel === 'ach') {
                                               setSendMode('bank');
+                                              setBrebCuenta(sendMethodSel === 'breb2' ? 2 : 1);
                                               setSendSourceRail(sendMethodSel === 'breb' ? 'COP_BREB' : 'COP_ACH');
                                           } else {
                                               setSendMode(sendMethodSel);
@@ -991,7 +1009,8 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                       {/* STEP 3 BANK: beneficiarios inscritos como tarjetas (diseño) */}
                       {sendStep === 3 && sendMode === 'bank' && (() => {
                           const all: any[] = ((currentUser as any)?.raw_data?.mouvContacts) ?? ((currentUser as any)?.mouvContacts) ?? [];
-                          const railKind = sendSourceRail === 'COP_ACH' ? 'ach' : 'breb';
+                          // Bre-B · Cuenta 2 sale del saldo ACH pero a beneficiarios Bre-B.
+                          const railKind = sendSourceRail === 'COP_ACH' && brebCuenta !== 2 ? 'ach' : 'breb';
                           // Solo Colombia y del riel elegido en el paso 2.
                           const myContacts = all.filter((c: any) => c.accountKind !== 'wallet' && (c.country ?? 'Colombia') === 'Colombia' && ((c.destKind ?? 'ach') === railKind));
                           const q = contactSearch.trim().toLowerCase();
@@ -1083,7 +1102,9 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                   beneficiaryType: c.kind === 'empresa' ? 'business' : 'personal',
                               });
                               setSendContact(c);
-                              setSendSourceRail((c as any).destKind === 'breb' ? 'COP_BREB' : 'COP_ACH');
+                              const esBrebC = (c as any).destKind === 'breb';
+                              if (!esBrebC) setBrebCuenta(1);
+                              setSendSourceRail(esBrebC && brebCuenta !== 2 ? 'COP_BREB' : 'COP_ACH');
                               setMouvDestId(null);
                           };
                           return (
@@ -1311,8 +1332,8 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                       {/* STEP 4 BANK: Confirmar (diseño Flujo Enviar) */}
                       {sendStep === 4 && sendMode === 'bank' && (() => {
                           const amt = getRawAmount(sendForm.amount);
-                          const isBrebM = (sendContact?.destKind ?? (sendSourceRail === 'COP_BREB' ? 'breb' : 'ach')) === 'breb';
-                          const railLbl = isBrebM ? 'Bre-B' : 'ACH';
+                          const isBrebM = (sendContact?.destKind ?? (sendSourceRail === 'COP_BREB' || brebCuenta === 2 ? 'breb' : 'ach')) === 'breb';
+                          const railLbl = isBrebM ? (brebCuenta === 2 ? 'Bre-B · Cuenta 2' : 'Bre-B') : 'ACH';
                           const initials = (n: string) => { const p = String(n || '').trim().split(/\s+/); return ((p[0]?.[0] ?? '') + (p[1]?.[0] ?? '')).toUpperCase() || '·'; };
                           // Todo de `destinatario`: con un beneficiario inscrito, la
                           // pantalla no puede mostrar la llave de uno y el nombre de otro.
@@ -1362,6 +1383,36 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                       </div>
                                   </div>
                               </div>
+                              {/* ENVIAR POR — Bre-B tiene dos cuentas: la 1 paga con
+                                  el saldo Bre-B y la 2 con el saldo ACH. Mismo
+                                  beneficiario, misma llave, mismos controles. */}
+                              {isBrebM && (
+                                  <div style={{ border: '1px solid rgba(255,255,255,0.1)', borderRadius: 13, padding: '13px 16px', background: 'rgba(255,255,255,0.025)' }}>
+                                      <span style={{ color: '#878E88', fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px' }}>ENVIAR POR</span>
+                                      <div className="grid grid-cols-2" style={{ gap: 8, marginTop: 8 }}>
+                                          {([1, 2] as const).map(n => {
+                                              const rc = n === 2 ? 'COP_ACH' : 'COP_BREB';
+                                              const bal = getBalance(rc);
+                                              const sel = brebCuenta === n;
+                                              const alcanza = bal >= amt + (payoutQuote?.feeCop ?? 1200);
+                                              const bloqueada = !sel && !alcanza;
+                                              return (
+                                                  <button key={n} type="button" disabled={bloqueada || isSending}
+                                                      onClick={() => { setBrebCuenta(n); setSendSourceRail(rc); }}
+                                                      style={{ textAlign: 'left', padding: '10px 12px', borderRadius: 10, minWidth: 0,
+                                                          border: sel ? '1px solid rgba(74,222,128,0.35)' : '1px solid rgba(255,255,255,0.1)',
+                                                          background: sel ? 'rgba(74,222,128,0.06)' : 'transparent',
+                                                          opacity: bloqueada ? 0.5 : 1, cursor: bloqueada ? 'not-allowed' : 'pointer' }}>
+                                                      <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>Cuenta {n}</span>
+                                                      <span style={{ display: 'block', fontSize: 11, color: sel ? '#4ADE80' : '#878E88', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                                          Saldo {n === 2 ? 'ACH' : 'Bre-B'} · ${Math.round(bal).toLocaleString('es-CO')}{!alcanza ? ' · no alcanza' : ''}
+                                                      </span>
+                                                  </button>
+                                              );
+                                          })}
+                                      </div>
+                                  </div>
+                              )}
                               {/* RECIBE */}
                               <div style={{ border: '1px solid rgba(255,255,255,0.1)', borderRadius: 13, padding: '15px 16px', background: 'rgba(255,255,255,0.025)' }}>
                                   <span style={{ color: '#878E88', fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px' }}>RECIBE</span>
@@ -1609,7 +1660,8 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                       {sendStep === 5 && sendMode !== 'cash' && (() => {
                           const ok = sendResult?.ok !== false;
                           const isCop = sendForm.destinationCurrency === 'COP';
-                          const isBrebS = (sendResult?.rail ?? sendSourceRail) === 'COP_BREB';
+                          const isBrebS = sendResult?.viaBreb ?? ((sendResult?.rail ?? sendSourceRail) === 'COP_BREB');
+                          const cuenta2S = isBrebS && sendResult?.cuentaBreb === 2;
                           const amt = getRawAmount(sendForm.amount);
                           const isWalletSend = sendMode === 'wallet' || sendResult?.rail === 'USDT';
                           // El comprobante es lo que el cliente guarda como soporte:
@@ -1623,7 +1675,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                           const last4 = acctRaw.slice(-4);
                           const methodLine = isWalletSend ? `Wallet ···${last4} · TRC-20`
                               : !isCop ? `Cuenta ···${last4}`
-                              : isBrebS ? `Llave ···${last4} · Bre-B`
+                              : isBrebS ? `Llave ···${last4} · Bre-B${cuenta2S ? ' · Cuenta 2' : ''}`
                               : `${dR.bank ?? 'Banco'} ···${last4} · ACH`;
                           const subOk = isWalletSend
                               ? 'Tu envío ya salió de tu billetera. Te avisamos cuando la red lo confirme.'
@@ -1728,7 +1780,8 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                               id: sendResult?.providerRef || `TX-${Date.now()}`,
                                               type: isWalletSend ? 'send' : 'dispersion',
                                               amount: amt,
-                                              currency: isWalletSend ? 'USDT_TRON' : (isBrebS ? 'COP_BREB' : (isCop ? 'COP_ACH' : sendForm.destinationCurrency)),
+                                              currency: isWalletSend ? 'USDT_TRON' : (isBrebS ? (cuenta2S ? 'COP_ACH' : 'COP_BREB') : (isCop ? 'COP_ACH' : sendForm.destinationCurrency)),
+                                              ...(isCop && !isWalletSend ? { rail: isBrebS ? 'BREB' : 'ACH', ...(isBrebS ? { cuentaBreb: cuenta2S ? 2 : 1 } : {}) } : {}),
                                               status: receiptStatus,
                                               createdAt: sendResult?.at || new Date().toISOString(),
                                               beneficiary: name,

@@ -976,6 +976,10 @@ function brebFeeCop(_amountCop?: number): number {
 }
 // Legacy (override directo del total si se quiere fijar a mano).
 const BREB_FEE_COP = Number(Deno.env.get('BREB_FEE_COP') ?? String(BREB_MOUV_FIXED + BREB_MARGIN_COP)) || 1200
+// Bre-B · Cuenta 2 (sale por Finity, del saldo ACH). Por defecto se cobra lo
+// mismo que la Cuenta 1; el costo que cobra Finity queda anotado en cada
+// envío (costoProveedorCop) para poder ajustar esta tarifa con datos reales.
+const BREB2_FEE_COP = Number(Deno.env.get('BREB2_FEE_COP') ?? '') || brebFeeCop()
 
 async function finityPayoutAch(userId: string, recipient: Record<string, any>, amountCop: number):
   Promise<{ ok: boolean; providerRef?: string; state?: string; feeCop: number; costs?: any; error?: any; destinationId?: string; amountMismatch?: Record<string, unknown> | null }> {
@@ -1161,6 +1165,114 @@ async function finityPayoutAch(userId: string, recipient: Record<string, any>, a
     await logAudit(userId, 'finity.withdrawal.amount_mismatch', { providerRef: String(od.id), ...amountMismatch })
   }
   return { ok: true, providerRef: String(od.id), state: od.status ?? od.state ?? 'PROCESSING', feeCop: ACH_FEE_COP, destinationId: destId ?? undefined, amountMismatch }
+}
+
+// ── Bre-B · Cuenta 2: el envío por llave sale por Finity ──────────────
+// Finity usa una sola bolsa para ACH y Bre-B, así que esta cuenta se paga
+// con el saldo ACH del cliente. El envío tiene dos pasos:
+//   1. CREAR  POST /v0/breb-transfers { amount, key_type, key_value }
+//      → { id: 'mvm-…', first_name, last_name, bank_name, transfer_amount,
+//          withdrawal_cost, total_withdrawal, total_received }
+//      No mueve plata. Dice A NOMBRE DE QUIÉN está la llave y cuánto llega.
+//   2. CONFIRMAR  POST /v0/breb-transfers/confirm { transaction_id }
+//      Este es el que manda la plata.
+//
+// Entre los dos pasos se revisa lo que Finity contestó: si la llave está a
+// nombre de otra persona o el monto no es el pedido, NO se confirma y el
+// saldo vuelve. Es la ventaja de este proveedor: se puede mirar antes de
+// mandar, en vez de enterarse después.
+type BrebTipoFinity = 'PHONE' | 'EMAIL' | 'ALPHANUM' | 'NRIC' | 'MERCHANT'
+function brebTypeToFinity(t: string, keyValue?: string): BrebTipoFinity {
+  if (/MERCHANT|COMERCIO/.test(String(t ?? '').toUpperCase())) return 'MERCHANT'
+  return brebTypeToMouv(t, keyValue)
+}
+// Las formas en que se prueba la llave. Crear no mueve plata, así que si
+// Finity rechaza una forma se puede probar la siguiente sin riesgo.
+function llavesParaFinity(tipo: BrebTipoFinity, valor: unknown): string[] {
+  const v = String(valor ?? '').trim()
+  const out: string[] = []
+  const add = (x: string) => { if (x && !out.includes(x)) out.push(x) }
+  if (tipo === 'PHONE') {
+    const d10 = v.replace(/\D/g, '').replace(/^57(?=\d{10}$)/, '')
+    add(d10); add(`+57${d10}`)
+  } else if (tipo === 'NRIC') {
+    add(v.replace(/\D/g, ''))
+  } else if (tipo === 'EMAIL') {
+    add(v.toLowerCase())
+  } else {
+    add(v); add(v.startsWith('@') ? v.slice(1) : `@${v}`)
+  }
+  return out
+}
+// ¿El titular que devuelve Finity es claramente OTRA persona? Solo se corta
+// cuando no comparte ni una palabra con ninguno de los nombres que tenemos
+// del beneficiario (el inscrito, el de la Registraduría, el del directorio
+// Bre-B). Si Finity enmascara el nombre o no lo manda, no se juzga.
+const RUIDO_NOMBRE = new Set(['SAS', 'LTDA', 'CIA', 'BIC', 'DEL', 'LAS', 'LOS', 'SOCIEDAD', 'COMPANIA', 'EMPRESA', 'GRUPO'])
+function palabrasNombre(s: unknown): string[] {
+  return String(s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase()
+    .replace(/[^A-Z0-9Ñ ]/g, ' ').split(/\s+/).filter(t => t.length >= 3 && !RUIDO_NOMBRE.has(t))
+}
+function titularEsOtro(titular: string, esperados: string[]): boolean {
+  if (!titular || /\*/.test(titular)) return false
+  const suyas = palabrasNombre(titular)
+  if (!suyas.length) return false
+  const listas = esperados.map(palabrasNombre).filter(l => l.length)
+  if (!listas.length) return false
+  return !listas.some(l => l.some(p => suyas.includes(p)))
+}
+async function finityPayoutBreb(userId: string, recipient: Record<string, any>, amountCop: number, nombresEsperados: string[]): Promise<{
+  ok: boolean; providerRef?: string; desenlaceDesconocido?: boolean; paso?: 'crear' | 'titular' | 'monto' | 'confirmar';
+  httpStatus?: number | null; body?: any; mensaje?: string; titular?: string; banco?: string;
+  costoProveedor?: number | null; totalProveedor?: number | null
+}> {
+  const tipo = brebTypeToFinity(String(recipient.keyType ?? ''), recipient.key)
+  const monto = Math.round(amountCop)   // pesos enteros, igual que los retiros ACH
+  let creada: any = null
+  let ultimo: any = null
+  for (const llave of llavesParaFinity(tipo, recipient.key)) {
+    const c = await finityCall('breb_crear', userId, { data: { amount: monto, key_type: tipo, key_value: llave } })
+    ultimo = c
+    const d = c?.data?.data ?? c?.data ?? null
+    if (c?.ok && d?.id) { creada = { ...d, id: String(d.id) }; break }
+    // Solo se prueba otra forma si Finity rechazó la llave por datos.
+    if (![400, 404, 422].includes(Number(c?.status ?? 0))) break
+  }
+  if (!creada) {
+    return { ok: false, paso: 'crear', httpStatus: Number(ultimo?.status ?? 0) || null, body: ultimo?.data ?? ultimo ?? null }
+  }
+  const titular = [creada.first_name, creada.last_name].map((x: unknown) => String(x ?? '').trim()).filter(Boolean).join(' ')
+  const extra = {
+    providerRef: creada.id, titular: titular || undefined, banco: creada.bank_name ? String(creada.bank_name) : undefined,
+    costoProveedor: Number.isFinite(Number(creada.withdrawal_cost)) ? Number(creada.withdrawal_cost) : null,
+    totalProveedor: Number.isFinite(Number(creada.total_withdrawal)) ? Number(creada.total_withdrawal) : null,
+  }
+
+  // Lo que llega tiene que ser lo pedido. Si Finity cotiza otro monto, no se
+  // manda: es justo el tipo de diferencia que en ACH se vio tarde.
+  const ecos = [creada.transfer_amount, creada.total_received, creada.cop_amount]
+    .map((x: unknown) => Number(x)).filter(n => Number.isFinite(n) && n > 0)
+  if (ecos.some(n => Math.abs(n - monto) > 1)) {
+    await logAudit(userId, 'finity.breb.monto_no_coincide', { pedido: monto, cotizado: ecos, id: creada.id })
+    return { ok: false, ...extra, providerRef: undefined, paso: 'monto', body: creada,
+      mensaje: 'El banco cotizó un monto distinto al que pediste, así que no enviamos nada. Tu saldo fue devuelto.' }
+  }
+  if (titular && titularEsOtro(titular, nombresEsperados)) {
+    await logAudit(userId, 'finity.breb.titular_no_coincide', { titular, esperados: nombresEsperados.filter(Boolean).slice(0, 4), id: creada.id })
+    return { ok: false, ...extra, providerRef: undefined, paso: 'titular', body: creada,
+      mensaje: `Esa llave Bre-B está a nombre de ${titular}, no del beneficiario que tienes inscrito. Corrige el beneficiario antes de enviar. Tu saldo fue devuelto.` }
+  }
+
+  const k = await finityCall('breb_confirmar', userId, { transaction_id: creada.id })
+  const hs = Number(k?.status ?? 0)
+  if (k?.ok && k?.data?.success !== false) return { ok: true, ...extra }
+  // ¿Finity dijo que NO, o no sabemos? Sin respuesta, un 5xx, o un 200 que no
+  // dice ni sí ni no pueden esconder una transferencia que SÍ salió. Un
+  // rechazo de nuestra propia llamada (forbidden, sesión) es un no: la
+  // confirmación ni llegó a Finity.
+  const nuestro = ['finity_auth_failed', 'forbidden', 'unauthorized', 'missing_id'].includes(String(k?.error ?? ''))
+  const desconocido = !nuestro && (!k || !!k?.desenlaceDesconocido || hs === 0 || hs >= 500 || hs === 408 || (k?.ok && k?.data?.success === false))
+  return { ok: false, ...extra, paso: 'confirmar', desenlaceDesconocido: desconocido, httpStatus: hs || null, body: k?.data ?? k ?? null }
 }
 
 // Registro de auditoría best-effort (no bloquea la operación).
@@ -1404,7 +1516,8 @@ serve(async (req: Request) => {
     if (!dueno) return json(403, { error: 'forbidden' })
     const t = await topeAchDe(dueno)
     const BREB_MAX = Number(Deno.env.get('BREB_MAX_COP') ?? '12000000') || 12000000
-    return json(200, { ok: true, achMax: t.max, brebMax: BREB_MAX })
+    const BREB2_MAX = Number(Deno.env.get('BREB2_MAX_COP') ?? '') || BREB_MAX
+    return json(200, { ok: true, achMax: t.max, brebMax: BREB_MAX, breb2Max: BREB2_MAX, breb2FeeCop: BREB2_FEE_COP })
   }
 
   // ── ping / balance: saldo de la wallet COMPARTIDA — SOLO ADMIN ──
@@ -1472,9 +1585,14 @@ serve(async (req: Request) => {
     // deja tocar la cuenta ajena.
     const userId = requireOwner(caller, payload)
     if (!userId) return json(403, { error: 'forbidden', message: 'Vuelve a iniciar sesión.' })
+    // Solo lo que salió por Finity: ACH y Bre-B · Cuenta 2 (las dos pagan con
+    // el saldo ACH). Las de Mouv las concilia reconcile_breb; si entraban acá
+    // ocupaban los 20 cupos preguntándole a Finity por ids que no son suyos.
     const { data: rows } = await db.from('transactions')
       .select('id, user_id, amount, currency, status, raw_data')
       .eq('type', 'dispersion').eq('user_id', userId).eq('status', 'Procesando')
+      .neq('currency', 'COP_BREB')
+      .order('created_at', { ascending: false })
       .limit(20)
     const out: any[] = []
     // Rechazos recientes que quedaron SIN motivo (antes no se guardaba): se
@@ -2714,6 +2832,9 @@ serve(async (req: Request) => {
     const amount = Number(payload.amount)
     if (!isFinite(amount) || amount <= 0) return json(400, { error: 'bad_amount' })
     const rail = String(payload.rail ?? 'BREB').toUpperCase()
+    if (rail === 'BREB2') {
+      return json(200, { ok: true, rail: 'BREB2', provider: 'lincoin', feeCop: BREB2_FEE_COP, fixedCop: BREB2_FEE_COP, variableCop: 0, ivaCop: 0, totalCop: amount + BREB2_FEE_COP })
+    }
     if (rail === 'BREB') {
       const fee = brebFeeCop(amount)
       return json(200, { ok: true, rail: 'BREB', provider: 'lincoin', feeCop: fee, fixedCop: fee, variableCop: 0, ivaCop: 0, totalCop: amount + fee })
@@ -2728,9 +2849,18 @@ serve(async (req: Request) => {
   //   BREB → $1.200 fijos por envío (BREB_FEE_COP); se debita monto + 1.200.
   //   ACH  → precio fijo Finity (ACH_FEE_COP); se debita monto + tarifa.
   // Si el proveedor falla, se REINTEGRA todo lo debitado.
-  if (action === 'payout_breb' || action === 'payout_ach') {
-    const rail: 'BREB' | 'ACH' = action === 'payout_breb' ? 'BREB' : 'ACH'
-    const railCol = action === 'payout_breb' ? 'COP_BREB' : 'COP_ACH'
+  if (action === 'payout_breb' || action === 'payout_breb2' || action === 'payout_ach') {
+    const rail: 'BREB' | 'ACH' = action === 'payout_ach' ? 'ACH' : 'BREB'
+    // Bre-B tiene DOS cuentas. La 1 sale por Mouv con el saldo Bre-B; la 2 sale
+    // por Finity con el saldo ACH, porque Finity usa una sola bolsa para los dos
+    // rieles. Todo lo demás —inscripción, AML, titular de la llave, motivo,
+    // topes— es el mismo proceso.
+    const brebFinity = action === 'payout_breb2'
+    const railCol = rail === 'BREB' && !brebFinity ? 'COP_BREB' : 'COP_ACH'
+    const saldoLabel = railCol === 'COP_BREB' ? 'Bre-B' : 'ACH'
+    // Los nombres que conocemos del beneficiario. Con la Cuenta 2 se comparan
+    // con el titular que devuelve Finity antes de confirmar el envío.
+    const nombresTitular: string[] = []
     // SEGURIDAD: mover dinero exige identidad PROBADA con JWT real (o admin).
     // Un simple user_id en el body ya NO autoriza un payout — así nadie drena
     // la cuenta de otro con solo la llave pública + el id de la víctima.
@@ -2846,6 +2976,7 @@ serve(async (req: Request) => {
           })
         }
         const hit = cands[0]
+        if (hit?.name) nombresTitular.push(String(hit.name))
         const docInscrito = soloDig(hit?.docNumber)
         if (docInscrito) {
           if (docDest && !mismoDoc(docDest, docInscrito)) {
@@ -2872,6 +3003,7 @@ serve(async (req: Request) => {
           try {
             const rrPrev = await mouvResolveBrebKey(String((payload.recipient as any)?.key ?? ''), String((payload.recipient as any)?.keyType ?? ''))
             const docReal = soloDig(rrPrev?.idValue)
+            if (rrPrev?.found && rrPrev.fullName && docReal && mismoDoc(docReal, docDest)) nombresTitular.push(rrPrev.fullName)
             if (rrPrev?.found && docReal && !mismoDoc(docReal, docDest)) {
               await logAudit(userId, 'mouv.titular_llave_no_coincide', {
                 docVerificado: docDest, docTitular: docReal, titular: rrPrev.fullName ?? null,
@@ -2894,6 +3026,7 @@ serve(async (req: Request) => {
           const tdCfg = (tdRow as any)?.value ? JSON.parse((tdRow as any).value) : null
           if (tdCfg?.activo) {
             const f = (rawU?.tusdatos?.beneficiarios ?? {})[docDest]
+            if (f?.nombreReal) nombresTitular.push(String(f.nombreReal))
             const cat = String(f?.categoria ?? '')
             const cerrado = f?.estado === 'finalizado'
 
@@ -3035,10 +3168,13 @@ serve(async (req: Request) => {
     //     20M y un envío de 12–20M pasaba la app y fallaba en Mouv). ACH usa el
     //     tope general. Ambos overridables por secret.
     const BREB_MAX_COP   = Number(Deno.env.get('BREB_MAX_COP')   ?? '12000000') || 12000000
+    // La Cuenta 2 (Finity) arranca con el mismo tope hasta que Finity confirme
+    // el suyo; se cambia con el secret BREB2_MAX_COP.
+    const BREB2_MAX_COP  = Number(Deno.env.get('BREB2_MAX_COP')  ?? '') || BREB_MAX_COP
     // ACH: el tope lo fija el admin — por defecto 500 M para empresas y 50 M
     // para personas, con excepciones por cliente y siempre por debajo del
     // tope del proveedor (ver topeAchDe). Bre-B sigue en el límite de Mouv.
-    const perOpMax = rail === 'BREB' ? BREB_MAX_COP : (await topeAchDe(userId)).max
+    const perOpMax = rail === 'BREB' ? (brebFinity ? BREB2_MAX_COP : BREB_MAX_COP) : (await topeAchDe(userId)).max
     if (amount > perOpMax) {
       return json(400, { error: 'over_limit', message: rail === 'BREB'
         ? `Bre-B permite máximo ${perOpMax.toLocaleString('es-CO')} COP por transferencia. Divide el envío en varias operaciones o usa la Mesa OTC.`
@@ -3053,6 +3189,9 @@ serve(async (req: Request) => {
       const { data: dup } = await db.from('transactions')
         .select('id, status, created_at')
         .eq('user_id', userId).eq('type', 'dispersion').eq('currency', railCol).eq('amount', amount)
+        // El saldo ACH paga dos rieles (ACH y Bre-B · Cuenta 2): un ACH no
+        // cuenta como duplicado de un Bre-B del mismo monto.
+        .eq('raw_data->>rail', rail)
         .gte('created_at', since)
         .in('status', ['Procesando', 'Completado'])
         .limit(1)
@@ -3084,7 +3223,7 @@ serve(async (req: Request) => {
     let feeCop = 0
     let feeDetail: Record<string, unknown> = {}
     if (rail === 'BREB') {
-      feeCop = brebFeeCop(amount)
+      feeCop = brebFinity ? BREB2_FEE_COP : brebFeeCop(amount)
       feeDetail = { feeCop, feeFixedCop: feeCop, feeVariableCop: 0, feeIvaCop: 0, feeProvider: 'lincoin' }
     } else {
       feeCop = ACH_FEE_COP
@@ -3160,14 +3299,14 @@ serve(async (req: Request) => {
     if (!adjDebErr) {
       const e = (adjDeb as any)?.error
       if (e === 'not_found') return json(404, { error: 'user_not_found', message: 'Usuario no encontrado.' })
-      if (e) return json(400, { error: 'insufficient_funds', message: `Saldo ${rail} insuficiente para monto + comisión (${totalDebit.toLocaleString('es-CO')} COP).` })
+      if (e) return json(400, { error: 'insufficient_funds', message: `Saldo ${saldoLabel} insuficiente para monto + comisión (${totalDebit.toLocaleString('es-CO')} COP).` })
       afterDebit = Number(((adjDeb as any)?.balances?.[railCol]) ?? 0)
     } else {
       const { data: u } = await db.from('users').select('balances').eq('id', userId).maybeSingle()
       if (!u) return json(404, { error: 'user_not_found', message: 'Usuario no encontrado.' })
       const bals: Record<string, number> = (u.balances as any) ?? {}
       const current = Number(bals[railCol] ?? 0)
-      if (current < totalDebit) return json(400, { error: 'insufficient_funds', message: `Saldo ${rail} insuficiente para monto + comisión (${totalDebit.toLocaleString('es-CO')} COP). Disponible: ${current.toLocaleString('es-CO')} COP.` })
+      if (current < totalDebit) return json(400, { error: 'insufficient_funds', message: `Saldo ${saldoLabel} insuficiente para monto + comisión (${totalDebit.toLocaleString('es-CO')} COP). Disponible: ${current.toLocaleString('es-CO')} COP.` })
       afterDebit = Number((current - totalDebit).toFixed(2))
       const { error: debErr } = await db.from('users').update({ balances: { ...bals, [railCol]: afterDebit } }).eq('id', userId)
       if (debErr) return json(500, { error: 'debit_failed', message: 'No se pudo reservar el saldo. Intenta de nuevo.' })
@@ -3182,7 +3321,8 @@ serve(async (req: Request) => {
     const keyTypeLabel = ({ celular: 'Celular', cedula: 'Cédula', correo: 'Correo', alfanumerico: 'Llave' } as Record<string, string>)[String(recipient.keyType ?? '')] ?? 'Llave'
     const prettyBase = {
       source: 'mouv_payout', rail,
-      title: `Dispersión ${railLabel}`,
+      ...(rail === 'BREB' ? { cuentaBreb: brebFinity ? 2 : 1, proveedor: brebFinity ? 'finity' : 'mouv' } : {}),
+      title: brebFinity ? 'Dispersión Bre-B · Cuenta 2' : `Dispersión ${railLabel}`,
       beneficiary: recipient.holderName ?? null,
       bank: rail === 'BREB' ? `Bre-B · ${keyTypeLabel}` : (recipient.bankCode ?? 'ACH'),
       account: rail === 'BREB' ? (recipient.key ?? null) : (recipient.accountNumber ?? null),
@@ -3252,7 +3392,79 @@ serve(async (req: Request) => {
       if (txId) await logAudit(userId, 'mouv.tx_insert_tardio', { txId, status })
     }
 
-    // 4) Llamar al PROVEEDOR del riel: BREB → Mouv · ACH → Finity
+    // 4) Llamar al PROVEEDOR del riel: BREB → Mouv (Cuenta 1) o Finity
+    //    (Cuenta 2) · ACH → Finity
+    if (brebFinity) {
+      const fb = await finityPayoutBreb(userId, recipient, amount, [...nombresTitular, String(recipient.holderName ?? '')])
+      const ahora = new Date().toISOString()
+      const delProveedor = {
+        ...(fb.titular ? { titularProveedor: fb.titular } : {}),
+        ...(fb.banco ? { bancoDestino: fb.banco } : {}),
+        ...(fb.costoProveedor != null ? { costoProveedorCop: fb.costoProveedor } : {}),
+        ...(fb.totalProveedor != null ? { totalProveedorCop: fb.totalProveedor } : {}),
+      }
+      if (fb.ok) {
+        // Confirmada no es pagada: queda Procesando hasta que la conciliación
+        // (o el aviso de Finity) diga que llegó. Igual que la Cuenta 1.
+        await asentarTx('Procesando', {
+          ...prettyBase, ...feeDetail, ...delProveedor,
+          providerRef: fb.providerRef ?? null, aceptadaAt: ahora,
+        })
+        await logAudit(userId, `finity.${action}.ok`, { amount, feeCop, rail, providerRef: fb.providerRef ?? null, costoProveedorCop: fb.costoProveedor ?? null })
+        await notifyTx(txId)
+        return json(200, { ok: true, status: 'Procesando', confirmada: false, providerRef: fb.providerRef ?? null, feeCop, newBalance: afterDebit })
+      }
+      // Sin respuesta clara AL CONFIRMAR: no se reembolsa. Puede haber salido.
+      if (fb.desenlaceDesconocido) {
+        await asentarTx('Procesando', {
+          ...prettyBase, ...feeDetail, ...delProveedor,
+          providerRef: fb.providerRef ?? null,
+          desenlaceDesconocido: true, revisionManual: true,
+          httpStatus: fb.httpStatus ?? null, error: fb.body ?? 'sin_respuesta',
+          sinConfirmarDesde: ahora,
+        })
+        await logAudit(userId, `finity.${action}.desenlace_desconocido`, { txId, amount, providerRef: fb.providerRef ?? null, httpStatus: fb.httpStatus ?? null })
+        await avisarAdminSinConfirmar({ id: txId, user_id: userId, amount, currency: railCol, raw_data: prettyBase })
+        await notifyTx(txId)
+        return json(200, {
+          ok: true, status: 'Procesando', confirmada: false, desenlaceDesconocido: true,
+          message: 'No pudimos confirmar el envío con el banco. NO lo reintentes: lo estamos verificando y te avisamos en minutos.',
+          feeCop, newBalance: afterDebit,
+        })
+      }
+      // Finity dijo que no, o lo frenamos antes de confirmar (titular o monto
+      // que no cuadran): no salió nada → REINTEGRAR monto + comisión.
+      let restoredF = 0
+      const { data: adjF, error: adjFErr } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { [railCol]: totalDebit } })
+      if (!adjFErr && !(adjF as any)?.error) {
+        restoredF = Number(((adjF as any)?.balances?.[railCol]) ?? 0)
+      } else {
+        const { data: uF } = await db.from('users').select('balances').eq('id', userId).maybeSingle()
+        const balsF: Record<string, number> = (uF?.balances as any) ?? {}
+        restoredF = Number((Number(balsF[railCol] ?? 0) + totalDebit).toFixed(2))
+        await db.from('users').update({ balances: { ...balsF, [railCol]: restoredF } }).eq('id', userId)
+      }
+      const provMsgF = fb.mensaje ? null : digMotivoRechazo(fb.body)
+      const errTextF = `${provMsgF ?? ''} ${(() => { try { return JSON.stringify(fb.body ?? '') } catch { return '' } })()}`.toLowerCase()
+      const llaveMala = fb.paso === 'crear' && /key|llave|not\s*found|no existe|inv[aá]lid|no.{0,3}activ/.test(errTextF)
+      const friendlyF = fb.mensaje
+        ?? (llaveMala
+          ? 'La llave Bre-B del beneficiario no es válida o no está activa. Pídele que te confirme su llave exacta y vuelve a intentarlo. Tu saldo fue devuelto.'
+          : provMsgF && !/[{}\[\]]|http\s*\d|status\s*code|errors?\b|\bpath\b/i.test(provMsgF)
+            ? `No pudimos completar el envío Bre-B: ${provMsgF}. Tu saldo fue devuelto.`
+            : 'No pudimos completar el envío Bre-B en este momento. Tu saldo fue devuelto — puedes intentarlo de nuevo en unos minutos.')
+      await asentarTx('Fallido', {
+        ...prettyBase, ...feeDetail, ...delProveedor,
+        ...(fb.providerRef ? { providerRef: fb.providerRef } : {}),
+        error: fb.body ?? 'finity_breb_failed', errorMessage: fb.mensaje ?? provMsgF ?? `paso ${fb.paso ?? '?'} · HTTP ${fb.httpStatus ?? 0}`,
+        pasoFallido: fb.paso ?? null, httpStatus: fb.httpStatus ?? null,
+        refunded: true, failedAt: ahora,
+      })
+      await logAudit(userId, `finity.${action}.fail`, { amount, paso: fb.paso ?? null, httpStatus: fb.httpStatus ?? null, error: (() => { try { return JSON.stringify(fb.body ?? {}).slice(0, 300) } catch { return null } })() })
+      await notifyTx(txId)
+      return json(200, { error: 'payout_failed', provider: 'finity', refunded: true, newBalance: restoredF, message: friendlyF })
+    }
+
     if (rail === 'BREB') {
       const pay = await mouvPayout(rail, recipient, amount)
       // ACEPTADA NO ES PAGADA.

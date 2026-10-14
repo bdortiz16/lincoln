@@ -1835,7 +1835,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     const beneficiary = tx.beneficiary || tx.recipient?.holderName || '';
     const sub = beneficiary ? `a ${beneficiary}${dateStr ? ` · ${dateStr}` : ''}` : dateStr;
     const Icon: React.ElementType =
-      tx.type === 'dispersion' ? (tx.currency === 'COP_ACH' ? Landmark : Zap)
+      tx.type === 'dispersion' ? (tx.currency === 'COP_ACH' && tx.rail !== 'BREB' ? Landmark : Zap)
       : tx.type === 'load' ? ArrowDownLeft
       : tx.type === 'send' || tx.type === 'pay_sent' ? Send
       : tx.type === 'pay_received' || tx.type === 'referral_payout' ? ArrowDownLeft
@@ -2450,9 +2450,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           const ben = titleCase(t.beneficiary || t.recipient?.holderName || rd.beneficiary || '');
           const acct = String(t.account ?? t.recipient?.key ?? t.recipient?.accountNumber ?? rd.account ?? '');
           const last4 = acct ? `···${acct.slice(-4)}` : '';
-          const isBreb = t.currency === 'COP_BREB';
+          const isBreb = t.currency === 'COP_BREB' || (t.type === 'dispersion' && (t.rail ?? rd.rail) === 'BREB');
+          const cuenta2 = isBreb && Number(t.cuentaBreb ?? rd.cuentaBreb) === 2;
           let title = t.title || ROW_LABELS[t.type] || t.type;
-          if (t.type === 'dispersion') title = `Dispersión ${isBreb ? 'Bre-B' : 'ACH'}${ben ? ` · ${ben}` : ''}`;
+          if (t.type === 'dispersion') title = `Dispersión ${isBreb ? (cuenta2 ? 'Bre-B · Cuenta 2' : 'Bre-B') : 'ACH'}${ben ? ` · ${ben}` : ''}`;
           else if (t.type === 'convert') title = t.title || 'Cambio USDT → COP';
           else if (ben && (t.type === 'send' || t.type === 'pay_sent')) title = `Envío a ${ben}`;
           const time = t.createdAt ? new Date(t.createdAt).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }) : '';
@@ -3026,7 +3027,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9, fontWeight: 700, letterSpacing: '0.7px', padding: '3px 7px', borderRadius: 999, whiteSpace: 'nowrap' }}>SEGUNDOS</span>
                               </div>
                               <p style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-1px', color: '#F4F4F2', marginTop: 16 }}>{Math.round(brebBal).toLocaleString('es-CO')}</p>
-                              <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '8px 0 0' }}>Dispersa a cuentas bancarias colombianas por llave Bre-B en segundos. Hasta 12 M por envío.</p>
+                              <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '8px 0 0' }}>Dispersa a cuentas bancarias colombianas por llave Bre-B en segundos (Bre-B · Cuenta 1). Hasta 12 M por envío.</p>
                               <div className="flex items-center" style={{ gap: 7, marginTop: 12 }}>
                                   <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#4ADE80' }} />
                                   {/* El tope de Bre-B es 12 M, no 50 M: 50 es el de ACH. La tarjeta
@@ -3057,7 +3058,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9, fontWeight: 700, letterSpacing: '0.7px', padding: '3px 7px', borderRadius: 999, whiteSpace: 'nowrap' }}>HORARIO</span>
                               </div>
                               <p style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-1px', color: '#F4F4F2', marginTop: 16 }}>{Math.round(achBal).toLocaleString('es-CO')}</p>
-                              <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '8px 0 0' }}>Dispersa a cualquier cuenta en Colombia por el riel ACH tradicional.{achMaxEnvio ? ` Hasta ${millones(achMaxEnvio)} por envío.` : ''}</p>
+                              <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '8px 0 0' }}>Dispersa a cualquier cuenta en Colombia por el riel ACH tradicional.{achMaxEnvio ? ` Hasta ${millones(achMaxEnvio)} por envío.` : ''} Con este saldo también envías por Bre-B · Cuenta 2.</p>
                               <div className="flex items-center" style={{ gap: 7, marginTop: 12 }}>
                                   <span style={{ width: 6, height: 6, borderRadius: '50%', background: achOpen ? '#4ADE80' : '#878E88' }} />
                                   <span style={{ fontSize: 11.5, color: '#878E88' }}>L–V 7:00–18:00 · {achOpen ? 'operativo ahora' : 'fuera de horario'}</span>
@@ -3861,6 +3862,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     const docValue = docNumberVal ? `${docTypeVal || 'CC'} ${docNumberVal}`.trim() : '';
     // Tipo de llave Bre-B (Celular/Cédula/Correo/Alfanumérica) para el label.
     const dispKeyTypeLabel: string = ({ celular: 'Celular', cedula: 'Cédula', correo: 'Correo', alfanumerico: 'Alfanumérica' } as Record<string, string>)[String(dispRecipient.keyType ?? '').toLowerCase()] ?? '';
+    // Bre-B · Cuenta 2 sale del saldo ACH (moneda COP_ACH) pero es un envío
+    // por llave: se reconoce por el riel, no por la moneda.
+    const esBrebDisp = tx.currency === 'COP_BREB' || (tx as any).rail === 'BREB' || rawData.rail === 'BREB';
+    const esCuenta2 = esBrebDisp && Number((tx as any).cuentaBreb ?? rawData.cuentaBreb) === 2;
 
     // EMISOR: el titular de la cuenta que originó el movimiento (ej. XATECH).
     // Esta es la app del CLIENTE, así que el movimiento es SUYO → se muestra el
@@ -3898,8 +3903,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       // (El "Riel de pago" ya va en el monto "COP · Bre-B" y en el Método.)
       ...(isDispersion && dispBeneficiary ? [{ label: 'Beneficiario', value: dispBeneficiary }] : []),
       ...(isDispersion && docValue ? [{ label: 'Documento', value: docValue }] : []),
-      ...(isDispersion && dispDest ? [{ label: tx.currency === 'COP_BREB' ? `Llave destino${dispKeyTypeLabel ? ` · ${dispKeyTypeLabel}` : ''}` : 'Cuenta destino', value: dispDest, copyable: true, mono: true }] : []),
-      ...(isDispersion && tx.currency !== 'COP_BREB' && dispRecipient.accountType ? [{ label: 'Tipo de cuenta', value: String(dispRecipient.accountType).charAt(0).toUpperCase() + String(dispRecipient.accountType).slice(1).toLowerCase() }] : []),
+      ...(isDispersion && dispDest ? [{ label: esBrebDisp ? `Llave destino${dispKeyTypeLabel ? ` · ${dispKeyTypeLabel}` : ''}` : 'Cuenta destino', value: dispDest, copyable: true, mono: true }] : []),
+      ...(isDispersion && !esBrebDisp && dispRecipient.accountType ? [{ label: 'Tipo de cuenta', value: String(dispRecipient.accountType).charAt(0).toUpperCase() + String(dispRecipient.accountType).slice(1).toLowerCase() }] : []),
       ...(isDispersion && tx.bank ? [{ label: 'Método', value: tx.bank }] : []),
       { label: 'Estado', value: tx.status },
       { label: 'Fecha', value: timeStr ? `${dateStr} · ${timeStr}` : dateStr },
@@ -3933,7 +3938,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       ...(!isDispersion && tx.bank ? [{ label: 'Banco / Método', value: tx.bank }] : []),
       ...(!isDispersion && tx.beneficiary ? [{ label: 'Beneficiario', value: tx.beneficiary }] : []),
       ...(!isDispersion && docValue ? [{ label: 'Documento', value: docValue }] : []),
-      ...(!isDispersion && tx.account ? [{ label: tx.currency === 'COP_BREB' ? 'Llave destino' : 'Número de cuenta', value: tx.account }] : []),
+      ...(!isDispersion && tx.account ? [{ label: esBrebDisp ? 'Llave destino' : 'Número de cuenta', value: tx.account }] : []),
       ...(!isCrypto && !isGasfreeDeposit && tx.toAddress ? [{ label: 'Dirección destino', value: tx.toAddress, copyable: true, mono: true }] : []),
       ...(tx.reason ? [{ label: 'Motivo', value: tx.reason }] : []),
       // Referencia de la operación: el id del PROVEEDOR (Mouv/Finity) cuando la
@@ -4183,8 +4188,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     const benName = (dispBeneficiary || tx.beneficiary || (isCredit ? 'Depósito' : '')).trim();
     const benInitials = benName ? benName.split(/\s+/).filter(Boolean).map((w: string) => w[0]).slice(0, 2).join('').toUpperCase() : '';
     const isCop = String(tx.currency || '').startsWith('COP');
-    const isBrebTx = tx.currency === 'COP_BREB';
-    const railLabel = isBrebTx ? `Bre-B${dispKeyTypeLabel ? ` · Llave ${dispKeyTypeLabel.toLowerCase()}` : ''}` : tx.currency === 'COP_ACH' ? 'ACH · Colombia' : railOfCurrency(tx.currency) || (isCop ? 'Colombia' : 'Red TRON · TRC-20');
+    const isBrebTx = esBrebDisp;
+    const railLabel = isBrebTx ? `Bre-B${esCuenta2 ? ' · Cuenta 2' : ''}${dispKeyTypeLabel ? ` · Llave ${dispKeyTypeLabel.toLowerCase()}` : ''}` : tx.currency === 'COP_ACH' ? 'ACH · Colombia' : railOfCurrency(tx.currency) || (isCop ? 'Colombia' : 'Red TRON · TRC-20');
     const feeCop = Number(tx.feeCop ?? rawData.feeCop ?? 0);
     // Cargue Bre-B con comisión de recepción: desglose transparente en el
     // detalle (Monto recibido − Comisión 0,10% = Acreditado). El número grande
@@ -4210,7 +4215,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
         { label: 'Acreditado a tu saldo', value: `${formatMoney(tx.amount, tx.currency)} COP`, green: true },
       ] : []),
       ...(isDispersion && dispDest ? [{ label: isBrebTx ? 'Llave destino' : 'Cuenta destino', value: dispDest, mono: true, copy: dispDest }] : []),
-      ...(isDispersion && tx.currency === 'COP_ACH' && tx.bank ? [{ label: 'Banco', value: String(tx.bank).split('·')[0].trim() }] : []),
+      ...(isDispersion && tx.currency === 'COP_ACH' && !esBrebDisp && tx.bank ? [{ label: 'Banco', value: String(tx.bank).split('·')[0].trim() }] : []),
       ...(isMouvConvert && mouvFromAmount != null ? [{ label: 'Debitado de', value: `Billetera USDT · −${Number(mouvFromAmount).toFixed(2)} USDT` }] : []),
       ...(isMouvConvert && mouvRate != null ? [{ label: 'Tasa aplicada', value: `1 USDT = ${Number(mouvRate).toLocaleString('es-CO', { maximumFractionDigits: 2 })} COP` }] : []),
       ...(isGasfreeDeposit && depTxId ? [{ label: 'TxID', value: truncMid(depTxId, 8, 8), mono: true, copy: depTxId }] : []),

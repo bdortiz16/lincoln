@@ -560,7 +560,7 @@ Deno.serve(async (req) => {
     // ── Gates de seguridad (pentest H3) ──────────────────────────────────
     // INTERNO/ADMIN: leer movimientos/saldo de la empresa o convertir sobre la
     // tesorería compartida. Nunca un cliente (ni con anon-key + user_id).
-    const INTERNAL_ONLY = new Set(['movements', 'convert', 'convert_confirm', 'balance'])
+    const INTERNAL_ONLY = new Set(['movements', 'convert', 'convert_confirm', 'balance', 'breb_crear', 'breb_confirmar'])
     if (INTERNAL_ONLY.has(action) && !caller.internal) {
       return json(403, { error: 'forbidden', message: 'Operación restringida.' })
     }
@@ -947,6 +947,48 @@ Deno.serve(async (req) => {
       const data = await res.json().catch(() => null)
       await logAudit(caller.userId!, 'finity.withdrawal.create', { status: res.status, path, data: payload.data, response: data })
       return json(200, { ok: res.ok, status: res.status, path, data, ...(res.status >= 500 ? { desenlaceDesconocido: true } : {}) })
+    }
+
+    // ── Bre-B por Finity (la "Cuenta 2" de Bre-B) ────────────────────────
+    // Dos pasos: CREAR arma la transferencia y devuelve el titular de la llave
+    // y el costo, sin mover plata; CONFIRMAR es lo que la manda. Solo las
+    // llama mouv-proxy, que ya debitó el saldo del cliente.
+    //
+    // Por eso el trato del error es distinto en cada uno: si crear falla o no
+    // contesta, no salió nada y se puede devolver el saldo. Si confirmar no
+    // contesta, no se sabe — puede haber salido.
+    if (action === 'breb_crear') {
+      if (!caller.internal) return json(403, { error: 'forbidden', message: 'Operación restringida.' })
+      const path = '/v0/breb-transfers'
+      let res: Response
+      try {
+        res = await finityFetch(path, { method: 'POST', body: JSON.stringify(payload.data ?? {}), signal: AbortSignal.timeout(30000) })
+      } catch (e) {
+        await logAudit(caller.userId!, 'finity.breb.crear', { status: 0, path, data: payload.data, error: String((e as Error)?.message ?? e).slice(0, 200) })
+        return json(200, { ok: false, status: 0, path, sinRespuesta: true })
+      }
+      const data = await res.json().catch(() => null)
+      await logAudit(caller.userId!, 'finity.breb.crear', { status: res.status, path, data: payload.data, response: data })
+      return json(200, { ok: res.ok, status: res.status, path, data })
+    }
+
+    if (action === 'breb_confirmar') {
+      if (!caller.internal) return json(403, { error: 'forbidden', message: 'Operación restringida.' })
+      const id = String(payload.transaction_id ?? '').trim()
+      if (!/^[\w-]{6,100}$/.test(id)) return json(400, { error: 'missing_id' })
+      const path = '/v0/breb-transfers/confirm'
+      let res: Response
+      try {
+        res = await finityFetch(path, { method: 'POST', body: JSON.stringify({ transaction_id: id }), signal: AbortSignal.timeout(45000) })
+      } catch (e) {
+        // Un token rechazado es un no: la confirmación ni se mandó.
+        const desconocido = !String((e as Error)?.message ?? '').startsWith('finity_auth_failed')
+        await logAudit(caller.userId!, 'finity.breb.confirmar', { status: 0, path, id, error: String((e as Error)?.message ?? e).slice(0, 200), desenlaceDesconocido: desconocido })
+        return json(200, { ok: false, status: 0, path, desenlaceDesconocido: desconocido, error: desconocido ? 'sin_respuesta' : 'finity_auth_failed' })
+      }
+      const data = await res.json().catch(() => null)
+      await logAudit(caller.userId!, 'finity.breb.confirmar', { status: res.status, path, id, response: data })
+      return json(200, { ok: res.ok, status: res.status, path, data, ...(res.status >= 500 || res.status === 408 ? { desenlaceDesconocido: true } : {}) })
     }
 
     if (action === 'withdrawal_status') {
