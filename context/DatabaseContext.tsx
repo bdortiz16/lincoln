@@ -934,6 +934,33 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     return () => { clearInterval(interval); document.removeEventListener('visibilitychange', alVolver); if (realtimeTimer) clearTimeout(realtimeTimer); supabase.removeChannel(channel); };
   }, [fetchData, hayUsuario, esAdminUsuario]);
 
+  // Facturas al día: con la cuenta de una EMPRESA abierta (cualquier
+  // pantalla), se le pide a facturación que emita lo que quedó atrasado —
+  // operaciones sin comprobante o comprobantes sin factura. Al entrar y cada
+  // 10 min con la pestaña a la vista. Si la empresa no tiene la facturación
+  // activa, el servidor responde al instante y no hace nada.
+  const esEmpresaUsuario = currentUser?.role === 'business';
+  useEffect(() => {
+    if (!isSupabaseConfigured || !hayUsuario || !esEmpresaUsuario) return;
+    const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+    const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+    const pedir = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      const tok = getStoredToken();
+      if (!tok) return;
+      fetch(`${SURL}/functions/v1/facturacion`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${tok}` },
+        body: JSON.stringify({ action: 'al_dia' }),
+        signal: AbortSignal.timeout(20000),
+      }).catch(() => { /* lo retoma la próxima vuelta */ });
+    };
+    const primera = setTimeout(pedir, 8000);   // después de la carga, no compitiendo con ella
+    const cada = setInterval(pedir, 10 * 60_000);
+    return () => { clearTimeout(primera); clearInterval(cada); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hayUsuario, esEmpresaUsuario]);
+
   // --- STORAGE HELPERS ---
 
   // Returns stored Supabase JWT from localStorage, or null if no session.

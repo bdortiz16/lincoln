@@ -1312,6 +1312,20 @@ Deno.serve(async (req) => {
       userId = empresaPedida
     }
 
+    // ── Ponerse al día (la propia cuenta): lo pide la app de la empresa al
+    //    entrar y cada 10 min, en cualquier pantalla. Antes solo pasaba al
+    //    abrir Contabilidad, y si el aviso automático de una operación no
+    //    llegaba, esa operación se quedaba sin comprobante ni factura.
+    //    Responde enseguida; el trabajo sigue en segundo plano.
+    if (accion === 'al_dia') {
+      const cfgA = await leerConfig(userId)
+      if (!cfgA?.activo) return json({ ok: true, activo: false })
+      const p = ponerseAlDia(userId).then(r => { if (r.creados || r.emitidos || r.errores.length) console.log('[facturacion] al día', userId, JSON.stringify(r)) }, e => console.error('[facturacion] al día', String((e as Error)?.message ?? e)))
+      const rt = (globalThis as any).EdgeRuntime
+      if (rt && typeof rt.waitUntil === 'function') rt.waitUntil(p); else await p
+      return json({ ok: true, activo: true })
+    }
+
     if (accion === 'config_get') {
       const chequeo = await chequeoAutomatico(userId)
       // Si hay operaciones sin comprobante o comprobantes que quedaron sin
