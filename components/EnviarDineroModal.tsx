@@ -25,6 +25,9 @@ export type EnviarPrefill = {
   mode?: 'bank' | 'pay' | 'cash' | 'wallet' | null;
   contact?: any;
   rail?: 'COP' | 'COP_BREB' | 'COP_ACH';
+  // Método ya elegido (p. ej. desde la tarjeta Bre-B: Cuenta 1 o Cuenta 2).
+  // Llega marcado en el paso "¿Cómo lo enviamos?" y se puede cambiar.
+  metodo?: 'breb' | 'breb2' | 'ach';
   form?: Partial<{
     destinationCountry: string; destinationCurrency: string; amount: string; beneficiaryType: 'personal' | 'business';
     beneficiaryName: string; documentType: string; documentNumber: string; bankName: string; accountType: string; accountNumber: string; reason: string; motivo: string; ordenanteId: string;
@@ -709,6 +712,11 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
     if (p && 'contact' in p) setSendContact(p.contact ?? null);
     if (p && 'mode' in p) setSendMode(p.mode ?? null);
     if (p?.rail) setSendSourceRail(p.rail);
+    if (p?.metodo) {
+      setSendMethodSel(p.metodo);
+      setBrebCuenta(p.metodo === 'breb2' ? 2 : 1);
+      setSendForm(prev => ({ ...prev, destinationCountry: 'Colombia', destinationCurrency: 'COP' }));
+    }
     setMouvDestId(null);
     setSendStep(p?.step ?? 1);
     setIsSendModalOpen(true);

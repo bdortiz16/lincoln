@@ -81,7 +81,7 @@ import { MouvDispersion } from './MouvDispersion';
 import { achEta, achEtaShort } from './achEta';
 import { ContactsSection, contactStatus } from './ContactsSection';
 import { ClientesSection } from './ClientesSection';
-import { EnviarDineroModal, EnviarHandle, prefillDeContacto } from './EnviarDineroModal';
+import { EnviarDineroModal, EnviarHandle, EnviarPrefill, prefillDeContacto } from './EnviarDineroModal';
 import { WalletsGasfreeSection } from './WalletsGasfreeSection';
 import { KytSection } from './KytSection';
 import { OtcManual } from './OtcManual';
@@ -1075,7 +1075,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
   // Abrir el flujo de ENVIAR dinero — exige 2FA (verificación en dos pasos)
   // activa. Sin 2FA no se puede enviar: se avisa y se lleva a Ajustes.
-  const openSendMoney = (prefill?: () => void) => {
+  const openSendMoney = (prefill?: () => void, datos?: EnviarPrefill) => {
       if (handleActionRestricted()) return;
       if (mfaLoadingStatus) { showToast('Verificando tu seguridad… reintenta en un segundo.', 3000); return; }
       if (!mfaEnrolled) {
@@ -1084,7 +1084,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           return;
       }
       prefill?.();
-      enviarRef.current?.abrir();
+      enviarRef.current?.abrir(datos);
   };
 
   // ── Cargar USDT (Dólar digital): depósito on-chain vía GasFree ──
@@ -3026,8 +3026,25 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   </div>
                                   <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9, fontWeight: 700, letterSpacing: '0.7px', padding: '3px 7px', borderRadius: 999, whiteSpace: 'nowrap' }}>SEGUNDOS</span>
                               </div>
-                              <p style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-1px', color: '#F4F4F2', marginTop: 16 }}>{Math.round(brebBal).toLocaleString('es-CO')}</p>
-                              <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '8px 0 0' }}>Dispersa a cuentas bancarias colombianas por llave Bre-B en segundos (Bre-B · Cuenta 1). Hasta 12 M por envío.</p>
+                              {/* Dos cuentas Bre-B: la 1 paga con el saldo Bre-B y la
+                                  2 con el saldo ACH (el mismo de la tarjeta ACH). */}
+                              <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                  {([
+                                      { n: 1, bal: brebBal, sub: 'Saldo Bre-B', metodo: 'breb' as const },
+                                      { n: 2, bal: achBal, sub: 'Usa tu saldo ACH', metodo: 'breb2' as const },
+                                  ]).map(c => (
+                                      <div key={c.n} className="flex items-center justify-between" style={{ gap: 10, padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.02)' }}>
+                                          <div style={{ minWidth: 0 }}>
+                                              <p style={{ fontSize: 11, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}><span style={{ color: '#F4F4F2', fontWeight: 700 }}>Cuenta {c.n}</span> · {c.sub}</p>
+                                              <p style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.6px', color: '#F4F4F2', marginTop: 2 }}>{Math.round(c.bal).toLocaleString('es-CO')}</p>
+                                          </div>
+                                          <button onClick={() => openSendMoney(undefined, { metodo: c.metodo })} disabled={c.bal <= 0}
+                                              style={{ fontSize: 12, fontWeight: 700, flexShrink: 0, padding: '7px 12px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.12)', color: c.bal <= 0 ? '#878E88' : '#F4F4F2', background: 'transparent', cursor: c.bal <= 0 ? 'not-allowed' : 'pointer' }}
+                                              className="hover:text-[#4ADE80] transition-colors">Enviar</button>
+                                      </div>
+                                  ))}
+                              </div>
+                              <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '10px 0 0' }}>Dispersa por llave Bre-B a cualquier banco en Colombia, en segundos. Hasta 12 M por envío.</p>
                               <div className="flex items-center" style={{ gap: 7, marginTop: 12 }}>
                                   <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#4ADE80' }} />
                                   {/* El tope de Bre-B es 12 M, no 50 M: 50 es el de ACH. La tarjeta
@@ -3038,7 +3055,6 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               </div>
                           </div>
                           <div style={{ padding: '11px 20px', borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.015)', display: 'flex', gap: 13 }}>
-                              <button onClick={() => openSendMoney()} disabled={brebBal <= 0} style={{ fontSize: 12, fontWeight: 600, color: brebBal <= 0 ? '#878E88' : '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors disabled:cursor-not-allowed">Enviar dinero</button>
                               <button onClick={() => setRecaudoOpen(true)} style={{ fontSize: 12, fontWeight: 600, color: '#4ADE80' }} className="hover:opacity-80 transition-opacity">Recibir pagos</button>
                               <button onClick={() => { setBrebMoveOpen(true); setBrebDir('to_peso'); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Mover saldo</button>
                           </div>
@@ -3065,7 +3081,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               </div>
                           </div>
                           <div style={{ padding: '11px 20px', borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.015)', display: 'flex', gap: 13 }}>
-                              <button onClick={() => { if (achOpen) openSendMoney(); }} disabled={!achOpen || achBal <= 0} title={achOpen ? '' : 'Disponible L–V 7:00–18:00 hora Colombia'} style={{ fontSize: 12, fontWeight: 600, color: (!achOpen || achBal <= 0) ? '#878E88' : '#F4F4F2', cursor: achOpen ? 'pointer' : 'not-allowed' }} className="transition-colors">Enviar dinero</button>
+                              <button onClick={() => { if (achOpen) openSendMoney(undefined, { metodo: 'ach' }); }} disabled={!achOpen || achBal <= 0} title={achOpen ? '' : 'Disponible L–V 7:00–18:00 hora Colombia'} style={{ fontSize: 12, fontWeight: 600, color: (!achOpen || achBal <= 0) ? '#878E88' : '#F4F4F2', cursor: achOpen ? 'pointer' : 'not-allowed' }} className="transition-colors">Enviar dinero</button>
                               <button onClick={() => { setBrebMoveOpen(true); setBrebDir('to_peso'); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Mover saldo</button>
                           </div>
                       </div>
