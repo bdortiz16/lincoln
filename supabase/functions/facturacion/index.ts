@@ -48,6 +48,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { encField, decField, KeyMismatchError } from '../_shared/field-crypto.ts'
 import { municipioPorCodigo, municipioPorNombre, lugarFueraDeColombia } from '../_shared/municipios.ts'
 import { domicilioEmpresa } from '../_shared/rues.ts'
+import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -75,6 +76,9 @@ export const DISPARADORES: Record<string, string> = {
 }
 
 async function quienLlama(req: Request): Promise<{ userId: string | null; servicio: boolean }> {
+  // El cron de la base (facturas_al_dia) se identifica con la clave que ella
+  // misma generó (private_config 'aviso_secret'), no con una llave copiada.
+  if (await traeSecretoDeLaBase(req, db)) return { userId: null, servicio: true }
   const jwt = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
   if (!jwt) return { userId: null, servicio: false }
   if (SERVICE_KEY && jwt === SERVICE_KEY) return { userId: null, servicio: true }

@@ -91,10 +91,32 @@ async function esLlaveDeServicio(token: string): Promise<boolean> {
   return false
 }
 
+// Clave que genera la PROPIA base (private_config 'aviso_secret') y que
+// mandan sus triggers y crons en x-webhook-secret. Así nadie tiene que copiar
+// una llave a mano: la base la crea, la base la manda y la función la lee de
+// la misma tabla (cerrada a anon y authenticated) para compararla.
+let secretoBase: { v: string; at: number } | null = null
+export async function secretoDeLaBase(db: any): Promise<string> {
+  if (secretoBase && Date.now() - secretoBase.at < 5 * 60_000) return secretoBase.v
+  try {
+    const { data } = await db.from('private_config').select('value').eq('key', 'aviso_secret').maybeSingle()
+    const v = String((data as any)?.value ?? '').trim()
+    secretoBase = { v, at: Date.now() }
+    return v
+  } catch { return '' }
+}
+export async function traeSecretoDeLaBase(req: Request, db: any): Promise<boolean> {
+  const enviado = (req.headers.get('x-webhook-secret') ?? '').trim()
+  if (enviado.length < 32) return false
+  const v = await secretoDeLaBase(db)
+  return v.length >= 32 && igual(enviado, v)
+}
+
 export async function exigirWebhook(
   req: Request, fuente: string, db: any,
 ): Promise<Response | null> {
   let r = autorizarWebhook(req)
+  if (!r.ok && await traeSecretoDeLaBase(req, db)) r = { ok: true, via: 'secreto_de_la_base' }
   if (!r.ok) {
     const token = (req.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
       || (req.headers.get('apikey') ?? '').trim()
