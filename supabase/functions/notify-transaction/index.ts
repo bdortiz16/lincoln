@@ -504,11 +504,18 @@ Deno.serve(async (req) => {
       const raw = (actual?.raw_data ?? {}) as Record<string, unknown>
       if (raw[dedupFlag]) claimed = false
       else {
-        const { data: upd } = await db.from('transactions')
+        const { data: upd, error: errUpd } = await db.from('transactions')
           .update({ raw_data: { ...raw, [dedupFlag]: true } })
           .eq('id', tx.id).filter(`raw_data->>${dedupFlag}`, 'is', null).select('id')
-        claimed = !!upd?.length
+        // Si la marca NO se pudo escribir por un error (no porque ya estuviera),
+        // se sigue igual: antes eso se tomaba como "repetido" y la operación
+        // se quedaba sin comprobante, sin factura y sin correo, en silencio.
+        // Un correo de más es mejor que ninguno; el comprobante es único por
+        // operación y la factura tiene su propio candado.
+        if (errUpd) console.error('[notify] no se pudo marcar', dedupFlag, 'tx', tx.id, errUpd.message)
+        claimed = errUpd ? true : !!upd?.length
       }
+      if (errMarca) console.warn('[notify] tx_marcar_flag no disponible:', errMarca.message)
     }
 
     if (!claimed) {
