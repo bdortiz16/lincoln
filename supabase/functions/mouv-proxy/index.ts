@@ -519,12 +519,23 @@ type MouvVerdict = 'completed' | 'returned' | 'pending' | 'unknown'
 // JSON ni códigos: si lo que hay no parece una frase, no se muestra.
 const CLAVES_MOTIVO = ['rejectionreason', 'rejection_reason', 'rejectreason', 'reject_reason', 'rejectedreason', 'rejected_reason', 'failurereason', 'failure_reason', 'failedreason', 'failed_reason', 'statusreason', 'status_reason', 'statusdetail', 'status_detail', 'statusdescription', 'status_description', 'errormessage', 'error_message', 'errordescription', 'error_description', 'declinereason', 'decline_reason', 'motivo', 'motivo_rechazo', 'motivorechazo', 'motivo_de_rechazo', 'observation', 'observations', 'observacion', 'observaciones', 'cause', 'causa', 'detail', 'details']
 const CLAVES_MOTIVO_DEBIL = ['reason', 'description', 'message', 'mensaje', 'note', 'notes']
-function digMotivoRechazo(o: any): string | null {
+// `excluir`: textos que NO son un motivo de rechazo aunque vengan en un campo
+// parecido — sobre todo el MOTIVO DEL PAGO que nosotros mismos mandamos con la
+// orden ("Pago a proveedores"), que Finity puede devolver como `reason`.
+// Además de los nombres exactos, se aceptan claves que CONTIENEN rechazo,
+// devolución o causal (Finity no documenta el nombre del campo).
+const CLAVE_MOTIVO_PARECIDA = /reject|rechaz|declin|devoluc|causal|return_?reason|bank_?(message|response|msg)|response_?(message|msg)|status_?(message|msg)|error_?(detail|msg|message)|failure/
+const CLAVE_NO_MOTIVO = /(_at|_id|date|time|code|count|amount|fee|cost)$/
+function digMotivoRechazo(o: any, excluir?: Set<string>): string | null {
   const limpio = (v: unknown): string | null => {
     if (typeof v !== 'string') return null
     const s = v.trim()
     if (s.length < 3 || s.length > 300) return null
     if (/[{}\[\]]|http\s*\d|status\s*code|\bnull\b|undefined/i.test(s)) return null
+    // Fechas, números, ids y estados sueltos no son un motivo.
+    if (/^\d{4}-\d{2}-\d{2}/.test(s) || /^[\d\s.,:$-]+$/.test(s) || /^[a-z]{2,5}-[0-9a-f]{4}-/i.test(s)) return null
+    if (/^(rejected|failed|rechazad[oa]|declined|returned|cancell?ed|error|fallid[oa])$/i.test(s)) return null
+    if (excluir?.has(s.toLowerCase())) return null
     return s
   }
   let debil: string | null = null
@@ -536,11 +547,37 @@ function digMotivoRechazo(o: any): string | null {
     for (const [k, v] of Object.entries(c)) {
       const key = k.toLowerCase()
       if (CLAVES_MOTIVO.includes(key)) { const s = limpio(v); if (s) return s }
-      if (!debil && CLAVES_MOTIVO_DEBIL.includes(key)) debil = limpio(v)
+      if (CLAVE_MOTIVO_PARECIDA.test(key) && !CLAVE_NO_MOTIVO.test(key)) { const s = limpio(v); if (s) return s }
+      if (!debil && (CLAVES_MOTIVO_DEBIL.includes(key) || key === 'error')) debil = limpio(v)
       if (v && typeof v === 'object') stack.push(v)
     }
   }
   return debil
+}
+
+// El motivo de un rechazo de Finity, buscado a fondo. Primero en la respuesta
+// de estado que ya se tiene; si no está, se le pide a finity-proxy todo lo que
+// Finity sepa de ese movimiento (otras rutas del detalle, el listado y el
+// backend del portal, que es donde el portal lo muestra). Si tampoco aparece,
+// queda la respuesta CRUDA en la auditoría para ver en qué campo viene.
+async function motivoFinity(dueno: string, ref: string, st: any, rd: Record<string, any>): Promise<{ motivo: string | null; diag?: string }> {
+  const excluir = new Set(
+    [...Object.values(MOTIVOS_ENVIO), rd?.motivoTexto, rd?.reason, rd?.reference, rd?.recipient?.reference, 'Envío de dinero', 'Pago Lincoin']
+      .filter(Boolean).map(x => String(x).trim().toLowerCase()),
+  )
+  let motivo = digMotivoRechazo(st, excluir)
+  if (motivo) return { motivo }
+  const m = await finityCall('motivo_rechazo', dueno, { id: ref })
+  const cuerpos: any[] = Array.isArray(m?.cuerpos) ? m.cuerpos : []
+  motivo = digMotivoRechazo(cuerpos.map(c => c?.data).filter(Boolean), excluir)
+  const rutas = cuerpos.map(c => `${c?.fuente} ${c?.path} ${c?.status}`)
+  if (motivo) {
+    await logAudit(dueno, 'finity.motivo.encontrado', { ref, motivo, rutas })
+    return { motivo }
+  }
+  const crudo = (() => { try { return JSON.stringify({ estado: st?.data ?? null, extra: st?.extra ?? null, cuerpos: cuerpos.filter(c => c?.data) }).slice(0, 8000) } catch { return null } })()
+  await logAudit(dueno, 'finity.motivo.no_encontrado', { ref, rutas, crudo })
+  return { motivo: null, diag: (clavesDe(st) + (cuerpos.length ? ` | ${clavesDe(cuerpos.map(c => c?.data).filter(Boolean))}` : '')).slice(0, 600) }
 }
 // Las rutas de las claves de un cuerpo (sin valores), para diagnosticar en
 // qué campo manda el operador el motivo. Los valores NO se copian: traen
@@ -1365,7 +1402,7 @@ async function conciliarFilaFinity(tx: any, origen: string): Promise<Record<stri
     // acredita de nuevo — evita el doble reembolso.
     // El MOTIVO que da el operador ("CUENTA Y NIT NO CORRESPONDEN") se
     // guarda con el rechazo: el cliente lo ve en el detalle del envío.
-    const motivoProveedor = digMotivoRechazo(st)
+    const motivoProveedor = digMotivoRechazo(st, new Set([...Object.values(MOTIVOS_ENVIO), rd.motivoTexto, rd.reason].filter(Boolean).map(x => String(x).trim().toLowerCase())))
     const ahora = new Date().toISOString()
     const { data: claimed } = await db.from('transactions').update({
       status: 'Rechazado',
@@ -1384,7 +1421,19 @@ async function conciliarFilaFinity(tx: any, origen: string): Promise<Record<stri
       return { id: tx.id, result: 'reembolso_fallido' }
     }
     await logAudit(dueno, 'finity.reconcile.reembolso', { txId: tx.id, refund, railCol, providerRef: ref, providerStatus: s, origen, tardia: tx.status === 'Completado' })
-    return { id: tx.id, result: 'refunded', refund, motivo: motivoProveedor }
+    // El saldo ya volvió. Si el estado no trajo el motivo, se busca a fondo
+    // DESPUÉS del reembolso (son varias consultas; no deben demorarlo).
+    let motivoFinal = motivoProveedor
+    if (!motivoFinal) {
+      try {
+        const hallado = await motivoFinity(dueno, ref, st, rd)
+        motivoFinal = hallado.motivo
+        const { data: fila } = await db.from('transactions').select('raw_data').eq('id', tx.id).maybeSingle()
+        const rdAhora = ((fila as any)?.raw_data ?? {}) as Record<string, any>
+        await db.from('transactions').update({ raw_data: { ...rdAhora, motivoBuscado: new Date().toISOString(), motivoBuscadoV: '4', ...(motivoFinal ? { providerError: motivoFinal } : { motivoDiag: hallado.diag ?? rdAhora.motivoDiag }) } }).eq('id', tx.id)
+      } catch { /* el motivo es informativo: el reembolso ya está hecho */ }
+    }
+    return { id: tx.id, result: 'refunded', refund, motivo: motivoFinal }
   }
   if (RE_FINITY_OK.test(s)) {
     if (tx.status === 'Completado') return { id: tx.id, result: 'sigue_completado' }
@@ -1712,7 +1761,7 @@ serve(async (req: Request) => {
     // Rechazos recientes que quedaron SIN motivo (antes no se guardaba): se
     // les pide el detalle a Finity una vez y se anota. No toca saldos.
     const hace30d = new Date(Date.now() - 30 * 86_400_000).toISOString()
-    const VERSION_BUSQUEDA = '3'
+    const VERSION_BUSQUEDA = '4'
     // Con `txId` (el detalle del envío lo manda) se consulta ESE movimiento
     // sí o sí, aunque ya se haya buscado antes. Sin txId, los rechazos
     // recientes que aún no se buscaron con esta versión.
@@ -1736,11 +1785,13 @@ serve(async (req: Request) => {
       const ref = String(rd.providerRef ?? '')
       if (!ref) { out.push({ id: tx.id, result: 'sin_referencia' }); continue }
       const st = await finityCall('withdrawal_status', String(userId), { id: ref })
-      // Se excava en TODA la respuesta (movimiento + orden de retiro).
-      const motivo = digMotivoRechazo(st)
+      // Se excava en TODA la respuesta (movimiento + orden de retiro) y, si
+      // no está, en todo lo demás que Finity sepa de ese movimiento.
+      const hallado = await motivoFinity(String(userId), ref, st, rd)
+      const motivo = hallado.motivo
       // Si no hay motivo, quedan anotadas las CLAVES que devolvió Finity (sin
-      // valores) para saber en cuál viene y ajustar la lectura por SQL.
-      const diag = motivo ? undefined : clavesDe(st).slice(0, 600) || `sin cuerpo (ok=${String(st?.ok)} status=${String(st?.status)})`
+      // valores) y la respuesta cruda en la auditoría (finity.motivo.no_encontrado).
+      const diag = motivo ? undefined : hallado.diag || `sin cuerpo (ok=${String(st?.ok)} status=${String(st?.status)})`
       await db.from('transactions').update({ raw_data: { ...rd, motivoBuscado: new Date().toISOString(), motivoBuscadoV: VERSION_BUSQUEDA, ...(motivo ? { providerError: motivo } : {}), ...(diag ? { motivoDiag: diag } : {}) } }).eq('id', tx.id)
       out.push({ id: tx.id, result: motivo ? 'motivo_anotado' : 'sin_motivo', motivo: motivo ?? null, diag: diag ?? null })
     }

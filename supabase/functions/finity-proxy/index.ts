@@ -560,7 +560,7 @@ Deno.serve(async (req) => {
     // ── Gates de seguridad (pentest H3) ──────────────────────────────────
     // INTERNO/ADMIN: leer movimientos/saldo de la empresa o convertir sobre la
     // tesorería compartida. Nunca un cliente (ni con anon-key + user_id).
-    const INTERNAL_ONLY = new Set(['movements', 'convert', 'convert_confirm', 'balance', 'breb_crear', 'breb_confirmar'])
+    const INTERNAL_ONLY = new Set(['movements', 'convert', 'convert_confirm', 'balance', 'breb_crear', 'breb_confirmar', 'motivo_rechazo'])
     if (INTERNAL_ONLY.has(action) && !caller.internal) {
       return json(403, { error: 'forbidden', message: 'Operación restringida.' })
     }
@@ -1036,6 +1036,44 @@ Deno.serve(async (req) => {
         if (match) return json(200, { ok: true, status: 200, path: 'movements[list]', data: match })
       } catch { /* respaldo best-effort */ }
       return json(200, { ok: false, status: lastStatus, data: lastData })
+    }
+
+    // ── Motivo de un rechazo: TODO lo que Finity sabe de ese movimiento ──
+    // El portal de Finity muestra "Motivo de rechazo: NUMERO CUENTA NO
+    // EXISTE", pero el detalle de la API de socios no lo trae. Acá se junta
+    // todo lo que responda sobre ese id: el detalle en cada ruta conocida, el
+    // movimiento dentro del listado y el detalle en el backend del portal
+    // (el mismo que alimenta esa pantalla). Solo lectura; solo interno.
+    if (action === 'motivo_rechazo') {
+      const id = String(payload.id ?? '').trim()
+      if (!/^[\w-]{6,100}$/.test(id)) return json(400, { error: 'missing_id' })
+      const enc = encodeURIComponent(id)
+      const cuerpos: { fuente: string; path: string; status: number; data?: any }[] = []
+      const leer = async (fuente: string, path: string, pedir: () => Promise<Response>) => {
+        try {
+          const r = await pedir()
+          const data = r.ok ? await r.json().catch(() => null) : null
+          cuerpos.push({ fuente, path, status: r.status, ...(data && typeof data === 'object' ? { data } : {}) })
+        } catch { cuerpos.push({ fuente, path, status: -1 }) }
+      }
+      for (const base of [...(CANDIDATES.movements ?? []), ...(CANDIDATES.withdrawalOrders ?? []).slice(0, 2)]) {
+        await leer('api', `${base}/{id}`, () => finityFetch(`${base}/${enc}`, { signal: AbortSignal.timeout(10000) }))
+      }
+      try {
+        const { res, path } = await finityTry('movements', {})
+        const body = await res.json().catch(() => null) as any
+        const arr: any[] = Array.isArray(body) ? body : (Array.isArray(body?.data) ? body.data : (Array.isArray(body?.movements) ? body.movements : (Array.isArray(body?.items) ? body.items : [])))
+        const match = arr.find(m => [m?.id, m?.reference, m?.movement_id, m?.movementId, m?.external_id].map(x => String(x ?? '')).includes(id))
+        cuerpos.push({ fuente: 'api', path: `${path}[lista]`, status: match ? res.status : 404, ...(match ? { data: match } : {}) })
+      } catch { cuerpos.push({ fuente: 'api', path: 'movements[lista]', status: -1 }) }
+      if (await getPortalToken()) {
+        for (const p of ['/movements/', '/movement/', '/transactions/', '/transaction/', '/withdrawals/', '/withdraw/']) {
+          await leer('portal', `${p}{id}`, () => portalFetch(`${p}${enc}`, { signal: AbortSignal.timeout(8000) }))
+        }
+      } else {
+        cuerpos.push({ fuente: 'portal', path: 'login', status: 0 })
+      }
+      return json(200, { ok: true, cuerpos })
     }
 
     // ── Enviar un correo de evento al PROPIO usuario (ej. "Contacto
