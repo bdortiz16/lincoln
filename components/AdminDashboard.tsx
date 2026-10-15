@@ -103,6 +103,7 @@ import { AdminGowd } from './AdminGowd';
 import { sonarCampana, campanaActiva } from './campanaOtc';
 import { Zap, ArrowLeftRight, ArrowLeft, Info, ChevronRight, Activity, Link2, MessageSquare } from 'lucide-react';
 import { pedirAdmin } from './adminApi';
+import { useMovimientosCliente } from './useMovimientosCliente';
 import { AdminEquipo } from './AdminEquipo';
 import { CollectionWalletCard } from './CollectionWalletCard';
 import type { AdminProfile } from './AdminPersonas/lib/adminAuth';
@@ -1269,6 +1270,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const carguesClient: User | null = carguesClientId
     ? (allUsers.find((u: any) => u.id === carguesClientId) ?? null)
     : null;
+  // Historial COMPLETO del cliente elegido (la carga general trae solo los
+  // 200 movimientos más recientes de toda la plataforma).
+  const histCargues = useMovimientosCliente(carguesClient?.id ?? null, getTransactionHistory() as any[]);
+  const [carguesVer, setCarguesVer] = useState(60);
+  useEffect(() => { setCarguesVer(60); }, [carguesClientId]);
   const adminTeam = getAdminTeam();
 
   // ── Panel de Fallos ──────────────────────────────────────────────────────
@@ -2409,7 +2415,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
               const d = dmy ? new Date(Number(dmy[3]), Number(dmy[2]) - 1, Number(dmy[1])) : new Date(s);
               return isNaN(d.getTime()) ? null : d;
             };
-            const cargues = (getTransactionHistory() as any[])
+            const cargues = (histCargues.movimientos as any[])
               .filter(t => t.userId === carguesClient.id && (t.source === 'admin_cargue' || t.source === 'admin_backfill' || t.type === 'adjustment' || (t.type === 'load' && t.rail)))
               .map(t => ({ t, d: fechaDe(t) }))
               .sort((a, b) => (b.d?.getTime() ?? 0) - (a.d?.getTime() ?? 0));
@@ -2431,7 +2437,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                 <div className="flex items-center justify-between flex-wrap gap-2" style={{ padding: '14px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
                   <div>
                     <p style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2', margin: 0 }}>Cargues a {carguesClient.name}</p>
-                    <p style={{ fontSize: 12, color: '#878E88', margin: '2px 0 0' }}>{cargues.length} {cargues.length === 1 ? 'movimiento manual' : 'movimientos manuales'} · lo más reciente primero</p>
+                    <p style={{ fontSize: 12, color: '#878E88', margin: '2px 0 0' }}>
+                      {cargues.length} {cargues.length === 1 ? 'movimiento manual' : 'movimientos manuales'} · lo más reciente primero
+                      {histCargues.cargando ? ' · trayendo el historial completo…' : histCargues.completo ? ' · historial completo' : ''}
+                    </p>
+                    {histCargues.error && <p style={{ fontSize: 11.5, color: '#F87171', margin: '2px 0 0' }}>No se pudo traer el historial completo: {histCargues.error}. Se muestran solo los movimientos recientes.</p>}
                   </div>
                 </div>
                 {cargues.length === 0 ? (
@@ -2443,7 +2453,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                         <th key={h || 'acc'} style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1.2px', color: 'rgba(244,244,242,0.45)', textAlign: i === 3 ? 'right' : 'left', padding: '9px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)', whiteSpace: 'nowrap' }}>{h}</th>
                       ))}</tr></thead>
                       <tbody>
-                        {cargues.slice(0, 60).map(({ t, d }) => {
+                        {cargues.slice(0, carguesVer).map(({ t, d }) => {
                           const esCredito = (t.direction ?? (t.type === 'load' ? 'credit' : 'debit')) === 'credit';
                           const backfill = t.source === 'admin_backfill' || t.recordOnly === true;
                           const a = t.acct;
@@ -2481,6 +2491,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                         })}
                       </tbody>
                     </table>
+                    {cargues.length > carguesVer && (
+                      <div style={{ padding: '12px 18px', borderTop: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: 12, color: '#878E88' }}>Mostrando {carguesVer} de {cargues.length}</span>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          <button onClick={() => setCarguesVer(v => v + 60)} style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2', background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 7, padding: '6px 12px', cursor: 'pointer' }}>Ver 60 más</button>
+                          <button onClick={() => setCarguesVer(cargues.length)} style={{ fontSize: 12, fontWeight: 700, color: '#878E88', background: 'transparent', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 7, padding: '6px 12px', cursor: 'pointer' }}>Ver todos</button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

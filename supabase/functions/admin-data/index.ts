@@ -997,6 +997,7 @@ const PERMISO_DE_ACCION: Record<string, string> = {
   conciliar_movimientos: 'plata.mover',
   otc_ajuste_get: 'plata.ver',
   limites_envio_get: 'plata.ver',
+  movimientos_cliente: 'clientes.ver',
   email_incidencias: 'clientes.ver',
   email_incidencia_resuelta: 'clientes.editar',
 
@@ -2838,6 +2839,30 @@ Deno.serve(async (req: Request) => {
         if (error) return json({ error: error.message }, 500)
         await auditAdmin(req, 'otc.ajuste_tasa', { finityCop, mouvCop })
         return json({ ok: true, ajuste: valor })
+      }
+
+      // ── TODOS los movimientos de UN cliente ───────────────────────────
+      // La carga general del panel trae solo los 200 movimientos más
+      // recientes de TODA la plataforma (más los pendientes). Con eso, al
+      // abrir un cliente se veía apenas lo que cayera en esa ventana: los
+      // cargues y movimientos más viejos "no existían". Esto trae el
+      // historial completo de esa cuenta, con el mismo filtro por país que
+      // la carga general.
+      if (body.action === 'movimientos_cliente') {
+        const uid = String(body.userId ?? '')
+        if (!/^[0-9a-f-]{36}$/i.test(uid)) return json({ error: 'userId inválido' }, 400)
+        const accM: Acceso = auth.acceso ?? { rol: 'lectura', paises: [], todosLosPaises: false }
+        const filas: Record<string, unknown>[] = []
+        const PAGINA = 1000
+        for (let desde = 0; desde < 10000; desde += PAGINA) {
+          const { data, error } = await db.from('transactions').select('*').eq('user_id', uid)
+            .order('created_at', { ascending: false }).range(desde, desde + PAGINA - 1)
+          if (error) return json({ error: error.message }, 500)
+          filas.push(...((data ?? []) as Record<string, unknown>[]))
+          if (!data || data.length < PAGINA) break
+        }
+        const visibles = filas.filter(t => accM.todosLosPaises || visibleEnPais(paisDeMovimiento(t), accM))
+        return json({ ok: true, total: visibles.length, transactions: visibles.map(t => ({ ...t, raw_data: slimRawData(t.raw_data) })) })
       }
 
       // ── Límites por envío ACH ──────────────────────────────────────────

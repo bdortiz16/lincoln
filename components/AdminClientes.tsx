@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { pedirMouv } from './adminApi';
+import { useMovimientosCliente } from './useMovimientosCliente';
 import { CuentaBrasilCliente, SolicitudesBrasil } from './AdminCuentasBrasil';
 import { useDatabase } from '../context/DatabaseContext';
 
@@ -251,9 +252,13 @@ export const AdminClientes: React.FC<{
     return saldo(u, 'USDT') + saldo(u, 'USDC') + (tasa > 0 ? cop / tasa : 0);
   };
 
-  const movsDe = (id: string) => movimientos
-    .filter((t: any) => t.userId === id)
-    .sort((a: any, b: any) => new Date(b.createdAt ?? b.date ?? 0).getTime() - new Date(a.createdAt ?? a.date ?? 0).getTime());
+  // El cliente abierto trae su historial COMPLETO del servidor (la carga
+  // general del panel solo tiene los 200 movimientos más recientes de toda la
+  // plataforma); los demás usan lo que ya hay en memoria.
+  const histSel = useMovimientosCliente(selId, movimientos);
+  const movsDe = (id: string) => (id === selId ? histSel.movimientos : movimientos.filter((t: any) => t.userId === id))
+    .slice()
+    .sort((a: any, b: any) => new Date(b.createdAt ?? b.created_at ?? b.date ?? 0).getTime() - new Date(a.createdAt ?? a.created_at ?? a.date ?? 0).getTime());
 
   // PREGUNTARLE AL PROVEEDOR, NO SOLO RELEER LA BASE.
   //
