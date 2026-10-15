@@ -104,6 +104,7 @@ import { sonarCampana, campanaActiva } from './campanaOtc';
 import { Zap, ArrowLeftRight, ArrowLeft, Info, ChevronRight, Activity, Link2, MessageSquare } from 'lucide-react';
 import { pedirAdmin } from './adminApi';
 import { useMovimientosCliente } from './useMovimientosCliente';
+import { descargarMovimientosCliente } from './excelMovimientosCliente';
 import { AdminEquipo } from './AdminEquipo';
 import { CollectionWalletCard } from './CollectionWalletCard';
 import type { AdminProfile } from './AdminPersonas/lib/adminAuth';
@@ -2448,6 +2449,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                     )}
                     {histCargues.error && <p style={{ fontSize: 11.5, color: '#F87171', margin: '2px 0 0' }}>No se pudo traer el historial completo: {histCargues.error}. Se muestran solo los movimientos recientes.</p>}
                   </div>
+                  <button onClick={() => descargarMovimientosCliente(String(carguesClient.name ?? 'cliente'), histCargues.movimientos as any[])}
+                    disabled={histCargues.cargando || histCargues.movimientos.length === 0}
+                    title={histCargues.cargando ? 'Esperá a que termine de traer el historial completo' : 'Excel con todos los movimientos del cliente, sus cargues manuales y un resumen'}
+                    className="lincoin-btn-white"
+                    style={{ fontWeight: 700, fontSize: 12.5, padding: '9px 16px', borderRadius: 9, border: 'none', cursor: histCargues.cargando ? 'wait' : 'pointer', opacity: histCargues.cargando || histCargues.movimientos.length === 0 ? 0.5 : 1, whiteSpace: 'nowrap' }}>
+                    {histCargues.cargando ? 'Cargando historial…' : 'Descargar Excel'}
+                  </button>
                 </div>
                 {cargues.length === 0 ? (
                   <p style={{ fontSize: 12.5, color: '#878E88', padding: '16px 18px', margin: 0 }}>Todavía no se le ha hecho ningún cargue manual.</p>

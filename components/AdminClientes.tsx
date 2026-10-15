@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { pedirMouv } from './adminApi';
 import { useMovimientosCliente } from './useMovimientosCliente';
+import { descargarMovimientosCliente } from './excelMovimientosCliente';
 import { CuentaBrasilCliente, SolicitudesBrasil } from './AdminCuentasBrasil';
 import { useDatabase } from '../context/DatabaseContext';
 
@@ -573,6 +574,17 @@ export const AdminClientes: React.FC<{
               {tab === 'movimientos' && <>
                 {diagSync && <DiagnosticoSync d={diagSync} onCerrar={() => setDiagSync(null)} />}
                 {sonda && <ResultadoSonda r={sonda} onCerrar={() => setSonda(null)} />}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+                  <span style={{ fontSize: 12, color: C.sub, fontFamily: FONT }}>
+                    {histSel.cargando ? 'Trayendo el historial completo…' : `${movsDe(sel.id).length} movimientos${histSel.completo ? ' · historial completo' : ''}`}
+                  </span>
+                  <button onClick={() => descargarMovimientosCliente(String(sel.name ?? sel.company_name ?? sel.email ?? 'cliente'), movsDe(sel.id))}
+                    disabled={histSel.cargando || movsDe(sel.id).length === 0}
+                    className="lincoin-btn-white"
+                    style={{ fontFamily: FONT, fontWeight: 700, fontSize: 12.5, padding: '8px 14px', borderRadius: 9, border: 'none', cursor: histSel.cargando ? 'wait' : 'pointer', opacity: histSel.cargando || movsDe(sel.id).length === 0 ? 0.5 : 1 }}>
+                    {histSel.cargando ? 'Cargando historial…' : 'Descargar Excel'}
+                  </button>
+                </div>
                 <Movimientos movs={movsDe(sel.id)} onSondear={sondear} sondeando={sondeando} />
               </>}
               {tab === 'kyc' && <Kyc sel={sel} verifyUser={verifyUser} refreshData={refreshData} showToast={showToast} verificado={verificado} />}
