@@ -2441,6 +2441,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                       {cargues.length} {cargues.length === 1 ? 'movimiento manual' : 'movimientos manuales'} · lo más reciente primero
                       {histCargues.cargando ? ' · trayendo el historial completo…' : histCargues.completo ? ' · historial completo' : ''}
                     </p>
+                    {histCargues.completo && (
+                      <p style={{ fontSize: 11.5, color: 'rgba(244,244,242,0.45)', margin: '2px 0 0' }}>
+                        El cliente tiene {histCargues.movimientos.length} movimientos en total{histCargues.ids.length > 1 ? ` (en ${histCargues.ids.length} cuentas con su mismo correo)` : ''}. Aquí van solo los cargues y ajustes manuales; todos sus movimientos están en Clientes → {carguesClient.name} → Movimientos.
+                      </p>
+                    )}
                     {histCargues.error && <p style={{ fontSize: 11.5, color: '#F87171', margin: '2px 0 0' }}>No se pudo traer el historial completo: {histCargues.error}. Se muestran solo los movimientos recientes.</p>}
                   </div>
                 </div>

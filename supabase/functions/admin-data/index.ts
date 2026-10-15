@@ -2852,17 +2852,28 @@ Deno.serve(async (req: Request) => {
         const uid = String(body.userId ?? '')
         if (!/^[0-9a-f-]{36}$/i.test(uid)) return json({ error: 'userId inválido' }, 400)
         const accM: Acceso = auth.acceso ?? { rol: 'lectura', paises: [], todosLosPaises: false }
+        // La misma persona puede tener filas de usuario duplicadas (mismo
+        // correo, ids distintos: el login creó un perfil con el id del auth y
+        // otro quedó con el id real). Sus movimientos pueden estar bajo
+        // cualquiera de esos ids; se traen los de todos, como en la app del
+        // cliente (gasfree my_transactions).
+        let ids: string[] = [uid]
+        const { data: yo } = await db.from('users').select('email').eq('id', uid).maybeSingle()
+        if ((yo as any)?.email) {
+          const { data: hermanos } = await db.from('users').select('id').eq('email', (yo as any).email)
+          if (Array.isArray(hermanos) && hermanos.length) ids = Array.from(new Set([uid, ...hermanos.map((h: any) => String(h.id))]))
+        }
         const filas: Record<string, unknown>[] = []
         const PAGINA = 1000
         for (let desde = 0; desde < 10000; desde += PAGINA) {
-          const { data, error } = await db.from('transactions').select('*').eq('user_id', uid)
+          const { data, error } = await db.from('transactions').select('*').in('user_id', ids)
             .order('created_at', { ascending: false }).range(desde, desde + PAGINA - 1)
           if (error) return json({ error: error.message }, 500)
           filas.push(...((data ?? []) as Record<string, unknown>[]))
           if (!data || data.length < PAGINA) break
         }
         const visibles = filas.filter(t => accM.todosLosPaises || visibleEnPais(paisDeMovimiento(t), accM))
-        return json({ ok: true, total: visibles.length, transactions: visibles.map(t => ({ ...t, raw_data: slimRawData(t.raw_data) })) })
+        return json({ ok: true, total: visibles.length, ids, transactions: visibles.map(t => ({ ...t, raw_data: slimRawData(t.raw_data) })) })
       }
 
       // ── Límites por envío ACH ──────────────────────────────────────────
