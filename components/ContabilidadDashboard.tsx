@@ -386,6 +386,10 @@ const Barras: React.FC<{ cubos: Cubo[]; titulo: string; moneda: Moneda }> = ({ c
 export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, onVerMovimiento, soloLectura = false, comprobantesExternos = null }) => {
   const [contadorAbierto, setContadorAbierto] = useState(false);
   const [periodo, setPeriodo] = useState<Periodo>('mes');
+  // El mes que se mira con "Mes". null = el mes en curso. La contadora cierra
+  // el mes anterior ya entrado el siguiente: tiene que poder volver a
+  // septiembre sin depender de "Este año" (que mezcla todo).
+  const [mesVer, setMesVer] = useState<{ y: number; m: number } | null>(null);
   const [monedaSel, setMonedaSel] = useState<Moneda | null>(null);
   const [filtroDir, setFiltroDir] = useState<'todos' | 'in' | 'out' | 'conv'>('todos');
   const [busca, setBusca] = useState('');
@@ -400,11 +404,15 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   const [pulsoFolios, setPulsoFolios] = useState(0);
 
   const ahora = useMemo(() => new Date(), []);
-  const inicioMes = new Date(ahora.getFullYear(), ahora.getMonth(), 1).getTime();
+  const mesY = mesVer?.y ?? ahora.getFullYear(), mesM = mesVer?.m ?? ahora.getMonth();
+  const esMesActual = mesY === ahora.getFullYear() && mesM === ahora.getMonth();
+  const rotMes = `${MESES_L[mesM].charAt(0).toUpperCase()}${MESES_L[mesM].slice(1)} ${mesY}`;
+  const inicioMes = new Date(mesY, mesM, 1).getTime();
+  const finMes = new Date(mesY, mesM + 1, 1).getTime();
   const inicioAnio = new Date(ahora.getFullYear(), 0, 1).getTime();
-  const inicioMesAnt = new Date(ahora.getFullYear(), ahora.getMonth() - 1, 1).getTime();
+  const inicioMesAnt = new Date(mesY, mesM - 1, 1).getTime();
   const inicioAnioAnt = new Date(ahora.getFullYear() - 1, 0, 1).getTime();
-  const rango = (p: Periodo): [number, number] => p === 'mes' ? [inicioMes, Infinity] : p === 'anio' ? [inicioAnio, Infinity] : [0, Infinity];
+  const rango = (p: Periodo): [number, number] => p === 'mes' ? [inicioMes, esMesActual ? Infinity : finMes] : p === 'anio' ? [inicioAnio, Infinity] : [0, Infinity];
   const rangoAnt = (p: Periodo): [number, number] | null => p === 'mes' ? [inicioMesAnt, inicioMes] : p === 'anio' ? [inicioAnioAnt, inicioAnio] : null;
   const en = (a: Asiento, [d, h]: [number, number]) => a.ts >= d && a.ts < h;
 
@@ -550,8 +558,8 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     const vacio = (rot: string, rotLargo: string): Cubo => ({ rot, rotLargo, entra: 0, sale: 0 });
     let lista: Cubo[] = []; let clave: (ts: number) => number;
     if (periodo === 'mes') {
-      const dias = new Date(ahora.getFullYear(), ahora.getMonth() + 1, 0).getDate();
-      lista = Array.from({ length: dias }, (_, i) => vacio(String(i + 1), `${i + 1} de ${MESES_L[ahora.getMonth()]}`));
+      const dias = new Date(mesY, mesM + 1, 0).getDate();
+      lista = Array.from({ length: dias }, (_, i) => vacio(String(i + 1), `${i + 1} de ${MESES_L[mesM]}`));
       clave = ts => new Date(ts).getDate() - 1;
     } else if (periodo === 'anio') {
       lista = MESES.map((m, i) => vacio(m, `${MESES_L[i]} ${ahora.getFullYear()}`));
@@ -567,7 +575,28 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     }
     for (const a of del) { if (!cuenta(a.tx)) continue; const i = clave(a.ts); if (i < 0 || i >= lista.length) continue; if (a.dir === 'in') lista[i].entra += a.monto; else lista[i].sale += a.monto; }
     return lista;
-  }, [periodo, moneda, del.length, recibido, enviado]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [periodo, moneda, del.length, recibido, enviado, mesY, mesM]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Meses que se pueden elegir: del mes en curso hacia atrás hasta el primer
+  // movimiento de la cuenta (máximo 3 años).
+  const opcionesMes = useMemo(() => {
+    const tss = asientos.map(a => a.ts).filter(Boolean);
+    const primero = tss.length ? new Date(Math.min(...tss)) : ahora;
+    const out: { y: number; m: number }[] = [];
+    let y = ahora.getFullYear(), m = ahora.getMonth();
+    for (let i = 0; i < 36; i++) {
+      out.push({ y, m });
+      if (y < primero.getFullYear() || (y === primero.getFullYear() && m <= primero.getMonth())) break;
+      m -= 1; if (m < 0) { m = 11; y -= 1; }
+    }
+    return out;
+  }, [asientos, ahora]);
+  const idxMes = opcionesMes.findIndex(o => o.y === mesY && o.m === mesM);
+  const irAMes = (o: { y: number; m: number } | undefined) => {
+    if (!o) return;
+    setPeriodo('mes'); setLimite(25);
+    setMesVer(o.y === ahora.getFullYear() && o.m === ahora.getMonth() ? null : o);
+  };
 
   // Por tipo, en el periodo.
   const porTipo = useMemo(() => {
@@ -583,7 +612,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     const desde = d.getTime(), hasta = new Date(d.getFullYear(), d.getMonth() + 1, 1).getTime();
     const as = asientos.filter(a => a.moneda === moneda && a.ts >= desde && a.ts < hasta && cuenta(a.tx));
     const r = as.filter(a => a.dir === 'in').reduce((s, a) => s + a.monto, 0), e = as.filter(a => a.dir === 'out').reduce((s, a) => s + a.monto, 0);
-    return { rot: `${MESES[d.getMonth()]} ${String(d.getFullYear()).slice(2)}`, recibido: r, enviado: e, movs: as.length };
+    return { rot: `${MESES[d.getMonth()]} ${String(d.getFullYear()).slice(2)}`, y: d.getFullYear(), m: d.getMonth(), recibido: r, enviado: e, movs: as.length };
   }), [asientos, moneda, ahora]);
 
   // Lista de movimientos: filtro y búsqueda juntos.
@@ -638,7 +667,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     }
     const saldoFinal = filasHoja.length ? (saldoTras.get(filasHoja[filasHoja.length - 1]) ?? saldoInicial) : saldoInicial;
     movimientos.push([null, 'Totales', '', '', '', '', '', '', totEntradas, totSalidas, saldoFinal, moneda, '', '', '', '', '', '']);
-    const rotP = periodo === 'mes' ? `${MESES_L[ahora.getMonth()]} ${ahora.getFullYear()}` : periodo === 'anio' ? String(ahora.getFullYear()) : 'Histórico';
+    const rotP = periodo === 'mes' ? rotMes : periodo === 'anio' ? String(ahora.getFullYear()) : 'Histórico';
     const resumen: (string | number | Date)[][] = [
       ['Concepto', 'Valor'],
       ['Periodo', rotP],
@@ -656,13 +685,14 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
       ['Movimientos en la hoja', lista.length],
       ['Generado', new Date()],
     ];
-    descargarXlsx(`lincoin-contabilidad-${moneda}-${periodo}-${new Date().toISOString().slice(0, 10)}.xlsx`, [
+    const rotArchivo = periodo === 'mes' ? `${mesY}-${String(mesM + 1).padStart(2, '0')}` : periodo;
+    descargarXlsx(`lincoin-contabilidad-${moneda}-${rotArchivo}-${new Date().toISOString().slice(0, 10)}.xlsx`, [
       { nombre: 'Movimientos', filas: movimientos, anchos: [18, 16, 34, 16, 18, 22, 16, 22, 16, 16, 18, 8, 12, 14, 22, 12, 30, 38] },
       { nombre: 'Resumen', filas: resumen, anchos: [30, 40] },
     ]);
   };
 
-  const rotPeriodo = periodo === 'mes' ? 'este mes' : periodo === 'anio' ? 'este año' : 'histórico';
+  const rotPeriodo = periodo === 'mes' ? (esMesActual ? 'este mes' : rotMes) : periodo === 'anio' ? 'este año' : 'histórico';
   const rotAnt = periodo === 'mes' ? 'el mes anterior' : 'el año anterior';
   const deltaTxt = (d: number | null) => d == null ? (periodo === 'historico' ? 'Todo el historial' : `Sin ${rotAnt} para comparar`) : `${d > 0 ? '+' : ''}${d.toLocaleString('es-CO', { maximumFractionDigits: 1 })} % vs. ${rotAnt}`;
   const fecha = (ts: number) => new Date(ts).toLocaleString('es-CO', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -682,10 +712,30 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
       <div className="flex items-center justify-between flex-wrap" style={{ gap: 12 }}>
         <div className="flex items-center flex-wrap" style={{ gap: 10 }}>
           <div className="flex" style={{ background: 'rgba(255,255,255,0.04)', border: `1px solid ${C.borde}`, borderRadius: 9, padding: 3 }}>
-            {([['mes', 'Este mes'], ['anio', 'Este año'], ['historico', 'Histórico']] as [Periodo, string][]).map(([k, rot]) => (
+            {([['mes', 'Mes'], ['anio', 'Este año'], ['historico', 'Histórico']] as [Periodo, string][]).map(([k, rot]) => (
               <button key={k} onClick={() => { setPeriodo(k); setLimite(25); }} style={seg(periodo === k)}>{rot}</button>
             ))}
           </div>
+          {/* Qué mes: flechas para ir y venir y la lista para saltar directo. */}
+          {periodo === 'mes' && (
+            <div className="flex items-center" style={{ background: 'rgba(255,255,255,0.04)', border: `1px solid ${C.borde}`, borderRadius: 9, padding: 3, gap: 2 }}>
+              <button onClick={() => irAMes(opcionesMes[idxMes + 1])} disabled={idxMes < 0 || idxMes >= opcionesMes.length - 1}
+                aria-label="Mes anterior" title="Mes anterior"
+                style={{ ...seg(false), padding: '7px 11px', opacity: idxMes < 0 || idxMes >= opcionesMes.length - 1 ? 0.35 : 1 }}>‹</button>
+              <select value={`${mesY}-${mesM}`} aria-label="Mes"
+                onChange={e => { const [y, m] = e.target.value.split('-').map(Number); irAMes({ y, m }); }}
+                style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, color: C.text, background: '#121413', border: 'none', borderRadius: 7, padding: '7px 8px', outline: 'none', cursor: 'pointer' }}>
+                {opcionesMes.map(o => (
+                  <option key={`${o.y}-${o.m}`} value={`${o.y}-${o.m}`}>
+                    {`${MESES_L[o.m].charAt(0).toUpperCase()}${MESES_L[o.m].slice(1)} ${o.y}`}{o.y === ahora.getFullYear() && o.m === ahora.getMonth() ? ' · en curso' : ''}
+                  </option>
+                ))}
+              </select>
+              <button onClick={() => irAMes(opcionesMes[idxMes - 1])} disabled={idxMes <= 0}
+                aria-label="Mes siguiente" title="Mes siguiente"
+                style={{ ...seg(false), padding: '7px 11px', opacity: idxMes <= 0 ? 0.35 : 1 }}>›</button>
+            </div>
+          )}
           {hayCop && hayUsd && (
             <div className="flex" style={{ background: 'rgba(255,255,255,0.04)', border: `1px solid ${C.borde}`, borderRadius: 9, padding: 3 }}>
               {(['COP', 'USD'] as Moneda[]).map(m => <button key={m} onClick={() => setMonedaSel(m)} style={seg(moneda === m)}>{m}</button>)}
@@ -752,7 +802,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
 
       {/* 3. Gráfico + por tipo */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12 }}>
-        <Barras cubos={cubos} moneda={moneda} titulo={periodo === 'mes' ? `MOVIMIENTOS POR DÍA · ${MESES_L[ahora.getMonth()].toUpperCase()}` : 'MOVIMIENTOS POR MES'} />
+        <Barras cubos={cubos} moneda={moneda} titulo={periodo === 'mes' ? `MOVIMIENTOS POR DÍA · ${rotMes.toUpperCase()}` : 'MOVIMIENTOS POR MES'} />
         <Tarjeta>
           <Rotulo>POR TIPO · {rotPeriodo.toUpperCase()}</Rotulo>
           {porTipo.length === 0 ? <p style={{ fontSize: 12.5, color: C.tenue, margin: '14px 0 0' }}>Sin movimientos en el periodo.</p>
@@ -772,13 +822,14 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
 
       {/* 4. Resumen por mes */}
       <Tarjeta style={{ padding: '18px 0 6px' }}>
-        <div style={{ padding: '0 20px' }}><Rotulo>ÚLTIMOS 12 MESES · {moneda}</Rotulo></div>
+        <div style={{ padding: '0 20px' }}><Rotulo>ÚLTIMOS 12 MESES · {moneda} · TOCA UN MES PARA VERLO</Rotulo></div>
         <div style={{ overflowX: 'auto', marginTop: 8 }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 560 }}>
             <thead><tr>{['MES', 'RECIBIDO', 'ENVIADO', 'NETO', 'MOVIMIENTOS'].map((h, i) => <th key={h} style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1.2px', color: C.tenue, textAlign: i === 0 ? 'left' : 'right', padding: '8px 20px', borderBottom: `1px solid ${C.borde}`, whiteSpace: 'nowrap' }}>{h}</th>)}</tr></thead>
             <tbody>
-              {meses12.map(m => { const vacio = m.movs === 0, col = vacio ? C.tenue : C.text, n = m.recibido - m.enviado; return (
-                <tr key={m.rot}>
+              {meses12.map(m => { const vacio = m.movs === 0, col = vacio ? C.tenue : C.text, n = m.recibido - m.enviado, elegido = periodo === 'mes' && m.y === mesY && m.m === mesM; return (
+                <tr key={m.rot} onClick={() => irAMes({ y: m.y, m: m.m })} title="Ver los movimientos de este mes"
+                  style={{ cursor: 'pointer', background: elegido ? 'rgba(74,222,128,0.06)' : undefined }}>
                   <td style={{ padding: '9px 20px', fontSize: 12.5, color: col, borderBottom: `1px solid ${C.borde}`, textTransform: 'capitalize' }}>{m.rot}</td>
                   <td style={{ padding: '9px 20px', fontSize: 12.5, color: col, textAlign: 'right', fontVariantNumeric: 'tabular-nums', borderBottom: `1px solid ${C.borde}`, whiteSpace: 'nowrap' }}>{m.recibido > 0 ? fmtMon(m.recibido, moneda) : '—'}</td>
                   <td style={{ padding: '9px 20px', fontSize: 12.5, color: col, textAlign: 'right', fontVariantNumeric: 'tabular-nums', borderBottom: `1px solid ${C.borde}`, whiteSpace: 'nowrap' }}>{m.enviado > 0 ? fmtMon(m.enviado, moneda) : '—'}</td>
