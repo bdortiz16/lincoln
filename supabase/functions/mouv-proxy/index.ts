@@ -1339,7 +1339,14 @@ async function limitesEnvio(): Promise<typeof LIMITES_DEF> {
     return { achEmpresa: n(v.achEmpresa, LIMITES_DEF.achEmpresa)!, achPersona: n(v.achPersona, LIMITES_DEF.achPersona)!, achProveedor: n(v.achProveedor, null) }
   } catch { return { ...LIMITES_DEF } }
 }
-async function topeAchDe(userId: string): Promise<{ max: number; origen: 'cliente' | 'empresa' | 'persona'; proveedor: number | null }> {
+// El tope ACH de UN envío. Cuenta quién envía y QUIÉN RECIBE:
+//   · una persona (cuenta o beneficiario) tiene el tope de personas (50 M);
+//   · una empresa, el de empresas (500 M);
+//   · gana el menor: una empresa que le paga a una persona queda en 50 M,
+//     empresa a empresa en 500 M.
+// La excepción por cliente (Compliance → Límites) manda sobre los generales.
+// El tope del proveedor es el techo de todo.
+async function topeAchDe(userId: string, beneficiario?: 'empresa' | 'persona' | null): Promise<{ max: number; origen: 'cliente' | 'empresa' | 'persona' | 'beneficiario_persona'; proveedor: number | null }> {
   const g = await limitesEnvio()
   const { data: u } = await db.from('users').select('role').eq('id', userId).maybeSingle()
   const esEmpresa = (u as any)?.role === 'business'
@@ -1349,9 +1356,16 @@ async function topeAchDe(userId: string): Promise<{ max: number; origen: 'client
     const k = Number((data as any)?.value ? JSON.parse((data as any).value)?.achMax : NaN)
     if (Number.isFinite(k) && k > 0) propio = k
   } catch { /* sin excepción: aplica el general */ }
-  let max = propio ?? (esEmpresa ? g.achEmpresa : g.achPersona)
+  let max: number
+  let origen: 'cliente' | 'empresa' | 'persona' | 'beneficiario_persona'
+  if (propio != null) { max = propio; origen = 'cliente' }
+  else {
+    max = esEmpresa ? g.achEmpresa : g.achPersona
+    origen = esEmpresa ? 'empresa' : 'persona'
+    if (beneficiario === 'persona' && g.achPersona < max) { max = g.achPersona; origen = 'beneficiario_persona' }
+  }
   if (g.achProveedor) max = Math.min(max, g.achProveedor)
-  return { max, origen: propio != null ? 'cliente' : esEmpresa ? 'empresa' : 'persona', proveedor: g.achProveedor }
+  return { max, origen, proveedor: g.achProveedor }
 }
 
 // Aprobación manual de cumplimiento sobre una ficha de antecedentes
@@ -1679,9 +1693,10 @@ serve(async (req: Request) => {
     const dueno = requireOwner(caller, payload)
     if (!dueno) return json(403, { error: 'forbidden' })
     const t = await topeAchDe(dueno)
+    const tPersona = await topeAchDe(dueno, 'persona')
     const BREB_MAX = Number(Deno.env.get('BREB_MAX_COP') ?? '12000000') || 12000000
     const BREB2_MAX = Number(Deno.env.get('BREB2_MAX_COP') ?? '') || BREB_MAX
-    return json(200, { ok: true, achMax: t.max, brebMax: BREB_MAX, breb2Max: BREB2_MAX, breb2FeeCop: BREB2_FEE_COP })
+    return json(200, { ok: true, achMax: t.max, achMaxPersona: tPersona.max, brebMax: BREB_MAX, breb2Max: BREB2_MAX, breb2FeeCop: BREB2_FEE_COP })
   }
 
   // ── ping / balance: saldo de la wallet COMPARTIDA — SOLO ADMIN ──
@@ -2988,6 +3003,9 @@ serve(async (req: Request) => {
     // Los nombres que conocemos del beneficiario. Con la Cuenta 2 se comparan
     // con el titular que devuelve Finity antes de confirmar el envío.
     const nombresTitular: string[] = []
+    // Persona o empresa QUIEN RECIBE (del beneficiario inscrito; si no se
+    // encuentra, del tipo de documento que llega). Define el tope ACH.
+    let tipoBeneficiario: 'empresa' | 'persona' | null = null
     // SEGURIDAD: mover dinero exige identidad PROBADA con JWT real (o admin).
     // Un simple user_id en el body ya NO autoriza un payout — así nadie drena
     // la cuenta de otro con solo la llave pública + el id de la víctima.
@@ -3104,6 +3122,7 @@ serve(async (req: Request) => {
         }
         const hit = cands[0]
         if (hit?.name) nombresTitular.push(String(hit.name))
+        if (hit) tipoBeneficiario = (String(hit.kind ?? '') === 'empresa' || /^NIT$/i.test(String(hit.docType ?? ''))) ? 'empresa' : 'persona'
         const docInscrito = soloDig(hit?.docNumber)
         if (docInscrito) {
           if (docDest && !mismoDoc(docDest, docInscrito)) {
@@ -3301,11 +3320,19 @@ serve(async (req: Request) => {
     // ACH: el tope lo fija el admin — por defecto 500 M para empresas y 50 M
     // para personas, con excepciones por cliente y siempre por debajo del
     // tope del proveedor (ver topeAchDe). Bre-B sigue en el límite de Mouv.
-    const perOpMax = rail === 'BREB' ? (brebFinity ? BREB2_MAX_COP : BREB_MAX_COP) : (await topeAchDe(userId)).max
+    if (!tipoBeneficiario) {
+      const docT = String((payload.recipient as any)?.documentType ?? (payload.recipient as any)?.docType ?? '').toUpperCase()
+      tipoBeneficiario = docT === 'NIT' ? 'empresa' : docT ? 'persona' : null
+    }
+    const topeAch = rail === 'BREB' ? null : await topeAchDe(userId, tipoBeneficiario)
+    const perOpMax = rail === 'BREB' ? (brebFinity ? BREB2_MAX_COP : BREB_MAX_COP) : topeAch!.max
     if (amount > perOpMax) {
+      await logAudit(userId, `mouv.${action}.over_limit`, { amount, tope: perOpMax, origen: topeAch?.origen ?? 'breb', beneficiario: tipoBeneficiario })
       return json(400, { error: 'over_limit', message: rail === 'BREB'
         ? `Bre-B permite máximo ${perOpMax.toLocaleString('es-CO')} COP por transferencia. Divide el envío en varias operaciones o usa la Mesa OTC.`
-        : `El monto supera tu límite por envío ACH (${perOpMax.toLocaleString('es-CO')} COP). Divide el envío o pide un aumento a soporte.` })
+        : topeAch?.origen === 'beneficiario_persona'
+          ? `Las transferencias ACH a personas tienen un máximo de ${perOpMax.toLocaleString('es-CO')} COP por envío. Divide el envío o pide un aumento a soporte.`
+          : `El monto supera tu límite por envío ACH (${perOpMax.toLocaleString('es-CO')} COP). Divide el envío o pide un aumento a soporte.` })
     }
     // (2) Idempotencia / anti doble-clic: si YA existe una dispersión idéntica
     //     (mismo usuario, riel, monto y DESTINO) creada hace menos de 2 minutos

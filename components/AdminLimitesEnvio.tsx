@@ -8,7 +8,9 @@ import { llamarFuncion } from '../lib/edge';
 //
 // Tres topes generales y excepciones por cliente. Los aplica el SERVIDOR
 // (mouv-proxy) al momento de cada envío; esta pantalla solo los guarda:
-//   · Empresas y Personas: máximo por envío según el tipo de cuenta.
+//   · Empresas y Personas: máximo por envío. Cuenta quién envía Y quién
+//     recibe: si alguno de los dos es persona, aplica el de personas.
+//     Empresa a empresa (NIT), el de empresas.
 //   · Proveedor: lo que Finity acepta por transferencia. Es el techo de
 //     todo — ni el general ni una excepción lo pueden pasar.
 //   · Excepción por cliente: sube o baja el tope de UNA cuenta.
@@ -113,7 +115,7 @@ export const AdminLimitesEnvio: React.FC = () => {
                 <h3 className="font-bold text-slate-800 flex items-center gap-2"><Gauge size={20} /> Límites por envío ACH</h3>
                 <button onClick={cargar} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="Recargar"><RefreshCw size={14} className={cargando ? 'animate-spin' : ''} /></button>
             </div>
-            <p className="text-xs text-slate-500 mb-5">Máximo que un cliente puede enviar por ACH en una sola operación. Lo aplica el servidor en cada envío. El tope del proveedor es el techo: ni el general ni una excepción lo pueden pasar.</p>
+            <p className="text-xs text-slate-500 mb-5">Máximo por envío ACH en una sola operación. Lo aplica el servidor en cada envío y cuenta <b>quién envía y quién recibe</b>: si cualquiera de los dos es una persona, aplica el tope de personas; de empresa a empresa (NIT), el de empresas. Una excepción por cliente manda sobre los generales. El tope del proveedor es el techo: nada lo puede pasar.</p>
 
             {msg && (
                 <div className={`mb-4 flex items-start gap-2 rounded-lg px-3 py-2.5 border ${msg.ok ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-red-50 border-red-200 text-red-800'}`}>
@@ -125,8 +127,8 @@ export const AdminLimitesEnvio: React.FC = () => {
             {cargando && !guardado ? <p className="text-sm text-slate-400">Cargando…</p> : (
                 <>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <CampoPesos label="Empresas" hint="por envío" value={empresa} onChange={setEmpresa} />
-                        <CampoPesos label="Personas" hint="por envío" value={persona} onChange={setPersona} />
+                        <CampoPesos label="Empresas" hint="por envío, de empresa a empresa" value={empresa} onChange={setEmpresa} />
+                        <CampoPesos label="Personas" hint="por envío, si envía o recibe una persona" value={persona} onChange={setPersona} />
                         <CampoPesos label="Tope del proveedor (Finity)" hint="opcional · lo que Finity acepta por transferencia" value={proveedor} onChange={setProveedor} placeholder="Sin definir" />
                     </div>
                     <div className="flex justify-end mt-4">
@@ -138,7 +140,7 @@ export const AdminLimitesEnvio: React.FC = () => {
 
                     <div className="border-t border-slate-100 mt-6 pt-5">
                         <p className="text-sm font-bold text-slate-800">Excepciones por cliente</p>
-                        <p className="text-xs text-slate-500 mt-0.5 mb-3">Sube o baja el tope de una cuenta en particular. Manda sobre el general.</p>
+                        <p className="text-xs text-slate-500 mt-0.5 mb-3">Sube o baja el tope de una cuenta en particular. Manda sobre los generales, también en sus envíos a personas.</p>
 
                         {!cliente ? (
                             <div className="relative">

@@ -648,11 +648,17 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // Tope por envío ACH de ESTA cuenta (lo fija el admin; lo aplica el
   // servidor). Se muestra en la tarjeta del riel para no prometer otro número.
   const [achMaxEnvio, setAchMaxEnvio] = useState<number | null>(null);
+  // Tope cuando quien recibe es una persona (puede ser menor que el general).
+  const [achMaxPersona, setAchMaxPersona] = useState<number | null>(null);
   useEffect(() => {
     if (!currentUser?.id) return;
     let vivo = true;
     llamarFuncion('mouv-proxy', { action: 'limite_envio', user_id: currentUser.id }, 15000)
-      .then((r: any) => { if (vivo && r?.ok && Number(r.achMax) > 0) setAchMaxEnvio(Number(r.achMax)); })
+      .then((r: any) => {
+        if (!vivo || !r?.ok) return;
+        if (Number(r.achMax) > 0) setAchMaxEnvio(Number(r.achMax));
+        if (Number(r.achMaxPersona) > 0) setAchMaxPersona(Number(r.achMaxPersona));
+      })
       .catch(() => {});
     return () => { vivo = false; };
   }, [currentUser?.id]);
@@ -3101,7 +3107,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9, fontWeight: 700, letterSpacing: '0.7px', padding: '3px 7px', borderRadius: 999, whiteSpace: 'nowrap' }}>HORARIO</span>
                               </div>
                               <p style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-1px', color: '#F4F4F2', marginTop: 16 }}>{Math.round(achBal).toLocaleString('es-CO')}</p>
-                              <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '8px 0 0' }}>Dispersa a cualquier cuenta en Colombia por el riel ACH tradicional.{achMaxEnvio ? ` Hasta ${millones(achMaxEnvio)} por envío.` : ''} Con este saldo también envías por Bre-B · Cuenta 2.</p>
+                              <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '8px 0 0' }}>Dispersa a cualquier cuenta en Colombia por el riel ACH tradicional.{achMaxEnvio ? ` Hasta ${millones(achMaxEnvio)} por envío${achMaxPersona && achMaxPersona < achMaxEnvio ? ` (${millones(achMaxPersona)} si el beneficiario es una persona)` : ''}.` : ''} Con este saldo también envías por Bre-B · Cuenta 2.</p>
                               <div className="flex items-center" style={{ gap: 7, marginTop: 12 }}>
                                   <span style={{ width: 6, height: 6, borderRadius: '50%', background: achOpen ? '#4ADE80' : '#878E88' }} />
                                   <span style={{ fontSize: 11.5, color: '#878E88' }}>L–V 7:00–18:00 · {achOpen ? 'operativo ahora' : 'fuera de horario'}</span>

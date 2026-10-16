@@ -1008,8 +1008,10 @@ const PERMISO_DE_ACCION: Record<string, string> = {
   approve_rail_move: 'plata.mover',
   reject_rail_move: 'plata.mover',
   otc_ajuste_set: 'plata.mover',
-  limites_envio_set: 'plata.mover',
-  limite_cliente_set: 'plata.mover',
+  // Los topes de envío son un control de cumplimiento: los ajusta Compliance
+  // (el dueño también, como todo).
+  limites_envio_set: 'cumplimiento',
+  limite_cliente_set: 'cumplimiento',
 
   // Clientes
   set_kyc_status: 'cumplimiento',
