@@ -8,6 +8,7 @@ import { DatabaseProvider } from './context/DatabaseContext';
 import { ThemeProvider } from './context/ThemeContext';
 import { lazyNamed } from './lib/lazyRetry';
 import { registrarSW } from './components/pushLincoin';
+import { SpeedInsights } from '@vercel/speed-insights/react';
 
 // Service worker: lo único que hace es recibir notificaciones push con la app
 // cerrada. No cachea nada a propósito — ver public/sw.js.
@@ -95,6 +96,7 @@ root.render(
         </ThemeProvider>
       )}
       </Suspense>
+      <SpeedInsights />
     </ErrorBoundary>
   </React.StrictMode>
 );
