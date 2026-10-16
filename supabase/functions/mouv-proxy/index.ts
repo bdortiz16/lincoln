@@ -23,6 +23,7 @@ import { serve } from 'https://deno.land/std@0.192.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { mergeRaw } from '../_shared/raw-data.ts'
 import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
+import { reclamarCandado, soltarCandado } from '../_shared/candado.ts'
 import { FIELD_ENC_KEY, decField } from '../_shared/field-crypto.ts'
 // Verificación TOTP en el SERVIDOR (2FA), con Web Crypto NATIVO (sin
 // dependencias externas que pudieran no cargar y tumbar el proxy). Mismo
@@ -3307,9 +3308,15 @@ serve(async (req: Request) => {
         : `El monto supera tu límite por envío ACH (${perOpMax.toLocaleString('es-CO')} COP). Divide el envío o pide un aumento a soporte.` })
     }
     // (2) Idempotencia / anti doble-clic: si YA existe una dispersión idéntica
-    //     (mismo usuario, riel y monto) creada hace menos de 2 minutos y que
-    //     no fue rechazada, se bloquea el reenvío — dos toques al botón
+    //     (mismo usuario, riel, monto y DESTINO) creada hace menos de 2 minutos
+    //     y que no fue rechazada, se bloquea el reenvío — dos toques al botón
     //     Confirmar no pueden ejecutar la operación dos veces.
+    //     El destino entra en la regla: antes bastaba el monto, y una nómina
+    //     con dos pagos iguales a personas distintas se frenaba como duplicada.
+    const destinoCrudo = String((payload.recipient as any)?.[rail === 'BREB' ? 'key' : 'accountNumber'] ?? '').trim()
+    const destinoNorm = rail === 'BREB'
+      ? (() => { const t = destinoCrudo.toLowerCase(); const d = t.replace(/\D/g, ''); return d.length >= 10 && /^[+\d\s().-]+$/.test(t) ? d.replace(/^57(?=\d{10}$)/, '') : t.replace(/\s+/g, '') })()
+      : destinoCrudo.replace(/\D/g, '')
     try {
       const since = new Date(Date.now() - 2 * 60 * 1000).toISOString()
       const { data: dup } = await db.from('transactions')
@@ -3318,6 +3325,7 @@ serve(async (req: Request) => {
         // El saldo ACH paga dos rieles (ACH y Bre-B · Cuenta 2): un ACH no
         // cuenta como duplicado de un Bre-B del mismo monto.
         .eq('raw_data->>rail', rail)
+        .eq('raw_data->>account', destinoCrudo)
         .gte('created_at', since)
         .in('status', ['Procesando', 'Completado'])
         .limit(1)
@@ -3384,6 +3392,36 @@ serve(async (req: Request) => {
       return json(500, { error: 'autorizacion_no_verificada', message: 'No se pudo verificar tu autorización. Intenta de nuevo.' })
     }
 
+    // ── CANDADO CONTRA EL DOBLE ENVÍO ───────────────────────────────────
+    // El control de arriba ("¿hay una dispersión igual en los últimos 2
+    // minutos?") lee la tabla: dos toques seguidos llegan juntos, los dos leen
+    // antes de que el primero escriba y los dos pasan. El candado se toma en
+    // la base (llave primaria), así que de dos pedidos simultáneos solo uno
+    // sigue. Dos claves:
+    //   · la del intento (idemKey que manda la pantalla): el mismo botón
+    //     apretado dos veces, o un reintento del mismo envío;
+    //   · la del envío: mismo cliente, saldo, riel y monto por 2 minutos —
+    //     la misma regla de arriba, ahora sin ventana.
+    // Si el envío no sale (rechazo claro, saldo devuelto) se sueltan.
+    const idemKey = String(payload.idemKey ?? '').replace(/[^\w-]/g, '').slice(0, 80)
+    const candados: string[] = []
+    {
+      const claves: [string, number][] = [
+        ...(idemKey ? [[`idem:${userId}:${idemKey}`, 86_400] as [string, number]] : []),
+        [`payout:${userId}:${railCol}:${rail}:${amount}:${destinoNorm}`, 120],
+      ]
+      for (const [clave, ttl] of claves) {
+        const r = await reclamarCandado(db, clave, ttl, userId, action)
+        if (r === 'ocupado') {
+          for (const c of candados) await soltarCandado(db, c)
+          await logAudit(userId, `mouv.${action}.duplicate_blocked`, { amount, rail, clave: clave.split(':')[0] })
+          return json(200, { error: 'duplicate', message: 'Ya hay un envío igual en curso. No lo repitas: revisa tus Movimientos en un momento.' })
+        }
+        if (r === 'ok') candados.push(clave)
+      }
+    }
+    const soltarCandados = async () => { for (const c of candados) await soltarCandado(db, c) }
+
     // ── Cuentas PERSONA: su COP llega al Saldo Lincoin ('COP'), no a un
     //    riel. Antes de debitar el riel del envío se cubre lo que falte desde
     //    'COP' y, si aún falta, desde el otro riel. Es un movimiento interno
@@ -3410,7 +3448,7 @@ serve(async (req: Request) => {
           if (Object.keys(mov).length) {
             const total = Number((-Object.values(mov).reduce((s, v) => s + v, 0)).toFixed(2))
             const { data: adj, error: adjErr } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { ...mov, [railCol]: total } })
-            if (adjErr || (adj as any)?.error) return json(400, { error: 'fondeo_riel', message: 'No se pudo preparar tu saldo en pesos para este envío. Intenta de nuevo.' })
+            if (adjErr || (adj as any)?.error) { await soltarCandados(); return json(400, { error: 'fondeo_riel', message: 'No se pudo preparar tu saldo en pesos para este envío. Intenta de nuevo.' }) }
           }
         }
       }
@@ -3424,18 +3462,18 @@ serve(async (req: Request) => {
     const { data: adjDeb, error: adjDebErr } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { [railCol]: -totalDebit } })
     if (!adjDebErr) {
       const e = (adjDeb as any)?.error
-      if (e === 'not_found') return json(404, { error: 'user_not_found', message: 'Usuario no encontrado.' })
-      if (e) return json(400, { error: 'insufficient_funds', message: `Saldo ${saldoLabel} insuficiente para monto + comisión (${totalDebit.toLocaleString('es-CO')} COP).` })
+      if (e === 'not_found') { await soltarCandados(); return json(404, { error: 'user_not_found', message: 'Usuario no encontrado.' }) }
+      if (e) { await soltarCandados(); return json(400, { error: 'insufficient_funds', message: `Saldo ${saldoLabel} insuficiente para monto + comisión (${totalDebit.toLocaleString('es-CO')} COP).` }) }
       afterDebit = Number(((adjDeb as any)?.balances?.[railCol]) ?? 0)
     } else {
       const { data: u } = await db.from('users').select('balances').eq('id', userId).maybeSingle()
-      if (!u) return json(404, { error: 'user_not_found', message: 'Usuario no encontrado.' })
+      if (!u) { await soltarCandados(); return json(404, { error: 'user_not_found', message: 'Usuario no encontrado.' }) }
       const bals: Record<string, number> = (u.balances as any) ?? {}
       const current = Number(bals[railCol] ?? 0)
-      if (current < totalDebit) return json(400, { error: 'insufficient_funds', message: `Saldo ${saldoLabel} insuficiente para monto + comisión (${totalDebit.toLocaleString('es-CO')} COP). Disponible: ${current.toLocaleString('es-CO')} COP.` })
+      if (current < totalDebit) { await soltarCandados(); return json(400, { error: 'insufficient_funds', message: `Saldo ${saldoLabel} insuficiente para monto + comisión (${totalDebit.toLocaleString('es-CO')} COP). Disponible: ${current.toLocaleString('es-CO')} COP.` }) }
       afterDebit = Number((current - totalDebit).toFixed(2))
       const { error: debErr } = await db.from('users').update({ balances: { ...bals, [railCol]: afterDebit } }).eq('id', userId)
-      if (debErr) return json(500, { error: 'debit_failed', message: 'No se pudo reservar el saldo. Intenta de nuevo.' })
+      if (debErr) { await soltarCandados(); return json(500, { error: 'debit_failed', message: 'No se pudo reservar el saldo. Intenta de nuevo.' }) }
     }
 
     // 3) Registrar la transacción (type 'dispersion' — NO colisiona con la
@@ -3588,6 +3626,7 @@ serve(async (req: Request) => {
       })
       await logAudit(userId, `finity.${action}.fail`, { amount, paso: fb.paso ?? null, httpStatus: fb.httpStatus ?? null, error: (() => { try { return JSON.stringify(fb.body ?? {}).slice(0, 300) } catch { return null } })() })
       await notifyTx(txId)
+      await soltarCandados()
       return json(200, { error: 'payout_failed', provider: 'finity', refunded: true, newBalance: restoredF, message: friendlyF })
     }
 
@@ -3821,6 +3860,7 @@ serve(async (req: Request) => {
       if (txId) { try { await db.from('transactions').update({ raw_data: { ...prettyBase, ...feeDetail, error: pay.data ?? 'payout_failed', errorMessage: provMsg ?? techHint ?? null, bloqueoDelProveedor: porCumplimientoDelProveedor || undefined, httpStatus: pay.status, refunded: true, failedAt: new Date().toISOString() } }).eq('id', txId) } catch { /* best-effort */ } }
       // NOTA: no se devuelven `data`/`detail` técnicos al cliente. El detalle
       // real vive en la tx (errorMessage/error/httpStatus) y en el audit_log.
+      await soltarCandados()
       return json(200, { error: 'payout_failed', code: provCode, retryAfterSeconds, refunded: true, newBalance: restored,
         message: friendly })
     }
@@ -3907,6 +3947,7 @@ serve(async (req: Request) => {
     const friendlyAch = finMsg && finMsg.trim()
       ? `No pudimos completar la transferencia ACH: ${finMsg}. Tu saldo fue devuelto.`
       : `No pudimos completar la transferencia ACH en este momento. Tu saldo fue devuelto — puedes intentarlo de nuevo en unos minutos.`
+    await soltarCandados()
     return json(200, { error: 'payout_failed', provider: 'finity', refunded: true, newBalance: restored5,
       message: friendlyAch })
   }

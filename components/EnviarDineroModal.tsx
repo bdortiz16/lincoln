@@ -209,6 +209,18 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
   // Candado síncrono anti doble-clic (el estado de React tarda un render en
   // reflejarse; el ref bloquea desde el primer instante).
   const sendingRef = useRef(false);
+  // Clave única de ESTE intento de envío. Viaja al servidor (idemKey): si el
+  // mismo envío llega dos veces —dos toques, dos pestañas, un reintento—, el
+  // servidor reconoce la clave y deja pasar uno solo. Se crea al primer toque
+  // de Confirmar y se descarta al cerrar el envío.
+  const idemRef = useRef('');
+  const claveIntento = () => {
+      if (!idemRef.current) {
+          try { idemRef.current = crypto.randomUUID(); }
+          catch { idemRef.current = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`; }
+      }
+      return idemRef.current;
+  };
   // Mismos candados SÍNCRONOS anti doble-clic para pagar (P2P) y convertir:
   // el estado de React tarda un render; el ref bloquea desde el primer clic.
   const payingRef = useRef(false);
@@ -525,6 +537,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
       sendingRef.current = true;
       setIsSending(true);
       const amount = getRawAmount(sendForm.amount);
+      const idemKey = claveIntento();
 
       // ── Dispersión REAL vía Mouv (envíos COP a banco/llave) ──
       // El riel lo determina el TIPO de destino: contacto Bre-B → payout_breb
@@ -586,7 +599,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
               : { bankCode: d.bank, accountType: (d.accountType === 'checking' ? 'corriente' : 'ahorros'), accountNumber: d.accountNumber, documentType: d.docType, documentNumber: d.docNumber, holderName: d.name, reference: sendForm.reason, motivo: sendForm.motivo, ...ordenante, ...(sendContact?.finityId ? { finityId: sendContact.finityId } : {}), ...direccion };
           try {
               const r = await Promise.race([
-                  callMouvProxy({ action: isBreb ? (cuenta2 ? 'payout_breb2' : 'payout_breb') : 'payout_ach', userId: currentUser.id, amount, recipient, otp: sentOtpRef.current }),
+                  callMouvProxy({ action: isBreb ? (cuenta2 ? 'payout_breb2' : 'payout_breb') : 'payout_ach', userId: currentUser.id, amount, recipient, otp: sentOtpRef.current, idemKey }),
                   // La Cuenta 2 hace dos llamadas al proveedor (crear y
                   // confirmar): se le da más margen antes de declarar
                   // "no sabemos si salió".
@@ -628,13 +641,16 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
       if (sendMode === 'wallet' && currentUser?.id) {
           try {
               const resp = await Promise.race([
-                  callGasfree({ action: 'my_send', userId: currentUser.id, toAddress: sendForm.accountNumber, amount, otp: sentOtpRef.current }),
+                  callGasfree({ action: 'my_send', userId: currentUser.id, toAddress: sendForm.accountNumber, amount, otp: sentOtpRef.current, idemKey }),
                   new Promise<any>((_, rej) => setTimeout(() => rej(new Error('timeout')), 90000)),
               ]);
               if (resp?.error || !resp?.traceId) {
                   sendingRef.current = false;
                   setIsSending(false);
-                  showToast(`No se pudo enviar: ${String(resp?.error ?? JSON.stringify(resp)).slice(0, 160)} — no se debitó tu saldo.`, 10000, 'error');
+                  // Un envío igual ya en curso (candado del servidor): no es un
+                  // fallo de este, así que no se dice "no se debitó".
+                  const enCurso = /en curso/i.test(String(resp?.error ?? ''));
+                  showToast(enCurso ? String(resp.error) : `No se pudo enviar: ${String(resp?.error ?? JSON.stringify(resp)).slice(0, 160)} — no se debitó tu saldo.`, 10000, 'error');
                   return;
               }
               sendingRef.current = false;
@@ -705,6 +721,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
       setSendContact(null);
       setSendMethodSel(null);
       setBrebCuenta(1);
+      idemRef.current = '';
   };
 
   const abrir = (p?: EnviarPrefill) => {

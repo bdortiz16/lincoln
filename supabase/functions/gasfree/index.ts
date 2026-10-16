@@ -25,6 +25,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { mergeRaw } from '../_shared/raw-data.ts'
 import { FIELD_ENC_KEY, decField } from '../_shared/field-crypto.ts'
+import { reclamarCandado } from '../_shared/candado.ts'
 import { ethers } from 'https://esm.sh/ethers@6.13.5'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
@@ -2919,6 +2920,23 @@ Deno.serve(async (req) => {
       if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
       const mfaErr = await require2FA(userId, body.otp)
       if (mfaErr) return err(mfaErr, 403)
+      // CANDADO CONTRA EL DOBLE ENVÍO. Un envío de USDT en la red NO se puede
+      // revertir, y acá no había ningún control: dos toques seguidos al botón
+      // mandaban la plata dos veces. De dos pedidos simultáneos, solo uno
+      // sigue (llave primaria en la base). El candado NO se suelta si el envío
+      // falla: no se sabe si llegó a la red, así que se espera a que venza.
+      {
+        const idemKey = String(body.idemKey ?? '').replace(/[^\w-]/g, '').slice(0, 80)
+        const claves: [string, number][] = [
+          ...(idemKey ? [[`idem:${userId}:${idemKey}`, 86_400] as [string, number]] : []),
+          [`usdt:${userId}:${String(toAddress).trim()}:${Number(amount)}`, 120],
+        ]
+        for (const [clave, ttl] of claves) {
+          if (await reclamarCandado(db, clave, ttl, userId, 'my_send') === 'ocupado') {
+            return err('Ya hay un envío igual en curso. No lo repitas: revisa tus Movimientos y espera un par de minutos.', 409)
+          }
+        }
+      }
       return ok(await mySend(userId, String(toAddress), Number(amount)))
     }
     if (action === 'my_verify_deposit') {
