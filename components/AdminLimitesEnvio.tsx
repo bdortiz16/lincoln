@@ -1,7 +1,50 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Gauge, Save, Search, Trash2, AlertTriangle, CheckCircle2, RefreshCw } from 'lucide-react';
 import { useDatabase } from '../context/DatabaseContext';
-import { llamarFuncion } from '../lib/edge';
+
+// Llamada a admin-data que NO pierde el motivo. La versión anterior leía solo
+// `error`: si la respuesta venía de la plataforma (función sin recursos, en
+// arranque, sesión vencida) el motivo llegaba en `message` o `msg` y la
+// pantalla decía "No se pudo guardar." sin explicar nada.
+type Respuesta = { ok?: boolean; error?: string; status: number; needs2fa?: boolean; [k: string]: any };
+async function pedirLimites(cuerpo: Record<string, unknown>): Promise<Respuesta> {
+    const SURL = (import.meta as any).env?.VITE_SUPABASE_URL || '';
+    const SKEY = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '';
+    let auth = `Bearer ${SKEY}`;
+    try {
+        const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
+        if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) auth = `Bearer ${d.access_token}`; }
+    } catch { /* sin sesión: el servidor lo rechaza con su motivo */ }
+    let r: Response;
+    try {
+        r = await fetch(`${SURL}/functions/v1/admin-data`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: auth },
+            body: JSON.stringify(cuerpo),
+            signal: AbortSignal.timeout(30000),
+        });
+    } catch (e: any) {
+        return { ok: false, status: 0, error: e?.name === 'TimeoutError' ? 'El servidor tardó demasiado en responder.' : 'No se pudo contactar el servidor. Revisa la conexión.' };
+    }
+    const t = await r.text().catch(() => '');
+    let d: any = null;
+    try { d = t ? JSON.parse(t) : null; } catch { d = null; }
+    if (d && typeof d === 'object' && !Array.isArray(d)) {
+        if (d.ok) return { ...d, status: r.status };
+        // Una respuesta sin `ok` ni motivo con la lista de clientes adentro es
+        // el listado general del panel: la función que contestó no conoce la
+        // acción (quedó desplegada una versión vieja).
+        const motivo = d.error || d.message || d.msg
+            || (d.users && d.transactions ? 'El servidor no reconoció la acción: falta desplegar la versión nueva.' : '');
+        return { ...d, ok: false, status: r.status, error: motivo ? String(motivo) : `El servidor respondió sin detalle (HTTP ${r.status}).` };
+    }
+    return { ok: false, status: r.status, error: `El servidor respondió sin detalle (HTTP ${r.status}).` };
+}
+
+// 0 = sin conexión; 5xx/546 = la plataforma, no una regla nuestra. Esas valen
+// un segundo intento: guardar un tope es idempotente (mismo valor, mismo
+// resultado), así que reintentar no duplica nada.
+const valeReintentar = (s: number) => s === 0 || s >= 500;
 
 // ─────────────────────────────────────────────
 // Límites por envío ACH — Configuración del admin.
@@ -58,46 +101,87 @@ export const AdminLimitesEnvio: React.FC = () => {
     const [topeCliente, setTopeCliente] = useState('');
     const [nota, setNota] = useState('');
 
-    const cargar = async () => {
+    // Candado síncrono: `ocupado` es estado y no frena dos clics seguidos.
+    const enCurso = useRef(false);
+
+    // Devuelve lo leído para que quien guarda pueda comprobar el resultado.
+    const cargar = async (callado = false): Promise<{ limites: any; excepciones: Excepcion[] } | null> => {
         setCargando(true);
-        const r = await llamarFuncion('admin-data', { action: 'limites_envio_get' }).catch(() => null);
+        const r = await pedirLimites({ action: 'limites_envio_get' });
         setCargando(false);
-        if (!r?.ok) { setMsg({ ok: false, text: r?.error ?? 'No se pudieron leer los límites.' }); return; }
+        if (!r.ok) { if (!callado) setMsg({ ok: false, text: r.error || 'No se pudieron leer los límites.' }); return null; }
         const l = r.limites;
+        const ex: Excepcion[] = Array.isArray(r.excepciones) ? r.excepciones : [];
         setGuardado({ achEmpresa: l.achEmpresa, achPersona: l.achPersona, achProveedor: l.achProveedor ?? null });
         setEmpresa(String(l.achEmpresa ?? ''));
         setPersona(String(l.achPersona ?? ''));
         setProveedor(l.achProveedor ? String(l.achProveedor) : '');
-        setExcepciones(Array.isArray(r.excepciones) ? r.excepciones : []);
+        setExcepciones(ex);
+        return { limites: l, excepciones: ex };
     };
     useEffect(() => { cargar(); }, []);
 
     const cambiado = !!guardado && (Number(empresa) !== guardado.achEmpresa || Number(persona) !== guardado.achPersona || (Number(proveedor) || null) !== (guardado.achProveedor || null));
 
+    // Guarda con un reintento si falló la plataforma (no una regla nuestra).
+    const guardarConReintento = async (cuerpo: Record<string, unknown>): Promise<Respuesta> => {
+        let r = await pedirLimites(cuerpo);
+        if (!r.ok && valeReintentar(r.status)) {
+            await new Promise(res => setTimeout(res, 1500));
+            r = await pedirLimites(cuerpo);
+        }
+        return r;
+    };
+
+    const textoError = (r: Respuesta) => r.needs2fa
+        ? `${r.error} Guardar topes exige el segundo factor en esta sesión.`
+        : (r.error || 'No se pudo guardar.');
+
     const guardarGeneral = async () => {
-        if (ocupado) return;
+        if (enCurso.current) return;
         const prov = Number(proveedor) || 0;
         if (!Number(empresa) || !Number(persona)) { setMsg({ ok: false, text: 'Pon el tope de empresas y el de personas.' }); return; }
         if (prov && (Number(empresa) > prov || Number(persona) > prov)) { setMsg({ ok: false, text: `Ningún tope puede pasar el del proveedor (${conPuntos(proveedor)} COP).` }); return; }
-        setOcupado(true); setMsg(null);
-        const r = await llamarFuncion('admin-data', { action: 'limites_envio_set', achEmpresa: empresa, achPersona: persona, achProveedor: proveedor || null }).catch(() => null);
-        setOcupado(false);
-        if (!r?.ok) { setMsg({ ok: false, text: r?.error ?? 'No se pudo guardar.' }); return; }
-        setMsg({ ok: true, text: 'Límites guardados. Aplican desde el próximo envío.' });
-        cargar();
+        enCurso.current = true; setOcupado(true); setMsg(null);
+        const pedido = { achEmpresa: Number(empresa), achPersona: Number(persona), achProveedor: prov || null };
+        try {
+            const r = await guardarConReintento({ action: 'limites_envio_set', ...pedido });
+            if (r.ok) { setMsg({ ok: true, text: 'Límites guardados. Aplican desde el próximo envío.' }); await cargar(true); return; }
+            // Una respuesta perdida no es un guardado fallido: se relee lo que
+            // quedó en el servidor antes de decir que no se guardó.
+            const v = await cargar(true);
+            const l = v?.limites;
+            if (l && Number(l.achEmpresa) === pedido.achEmpresa && Number(l.achPersona) === pedido.achPersona && (Number(l.achProveedor) || null) === pedido.achProveedor) {
+                setMsg({ ok: true, text: 'Límites guardados. Aplican desde el próximo envío.' });
+                return;
+            }
+            // Lo releído pisó lo escrito: se devuelve lo que el admin había puesto.
+            if (v) { setEmpresa(String(pedido.achEmpresa)); setPersona(String(pedido.achPersona)); setProveedor(pedido.achProveedor ? String(pedido.achProveedor) : ''); }
+            setMsg({ ok: false, text: textoError(r) });
+        } finally {
+            enCurso.current = false; setOcupado(false);
+        }
     };
 
     const guardarExcepcion = async (userId: string, achMax: string | null, notaTxt = '') => {
-        if (ocupado) return;
+        if (enCurso.current) return;
         const prov = Number(guardado?.achProveedor) || 0;
         if (achMax && prov && Number(achMax) > prov) { setMsg({ ok: false, text: `No puede pasar el tope del proveedor (${conPuntos(String(prov))} COP).` }); return; }
-        setOcupado(true); setMsg(null);
-        const r = await llamarFuncion('admin-data', { action: 'limite_cliente_set', userId, achMax, nota: notaTxt }).catch(() => null);
-        setOcupado(false);
-        if (!r?.ok) { setMsg({ ok: false, text: r?.error ?? 'No se pudo guardar.' }); return; }
-        setMsg({ ok: true, text: achMax ? 'Excepción guardada para ese cliente.' : 'Excepción quitada: vuelve al tope general.' });
-        setCliente(null); setTopeCliente(''); setNota(''); setQ('');
-        cargar();
+        enCurso.current = true; setOcupado(true); setMsg(null);
+        const listo = () => {
+            setMsg({ ok: true, text: achMax ? 'Excepción guardada para ese cliente.' : 'Excepción quitada: vuelve al tope general.' });
+            setCliente(null); setTopeCliente(''); setNota(''); setQ('');
+        };
+        try {
+            const r = await guardarConReintento({ action: 'limite_cliente_set', userId, achMax, nota: notaTxt });
+            if (r.ok) { listo(); await cargar(true); return; }
+            const v = await cargar(true);
+            const hoy = v?.excepciones.find(e => e.userId === userId);
+            if (v && (achMax ? Number(hoy?.achMax) === Number(achMax) : !hoy)) { listo(); return; }
+            setMsg({ ok: false, text: textoError(r) });
+        } finally {
+            enCurso.current = false; setOcupado(false);
+        }
     };
 
     const usuarios: any[] = useMemo(() => (typeof getAllUsers === 'function' ? getAllUsers() : []).filter((u: any) => u.role !== 'admin'), [getAllUsers]);
@@ -113,7 +197,7 @@ export const AdminLimitesEnvio: React.FC = () => {
         <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
             <div className="flex items-start justify-between gap-3 mb-1">
                 <h3 className="font-bold text-slate-800 flex items-center gap-2"><Gauge size={20} /> Límites por envío ACH</h3>
-                <button onClick={cargar} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="Recargar"><RefreshCw size={14} className={cargando ? 'animate-spin' : ''} /></button>
+                <button onClick={() => { setMsg(null); cargar(); }} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="Recargar"><RefreshCw size={14} className={cargando ? 'animate-spin' : ''} /></button>
             </div>
             <p className="text-xs text-slate-500 mb-5">Máximo por envío ACH en una sola operación. Lo aplica el servidor en cada envío y cuenta <b>quién envía y quién recibe</b>: si cualquiera de los dos es una persona, aplica el tope de personas; de empresa a empresa (NIT), el de empresas. Una excepción por cliente manda sobre los generales. El tope del proveedor es el techo: nada lo puede pasar.</p>
 
