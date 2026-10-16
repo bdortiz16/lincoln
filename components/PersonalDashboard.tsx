@@ -3780,6 +3780,16 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const displayCurrency = (c?: string): string => String(c || '').split('_')[0];
   const railOfCurrency = (c?: string): string | null =>
     c === 'COP_BREB' ? 'Bre-B' : c === 'COP_ACH' ? 'ACH' : null;
+  // El riel de UN movimiento. Bre-B · Cuenta 2 se paga con el saldo ACH
+  // (moneda COP_ACH) pero es un envío por llave: se mira el riel del envío,
+  // no la moneda. Si no, el comprobante decía "ACH" en una transferencia Bre-B.
+  const railDeTx = (tx: any): string | null => {
+    const rd = (tx?.raw_data ?? {}) as Record<string, any>;
+    if (tx?.type === 'dispersion' && (tx?.rail === 'BREB' || rd.rail === 'BREB')) {
+      return Number(tx?.cuentaBreb ?? rd.cuentaBreb) === 2 ? 'Bre-B · Cuenta 2' : 'Bre-B';
+    }
+    return railOfCurrency(tx?.currency);
+  };
 
   const WALLET_NETWORK: Record<string, string> = {
     USDT_BSC: 'BSC (BEP-20)', USDC_BSC: 'BSC (BEP-20)', BNB: 'BSC (BEP-20)',
@@ -4078,7 +4088,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       ctx.strokeStyle = 'rgba(255,255,255,0.10)'; ctx.lineWidth = 1;
       roundRect(ctx, PAD, boxY, maxW, boxH, 14); ctx.stroke();
       ctx.font = `800 25px Archivo, ${FONT}`; ctx.fillStyle = isCredit ? '#4ADE80' : '#F4F4F2';
-      const amtLabel = `${isCredit ? '+' : '-'}${formatMoney(tx.amount, tx.currency)} ${displayCurrency(tx.currency)}${railOfCurrency(tx.currency) ? ` · ${railOfCurrency(tx.currency)}` : ''}`;
+      const amtLabel = `${isCredit ? '+' : '-'}${formatMoney(tx.amount, tx.currency)} ${displayCurrency(tx.currency)}${railDeTx(tx) ? ` · ${railDeTx(tx)}` : ''}`;
       ctx.fillText(amtLabel, W / 2, boxY + 34);
       // Chip de estado: borde de color, sin fondos rojos/naranjas chillones.
       // 'Procesando'/'Pendiente' = ámbar (en curso), no rojo de error.

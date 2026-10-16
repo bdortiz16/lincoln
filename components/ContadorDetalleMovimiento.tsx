@@ -179,7 +179,10 @@ export const ContadorDetalleMovimiento: React.FC<{ tx: any; comprobante: any | n
   const docTipo = String(v('documentType') ?? dest.documentType ?? dest.docType ?? '').trim();
   const cuenta = String(v('account') ?? dest.key ?? dest.accountNumber ?? '').trim();
   const banco = String(v('bank') ?? dest.bankName ?? '').split('·')[0].trim();
-  const riel = tx.currency === 'COP_BREB' ? 'Bre-B' : tx.currency === 'COP_ACH' ? 'ACH · Colombia' : '';
+  // Bre-B · Cuenta 2 se paga con el saldo ACH (moneda COP_ACH) pero es un
+  // envío por llave: manda el riel del envío, no la moneda.
+  const esBreb = tx.currency === 'COP_BREB' || (tx.type === 'dispersion' && v('rail') === 'BREB');
+  const riel = esBreb ? (Number(v('cuentaBreb')) === 2 ? 'Bre-B · Cuenta 2' : 'Bre-B') : tx.currency === 'COP_ACH' ? 'ACH · Colombia' : '';
   const ref = String(v('providerRef') ?? v('providerTraceId') ?? v('reference') ?? v('txHash') ?? '').trim();
   const motivoPago = String(v('motivo') ?? v('reason') ?? '').trim();
   const nota = String(v('note') ?? v('description') ?? '').trim();
@@ -195,7 +198,7 @@ export const ContadorDetalleMovimiento: React.FC<{ tx: any; comprobante: any | n
     ...(contraparte ? [{ label: entra ? 'Pagador' : 'Beneficiario', value: contraparte }] : []),
     ...(docNum ? [{ label: 'Documento', value: `${docTipo || 'CC'} ${docNum}`, mono: true, copy: docNum }] : []),
     ...(banco ? [{ label: 'Banco', value: banco }] : []),
-    ...(cuenta ? [{ label: tx.currency === 'COP_BREB' ? 'Llave destino' : 'Cuenta destino', value: cuenta, mono: true, copy: cuenta }] : []),
+    ...(cuenta ? [{ label: esBreb ? 'Llave destino' : 'Cuenta destino', value: cuenta, mono: true, copy: cuenta }] : []),
     ...(motivoPago ? [{ label: 'Motivo del pago', value: motivoPago }] : []),
     ...(nota && nota !== motivoPago ? [{ label: 'Nota', value: nota }] : []),
     ...(!entra && fee > 0 ? [{ label: 'Costo del envío', value: `${fmt(fee, 'COP')}` }] : []),
@@ -382,7 +385,7 @@ export const ContadorDetalleMovimiento: React.FC<{ tx: any; comprobante: any | n
             ['Nombre', contraparte],
             ['Documento', docNum ? `${docTipo || 'CC'} ${docNum}` : ''],
             ['Banco', banco],
-            [tx.currency === 'COP_BREB' ? 'Llave' : 'Cuenta', cuenta],
+            [esBreb ? 'Llave' : 'Cuenta', cuenta],
           ]} />
           {motivoRechazo && <Bloque titulo="MOTIVO DEL RECHAZO" datos={[['Motivo', motivoRechazo]]} />}
           {doc && conDoc && <Bloque titulo="DOCUMENTO ASOCIADO" datos={[[tituloDoc, String(doc.numero ?? '')], [esDS ? 'CUDS' : 'CUFE', cude]]} />}
