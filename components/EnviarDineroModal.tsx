@@ -247,6 +247,9 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
   const [payRecipientUser, setPayRecipientUser] = useState<any>(null);
   const [payLookupStatus, setPayLookupStatus] = useState<'idle' | 'found' | 'not_found'>('idle');
   const [isPaySending, setIsPaySending] = useState(false);
+  // Pago sin respuesta: no se sabe si salió. Se bloquea repetirlo desde esta
+  // misma ventana hasta cerrarla (y al volver ya se ven los Movimientos).
+  const [payUnknown, setPayUnknown] = useState(false);
   const [showPayVerify, setShowPayVerify] = useState(false);
   const [payVerifyCode, setPayVerifyCode] = useState('');
   const [payVerifyLoading, setPayVerifyLoading] = useState(false);
@@ -432,20 +435,21 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
 
   const executePay = async () => {
       if (!payRecipientUser) return;
-      if (payingRef.current || isPaySending) return; // candado síncrono anti doble-envío
+      if (payingRef.current || isPaySending || payUnknown) return; // candado síncrono anti doble-envío
       payingRef.current = true;
       setIsPaySending(true);
       try {
-          const timeout = new Promise<{ error: string }>(resolve =>
-              setTimeout(() => resolve({ error: 'Tiempo de espera agotado. Intenta de nuevo.' }), 30000)
+          const timeout = new Promise<{ error: string; desconocido: boolean }>(resolve =>
+              setTimeout(() => resolve({ desconocido: true, error: 'No pudimos confirmar el pago a tiempo. Puede que sí haya salido: revisa tus Movimientos antes de repetirlo.' }), 35000)
           );
-          const result = await Promise.race([
+          const result: any = await Promise.race([
               sendCuypayPayment(payRecipientUser.ownReferralCode, getRawAmount(sendForm.amount), sendForm.destinationCurrency),
               timeout,
           ]);
-          if (result?.error) { showToast(result.error, 4000, 'error'); }
+          if (result?.desconocido) { setPayUnknown(true); showToast(result.error, 12000, 'error'); refreshData?.(); }
+          else if (result?.error) { showToast(result.error, 6000, 'error'); }
           else { setSendStep(4); }
-      } catch { showToast('Error al procesar el pago', 4000, 'error'); }
+      } catch { setPayUnknown(true); showToast('No pudimos confirmar el pago. Revisa tus Movimientos antes de repetirlo.', 10000, 'error'); }
       finally { payingRef.current = false; setIsPaySending(false); }
   };
 
@@ -617,6 +621,15 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                   refreshData?.();
                   return;
               }
+              // El servidor ya tiene un envío igual en curso (candado contra el
+              // doble envío): no es un fallo de este. Se avisa y se bloquea
+              // repetirlo desde esta ventana.
+              if (r?.error === 'duplicate') {
+                  sendingRef.current = false; setIsSending(false); setMouvUnknown(true);
+                  showToast(String(r?.message ?? 'Ya hay un envío igual en curso. Revisa tus Movimientos antes de repetirlo.'), 10000, 'error');
+                  refreshData?.();
+                  return;
+              }
               // Falló o aún sin cablear → el edge YA reintegró el saldo (refunded).
               sendingRef.current = false; setIsSending(false);
               const msg = r?.message || r?.error || 'La dispersión no se pudo completar.';
@@ -722,6 +735,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
       setSendMethodSel(null);
       setBrebCuenta(1);
       idemRef.current = '';
+      setPayUnknown(false);
   };
 
   const abrir = (p?: EnviarPrefill) => {
@@ -1398,7 +1412,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                               )}
                               <button
                                   onClick={handlePaySubmit}
-                                  disabled={payLookupStatus !== 'found' || isPaySending}
+                                  disabled={payLookupStatus !== 'found' || isPaySending || payUnknown}
                                   className="w-full h-14 bg-green-600 text-white font-bold rounded-xl hover:bg-green-700 flex items-center justify-center gap-2 text-lg shadow-lg disabled:opacity-40 disabled:cursor-not-allowed transition-all"
                               >
                                   {isPaySending ? <Loader2 className="animate-spin" size={22}/> : <><Zap size={20}/> Enviar ahora</>}
@@ -1721,7 +1735,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                               <p className="text-xs text-slate-400 text-center">El receptor deberá presentar su documento de identidad en el punto físico para cobrar.</p>
                               <div className="flex gap-3">
                                   <button onClick={() => setSendStep(3)} className="flex-1 py-3 border border-slate-300 text-slate-600 font-bold rounded-xl hover:bg-slate-50 transition-colors">Corregir</button>
-                                  <button onClick={handleCashSubmit} className="flex-1 py-3 bg-orange-500 text-white font-bold rounded-xl hover:bg-orange-600 shadow-lg transition-colors flex items-center justify-center gap-2">
+                                  <button onClick={handleCashSubmit} disabled={isSending} className="flex-1 py-3 bg-orange-500 text-white font-bold rounded-xl hover:bg-orange-600 shadow-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-wait">
                                       {isSending ? <Loader2 size={18} className="animate-spin"/> : <><MapPin size={16}/> Confirmar</>}
                                   </button>
                               </div>

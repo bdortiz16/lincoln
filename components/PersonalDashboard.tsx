@@ -1662,7 +1662,14 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       setLoadStep(4);
   };
 
+  // Candado: el comprobante se lee (await) antes de crear la solicitud y un
+  // segundo toque en esa espera creaba dos depósitos pendientes con el mismo
+  // soporte — y los dos se podían aprobar.
+  const notificandoRef = useRef(false);
   const handleLoadSubmit = async () => {
+      if (notificandoRef.current) return;
+      notificandoRef.current = true;
+      setTimeout(() => { notificandoRef.current = false; }, 5000);
       const numericAmount = getRawAmount(loadAmount);
       let currency = 'CLP';
       if (selectedCountry === 'Colombia') currency = 'COP';
@@ -1710,22 +1717,33 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       }
       convertingRef.current = true;
       setIsConverting(true);
-      const convTimeout = new Promise<{ error: string }>(resolve =>
-          setTimeout(() => resolve({ error: 'Tiempo de espera agotado. Intenta de nuevo.' }), 12000)
-      );
-      Promise.race([
-          performConversion(sourceCurr, targetCurr, rawAmount, finalAmount, finalFee, appliedCoupon?.code),
-          convTimeout,
-      ]).then((result) => {
+      // El candado se suelta cuando TERMINA la conversión, no a los 12 s.
+      // Antes, al vencer la espera se liberaba con "Intenta de nuevo" mientras
+      // la primera seguía corriendo: el reintento convertía dos veces.
+      const enCurso = performConversion(sourceCurr, targetCurr, rawAmount, finalAmount, finalFee, appliedCoupon?.code);
+      let avisadoTarde = false;
+      const convTimeout = new Promise<'tarde'>(resolve => setTimeout(() => resolve('tarde'), 12000));
+      Promise.race([enCurso, convTimeout]).then((r) => {
+          if (r === 'tarde') {
+              avisadoTarde = true;
+              showToast('La conversión está tardando. No la repitas: te avisamos cuando termine.', 8000);
+          }
+      });
+      enCurso.then((result) => {
           convertingRef.current = false;
           setIsConverting(false);
           if (result?.error) {
-              showToast(result.error, 4000, 'error');
+              showToast(result.error, 6000, 'error');
           } else {
               closeConvertModal();
               showToast(`Conversión exitosa. Has recibido ${formatMoney(finalAmount, targetCurr)} ${targetCurr}`);
           }
-      }).catch(() => { convertingRef.current = false; setIsConverting(false); showToast('Error al procesar la conversión.', 4000, 'error'); });
+          if (avisadoTarde) refreshData?.();
+      }).catch(() => {
+          convertingRef.current = false; setIsConverting(false);
+          refreshData?.();
+          showToast('No pudimos confirmar la conversión. Revisa tus Movimientos antes de repetirla.', 8000, 'error');
+      });
   };
 
   const handleNotificationsClick = () => {
@@ -2740,7 +2758,16 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       );
   };
 
+  // Candado síncrono: `brebMoving` es estado de React y dos toques en el mismo
+  // instante lo leen en false los dos. El ref se marca antes de cualquier await
+  // y se suelta cuando termina (el estado lo maneja el resto de la función).
+  const moviendoRef = useRef(false);
   const handleBrebMove = async () => {
+    if (moviendoRef.current) return;
+    moviendoRef.current = true;
+    try { await handleBrebMoveUnaVez(); } finally { moviendoRef.current = false; }
+  };
+  const handleBrebMoveUnaVez = async () => {
     if (!currentUser?.id || brebMoving) return;
     const amount = Number(brebAmountStr.replace(/[^\d]/g, ''));
     const cop  = getBalance('COP');

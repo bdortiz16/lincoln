@@ -997,7 +997,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   };
 
   // Paso 2: aplicar el cargue (lo llama el botón del modal).
+  // Candado síncrono contra el doble toque: se marca antes de cualquier await
+  // (el estado de React tarda un render y dos toques seguidos pasaban los dos).
+  const submitCargueEnCursoRef = useRef(false);
   const submitCargue = async () => {
+    if (submitCargueEnCursoRef.current) return;
+    submitCargueEnCursoRef.current = true;
+    try { return await submitCargueUnaVez(); } finally { submitCargueEnCursoRef.current = false; }
+  };
+  const submitCargueUnaVez = async () => {
     if (!carguesClient || !carguesConfirm) return;
     const raw = carguesConfirm.raw;
     const delta = carguesDir === 'credit' ? raw : -raw;
@@ -1049,7 +1057,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
 
   // ── Solicitudes de movimiento a ACH (aprobación manual de Tesorería) ──
   const [railMoveBusy, setRailMoveBusy] = useState<string | number | null>(null);
+  // Candado síncrono contra el doble toque: se marca antes de cualquier await
+  // (el estado de React tarda un render y dos toques seguidos pasaban los dos).
+  const railMoveActionEnCursoRef = useRef(false);
   const railMoveAction = async (txId: string | number, action: 'approve' | 'reject') => {
+    if (railMoveActionEnCursoRef.current) return;
+    railMoveActionEnCursoRef.current = true;
+    try { return await railMoveActionUnaVez(txId, action); } finally { railMoveActionEnCursoRef.current = false; }
+  };
+  const railMoveActionUnaVez = async (txId: string | number, action: 'approve' | 'reject') => {
     if (railMoveBusy) return;
     if (action === 'approve' && !window.confirm('¿Ya moviste el respaldo al proveedor? Aprobar acredita el saldo ACH del cliente.')) return;
     if (action === 'reject' && !window.confirm('¿Rechazar la solicitud? El COP se reembolsa al Saldo Lincoin del cliente.')) return;
@@ -1586,7 +1602,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       showToast("Usuario guardado");
   };
 
+  // Candado: el comprobante se convierte (await) antes de registrar, y un
+  // segundo clic en esa espera registraba el movimiento dos veces.
+  const registrandoRef = useRef(false);
   const handleRegisterInternalMovement = async () => {
+      if (registrandoRef.current) return;
       if (!internalAmount || isNaN(parseFloat(internalAmount))) {
           alert("Monto inválido");
           return;
@@ -1600,6 +1620,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
           return;
       }
 
+      registrandoRef.current = true;
+      setTimeout(() => { registrandoRef.current = false; }, 4000);
       let proofUrl = undefined;
       if (internalProofFile) {
           try {
@@ -1627,29 +1649,41 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       showToast("Movimiento interno registrado y saldo actualizado.");
   };
 
-  const handleTxAction = (action: 'approve' | 'reject') => {
-      if (!selectedTreasuryTx) return;
-
-      if (action === 'approve') {
-          if (selectedTreasuryTx.type === 'load') {
-              approveDeposit(selectedTreasuryTx.id);
-              showToast("Depósito aprobado y saldo acreditado.");
-          } else if (selectedTreasuryTx.type === 'send') {
-              completeWithdrawal(selectedTreasuryTx.id);
-              showToast("Retiro completado.");
+  // Aprobar / Rechazar en Tesorería: un solo pedido por movimiento. Antes no
+  // había candado ni se esperaba la respuesta: dos clics aprobaban dos veces.
+  const txAccionRef = useRef(false);
+  const [txAccionando, setTxAccionando] = useState(false);
+  const handleTxAction = async (action: 'approve' | 'reject') => {
+      if (!selectedTreasuryTx || txAccionRef.current) return;
+      txAccionRef.current = true;
+      setTxAccionando(true);
+      const tx = selectedTreasuryTx;
+      try {
+          if (action === 'approve') {
+              if (tx.type === 'load') {
+                  await approveDeposit(tx.id);
+                  showToast("Depósito aprobado y saldo acreditado.");
+              } else if (tx.type === 'send') {
+                  await completeWithdrawal(tx.id);
+                  showToast("Retiro completado.");
+              }
+          } else {
+              if (tx.type === 'load') {
+                  await rejectDeposit(tx.id);
+                  showToast("Depósito rechazado.");
+              } else if (tx.type === 'send') {
+                  await rejectWithdrawal(tx.id, rejectReason || 'Rechazado por administración');
+                  showToast("Retiro rechazado y fondos devueltos.");
+              }
           }
-      } else {
-          if (selectedTreasuryTx.type === 'load') {
-              rejectDeposit(selectedTreasuryTx.id);
-              showToast("Depósito rechazado.");
-          } else if (selectedTreasuryTx.type === 'send') {
-              rejectWithdrawal(selectedTreasuryTx.id, rejectReason || 'Rechazado por administración');
-              showToast("Retiro rechazado y fondos devueltos.");
-          }
+      } finally {
+          txAccionRef.current = false;
+          setTxAccionando(false);
+          setSelectedTreasuryTx(null);
+          setRejectReason('');
       }
-      setSelectedTreasuryTx(null);
-      setRejectReason('');
   };
+
 
   const formatMoney = (amount: number, currency: string) => {
       return new Intl.NumberFormat('es-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(amount);
@@ -4987,16 +5021,16 @@ const renderDesign = () => (
                                 </div>
                                 <div className="flex gap-3">
                                     <button 
-                                        onClick={() => handleTxAction('reject')}
-                                        className="flex-1 py-3 border border-red-200 bg-red-50 text-red-700 font-bold rounded-lg hover:bg-red-100 transition-colors"
+                                        onClick={() => handleTxAction('reject')} disabled={txAccionando}
+                                        className="flex-1 py-3 border border-red-200 bg-red-50 text-red-700 font-bold rounded-lg hover:bg-red-100 transition-colors disabled:opacity-50 disabled:cursor-wait"
                                     >
-                                        Rechazar
+                                        {txAccionando ? 'Procesando…' : 'Rechazar'}
                                     </button>
                                     <button 
-                                        onClick={() => handleTxAction('approve')}
-                                        className="flex-1 py-3 bg-green-600 text-white font-bold rounded-lg hover:bg-green-700 transition-colors shadow-lg shadow-green-200"
+                                        onClick={() => handleTxAction('approve')} disabled={txAccionando}
+                                        className="flex-1 py-3 bg-green-600 text-white font-bold rounded-lg hover:bg-green-700 transition-colors shadow-lg shadow-green-200 disabled:opacity-50 disabled:cursor-wait"
                                     >
-                                        Aprobar Operación
+                                        {txAccionando ? 'Procesando…' : 'Aprobar Operación'}
                                     </button>
                                 </div>
                             </div>

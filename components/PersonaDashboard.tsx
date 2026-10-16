@@ -334,7 +334,15 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
     if (convMontoNum > saldo(wa.code)) { setConvError(`Tienes ${fmt(saldo(wa.code), wa.code)} ${wa.code} disponibles.`); return; }
     setConvPaso('revisar');
   };
+  // Candado síncrono contra el doble toque: se marca antes de cualquier await
+  // (el estado de React tarda un render y dos toques seguidos pasaban los dos).
+  const ejecutarConversionEnCursoRef = useRef(false);
   const ejecutarConversion = async () => {
+    if (ejecutarConversionEnCursoRef.current) return;
+    ejecutarConversionEnCursoRef.current = true;
+    try { return await ejecutarConversionUnaVez(); } finally { ejecutarConversionEnCursoRef.current = false; }
+  };
+  const ejecutarConversionUnaVez = async () => {
     if (convOcupado) return;
     setConvOcupado(true); setConvError(null);
     const r = await performConversion(wa.code, convA, convMontoNum, Number(convRecibe.toFixed(decimales(convA))), 0);

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   ArrowLeft, Plus, Send, Archive, ArchiveRestore, Pencil, Copy, Check,
   RefreshCw, Wallet, Star, ChevronDown, ChevronUp, X,
@@ -81,7 +81,15 @@ export const WalletsGasfreeSection: React.FC<Props> = ({ userId, callGasfree, sh
     setRenaming(null); setRenameVal('');
   };
 
+  // Candado síncrono contra el doble toque: se marca antes de cualquier await
+  // (el estado de React tarda un render y dos toques seguidos pasaban los dos).
+  const runSendEnCursoRef = useRef(false);
   const runSend = async () => {
+    if (runSendEnCursoRef.current) return;
+    runSendEnCursoRef.current = true;
+    try { return await runSendUnaVez(); } finally { runSendEnCursoRef.current = false; }
+  };
+  const runSendUnaVez = async () => {
     if (!sendFrom) return;
     const amt = Number(sendAmount);
     if (!amt || amt <= 0) { showToast('Monto inválido', 3000, 'error'); return; }

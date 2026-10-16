@@ -125,7 +125,7 @@ interface DatabaseContextType {
   sendPasswordReset: (email: string, captchaToken?: string) => Promise<void>;
   isPasswordRecovery: boolean;
   setNewPassword: (newPassword: string) => Promise<string | null>;
-  sendCuypayPayment: (recipientCode: string, amount: number, currency: string) => Promise<{ error?: string }>;
+  sendCuypayPayment: (recipientCode: string, amount: number, currency: string) => Promise<{ error?: string; desconocido?: boolean }>;
   mfaPending: boolean;
   mfaErrorDetail: string | null;
   loginErrorDetail: string | null;
@@ -2467,6 +2467,13 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     return {};
   };
 
+  // ¿El RPC NO existe (falta su migración)? Solo en ese caso se usa el camino
+  // directo viejo. Si el RPC respondió —aunque sea con un error de negocio
+  // como "ya completado"— manda él: antes un doble clic hacía que el segundo
+  // pedido recibiera "already_completed", cayera al camino directo y volviera
+  // a acreditar el saldo desde el navegador.
+  const rpcNoExiste = (e: any) => !!e && /42883|PGRST202|could not find the function|function .* does not exist/i.test(`${e?.code ?? ''} ${e?.message ?? ''}`);
+
   const approveDeposit = async (txId: number) => {
     // Vía preferida: RPC SECURITY DEFINER (2026_admin_treasury_rpcs.sql) —
     // los updates directos a filas de OTROS usuarios los bloquea RLS en
@@ -2474,12 +2481,12 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     if (isSupabaseConfigured) {
       try {
         const { data: rpc, error: rpcErr } = await supabase.rpc('admin_approve_deposit', { p_tx_id: txId });
-        if (!rpcErr && (rpc as any)?.ok) { await fetchData(); return; }
         if (!rpcErr && (rpc as any)?.error) console.error('[approveDeposit] RPC error:', (rpc as any).error);
-      } catch { /* fallback directo */ }
+        if (!rpcNoExiste(rpcErr)) { await fetchData(); return; }
+      } catch { await fetchData(); return; /* sin respuesta: no se acredita a ciegas */ }
     }
     const tx = transactions.find(t => t.id === txId);
-    if (!tx) return;
+    if (!tx || tx.status !== 'Pendiente') return;
     const user = users.find(u => u.id === tx.userId);
     if (!user) return;
     const newBal = { ...user.balances, [tx.currency]: (user.balances[tx.currency] || 0) + tx.amount };
@@ -2518,9 +2525,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   const rejectDeposit = async (id: number) => {
     if (isSupabaseConfigured) {
       try {
-        const { data: rpc, error: rpcErr } = await supabase.rpc('admin_reject_deposit', { p_tx_id: id });
-        if (!rpcErr && (rpc as any)?.ok) { await fetchData(); return; }
-      } catch { /* fallback directo */ }
+        const { error: rpcErr } = await supabase.rpc('admin_reject_deposit', { p_tx_id: id });
+        if (!rpcNoExiste(rpcErr)) { await fetchData(); return; }
+      } catch { await fetchData(); return; }
     }
     await updateTxStatus(id, { status: 'Rechazado' });
   };
@@ -2530,6 +2537,8 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     if (isSupabaseConfigured) {
       try {
         const { data: rpc, error: rpcErr } = await supabase.rpc('admin_complete_withdrawal', { p_tx_id: id });
+        if (!rpcErr && !(rpc as any)?.ok) { await fetchData(); return; }   // ya completado / no pendiente: nada que hacer
+        if (rpcErr && !rpcNoExiste(rpcErr)) { await fetchData(); return; }
         if (!rpcErr && (rpc as any)?.ok) {
           await fetchData();
           // Sync de la cuenta de tesorería (igual que el camino directo)
@@ -2540,8 +2549,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           }
           return;
         }
-      } catch { /* fallback directo */ }
+      } catch { await fetchData(); return; }
     }
+    if (!tx || tx.status !== 'Pendiente') return;
     await updateTxStatus(id, { status: 'Completado' });
     // Auto-debit the matching treasury account so the balance stays in sync
     if (tx) {
@@ -2559,12 +2569,12 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   const rejectWithdrawal = async (id: number, reason: string) => {
     if (isSupabaseConfigured) {
       try {
-        const { data: rpc, error: rpcErr } = await supabase.rpc('admin_reject_withdrawal', { p_tx_id: id, p_reason: reason || null });
-        if (!rpcErr && (rpc as any)?.ok) { await fetchData(); return; }
-      } catch { /* fallback directo */ }
+        const { error: rpcErr } = await supabase.rpc('admin_reject_withdrawal', { p_tx_id: id, p_reason: reason || null });
+        if (!rpcNoExiste(rpcErr)) { await fetchData(); return; }
+      } catch { await fetchData(); return; }
     }
     const tx = transactions.find(t => t.id === id);
-    if (!tx) return;
+    if (!tx || tx.status !== 'Pendiente') return;
     const user = users.find(u => u.id === tx.userId);
     if (user) {
       const newBal = { ...user.balances, [tx.currency]: (user.balances[tx.currency] || 0) + tx.amount };
@@ -2613,7 +2623,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     } catch { return false; }
   };
 
-  const sendCuypayPayment = async (recipientCode: string, amount: number, currency: string): Promise<{ error?: string }> => {
+  const sendCuypayPayment = async (recipientCode: string, amount: number, currency: string): Promise<{ error?: string; desconocido?: boolean }> => {
     if (!currentUser) return { error: 'No autenticado' };
     if (!amount || !isFinite(amount) || amount <= 0) return { error: 'Monto inválido' };
     if (!recipientCode || typeof recipientCode !== 'string') return { error: 'Código de destinatario inválido' };
@@ -2724,7 +2734,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           p_amount: amount,
           p_currency: currency,
         }),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('rpc_timeout')), 10000)),
+        // 25 s: con 10 s, en una red lenta se cortaba un pago que el servidor
+        // sí estaba haciendo, y la pantalla invitaba a repetirlo.
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('rpc_timeout')), 25000)),
       ]);
       const { data: rpcData, error: rpcError } = rpcResult as any;
       if (rpcError) {
@@ -2747,10 +2759,14 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       }
     } catch (e: any) {
       const msg = (e?.message || '') as string;
-      if (msg !== 'rpc_timeout') {
-        console.warn('[pay] RPC exception, falling back to direct writes:', msg);
-        // Don't return error — fall through to direct writes
+      if (msg === 'rpc_timeout') {
+        // SIN RESPUESTA NO ES "NO SALIÓ". El pago se hace en el servidor y la
+        // respuesta pudo perderse con el pago ya hecho. Antes se decía "tu
+        // saldo no se movió, reintenta", y el reintento lo duplicaba.
+        refreshAll().catch(() => {});
+        return { desconocido: true, error: 'No pudimos confirmar el pago a tiempo. Puede que sí haya salido: revisa tus Movimientos antes de repetirlo.' };
       }
+      console.warn('[pay] RPC exception:', msg);
     }
 
     // Acá había un respaldo que, si el RPC daba timeout o no estaba
@@ -2762,7 +2778,8 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     // Mover dinero es exclusivamente del servidor. Si el RPC no responde, el
     // pago no ocurre y se dice: es mejor que el usuario reintente a que el
     // saldo lo escriba la pantalla.
-    return { error: 'No pudimos completar el pago en este momento. Tu saldo no se movió. Reintenta en un minuto.' };
+    refreshAll().catch(() => {});
+    return { error: 'No pudimos completar el pago en este momento. Revisa tus Movimientos antes de repetirlo.' };
   };
 
   const deleteUser = async (id: string): Promise<{ error?: string }> => {

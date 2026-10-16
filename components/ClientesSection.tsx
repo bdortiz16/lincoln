@@ -14,7 +14,7 @@
 //  descuenta de la empresa, acredita a la persona y deja un movimiento de
 //  cada lado. Mueve plata, así que exige lo mismo que Enviar: 2FA.
 // ══════════════════════════════════════════════════════════════════
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { Trash2, X, Wallet, ArrowUpRight, Copy, Check, Clock, ShieldCheck, Image as ImageIcon, SlidersHorizontal } from 'lucide-react';
 import { useDatabase } from '../context/DatabaseContext';
 import { supabase } from '../lib/supabaseClient';
@@ -147,7 +147,15 @@ export const ClientesSection: React.FC<Props> = ({ showToast, handleActionRestri
     setPaso('codigo');
   };
 
+  // Candado síncrono contra el doble toque: se marca antes de cualquier await
+  // (el estado de React tarda un render y dos toques seguidos pasaban los dos).
+  const ejecutarEnCursoRef = useRef(false);
   const ejecutar = async (e: React.FormEvent) => {
+    e.preventDefault(); if (ejecutarEnCursoRef.current) return;
+    ejecutarEnCursoRef.current = true;
+    try { return await ejecutarUnaVez(e); } finally { ejecutarEnCursoRef.current = false; }
+  };
+  const ejecutarUnaVez = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!cargaPara || enviando || codigo2fa.length !== 6) return;
     setEnviando(true); setErrorCarga(null);

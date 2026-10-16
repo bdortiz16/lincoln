@@ -572,7 +572,15 @@ export const AdminGasFreeSection: React.FC = () => {
     const payFeeEstimate = rec?.token
         ? fmt(rec.token.transferFee / 1e6) + (rec.active ? '' : ` (+${fmt(rec.token.activateFee / 1e6)} activación)`)
         : null;
+    // Candado síncrono contra el doble toque: se marca antes de cualquier await
+    // (el estado de React tarda un render y dos toques seguidos pasaban los dos).
+    const doPayProviderEnCursoRef = useRef(false);
     const doPayProvider = async () => {
+      if (doPayProviderEnCursoRef.current) return;
+      doPayProviderEnCursoRef.current = true;
+      try { return await doPayProviderUnaVez(); } finally { doPayProviderEnCursoRef.current = false; }
+    };
+    const doPayProviderUnaVez = async () => {
         const amt = parseFloat(payAmount);
         if (!payTarget || isNaN(amt) || amt <= 0) return;
         if (!window.confirm(`¿Pagar ${fmt(amt)} USDT a ${payTarget.name} (${mask(payTarget.detail)})? Se cobra aparte la comisión GasFree vigente.`)) return;

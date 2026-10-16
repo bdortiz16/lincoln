@@ -1662,6 +1662,23 @@ async function myStatus(userId: string) {
 }
 // Envío del propio cliente (paga con su saldo GasFree). Registra el
 // movimiento con el desglose real de comisión para que quede trazable.
+// Candado común de los envíos de USDT a la red (no se pueden revertir): por
+// intento (idemKey) y por destino + monto durante 2 minutos. Devuelve el
+// mensaje de rechazo si ya hay uno igual en curso, o null si puede seguir.
+async function candadoEnvioUsdt(userId: string, idemKeyCrudo: unknown, origen: string, toAddress: string, amount: number): Promise<string | null> {
+  const idemKey = String(idemKeyCrudo ?? '').replace(/[^\w-]/g, '').slice(0, 80)
+  const claves: [string, number][] = [
+    ...(idemKey ? [[`idem:${userId}:${idemKey}`, 86_400] as [string, number]] : []),
+    [`usdt:${userId}:${origen}:${String(toAddress).trim()}:${Number(amount)}`, 120],
+  ]
+  for (const [clave, ttl] of claves) {
+    if (await reclamarCandado(db, clave, ttl, userId, origen) === 'ocupado') {
+      return 'Ya hay un envío igual en curso. No lo repitas: revisa tus Movimientos y espera un par de minutos.'
+    }
+  }
+  return null
+}
+
 async function mySend(userId: string, toAddress: string, amount: number) {
   const { data: u } = await db.from('users').select('email').eq('id', userId).single()
   if (!u) throw new Error('Usuario no encontrado')
@@ -2947,6 +2964,21 @@ Deno.serve(async (req) => {
     if (action === 'my_convert_settle') {
       if (!userId || !amount || !body.copAmount) return err('Faltan userId, amount o copAmount', 400)
       if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
+      // CANDADO: dos toques a "Confirmar conversión" llegaban juntos y
+      // convertían dos veces el mismo USDT. De dos pedidos simultáneos del
+      // mismo monto, solo uno sigue (90 s).
+      {
+        const idemKey = String(body.idemKey ?? '').replace(/[^\w-]/g, '').slice(0, 80)
+        const claves: [string, number][] = [
+          ...(idemKey ? [[`idem:${userId}:${idemKey}`, 86_400] as [string, number]] : []),
+          [`convert:${userId}:${Number(amount)}`, 90],
+        ]
+        for (const [clave, ttl] of claves) {
+          if (await reclamarCandado(db, clave, ttl, userId, 'my_convert_settle') === 'ocupado') {
+            return err('Ya hay una conversión igual en curso. No la repitas: revisa tus Movimientos en un momento.', 409)
+          }
+        }
+      }
       const settled: any = await myConvertSettle(userId, Number(amount), Number(body.copAmount), {
         // El frontend manda la tasa como finityRate — se acepta con ambos nombres.
         mouvRate: body.mouvRate != null ? Number(body.mouvRate) : (body.finityRate != null ? Number(body.finityRate) : undefined),
@@ -3047,6 +3079,7 @@ Deno.serve(async (req) => {
       if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
       const mfaErr = await require2FA(userId, body.otp)
       if (mfaErr) return err(mfaErr, 403)
+      { const dup = await candadoEnvioUsdt(userId, body.idemKey, `archivada${Number(body.index)}`, String(toAddress), Number(amount)); if (dup) return err(dup, 409) }
       return ok(await myArchivedSend(userId, Number(body.index), String(toAddress), Number(amount)))
     }
     if (action === 'my_wallets_reorder') {
@@ -3059,6 +3092,7 @@ Deno.serve(async (req) => {
       if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
       const mfaErr = await require2FA(userId, body.otp)   // envío on-chain → 2FA server-side
       if (mfaErr) return err(mfaErr, 403)
+      { const dup = await candadoEnvioUsdt(userId, body.idemKey, `wallet${String(body.id)}`, String(toAddress), Number(amount)); if (dup) return err(dup, 409) }
       return ok(await myWalletSend(userId, String(body.id), String(toAddress), Number(amount)))
     }
     if (action === 'my_convert_finalize') {

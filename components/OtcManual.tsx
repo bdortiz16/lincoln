@@ -263,7 +263,14 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
     const envMoneda = side === 'vende_usdt' ? 'USDT' : 'COP';
     const recMoneda = side === 'vende_usdt' ? 'COP' : 'USDT';
 
+    // Candado síncrono: dos toques a "Enviar solicitud" creaban dos cierres.
+    const enviarEnCursoRef = useRef(false);
     const enviar = async () => {
+        if (enviarEnCursoRef.current) return;
+        enviarEnCursoRef.current = true;
+        try { await enviarUnaVez(); } finally { enviarEnCursoRef.current = false; }
+    };
+    const enviarUnaVez = async () => {
         setError(null);
         if (!montoOk) { setError('Escribí cuánto querés enviar.'); return; }
         setEnviando(true);

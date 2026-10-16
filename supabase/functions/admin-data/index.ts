@@ -3341,27 +3341,38 @@ Deno.serve(async (req: Request) => {
         if (!tx || tx.type !== 'rail_move') return json({ success: false, error: 'Solicitud no encontrada' }, 404)
         if (tx.status !== 'Pendiente') return json({ success: true, already: true, status: tx.status })
         const rd = (tx.raw_data ?? {}) as Record<string, any>
-        const { data: u } = await db.from('users').select('balances').eq('id', tx.user_id).single()
-        const bals: Record<string, number> = (u?.balances as any) ?? {}
         const amt = Number(tx.amount ?? 0)
-        if (body.action === 'approve_rail_move') {
-          const toRail = String(rd.toRail ?? 'COP_ACH')
-          const newBal = parseFloat(((bals[toRail] ?? 0) + amt).toFixed(2))
-          await db.from('users').update({ balances: { ...bals, [toRail]: newBal } }).eq('id', tx.user_id)
-          await db.from('transactions').update({
-            status: 'Completado',
-            raw_data: { ...rd, approvedAt: new Date().toISOString(), title: 'Saldo Lincoin → ACH · aprobado' },
-          }).eq('id', tx.id)
-          return json({ success: true, newBalance: newBal })
+        const aprobar = body.action === 'approve_rail_move'
+        const rail = aprobar ? String(rd.toRail ?? 'COP_ACH') : String(rd.fromRail ?? 'COP')
+        const ahora = new Date().toISOString()
+        // RECLAMAR ANTES DE ACREDITAR. Antes se miraba el estado y después se
+        // escribía: dos clics (o dos pestañas) leían "Pendiente" los dos y
+        // acreditaban dos veces. El update condicional solo lo gana uno.
+        const { data: reclamada } = await db.from('transactions').update({
+          status: aprobar ? 'Completado' : 'Rechazado',
+          raw_data: aprobar
+            ? { ...rd, approvedAt: ahora, title: 'Saldo Lincoin → ACH · aprobado' }
+            : { ...rd, rejectedAt: ahora, rejectReason: body.reason ?? 'Rechazado por administración', title: 'Saldo Lincoin → ACH · rechazado (reembolsado)' },
+        }).eq('id', tx.id).eq('status', 'Pendiente').select('id')
+        if (!reclamada?.length) return json({ success: true, already: true })
+        // Abono atómico (sin leer-y-escribir el saldo entero).
+        let nuevo: number | null = null
+        const { data: adj, error: adjErr } = await db.rpc('adjust_balances', { p_user_id: tx.user_id, p_fiat: { [rail]: amt } })
+        if (!adjErr && !(adj as any)?.error) {
+          nuevo = Number((adj as any)?.balances?.[rail] ?? 0)
+        } else if (adjErr) {
+          const { data: u } = await db.from('users').select('balances').eq('id', tx.user_id).single()
+          const bals: Record<string, number> = (u?.balances as any) ?? {}
+          nuevo = parseFloat(((bals[rail] ?? 0) + amt).toFixed(2))
+          const { error: upErr } = await db.from('users').update({ balances: { ...bals, [rail]: nuevo } }).eq('id', tx.user_id)
+          if (upErr) nuevo = null
         }
-        const fromRail = String(rd.fromRail ?? 'COP')
-        const refunded = parseFloat(((bals[fromRail] ?? 0) + amt).toFixed(2))
-        await db.from('users').update({ balances: { ...bals, [fromRail]: refunded } }).eq('id', tx.user_id)
-        await db.from('transactions').update({
-          status: 'Rechazado',
-          raw_data: { ...rd, rejectedAt: new Date().toISOString(), rejectReason: body.reason ?? 'Rechazado por administración', title: 'Saldo Lincoin → ACH · rechazado (reembolsado)' },
-        }).eq('id', tx.id)
-        return json({ success: true, refunded: true })
+        if (nuevo == null) {
+          // No se pudo abonar: la solicitud vuelve a Pendiente para reintentar.
+          await db.from('transactions').update({ status: 'Pendiente', raw_data: rd }).eq('id', tx.id)
+          return json({ success: false, error: 'No se pudo abonar el saldo. La solicitud sigue pendiente; intenta de nuevo.' }, 500)
+        }
+        return json(aprobar ? { success: true, newBalance: nuevo } : { success: true, refunded: true })
       }
 
       // Credit conversion fee to admin's balance (called by performConversion for all users)

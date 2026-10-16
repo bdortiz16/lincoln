@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
     Landmark, RefreshCw, CheckCircle, XCircle, Plus, Send, ChevronDown,
     ChevronUp, AlertTriangle, Wallet, Activity, DollarSign, ArrowDown, Clock,
@@ -652,7 +652,17 @@ export const FinitySection: React.FC<{
         setConverting(false);
     };
 
+    // Candado del botón "Confirmar conversión": dos toques seguidos (antes de
+    // que React cierre la ventana) llamaban dos veces y mandaban el USDT dos
+    // veces a la red. El ref se marca ANTES de cualquier await.
+    const convirtiendoRef = useRef(false);
     const runConvert = async (amount: number, netAmount: number, gasfreeCost: number, previewRate: number | null) => {
+        if (convirtiendoRef.current) return;
+        convirtiendoRef.current = true;
+        try { await runConvertUnaVez(amount, netAmount, gasfreeCost, previewRate); }
+        finally { convirtiendoRef.current = false; }
+    };
+    const runConvertUnaVez = async (amount: number, netAmount: number, gasfreeCost: number, previewRate: number | null) => {
         setConverting(true); setConvertResult(null); setConvertStep('enviando');
         try {
             // Saldo de la cuenta del proveedor ANTES de enviar — sirve para
@@ -854,9 +864,16 @@ export const FinitySection: React.FC<{
         });
     };
 
+    const retirandoRef = useRef(false);
     const runWithdrawal = async (amount: number) => {
+        // Mismo candado: el "Aceptar" de la ventana no se deshabilita y dos
+        // toques creaban dos órdenes de dispersión.
+        if (retirandoRef.current) return;
+        retirandoRef.current = true;
         setSubmitting(true); setResult(null);
-        const r = await callFinity('create_withdrawal', userId, { data: { ...pay, amount } });
+        let r: any;
+        try { r = await callFinity('create_withdrawal', userId, { data: { ...pay, amount } }); }
+        finally { retirandoRef.current = false; }
         setSubmitting(false);
         setResult({ ok: !!r.ok, text: r.ok ? 'Orden de dispersión creada.' : `La red respondió ${r.status}: ${JSON.stringify(r.data ?? r).slice(0, 300)}` });
         if (r.ok) {

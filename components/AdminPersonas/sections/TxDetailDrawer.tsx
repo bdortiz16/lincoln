@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
     X, CheckCircle2, XCircle, AlertTriangle, RefreshCw,
     User as UserIcon, Building2, Hash, FileText, Receipt, Shield
@@ -136,7 +136,15 @@ export const TxDetailDrawer: React.FC<Props> = ({ txId, onClose, onUpdated, prof
 
     useEffect(() => { load(); }, [txId]);
 
+    // Candado síncrono contra el doble toque: se marca antes de cualquier await
+    // (el estado de React tarda un render y dos toques seguidos pasaban los dos).
+    const decideEnCursoRef = useRef(false);
     const decide = async (decision: 'approve' | 'reject') => {
+      if (decideEnCursoRef.current) return;
+      decideEnCursoRef.current = true;
+      try { return await decideUnaVez(decision); } finally { decideEnCursoRef.current = false; }
+    };
+    const decideUnaVez = async (decision: 'approve' | 'reject') => {
         if (!canApprove || !tx) return;
         if (decision === 'approve') {
             // Candado 1: saldo del sistema en la moneda del pago.
