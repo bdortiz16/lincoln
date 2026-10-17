@@ -3985,20 +3985,29 @@ serve(async (req: Request) => {
       await db.from('users').update({ balances: { ...bals5, [railCol]: restored5 } }).eq('id', userId)
     }
     const finErr: any = fin.error
+    // El motivo vive en error.BODY ({ step, httpStatus, path, body }). Se leía
+    // error.message, que nunca existe: los motivos propios ("el banco todavía
+    // está validando esta cuenta destino", "al contacto le faltan datos") se
+    // perdían y el comprobante decía "el operador no entregó el motivo" de un
+    // envío que ni siquiera había llegado al operador.
     const finMsgRaw = (typeof finErr === 'string' ? finErr
-      : (finErr?.message ?? finErr?.detail ?? finErr?.error?.message)) as string | undefined
+      : (finErr?.body?.message ?? finErr?.body?.error?.message ?? digMotivoRechazo(finErr?.body) ?? finErr?.message ?? finErr?.detail ?? finErr?.error?.message)) as string | undefined
+    const finPaso = String(finErr?.step ?? '')
     const detail = (() => { try { return JSON.stringify(fin.error ?? fin).slice(0, 350) } catch { return String(fin.error ?? 'sin detalle') } })()
-    // errorMessage = detalle técnico para el Panel de Fallos del admin.
-    await asentarTx('Fallido', { ...prettyBase, feeProvider: 'finity', error: fin.error ?? 'finity_failed', errorMessage: (finMsgRaw ?? detail) ?? null, refunded: true, failedAt: new Date().toISOString() })
-    await logAudit(userId, `finity.${action}.fail`, { amount, error: JSON.stringify(fin.error ?? {}).slice(0, 200) })
+    // AL CLIENTE: mensaje LIMPIO. Solo se usa el texto si es un motivo que el
+    // cliente entiende (sin JSON, jerga en inglés ni nombres de aliados).
+    const finMsg = motivoParaCliente(finMsgRaw)
+    // errorMessage: el motivo legible si lo hay (lo ven el comprobante y el
+    // Panel de Fallos); si no, el detalle técnico. El cuerpo entero queda en `error`.
+    await asentarTx('Fallido', { ...prettyBase, feeProvider: 'finity', error: fin.error ?? 'finity_failed', errorMessage: finMsg ?? finMsgRaw ?? detail ?? null, pasoFallido: finPaso || null, noSalio: true, refunded: true, failedAt: new Date().toISOString() })
+    await logAudit(userId, `finity.${action}.fail`, { amount, paso: finPaso || null, error: JSON.stringify(fin.error ?? {}).slice(0, 400) })
     await notifyTx(txId) // correo "no pudimos completar tu envío · saldo devuelto"
-    // AL CLIENTE: mensaje LIMPIO. Solo se usa el texto de Finity si es HUMANO
-    // (sin JSON, códigos ni jerga). El detalle técnico NO se devuelve — vive en
-    // la tx (errorMessage) y el audit_log para el Panel de Fallos del admin.
-    const finMsg = finMsgRaw && !/[{}\[\]]|http\s*\d|status\s*code|errors?\b|\bpath\b/i.test(finMsgRaw) ? finMsgRaw : null
-    const friendlyAch = finMsg && finMsg.trim()
+    const friendlyAch = finMsg
       ? `No pudimos completar la transferencia ACH: ${finMsg}. Tu saldo fue devuelto.`
-      : `No pudimos completar la transferencia ACH en este momento. Tu saldo fue devuelto — puedes intentarlo de nuevo en unos minutos.`
+      // Falló al inscribir o validar la cuenta destino: el envío ni salió.
+      : finPaso === 'destino'
+        ? 'No pudimos inscribir la cuenta destino con el banco, así que el envío no salió. Revisa los datos del beneficiario (banco, número y tipo de cuenta, tipo y número de documento). Tu saldo fue devuelto.'
+        : `No pudimos completar la transferencia ACH en este momento. Tu saldo fue devuelto — puedes intentarlo de nuevo en unos minutos.`
     await soltarCandados()
     return json(200, { error: 'payout_failed', provider: 'finity', refunded: true, newBalance: restored5,
       message: friendlyAch })

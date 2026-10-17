@@ -4326,7 +4326,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     // ("Bad request to Kamin API") se queda en el panel de soporte.
     const motivoRechazo: string | null = (st === 'Rechazado' || st === 'Fallido')
       ? (() => {
-          const c = [tx.providerError, rawData.providerError, tx.errorMessage, rawData.errorMessage, tx.rejectReason, rawData.rejectReason, typeof tx.error === 'string' ? tx.error : null]
+          // error.body.message: el motivo de un envío que se frenó antes de
+          // salir ("el banco todavía está validando esta cuenta destino").
+          const motivoGuardado = (e: any) => (e && typeof e === 'object' ? (e.body?.message ?? e.message ?? null) : null);
+          const c = [tx.providerError, rawData.providerError, tx.errorMessage, rawData.errorMessage, motivoGuardado(tx.error), motivoGuardado(rawData.error), tx.rejectReason, rawData.rejectReason, typeof tx.error === 'string' ? tx.error : null]
             .map(v => (typeof v === 'string' ? v.trim() : ''))
             .find(v => v
               && !/[{}\[\]<>]|https?:|http\s*\d|status\s*code|\b(api|request|bad|internal|server|gateway|timeout|exception|null|undefined|token|unauthori[sz]ed|forbidden|payload|json|paso)\b/i.test(v)
@@ -4376,8 +4379,14 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
             {/* Rechazado: por qué, con las palabras del operador del riel. */}
             {(st === 'Rechazado' || st === 'Fallido') && (
               <div style={{ border: '1px solid rgba(248,113,113,0.35)', borderRadius: 12, background: 'rgba(248,113,113,0.06)', padding: '12px 14px', marginBottom: 16 }}>
-                <p style={{ fontSize: 10.5, fontWeight: 700, color: '#F87171', letterSpacing: 0.4 }}>MOTIVO DEL RECHAZO</p>
-                <p style={{ fontSize: 13, fontWeight: 600, color: '#F4F4F2', marginTop: 4, lineHeight: 1.45 }}>{motivoRechazo ?? 'El operador del riel no entregó el motivo. Se consulta de nuevo al abrir Movimientos; si sigue sin aparecer, escríbenos a soporte con la referencia.'}</p>
+                <p style={{ fontSize: 10.5, fontWeight: 700, color: '#F87171', letterSpacing: 0.4 }}>{st === 'Fallido' ? 'POR QUÉ NO SALIÓ' : 'MOTIVO DEL RECHAZO'}</p>
+                {/* Fallido = no alcanzó a salir (se frenó antes de llegar al
+                    banco). Rechazado = salió y el banco lo devolvió. Decir "el
+                    operador no entregó el motivo" de algo que nunca le llegó
+                    mandaba a buscar el envío donde no estaba. */}
+                <p style={{ fontSize: 13, fontWeight: 600, color: '#F4F4F2', marginTop: 4, lineHeight: 1.45 }}>{motivoRechazo ?? (st === 'Fallido'
+                  ? 'El envío no alcanzó a salir hacia el banco destino. Si vuelve a pasar, escríbenos a soporte con la referencia.'
+                  : 'El operador del riel no entregó el motivo. Se consulta de nuevo al abrir Movimientos; si sigue sin aparecer, escríbenos a soporte con la referencia.')}</p>
                 {(tx.refunded || rawData.refunded) && <p style={{ fontSize: 12, color: '#878E88', marginTop: 6 }}>El dinero ya está de vuelta en tu saldo.</p>}
               </div>
             )}
