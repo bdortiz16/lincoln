@@ -96,7 +96,7 @@ import { AdminCompliance } from './AdminCompliance';
 import { AdminLincoinRisk } from './AdminLincoinRisk';
 import { AdminClientes } from './AdminClientes';
 import { AdminReconcile } from './AdminReconcile';
-import { AdminOtcSection } from './AdminOtcSection';
+import { AdminContabilidad } from './AdminContabilidad';
 import { AdminLimitesEnvio } from './AdminLimitesEnvio';
 import { AdminOtcCierres } from './AdminOtcCierres';
 import { AdminGowd } from './AdminGowd';
@@ -235,7 +235,7 @@ const TAB_TITLES: Record<string, string> = {
   overview: 'Dashboard', clients: 'Clientes', treasury: 'Tesorería', cargues: 'Cargues',
   team: 'Equipo Admin', reports: 'Reportes', marketing: 'Marketing', config: 'Configuración',
   banks: 'Bancos', rates: 'Tasas de Cambio', security: 'Seguridad', design: 'Diseño y Apariencia',
-  gasfree: 'Custodia USDT', otcConfig: 'Contabilidad OTC', fallos: 'Fallos',
+  gasfree: 'Custodia USDT', otcConfig: 'Contabilidad', fallos: 'Fallos',
   auditoria: 'Auditoría', monitoreo: 'Monitoreo', kumplo: 'Kumplo', comando: 'Centro de Comando',
   tusdatos: 'TusDatos', compliance: 'Cumplimiento', risk: 'Lincoin Risk',
   otcCierres: 'Cierres OTC', gowd: 'Gowd · Brasil',
@@ -499,12 +499,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const [auditLoading, setAuditLoading] = useState(false);
   const [adminLogins, setAdminLogins] = useState<{ admins: any[]; activity: any[] } | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  // Grupos colapsables del sidebar (estado persistido).
-  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() => {
-    try { const s = localStorage.getItem('lincoin_admin_groups'); if (s) return JSON.parse(s); } catch { /* */ }
-    return { operacion: true, finanzas: false, sistema: false };
-  });
-  const toggleGroup = (g: string) => setOpenGroups(p => { const n = { ...p, [g]: !p[g] }; try { localStorage.setItem('lincoin_admin_groups', JSON.stringify(n)); } catch { /* */ } return n; });
   const [ratesSaved, setRatesSaved] = useState(false);
   const [showPaletteChooser, setShowPaletteChooser] = useState(false);
   
@@ -4724,9 +4718,8 @@ const renderDesign = () => (
                 </button>
 
                 {(() => {
-                    const operacionBadge = (pendingClientsCount || 0) + pendingDeposits.length + pendingWithdrawals.length + (failuresCount || 0) + (otcPend || 0);
-                    const groups: { key: string; title: string; badge?: number; items: React.ReactNode }[] = [
-                        { key: 'operacion', title: 'Operación', badge: operacionBadge, items: <>
+                    const groups: { key: string; title: string; items: React.ReactNode }[] = [
+                        { key: 'operacion', title: 'Operación', items: <>
                             <AdminSidebarItem icon={Users} label="Clientes" active={activeTab === 'clients'} badge={pendingClientsCount > 0 ? pendingClientsCount : undefined} onClick={() => navTo('clients')} />
                             <AdminSidebarItem icon={Landmark} label="Tesorería" active={activeTab === 'treasury'} badge={pendingDeposits.length + pendingWithdrawals.length > 0 ? pendingDeposits.length + pendingWithdrawals.length : undefined} onClick={() => navTo('treasury')} />
                             {/* Cargues (COP) y GasFree (USDT) ya NO van sueltos aquí:
@@ -4740,7 +4733,7 @@ const renderDesign = () => (
                             <AdminSidebarItem icon={FileText} label="Reportes" active={activeTab === 'reports'} onClick={() => navTo('reports')} />
                             <AdminSidebarItem icon={Building2} label="Bancos" active={activeTab === 'banks'} onClick={() => navTo('banks')} />
                             <AdminSidebarItem icon={TrendingUp} label="Tasas de Cambio" active={activeTab === 'rates'} onClick={() => navTo('rates')} />
-                            <AdminSidebarItem icon={ArrowLeftRight} label="Contabilidad OTC" active={activeTab === 'otcConfig'} onClick={() => navTo('otcConfig')} />
+                            <AdminSidebarItem icon={ArrowLeftRight} label="Contabilidad" active={activeTab === 'otcConfig'} onClick={() => navTo('otcConfig')} />
                         </> },
                         { key: 'sistema', title: 'Sistema', items: <>
                             {/* Seguridad y Cumplimiento son una entrada cada
@@ -4753,20 +4746,14 @@ const renderDesign = () => (
                             <AdminSidebarItem icon={Settings} label="Configuración" active={activeTab === 'config'} onClick={() => navTo('config')} />
                         </> },
                     ];
-                    return groups.map(g => {
-                        const open = !!openGroups[g.key];
-                        return (
-                            <div key={g.key} className="pt-3">
-                                <button onClick={() => toggleGroup(g.key)} className="flex items-center justify-between w-full px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-500 hover:text-slate-300 transition-colors">
-                                    <span className="flex items-center gap-1.5">
-                                        <ChevronRight size={12} className={`transition-transform ${open ? 'rotate-90' : ''}`} /> {g.title}
-                                    </span>
-                                    {!open && g.badge ? <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-500/90 text-white">{g.badge}</span> : null}
-                                </button>
-                                {open && <div className="mt-1 space-y-1">{g.items}</div>}
-                            </div>
-                        );
-                    });
+                    // Los grupos ya no se pliegan: todo queda a la vista. El
+                    // título es solo un rótulo y cada renglón muestra su aviso.
+                    return groups.map(g => (
+                        <div key={g.key} className="pt-3">
+                            <p className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">{g.title}</p>
+                            <div className="mt-1 space-y-1">{g.items}</div>
+                        </div>
+                    ));
                 })()}
             </div>
             <div className="p-3 border-t border-white/10 space-y-2">
@@ -4916,7 +4903,7 @@ const renderDesign = () => (
                   </button>
                   <AdminGasFreeSection />
                 </>)}
-                {activeTab === 'otcConfig' && <AdminOtcSection />}
+                {activeTab === 'otcConfig' && <AdminContabilidad />}
                 {activeTab === 'gowd' && <AdminGowd />}
                 {activeTab === 'otcCierres' && <AdminOtcCierres />}
                 {activeTab === 'fallos' && renderFallos()}

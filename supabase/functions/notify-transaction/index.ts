@@ -551,6 +551,9 @@ Deno.serve(async (req) => {
     // plano para no demorar el correo, y de paso pone al día las facturas
     // atrasadas de la misma cuenta.
     if (comprobante) await enSegundoPlano(facturarYPonerseAlDia(comprobante.folio, tx.user_id))
+    // La factura de LINCOIN al cliente (cargues y conversiones). Es aparte de
+    // la del Siigo del cliente: facturacion decide si aplica y la emite.
+    if (completed && !failed && (tx.type === 'load' || tx.type === 'convert')) await enSegundoPlano(facturarLincoin(tx.id))
 
     if (!user?.email) return new Response('no_email', { status: 200 })
 
@@ -669,6 +672,20 @@ async function enSegundoPlano(p: Promise<unknown>): Promise<void> {
   const seguro = p.catch(e => console.error('[notify] tarea en segundo plano:', (e as Error)?.message))
   if (rt && typeof rt.waitUntil === 'function') { rt.waitUntil(seguro); return }
   await seguro
+}
+
+async function facturarLincoin(txId: string | number): Promise<void> {
+  try {
+    const r = await fetch(`${SUPABASE_URL}/functions/v1/facturacion`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+      body: JSON.stringify({ action: 'lincoin_auto', transactionId: String(txId) }),
+      signal: AbortSignal.timeout(30000),
+    })
+    console.log('[notify] factura lincoin', txId, r.status, (await r.text().catch(() => '')).slice(0, 200))
+  } catch (e) {
+    console.error('[notify] factura lincoin no respondió:', (e as Error)?.message)
+  }
 }
 
 async function facturarYPonerseAlDia(folio: number, userId: string): Promise<void> {

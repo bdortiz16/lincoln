@@ -2,6 +2,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { mergeRaw } from '../_shared/raw-data.ts'
 import { reclamarCandado, soltarCandado } from '../_shared/candado.ts'
 import { FIELD_ENC_KEY, encField, decField, keyFp, KeyMismatchError } from '../_shared/field-crypto.ts'
+import { liquidacionDe, type CierreOtc } from '../_shared/liquidacion-lincoin.ts'
 
 // La librería de passkeys se carga SOLO cuando se usa. Con un import normal,
 // un tropiezo del CDN al arrancar tumbaría la función entera —y con ella el
@@ -32,6 +33,8 @@ const json = (body: unknown, status = 200) =>
 // admin tardara/agotara el timeout. Se reemplazan por un marcador y el
 // panel los pide uno a uno con action=get_tx_proof al abrir el detalle.
 const PROOF_MARKER = '__stored__'
+const esCopMon = (m: unknown) => /^COP/i.test(String(m ?? ''))
+
 function slimRawData(rd: unknown, limit = 2000): unknown {
   if (!rd || typeof rd !== 'object') return rd
   const out: Record<string, unknown> = {}
@@ -999,6 +1002,15 @@ const PERMISO_DE_ACCION: Record<string, string> = {
   otc_ajuste_get: 'plata.ver',
   limites_envio_get: 'plata.ver',
   movimientos_cliente: 'clientes.ver',
+  // Contabilidad: el tablero y la facturación de Lincoin. Configurar Siigo
+  // (credenciales) queda para el dueño: fact_lincoin_set no figura acá.
+  contabilidad_resumen: 'plata.ver',
+  contabilidad_cliente: 'plata.ver',
+  fact_lincoin_get: 'plata.ver',
+  fact_lincoin_lista: 'plata.ver',
+  fact_lincoin_probar: 'plata.mover',
+  fact_lincoin_emitir: 'plata.mover',
+  fact_lincoin_al_dia: 'plata.mover',
   email_incidencias: 'clientes.ver',
   email_incidencia_resuelta: 'clientes.editar',
 
@@ -1544,11 +1556,23 @@ Deno.serve(async (req: Request) => {
           if (upErr) return json({ error: upErr.message }, 500)
         }
 
+        // La parte de Lincoin, en pesos, calculada acá con la misma tasa que
+        // validó la conversión: lo que el cliente dejó de recibir frente al
+        // monto justo. Queda guardada para Contabilidad y la factura (el
+        // `fee` lo manda el navegador y no sirve como dato contable).
+        let lincoin: Record<string, number> | null = null
+        if (bS !== bT && (bS === 'COP' || bT === 'COP') && expected > 0) {
+          const dif = Math.max(0, expected - amtT)
+          const r2 = (n: number) => Math.round(n * 100) / 100
+          lincoin = bT === 'COP'
+            ? { totalCop: r2(expected), utilidadCop: r2(dif), usd: amtS }
+            : { totalCop: r2(amtS), utilidadCop: r2(dif * amtS / expected), usd: amtT }
+        }
         let txId: number | null = null
         try {
           const { data: ins } = await db.from('transactions').insert({
             user_id: userId, type: 'convert', amount: amtS, currency: src, status: 'Completado',
-            raw_data: { initials: 'CV', title: `${src} a ${tgt}`, targetAmount: amtT, targetCurrency: tgt, destCurrency: tgt, fee, couponCode: selfServiceBody.coupon ?? null, createdAt: new Date().toISOString() },
+            raw_data: { initials: 'CV', title: `${src} a ${tgt}`, targetAmount: amtT, targetCurrency: tgt, destCurrency: tgt, fee, couponCode: selfServiceBody.coupon ?? null, createdAt: new Date().toISOString(), ...(lincoin ? { lincoin } : {}) },
           }).select('id').single()
           txId = (ins as any)?.id ?? null
         } catch { /* best-effort */ }
@@ -2289,6 +2313,8 @@ Deno.serve(async (req: Request) => {
         'delete_user', 'force_delete_by_email', 'set_kyc_status',
         // Cambian la configuración o la propia seguridad
         'save_config', 'block_ip', 'unblock_ip', 'log_key_rotation',
+        // Facturan ante la DIAN o cambian las credenciales de Siigo
+        'fact_lincoin_set', 'fact_lincoin_emitir',
       ])
       if (SENSITIVE_ADMIN_ACTIONS.has(String(body.action))) {
         const mfaErr = await requireMfaSession(req, auth.userId)
@@ -2904,6 +2930,197 @@ Deno.serve(async (req: Request) => {
       // cargues y movimientos más viejos "no existían". Esto trae el
       // historial completo de esa cuenta, con el mismo filtro por país que
       // la carga general.
+      // ── CONTABILIDAD: cargues y conversiones, por cliente y por mes ─────
+      // Lo que se le cargó a cada cliente, lo que convirtió, lo que ganó
+      // Lincoin en cada operación y si ya tiene factura. Se lee TODO (por
+      // páginas), no la ventana de 200 de la carga general: un total que solo
+      // suma lo reciente no sirve para contabilidad. La utilidad la calcula
+      // liquidacionDe, la misma que usa la factura.
+      if (body.action === 'contabilidad_resumen' || body.action === 'contabilidad_cliente') {
+        const accC: Acceso = auth.acceso ?? { rol: 'lectura', paises: [], todosLosPaises: false }
+        const fecha = (v: unknown) => typeof v === 'string' && v && !isNaN(Date.parse(v)) ? new Date(v).toISOString() : null
+        const desde = fecha(body.desde), hasta = fecha(body.hasta)
+        const delCliente = body.action === 'contabilidad_cliente'
+        let ids: string[] | null = null
+        if (delCliente) {
+          const uid = String(body.userId ?? '')
+          if (!/^[0-9a-f-]{36}$/i.test(uid)) return json({ error: 'userId inválido' }, 400)
+          ids = [uid]
+          // Mismo criterio que movimientos_cliente: filas duplicadas del mismo correo.
+          const { data: yo } = await db.from('users').select('email').eq('id', uid).maybeSingle()
+          if ((yo as any)?.email) {
+            const { data: hermanos } = await db.from('users').select('id').eq('email', (yo as any).email)
+            if (Array.isArray(hermanos) && hermanos.length) ids = Array.from(new Set([uid, ...hermanos.map((h: any) => String(h.id))]))
+          }
+        }
+        const TOPE = 40000
+        const leer = async (tipos: string[], columnas: string): Promise<{ filas: any[]; truncado: boolean }> => {
+          const filas: any[] = []
+          for (let off = 0; off < TOPE; off += 1000) {
+            let q = db.from('transactions').select(columnas).in('type', tipos).eq('status', 'Completado')
+            if (ids) q = q.in('user_id', ids)
+            if (desde) q = q.gte('created_at', desde)
+            if (hasta) q = q.lt('created_at', hasta)
+            const { data, error } = await q.order('created_at', { ascending: false }).order('id', { ascending: true }).range(off, off + 999)
+            if (error) throw new Error(error.message)
+            filas.push(...((data ?? []) as any[]))
+            if (!data || data.length < 1000) return { filas, truncado: false }
+          }
+          return { filas, truncado: true }
+        }
+        let ops: { filas: any[]; truncado: boolean }, otros: { filas: any[]; truncado: boolean }
+        try {
+          ops = await leer(['load', 'convert', 'adjustment'],
+            'id, user_id, type, amount, currency, status, created_at, source:raw_data->>source, recordOnly:raw_data->recordOnly, acct:raw_data->acct, feeCop:raw_data->feeCop, grossCop:raw_data->grossCop, utilityCop:raw_data->utilityCop, gasfree:raw_data->gasfree, fromAmount:raw_data->fromAmount, fromCurrency:raw_data->>fromCurrency, destAmount:raw_data->destAmount, otcCloseId:raw_data->>otcCloseId, otcRef:raw_data->>otcRef, lincoin:raw_data->lincoin, rail:raw_data->>rail, note:raw_data->>note')
+          otros = await leer(['dispersion', 'send', 'pay_sent', 'pay_received', 'otc_deposit', 'otc_withdraw'],
+            delCliente ? 'id, user_id, type, amount, currency, status, created_at, rail:raw_data->>rail, beneficiary:raw_data->>beneficiary, senderName:raw_data->>senderName' : 'user_id, type, amount, currency, created_at, rail:raw_data->>rail')
+        } catch (e) {
+          return json({ error: `No se pudieron leer los movimientos: ${(e as Error).message}` }, 500)
+        }
+        const visible = (t: any) => accC.todosLosPaises || visibleEnPais(paisDeMovimiento({ currency: t.currency, raw_data: { rail: t.rail } }), accC)
+        const filasOps = ops.filas.filter(visible)
+        const filasOtros = otros.filas.filter(visible)
+
+        // Los cierres de la mesa, para estimar la utilidad de sus conversiones.
+        const idsCierre = Array.from(new Set(filasOps.map(t => String(t.otcCloseId ?? '')).filter(Boolean)))
+        const cierres = new Map<string, CierreOtc>()
+        for (let i = 0; i < idsCierre.length; i += 200) {
+          const { data } = await db.from('otc_closes').select('id, side, from_amount, to_amount, rate_final, rate_fuente').in('id', idsCierre.slice(i, i + 200))
+          for (const c of (data ?? []) as any[]) cierres.set(String(c.id), c)
+        }
+        // Las facturas de Lincoin ya emitidas o intentadas, por operación.
+        const facturas = new Map<string, any>()
+        let conFacturas = true
+        for (let off = 0; off < TOPE; off += 1000) {
+          let q = db.from('facturas_lincoin').select('transaction_id, estado, numero, total, utilidad, error, emitida_at')
+          if (ids) q = q.in('user_id', ids)
+          const { data, error } = await q.order('id', { ascending: true }).range(off, off + 999)
+          if (error) { conFacturas = false; break }
+          for (const f of (data ?? []) as any[]) facturas.set(String(f.transaction_id), f)
+          if (!data || data.length < 1000) break
+        }
+
+        // Bogotá (UTC−5) para el mes: una operación de las 9 p. m. del 31 es
+        // de ese mes, no del siguiente.
+        const mesDe = (iso: string) => new Date(Date.parse(iso) - 5 * 3600_000).toISOString().slice(0, 7)
+        const r2 = (n: number) => Math.round(n * 100) / 100
+        const nuevo = () => ({
+          cargues: 0, cargadoCop: 0, cargadoTotalCop: 0, usdCargado: 0, utilidadCargues: 0,
+          conversiones: 0, convertidoCop: 0, usdConvertido: 0, utilidadConversiones: 0,
+          utilidadEstimada: 0, sinUtilidad: 0, ajustes: 0, ajustadoCop: 0,
+          envios: 0, enviadoCop: 0, recibidos: 0, recibidoCop: 0,
+          facturadas: 0, facturadoCop: 0, porFacturar: 0, facturasConError: 0,
+          ultima: '' as string,
+        })
+        type Suma = ReturnType<typeof nuevo>
+        const total = nuevo()
+        const porMes = new Map<string, Suma>()
+        const porCliente = new Map<string, Suma>()
+        const de = (m: Map<string, Suma>, k: string) => { let s = m.get(k); if (!s) { s = nuevo(); m.set(k, s) } return s }
+        const sumar = (fn: (s: Suma) => void, t: any) => {
+          fn(total); fn(de(porMes, mesDe(String(t.created_at)))); fn(de(porCliente, String(t.user_id)))
+          const c = de(porCliente, String(t.user_id)); if (String(t.created_at) > c.ultima) c.ultima = String(t.created_at)
+        }
+        const detalle: any[] = []
+        for (const t of filasOps) {
+          if (t.type === 'adjustment') {
+            sumar(s => { s.ajustes++; s.ajustadoCop += esCopMon(t.currency) ? Number(t.amount) || 0 : 0 }, t)
+            if (delCliente) detalle.push({ id: t.id, type: t.type, amount: t.amount, currency: t.currency, created_at: t.created_at, nota: t.note ?? null, liq: null, factura: null })
+            continue
+          }
+          const liq = liquidacionDe(t, t.otcCloseId ? cierres.get(String(t.otcCloseId)) ?? null : null)
+          if (!liq) {
+            // Un 'load' que no es un cargue del admin es un depósito del cliente.
+            if (t.type === 'load') sumar(s => { s.recibidos++; s.recibidoCop += esCopMon(t.currency) ? Number(t.amount) || 0 : 0 }, t)
+            if (delCliente) detalle.push({ id: t.id, type: t.type, amount: t.amount, currency: t.currency, created_at: t.created_at, nota: t.note ?? null, liq: null, factura: null, deposito: t.type === 'load' })
+            continue
+          }
+          const f = facturas.get(String(t.id)) ?? null
+          const u = liq.utilidadCop ?? 0
+          sumar(s => {
+            if (liq.tipo === 'cargue') {
+              s.cargues++; s.cargadoCop += liq.tercerosCop ?? 0; s.cargadoTotalCop += liq.totalCop ?? liq.tercerosCop ?? 0
+              s.usdCargado += liq.usd ?? 0; s.utilidadCargues += u
+            } else {
+              s.conversiones++; s.convertidoCop += liq.totalCop ?? liq.tercerosCop ?? 0
+              s.usdConvertido += liq.usd ?? 0; s.utilidadConversiones += u
+            }
+            if (liq.fuente === 'estimada') s.utilidadEstimada += u
+            if (liq.fuente === 'sin_dato' && liq.facturable) s.sinUtilidad++
+            if (f?.estado === 'emitida') { s.facturadas++; s.facturadoCop += Number(f.total) || 0 }
+            else if (f?.estado === 'error') s.facturasConError++
+            else if (liq.facturable && u > 0) s.porFacturar++
+          }, t)
+          if (delCliente) detalle.push({
+            id: t.id, type: t.type, amount: t.amount, currency: t.currency, created_at: t.created_at,
+            ref: t.otcRef ?? null, nota: t.note ?? null, liq,
+            factura: f ? { estado: f.estado, numero: f.numero ?? null, total: f.total ?? null, error: f.error ?? null, emitida_at: f.emitida_at ?? null } : null,
+          })
+        }
+        for (const t of filasOtros) {
+          const cop = esCopMon(t.currency) ? Number(t.amount) || 0 : 0
+          if (t.type === 'pay_received' || t.type === 'otc_deposit') sumar(s => { s.recibidos++; s.recibidoCop += cop }, t)
+          else sumar(s => { s.envios++; s.enviadoCop += cop }, t)
+          if (delCliente) detalle.push({ id: t.id, type: t.type, amount: t.amount, currency: t.currency, created_at: t.created_at, contraparte: t.beneficiary ?? t.senderName ?? null, liq: null, factura: null })
+        }
+        const redondear = (s: Suma) => Object.fromEntries(Object.entries(s).map(([k, v]) => [k, typeof v === 'number' ? r2(v) : v])) as Suma
+
+        // Quién es cada cliente (nombre y documento para la factura).
+        const idsCli = Array.from(porCliente.keys())
+        const fichas = new Map<string, any>()
+        for (let i = 0; i < idsCli.length; i += 200) {
+          const { data } = await db.from('users').select('id, email, full_name, company_name, role, tax_id, doc_number').in('id', idsCli.slice(i, i + 200))
+          for (const u of (data ?? []) as any[]) fichas.set(String(u.id), u)
+        }
+        const clientes = idsCli.map(id => {
+          const u = fichas.get(id) ?? {}
+          return {
+            userId: id, nombre: u.company_name || u.full_name || u.email || id, email: u.email ?? null, rol: u.role ?? null,
+            documento: u.tax_id || u.doc_number || null, ...redondear(porCliente.get(id)!),
+          }
+        }).sort((a, b) => (b.cargadoTotalCop + b.convertidoCop) - (a.cargadoTotalCop + a.convertidoCop))
+        const meses = Array.from(porMes.entries()).sort((a, b) => b[0].localeCompare(a[0])).map(([mes, s]) => ({ mes, ...redondear(s) }))
+        const estados: Record<string, number> = {}
+        for (const f of facturas.values()) estados[String(f.estado)] = (estados[String(f.estado)] ?? 0) + 1
+        return json({
+          ok: true, generado_at: new Date().toISOString(), desde, hasta,
+          truncado: ops.truncado || otros.truncado, conFacturas,
+          totales: { ...redondear(total), clientes: clientes.length },
+          meses, clientes, facturas: estados,
+          ...(delCliente ? { cliente: clientes.find(c => c.userId === String(body.userId)) ?? clientes[0] ?? null, ids, detalle: detalle.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))) } : {}),
+        })
+      }
+
+      // ── Facturación de LINCOIN en Siigo ─────────────────────────────────
+      // La hace la función facturacion (ahí viven Siigo y las credenciales
+      // cifradas). Acá solo se decide quién puede pedir qué y se le pasa el
+      // pedido con la llave del servicio. La access key nunca vuelve.
+      const ACCION_FACTURACION_LINCOIN: Record<string, string> = {
+        fact_lincoin_get: 'lincoin_config_get', fact_lincoin_set: 'lincoin_config_set', fact_lincoin_probar: 'lincoin_probar',
+        fact_lincoin_emitir: 'lincoin_emitir', fact_lincoin_al_dia: 'lincoin_al_dia', fact_lincoin_lista: 'lincoin_facturas',
+      }
+      if (ACCION_FACTURACION_LINCOIN[String(body.action)]) {
+        const sub = String(body.action).replace('fact_lincoin_', '')
+        const cuerpo: Record<string, unknown> = { action: ACCION_FACTURACION_LINCOIN[String(body.action)], adminId: auth.userId ?? null }
+        for (const k of ['config', 'cambiarActivo', 'transactionId', 'utilidad', 'estado', 'userId', 'limite']) if (k in body) cuerpo[k] = body[k]
+        try {
+          const r = await fetch(`${SUPABASE_URL}/functions/v1/facturacion`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+            body: JSON.stringify(cuerpo),
+            signal: AbortSignal.timeout(sub === 'emitir' ? 140_000 : 60_000),
+          })
+          const texto = await r.text()
+          let d: any = null
+          try { d = JSON.parse(texto) } catch { d = null }
+          if (!d) return json({ ok: false, error: `La facturación no respondió bien (HTTP ${r.status}).` }, 502)
+          if (sub === 'set' || sub === 'emitir') await auditAdmin(req, `admin.factura_lincoin_${sub}`, { transactionId: body.transactionId ?? null, ok: !!d.ok, cambiarActivo: body.cambiarActivo ?? null })
+          return json(d, r.ok ? 200 : r.status)
+        } catch (e) {
+          return json({ ok: false, error: /timeout|abort/i.test(String((e as Error)?.message)) ? 'Siigo tardó demasiado. La factura PUDO haberse creado: recargá la lista antes de reintentar.' : `No se pudo llamar a la facturación: ${(e as Error)?.message}` }, 502)
+        }
+      }
+
       if (body.action === 'movimientos_cliente') {
         const uid = String(body.userId ?? '')
         if (!/^[0-9a-f-]{36}$/i.test(uid)) return json({ error: 'userId inválido' }, 400)

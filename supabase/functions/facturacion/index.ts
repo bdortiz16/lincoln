@@ -49,6 +49,7 @@ import { encField, decField, KeyMismatchError } from '../_shared/field-crypto.ts
 import { municipioPorCodigo, municipioPorNombre, lugarFueraDeColombia } from '../_shared/municipios.ts'
 import { domicilioEmpresa } from '../_shared/rues.ts'
 import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
+import { liquidacionDe, type Liquidacion } from '../_shared/liquidacion-lincoin.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -504,7 +505,7 @@ function partirNit(doc: string): { identification: string; check_digit?: string 
 // rechaza el documento soporte si el tercero no tiene país ("Falta o es
 // inválido el país del tercero", regla vista en DS-1-10).
 type Direccion = { address: string; city: { country_code: string; state_code: string; city_code: string } }
-type Contraparte = { identification: string; check_digit?: string; nombre: string; esDefault: boolean; esEmpresa: boolean; direccion: Direccion | null }
+type Contraparte = { identification: string; check_digit?: string; nombre: string; esDefault: boolean; esEmpresa: boolean; direccion: Direccion | null; email?: string | null }
 // Sin calle no se inventa una: Siigo exige texto en address y la DIAN solo
 // valida el país, así que va dicho tal cual.
 const SIN_CALLE = 'Sin direccion informada'
@@ -727,20 +728,22 @@ async function asegurarCliente(token: string, partner: string, cfg: any, cp: Con
   // responsable" (R-99-PN), que es lo que aplica mientras nadie diga otra
   // cosa. Si Siigo pide más, lo dice y se ve en la columna FACTURA.
   const partes = cp.nombre.split(/\s+/).filter(Boolean)
+  // Con correo, como contacto: es a donde Siigo manda la factura (mail.send).
+  const contacto = cp.email ? { contacts: [{ first_name: partes[0] ?? cp.nombre, last_name: partes.slice(1).join(' ') || '.', email: cp.email }] } : {}
   const cuerpo = cp.esEmpresa && !cp.esDefault
     ? {
       type: rol, person_type: 'Company', id_type: '31',
       identification: cp.identification, ...(cp.check_digit ? { check_digit: cp.check_digit } : {}),
       name: [cp.nombre], commercial_name: cp.nombre, branch_office: 0, active: true,
       vat_responsible: false, fiscal_responsibilities: [{ code: 'R-99-PN' }],
-      ...(cp.direccion ? { address: cp.direccion } : {}),
+      ...(cp.direccion ? { address: cp.direccion } : {}), ...contacto,
     }
     : {
       type: rol, person_type: 'Person', id_type: '13',
       identification: cp.identification,
       name: [partes[0] ?? cp.nombre, partes.slice(1).join(' ') || '.'], branch_office: 0, active: true,
       vat_responsible: false, fiscal_responsibilities: [{ code: 'R-99-PN' }],
-      ...(cp.direccion ? { address: cp.direccion } : {}),
+      ...(cp.direccion ? { address: cp.direccion } : {}), ...contacto,
     }
   const crea = await siigo('POST', '/v1/customers', { token, partner, body: cuerpo })
   if (!crea.ok) return { ok: false, error: `Creando al cliente ${cp.identification} en Siigo — ${motivoDe(crea)}` }
@@ -1286,6 +1289,466 @@ async function esContadorDe(contadorId: string, empresaId: string): Promise<bool
   return (yo as any)?.role === 'contador' && String((yo as any)?.raw_data?.contadorDe ?? '') === empresaId
 }
 
+// ══════════════════════════════════════════════════════════════════
+//  FACTURAS DE LINCOIN (la empresa) A SUS CLIENTES
+//
+//  Todo lo de arriba opera el Siigo de CADA cliente. Esto es otra cosa: el
+//  Siigo de Lincoin, que le factura a cada cliente por cada cargue y cada
+//  conversión. Es una factura de MANDATO con dos líneas:
+//    1) Ingresos recibidos para terceros = lo que es del cliente, sin IVA.
+//    2) Comisión de Lincoin = la utilidad de la operación, IVA INCLUIDO
+//       (base + IVA = utilidad).
+//  Total = terceros + utilidad. La utilidad sale de liquidacionDe (la misma
+//  cuenta que muestra el tablero de Contabilidad); si la operación no la
+//  guardó, o es una estimación (mesa OTC), queda en 'revision' y un admin la
+//  confirma: no se factura un número que nadie verificó.
+//
+//  Config: una sola fila en facturacion_lincoin (credenciales cifradas como
+//  las del cliente). Facturas: facturas_lincoin, una por operación
+//  (transaction_id UNIQUE) con candado 'emitiendo' para no duplicar ante la
+//  DIAN. Solo la llama el sistema: admin-data (con permisos) y el aviso de
+//  operación completada (notify-transaction), los dos con la llave del
+//  servicio.
+// ══════════════════════════════════════════════════════════════════
+const CLAVE_TOKEN_LINCOIN = '__lincoin__'
+const OPERACIONES_LINCOIN: Record<string, string> = { cargue: 'Cargues', conversion: 'Conversiones' }
+const ESTADOS_REEMITIBLES = 'pendiente,error,revision,omitida'
+const faltaTablaLincoin = (m: string) => /42P01|does not exist|schema cache|PGRST20[45]/i.test(m)
+const MIGRACION_LINCOIN = 'Falta correr la migración 2026_zz9_facturacion_lincoin.sql en la base.'
+
+async function leerConfigLincoin(): Promise<{ cfg: any | null; falta: boolean }> {
+  const { data, error } = await db.from('facturacion_lincoin').select('*').eq('id', 1).maybeSingle()
+  if (error) return { cfg: null, falta: faltaTablaLincoin(error.message) }
+  return { cfg: data ?? null, falta: false }
+}
+
+async function publicaLincoin(cfg: any) {
+  if (!cfg) return { existe: false, activo: false, tieneAccessKey: false, operaciones: Object.keys(OPERACIONES_LINCOIN), stamp: true, mail: true }
+  const { access_key_enc, ...resto } = cfg
+  let access_key_pista: { largo: number; inicio: string; fin: string } | null = null
+  if (access_key_enc) {
+    try { const k = await decField(access_key_enc); access_key_pista = { largo: k.length, inicio: k.slice(0, 4), fin: k.slice(-3) } } catch { access_key_pista = null }
+  }
+  return { existe: true, ...resto, tieneAccessKey: !!access_key_enc, access_key_pista }
+}
+
+async function resumenLincoin(): Promise<Record<string, number>> {
+  const out: Record<string, number> = {}
+  for (let off = 0; off < 40000; off += 1000) {
+    const { data, error } = await db.from('facturas_lincoin').select('estado').order('id', { ascending: true }).range(off, off + 999)
+    if (error) break
+    for (const f of (data ?? []) as any[]) out[String(f.estado)] = (out[String(f.estado)] ?? 0) + 1
+    if (!data || data.length < 1000) break
+  }
+  return out
+}
+
+// El cliente de Lincoin como cliente de la factura: su NIT (empresa) o su
+// documento (persona), su nombre y su correo. La dirección se busca solo si
+// hay que CREARLO en Siigo (la de su ficha; para una empresa, el RUES; si no
+// aparece, Bogotá con la ciudad marcada como no verificada).
+async function clienteLincoin(userId: string): Promise<{ cp: Contraparte; u: any } | { error: string }> {
+  const { data: u } = await db.from('users').select('*').eq('id', userId).maybeSingle()
+  if (!u) return { error: 'No se encontró la ficha del cliente.' }
+  const rd = ((u as any).raw_data ?? {}) as Record<string, any>
+  const x = u as any
+  const docEmpresa = String(x.tax_id ?? rd.taxId ?? '').replace(/\D/g, '')
+  const docPersona = String(x.doc_number ?? rd.docNumber ?? '').replace(/\D/g, '')
+  const esEmpresa = !!docEmpresa && (x.role === 'business' || !!(x.company_name ?? rd.companyName))
+  const doc = esEmpresa ? docEmpresa : (docPersona || docEmpresa)
+  if (!doc) return { error: 'El cliente no tiene NIT ni documento en su ficha. Completalo en Clientes y emití de nuevo.' }
+  const nombre = String(esEmpresa
+    ? (x.company_name ?? rd.companyName ?? x.full_name ?? '')
+    : (x.full_name ?? ([x.first_name ?? rd.firstName, x.last_name ?? rd.lastName].filter(Boolean).join(' ') || ''))).trim() || doc
+  const partes = esEmpresa ? partirNit(doc) : { identification: doc }
+  return { cp: { ...partes, nombre, esDefault: false, esEmpresa, direccion: null, email: x.email ? String(x.email) : null }, u }
+}
+
+async function direccionLincoin(u: any, cp: Contraparte): Promise<Direccion> {
+  const rd = (u?.raw_data ?? {}) as Record<string, any>
+  let calle = limpiarDireccion(String((cp.esEmpresa ? (u?.company_address ?? rd.companyAddress ?? u?.address) : (u?.address ?? rd.address)) ?? '')) || SIN_CALLE
+  let m = cp.esEmpresa
+    ? (municipioPorNombre(u?.company_city) ?? municipioPorNombre(rd.companyCity) ?? municipioPorNombre(u?.city))
+    : (municipioPorNombre(u?.city) ?? municipioPorNombre(rd.city))
+  if (!m && cp.esEmpresa) {
+    const r = await domicilioEmpresa(cp.identification)
+    if (r.domicilio?.municipio) {
+      m = r.domicilio.municipio as any
+      if (calle === SIN_CALLE && r.domicilio.direccion) calle = limpiarDireccion(r.domicilio.direccion) || SIN_CALLE
+    }
+  }
+  if (m) return { address: calle, city: { country_code: 'Co', state_code: m.depto, city_code: m.codigo } }
+  const bogota = municipioPorCodigo('11001')!
+  return { address: limpiarDireccion(`${calle} - Ciudad no verificada`), city: { country_code: 'Co', state_code: bogota.depto, city_code: bogota.codigo } }
+}
+
+// Emite (o deja anotado por qué no) la factura de Lincoin de UNA operación.
+// manual = la pide un admin: se emite aunque la automática esté pausada o la
+// operación sea anterior a "desde". utilidad = la que confirmó o corrigió el
+// admin (obligatoria cuando la registrada falta o es estimada).
+async function emitirLincoin(txId: string, opts: { manual?: boolean; utilidad?: number | null; adminId?: string | null } = {}): Promise<any> {
+  const { cfg, falta } = await leerConfigLincoin()
+  if (falta) return { ok: false, error: MIGRACION_LINCOIN }
+  if (!cfg) return { ok: false, error: 'Primero configurá el Siigo de Lincoin en Contabilidad → Facturación.' }
+  if (!opts.manual && !cfg.activo) return { ok: true, estado: 'omitida', motivo: 'La facturación de Lincoin está pausada.' }
+  const { data: tx } = await db.from('transactions').select('id, user_id, type, amount, currency, status, created_at, raw_data').eq('id', txId).maybeSingle()
+  if (!tx) return { ok: false, error: 'movimiento_no_encontrado' }
+  const t = tx as any
+  const rd = (t.raw_data ?? {}) as Record<string, any>
+  let cierre: any = null
+  if (rd.otcCloseId) {
+    const { data } = await db.from('otc_closes').select('id, side, from_amount, to_amount, rate_final, rate_fuente').eq('id', String(rd.otcCloseId)).maybeSingle()
+    cierre = data ?? null
+  }
+  const liq: Liquidacion | null = liquidacionDe(t, cierre)
+  if (!liq) return { ok: false, error: String(t.status) !== 'Completado' ? `La operación está en "${t.status}". Solo se factura cuando queda Completada.` : 'Esta operación no es un cargue ni una conversión.' }
+  const ops: string[] = Array.isArray(cfg.operaciones) ? cfg.operaciones : Object.keys(OPERACIONES_LINCOIN)
+  if (!opts.manual && !ops.includes(liq.tipo)) return { ok: true, estado: 'omitida', motivo: `Las ${OPERACIONES_LINCOIN[liq.tipo]?.toLowerCase() ?? liq.tipo} no se facturan solas (Configuración).` }
+  if (!opts.manual && cfg.desde && Date.parse(String(t.created_at)) < Date.parse(String(cfg.desde))) return { ok: true, estado: 'omitida', motivo: 'Operación anterior a la fecha desde la que se factura sola.' }
+
+  // La fila de la factura: una por operación. Si ya existe, se usa esa.
+  const ahora = () => new Date().toISOString()
+  const ins = await db.from('facturas_lincoin').upsert({
+    transaction_id: String(t.id), user_id: String(t.user_id), tipo: liq.tipo, operacion_at: t.created_at, moneda: 'COP',
+    total: liq.totalCop, terceros: liq.tercerosCop, utilidad: liq.utilidadCop, utilidad_fuente: liq.fuente,
+  }, { onConflict: 'transaction_id', ignoreDuplicates: true })
+  if (ins.error) return { ok: false, error: faltaTablaLincoin(ins.error.message) ? MIGRACION_LINCOIN : `No se pudo registrar la factura: ${ins.error.message}` }
+  const { data: filaD } = await db.from('facturas_lincoin').select('*').eq('transaction_id', String(t.id)).maybeSingle()
+  const fila = filaD as any
+  if (!fila) return { ok: false, error: 'No se pudo leer la factura de la operación.' }
+  if (fila.estado === 'emitida' && fila.numero) return { ok: true, estado: 'emitida', numero: fila.numero, yaEstaba: true }
+  if (fila.estado === 'emitiendo' && Date.parse(String(fila.updated_at)) > Date.now() - 180000) return { ok: false, error: 'Esta factura se está emitiendo. Esperá un momento y recargá.' }
+  // La automática solo trabaja las nuevas o las que quedaron 'pendiente'. Un
+  // error o una revisión los mira una persona: reintentarlos solo no los arregla.
+  if (!opts.manual && fila.estado !== 'pendiente') return { ok: true, estado: fila.estado }
+  const marcar = async (patch: Record<string, unknown>, cuenta = true) => {
+    await db.from('facturas_lincoin').update({ ...patch, ...(cuenta ? { intentos: Number(fila.intentos ?? 0) + 1 } : {}), updated_at: ahora() }).eq('id', fila.id)
+  }
+
+  // ── Cuánto y de qué ────────────────────────────────────────────────
+  if (!liq.facturable) { await marcar({ estado: 'omitida', error: liq.nota }, false); return { ok: true, estado: 'omitida', motivo: liq.nota } }
+  let utilidad = liq.utilidadCop, terceros = liq.tercerosCop, totalOp = liq.totalCop
+  let fuente: string = liq.fuente
+  if (opts.utilidad != null) {
+    const uM = r2(Number(opts.utilidad))
+    if (!Number.isFinite(uM) || uM <= 0) return { ok: false, error: 'La utilidad tiene que ser un valor mayor que cero.' }
+    if (liq.fijo === 'total') {
+      if (totalOp == null) return { ok: false, error: 'No se sabe cuánto pagó el cliente en esta operación: no se puede armar la factura.' }
+      terceros = r2(totalOp - uM)
+    } else {
+      if (terceros == null) return { ok: false, error: 'No se sabe cuánto recibió el cliente en esta operación: no se puede armar la factura.' }
+      totalOp = r2(terceros + uM)
+    }
+    utilidad = uM
+    fuente = 'manual'
+  } else if (liq.fuente !== 'registrada') {
+    const e = liq.fuente === 'estimada'
+      ? `${liq.nota} Utilidad estimada: ${Number(liq.utilidadCop ?? 0).toLocaleString('es-CO')} COP.`
+      : `${liq.nota} Escribí la utilidad de Lincoin para emitirla.`
+    await marcar({ estado: 'revision', error: e, total: liq.totalCop, terceros: liq.tercerosCop, utilidad: liq.utilidadCop, utilidad_fuente: liq.fuente }, false)
+    return { ok: false, revision: true, error: e, sugerida: liq.utilidadCop }
+  }
+  if (utilidad == null || utilidad <= 0) {
+    const e = `Sin utilidad para Lincoin en esta operación (${Number(utilidad ?? 0).toLocaleString('es-CO')} COP): no hay comisión que facturar.`
+    await marcar({ estado: 'omitida', error: e, utilidad, utilidad_fuente: fuente }, false)
+    return { ok: true, estado: 'omitida', motivo: e }
+  }
+  if (terceros == null || totalOp == null || terceros < 0) return { ok: false, error: 'Los valores de la operación no cuadran (terceros negativo o faltante). Revisá el movimiento.' }
+
+  const falla = async (e: string, extra: Record<string, unknown> = {}) => { await marcar({ estado: 'error', error: e, total: totalOp, terceros, utilidad, utilidad_fuente: fuente, ...extra }); return { ok: false, error: e } }
+  const faltan = ['document_id', 'seller_id', 'payment_id', 'item_terceros', 'item_comision'].filter(k => !cfg[k])
+  if (faltan.length) return falla(`Falta elegir en Configuración: ${faltan.join(', ')}.`)
+  const itemT = String(cfg.item_terceros).trim(), itemC = String(cfg.item_comision).trim()
+  const ivaT = ivaDelProducto(cfg, itemT)
+  if (ivaT) return falla(`El ítem de ingresos para terceros (${itemT}) tiene ${ivaT.name || 'IVA'} ${ivaT.percentage} % en Siigo, y va sin IVA. Elegí otro ítem o quitale el impuesto en Siigo.`)
+
+  const partner = cfg.partner_id || 'Lincoin'
+  const tk = await tokenDe(CLAVE_TOKEN_LINCOIN, cfg)
+  if ('error' in tk) return falla(tk.error)
+  const cli = await clienteLincoin(String(t.user_id))
+  if ('error' in cli) return falla(cli.error)
+  const cp = cli.cp
+
+  // ¿Ya existe en Siigo? y el IVA del ítem de comisión EN VIVO, en paralelo.
+  const [buscaCli, rpProd] = await Promise.all([
+    siigo('GET', `/v1/customers?identification=${encodeURIComponent(cp.identification)}`, { token: tk.token, partner }),
+    siigo('GET', `/v1/products?code=${encodeURIComponent(itemC)}`, { token: tk.token, partner }),
+  ])
+  const listaCli: any[] = Array.isArray(buscaCli.data?.results) ? buscaCli.data.results : Array.isArray(buscaCli.data) ? buscaCli.data : []
+  if (!(buscaCli.ok && listaCli.some(x => String(x?.identification ?? '') === cp.identification))) {
+    cp.direccion = await direccionLincoin(cli.u, cp)
+    const a = await asegurarCliente(tk.token, partner, cfg, cp, 'Customer')
+    if ('error' in a) return falla(a.error)
+  }
+  let iva: { id: number; name: string; percentage: number } | null = null
+  {
+    const lista: any[] = Array.isArray(rpProd.data?.results) ? rpProd.data.results : Array.isArray(rpProd.data) ? rpProd.data : []
+    const p = lista.find((x: any) => String(x.code) === itemC) ?? null
+    const conValor = (Array.isArray(p?.taxes) ? p.taxes : []).filter((x: any) => (Number(x.percentage) || 0) > 0)
+    const t0 = conValor.find((x: any) => /iva/i.test(String(x.name ?? '')) || /iva/i.test(String(x.type ?? ''))) ?? conValor[0]
+    if (t0) iva = { id: Number(t0.id), name: String(t0.name ?? ''), percentage: Number(t0.percentage) || 0 }
+  }
+  if (!iva) iva = ivaDelProducto(cfg, itemC)
+  if (!iva && cfg.iva_tax_id) {
+    const imp: any[] = Array.isArray(cfg.catalogos?.impuestos) ? cfg.catalogos.impuestos : []
+    const e = imp.find((x: any) => Number(x.id) === Number(cfg.iva_tax_id))
+    if (e) iva = { id: Number(e.id), name: String(e.name ?? ''), percentage: Number(e.percentage) || 0 }
+  }
+  if (!iva) return falla(`El ítem de comisión (${itemC}) no tiene IVA en Siigo y no se eligió uno en Configuración. La comisión va gravada: ponele el IVA al ítem en Siigo.`)
+
+  const hoy = new Date(Date.now() - 5 * 3600_000).toISOString().slice(0, 10)
+  const fechaOp = new Date(Date.parse(String(t.created_at)) - 5 * 3600_000).toISOString().slice(0, 10)
+  const ctx: Record<string, string> = {
+    tipo: liq.tipo === 'cargue' ? 'Cargue' : 'Conversión', fecha: fechaOp, cliente: cp.nombre,
+    usd: liq.usd != null ? `${liq.usd.toLocaleString('es-CO', { maximumFractionDigits: 2 })} USD` : '',
+    ref: String(rd.otcRef ?? String(t.id).slice(0, 8)),
+  }
+  const plantilla = (s: string) => s.replace(/\{(\w+)\}/g, (_m, k) => ctx[k] ?? '').replace(/\s+·\s+·/g, ' ·').trim()
+  const descT = plantilla(cfg.desc_terceros || 'Ingresos recibidos para terceros · {tipo} {fecha}').slice(0, 500)
+  const descC = plantilla(cfg.desc_comision || 'Comisión Lincoin · {tipo} {fecha}').slice(0, 500)
+  const observations = [
+    cfg.observaciones || `Factura en desarrollo del contrato de mandato con ${cp.nombre}. Ítem 1: ingresos recibidos para terceros, valor de la operación que corresponde al cliente; no constituye ingreso propio de Lincoin. Ítem 2: comisión de Lincoin por la operación, IVA incluido.`,
+    `${ctx.tipo} del ${fechaOp} · ref ${ctx.ref}`,
+  ].filter(Boolean).join(' · ').slice(0, 500)
+  const armar = (tarifa: number) => {
+    const base = r2(utilidad! / (1 + tarifa))
+    const ivaV = r2(base * tarifa)
+    // Los terceros absorben el redondeo: el total es el de la operación.
+    const tercerosV = r2(totalOp! - base - ivaV)
+    const items = [
+      ...(tercerosV >= 0.01 ? [{ code: itemT, description: descT, quantity: 1, price: tercerosV }] : []),
+      { code: itemC, description: descC, quantity: 1, price: base, taxes: [{ id: iva!.id }] },
+    ]
+    const total = r2(Math.max(0, tercerosV) + base + ivaV)
+    return {
+      base, ivaV, tercerosV, total,
+      cuerpo: {
+        document: { id: Number(cfg.document_id) }, date: hoy,
+        customer: { identification: cp.identification, branch_office: 0 },
+        seller: Number(cfg.seller_id),
+        stamp: { send: cfg.stamp !== false }, mail: { send: cfg.mail !== false },
+        observations, items,
+        payments: [{ id: Number(cfg.payment_id), value: total, due_date: hoy }],
+      },
+    }
+  }
+
+  // Pausa de última hora (solo la automática) y CANDADO: un solo envío a la
+  // DIAN por operación, aunque lleguen el aviso, el cron y un clic a la vez.
+  if (!opts.manual) {
+    const v = await leerConfigLincoin()
+    if (!v.cfg?.activo) { await marcar({ estado: 'pendiente', error: 'Facturación pausada antes de enviar a Siigo.' }, false); return { ok: true, estado: 'pendiente' } }
+  }
+  {
+    const hace3 = new Date(Date.now() - 180000).toISOString()
+    const { data: tomado, error: eLock } = await db.from('facturas_lincoin')
+      .update({ estado: 'emitiendo', error: null, updated_at: ahora() })
+      .eq('id', fila.id)
+      .or(`estado.in.(${ESTADOS_REEMITIBLES}),and(estado.eq.emitiendo,updated_at.lt.${hace3})`)
+      .select('id')
+    if (eLock) return { ok: false, error: `No se pudo tomar la factura: ${eLock.message}` }
+    if (!Array.isArray(tomado) || !tomado.length) return { ok: false, error: 'Esta factura ya se está emitiendo o ya salió. Recargá la lista.' }
+  }
+  const intentos: any[] = []
+  let tarifa = iva.percentage / 100
+  let arm = armar(tarifa)
+  let r = await siigo('POST', '/v1/invoices', { token: tk.token, partner, body: arm.cuerpo, ms: 70000 })
+  intentos.push({ status: r.status, respuesta: r.data ?? r.texto, tarifa })
+  if (!r.ok) {
+    // Siigo dice el total que calculó: de ahí sale la tarifa que aplica de
+    // verdad (el catálogo puede estar viejo). Se reintenta una vez.
+    const m = /total invoice calculated is\s*([\d.,]+)/i.exec(motivoDe(r))
+    const totalSiigo = m ? Number(m[1].replace(/,/g, '')) : NaN
+    if (Number.isFinite(totalSiigo) && arm.base > 0) {
+      const tReal = Math.round(((totalSiigo - Math.max(0, arm.tercerosV)) / arm.base - 1) * 10000) / 10000
+      if (tReal > 0.0001 && tReal < 1 && Math.abs(tReal - tarifa) > 0.0001) {
+        tarifa = tReal
+        arm = armar(tarifa)
+        r = await siigo('POST', '/v1/invoices', { token: tk.token, partner, body: arm.cuerpo, ms: 70000 })
+        intentos.push({ status: r.status, respuesta: r.data ?? r.texto, tarifa, nota: `Tarifa deducida del total de Siigo (${totalSiigo})` })
+      }
+    }
+  }
+  const valores = { total: arm.total, terceros: arm.tercerosV, utilidad, base: arm.base, iva: arm.ivaV, utilidad_fuente: fuente }
+  if (!r.ok) {
+    if (r.status === 0) return falla('Siigo no respondió a tiempo: la factura PUDO haberse creado. Revisá en Siigo Nube (Ventas → Facturas) antes de reintentar.', { ...valores, detalle: { enviado: arm.cuerpo, intentos, liq } })
+    if (r.status === 409 && esDuplicadoSiigo(motivoDe(r)) && Number(fila.intentos ?? 0) + 1 < REINTENTOS_DUPLICADO) {
+      await marcar({ estado: 'pendiente', error: 'Siigo la tomó como duplicada de otra factura parecida emitida segundos antes. Se reintenta sola en unos minutos.', ...valores, detalle: { enviado: arm.cuerpo, intentos, liq } })
+      return { ok: false, reintento: true, error: 'Siigo la tomó como duplicada; se reintenta sola.' }
+    }
+    return falla(`Siigo rechazó la factura — ${motivoDe(r)}`, { ...valores, detalle: { enviado: arm.cuerpo, intentos, liq } })
+  }
+  const d = r.data ?? {}
+  const numero = d.name ?? (d.number != null ? `${d.prefix ?? ''}${d.number}` : null) ?? String(d.id ?? '')
+  await marcar({
+    estado: 'emitida', error: null, numero, siigo_id: d.id != null ? String(d.id) : null,
+    cufe: d.stamp?.cufe ?? null, url: d.public_url ?? null, emitida_at: ahora(), ...valores,
+    detalle: { enviado: arm.cuerpo, respuesta: d, intentos, liq, ...(opts.adminId ? { por: opts.adminId } : {}) },
+  })
+  return { ok: true, estado: 'emitida', numero, ...valores, cufe: d.stamp?.cufe ?? null, url: d.public_url ?? null }
+}
+
+// Las operaciones que quedaron sin factura: completadas desde "desde", sin
+// fila en facturas_lincoin, o en 'pendiente' (pausa, duplicado de Siigo).
+// No toca 'error' ni 'revision' (piden a alguien) ni 'emitiendo' reciente.
+async function ponerseAlDiaLincoin(opts: { tope?: number; hastaMs?: number; dias?: number } = {}): Promise<{ emitidas: number; revisadas: number; errores: string[]; restan: number }> {
+  const out = { emitidas: 0, revisadas: 0, errores: [] as string[], restan: 0 }
+  const { cfg } = await leerConfigLincoin()
+  if (!cfg?.activo) return out
+  const fin = opts.hastaMs ?? Date.now() + 100_000
+  const tope = opts.tope ?? 3
+  const limite = Math.max(Date.parse(String(cfg.desde ?? '')) || 0, Date.now() - (opts.dias ?? 14) * 86400000)
+  const { data: txs } = await db.from('transactions').select('id, user_id, type, amount, currency, status, created_at, raw_data')
+    .in('type', ['load', 'convert']).eq('status', 'Completado')
+    .gte('created_at', new Date(limite).toISOString()).lt('created_at', new Date(Date.now() - 60_000).toISOString())
+    .order('created_at', { ascending: false }).limit(1000)
+  const ops: string[] = Array.isArray(cfg.operaciones) ? cfg.operaciones : Object.keys(OPERACIONES_LINCOIN)
+  const candidatas = ((txs ?? []) as any[]).filter(t => { const l = liquidacionDe(t); return l && ops.includes(l.tipo) })
+  if (!candidatas.length) return out
+  const estado = new Map<string, any>()
+  for (let i = 0; i < candidatas.length; i += 200) {
+    const { data: filas } = await db.from('facturas_lincoin').select('transaction_id, estado, updated_at').in('transaction_id', candidatas.slice(i, i + 200).map(t => String(t.id)))
+    for (const f of (filas ?? []) as any[]) estado.set(String(f.transaction_id), f)
+  }
+  const reposo = Date.now() - 5 * 60_000
+  // De la más vieja a la más nueva: la que lleva más tiempo esperando, primero.
+  const pendientes = candidatas.filter(t => {
+    const f = estado.get(String(t.id))
+    return !f || (f.estado === 'pendiente' && Date.parse(String(f.updated_at)) < reposo)
+  }).reverse()
+  let hechas = 0
+  for (const t of pendientes) {
+    if (hechas >= tope || Date.now() > fin) { out.restan++; continue }
+    hechas++
+    try {
+      const r = await emitirLincoin(String(t.id))
+      if (r?.ok && r.estado === 'emitida') out.emitidas++
+      else if (r?.revision) out.revisadas++
+      else if (r && !r.ok && !r.reintento) out.errores.push(String(r.error ?? 'error'))
+    } catch (e) { out.errores.push(String((e as Error)?.message ?? e)) }
+  }
+  return out
+}
+
+function enSegundoPlano(p: Promise<unknown>, etiqueta: string): boolean {
+  const seguro = p.then(r => console.log(`[facturacion] ${etiqueta}`, JSON.stringify(r ?? {}).slice(0, 500)), e => console.error(`[facturacion] ${etiqueta}`, String((e as Error)?.message ?? e)))
+  const rt = (globalThis as any).EdgeRuntime
+  if (rt && typeof rt.waitUntil === 'function') { rt.waitUntil(seguro); return true }
+  return false
+}
+
+async function accionLincoin(accion: string, body: any): Promise<Response> {
+  if (accion === 'lincoin_config_get') {
+    const { cfg, falta } = await leerConfigLincoin()
+    if (falta) return json({ ok: false, error: MIGRACION_LINCOIN, falta: true })
+    return json({ ok: true, config: await publicaLincoin(cfg), resumen: await resumenLincoin(), operaciones: OPERACIONES_LINCOIN })
+  }
+
+  if (accion === 'lincoin_config_set') {
+    const c = body.config ?? {}
+    const { cfg: actualCfg, falta } = await leerConfigLincoin()
+    if (falta) return json({ ok: false, error: MIGRACION_LINCOIN }, 500)
+    const fila: Record<string, unknown> = { id: 1, updated_at: new Date().toISOString(), updated_by: body.adminId ?? null }
+    for (const k of ['username', 'partner_id', 'item_terceros', 'item_comision', 'desc_terceros', 'desc_comision', 'observaciones']) {
+      if (k in c) fila[k] = c[k] == null || String(c[k]).trim() === '' ? null : String(c[k]).trim().slice(0, 500)
+    }
+    for (const k of ['document_id', 'seller_id', 'payment_id', 'iva_tax_id']) if (k in c) fila[k] = c[k] == null || c[k] === '' ? null : Number(c[k])
+    for (const k of ['stamp', 'mail']) if (k in c) fila[k] = !!c[k]
+    if (Array.isArray(c.operaciones)) fila.operaciones = c.operaciones.filter((o: any) => typeof o === 'string' && o in OPERACIONES_LINCOIN)
+    if ('desde' in c) fila.desde = c.desde && !isNaN(Date.parse(String(c.desde))) ? new Date(String(c.desde)).toISOString() : null
+    if (typeof c.access_key === 'string' && c.access_key.replace(/\s+/g, '')) {
+      try { fila.access_key_enc = await encField(c.access_key.replace(/\s+/g, '')) }
+      catch { return json({ ok: false, error: 'No se pudo cifrar la access key: falta FIELD_ENC_KEY en el servidor.' }, 500) }
+      tokens.delete(CLAVE_TOKEN_LINCOIN)
+    }
+    const cambiaActivo = body.cambiarActivo === true && 'activo' in c
+    if (cambiaActivo) fila.activo = !!c.activo
+    if (fila.activo === true) {
+      const a = { ...(actualCfg ?? {}), ...fila } as any
+      const faltan: string[] = []
+      if (!a.username) faltan.push('usuario')
+      if (!a.access_key_enc) faltan.push('access key')
+      for (const [k, n] of [['document_id', 'tipo de factura'], ['seller_id', 'vendedor'], ['payment_id', 'forma de pago'], ['item_terceros', 'ítem de ingresos para terceros'], ['item_comision', 'ítem de comisión']]) if (!a[k]) faltan.push(n)
+      if (!(Array.isArray(a.operaciones) ? a.operaciones : []).length) faltan.push('qué operaciones se facturan')
+      if (!a.ultimo_test_ok) faltan.push('probar la conexión')
+      if (faltan.length) return json({ ok: false, error: `Para activar falta: ${faltan.join(', ')}.` }, 400)
+      if (a.item_terceros) {
+        const ivaT = ivaDelProducto(a, String(a.item_terceros))
+        if (ivaT) return json({ ok: false, error: `El ítem de ingresos para terceros (${a.item_terceros}) tiene ${ivaT.name || 'IVA'} ${ivaT.percentage} % en Siigo y va sin IVA.` }, 400)
+      }
+      // Sin "desde", se factura de ahora en adelante: activar no puede
+      // mandar a la DIAN de golpe todas las operaciones viejas.
+      if (!a.desde) fila.desde = new Date().toISOString()
+    }
+    const { error } = await db.from('facturacion_lincoin').upsert(fila, { onConflict: 'id' })
+    if (error) return json({ ok: false, error: faltaTablaLincoin(error.message) ? MIGRACION_LINCOIN : error.message }, 500)
+    if (cambiaActivo) await db.from('audit_log').insert({ user_id: body.adminId ?? null, action: fila.activo ? 'facturacion_lincoin.activada' : 'facturacion_lincoin.pausada', metadata: { at: new Date().toISOString() } }).then(() => {}, () => {})
+    const { cfg } = await leerConfigLincoin()
+    return json({ ok: true, config: await publicaLincoin(cfg) })
+  }
+
+  if (accion === 'lincoin_probar') {
+    const { cfg, falta } = await leerConfigLincoin()
+    if (falta) return json({ ok: false, error: MIGRACION_LINCOIN })
+    if (!cfg) return json({ ok: false, error: 'Primero guardá el usuario y la access key.' })
+    const t = await tokenDe(CLAVE_TOKEN_LINCOIN, cfg, true)
+    const ahora = new Date().toISOString()
+    if ('error' in t) {
+      await db.from('facturacion_lincoin').update({ ultimo_test_at: ahora, ultimo_test_ok: false, ultimo_error: t.error }).eq('id', 1)
+      const v = await leerConfigLincoin()
+      return json({ ok: false, error: t.error, config: await publicaLincoin(v.cfg) })
+    }
+    const cat = await traerCatalogos(t.token, cfg.partner_id || 'Lincoin')
+    const problemas = Object.entries(cat.fuentes).filter(([k, f]) => !f.ok && ['documentos', 'vendedores', 'pagos', 'productos', 'impuestos'].includes(k)).map(([k, f]) => `${k}: ${f.motivo}`)
+    await db.from('facturacion_lincoin').update({ ultimo_test_at: ahora, ultimo_test_ok: true, catalogos: cat, ultimo_error: problemas.length ? `Conectó, pero: ${problemas.join(' | ')}` : null }).eq('id', 1)
+    const v = await leerConfigLincoin()
+    return json({ ok: true, aviso: problemas.length ? problemas.join(' | ') : null, config: await publicaLincoin(v.cfg) })
+  }
+
+  if (accion === 'lincoin_emitir') {
+    const txId = String(body.transactionId ?? '')
+    if (!txId) return json({ ok: false, error: 'falta_transactionId' }, 400)
+    const u = body.utilidad != null && body.utilidad !== '' ? Number(body.utilidad) : null
+    return json(await emitirLincoin(txId, { manual: true, utilidad: u, adminId: body.adminId ?? null }))
+  }
+
+  // Del aviso de operación completada. Responde enseguida y emite en
+  // segundo plano, con una espera: un cargue se registra ANTES de tocar el
+  // saldo y se borra si el saldo no se pudo aplicar; no se factura algo que
+  // a los segundos puede no existir.
+  if (accion === 'lincoin_auto') {
+    const txId = String(body.transactionId ?? '')
+    if (!txId) return json({ ok: false, error: 'falta_transactionId' }, 400)
+    const p = new Promise(res => setTimeout(res, 20_000)).then(() => emitirLincoin(txId))
+    if (!enSegundoPlano(p, `lincoin auto ${txId}`)) await p
+    return json({ ok: true, enCola: true })
+  }
+
+  if (accion === 'lincoin_al_dia') {
+    const p = ponerseAlDiaLincoin({ tope: 10, hastaMs: Date.now() + 140_000, dias: 120 })
+    if (!enSegundoPlano(p, 'lincoin al día')) return json({ ok: true, ...(await p) })
+    return json({ ok: true, enSegundoPlano: true })
+  }
+
+  if (accion === 'lincoin_facturas') {
+    const lim = Math.min(Math.max(Number(body.limite) || 300, 1), 2000)
+    let q = db.from('facturas_lincoin').select('id, transaction_id, user_id, tipo, operacion_at, total, terceros, utilidad, base, iva, utilidad_fuente, estado, numero, cufe, url, error, intentos, created_at, updated_at, emitida_at')
+    if (body.estado) q = q.eq('estado', String(body.estado))
+    if (body.userId) q = q.eq('user_id', String(body.userId))
+    const { data, error } = await q.order('created_at', { ascending: false }).limit(lim)
+    if (error) return json({ ok: false, error: faltaTablaLincoin(error.message) ? MIGRACION_LINCOIN : error.message })
+    const filas = (data ?? []) as any[]
+    const ids = Array.from(new Set(filas.map(f => String(f.user_id)).filter(Boolean)))
+    const nombres = new Map<string, any>()
+    for (let i = 0; i < ids.length; i += 200) {
+      const { data: us } = await db.from('users').select('id, email, full_name, company_name').in('id', ids.slice(i, i + 200))
+      for (const u of (us ?? []) as any[]) nombres.set(String(u.id), u)
+    }
+    return json({ ok: true, facturas: filas.map(f => { const u = nombres.get(String(f.user_id)); return { ...f, cliente: u ? (u.company_name || u.full_name || u.email) : null } }) })
+  }
+  return json({ error: 'accion_desconocida' }, 400)
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
   try {
@@ -1319,7 +1782,20 @@ Deno.serve(async (req) => {
         try { resultados[id] = await ponerseAlDia(id, { tope: uid ? 3 : 2, hastaMs }) }
         catch (e) { resultados[id] = { error: String((e as Error)?.message ?? e) } }
       }
-      return json({ ok: true, cuentas: ids.length, resultados })
+      // El cron general también pone al día las facturas de Lincoin.
+      let lincoin: unknown = null
+      if (!uid && Date.now() < hastaMs - 20_000) {
+        try { lincoin = await ponerseAlDiaLincoin({ tope: 3, hastaMs }) }
+        catch (e) { lincoin = { error: String((e as Error)?.message ?? e) } }
+      }
+      return json({ ok: true, cuentas: ids.length, resultados, lincoin })
+    }
+
+    // ── Facturas de Lincoin a sus clientes: solo el sistema (admin-data ya
+    //    revisó el permiso del admin; notify-transaction y el cron).
+    if (accion.startsWith('lincoin_')) {
+      if (!yo.servicio) return json({ error: 'no_autorizado' }, 401)
+      return await accionLincoin(accion, body)
     }
 
     if (!yo.userId) return json({ error: 'no_autorizado' }, 401)
