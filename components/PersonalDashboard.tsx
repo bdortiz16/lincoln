@@ -3918,7 +3918,15 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     // respaldos y, si hay número sin tipo, se asume CC (cédula).
     const docTypeVal: string = tx.documentType ?? rawData.documentType ?? dispRecipient.documentType ?? dispRecipient.docType ?? '';
     const docNumberVal: string = tx.documentNumber ?? rawData.documentNumber ?? dispRecipient.documentNumber ?? dispRecipient.docNumber ?? '';
-    const docValue = docNumberVal ? `${docTypeVal || 'CC'} ${docNumberVal}`.trim() : '';
+    // Una empresa tiene NIT, no cédula. Las llaves Bre-B devuelven el número
+    // sin el tipo y se asumía CC: "EQUIPOS AMC SA · CC 890932739". Si el
+    // titular es una razón social, o el número tiene la forma de un NIT (9
+    // dígitos que empiezan por 8 o 9) y nadie dijo el tipo, es NIT.
+    const titularDoc = String(dispBeneficiary || tx.beneficiary || '');
+    const esRazonSocial = /\b(S\.?\s?A\.?\s?S\.?|S\.?\s?A\.?|LTDA\.?|S\.?\s?EN\s?C\.?|E\.?\s?U\.?|CIA\.?|CORP\.?|INC\.?|FUNDACI[OÓ]N|COOPERATIVA|ASOCIACI[OÓ]N|CORPORACI[OÓ]N)$|\b(SAS|LTDA|SOCIEDAD|COMPA[ÑN][IÍ]A|EMPRESA|INVERSIONES|GRUPO)\b/i.test(titularDoc.trim());
+    const formaDeNit = /^[89]\d{8}$/.test(String(docNumberVal).replace(/\D/g, ''));
+    const docTypeShown = esRazonSocial ? 'NIT' : (docTypeVal || (formaDeNit ? 'NIT' : 'CC'));
+    const docValue = docNumberVal ? `${docTypeShown} ${docNumberVal}`.trim() : '';
     // Tipo de llave Bre-B (Celular/Cédula/Correo/Alfanumérica) para el label.
     const dispKeyTypeLabel: string = ({ celular: 'Celular', cedula: 'Cédula', correo: 'Correo', alfanumerico: 'Alfanumérica' } as Record<string, string>)[String(dispRecipient.keyType ?? '').toLowerCase()] ?? '';
     // Bre-B · Cuenta 2 sale del saldo ACH (moneda COP_ACH) pero es un envío
@@ -4031,17 +4039,30 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       const scale = 3, W = 380, PAD = 26, PAD_TOP = 58, PAD_BOTTOM = 40, maxW = W - PAD * 2;
       const F_VALUE = `600 14px ${FONT}`, F_LABEL = `700 10px ${FONT}`;
       const mctx = document.createElement('canvas').getContext('2d')!;
+      // Corta por PALABRAS. Cortaba por letras y partía cualquier palabra donde
+      // se acabara la línea ("Lincoi" / "n."). Solo una palabra más ancha que
+      // la línea entera —un TxID, una dirección— se corta por letras.
       const wrap = (text: string, font: string) => {
         mctx.font = font;
+        const cabe = (s: string) => mctx.measureText(s).width <= maxW;
         const out: string[] = [];
-        let line = '';
-        for (const ch of String(text ?? '')) {
-          if (ch === '\n') { out.push(line); line = ''; continue; }
-          const test = line + ch;
-          if (mctx.measureText(test).width > maxW && line !== '') { out.push(line); line = ch; }
-          else line = test;
+        for (const parrafo of String(text ?? '').split('\n')) {
+          let line = '';
+          for (const palabra of parrafo.split(' ')) {
+            const test = line ? `${line} ${palabra}` : palabra;
+            if (cabe(test)) { line = test; continue; }
+            if (line) out.push(line);
+            let resto = palabra;
+            while (resto.length > 1 && !cabe(resto)) {
+              let i = 1;
+              while (i < resto.length - 1 && cabe(resto.slice(0, i + 1))) i++;
+              out.push(resto.slice(0, i));
+              resto = resto.slice(i);
+            }
+            line = resto;
+          }
+          out.push(line);
         }
-        out.push(line);
         return out;
       };
       const rows = fields.filter(f => f.label !== 'Estado').map(f => ({ f, lines: wrap(f.value, F_VALUE) }));
@@ -4058,8 +4079,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
         : '')
         + 'Este comprobante es un soporte de la operación realizada a través de Lincoin. No constituye una factura ni un extracto bancario. Lincoin no es un banco; la confianza opera sobre infraestructura de Circle, Fireblocks y SEPA/SWIFT.';
       const footLines = wrap(footNote, F_FOOT);
+      // El riel va en su propia línea debajo del monto: pegado al monto
+      // ("887.638,00 COP · Bre-B · Cuenta 2") no cabía y se salía de la caja.
+      const rielTxt = railDeTx(tx);
+      const extraRiel = rielTxt ? 20 : 0;
       // Medir alto
-      let H = PAD_TOP + 30 + 22 + 16 + 84 + 20;
+      let H = PAD_TOP + 30 + 22 + 16 + 84 + extraRiel + 20;
       for (const r of rows) H += 16 + r.lines.length * 18 + 14;
       // Pie: espacio + "Comprobante Lincoin" + nota + web + margen inferior
       H += 20 + 16 + 12 + footLines.length * 13 + 20 + PAD_BOTTOM;
@@ -4089,13 +4114,22 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       ctx.fillText(`Detalle de ${isCredit ? 'depósito' : 'retiro'}`, W / 2, y);
       // Caja de monto
       y += 16;
-      const boxY = y, boxH = 72;
+      const boxH = 72 + extraRiel, boxY = y;
       roundRect(ctx, PAD, boxY, maxW, boxH, 14); ctx.fillStyle = '#121413'; ctx.fill();
       ctx.strokeStyle = 'rgba(255,255,255,0.10)'; ctx.lineWidth = 1;
       roundRect(ctx, PAD, boxY, maxW, boxH, 14); ctx.stroke();
-      ctx.font = `800 25px Archivo, ${FONT}`; ctx.fillStyle = isCredit ? '#4ADE80' : '#F4F4F2';
-      const amtLabel = `${isCredit ? '+' : '-'}${formatMoney(tx.amount, tx.currency)} ${displayCurrency(tx.currency)}${railDeTx(tx) ? ` · ${railDeTx(tx)}` : ''}`;
+      // El monto se achica si no cabe en la caja (montos de miles de millones).
+      const amtLabel = `${isCredit ? '+' : '-'}${formatMoney(tx.amount, tx.currency)} ${displayCurrency(tx.currency)}`;
+      let amtPx = 25;
+      ctx.font = `800 ${amtPx}px Archivo, ${FONT}`;
+      const anchoCaja = maxW - 28, anchoAmt = ctx.measureText(amtLabel).width;
+      if (anchoAmt > anchoCaja) { amtPx = Math.max(14, Math.floor(amtPx * anchoCaja / anchoAmt)); ctx.font = `800 ${amtPx}px Archivo, ${FONT}`; }
+      ctx.fillStyle = isCredit ? '#4ADE80' : '#F4F4F2';
       ctx.fillText(amtLabel, W / 2, boxY + 34);
+      if (rielTxt) {
+        ctx.font = `600 12px Archivo, ${FONT}`; ctx.fillStyle = '#878E88';
+        ctx.fillText(rielTxt, W / 2, boxY + 54);
+      }
       // Chip de estado: borde de color, sin fondos rojos/naranjas chillones.
       // 'Procesando'/'Pendiente' = ámbar (en curso), no rojo de error.
       const stCol = tx.status === 'Completado' ? '#4ADE80'
@@ -4104,8 +4138,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       ctx.font = `700 11px Archivo, ${FONT}`;
       const stW = ctx.measureText(tx.status).width + 26;
       ctx.strokeStyle = stCol; ctx.lineWidth = 1.2;
-      roundRect(ctx, (W - stW) / 2, boxY + 46, stW, 22, 11); ctx.stroke();
-      ctx.fillStyle = stCol; ctx.fillText(tx.status, W / 2, boxY + 46 + 15);
+      const chipY = boxY + 46 + extraRiel;
+      roundRect(ctx, (W - stW) / 2, chipY, stW, 22, 11); ctx.stroke();
+      ctx.fillStyle = stCol; ctx.fillText(tx.status, W / 2, chipY + 15);
       // Campos
       ctx.textAlign = 'left';
       y = boxY + boxH + 20;
