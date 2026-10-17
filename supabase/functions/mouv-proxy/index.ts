@@ -150,6 +150,28 @@ async function reembolsoPermitido(tx: any, ref: string, origen: string): Promise
   return { ok: true, refund }
 }
 
+const rpcNoExiste = (e: any): boolean => !!e && /42883|PGRST202|could not find the function|function .* does not exist/i.test(`${e?.code ?? ''} ${e?.message ?? ''}`)
+
+// El mensaje al cliente cuando el reintegro NO se pudo hacer en el momento:
+// no se le dice "fue devuelto" si no lo fue.
+function conReintegro(msg: string, ok: boolean): string {
+  return ok ? msg : msg.replace(/Tu saldo fue devuelto[^.]*\.?/, 'Estamos devolviendo tu saldo: si en unos minutos no lo ves, escríbenos a soporte.')
+}
+const marcasReintegro = (ok: boolean) => ok ? { refunded: true } : { refunded: false, reembolsoPendiente: true, revisionManual: true }
+
+// Devolver el saldo de un envío que no salió. Si no se pudo devolver, la fila
+// NO se marca reembolsada: queda en revisión y se avisa a los admins.
+async function reintegrarEnvio(userId: string, railCol: string, total: number): Promise<{ ok: boolean; saldo: number | null }> {
+  const { data: adj, error } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { [railCol]: total } })
+  if (!error && !(adj as any)?.error) return { ok: true, saldo: Number(((adj as any)?.balances?.[railCol]) ?? 0) }
+  if (!error || !rpcNoExiste(error)) {
+    await logAudit(userId, 'envio.reintegro_no_aplicado', { railCol, total, motivo: (adj as any)?.error ?? error?.message ?? null })
+    return { ok: false, saldo: null }
+  }
+  const ok = await creditBalanceAtomic(userId, railCol, total)
+  return { ok, saldo: null }
+}
+
 async function creditBalanceAtomic(userId: string, col: string, delta: number): Promise<boolean> {
   // `adjust_balances` devuelve {error:'not_found'} o {error:'insufficient'}
   // como respuesta EXITOSA (200, sin error de transporte). Mirar solo `error`
@@ -164,7 +186,14 @@ async function creditBalanceAtomic(userId: string, col: string, delta: number): 
     return false
   }
 
-  // Respaldo SOLO para fallos de transporte.
+  // Un error de transporte (la respuesta se perdió) NO se reintenta a mano:
+  // el ajuste pudo haberse aplicado y repetirlo acreditaría dos veces. Queda
+  // como no hecho, y quien llama lo marca para revisión. El respaldo manual es
+  // solo para una base sin adjust_balances.
+  if (!rpcNoExiste(error)) {
+    await logAudit(userId, 'balance.ajuste_incierto', { col, delta, motivo: error?.message ?? null })
+    return false
+  }
   const { data: u, error: leerErr } = await db.from('users').select('balances').eq('id', userId).single()
   // SIN ESTA GUARDA se escribia `balances = { [col]: delta }` cuando la lectura
   // fallaba: se perdian COP, COP_ACH, USD y todo lo demas del usuario en una
@@ -454,8 +483,11 @@ async function mouvPayout(
     // (se inscribió y validó antes), NO se aborta el envío: Mouv hará la
     // validación final en /transfers/send. Solo se aborta si de plano faltan
     // los datos SARLAFT (ni resueltos ni guardados).
+    // 422 y no 0: acá no se llamó a Mouv, así que el envío NO salió. Con
+    // status 0 el pago se trataba como "no sabemos si salió": el saldo
+    // quedaba retenido y al cliente se le decía que no reintentara.
     if (!targetName || !targetDocument) {
-      return { ok: false, status: 0, data: { error: 'missing_sarlaft', message: 'No se pudo obtener el titular de la llave (nombre/documento requeridos por SARLAFT).', resolveDebug: rr.raw ?? null } }
+      return { ok: false, status: 422, data: { error: 'missing_sarlaft', noSalio: true, message: 'No pudimos confirmar a nombre de quién está esa llave Bre-B. Revisa la llave o completa el documento del beneficiario y vuelve a intentar.', resolveDebug: rr.raw ?? null } }
     }
 
     // Referencia ÚNICA por envío: si Mouv dedupe por referencia (409 Conflict
@@ -604,6 +636,9 @@ function motivoParaCliente(s: unknown): string | null {
   const t = s.trim().replace(/[.\s]+$/, '')
   if (t.length < 3 || t.length > 240) return null
   if (JERGA_TECNICA.test(t) || NOMBRES_ALIADOS.test(t) || EN_INGLES.test(t)) return null
+  // Tiene que ESTAR EN ESPAÑOL. La lista de palabras en inglés nunca alcanza:
+  // "Insufficient funds", "Conflict" o "Daily limit exceeded" pasaban.
+  if (!/\b(de|del|la|el|los|las|no|en|por|para|con|sin|al|es|se|y|cuenta|banco|titular|documento|llave|existe|corresponde[n]?|v[aá]lid[ao]|inv[aá]lid[ao]|rechazad[ao]|bloquead[ao])\b/i.test(t)) return null
   // "Saldo insuficiente" del proveedor es el de NUESTRA cuenta con él, no el
   // del cliente: mostrarlo así le hace creer que le falta plata a él.
   if (/\b(saldo|fondos)\b/i.test(t)) return null
@@ -1123,9 +1158,12 @@ async function revisarDestinoFinity(userId: string, destId: string | null, accDi
     const textos = [fila.verification_status, fila.estado, fila.state, fila.status]
       .filter((v: unknown) => v !== undefined && v !== null && String(v).trim() !== '')
       .map((v: unknown) => String(v).toLowerCase())
-    const rechazada = textos.some(s => /rechaz|reject|denied|declin|fail/.test(s))
-    const enRevision = textos.some(s => /proces|pend|review|revis|created|unconfirmed/.test(s))
-    const aprobada = textos.some(s => /aprob|approv|verified/.test(s))
+    // "approved"/"verified" como palabra COMPLETA y sin negación: la regex
+    // suelta aceptaba "unverified", "not_approved" y "awaiting_approval".
+    const rechazada = textos.some(s => /rechaz|reject|denied|declin|fail|inactiv|block|bloque|suspend|cancel/.test(s))
+    const negada = textos.some(s => /(un|not|no|dis|awaiting|pending|sin)[\s_-]?(verif|approv|aprob)/.test(s))
+    const enRevision = negada || textos.some(s => /proces|pend|review|revis|created|unconfirmed|awaiting/.test(s))
+    const aprobada = !negada && textos.some(s => /(^|[\s_-])(approved|verified|aprobad[ao]|verificad[ao])$/.test(s.trim()))
     if (rechazada || enRevision || (!aprobada && textos.length > 0)) {
       await logAudit(userId, 'finity.payout.destino_no_aprobado', {
         destinationId: destId ?? (idDe(fila) || null), cuenta: accDigits, estadoProveedor: textos.join(' · '),
@@ -1250,6 +1288,17 @@ async function finityPayoutAch(userId: string, recipient: Record<string, any>, a
     return {
       ok: false, feeCop: 0, destinationId: destId ?? undefined,
       error: { step: 'retiro', httpStatus: w?.status ?? null, path: w?.path ?? null, desenlaceDesconocido: desconocido, body: (od && Object.keys(od).length > 0) ? od : (w?.data ?? w ?? null) },
+    }
+  }
+  // Una orden CREADA puede venir ya fallida (201 con status FAILED). Antes se
+  // tomaba como aceptada: el cliente leía "en proceso" y el reembolso esperaba
+  // a la conciliación. Se trata como lo que es: un rechazo claro.
+  const estadoOrden = String(od.status ?? od.state ?? '').toUpperCase()
+  if (estadoOrden && RE_FINITY_FALLO.test(estadoOrden)) {
+    await logAudit(userId, 'finity.withdrawal.creada_fallida', { providerRef: String(od.id), estado: estadoOrden })
+    return {
+      ok: false, feeCop: 0, destinationId: destId ?? undefined,
+      error: { step: 'retiro', httpStatus: w?.status ?? null, path: w?.path ?? null, desenlaceDesconocido: false, body: od },
     }
   }
   // CONTROL DE MONTO (post-orden): si Finity ecoa un amount y NO coincide
@@ -3271,6 +3320,20 @@ serve(async (req: Request) => {
           docDest = docInscrito
         }
 
+        // Bre-B SIN documento (ni en el pedido ni en el inscrito): se le
+        // pregunta al directorio de quién es la llave. Sin esto, la consulta
+        // de antecedentes de abajo —que va por documento— se saltaba entera.
+        if (rail === 'BREB' && !docDest) {
+          try {
+            const rrDoc = await mouvResolveBrebKey(String((payload.recipient as any)?.key ?? ''), String((payload.recipient as any)?.keyType ?? ''))
+            const docLlave = soloDig(rrDoc?.idValue)
+            if (rrDoc?.found && docLlave) {
+              docDest = docLlave
+              if (rrDoc.fullName) nombresTitular.push(rrDoc.fullName)
+            }
+          } catch { /* sin respuesta: decide la compuerta de abajo */ }
+        }
+
         // ── EL TITULAR REAL DE LA LLAVE ──────────────────────────────────
         // Este es el único dato de toda la cadena que no sale del navegador ni
         // del raw_data del propio usuario: se lo pregunta al proveedor. Si el
@@ -3300,6 +3363,23 @@ serve(async (req: Request) => {
       // el control que manda; el de Kumplo queda debajo como respaldo para
       // los veredictos que ya estaban guardados de antes.
       let aprobadoAml = false
+      // Sin documento NO hay consulta de antecedentes posible. Si el control
+      // está activo y cubre esta cuenta, el envío no sale: "sin resultado no
+      // sale plata" vale también cuando ni siquiera hay a quién consultar.
+      if (!docDest && rail === 'BREB') {
+        try {
+          const { data: tdRow0 } = await db.from('system_config').select('value').eq('key', 'tusdatos_config').maybeSingle()
+          const tdCfg0 = (tdRow0 as any)?.value ? JSON.parse((tdRow0 as any).value) : null
+          const soloEstos0: string[] = Array.isArray(tdCfg0?.soloEstosUsuarios) ? tdCfg0.soloEstosUsuarios : []
+          if (tdCfg0?.activo && (soloEstos0.length === 0 || soloEstos0.includes(userId))) {
+            await logAudit(userId, 'tusdatos.envio_sin_documento', { rail, llave: String((payload.recipient as any)?.key ?? '').slice(-4) })
+            return json(409, {
+              error: 'sin_documento',
+              message: 'Para enviar a esta llave necesitamos el documento del titular. Edita el beneficiario, agrega su documento y vuelve a intentar.',
+            })
+          }
+        } catch { /* sin configuración legible: sigue como antes */ }
+      }
       if (docDest) {
         try {
           const { data: tdRow } = await db.from('system_config').select('value').eq('key', 'tusdatos_config').maybeSingle()
@@ -3456,7 +3536,9 @@ serve(async (req: Request) => {
     // tope del proveedor (ver topeAchDe). Bre-B sigue en el límite de Mouv.
     if (!tipoBeneficiario) {
       const docT = String((payload.recipient as any)?.documentType ?? (payload.recipient as any)?.docType ?? '').toUpperCase()
-      tipoBeneficiario = docT === 'NIT' ? 'empresa' : docT ? 'persona' : null
+      // Si no se sabe quién recibe, se aplica el tope de PERSONAS: con null se
+      // usaba el de empresas (500 M) para cualquier destino sin tipo.
+      tipoBeneficiario = docT === 'NIT' ? 'empresa' : 'persona'
     }
     const topeAch = rail === 'BREB' ? null : await topeAchDe(userId, tipoBeneficiario)
     const perOpMax = rail === 'BREB' ? (brebFinity ? BREB2_MAX_COP : BREB_MAX_COP) : topeAch!.max
@@ -3649,6 +3731,14 @@ serve(async (req: Request) => {
       if (e === 'not_found') { await soltarCandados(); return json(404, { error: 'user_not_found', message: 'Usuario no encontrado.' }) }
       if (e) { await soltarCandados(); return json(400, { error: 'insufficient_funds', message: `Saldo ${saldoLabel} insuficiente para monto + comisión (${totalDebit.toLocaleString('es-CO')} COP).` }) }
       afterDebit = Number(((adjDeb as any)?.balances?.[railCol]) ?? 0)
+    } else if (!rpcNoExiste(adjDebErr)) {
+      // La base no contestó con claridad: el débito pudo haberse aplicado.
+      // NO se reintenta a mano (cobraría dos veces) y NO se llama al
+      // proveedor. Se avisa para revisar el saldo.
+      await logAudit(userId, `mouv.${action}.debito_incierto`, { amount, totalDebit, railCol, motivo: adjDebErr?.message ?? null })
+      await avisarAdminSinConfirmar({ id: null, user_id: userId, amount, currency: railCol, created_at: new Date().toISOString(), raw_data: { motivo: 'debito_incierto', totalDebit } })
+      await soltarCandados()
+      return json(500, { error: 'debit_uncertain', message: 'No pudimos confirmar el descuento de tu saldo, así que no enviamos nada. Revisa tu saldo en un minuto; si se descontó, te lo devolvemos.' })
     } else {
       const { data: u } = await db.from('users').select('balances').eq('id', userId).maybeSingle()
       if (!u) { await soltarCandados(); return json(404, { error: 'user_not_found', message: 'Usuario no encontrado.' }) }
@@ -3782,16 +3872,8 @@ serve(async (req: Request) => {
       }
       // Finity dijo que no, o lo frenamos antes de confirmar (titular o monto
       // que no cuadran): no salió nada → REINTEGRAR monto + comisión.
-      let restoredF = 0
-      const { data: adjF, error: adjFErr } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { [railCol]: totalDebit } })
-      if (!adjFErr && !(adjF as any)?.error) {
-        restoredF = Number(((adjF as any)?.balances?.[railCol]) ?? 0)
-      } else {
-        const { data: uF } = await db.from('users').select('balances').eq('id', userId).maybeSingle()
-        const balsF: Record<string, number> = (uF?.balances as any) ?? {}
-        restoredF = Number((Number(balsF[railCol] ?? 0) + totalDebit).toFixed(2))
-        await db.from('users').update({ balances: { ...balsF, [railCol]: restoredF } }).eq('id', userId)
-      }
+      const reintF = await reintegrarEnvio(userId, railCol, totalDebit)
+      const restoredF = reintF.saldo ?? 0
       const provMsgF = fb.mensaje ? null : digMotivoRechazo(fb.body)
       const errTextF = `${provMsgF ?? ''} ${(() => { try { return JSON.stringify(fb.body ?? '') } catch { return '' } })()}`.toLowerCase()
       const llaveMala = fb.paso === 'crear' && /key|llave|not\s*found|no existe|inv[aá]lid|no.{0,3}activ/.test(errTextF)
@@ -3812,12 +3894,13 @@ serve(async (req: Request) => {
         ...(fb.providerRef ? { providerRef: fb.providerRef } : {}),
         error: fb.body ?? 'finity_breb_failed', errorMessage: fb.mensaje ?? provMsgF ?? `paso ${fb.paso ?? '?'} · HTTP ${fb.httpStatus ?? 0}`,
         pasoFallido: fb.paso ?? null, httpStatus: fb.httpStatus ?? null,
-        refunded: true, failedAt: ahora,
+        ...marcasReintegro(reintF.ok), failedAt: ahora,
       })
+      if (!reintF.ok) await avisarAdminSinConfirmar({ id: txId, user_id: userId, amount, currency: railCol, created_at: ahora, raw_data: { ...prettyBase, reembolsoPendiente: true } })
       await logAudit(userId, `finity.${action}.fail`, { amount, paso: fb.paso ?? null, httpStatus: fb.httpStatus ?? null, error: (() => { try { return JSON.stringify(fb.body ?? {}).slice(0, 300) } catch { return null } })() })
       await notifyTx(txId)
       await soltarCandados()
-      return json(200, { error: 'payout_failed', provider: 'finity', refunded: true, newBalance: restoredF, message: friendlyF })
+      return json(200, { error: 'payout_failed', provider: 'finity', refunded: reintF.ok, newBalance: restoredF, message: conReintegro(friendlyF, reintF.ok) })
     }
 
     if (rail === 'BREB') {
@@ -3958,17 +4041,10 @@ serve(async (req: Request) => {
 
       // Rechazo EXPLICITO del proveedor (4xx) o envio ya devuelto → REINTEGRAR
       // monto + comisión (atómico; fallback read-write).
-      let restored = 0
-      const { data: adjR, error: adjRErr } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { [railCol]: totalDebit } })
-      if (!adjRErr && !(adjR as any)?.error) {
-        restored = Number(((adjR as any)?.balances?.[railCol]) ?? 0)
-      } else {
-        const { data: u2 } = await db.from('users').select('balances').eq('id', userId).maybeSingle()
-        const bals2: Record<string, number> = (u2?.balances as any) ?? {}
-        restored = Number((Number(bals2[railCol] ?? 0) + totalDebit).toFixed(2))
-        await db.from('users').update({ balances: { ...bals2, [railCol]: restored } }).eq('id', userId)
-      }
-      await asentarTx('Fallido', { ...prettyBase, ...feeDetail, error: pay.data ?? 'payout_failed', httpStatus: pay.status, refunded: true, failedAt: new Date().toISOString() })
+      const reintM = await reintegrarEnvio(userId, railCol, totalDebit)
+      const restored = reintM.saldo ?? 0
+      await asentarTx('Fallido', { ...prettyBase, ...feeDetail, error: pay.data ?? 'payout_failed', httpStatus: pay.status, ...marcasReintegro(reintM.ok), failedAt: new Date().toISOString() })
+      if (!reintM.ok) await avisarAdminSinConfirmar({ id: txId, user_id: userId, amount, currency: railCol, created_at: new Date().toISOString(), raw_data: { ...prettyBase, reembolsoPendiente: true } })
       await logAudit(userId, `mouv.${action}.fail`, { amount, rail, status: pay.status, data: pay.data ?? null })
       await notifyTx(txId) // correo "no pudimos completar tu envío · saldo devuelto"
       // Mensaje LIMPIO para el cliente: si el proveedor manda un error
@@ -4011,7 +4087,10 @@ serve(async (req: Request) => {
         return s.toLowerCase()
       })()
       // ¿Es un problema de la LLAVE del beneficiario (no un fallo de Mouv)?
-      const isKeyProblem = /brebkey|destination|no existe|not\s*found|inv[aá]lid|no.{0,3}activ|resolver la llave|llave no|unknown\s*key|key\s*not/.test(errText)
+      // Un 401/403 es NUESTRA credencial con Mouv ("Invalid API key"), no la
+      // llave del beneficiario: decirle al cliente que su llave está mal lo
+      // mandaba a corregir algo que estaba bien.
+      const isKeyProblem = ![0, 401, 403].includes(Number(pay.status)) && /brebkey|destination|no existe|not\s*found|inv[aá]lid|no.{0,3}activ|resolver la llave|llave no|unknown\s*key|key\s*not/.test(errText)
       let friendly: string
       if (provCode === 'STRUCTURING_WINDOW_BLOCKED' || (pay.status === 409 && !provMsg)) {
         const secs = retryAfterSeconds ?? 0
@@ -4025,7 +4104,9 @@ serve(async (req: Request) => {
         // firma, así que se leía como si lo hubiera decidido Lincoin —
         // exactamente el mismo texto que usaría nuestra propia verificación.
         // Costó horas de buscar el bloqueo en el lado equivocado.
-        friendly = `El operador del envío rechazó esta transferencia por una restricción de cumplimiento de su lado: «${provMsg}» No es una restricción de Lincoin. Comunícate con soporte para revisarlo. Tu saldo fue devuelto.`
+        // El texto del operador solo si es uno que el cliente entiende.
+        const motivoCump = motivoParaCliente(provMsg)
+        friendly = `El operador del envío rechazó esta transferencia por una restricción de cumplimiento de su lado${motivoCump ? `: «${motivoCump}».` : '.'} No es una restricción de Lincoin. Comunícate con soporte para revisarlo. Tu saldo fue devuelto.`
       } else if (motivoParaCliente(provMsg)) {
         // Solo se muestra el mensaje del proveedor si es TEXTO HUMANO (sin JSON,
         // códigos, jerga en inglés ni nombres de aliados). Si no, el genérico.
@@ -4047,12 +4128,12 @@ serve(async (req: Request) => {
         })
       }
       // Guardar el motivo legible en la tx para que el comprobante del fallo lo muestre.
-      if (txId) { try { await db.from('transactions').update({ raw_data: { ...prettyBase, ...feeDetail, error: pay.data ?? 'payout_failed', errorMessage: provMsg ?? techHint ?? null, bloqueoDelProveedor: porCumplimientoDelProveedor || undefined, httpStatus: pay.status, refunded: true, failedAt: new Date().toISOString() } }).eq('id', txId) } catch { /* best-effort */ } }
+      if (txId) { try { await db.from('transactions').update({ raw_data: { ...prettyBase, ...feeDetail, error: pay.data ?? 'payout_failed', errorMessage: provMsg ?? techHint ?? null, bloqueoDelProveedor: porCumplimientoDelProveedor || undefined, httpStatus: pay.status, ...marcasReintegro(reintM.ok), failedAt: new Date().toISOString() } }).eq('id', txId) } catch { /* best-effort */ } }
       // NOTA: no se devuelven `data`/`detail` técnicos al cliente. El detalle
       // real vive en la tx (errorMessage/error/httpStatus) y en el audit_log.
       await soltarCandados()
-      return json(200, { error: 'payout_failed', code: provCode, retryAfterSeconds, refunded: true, newBalance: restored,
-        message: friendly })
+      return json(200, { error: 'payout_failed', code: provCode, retryAfterSeconds, refunded: reintM.ok, newBalance: restored,
+        message: conReintegro(friendly, reintM.ok) })
     }
 
     // ── ACH vía FINITY ──
@@ -4116,16 +4197,8 @@ serve(async (req: Request) => {
     }
 
     // Finity dijo que NO (rechazo claro) → REINTEGRAR monto + comisión.
-    let restored5 = 0
-    const { data: adjR5, error: adjR5Err } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { [railCol]: totalDebit } })
-    if (!adjR5Err && !(adjR5 as any)?.error) {
-      restored5 = Number(((adjR5 as any)?.balances?.[railCol]) ?? 0)
-    } else {
-      const { data: u5 } = await db.from('users').select('balances').eq('id', userId).maybeSingle()
-      const bals5: Record<string, number> = (u5?.balances as any) ?? {}
-      restored5 = Number((Number(bals5[railCol] ?? 0) + totalDebit).toFixed(2))
-      await db.from('users').update({ balances: { ...bals5, [railCol]: restored5 } }).eq('id', userId)
-    }
+    const reintA = await reintegrarEnvio(userId, railCol, totalDebit)
+    const restored5 = reintA.saldo ?? 0
     const finErr: any = fin.error
     // El motivo vive en error.BODY ({ step, httpStatus, path, body }). Se leía
     // error.message, que nunca existe: los motivos propios ("el banco todavía
@@ -4141,7 +4214,8 @@ serve(async (req: Request) => {
     const finMsg = motivoParaCliente(finMsgRaw)
     // errorMessage: el motivo legible si lo hay (lo ven el comprobante y el
     // Panel de Fallos); si no, el detalle técnico. El cuerpo entero queda en `error`.
-    await asentarTx('Fallido', { ...prettyBase, feeProvider: 'finity', error: fin.error ?? 'finity_failed', errorMessage: finMsg ?? finMsgRaw ?? detail ?? null, pasoFallido: finPaso || null, noSalio: true, refunded: true, failedAt: new Date().toISOString() })
+    await asentarTx('Fallido', { ...prettyBase, feeProvider: 'finity', error: fin.error ?? 'finity_failed', errorMessage: finMsg ?? finMsgRaw ?? detail ?? null, pasoFallido: finPaso || null, noSalio: true, ...marcasReintegro(reintA.ok), failedAt: new Date().toISOString() })
+    if (!reintA.ok) await avisarAdminSinConfirmar({ id: txId, user_id: userId, amount, currency: railCol, created_at: new Date().toISOString(), raw_data: { ...prettyBase, reembolsoPendiente: true } })
     await logAudit(userId, `finity.${action}.fail`, { amount, paso: finPaso || null, error: JSON.stringify(fin.error ?? {}).slice(0, 400) })
     await notifyTx(txId) // correo "no pudimos completar tu envío · saldo devuelto"
     const friendlyAch = finMsg
@@ -4151,8 +4225,8 @@ serve(async (req: Request) => {
         ? 'No pudimos inscribir la cuenta destino con el banco, así que el envío no salió. Revisa los datos del beneficiario (banco, número y tipo de cuenta, tipo y número de documento). Tu saldo fue devuelto.'
         : `No pudimos completar la transferencia ACH en este momento. Tu saldo fue devuelto — puedes intentarlo de nuevo en unos minutos.`
     await soltarCandados()
-    return json(200, { error: 'payout_failed', provider: 'finity', refunded: true, newBalance: restored5,
-      message: friendlyAch })
+    return json(200, { error: 'payout_failed', provider: 'finity', refunded: reintA.ok, newBalance: restored5,
+      message: conReintegro(friendlyAch, reintA.ok) })
   }
 
   return json(200, { error: 'unknown_action', message: `Acción no soportada: ${action}` })

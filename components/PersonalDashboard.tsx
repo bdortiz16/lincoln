@@ -1495,9 +1495,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   const textos = [row?.verification_status, row?.estado, row?.state, row?.status]
                       .filter((v: unknown) => v !== undefined && v !== null && String(v).trim() !== '')
                       .map((v: unknown) => String(v).toLowerCase());
-                  if (textos.some(s => /rechaz|reject|denied|declin|fail/.test(s))) return 'rechazada';
-                  if (textos.some(s => /proces|pend|review|revis|created|unconfirmed/.test(s))) return 'en_proceso';
-                  if (textos.some(s => /aprob|approv|verified/.test(s))) return 'aprobada';
+                  if (textos.some(s => /rechaz|reject|denied|declin|fail|inactiv|block|bloque|suspend|cancel/.test(s))) return 'rechazada';
+                  if (textos.some(s => /(un|not|no|dis|awaiting|pending|sin)[\s_-]?(verif|approv|aprob)/.test(s))) return 'en_proceso';
+                  if (textos.some(s => /proces|pend|review|revis|created|unconfirmed|awaiting/.test(s))) return 'en_proceso';
+                  if (textos.some(s => /(^|[\s_-])(approved|verified|aprobad[ao]|verificad[ao])$/.test(s.trim()))) return 'aprobada';
                   return textos.length ? 'en_proceso' : null;
               };
               let changed = false;

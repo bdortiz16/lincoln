@@ -250,14 +250,18 @@ const normalizeStatus = (v: unknown): ContactStatus | null => {
 // Si el proveedor no dice explícitamente que aprobó, la cuenta se queda en
 // validación. Esperar de más solo demora un envío; aprobar de más lo deja
 // salir hacia una cuenta que el banco no acepta.
-const APRUEBA = /aprob|approv|verified/;
+const APRUEBA = /(^|[\s_-])(approved|verified|aprobad[ao]|verificad[ao])$/;
+const NIEGA = /(un|not|no|dis|awaiting|pending|sin)[\s_-]?(verif|approv|aprob)/;
 const estadoDeFila = (row: any): ContactStatus | null => {
     const textos = [row?.verification_status, row?.estado, row?.state, row?.status]
         .filter(v => v !== undefined && v !== null && String(v).trim() !== '')
         .map(v => String(v).toLowerCase());
-    if (textos.some(s => /rechaz|reject|denied|declin|fail/.test(s))) return 'rechazada';
-    if (textos.some(s => /proces|pend|review|revis|created|unconfirmed/.test(s))) return 'en_proceso';
-    if (textos.some(s => APRUEBA.test(s))) return 'aprobada';
+    if (textos.some(s => /rechaz|reject|denied|declin|fail|inactiv|block|bloque|suspend|cancel/.test(s))) return 'rechazada';
+    // Negaciones ("unverified", "not_approved", "awaiting_approval") NO son
+    // aprobación aunque contengan la palabra.
+    if (textos.some(s => NIEGA.test(s))) return 'en_proceso';
+    if (textos.some(s => /proces|pend|review|revis|created|unconfirmed|awaiting/.test(s))) return 'en_proceso';
+    if (textos.some(s => APRUEBA.test(s.trim()))) return 'aprobada';
     // Solo "active" y compañía: el registro existe, pero nadie dijo que esté
     // aprobado. No alcanza.
     return textos.length ? 'en_proceso' : null;

@@ -720,6 +720,24 @@ Deno.serve(async (req) => {
       // caché 45 s para todos. Antes cada navegador abierto la pedía cada
       // 15 s, cientos de llamadas por hora a la misma ruta de Finity.
       const lista = await listaCuentasFinity()
+      // Un CLIENTE recibe solo SUS cuentas. La lista de Finity es una sola para
+      // toda la empresa: antes se devolvía entera y cualquier sesión veía
+      // nombre, documento y número de cuenta de los beneficiarios de todos los
+      // demás clientes. El servidor y el admin (internal) la reciben completa.
+      if (!caller.internal) {
+        const { data: yo } = await db.from('users').select('raw_data').eq('id', String(caller.userId ?? '')).maybeSingle()
+        const contactos: any[] = Array.isArray((yo as any)?.raw_data?.mouvContacts) ? (yo as any).raw_data.mouvContacts : []
+        const ids = new Set(contactos.flatMap((c: any) => [c?.finityId, c?.mouvId]).filter(Boolean).map((x: any) => String(x)))
+        const cuentas = new Set(contactos.map((c: any) => String(c?.accountNumber ?? '').replace(/\D/g, '')).filter(Boolean))
+        const esMia = (r: any) => ids.has(String(r?.id ?? r?.external_account_id ?? r?.account_id ?? ''))
+          || cuentas.has(String(r?.account_number ?? r?.account?.account_number ?? '').replace(/\D/g, ''))
+        const d: any = lista.data
+        const filtrada = Array.isArray(d) ? d.filter(esMia)
+          : (d && typeof d === 'object')
+            ? Object.fromEntries(Object.entries(d).map(([k, v]) => [k, Array.isArray(v) ? (v as any[]).filter(esMia) : v]))
+            : d
+        return json(200, { ok: lista.ok, status: lista.status, path: lista.path, data: filtrada, ...(lista.cache ? { cache: true } : {}) })
+      }
       if (lista.cache) return json(200, { ok: lista.ok, status: lista.status, path: lista.path, data: lista.data, cache: true })
       const { res, path, data } = { res: { ok: lista.ok, status: lista.status }, path: lista.path, data: lista.data }
       // Se audita un RESUMEN de los estados que devuelve el proveedor: qué
