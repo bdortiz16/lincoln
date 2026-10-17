@@ -76,6 +76,12 @@ const asientosDe = (t: any): Asiento[] => {
     if (a && Number.isFinite(tA) && tA > 0) out.push({ ...base, dir: 'in', monto: tA, moneda: familia(a), tipo: 'Conversión', contraparte: `${de.split('_')[0]} → ${a.split('_')[0]}` });
     return out;
   }
+  // Ajuste manual del admin: entra o sale según su dirección. Antes no se
+  // contaba y un descuento del admin no bajaba el saldo de la contabilidad.
+  if (t.type === 'adjustment') {
+    const dirAj: Dir = String(t.direction ?? t.raw_data?.direction ?? 'debit') === 'credit' ? 'in' : 'out';
+    return [{ ...base, dir: dirAj, monto: Number(t.amount) || 0, moneda: familia(t.currency), tipo: 'Ajuste', contraparte: 'Lincoin' }];
+  }
   if (ENTRA.has(t.type)) return [{ ...base, dir: 'in', monto: Number(t.amount) || 0, moneda: familia(t.currency), tipo: TIPO_ES[t.type] ?? t.type, contraparte: contra }];
   if (SALE.has(t.type)) return [{ ...base, dir: 'out', monto: Number(t.amount) || 0, moneda: familia(t.currency), tipo: TIPO_ES[t.type] ?? t.type, contraparte: contra }];
   return [];

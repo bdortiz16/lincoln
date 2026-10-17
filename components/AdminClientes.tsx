@@ -575,10 +575,22 @@ export const AdminClientes: React.FC<{
                 {diagSync && <DiagnosticoSync d={diagSync} onCerrar={() => setDiagSync(null)} />}
                 {sonda && <ResultadoSonda r={sonda} onCerrar={() => setSonda(null)} />}
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
-                  <span style={{ fontSize: 12, color: C.sub, fontFamily: FONT }}>
-                    {histSel.cargando ? 'Trayendo el historial completo…' : `${movsDe(sel.id).length} movimientos${histSel.completo ? ' · historial completo' : ''}`}
+                  <span style={{ fontSize: 12, color: histSel.error && !histSel.completo ? C.red : C.sub, fontFamily: FONT }}>
+                    {histSel.cargando ? 'Trayendo el historial completo…'
+                      // Si el historial completo no llegó, se DICE: lo que se ve
+                      // es solo la ventana reciente del panel, no todo.
+                      : histSel.error && !histSel.completo
+                        ? `${movsDe(sel.id).length} movimientos · SOLO LOS RECIENTES (${histSel.error}) `
+                        : `${movsDe(sel.id).length} movimientos${histSel.completo ? ' · historial completo' : ''}`}
+                    {!histSel.cargando && histSel.error && !histSel.completo && (
+                      <button onClick={() => histSel.recargar?.()} style={{ fontFamily: FONT, fontSize: 12, fontWeight: 700, color: C.text, background: 'transparent', border: 'none', textDecoration: 'underline', cursor: 'pointer', padding: 0 }}>Reintentar</button>
+                    )}
                   </span>
-                  <button onClick={() => descargarMovimientosCliente(String(sel.name ?? sel.company_name ?? sel.email ?? 'cliente'), movsDe(sel.id))}
+                  <button onClick={() => {
+                      // Un Excel parcial que parece completo es peor que ninguno.
+                      if (!histSel.completo && !window.confirm('El historial completo no se pudo cargar: el Excel tendría SOLO los movimientos recientes. ¿Descargarlo igual?')) return;
+                      descargarMovimientosCliente(String(sel.name ?? sel.company_name ?? sel.email ?? 'cliente'), movsDe(sel.id));
+                    }}
                     disabled={histSel.cargando || movsDe(sel.id).length === 0}
                     className="lincoin-btn-white"
                     style={{ fontFamily: FONT, fontWeight: 700, fontSize: 12.5, padding: '8px 14px', borderRadius: 9, border: 'none', cursor: histSel.cargando ? 'wait' : 'pointer', opacity: histSel.cargando || movsDe(sel.id).length === 0 ? 0.5 : 1 }}>

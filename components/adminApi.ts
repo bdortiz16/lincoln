@@ -12,12 +12,26 @@ export async function pedirAdmin(body: any): Promise<any> {
     const k = Object.keys(localStorage).find((key) => key.startsWith('sb-') && key.endsWith('-auth-token'));
     if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; }
   } catch { /* sin sesión, va con la anon y el servidor la rechaza, que es lo correcto */ }
-  const r = await fetch(`${SURL}/functions/v1/admin-data`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}` },
-    body: JSON.stringify(body),
-  });
-  return r.json();
+  // El motivo no se puede perder en el camino: si la respuesta no es JSON (la
+  // plataforma cortó, la función no arrancó) se devuelve un `error` legible,
+  // y si el servidor mandó el motivo en `message`/`msg` se copia a `error`,
+  // que es lo que leen las pantallas.
+  let r: Response;
+  try {
+    r = await fetch(`${SURL}/functions/v1/admin-data`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}` },
+      body: JSON.stringify(body),
+    });
+  } catch (e: any) {
+    return { ok: false, error: 'No se pudo contactar el servidor. Revisa la conexión.' };
+  }
+  const t = await r.text().catch(() => '');
+  let d: any = null;
+  try { d = t ? JSON.parse(t) : null; } catch { d = null; }
+  if (!d || typeof d !== 'object') return { ok: false, error: `El servidor respondió sin detalle (HTTP ${r.status}).` };
+  if (!r.ok && !d.error && (d.message || d.msg)) d.error = d.message || d.msg;
+  return d;
 }
 
 // Llamada a la función `gowd` (cuentas en Brasil) con la sesión del admin.

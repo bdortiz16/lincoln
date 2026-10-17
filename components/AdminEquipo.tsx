@@ -131,7 +131,7 @@ export const AdminEquipo: React.FC = () => {
                       onClick={async () => {
                         if (!confirm(`Quitarle el acceso a ${m.email}?`)) return;
                         const r = await pedirAdmin({ action: 'equipo_desactivar', id: m.id });
-                        if (!r?.ok) alert(r?.message ?? 'No se pudo quitar el acceso.');
+                        if (!r?.ok) alert(r?.error ?? r?.message ?? 'No se pudo quitar el acceso.');
                         cargar();
                       }}
                       className="text-xs font-semibold text-red-600 hover:text-red-800 border border-red-200 rounded-lg px-2.5 py-1">

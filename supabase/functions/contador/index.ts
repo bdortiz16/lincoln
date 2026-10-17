@@ -148,10 +148,22 @@ Deno.serve(async (req) => {
       const aprobado = lista(emp.raw_data, 'contadores').some(c => c.id === yo.id) || (yo.role === 'contador' && String(yo.raw.contadorDe ?? '') === empresaId)
       if (!aprobado) return json({ ok: false, error: 'La empresa no ha aprobado tu acceso.' }, 403)
 
-      const [tx, comps] = await Promise.all([
-        db.from('transactions').select('*').eq('user_id', empresaId).order('created_at', { ascending: false }).limit(5000),
-        db.from('comprobantes').select('*').eq('user_id', empresaId).limit(5000),
-      ])
+      // POR PÁGINAS: la API devuelve como mucho 1.000 filas por consulta. Con
+      // .limit(5000) una empresa con más de 1.000 movimientos veía vacíos los
+      // meses viejos y un "saldo inicial" equivocado en el Excel.
+      const leerTodo = async (tabla: string, columnaOrden: string) => {
+        const filas: any[] = []
+        for (let desde = 0; desde < 20000; desde += 1000) {
+          // Orden fijo: sin él, las páginas pueden repetir o saltarse filas.
+          const { data, error } = await db.from(tabla).select('*').eq('user_id', empresaId)
+            .order(columnaOrden, { ascending: false }).range(desde, desde + 999)
+          if (error) return { data: filas, error }
+          filas.push(...(data ?? []))
+          if (!data || data.length < 1000) break
+        }
+        return { data: filas, error: null as any }
+      }
+      const [tx, comps] = await Promise.all([leerTodo('transactions', 'created_at'), leerTodo('comprobantes', 'id')])
       if (tx.error) return json({ ok: false, error: `Movimientos: ${tx.error.message}` }, 500)
       return json({
         ok: true,

@@ -3000,7 +3000,9 @@ Deno.serve(async (req: Request) => {
         }
         const key = `limite_envio:${uid}`
         if (achMax === null) {
-          await db.from('system_config').delete().eq('key', key)
+          // Sin revisar el error decía "Excepción quitada" aunque no se hubiera borrado.
+          const { error: delErr } = await db.from('system_config').delete().eq('key', key)
+          if (delErr) return json({ error: `No se pudo quitar la excepción: ${delErr.message}` }, 500)
         } else {
           const valor = { achMax, nota: String(body.nota ?? '').slice(0, 200) || null, at: new Date().toISOString(), por: String(auth.userId ?? '') }
           const { error } = await db.from('system_config').upsert({ key, value: JSON.stringify(valor) }, { onConflict: 'key' })
@@ -3117,13 +3119,24 @@ Deno.serve(async (req: Request) => {
           .in('action', ['mouv.payout_breb.ok', 'mouv.payout_ach.ok', 'finity.payout_ach.ok', 'mouv.tx_insert_failed'])
           .gte('created_at', desde).order('created_at', { ascending: false }).limit(1000)
 
-        const { data: txs } = await db.from('transactions')
-          .select('id, user_id, amount, currency, created_at, raw_data')
-          .eq('type', 'dispersion').gte('created_at', desde).limit(3000)
+        // POR PÁGINAS: la API devuelve como mucho 1.000 filas por consulta,
+        // así que con .limit(3000) se leían solo 1.000 y el resto de los envíos
+        // EXISTENTES se reportaban como "huérfanos" — y Reconstruir los
+        // duplicaba.
+        const txs: any[] = []
+        for (let desdeFila = 0; desdeFila < 20000; desdeFila += 1000) {
+          const { data: pag, error: pagErr } = await db.from('transactions')
+            .select('id, user_id, amount, currency, created_at, raw_data')
+            .eq('type', 'dispersion').gte('created_at', desde)
+            .order('created_at', { ascending: false }).range(desdeFila, desdeFila + 999)
+          if (pagErr) return json({ ok: false, error: `No se pudieron leer los movimientos: ${pagErr.message}` }, 500)
+          txs.push(...((pag ?? []) as any[]))
+          if (!pag || pag.length < 1000) break
+        }
 
         const porRef = new Set<string>()
         const porUsuarioMonto = new Set<string>()
-        for (const t of (txs ?? []) as any[]) {
+        for (const t of txs) {
           const ref = String(t?.raw_data?.providerRef ?? '')
           if (ref) porRef.add(ref)
           // Clave de respaldo para los envíos sin referencia del proveedor:
@@ -3157,6 +3170,17 @@ Deno.serve(async (req: Request) => {
         let creados = 0
         for (const h of huerfanos.slice(0, 200)) {
           if (!h.userId || !h.amount) continue
+          // Última comprobación, fila por fila, justo antes de crearla: ni un
+          // envío con esa referencia ni una reconstrucción previa del mismo
+          // evento. Dos clics en Reconstruir no pueden duplicar nada.
+          if (h.providerRef) {
+            const { data: ya } = await db.from('transactions').select('id').eq('type', 'dispersion').filter('raw_data->>providerRef', 'eq', String(h.providerRef)).limit(1)
+            if (ya?.length) continue
+          }
+          {
+            const { data: yaRec } = await db.from('transactions').select('id').filter('raw_data->>desdeAuditoria', 'eq', String(h.auditId)).limit(1)
+            if (yaRec?.length) continue
+          }
           const { error } = await db.from('transactions').insert({
             user_id: h.userId, type: 'dispersion', amount: h.amount, currency: h.railCol,
             status: String(h.accion).endsWith('.ok') ? 'Completado' : 'Procesando',

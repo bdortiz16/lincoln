@@ -183,6 +183,17 @@ export const TxDetailDrawer: React.FC<Props> = ({ txId, onClose, onUpdated, prof
 
             // Decidir si aplicamos status final ahora
             const intent: 'approved' | 'rejected' = decision === 'reject' ? 'rejected' : 'approved';
+            // Si el voto no se pudo registrar y esta operación exige DOS
+            // aprobaciones, no se aprueba: antes un voto fallido se tomaba como
+            // aprobación final y un solo admin aprobaba lo que pedía dos.
+            if (decision === 'approve' && voteFailed && needsDual) {
+                await confirm({
+                    title: 'No se registró tu aprobación',
+                    message: `Esta operación necesita doble aprobación y tu voto no se pudo guardar (${voteErr?.message ?? 'error desconocido'}). No se aprobó nada; intenta de nuevo.`,
+                    variant: 'danger', alertOnly: true, confirmLabel: 'Cerrar',
+                });
+                return;
+            }
             let applyFinal = decision === 'reject' || voteFailed;
             if (decision === 'approve' && !voteFailed) {
                 if (needsDual) {
