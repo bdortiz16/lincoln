@@ -75,6 +75,7 @@ const getStoredTokenPD = (): string | null => {
 import { Logo } from './Logo';
 import { SidebarEmpresas } from './SidebarEmpresas';
 import { llamarFuncion } from '../lib/edge';
+import { motivoLegibleCliente, tipoDocumentoMostrado } from '../lib/textoCliente';
 import { MOTIVOS_ENVIO } from '../lib/motivosEnvio';
 import { MouvSection, fetchMouvBalance, fetchMouvRateValue, fetchMouvUsdCopConfig, callMouv } from './OtcMigration';
 import { MouvDispersion } from './MouvDispersion';
@@ -2509,7 +2510,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           const reference = ref0 ? String(ref0) : `TX-${String(t.id ?? '').replace(/-/g, '').slice(-6).toUpperCase()}`;
           const st = String(t.status || '');
           const pill = etiquetaEstado(t);
-          const failReason = isFailedTx(t) ? String(rd.error?.message ?? (typeof rd.error === 'string' ? rd.error : '') ?? '').slice(0, 220) : '';
+          // El motivo del fallo en el tooltip, con el MISMO filtro que el detalle:
+          // nada de texto técnico, inglés ni nombres de aliados.
+          const failReason = isFailedTx(t) ? (motivoLegibleCliente(rd.providerError ?? rd.errorMessage ?? rd.error?.body?.message ?? rd.error?.message ?? (typeof rd.error === 'string' ? rd.error : '')) ?? '') : '';
           const rateVal = t.mouvRate ?? rd.mouvRate;
           const sub2 = t.type === 'convert' && rateVal ? `tasa ${Math.round(Number(rateVal)).toLocaleString('es-CO')}` : '';
           return { kind, ticker, title, time, dest, rail, flag, reference, pill, failReason, sub2 };
@@ -3910,14 +3913,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     // respaldos y, si hay número sin tipo, se asume CC (cédula).
     const docTypeVal: string = tx.documentType ?? rawData.documentType ?? dispRecipient.documentType ?? dispRecipient.docType ?? '';
     const docNumberVal: string = tx.documentNumber ?? rawData.documentNumber ?? dispRecipient.documentNumber ?? dispRecipient.docNumber ?? '';
-    // Una empresa tiene NIT, no cédula. Las llaves Bre-B devuelven el número
-    // sin el tipo y se asumía CC: "EQUIPOS AMC SA · CC 890932739". Si el
-    // titular es una razón social, o el número tiene la forma de un NIT (9
-    // dígitos que empiezan por 8 o 9) y nadie dijo el tipo, es NIT.
-    const titularDoc = String(dispBeneficiary || tx.beneficiary || '');
-    const esRazonSocial = /\b(S\.?\s?A\.?\s?S\.?|S\.?\s?A\.?|LTDA\.?|S\.?\s?EN\s?C\.?|E\.?\s?U\.?|CIA\.?|CORP\.?|INC\.?|FUNDACI[OÓ]N|COOPERATIVA|ASOCIACI[OÓ]N|CORPORACI[OÓ]N)$|\b(SAS|LTDA|SOCIEDAD|COMPA[ÑN][IÍ]A|EMPRESA|INVERSIONES|GRUPO)\b/i.test(titularDoc.trim());
-    const formaDeNit = /^[89]\d{8}$/.test(String(docNumberVal).replace(/\D/g, ''));
-    const docTypeShown = esRazonSocial ? 'NIT' : (docTypeVal || (formaDeNit ? 'NIT' : 'CC'));
+    // Una empresa tiene NIT, no cédula (ver tipoDocumentoMostrado).
+    const docTypeShown = tipoDocumentoMostrado(docTypeVal, docNumberVal, dispBeneficiary || tx.beneficiary);
     const docValue = docNumberVal ? `${docTypeShown} ${docNumberVal}`.trim() : '';
     // Tipo de llave Bre-B (Celular/Cédula/Correo/Alfanumérica) para el label.
     const dispKeyTypeLabel: string = ({ celular: 'Celular', cedula: 'Cédula', correo: 'Correo', alfanumerico: 'Alfanumérica' } as Record<string, string>)[String(dispRecipient.keyType ?? '').toLowerCase()] ?? '';
@@ -4309,7 +4306,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       // Referencia de la operación = id del proveedor (Mouv/Finity) cuando pasó
       // por un riel externo → coincide 1:1 con su panel. Si no, id interno.
       { label: providerOpRef ? providerRefLabel : 'Referencia', value: truncMid(providerOpRef || String(tx.id)), mono: true, copy: providerOpRef || String(tx.id) },
-      ...(!isCredit ? [{ label: 'Costo del envío', value: feeCop > 0 ? `${formatMoney(feeCop, 'COP')} COP` : 'Gratis', green: feeCop <= 0 }] : []),
+      // Fallido/Rechazado: la comisión se devolvió con el monto; mostrar
+      // "Costo del envío 1.200" o "Gratis" al lado de "tu saldo fue devuelto"
+      // confundía.
+      ...(!isCredit && st !== 'Fallido' && st !== 'Rechazado' ? [{ label: 'Costo del envío', value: feeCop > 0 ? `${formatMoney(feeCop, 'COP')} COP` : 'Gratis', green: feeCop <= 0 }] : []),
     ];
     // Por qué se rechazó, con las palabras del operador del riel. Lo que la
     // base guardó al conciliar: providerError; si no, errorMessage (rechazo
@@ -4323,10 +4323,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           const motivoGuardado = (e: any) => (e && typeof e === 'object' ? (e.body?.message ?? e.message ?? null) : null);
           const c = [tx.providerError, rawData.providerError, tx.errorMessage, rawData.errorMessage, motivoGuardado(tx.error), motivoGuardado(rawData.error), tx.rejectReason, rawData.rejectReason, typeof tx.error === 'string' ? tx.error : null]
             .map(v => (typeof v === 'string' ? v.trim() : ''))
-            .find(v => v
-              && !/[{}\[\]<>]|https?:|http\s*\d|status\s*code|\b(api|request|bad|internal|server|gateway|timeout|exception|null|undefined|token|unauthori[sz]ed|forbidden|payload|json|paso)\b/i.test(v)
-              && !/\b(kamin|finity|mouv|gowd|kumplo|tusdatos|sumsub|fireblocks|tatum|gasfree|saldo|fondos)\b/i.test(v)
-              && !/\b(the|to|of|is|was|not|could|cannot|unable|failed|invalid|please|your|with|from)\b/i.test(v));
+            .find(v => !!motivoLegibleCliente(v));
           return c || null;
         })()
       : null;

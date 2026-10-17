@@ -96,7 +96,7 @@ interface DatabaseContextType {
   deleteNotification: (id: string | number) => void;
   clearNotifications: () => void;
   requestDeposit: (amount: number, curr: string, method: string, proof?: string) => Promise<void>;
-  requestWithdrawal: (amount: number, curr: string, bank: string, acc: string, ben: string, reason: string, docType?: string, docNumber?: string, debitKey?: string) => Promise<void>;
+  requestWithdrawal: (amount: number, curr: string, bank: string, acc: string, ben: string, reason: string, docType?: string, docNumber?: string, debitKey?: string, extra?: Record<string, unknown>) => Promise<{ ok: boolean; error?: string }>;
   performConversion: (src: string, tgt: string, amtS: number, amtT: number, fee: number, coup?: string) => Promise<{ error?: string }>;
   approveDeposit: (id: any) => Promise<{ ok: boolean; error?: string }>;
   rejectDeposit: (id: any) => Promise<{ ok: boolean; error?: string }>;
@@ -1433,7 +1433,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         .single();
       if (inserted?.id) {
         setTransactions(prev => prev.map(t => t.id === tempId ? { ...t, id: inserted.id } : t));
-        return;
+        return true;
       }
       // ⚠️ La RLS de public.transactions solo dejaba insertar a admins — un
       // cliente normal (con JWT real o no) nunca podía crear su propio
@@ -1452,14 +1452,16 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         }).then(r2 => r2.json()).catch((e2: any) => ({ error: String(e2?.message ?? e2) }));
         if (r?.id != null) {
           setTransactions(prev => prev.map(t => t.id === tempId ? { ...t, id: r.id } : t));
-        } else {
-          console.error('[saveTx] fallback admin-data también falló:', r?.error);
+          return true;
         }
+        console.error('[saveTx] fallback admin-data también falló:', r?.error);
       }
     } catch (e) {
       console.error('[saveTx] threw:', e);
       /* optimistic row stays visible locally even though nothing landed in DB */
     }
+    // La fila no llegó a la base: quien llama tiene que poder decirlo.
+    return false;
   };
 
   const updateTxStatus = async (id: number, updates: Partial<Transaction>) => {
@@ -2398,18 +2400,22 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     }).catch(() => {});
   };
 
-  const requestWithdrawal = async (amount: number, currency: string, bank: string, account: string, beneficiary: string, reason: string, docType?: string, docNumber?: string, debitKey?: string) => {
+  // Devuelve si la solicitud QUEDÓ registrada. Antes devolvía nada: sin saldo
+  // salía en silencio, un error de guardado se tragaba, y la pantalla decía
+  // "¡Retiro solicitado!" en todos los casos.
+  const requestWithdrawal = async (amount: number, currency: string, bank: string, account: string, beneficiary: string, reason: string, docType?: string, docNumber?: string, debitKey?: string, extra?: Record<string, unknown>): Promise<{ ok: boolean; error?: string }> => {
     // El saldo puede salir de un riel distinto al de la moneda mostrada:
     // COP tiene 3 billeteras separadas (COP / COP_BREB / COP_ACH). `debitKey`
     // dice de cuál se debita; el registro guarda `currency` para el display.
     const key = debitKey || currency;
-    if (!currentUser || getBalance(key) < amount) return;
+    if (!currentUser) return { ok: false, error: 'Tu sesión expiró. Vuelve a iniciar sesión.' };
+    if (getBalance(key) < amount) return { ok: false, error: 'Saldo insuficiente en la cuenta de la que sale el retiro.' };
     const newBal = { ...currentUser.balances, [key]: getBalance(key) - amount };
     pendingWriteUntilRef.current = Date.now() + 10000;
     setCurrentUser(prev => prev ? { ...prev, balances: newBal } : prev);
     setUsers(prev => prev.map(u => u.id === currentUser.id ? { ...u, balances: newBal } : u));
     saveUser({ ...currentUser, balances: newBal }, false, true).catch(() => {});
-    saveTx({
+    const quedo = await saveTx({
       userId: currentUser.id,
       userName: currentUser.name,
       userRole: currentUser.role,
@@ -2420,7 +2426,10 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       amount, currency, status: 'Pendiente', bank, account, beneficiary, reason,
       ...(docType ? { documentType: docType } : {}),
       ...(docNumber ? { documentNumber: docNumber } : {}),
-    }).catch(() => {});
+      ...(extra ?? {}),
+    }).catch(() => false);
+    if (!quedo) return { ok: false, error: 'No pudimos registrar la solicitud. Revisa tus movimientos antes de repetirla.' };
+    return { ok: true };
   };
 
   const performConversion = async (src: string, tgt: string, amtS: number, amtT: number, fee: number, coupon?: string): Promise<{ error?: string }> => {

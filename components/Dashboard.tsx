@@ -1105,7 +1105,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
       if (isSending) return;
       setIsSending(true);
       requestWithdrawal(getRawAmount(sendForm.amount), sendForm.destinationCurrency, sendForm.bankName, sendForm.accountNumber, sendForm.beneficiaryName, sendForm.reason)
-        .then(() => { setIsSending(false); setSendStep(4); })
+        .then((r) => { setIsSending(false); if (!r?.ok) { showToast(r?.error || 'No se pudo registrar el envío.'); return; } setSendStep(4); })
         .catch(() => { setIsSending(false); showToast('Error al procesar el envío.'); });
   };
 
@@ -1119,10 +1119,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
           'Punto Físico',
           cashForm.docNumber,
           cashForm.recipientName,
-          `Retiro en punto físico — ${cashForm.city}`
-      ).then(() => {
-          setCashReference(ref);
+          `Retiro en punto físico — ${cashForm.city}`,
+          undefined, undefined, undefined,
+          { cashReference: ref },
+      ).then((r) => {
           setIsSending(false);
+          if (!r?.ok) { showToast(r?.error || 'No se pudo registrar el retiro.'); return; }
+          setCashReference(ref);
           setSendStep(4);
       }).catch(() => {
           setIsSending(false);

@@ -686,7 +686,13 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
         callGasfree={callGasfree}
         refreshGasfreeBal={() => refreshData()}
         movements={movs}
-        onIrA={(v) => { if (v === 'settings') abrirSeguridad(); }}
+        onIrA={(v) => {
+          if (v === 'settings') abrirSeguridad();
+          // "Inscribir beneficiario" desde el envío: antes solo cerraba el panel.
+          else if (v === 'contactos' || v === 'beneficiarios') setVista('beneficiarios');
+          else if (v === 'movimientos' || v === 'history') setVista('movimientos');
+        }}
+        onVerMovimiento={() => setVista('movimientos')}
         saldoUnificado
       />
 

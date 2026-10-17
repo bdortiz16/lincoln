@@ -108,7 +108,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
   const [sendStep, setSendStep] = useState(1);
   // Resultado del envío para el paso 5 ("Envío en camino" / fallo): datos
   // reales de la dispersión — referencia del proveedor, costo, riel, hora.
-  const [sendResult, setSendResult] = useState<{ ok: boolean; message?: string; providerRef?: string | null; feeCop?: number; rail?: string; at?: string; viaBreb?: boolean; cuentaBreb?: 1 | 2 } | null>(null);
+  const [sendResult, setSendResult] = useState<{ ok: boolean; message?: string; providerRef?: string | null; feeCop?: number; rail?: string; at?: string; viaBreb?: boolean; cuentaBreb?: 1 | 2; desconocido?: boolean } | null>(null);
   // Buscador del selector de contactos inscritos (envíos COP · banco)
   const [contactSearch, setContactSearch] = useState('');
   // ID de la external account de Mouv del contacto elegido — con él la
@@ -390,7 +390,14 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
           }
           // Beneficiario preseleccionado (botón "Enviar" de Beneficiarios):
           // ya se sabe destino y método — del monto directo a confirmar.
-          if (sendContact && sendMode && sendForm.beneficiaryName) { setSendStep(4); return; }
+          // PERO con los mismos controles que la lista del paso 3: el atajo de
+          // "Beneficiarios frecuentes" se saltaba la aprobación de la cuenta y
+          // los antecedentes, y llevaba a confirmar un envío que iba a fallar.
+          if (sendContact && sendMode && sendForm.beneficiaryName) {
+              const motivo = motivoContactoNoSirve(sendContact);
+              if (motivo) { showToast(motivo, 6000, 'error'); return; }
+              setSendStep(4); return;
+          }
           // USDT: único método es wallet — directo al destinatario.
           if (sendForm.destinationCurrency === 'USD') { setSendMode('wallet'); setSendStep(3); return; }
           setSendStep(2); // → method selection
@@ -401,6 +408,26 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
           }
           setSendStep(4);
       }
+  };
+
+  // ¿Por qué NO se le puede enviar a este beneficiario ahora? null = sí se
+  // puede. Mismo criterio que la lista del paso 3 (aprobación de la cuenta y
+  // veredicto de antecedentes); el servidor igual tiene la última palabra.
+  const motivoContactoNoSirve = (c: any): string | null => {
+      if (!c) return null;
+      const st = contactStatus(c);
+      if (st === 'rechazada') return 'El banco rechazó la cuenta de este beneficiario. Revísala en Beneficiarios.';
+      if (st !== 'aprobada') return 'La cuenta de este beneficiario todavía está en validación. Podrás enviarle apenas la aprueben.';
+      const benefs: Record<string, any> = amlSrv ?? ((currentUser as any)?.raw_data?.tusdatos?.beneficiarios) ?? {};
+      const doc = String(c?.docNumber ?? '').replace(/\D/g, '');
+      const k = doc ? benefs[doc] : null;
+      if (k) {
+          if (k.estado !== 'finalizado') return 'Estamos verificando los antecedentes de este beneficiario. Suele tardar cerca de un minuto; inténtalo de nuevo en un momento.';
+          if (k.aprobadoManual !== true && (k.operable === false || k.categoria === 'alto' || k.nombreCoincide === false || k.documentoVigente === false)) {
+              return 'Este beneficiario no pasó la verificación de antecedentes. Revisa el detalle en Beneficiarios.';
+          }
+      }
+      return null;
   };
 
   const handlePayLookup = (code: string) => {
@@ -493,11 +520,16 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
           cashForm.recipientName,
           `Retiro en punto físico — ${cashForm.city}`,
           cashForm.docType,
-          cashForm.docNumber
-      ).then(() => {
-          setCashReference(ref);
+          cashForm.docNumber,
+          undefined,
+          // La referencia queda GUARDADA en la solicitud: antes se inventaba
+          // en el navegador y no existía en ningún sistema.
+          { cashReference: ref },
+      ).then((r) => {
           sendingRef.current = false;
           setIsSending(false);
+          if (!r?.ok) { showToast(r?.error || 'No se pudo registrar el retiro.', 6000, 'error'); return; }
+          setCashReference(ref);
           setSendStep(5);
       }).catch(() => {
           sendingRef.current = false;
@@ -511,7 +543,11 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
   // de ejecutar el movimiento. Solo tras validarlo se corre handleSendSubmit.
   const requestSendConfirm = () => {
       if (isSending || sendingRef.current || mouvUnknown) return;
-      if (mfaEnrolled && (mfaTotpSecret || mfaFactorId)) {
+      // Basta con que tenga 2FA: verifyMfaCode valida contra el servidor si
+      // la pantalla no tiene el secreto. Antes se exigía que el portal pasara
+      // el secreto o el factor, y el de Personas no los pasa: el código nunca
+      // se pedía, el envío salía sin él y el servidor lo rechazaba siempre.
+      if (mfaEnrolled) {
           setSendOtpCode(''); setSendOtpError(''); setSendOtpOpen(true);
           return;
       }
@@ -611,7 +647,10 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
               ]);
               const cuentaBreb = isBreb ? (cuenta2 ? 2 : 1) as 1 | 2 : undefined;
               if (r?.ok) {
-                  setSendResult({ ok: true, providerRef: r?.providerRef ?? null, feeCop: Number(r?.feeCop ?? (isBreb ? 1200 : 2500)), rail, viaBreb: isBreb, cuentaBreb, at: new Date().toISOString() });
+                  // desenlaceDesconocido: el proveedor no confirmó. Se dice tal
+                  // cual ("lo estamos verificando, no lo repitas"); antes salía
+                  // el verde "Envío en camino" igual que un envío aceptado.
+                  setSendResult({ ok: true, providerRef: r?.providerRef ?? null, feeCop: Number(r?.feeCop ?? (isBreb ? 1200 : 2500)), rail, viaBreb: isBreb, cuentaBreb, at: new Date().toISOString(), desconocido: !!r?.desenlaceDesconocido, message: r?.desenlaceDesconocido ? String(r?.message ?? '') : undefined });
                   // Arranca la vigilancia rápida: 4 minutos preguntando cada 12 s
                   // por el desenlace de ESTE envío. Si se devolvió, el cliente
                   // se entera mientras todavía está en la pantalla.
@@ -701,7 +740,12 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
               sendForm.destinationCurrency === 'COP' ? sendSourceRail : undefined
           ),
           sendTimeout,
-      ]).then(() => { sendingRef.current = false; setIsSending(false); setSendResult({ ok: true, rail: sendForm.destinationCurrency === 'COP' ? sendSourceRail : sendForm.destinationCurrency, at: new Date().toISOString() }); setSendStep(5); })
+      ]).then((r: any) => {
+          sendingRef.current = false; setIsSending(false);
+          // Éxito solo si la solicitud QUEDÓ registrada.
+          if (!r?.ok) { showToast(r?.error || 'No se pudo registrar el envío.', 6000, 'error'); return; }
+          setSendResult({ ok: true, rail: sendForm.destinationCurrency === 'COP' ? sendSourceRail : sendForm.destinationCurrency, at: new Date().toISOString() }); setSendStep(5);
+      })
         .catch(() => { sendingRef.current = false; setIsSending(false); showToast('Error al procesar el envío.', 4000, 'error'); });
   };
 
@@ -1079,6 +1123,14 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                   <button
                                       onClick={() => {
                                           if (!sendMethodSel || sendMethodSel === 'brebX') return;
+                                          // Un beneficiario elegido para OTRO método no sirve: si se
+                                          // volvía de ACH a Bre-B, "Sale de" decía Bre-B pero el envío
+                                          // salía por ACH con el contacto viejo.
+                                          if (sendContact) {
+                                              const esBrebContacto = (sendContact as any).destKind === 'breb';
+                                              const esBrebMetodo = sendMethodSel === 'breb' || sendMethodSel === 'breb2';
+                                              if (esBrebContacto !== esBrebMetodo || (sendMethodSel !== 'ach' && !esBrebMetodo)) setSendContact(null);
+                                          }
                                           if (sendMethodSel === 'breb' || sendMethodSel === 'breb2' || sendMethodSel === 'ach') {
                                               setSendMode('bank');
                                               setBrebCuenta(sendMethodSel === 'breb2' ? 2 : 1);
@@ -1791,9 +1843,11 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                           ? <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" stroke="#4ADE80" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
                                           : <X size={22} style={{ color: '#F4F4F2' }} strokeWidth={2} />}
                                   </div>
-                                  <h2 style={{ fontSize: 20, fontWeight: 800, letterSpacing: '-0.5px', color: '#F4F4F2' }}>{ok ? 'Envío en camino' : 'No pudimos completar el envío'}</h2>
-                                  <p style={{ fontSize: 13.5, color: '#878E88', marginTop: 6, lineHeight: 1.45 }}>
-                                      {ok ? subOk : (sendResult?.message || 'El envío no se pudo completar y tu saldo fue devuelto.')}
+                                  <h2 style={{ fontSize: 20, fontWeight: 800, letterSpacing: '-0.5px', color: '#F4F4F2' }}>{!ok ? 'No pudimos completar el envío' : sendResult?.desconocido ? 'Envío en verificación' : 'Envío en camino'}</h2>
+                                  <p style={{ fontSize: 13.5, color: sendResult?.desconocido ? '#F59E0B' : '#878E88', marginTop: 6, lineHeight: 1.45 }}>
+                                      {!ok ? (sendResult?.message || 'El envío no se pudo completar y tu saldo fue devuelto.')
+                                          : sendResult?.desconocido ? (sendResult?.message || 'No pudimos confirmar el envío con el banco. NO lo repitas: lo estamos verificando y te avisamos en minutos.')
+                                          : subOk}
                                   </p>
                               </div>
                               {/* 2. Monto */}
@@ -1834,12 +1888,15 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                       <span style={{ fontSize: 12.5, color: '#878E88' }}>Fecha</span>
                                       <span style={{ fontSize: 12.5, fontWeight: 600, color: '#F4F4F2' }}>{dateLabel}</span>
                                   </div>
+                                  {/* Un envío que no salió no cobra comisión: se devolvió con el monto. */}
+                                  {ok && (
                                   <div style={rowStyle}>
                                       <span style={{ fontSize: 12.5, color: '#878E88' }}>Costo del envío</span>
                                       {feeCop > 0
                                           ? <span style={{ fontSize: 12.5, fontWeight: 600, color: '#F4F4F2' }}>{formatMoney(feeCop, 'COP')} COP</span>
                                           : <span style={{ fontSize: 12.5, fontWeight: 700, color: '#4ADE80' }}>Gratis</span>}
                                   </div>
+                                  )}
                               </div>
                               {/* 5. Botonera */}
                               <div className="flex" style={{ gap: 9, marginTop: 16 }}>
@@ -1870,7 +1927,8 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                           // movimiento real, lo cierto es 'Procesando'.
                                           const receiptStatus = realMov?.status || 'Procesando';
                                           const receiptTx = {
-                                              id: sendResult?.providerRef || `TX-${Date.now()}`,
+                                              // El id REAL del movimiento si ya apareció; el inventado solo si no hay nada.
+                                              id: realMov?.id ?? (sendResult?.providerRef || `TX-${Date.now()}`),
                                               type: isWalletSend ? 'send' : 'dispersion',
                                               amount: amt,
                                               currency: isWalletSend ? 'USDT_TRON' : (isBrebS ? (cuenta2S ? 'COP_ACH' : 'COP_BREB') : (isCop ? 'COP_ACH' : sendForm.destinationCurrency)),

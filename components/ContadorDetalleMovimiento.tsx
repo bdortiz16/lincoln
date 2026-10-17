@@ -13,6 +13,7 @@
 import React, { useEffect, useState } from 'react';
 import { X, Copy, FileText, ExternalLink, Download } from 'lucide-react';
 import { llamarFuncion } from '../lib/edge';
+import { motivoLegibleCliente, tipoDocumentoMostrado } from '../lib/textoCliente';
 
 const FONT = 'Archivo, system-ui, sans-serif';
 const MONO = 'ui-monospace, Menlo, monospace';
@@ -176,7 +177,7 @@ export const ContadorDetalleMovimiento: React.FC<{ tx: any; comprobante: any | n
   const dest = (v('recipient') && typeof v('recipient') === 'object') ? v('recipient') : {};
   const contraparte = String(v('beneficiary') ?? dest.holderName ?? v('beneficiaryName') ?? v('counterpartyName') ?? v('senderName') ?? v('pagador') ?? v('recipientName') ?? '').trim();
   const docNum = String(v('documentNumber') ?? dest.documentNumber ?? dest.docNumber ?? '').trim();
-  const docTipo = String(v('documentType') ?? dest.documentType ?? dest.docType ?? '').trim();
+  const docTipo = tipoDocumentoMostrado(v('documentType') ?? dest.documentType ?? dest.docType, v('documentNumber') ?? dest.documentNumber ?? dest.docNumber, v('beneficiary') ?? dest.holderName);
   const cuenta = String(v('account') ?? dest.key ?? dest.accountNumber ?? '').trim();
   const banco = String(v('bank') ?? dest.bankName ?? '').split('·')[0].trim();
   // Bre-B · Cuenta 2 se paga con el saldo ACH (moneda COP_ACH) pero es un
@@ -188,8 +189,8 @@ export const ContadorDetalleMovimiento: React.FC<{ tx: any; comprobante: any | n
   const nota = String(v('note') ?? v('description') ?? '').trim();
   const fee = Number(v('feeCop') ?? 0);
   const motivoRechazo = (st === 'Rechazado' || st === 'Fallido')
-    ? [v('providerError'), v('errorMessage'), v('rejectReason'), typeof v('error') === 'string' ? v('error') : null]
-        .map(x => (typeof x === 'string' ? x.trim() : '')).find(x => x && !/[{}\[\]]|http\s*\d|status\s*code/i.test(x)) ?? null
+    ? [v('providerError'), v('errorMessage'), (v('error') as any)?.body?.message, v('rejectReason'), typeof v('error') === 'string' ? v('error') : null]
+        .map(x => motivoLegibleCliente(x)).find(Boolean) ?? null
     : null;
 
   const filasMov: Fila[] = [
@@ -275,8 +276,8 @@ export const ContadorDetalleMovimiento: React.FC<{ tx: any; comprobante: any | n
         <div style={{ padding: '14px 22px 22px' }}>
           {motivoRechazo !== null || st === 'Rechazado' || st === 'Fallido' ? (
             <div style={{ border: '1px solid rgba(248,113,113,0.35)', borderRadius: 12, background: 'rgba(248,113,113,0.06)', padding: '11px 14px', marginBottom: 12 }}>
-              <p style={{ fontSize: 10.5, fontWeight: 700, color: C.rojo, letterSpacing: 0.4, margin: 0 }}>MOTIVO DEL RECHAZO</p>
-              <p style={{ fontSize: 13, fontWeight: 600, color: C.text, margin: '4px 0 0', lineHeight: 1.45 }}>{motivoRechazo ?? 'El operador del riel no entregó el motivo.'}</p>
+              <p style={{ fontSize: 10.5, fontWeight: 700, color: C.rojo, letterSpacing: 0.4, margin: 0 }}>{st === 'Fallido' ? 'POR QUÉ NO SALIÓ' : 'MOTIVO DEL RECHAZO'}</p>
+              <p style={{ fontSize: 13, fontWeight: 600, color: C.text, margin: '4px 0 0', lineHeight: 1.45 }}>{motivoRechazo ?? (st === 'Fallido' ? 'El envío no alcanzó a salir hacia el banco destino.' : 'El operador del riel no entregó el motivo.')}</p>
             </div>
           ) : null}
 

@@ -1161,19 +1161,25 @@ export const ContactsSection: React.FC<{
                 const next = retried.map(c => {
                     if (!isFinityAch(c)) return c;
                     const cid = c.finityId ?? c.mouvId;
-                    const row = rows.find((x: any) => {
-                        // 1) Por ID de Finity (infalible cuando lo tenemos)
-                        const rid = String(x.id ?? x.external_account_id ?? x.account_id ?? '');
-                        if (cid && rid && rid === cid) return true;
-                        // 2) Por número de cuenta — comparando solo dígitos, y
-                        //    tolerando números enmascarados (****1185)
-                        const acc = String(x.account_number ?? x.accountNumber ?? x.number ?? x.account ?? '');
-                        const accDigits = acc.replace(/\D/g, '');
-                        const cDigits = String(c.accountNumber).replace(/\D/g, '');
-                        if (!accDigits || !cDigits) return false;
-                        if (accDigits === cDigits) return true;
-                        return /[*·•]/.test(acc) && accDigits.length >= 4 && cDigits.endsWith(accDigits.slice(-4));
-                    });
+                    const idDe = (x: any) => String(x.id ?? x.external_account_id ?? x.account_id ?? '');
+                    const accDe = (x: any) => String(x.account_number ?? x.accountNumber ?? x.number ?? x.account ?? '');
+                    const cDigits = String(c.accountNumber).replace(/\D/g, '');
+                    const cDoc = String(c.docNumber ?? '').replace(/\D/g, '');
+                    // EN ORDEN, y no "la primera fila que cumpla cualquiera":
+                    // 1) por el id de Finity; 2) por el número COMPLETO; 3) por
+                    // un número enmascarado (****1185) SOLO si una única fila
+                    // termina así y, si trae documento, es el del beneficiario.
+                    // Antes una fila de otra cuenta que terminaba igual podía
+                    // ganarle a la propia: el contacto copiaba su estado y su id.
+                    const porId = cid ? rows.find((x: any) => idDe(x) === String(cid)) : null;
+                    const porNumero = !porId && cDigits ? rows.find((x: any) => accDe(x).replace(/\D/g, '') === cDigits) : null;
+                    const enmascaradas = !porId && !porNumero && cDigits ? rows.filter((x: any) => {
+                        const acc = accDe(x); const d = acc.replace(/\D/g, '');
+                        if (!/[*·•]/.test(acc) || d.length < 4 || !cDigits.endsWith(d.slice(-4))) return false;
+                        const docFila = String(x.account_holder_id_number ?? x.account?.account_holder_id_number ?? '').replace(/\D/g, '');
+                        return !docFila || !cDoc || docFila === cDoc || docFila.startsWith(cDoc) || cDoc.startsWith(docFila);
+                    }) : [];
+                    const row = porId ?? porNumero ?? (enmascaradas.length === 1 ? enmascaradas[0] : null);
                     if (!row) return c;
                     const st = estadoDeFila(row);
                     const crudo = estadoCrudo(row);
