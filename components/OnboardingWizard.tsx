@@ -299,7 +299,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
                  </div>
                  <h2 className="text-2xl font-bold text-[#0C0E0D] mb-2">{steps.find(s => s.id === currentStep)?.label}</h2>
                  <p className="text-slate-500 mb-8 leading-relaxed">Complete la información requerida para habilitar su cuenta empresa.</p>
-                 <button onClick={handleStartStep} className="w-fit px-8 py-3 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg shadow-lg shadow-green-900/20 transition-all">
+                 <button onClick={handleStartStep} className="w-fit px-8 py-3 bg-[#0C0E0D] hover:bg-[#161A17] font-bold rounded-lg shadow-lg shadow-green-900/20 transition-all">
                     {currentStep === 1 ? "Comenzar registro" : "Continuar"}
                  </button>
             </div>
@@ -323,9 +323,9 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
                 <h2 className="text-xl text-slate-800 font-bold mb-1">¡Felicidades!</h2>
                 <h1 className="text-2xl text-[#0C0E0D] font-bold mb-4">La empresa {formData.companyName} fue registrada con éxito</h1>
                 <p className="text-slate-500 max-w-lg mb-12 leading-relaxed">
-                    Validaremos la documentación enviada y dentro de las próximas 24 horas hábiles te notificaremos para que puedas operar en LINCOIN.
+                    Validaremos la documentación enviada y dentro de las próximas 24 horas hábiles te notificaremos para que puedas operar en Lincoin.
                 </p>
-                <button onClick={onFinish} className="w-full max-w-xs h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg shadow-lg shadow-green-900/20 transition-all">Ir al inicio</button>
+                <button onClick={onFinish} className="w-full max-w-xs h-12 bg-[#0C0E0D] hover:bg-[#161A17] font-bold rounded-lg shadow-lg shadow-green-900/20 transition-all">Ir al inicio</button>
             </div>
         </div>
       );
@@ -422,7 +422,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
                             </div>
 
                             <div className="pt-4 flex justify-center pb-8">
-                                <button onClick={handleNextInForm} className="w-full max-w-sm h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg shadow-lg transition-all">Continuar</button>
+                                <button onClick={handleNextInForm} className="w-full max-w-sm h-12 bg-[#0C0E0D] hover:bg-[#161A17] font-bold rounded-lg shadow-lg transition-all">Continuar</button>
                             </div>
                         </div>
                     </>
@@ -442,7 +442,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
                         </div>
                         <h2 className="text-2xl font-bold text-[#0C0E0D] mb-4">Validación Biométrica</h2>
                         <p className="text-slate-500 mb-8">Para tu seguridad, necesitamos verificar que eres quien dices ser.</p>
-                        <button onClick={handleNextInForm} className="w-full max-w-xs h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg shadow-lg transition-all">Iniciar Verificación</button>
+                        <button onClick={handleNextInForm} className="w-full max-w-xs h-12 bg-[#0C0E0D] hover:bg-[#161A17] font-bold rounded-lg shadow-lg transition-all">Iniciar Verificación</button>
                     </div>
                 )}
 
@@ -490,7 +490,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
                             </div>
 
                             <div className="pt-8 flex justify-center pb-8">
-                                <button onClick={handleNextInForm} className="w-full max-w-sm h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg shadow-lg transition-all">Continuar</button>
+                                <button onClick={handleNextInForm} className="w-full max-w-sm h-12 bg-[#0C0E0D] hover:bg-[#161A17] font-bold rounded-lg shadow-lg transition-all">Continuar</button>
                             </div>
                         </div>
                     </>
@@ -510,7 +510,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
                                 </div>
                             </div>
                             <div className="pt-8 flex justify-center pb-8">
-                                <button onClick={handleNextInForm} className="w-full max-w-sm h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg shadow-lg transition-all">Continuar</button>
+                                <button onClick={handleNextInForm} className="w-full max-w-sm h-12 bg-[#0C0E0D] hover:bg-[#161A17] font-bold rounded-lg shadow-lg transition-all">Continuar</button>
                             </div>
                         </div>
                     </>
@@ -551,7 +551,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
                             </div>
 
                             <div className="pt-8 flex justify-center pb-8">
-                                <button onClick={handleNextInForm} className="w-full max-w-sm h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg shadow-lg transition-all">Finalizar Registro</button>
+                                <button onClick={handleNextInForm} className="w-full max-w-sm h-12 bg-[#0C0E0D] hover:bg-[#161A17] font-bold rounded-lg shadow-lg transition-all">Finalizar Registro</button>
                             </div>
                         </div>
                     </>
@@ -581,7 +581,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
                             </div>
                         </div>
                         <div className="pt-8 flex justify-center pb-8">
-                            <button onClick={handleNextInForm} className="w-full max-w-sm h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg shadow-lg transition-all">Confirmar y Enviar</button>
+                            <button onClick={handleNextInForm} className="w-full max-w-sm h-12 bg-[#0C0E0D] hover:bg-[#161A17] font-bold rounded-lg shadow-lg transition-all">Confirmar y Enviar</button>
                         </div>
                     </>
                 )}
@@ -603,7 +603,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onFinish }) 
                                 <ScanFace size={64} className="text-[#0C0E0D] mb-4"/>
                                 <h2 className="text-2xl font-bold text-slate-800 mb-2">Escaneo Facial</h2>
                                 <p className="text-slate-500 mb-8 text-sm">Por favor, mantén tu rostro dentro del marco y sigue las instrucciones.</p>
-                                <button onClick={handleModalStart} className="w-full max-w-xs h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg transition-colors">Escanear Ahora</button>
+                                <button onClick={handleModalStart} className="w-full max-w-xs h-12 bg-[#0C0E0D] hover:bg-[#161A17] font-bold rounded-lg transition-colors">Escanear Ahora</button>
                             </>
                         ) : (
                             <div className="flex flex-col items-center">

@@ -23,6 +23,7 @@
 // ════════════════════════════════════════════════════════
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { exigirWebhook } from '../_shared/webhook-auth.ts'
 
 const RESEND_KEY   = Deno.env.get('RESEND_API_KEY') ?? ''
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
@@ -347,6 +348,11 @@ function htmlEmail(event: EventKind, name: string, subject: string, record: DocR
 // ─────────────────────────────────────────────
 Deno.serve(async (req) => {
   try {
+    // Quién llama. Sin credencial no se manda ningún correo: la URL
+    // viaja en el bundle del navegador, así que conocerla no puede
+    // alcanzar para que Lincoin le escriba a un cliente.
+    { const no = await exigirWebhook(req, 'compliance-email', db); if (no) return no }
+
     if (!RESEND_KEY) {
       console.error('[compliance-email] RESEND_API_KEY not set — emails disabled')
       return new Response('no_key', { status: 200 })

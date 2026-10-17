@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 declare global { interface Window { grecaptcha: any } }
 import { Eye, EyeOff, ArrowLeft, AlertTriangle, X, CheckCircle, ShieldCheck } from 'lucide-react';
 import { Logo } from './Logo';
+import { CodeInput } from './CodeInput';
 import { TurnstileWidget, captchaEnabled } from './TurnstileWidget';
 import { useSystemConfig } from '../context/SystemConfigContext';
 import { useDatabase } from '../context/DatabaseContext';
@@ -11,14 +12,29 @@ interface LoginProps {
   onRegisterClick: () => void;
   onLoginSuccess: (role?: 'business' | 'personal' | 'admin') => void;
   onBack: () => void;
-  userRole?: 'business' | 'personal';
+  userRole?: 'business' | 'personal' | 'contador';
+  /** Mensaje que trae App (p. ej. Google entró con una cuenta del otro portal). */
+  errorInicial?: string | null;
 }
 
-export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, onBack, userRole = 'business' }) => {
+// Cada portal es para SU tipo de cuenta: Personas para cuentas Persona,
+// Empresas → Usuario para cuentas Empresa. Por Contabilidad entra cualquier
+// cuenta que no sea admin (el vínculo se resuelve adentro con el ID). Si la
+// cuenta no corresponde al portal, NO entra: se cierra la sesión y se dice
+// por dónde debe entrar. Devuelve el mensaje, o null si sí corresponde.
+export const errorDePortal = (portal: string, rolCuenta?: string): string | null => {
+  if (!rolCuenta || rolCuenta === 'admin' || portal === 'contador' || rolCuenta === portal) return null;
+  if (rolCuenta === 'personal') return 'Esta cuenta es de Personas. Este es el portal de Empresas: entra por Personas en lincoin.me/ingresar_personas.';
+  if (rolCuenta === 'contador') return 'Esta cuenta es de contador. Entra por Empresas → Contabilidad.';
+  return 'Esta cuenta es de Empresas. Este es el portal de Personas: entra por Empresas → Usuario en lincoin.me/ingresar_empresas.';
+};
+
+export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, onBack, userRole = 'business', errorInicial = null }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(errorInicial);
+  useEffect(() => { if (errorInicial) setErrorMsg(errorInicial); }, [errorInicial]);
   const [isLoading, setIsLoading] = useState(false);
 
   // Forgot Password State
@@ -65,7 +81,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
     const safetyTimer = setTimeout(() => setIsLoading(false), 20000);
     try {
       await getRecaptchaToken();
-      const result = await loginUser(email, password, captchaToken || undefined);
+      const result = await loginUser(email, password, captchaToken || undefined, userRole === 'personal' ? 'personal' : 'business');
       setCaptchaToken(''); setCaptchaKey(k => k + 1);
 
       // 2FA pendiente: la contraseña FUE correcta; se muestra la pantalla del
@@ -78,18 +94,11 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
         return;
       }
 
-      if (user && userRole !== 'admin' && user.role !== 'admin' && user.role !== userRole) {
-        logoutUser();
-        setErrorMsg(
-          user.role === 'personal'
-            ? 'Tu cuenta es de tipo Personal. Por favor inicia sesión en la sección de Personas.'
-            : 'Tu cuenta es de tipo Empresas. Por favor inicia sesión en la sección de Empresas.'
-        );
-        return;
-      }
+      const malPortal = errorDePortal(userRole, user.role);
+      if (malPortal) { logoutUser('portal equivocado'); setErrorMsg(malPortal); return; }
 
       if (config.maintenanceMode && user!.role !== 'admin') {
-        logoutUser();
+        logoutUser('mantenimiento');
         setErrorMsg("El sistema se encuentra en mantenimiento. Solo administradores pueden ingresar.");
         return;
       }
@@ -113,6 +122,14 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
       setMfaError('Código incorrecto o expirado. Intenta nuevamente.');
       setMfaCode('');
       return;
+    }
+    // La misma regla que sin 2FA: el código correcto no abre el portal
+    // equivocado. Antes este camino se saltaba la revisión y una cuenta de
+    // Empresas con 2FA entraba por Personas.
+    const malPortal = errorDePortal(userRole, user.role);
+    if (malPortal) { await logoutUser('portal equivocado'); setMfaCode(''); setErrorMsg(malPortal); return; }
+    if (config.maintenanceMode && user.role !== 'admin') {
+      await logoutUser('mantenimiento'); setMfaCode(''); setErrorMsg('El sistema se encuentra en mantenimiento. Solo administradores pueden ingresar.'); return;
     }
     onLoginSuccess(user.role as 'business' | 'personal' | 'admin');
   };
@@ -153,22 +170,27 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
             </div>
           )}
 
-          <input
-            type="text"
-            inputMode="numeric"
-            maxLength={6}
-            value={mfaCode}
-            onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, ''))}
-            className="w-full h-16 text-center text-3xl font-bold tracking-[0.5em] border-2 border-slate-200 rounded-xl focus:border-[#0C0E0D] outline-none mb-6 bg-slate-50"
-            placeholder="000000"
-            autoFocus
-            onKeyDown={(e) => e.key === 'Enter' && handleVerify2FA()}
-          />
+          {/* Al completar los seis dígitos se verifica solo: tener que tocar
+              "Verificar" con el código ya puesto es un paso de más justo donde
+              la gente ya está esperando. El botón se queda para quien prefiera
+              tocarlo y para reintentar. */}
+          <div className="mb-6">
+            <CodeInput
+              value={mfaCode}
+              onChange={setMfaCode}
+              onComplete={() => { if (!mfaLoading) handleVerify2FA(); }}
+              status={mfaLoading ? 'verifying' : mfaError ? 'error' : 'idle'}
+              tone="light"
+              autoFocus
+              disabled={mfaLoading}
+              aria="Código de verificación en dos pasos"
+            />
+          </div>
 
           <button
             onClick={handleVerify2FA}
             disabled={mfaCode.length !== 6 || mfaLoading}
-            className="w-full h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg disabled:opacity-50 transition-colors mb-4 shadow-lg shadow-green-900/20"
+            className="w-full h-12 bg-[#0C0E0D] hover:bg-[#161A17] font-bold rounded-lg disabled:opacity-50 transition-colors mb-4 shadow-lg shadow-green-900/20"
           >
             {mfaLoading ? 'Verificando...' : 'Verificar'}
           </button>
@@ -196,12 +218,14 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
         Volver al inicio
       </button>
 
-      <div className="mb-8 scale-125 cursor-pointer hover:scale-[1.4] transition-transform duration-300 anim-fade-in" onClick={onBack} title="Volver a la página principal">
-        <Logo collapsed />
+      <div className="mb-8 cursor-pointer anim-fade-in" onClick={onBack} title="Volver a la página principal">
+        <Logo />
       </div>
 
       <h1 className="text-2xl font-bold text-[#0C0E0D] text-center mb-10 anim-fade-up">
-        ¡Te damos la bienvenida a LINCOIN{userRole === 'business' ? <><br />empresas!</> : '!'}
+        {userRole === 'business' ? <>¡Te damos la bienvenida a Lincoin<br />empresas!</>
+          : userRole === 'contador' ? <>Contabilidad<br /><span className="text-base font-semibold text-slate-600">Entra con tu cuenta y luego escribe el ID de la empresa</span></>
+          : <>¡Te damos la bienvenida a Lincoin!</>}
       </h1>
 
       {config.maintenanceMode && (
@@ -261,11 +285,12 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
         <button
           onClick={handleLogin}
           disabled={isLoading || (captchaEnabled && !captchaToken)}
-          className="btn-shine w-full h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg transition-all duration-200 shadow-lg shadow-green-900/20 disabled:opacity-70 hover:shadow-xl hover:shadow-green-500/30 hover:-translate-y-0.5 active:scale-[0.98] active:translate-y-0"
+          className="btn-shine w-full h-12 bg-[#0C0E0D] hover:bg-[#161A17] font-bold rounded-lg transition-all duration-200 shadow-lg shadow-green-900/20 disabled:opacity-70 hover:shadow-xl hover:shadow-green-500/30 hover:-translate-y-0.5 active:scale-[0.98] active:translate-y-0"
         >
           {isLoading ? 'Iniciando sesión...' : 'Iniciar sesión'}
         </button>
 
+        <>
         <div className="flex items-center gap-3">
           <div className="flex-1 h-px bg-slate-200" />
           <span className="text-xs text-slate-800 font-medium">o continúa con</span>
@@ -273,7 +298,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
         </div>
 
         <button
-          onClick={() => loginWithGoogle(userRole !== 'admin' ? userRole : 'business')}
+          onClick={() => loginWithGoogle(userRole === 'personal' ? 'personal' : userRole === 'contador' ? 'contador' : 'business')}
           type="button"
           disabled={captchaEnabled && !captchaToken}
           title={captchaEnabled && !captchaToken ? 'Espera la verificación anti-bot' : undefined}
@@ -287,10 +312,11 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
           </svg>
           Continuar con Google
         </button>
+        </>
 
         <div className="flex justify-between items-center text-sm pt-2">
           <div className="text-slate-900">
-            ¿Eres nuevo? <button onClick={onRegisterClick} className="text-[#0C0E0D] font-bold hover:underline">Regístrate</button>
+            ¿Eres nuevo? <button onClick={onRegisterClick} className="text-[#0C0E0D] font-bold hover:underline">{userRole === 'contador' ? 'Crea tu cuenta de contador' : 'Regístrate'}</button>
           </div>
           <button onClick={() => setIsForgotModalOpen(true)} className="text-slate-800 hover:text-[#0C0E0D] transition-colors">
             Recuperar contraseña
@@ -324,7 +350,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
                     placeholder="tu@email.com"
                   />
                 </div>
-                <button onClick={handleForgotPassword} className="w-full h-12 bg-[#0C0E0D] font-bold rounded-lg hover:bg-[#152e52] transition-colors">
+                <button onClick={handleForgotPassword} className="w-full h-12 bg-[#0C0E0D] font-bold rounded-lg hover:bg-[#161A17] transition-colors">
                   Enviar Instrucciones
                 </button>
               </>

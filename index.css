@@ -176,3 +176,91 @@ button[class~="bg-[#4ADE80]"] {
 @keyframes lincoinFxRing { 0%{transform:scale(1);opacity:0.7} 100%{transform:scale(1.7);opacity:0} }
 .lincoin-fx-ring { animation: lincoinFxRing 1.1s ease-out 0.15s; }
 @media (prefers-reduced-motion: reduce) { .lincoin-deposit-fx,.lincoin-fx-check,.lincoin-fx-ring{animation:none} }
+
+/* ─── Foco visible ───
+   Muchos botones de la app son <button> sin borde ni fondo, y el contorno
+   que pinta el navegador por defecto se pierde encima. Sin esto, quien
+   navega con teclado no sabe dónde está parado. El anillo es el verde de
+   la marca, a media opacidad para que no compita con el contenido. */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid rgba(74, 222, 128, 0.5);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* ── Casillas del código de verificación ──────────────────────────────────
+   Un solo input real por debajo (para que funcionen el teclado numérico, el
+   pegado y el autorrelleno del código de iOS) y seis casillas dibujadas
+   encima. Las animaciones son cortas a propósito: esto se usa cuando alguien
+   está entrando a su cuenta o autorizando un pago, y una animación lenta ahí
+   se siente como lentitud del sistema, no como cuidado. */
+@keyframes lincoinCodePop {
+  0%   { transform: scale(0.72); opacity: 0; }
+  55%  { transform: scale(1.08); opacity: 1; }
+  100% { transform: scale(1);    opacity: 1; }
+}
+@keyframes lincoinCodeCaret { 0%, 45% { opacity: 1; } 55%, 100% { opacity: 0; } }
+@keyframes lincoinCodeShake {
+  0%, 100% { transform: translateX(0); }
+  15% { transform: translateX(-7px); }
+  30% { transform: translateX(6px); }
+  45% { transform: translateX(-4px); }
+  60% { transform: translateX(3px); }
+  80% { transform: translateX(-1px); }
+}
+@keyframes lincoinCodeOk {
+  0%   { transform: scale(1); }
+  40%  { transform: scale(1.07); }
+  100% { transform: scale(1); }
+}
+@keyframes lincoinCodeWait { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
+
+.lincoin-code-digit { animation: lincoinCodePop 170ms cubic-bezier(0.2, 0.9, 0.3, 1.2) both; }
+.lincoin-code-caret { animation: lincoinCodeCaret 1.05s steps(1, end) infinite; }
+.lincoin-code-shake { animation: lincoinCodeShake 420ms ease-in-out both; }
+.lincoin-code-ok    { animation: lincoinCodeOk 320ms ease-out both; }
+.lincoin-code-wait  { animation: lincoinCodeWait 1.1s ease-in-out infinite; }
+
+/* Quien pidió menos movimiento en su sistema no debería tener que aguantar
+   esto. Se conservan los colores, que son los que comunican el estado; se va
+   solo el movimiento. */
+@media (prefers-reduced-motion: reduce) {
+  .lincoin-code-digit,
+  .lincoin-code-caret,
+  .lincoin-code-shake,
+  .lincoin-code-ok,
+  .lincoin-code-wait { animation: none !important; }
+}
+
+/* ── El reporte AML en el celular ─────────────────────────────────────────
+   Está pensado para hoja A4: tablas de seis y siete columnas con cabeceras
+   que no se parten. En un teléfono eso desborda hacia la derecha, el
+   navegador desplaza la página entera para mostrarlo, y se llevan consigo
+   los botones de arriba: el de cerrar quedaba fuera de la pantalla.
+
+   La hoja pasa a ocupar el ancho del teléfono y cada tabla se desplaza sola,
+   con el dedo, sin arrastrar el resto. Nada de esto toca la impresión: el
+   bloque de @media print de abajo manda ahí. */
+#lincoin-reporte { box-sizing: border-box; width: 100%; }
+@media screen and (max-width: 720px) {
+  #lincoin-reporte { margin: 0 !important; padding: 18px 14px 28px !important; }
+  #lincoin-reporte table { display: block; max-width: 100%; overflow-x: auto;
+    -webkit-overflow-scrolling: touch; }
+}
+
+/* ── Impresión del reporte AML ────────────────────────────────────────────
+   Al imprimir se oculta TODA la app y queda solo la hoja del reporte. Sin
+   esto el navegador imprime el dashboard entero de fondo. */
+@media print {
+  body > *:not(.lincoin-print-root) { display: none !important; }
+  .lincoin-print-root { position: static !important; inset: auto !important;
+    background: #FFFFFF !important; overflow: visible !important; }
+  .no-imprimir { display: none !important; }
+  #lincoin-reporte { max-width: none !important; margin: 0 !important;
+    padding: 0 !important; box-shadow: none !important; }
+  /* Los fondos de las cabeceras de tabla y las bandas de color SÍ se imprimen:
+     sin ellos las tablas pierden la separación y el nivel de riesgo deja de
+     verse de un golpe, que es lo único que algunos van a mirar. */
+  * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+  @page { margin: 14mm 12mm; }
+}

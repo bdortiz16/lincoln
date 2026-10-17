@@ -105,7 +105,8 @@ export const AdminCustodyPanel: React.FC<{
   onAudit: (text: string, sev?: 'info' | 'warn') => void;
   services: { name: string; latency: number | null; up: boolean }[];
   flow?: { in: number; out: number }[];
-}> = ({ discreet, onToggleDiscreet, treasuryAddress, treasuryBalance, mouvCop, walletsCount, providerLocked, providerAssigned, mfaCovered, mfaTotal, alertThreshold, audit, onAudit, services, flow }) => {
+  onOpenTreasury?: () => void;
+}> = ({ discreet, onToggleDiscreet, treasuryAddress, treasuryBalance, mouvCop, walletsCount, providerLocked, providerAssigned, mfaCovered, mfaTotal, alertThreshold, audit, onAudit, services, flow, onOpenTreasury }) => {
   const [now, setNow] = useState(Date.now());
   const [revealed, setRevealed] = useState(false);
   const [showQr, setShowQr] = useState(false);
@@ -232,6 +233,12 @@ export const AdminCustodyPanel: React.FC<{
                 <img alt="QR Tesorería" width={148} height={148}
                   src={`https://api.qrserver.com/v1/create-qr-code/?size=148x148&data=${encodeURIComponent(treasuryAddress)}`} />
               </div>
+            )}
+            {onOpenTreasury && (
+              <button onClick={onOpenTreasury}
+                style={{ marginTop: 12, width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7, background: 'rgba(74,222,128,0.12)', border: '1px solid rgba(74,222,128,0.3)', color: C.green, borderRadius: 10, padding: '9px 12px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>
+                <Wallet size={14} /> Ver detalle de Tesorería
+              </button>
             )}
             <p style={{ color: C.dim, fontSize: 11, margin: '10px 0 0' }}>Revelar, copiar o mostrar el QR queda registrado en la auditoría de esta página.</p>
           </Card>

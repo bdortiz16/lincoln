@@ -102,16 +102,64 @@ Deno.serve(async (req) => {
       || req.headers.get('x-real-ip') || ''
 
     if (action === 'send') {
-      if (!RESEND_KEY) return json(200, { ok: false, error: 'email_not_configured', message: 'Falta RESEND_API_KEY.' })
+      // Todo lo que impide que salga un correo se REGISTRA. Hoy no se
+      // registraba nada: cuando no llegaba el código no había forma de saber
+      // si era la llave, el proveedor o una condición de acá adentro, y se
+      // terminaba adivinando. Los registros van con el correo enmascarado.
+      const quien = maskEmail(String(user.email ?? ''))
+      if (!RESEND_KEY) {
+        console.error(`[otp] ${quien}: falta RESEND_API_KEY en el entorno`)
+        return json(200, { ok: false, error: 'email_not_configured', message: 'Falta RESEND_API_KEY.' })
+      }
       // Rate-limit suave: no reenviar si se emitió hace < 30 s.
       const prev = raw.otp
       if (prev?.sentAt && Date.now() - Number(prev.sentAt) < 30000) {
-        return json(200, { ok: true, throttled: true, message: 'Ya te enviamos un código. Revisa tu correo.' })
+        const hace = Math.round((Date.now() - Number(prev.sentAt)) / 1000)
+        console.log(`[otp] ${quien}: frenado, el anterior salio hace ${hace}s`)
+        return json(200, { ok: true, throttled: true, esperaSegundos: 30 - hace, message: 'Ya te enviamos un código. Revisa tu correo.' })
       }
       const code = String(Math.floor(100000 + Math.random() * 900000)) // 6 dígitos
       const codeHash = await sha256(code)
       const otp = { codeHash, expiresAt: Date.now() + 10 * 60 * 1000, attempts: 0, sentAt: Date.now() }
-      await db.from('users').update({ raw_data: { ...raw, otp } }).eq('id', user.id)
+
+      // ── UN SOLO CÓDIGO POR VEZ, AUNQUE LLEGUEN DOS PETICIONES JUNTAS ────
+      // El freno de 30 s de arriba mira `prev`, que se leyó al empezar. Dos
+      // peticiones simultáneas leían las dos el MISMO estado anterior, las dos
+      // pasaban el freno, las dos escribían y las dos mandaban correo. Llegaban
+      // dos códigos con un segundo de diferencia y solo servía el segundo —el
+      // que sobreescribió—, así que el titular probaba el primero y le decía
+      // "código incorrecto".
+      //
+      // La escritura ahora exige que el estado anterior SIGA siendo el que se
+      // leyó. Solo una puede cumplirlo: la otra no encuentra fila, no manda
+      // correo y responde como si estuviera frenada.
+      //
+      // Los TRES estados posibles, cada uno con su condición. Antes eran dos,
+      // y el tercero —un otp guardado SIN sentAt— no encajaba en ninguna: la
+      // condición exigía que raw_data->otp fuera null, y no lo era, así que
+      // no coincidía ninguna fila y la cuenta se quedaba SIN PODER RECIBIR
+      // CÓDIGOS PARA SIEMPRE, respondiendo "ya te enviamos uno" sin enviar
+      // nada. La rama de abajo es además lo que DESTRABA a las cuentas que ya
+      // quedaron así: en el próximo intento coinciden y vuelven a funcionar
+      // solas, sin tocar la base a mano.
+      let claim = db.from('users').update({ raw_data: { ...raw, otp } }).eq('id', user.id)
+      if (prev?.sentAt) {
+        claim = claim.filter('raw_data->otp->>sentAt', 'eq', String(prev.sentAt))
+      } else if (prev) {
+        claim = claim.is('raw_data->otp->>sentAt', null)
+      } else {
+        claim = claim.is('raw_data->otp', null)
+      }
+      const { data: gane, error: errClaim } = await claim.select('id')
+      // Este NO es el freno de 30 s, aunque antes respondía lo mismo. Que los
+      // dos casos dijeran "ya te enviamos un código" fue justo lo que escondió
+      // durante horas una cuenta que no podía emitir ninguno. Se distinguen.
+      if (!gane?.length) {
+        console.error(`[otp] ${quien}: no se pudo reclamar el turno` +
+          ` · otp guardado=${JSON.stringify(prev ?? null).slice(0, 120)}` +
+          (errClaim ? ` · error=${errClaim.message}` : ''))
+        return json(200, { ok: false, error: 'claim_failed', message: 'No pudimos emitir el código. Probá de nuevo en un momento.' })
+      }
       const res = await fetch('https://api.resend.com/emails', {
         method: 'POST',
         headers: { Authorization: `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
@@ -128,27 +176,129 @@ Deno.serve(async (req) => {
       })
       if (!res.ok) {
         const t = await res.text().catch(() => '')
-        return json(200, { ok: false, error: 'send_failed', status: res.status, detail: t.slice(0, 200) })
+        console.error(`[otp] ${quien}: Resend rechazo el envio · HTTP ${res.status} · ${t.slice(0, 300)}`)
+        // El turno ya se reclamó arriba, así que quedó guardado un código que
+        // el titular NUNCA recibió: el próximo intento caería en el freno de
+        // 30 s y le diría "revisa tu correo" — un correo que no existe. Se
+        // deshace la marca de envío. Queda `failedAt` en vez de borrar el
+        // objeto: sin `sentAt`, el próximo intento vuelve a reclamar turno de
+        // inmediato, y además queda el rastro de que hubo un fallo.
+        await db.from('users')
+          .update({ raw_data: { ...raw, otp: { failedAt: Date.now() } } })
+          .eq('id', user.id)
+          .filter('raw_data->otp->>sentAt', 'eq', String(otp.sentAt))
+        return json(200, { ok: false, error: 'send_failed', status: res.status, detail: t.slice(0, 200), message: 'El proveedor de correo rechazó el envío.' })
       }
-      return json(200, { ok: true, sent: true, to: maskEmail(String(user.email ?? '')) })
+      console.log(`[otp] ${quien}: enviado`)
+      return json(200, { ok: true, sent: true, to: quien })
     }
 
     if (action === 'verify') {
       const code = String(body.code ?? '').trim()
       if (!/^\d{6}$/.test(code)) return json(200, { ok: false, error: 'bad_code' })
       const otp = raw.otp
-      if (!otp?.codeHash) return json(200, { ok: false, error: 'no_code', message: 'Solicita un código nuevo.' })
+      // Sin hash guardado hay dos casos distintos, y conviene distinguirlos:
+      // nunca se pidió un código, o este YA SE USÓ. Decir "solicita uno nuevo"
+      // cuando el código acaba de funcionar en otra pestaña confunde al dueño
+      // de la cuenta y no le aclara nada a nadie más.
+      if (!otp?.codeHash) {
+        return otp?.usedAt
+          ? json(200, { ok: false, error: 'used', message: 'Ese código ya se usó. Pide uno nuevo.' })
+          : json(200, { ok: false, error: 'no_code', message: 'Solicita un código nuevo.' })
+      }
       if (Date.now() > Number(otp.expiresAt)) return json(200, { ok: false, error: 'expired', message: 'El código venció. Pide uno nuevo.' })
       if (Number(otp.attempts ?? 0) >= 5) return json(200, { ok: false, error: 'too_many', message: 'Demasiados intentos. Pide un código nuevo.' })
       const ok = (await sha256(code)) === otp.codeHash
       if (!ok) {
-        await db.from('users').update({ raw_data: { ...raw, otp: { ...otp, attempts: Number(otp.attempts ?? 0) + 1 } } }).eq('id', user.id)
+        // El incremento va CONDICIONADO al valor que se acaba de leer. Antes
+        // era leer-sumar-escribir a secas: con peticiones en paralelo todas
+        // leían el mismo 'attempts' y todas escribían el mismo número, así
+        // que el contador nunca subía y el tope de 5 intentos no existía —
+        // se podía probar el millón de códigos dentro de la ventana. Si otra
+        // petición ya lo movió, esta escritura no aplica y el intento cuenta
+        // igual (el suyo sí subió).
+        // El código siempre se emite con attempts: 0 (arriba), así que el
+        // campo existe y basta comparar por igualdad.
+        const previo = Number(otp.attempts ?? 0)
+        await db.from('users')
+          .update({ raw_data: { ...raw, otp: { ...otp, attempts: previo + 1 } } })
+          .eq('id', user.id)
+          .eq('raw_data->otp->>attempts', String(previo))
         return json(200, { ok: false, error: 'invalid', message: 'Código incorrecto.' })
       }
-      // Éxito: se limpia el OTP.
-      const { otp: _drop, ...rest } = raw
-      await db.from('users').update({ raw_data: rest }).eq('id', user.id)
+
+      // ── CONSUMO DE UN SOLO USO, ATÓMICO ─────────────────────────────────
+      // El borrado por sí solo NO alcanzaba: entre leer el código y borrarlo
+      // hay una ventana, y dos peticiones con el MISMO código que llegan a la
+      // vez —un doble toque en "Continuar", o alguien reenviando la petición—
+      // leían las dos el código todavía puesto, las dos daban por buena la
+      // verificación, y las dos borraban. Un código, dos usos.
+      //
+      // Ahora el borrado lleva la condición de que el hash SIGA siendo el
+      // mismo. La base solo puede cumplirla una vez: la primera petición lo
+      // quita, y la segunda no encuentra fila que actualizar. Gana una sola,
+      // sin importar cuántas lleguen juntas.
+      //
+      // Se deja la marca 'usedAt' en vez de borrar el objeto entero, para
+      // poder responder "ese código ya se usó" en lugar de un genérico.
+      //
+      // ── DISPOSITIVO DE CONFIANZA, EN LA MISMA ESCRITURA ─────────────────
+      // "Confiar en este dispositivo 30 días" vivía SOLO en el navegador: una
+      // fecha en localStorage. Cualquier cosa que limpie el almacenamiento la
+      // borraba y el código volvía a pedirse en cada ingreso; y al revés,
+      // escribiendo esa fecha a mano se saltaba el paso. Ahora la confianza la
+      // guarda el SERVIDOR: el navegador solo conserva un identificador sin
+      // valor por sí mismo, que si no está en la lista de acá no abre nada.
+      //
+      // VA EN ESTA MISMA ESCRITURA, no en una segunda. Cuando era una segunda
+      // pasaban dos cosas, las dos malas: partía de `raw`, que se leyó al
+      // ENTRAR a la petición, así que pisaba lo que acababa de dejar el
+      // reclamo de acá arriba; y al reconstruir el objeto otp se le quedaba
+      // fuera `sentAt`. Sin `sentAt`, el envío del código no encontraba fila
+      // que reclamar y la cuenta quedaba SIN PODER RECIBIR CÓDIGOS, mientras
+      // respondía "ya te enviamos uno". Marcar "confiar en este dispositivo"
+      // era lo que dejaba la cuenta inservible. Una sola escritura no puede
+      // pisarse a sí misma.
+      const dev = String(body.deviceId ?? '').trim().slice(0, 64)
+      const confiar = body.trust === true && /^[A-Za-z0-9_-]{16,64}$/.test(dev)
+
+      const rawNuevo: Record<string, any> = {
+        ...raw,
+        otp: { usedAt: Date.now(), sentAt: otp.sentAt ?? null },
+      }
+      if (confiar) {
+        const previos: any[] = Array.isArray(raw.trustedDevices) ? raw.trustedDevices : []
+        const vivos = previos.filter(d => d && d.id !== dev && Number(d.exp ?? 0) > Date.now())
+        const nuevo = {
+          id: dev,
+          exp: Date.now() + 30 * 86400_000,
+          desde: new Date().toISOString(),
+          agente: deviceFromUA(req.headers.get('user-agent') ?? ''),
+        }
+        // Tope de 10: una cuenta con veinte dispositivos "de confianza" no
+        // tiene ninguno. Se quedan los más recientes.
+        rawNuevo.trustedDevices = [nuevo, ...vivos].slice(0, 10)
+      }
+
+      const { data: reclamado } = await db.from('users')
+        .update({ raw_data: rawNuevo })
+        .eq('id', user.id)
+        .filter('raw_data->otp->>codeHash', 'eq', String(otp.codeHash))
+        .select('id')
+      if (!reclamado?.length) {
+        return json(200, { ok: false, error: 'used', message: 'Ese código ya se usó. Pide uno nuevo.' })
+      }
       return json(200, { ok: true, verified: true, userId: user.id })
+    }
+
+    // ¿Este dispositivo ya pasó el código? Lo decide el servidor, no el
+    // navegador. Se responde solo sí o no: nada que un cliente pueda fingir.
+    if (action === 'is_trusted') {
+      const dev = String(body.deviceId ?? '').trim().slice(0, 64)
+      if (!/^[A-Za-z0-9_-]{16,64}$/.test(dev)) return json(200, { ok: true, trusted: false })
+      const lista: any[] = Array.isArray(raw.trustedDevices) ? raw.trustedDevices : []
+      const hit = lista.find(d => d && d.id === dev && Number(d.exp ?? 0) > Date.now())
+      return json(200, { ok: true, trusted: !!hit, hasta: hit?.exp ?? null })
     }
 
     return json(400, { error: 'bad_action' })

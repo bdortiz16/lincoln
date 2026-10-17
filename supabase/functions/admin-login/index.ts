@@ -17,6 +17,44 @@ async function hashPassword(password: string, email: string): Promise<string> {
   return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('')
 }
 
+
+// ── Freno de fuerza bruta ─────────────────────────────────────────────────
+// Este endpoint verifica contraseñas SIN pasar por Supabase Auth, así que no
+// heredaba ni su límite de intentos ni el CAPTCHA de la pantalla: era un
+// oráculo al que se le podían probar contraseñas a toda velocidad. Ahora
+// comparte la lista de IPs bloqueadas y el registro de intentos fallidos del
+// panel de seguridad.
+function ipOf(req: Request): string | null {
+  const fwd = (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim()
+  return fwd || req.headers.get('cf-connecting-ip') || req.headers.get('x-real-ip') || null
+}
+const MAX_FAILS_15M = 10
+async function loginThrottle(req: Request): Promise<string | null> {
+  const ip = ipOf(req)
+  if (!ip) return null
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', 'blocked_ips').single()
+    const list: any[] = data?.value ? JSON.parse(data.value) : []
+    if (list.some((b: any) => b?.ip === ip)) return 'ip_blocked'
+  } catch { /* si no se puede leer, no se bloquea a nadie por error */ }
+  try {
+    const since = new Date(Date.now() - 15 * 60_000).toISOString()
+    const { data: recent } = await db.from('audit_log').select('metadata')
+      .eq('action', 'auth.failed_login').gte('created_at', since).limit(300)
+    const fails = (recent ?? []).filter((r: any) => r?.metadata?.ip === ip).length
+    if (fails >= MAX_FAILS_15M) return 'too_many_attempts'
+  } catch { /* idem */ }
+  return null
+}
+async function noteFail(req: Request, email: string, reason: string) {
+  try {
+    await db.from('audit_log').insert({
+      user_id: null, action: 'auth.failed_login',
+      metadata: { email: String(email ?? '').slice(0, 120), reason, ip: ipOf(req), userAgent: req.headers.get('user-agent') ?? null, at: new Date().toISOString() },
+    })
+  } catch { /* el registro nunca rompe el login */ }
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: CORS })
 
@@ -29,11 +67,19 @@ Deno.serve(async (req) => {
       })
     }
 
+    const throttled = await loginThrottle(req)
+    if (throttled) {
+      return new Response(JSON.stringify({ error: throttled === 'ip_blocked' ? 'ip_blocked' : 'too_many_attempts' }), {
+        status: 429, headers: { 'Content-Type': 'application/json', ...CORS },
+      })
+    }
+
     // If ADMIN_EMAIL is configured, restrict to that email only.
     // Respuesta UNIFORME (401 invalid_credentials): NO devolver un código
     // distinto (403/not_admin) para correos que no son el admin — eso
     // permitiría enumerar / adivinar cuál es el correo admin probando emails.
     if (ADMIN_EMAIL && email.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
+      await noteFail(req, email, 'intento contra el login de admin')
       return new Response(JSON.stringify({ error: 'invalid_credentials' }), {
         status: 401, headers: { 'Content-Type': 'application/json', ...CORS },
       })
@@ -48,6 +94,7 @@ Deno.serve(async (req) => {
     // Respuesta UNIFORME: no revelar si el correo existe ni si es admin
     // (evita enumeración de cuentas / del correo admin).
     if (error || !user || user.role !== 'admin') {
+      await noteFail(req, email, 'intento contra el login de admin')
       return new Response(JSON.stringify({ error: 'invalid_credentials' }), {
         status: 401, headers: { 'Content-Type': 'application/json', ...CORS },
       })
@@ -67,6 +114,7 @@ Deno.serve(async (req) => {
       // cuando la cuenta admin no tiene hash propio — eso permitiría tomarse
       // la cuenta admin con solo su correo. El admin entra por su sesión real
       // de Supabase (Authentication → Users). Se rechaza este respaldo.
+      await noteFail(req, email, 'intento contra el login de admin')
       return new Response(JSON.stringify({ error: 'invalid_credentials' }), {
         status: 401, headers: { 'Content-Type': 'application/json', ...CORS },
       })

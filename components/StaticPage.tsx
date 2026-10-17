@@ -120,7 +120,7 @@ export const StaticPage: React.FC<StaticPageProps> = ({ pageKey, onBack }) => {
           icon: Lock,
           content: (
             <div className="space-y-6 text-slate-600">
-              <p>En LINCOIN, nos tomamos muy en serio la privacidad de sus datos. Esta política describe cómo recopilamos, usamos y protegemos su información personal.</p>
+              <p>En Lincoin, nos tomamos muy en serio la privacidad de sus datos. Esta política describe cómo recopilamos, usamos y protegemos su información personal.</p>
               <h3 className="text-lg font-bold text-[#0C0E0D]">1. Recolección de Información</h3>
               <p>Recopilamos información cuando usted se registra en nuestro sitio, realiza una transacción o completa un formulario. La información recopilada incluye su nombre, dirección de correo electrónico, número de teléfono y documentos de identificación para procesos KYC.</p>
               <h3 className="text-lg font-bold text-[#0C0E0D]">2. Uso de la Información</h3>
@@ -148,11 +148,11 @@ export const StaticPage: React.FC<StaticPageProps> = ({ pageKey, onBack }) => {
           icon: FileText,
           content: (
             <div className="space-y-6 text-slate-600">
-              <p>Bienvenido a LINCOIN. Al acceder a nuestro sitio web y utilizar nuestros servicios, usted acepta cumplir con los siguientes términos y condiciones.</p>
+              <p>Bienvenido a Lincoin. Al acceder a nuestro sitio web y utilizar nuestros servicios, usted acepta cumplir con los siguientes términos y condiciones.</p>
               <h3 className="text-lg font-bold text-[#0C0E0D]">1. Aceptación de los Términos</h3>
-              <p>Al registrarse y utilizar los servicios de LINCOIN, usted confirma que tiene la mayoría de edad legal en su jurisdicción y que tiene la capacidad legal para celebrar contratos vinculantes.</p>
+              <p>Al registrarse y utilizar los servicios de Lincoin, usted confirma que tiene la mayoría de edad legal en su jurisdicción y que tiene la capacidad legal para celebrar contratos vinculantes.</p>
               <h3 className="text-lg font-bold text-[#0C0E0D]">2. Servicios de Pago</h3>
-              <p>LINCOIN proporciona servicios de procesamiento de pagos y transferencia de dinero. Nos reservamos el derecho de rechazar cualquier transacción que consideremos sospechosa o que viole nuestras políticas de cumplimiento.</p>
+              <p>Lincoin proporciona servicios de procesamiento de pagos y transferencia de dinero. Nos reservamos el derecho de rechazar cualquier transacción que consideremos sospechosa o que viole nuestras políticas de cumplimiento.</p>
               <h3 className="text-lg font-bold text-[#0C0E0D]">3. Naturaleza del servicio</h3>
               <p>Lincoin permite recibir, cambiar y enviar dólares y euros digitales (USDT/EURT). <strong>Lincoin no es un banco</strong> ni una entidad de crédito y no capta depósitos del público. Los saldos corresponden a stablecoins respaldadas 1:1 por sus emisores y no están cubiertos por fondos de garantía de depósitos.</p>
               <h3 className="text-lg font-bold text-[#0C0E0D]">4. Tarifas y Comisiones</h3>
@@ -173,7 +173,7 @@ export const StaticPage: React.FC<StaticPageProps> = ({ pageKey, onBack }) => {
               <div className="bg-slate-50 p-4 rounded-lg border border-slate-200 mb-6">
                 <p className="text-sm font-bold text-[#4ADE80]">Sistema de Autocontrol y Gestión del Riesgo Integral de Lavado de Activos y Financiación del Terrorismo.</p>
               </div>
-              <p>LINCOIN está comprometido con la lucha contra el lavado de activos y la financiación del terrorismo. Hemos implementado estrictos controles y procedimientos internos.</p>
+              <p>Lincoin está comprometido con la lucha contra el lavado de activos y la financiación del terrorismo. Hemos implementado estrictos controles y procedimientos internos.</p>
               <h3 className="text-lg font-bold text-[#0C0E0D]">1. Debida Diligencia</h3>
               <p>Realizamos procesos de conocimiento del cliente (KYC) para todos nuestros usuarios, verificando su identidad y el origen de sus fondos.</p>
               <h3 className="text-lg font-bold text-[#0C0E0D]">2. Monitoreo Transaccional</h3>
@@ -189,7 +189,7 @@ export const StaticPage: React.FC<StaticPageProps> = ({ pageKey, onBack }) => {
           icon: Users,
           content: (
             <div className="space-y-6 text-slate-600">
-              <p className="text-lg leading-relaxed">Somos <span className="font-bold text-[#0C0E0D]">LINCOIN</span>, tu socio financiero en América Latina.</p>
+              <p className="text-lg leading-relaxed">Somos <span className="font-bold text-[#0C0E0D]">Lincoin</span>, tu socio financiero en América Latina.</p>
               <p>Nacimos con la misión de eliminar las fronteras financieras para empresas y personas en LATAM. Creemos que mover dinero internacionalmente debería ser tan fácil, rápido y económico como enviar un mensaje de texto.</p>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6 my-8">
                 <div className="p-4 bg-slate-50 rounded-xl text-center">
@@ -240,7 +240,7 @@ export const StaticPage: React.FC<StaticPageProps> = ({ pageKey, onBack }) => {
                   <input type="text" placeholder="Tu Nombre" className="w-full p-3 rounded-lg border border-slate-300 focus:border-[#0C0E0D] outline-none" />
                   <input type="email" placeholder="Tu Email" className="w-full p-3 rounded-lg border border-slate-300 focus:border-[#0C0E0D] outline-none" />
                   <textarea placeholder="¿En qué podemos ayudarte?" className="w-full p-3 rounded-lg border border-slate-300 focus:border-[#0C0E0D] outline-none h-32"></textarea>
-                  <button className="bg-[#0C0E0D] px-6 py-3 rounded-lg font-bold hover:bg-[#152e52] transition-colors w-full md:w-auto">Enviar Mensaje</button>
+                  <button className="bg-[#0C0E0D] px-6 py-3 rounded-lg font-bold hover:bg-[#161A17] transition-colors w-full md:w-auto">Enviar Mensaje</button>
                 </div>
               </div>
             </div>
@@ -416,7 +416,7 @@ export const StaticPage: React.FC<StaticPageProps> = ({ pageKey, onBack }) => {
 
       {/* Simple Footer */}
       <footer className="bg-[#0C0E0D] text-white py-8 text-center text-sm text-slate-400" style={{ backgroundColor: config.themeColor }}>
-        © Copyright LINCOIN, All rights reserved.
+        © Copyright Lincoin, All rights reserved.
       </footer>
     </div>
   );
