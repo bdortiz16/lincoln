@@ -4284,14 +4284,19 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       { label: providerOpRef ? providerRefLabel : 'Referencia', value: truncMid(providerOpRef || String(tx.id)), mono: true, copy: providerOpRef || String(tx.id) },
       ...(!isCredit ? [{ label: 'Costo del envío', value: feeCop > 0 ? `${formatMoney(feeCop, 'COP')} COP` : 'Gratis', green: feeCop <= 0 }] : []),
     ];
-    // Por qué se rechazó, con las palabras del operador del riel (Finity o
-    // Mouv). Lo que la base guardó al conciliar: providerError; si no,
-    // errorMessage (rechazo inmediato) o rejectReason (rechazo de la mesa).
+    // Por qué se rechazó, con las palabras del operador del riel. Lo que la
+    // base guardó al conciliar: providerError; si no, errorMessage (rechazo
+    // inmediato) o rejectReason (rechazo de la mesa). Solo si es un motivo que
+    // el cliente entiende: la jerga técnica en inglés o el nombre de un aliado
+    // ("Bad request to Kamin API") se queda en el panel de soporte.
     const motivoRechazo: string | null = (st === 'Rechazado' || st === 'Fallido')
       ? (() => {
           const c = [tx.providerError, rawData.providerError, tx.errorMessage, rawData.errorMessage, tx.rejectReason, rawData.rejectReason, typeof tx.error === 'string' ? tx.error : null]
             .map(v => (typeof v === 'string' ? v.trim() : ''))
-            .find(v => v && !/[{}\[\]]|http\s*\d|status\s*code/i.test(v));
+            .find(v => v
+              && !/[{}\[\]<>]|https?:|http\s*\d|status\s*code|\b(api|request|bad|internal|server|gateway|timeout|exception|null|undefined|token|unauthori[sz]ed|forbidden|payload|json|paso)\b/i.test(v)
+              && !/\b(kamin|finity|mouv|gowd|kumplo|tusdatos|sumsub|fireblocks|tatum|gasfree|saldo|fondos)\b/i.test(v)
+              && !/\b(the|to|of|is|was|not|could|cannot|unable|failed|invalid|please|your|with|from)\b/i.test(v));
           return c || null;
         })()
       : null;

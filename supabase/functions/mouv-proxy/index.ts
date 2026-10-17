@@ -556,6 +556,25 @@ function digMotivoRechazo(o: any, excluir?: Set<string>): string | null {
   return debil
 }
 
+// ¿Se le puede mostrar este texto del proveedor al CLIENTE? Solo si es un
+// motivo que el cliente entiende ("NUMERO CUENTA NO EXISTE"). Jerga técnica en
+// inglés o el nombre de un aliado no: "Bad request to Kamin API" llegó tal
+// cual a la pantalla de un cliente — no le explica nada y le muestra con quién
+// operamos. Ese texto es para soporte y queda guardado en la fila.
+const JERGA_TECNICA = /[{}\[\]<>]|https?:|http\s*\d|status\s*code|\b(api|request|bad|internal|server|gateway|timeout|timed?\s*out|exception|stack|null|undefined|token|unauthori[sz]ed|forbidden|payload|endpoint|json|errors?|path|brebkey)\b/i
+const NOMBRES_ALIADOS = /\b(kamin|finity|mouv|gowd|kumplo|tusdatos|sumsub|fireblocks|circle|tatum|gasfree|resend|crisp)\b/i
+const EN_INGLES = /\b(the|to|of|is|was|not|could|cannot|can't|unable|failed|invalid|please|your|with|from)\b/i
+function motivoParaCliente(s: unknown): string | null {
+  if (typeof s !== 'string') return null
+  const t = s.trim().replace(/[.\s]+$/, '')
+  if (t.length < 3 || t.length > 240) return null
+  if (JERGA_TECNICA.test(t) || NOMBRES_ALIADOS.test(t) || EN_INGLES.test(t)) return null
+  // "Saldo insuficiente" del proveedor es el de NUESTRA cuenta con él, no el
+  // del cliente: mostrarlo así le hace creer que le falta plata a él.
+  if (/\b(saldo|fondos)\b/i.test(t)) return null
+  return t
+}
+
 // El motivo de un rechazo de Finity, buscado a fondo. Primero en la respuesta
 // de estado que ya se tiene; si no está, se le pide a finity-proxy todo lo que
 // Finity sepa de ese movimiento (otras rutas del detalle, el listado y el
@@ -3638,12 +3657,18 @@ serve(async (req: Request) => {
       const provMsgF = fb.mensaje ? null : digMotivoRechazo(fb.body)
       const errTextF = `${provMsgF ?? ''} ${(() => { try { return JSON.stringify(fb.body ?? '') } catch { return '' } })()}`.toLowerCase()
       const llaveMala = fb.paso === 'crear' && /key|llave|not\s*found|no existe|inv[aá]lid|no.{0,3}activ/.test(errTextF)
+      const motivoF = motivoParaCliente(provMsgF)
       const friendlyF = fb.mensaje
         ?? (llaveMala
           ? 'La llave Bre-B del beneficiario no es válida o no está activa. Pídele que te confirme su llave exacta y vuelve a intentarlo. Tu saldo fue devuelto.'
-          : provMsgF && !/[{}\[\]]|http\s*\d|status\s*code|errors?\b|\bpath\b/i.test(provMsgF)
-            ? `No pudimos completar el envío Bre-B: ${provMsgF}. Tu saldo fue devuelto.`
-            : 'No pudimos completar el envío Bre-B en este momento. Tu saldo fue devuelto — puedes intentarlo de nuevo en unos minutos.')
+          : motivoF
+            ? `No pudimos completar el envío Bre-B: ${motivoF}. Tu saldo fue devuelto.`
+            // Rechazado al CREAR: no salió nada y no hay un motivo que se pueda
+            // mostrar. Se le da al cliente algo que hacer en vez de "intenta
+            // más tarde", que con un rechazo por datos vuelve a fallar igual.
+            : fb.paso === 'crear'
+              ? 'La red Bre-B no aceptó este envío por la Cuenta 2, así que no salió nada. Revisa que la llave del beneficiario esté bien escrita; si lo está, envíalo por Bre-B · Cuenta 1 o por ACH. Tu saldo fue devuelto.'
+              : 'No pudimos completar el envío Bre-B en este momento. Tu saldo fue devuelto — puedes intentarlo de nuevo en unos minutos.')
       await asentarTx('Fallido', {
         ...prettyBase, ...feeDetail, ...delProveedor,
         ...(fb.providerRef ? { providerRef: fb.providerRef } : {}),
@@ -3863,10 +3888,10 @@ serve(async (req: Request) => {
         // exactamente el mismo texto que usaría nuestra propia verificación.
         // Costó horas de buscar el bloqueo en el lado equivocado.
         friendly = `El operador del envío rechazó esta transferencia por una restricción de cumplimiento de su lado: «${provMsg}» No es una restricción de Lincoin. Comunícate con soporte para revisarlo. Tu saldo fue devuelto.`
-      } else if (provMsg && !/[{}\[\]]|http\s*\d|status\s*code|errors?\b|\bpath\b|brebkey/i.test(provMsg)) {
+      } else if (motivoParaCliente(provMsg)) {
         // Solo se muestra el mensaje del proveedor si es TEXTO HUMANO (sin JSON,
-        // códigos ni jerga). Si trae basura técnica, se usa el genérico limpio.
-        friendly = `${provMsg} Tu saldo fue devuelto.`
+        // códigos, jerga en inglés ni nombres de aliados). Si no, el genérico.
+        friendly = `${motivoParaCliente(provMsg)}. Tu saldo fue devuelto.`
       } else {
         // AL CLIENTE: mensaje limpio, SIN detalles técnicos. El detalle real
         // (techHint) NO se muestra aquí — queda guardado en la tx (errorMessage)
