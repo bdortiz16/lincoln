@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { pedirMouv } from './adminApi';
 import { useMovimientosCliente } from './useMovimientosCliente';
 import { descargarMovimientosCliente } from './excelMovimientosCliente';
+import { descargarXlsx } from '../lib/xlsx';
 import { CuentaBrasilCliente, SolicitudesBrasil } from './AdminCuentasBrasil';
 import { useDatabase } from '../context/DatabaseContext';
 
@@ -154,7 +155,7 @@ export const AdminClientes: React.FC<{
   const tipoDe = (u: any): 'empresa' | 'contador' | 'persona' => u?.role === 'business' ? 'empresa' : idsContadores.has(String(u?.id)) ? 'contador' : 'persona';
   const ROT_TIPO = { empresa: 'EMPRESA', contador: 'CONTADOR', persona: 'PERSONA' } as const;
   const [selId, setSelId] = useState<string | null>(null);
-  const [tab, setTab] = useState<'resumen' | 'movimientos' | 'kyc' | 'brasil' | 'limites' | 'auditoria'>('resumen');
+  const [tab, setTab] = useState<'resumen' | 'movimientos' | 'envios' | 'kyc' | 'brasil' | 'limites' | 'auditoria'>('resumen');
   const [brasilAbierto, setBrasilAbierto] = useState(false);
   const [sincronizando, setSincronizando] = useState(false);
   // El resultado de la última sincronización, FIJO en pantalla.
@@ -553,7 +554,7 @@ export const AdminClientes: React.FC<{
               {/* Pestañas */}
               <div style={{ display: 'flex', gap: 4, borderBottom: `1px solid ${C.b1}`, marginTop: 18, overflowX: 'auto' }}>
                 {([
-                  ['resumen', 'Resumen'], ['movimientos', 'Movimientos'], ['kyc', 'KYC y documentos'],
+                  ['resumen', 'Resumen'], ['movimientos', 'Movimientos'], ['envios', 'Envíos y pagos'], ['kyc', 'KYC y documentos'],
                   ['brasil', 'Cuenta Brasil'], ['limites', 'Límites y comisiones'], ['auditoria', 'Auditoría'],
                 ] as const).map(([k, l]) => (
                   <button key={k} onClick={() => setTab(k)}
@@ -599,6 +600,7 @@ export const AdminClientes: React.FC<{
                 </div>
                 <Movimientos movs={movsDe(sel.id)} onSondear={sondear} sondeando={sondeando} />
               </>}
+              {tab === 'envios' && <EnviosPagos sel={sel} movs={movsDe(sel.id)} cargando={histSel.cargando} completo={histSel.completo} onSondear={sondear} sondeando={sondeando} />}
               {tab === 'kyc' && <Kyc sel={sel} verifyUser={verifyUser} refreshData={refreshData} showToast={showToast} verificado={verificado} />}
               {tab === 'brasil' && <CuentaBrasilCliente sel={sel} showToast={showToast} />}
               {tab === 'limites' && <Limites sel={sel} movs={movsDe(sel.id)} updateUserRawData={updateUserRawData} refreshData={refreshData} showToast={showToast} />}
@@ -1075,6 +1077,203 @@ const Movimientos: React.FC<any> = ({ movs, onSondear, sondeando }) => (
     })}
   </Tarjeta>
 );
+
+// ── Tab: Envíos y pagos ──────────────────────────────────────────────────
+// Lo que el cliente MANDA: envíos Bre-B y ACH, retiros, pagos a otros
+// usuarios y retiros de la mesa OTC. Es la operación del cliente, no la
+// contabilidad de Lincoin (cargues y conversiones, que se facturan): por eso
+// vive en su ficha y no en Contabilidad.
+const TIPOS_ENVIO: Record<string, string> = { dispersion: 'Envío', send: 'Retiro', pay_sent: 'Pago', otc_withdraw: 'Retiro OTC' };
+const ENVIO_OK = ['Completado', 'Liquidado', 'Aprobado'];
+const ENVIO_MAL = ['Fallido', 'Rechazado'];
+const esCop = (t: any) => String(t.currency ?? '').toUpperCase().startsWith('COP');
+const rielEnvio = (t: any): string => {
+  const cur = String(t.currency ?? '').toUpperCase();
+  if (t.rail === 'BREB' || cur === 'COP_BREB') return Number(t.cuentaBreb) === 2 ? 'Bre-B · Cuenta 2' : 'Bre-B';
+  if (t.rail === 'ACH' || cur === 'COP_ACH') return 'ACH';
+  if (cur === 'COP') return 'Saldo Lincoin';
+  if (cur.startsWith('USD')) return 'USD / USDT';
+  if (cur === 'BRL') return 'Brasil';
+  return cur || '—';
+};
+const destinoEnvio = (t: any) => {
+  const r = t.recipient && typeof t.recipient === 'object' ? t.recipient : {};
+  return {
+    nombre: String(t.beneficiary ?? t.recipientName ?? r.holderName ?? r.name ?? (t.type === 'otc_withdraw' ? 'Billetera externa' : '') ?? '').trim() || '—',
+    doc: String(t.documentNumber ?? r.documentNumber ?? r.docNumber ?? '').trim(),
+    cuenta: String(t.account ?? t.accountNumber ?? r.accountNumber ?? r.key ?? t.address ?? '').trim(),
+    // "Bre-B · Celular" → "Celular": el riel ya dice Bre-B.
+    banco: String(t.bank ?? r.bankName ?? '').trim().replace(/^Bre-B\s*·\s*/i, ''),
+  };
+};
+const motivoFallo = (t: any): string => {
+  const c = [t.providerError, t.errorMessage, t.rejectReason, typeof t.error === 'string' ? t.error : t.error?.message];
+  const m = c.find(x => typeof x === 'string' && x.trim());
+  return m ? String(m).slice(0, 240) : '';
+};
+const PERIODOS_ENVIO = [['todo', 'Todo'], ['mes', 'Este mes'], ['mes_pasado', 'Mes pasado'], ['90d', '90 días']] as const;
+const enPeriodo = (iso: unknown, p: string) => {
+  if (p === 'todo') return true;
+  const t = new Date(String(iso ?? '')).getTime();
+  if (!Number.isFinite(t)) return false;
+  // Meses en hora de Colombia (UTC−5).
+  const bog = new Date(Date.now() - 5 * 3600_000);
+  const ini = (y: number, m: number) => Date.UTC(y, m, 1, 5);
+  const y = bog.getUTCFullYear(), m = bog.getUTCMonth();
+  if (p === 'mes') return t >= ini(y, m);
+  if (p === 'mes_pasado') return t >= ini(y, m - 1) && t < ini(y, m);
+  return t >= Date.now() - 90 * 86400_000;
+};
+
+const EnviosPagos: React.FC<{ sel: any; movs: any[]; cargando: boolean; completo: boolean; onSondear?: (id: string) => void; sondeando?: string | null }> = ({ sel, movs, cargando, completo, onSondear, sondeando }) => {
+  const [periodo, setPeriodo] = useState<string>('todo');
+  const [estado, setEstado] = useState<'todos' | 'ok' | 'curso' | 'mal'>('todos');
+  const [q, setQ] = useState('');
+  const [ver, setVer] = useState(100);
+  const envios = useMemo(() => (movs ?? []).filter((t: any) => String(t.type) in TIPOS_ENVIO && enPeriodo(t.createdAt ?? t.created_at, periodo)), [movs, periodo]);
+  const tonoDe = (t: any) => ENVIO_OK.includes(String(t.status)) ? 'ok' : ENVIO_MAL.includes(String(t.status)) ? 'mal' : 'curso';
+  const k = useMemo(() => {
+    const r = { okN: 0, okCop: 0, okOtro: 0, cursoN: 0, cursoCop: 0, malN: 0, malCop: 0, devueltos: 0, comisiones: 0 };
+    for (const t of envios) {
+      const v = Math.abs(Number(t.amount) || 0), cop = esCop(t), tn = tonoDe(t);
+      if (tn === 'ok') { r.okN++; if (cop) r.okCop += v; else r.okOtro += v; r.comisiones += Number(t.feeCop) || 0; }
+      else if (tn === 'mal') { r.malN++; if (cop) r.malCop += v; if (t.refunded === true || t.reintegrado === true) r.devueltos++; }
+      else { r.cursoN++; if (cop) r.cursoCop += v; }
+    }
+    return r;
+  }, [envios]);
+  const porRiel = useMemo(() => {
+    const m = new Map<string, { n: number; cop: number; otro: number }>();
+    for (const t of envios) {
+      if (tonoDe(t) !== 'ok') continue;
+      const kR = rielEnvio(t); const e = m.get(kR) ?? { n: 0, cop: 0, otro: 0 };
+      e.n++; if (esCop(t)) e.cop += Math.abs(Number(t.amount) || 0); else e.otro += Math.abs(Number(t.amount) || 0);
+      m.set(kR, e);
+    }
+    return Array.from(m.entries()).sort((a, b) => b[1].cop - a[1].cop);
+  }, [envios]);
+  const top = useMemo(() => {
+    const m = new Map<string, { nombre: string; doc: string; n: number; cop: number }>();
+    for (const t of envios) {
+      if (tonoDe(t) !== 'ok' || !esCop(t)) continue;
+      const d = destinoEnvio(t); const kB = `${d.nombre}|${d.doc}`;
+      const e = m.get(kB) ?? { nombre: d.nombre, doc: d.doc, n: 0, cop: 0 };
+      e.n++; e.cop += Math.abs(Number(t.amount) || 0); m.set(kB, e);
+    }
+    return Array.from(m.values()).sort((a, b) => b.cop - a.cop).slice(0, 8);
+  }, [envios]);
+  const lista = useMemo(() => {
+    const n = q.trim().toLowerCase();
+    return envios.filter((t: any) => (estado === 'todos' || tonoDe(t) === estado)
+      && (!n || [destinoEnvio(t).nombre, destinoEnvio(t).doc, destinoEnvio(t).cuenta, t.reference, t.providerRef].some(x => String(x ?? '').toLowerCase().includes(n))))
+      .sort((a: any, b: any) => new Date(b.createdAt ?? b.created_at ?? 0).getTime() - new Date(a.createdAt ?? a.created_at ?? 0).getTime());
+  }, [envios, estado, q]);
+  const exportar = () => {
+    if (!completo && !window.confirm('El historial completo no se pudo cargar: el Excel tendría SOLO los movimientos recientes. ¿Descargarlo igual?')) return;
+    const nombre = String(sel.name ?? sel.company_name ?? sel.email ?? 'cliente').replace(/[^\w]+/g, '-').slice(0, 40);
+    descargarXlsx(`envios-${nombre}-${new Date().toISOString().slice(0, 10)}.xlsx`, [{
+      nombre: 'Envíos y pagos',
+      filas: [
+        ['Fecha', 'Tipo', 'Riel', 'Beneficiario', 'Documento', 'Banco / llave', 'Cuenta', 'Monto', 'Moneda', 'Comisión COP', 'Estado', 'Motivo', 'Referencia'],
+        ...lista.map((t: any) => { const d = destinoEnvio(t); return [t.createdAt ? new Date(t.createdAt) : null, TIPOS_ENVIO[String(t.type)] ?? t.type, rielEnvio(t), d.nombre, d.doc, d.banco, d.cuenta, Math.abs(Number(t.amount) || 0), t.currency, Number(t.feeCop) || null, t.status, motivoFallo(t), t.providerRef ?? t.reference ?? '']; }),
+      ],
+    }]);
+  };
+  const chip = (activo: boolean): React.CSSProperties => ({
+    border: `1px solid ${activo ? 'rgba(74,222,128,0.35)' : C.b2}`, background: activo ? 'rgba(74,222,128,0.07)' : 'transparent',
+    color: activo ? C.text : C.sub, borderRadius: 999, padding: '6px 12px', fontSize: 11.5, fontWeight: 700, cursor: 'pointer', fontFamily: FONT, whiteSpace: 'nowrap',
+  });
+  const kpi = (titulo: string, valor: string, detalle: string, tono?: string) => (
+    <Tarjeta>
+      <Etiqueta>{titulo}</Etiqueta>
+      <p style={{ fontSize: 18, fontWeight: 800, margin: '6px 0 0', color: tono ?? C.text, letterSpacing: '-0.3px', wordBreak: 'break-word' }}>{valor}</p>
+      <p style={{ fontSize: 11.5, color: C.sub, margin: '3px 0 0' }}>{detalle}</p>
+    </Tarjeta>
+  );
+  return (
+    <div style={{ marginTop: 18, display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {PERIODOS_ENVIO.map(([kP, n]) => <button key={kP} onClick={() => setPeriodo(kP)} style={chip(periodo === kP)}>{n}</button>)}
+        </div>
+        <button onClick={exportar} disabled={cargando || !lista.length} className="lincoin-btn-white"
+          style={{ fontFamily: FONT, fontWeight: 700, fontSize: 12.5, padding: '8px 14px', borderRadius: 9, border: 'none', cursor: 'pointer', opacity: cargando || !lista.length ? 0.5 : 1 }}>
+          Descargar Excel
+        </button>
+      </div>
+      {cargando && <p style={{ fontSize: 12, color: C.sub, margin: 0 }}>Trayendo el historial completo…</p>}
+      {!cargando && !completo && <p style={{ fontSize: 12, color: C.red, margin: 0 }}>No llegó el historial completo: se ven SOLO los movimientos recientes. Reintentá desde Movimientos.</p>}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
+        {kpi('ENVIADO', `${money(k.okCop, 0)} COP`, `${k.okN} completado${k.okN === 1 ? '' : 's'}${k.okOtro ? ` · + ${money(k.okOtro)} en USD` : ''}`)}
+        {kpi('EN PROCESO', String(k.cursoN), k.cursoN ? `${money(k.cursoCop, 0)} COP` : 'Nada pendiente')}
+        {kpi('FALLIDOS O RECHAZADOS', String(k.malN), k.malN ? `${money(k.malCop, 0)} COP · ${k.devueltos} con saldo devuelto` : 'Ninguno', k.malN ? C.red : undefined)}
+        {kpi('COMISIONES COBRADAS', `${money(k.comisiones, 0)} COP`, 'De los envíos completados')}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 10 }}>
+        <Tarjeta>
+          <Etiqueta>POR RIEL (COMPLETADOS)</Etiqueta>
+          {porRiel.length === 0 ? <p style={{ fontSize: 12, color: C.sub, margin: '9px 0 0' }}>Sin envíos completados.</p> : porRiel.map(([r, e]) => (
+            <div key={r} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginTop: 9, fontSize: 12.5 }}>
+              <span style={{ color: C.text }}>{r} <span style={{ color: C.sub }}>· {e.n}</span></span>
+              <span style={{ fontWeight: 700 }}>{e.cop ? `${money(e.cop, 0)} COP` : `${money(e.otro)} USD`}</span>
+            </div>
+          ))}
+        </Tarjeta>
+        <Tarjeta>
+          <Etiqueta>A QUIÉN LE MANDA MÁS</Etiqueta>
+          {top.length === 0 ? <p style={{ fontSize: 12, color: C.sub, margin: '9px 0 0' }}>Sin envíos completados en pesos.</p> : top.map(b => (
+            <div key={`${b.nombre}|${b.doc}`} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginTop: 9, fontSize: 12.5 }}>
+              <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.nombre}{b.doc ? <span style={{ color: C.sub, fontFamily: MONO, fontSize: 11 }}> {b.doc}</span> : null} <span style={{ color: C.sub }}>· {b.n}</span></span>
+              <span style={{ fontWeight: 700, whiteSpace: 'nowrap' }}>{money(b.cop, 0)} COP</span>
+            </div>
+          ))}
+        </Tarjeta>
+      </div>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+        {([['todos', 'Todos'], ['ok', 'Completados'], ['curso', 'En proceso'], ['mal', 'Fallidos']] as const).map(([kE, n]) => <button key={kE} onClick={() => setEstado(kE)} style={chip(estado === kE)}>{n}</button>)}
+        <input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar beneficiario, documento o cuenta"
+          style={{ flex: 1, minWidth: 200, height: 34, background: C.elev, border: `1px solid ${C.b1}`, borderRadius: 9, padding: '0 12px', color: C.text, fontSize: 12.5, outline: 'none', fontFamily: FONT }} />
+      </div>
+      <Tarjeta style={{ padding: 0 }}>
+        {lista.length === 0 ? (
+          <p style={{ fontSize: 12.5, color: C.sub, padding: 22, margin: 0, textAlign: 'center' }}>{cargando ? 'Cargando…' : 'Sin envíos ni pagos en este filtro.'}</p>
+        ) : lista.slice(0, ver).map((t: any, i: number) => {
+          const d = destinoEnvio(t), tn = tonoDe(t), mot = tn === 'mal' ? motivoFallo(t) : '';
+          return (
+            <div key={t.id ?? i} style={{ display: 'flex', alignItems: 'flex-start', gap: 11, padding: '12px 16px', borderTop: i === 0 ? 'none' : `1px solid ${C.b1}`, flexWrap: 'wrap' }}>
+              <div style={{ minWidth: 0, flex: '1 1 220px' }}>
+                <p style={{ fontSize: 13, fontWeight: 600, margin: 0 }}>{d.nombre}{d.doc ? <span style={{ color: C.sub, fontFamily: MONO, fontSize: 11 }}> · {d.doc}</span> : null}</p>
+                <p style={{ fontSize: 11.5, color: C.sub, margin: '2px 0 0' }}>
+                  {TIPOS_ENVIO[String(t.type)] ?? t.type} · {rielEnvio(t)}{d.banco ? ` · ${d.banco}` : ''}{d.cuenta ? <span style={{ fontFamily: MONO }}> · {d.cuenta}</span> : null}
+                </p>
+                <p style={{ fontSize: 11, color: C.dim, margin: '2px 0 0', fontFamily: MONO }}>{fechaHora(t.createdAt ?? t.created_at)}{t.providerRef ? ` · ${t.providerRef}` : ''}</p>
+                {mot && <p style={{ fontSize: 11.5, color: C.red, margin: '4px 0 0', wordBreak: 'break-word' }}>{mot}</p>}
+              </div>
+              <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                <p style={{ fontSize: 13, fontWeight: 700, margin: 0, whiteSpace: 'nowrap' }}>−{money(Math.abs(Number(t.amount) || 0), esCop(t) ? 0 : 2)} <span style={{ color: C.sub, fontWeight: 500, fontSize: 11 }}>{String(t.currency ?? '').split('_')[0]}</span></p>
+                {Number(t.feeCop) > 0 && <p style={{ fontSize: 11, color: C.sub, margin: '2px 0 0' }}>comisión {money(Number(t.feeCop), 0)}</p>}
+                <div style={{ marginTop: 5, display: 'flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center' }}>
+                  <Pill tono={tn as any}>{String(t.status ?? '—').toUpperCase()}</Pill>
+                  {String(t.type) === 'dispersion' && onSondear && (
+                    <button onClick={() => onSondear(t.id)} disabled={sondeando === t.id}
+                      style={{ background: 'transparent', border: `1px solid ${C.b2}`, color: sondeando === t.id ? C.dim : C.sub, borderRadius: 8, padding: '3px 8px', fontSize: 10.5, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                      {sondeando === t.id ? 'Consultando…' : 'Consultar'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+        {lista.length > ver && (
+          <button onClick={() => setVer(v => v + 100)} style={{ width: '100%', background: 'transparent', border: 'none', borderTop: `1px solid ${C.b1}`, color: C.sub, padding: 12, fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: FONT }}>
+            Ver más ({lista.length - ver} restantes)
+          </button>
+        )}
+      </Tarjeta>
+    </div>
+  );
+};
 
 // ── Tab: KYC ─────────────────────────────────────────────────────────────
 const Kyc: React.FC<any> = ({ sel, verifyUser, refreshData, showToast, verificado }) => {

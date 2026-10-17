@@ -2968,18 +2968,18 @@ Deno.serve(async (req: Request) => {
           }
           return { filas, truncado: true }
         }
-        let ops: { filas: any[]; truncado: boolean }, otros: { filas: any[]; truncado: boolean }
+        // Solo lo que factura Lincoin: cargues, conversiones y los ajustes que
+        // corrigen un cargue. Los envíos y pagos del cliente no son
+        // contabilidad de Lincoin: viven en Clientes → ficha → Envíos y pagos.
+        let ops: { filas: any[]; truncado: boolean }
         try {
           ops = await leer(['load', 'convert', 'adjustment'],
             'id, user_id, type, amount, currency, status, created_at, source:raw_data->>source, recordOnly:raw_data->recordOnly, acct:raw_data->acct, feeCop:raw_data->feeCop, grossCop:raw_data->grossCop, utilityCop:raw_data->utilityCop, gasfree:raw_data->gasfree, fromAmount:raw_data->fromAmount, fromCurrency:raw_data->>fromCurrency, destAmount:raw_data->destAmount, otcCloseId:raw_data->>otcCloseId, otcRef:raw_data->>otcRef, lincoin:raw_data->lincoin, rail:raw_data->>rail, note:raw_data->>note')
-          otros = await leer(['dispersion', 'send', 'pay_sent', 'pay_received', 'otc_deposit', 'otc_withdraw'],
-            delCliente ? 'id, user_id, type, amount, currency, status, created_at, rail:raw_data->>rail, beneficiary:raw_data->>beneficiary, senderName:raw_data->>senderName' : 'user_id, type, amount, currency, created_at, rail:raw_data->>rail')
         } catch (e) {
           return json({ error: `No se pudieron leer los movimientos: ${(e as Error).message}` }, 500)
         }
         const visible = (t: any) => accC.todosLosPaises || visibleEnPais(paisDeMovimiento({ currency: t.currency, raw_data: { rail: t.rail } }), accC)
         const filasOps = ops.filas.filter(visible)
-        const filasOtros = otros.filas.filter(visible)
 
         // Los cierres de la mesa, para estimar la utilidad de sus conversiones.
         const idsCierre = Array.from(new Set(filasOps.map(t => String(t.otcCloseId ?? '')).filter(Boolean)))
@@ -3008,7 +3008,6 @@ Deno.serve(async (req: Request) => {
           cargues: 0, cargadoCop: 0, cargadoTotalCop: 0, usdCargado: 0, utilidadCargues: 0,
           conversiones: 0, convertidoCop: 0, usdConvertido: 0, utilidadConversiones: 0,
           utilidadEstimada: 0, sinUtilidad: 0, ajustes: 0, ajustadoCop: 0,
-          envios: 0, enviadoCop: 0, recibidos: 0, recibidoCop: 0,
           facturadas: 0, facturadoCop: 0, porFacturar: 0, facturasConError: 0,
           ultima: '' as string,
         })
@@ -3032,12 +3031,9 @@ Deno.serve(async (req: Request) => {
             continue
           }
           const liq = liquidacionDe(t, t.otcCloseId ? cierres.get(String(t.otcCloseId)) ?? null : null)
-          if (!liq) {
-            // Un 'load' que no es un cargue del admin es un depósito del cliente.
-            if (t.type === 'load') sumar(s => { s.recibidos++; s.recibidoCop += esCopMon(t.currency) ? Number(t.amount) || 0 : 0 }, t)
-            if (delCliente) detalle.push({ id: t.id, type: t.type, amount: t.amount, currency: t.currency, created_at: t.created_at, nota: t.note ?? null, liq: null, factura: null, deposito: t.type === 'load' })
-            continue
-          }
+          // Un 'load' que no es un cargue del admin es un depósito del propio
+          // cliente: no es un cargue de Lincoin y no se cuenta acá.
+          if (!liq) continue
           const f = facturas.get(String(t.id)) ?? null
           const u = liq.utilidadCop ?? 0
           sumar(s => {
@@ -3060,12 +3056,6 @@ Deno.serve(async (req: Request) => {
             factura: f ? { estado: f.estado, numero: f.numero ?? null, total: f.total ?? null, error: f.error ?? null, emitida_at: f.emitida_at ?? null } : null,
           })
         }
-        for (const t of filasOtros) {
-          const cop = esCopMon(t.currency) ? Number(t.amount) || 0 : 0
-          if (t.type === 'pay_received' || t.type === 'otc_deposit') sumar(s => { s.recibidos++; s.recibidoCop += cop }, t)
-          else sumar(s => { s.envios++; s.enviadoCop += cop }, t)
-          if (delCliente) detalle.push({ id: t.id, type: t.type, amount: t.amount, currency: t.currency, created_at: t.created_at, contraparte: t.beneficiary ?? t.senderName ?? null, liq: null, factura: null })
-        }
         const redondear = (s: Suma) => Object.fromEntries(Object.entries(s).map(([k, v]) => [k, typeof v === 'number' ? r2(v) : v])) as Suma
 
         // Quién es cada cliente (nombre y documento para la factura).
@@ -3087,7 +3077,7 @@ Deno.serve(async (req: Request) => {
         for (const f of facturas.values()) estados[String(f.estado)] = (estados[String(f.estado)] ?? 0) + 1
         return json({
           ok: true, generado_at: new Date().toISOString(), desde, hasta,
-          truncado: ops.truncado || otros.truncado, conFacturas,
+          truncado: ops.truncado, conFacturas,
           totales: { ...redondear(total), clientes: clientes.length },
           meses, clientes, facturas: estados,
           ...(delCliente ? { cliente: clientes.find(c => c.userId === String(body.userId)) ?? clientes[0] ?? null, ids, detalle: detalle.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))) } : {}),

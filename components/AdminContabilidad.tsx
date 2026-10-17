@@ -63,10 +63,10 @@ const nombreMes = (mes: string) => {
   return t.charAt(0).toUpperCase() + t.slice(1);
 };
 
-const TIPO_TX: Record<string, string> = {
-  load: 'Cargue', convert: 'Conversión', adjustment: 'Ajuste', dispersion: 'Envío', send: 'Retiro',
-  pay_sent: 'Pago enviado', pay_received: 'Pago recibido', otc_deposit: 'Depósito', otc_withdraw: 'Retiro',
-};
+// Contabilidad es lo que factura Lincoin: cargues, conversiones y los ajustes
+// que corrigen un cargue. Los envíos y pagos del cliente están en Clientes →
+// ficha del cliente → Envíos y pagos.
+const TIPO_TX: Record<string, string> = { load: 'Cargue', convert: 'Conversión', adjustment: 'Ajuste' };
 const ESTADO_FACTURA: Record<string, { txt: string; cls: string }> = {
   emitida: { txt: 'Emitida', cls: 'bg-green-50 text-[#16A34A] border-green-200' },
   emitiendo: { txt: 'Emitiendo…', cls: 'bg-blue-50 text-blue-700 border-blue-200' },
@@ -217,8 +217,8 @@ const Clientes: React.FC<{ datos: any; cargando: boolean; periodo: Periodo; onAv
     descargarXlsx(`lincoin-clientes-${new Date().toISOString().slice(0, 10)}.xlsx`, [{
       nombre: 'Clientes',
       filas: [
-        ['Cliente', 'Documento', 'Correo', 'Cargues', 'Cargado COP', 'USDT cargado', 'Utilidad cargues', 'Conversiones', 'Convertido COP', 'Utilidad conversiones', 'Envíos', 'Enviado COP', 'Facturas emitidas', 'Facturado COP', 'Por facturar', 'Última operación'],
-        ...filtrados.map(c => [c.nombre, c.documento, c.email, c.cargues, c.cargadoCop, c.usdCargado, c.utilidadCargues, c.conversiones, c.convertidoCop, c.utilidadConversiones, c.envios, c.enviadoCop, c.facturadas, c.facturadoCop, c.porFacturar, c.ultima ? new Date(c.ultima) : null]),
+        ['Cliente', 'Documento', 'Correo', 'Cargues', 'Cargado COP', 'USDT cargado', 'Utilidad cargues', 'Conversiones', 'Convertido COP', 'Utilidad conversiones', 'Facturas emitidas', 'Facturado COP', 'Por facturar', 'Última operación'],
+        ...filtrados.map(c => [c.nombre, c.documento, c.email, c.cargues, c.cargadoCop, c.usdCargado, c.utilidadCargues, c.conversiones, c.convertidoCop, c.utilidadConversiones, c.facturadas, c.facturadoCop, c.porFacturar, c.ultima ? new Date(c.ultima) : null]),
       ],
     }]);
   };
@@ -245,13 +245,12 @@ const Clientes: React.FC<{ datos: any; cargando: boolean; periodo: Periodo; onAv
               <th className="text-right px-3 py-2.5">Conversiones</th>
               <th className="text-right px-3 py-2.5">Convertido</th>
               <th className="text-right px-3 py-2.5">Utilidad</th>
-              <th className="text-right px-3 py-2.5">Envíos</th>
               <th className="text-right px-3 py-2.5">Facturas</th>
               <th className="text-right px-4 py-2.5">Última</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {!filtrados.length && <tr><td colSpan={9} className="px-4 py-6 text-center text-slate-400">{cargando ? 'Cargando…' : 'Sin clientes con operaciones en el período.'}</td></tr>}
+            {!filtrados.length && <tr><td colSpan={8} className="px-4 py-6 text-center text-slate-400">{cargando ? 'Cargando…' : 'Sin cargues ni conversiones en el período.'}</td></tr>}
             {filtrados.map(c => (
               <tr key={c.userId} onClick={() => setAbierto(c)} className="hover:bg-slate-50 cursor-pointer">
                 <td className="px-4 py-2.5">
@@ -263,7 +262,6 @@ const Clientes: React.FC<{ datos: any; cargando: boolean; periodo: Periodo; onAv
                 <td className="px-3 py-2.5 text-right text-slate-600">{c.conversiones}</td>
                 <td className="px-3 py-2.5 text-right font-semibold text-slate-800">{cop(c.convertidoCop)}</td>
                 <td className="px-3 py-2.5 text-right font-bold text-[#16A34A]">{cop((c.utilidadCargues ?? 0) + (c.utilidadConversiones ?? 0))}</td>
-                <td className="px-3 py-2.5 text-right text-slate-600">{c.envios ? `${c.envios} · ${cop(c.enviadoCop)}` : '—'}</td>
                 <td className="px-3 py-2.5 text-right">
                   <span className="text-slate-700">{c.facturadas}</span>
                   {c.porFacturar > 0 && <span className="text-amber-700"> · {c.porFacturar} por facturar</span>}
@@ -283,7 +281,7 @@ const DetalleCliente: React.FC<{ cliente: any; periodo: Periodo; onVolver: () =>
   const [datos, setDatos] = useState<any | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cargando, setCargando] = useState(false);
-  const [filtro, setFiltro] = useState<'todo' | 'cargues' | 'conversiones' | 'otros'>('todo');
+  const [filtro, setFiltro] = useState<'todo' | 'cargues' | 'conversiones' | 'ajustes'>('todo');
   const cargar = useCallback(async () => {
     setCargando(true); setError(null);
     const r = await pedirAdmin({ action: 'contabilidad_cliente', userId: cliente.userId, ...rango(periodo) });
@@ -296,14 +294,14 @@ const DetalleCliente: React.FC<{ cliente: any; periodo: Periodo; onVolver: () =>
   const vistos = detalle.filter(d => filtro === 'todo'
     || (filtro === 'cargues' && d.liq?.tipo === 'cargue')
     || (filtro === 'conversiones' && d.liq?.tipo === 'conversion')
-    || (filtro === 'otros' && !d.liq));
+    || (filtro === 'ajustes' && d.type === 'adjustment'));
   const aviso = (m: string, ok: boolean) => { onAviso(m, ok); cargar(); };
   const exportar = () => {
     descargarXlsx(`lincoin-${String(c.nombre ?? 'cliente').replace(/[^\w]+/g, '-').slice(0, 40)}-${new Date().toISOString().slice(0, 10)}.xlsx`, [{
       nombre: 'Operaciones',
       filas: [
         ['Fecha', 'Tipo', 'Monto', 'Moneda', 'Valor operación COP', 'Para el cliente COP', 'Utilidad Lincoin COP', 'Utilidad', 'USD', 'Factura', 'Número', 'Detalle'],
-        ...detalle.map(d => [d.created_at ? new Date(d.created_at) : null, TIPO_TX[d.type] ?? d.type, Number(d.amount) || 0, d.currency, d.liq?.totalCop ?? null, d.liq?.tercerosCop ?? null, d.liq?.utilidadCop ?? null, d.liq ? FUENTE[d.liq.fuente] ?? d.liq.fuente : '', d.liq?.usd ?? null, d.factura?.estado ?? '', d.factura?.numero ?? '', d.factura?.error ?? d.liq?.nota ?? d.contraparte ?? d.nota ?? '']),
+        ...detalle.map(d => [d.created_at ? new Date(d.created_at) : null, TIPO_TX[d.type] ?? d.type, Number(d.amount) || 0, d.currency, d.liq?.totalCop ?? null, d.liq?.tercerosCop ?? null, d.liq?.utilidadCop ?? null, d.liq ? FUENTE[d.liq.fuente] ?? d.liq.fuente : '', d.liq?.usd ?? null, d.factura?.estado ?? '', d.factura?.numero ?? '', d.factura?.error ?? d.liq?.nota ?? d.nota ?? '']),
       ],
     }]);
   };
@@ -314,6 +312,7 @@ const DetalleCliente: React.FC<{ cliente: any; periodo: Periodo; onVolver: () =>
           <button onClick={onVolver} className="text-[11px] text-slate-400 hover:text-slate-600 font-bold mb-1 flex items-center gap-1"><ChevronLeft size={12} /> Todos los clientes</button>
           <h4 className="font-bold text-slate-800 text-base">{c.nombre}</h4>
           <p className="text-xs text-slate-500">{c.documento ? `${c.documento} · ` : ''}{c.email ?? ''}</p>
+          <p className="text-[11px] text-slate-400 mt-1">Sus envíos y pagos están en Clientes → ficha del cliente → Envíos y pagos.</p>
         </div>
         <div className="flex gap-2">
           <button onClick={cargar} disabled={cargando} className="flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-50"><RefreshCw size={13} className={cargando ? 'animate-spin' : ''} /> Actualizar</button>
@@ -324,11 +323,11 @@ const DetalleCliente: React.FC<{ cliente: any; periodo: Periodo; onVolver: () =>
         <Kpi titulo="Cargado" valor={cop(c.cargadoCop)} detalle={`${c.cargues ?? 0} cargues · ${usd(c.usdCargado)} USDT`} />
         <Kpi titulo="Convertido" valor={cop(c.convertidoCop)} detalle={`${c.conversiones ?? 0} conversiones`} />
         <Kpi titulo="Utilidad Lincoin" valor={cop((c.utilidadCargues ?? 0) + (c.utilidadConversiones ?? 0))} acento detalle={c.utilidadEstimada > 0 ? `${cop(c.utilidadEstimada)} estimada` : undefined} />
-        <Kpi titulo="Envíos y pagos" valor={cop(c.enviadoCop)} detalle={`${c.envios ?? 0} envíos · ${c.recibidos ?? 0} recibidos`} />
+        <Kpi titulo="Facturas Lincoin" valor={`${c.facturadas ?? 0} emitidas`} detalle={`${cop(c.facturadoCop)} facturado · ${c.porFacturar ?? 0} por facturar${c.facturasConError ? ` · ${c.facturasConError} con error` : ''}`} />
       </div>
       {error && <Aviso tono="error">{error}</Aviso>}
       <div className="flex gap-1.5 flex-wrap">
-        {([['todo', 'Todo'], ['cargues', 'Cargues'], ['conversiones', 'Conversiones'], ['otros', 'Envíos y otros']] as const).map(([k, n]) => (
+        {([['todo', 'Todo'], ['cargues', 'Cargues'], ['conversiones', 'Conversiones'], ...(c.ajustes ? [['ajustes', 'Ajustes']] as const : [])] as const).map(([k, n]) => (
           <button key={k} onClick={() => setFiltro(k)} className={`text-xs font-bold px-3 py-1.5 rounded-full border ${filtro === k ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>{n}</button>
         ))}
       </div>
@@ -351,8 +350,8 @@ const DetalleCliente: React.FC<{ cliente: any; periodo: Periodo; onVolver: () =>
               <tr key={d.id} className="align-top">
                 <td className="px-4 py-2.5 text-slate-500 whitespace-nowrap">{fecha(d.created_at)}</td>
                 <td className="px-3 py-2.5">
-                  <p className="font-semibold text-slate-700">{TIPO_TX[d.type] ?? d.type}{d.deposito ? ' (depósito)' : ''}{d.ref ? ` · ${d.ref}` : ''}</p>
-                  {(d.contraparte || d.nota) && <p className="text-[10px] text-slate-400 max-w-[260px] break-words">{d.contraparte ?? d.nota}</p>}
+                  <p className="font-semibold text-slate-700">{TIPO_TX[d.type] ?? d.type}{d.ref ? ` · ${d.ref}` : ''}</p>
+                  {d.nota && <p className="text-[10px] text-slate-400 max-w-[260px] break-words">{d.nota}</p>}
                 </td>
                 <td className="px-3 py-2.5 text-right font-semibold text-slate-800 whitespace-nowrap">{Number(d.amount).toLocaleString('es-CO', { maximumFractionDigits: 2 })} {d.currency}</td>
                 <td className="px-3 py-2.5 text-right text-slate-600 whitespace-nowrap">{d.liq ? cop(d.liq.tercerosCop) : '—'}</td>
@@ -643,8 +642,8 @@ export const AdminContabilidad: React.FC = () => {
       {
         nombre: 'Por cliente',
         filas: [
-          ['Cliente', 'Documento', 'Correo', 'Cargues', 'Cargado COP', 'Utilidad cargues', 'Conversiones', 'Convertido COP', 'Utilidad conversiones', 'Envíos', 'Enviado COP', 'Facturas emitidas'],
-          ...(datos.clientes ?? []).map((c: any) => [c.nombre, c.documento, c.email, c.cargues, c.cargadoCop, c.utilidadCargues, c.conversiones, c.convertidoCop, c.utilidadConversiones, c.envios, c.enviadoCop, c.facturadas]),
+          ['Cliente', 'Documento', 'Correo', 'Cargues', 'Cargado COP', 'Utilidad cargues', 'Conversiones', 'Convertido COP', 'Utilidad conversiones', 'Facturas emitidas', 'Facturado COP'],
+          ...(datos.clientes ?? []).map((c: any) => [c.nombre, c.documento, c.email, c.cargues, c.cargadoCop, c.utilidadCargues, c.conversiones, c.convertidoCop, c.utilidadConversiones, c.facturadas, c.facturadoCop]),
         ],
       },
     ]);
