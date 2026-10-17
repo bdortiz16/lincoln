@@ -115,6 +115,27 @@ async function aRevisionSinFirma(tx: any, origen: string) {
   } catch { /* la revisión manual es el resguardo; el aviso es un extra */ }
 }
 
+// Mensaje al cliente cuando Bre-B · Cuenta 2 no sale. `debitado` = si ya se
+// le había descontado (falló al confirmar) o no (falló al preparar).
+function mensajeFalloBreb2(fb: ResultadoBreb2, debitado: boolean): string {
+  const provMsg = fb.mensaje ? null : digMotivoRechazo(fb.body)
+  const errText = `${provMsg ?? ''} ${(() => { try { return JSON.stringify(fb.body ?? '') } catch { return '' } })()}`.toLowerCase()
+  const llaveMala = fb.paso === 'crear' && /key|llave|not\s*found|no existe|inv[aá]lid|no.{0,3}activ/.test(errText)
+  const motivo = motivoParaCliente(provMsg)
+  const base = fb.mensaje
+    ?? (llaveMala
+      ? 'La llave Bre-B del beneficiario no es válida o no está activa. Pídele que te confirme su llave exacta y vuelve a intentarlo. Tu saldo fue devuelto.'
+      : motivo
+        ? `No pudimos completar el envío Bre-B: ${motivo}. Tu saldo fue devuelto.`
+        // Rechazado al CREAR sin un motivo mostrable: algo que hacer en vez
+        // de "intenta más tarde", que con un rechazo por datos falla igual.
+        : fb.paso === 'crear'
+          ? 'La red Bre-B no aceptó este envío por la Cuenta 2, así que no salió nada. Revisa que la llave del beneficiario esté bien escrita; si lo está, envíalo por Bre-B · Cuenta 1 o por ACH. Tu saldo fue devuelto.'
+          : 'No pudimos completar el envío Bre-B en este momento. Tu saldo fue devuelto — puedes intentarlo de nuevo en unos minutos.')
+  if (debitado) return base
+  return base.replace(/\s*Tu saldo fue devuelto[^.]*\.?/, '').trim() + ' No se descontó nada de tu saldo.'
+}
+
 // ── ¿Se puede reembolsar ESTA fila sola, sin un admin? ───────────────────
 // La firma cubre usuario|tipo|monto|moneda, y el cliente lee sus propias
 // filas: una fila inventada con el MISMO monto que un envío suyo rechazado
@@ -1372,11 +1393,16 @@ function titularEsOtro(titular: string, esperados: string[]): boolean {
   if (!listas.length) return false
   return !listas.some(l => l.some(p => suyas.includes(p)))
 }
-async function finityPayoutBreb(userId: string, recipient: Record<string, any>, amountCop: number, nombresEsperados: string[]): Promise<{
+type ResultadoBreb2 = {
   ok: boolean; providerRef?: string; desenlaceDesconocido?: boolean; paso?: 'crear' | 'titular' | 'monto' | 'confirmar';
   httpStatus?: number | null; body?: any; mensaje?: string; titular?: string; banco?: string;
   costoProveedor?: number | null; totalProveedor?: number | null
-}> {
+}
+// PREPARAR = crear + revisar monto y titular. No mueve plata, así que corre
+// ANTES de debitar: una llave que Finity no acepta ("Bad request to Kamin
+// API"), un titular que no es o un monto distinto ya no cobran y devuelven —
+// el envío ni arranca.
+async function finityPrepararBreb(userId: string, recipient: Record<string, any>, amountCop: number, nombresEsperados: string[]): Promise<ResultadoBreb2 & { creada?: any }> {
   const tipo = brebTypeToFinity(String(recipient.keyType ?? ''), recipient.key)
   const monto = Math.round(amountCop)   // pesos enteros, igual que los retiros ACH
   let creada: any = null
@@ -1413,7 +1439,14 @@ async function finityPayoutBreb(userId: string, recipient: Record<string, any>, 
     return { ok: false, ...extra, providerRef: undefined, paso: 'titular', body: creada,
       mensaje: `Esa llave Bre-B está a nombre de ${titular}, no del beneficiario que tienes inscrito. Corrige el beneficiario antes de enviar. Tu saldo fue devuelto.` }
   }
+  return { ok: true, ...extra, creada }
+}
 
+// CONFIRMAR = lo que manda la plata. Corre después del débito.
+async function finityConfirmarBreb(userId: string, prep: ResultadoBreb2 & { creada?: any }): Promise<ResultadoBreb2> {
+  const creada = prep.creada
+  const extra = { providerRef: prep.providerRef, titular: prep.titular, banco: prep.banco, costoProveedor: prep.costoProveedor ?? null, totalProveedor: prep.totalProveedor ?? null }
+  if (!creada?.id) return { ok: false, ...extra, paso: 'confirmar', httpStatus: null, body: { message: 'sin transferencia creada' } }
   const k = await finityCall('breb_confirmar', userId, { transaction_id: creada.id })
   const hs = Number(k?.status ?? 0)
   if (k?.ok && k?.data?.success !== false) return { ok: true, ...extra }
@@ -3688,6 +3721,23 @@ serve(async (req: Request) => {
     }
     const soltarCandados = async () => { for (const c of candados) await soltarCandado(db, c) }
 
+    // ── Bre-B · Cuenta 2: PREPARAR antes de tocar el saldo ───────────────
+    // Crear la transferencia en Finity no mueve plata: si la llave no sirve,
+    // el titular no es o el monto no cuadra, el envío no arranca — sin
+    // débito, sin fila Fallido y sin devolución.
+    let prepBreb2: (ResultadoBreb2 & { creada?: any }) | null = null
+    if (brebFinity) {
+      prepBreb2 = await finityPrepararBreb(userId, recipient, amount, [...nombresTitular, String(recipient.holderName ?? '')])
+      if (!prepBreb2.ok) {
+        await logAudit(userId, `finity.${action}.no_creada`, {
+          amount, paso: prepBreb2.paso ?? null, httpStatus: prepBreb2.httpStatus ?? null,
+          error: (() => { try { return JSON.stringify(prepBreb2!.body ?? {}).slice(0, 300) } catch { return null } })(),
+        })
+        await soltarCandados()
+        return json(200, { error: 'payout_failed', provider: 'finity', refunded: false, sinDebito: true, message: mensajeFalloBreb2(prepBreb2, false) })
+      }
+    }
+
     // ── Cuentas PERSONA: su COP llega al Saldo Lincoin ('COP'), no a un
     //    riel. Antes de debitar el riel del envío se cubre lo que falte desde
     //    'COP' y, si aún falta, desde el otro riel. Es un movimiento interno
@@ -3833,7 +3883,7 @@ serve(async (req: Request) => {
     // 4) Llamar al PROVEEDOR del riel: BREB → Mouv (Cuenta 1) o Finity
     //    (Cuenta 2) · ACH → Finity
     if (brebFinity) {
-      const fb = await finityPayoutBreb(userId, recipient, amount, [...nombresTitular, String(recipient.holderName ?? '')])
+      const fb = await finityConfirmarBreb(userId, prepBreb2!)
       const ahora = new Date().toISOString()
       const delProveedor = {
         ...(fb.titular ? { titularProveedor: fb.titular } : {}),
@@ -3875,20 +3925,7 @@ serve(async (req: Request) => {
       const reintF = await reintegrarEnvio(userId, railCol, totalDebit)
       const restoredF = reintF.saldo ?? 0
       const provMsgF = fb.mensaje ? null : digMotivoRechazo(fb.body)
-      const errTextF = `${provMsgF ?? ''} ${(() => { try { return JSON.stringify(fb.body ?? '') } catch { return '' } })()}`.toLowerCase()
-      const llaveMala = fb.paso === 'crear' && /key|llave|not\s*found|no existe|inv[aá]lid|no.{0,3}activ/.test(errTextF)
-      const motivoF = motivoParaCliente(provMsgF)
-      const friendlyF = fb.mensaje
-        ?? (llaveMala
-          ? 'La llave Bre-B del beneficiario no es válida o no está activa. Pídele que te confirme su llave exacta y vuelve a intentarlo. Tu saldo fue devuelto.'
-          : motivoF
-            ? `No pudimos completar el envío Bre-B: ${motivoF}. Tu saldo fue devuelto.`
-            // Rechazado al CREAR: no salió nada y no hay un motivo que se pueda
-            // mostrar. Se le da al cliente algo que hacer en vez de "intenta
-            // más tarde", que con un rechazo por datos vuelve a fallar igual.
-            : fb.paso === 'crear'
-              ? 'La red Bre-B no aceptó este envío por la Cuenta 2, así que no salió nada. Revisa que la llave del beneficiario esté bien escrita; si lo está, envíalo por Bre-B · Cuenta 1 o por ACH. Tu saldo fue devuelto.'
-              : 'No pudimos completar el envío Bre-B en este momento. Tu saldo fue devuelto — puedes intentarlo de nuevo en unos minutos.')
+      const friendlyF = mensajeFalloBreb2(fb, true)
       await asentarTx('Fallido', {
         ...prettyBase, ...feeDetail, ...delProveedor,
         ...(fb.providerRef ? { providerRef: fb.providerRef } : {}),
