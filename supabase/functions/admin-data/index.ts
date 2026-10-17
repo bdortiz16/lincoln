@@ -3303,12 +3303,17 @@ Deno.serve(async (req: Request) => {
 
       // Manually credit or debit a user's crypto balance
       if (body.action === 'admin_credit_crypto' && body.userId && body.currency && body.amount != null) {
-        const { data: u } = await db.from('users').select('crypto_balances').eq('id', body.userId).single()
-        const bals: Record<string, number> = (u?.crypto_balances as any) ?? {}
         const cur: string = body.currency
         const delta: number = parseFloat(body.amount)
-        const newBal = parseFloat(Math.max(0, (bals[cur] ?? 0) + delta).toFixed(8))
-        await db.from('users').update({ crypto_balances: { ...bals, [cur]: newBal } }).eq('id', body.userId)
+        if (!isFinite(delta) || delta === 0) return json({ success: false, error: 'Monto inválido' }, 400)
+        // Suma ATÓMICA en la base. Antes: leer todos los saldos cripto, sumar y
+        // escribir el objeto entero — un movimiento cripto del cliente en el
+        // medio se deshacía, y un descuento mayor al saldo quedaba en 0 sin
+        // avisar.
+        const { data: adjC, error: adjCErr } = await db.rpc('adjust_balances', { p_user_id: body.userId, p_fiat: {}, p_crypto: { [cur]: delta } })
+        if (adjCErr) return json({ success: false, error: `No se pudo aplicar el saldo (${adjCErr.message}). Revisa el saldo antes de repetir.` }, 502)
+        if ((adjC as any)?.error) return json({ success: false, error: (adjC as any).error === 'insufficient' ? 'El cliente no tiene saldo suficiente para ese descuento. No se cambió nada.' : String((adjC as any).error) }, 400)
+        const newBal = Number((adjC as any)?.crypto_balances?.[cur] ?? (adjC as any)?.balances?.[cur] ?? 0)
         if (delta > 0) {
           await db.from('transactions').insert({
             user_id: body.userId, type: 'otc_deposit', amount: delta, currency: body.currency,
