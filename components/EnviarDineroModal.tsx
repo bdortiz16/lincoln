@@ -635,7 +635,9 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
               const msg = r?.message || r?.error || 'La dispersión no se pudo completar.';
               setSendResult({ ok: false, message: String(msg), rail, viaBreb: isBreb, cuentaBreb, at: new Date().toISOString() });
               setSendStep(5);
-              if (r?.refunded) refreshData?.();
+              // destino_no_aprobado: el servidor devolvió el contacto a "en
+              // validación"; se recarga para que la lista lo muestre así.
+              if (r?.refunded || r?.error === 'destino_no_aprobado') refreshData?.();
               return;
           } catch {
               // Timeout: NO sabemos si Mouv la creó → bloquear reintento.

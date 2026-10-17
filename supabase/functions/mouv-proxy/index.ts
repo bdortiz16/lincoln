@@ -1039,6 +1039,65 @@ const BREB_FEE_COP = Number(Deno.env.get('BREB_FEE_COP') ?? String(BREB_MOUV_FIX
 // envío (costoProveedorCop) para poder ajustar esta tarifa con datos reales.
 const BREB2_FEE_COP = Number(Deno.env.get('BREB2_FEE_COP') ?? '') || brebFeeCop()
 
+// ── ¿La cuenta destino está APROBADA en Finity? ─────────────────────────
+// El estado que muestra Lincoin no sirve como control: vive en los contactos
+// del usuario, que el propio cliente puede escribir — y un revisor de la app
+// llegó a marcar "aprobada" una cuenta que Finity tenía en revisión, con el
+// botón de enviar habilitado. El único que manda es el proveedor, así que se
+// le pregunta a él ANTES de debitar.
+//
+// Se miran TODOS los campos de estado y gana el más restrictivo: una cuenta
+// puede venir "active" (el registro existe) y a la vez en revisión. Y solo se
+// aprueba con una palabra que lo diga (aprobada / approved / verified).
+//
+// FALLA ABIERTO a propósito: si la lista no se puede consultar, o la cuenta no
+// aparece, no se bloquea — un control que no logra verificar no puede frenar
+// una transferencia legítima, y si de verdad no está aprobada el proveedor la
+// rechaza y el saldo se devuelve.
+async function revisarDestinoFinity(userId: string, destId: string | null, accDigits: string, docPedido: string): Promise<{
+  bloqueo: null | { estado: 'rechazada' | 'en_proceso' | 'otra_cuenta'; message: string }
+}> {
+  try {
+    const lista = await finityCall('external_accounts', userId)
+    const filas: any[] = lista?.data?.data ?? lista?.data?.results ?? (Array.isArray(lista?.data) ? lista.data : [])
+    const idDe = (r: any) => String(r?.id ?? r?.external_account_id ?? r?.account_id ?? '')
+    const accDe = (r: any) => String(r?.account_number ?? r?.account?.account_number ?? '').replace(/\D/g, '')
+    // Primero por id; si no, por el número de cuenta COMPLETO. Nunca por los
+    // últimos dígitos: dos cuentas pueden terminar igual.
+    const fila = (destId ? filas.find(r => idDe(r) === destId) : null)
+      ?? (accDigits ? filas.find(r => accDe(r) === accDigits) : null)
+    if (!fila) return { bloqueo: null }
+    // El id de destino lo puede mandar el navegador: tiene que ser la MISMA
+    // cuenta que se verificó (AML, documento). Si en Finity ese id es otra
+    // cuenta, el envío no sale — si no, se podía verificar una cuenta limpia
+    // y mandar la plata a otra.
+    const accFila = accDe(fila)
+    const docFila = String(fila?.account_holder_id_number ?? fila?.account?.account_holder_id_number ?? '').replace(/\D/g, '')
+    const otraCuenta = (accFila && accDigits && accFila !== accDigits) || (docFila && docPedido && docFila !== docPedido && !docFila.startsWith(docPedido) && !docPedido.startsWith(docFila))
+    if (otraCuenta) {
+      await logAudit(userId, 'finity.payout.destino_no_coincide', { destId, accPedido: accDigits.slice(-4), accFila: accFila.slice(-4) })
+      return { bloqueo: { estado: 'otra_cuenta', message: 'La cuenta destino no coincide con el beneficiario verificado. Vuelve a inscribirlo.' } }
+    }
+    const textos = [fila.verification_status, fila.estado, fila.state, fila.status]
+      .filter((v: unknown) => v !== undefined && v !== null && String(v).trim() !== '')
+      .map((v: unknown) => String(v).toLowerCase())
+    const rechazada = textos.some(s => /rechaz|reject|denied|declin|fail/.test(s))
+    const enRevision = textos.some(s => /proces|pend|review|revis|created|unconfirmed/.test(s))
+    const aprobada = textos.some(s => /aprob|approv|verified/.test(s))
+    if (rechazada || enRevision || (!aprobada && textos.length > 0)) {
+      await logAudit(userId, 'finity.payout.destino_no_aprobado', {
+        destinationId: destId ?? (idDe(fila) || null), cuenta: accDigits, estadoProveedor: textos.join(' · '),
+      })
+      return {
+        bloqueo: rechazada
+          ? { estado: 'rechazada', message: 'El banco rechazó esta cuenta destino. Revisa los datos del beneficiario e inscríbela de nuevo.' }
+          : { estado: 'en_proceso', message: 'El banco todavía está validando esta cuenta destino. Podrás transferirle apenas la apruebe.' },
+      }
+    }
+    return { bloqueo: null }
+  } catch { return { bloqueo: null } }
+}
+
 async function finityPayoutAch(userId: string, recipient: Record<string, any>, amountCop: number):
   Promise<{ ok: boolean; providerRef?: string; state?: string; feeCop: number; costs?: any; error?: any; destinationId?: string; amountMismatch?: Record<string, unknown> | null }> {
   // 1) Cuenta destino en Finity (destination_id). Reusar si el contacto ya
@@ -1108,70 +1167,13 @@ async function finityPayoutAch(userId: string, recipient: Record<string, any>, a
       else return { ok: false, feeCop: 0, error: { step: 'destino', httpStatus: ea?.status ?? null, path: ea?.path ?? null, body: ea?.data ?? null } }
     }
   }
-  // 1.b) La cuenta destino tiene que estar APROBADA por el banco. El estado
-  //      que muestra Lincoin no sirve como control: vive en los contactos del
-  //      usuario, que el propio cliente puede escribir. El único que manda es
-  //      el proveedor, así que se le pregunta a él antes de mover plata.
-  //
-  //      Se miran TODOS los campos de estado y gana el más restrictivo: una
-  //      cuenta puede venir "active" (el registro existe) y a la vez en
-  //      revisión (el banco no la aprueba todavía). Son cosas distintas.
-  //
-  //      FALLA ABIERTO a propósito: si no se puede consultar la lista, o la
-  //      cuenta no aparece, el envío sigue. Un control que no logra verificar
-  //      no puede frenar una transferencia legítima — y si de verdad no está
-  //      aprobada, el proveedor la rechaza y el saldo se devuelve.
-  try {
-    const lista = await finityCall('external_accounts', userId)
-    const filas: any[] = lista?.data?.data ?? lista?.data?.results ?? (Array.isArray(lista?.data) ? lista.data : [])
-    const fila = filas.find((r: any) => {
-      const rid = String(r?.id ?? r?.external_account_id ?? r?.account_id ?? '')
-      if (destId && rid && rid === destId) return true
-      const acc = String(r?.account_number ?? r?.account?.account_number ?? '').replace(/\D/g, '')
-      return !!acc && acc === accDigits
-    })
-    // El id de destino que trae el pedido lo manda el navegador: tiene que
-    // ser la MISMA cuenta que se verificó (AML, documento). Si en Finity ese
-    // id es otra cuenta, el envío no sale — si no, se podía verificar una
-    // cuenta limpia y mandar la plata a otra.
-    if (fila && destId) {
-      const accFila = String(fila?.account_number ?? fila?.account?.account_number ?? '').replace(/\D/g, '')
-      const docFila = String(fila?.account_holder_id_number ?? fila?.account?.account_holder_id_number ?? '').replace(/\D/g, '')
-      const docPedido = String(recipient.documentNumber ?? '').replace(/\D/g, '')
-      const otraCuenta = (accFila && accDigits && accFila !== accDigits) || (docFila && docPedido && docFila !== docPedido && !docFila.startsWith(docPedido) && !docPedido.startsWith(docFila))
-      if (otraCuenta) {
-        await logAudit(userId, 'finity.payout.destino_no_coincide', { destId, accPedido: accDigits.slice(-4), accFila: accFila.slice(-4) })
-        return { ok: false, feeCop: 0, error: { step: 'destino', httpStatus: null, path: null, body: { message: 'La cuenta destino no coincide con el beneficiario verificado. Vuelve a inscribirlo.' } } }
-      }
-    }
-    if (fila) {
-      const textos = [fila.verification_status, fila.estado, fila.state, fila.status]
-        .filter((v: unknown) => v !== undefined && v !== null && String(v).trim() !== '')
-        .map((v: unknown) => String(v).toLowerCase())
-      const rechazada = textos.some(s => /rechaz|reject|denied|declin|fail/.test(s))
-      // Aprobada SOLO con una palabra que lo diga. "active" o "enabled"
-      // describen el registro, no el veredicto: una cuenta en revisión también
-      // es un registro activo.
-      const aprobada = textos.some(s => /aprob|approv|verified/.test(s))
-      const enRevision = !rechazada && !aprobada && textos.length > 0
-      if (rechazada || enRevision) {
-        await logAudit(userId, 'finity.payout.destino_no_aprobado', {
-          destinationId: destId, cuenta: accDigits, estadoProveedor: textos.join(' · '),
-        })
-        return {
-          ok: false, feeCop: 0,
-          error: {
-            step: 'destino', httpStatus: null, path: null,
-            body: {
-              message: rechazada
-                ? 'El banco rechazó esta cuenta destino. Revisa los datos del beneficiario e inscríbela de nuevo.'
-                : 'El banco todavía está validando esta cuenta destino. Podrás transferirle apenas la apruebe.',
-            },
-          },
-        }
-      }
-    }
-  } catch { /* no se pudo verificar: sigue, el proveedor tiene la última palabra */ }
+  // 1.b) La cuenta destino tiene que estar APROBADA. Ya se revisó antes de
+  //      debitar; se repite acá porque la cuenta pudo inscribirse recién, en
+  //      el paso 1, y una cuenta nueva casi siempre arranca en revisión.
+  {
+    const rev = await revisarDestinoFinity(userId, destId, accDigits, String(recipient.documentNumber ?? '').replace(/\D/g, ''))
+    if (rev.bloqueo) return { ok: false, feeCop: 0, error: { step: 'destino', httpStatus: null, path: null, body: { message: rev.bloqueo.message } } }
+  }
 
   // 2) Orden de retiro:
   //    POST /v0/withdrawal-orders { destination_id, amount, currency:'COP' }
@@ -3394,6 +3396,29 @@ serve(async (req: Request) => {
     const motivo = String(recipient.motivo ?? '').trim()
     if (!motivo || !(motivo in MOTIVOS_ENVIO)) return json(400, { error: 'falta_motivo', message: 'Elige el motivo del envío (pago a proveedores, servicios, nómina…).' })
     const motivoTexto = MOTIVOS_ENVIO[motivo]
+
+    // ── ACH: la cuenta destino tiene que estar APROBADA en Finity ANTES de
+    //    tocar el saldo. Esta revisión vivía solo dentro del pago, con el
+    //    saldo ya descontado: un envío de 105 M a una cuenta que Finity tenía
+    //    en revisión se debitó, quedó "Fallido" y hubo que devolverlo — y la
+    //    pantalla la mostraba como aprobada. Ahora no arranca, y el contacto
+    //    vuelve a "en validación" para que la pantalla diga la verdad.
+    if (rail === 'ACH') {
+      const accD = String(recipient.accountNumber ?? '').replace(/\D/g, '')
+      const rev = await revisarDestinoFinity(userId, recipient.finityId ? String(recipient.finityId) : null, accD, String(recipient.documentNumber ?? '').replace(/\D/g, ''))
+      if (rev.bloqueo) {
+        if (rev.bloqueo.estado !== 'otra_cuenta') {
+          try {
+            const { data: uC } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
+            const lst: any[] = Array.isArray((uC as any)?.raw_data?.mouvContacts) ? (uC as any).raw_data.mouvContacts : []
+            const nuevo = lst.map((c: any) => (c?.destKind ?? 'ach') !== 'breb' && String(c?.accountNumber ?? '').replace(/\D/g, '') === accD
+              ? { ...c, status: rev.bloqueo!.estado } : c)
+            if (JSON.stringify(nuevo) !== JSON.stringify(lst)) await mergeRaw(db, userId, { mouvContacts: nuevo })
+          } catch { /* best-effort: el envío igual no sale */ }
+        }
+        return json(409, { error: 'destino_no_aprobado', estado: rev.bloqueo.estado, message: rev.bloqueo.message })
+      }
+    }
 
     // 1) Comisión que SE COBRA AL CLIENTE
     //    BREB → FIJA Lincoin ($1.200 por envío, BREB_FEE_COP). El costo

@@ -1485,28 +1485,34 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   : Array.isArray(d.accounts) ? d.accounts : Array.isArray(d.external_accounts) ? d.external_accounts
                   : Array.isArray(d.results) ? d.results : [];
               if (!rows.length) return;
-              const norm = (v: unknown): string | null => {
-                  const s = String(v ?? '').toLowerCase();
-                  if (!s) return null;
-                  if (/aprob|approv|active|activa|complete|enabled|verified|success/.test(s)) return 'aprobada';
-                  if (/rechaz|reject|denied|declin|fail/.test(s)) return 'rechazada';
-                  if (/proces|pend|review|revis|created|unconfirmed/.test(s)) return 'en_proceso';
-                  return null;
+              // MISMA regla que Beneficiarios (ContactsSection) y que el
+              // servidor: se miran TODOS los campos de estado, gana el más
+              // restrictivo, y solo se aprueba con una palabra que lo diga.
+              // Este revisor leía el primer campo no vacío y tomaba "active"
+              // como aprobada: marcó APROBADA una cuenta que Finity tenía en
+              // revisión y dejó intentar un envío de 105 M hacia ella.
+              const estadoDe = (row: any): string | null => {
+                  const textos = [row?.verification_status, row?.estado, row?.state, row?.status]
+                      .filter((v: unknown) => v !== undefined && v !== null && String(v).trim() !== '')
+                      .map((v: unknown) => String(v).toLowerCase());
+                  if (textos.some(s => /rechaz|reject|denied|declin|fail/.test(s))) return 'rechazada';
+                  if (textos.some(s => /proces|pend|review|revis|created|unconfirmed/.test(s))) return 'en_proceso';
+                  if (textos.some(s => /aprob|approv|verified/.test(s))) return 'aprobada';
+                  return textos.length ? 'en_proceso' : null;
               };
               let changed = false;
               const cambios: Record<string, string> = {};
               const next = bankList.map((c: any) => {
                   if (!pending.some(p => p.id === c.id)) return c;
                   const cid = String(c.finityId ?? c.mouvId ?? '');
-                  const row = rows.find((x: any) => {
-                      const rid = String(x.id ?? x.external_account_id ?? x.account_id ?? '');
-                      if (cid && rid && rid === cid) return true;
-                      const accDigits = String(x.account_number ?? x.accountNumber ?? x.number ?? x.account ?? '').replace(/\D/g, '');
-                      const cDigits = String(c.accountNumber ?? '').replace(/\D/g, '');
-                      return !!accDigits && !!cDigits && (accDigits === cDigits || (accDigits.length >= 4 && cDigits.endsWith(accDigits.slice(-4))));
-                  });
+                  const cDigits = String(c.accountNumber ?? '').replace(/\D/g, '');
+                  // Por id; si no, por el número COMPLETO. Antes también
+                  // valían los últimos 4 dígitos, y dos cuentas pueden
+                  // terminar igual: se copiaba el estado de otra cuenta.
+                  const row = (cid ? rows.find((x: any) => String(x.id ?? x.external_account_id ?? x.account_id ?? '') === cid) : null)
+                      ?? (cDigits ? rows.find((x: any) => String(x.account_number ?? x.accountNumber ?? x.number ?? x.account ?? '').replace(/\D/g, '') === cDigits) : null);
                   if (!row) return c;
-                  const st = norm(row.verification_status ?? row.status ?? row.estado ?? row.state);
+                  const st = estadoDe(row);
                   if (st && st !== c.status) { changed = true; cambios[c.id] = st; return { ...c, status: st }; }
                   return c;
               });
