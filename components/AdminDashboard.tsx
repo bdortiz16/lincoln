@@ -1000,6 +1000,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   // Candado síncrono contra el doble toque: se marca antes de cualquier await
   // (el estado de React tarda un render y dos toques seguidos pasaban los dos).
   const submitCargueEnCursoRef = useRef(false);
+  // Id de ESTE cargue: se repite si se reintenta (respuesta perdida, error de
+  // red) para que el servidor no lo aplique dos veces. Se renueva al aplicarse.
+  const cargueIdRef = useRef<string | null>(null);
   const submitCargue = async () => {
     if (submitCargueEnCursoRef.current) return;
     submitCargueEnCursoRef.current = true;
@@ -1026,6 +1029,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
         body: JSON.stringify({
           action: 'admin_credit_balance', userId: carguesClient.id, currency: carguesRail,
           amount: delta, note: carguesNote.trim() || undefined,
+          cargueId: (cargueIdRef.current ??= (crypto as any)?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`),
           ...(carguesRecordOnly ? { recordOnly: true } : { otp: cargueOtp.trim() }),
           ...(usandoAcct ? { acct: {
             usdtGross: acctCalc.usdtGross, usdtNet: acctCalc.usdtNet,
@@ -1034,8 +1038,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
           } } : {}),
         }),
       });
-      const d = await r.json();
+      // Si la respuesta no es JSON (la plataforma cortó), se dice con
+      // palabras y no con "Unexpected token…".
+      const t = await r.text();
+      let d: any = null;
+      try { d = t ? JSON.parse(t) : null; } catch { d = null; }
+      if (!d) d = { success: false, error: `El servidor no respondió bien (HTTP ${r.status}). Revisa el saldo del cliente antes de repetir.` };
       if (d?.success) {
+        cargueIdRef.current = null;
         setCarguesMsg({ ok: true, text: d.recordOnly
           ? `✅ Movimiento registrado en el historial. El saldo NO cambió (${formatMoney(d.newBalance ?? 0, '')} COP).`
           : d.feeCop > 0
@@ -1079,12 +1089,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
         if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; }
       } catch { /* sin sesión supabase */ }
       const authHeader = jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}`;
-      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: authHeader },
-        body: JSON.stringify({ action: action === 'approve' ? 'approve_rail_move' : 'reject_rail_move', txId }),
-      });
-      const d = await r.json();
+      const pedir = async (extra: Record<string, unknown> = {}) => {
+        const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: authHeader },
+          body: JSON.stringify({ action: action === 'approve' ? 'approve_rail_move' : 'reject_rail_move', txId, ...extra }),
+        });
+        const t = await r.text();
+        try { return t ? JSON.parse(t) : { error: `Sin respuesta (HTTP ${r.status}).` }; } catch { return { error: `Respuesta no válida (HTTP ${r.status}).` }; }
+      };
+      let d = await pedir();
+      // Solicitud creada por una versión anterior: el servidor no sabe si el
+      // COP se descontó. Se pide confirmarlo antes de mover nada.
+      if (d?.sinDebitoVerificado && window.confirm(`${d.error}\n\n¿Confirmas que el Saldo Lincoin del cliente SÍ se descontó por esta solicitud?`)) {
+        d = await pedir({ confirmoDebito: true });
+      }
       if (d?.success) { showToast(action === 'approve' ? '✅ Aprobado — saldo ACH acreditado al cliente.' : 'Solicitud rechazada — COP reembolsado.'); refreshData(); }
       else showToast(`❌ ${d?.error || 'No se pudo aplicar.'}`, 5000, 'error');
     } catch (e: any) { showToast(`❌ ${e?.message ?? 'Error de red'}`, 5000, 'error'); }
@@ -1445,7 +1464,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       return () => clearInterval(interval);
   }, [apiStatus, pendingDeposits, pendingWithdrawals, systemConfig, allUsers, historyTransactions, pendingClientsCount, getRate, isOnline]); 
 
-  const showToast = (msg: string) => { setToastMessage(msg); setTimeout(() => setToastMessage(null), 3000); };
+  const showToast = (msg: string, ms = 3000, _tipo?: 'error') => { setToastMessage(msg); setTimeout(() => setToastMessage(null), ms); };
   
   // -- Handlers -- (Omitted for brevity, same as previous)
   // ... [Handlers remain the same: handleApproveKYC, handleRejectKYC, etc.]
@@ -1458,13 +1477,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
       if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) token = d.access_token; }
     } catch {}
+    // Devuelve el motivo si el servidor dijo que no (rol sin permiso de
+    // cumplimiento, 2FA de la sesión). Antes se descartaba la respuesta y la
+    // pantalla escribía el KYC por su cuenta: un rol sin permiso "aprobaba".
     try {
-      await fetch(`${SURL}/functions/v1/admin-data`, {
+      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({ action: 'set_kyc_status', userId, kycStatus }),
       });
-    } catch {}
+      const t = await r.text();
+      let d: any = null;
+      try { d = t ? JSON.parse(t) : null; } catch { d = null; }
+      if (r.ok && d && !d.error) return null;
+      return String(d?.error || d?.message || `El servidor no aplicó el cambio (HTTP ${r.status}).`);
+    } catch {
+      return 'No se pudo contactar el servidor. No se cambió el KYC.';
+    }
   };
 
   const handleSyncCrypto = async (userId: string, userName: string) => {
@@ -1491,8 +1520,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     const existing: any[] = selectedClient.notifications ?? [];
     const notif = { id: Date.now(), type: 'kyc', title: 'KYC Aprobado', message: 'Tu cuenta ha sido verificada exitosamente. Ya puedes operar con todos los servicios Lincoin.', read: false, date: new Date().toLocaleDateString() };
     // Use edge function (service role) so RLS doesn't block the update
-    await setKycViaEdgeFn(selectedClient.id, 'verified');
-    updateUserProfile(selectedClient.id, { kycStatus: 'verified', notifications: [...existing, notif] });
+    const err = await setKycViaEdgeFn(selectedClient.id, 'verified');
+    if (err) { showToast(`❌ ${err}`, 7000, 'error'); return; }
+    // El KYC ya lo escribió el servidor; acá solo se agrega la notificación.
+    updateUserProfile(selectedClient.id, { notifications: [...existing, notif] });
     setSelectedClient(null);
     showToast('Cliente verificado.');
   };
@@ -1500,8 +1531,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     if (!selectedClient) return;
     const existing: any[] = selectedClient.notifications ?? [];
     const notif = { id: Date.now(), type: 'kyc', title: 'KYC Rechazado', message: 'Tu solicitud de verificación fue rechazada. Por favor contacta a soporte para más información.', read: false, date: new Date().toLocaleDateString() };
-    await setKycViaEdgeFn(selectedClient.id, 'rejected');
-    updateUserProfile(selectedClient.id, { kycStatus: 'rejected', notifications: [...existing, notif] });
+    const err = await setKycViaEdgeFn(selectedClient.id, 'rejected');
+    if (err) { showToast(`❌ ${err}`, 7000, 'error'); return; }
+    updateUserProfile(selectedClient.id, { notifications: [...existing, notif] });
     setSelectedClient(null);
     showToast('Cliente rechazado.');
   };
@@ -1659,22 +1691,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       setTxAccionando(true);
       const tx = selectedTreasuryTx;
       try {
-          if (action === 'approve') {
-              if (tx.type === 'load') {
-                  await approveDeposit(tx.id);
-                  showToast("Depósito aprobado y saldo acreditado.");
-              } else if (tx.type === 'send') {
-                  await completeWithdrawal(tx.id);
-                  showToast("Retiro completado.");
-              }
+          // El aviso dice lo que PASÓ, no lo que se pidió: antes era fijo y
+          // decía "aprobado" aunque la base no hubiera hecho nada.
+          const r = action === 'approve'
+              ? (tx.type === 'load' ? await approveDeposit(tx.id) : tx.type === 'send' ? await completeWithdrawal(tx.id) : null)
+              : (tx.type === 'load' ? await rejectDeposit(tx.id) : tx.type === 'send' ? await rejectWithdrawal(tx.id, rejectReason || 'Rechazado por administración') : null);
+          if (!r) {
+              showToast("Este tipo de movimiento no se resuelve desde aquí.", 5000, 'error');
+          } else if (!r.ok) {
+              showToast(r.error || 'No se pudo completar. No se cambió nada.', 8000, 'error');
           } else {
-              if (tx.type === 'load') {
-                  await rejectDeposit(tx.id);
-                  showToast("Depósito rechazado.");
-              } else if (tx.type === 'send') {
-                  await rejectWithdrawal(tx.id, rejectReason || 'Rechazado por administración');
-                  showToast("Retiro rechazado y fondos devueltos.");
-              }
+              showToast(action === 'approve'
+                  ? (tx.type === 'load' ? "Depósito aprobado y saldo acreditado." : "Retiro completado.")
+                  : (tx.type === 'load' ? "Depósito rechazado." : "Retiro rechazado y fondos devueltos."));
           }
       } finally {
           txAccionRef.current = false;

@@ -1,5 +1,6 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { mergeRaw } from '../_shared/raw-data.ts'
+import { reclamarCandado, soltarCandado } from '../_shared/candado.ts'
 import { FIELD_ENC_KEY, encField, decField, keyFp, KeyMismatchError } from '../_shared/field-crypto.ts'
 
 // La librería de passkeys se carga SOLO cuando se usa. Con un import normal,
@@ -1358,7 +1359,26 @@ Deno.serve(async (req: Request) => {
         // in_review, así que esos SÍ pasan. Balances no se tocan: el flujo
         // legacy de retiro del cliente aún los persiste por esta vía.
         const userRow = { ...selfServiceBody.user }
-        if (!(await verifyAdmin(req)).ok) {
+        const quienAdmin = await verifyAdmin(req)
+        // ADMIN EDITANDO A OTRO: esta acción corre antes del control de roles y
+        // con service role, así que cualquier cuenta admin —también "Solo
+        // lectura"— podía escribir el saldo de un cliente sin permiso, sin 2FA
+        // y sin auditoría. El saldo de otro se mueve SOLO por las acciones de
+        // tesorería; acá se exige el permiso de editar clientes, y el KYC el de
+        // cumplimiento.
+        if (quienAdmin.ok && quienAdmin.userId !== String(selfServiceBody.user.id)) {
+          const permisos = PERMISOS_POR_ROL[(quienAdmin.acceso?.rol ?? 'lectura') as Rol] ?? new Set<string>()
+          const puede = (p: string) => permisos.has('*') || permisos.has(p)
+          if (!puede('clientes.editar') && !puede('cumplimiento')) {
+            await auditAdmin(req, 'auth.permiso_denegado', { accion: 'save_user', rol: quienAdmin.acceso?.rol ?? null, userId: quienAdmin.userId })
+            return json({ error: 'Tu rol no permite editar clientes.', permisoDenegado: true }, 403)
+          }
+          delete (userRow as any).balances
+          delete (userRow as any).crypto_balances
+          if (userRow.kyc_status != null && !puede('cumplimiento')) delete (userRow as any).kyc_status
+          if (userRow.role != null && !puede('clientes.editar')) delete (userRow as any).role
+        }
+        if (!quienAdmin.ok) {
           // El ROL no lo cambia el propio usuario, nunca. Antes se aceptaba
           // personal/business "para el onboarding", pero la fila ya existe
           // desde el registro con su rol: lo único que hacía era dejar que
@@ -1567,6 +1587,40 @@ Deno.serve(async (req: Request) => {
       // save_user, que solo acepta BAJADAS: al mover COP → Bre-B se aplicaba
       // la resta y se perdía la suma, y un saldo viejo en memoria podía borrar
       // un crédito reciente. Ahora es un solo ajuste en la base, con deltas.
+      // ── Solicitud "Saldo Lincoin → ACH" (la aprueba Tesorería) ───────────
+      // El DÉBITO y la SOLICITUD en un solo paso del servidor. Antes el
+      // navegador insertaba la fila y después se descontaba él mismo, con un
+      // guardado cuyo error se tragaba: Tesorería aprobaba (o "devolvía" al
+      // rechazar) sin saber si el descuento se había hecho. La fila queda
+      // marcada `debitado` y aprobar/rechazar lo exigen.
+      if (selfServiceBody.action === 'solicitar_mover_ach' && selfServiceBody.userId) {
+        const uidS = String(selfServiceBody.userId)
+        if (!(await verifySelfOrAdmin(req, uidS))) return json({ ok: false, error: 'No autorizado' }, 401)
+        const monto = Math.round(Number(selfServiceBody.amount))
+        if (!(monto > 0)) return json({ ok: false, error: 'Monto inválido.' }, 400)
+        const { data: adj, error: eAdj } = await db.rpc('adjust_balances', { p_user_id: uidS, p_fiat: { COP: -monto } })
+        if (eAdj) return json({ ok: false, error: 'No se pudo descontar el saldo. No se cambió nada; intenta de nuevo.' }, 500)
+        if ((adj as any)?.error) return json({ ok: false, error: (adj as any).error === 'insufficient' ? 'Saldo insuficiente en tu Saldo Lincoin.' : String((adj as any).error) }, 400)
+        const { data: uS } = await db.from('users').select('full_name').eq('id', uidS).maybeSingle()
+        const ahoraS = new Date().toISOString()
+        const { data: insS, error: insErrS } = await db.from('transactions').insert({
+          user_id: uidS, type: 'rail_move', amount: monto, currency: 'COP', status: 'Pendiente',
+          raw_data: {
+            initials: 'AC', fromRail: 'COP', toRail: 'COP_ACH',
+            title: 'Saldo Lincoin → ACH · en aprobación',
+            date: new Date().toLocaleDateString('es-CO'), createdAt: ahoraS,
+            userName: (uS as any)?.full_name ?? null,
+            debitado: true, debitadoAt: ahoraS, servidor: true,
+          },
+        }).select('id').single()
+        if (insErrS) {
+          // Sin solicitud no puede quedar descontado: se devuelve.
+          await db.rpc('adjust_balances', { p_user_id: uidS, p_fiat: { COP: monto } })
+          return json({ ok: false, error: 'No pudimos registrar la solicitud y no se descontó tu saldo. Intenta de nuevo.' }, 500)
+        }
+        return json({ ok: true, id: (insS as any)?.id ?? null, balances: (adj as any)?.balances ?? null })
+      }
+
       if (selfServiceBody.action === 'mover_saldo' && selfServiceBody.userId) {
         const uidM = String(selfServiceBody.userId)
         if (!(await verifySelfOrAdmin(req, uidM))) return json({ error: 'No autorizado' }, 401)
@@ -3146,6 +3200,7 @@ Deno.serve(async (req: Request) => {
           .update({ kyc_status: body.kycStatus })
           .eq('id', body.userId)
         if (kycErr) return json({ error: kycErr.message }, 500)
+        await auditAdmin(req, 'admin.set_kyc_status', { userId: body.userId, kycStatus: body.kycStatus })
         return json({ success: true })
       }
 
@@ -3281,6 +3336,16 @@ Deno.serve(async (req: Request) => {
           delta = acct.copToClient
         }
         if (!isFinite(delta) || delta === 0) return json({ success: false, error: 'Monto inválido' }, 400)
+        // UN cargue se aplica UNA vez. La pantalla manda un id por cargue y lo
+        // repite si reintenta: si la respuesta se perdió y el admin vuelve a
+        // apretar, el segundo pedido no acredita otra vez.
+        const cargueId = String(body.cargueId ?? '').replace(/[^\w-]/g, '').slice(0, 80)
+        const claveCargue = cargueId ? `cargue:${body.userId}:${cargueId}` : ''
+        if (claveCargue) {
+          const c = await reclamarCandado(db, claveCargue, 86_400, String(auth.userId ?? ''), 'admin_credit_balance')
+          if (c === 'ocupado') return json({ success: false, duplicado: true, error: 'Este cargue ya se aplicó (o se está aplicando). Revisa el saldo del cliente antes de repetirlo.' }, 409)
+        }
+        const soltar = async () => { if (claveCargue) await soltarCandado(db, claveCargue) }
         const BREB_CARGUE_FEE_PCT = Number(Deno.env.get('BREB_CARGUE_FEE_PCT') ?? '0.10') || 0.10
         let feeCop = 0
         let credit = delta
@@ -3301,7 +3366,7 @@ Deno.serve(async (req: Request) => {
         const utilityCop = acct ? Math.round(acct.revenueCop - credit) : null
         // ATÓMICO: primero el movimiento — si el registro falla, NO se toca
         // el saldo (un cargue sin rastro en el historial es un descuadre).
-        const { error: txInsErr } = await db.from('transactions').insert({
+        const { data: txIns, error: txInsErr } = await db.from('transactions').insert({
           user_id: body.userId,
           type: delta > 0 ? 'load' : 'adjustment',
           // El movimiento del cliente muestra lo NETO acreditado.
@@ -3322,12 +3387,41 @@ Deno.serve(async (req: Request) => {
               : 'Ajuste manual'),
             creditedAt: new Date().toISOString(),
           },
-        })
-        if (txInsErr) return json({ success: false, error: `No se registró el movimiento (${txInsErr.message}) — el saldo NO fue modificado.` }, 500)
+        }).select('id').single()
+        if (txInsErr) { await soltar(); return json({ success: false, error: `No se registró el movimiento (${txInsErr.message}) — el saldo NO fue modificado.` }, 500) }
         let newBal = parseFloat(Number(bals[cur] ?? 0).toFixed(2))
         if (!recordOnly) {
-          newBal = parseFloat(Math.max(0, (bals[cur] ?? 0) + credit).toFixed(2))
-          await db.from('users').update({ balances: { ...bals, [cur]: newBal } }).eq('id', body.userId)
+          // SUMA atómica sobre la base, no "saldo leído + monto". Antes se
+          // escribía el objeto de saldos ENTERO con la copia leída al
+          // principio: si en el medio el cliente enviaba plata por otro riel,
+          // ese débito se deshacía. Y un descuento mayor al saldo se dejaba en
+          // 0 en silencio, con el movimiento registrando el monto completo.
+          const { data: adj, error: adjErr } = await db.rpc('adjust_balances', { p_user_id: body.userId, p_fiat: { [cur]: credit } })
+          const motivoAdj = (adj as any)?.error
+          if (motivoAdj || (adjErr && !/function .* does not exist|42883|PGRST202/i.test(`${adjErr.code ?? ''} ${adjErr.message ?? ''}`))) {
+            if (motivoAdj) {
+              // La base dijo que no: no se movió nada. Se borra el movimiento.
+              await db.from('transactions').delete().eq('id', (txIns as any)?.id)
+              await soltar()
+              return json({ success: false, error: motivoAdj === 'insufficient' ? 'El cliente no tiene saldo suficiente en ese riel para el descuento. No se cambió nada.' : `No se pudo aplicar al saldo (${motivoAdj}). No se cambió nada.` }, 400)
+            }
+            // Error de transporte: puede haberse aplicado. No se borra el
+            // movimiento ni se suelta el candado; se avisa para revisar.
+            await auditAdmin(req, 'admin.cargue_saldo_incierto', { userId: body.userId, rail: cur, credit, txId: (txIns as any)?.id ?? null, error: adjErr?.message ?? null })
+            return json({ success: false, error: 'No hubo respuesta clara al aplicar el saldo. Revisa el saldo del cliente ANTES de repetir: el movimiento quedó registrado.' }, 502)
+          }
+          if (adjErr) {
+            // Base sin adjust_balances: camino viejo, con la escritura revisada.
+            newBal = parseFloat(Math.max(0, (bals[cur] ?? 0) + credit).toFixed(2))
+            const { error: upErr } = await db.from('users').update({ balances: { ...bals, [cur]: newBal } }).eq('id', body.userId)
+            if (upErr) {
+              await db.from('transactions').delete().eq('id', (txIns as any)?.id)
+              await soltar()
+              return json({ success: false, error: `No se pudo aplicar al saldo (${upErr.message}). No se cambió nada.` }, 500)
+            }
+          } else {
+            newBal = parseFloat(Number((adj as any)?.balances?.[cur] ?? newBal).toFixed(2))
+          }
         }
         if (acct) await auditAdmin(req, 'admin.cargue_contable', { userId: body.userId, rail: cur, ...acct, creditedCop: credit, utilityCop })
         return json({ success: true, newBalance: newBal, recordOnly, grossCop: Math.abs(delta), feeCop, netCop: Math.abs(credit), feePct: feeCop > 0 ? BREB_CARGUE_FEE_PCT : 0, acct: acct ? { ...acct, creditedCop: credit, feeCopBreb: feeCop, utilityCop } : null })
@@ -3345,7 +3439,19 @@ Deno.serve(async (req: Request) => {
         const rd = (tx.raw_data ?? {}) as Record<string, any>
         const amt = Number(tx.amount ?? 0)
         const aprobar = body.action === 'approve_rail_move'
-        const rail = aprobar ? String(rd.toRail ?? 'COP_ACH') : String(rd.fromRail ?? 'COP')
+        // Los rieles los escribía el navegador: solo existe COP → COP_ACH. Una
+        // fila que diga otra cosa no se acredita ni se "devuelve" a ningún lado.
+        if (String(rd.fromRail ?? 'COP') !== 'COP' || String(rd.toRail ?? 'COP_ACH') !== 'COP_ACH') {
+          return json({ success: false, error: 'Esta solicitud tiene rieles que no corresponden (solo Saldo Lincoin → ACH). No se movió nada; revísala a mano.' }, 400)
+        }
+        // Las solicitudes nuevas las crea el servidor con el débito hecho
+        // (`debitado`). Una sin esa marca y sin el débito confirmado por quien
+        // la resuelve no se toca: aprobarla acreditaría plata que nunca se
+        // descontó, y rechazarla "devolvería" lo mismo.
+        if (!rd.debitado && body.confirmoDebito !== true) {
+          return json({ success: false, sinDebitoVerificado: true, error: 'Esta solicitud no tiene el débito verificado por el servidor (se creó desde una versión anterior de la app). Confirma en el historial del cliente que el Saldo Lincoin se descontó antes de resolverla.' }, 409)
+        }
+        const rail = aprobar ? 'COP_ACH' : 'COP'
         const ahora = new Date().toISOString()
         // RECLAMAR ANTES DE ACREDITAR. Antes se miraba el estado y después se
         // escribía: dos clics (o dos pestañas) leían "Pendiente" los dos y

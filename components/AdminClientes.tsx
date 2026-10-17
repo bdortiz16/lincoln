@@ -541,7 +541,7 @@ export const AdminClientes: React.FC<{
                     Esta cuenta está pendiente de verificación. Hasta aprobarla, sus operaciones quedan limitadas.
                   </p>
                   <div style={{ display: 'flex', gap: 8 }}>
-                    <button onClick={async () => { await verifyUser?.(sel.id, 'verified'); await refreshData?.(); showToast?.('Cliente verificado.'); }} style={btnPri}>Aprobar KYC</button>
+                    <button onClick={async () => { const err = await verifyUser?.(sel.id, 'verified'); if (err) { showToast?.(`❌ ${err}`); return; } await refreshData?.(); showToast?.('Cliente verificado.'); }} style={btnPri}>Aprobar KYC</button>
                     <button
                       onClick={() => showToast?.('Todavía no está conectado: el reenvío de verificación hay que hacerlo desde soporte.', 7000)}
                       title="Aún no conectado"
@@ -1082,11 +1082,11 @@ const Kyc: React.FC<any> = ({ sel, verifyUser, refreshData, showToast, verificad
           {verificado(sel) ? <Pill tono="ok">VERIFICADO</Pill> : <Pill>PENDIENTE</Pill>}
         </div>
         <div style={{ display: 'flex', gap: 8, marginTop: 14, flexWrap: 'wrap' }}>
-          <button onClick={async () => { await verifyUser?.(sel.id, 'verified'); await refreshData?.(); showToast?.('Cliente verificado.'); }}
+          <button onClick={async () => { const err = await verifyUser?.(sel.id, 'verified'); if (err) { showToast?.(`❌ ${err}`); return; } await refreshData?.(); showToast?.('Cliente verificado.'); }}
             style={{ background: C.text, border: 'none', color: '#0A0A0A', borderRadius: 9, padding: '9px 15px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', fontFamily: FONT }}>
             Aprobar
           </button>
-          <button onClick={async () => { await verifyUser?.(sel.id, 'rejected'); await refreshData?.(); showToast?.('Verificación rechazada.'); }}
+          <button onClick={async () => { const err = await verifyUser?.(sel.id, 'rejected'); if (err) { showToast?.(`❌ ${err}`); return; } await refreshData?.(); showToast?.('Verificación rechazada.'); }}
             style={{ background: 'transparent', border: `1px solid ${C.b2}`, color: C.sub, borderRadius: 9, padding: '9px 15px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', fontFamily: FONT }}>
             Rechazar
           </button>

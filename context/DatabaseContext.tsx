@@ -3,6 +3,7 @@ import { useSystemConfig } from './SystemConfigContext';
 import { supabase, isSupabaseConfigured } from '../lib/supabaseClient';
 import { generateTOTPSecret, getTOTPQRCode, verifyTOTP } from '../lib/totp';
 import { firmarConPasskey, explicarErrorPasskey } from '../lib/webauthn';
+import { llamarFuncion } from '../lib/edge';
 
 // --- TYPES ---
 
@@ -97,11 +98,11 @@ interface DatabaseContextType {
   requestDeposit: (amount: number, curr: string, method: string, proof?: string) => Promise<void>;
   requestWithdrawal: (amount: number, curr: string, bank: string, acc: string, ben: string, reason: string, docType?: string, docNumber?: string, debitKey?: string) => Promise<void>;
   performConversion: (src: string, tgt: string, amtS: number, amtT: number, fee: number, coup?: string) => Promise<{ error?: string }>;
-  approveDeposit: (id: number) => Promise<void>;
-  rejectDeposit: (id: number) => Promise<void>;
-  completeWithdrawal: (id: number) => Promise<void>;
-  rejectWithdrawal: (id: number, reason: string) => Promise<void>;
-  verifyUser: (id: string, status: string) => Promise<void>;
+  approveDeposit: (id: any) => Promise<{ ok: boolean; error?: string }>;
+  rejectDeposit: (id: any) => Promise<{ ok: boolean; error?: string }>;
+  completeWithdrawal: (id: any) => Promise<{ ok: boolean; error?: string }>;
+  rejectWithdrawal: (id: any, reason: string) => Promise<{ ok: boolean; error?: string }>;
+  verifyUser: (id: string, status: string) => Promise<string | null>;
   toggleUserBlock: (id: string, blocked: boolean, reason?: string) => Promise<void>;
   isOnline: boolean;
   dataReady: boolean;
@@ -1078,7 +1079,12 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   // (la edición de cliente del admin). En cualquier otro guardado el rol NO
   // viaja: la sesión puede tenerlo mal en memoria (una empresa que entró con
   // el rol equivocado) y mandarlo la convertía en Persona en la base.
-  const saveUser = async (u: User, conRol = false) => {
+  // `conSaldos`: el saldo SOLO viaja cuando este guardado es para cambiarlo a
+  // propósito. Antes viajaba SIEMPRE: aprobar el KYC de un cliente, bloquearlo
+  // o cambiarle el nombre desde el admin reescribía su saldo con la copia que
+  // el panel tenía en memoria — si al cliente le habían debitado un envío
+  // después del último refresco, el envío volvía a su saldo.
+  const saveUser = async (u: User, conRol = false, conSaldos = false) => {
     if (!isSupabaseConfigured) { lsUpsertUser(u); fetchData(); return; }
     const {
       id, email, role: rolMemoria, name, balances, kycStatus, password: _pw,
@@ -1099,26 +1105,29 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
     const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
     const token = getStoredToken();
-    fetch(`${SURL}/rest/v1/users?id=eq.${encodeURIComponent(id)}`, {
-      method: 'PATCH',
-      keepalive: true,
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': SKEY,
-        // Only send Authorization if we have a real JWT; anon key is NOT a valid Bearer token
-        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-        'Prefer': 'return=minimal',
-      },
-      body: JSON.stringify({ balances }),
-    }).catch(() => {});
+    if (conSaldos) {
+      fetch(`${SURL}/rest/v1/users?id=eq.${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        keepalive: true,
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': SKEY,
+          // Only send Authorization if we have a real JWT; anon key is NOT a valid Bearer token
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+          'Prefer': 'return=minimal',
+        },
+        body: JSON.stringify({ balances }),
+      }).catch(() => {});
+    }
 
     // Split balances into fiat (balances col) and crypto (crypto_balances col)
     const fiatBalances: Record<string, number> = {};
     const cryptoBalances: Record<string, number> = {};
-    for (const [k, v] of Object.entries(balances)) {
+    for (const [k, v] of Object.entries(balances ?? {})) {
       if (CRYPTO_CURRENCIES.has(k)) cryptoBalances[k] = v as number;
       else fiatBalances[k] = v as number;
     }
+    const saldosCampo = conSaldos ? { balances: fiatBalances, crypto_balances: cryptoBalances } : {};
 
     const timeout = new Promise<{ data: null; error: Error }>((_, reject) =>
       setTimeout(() => reject(new Error('Supabase timeout after 8s')), 8000)
@@ -1192,8 +1201,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         supabase.from('users').upsert({
           id, email, ...rolCampo,
           full_name: name,
-          balances: fiatBalances,
-          crypto_balances: cryptoBalances,
+          ...saldosCampo,
           kyc_status: kycStatus,
           // Personal KYC
           first_name: firstName,
@@ -1254,7 +1262,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
               action: 'save_user',
               user: {
                 id, email, ...rolCampo, full_name: name,
-                balances: fiatBalances, crypto_balances: cryptoBalances,
+                ...saldosCampo,
                 kyc_status: kycStatus,
                 first_name: firstName, last_name: lastName, birth_date: birthDate,
                 nationality, profession, doc_type: docType, doc_number: docNumber,
@@ -2369,7 +2377,8 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     setUsers(prev => prev.map(u => u.id === id ? updated : u));
     try {
       // El rol solo viaja si este guardado lo pidió a propósito (admin).
-      await saveUser(updated, Object.prototype.hasOwnProperty.call(data ?? {}, 'role') && currentUser.role === 'admin');
+      // El saldo solo viaja si ESTE cambio es de saldo (data.balances).
+      await saveUser(updated, Object.prototype.hasOwnProperty.call(data ?? {}, 'role') && currentUser.role === 'admin', !!data?.balances);
     } catch (e) {
       console.error('saveUser failed, in-memory state is updated:', e);
     }
@@ -2399,7 +2408,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     pendingWriteUntilRef.current = Date.now() + 10000;
     setCurrentUser(prev => prev ? { ...prev, balances: newBal } : prev);
     setUsers(prev => prev.map(u => u.id === currentUser.id ? { ...u, balances: newBal } : u));
-    saveUser({ ...currentUser, balances: newBal }).catch(() => {});
+    saveUser({ ...currentUser, balances: newBal }, false, true).catch(() => {});
     saveTx({
       userId: currentUser.id,
       userName: currentUser.name,
@@ -2461,7 +2470,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     }
 
     // ── LEGACY (respaldo si apply_conversion no está desplegado) ──
-    saveUser({ ...currentUser, balances: newBal }).catch(() => {});
+    saveUser({ ...currentUser, balances: newBal }, false, true).catch(() => {});
     saveTx({ userId: currentUser.id, userName: currentUser.name, type: 'convert', initials: 'CV', title: `${src} a ${tgt}`, date: new Date().toLocaleDateString(), createdAt: new Date().toISOString(), amount: amtS, currency: src, status: 'Completado', fee, couponCode: coupon, targetAmount: amtT, targetCurrency: tgt }).catch(() => {});
     creditFee();
     return {};
@@ -2474,21 +2483,49 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   // a acreditar el saldo desde el navegador.
   const rpcNoExiste = (e: any) => !!e && /42883|PGRST202|could not find the function|function .* does not exist/i.test(`${e?.code ?? ''} ${e?.message ?? ''}`);
 
-  const approveDeposit = async (txId: number) => {
-    // Vía preferida: RPC SECURITY DEFINER (2026_admin_treasury_rpcs.sql) —
-    // los updates directos a filas de OTROS usuarios los bloquea RLS en
-    // silencio. Si el RPC no está deployado, cae al camino directo viejo.
-    if (isSupabaseConfigured) {
-      try {
-        const { data: rpc, error: rpcErr } = await supabase.rpc('admin_approve_deposit', { p_tx_id: txId });
-        if (!rpcErr && (rpc as any)?.error) console.error('[approveDeposit] RPC error:', (rpc as any).error);
-        if (!rpcNoExiste(rpcErr)) { await fetchData(); return; }
-      } catch { await fetchData(); return; /* sin respuesta: no se acredita a ciegas */ }
+  // ── Tesorería: aprobar / rechazar depósitos y retiros ──────────────────
+  // Devuelven el RESULTADO para que la pantalla diga la verdad. Antes la
+  // pantalla mostraba "aprobado" siempre: las funciones de la base pedían un
+  // id numérico, los movimientos tienen UUID, el error no era "función no
+  // existe" y se tomaba como éxito — no se aprobaba ni se devolvía nada.
+  type ResTesoreria = { ok: boolean; error?: string };
+  const textoTesoreria = (code: unknown): string => {
+    const c = String(code ?? '');
+    if (c === 'no_pendiente') return 'Ese movimiento ya no está pendiente: alguien más lo resolvió o cambió de estado.';
+    if (c === 'forbidden') return 'Tu cuenta no tiene permiso para esta acción.';
+    if (c === 'tx_not_found') return 'No se encontró el movimiento.';
+    return c || 'No se pudo completar.';
+  };
+  // null = la función no existe en la base: se usa el camino viejo.
+  const llamarTesoreria = async (fn: string, args: Record<string, unknown>): Promise<ResTesoreria | null> => {
+    try {
+      const { data, error } = await supabase.rpc(fn, args);
+      if (rpcNoExiste(error)) return null;
+      if (error) {
+        const viejo = /22P02|bigint/i.test(`${error.code ?? ''} ${error.message ?? ''}`);
+        return { ok: false, error: viejo ? 'La base tiene la versión vieja de esta función. Hay que correr el SQL de Tesorería (2026_zz8_tesoreria_uuid).' : (error.message || 'No se pudo completar.') };
+      }
+      if ((data as any)?.error) return { ok: false, error: textoTesoreria((data as any).error) };
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'Sin respuesta del servidor. Revisa el estado del movimiento antes de repetir.' };
+    } finally {
+      fetchData();
     }
-    const tx = transactions.find(t => t.id === txId);
-    if (!tx || tx.status !== 'Pendiente') return;
+  };
+
+  const approveDeposit = async (txId: any): Promise<ResTesoreria> => {
+    // Vía preferida: RPC SECURITY DEFINER — los updates directos a filas de
+    // OTROS usuarios los bloquea RLS en silencio. Si el RPC no está
+    // deployado, cae al camino directo viejo.
+    if (isSupabaseConfigured) {
+      const r = await llamarTesoreria('admin_approve_deposit', { p_tx_id: txId });
+      if (r) return r;
+    }
+    const tx = transactions.find(t => String(t.id) === String(txId));
+    if (!tx || tx.status !== 'Pendiente') return { ok: false, error: textoTesoreria('no_pendiente') };
     const user = users.find(u => u.id === tx.userId);
-    if (!user) return;
+    if (!user) return { ok: false, error: 'No se encontró el cliente.' };
     const newBal = { ...user.balances, [tx.currency]: (user.balances[tx.currency] || 0) + tx.amount };
     if (isSupabaseConfigured) {
       // Route balance update to the correct DB column to avoid fiat/crypto conflict
@@ -2502,14 +2539,14 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       const { error } = await supabase.from('users').update(colUpdate).eq('id', user.id);
       if (error) {
         console.error('[approveDeposit] Balance update failed:', error.message, error.hint, error.code, { userId: user.id, newBal });
-      } else {
-        setUsers(prev => prev.map(u => u.id === user.id ? { ...u, balances: newBal } : u));
-        if (currentUser?.id === user.id) setCurrentUser(prev => prev ? { ...prev, balances: newBal } : prev);
+        return { ok: false, error: `No se pudo acreditar el saldo: ${error.message}` };
       }
+      setUsers(prev => prev.map(u => u.id === user.id ? { ...u, balances: newBal } : u));
+      if (currentUser?.id === user.id) setCurrentUser(prev => prev ? { ...prev, balances: newBal } : prev);
     } else {
       lsUpsertUser({ ...user, balances: newBal });
     }
-    await updateTxStatus(txId, { status: 'Completado' });
+    await updateTxStatus(tx.id, { status: 'Completado' });
     // Auto-credit the matching treasury account so the balance stays in sync
     const currentTreasury: TreasuryAccount[] = config.treasuryAccounts || [];
     const matchingAcc = currentTreasury.find((a: any) => a.currency === tx.currency);
@@ -2520,70 +2557,64 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       updateConfig({ treasuryAccounts: updatedTreasury });
     }
     fetchData();
+    return { ok: true };
   };
 
-  const rejectDeposit = async (id: number) => {
+  const rejectDeposit = async (id: any): Promise<ResTesoreria> => {
     if (isSupabaseConfigured) {
-      try {
-        const { error: rpcErr } = await supabase.rpc('admin_reject_deposit', { p_tx_id: id });
-        if (!rpcNoExiste(rpcErr)) { await fetchData(); return; }
-      } catch { await fetchData(); return; }
+      const r = await llamarTesoreria('admin_reject_deposit', { p_tx_id: id });
+      if (r) return r;
     }
     await updateTxStatus(id, { status: 'Rechazado' });
+    return { ok: true };
   };
 
-  const completeWithdrawal = async (id: number) => {
-    const tx = transactions.find(t => t.id === id);
+  const completeWithdrawal = async (id: any): Promise<ResTesoreria> => {
+    const tx = transactions.find(t => String(t.id) === String(id));
+    const sincronizarTesoreria = () => {
+      if (!tx) return;
+      const t0: TreasuryAccount[] = config.treasuryAccounts || [];
+      const acc = t0.find((a: any) => a.currency === tx.currency);
+      if (acc) updateConfig({ treasuryAccounts: t0.map((a: any) => a.id === acc.id ? { ...a, amount: (a.amount || 0) - tx.amount } : a) });
+    };
     if (isSupabaseConfigured) {
-      try {
-        const { data: rpc, error: rpcErr } = await supabase.rpc('admin_complete_withdrawal', { p_tx_id: id });
-        if (!rpcErr && !(rpc as any)?.ok) { await fetchData(); return; }   // ya completado / no pendiente: nada que hacer
-        if (rpcErr && !rpcNoExiste(rpcErr)) { await fetchData(); return; }
-        if (!rpcErr && (rpc as any)?.ok) {
-          await fetchData();
-          // Sync de la cuenta de tesorería (igual que el camino directo)
-          if (tx) {
-            const t0: TreasuryAccount[] = config.treasuryAccounts || [];
-            const acc = t0.find((a: any) => a.currency === tx.currency);
-            if (acc) updateConfig({ treasuryAccounts: t0.map((a: any) => a.id === acc.id ? { ...a, amount: (a.amount || 0) - tx.amount } : a) });
-          }
-          return;
-        }
-      } catch { await fetchData(); return; }
+      const r = await llamarTesoreria('admin_complete_withdrawal', { p_tx_id: id });
+      if (r) { if (r.ok) sincronizarTesoreria(); return r; }
     }
-    if (!tx || tx.status !== 'Pendiente') return;
+    if (!tx || tx.status !== 'Pendiente') return { ok: false, error: textoTesoreria('no_pendiente') };
     await updateTxStatus(id, { status: 'Completado' });
-    // Auto-debit the matching treasury account so the balance stays in sync
-    if (tx) {
-      const currentTreasury: TreasuryAccount[] = config.treasuryAccounts || [];
-      const matchingAcc = currentTreasury.find((a: any) => a.currency === tx.currency);
-      if (matchingAcc) {
-        const updatedTreasury = currentTreasury.map((a: any) =>
-          a.id === matchingAcc.id ? { ...a, amount: (a.amount || 0) - tx.amount } : a
-        );
-        updateConfig({ treasuryAccounts: updatedTreasury });
-      }
-    }
+    sincronizarTesoreria();
+    return { ok: true };
   };
 
-  const rejectWithdrawal = async (id: number, reason: string) => {
+  const rejectWithdrawal = async (id: any, reason: string): Promise<ResTesoreria> => {
     if (isSupabaseConfigured) {
-      try {
-        const { error: rpcErr } = await supabase.rpc('admin_reject_withdrawal', { p_tx_id: id, p_reason: reason || null });
-        if (!rpcNoExiste(rpcErr)) { await fetchData(); return; }
-      } catch { await fetchData(); return; }
+      const r = await llamarTesoreria('admin_reject_withdrawal', { p_tx_id: id, p_reason: reason || null });
+      if (r) return r;
     }
-    const tx = transactions.find(t => t.id === id);
-    if (!tx || tx.status !== 'Pendiente') return;
+    const tx = transactions.find(t => String(t.id) === String(id));
+    if (!tx || tx.status !== 'Pendiente') return { ok: false, error: textoTesoreria('no_pendiente') };
     const user = users.find(u => u.id === tx.userId);
-    if (user) {
-      const newBal = { ...user.balances, [tx.currency]: (user.balances[tx.currency] || 0) + tx.amount };
-      await saveUser({ ...user, balances: newBal });
-      await updateTxStatus(id, { status: 'Rechazado', reason } as any);
-    }
+    if (!user) return { ok: false, error: 'No se encontró el cliente.' };
+    const newBal = { ...user.balances, [tx.currency]: (user.balances[tx.currency] || 0) + tx.amount };
+    await saveUser({ ...user, balances: newBal }, false, true);
+    await updateTxStatus(id, { status: 'Rechazado', reason } as any);
+    return { ok: true };
   };
 
-  const verifyUser = async (id: string, s: string) => { await updateUserProfile(id, { kycStatus: s }); };
+  // El KYC lo cambia SOLO el servidor (exige el permiso de cumplimiento y el
+  // 2FA de la sesión). Antes se escribía directo en la base con la sesión del
+  // admin: cualquier rol "aprobaba" y la regla del servidor no contaba.
+  // Devuelve el motivo si no se aplicó.
+  const verifyUser = async (id: string, s: string): Promise<string | null> => {
+    try {
+      const r: any = await llamarFuncion('admin-data', { action: 'set_kyc_status', userId: id, kycStatus: s });
+      if (r?.success) { fetchData(); return null; }
+      return String(r?.error || r?.message || 'El servidor no aplicó el cambio de KYC.');
+    } catch {
+      return 'No se pudo contactar el servidor. No se cambió el KYC.';
+    }
+  };
   const toggleUserBlock = async (id: string, b: boolean, r?: string) => { await updateUserProfile(id, { isBlocked: b, blockReason: r }); };
 
   // --- ADMIN ---

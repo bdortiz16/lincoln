@@ -2794,31 +2794,16 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     // el respaldo y luego aprueba. Aquí se DEBITA el COP (queda en espera) y
     // se crea la solicitud Pendiente que el admin aprueba o rechaza.
     if (brebDir === 'to_ach') {
-      // Se crea la SOLICITUD PRIMERO y solo si quedó registrada se debita el
-      // saldo. Antes se debitaba antes de insertar y, si el insert fallaba (p.
-      // ej. sesión sin JWT real), el cliente quedaba descontado SIN que
-      // Tesorería recibiera nada para aprobar — plata en el limbo.
-      let createdId: string | null = null;
-      try {
-        const { data: ins } = await supabase.from('transactions').insert({
-          user_id: currentUser.id,
-          type: 'rail_move', amount, currency: 'COP', status: 'Pendiente',
-          raw_data: {
-            initials: 'AC', fromRail: 'COP', toRail: 'COP_ACH',
-            title: 'Saldo Lincoin → ACH · en aprobación',
-            date: new Date().toLocaleDateString('es-CO'), createdAt: new Date().toISOString(),
-            userName: currentUser.name,
-          },
-        }).select('id').single();
-        createdId = (ins as any)?.id ?? null;
-      } catch { createdId = null; }
-      if (!createdId) {
+      // El servidor descuenta y registra la solicitud EN UN SOLO PASO. Antes
+      // el navegador insertaba la fila y se descontaba él mismo: si ese
+      // guardado fallaba, Tesorería aprobaba plata que nunca se descontó.
+      const r: any = await llamarFuncion('admin-data', { action: 'solicitar_mover_ach', userId: currentUser.id, amount }).catch(() => null);
+      if (!r?.ok) {
         setBrebMoving(false);
-        showToast('No pudimos registrar la solicitud y NO se descontó tu saldo. Intenta de nuevo en un momento.', 7000, 'error');
+        showToast(r?.error || 'No pudimos registrar la solicitud y NO se descontó tu saldo. Intenta de nuevo en un momento.', 7000, 'error');
+        refreshData?.();
         return;
       }
-      // Solicitud registrada → ahora sí se debita (queda en espera de aprobación).
-      await updateUserProfile(currentUser.id, { balances: { COP: cop - amount } });
       setBrebMoving(false);
       setBrebMoveOpen(false);
       setBrebAmountStr('');
