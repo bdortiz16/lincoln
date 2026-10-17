@@ -115,6 +115,41 @@ async function aRevisionSinFirma(tx: any, origen: string) {
   } catch { /* la revisión manual es el resguardo; el aviso es un extra */ }
 }
 
+// ── ¿Se puede reembolsar ESTA fila sola, sin un admin? ───────────────────
+// La firma cubre usuario|tipo|monto|moneda, y el cliente lee sus propias
+// filas: una fila inventada con el MISMO monto que un envío suyo rechazado
+// copia la firma tal cual, con la referencia de ese envío, y se reembolsaba
+// otra vez — sumando además la comisión que el cliente quisiera escribir.
+// Dos cierres, sin tocar la firma:
+//   · un movimiento del proveedor se reembolsa UNA vez: si su referencia está
+//     en otra fila de envío, ninguna de las dos se reembolsa sola — va a
+//     revisión de un admin;
+//   · la comisión que se devuelve no es la que diga la fila sino, como mucho,
+//     la que cobra el servidor.
+async function reembolsoPermitido(tx: any, ref: string, origen: string): Promise<{ ok: boolean; refund: number }> {
+  const rd = (tx.raw_data ?? {}) as Record<string, any>
+  const amount = Number(tx.amount ?? 0)
+  const feeMax = Math.max(ACH_FEE_COP, BREB2_FEE_COP, BREB_FEE_COP, brebFeeCop(amount))
+  const fee = Math.min(Math.max(0, Number(rd.feeCop ?? 0) || 0), feeMax)
+  const refund = Number((amount + fee).toFixed(2))
+  if (!ref) return { ok: true, refund }
+  const { data: otras, error } = await db.from('transactions').select('id')
+    .eq('type', 'dispersion').filter('raw_data->>providerRef', 'eq', ref).neq('id', tx.id).limit(1)
+  // Si no se pudo comprobar, no se reembolsa ahora: la próxima vuelta reintenta.
+  if (error) return { ok: false, refund }
+  if (otras?.length) {
+    if (!rd.refDuplicada) {
+      try {
+        await db.from('transactions').update({ raw_data: { ...rd, revisionManual: true, refDuplicada: true, refDuplicadaConId: (otras[0] as any).id, refDuplicadaVistaAt: new Date().toISOString() } }).eq('id', tx.id)
+        await logAudit(String(tx.user_id), 'reembolso.ref_duplicada', { txId: tx.id, otraFila: (otras[0] as any).id, providerRef: ref, origen, amount, feeFila: rd.feeCop ?? null })
+        await avisarAdminSinConfirmar({ id: tx.id, user_id: tx.user_id, amount: tx.amount, currency: tx.currency, raw_data: rd })
+      } catch { /* la marca y el aviso son extra: igual no se reembolsa */ }
+    }
+    return { ok: false, refund }
+  }
+  return { ok: true, refund }
+}
+
 async function creditBalanceAtomic(userId: string, col: string, delta: number): Promise<boolean> {
   // `adjust_balances` devuelve {error:'not_found'} o {error:'insufficient'}
   // como respuesta EXITOSA (200, sin error de transporte). Mirar solo `error`
@@ -527,7 +562,7 @@ const CLAVES_MOTIVO_DEBIL = ['reason', 'description', 'message', 'mensaje', 'not
 // devolución o causal (Finity no documenta el nombre del campo).
 const CLAVE_MOTIVO_PARECIDA = /reject|rechaz|declin|devoluc|causal|return_?reason|bank_?(message|response|msg)|response_?(message|msg)|status_?(message|msg)|error_?(detail|msg|message)|failure/
 const CLAVE_NO_MOTIVO = /(_at|_id|date|time|code|count|amount|fee|cost)$/
-function digMotivoRechazo(o: any, excluir?: Set<string>): string | null {
+function digMotivoRechazo(o: any, excluir?: Set<string>, soloFuertes = false): string | null {
   const limpio = (v: unknown): string | null => {
     if (typeof v !== 'string') return null
     const s = v.trim()
@@ -553,7 +588,7 @@ function digMotivoRechazo(o: any, excluir?: Set<string>): string | null {
       if (v && typeof v === 'object') stack.push(v)
     }
   }
-  return debil
+  return soloFuertes ? null : debil
 }
 
 // ¿Se le puede mostrar este texto del proveedor al CLIENTE? Solo si es un
@@ -580,11 +615,18 @@ function motivoParaCliente(s: unknown): string | null {
 // Finity sepa de ese movimiento (otras rutas del detalle, el listado y el
 // backend del portal, que es donde el portal lo muestra). Si tampoco aparece,
 // queda la respuesta CRUDA en la auditoría para ver en qué campo viene.
-async function motivoFinity(dueno: string, ref: string, st: any, rd: Record<string, any>): Promise<{ motivo: string | null; diag?: string }> {
-  const excluir = new Set(
+// Lo que NOSOTROS mandamos con la orden (el motivo del pago, la referencia) y
+// que el proveedor puede devolver en un campo genérico: no es un motivo de
+// rechazo. Un solo conjunto para todas las búsquedas.
+function textosQueNoSonMotivo(rd: Record<string, any>): Set<string> {
+  return new Set(
     [...Object.values(MOTIVOS_ENVIO), rd?.motivoTexto, rd?.reason, rd?.reference, rd?.recipient?.reference, 'Envío de dinero', 'Pago Lincoin']
       .filter(Boolean).map(x => String(x).trim().toLowerCase()),
   )
+}
+
+async function motivoFinity(dueno: string, ref: string, st: any, rd: Record<string, any>): Promise<{ motivo: string | null; diag?: string }> {
+  const excluir = textosQueNoSonMotivo(rd)
   let motivo = digMotivoRechazo(st, excluir)
   if (motivo) return { motivo }
   const m = await finityCall('motivo_rechazo', dueno, { id: ref })
@@ -1413,7 +1455,10 @@ function aprobacionAmlVigente(f: any): boolean {
 // El rechazo se mira PRIMERO: una devolución tardía llega sobre un envío que
 // ya figuraba completado, y es justo la que no puede quedar sin reembolsar.
 const RE_FINITY_FALLO = /FAILED|FALLID|REJECT|RECHAZ|CANCEL|ANUL|DECLIN|RETURN|DEVUEL|REVERS|EXPIR|VENCID|UNSUCCESS/
-const RE_FINITY_OK = /COMPLET|SETTLE|LIQUID|PAGAD|\bPAID\b|SUCCESS|FINALIZ|DISPERSAD|EXITOS|APROBAD|APPROVED/
+// APPROVED / APROBADO no van: es "aprobada para procesar", no "pagada" (así lo
+// trata también finity-proxy). Marcarla Completado antes de tiempo la sacaba
+// de la vigilancia de Procesando, y una devolución posterior no se veía.
+const RE_FINITY_OK = /COMPLET|SETTLE|LIQUID|PAGAD|\bPAID\b|SUCCESS|FINALIZ|DISPERSAD|EXITOS/
 async function conciliarFilaFinity(tx: any, origen: string): Promise<Record<string, unknown>> {
   const rd = (tx.raw_data ?? {}) as Record<string, any>
   const ref = String(rd.providerRef ?? '')
@@ -1421,6 +1466,10 @@ async function conciliarFilaFinity(tx: any, origen: string): Promise<Record<stri
   if (!ref || !dueno) return { id: tx.id, result: 'sin_referencia' }
   if (rd.refunded) return { id: tx.id, result: 'already_refunded' }
   const st = await finityCall('withdrawal_status', dueno, { id: ref })
+  // Sin una consulta exitosa no se clasifica nada: con ok:false, `data` es el
+  // cuerpo de un ERROR de Finity, y un `status` dentro de ese error se leía
+  // como si fuera el estado de la transferencia.
+  if (!st || st.ok !== true) return { id: tx.id, result: 'consulta_fallida', httpStatus: st?.status ?? null }
   const d = (st?.data ?? {}) as any
   // Finity devuelve el estado en distintos niveles según el endpoint; se
   // excava en todos (antes sólo leía d.status/d.state y, si venía anidado,
@@ -1431,14 +1480,20 @@ async function conciliarFilaFinity(tx: any, origen: string): Promise<Record<stri
   ).toUpperCase()
   if (RE_FINITY_FALLO.test(s)) {
     if (!(await filaFirmada(tx, 'dispersion'))) { if (!rd.sinFirmaServidor) await aRevisionSinFirma(tx, origen); return { id: tx.id, result: 'revision_sin_firma' } }
-    const refund = Number(tx.amount ?? 0) + Number(rd.feeCop ?? 0)
+    const permiso = await reembolsoPermitido(tx, ref, origen)
+    if (!permiso.ok) return { id: tx.id, result: 'revision_ref_duplicada' }
+    const refund = permiso.refund
     const railCol = String(tx.currency ?? 'COP_ACH')
     // CAS: reclamar el reembolso ANTES de tocar el saldo. Si el webhook (o
     // una ejecución paralela) ya reclamó, claimed viene vacío y NO se
     // acredita de nuevo — evita el doble reembolso.
     // El MOTIVO que da el operador ("CUENTA Y NIT NO CORRESPONDEN") se
     // guarda con el rechazo: el cliente lo ve en el detalle del envío.
-    const motivoProveedor = digMotivoRechazo(st, new Set([...Object.values(MOTIVOS_ENVIO), rd.motivoTexto, rd.reason].filter(Boolean).map(x => String(x).trim().toLowerCase())))
+    // Solo campos que SIGNIFICAN motivo de rechazo. Un campo genérico
+    // (description, message) puede traer "Envío de dinero" —lo que mandamos
+    // nosotros—, y guardarlo como motivo saltaba la búsqueda a fondo: el
+    // cliente veía eso para siempre en vez de "NUMERO CUENTA NO EXISTE".
+    const motivoProveedor = digMotivoRechazo(st, textosQueNoSonMotivo(rd), true)
     const ahora = new Date().toISOString()
     const { data: claimed } = await db.from('transactions').update({
       status: 'Rechazado',
@@ -1573,14 +1628,29 @@ serve(async (req: Request) => {
         const st = await mouvTransferStatus(String(transferId))
         if (st.found && st.verdict === 'returned') {
           if (!(await filaFirmada(dtx, 'dispersion'))) { await aRevisionSinFirma(dtx, 'mouv_webhook'); return json(200, { ok: true, revision: 'sin_firma' }) }
-          const refund = Number(dtx.amount ?? 0) + Number(drd.feeCop ?? 0)
+          const permiso = await reembolsoPermitido(dtx, String(transferId), 'mouv_webhook')
+          if (!permiso.ok) return json(200, { ok: true, revision: 'ref_duplicada' })
+          const refund = permiso.refund
           const railCol = String(dtx.currency ?? 'COP_BREB')
           const { data: claimed } = await db.from('transactions').update({
             status: 'Rechazado',
             raw_data: { ...drd, refunded: true, refundCop: refund, providerState: st.state, returnedAt: new Date().toISOString(), source_event: 'mouv_webhook' },
-          }).eq('id', dtx.id).filter('raw_data->>refunded', 'is', null).select('id')
+          }).eq('id', dtx.id).neq('status', 'Rechazado').filter('raw_data->>refunded', 'is', null).select('id')
           if (claimed?.length) {
-            await creditBalanceAtomic(dtx.user_id, railCol, refund)
+            // Si el saldo NO volvió, se suelta el reclamo para que la próxima
+            // conciliación lo reintente. Antes se ignoraba el resultado: la fila
+            // quedaba "reembolsada" sin que la plata volviera, y ninguna vuelta
+            // posterior la miraba otra vez.
+            const acreditado = await creditBalanceAtomic(dtx.user_id, railCol, refund)
+            if (!acreditado) {
+              await db.from('transactions').update({
+                status: dtx.status,
+                raw_data: { ...drd, reembolsoFallido: true, reembolsoFallidoAt: new Date().toISOString(), providerState: st.state },
+              }).eq('id', dtx.id).eq('status', 'Rechazado')
+              await logAudit(dtx.user_id, 'mouv.webhook.reembolso_fallido', { txId: dtx.id, refund, transferId })
+              await avisarAdminSinConfirmar({ id: dtx.id, user_id: dtx.user_id, amount: dtx.amount, currency: railCol, raw_data: drd })
+              return json(200, { ok: true, refunded: false, retry: true, id: transferId })
+            }
             await logAudit(dtx.user_id, 'mouv.webhook.breb_returned', { txId: dtx.id, refund, providerState: st.state, transferId })
             await notifyTx(dtx.id)
           }
@@ -1656,26 +1726,53 @@ serve(async (req: Request) => {
     const autorizado = (!!SERVICE_KEY && bearer === SERVICE_KEY) || await traeSecretoDeLaBase(req, db)
     if (!autorizado) return json(403, { error: 'forbidden' })
     const ahora = Date.now()
-    const { data: vivas } = await db.from('transactions')
+    // UNA referencia puntual: la usa el aviso (webhook) de Finity. El aviso no
+    // decide nada por su cuenta: avisa, y acá se le vuelve a preguntar a
+    // Finity el estado, con las mismas protecciones de siempre (firma,
+    // referencia única, reversa si el crédito falla).
+    const refObjetivo = String(payload?.ref ?? '').trim()
+    if (refObjetivo) {
+      const { data: filasRef } = await db.from('transactions')
+        .select('id, user_id, amount, currency, status, raw_data, created_at')
+        .eq('type', 'dispersion').eq('currency', 'COP_ACH').in('status', ['Procesando', 'Completado'])
+        .filter('raw_data->>providerRef', 'eq', refObjetivo).limit(3)
+      const resultados: Record<string, unknown>[] = []
+      for (const tx of (filasRef ?? []) as any[]) {
+        try { resultados.push(await conciliarFilaFinity(tx, 'finity_webhook')) }
+        catch (e) { resultados.push({ id: tx.id, result: 'error', error: String((e as Error)?.message ?? e).slice(0, 160) }) }
+      }
+      return json(200, { ok: true, ref: refObjetivo, revisadas: resultados.length, results: resultados })
+    }
+    // Las más NUEVAS (rechazos que alguien está esperando) y las más VIEJAS
+    // (las que llevan días atascadas). Solo las nuevas dejaba que 30 filas
+    // trabadas ocuparan todos los cupos y las demás no se miraban nunca.
+    const baseVivas = () => db.from('transactions')
       .select('id, user_id, amount, currency, status, raw_data, created_at')
       .eq('type', 'dispersion').eq('status', 'Procesando').eq('currency', 'COP_ACH')
       .not('raw_data->>providerRef', 'is', null)
       .gte('created_at', new Date(ahora - 10 * 86_400_000).toISOString())
       .lte('created_at', new Date(ahora - 30_000).toISOString())
-      .order('created_at', { ascending: false }).limit(30)
+    const [{ data: nuevas }, { data: viejas }] = await Promise.all([
+      baseVivas().order('created_at', { ascending: false }).limit(25),
+      baseVivas().order('created_at', { ascending: true }).limit(15),
+    ])
+    const vistas = new Set<string>()
+    const vivas = [...((nuevas ?? []) as any[]), ...((viejas ?? []) as any[])].filter(t => !vistas.has(t.id) && !!vistas.add(t.id))
     let tardias: any[] = []
     if (payload?.barrido === true) {
+      // Devoluciones TARDÍAS sobre envíos ya Completados: Bre-B · Cuenta 2 y
+      // también ACH. Antes solo se miraba Bre-B, y un ACH que el banco devolvía
+      // al día siguiente de marcarse Completado no se reembolsaba nunca.
       const { data } = await db.from('transactions')
         .select('id, user_id, amount, currency, status, raw_data, created_at')
         .eq('type', 'dispersion').eq('status', 'Completado').eq('currency', 'COP_ACH')
-        .eq('raw_data->>rail', 'BREB')
         .not('raw_data->>providerRef', 'is', null)
-        .gte('created_at', new Date(ahora - 3 * 86_400_000).toISOString())
-        .order('created_at', { ascending: false }).limit(40)
+        .gte('created_at', new Date(ahora - 5 * 86_400_000).toISOString())
+        .order('created_at', { ascending: false }).limit(60)
       tardias = (data ?? []) as any[]
     }
     const results: Record<string, unknown>[] = []
-    for (const tx of [...((vivas ?? []) as any[]), ...tardias]) {
+    for (const tx of [...vivas, ...tardias]) {
       try { results.push(await conciliarFilaFinity(tx, 'vigilar_finity')) }
       catch (e) { results.push({ id: tx.id, result: 'error', error: String((e as Error)?.message ?? e).slice(0, 160) }) }
     }
@@ -1851,7 +1948,12 @@ serve(async (req: Request) => {
   // el comprobante ya dijera Completado). Idempotente (flag refunded, CAS).
   if (action === 'reconcile_breb') {
     // Identidad PROBADA (JWT/admin) — mismo motivo que reconcile_ach (IDOR).
-    const userId = requireOwner(caller, payload)
+    // El cron y el workflow llaman con la llave de servicio y `todos`, sin
+    // user_id: requireOwner les daba null y les contestaba 403. Ninguna de las
+    // dos vigilancias automáticas de Bre-B había conciliado nada nunca — una
+    // devolución quedaba esperando a que el cliente abriera la app.
+    const barridoDelServidor = caller.admin && !caller.userId && payload?.todos === true
+    const userId = barridoDelServidor ? 'servidor' : requireOwner(caller, payload)
     if (!userId) return json(403, { error: 'forbidden', message: 'Vuelve a iniciar sesión.' })
     // Ventana de conciliación para las ya-Completadas: una devolución bancaria
     // llega en horas/pocos días. Se revisan las Completadas de los últimos N
@@ -1975,9 +2077,15 @@ serve(async (req: Request) => {
             out.push({ id: tx.id, result: 'emparejamiento_duplicado', providerRef: ref })
             continue
           }
-          await db.from('transactions').update({
+          // Solo si la fila sigue sin ref y sin reembolso. Sin estas guardas, una
+          // corrida lenta escribía su copia vieja de raw_data encima de la que
+          // otra corrida ya había reembolsado: borraba `refunded` y la fila se
+          // reembolsaba DOS veces.
+          const { data: pegada } = await db.from('transactions').update({
             raw_data: { ...rd, providerRef: ref, providerRefOrigen: `conciliacion_por_listado: ${m.via}`, providerRefAt: new Date().toISOString() },
-          }).eq('id', tx.id)
+          }).eq('id', tx.id).neq('status', 'Rechazado')
+            .filter('raw_data->>refunded', 'is', null).filter('raw_data->>providerRef', 'is', null).select('id')
+          if (!pegada?.length) { out.push({ id: tx.id, result: 'cambio_en_paralelo' }); continue }
           rd.providerRef = ref
         }
       }
@@ -2012,7 +2120,6 @@ serve(async (req: Request) => {
       }
       // 1) DEVOLUCIÓN confirmada por Mouv → Rechazado + REEMBOLSO (idempotente).
       if (st.found && st.verdict === 'returned') {
-        const refund = Number(tx.amount ?? 0) + Number(rd.feeCop ?? 0)
         const railCol = String(tx.currency ?? 'COP_BREB')
         // CAS: reclamar el reembolso ANTES de tocar el saldo. Si una ejecución
         // paralela ya reclamó, `claimed` viene vacío y NO se acredita de nuevo.
@@ -2020,6 +2127,9 @@ serve(async (req: Request) => {
         // se guarda: "fue devuelto" sin decir por que obliga a abrir la consola
         // del proveedor para contestarle al cliente lo mas basico.
         if (!(await filaFirmada(tx, 'dispersion'))) { if (!rd.sinFirmaServidor) await aRevisionSinFirma(tx, 'reconcile_breb'); out.push({ id: tx.id, result: 'revision_sin_firma' }); continue }
+        const permiso = await reembolsoPermitido(tx, ref, 'reconcile_breb')
+        if (!permiso.ok) { out.push({ id: tx.id, result: 'revision_ref_duplicada' }); continue }
+        const refund = permiso.refund
         const motivoProveedor = (() => {
           const m = (st.raw as any)?.errorMessage ?? (st.raw as any)?.data?.errorMessage
           return typeof m === 'string' && m.trim() ? m.trim().slice(0, 300) : null
@@ -2027,7 +2137,7 @@ serve(async (req: Request) => {
         const { data: claimed } = await db.from('transactions').update({
           status: 'Rechazado',
           raw_data: { ...rd, refunded: true, refundCop: refund, providerState: st.state, providerError: motivoProveedor, returnedAt: new Date().toISOString(), reconciledAt: new Date().toISOString() },
-        }).eq('id', tx.id).filter('raw_data->>refunded', 'is', null).select('id')
+        }).eq('id', tx.id).neq('status', 'Rechazado').filter('raw_data->>refunded', 'is', null).select('id')
         if (!claimed?.length) { out.push({ id: tx.id, result: 'refund_already_claimed' }); continue }
         // El reembolso va al DUEÑO DE LA FILA, no a quien llamó. Con el barrido
         // de todos los clientes, `userId` es el admin que apretó el botón —
@@ -2051,10 +2161,13 @@ serve(async (req: Request) => {
         await logAudit(duenio, 'mouv.reconcile_breb.refunded', { txId: tx.id, refund, providerState: st.state, providerError: motivoProveedor, providerRef: ref })
         await notifyTx(tx.id) // correo "tu envío fue devuelto · saldo reintegrado"
         // Y al telefono, que es donde se lee en el momento.
+        // El motivo va al teléfono SOLO si es uno que el cliente entiende: el
+        // texto crudo de Mouv puede traer jerga en inglés o nombres de aliados.
+        const motivoPush = motivoParaCliente(motivoProveedor)
         await avisarCliente(duenio,
           'Tu envío fue devuelto',
           `El envío de ${Number(tx.amount ?? 0).toLocaleString('es-CO')} a ${String((rd as any).beneficiary ?? 'tu beneficiario')} no llegó a destino. `
-          + `Ya te reintegramos ${refund.toLocaleString('es-CO')} COP a tu saldo${motivoProveedor ? `. Motivo: ${motivoProveedor}` : '.'}`,
+          + `Ya te reintegramos ${refund.toLocaleString('es-CO')} COP a tu saldo${motivoPush ? `. Motivo: ${motivoPush}` : '.'}`,
           `dev-${tx.id}`)
         out.push({ id: tx.id, result: 'refunded', refund })
         continue
@@ -3967,7 +4080,9 @@ serve(async (req: Request) => {
       const newBalance = afterDebit
       // Finity CONFIRMED = orden aceptada (aún no pagada) → Procesando.
       await asentarTx('Procesando', {
-        ...prettyBase, feeProvider: 'finity', feeCop: fin.feeCop, costs: fin.costs ?? null,
+        // La comisión que SE DEBITÓ (no la que reporta el proveedor): es la que
+        // se devuelve si el envío termina rechazado.
+        ...prettyBase, feeProvider: 'finity', feeCop, costs: fin.costs ?? null,
         providerRef: fin.providerRef ?? null, state: fin.state ?? null,
         ...(fin.amountMismatch ? { amountMismatch: fin.amountMismatch, needsReview: true } : {}),
         acceptedAt: new Date().toISOString(),
@@ -3982,7 +4097,9 @@ serve(async (req: Request) => {
     // veces. Queda en Procesando para revisión y se avisa a los admins.
     if ((fin.error as any)?.desenlaceDesconocido) {
       await asentarTx('Procesando', {
-        ...prettyBase, feeProvider: 'finity', feeCop: fin.feeCop,
+        // feeCop debitado: con fin.feeCop (0 en este camino) una devolución
+        // posterior reintegraba el monto sin la comisión.
+        ...prettyBase, feeProvider: 'finity', feeCop,
         desenlaceDesconocido: true, revisionManual: true,
         httpStatus: (fin.error as any)?.httpStatus ?? null,
         error: (fin.error as any)?.body ?? 'sin_respuesta',
@@ -3994,7 +4111,7 @@ serve(async (req: Request) => {
       return json(200, {
         ok: true, status: 'Procesando', confirmada: false, desenlaceDesconocido: true,
         message: 'No pudimos confirmar el envío con el banco. NO lo reintentes: lo estamos verificando y te avisamos en minutos.',
-        feeCop: fin.feeCop, newBalance: afterDebit,
+        feeCop, newBalance: afterDebit,
       })
     }
 
