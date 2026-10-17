@@ -1402,21 +1402,124 @@ type ResultadoBreb2 = {
 // ANTES de debitar: una llave que Finity no acepta ("Bad request to Kamin
 // API"), un titular que no es o un monto distinto ya no cobran y devuelven —
 // el envío ni arranca.
+// El saldo en pesos de la bolsa de Finity (la misma para ACH y Bre-B · Cuenta
+// 2). null = no se pudo leer; nunca se adivina.
+async function finityCopDisponible(userId: string): Promise<number | null> {
+  try {
+    const b = await finityCall('balance', userId)
+    const data: any = b?.data ?? null
+    if (!b?.ok || !data) return null
+    const filas: any[] = Array.isArray(data) ? data : Array.isArray(data.data) ? data.data
+      : Array.isArray(data.balances) ? data.balances : Array.isArray(data.items) ? data.items : []
+    for (const row of filas) {
+      const moneda = String(row?.asset ?? row?.currency ?? row?.code ?? '').toUpperCase()
+      if (moneda === 'COP') {
+        const n = Number(String(row?.available ?? row?.available_balance ?? row?.availableBalance ?? row?.balance ?? row?.amount ?? '').replace(/,/g, ''))
+        if (Number.isFinite(n)) return n
+      }
+    }
+    const directo = data.COP ?? data.cop ?? data.copBalance ?? data.data?.COP ?? data.data?.cop ?? data.data?.copBalance
+    if (directo != null) { const n = Number(String(directo).replace(/,/g, '')); if (Number.isFinite(n)) return n }
+    return null
+  } catch { return null }
+}
+
+// Aviso al admin (a lo sumo uno por hora por motivo): la Cuenta 2 rechaza
+// envíos por algo que el cliente no puede arreglar.
+async function avisarAdminBreb2(motivo: string, asunto: string, texto: string): Promise<void> {
+  const KEY = Deno.env.get('RESEND_API_KEY') ?? ''
+  const FROM = Deno.env.get('OTP_FROM_EMAIL') ?? Deno.env.get('FROM_EMAIL') ?? 'no-reply@lincoin.me'
+  const ADMIN = Deno.env.get('VITE_ADMIN_EMAIL') ?? Deno.env.get('ADMIN_EMAIL') ?? ''
+  if (!KEY || !ADMIN) return
+  try {
+    if (await reclamarCandado(db, `aviso:breb2:${motivo}`, 3600, null, 'aviso_breb2') === 'ocupado') return
+    await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: `Lincoin <${FROM}>`, to: [ADMIN], subject: asunto,
+        html: `<!doctype html><html><body style="margin:0;padding:24px;background:#F0EFEB;font-family:Arial,sans-serif"><table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;background:#FFF;border:1px solid rgba(21,24,26,0.08);border-radius:14px"><tr><td style="padding:26px"><p style="font-family:'Archivo',Arial,sans-serif;font-size:21px;font-weight:800;color:#15181A;margin:0">Lincoin<span style="color:#22A35C">.</span></p><p style="font-size:17px;font-weight:800;color:#15181A;margin:20px 0 8px">${asunto}</p><p style="font-size:13px;color:#5C625E;line-height:1.6;margin:0">${texto}</p></td></tr></table></body></html>`,
+      }),
+      signal: AbortSignal.timeout(8000),
+    })
+  } catch { /* el aviso es un extra */ }
+}
+
+const enmascarar = (v: string) => v.length > 4 ? `${'•'.repeat(Math.min(6, v.length - 4))}${v.slice(-4)}` : v
+const motivoCreacion = (c: any): string => {
+  const d = c?.data ?? c ?? {}
+  const m = d?.message ?? d?.error?.message ?? d?.error ?? d?.data?.message ?? d?.errors
+  try { return (typeof m === 'string' ? m : JSON.stringify(m ?? '')).slice(0, 200) } catch { return '' }
+}
+
 async function finityPrepararBreb(userId: string, recipient: Record<string, any>, amountCop: number, nombresEsperados: string[]): Promise<ResultadoBreb2 & { creada?: any }> {
-  const tipo = brebTypeToFinity(String(recipient.keyType ?? ''), recipient.key)
   const monto = Math.round(amountCop)   // pesos enteros, igual que los retiros ACH
+  // EL TIPO DE LLAVE LO DICE EL DIRECTORIO BRE-B, no el formulario. La
+  // Cuenta 1 ya lo hacía (resolve-key es autoritativo); la Cuenta 2 mandaba el
+  // tipo que el cliente eligió al inscribir, y una llave inscrita como
+  // "celular" que en Bre-B es otra cosa la rechaza Kamin con un 400 sin
+  // explicación ("Bad request to Kamin API").
+  const intentos: { tipo: BrebTipoFinity; valor: string }[] = []
+  const agregar = (tipo: BrebTipoFinity, valores: string[]) => {
+    for (const valor of valores) if (valor && !intentos.some(x => x.tipo === tipo && x.valor === valor)) intentos.push({ tipo, valor })
+  }
+  let directorio: { tipo?: string; llave?: string } = {}
+  try {
+    const rr = await mouvResolveBrebKey(String(recipient.key ?? ''), String(recipient.keyType ?? ''))
+    if (rr.found && rr.keyType) {
+      const tipoR = brebTypeToFinity(rr.keyType, rr.matchedKey)
+      directorio = { tipo: tipoR, llave: rr.matchedKey }
+      agregar(tipoR, [...llavesParaFinity(tipoR, rr.matchedKey), ...llavesParaFinity(tipoR, recipient.key)])
+    }
+  } catch { /* sin directorio: se usa lo inscrito */ }
+  const tipoInscrito = brebTypeToFinity(String(recipient.keyType ?? ''), recipient.key)
+  agregar(tipoInscrito, llavesParaFinity(tipoInscrito, recipient.key))
+
   let creada: any = null
   let ultimo: any = null
-  for (const llave of llavesParaFinity(tipo, recipient.key)) {
-    const c = await finityCall('breb_crear', userId, { data: { amount: monto, key_type: tipo, key_value: llave } })
+  const rastro: Record<string, unknown>[] = []
+  for (const it of intentos) {
+    const c = await finityCall('breb_crear', userId, { data: { amount: monto, key_type: it.tipo, key_value: it.valor } })
     ultimo = c
+    rastro.push({ tipo: it.tipo, llave: enmascarar(it.valor), status: Number(c?.status ?? 0) || null, motivo: c?.ok ? null : motivoCreacion(c) })
     const d = c?.data?.data ?? c?.data ?? null
     if (c?.ok && d?.id) { creada = { ...d, id: String(d.id) }; break }
     // Solo se prueba otra forma si Finity rechazó la llave por datos.
     if (![400, 404, 422].includes(Number(c?.status ?? 0))) break
   }
   if (!creada) {
-    return { ok: false, paso: 'crear', httpStatus: Number(ultimo?.status ?? 0) || null, body: ultimo?.data ?? ultimo ?? null }
+    // ¿Es la llave o es el monto? Crear no mueve plata: se prueba la misma
+    // llave con el mínimo (5.000). Si así sí la acepta, la llave está bien y lo
+    // que no pasa es el monto — o la bolsa de la Cuenta 2 no lo cubre.
+    let diagnostico: 'llave' | 'monto' | 'cupo' | 'desconocido' = 'desconocido'
+    let mensaje: string | undefined
+    const rechazoPorDatos = [400, 404, 422].includes(Number(ultimo?.status ?? 0))
+    if (rechazoPorDatos && monto > 5000 && intentos.length) {
+      const base = intentos[0]
+      const p = await finityCall('breb_crear', userId, { data: { amount: 5000, key_type: base.tipo, key_value: base.valor } })
+      const okPrueba = !!(p?.ok && (p?.data?.data?.id ?? p?.data?.id))
+      rastro.push({ prueba: 5000, tipo: base.tipo, llave: enmascarar(base.valor), status: Number(p?.status ?? 0) || null, motivo: p?.ok ? null : motivoCreacion(p) })
+      if (okPrueba) {
+        const disponible = await finityCopDisponible(userId)
+        rastro.push({ saldoCuenta2: disponible })
+        if (disponible != null && disponible < monto + 5000) {
+          diagnostico = 'cupo'
+          mensaje = 'La Bre-B · Cuenta 2 no tiene cupo para este monto en este momento, así que no salió nada. Envíalo por Bre-B · Cuenta 1 o por ACH.'
+          await avisarAdminBreb2('cupo', 'Bre-B Cuenta 2: la bolsa de Finity no cubre los envíos',
+            `Un cliente intentó enviar ${monto.toLocaleString('es-CO')} COP por Bre-B Cuenta 2 y Finity lo rechazó. Con el mínimo (5.000) la misma llave sí pasa, y el saldo en pesos de la cuenta Finity es ${disponible.toLocaleString('es-CO')} COP. Hay que fondear la cuenta Finity: de esa misma bolsa salen también los envíos ACH.`)
+        } else {
+          diagnostico = 'monto'
+          mensaje = 'La Bre-B · Cuenta 2 no aceptó este monto, así que no salió nada. Envíalo por Bre-B · Cuenta 1 o por ACH, o en montos más pequeños.'
+          await avisarAdminBreb2('monto', 'Bre-B Cuenta 2: Finity rechaza montos altos',
+            `Finity rechazó un envío Bre-B Cuenta 2 de ${monto.toLocaleString('es-CO')} COP ("${motivoCreacion(ultimo)}"), pero aceptó la misma llave con 5.000 COP. ${disponible == null ? 'No se pudo leer el saldo de la cuenta Finity.' : `El saldo en pesos de la cuenta Finity es ${disponible.toLocaleString('es-CO')} COP, que sí alcanza.`} Puede ser un tope por transferencia de Finity o de Kamin: conviene preguntárselo a Finity.`)
+        }
+      } else if (rechazoPorDatos) {
+        diagnostico = 'llave'
+        mensaje = 'La Bre-B · Cuenta 2 no reconoce esa llave, así que no salió nada. Pídele al beneficiario que te confirme su llave exacta, o envíalo por Bre-B · Cuenta 1 o por ACH.'
+      }
+    }
+    await logAudit(userId, 'finity.breb.diagnostico', { monto, diagnostico, directorio: directorio.tipo ? { tipo: directorio.tipo, llave: enmascarar(String(directorio.llave ?? '')) } : null, tipoInscrito, intentos: rastro })
+    return { ok: false, paso: 'crear', httpStatus: Number(ultimo?.status ?? 0) || null, body: ultimo?.data ?? ultimo ?? null, ...(mensaje ? { mensaje } : {}) }
   }
   const titular = [creada.first_name, creada.last_name].map((x: unknown) => String(x ?? '').trim()).filter(Boolean).join(' ')
   const extra = {
