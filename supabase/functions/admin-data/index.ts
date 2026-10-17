@@ -3017,9 +3017,12 @@ Deno.serve(async (req: Request) => {
         const porMes = new Map<string, Suma>()
         const porCliente = new Map<string, Suma>()
         const de = (m: Map<string, Suma>, k: string) => { let s = m.get(k); if (!s) { s = nuevo(); m.set(k, s) } return s }
+        // En el detalle de un cliente, sus filas duplicadas (mismo correo)
+        // suman a él: es la misma persona.
+        const claveCliente = (t: any) => delCliente ? String(body.userId) : String(t.user_id)
         const sumar = (fn: (s: Suma) => void, t: any) => {
-          fn(total); fn(de(porMes, mesDe(String(t.created_at)))); fn(de(porCliente, String(t.user_id)))
-          const c = de(porCliente, String(t.user_id)); if (String(t.created_at) > c.ultima) c.ultima = String(t.created_at)
+          fn(total); fn(de(porMes, mesDe(String(t.created_at)))); fn(de(porCliente, claveCliente(t)))
+          const c = de(porCliente, claveCliente(t)); if (String(t.created_at) > c.ultima) c.ultima = String(t.created_at)
         }
         const detalle: any[] = []
         for (const t of filasOps) {
