@@ -44,7 +44,7 @@ function rango(p: Periodo): { desde?: string; hasta?: string } {
 const cop = (n: unknown) => {
   const v = Number(n);
   if (!Number.isFinite(v)) return '—';
-  return `$${v.toLocaleString('es-CO', { maximumFractionDigits: 0 })}`;
+  return `${v < 0 ? '−' : ''}$${Math.abs(v).toLocaleString('es-CO', { maximumFractionDigits: 0 })}`;
 };
 const usd = (n: unknown) => {
   const v = Number(n);
@@ -159,6 +159,12 @@ const Resumen: React.FC<{ datos: any; cargando: boolean }> = ({ datos, cargando 
         <Kpi titulo="Utilidad Lincoin" valor={cop(utilidad)} acento detalle={t.utilidadEstimada > 0 ? `${cop(t.utilidadEstimada)} estimada (mesa OTC)` : `Cargues ${cop(t.utilidadCargues)} · Conv. ${cop(t.utilidadConversiones)}`} />
         <Kpi titulo="Facturas Lincoin" valor={`${f.emitida ?? 0} emitidas`} detalle={`${t.porFacturar ?? 0} por facturar · ${f.error ?? 0} con error · ${f.revision ?? 0} por revisar`} />
       </div>
+      {t.ajustes > 0 && (
+        <Aviso>Hay {t.ajustes} ajuste{t.ajustes === 1 ? '' : 's'} (débito) por {cop(t.ajustadoCop)} sin vincular a un cargue. Si corrigen un cargue hecho por error, ábrelos en Clientes → el cliente → Ajustes y vincúlalos: así el cargue se anula o se corrige y la utilidad cuadra.</Aviso>
+      )}
+      {t.facturasDeAnulados > 0 && (
+        <Aviso tono="error">{t.facturasDeAnulados} cargue{t.facturasDeAnulados === 1 ? '' : 's'} anulado{t.facturasDeAnulados === 1 ? '' : 's'} ya tenía{t.facturasDeAnulados === 1 ? '' : 'n'} factura emitida: anúlala en Siigo o haz la nota crédito.</Aviso>
+      )}
       {t.sinUtilidad > 0 && (
         <Aviso>{t.sinUtilidad} operación{t.sinUtilidad === 1 ? '' : 'es'} no guardaron la utilidad (cargues viejos sin la contabilidad del USDT). No se facturan solas: en Clientes podés confirmar la utilidad de cada una.</Aviso>
       )}
@@ -258,7 +264,11 @@ const Clientes: React.FC<{ datos: any; cargando: boolean; periodo: Periodo; onAv
                   <p className="text-[10px] text-slate-400 truncate max-w-[240px]">{c.documento ? `${c.documento} · ` : ''}{c.email ?? ''}</p>
                 </td>
                 <td className="px-3 py-2.5 text-right text-slate-600">{c.cargues}</td>
-                <td className="px-3 py-2.5 text-right font-semibold text-slate-800">{cop(c.cargadoCop)}</td>
+                <td className="px-3 py-2.5 text-right">
+                  <p className="font-semibold text-slate-800">{cop(c.cargadoCop)}</p>
+                  {c.usdCargado > 0 && <p className="text-[10px] text-slate-400">{usd(c.usdCargado)} USDT</p>}
+                  {c.ajustes > 0 && <p className="text-[10px] text-amber-700">{c.ajustes} ajuste{c.ajustes === 1 ? '' : 's'} sin vincular</p>}
+                </td>
                 <td className="px-3 py-2.5 text-right text-slate-600">{c.conversiones}</td>
                 <td className="px-3 py-2.5 text-right font-semibold text-slate-800">{cop(c.convertidoCop)}</td>
                 <td className="px-3 py-2.5 text-right font-bold text-[#16A34A]">{cop((c.utilidadCargues ?? 0) + (c.utilidadConversiones ?? 0))}</td>
@@ -273,6 +283,54 @@ const Clientes: React.FC<{ datos: any; cargando: boolean; periodo: Periodo; onAv
           </tbody>
         </table>
       </div>
+    </div>
+  );
+};
+
+// Tasa en COP por USD, sin decimales de más.
+const tasa = (n: unknown) => {
+  const v = Number(n);
+  return Number.isFinite(v) && v > 0 ? v.toLocaleString('es-CO', { maximumFractionDigits: 2 }) : '—';
+};
+
+// Vincular un débito (ajuste) al cargue que corrige. Las sugerencias las arma
+// el servidor: mismo saldo, anterior al débito, y primero el que cuadra exacto.
+const VincularAjuste: React.FC<{ fila: any; fechaDe: (id: string) => string | null; onHecho: (m: string, ok: boolean) => void }> = ({ fila, fechaDe, onHecho }) => {
+  const sug: any[] = fila.sugerencias ?? [];
+  const [elegido, setElegido] = useState<string>(sug.find(x => x.exacto)?.id ?? sug[0]?.id ?? '');
+  const [enviando, setEnviando] = useState(false);
+  const pedir = async (cargueId: string | null) => {
+    setEnviando(true);
+    const r = await pedirAdmin({ action: 'contabilidad_vincular_ajuste', ajusteId: fila.id, cargueId });
+    setEnviando(false);
+    if (r?.ok) onHecho(cargueId ? (r.aviso ? `Vinculado. ${r.aviso}` : r.anulado ? 'Vinculado: el cargue quedó anulado y ya no suma ni deja utilidad.' : 'Vinculado: el cargue quedó corregido.') : 'Ajuste desvinculado.', !r.aviso);
+    else onHecho(r?.permisoDenegado ? 'Tu rol no permite vincular ajustes.' : (r?.error ?? 'No se pudo vincular.'), false);
+  };
+  if (fila.reversaDe) {
+    const f = fechaDe(String(fila.reversaDe));
+    return (
+      <div className="space-y-1">
+        <p className="text-[10px] text-slate-500">Revierte el cargue {f ? `del ${f}` : 'de otro período'}</p>
+        <button disabled={enviando} onClick={() => { if (window.confirm('¿Desvincular este ajuste del cargue? El cargue vuelve a sumar con su utilidad.')) pedir(null); }}
+          className="text-[11px] font-bold text-slate-400 hover:text-slate-600 underline disabled:opacity-50">Desvincular</button>
+      </div>
+    );
+  }
+  if (!fila.esDebito) return <p className="text-[10px] text-slate-400">Ajuste a favor del cliente</p>;
+  if (!sug.length) return <p className="text-[10px] text-amber-700 max-w-[220px]">Sin vincular. No hay un cargue anterior de este saldo que lo cubra.</p>;
+  return (
+    <div className="flex items-center gap-1.5 flex-wrap justify-end">
+      <select value={elegido} onChange={e => setElegido(e.target.value)} className="border border-slate-300 rounded-lg px-2 py-1 text-[11px] bg-white max-w-[230px]">
+        {sug.map(x => (
+          <option key={x.id} value={x.id}>
+            {x.exacto ? '✓ ' : ''}Cargue {new Date(x.created_at).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' })} · {cop(x.credit)}{x.resta < x.credit ? ` (quedan ${cop(x.resta)})` : ''}
+          </option>
+        ))}
+      </select>
+      <button disabled={enviando || !elegido} onClick={() => pedir(elegido)}
+        className="text-[11px] font-bold px-2.5 py-1 rounded-lg border border-[#16A34A] text-[#16A34A] hover:bg-green-50 disabled:opacity-50 whitespace-nowrap">
+        {enviando ? '…' : 'Vincular'}
+      </button>
     </div>
   );
 };
@@ -295,16 +353,52 @@ const DetalleCliente: React.FC<{ cliente: any; periodo: Periodo; onVolver: () =>
     || (filtro === 'cargues' && d.liq?.tipo === 'cargue')
     || (filtro === 'conversiones' && d.liq?.tipo === 'conversion')
     || (filtro === 'ajustes' && d.type === 'adjustment'));
+  const fechaDe = (id: string) => { const d = detalle.find(x => String(x.id) === id); return d ? new Date(d.created_at).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' }) : null; };
   const aviso = (m: string, ok: boolean) => { onAviso(m, ok); cargar(); };
+
+  // Los totales de lo que se está viendo. Un cargue anulado vale 0 y un
+  // ajuste vinculado ya está restado dentro de su cargue: los ajustes que se
+  // suman aparte son solo los SIN vincular. Las tasas son promedios
+  // ponderados (pesos / USD), solo de las filas que tienen USD.
+  const totalesDe = (filas: any[]) => {
+    const t = { usd: 0, usdLlego: 0, recibido: 0, acreditado: 0, utilidad: 0, ventaPond: 0, usdVenta: 0, clientePond: 0, usdCliente: 0, ajustesSueltos: 0, nAjustesSueltos: 0 };
+    for (const d of filas) {
+      if (d.type === 'adjustment') { if (!d.reversaDe && d.esDebito) { t.ajustesSueltos += Number(d.amount) || 0; t.nAjustesSueltos++; } continue; }
+      const l = d.liq; if (!l || l.anulado) continue;
+      const u = l.usd ?? 0;
+      t.usd += u; t.usdLlego += l.usdLlego ?? u;
+      t.recibido += l.totalCop ?? l.tercerosCop ?? 0; t.acreditado += l.tercerosCop ?? 0; t.utilidad += l.utilidadCop ?? 0;
+      // Promedio ponderado por los USDT de cada operación.
+      if (u > 0 && l.tasaLincoin) { t.ventaPond += l.tasaLincoin * u; t.usdVenta += u; }
+      if (u > 0 && l.tasaCliente) { t.clientePond += l.tasaCliente * u; t.usdCliente += u; }
+    }
+    return { ...t, tasaVenta: t.usdVenta ? t.ventaPond / t.usdVenta : null, tasaCliente: t.usdCliente ? t.clientePond / t.usdCliente : null };
+  };
+  const tot = useMemo(() => totalesDe(vistos), [vistos]);
+  const totCargues = useMemo(() => totalesDe(detalle.filter(d => d.liq?.tipo === 'cargue')), [detalle]);
+
   const exportar = () => {
+    const filaDe = (d: any) => {
+      const l = d.liq;
+      const estado = d.type === 'adjustment' ? (d.reversaDe ? 'Revierte un cargue' : 'Sin vincular') : l?.anulado ? 'Anulado' : l?.reversadoCop ? 'Corregido' : '';
+      return [d.created_at ? new Date(d.created_at) : null, TIPO_TX[d.type] ?? d.type, estado,
+        l?.usd ?? null, l?.usdLlego ?? null, l?.tasaLincoin ?? null, l ? (l.totalCop ?? null) : null, l?.tasaCliente ?? null,
+        l ? (l.tercerosCop ?? null) : (d.type === 'adjustment' ? -(Number(d.amount) || 0) : null), l?.comisionBrebCop ?? null, l?.utilidadCop ?? null,
+        l ? FUENTE[l.fuente] ?? l.fuente : '', d.currency, d.factura?.estado ?? '', d.factura?.numero ?? '', d.factura?.error ?? l?.nota ?? d.nota ?? ''];
+    };
     descargarXlsx(`lincoin-${String(c.nombre ?? 'cliente').replace(/[^\w]+/g, '-').slice(0, 40)}-${new Date().toISOString().slice(0, 10)}.xlsx`, [{
       nombre: 'Operaciones',
       filas: [
-        ['Fecha', 'Tipo', 'Monto', 'Moneda', 'Valor operación COP', 'Para el cliente COP', 'Utilidad Lincoin COP', 'Utilidad', 'USD', 'Factura', 'Número', 'Detalle'],
-        ...detalle.map(d => [d.created_at ? new Date(d.created_at) : null, TIPO_TX[d.type] ?? d.type, Number(d.amount) || 0, d.currency, d.liq?.totalCop ?? null, d.liq?.tercerosCop ?? null, d.liq?.utilidadCop ?? null, d.liq ? FUENTE[d.liq.fuente] ?? d.liq.fuente : '', d.liq?.usd ?? null, d.factura?.estado ?? '', d.factura?.numero ?? '', d.factura?.error ?? d.liq?.nota ?? d.nota ?? '']),
+        ['Fecha', 'Tipo', 'Estado', 'USDT entró', 'USDT llegó', 'Tasa venta', 'Recibido COP', 'Tasa cliente', 'Acreditado COP', 'Comisión Bre-B COP', 'Utilidad COP', 'Utilidad', 'Saldo', 'Factura', 'Número', 'Detalle'],
+        ...vistos.map(filaDe),
+        ['TOTAL', '', '', tot.usd, tot.usdLlego, tot.tasaVenta, tot.recibido, tot.tasaCliente, tot.acreditado, null, tot.utilidad, '', '', '', '', tot.nAjustesSueltos ? `Ajustes sin vincular: -${tot.ajustesSueltos}` : ''],
       ],
     }]);
   };
+
+  const util = (c.utilidadCargues ?? 0) + (c.utilidadConversiones ?? 0);
+  const tasaVentaProm = totCargues.tasaVenta;
+  const tasaClienteProm = totCargues.tasaCliente;
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -319,65 +413,122 @@ const DetalleCliente: React.FC<{ cliente: any; periodo: Periodo; onVolver: () =>
           <button onClick={exportar} disabled={!detalle.length} className="flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-50"><Download size={13} /> Excel</button>
         </div>
       </div>
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <Kpi titulo="Cargado" valor={cop(c.cargadoCop)} detalle={`${c.cargues ?? 0} cargues · ${usd(c.usdCargado)} USDT`} />
-        <Kpi titulo="Convertido" valor={cop(c.convertidoCop)} detalle={`${c.conversiones ?? 0} conversiones`} />
-        <Kpi titulo="Utilidad Lincoin" valor={cop((c.utilidadCargues ?? 0) + (c.utilidadConversiones ?? 0))} acento detalle={c.utilidadEstimada > 0 ? `${cop(c.utilidadEstimada)} estimada` : undefined} />
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+        <Kpi titulo="USDT que entró" valor={`${usd(c.usdCargado)} USDT`} detalle={`${c.cargues ?? 0} cargues${c.usdLlego && Math.abs(c.usdLlego - c.usdCargado) > 0.009 ? ` · llegaron ${usd(c.usdLlego)}` : ''}`} />
+        <Kpi titulo="Recibido por la venta" valor={cop(c.cargadoTotalCop)} detalle={`Tasa promedio ${tasa(tasaVentaProm)}`} />
+        <Kpi titulo="Acreditado al cliente" valor={cop(c.cargadoCop)} detalle={`Tasa promedio ${tasa(tasaClienteProm)}${c.comisionBrebCop ? ` · comisión Bre-B ${cop(c.comisionBrebCop)}` : ''}`} />
+        <Kpi titulo="Utilidad Lincoin" valor={cop(util)} acento detalle={`Cargues ${cop(c.utilidadCargues)}${c.conversiones ? ` · conversiones ${cop(c.utilidadConversiones)}` : ''}${c.utilidadEstimada > 0 ? ` · ${cop(c.utilidadEstimada)} estimada` : ''}`} />
         <Kpi titulo="Facturas Lincoin" valor={`${c.facturadas ?? 0} emitidas`} detalle={`${cop(c.facturadoCop)} facturado · ${c.porFacturar ?? 0} por facturar${c.facturasConError ? ` · ${c.facturasConError} con error` : ''}`} />
       </div>
+      {c.conversiones > 0 && <p className="text-[11px] text-slate-500">Además: {c.conversiones} conversion{c.conversiones === 1 ? '' : 'es'} por {cop(c.convertidoCop)} ({usd(c.usdConvertido)} USD), con utilidad de {cop(c.utilidadConversiones)}.</p>}
+      {c.ajustes > 0 && <Aviso>Hay {c.ajustes} ajuste{c.ajustes === 1 ? '' : 's'} (débito) sin vincular por {cop(c.ajustadoCop)}. Si corrigen un cargue hecho por error, vincúlalos abajo: así el cargue se anula o se corrige y la utilidad cuadra.</Aviso>}
+      {c.anulados > 0 && <p className="text-[11px] text-slate-500">{c.anulados} cargue{c.anulados === 1 ? '' : 's'} anulado{c.anulados === 1 ? '' : 's'} con su ajuste: no suman ni dejan utilidad.</p>}
+      {c.facturasDeAnulados > 0 && <Aviso tono="error">{c.facturasDeAnulados} cargue{c.facturasDeAnulados === 1 ? '' : 's'} anulado{c.facturasDeAnulados === 1 ? '' : 's'} ya tenía{c.facturasDeAnulados === 1 ? '' : 'n'} factura emitida. Anúlala en Siigo (o haz la nota crédito).</Aviso>}
       {error && <Aviso tono="error">{error}</Aviso>}
       <div className="flex gap-1.5 flex-wrap">
-        {([['todo', 'Todo'], ['cargues', 'Cargues'], ['conversiones', 'Conversiones'], ...(c.ajustes ? [['ajustes', 'Ajustes']] as const : [])] as const).map(([k, n]) => (
+        {([['todo', 'Todo'], ['cargues', 'Cargues'], ['conversiones', 'Conversiones'], ...((c.ajustes || c.ajustesVinculados) ? [['ajustes', 'Ajustes']] as const : [])] as const).map(([k, n]) => (
           <button key={k} onClick={() => setFiltro(k)} className={`text-xs font-bold px-3 py-1.5 rounded-full border ${filtro === k ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>{n}</button>
         ))}
       </div>
       <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
-        <table className="w-full text-xs min-w-[900px]">
+        <table className="w-full text-xs min-w-[1180px]">
           <thead className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-wider">
             <tr>
               <th className="text-left px-4 py-2.5">Fecha</th>
               <th className="text-left px-3 py-2.5">Operación</th>
-              <th className="text-right px-3 py-2.5">Monto</th>
-              <th className="text-right px-3 py-2.5">Para el cliente</th>
+              <th className="text-right px-3 py-2.5">USDT entró</th>
+              <th className="text-right px-3 py-2.5">Tasa venta</th>
+              <th className="text-right px-3 py-2.5">Recibido</th>
+              <th className="text-right px-3 py-2.5">Tasa cliente</th>
+              <th className="text-right px-3 py-2.5">Acreditado</th>
               <th className="text-right px-3 py-2.5">Utilidad</th>
               <th className="text-left px-3 py-2.5">Factura Lincoin</th>
               <th className="px-4 py-2.5"></th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {!vistos.length && <tr><td colSpan={7} className="px-4 py-6 text-center text-slate-400">{cargando ? 'Cargando…' : 'Nada en el período.'}</td></tr>}
-            {vistos.map(d => (
-              <tr key={d.id} className="align-top">
-                <td className="px-4 py-2.5 text-slate-500 whitespace-nowrap">{fecha(d.created_at)}</td>
-                <td className="px-3 py-2.5">
-                  <p className="font-semibold text-slate-700">{TIPO_TX[d.type] ?? d.type}{d.ref ? ` · ${d.ref}` : ''}</p>
-                  {d.nota && <p className="text-[10px] text-slate-400 max-w-[260px] break-words">{d.nota}</p>}
-                </td>
-                <td className="px-3 py-2.5 text-right font-semibold text-slate-800 whitespace-nowrap">{Number(d.amount).toLocaleString('es-CO', { maximumFractionDigits: 2 })} {d.currency}</td>
-                <td className="px-3 py-2.5 text-right text-slate-600 whitespace-nowrap">{d.liq ? cop(d.liq.tercerosCop) : '—'}</td>
-                <td className="px-3 py-2.5 text-right whitespace-nowrap">
-                  {d.liq ? (
-                    <>
-                      <p className={`font-bold ${d.liq.utilidadCop != null ? 'text-[#16A34A]' : 'text-slate-400'}`}>{d.liq.utilidadCop != null ? cop(d.liq.utilidadCop) : 'Sin dato'}</p>
-                      <p className="text-[10px] text-slate-400">{FUENTE[d.liq.fuente] ?? d.liq.fuente}</p>
-                    </>
-                  ) : '—'}
-                </td>
-                <td className="px-3 py-2.5">
-                  {d.liq ? (
-                    <div className="space-y-1">
-                      {d.liq.facturable ? <EstadoFactura estado={d.factura?.estado} /> : <span className="text-[10px] text-slate-400">No aplica</span>}
-                      {d.factura?.numero && <p className="text-[10px] font-semibold text-slate-600">{d.factura.numero}</p>}
-                      {(d.factura?.error || (!d.liq.facturable && d.liq.nota)) && <p className="text-[10px] text-slate-500 max-w-[260px] break-words">{d.factura?.error ?? d.liq.nota}</p>}
-                    </div>
-                  ) : null}
-                </td>
-                <td className="px-4 py-2.5 text-right">
-                  {d.liq?.facturable && <BotonFacturar txId={String(d.id)} estado={d.factura?.estado} liq={d.liq} onHecho={aviso} />}
-                </td>
-              </tr>
-            ))}
+            {!vistos.length && <tr><td colSpan={10} className="px-4 py-6 text-center text-slate-400">{cargando ? 'Cargando…' : 'Nada en el período.'}</td></tr>}
+            {vistos.map(d => {
+              const l = d.liq;
+              if (d.type === 'adjustment') return (
+                <tr key={d.id} className="align-top" style={{ background: d.reversaDe ? 'rgba(255,255,255,0.02)' : 'rgba(251,191,36,0.05)' }}>
+                  <td className="px-4 py-2.5 text-slate-500 whitespace-nowrap">{fecha(d.created_at)}</td>
+                  <td className="px-3 py-2.5">
+                    <p className="font-semibold text-slate-700">Ajuste {d.esDebito ? '(débito)' : '(crédito)'}</p>
+                    {d.nota && <p className="text-[10px] text-slate-400 max-w-[240px] break-words">{d.nota}</p>}
+                  </td>
+                  <td colSpan={4} className="px-3 py-2.5 text-[10px] text-slate-400">{d.reversaDe ? 'Ya está restado dentro del cargue que revierte.' : d.esDebito ? 'No suma en los totales del cliente hasta que se vincule.' : ''}</td>
+                  <td className="px-3 py-2.5 text-right font-semibold whitespace-nowrap" style={{ color: d.esDebito ? '#DC2626' : undefined }}>{d.esDebito ? '−' : ''}{cop(d.amount)}</td>
+                  <td className="px-3 py-2.5"></td>
+                  <td colSpan={2} className="px-3 py-2.5 text-right"><VincularAjuste fila={d} fechaDe={fechaDe} onHecho={aviso} /></td>
+                </tr>
+              );
+              const anulado = !!l?.anulado;
+              const o = l?.original;
+              const tachado = anulado ? 'line-through text-slate-400' : '';
+              return (
+                <tr key={d.id} className={`align-top ${anulado ? 'opacity-70' : ''}`}>
+                  <td className="px-4 py-2.5 text-slate-500 whitespace-nowrap">{fecha(d.created_at)}</td>
+                  <td className="px-3 py-2.5">
+                    <p className="font-semibold text-slate-700">{TIPO_TX[d.type] ?? d.type}{d.ref ? ` · ${d.ref}` : ''}
+                      {anulado && <span className="ml-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full border border-red-200 text-red-600">ANULADO</span>}
+                      {!anulado && l?.reversadoCop ? <span className="ml-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full border border-amber-300 text-amber-700">CORREGIDO</span> : null}
+                    </p>
+                    {d.nota && <p className="text-[10px] text-slate-400 max-w-[240px] break-words">{d.nota}</p>}
+                    {(anulado || l?.reversadoCop) && <p className="text-[10px] text-slate-500 max-w-[240px] break-words">{l.nota}</p>}
+                  </td>
+                  <td className={`px-3 py-2.5 text-right whitespace-nowrap ${tachado}`}>
+                    <p className="font-semibold text-slate-800">{usd(anulado ? o?.usd : l?.usd)}</p>
+                    {!anulado && l?.usdLlego != null && l?.usd != null && Math.abs(l.usdLlego - l.usd) > 0.009 && <p className="text-[10px] text-slate-400">llegaron {usd(l.usdLlego)}</p>}
+                  </td>
+                  <td className="px-3 py-2.5 text-right whitespace-nowrap text-slate-600">{tasa(l?.tasaLincoin)}</td>
+                  <td className={`px-3 py-2.5 text-right whitespace-nowrap font-semibold text-slate-800 ${tachado}`}>{cop(anulado ? o?.totalCop : l?.totalCop)}</td>
+                  <td className="px-3 py-2.5 text-right whitespace-nowrap text-slate-600">{tasa(l?.tasaCliente)}</td>
+                  <td className={`px-3 py-2.5 text-right whitespace-nowrap ${tachado}`}>
+                    <p className="font-semibold text-slate-800">{cop(anulado ? o?.tercerosCop : l?.tercerosCop)}</p>
+                    {l?.comisionBrebCop ? <p className="text-[10px] text-slate-400">comisión Bre-B {cop(l.comisionBrebCop)}</p> : null}
+                  </td>
+                  <td className="px-3 py-2.5 text-right whitespace-nowrap">
+                    {anulado ? <p className={`font-bold ${tachado}`}>{cop(o?.utilidadCop)}</p> : (
+                      <>
+                        <p className={`font-bold ${l?.utilidadCop == null ? 'text-slate-400' : l.utilidadCop < 0 ? 'text-red-600' : 'text-[#16A34A]'}`}>{l?.utilidadCop != null ? cop(l.utilidadCop) : 'Sin dato'}</p>
+                        <p className="text-[10px] text-slate-400">{l ? FUENTE[l.fuente] ?? l.fuente : ''}</p>
+                      </>
+                    )}
+                  </td>
+                  <td className="px-3 py-2.5">
+                    {l ? (
+                      <div className="space-y-1">
+                        {l.facturable ? <EstadoFactura estado={d.factura?.estado} /> : d.factura?.estado === 'emitida' ? <span className="text-[10px] font-bold text-red-600">Factura emitida: anúlala en Siigo</span> : <span className="text-[10px] text-slate-400">No aplica</span>}
+                        {d.factura?.numero && <p className="text-[10px] font-semibold text-slate-600">{d.factura.numero}</p>}
+                        {(d.factura?.error || (!l.facturable && !anulado && l.nota)) && <p className="text-[10px] text-slate-500 max-w-[220px] break-words">{d.factura?.error ?? l.nota}</p>}
+                      </div>
+                    ) : null}
+                  </td>
+                  <td className="px-4 py-2.5 text-right">
+                    {l?.facturable && <BotonFacturar txId={String(d.id)} estado={d.factura?.estado} liq={l} onHecho={aviso} />}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
+          {vistos.some(d => d.liq) && (
+            <tfoot className="bg-slate-50 border-t-2 border-slate-200">
+              <tr className="font-bold text-slate-800">
+                <td className="px-4 py-3" colSpan={2}>
+                  TOTAL
+                  <p className="text-[10px] font-normal text-slate-400">Sin anulados{tot.nAjustesSueltos ? ` · ${tot.nAjustesSueltos} ajuste${tot.nAjustesSueltos === 1 ? '' : 's'} sin vincular (−${cop(tot.ajustesSueltos)}) aparte` : ''}</p>
+                </td>
+                <td className="px-3 py-3 text-right whitespace-nowrap">{usd(tot.usd)}</td>
+                <td className="px-3 py-3 text-right whitespace-nowrap text-slate-600">{tasa(tot.tasaVenta)}</td>
+                <td className="px-3 py-3 text-right whitespace-nowrap">{cop(tot.recibido)}</td>
+                <td className="px-3 py-3 text-right whitespace-nowrap text-slate-600">{tasa(tot.tasaCliente)}</td>
+                <td className="px-3 py-3 text-right whitespace-nowrap">{cop(tot.acreditado)}</td>
+                <td className="px-3 py-3 text-right whitespace-nowrap text-[#16A34A]">{cop(tot.utilidad)}</td>
+                <td colSpan={2}></td>
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
     </div>

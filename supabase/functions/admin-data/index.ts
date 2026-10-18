@@ -281,6 +281,69 @@ type Acct = {
   sellRate: number; clientRate: number; feeBearer: 'lincoin' | 'cliente'
   revenueCop: number; copToClient: number; feeCostCop: number
 }
+// ── Reverso de un cargue con un ajuste ─────────────────────────────────
+// Un cargue hecho por error se corrige con un DÉBITO (ajuste). Sin vincularlos,
+// el cargue seguía sumando en "cargado" y su utilidad en la de Lincoin (y se
+// facturaba), y el débito quedaba suelto: descuadre. Vinculado, el cargue
+// guarda raw_data.reverso = { ajustes, montoCop, anulado } y el ajuste
+// raw_data.reversaDe = id del cargue. Si el débito cubre todo lo acreditado
+// el cargue queda ANULADO; si cubre una parte, se corrige en proporción
+// (liquidacionDe en _shared/liquidacion-lincoin.ts).
+async function idsMismaPersona(userId: string): Promise<string[]> {
+  const { data: u } = await db.from('users').select('email').eq('id', userId).maybeSingle()
+  if (!(u as any)?.email) return [userId]
+  const { data: h } = await db.from('users').select('id').eq('email', (u as any).email)
+  return Array.from(new Set([userId, ...((h ?? []) as any[]).map(x => String(x.id))]))
+}
+async function vincularAjuste(ajusteId: string, cargueId: string | null, adminId: string | null): Promise<{ ok: true; aviso?: string; anulado?: boolean } | { ok: false; error: string; status: number }> {
+  const { data: aj } = await db.from('transactions').select('id, user_id, type, amount, currency, status, created_at, raw_data').eq('id', ajusteId).maybeSingle()
+  if (!aj || (aj as any).type !== 'adjustment') return { ok: false, error: 'No se encontró ese ajuste.', status: 404 }
+  const a = aj as any
+  const rdA = (a.raw_data ?? {}) as Record<string, any>
+  if (String(rdA.direction ?? 'debit') !== 'debit') return { ok: false, error: 'Solo un débito revierte un cargue.', status: 400 }
+  const ahora = new Date().toISOString()
+  const quitarDe = async (cId: string) => {
+    const { data: c } = await db.from('transactions').select('id, amount, raw_data').eq('id', cId).maybeSingle()
+    if (!c) return
+    const rdC = ((c as any).raw_data ?? {}) as Record<string, any>
+    const lista: any[] = Array.isArray(rdC.reverso?.ajustes) ? rdC.reverso.ajustes.filter((x: any) => String(x?.id) !== String(a.id)) : []
+    const { reverso: _r, ...resto } = rdC
+    const credit = Number(rdC.acct?.creditedCop ?? (c as any).amount) || 0
+    const monto = lista.reduce((s, x) => s + (Number(x?.montoCop) || 0), 0)
+    await db.from('transactions').update({ raw_data: lista.length ? { ...resto, reverso: { ...rdC.reverso, ajustes: lista, montoCop: monto, anulado: credit > 0 ? monto >= credit - 1 : false, vinculadoAt: ahora } } : resto }).eq('id', cId)
+  }
+  if (!cargueId) {
+    if (!rdA.reversaDe) return { ok: true }
+    await quitarDe(String(rdA.reversaDe))
+    const { reversaDe: _x, ...restoA } = rdA
+    await db.from('transactions').update({ raw_data: restoA }).eq('id', a.id)
+    return { ok: true }
+  }
+  if (rdA.reversaDe && String(rdA.reversaDe) !== cargueId) return { ok: false, error: 'Este ajuste ya está vinculado a otro cargue. Desvincúlalo primero.', status: 409 }
+  const { data: cg } = await db.from('transactions').select('id, user_id, type, amount, currency, status, created_at, raw_data').eq('id', cargueId).maybeSingle()
+  const c = cg as any
+  const rdC = (c?.raw_data ?? {}) as Record<string, any>
+  if (!c || c.type !== 'load' || !['admin_cargue', 'admin_backfill'].includes(String(rdC.source ?? ''))) return { ok: false, error: 'No se encontró ese cargue.', status: 404 }
+  if (String(c.currency) !== String(a.currency)) return { ok: false, error: `El cargue es en ${c.currency} y el ajuste en ${a.currency}: un débito solo revierte un cargue del mismo saldo.`, status: 400 }
+  const misIds = await idsMismaPersona(String(c.user_id))
+  if (!misIds.includes(String(a.user_id))) return { ok: false, error: 'El ajuste y el cargue son de clientes distintos.', status: 400 }
+  const credit = Number(rdC.acct?.creditedCop ?? c.amount) || 0
+  const otros: any[] = Array.isArray(rdC.reverso?.ajustes) ? rdC.reverso.ajustes.filter((x: any) => String(x?.id) !== String(a.id)) : []
+  const monto = otros.reduce((s, x) => s + (Number(x?.montoCop) || 0), 0) + (Number(a.amount) || 0)
+  if (monto > credit + 1) return { ok: false, error: `Con este ajuste se revertirían $${Math.round(monto).toLocaleString('es-CO')} de un cargue de $${Math.round(credit).toLocaleString('es-CO')}. Elegí otro cargue.`, status: 400 }
+  const anulado = monto >= credit - 1
+  await db.from('transactions').update({ raw_data: { ...rdC, reverso: { ajustes: [...otros, { id: a.id, montoCop: Number(a.amount) || 0, at: a.created_at }], montoCop: monto, anulado, vinculadoPor: adminId, vinculadoAt: ahora } } }).eq('id', c.id)
+  await db.from('transactions').update({ raw_data: { ...rdA, reversaDe: String(c.id) } }).eq('id', a.id)
+  // ¿Ya tenía factura de Lincoin? Eso no se deshace solo: hay que anularla o
+  // emitir una nota crédito en Siigo.
+  let aviso: string | undefined
+  try {
+    const { data: f } = await db.from('facturas_lincoin').select('estado, numero').eq('transaction_id', String(c.id)).maybeSingle()
+    if ((f as any)?.estado === 'emitida') aviso = `Este cargue ya tenía la factura ${(f as any).numero ?? ''}. ${anulado ? 'Anúlala' : 'Corrígela con una nota crédito'} en Siigo.`
+  } catch { /* sin tabla de facturas */ }
+  return { ok: true, anulado, ...(aviso ? { aviso } : {}) }
+}
+
 function computeAcct(input: any): { acct: Acct } | { error: string } {
   const n = (v: any) => { const x = Number(v); return Number.isFinite(x) ? x : NaN }
   const usdtGross = n(input?.usdtGross)
@@ -1006,6 +1069,7 @@ const PERMISO_DE_ACCION: Record<string, string> = {
   // (credenciales) queda para el dueño: fact_lincoin_set no figura acá.
   contabilidad_resumen: 'plata.ver',
   contabilidad_cliente: 'plata.ver',
+  contabilidad_vincular_ajuste: 'plata.mover',
   fact_lincoin_get: 'plata.ver',
   fact_lincoin_lista: 'plata.ver',
   fact_lincoin_probar: 'plata.mover',
@@ -2974,7 +3038,7 @@ Deno.serve(async (req: Request) => {
         let ops: { filas: any[]; truncado: boolean }
         try {
           ops = await leer(['load', 'convert', 'adjustment'],
-            'id, user_id, type, amount, currency, status, created_at, source:raw_data->>source, recordOnly:raw_data->recordOnly, acct:raw_data->acct, feeCop:raw_data->feeCop, grossCop:raw_data->grossCop, utilityCop:raw_data->utilityCop, gasfree:raw_data->gasfree, fromAmount:raw_data->fromAmount, fromCurrency:raw_data->>fromCurrency, destAmount:raw_data->destAmount, otcCloseId:raw_data->>otcCloseId, otcRef:raw_data->>otcRef, lincoin:raw_data->lincoin, rail:raw_data->>rail, note:raw_data->>note')
+            'id, user_id, type, amount, currency, status, created_at, source:raw_data->>source, recordOnly:raw_data->recordOnly, acct:raw_data->acct, feeCop:raw_data->feeCop, grossCop:raw_data->grossCop, utilityCop:raw_data->utilityCop, gasfree:raw_data->gasfree, fromAmount:raw_data->fromAmount, fromCurrency:raw_data->>fromCurrency, destAmount:raw_data->destAmount, mouvRate:raw_data->mouvRate, otcCloseId:raw_data->>otcCloseId, otcRef:raw_data->>otcRef, lincoin:raw_data->lincoin, rail:raw_data->>rail, note:raw_data->>note, reverso:raw_data->reverso, reversaDe:raw_data->>reversaDe, direction:raw_data->>direction')
         } catch (e) {
           return json({ error: `No se pudieron leer los movimientos: ${(e as Error).message}` }, 500)
         }
@@ -3004,11 +3068,14 @@ Deno.serve(async (req: Request) => {
         // de ese mes, no del siguiente.
         const mesDe = (iso: string) => new Date(Date.parse(iso) - 5 * 3600_000).toISOString().slice(0, 7)
         const r2 = (n: number) => Math.round(n * 100) / 100
+        // Todo lo que suma sale de liquidacionDe (con el reverso ya aplicado):
+        // un cargue anulado vale 0 y un ajuste vinculado a un cargue NO se
+        // cuenta aparte (ya está adentro del cargue). Así la utilidad cuadra.
         const nuevo = () => ({
-          cargues: 0, cargadoCop: 0, cargadoTotalCop: 0, usdCargado: 0, utilidadCargues: 0,
-          conversiones: 0, convertidoCop: 0, usdConvertido: 0, utilidadConversiones: 0,
-          utilidadEstimada: 0, sinUtilidad: 0, ajustes: 0, ajustadoCop: 0,
-          facturadas: 0, facturadoCop: 0, porFacturar: 0, facturasConError: 0,
+          cargues: 0, anulados: 0, corregidos: 0, cargadoCop: 0, cargadoTotalCop: 0, usdCargado: 0, usdLlego: 0, utilidadCargues: 0, comisionBrebCop: 0,
+          conversiones: 0, convertidoCop: 0, convertidoClienteCop: 0, usdConvertido: 0, utilidadConversiones: 0,
+          utilidadEstimada: 0, sinUtilidad: 0, ajustes: 0, ajustadoCop: 0, ajustesVinculados: 0,
+          facturadas: 0, facturadoCop: 0, porFacturar: 0, facturasConError: 0, facturasDeAnulados: 0,
           ultima: '' as string,
         })
         type Suma = ReturnType<typeof nuevo>
@@ -3024,10 +3091,18 @@ Deno.serve(async (req: Request) => {
           const c = de(porCliente, claveCliente(t)); if (String(t.created_at) > c.ultima) c.ultima = String(t.created_at)
         }
         const detalle: any[] = []
+        const sueltos: any[] = []
         for (const t of filasOps) {
           if (t.type === 'adjustment') {
-            sumar(s => { s.ajustes++; s.ajustadoCop += esCopMon(t.currency) ? Number(t.amount) || 0 : 0 }, t)
-            if (delCliente) detalle.push({ id: t.id, type: t.type, amount: t.amount, currency: t.currency, created_at: t.created_at, nota: t.note ?? null, liq: null, factura: null })
+            const vinculado = !!t.reversaDe
+            const esDebito = String(t.direction ?? 'debit') === 'debit'
+            if (vinculado) sumar(s => { s.ajustesVinculados++ }, t)
+            else sumar(s => { s.ajustes++; s.ajustadoCop += esCopMon(t.currency) ? Number(t.amount) || 0 : 0 }, t)
+            if (delCliente) {
+              const fila = { id: t.id, type: t.type, amount: t.amount, currency: t.currency, created_at: t.created_at, nota: t.note ?? null, liq: null, factura: null, reversaDe: t.reversaDe ?? null, esDebito, sugerencias: [] as any[] }
+              detalle.push(fila)
+              if (!vinculado && esDebito) sueltos.push(fila)
+            }
             continue
           }
           const liq = liquidacionDe(t, t.otcCloseId ? cierres.get(String(t.otcCloseId)) ?? null : null)
@@ -3038,10 +3113,12 @@ Deno.serve(async (req: Request) => {
           const u = liq.utilidadCop ?? 0
           sumar(s => {
             if (liq.tipo === 'cargue') {
-              s.cargues++; s.cargadoCop += liq.tercerosCop ?? 0; s.cargadoTotalCop += liq.totalCop ?? liq.tercerosCop ?? 0
-              s.usdCargado += liq.usd ?? 0; s.utilidadCargues += u
+              if (liq.anulado) { s.anulados++; if (f?.estado === 'emitida') s.facturasDeAnulados++; return }
+              s.cargues++; if (liq.reversadoCop) s.corregidos++
+              s.cargadoCop += liq.tercerosCop ?? 0; s.cargadoTotalCop += liq.totalCop ?? liq.tercerosCop ?? 0
+              s.usdCargado += liq.usd ?? 0; s.usdLlego += liq.usdLlego ?? liq.usd ?? 0; s.utilidadCargues += u; s.comisionBrebCop += liq.comisionBrebCop ?? 0
             } else {
-              s.conversiones++; s.convertidoCop += liq.totalCop ?? liq.tercerosCop ?? 0
+              s.conversiones++; s.convertidoCop += liq.totalCop ?? liq.tercerosCop ?? 0; s.convertidoClienteCop += liq.tercerosCop ?? 0
               s.usdConvertido += liq.usd ?? 0; s.utilidadConversiones += u
             }
             if (liq.fuente === 'estimada') s.utilidadEstimada += u
@@ -3053,8 +3130,30 @@ Deno.serve(async (req: Request) => {
           if (delCliente) detalle.push({
             id: t.id, type: t.type, amount: t.amount, currency: t.currency, created_at: t.created_at,
             ref: t.otcRef ?? null, nota: t.note ?? null, liq,
+            reverso: t.reverso && typeof t.reverso === 'object' ? { ajustes: Array.isArray(t.reverso.ajustes) ? t.reverso.ajustes : [], montoCop: t.reverso.montoCop ?? null } : null,
             factura: f ? { estado: f.estado, numero: f.numero ?? null, total: f.total ?? null, error: f.error ?? null, emitida_at: f.emitida_at ?? null } : null,
           })
+        }
+        // A qué cargue puede corresponder cada débito suelto: del mismo saldo,
+        // anterior al débito y con lo que le queda por revertir >= el débito.
+        // Se buscan TODOS los cargues del cliente, no solo los del período: el
+        // error pudo ser el mes pasado. Primero el que cuadra exacto.
+        if (delCliente && sueltos.length && ids) {
+          const { data: cs } = await db.from('transactions').select('id, amount, currency, created_at, status, acct:raw_data->acct, reverso:raw_data->reverso, source:raw_data->>source')
+            .in('user_id', ids).eq('type', 'load').eq('status', 'Completado').order('created_at', { ascending: false }).limit(500)
+          const cargues = ((cs ?? []) as any[]).filter(c => c.source === 'admin_cargue' || c.source === 'admin_backfill').map(c => {
+            const credit = Number(c.acct?.creditedCop ?? c.amount) || 0
+            const ya = Number(c.reverso?.montoCop ?? 0) || 0
+            return { id: c.id, currency: c.currency, created_at: c.created_at, credit, resta: Math.max(0, credit - ya) }
+          })
+          for (const a of sueltos) {
+            const m = Number(a.amount) || 0
+            a.sugerencias = cargues
+              .filter(c => c.currency === a.currency && c.created_at <= a.created_at && c.resta >= m - 1)
+              .map(c => ({ ...c, exacto: Math.abs(c.resta - m) <= 1 }))
+              .sort((x, y) => Number(y.exacto) - Number(x.exacto) || String(y.created_at).localeCompare(String(x.created_at)))
+              .slice(0, 6)
+          }
         }
         const redondear = (s: Suma) => Object.fromEntries(Object.entries(s).map(([k, v]) => [k, typeof v === 'number' ? r2(v) : v])) as Suma
 
@@ -3082,6 +3181,16 @@ Deno.serve(async (req: Request) => {
           meses, clientes, facturas: estados,
           ...(delCliente ? { cliente: clientes.find(c => c.userId === String(body.userId)) ?? clientes[0] ?? null, ids, detalle: detalle.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))) } : {}),
         })
+      }
+
+      // ── Vincular (o desvincular) un débito al cargue que corrige ─────────
+      if (body.action === 'contabilidad_vincular_ajuste') {
+        const ajusteId = String(body.ajusteId ?? '')
+        if (!ajusteId) return json({ ok: false, error: 'Falta el ajuste.' }, 400)
+        const r = await vincularAjuste(ajusteId, body.cargueId ? String(body.cargueId) : null, auth.userId ?? null)
+        if ('error' in r) return json({ ok: false, error: r.error }, r.status)
+        await auditAdmin(req, body.cargueId ? 'admin.ajuste_vinculado' : 'admin.ajuste_desvinculado', { ajusteId, cargueId: body.cargueId ?? null, anulado: r.anulado ?? null })
+        return json(r)
       }
 
       // ── Facturación de LINCOIN en Siigo ─────────────────────────────────
@@ -3663,7 +3772,16 @@ Deno.serve(async (req: Request) => {
           }
         }
         if (acct) await auditAdmin(req, 'admin.cargue_contable', { userId: body.userId, rail: cur, ...acct, creditedCop: credit, utilityCop })
-        return json({ success: true, newBalance: newBal, recordOnly, grossCop: Math.abs(delta), feeCop, netCop: Math.abs(credit), feePct: feeCop > 0 ? BREB_CARGUE_FEE_PCT : 0, acct: acct ? { ...acct, creditedCop: credit, feeCopBreb: feeCop, utilityCop } : null })
+        // Un descuento que corrige un cargue hecho por error: se vincula ya,
+        // para que Contabilidad lo reste de ese cargue (y de su utilidad) en
+        // vez de dejarlo suelto. Si no se puede vincular, el descuento igual
+        // quedó aplicado: se avisa y se vincula después desde Contabilidad.
+        let reverso: { ok: boolean; aviso?: string; error?: string } | null = null
+        if (delta < 0 && body.reversaDe && (txIns as any)?.id) {
+          const v = await vincularAjuste(String((txIns as any).id), String(body.reversaDe), auth.userId ?? null)
+          reverso = 'error' in v ? { ok: false, error: v.error } : { ok: true, ...(v.aviso ? { aviso: v.aviso } : {}) }
+        }
+        return json({ success: true, newBalance: newBal, recordOnly, grossCop: Math.abs(delta), feeCop, netCop: Math.abs(credit), feePct: feeCop > 0 ? BREB_CARGUE_FEE_PCT : 0, acct: acct ? { ...acct, creditedCop: credit, feeCopBreb: feeCop, utilityCop } : null, ...(reverso ? { reverso } : {}) })
       }
 
       // ── Solicitudes "Mover Saldo Lincoin → ACH" (aprobación manual) ──

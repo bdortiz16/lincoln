@@ -590,6 +590,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const [carguesAmount, setCarguesAmount] = useState('');
   const [carguesNote, setCarguesNote] = useState('');
   const [carguesDir, setCarguesDir] = useState<'credit' | 'debit'>('credit');
+  // Un descuento que corrige un cargue hecho por error: a qué cargue revierte.
+  // Así Contabilidad lo resta de ese cargue y de su utilidad, sin descuadre.
+  const [carguesReversaDe, setCarguesReversaDe] = useState('');
   const [carguesRecordOnly, setCarguesRecordOnly] = useState(false);
   const [carguesBusy, setCarguesBusy] = useState(false);
   const [carguesMsg, setCarguesMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -1023,6 +1026,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
         body: JSON.stringify({
           action: 'admin_credit_balance', userId: carguesClient.id, currency: carguesRail,
           amount: delta, note: carguesNote.trim() || undefined,
+          ...(carguesDir === 'debit' && carguesReversaDe ? { reversaDe: carguesReversaDe } : {}),
           cargueId: (cargueIdRef.current ??= (crypto as any)?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`),
           ...(carguesRecordOnly ? { recordOnly: true } : { otp: cargueOtp.trim() }),
           ...(usandoAcct ? { acct: {
@@ -1045,7 +1049,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
           : d.feeCop > 0
           ? `✅ ${railLabel} actualizado. Cargue ${formatMoney(d.grossCop ?? raw, '')} − comisión ${formatMoney(d.feeCop, '')} (${d.feePct}%) = ${formatMoney(d.netCop ?? 0, '')} acreditados. Nuevo saldo: ${formatMoney(d.newBalance ?? 0, '')} COP`
           : `✅ ${railLabel} actualizado. Nuevo saldo: ${formatMoney(d.newBalance ?? 0, '')} COP` });
-        setCarguesAmount(''); setCarguesNote(''); setCargueOtp('');
+        if (d.reverso && !d.reverso.ok) setCarguesMsg({ ok: false, text: `⚠️ El descuento se aplicó, pero no se pudo vincular al cargue: ${d.reverso.error}. Vincúlalo desde Contabilidad → Clientes.` });
+        else if (d.reverso?.aviso) showToast(d.reverso.aviso, 9000);
+        setCarguesAmount(''); setCarguesNote(''); setCargueOtp(''); setCarguesReversaDe('');
         setAcctUsdtGross(''); setAcctUsdtNet(''); setAcctSellRate(''); setAcctClientRate('');
         showToast(`Cargue aplicado a ${carguesClient.name}`);
         refreshData();
@@ -2437,6 +2443,36 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                     <input type="checkbox" checked={carguesRecordOnly} onChange={e => setCarguesRecordOnly(e.target.checked)} style={{ width: 15, height: 15, accentColor: '#4ADE80' }} />
                     <span className="text-xs text-slate-500">Solo registrar movimiento histórico (<b>no</b> modifica el saldo ni cobra comisión)</span>
                   </label>
+
+                  {carguesDir === 'debit' && !carguesRecordOnly && (() => {
+                    // Los cargues de este cliente en este saldo, con lo que les
+                    // queda por revertir. Un descuento que corrige un cargue se
+                    // vincula a él; uno que no (otro motivo) se deja en "No".
+                    const opciones = (histCargues.movimientos as any[])
+                      .filter(t => t.type === 'load' && t.status === 'Completado' && (t.source === 'admin_cargue' || t.source === 'admin_backfill') && t.currency === carguesRail)
+                      .map(t => { const credit = Number(t.acct?.creditedCop ?? t.amount) || 0; return { id: String(t.id), at: t.createdAt ?? t.created_at, credit, resta: Math.max(0, credit - (Number(t.reverso?.montoCop ?? 0) || 0)) }; })
+                      .filter(o => o.resta > 0)
+                      .sort((a, b) => String(b.at).localeCompare(String(a.at)))
+                      .slice(0, 25);
+                    return (
+                      <div className="rounded-xl p-3 mb-3" style={{ backgroundColor: '#121413', border: '1px solid rgba(248,113,113,0.22)' }}>
+                        <label className="block text-[10px] font-bold uppercase tracking-wide mb-1" style={{ color: '#878E88' }}>¿Este descuento corrige un cargue?</label>
+                        <select value={carguesReversaDe} onChange={e => setCarguesReversaDe(e.target.value)}
+                          className="w-full px-2.5 py-2 rounded-lg text-sm outline-none"
+                          style={{ backgroundColor: '#0C0E0D', color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.12)' }}>
+                          <option value="">No, es otro ajuste</option>
+                          {opciones.map(o => (
+                            <option key={o.id} value={o.id}>
+                              Cargue del {new Date(o.at).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' })} · {formatMoney(o.credit, '')} COP{o.resta < o.credit ? ` (quedan ${formatMoney(o.resta, '')})` : ''}
+                            </option>
+                          ))}
+                        </select>
+                        <p className="text-[10px] mt-1.5" style={{ color: '#878E88' }}>
+                          Si descuentas todo lo acreditado, el cargue queda anulado: no suma, no deja utilidad y no se factura. Si es una parte, se corrige en proporción.
+                        </p>
+                      </div>
+                    );
+                  })()}
 
                   {carguesMsg && (
                     <div className={`text-xs font-medium rounded-lg p-3 mb-3 ${carguesMsg.ok ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
