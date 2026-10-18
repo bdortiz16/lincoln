@@ -25,7 +25,7 @@ import { mergeRaw } from '../_shared/raw-data.ts'
 import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
 import { reclamarCandado, soltarCandado } from '../_shared/candado.ts'
 import { FIELD_ENC_KEY, decField } from '../_shared/field-crypto.ts'
-import { cupoGeneral, cupoAprobado, solicitudEnProceso, claveBeneficiario, enviosDelMes, usadoPara, idsMismaPersona as idsDeLaPersona, normDoc } from '../_shared/cupos.ts'
+import { inicioMesBogota, cupoGeneral, cupoAprobado, cupoVigente, solicitudEnProceso, claveBeneficiario, clavesBeneficiario, enviosDelMes, usadoPara, idsMismaPersona as idsDeLaPersona, normDoc, tipoCupo } from '../_shared/cupos.ts'
 // Verificación TOTP en el SERVIDOR (2FA), con Web Crypto NATIVO (sin
 // dependencias externas que pudieran no cargar y tumbar el proxy). Mismo
 // algoritmo que el cliente: SHA1, 6 dígitos, período 30s, ventana ±2. Sin
@@ -73,6 +73,15 @@ const CORS = {
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+
+// Comparación de secretos en tiempo constante: con === el tiempo de respuesta
+// delataba cuántos caracteres del inicio coincidían.
+function igualSeguro(a: string, b: string): boolean {
+  const x = new TextEncoder().encode(String(a ?? '')), y = new TextEncoder().encode(String(b ?? ''))
+  let d = x.length ^ y.length
+  for (let i = 0; i < Math.max(x.length, y.length); i++) d |= (x[i] ?? 0) ^ (y[i] ?? 0)
+  return d === 0
+}
 const db = createClient(SUPABASE_URL, SERVICE_KEY)
 
 const MOUV_API_KEY = (Deno.env.get('MOUV_API_KEY') ?? '').trim()
@@ -1735,7 +1744,7 @@ async function validCaller(req: Request, payload: any): Promise<{ ok: boolean; u
   // pantalla abierta.
   //
   // Solo la sabe el servidor: no viaja al navegador ni esta en el bundle.
-  if (jwt && SERVICE_KEY && jwt === SERVICE_KEY) {
+  if (jwt && SERVICE_KEY && igualSeguro(jwt, SERVICE_KEY)) {
     return { ok: true, userId: payload?.user_id ?? payload?.userId ?? null, admin: true, viaJwt: true }
   }
 
@@ -1909,7 +1918,7 @@ serve(async (req: Request) => {
   // service key. Nadie tiene que copiar llaves.
   if (action === 'vigilar_finity') {
     const bearer = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim()
-    const autorizado = (!!SERVICE_KEY && bearer === SERVICE_KEY) || await traeSecretoDeLaBase(req, db)
+    const autorizado = (!!SERVICE_KEY && igualSeguro(bearer, SERVICE_KEY)) || await traeSecretoDeLaBase(req, db)
     if (!autorizado) return json(403, { error: 'forbidden' })
     const ahora = Date.now()
     // UNA referencia puntual: la usa el aviso (webhook) de Finity. El aviso no
@@ -1986,8 +1995,20 @@ serve(async (req: Request) => {
     if (!duenoBreb) return json(403, { error: 'forbidden', message: 'Esta consulta requiere una sesión válida. Vuelve a iniciar sesión.' })
     const rawKey = String((payload as any).keyValue ?? (payload as any).key ?? '').trim()
     if (!rawKey) return json(400, { error: 'missing_key', message: 'Falta la llave.' })
+    // Devuelve nombre y documento de un tercero: con la sesión de cualquier
+    // cuenta (el registro es abierto) se podía consultar en masa. Tope por
+    // cuenta y por día; quien inscribe beneficiarios de verdad no llega.
+    if (!caller.admin) {
+      try {
+        const desde = new Date(Date.now() - 24 * 3600_000).toISOString()
+        const { count } = await db.from('audit_log').select('id', { count: 'exact', head: true })
+          .eq('user_id', duenoBreb).eq('action', 'mouv.breb_consulta').gte('created_at', desde)
+        if ((count ?? 0) >= 60) return json(429, { error: 'demasiadas_consultas', message: 'Llegaste al máximo de consultas de llaves por hoy. Intenta de nuevo mañana o escríbenos a soporte.' })
+      } catch { /* sin conteo no se frena la inscripción */ }
+      await logAudit(duenoBreb, 'mouv.breb_consulta', { tipo: String((payload as any).keyType ?? '') })
+    }
     const rr = await mouvResolveBrebKey(rawKey, String((payload as any).keyType ?? ''))
-    if (!rr.found) return json(200, { ok: true, found: false, message: 'La llave Bre-B no existe o no está activa.', debug: rr.raw ?? null })
+    if (!rr.found) return json(200, { ok: true, found: false, message: 'La llave Bre-B no existe o no está activa.' })
     return json(200, { ok: true, found: true, matchedKey: rr.matchedKey, fullName: rr.fullName ?? null, idValue: rr.idValue ?? null, keyType: rr.keyType ?? null, bank: rr.bank ?? null })
   }
 
@@ -2584,7 +2605,7 @@ serve(async (req: Request) => {
   const errorLlave = (status: number, d: any): { error: string; message: string; extra?: any } => {
     const cod = String(d?.error ?? '').toUpperCase()
     if (cod === 'AGGREGATOR_NOT_ENABLED' || status === 403 && !cod) {
-      return { error: 'agregador_inactivo', message: 'El modo agregador todavía no está habilitado para Lincoin. Hay que pedirlo a Vectora antes de poder emitir llaves.' }
+      return { error: 'agregador_inactivo', message: 'La emisión de llaves de recaudo todavía no está habilitada. Escríbenos a soporte.' }
     }
     if (cod === 'ACCOUNT_NOT_READY') {
       return { error: 'cuenta_no_lista', message: 'La cuenta de recaudo Bre-B todavía no está lista del lado del proveedor.' }
@@ -2601,7 +2622,9 @@ serve(async (req: Request) => {
     }
     if (cod === 'INSUFFICIENT_SCOPE') return { error: 'sin_permiso', message: 'La llave de API no tiene permiso de escritura.' }
     if (status === 429) return { error: 'limite', message: 'Se alcanzó el límite de creación de llaves. Esperá un minuto y reintentá.' }
-    return { error: 'proveedor', message: String(d?.message ?? 'El proveedor no pudo emitir la llave en este momento.') }
+    // El texto crudo del proveedor no va al cliente (puede nombrar sistemas
+    // internos); queda en el registro de quien llama.
+    return { error: 'proveedor', message: 'No se pudo emitir la llave en este momento. Intenta de nuevo en unos minutos.' }
   }
 
   // ── Emitir (o traer) la llave de recaudo del usuario ──────────────
@@ -2831,7 +2854,15 @@ serve(async (req: Request) => {
         // saldo sube y no hay como explicar de donde salio.
         if (insErr || !creada) { out.push({ dep: depId, result: 'no_se_registro', error: insErr?.message ?? null }); continue }
 
-        await creditBalanceAtomic(ext, 'COP_BREB', neto)
+        // El crédito puede NO entrar (ajuste rechazado o incierto). Antes la
+        // fila quedaba Completado igual y el cliente perdía el depósito en
+        // silencio: ahora queda marcada para revisión, con el motivo.
+        if (!(await creditBalanceAtomic(ext, 'COP_BREB', neto))) {
+          await db.from('transactions').update({ status: 'Pendiente', raw_data: { source: 'mouv_breb_recaudo', title: 'Recaudo Bre-B', depositId: depId, brutoCop: bruto, comisionCop: comision, netoCop: neto, revisarCredito: true, acreditadoAt: null } }).eq('id', (creada as any).id)
+          await logAudit(ext, 'mouv.breb_recaudo.credito_fallido', { depId, neto })
+          out.push({ dep: depId, result: 'credito_fallido_revisar', neto })
+          continue
+        }
         await logAudit(ext, 'mouv.breb_recaudo.acreditado', { depId, neto, bruto, comision, llave: dep?.brebKey?.value ?? null })
         acreditados++; montoAcreditado += neto
         out.push({ dep: depId, result: 'acreditado', neto })
@@ -2854,21 +2885,21 @@ serve(async (req: Request) => {
         const { data: saldoU } = await db.from('users').select('balances').eq('id', ext).maybeSingle()
         const disponible = Number(((saldoU as any)?.balances ?? {})['COP_BREB'] ?? 0)
 
-        if (disponible >= montoFila) {
-          await creditBalanceAtomic(ext, 'COP_BREB', -montoFila)
+        if (disponible >= montoFila && await creditBalanceAtomic(ext, 'COP_BREB', -montoFila)) {
           out.push({ dep: depId, result: 'reversado', monto: montoFila })
         } else {
           // NO se deja el saldo en negativo ni se ignora el faltante: se debita
           // lo que hay y el resto queda asentado como deuda para que alguien lo
           // cobre. Un reverso que no se puede cubrir es un problema real, y
           // callarlo no lo hace desaparecer.
-          if (disponible > 0) await creditBalanceAtomic(ext, 'COP_BREB', -disponible)
-          const deuda = Number((montoFila - disponible).toFixed(2))
+          // Si el débito no entra, TODO queda como deuda (no se asume cobrado).
+          const cobrado = disponible > 0 && disponible < montoFila && await creditBalanceAtomic(ext, 'COP_BREB', -disponible) ? disponible : 0
+          const deuda = Number((montoFila - cobrado).toFixed(2))
           await db.from('transactions').update({
-            raw_data: { ...frd, reversado: true, reversadoAt: new Date().toISOString(), deudaCop: deuda, debitadoCop: disponible },
+            raw_data: { ...frd, reversado: true, reversadoAt: new Date().toISOString(), deudaCop: deuda, debitadoCop: cobrado },
           }).eq('id', (fila as any).id)
-          await logAudit(ext, 'mouv.breb_recaudo.reverso_sin_fondos', { depId, montoFila, debitado: disponible, deuda })
-          out.push({ dep: depId, result: 'reversado_con_deuda', debitado: disponible, deuda })
+          await logAudit(ext, 'mouv.breb_recaudo.reverso_sin_fondos', { depId, montoFila, debitado: cobrado, deuda })
+          out.push({ dep: depId, result: 'reversado_con_deuda', debitado: cobrado, deuda })
         }
         await logAudit(ext, 'mouv.breb_recaudo.reversado', { depId, montoFila })
         reversados++
@@ -3139,7 +3170,10 @@ serve(async (req: Request) => {
     const rd = (tx.raw_data ?? {}) as Record<string, any>
     if (rd.refunded) return json(200, { ok: true, already: 'refunded', refundCop: rd.refundCop ?? null })
 
-    const refund = Number(tx.amount ?? 0) + Number(rd.feeCop ?? 0)
+    // La comisión de la fila con el mismo tope que el resto de reembolsos: una
+    // fila con feeCop inflado no devuelve más de lo que se cobró de verdad.
+    const feeMaxFR = Math.max(ACH_FEE_COP, BREB2_FEE_COP, BREB_FEE_COP, brebFeeCop(Number(tx.amount ?? 0)))
+    const refund = Number(tx.amount ?? 0) + Math.min(Math.max(0, Number(rd.feeCop ?? 0) || 0), feeMaxFR)
     if (!(refund > 0)) return json(400, { error: 'bad_amount', refund })
     const railCol = String(tx.currency ?? 'COP_BREB')
     const motivo = String(payload?.reason ?? '').trim().slice(0, 300)
@@ -3208,6 +3242,11 @@ serve(async (req: Request) => {
     if (action === 'payin_status') {
       const ref = String(payload.reference ?? payload.id ?? '')
       if (!ref) return json(400, { error: 'missing_ref' })
+      // Solo letras, números, guion y guion bajo: la referencia va dentro de
+      // un filtro .or() y en la ruta del proveedor. Con comas o puntos se
+      // podía agregar condiciones al filtro, y con "../" apuntar el GET a
+      // otras rutas del proveedor (saldo de tesorería, envíos de otros).
+      if (!/^[A-Za-z0-9_-]{4,100}$/.test(ref)) return json(400, { error: 'bad_ref', message: 'Referencia no válida.' })
       // Y que la referencia sea SUYA. Tener sesión no da derecho a mirar el
       // cobro de otro con solo cambiar el número.
       if (!caller.admin) {
@@ -3217,7 +3256,8 @@ serve(async (req: Request) => {
           .limit(1)
         if (!mio?.length) return json(403, { error: 'forbidden', message: 'Operación restringida.' })
       }
-      const paths = [`/collections/${ref}`, `/payin/${ref}`, `/pse/${ref}`, `/transfers/collect/${ref}`, `/collections/status/${ref}`]
+      const r0 = encodeURIComponent(ref)
+      const paths = [`/collections/${r0}`, `/payin/${r0}`, `/pse/${r0}`, `/transfers/collect/${r0}`, `/collections/status/${r0}`]
       for (const p of paths) {
         const r = await mouvFetch(p, { method: 'GET' })
         if (r.ok) return json(200, { ok: true, path: p, data: r.data })
@@ -3302,7 +3342,7 @@ serve(async (req: Request) => {
       return json(200, { ok: true, rail: 'BREB', provider: 'lincoin', feeCop: fee, fixedCop: fee, variableCop: 0, ivaCop: 0, totalCop: amount + fee })
     }
     // ACH: comisión FIJA única ($2.500) — SIN componente variable.
-    return json(200, { ok: true, rail: 'ACH', provider: 'finity', feeCop: ACH_FEE_COP, fixedCop: ACH_FEE_COP, variableCop: 0, ivaCop: 0, totalCop: amount + ACH_FEE_COP })
+    return json(200, { ok: true, rail: 'ACH', feeCop: ACH_FEE_COP, fixedCop: ACH_FEE_COP, variableCop: 0, ivaCop: 0, totalCop: amount + ACH_FEE_COP })
   }
 
   // ── dispersión BREB (Mouv) / ACH (Finity) ──
@@ -3690,6 +3730,11 @@ serve(async (req: Request) => {
       // usaba el de empresas (500 M) para cualquier destino sin tipo.
       tipoBeneficiario = docT === 'NIT' ? 'empresa' : 'persona'
     }
+    // "Empresa" lo dice la ficha del beneficiario (o el pedido), y eso lo
+    // escribe el cliente: marcar a una persona como empresa le daba el cupo
+    // mensual de 800 M y el tope ACH de empresas. Solo vale si el documento
+    // tiene forma de NIT de empresa.
+    tipoBeneficiario = tipoCupo(tipoBeneficiario, benefDocCupo)
     const topeAch = rail === 'BREB' ? null : await topeAchDe(userId, tipoBeneficiario)
     const perOpMax = rail === 'BREB' ? (brebFinity ? BREB2_MAX_COP : BREB_MAX_COP) : topeAch!.max
     if (amount > perOpMax) {
@@ -3710,38 +3755,6 @@ serve(async (req: Request) => {
     const destinoNorm = rail === 'BREB'
       ? (() => { const t = destinoCrudo.toLowerCase(); const d = t.replace(/\D/g, ''); return d.length >= 10 && /^[+\d\s().-]+$/.test(t) ? d.replace(/^57(?=\d{10}$)/, '') : t.replace(/\s+/g, '') })()
       : destinoCrudo.replace(/\D/g, '')
-    // (1b) CUPO MENSUAL POR BENEFICIARIO (normativa de Cumplimiento): en el
-    //      mes, a una persona hasta 80 M y a una empresa hasta 800 M, salvo el
-    //      cupo que Cumplimiento haya aprobado para ESE beneficiario. Se corta
-    //      antes de debitar, con lo usado y lo que queda.
-    {
-      try {
-        const general = await cupoGeneral(db)
-        const clave = claveBeneficiario(benefDocCupo, destinoNorm)
-        const aprobado = await cupoAprobado(db, userId, clave)
-        const cupo = aprobado ?? (tipoBeneficiario === 'empresa' ? general.empresa : general.persona)
-        const envios = await enviosDelMes(db, await idsDeLaPersona(db, userId))
-        const usado = usadoPara(envios, benefDocCupo, [...benefDestinosCupo, destinoNorm])
-        if (usado + amount > cupo) {
-          const enProceso = await solicitudEnProceso(db, userId, clave)
-          const quedan = Math.max(0, cupo - usado)
-          const quien = benefNombreCupo || String((payload.recipient as any)?.holderName ?? '').trim() || 'este beneficiario'
-          await logAudit(userId, `mouv.${action}.cupo_mensual`, { amount, usado, cupo, aprobado: aprobado != null, clave, enProceso })
-          return json(403, {
-            error: 'cupo_mensual', cupo, usado, disponible: quedan, enProceso,
-            message: `Este envío supera el cupo mensual de ${quien}: este mes llevas ${usado.toLocaleString('es-CO')} COP de ${cupo.toLocaleString('es-CO')} COP y te quedan ${quedan.toLocaleString('es-CO')} COP. `
-              + (enProceso
-                ? 'Tu solicitud de aumento de cupo para este beneficiario está en revisión de cumplimiento.'
-                : 'Para enviar más, solicita un aumento de cupo en Beneficiarios adjuntando el RUT.'),
-          })
-        }
-      } catch (e) {
-        // Sin poder calcular el cupo, el envío NO sale: es un control de
-        // cumplimiento y falla cerrado.
-        await logAudit(userId, `mouv.${action}.cupo_error`, { error: String((e as Error)?.message ?? e).slice(0, 200) })
-        return json(503, { error: 'cupo_no_verificado', message: 'No pudimos verificar el cupo mensual de este beneficiario. Intenta de nuevo en un momento.' })
-      }
-    }
     try {
       const since = new Date(Date.now() - 2 * 60 * 1000).toISOString()
       const { data: dup } = await db.from('transactions')
@@ -3826,8 +3839,9 @@ serve(async (req: Request) => {
         const aut = ((emp as any).raw_data?.personasAutorizadas ?? []).find((x: any) => x?.id === userId)
         const tope = aut?.topeMensual == null ? null : Number(aut.topeMensual)
         if (tope != null && tope > 0) {
-          const ini = new Date(); ini.setDate(1); ini.setHours(0, 0, 0, 0)
-          const { data: tx } = await db.from('transactions').select('amount, status').eq('user_id', userId).eq('type', 'dispersion').gte('created_at', ini.toISOString())
+          // El mes empieza a medianoche de Bogotá (el servidor corre en UTC:
+          // con setHours el mes arrancaba 5 horas tarde).
+          const { data: tx } = await db.from('transactions').select('amount, status').eq('user_id', userId).eq('type', 'dispersion').gte('created_at', inicioMesBogota())
           const usado = (tx ?? []).filter((t: any) => ['Completado', 'Procesando', 'Pendiente'].includes(String(t.status))).reduce((s: number, t: any) => s + (Number(t.amount) || 0), 0)
           if (usado + amount > tope) {
             const resta = Math.max(0, tope - usado)
@@ -3865,10 +3879,75 @@ serve(async (req: Request) => {
           await logAudit(userId, `mouv.${action}.duplicate_blocked`, { amount, rail, clave: clave.split(':')[0] })
           return json(200, { error: 'duplicate', message: 'Ya hay un envío igual en curso. No lo repitas: revisa tus Movimientos en un momento.' })
         }
+        // El candado existe pero la base no respondió: sin él no hay
+        // protección contra el doble envío, así que no sale.
+        if (r === 'error') {
+          for (const c of candados) await soltarCandado(db, c)
+          return json(503, { error: 'candado_no_disponible', message: 'No pudimos asegurar tu envío en este momento. No se movió nada; intenta de nuevo en un minuto.' })
+        }
         if (r === 'ok') candados.push(clave)
       }
     }
     const soltarCandados = async () => { for (const c of candados) await soltarCandado(db, c) }
+
+    // (1b) CUPO MENSUAL POR BENEFICIARIO (normativa de Cumplimiento): en el
+    //      mes, a una persona hasta 80 M y a una empresa hasta 800 M, salvo el
+    //      cupo que Cumplimiento haya aprobado para ESE beneficiario. Se corta
+    //      antes de debitar, con lo usado y lo que queda.
+    //      Va DESPUÉS de los candados y con uno propio por beneficiario: dos
+    //      envíos simultáneos al mismo beneficiario con montos distintos no
+    //      chocan en el candado del envío, leían el mismo "usado" y pasaban
+    //      juntos el cupo. El de cupo se suelta apenas la fila queda escrita.
+    {
+      const clave = claveBeneficiario(benefDocCupo, destinoNorm)
+      const destinosCupo = [...benefDestinosCupo, destinoNorm]
+      const clavesCupo = clavesBeneficiario(benefDocCupo, destinosCupo)
+      // Las cuentas de la misma persona suman juntas: el candado también es
+      // por persona (la primera de sus cuentas), no por cuenta.
+      let idsPersona: string[] = [userId]
+      try { idsPersona = await idsDeLaPersona(db, userId) } catch { /* sigue con la propia */ }
+      const duenoCupo = [...idsPersona].sort()[0] ?? userId
+      if (clave) {
+        const cc = `cupo:${duenoCupo}:${clave}`
+        const r = await reclamarCandado(db, cc, 90, userId, action)
+        if (r === 'ocupado') {
+          await soltarCandados()
+          return json(409, { error: 'cupo_ocupado', message: 'Hay otro envío a este beneficiario terminando de procesarse. Espera unos segundos y vuelve a intentar.' })
+        }
+        if (r === 'error') {
+          await soltarCandados()
+          return json(503, { error: 'cupo_no_verificado', message: 'No pudimos verificar el cupo mensual de este beneficiario. Intenta de nuevo en un momento.' })
+        }
+        if (r === 'ok') candados.push(cc)
+      }
+      try {
+        const general = await cupoGeneral(db)
+        const aprobado = await cupoAprobado(db, idsPersona, clavesCupo)
+        const cupo = cupoVigente(aprobado, tipoBeneficiario === 'empresa' ? general.empresa : general.persona)
+        const envios = await enviosDelMes(db, idsPersona)
+        const usado = usadoPara(envios, benefDocCupo, destinosCupo)
+        if (usado + amount > cupo) {
+          const enProceso = await solicitudEnProceso(db, idsPersona, clavesCupo)
+          const quedan = Math.max(0, cupo - usado)
+          const quien = benefNombreCupo || String((payload.recipient as any)?.holderName ?? '').trim() || 'este beneficiario'
+          await logAudit(userId, `mouv.${action}.cupo_mensual`, { amount, usado, cupo, aprobado: aprobado != null, clave, enProceso })
+          await soltarCandados()
+          return json(403, {
+            error: 'cupo_mensual', cupo, usado, disponible: quedan, enProceso,
+            message: `Este envío supera el cupo mensual de ${quien}: este mes llevas ${usado.toLocaleString('es-CO')} COP de ${cupo.toLocaleString('es-CO')} COP y te quedan ${quedan.toLocaleString('es-CO')} COP. `
+              + (enProceso
+                ? 'Tu solicitud de aumento de cupo para este beneficiario está en revisión de cumplimiento.'
+                : 'Para enviar más, solicita un aumento de cupo en Beneficiarios adjuntando el RUT.'),
+          })
+        }
+      } catch (e) {
+        // Sin poder calcular el cupo, el envío NO sale: es un control de
+        // cumplimiento y falla cerrado.
+        await logAudit(userId, `mouv.${action}.cupo_error`, { error: String((e as Error)?.message ?? e).slice(0, 200) })
+        await soltarCandados()
+        return json(503, { error: 'cupo_no_verificado', message: 'No pudimos verificar el cupo mensual de este beneficiario. Intenta de nuevo en un momento.' })
+      }
+    }
 
     // ── Bre-B · Cuenta 2: PREPARAR antes de tocar el saldo ───────────────
     // Crear la transferencia en Finity no mueve plata: si la llave no sirve,
@@ -3876,14 +3955,17 @@ serve(async (req: Request) => {
     // débito, sin fila Fallido y sin devolución.
     let prepBreb2: (ResultadoBreb2 & { creada?: any }) | null = null
     if (brebFinity) {
-      prepBreb2 = await finityPrepararBreb(userId, recipient, amount, [...nombresTitular, String(recipient.holderName ?? '')])
+      // Solo nombres que NO salen del pedido: el inscrito y el del directorio.
+      // El holderName lo escribe el navegador y con él la comparación siempre
+      // pasaba.
+      prepBreb2 = await finityPrepararBreb(userId, recipient, amount, [...nombresTitular])
       if (!prepBreb2.ok) {
         await logAudit(userId, `finity.${action}.no_creada`, {
           amount, paso: prepBreb2.paso ?? null, httpStatus: prepBreb2.httpStatus ?? null,
           error: (() => { try { return JSON.stringify(prepBreb2!.body ?? {}).slice(0, 300) } catch { return null } })(),
         })
         await soltarCandados()
-        return json(200, { error: 'payout_failed', provider: 'finity', refunded: false, sinDebito: true, message: mensajeFalloBreb2(prepBreb2, false) })
+        return json(200, { error: 'payout_failed', refunded: false, sinDebito: true, message: mensajeFalloBreb2(prepBreb2, false) })
       }
     }
 
@@ -4000,6 +4082,15 @@ serve(async (req: Request) => {
         })
       }
     }
+    // La fila ya existe y cuenta para el cupo: el siguiente envío a este
+    // beneficiario puede leerla, así que su candado se suelta ya. (Si la fila
+    // no se escribió, se deja vencer: así no entra otro sin verla.)
+    if (txId) {
+      for (const c of candados.filter(x => x.startsWith('cupo:'))) {
+        await soltarCandado(db, c)
+        candados.splice(candados.indexOf(c), 1)
+      }
+    }
 
     // Deja el movimiento en su estado final. Si la fila no llegó a crearse, la
     // CREA ahora — el envío ya ocurrió, así que el registro tiene que existir
@@ -4089,7 +4180,7 @@ serve(async (req: Request) => {
       await logAudit(userId, `finity.${action}.fail`, { amount, paso: fb.paso ?? null, httpStatus: fb.httpStatus ?? null, error: (() => { try { return JSON.stringify(fb.body ?? {}).slice(0, 300) } catch { return null } })() })
       await notifyTx(txId)
       await soltarCandados()
-      return json(200, { error: 'payout_failed', provider: 'finity', refunded: reintF.ok, newBalance: restoredF, message: conReintegro(friendlyF, reintF.ok) })
+      return json(200, { error: 'payout_failed', refunded: reintF.ok, newBalance: restoredF, message: conReintegro(friendlyF, reintF.ok) })
     }
 
     if (rail === 'BREB') {
@@ -4359,7 +4450,7 @@ serve(async (req: Request) => {
       })
       await logAudit(userId, `finity.${action}.ok`, { amount, feeCop: fin.feeCop, providerRef: fin.providerRef ?? null })
       await notifyTx(txId) // correo "recibimos tu envío · en proceso"
-      return json(200, { ok: true, provider: 'finity', providerRef: fin.providerRef ?? null, feeCop: fin.feeCop, newBalance })
+      return json(200, { ok: true, providerRef: fin.providerRef ?? null, feeCop: fin.feeCop, newBalance })
     }
     // ── SIN RESPUESTA CLARA DE FINITY: NO SE REEMBOLSA ──────────────
     // Igual que en Bre-B: un timeout o un 5xx no significan "no salió". Si
@@ -4414,7 +4505,7 @@ serve(async (req: Request) => {
         ? 'No pudimos inscribir la cuenta destino con el banco, así que el envío no salió. Revisa los datos del beneficiario (banco, número y tipo de cuenta, tipo y número de documento). Tu saldo fue devuelto.'
         : `No pudimos completar la transferencia ACH en este momento. Tu saldo fue devuelto — puedes intentarlo de nuevo en unos minutos.`
     await soltarCandados()
-    return json(200, { error: 'payout_failed', provider: 'finity', refunded: reintA.ok, newBalance: restored5,
+    return json(200, { error: 'payout_failed', refunded: reintA.ok, newBalance: restored5,
       message: conReintegro(friendlyAch, reintA.ok) })
   }
 

@@ -51,6 +51,10 @@ export function autorizarWebhook(req: Request): ResultadoAuth {
   if (SERVICE_KEY && igual(auth, SERVICE_KEY)) return { ok: true, via: 'service_role' }
 
   if (SECRETO) {
+    // ?secret= en la URL se sigue aceptando porque los Database Webhooks del
+    // panel pueden estar configurados así; preferir x-webhook-secret (la URL
+    // queda en los logs de la plataforma). La comparación es en tiempo
+    // constante en los tres casos.
     let enUrl = ''
     try { enUrl = new URL(req.url).searchParams.get('secret') ?? '' } catch { /* url rara */ }
     const candidatos = [enUrl, req.headers.get('x-webhook-secret') ?? '', auth]

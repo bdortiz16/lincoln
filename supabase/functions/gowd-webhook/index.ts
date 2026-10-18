@@ -41,6 +41,7 @@
 // ════════════════════════════════════════════════════════
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { encField, decField } from '../_shared/field-crypto.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -100,10 +101,46 @@ async function secretoVigente(): Promise<string> {
   let valor = SECRET
   try {
     const { data } = await db.from('gowd_config').select('valor').eq('clave', 'webhook_secret').maybeSingle()
-    if (data?.valor) valor = String(data.valor).trim()
-  } catch { /* sin la tabla, queda el de los secretos */ }
+    const guardado = data?.valor ? String(data.valor).trim() : ''
+    if (guardado) {
+      // Se guarda cifrado (enc:v2). Uno viejo en claro se usa una vez y se
+      // vuelve a guardar cifrado: un secreto de un banco no vive en texto
+      // plano en la base.
+      valor = (await decField(guardado)).trim()
+      if (!guardado.startsWith('enc:v')) {
+        try { await db.from('gowd_config').update({ valor: await encField(valor) }).eq('clave', 'webhook_secret') } catch { /* sin FIELD_ENC_KEY queda como estaba */ }
+      }
+    }
+  } catch { /* sin la tabla (o sin poder descifrar), queda el de los secretos */ }
   secretoCache = { valor, at: Date.now() }
   return valor
+}
+
+// ── Repeticiones viejas ─────────────────────────────────────────────
+// Un aviso firmado que alguien capturó sigue teniendo firma válida: si se
+// reenvía más tarde, podía devolver una cuenta o una orden a un estado viejo
+// (p. ej. un ACTIVE de ayer después del BLOCKED de hoy). Se aplica solo si
+// no hay del mismo objeto uno más nuevo:
+//   · por updatedAt, cuando el aviso lo trae (las órdenes);
+//   · si el cuerpo es IDÉNTICO a uno ya recibido y después llegó otro
+//     distinto del mismo objeto (los reintentos legítimos de Gowd repiten
+//     el último, no uno anterior).
+async function esRepeticionVieja(j: Record<string, any>, idActual: number | null, cuerpo: string): Promise<boolean> {
+  const ordenId = typeof j.id === 'string' || typeof j.id === 'number' ? String(j.id) : null
+  const acc = j.accountId ? String(j.accountId) : null
+  const req = j.requestId ? String(j.requestId) : null
+  let q = db.from('gowd_eventos').select('id, cuerpo_texto, actualizado_at').eq('verificado', true).order('id', { ascending: false }).limit(50)
+  if (idActual != null) q = q.neq('id', idActual)
+  if (ordenId) q = q.eq('orden_id', ordenId.slice(0, 300))
+  else if (acc) q = q.eq('cuerpo->>accountId', acc)
+  else if (req) q = q.eq('cuerpo->>requestId', req)
+  else return false
+  const { data, error } = await q
+  if (error || !Array.isArray(data) || !data.length) return false
+  const upd = typeof j.updatedAt === 'string' ? Date.parse(j.updatedAt) : NaN
+  if (Number.isFinite(upd) && data.some((e: any) => { const t = Date.parse(String(e.actualizado_at ?? '')); return Number.isFinite(t) && t > upd })) return true
+  const idx = data.findIndex((e: any) => e.cuerpo_texto === cuerpo)
+  return idx > 0 && data.slice(0, idx).some((e: any) => e.cuerpo_texto !== cuerpo)
 }
 
 async function verificar(headers: Record<string, string>, crudo: Uint8Array): Promise<Verdicto> {
@@ -213,6 +250,22 @@ Deno.serve(async (req) => {
 
   const verdicto = await verificar(headers, crudo)
 
+  // Lo que NO viene firmado no se guarda entero ni sin límite: cualquiera
+  // puede pegarle a esta URL, y 100 KB por pedido sin tope es una forma de
+  // llenar la base. Se guarda un pedazo (sirve para ver el esquema) y, si en
+  // la última hora ya hay demasiados sin verificar, no se guarda.
+  if (!verdicto.ok) {
+    try {
+      const desde = new Date(Date.now() - 3600_000).toISOString()
+      const { count } = await db.from('gowd_eventos').select('id', { count: 'exact', head: true })
+        .eq('verificado', false).gte('recibido_at', desde)
+      if ((count ?? 0) >= 300) {
+        return verdicto.metodo === 'rechazado' ? json(401, { error: 'no_autorizado' }) : json(429, { error: 'demasiados_avisos' })
+      }
+    } catch { /* sin poder contar, se sigue con el tope de tamaño */ }
+  }
+  const topeCuerpo = verdicto.ok ? 100_000 : 4_000
+
   // Lo que se guarda de las cabeceras: valor si es inocuo, huella si no.
   const headersGuardables: Record<string, string> = {}
   for (const [k, v] of Object.entries(headers)) {
@@ -240,13 +293,13 @@ Deno.serve(async (req) => {
   // El monto NO se convierte a número. Su ejemplo es "50.00": pasarlo por un
   // float lo deja de ser, y con plata eso no se perdona. Se guarda tal cual
   // llegó y se convierte a centavos enteros recién cuando haga falta.
-  const { error } = await db.from('gowd_eventos').insert({
+  const { data: insertado, error } = await db.from('gowd_eventos').insert({
     verificado: verdicto.ok,
     metodo_auth: verdicto.metodo,
     headers: headersGuardables,
     ip: headers['x-forwarded-for']?.split(',')[0]?.trim() ?? null,
-    cuerpo_texto: cuerpo.slice(0, 100_000),
-    cuerpo: cuerpoJson,
+    cuerpo_texto: cuerpo.slice(0, topeCuerpo),
+    cuerpo: verdicto.ok || cuerpo.length <= topeCuerpo ? cuerpoJson : null,
     orden_id: txt(j.id),
     orden_code: txt(j.code),
     // 'event' es de los postbacks nuevos (banking); los viejos solo traen
@@ -261,7 +314,7 @@ Deno.serve(async (req) => {
     nota: verdicto.metodo === 'sin_secreto'
       ? 'Sin verificar: falta el secreto del webhook (Admin → Gowd → Webhooks → Rotar secreto). Este aviso NO confirma nada — hay que preguntarle a la API de Gowd por este id antes de mover un saldo.'
       : null,
-  })
+  }).select('id').maybeSingle()
 
   if (error) {
     // Si no se pudo guardar, NO se contesta 200. Un 200 le dice al banco
@@ -281,6 +334,16 @@ Deno.serve(async (req) => {
   // estado en gowd_cuentas; los datos bancarios los trae el admin con
   // "Actualizar" (la API confirma). Idempotente: el mismo aviso 5 veces deja
   // la fila igual.
+  const vieja = verdicto.ok && typeof j.event === 'string'
+    ? await esRepeticionVieja(j, (insertado as any)?.id ?? null, cuerpo).catch(() => false)
+    : false
+  if (vieja) {
+    // Se guardó (queda el rastro) pero no se aplica. 200: para Gowd está
+    // recibido; reintentarlo no cambia nada.
+    console.warn('[gowd-webhook] aviso repetido fuera de orden: no se aplica')
+    try { await db.from('gowd_eventos').update({ nota: 'Repetición de un aviso anterior: no se aplicó (ya había uno más nuevo del mismo objeto).' }).eq('id', (insertado as any)?.id) } catch { /* */ }
+    return json(200, { returnCode: 'SUCCESS' })
+  }
   if (verdicto.ok && typeof j.event === 'string' && j.event.startsWith('ACCOUNT.')) {
     try { await aplicarEventoCuenta(j) } catch (e) { console.error('[gowd-webhook] evento de cuenta:', (e as Error).message) }
   }

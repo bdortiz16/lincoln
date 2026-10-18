@@ -27,6 +27,7 @@
 //  no se queda adivinando en silencio como nos pasó con el proveedor de rieles.
 // ══════════════════════════════════════════════════════════════════
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { igualSeguro } from '../_shared/admin-auth.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -107,7 +108,7 @@ async function guardarConfig(c: Config) {
 async function quienLlama(req: Request): Promise<{ userId: string | null; esAdmin: boolean }> {
   const jwt = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
   if (!jwt) return { userId: null, esAdmin: false }
-  if (SERVICE_KEY && jwt === SERVICE_KEY) return { userId: null, esAdmin: true }
+  if (SERVICE_KEY && igualSeguro(jwt, SERVICE_KEY)) return { userId: null, esAdmin: true }
   try {
     const { data: { user } } = await db.auth.getUser(jwt)
     if (!user) return { userId: null, esAdmin: false }
@@ -768,6 +769,23 @@ async function logAuditKyt(userId: string | null, action: string, metadata: Reco
   try { await db.from('audit_log').insert({ user_id: userId, action, metadata }) } catch { /* no bloquea */ }
 }
 
+// ── Tope diario de consultas PAGADAS por cuenta ───────────────────
+// Vale para TODO lo que gasta el plan: la consulta, el reporte (que vuelve a
+// evaluar y expande contrapartes) y el rastreo de rutas (una consulta por
+// contraparte). Antes solo 'consultar' lo miraba, y con force:true el
+// reporte o las rutas se saltaban el caché y el tope. Las fallidas también
+// cuentan: igual llegaron al proveedor. Los admins no tienen tope.
+async function topeKytAgotado(c: any, yo: { userId: string | null; esAdmin: boolean }): Promise<boolean> {
+  if (yo.esAdmin || !yo.userId || !(Number(c.topeDiarioPorCliente) > 0)) return false
+  const desde = new Date(Date.now() - 86400_000).toISOString()
+  const { count } = await db.from('audit_log')
+    .select('*', { count: 'exact', head: true })
+    .eq('user_id', yo.userId).in('action', ['kyt.consulta_pagada', 'kyt.consulta_fallida'])
+    .gte('created_at', desde)
+  return (count ?? 0) >= Number(c.topeDiarioPorCliente)
+}
+const msgTopeKyt = (c: any) => `Llegaste al tope de ${c.topeDiarioPorCliente} consultas por día.`
+
 // ── Consulta PAGADA + guardado en el padrón ───────────────────────
 // La usan la consulta del cliente y la ronda de monitoreo. Una sola
 // implementación a propósito: dos copias de esto se habrían separado, y una de
@@ -1053,15 +1071,8 @@ Deno.serve(async (req) => {
 
       // 2) Tope diario por cuenta. Cada consulta se paga; una sola cuenta no
       //    puede gastarse el plan en una tarde.
-      if (!yo.esAdmin && c.topeDiarioPorCliente > 0 && yo.userId) {
-        const desde = new Date(Date.now() - 86400_000).toISOString()
-        const { count } = await db.from('audit_log')
-          .select('*', { count: 'exact', head: true })
-          .eq('user_id', yo.userId).eq('action', 'kyt.consulta_pagada')
-          .gte('created_at', desde)
-        if ((count ?? 0) >= c.topeDiarioPorCliente) {
-          return json({ ok: false, error: 'tope_diario', mensaje: `Llegaste al tope de ${c.topeDiarioPorCliente} consultas por día.` })
-        }
+      if (await topeKytAgotado(c, yo)) {
+        return json({ ok: false, error: 'tope_diario', mensaje: msgTopeKyt(c) })
       }
 
       // 3) Se paga la consulta. La misma función que usa la ronda de
@@ -1069,6 +1080,7 @@ Deno.serve(async (req) => {
       const ev = await evaluarYGuardar(c, coin, dir, quien, ficha)
 
       if (!ev.hay) {
+        await logAuditKyt(yo.userId, 'kyt.consulta_fallida', { coin, address: dir, origen: 'consultar' })
         // NO HAY VEREDICTO. Se devolvió ya guardado como 'sin_resultado' para
         // no repetir el gasto a ciegas, pero no se devuelve nada que se pueda
         // leer como "está limpia".
@@ -1213,7 +1225,7 @@ Deno.serve(async (req) => {
     if (accion === 'monitorear') {
       const secreto = Deno.env.get('CRON_SECRET') ?? ''
       const traido = String(body.secret ?? req.headers.get('x-cron-secret') ?? '')
-      const autorizado = yo.esAdmin || (!!secreto && traido === secreto)
+      const autorizado = yo.esAdmin || (!!secreto && igualSeguro(traido, secreto))
       if (!autorizado) return json({ error: 'no_autorizado' }, 401)
       if (!secreto && !yo.esAdmin) return json({ error: 'sin_cron_secret' }, 503)
 
@@ -1319,11 +1331,15 @@ Deno.serve(async (req) => {
       const completo = !!ficha && ficha.estado === 'finalizado'
         && ficha.contrapartes !== null && ficha.investigacion !== null
         && ficha.fuentes != null
-      const reusar = body.force !== true && completo && Date.now() < vigenteHasta
+      // force (saltarse el caché y pagar de nuevo) es solo para admins.
+      const forzar = body.force === true && yo.esAdmin
+      const reusar = !forzar && completo && Date.now() < vigenteHasta
 
       if (!reusar) {
+        if (await topeKytAgotado(c, yo)) return json({ ok: false, error: 'tope_diario', mensaje: msgTopeKyt(c) })
         // El veredicto y sus enriquecimientos base.
         const ev = await evaluarYGuardar(c, coin, dir, quien, ficha)
+        await logAuditKyt(yo.userId, ev.hay ? 'kyt.consulta_pagada' : 'kyt.consulta_fallida', { coin, address: dir, origen: 'reporte' })
         if (!ev.hay) {
           return json({
             ok: false, error: ev.error === 'sin_credencial' ? 'sin_credencial' : 'sin_resultado',
@@ -1391,7 +1407,11 @@ Deno.serve(async (req) => {
       let trazado: any = f.rutas ?? null
       const rutasVigentes = trazado && f.rutas_at
         && Date.now() - new Date(f.rutas_at).getTime() < c.diasVigencia * 86400_000
-      if (!rutasVigentes && body.sinRutas !== true) {
+      // Sin cupo del día, el reporte sale igual pero sin rastrear rutas nuevas
+      // (cada contraparte expandida es otra consulta pagada).
+      const sinCupoRutas = !rutasVigentes && body.sinRutas !== true && await topeKytAgotado(c, yo)
+      if (!rutasVigentes && body.sinRutas !== true && !sinCupoRutas) {
+        await logAuditKyt(yo.userId, 'kyt.consulta_pagada', { coin, address: dir, origen: 'reporte_rutas' })
         const rInv2 = await llamarMT(c, c.rutaInvestigacion, { coin, address: dir, type: 'all', page: '1' })
         const inv2 = rInv2.ok ? leerInvestigacion(rInv2.data) : null
         if (inv2) {
@@ -1513,6 +1533,8 @@ Deno.serve(async (req) => {
       // pagada. 10 por defecto; el tope evita que una direccion con cientos de
       // contrapartes se coma el plan en un clic.
       const presupuesto = Math.max(1, Math.min(25, Number(body.presupuesto) || 10))
+      if (await topeKytAgotado(c, yo)) return json({ ok: false, error: 'tope_diario', mensaje: msgTopeKyt(c) })
+      await logAuditKyt(yo.userId, 'kyt.consulta_pagada', { coin, address: dir, origen: 'rutas', presupuesto })
 
       // ── 1) El camino que ya tenemos guardado ──
       // hop_dic viene con el veredicto, y el veredicto ya se pago al consultar.

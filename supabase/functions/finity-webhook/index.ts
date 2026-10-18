@@ -106,7 +106,15 @@ Deno.serve(async (req) => {
       req.headers.get('signature'),
     ].filter((v): v is string => !!v).map(v => v.trim().replace(/^sha256=/i, ''))
     const { hex, b64 } = await hmacOf(rawBody, SECRET)
-    const okAuth = candidates.some(v => v === SECRET || v.toLowerCase() === hex || v === b64)
+    // En tiempo constante: con === la demora delataba cuánto del secreto
+    // coincidía.
+    const igual = (a: string, b: string) => {
+      const x = new TextEncoder().encode(a), y = new TextEncoder().encode(b)
+      let d = x.length ^ y.length
+      for (let i = 0; i < Math.max(x.length, y.length); i++) d |= (x[i] ?? 0) ^ (y[i] ?? 0)
+      return d === 0
+    }
+    const okAuth = candidates.some(v => igual(v, SECRET) || igual(v.toLowerCase(), hex) || igual(v, b64))
     if (!okAuth) return json(401, { error: 'unauthorized' })
   }
 

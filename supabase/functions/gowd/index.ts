@@ -28,6 +28,7 @@
 // ══════════════════════════════════════════════════════════════════
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { mergeRaw } from '../_shared/raw-data.ts'
+import { encField } from '../_shared/field-crypto.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -45,7 +46,7 @@ const CORS = {
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...CORS, 'Content-Type': 'application/json' } })
 
 // ── Quién llama ─────────────────────────────────────────────────────────
-type Quien = { id: string; email: string; role: string; nombre: string; empresa: string; taxId: string; kyc: string; bloqueado: boolean; raw: Record<string, any> }
+type Quien = { id: string; email: string; emailAuth: string; role: string; nombre: string; empresa: string; taxId: string; kyc: string; bloqueado: boolean; raw: Record<string, any> }
 
 function sessionIdOf(req: Request): string | null {
   try {
@@ -67,6 +68,9 @@ async function quienLlama(req: Request): Promise<Quien | null> {
   const raw = (f.raw_data ?? {}) as Record<string, any>
   return {
     id: String(f.id), email: String(f.email ?? user.email ?? ''), role: String(f.role ?? ''),
+    // El correo de Auth (verificado). public.users.email lo puede cambiar el
+    // propio usuario: no sirve para decidir quién es el dueño.
+    emailAuth: String(user.email ?? ''),
     nombre: String(f.full_name ?? ''), empresa: String(f.company_name ?? raw.companyName ?? ''),
     taxId: String(f.tax_id ?? raw.taxId ?? ''), kyc: String(f.kyc_status ?? ''),
     bloqueado: !!(f.is_blocked ?? raw.isBlocked), raw,
@@ -75,12 +79,16 @@ async function quienLlama(req: Request): Promise<Quien | null> {
 
 // Mismo modelo de permisos que admin-data (tabla admin_miembros). Si la tabla
 // no existe o está vacía, todo admin es dueño: una migración sin correr no le
-// quita el acceso a nadie.
+// quita el acceso a nadie. Pero un ERROR al leerla (la base no respondió) NO
+// es "no existe": antes daba dueño a cualquier admin justo cuando la base
+// tropezaba. Ahí se cae al lado seguro (solo lectura).
 type Acceso = { rol: 'dueno' | 'operaciones' | 'cumplimiento' | 'lectura'; brasil: boolean }
+const tablaAusente = (m: string) => /42P01|does not exist|schema cache|PGRST20[45]/i.test(m)
 async function accesoDe(userId: string, email: string): Promise<Acceso> {
   const TODO: Acceso = { rol: 'dueno', brasil: true }
+  const NADA: Acceso = { rol: 'lectura', brasil: false }
   const { data: m, error } = await db.from('admin_miembros').select('rol, paises, activo').eq('id', userId).maybeSingle()
-  if (error) return TODO
+  if (error) return tablaAusente(String(error.message ?? '')) ? TODO : NADA
   if (m && (m as any).activo) {
     const rol = String((m as any).rol) as Acceso['rol']
     const paises: string[] = Array.isArray((m as any).paises) ? (m as any).paises.map(String) : []
@@ -88,16 +96,21 @@ async function accesoDe(userId: string, email: string): Promise<Acceso> {
   }
   if (m && !(m as any).activo) return { rol: 'lectura', brasil: false }
   const { count, error: e2 } = await db.from('admin_miembros').select('id', { count: 'exact', head: true })
-  if (e2 || !count) return TODO
-  if (ADMIN_EMAIL && email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) return TODO
-  return { rol: 'lectura', brasil: false }
+  if (e2) return tablaAusente(String(e2.message ?? '')) ? TODO : NADA
+  if (!count) return TODO
+  if (ADMIN_EMAIL && email && email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) return TODO
+  return NADA
 }
 
 // La sesión pasó el 2FA completo (mismo registro que escribe admin-data).
+// Para ESCRIBIR en Brasil (asignar cuentas, mandar PIX/TED, reembolsos) falla
+// cerrado: el admin tiene que tener el 2FA activo y esta sesión tiene que
+// haberlo pasado. Antes, una cuenta admin sin 2FA —o un token sin id de
+// sesión— pasaba, y con solo la contraseña se movía plata en Brasil.
 function sesionVerificada(req: Request, raw: Record<string, any>): boolean {
-  if (!raw.mfaEnabled) return true
+  if (!raw.mfaEnabled) return false
   const sid = sessionIdOf(req)
-  if (!sid) return true
+  if (!sid) return false
   const lista: any[] = Array.isArray(raw.mfaSessions) ? raw.mfaSessions : []
   const hit = lista.find(x => x?.sid === sid && (x?.stage ?? 'full') === 'full')
   return !!hit && Date.now() - new Date(hit.at).getTime() < MFA_TTL_MS
@@ -400,7 +413,7 @@ Deno.serve(async (req) => {
     // ── ADMIN ──────────────────────────────────────────────────────────
     if (!accion.startsWith('admin_')) return json({ ok: false, error: `Acción desconocida: ${accion}` }, 400)
     if (yo.role !== 'admin') return json({ ok: false, error: 'Solo administración' }, 403)
-    const acceso = await accesoDe(yo.id, yo.email)
+    const acceso = await accesoDe(yo.id, yo.emailAuth)
     if (!acceso.brasil) return json({ ok: false, error: 'No tienes acceso a Brasil.' }, 403)
 
     if (accion === 'admin_listar') {
@@ -625,7 +638,14 @@ Deno.serve(async (req) => {
 
     // De acá en adelante se escribe: dueño u operaciones, con 2FA de sesión.
     if (!(acceso.rol === 'dueno' || acceso.rol === 'operaciones')) return json({ ok: false, error: 'Tu rol solo puede ver las cuentas de Brasil.' }, 403)
-    if (!sesionVerificada(req, yo.raw)) return json({ ok: false, error: 'Esta sesión no verificó el segundo factor. Vuelve a iniciar sesión.', needs2fa: true }, 403)
+    if (!sesionVerificada(req, yo.raw)) {
+      return json({
+        ok: false, needs2fa: true,
+        error: yo.raw.mfaEnabled
+          ? 'Esta sesión no verificó el segundo factor. Vuelve a iniciar sesión.'
+          : 'Para operar Brasil tu cuenta necesita el código de dos pasos (2FA). Actívalo en Seguridad y vuelve a iniciar sesión.',
+      }, 403)
+    }
 
     if (accion === 'admin_asignar') {
       const userId = String(body.userId ?? '')
@@ -1152,8 +1172,14 @@ Deno.serve(async (req) => {
         // gowd-webhook. No vuelve al navegador: nadie tiene que copiarlo.
         const r = await llamarProxy('POST', '/order/v1/webhook/rotate-secret', {})
         if (!okGowd(r) || !r.data?.secret) return json({ ok: false, error: okGowd(r) ? 'Gowd no devolvió el secreto.' : errorGowd(r) })
-        const { error } = await db.from('gowd_config').upsert({ clave: 'webhook_secret', valor: String(r.data.secret), actualizado_at: new Date().toISOString(), actualizado_por: yo.id })
-        await auditar(yo.id, 'gowd.webhook_secreto_rotado', { guardado: !error })
+        // Se guarda CIFRADO. Si el servidor no tiene la llave de cifrado se
+        // guarda igual (Gowd ya lo cambió y solo lo muestra una vez: perderlo
+        // deja el webhook sin verificar), y queda dicho en la auditoría.
+        let valorGuardado = String(r.data.secret)
+        let cifrado = true
+        try { valorGuardado = await encField(valorGuardado) } catch { cifrado = false }
+        const { error } = await db.from('gowd_config').upsert({ clave: 'webhook_secret', valor: valorGuardado, actualizado_at: new Date().toISOString(), actualizado_por: yo.id })
+        await auditar(yo.id, 'gowd.webhook_secreto_rotado', { guardado: !error, cifrado })
         if (error) return json({ ok: false, error: `Gowd ya cambió el secreto pero no se pudo guardar (${error.message}). Corre la migración y vuelve a rotar.` }, 500)
         return json({ ok: true, guardado: true })
       }

@@ -147,20 +147,14 @@ async function leerConfig(userId: string) {
   return (data as any) ?? null
 }
 
-// Lo que ve la pantalla: nunca la access key. Sí una PISTA de la guardada
-// —cuántos caracteres, cómo empieza y cómo termina— para que quien la pegó
-// pueda compararla con la del portal de Siigo sin que nadie la vea entera.
+// Lo que ve la pantalla: nunca la access key, ni pedazos de ella. Antes iba
+// una "pista" (largo, primeros 4 y últimos 3 caracteres): siete caracteres de
+// una credencial son siete menos por adivinar, y la veía cualquiera con
+// acceso a la pantalla. Solo se dice si hay una guardada.
 async function publica(cfg: any, resumen?: any) {
   if (!cfg) return { existe: false, activo: false, tieneAccessKey: false, disparadores: ['load', 'pay_received'], stamp: true, mail: true, crear_clientes: true, cliente_default_nit: '222222222222', cliente_default_nombre: 'Consumidor final', resumen }
   const { access_key_enc, ...resto } = cfg
-  let access_key_pista: { largo: number; inicio: string; fin: string } | null = null
-  if (access_key_enc) {
-    try {
-      const k = await decField(access_key_enc)
-      access_key_pista = { largo: k.length, inicio: k.slice(0, 4), fin: k.slice(-3) }
-    } catch { access_key_pista = null }
-  }
-  return { existe: true, ...resto, tieneAccessKey: !!access_key_enc, access_key_pista, resumen }
+  return { existe: true, ...resto, tieneAccessKey: !!access_key_enc, resumen }
 }
 
 async function resumenDe(userId: string) {
@@ -1324,13 +1318,31 @@ async function leerConfigLincoin(): Promise<{ cfg: any | null; falta: boolean }>
 
 async function publicaLincoin(cfg: any) {
   if (!cfg) return { existe: false, activo: false, tieneAccessKey: false, operaciones: Object.keys(OPERACIONES_LINCOIN), stamp: true, mail: true }
+  // Sin pista de la access key (ver publica): solo si hay una guardada.
   const { access_key_enc, ...resto } = cfg
-  let access_key_pista: { largo: number; inicio: string; fin: string } | null = null
-  if (access_key_enc) {
-    try { const k = await decField(access_key_enc); access_key_pista = { largo: k.length, inicio: k.slice(0, 4), fin: k.slice(-3) } } catch { access_key_pista = null }
-  }
-  return { existe: true, ...resto, tieneAccessKey: !!access_key_enc, access_key_pista }
+  return { existe: true, ...resto, tieneAccessKey: !!access_key_enc }
 }
+
+// ── ¿La factura YA está en Siigo? ─────────────────────────────────────
+// Cuando Siigo no contestó a tiempo (o la función se cortó a mitad del
+// envío), la factura PUDO haberse creado. Reenviarla a ciegas es mandar dos
+// a la DIAN por la misma operación. Antes de cualquier reintento se busca:
+// facturas del cliente desde el día del primer intento cuya observación
+// lleve la marca de ESTA operación (y el mismo total, si se sabe).
+// ok:false = no se pudo preguntar → NO se reenvía; se pide revisar a mano.
+async function buscarFacturaLincoinEnSiigo(token: string, partner: string, identificacion: string, desdeIso: string, marca: string, total: number | null): Promise<{ ok: boolean; factura: any | null }> {
+  const d = new Date(Date.parse(desdeIso) || Date.now())
+  const desde = new Date(d.getTime() - 2 * 86400000).toISOString().slice(0, 10)
+  const ruta = `/v1/invoices?customer_identification=${encodeURIComponent(identificacion)}&date_start=${desde}&page_size=100`
+  const r = await siigo('GET', ruta, { token, partner, ms: 30000 })
+  if (!r.ok) return { ok: false, factura: null }
+  const lista: any[] = Array.isArray(r.data?.results) ? r.data.results : Array.isArray(r.data) ? r.data : []
+  const hit = lista.find((x: any) =>
+    String(x?.observations ?? '').includes(marca) &&
+    (total == null || !Number.isFinite(Number(x?.total)) || Math.abs(Number(x.total) - total) < 1)) ?? null
+  return { ok: true, factura: hit }
+}
+const MSG_INCIERTA = 'Siigo no confirmó si la factura se creó. Antes de volver a enviarla se busca en Siigo: usa «Verificar y reintentar» (o revísala en Siigo Nube → Ventas → Facturas).'
 
 async function resumenLincoin(): Promise<Record<string, number>> {
   const out: Record<string, number> = {}
@@ -1421,8 +1433,16 @@ async function emitirLincoin(txId: string, opts: { manual?: boolean; utilidad?: 
   // La automática solo trabaja las nuevas o las que quedaron 'pendiente'. Un
   // error o una revisión los mira una persona: reintentarlos solo no los arregla.
   if (!opts.manual && fila.estado !== 'pendiente') return { ok: true, estado: fila.estado }
+  // 'incierta' o un 'emitiendo' viejo: Siigo pudo haberla creado. Se verifica
+  // en Siigo antes de mandar nada (más abajo, ya con la credencial).
+  const porVerificar = fila.estado === 'incierta' || fila.estado === 'emitiendo'
   const marcar = async (patch: Record<string, unknown>, cuenta = true) => {
-    await db.from('facturas_lincoin').update({ ...patch, ...(cuenta ? { intentos: Number(fila.intentos ?? 0) + 1 } : {}), updated_at: ahora() }).eq('id', fila.id)
+    // Una incierta no se "olvida": si ahora no se puede emitir (falta la
+    // utilidad, cambió algo), sigue incierta — pasar a 'revision' o 'error'
+    // haría que el próximo intento la mande sin verificar en Siigo.
+    const p0 = porVerificar && !['emitida', 'incierta', 'emitiendo'].includes(String(patch.estado ?? ''))
+      ? { ...patch, estado: 'incierta' } : patch
+    await db.from('facturas_lincoin').update({ ...p0, ...(cuenta ? { intentos: Number(fila.intentos ?? 0) + 1 } : {}), updated_at: ahora() }).eq('id', fila.id)
   }
 
   // ── Cuánto y de qué ────────────────────────────────────────────────
@@ -1506,9 +1526,13 @@ async function emitirLincoin(txId: string, opts: { manual?: boolean; utilidad?: 
   const plantilla = (s: string) => s.replace(/\{(\w+)\}/g, (_m, k) => ctx[k] ?? '').replace(/\s+·\s+·/g, ' ·').trim()
   const descT = plantilla(cfg.desc_terceros || 'Ingresos recibidos para terceros · {tipo} {fecha}').slice(0, 500)
   const descC = plantilla(cfg.desc_comision || 'Comisión Lincoin · {tipo} {fecha}').slice(0, 500)
+  // La marca de la operación va PRIMERO: es con lo que se la reconoce en
+  // Siigo si un envío queda sin respuesta, y al final la cortaba el tope de
+  // 500 caracteres cuando la observación configurada es larga.
+  const marcaOp = `${ctx.tipo} del ${fechaOp} · ref ${ctx.ref}`
   const observations = [
+    marcaOp,
     cfg.observaciones || `Factura en desarrollo del contrato de mandato con ${cp.nombre}. Ítem 1: ingresos recibidos para terceros, valor de la operación que corresponde al cliente; no constituye ingreso propio de Lincoin. Ítem 2: comisión de Lincoin por la operación, IVA incluido.`,
-    `${ctx.tipo} del ${fechaOp} · ref ${ctx.ref}`,
   ].filter(Boolean).join(' · ').slice(0, 500)
   const armar = (tarifa: number) => {
     const base = r2(utilidad! / (1 + tarifa))
@@ -1533,6 +1557,26 @@ async function emitirLincoin(txId: string, opts: { manual?: boolean; utilidad?: 
     }
   }
 
+  // Antes de reenviar una incierta: ¿ya está en Siigo? Si está, se adopta
+  // (queda 'emitida' con sus datos). Si no se pudo preguntar, no se envía.
+  if (porVerificar) {
+    const b = await buscarFacturaLincoinEnSiigo(tk.token, partner, cp.identification, String(fila.updated_at ?? fila.created_at ?? t.created_at), marcaOp, totalOp)
+    if (!b.ok) {
+      await marcar({ estado: 'incierta', error: `${MSG_INCIERTA} (No se pudo consultar Siigo ahora.)` }, false)
+      return { ok: false, incierta: true, error: 'No se pudo verificar en Siigo si la factura ya existe. No se reenvió. Revísala en Siigo Nube antes de reintentar.' }
+    }
+    if (b.factura) {
+      const d0 = b.factura
+      const numero0 = d0.name ?? (d0.number != null ? `${d0.prefix ?? ''}${d0.number}` : null) ?? String(d0.id ?? '')
+      await marcar({
+        estado: 'emitida', error: null, numero: numero0, siigo_id: d0.id != null ? String(d0.id) : null,
+        cufe: d0.stamp?.cufe ?? null, url: d0.public_url ?? null, emitida_at: ahora(),
+        detalle: { adoptada: true, respuesta: d0, ...(opts.adminId ? { por: opts.adminId } : {}) },
+      }, false)
+      return { ok: true, estado: 'emitida', numero: numero0, adoptada: true }
+    }
+  }
+
   // Pausa de última hora (solo la automática) y CANDADO: un solo envío a la
   // DIAN por operación, aunque lleguen el aviso, el cron y un clic a la vez.
   if (!opts.manual) {
@@ -1544,7 +1588,9 @@ async function emitirLincoin(txId: string, opts: { manual?: boolean; utilidad?: 
     const { data: tomado, error: eLock } = await db.from('facturas_lincoin')
       .update({ estado: 'emitiendo', error: null, updated_at: ahora() })
       .eq('id', fila.id)
-      .or(`estado.in.(${ESTADOS_REEMITIBLES}),and(estado.eq.emitiendo,updated_at.lt.${hace3})`)
+      // 'incierta' y el 'emitiendo' viejo solo llegan acá después de verificar
+      // en Siigo que la factura NO existe (arriba).
+      .or(`estado.in.(${ESTADOS_REEMITIBLES}${porVerificar ? ',incierta' : ''}),and(estado.eq.emitiendo,updated_at.lt.${hace3})`)
       .select('id')
     if (eLock) return { ok: false, error: `No se pudo tomar la factura: ${eLock.message}` }
     if (!Array.isArray(tomado) || !tomado.length) return { ok: false, error: 'Esta factura ya se está emitiendo o ya salió. Recargá la lista.' }
@@ -1571,7 +1617,13 @@ async function emitirLincoin(txId: string, opts: { manual?: boolean; utilidad?: 
   }
   const valores = { total: arm.total, terceros: arm.tercerosV, utilidad, base: arm.base, iva: arm.ivaV, utilidad_fuente: fuente }
   if (!r.ok) {
-    if (r.status === 0) return falla('Siigo no respondió a tiempo: la factura PUDO haberse creado. Revisá en Siigo Nube (Ventas → Facturas) antes de reintentar.', { ...valores, detalle: { enviado: arm.cuerpo, intentos, liq } })
+    // Sin respuesta (o un error del lado de Siigo): la factura PUDO crearse.
+    // Queda 'incierta' — no es un 'error' que se reintenta con un botón:
+    // antes de reenviarla se busca en Siigo.
+    if (r.status === 0 || r.status >= 500) {
+      await marcar({ estado: 'incierta', error: MSG_INCIERTA, ...valores, detalle: { enviado: arm.cuerpo, intentos, liq } })
+      return { ok: false, incierta: true, error: MSG_INCIERTA }
+    }
     if (r.status === 409 && esDuplicadoSiigo(motivoDe(r)) && Number(fila.intentos ?? 0) + 1 < REINTENTOS_DUPLICADO) {
       await marcar({ estado: 'pendiente', error: 'Siigo la tomó como duplicada de otra factura parecida emitida segundos antes. Se reintenta sola en unos minutos.', ...valores, detalle: { enviado: arm.cuerpo, intentos, liq } })
       return { ok: false, reintento: true, error: 'Siigo la tomó como duplicada; se reintenta sola.' }
@@ -1593,6 +1645,14 @@ async function emitirLincoin(txId: string, opts: { manual?: boolean; utilidad?: 
 // No toca 'error' ni 'revision' (piden a alguien) ni 'emitiendo' reciente.
 async function ponerseAlDiaLincoin(opts: { tope?: number; hastaMs?: number; dias?: number } = {}): Promise<{ emitidas: number; revisadas: number; errores: string[]; restan: number }> {
   const out = { emitidas: 0, revisadas: 0, errores: [] as string[], restan: 0 }
+  // Un 'emitiendo' de hace más de 10 minutos es un envío que se cortó a mitad
+  // (la función se reinició o Siigo no contestó): pasa a 'incierta', que se
+  // ve en el panel y se verifica en Siigo antes de reintentar. Nunca se
+  // reintenta solo.
+  try {
+    await db.from('facturas_lincoin').update({ estado: 'incierta', error: MSG_INCIERTA, updated_at: new Date().toISOString() })
+      .eq('estado', 'emitiendo').lt('updated_at', new Date(Date.now() - 10 * 60_000).toISOString())
+  } catch { /* la próxima vuelta */ }
   const { cfg } = await leerConfigLincoin()
   if (!cfg?.activo) return out
   const fin = opts.hastaMs ?? Date.now() + 100_000

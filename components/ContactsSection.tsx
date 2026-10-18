@@ -2117,7 +2117,15 @@ export const ContactsSection: React.FC<{
             {/* Cupo mensual por beneficiario: la regla, a la vista antes de
                 la lista, y cómo pedir más. */}
             {cupos.general && contacts.some(c => c.accountKind !== 'wallet') && (() => {
-                const filas = contacts.filter(c => c.accountKind !== 'wallet').map(c => cupos.porContacto[String(c.id)]).filter(Boolean);
+                // Por beneficiario, no por ficha: la llave Bre-B y la cuenta ACH
+                // de la misma persona comparten cupo y contaban dos veces.
+                const porClave = new Map<string, any>();
+                for (const c of contacts) {
+                    if (c.accountKind === 'wallet') continue;
+                    const x = cupos.porContacto[String(c.id)];
+                    if (x) porClave.set(String(x.clave || c.id), x);
+                }
+                const filas = [...porClave.values()];
                 const enProceso = filas.filter((x: any) => x.solicitud?.estado === 'en_proceso').length;
                 const agotados = filas.filter((x: any) => Number(x.cupo) > 0 && Number(x.disponible) <= 0).length;
                 const millones = (v: number) => `$${(Number(v) / 1e6).toLocaleString('es-CO', { maximumFractionDigits: 1 })} millones`;

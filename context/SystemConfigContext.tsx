@@ -1,4 +1,4 @@
-import React, { createContext, useState, useContext, ReactNode, useEffect, useCallback } from 'react';
+import React, { createContext, useState, useContext, ReactNode, useEffect, useCallback, useRef } from 'react';
 import { supabase, isSupabaseConfigured } from '../lib/supabaseClient';
 import { BankDetail, TreasuryAccount, AdminUser } from './DatabaseContext';
 
@@ -165,21 +165,40 @@ export const SystemConfigProvider: React.FC<{ children: ReactNode }> = ({ childr
     });
   }, []);
 
+  // ¿La configuración en memoria es la COMPLETA (la que ve un admin) o la
+  // pública? get-system-config ya no le da a cualquiera el equipo de admin ni
+  // la tesorería. Guardar escribe el objeto entero: guardar sobre la vista
+  // pública borraría lo que no vino. Por eso se lleva la cuenta.
+  const vistaRef = useRef<'completa' | 'publica' | null>(null);
+  const tokenSesion = async (): Promise<string> => {
+    try {
+      const { data } = await supabase.auth.getSession();
+      return data?.session?.access_token || SKEY;
+    } catch { return SKEY; }
+  };
+  const leerConfigServidor = useCallback(async (): Promise<{ settings: any; vista: 'completa' | 'publica' } | null> => {
+    if (!GET_CONFIG_URL) return null;
+    try {
+      const res = await fetch(GET_CONFIG_URL, {
+        headers: { 'apikey': SKEY, 'Authorization': `Bearer ${await tokenSesion()}` },
+      });
+      if (!res.ok) return null;
+      const d = await res.json();
+      if (!d?.settings) return null;
+      return { settings: d.settings, vista: d.vista === 'completa' ? 'completa' : 'publica' };
+    } catch (e) {
+      console.warn('[config] get-system-config failed', e);
+      return null;
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [GET_CONFIG_URL, SKEY]);
+
   const fetchRemoteConfig = useCallback(async () => {
     if (!isSupabaseConfigured) return;
-    // Try get-system-config first (simple read-only function, no auth needed)
-    if (GET_CONFIG_URL) {
-      try {
-        const res = await fetch(GET_CONFIG_URL, {
-          headers: { 'apikey': SKEY, 'Authorization': `Bearer ${SKEY}` },
-        });
-        if (res.ok) {
-          const { settings } = await res.json();
-          if (settings) { applySettings(settings); return; }
-        }
-      } catch (e) {
-        console.warn('[config] get-system-config failed', e);
-      }
+    // Try get-system-config first (read-only; con sesión de admin trae todo)
+    {
+      const r = await leerConfigServidor();
+      if (r) { vistaRef.current = r.vista; applySettings(r.settings); return; }
     }
     // Secondary: gasfree get_config (once deployed)
     if (GASFREE_WALLET_URL) {
@@ -228,9 +247,16 @@ export const SystemConfigProvider: React.FC<{ children: ReactNode }> = ({ childr
         })
         .subscribe();
 
+      // Al iniciar o cerrar sesión cambia lo que se puede ver (un admin trae
+      // la configuración completa): se vuelve a leer.
+      const { data: authSub } = supabase.auth.onAuthStateChange((evento) => {
+        if (evento === 'SIGNED_IN' || evento === 'SIGNED_OUT') fetchRemoteConfig();
+      });
+
       return () => {
         clearInterval(interval);
         supabase.removeChannel(channel);
+        authSub?.subscription?.unsubscribe();
       };
     }
   }, [fetchRemoteConfig]);
@@ -263,7 +289,20 @@ export const SystemConfigProvider: React.FC<{ children: ReactNode }> = ({ childr
   // vuelve solo a su lugar dice la verdad; uno que se queda puesto, no.
   const updateConfig = async (newPart: any) => {
     const previo = config;
-    const newFull = { ...config, ...newPart, paletteVersion: PALETTE_VERSION };
+    let base = config;
+    // Sobre la vista pública NO se guarda: le faltan claves (equipo de admin,
+    // tesorería) y el guardado escribe el objeto entero, así que las borraría.
+    // Se trae primero la completa; si quien guarda no es admin, no se guarda.
+    if (isSupabaseConfigured && vistaRef.current !== 'completa') {
+      const r = await leerConfigServidor();
+      if (!r || r.vista !== 'completa') {
+        setConfigError('Recarga el panel para cargar la configuración completa antes de guardar.');
+        return;
+      }
+      vistaRef.current = 'completa';
+      base = { ...DEFAULT_CONFIG, ...r.settings };
+    }
+    const newFull = { ...base, ...newPart, paletteVersion: PALETTE_VERSION };
 
     // Optimista para que la interfaz responda al instante. Si el guardado
     // falla, se deshace.

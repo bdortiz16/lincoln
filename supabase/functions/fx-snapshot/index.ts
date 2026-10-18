@@ -132,6 +132,13 @@ async function ratesForBase(base: string): Promise<Record<string, number>> {
 // ─────────────────────────────────────────────
 // Handler
 // ─────────────────────────────────────────────
+function igualTexto(a: string, b: string): boolean {
+  if (!a || !b || a.length !== b.length) return false
+  let d = 0
+  for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i)
+  return d === 0
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: CORS })
 
@@ -146,7 +153,9 @@ Deno.serve(async (req) => {
     if (!CRON_SECRET) {
       return new Response(JSON.stringify({ error: 'not_configured', message: 'Falta CRON_SECRET.' }), { status: 503, headers: { ...CORS, 'Content-Type': 'application/json' } })
     }
-    if (url.searchParams.get('key') !== CRON_SECRET) {
+    // Comparación en tiempo constante (no filtra el secreto por lo que tarda).
+    // El secreto va en la URL porque así lo manda el cron de pg_net.
+    if (!igualTexto(url.searchParams.get('key') ?? '', CRON_SECRET)) {
       return new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401, headers: { ...CORS, 'Content-Type': 'application/json' } })
     }
     // mode=ping → solo verifica conectividad y credenciales sin insertar

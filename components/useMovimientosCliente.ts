@@ -22,7 +22,7 @@ const mapear = (t: any, userId: string) => ({
 });
 
 export function useMovimientosCliente(userId: string | null | undefined, globales: any[]) {
-  const [extra, setExtra] = useState<{ id: string; filas: any[]; ids: string[] } | null>(null);
+  const [extra, setExtra] = useState<{ id: string; filas: any[]; ids: string[]; truncado?: boolean } | null>(null);
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
@@ -34,7 +34,7 @@ export function useMovimientosCliente(userId: string | null | undefined, globale
     pedirAdmin({ action: 'movimientos_cliente', userId })
       .then((r: any) => {
         if (!vivo) return;
-        if (r?.ok && Array.isArray(r.transactions)) setExtra({ id: userId, filas: r.transactions.map((t: any) => mapear(t, userId)), ids: Array.isArray(r.ids) ? r.ids.map(String) : [userId] });
+        if (r?.ok && Array.isArray(r.transactions)) setExtra({ id: userId, filas: r.transactions.map((t: any) => mapear(t, userId)), ids: Array.isArray(r.ids) ? r.ids.map(String) : [userId], truncado: r.truncado === true });
         else setError(r?.error ?? 'No se pudo traer el historial completo.');
       })
       .catch((e: any) => { if (vivo) setError(String(e?.message ?? e)); })
@@ -57,7 +57,9 @@ export function useMovimientosCliente(userId: string | null | undefined, globale
     ids: extra && extra.id === userId ? extra.ids : [],
     cargando,
     error,
-    completo: !!userId && !!extra && extra.id === userId,
+    // "Completo" solo si el servidor no cortó el historial por el tope.
+    completo: !!userId && !!extra && extra.id === userId && !extra.truncado,
+    truncado: !!userId && !!extra && extra.id === userId && !!extra.truncado,
     recargar: () => setVersion(v => v + 1),
   };
 }

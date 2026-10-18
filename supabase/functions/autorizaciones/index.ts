@@ -98,6 +98,38 @@ async function guardarPersona(personaId: string, patchRaw: Record<string, unknow
   return error ? error.message : null
 }
 
+// ¿Hay constancia ESCRITA POR ESTE SERVIDOR del vínculo? Las listas
+// personasSolicitudes / personasAutorizadas viven en el raw_data de la
+// empresa, y esa fila la puede editar la propia empresa: con meter el id de
+// cualquiera en su lista, aprobaba (kyc_status = approved) o reseteaba a
+// quien quisiera, o veía la foto con documento de un tercero. audit_log solo
+// lo escribe el servidor (con la llave de servicio): ahí queda la prueba.
+async function constancia(empresaId: string, personaId: string, accion: string): Promise<boolean> {
+  if (!empresaId || !personaId) return false
+  try {
+    const { data } = await db.from('audit_log').select('id')
+      .eq('user_id', empresaId).eq('action', accion).eq('metadata->>personaId', personaId).limit(1)
+    return Array.isArray(data) && data.length > 0
+  } catch { return false }
+}
+// La ÚLTIMA solicitud que mandó la persona, sea a quien sea: solo esa empresa
+// puede aprobarla. Una solicitud vieja a otra empresa no sirve.
+async function ultimaSolicitudA(personaId: string): Promise<string | null> {
+  try {
+    const { data } = await db.from('audit_log').select('user_id')
+      .eq('action', 'empresa.persona_solicitud').eq('metadata->>personaId', personaId)
+      .order('created_at', { ascending: false }).limit(1)
+    return data?.[0]?.user_id ? String(data[0].user_id) : null
+  } catch { return null }
+}
+// La persona tiene que ser una cuenta Persona de verdad, y no la propia empresa.
+async function esPersona(personaId: string, yoId: string): Promise<{ id: string; raw: Record<string, any> } | null> {
+  if (!personaId || personaId === yoId) return null
+  const { data } = await db.from('users').select('id, role, raw_data').eq('id', personaId).maybeSingle()
+  if (!data || String((data as any).role ?? '') !== 'personal') return null
+  return { id: String((data as any).id), raw: ((data as any).raw_data ?? {}) as Record<string, any> }
+}
+
 // ¿Qué empresa la autoriza hoy? (la que la tiene en personasAutorizadas)
 async function empresaDe(personaId: string) {
   const { data } = await db.from('users').select('id, full_name, company_name, email, raw_data').eq('role', 'business')
@@ -140,8 +172,13 @@ Deno.serve(async (req) => {
       if (!foto.startsWith('data:image/') || foto.length < 5000) return json({ ok: false, error: 'Falta la foto sosteniendo tu documento' }, 400)
       if (foto.length > 2_500_000) return json({ ok: false, error: 'La foto es muy pesada. Toma una más liviana.' }, 400)
 
-      const { data: emp } = await db.from('users').select('*').eq('role', 'business').eq('raw_data->>ownReferralCode', codigo).limit(1).maybeSingle()
+      // El código lo escribe cada cuenta en su perfil y no es único en la base:
+      // si dos empresas lo comparten no se adivina a cuál mandar la foto.
+      const { data: emps } = await db.from('users').select('*').eq('role', 'business').eq('raw_data->>ownReferralCode', codigo).limit(2)
+      if ((emps ?? []).length > 1) return json({ ok: false, error: 'Ese ID está repetido. Pídele a la empresa que se comunique con soporte.' }, 409)
+      const emp = (emps ?? [])[0]
       if (!emp) return json({ ok: false, error: 'No hay una empresa con ese ID. Pídele a la empresa que lo copie de su panel (Personas autorizadas).' }, 404)
+      if (String(emp.id) === yo.id) return json({ ok: false, error: 'Ese ID es el tuyo.' }, 400)
 
       const autorizadas = lista<Autorizada>(emp.raw_data, 'personasAutorizadas')
       if (autorizadas.some(a => a.id === yo.id)) return json({ ok: true, estado: 'autorizada', empresa: { id: String(emp.id), nombre: nombreEmpresa(emp) } })
@@ -192,6 +229,11 @@ Deno.serve(async (req) => {
 
     if (accion === 'ver_foto') {
       if (![...autorizadas, ...solicitudes].some(x => x.id === personaId)) return json({ ok: false, error: 'Esa persona no te pidió autorización' }, 403)
+      // La lista la puede editar la empresa: la foto (con el documento en la
+      // mano) solo sale si el servidor registró que esa persona se la pidió.
+      if (!(await esPersona(personaId, yo.id)) || !(await constancia(yo.id, personaId, 'empresa.persona_solicitud'))) {
+        return json({ ok: false, error: 'Esa persona no te pidió autorización' }, 403)
+      }
       const { data: p } = await db.from('users').select('documents').eq('id', personaId).maybeSingle()
       return json({ ok: true, foto: String((p?.documents as any)?.autorizacionFoto ?? '') || null })
     }
@@ -199,6 +241,12 @@ Deno.serve(async (req) => {
     if (accion === 'aprobar') {
       const s = solicitudes.find(x => x.id === personaId)
       if (!s) return json({ ok: false, error: 'Esa solicitud ya no está' }, 404)
+      // Aprobar marca a la persona como identificada (kyc_status). Solo vale si
+      // es una cuenta Persona, si no es la propia empresa y si su ÚLTIMA
+      // solicitud registrada por el servidor es a esta empresa.
+      if (!(await esPersona(personaId, yo.id)) || (await ultimaSolicitudA(personaId)) !== yo.id) {
+        return json({ ok: false, error: 'Esa solicitud ya no está' }, 404)
+      }
       const tope = body.topeMensual == null || body.topeMensual === '' ? null : Math.max(0, Math.round(Number(body.topeMensual) || 0))
       solicitudes = solicitudes.filter(x => x.id !== personaId)
       // El ID Lincoin de la persona queda en el vínculo: es lo que la empresa
@@ -226,7 +274,8 @@ Deno.serve(async (req) => {
       solicitudes = solicitudes.filter(x => x.id !== personaId)
       const e1 = await guardarEmpresa(yo.id, autorizadas, solicitudes)
       if (e1) return json({ ok: false, error: e1 }, 500)
-      if (s) {
+      // A la persona solo se le escribe si de verdad le pidió a esta empresa.
+      if (s && (await esPersona(personaId, yo.id)) && (await constancia(yo.id, personaId, 'empresa.persona_solicitud'))) {
         // Si no tiene otra empresa aprobada, vuelve a "pendiente".
         const otra = await empresaDe(personaId)
         if (!otra) await guardarPersona(personaId, { autorizacion: { ...(s as any), estado: 'rechazada', empresaId: yo.id, empresaNombre: nombreEmpresa(emp) } })
@@ -241,7 +290,12 @@ Deno.serve(async (req) => {
       autorizadas = autorizadas.filter(x => x.id !== personaId)
       const e1 = await guardarEmpresa(yo.id, autorizadas, solicitudes)
       if (e1) return json({ ok: false, error: e1 }, 500)
-      if (a) {
+      // Revocar devuelve a la persona a "identificación pendiente": solo la
+      // empresa que de verdad la aprobó (constancia del servidor, o el espejo
+      // que escribió el servidor en la persona) puede hacerlo.
+      const pr = a ? await esPersona(personaId, yo.id) : null
+      const laAprobo = !!pr && ((await constancia(yo.id, personaId, 'empresa.persona_aprobada')) || String(pr.raw?.empresaAutorizante?.id ?? '') === yo.id)
+      if (a && laAprobo) {
         const otra = await empresaDe(personaId)
         if (!otra) await guardarPersona(personaId, { empresaAutorizante: null, autorizacion: { ...(a as any), estado: 'revocada' } }, undefined, 'pending')
         await db.from('audit_log').insert({ user_id: yo.id, action: 'empresa.persona_revocada', metadata: { personaId, email: a.email, at: new Date().toISOString() } })
@@ -262,6 +316,7 @@ Deno.serve(async (req) => {
 
     return json({ ok: false, error: `Acción desconocida: ${accion}` }, 400)
   } catch (e) {
-    return json({ ok: false, error: (e as Error)?.message ?? String(e) }, 500)
+    console.error('[autorizaciones]', (e as Error)?.message ?? e)
+    return json({ ok: false, error: 'No se pudo completar la operación. Intenta de nuevo.' }, 500)
   }
 })

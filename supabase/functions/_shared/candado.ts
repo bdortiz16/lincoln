@@ -15,7 +15,7 @@
 // Si la tabla todavía no existe (falta correr la migración), devuelve
 // 'sin_tabla' y quien llama sigue como antes: el candado se suma a los
 // controles que ya había, no los reemplaza.
-export type ResultadoCandado = 'ok' | 'ocupado' | 'sin_tabla'
+export type ResultadoCandado = 'ok' | 'ocupado' | 'sin_tabla' | 'error'
 
 export async function reclamarCandado(db: any, clave: string, ttlSeg: number, userId: string | null, accion: string): Promise<ResultadoCandado> {
   const fila = { clave, user_id: userId, accion, creado_at: new Date().toISOString() }
@@ -31,10 +31,16 @@ export async function reclamarCandado(db: any, clave: string, ttlSeg: number, us
       .eq('clave', clave).lt('creado_at', vencida).select('clave')
     return Array.isArray(data) && data.length ? 'ok' : 'ocupado'
   }
-  // Tabla ausente u otro error de la base: no se frena el envío por un
-  // candado que no se pudo consultar (los demás controles siguen en pie).
-  console.warn('[candado] no disponible:', code, msg.slice(0, 160))
-  return 'sin_tabla'
+  // Tabla ausente (falta la migración): se sigue como antes de que existiera.
+  // Cualquier OTRO error de la base es distinto: el candado existe pero no se
+  // pudo tomar, y seguir sería apagar la protección justo cuando la base
+  // tropieza. Quien llama decide; los envíos lo tratan como "no sale".
+  if (code === '42P01' || code === 'PGRST205' || /does not exist|schema cache|could not find the table/i.test(msg)) {
+    console.warn('[candado] tabla ausente:', code, msg.slice(0, 160))
+    return 'sin_tabla'
+  }
+  console.warn('[candado] error:', code, msg.slice(0, 160))
+  return 'error'
 }
 
 // Se suelta cuando el envío NO salió (rechazo claro, saldo devuelto), para que

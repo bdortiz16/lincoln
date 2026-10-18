@@ -26,6 +26,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { mergeRaw, setRawPath } from '../_shared/raw-data.ts'
+import { requireMfaSession, igualSeguro } from '../_shared/admin-auth.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -144,16 +145,27 @@ function rutaCon(_c: Config, ruta: string, documento: string, empresa = ''): str
 }
 
 // ── Identidad de quien llama ──────────────────────────────────────────────
-async function quienLlama(req: Request): Promise<{ userId: string | null; esAdmin: boolean }> {
+async function quienLlama(req: Request): Promise<{ userId: string | null; esAdmin: boolean; servicio?: boolean }> {
   const jwt = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
   if (!jwt) return { userId: null, esAdmin: false }
-  if (SERVICE_KEY && jwt === SERVICE_KEY) return { userId: null, esAdmin: true }
+  if (SERVICE_KEY && igualSeguro(jwt, SERVICE_KEY)) return { userId: null, esAdmin: true, servicio: true }
   try {
     const { data: { user } } = await db.auth.getUser(jwt)
     if (!user) return { userId: null, esAdmin: false }
     const { data } = await db.from('users').select('role').eq('id', user.id).single()
     return { userId: user.id, esAdmin: (data as any)?.role === 'admin' }
   } catch { return { userId: null, esAdmin: false } }
+}
+
+// Las acciones de administración exigen, además del rol, que la sesión haya
+// pasado el segundo factor (la misma regla de admin-data). Con solo la
+// contraseña de un admin se podía cambiar la configuración AML o leer el
+// listado de veredictos. La llave de servicio (llamadas internas) pasa.
+async function exigirAdmin(req: Request, yo: { userId: string | null; esAdmin: boolean; servicio?: boolean }): Promise<Response | null> {
+  if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+  if (yo.servicio) return null
+  const mfa = await requireMfaSession(db, req, yo.userId)
+  return mfa ? json({ error: mfa }, 403) : null
 }
 
 type EstadoKumplo = {
@@ -500,14 +512,14 @@ Deno.serve(async (req: Request) => {
 
     // ── Configuración (solo admin) ───────────────────────────────────────
     if (accion === 'config_get') {
-      if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      { const no = await exigirAdmin(req, yo); if (no) return no }
       const c = await leerConfig()
       // La llave NUNCA sale de la Bóveda: solo se dice si está puesta.
       return json({ ok: true, config: c, credencial: API_KEY ? 'configurada' : 'falta' })
     }
 
     if (accion === 'config_set') {
-      if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      { const no = await exigirAdmin(req, yo); if (no) return no }
       const actual = await leerConfig()
       const c: Config = { ...actual, ...(body.config ?? {}) }
       // No se puede encender sin lo mínimo para funcionar: encender algo que
@@ -538,9 +550,14 @@ Deno.serve(async (req: Request) => {
     // Esto recorre la cadena y dice en cuál eslabón se corta. Si todo está en
     // orden, MANDA UNA CONSULTA REAL con el documento que se le pase y
     // devuelve lo que Kumplo contestó, sin interpretar.
+    // SOLO ADMIN: manda una consulta AML REAL con el documento y el nombre que
+    // se le pasen y devuelve la respuesta cruda del proveedor. Abierto al
+    // titular, servía para consultar los antecedentes de cualquier persona
+    // (un documento que no es de sus beneficiarios) con la cuenta de Lincoin.
     if (accion === 'diagnostico') {
+      { const no = await exigirAdmin(req, yo); if (no) return no }
       const uid = String(body.userId ?? yo.userId ?? '')
-      if (!uid || (!yo.esAdmin && yo.userId !== uid)) return json({ error: 'No autorizado' }, 401)
+      if (!uid) return json({ error: 'Falta la cuenta a diagnosticar.' }, 400)
       const c = await leerConfig()
       const mio = await leerEstado(uid)
       const empresa = String(mio.empresaId ?? '').trim()
@@ -591,7 +608,7 @@ Deno.serve(async (req: Request) => {
     }
 
     if (accion === 'probar') {
-      if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      { const no = await exigirAdmin(req, yo); if (no) return no }
       const c = await leerConfig()
       if (!c.baseUrl) return json({ ok: false, motivo: 'Falta la dirección base de Kumplo.' })
       if (!API_KEY) return json({ ok: false, motivo: 'Falta la credencial de Kumplo en la Bóveda.' })
@@ -643,6 +660,10 @@ Deno.serve(async (req: Request) => {
     //
     // Al conectar se dispara de una vez el alta y la consulta: dejarlo
     // conectado pero sin consultar sería quedarse a mitad de camino.
+    // LIMITACIÓN CONOCIDA: el código EMP-… no se puede comprobar contra el
+    // proveedor (no expone a quién pertenece), así que se registra quién lo
+    // pegó y cuándo. Las consultas van con la credencial de Lincoin y quedan
+    // en la auditoría con la cuenta que las hizo.
     if (accion === 'conectar') {
       const uid = String(body.userId ?? yo.userId ?? '')
       if (!uid || (!yo.esAdmin && yo.userId !== uid)) return json({ error: 'No autorizado' }, 401)
@@ -665,16 +686,29 @@ Deno.serve(async (req: Request) => {
       return json({ ok: true, estado: await consultarAml(c, uid) })
     }
 
-    // Desconectar: quita el vínculo y el veredicto. Solo el titular o el admin.
+    // Desconectar: el TITULAR solo quita el vínculo con su cuenta de Kumplo
+    // (el código de empresa). Los VEREDICTOS AML —el suyo y el de sus
+    // beneficiarios— se quedan: antes se borraba raw_data.kumplo entero y,
+    // sin veredicto, el resto del sistema lo dejaba operar. Quitarse uno mismo
+    // un "riesgo alto" no puede ser un botón. Borrar todo (volver a cero) es
+    // solo del admin, con su segundo factor.
     if (accion === 'desconectar') {
       const uid = String(body.userId ?? yo.userId ?? '')
       if (!uid || (!yo.esAdmin && yo.userId !== uid)) return json({ error: 'No autorizado' }, 401)
-      const { data } = await db.from('users').select('raw_data').eq('id', uid).single()
-      const raw = { ...((data as any)?.raw_data ?? {}) }
-      delete raw.kumplo
-      await db.from('users').update({ raw_data: raw }).eq('id', uid)
+      if (yo.esAdmin && body.borrarTodo === true) {
+        { const no = await exigirAdmin(req, yo); if (no) return no }
+        const { data } = await db.from('users').select('raw_data').eq('id', uid).single()
+        const raw = { ...((data as any)?.raw_data ?? {}) }
+        delete raw.kumplo
+        await db.from('users').update({ raw_data: raw }).eq('id', uid)
+        await auditar('kumplo.reiniciado', { userId: uid, por: yo.userId })
+        return json({ ok: true, estado: {} })
+      }
+      const prev = await leerEstado(uid)
+      const { empresaId: _sinEmpresa, ...resto } = prev as any
+      await setRawPath(db, uid, ['kumplo'], { ...resto, estado: 'desconectado', at: new Date().toISOString() }, false)
       await auditar('kumplo.desconectado', { userId: uid, por: yo.userId })
-      return json({ ok: true, estado: {} })
+      return json({ ok: true, estado: await leerEstado(uid) })
     }
 
 
@@ -803,9 +837,12 @@ Deno.serve(async (req: Request) => {
     // ── ¿Puede transferir? Lo pregunta el resto del sistema ───────────────
     // Fuera de la prueba, o con la integración apagada, SIEMPRE deja operar.
     // Una integración de prueba no puede convertirse en un freno accidental.
+    // Solo lo pregunta el propio titular, un admin o el servidor: abierto,
+    // revelaba el nivel de riesgo AML de cualquier cuenta (y si existe).
     if (accion === 'puede_operar') {
       const uid = String(body.userId ?? yo.userId ?? '')
       if (!uid) return json({ ok: true, puede: true })
+      if (!yo.esAdmin && yo.userId !== uid) return json({ error: 'No autorizado' }, 401)
       const c = await leerConfig()
       if (!c.activo || !c.bloquearEnAlto || !enLaPrueba(c, uid)) return json({ ok: true, puede: true })
       const e = await leerEstado(uid)
@@ -814,7 +851,7 @@ Deno.serve(async (req: Request) => {
 
     // ── Listado para el panel ────────────────────────────────────────────
     if (accion === 'listado') {
-      if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      { const no = await exigirAdmin(req, yo); if (no) return no }
       const { data } = await db.from('users').select('id, name, email, raw_data').limit(500)
       const filas = ((data ?? []) as any[])
         .map(u => ({ id: u.id, nombre: u.name, correo: u.email, kumplo: u.raw_data?.kumplo ?? null }))

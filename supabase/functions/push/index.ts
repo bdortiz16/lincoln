@@ -19,7 +19,7 @@
 //   y mañana; las librerías de npm para esto arrastran módulos de Node y
 //   fallan recién en producción, que es donde no se puede fallar.
 //
-// Secrets: SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY / SUPABASE_ANON_KEY
+// Secrets: SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY
 //          VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY / VAPID_SUBJECT (opcional)
 // ════════════════════════════════════════════════════════
 
@@ -27,7 +27,6 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-const ANON_KEY     = Deno.env.get('SUPABASE_ANON_KEY') ?? ''
 
 const VAPID_PUB  = (Deno.env.get('VAPID_PUBLIC_KEY') ?? '').trim()
 const VAPID_PRIV = (Deno.env.get('VAPID_PRIVATE_KEY') ?? '').trim()
@@ -44,8 +43,6 @@ const CORS = {
 }
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { ...CORS, 'Content-Type': 'application/json' } })
-
-const PROJECT_REF = (() => { try { return new URL(SUPABASE_URL).hostname.split('.')[0] } catch { return '' } })()
 
 // ─── Bytes y base64url ──────────────────────────────────
 const utf8 = (s: string) => new TextEncoder().encode(s)
@@ -191,27 +188,26 @@ async function avisar(subs: any[], aviso: Aviso): Promise<{ enviados: number; fa
 }
 
 // ─── Validacion del caller ──────────────────────────────
-// Mismo patrón que otc-mesa:
 //   0) service_role  → llamada interna
 //   a) JWT real de Supabase → identidad PROBADA; admin si users.role='admin'
-//   b) anon key + user_id existente → medio-auth, solo acciones propias
-function isProjectAnonKey(jwt: string): boolean {
-  if (ANON_KEY && jwt === ANON_KEY) return true
-  try {
-    const b64 = jwt.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')
-    const p = JSON.parse(atob(b64))
-    const ref = String(p.ref ?? '') || String(p.iss ?? '')
-    return p.role === 'anon' && (!PROJECT_REF || ref.includes(PROJECT_REF))
-  } catch { return false }
-}
-
+// Ya NO se acepta "llave anon + user_id": la llave anon es pública (va en el
+// bundle) y con ella cualquiera registraba SU aparato a nombre de otro
+// usuario y recibía sus avisos (nombres y documentos de autorizaciones,
+// alertas de la mesa a los admins).
 type Caller = { ok: boolean; userId?: string; admin?: boolean; interna?: boolean }
+
+function igualesTexto(a: string, b: string): boolean {
+  if (!a || a.length !== b.length) return false
+  let d = 0
+  for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i)
+  return d === 0
+}
 
 async function validCaller(req: Request, payload: Record<string, unknown>): Promise<Caller> {
   const jwt = (req.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '')
   if (!jwt) return { ok: false }
 
-  if (SERVICE_KEY && jwt === SERVICE_KEY) {
+  if (SERVICE_KEY && igualesTexto(jwt, SERVICE_KEY)) {
     return { ok: true, userId: String(payload.user_id ?? '') || undefined, admin: true, interna: true }
   }
 
@@ -219,13 +215,6 @@ async function validCaller(req: Request, payload: Record<string, unknown>): Prom
   if (data?.user) {
     const { data: prof } = await db.from('users').select('role').eq('id', data.user.id).maybeSingle()
     return { ok: true, userId: data.user.id, admin: String((prof as any)?.role ?? '') === 'admin' }
-  }
-
-  if (isProjectAnonKey(jwt)) {
-    const uid = String(payload.user_id ?? '')
-    if (!uid) return { ok: false }
-    const { data: u } = await db.from('users').select('id').eq('id', uid).maybeSingle()
-    if (u) return { ok: true, userId: uid }
   }
   return { ok: false }
 }
@@ -239,15 +228,16 @@ Deno.serve(async (req) => {
     const action = String(payload.action ?? '')
     if (!action) return json(400, { ok: false, error: 'falta action' })
 
-    const caller = await validCaller(req, payload)
-    if (!caller.ok) return json(401, { ok: false, error: 'unauthorized' })
-
     const configurado = !!(VAPID_PUB && VAPID_PRIV)
 
     // ── La clave pública que el navegador necesita para suscribirse ──
+    // Es pública por diseño: no hace falta sesión para pedirla.
     if (action === 'clave') {
       return json(200, { ok: true, configurado, clave: configurado ? VAPID_PUB : null })
     }
+
+    const caller = await validCaller(req, payload)
+    if (!caller.ok) return json(401, { ok: false, error: 'unauthorized' })
 
     if (!configurado) {
       // Se dice qué falta en vez de "no se pudo": sin esto, un push que nunca
@@ -340,6 +330,7 @@ Deno.serve(async (req) => {
 
     return json(400, { ok: false, error: `accion desconocida: ${action}` })
   } catch (e) {
-    return json(500, { ok: false, error: String((e as Error)?.message ?? e) })
+    console.error('[push]', (e as Error)?.message ?? e)
+    return json(500, { ok: false, error: 'No se pudo completar la operación.' })
   }
 })

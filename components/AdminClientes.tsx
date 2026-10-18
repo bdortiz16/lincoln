@@ -582,7 +582,7 @@ export const AdminClientes: React.FC<{
                       // es solo la ventana reciente del panel, no todo.
                       : histSel.error && !histSel.completo
                         ? `${movsDe(sel.id).length} movimientos · SOLO LOS RECIENTES (${histSel.error}) `
-                        : `${movsDe(sel.id).length} movimientos${histSel.completo ? ' · historial completo' : ''}`}
+                        : `${movsDe(sel.id).length} movimientos${histSel.completo ? ' · historial completo' : histSel.truncado ? ' · solo los 10.000 más recientes' : ''}`}
                     {!histSel.cargando && histSel.error && !histSel.completo && (
                       <button onClick={() => histSel.recargar?.()} style={{ fontFamily: FONT, fontSize: 12, fontWeight: 700, color: C.text, background: 'transparent', border: 'none', textDecoration: 'underline', cursor: 'pointer', padding: 0 }}>Reintentar</button>
                     )}
@@ -600,7 +600,7 @@ export const AdminClientes: React.FC<{
                 </div>
                 <Movimientos movs={movsDe(sel.id)} onSondear={sondear} sondeando={sondeando} />
               </>}
-              {tab === 'envios' && <EnviosPagos sel={sel} movs={movsDe(sel.id)} cargando={histSel.cargando} completo={histSel.completo} onSondear={sondear} sondeando={sondeando} />}
+              {tab === 'envios' && <EnviosPagos sel={sel} movs={movsDe(sel.id)} cargando={histSel.cargando} completo={histSel.completo} truncado={histSel.truncado} onSondear={sondear} sondeando={sondeando} />}
               {tab === 'kyc' && <Kyc sel={sel} verifyUser={verifyUser} refreshData={refreshData} showToast={showToast} verificado={verificado} />}
               {tab === 'brasil' && <CuentaBrasilCliente sel={sel} showToast={showToast} />}
               {tab === 'limites' && <Limites sel={sel} movs={movsDe(sel.id)} updateUserRawData={updateUserRawData} refreshData={refreshData} showToast={showToast} />}
@@ -1096,11 +1096,19 @@ const rielEnvio = (t: any): string => {
   if (cur === 'BRL') return 'Brasil';
   return cur || '—';
 };
+// La moneda de un envío que no es en pesos, agrupando las variantes del dólar.
+const monedaBase = (t: any): string => {
+  const cur = String(t.currency ?? '').toUpperCase();
+  return cur.startsWith('USD') ? 'USD' : cur.startsWith('EUR') ? 'EUR' : (cur || '—');
+};
 const destinoEnvio = (t: any) => {
   const r = t.recipient && typeof t.recipient === 'object' ? t.recipient : {};
   return {
     nombre: String(t.beneficiary ?? t.recipientName ?? r.holderName ?? r.name ?? (t.type === 'otc_withdraw' ? 'Billetera externa' : '') ?? '').trim() || '—',
-    doc: String(t.documentNumber ?? r.documentNumber ?? r.docNumber ?? '').trim(),
+    // El documento con que se controla el cupo (benefDoc, el inscrito o el
+    // de la llave) manda sobre el que traía el pedido, que en Bre-B suele
+    // venir vacío.
+    doc: String(t.benefDoc ?? t.documentNumber ?? r.documentNumber ?? r.docNumber ?? '').trim(),
     cuenta: String(t.account ?? t.accountNumber ?? r.accountNumber ?? r.key ?? t.address ?? '').trim(),
     // "Bre-B · Celular" → "Celular": el riel ya dice Bre-B.
     banco: String(t.bank ?? r.bankName ?? '').trim().replace(/^Bre-B\s*·\s*/i, ''),
@@ -1125,7 +1133,7 @@ const enPeriodo = (iso: unknown, p: string) => {
   return t >= Date.now() - 90 * 86400_000;
 };
 
-const EnviosPagos: React.FC<{ sel: any; movs: any[]; cargando: boolean; completo: boolean; onSondear?: (id: string) => void; sondeando?: string | null }> = ({ sel, movs, cargando, completo, onSondear, sondeando }) => {
+const EnviosPagos: React.FC<{ sel: any; movs: any[]; cargando: boolean; completo: boolean; truncado?: boolean; onSondear?: (id: string) => void; sondeando?: string | null }> = ({ sel, movs, cargando, completo, truncado, onSondear, sondeando }) => {
   const [periodo, setPeriodo] = useState<string>('todo');
   const [estado, setEstado] = useState<'todos' | 'ok' | 'curso' | 'mal'>('todos');
   const [q, setQ] = useState('');
@@ -1133,20 +1141,22 @@ const EnviosPagos: React.FC<{ sel: any; movs: any[]; cargando: boolean; completo
   const envios = useMemo(() => (movs ?? []).filter((t: any) => String(t.type) in TIPOS_ENVIO && enPeriodo(t.createdAt ?? t.created_at, periodo)), [movs, periodo]);
   const tonoDe = (t: any) => ENVIO_OK.includes(String(t.status)) ? 'ok' : ENVIO_MAL.includes(String(t.status)) ? 'mal' : 'curso';
   const k = useMemo(() => {
-    const r = { okN: 0, okCop: 0, okOtro: 0, cursoN: 0, cursoCop: 0, malN: 0, malCop: 0, devueltos: 0, comisiones: 0 };
+    const r = { okN: 0, okCop: 0, okOtro: {} as Record<string, number>, cursoN: 0, cursoCop: 0, malN: 0, malCop: 0, devueltos: 0, comisiones: 0 };
     for (const t of envios) {
       const v = Math.abs(Number(t.amount) || 0), cop = esCop(t), tn = tonoDe(t);
-      if (tn === 'ok') { r.okN++; if (cop) r.okCop += v; else r.okOtro += v; r.comisiones += Number(t.feeCop) || 0; }
+      // Lo que no es en pesos se suma POR MONEDA: antes todo salía como "USD",
+      // también los euros o los reales.
+      if (tn === 'ok') { r.okN++; if (cop) r.okCop += v; else { const mo = monedaBase(t); r.okOtro[mo] = (r.okOtro[mo] ?? 0) + v; } r.comisiones += Number(t.feeCop) || 0; }
       else if (tn === 'mal') { r.malN++; if (cop) r.malCop += v; if (t.refunded === true || t.reintegrado === true) r.devueltos++; }
       else { r.cursoN++; if (cop) r.cursoCop += v; }
     }
     return r;
   }, [envios]);
   const porRiel = useMemo(() => {
-    const m = new Map<string, { n: number; cop: number; otro: number }>();
+    const m = new Map<string, { n: number; cop: number; otro: number; mon: string }>();
     for (const t of envios) {
       if (tonoDe(t) !== 'ok') continue;
-      const kR = rielEnvio(t); const e = m.get(kR) ?? { n: 0, cop: 0, otro: 0 };
+      const kR = rielEnvio(t); const e = m.get(kR) ?? { n: 0, cop: 0, otro: 0, mon: monedaBase(t) };
       e.n++; if (esCop(t)) e.cop += Math.abs(Number(t.amount) || 0); else e.otro += Math.abs(Number(t.amount) || 0);
       m.set(kR, e);
     }
@@ -1156,7 +1166,9 @@ const EnviosPagos: React.FC<{ sel: any; movs: any[]; cargando: boolean; completo
     const m = new Map<string, { nombre: string; doc: string; n: number; cop: number }>();
     for (const t of envios) {
       if (tonoDe(t) !== 'ok' || !esCop(t)) continue;
-      const d = destinoEnvio(t); const kB = `${d.nombre}|${d.doc}`;
+      // Por documento cuando lo hay (la misma persona por llave Bre-B y por
+      // ACH es UNA); sin documento, por nombre.
+      const d = destinoEnvio(t); const kB = d.doc ? `doc:${d.doc.replace(/\D/g, '').replace(/^0+/, '')}` : `nombre:${d.nombre.toLowerCase()}`;
       const e = m.get(kB) ?? { nombre: d.nombre, doc: d.doc, n: 0, cop: 0 };
       e.n++; e.cop += Math.abs(Number(t.amount) || 0); m.set(kB, e);
     }
@@ -1202,9 +1214,9 @@ const EnviosPagos: React.FC<{ sel: any; movs: any[]; cargando: boolean; completo
         </button>
       </div>
       {cargando && <p style={{ fontSize: 12, color: C.sub, margin: 0 }}>Trayendo el historial completo…</p>}
-      {!cargando && !completo && <p style={{ fontSize: 12, color: C.red, margin: 0 }}>No llegó el historial completo: se ven SOLO los movimientos recientes. Reintentá desde Movimientos.</p>}
+      {!cargando && !completo && <p style={{ fontSize: 12, color: C.red, margin: 0 }}>{truncado ? 'El historial pasa del tope de 10.000 movimientos: se ven SOLO los más recientes y los totales no son de toda la historia.' : 'No llegó el historial completo: se ven SOLO los movimientos recientes. Reintentá desde Movimientos.'}</p>}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
-        {kpi('ENVIADO', `${money(k.okCop, 0)} COP`, `${k.okN} completado${k.okN === 1 ? '' : 's'}${k.okOtro ? ` · + ${money(k.okOtro)} en USD` : ''}`)}
+        {kpi('ENVIADO', `${money(k.okCop, 0)} COP`, `${k.okN} completado${k.okN === 1 ? '' : 's'}${Object.entries(k.okOtro).map(([mo, v]) => ` · + ${money(Number(v))} ${mo}`).join('')}`)}
         {kpi('EN PROCESO', String(k.cursoN), k.cursoN ? `${money(k.cursoCop, 0)} COP` : 'Nada pendiente')}
         {kpi('FALLIDOS O RECHAZADOS', String(k.malN), k.malN ? `${money(k.malCop, 0)} COP · ${k.devueltos} con saldo devuelto` : 'Ninguno', k.malN ? C.red : undefined)}
         {kpi('COMISIONES COBRADAS', `${money(k.comisiones, 0)} COP`, 'De los envíos completados')}
@@ -1215,7 +1227,7 @@ const EnviosPagos: React.FC<{ sel: any; movs: any[]; cargando: boolean; completo
           {porRiel.length === 0 ? <p style={{ fontSize: 12, color: C.sub, margin: '9px 0 0' }}>Sin envíos completados.</p> : porRiel.map(([r, e]) => (
             <div key={r} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginTop: 9, fontSize: 12.5 }}>
               <span style={{ color: C.text }}>{r} <span style={{ color: C.sub }}>· {e.n}</span></span>
-              <span style={{ fontWeight: 700 }}>{e.cop ? `${money(e.cop, 0)} COP` : `${money(e.otro)} USD`}</span>
+              <span style={{ fontWeight: 700 }}>{e.cop ? `${money(e.cop, 0)} COP` : `${money(e.otro)} ${e.mon}`}</span>
             </div>
           ))}
         </Tarjeta>

@@ -103,7 +103,11 @@ Deno.serve(async (req) => {
     if (accion === 'solicitar') {
       const codigo = String(body.codigoEmpresa ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '')
       if (codigo.length < 4) return json({ ok: false, error: 'Escribe el ID Lincoin de la empresa' }, 400)
-      const { data: emp } = await db.from('users').select('*').eq('role', 'business').eq('raw_data->>ownReferralCode', codigo).limit(1).maybeSingle()
+      // El código no es único en la base: si dos empresas lo comparten no se
+      // adivina a cuál pedirle acceso.
+      const { data: emps } = await db.from('users').select('*').eq('role', 'business').eq('raw_data->>ownReferralCode', codigo).limit(2)
+      if ((emps ?? []).length > 1) return json({ ok: false, error: 'Ese ID está repetido. Pídele a la empresa que se comunique con soporte.' }, 409)
+      const emp = (emps ?? [])[0]
       if (!emp) return json({ ok: false, error: 'No hay una empresa con ese ID. Pídele a la empresa que lo copie de su panel (Contabilidad → Contador).' }, 404)
       if (String(emp.id) === yo.id) return json({ ok: false, error: 'Ese es tu propio ID' }, 400)
 
@@ -126,13 +130,11 @@ Deno.serve(async (req) => {
         db.from('users').select('id, full_name, company_name, email').eq('role', 'business').contains('raw_data', { contadores: [{ id: yo.id }] }),
         db.from('users').select('id, full_name, company_name, email').eq('role', 'business').contains('raw_data', { contadoresSolicitudes: [{ id: yo.id }] }),
       ])
+      // Solo cuentan los accesos que la EMPRESA tiene aprobados en su lista.
+      // El esquema anterior confiaba en raw_data.contadorDe del propio
+      // contador, que él mismo puede editar: con apuntarlo a cualquier empresa
+      // veía toda su contabilidad.
       const aprobadas = (ap.data ?? []).map((e: any) => ({ id: String(e.id), nombre: nombreEmpresa(e) }))
-      // Accesos creados con el esquema anterior (cuenta con rol contador).
-      const legado = String(yo.raw.contadorDe ?? '')
-      if (yo.role === 'contador' && legado && !aprobadas.some(a => a.id === legado)) {
-        const emp = await empresaPorId(legado)
-        if (emp) aprobadas.push({ id: legado, nombre: nombreEmpresa(emp) })
-      }
       return json({ ok: true, aprobadas, pendientes: (pe.data ?? []).map((e: any) => ({ id: String(e.id), nombre: nombreEmpresa(e) })) })
     }
 
@@ -140,12 +142,13 @@ Deno.serve(async (req) => {
       let empresaId = String(body.empresaId ?? '')
       if (!empresaId) {
         const { data: ap } = await db.from('users').select('id').eq('role', 'business').contains('raw_data', { contadores: [{ id: yo.id }] }).limit(1)
-        empresaId = String(ap?.[0]?.id ?? (yo.role === 'contador' ? (yo.raw.contadorDe ?? '') : ''))
+        empresaId = String(ap?.[0]?.id ?? '')
       }
       if (!empresaId) return json({ ok: false, error: 'Todavía no tienes acceso aprobado a ninguna empresa.' }, 403)
       const emp = await empresaPorId(empresaId)
       if (!emp) return json({ ok: false, error: 'La empresa ya no existe' }, 404)
-      const aprobado = lista(emp.raw_data, 'contadores').some(c => c.id === yo.id) || (yo.role === 'contador' && String(yo.raw.contadorDe ?? '') === empresaId)
+      // La aprobación la da la lista de la empresa, no el perfil del contador.
+      const aprobado = lista(emp.raw_data, 'contadores').some(c => c.id === yo.id)
       if (!aprobado) return json({ ok: false, error: 'La empresa no ha aprobado tu acceso.' }, 403)
 
       // POR PÁGINAS: la API devuelve como mucho 1.000 filas por consulta. Con
@@ -227,6 +230,7 @@ Deno.serve(async (req) => {
 
     return json({ ok: false, error: `Acción desconocida: ${accion}` }, 400)
   } catch (e) {
-    return json({ ok: false, error: (e as Error)?.message ?? String(e) }, 500)
+    console.error('[contador]', (e as Error)?.message ?? e)
+    return json({ ok: false, error: 'No se pudo completar la operación. Intenta de nuevo.' }, 500)
   }
 })

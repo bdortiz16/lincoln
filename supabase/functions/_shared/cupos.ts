@@ -39,12 +39,30 @@ function dvNit(base: string): number {
   return r > 1 ? 11 - r : r
 }
 
-// El documento sin ceros a la izquierda y, si es un NIT con su dígito de
-// verificación pegado (10 dígitos, el último es el DV de los 9), sin el DV.
+// El documento sin ceros a la izquierda y, si es un NIT de empresa con su
+// dígito de verificación pegado (9 dígitos que empiezan por 8 o 9, más el DV),
+// sin el DV. Solo a esa forma: una cédula nueva también tiene 10 dígitos
+// (empieza por 1) y, una de cada once veces, su último dígito coincide con el
+// DV de los nueve primeros; cortarlo la confundía con otra persona.
 export function normDoc(v: unknown): string {
   let d = soloDig(v).replace(/^0+/, '')
-  if (d.length === 10 && dvNit(d.slice(0, 9)) === Number(d[9])) d = d.slice(0, 9)
+  if (d.length === 10 && /^[89]/.test(d) && dvNit(d.slice(0, 9)) === Number(d[9])) d = d.slice(0, 9)
   return d
+}
+
+// ¿Ese documento es el NIT de una EMPRESA? Los de personas jurídicas tienen 9
+// dígitos y empiezan por 8 o 9 (800…, 860…, 890…, 900…, 901…). Una cédula no
+// tiene esa forma: las nuevas son de 10 dígitos y empiezan por 1.
+export function esNitEmpresa(v: unknown): boolean {
+  return /^[89]\d{8}$/.test(normDoc(v))
+}
+
+// El tipo con que se controla el cupo (y el tope ACH). Que el beneficiario es
+// "empresa" lo dice su ficha, y la ficha la escribe el cliente: marcar a una
+// persona como empresa le daba el cupo de 800 M. Solo cuenta como empresa si
+// además el documento tiene forma de NIT de empresa.
+export function tipoCupo(declarado: unknown, doc: unknown): 'persona' | 'empresa' {
+  return declarado === 'empresa' && esNitEmpresa(doc) ? 'empresa' : 'persona'
 }
 
 // La cuenta o la llave: celulares sin +57 ni espacios, cuentas solo dígitos.
@@ -61,6 +79,19 @@ export function claveBeneficiario(doc: unknown, destino: unknown): string {
   if (d) return `doc:${d}`
   const x = normDestino(destino)
   return x ? `dest:${x}` : ''
+}
+
+// TODAS las claves con que se pudo haber pedido o aprobado el cupo de un
+// beneficiario: por su documento y por cada uno de sus destinos. La ficha sin
+// documento pide el aumento como `dest:<llave>`, y el envío puede conocer el
+// documento por el directorio Bre-B y buscar `doc:<doc>`: con una sola clave,
+// el aumento aprobado no se encontraba al enviar.
+export function clavesBeneficiario(doc: unknown, destinos: unknown[]): string[] {
+  const out = new Set<string>()
+  const d = normDoc(doc)
+  if (d) out.add(`doc:${d}`)
+  for (const x of destinos.map(normDestino)) if (x) out.add(`dest:${x}`)
+  return [...out]
 }
 
 // Primer instante del mes en Bogotá (UTC−5), en ISO.
@@ -93,7 +124,11 @@ export type EnvioMes = { id: string; amount: number; doc: string; destino: strin
 // están saliendo. Lo rechazado o devuelto no cuenta.
 export async function enviosDelMes(db: any, ids: string[], desde = inicioMesBogota()): Promise<EnvioMes[]> {
   const out: EnvioMes[] = []
-  for (let off = 0; off < 20000; off += 1000) {
+  const TOPE = 50000
+  for (let off = 0; ; off += 1000) {
+    // Sin poder leerlos todos, la cuenta saldría corta y el control dejaría
+    // pasar de más: se corta (quien llama falla cerrado).
+    if (off >= TOPE) throw new Error('Demasiados envíos en el mes para calcular el cupo')
     const { data, error } = await db.from('transactions')
       .select('id, amount, status, created_at, benefDoc:raw_data->>benefDoc, documentNumber:raw_data->>documentNumber, recDoc:raw_data->recipient->>documentNumber, account:raw_data->>account, recKey:raw_data->recipient->>key, recCuenta:raw_data->recipient->>accountNumber, refunded:raw_data->refunded')
       .in('user_id', ids).eq('type', 'dispersion').gte('created_at', desde)
@@ -121,19 +156,34 @@ export function usadoPara(envios: EnvioMes[], doc: unknown, destinos: unknown[])
   return s
 }
 
-export async function cupoAprobado(db: any, userId: string, clave: string): Promise<number | null> {
-  if (!clave) return null
+// El cupo aprobado por Cumplimiento para ese beneficiario: el mayor entre
+// todas sus claves y todas las cuentas de la misma persona (el uso se suma por
+// persona; la aprobación también tiene que valer por persona).
+export async function cupoAprobado(db: any, userIds: string | string[], claves: string | string[]): Promise<number | null> {
+  const ids = (Array.isArray(userIds) ? userIds : [userIds]).filter(Boolean)
+  const ks = (Array.isArray(claves) ? claves : [claves]).filter(Boolean)
+  if (!ids.length || !ks.length) return null
   try {
-    const { data } = await db.from('cupos_beneficiario').select('cupo_mensual').eq('user_id', userId).eq('beneficiario_clave', clave).maybeSingle()
-    const n = Number((data as any)?.cupo_mensual)
-    return Number.isFinite(n) && n > 0 ? n : null
+    const { data } = await db.from('cupos_beneficiario').select('cupo_mensual').in('user_id', ids).in('beneficiario_clave', ks)
+    let max: number | null = null
+    for (const r of (data ?? []) as any[]) { const n = Number(r.cupo_mensual); if (Number.isFinite(n) && n > 0 && (max == null || n > max)) max = n }
+    return max
   } catch { return null }
 }
 
-export async function solicitudEnProceso(db: any, userId: string, clave: string): Promise<boolean> {
-  if (!clave) return false
+// El cupo que rige: el aprobado nunca BAJA el general (un "aumento" menor al
+// cupo general, o un general que luego sube, no puede dejar al beneficiario
+// por debajo de todos los demás).
+export function cupoVigente(aprobado: number | null, general: number): number {
+  return aprobado != null && aprobado > general ? aprobado : general
+}
+
+export async function solicitudEnProceso(db: any, userIds: string | string[], claves: string | string[]): Promise<boolean> {
+  const ids = (Array.isArray(userIds) ? userIds : [userIds]).filter(Boolean)
+  const ks = (Array.isArray(claves) ? claves : [claves]).filter(Boolean)
+  if (!ids.length || !ks.length) return false
   try {
-    const { data } = await db.from('cupo_solicitudes').select('id').eq('user_id', userId).eq('beneficiario_clave', clave).eq('estado', 'en_proceso').limit(1)
+    const { data } = await db.from('cupo_solicitudes').select('id').in('user_id', ids).in('beneficiario_clave', ks).eq('estado', 'en_proceso').limit(1)
     return Array.isArray(data) && data.length > 0
   } catch { return false }
 }

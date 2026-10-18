@@ -26,6 +26,13 @@ async function loadFooterNote(): Promise<void> {
 const escNote = (s: string) => s
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/\n/g, '<br/>')
+// Todo dato que entra a un correo (nombre, beneficiario, banco, cuenta…) se
+// escapa: varios los escribe el propio cliente (su nombre, el de su
+// beneficiario). Sin escapar, un nombre con HTML viajaba como enlace o
+// formulario dentro de un correo legítimo de no-reply@lincoin.me.
+const esc = (v: unknown) => String(v ?? '')
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
 const footerNoteHtml = () => FOOTER_NOTE.trim()
   ? `<div style="margin:24px 0 0 0;padding:14px 16px;background-color:#F8FAFC;border:1px solid #e2e8f0;border-radius:10px">
       <p style="margin:0;font-size:11px;color:#64748b;line-height:1.7">${escNote(FOOTER_NOTE.trim())}</p>
@@ -119,14 +126,14 @@ function buildSubjectCompleted(tx: TxRecord): string {
 }
 
 function buildMessageCompleted(tx: TxRecord, name: string): string {
-  const greet = `Hola <strong style="color:${BRAND_NAVY}">${name}</strong>,`
+  const greet = `Hola <strong style="color:${BRAND_NAVY}">${esc(name)}</strong>,`
   const ov = (TPL[`${tplKeyOf(tx.type)}_done`] ?? {}) as any
   if (ov.message) return escNote(applyVars(String(ov.message), { nombre: name, monto: fmt(tx.amount, tx.currency) }))
   if (tx.type === 'send' || tx.type === 'otc_withdraw')
     return `${greet} tu retiro se <strong>completó</strong> y el dinero ya fue enviado al destino.`
   if (tx.type === 'dispersion') {
     const ben = tx.raw_data?.beneficiary
-    return `${greet} tu envío${ben ? ` a <strong>${ben}</strong>` : ''} llegó a destino. El banco confirmó la acreditación.`
+    return `${greet} tu envío${ben ? ` a <strong>${esc(ben)}</strong>` : ''} llegó a destino. El banco confirmó la acreditación.`
   }
   if (tx.type === 'load' || tx.type === 'otc_deposit')
     return `${greet} tu depósito fue <strong>acreditado</strong> a tu saldo.`
@@ -168,7 +175,7 @@ function txStatusText(type: string): string {
 function buildMessage(tx: TxRecord, name: string): string {
   const from = tx.raw_data?.senderName || 'un usuario Lincoin'
   const to   = tx.raw_data?.recipientName || 'un usuario Lincoin'
-  const greet = `Hola <strong style="color:${BRAND_NAVY}">${name}</strong>,`
+  const greet = `Hola <strong style="color:${BRAND_NAVY}">${esc(name)}</strong>,`
 
   // Override editable desde el panel (Soporte → Formato de correos)
   const ov = (TPL[tplKeyOf(tx.type)] ?? {}) as any
@@ -179,38 +186,39 @@ function buildMessage(tx: TxRecord, name: string): string {
   }
 
   if (tx.type === 'pay_received')
-    return `${greet} <strong>${from}</strong> te envió dinero. El monto ya está disponible en tu saldo.`
+    return `${greet} <strong>${esc(from)}</strong> te envió dinero. El monto ya está disponible en tu saldo.`
   if (tx.type === 'pay_sent')
-    return `${greet} tu transferencia a <strong>${to}</strong> fue procesada exitosamente.`
+    return `${greet} tu transferencia a <strong>${esc(to)}</strong> fue procesada exitosamente.`
   if (tx.type === 'load')
     return `${greet} recibimos tu solicitud de depósito y la estamos <strong>revisando</strong>. Te avisamos cuando se acredite.`
   if (tx.type === 'send')
     return `${greet} estamos <strong>procesando</strong> tu solicitud de retiro. Te avisamos cuando se complete.`
   if (tx.type === 'dispersion') {
     const ben = tx.raw_data?.beneficiary
-    return `${greet} estamos <strong>procesando</strong> tu envío${ben ? ` a <strong>${ben}</strong>` : ''}. Te avisamos apenas el banco confirme la acreditación.`
+    return `${greet} estamos <strong>procesando</strong> tu envío${ben ? ` a <strong>${esc(ben)}</strong>` : ''}. Te avisamos apenas el banco confirme la acreditación.`
   }
   if (tx.type === 'otc_deposit') {
     const net = networkLabel(tx.currency, tx.raw_data)
-    return `${greet} detectamos tu depósito en la red <strong>${net}</strong> y se acreditó automáticamente en tu wallet OTC.`
+    return `${greet} detectamos tu depósito en la red <strong>${esc(net)}</strong> y se acreditó automáticamente en tu wallet OTC.`
   }
   if (tx.type === 'otc_withdraw') {
     const net = networkLabel(tx.currency, tx.raw_data)
-    const addr = tx.raw_data?.toAddress ?? tx.raw_data?.address ?? ''
-    return `${greet} tu retiro en la red <strong>${net}</strong> fue enviado a la blockchain.${addr ? ` Dirección: <code style="font-size:11px">${addr.slice(0,12)}…${addr.slice(-8)}</code>` : ''}`
+    const addr = String(tx.raw_data?.toAddress ?? tx.raw_data?.address ?? '')
+    return `${greet} tu retiro en la red <strong>${esc(net)}</strong> fue enviado a la blockchain.${addr ? ` Dirección: <code style="font-size:11px">${esc(addr.slice(0,12))}…${esc(addr.slice(-8))}</code>` : ''}`
   }
   if (tx.type === 'convert' || tx.type === 'tx_created') {
     const dest = tx.raw_data?.destCurrency ?? tx.raw_data?.to_currency
-    if (dest) return `${greet} tu conversión a <strong>${dest}</strong> se completó. Ya está reflejada en tu saldo.`
+    if (dest) return `${greet} tu conversión a <strong>${esc(dest)}</strong> se completó. Ya está reflejada en tu saldo.`
     return `${greet} recibimos tu operación y ya está confirmada.`
   }
   return `${greet} registramos un movimiento en tu cuenta.`
 }
 
+// Etiqueta y valor van como TEXTO: se escapan acá, para todas las filas.
 function detailRow(label: string, value: string): string {
   return `<tr>
-    <td style="font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;padding:10px 0 0 0;vertical-align:top;width:40%">${label}</td>
-    <td style="font-size:14px;font-weight:600;color:${BRAND_NAVY};padding:10px 0 0 0;vertical-align:top">${value}</td>
+    <td style="font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;padding:10px 0 0 0;vertical-align:top;width:40%">${esc(label)}</td>
+    <td style="font-size:14px;font-weight:600;color:${BRAND_NAVY};padding:10px 0 0 0;vertical-align:top">${esc(value)}</td>
   </tr>`
 }
 
@@ -223,7 +231,7 @@ function buildDetailRows(tx: TxRecord, completed = false): string {
 
   if (tx.type === 'otc_deposit' || tx.type === 'otc_withdraw') {
     rows.push(detailRow('Red', networkLabel(tx.currency, tx.raw_data)))
-    const txId = tx.raw_data?.txId
+    const txId = tx.raw_data?.txId ? String(tx.raw_data.txId) : ''
     if (txId) rows.push(detailRow('TxID', `${txId.slice(0, 14)}…${txId.slice(-8)}`))
   }
 
@@ -302,7 +310,7 @@ function htmlEmail(tx: TxRecord, name: string, subject: string, completed = fals
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <meta name="color-scheme" content="light only">
 <meta name="supported-color-schemes" content="light only">
-<title>${subject}</title>
+<title>${esc(subject)}</title>
 </head>
 <body style="margin:0;padding:0;background-color:${BRAND_LIGHT};font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
 
@@ -327,7 +335,7 @@ function htmlEmail(tx: TxRecord, name: string, subject: string, completed = fals
 
         <!-- Tipo + monto hero -->
         <p style="margin:0 0 6px 0;font-size:11px;font-weight:700;color:${ACCENT};text-transform:uppercase;letter-spacing:1.5px">${label}</p>
-        <p style="margin:0 0 8px 0;font-size:42px;font-weight:800;color:${BRAND_NAVY};letter-spacing:-1.8px;line-height:1">${amount}</p>
+        <p style="margin:0 0 8px 0;font-size:42px;font-weight:800;color:${BRAND_NAVY};letter-spacing:-1.8px;line-height:1">${esc(amount)}</p>
 
         <!-- Divider -->
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:24px 0">
@@ -405,7 +413,7 @@ function htmlEmail(tx: TxRecord, name: string, subject: string, completed = fals
 function customHtmlEmail(title: string, message: string, subject: string): string {
   return `<!DOCTYPE html><html lang="es"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<meta name="color-scheme" content="light only"><title>${subject}</title></head>
+<meta name="color-scheme" content="light only"><title>${esc(subject)}</title></head>
 <body style="margin:0;padding:0;background-color:${BRAND_LIGHT};font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
 <table width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="${BRAND_LIGHT}"><tr><td align="center" style="padding:40px 16px 48px">
   <table width="560" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;width:100%;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(15,23,42,0.08)">
@@ -588,7 +596,7 @@ Deno.serve(async (req) => {
       const noun = isSend ? 'envío' : 'operación'
       const ben = tx.raw_data?.beneficiary
       subject = `Lincoin · No pudimos completar tu ${noun} de ${a}`
-      const msg = `Hola <strong style="color:${BRAND_NAVY}">${name}</strong>, no pudimos completar tu ${noun}${ben ? ` a <strong>${ben}</strong>` : ''} por <strong>${a}</strong>. <strong>Tu saldo fue devuelto</strong> y puedes intentarlo de nuevo en unos minutos. Si el problema persiste, escríbenos.`
+      const msg = `Hola <strong style="color:${BRAND_NAVY}">${esc(name)}</strong>, no pudimos completar tu ${noun}${ben ? ` a <strong>${esc(ben)}</strong>` : ''} por <strong>${esc(a)}</strong>. <strong>Tu saldo fue devuelto</strong> y puedes intentarlo de nuevo en unos minutos. Si el problema persiste, escríbenos.`
       html = customHtmlEmail(`No pudimos completar tu ${noun}`, msg, subject)
     } else {
       subject = completed ? buildSubjectCompleted(tx) : buildSubject(tx)

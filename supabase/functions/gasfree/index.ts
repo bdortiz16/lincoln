@@ -30,6 +30,15 @@ import { ethers } from 'https://esm.sh/ethers@6.13.5'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+
+// Comparación de secretos en tiempo constante: con === el tiempo de respuesta
+// delataba cuántos caracteres del inicio coincidían.
+function igualSeguro(a: string, b: string): boolean {
+  const x = new TextEncoder().encode(String(a ?? '')), y = new TextEncoder().encode(String(b ?? ''))
+  let d = x.length ^ y.length
+  for (let i = 0; i < Math.max(x.length, y.length); i++) d |= (x[i] ?? 0) ^ (y[i] ?? 0)
+  return d === 0
+}
 const db = createClient(SUPABASE_URL, SERVICE_KEY)
 
 // Cifrado de campos sensibles: la implementación vive en _shared para que
@@ -845,6 +854,40 @@ async function correoVerificado(userId: string): Promise<string | null> {
     return e
   } catch { return null }
 }
+// Las filas de users de la MISMA persona: las que comparten el correo
+// VERIFICADO (Auth). public.users.email lo edita el propio usuario: con poner
+// el correo de otro cliente pasaba por "hermano" suyo y veía sus movimientos,
+// archivaba o reasignaba su billetera y firmaba envíos con su llave.
+async function filasHermanas(userId: string, campos = 'id, email, raw_data'): Promise<any[]> {
+  const { data: yo } = await db.from('users').select(campos).eq('id', userId).maybeSingle()
+  const email = await correoVerificado(userId)
+  if (!email) return yo ? [yo] : []
+  const { data: sibs } = await db.from('users').select(campos).ilike('email', email.replace(/[%_\\]/g, '\\$&'))
+  const out: any[] = yo ? [yo] : []
+  for (const r of (sibs ?? []) as any[]) {
+    if (String(r.id) === String(userId)) continue
+    if ((await correoVerificado(String(r.id))) === email) out.push(r)
+  }
+  return out
+}
+
+// ¿Esa sub-wallet es de quien la usa? El índice vive en raw_data.subWallets,
+// que una cuenta nueva podía traer escrito al registrarse con el índice de la
+// wallet de otro cliente. Las sub-wallets quedan registradas a su dueño en el
+// almacén del servidor; las anteriores al registro se aceptan solo si ninguna
+// otra cuenta las tiene y no son la principal de nadie (y quedan registradas).
+const subKey = (index: number) => `gasfree_sub:${index}`
+async function subWalletEsMia(userId: string, index: number): Promise<boolean> {
+  if (!Number.isFinite(index)) return false
+  const { data } = await db.from('system_config').select('value').eq('key', subKey(index)).maybeSingle()
+  if ((data as any)?.value) return String((data as any).value) === String(userId)
+  if (await indiceDeOtro(userId, index)) return false
+  const { data: otros } = await db.from('users').select('id').contains('raw_data', { subWallets: [{ index }] }).neq('id', userId).limit(1)
+  if (otros && otros.length) return false
+  try { await saveSystemConfig(subKey(index), String(userId)) } catch { /* se vuelve a intentar en el próximo envío */ }
+  return true
+}
+
 // ¿Ese índice ya es la billetera de OTRA persona? (almacén durable por id)
 async function indiceDeOtro(userId: string, idx: number): Promise<boolean> {
   try {
@@ -1031,11 +1074,9 @@ async function auditIndexes() {
 async function resetUserIndex(userId: string, source = 'admin_reset') {
   const { data: primary } = await db.from('users').select('id, email, raw_data').eq('id', userId).maybeSingle()
   if (!primary) throw new Error('Usuario no encontrado')
-  let rows: any[] = [primary]
-  if (primary.email) {
-    const { data: sibs } = await db.from('users').select('id, email, raw_data').eq('email', primary.email)
-    if (Array.isArray(sibs) && sibs.length) rows = sibs
-  }
+  // Hermanos por correo VERIFICADO (no por public.users.email, que es editable).
+  const rows: any[] = await filasHermanas(userId)
+  if (!rows.length) rows.push(primary)
   const oldIndex = (primary.raw_data ?? {})?.gasfreeIndex ?? null
   const next = await allocNextIndex()
   const [oldAddress, newAddress] = await Promise.all([addressForIndex(oldIndex), addressForIndex(next)])
@@ -1071,8 +1112,7 @@ async function resetUserIndex(userId: string, source = 'admin_reset') {
 // Devuelve la wallet ACTUAL (principal) y las ANTERIORES (archivadas),
 // reconstruidas del log de cambios. Solo lo del propio usuario.
 async function myWalletArchive(userId: string) {
-  const { data: primary } = await db.from('users').select('id, email').eq('id', userId).maybeSingle()
-  const email = primary?.email ?? null
+  const email = await correoVerificado(userId)
   const idx = await userIndex(userId)
   const currentAddress = await addressForIndex(idx)
   // Todas las entradas del log de este usuario (por userId o por correo).
@@ -1114,16 +1154,16 @@ async function myWalletArchive(userId: string) {
   // de sesiones half-auth) y los gasfreeIndex/HdIndex guardados en filas
   // hermanas del mismo correo. Así aparecen wallets viejas que el log no tenía.
   try {
-    const { data: sibs } = email
-      ? await db.from('users').select('id, raw_data').eq('email', email)
-      : { data: [{ id: userId, raw_data: (primary as any)?.raw_data }] as any[] }
+    const sibs = await filasHermanas(userId, 'id, raw_data')
     const extraIdx = new Set<number>()
     extraIdx.add(deterministicIndex(String(userId)))
-    for (const s of ((sibs as any[]) ?? [])) {
+    for (const s of sibs) {
       extraIdx.add(deterministicIndex(String(s.id)))
       const raw = (s.raw_data ?? {}) as Record<string, any>
       for (const k of ['gasfreeIndex', 'gasfreeHdIndex']) {
-        if (typeof raw[k] === 'number') extraIdx.add(raw[k])
+        // raw_data lo escribe el cliente: un índice que ya es de otra persona
+        // no se muestra como suyo.
+        if (typeof raw[k] === 'number' && !(await indiceDeOtro(String(s.id), raw[k]))) extraIdx.add(raw[k])
       }
     }
     for (const ix of extraIdx) {
@@ -1158,20 +1198,17 @@ async function myWalletArchive(userId: string) {
 async function userOwnsIndex(userId: string, index: number): Promise<boolean> {
   if (!Number.isFinite(index)) return false
   if ((await userIndex(userId)) === index) return true
-  const { data: primary } = await db.from('users').select('id, email').eq('id', userId).maybeSingle()
-  const email = primary?.email ?? null
-  const e = String(email ?? '').toLowerCase()
+  // El correo que cuenta es el VERIFICADO (Auth), no public.users.email.
+  const e = String((await correoVerificado(userId)) ?? '').toLowerCase()
   // Índices deterministas propios y de filas hermanas + los guardados en ellas
-  // (los mismos que myWalletArchive puede DETECTAR sin log).
+  // (los mismos que myWalletArchive puede DETECTAR sin log). Un índice escrito
+  // en raw_data que ya es la billetera de otra persona NO cuenta.
   if (deterministicIndex(String(userId)) === index) return true
   try {
-    const { data: sibs } = email
-      ? await db.from('users').select('id, raw_data').eq('email', email)
-      : { data: [] as any[] }
-    for (const s of ((sibs as any[]) ?? [])) {
+    for (const s of await filasHermanas(userId, 'id, raw_data')) {
       if (deterministicIndex(String(s.id)) === index) return true
       const raw = (s.raw_data ?? {}) as Record<string, any>
-      if (raw.gasfreeIndex === index || raw.gasfreeHdIndex === index) return true
+      if ((raw.gasfreeIndex === index || raw.gasfreeHdIndex === index) && !(await indiceDeOtro(String(s.id), index))) return true
     }
   } catch { /* seguimos con el log */ }
   const { data } = await db.from('system_config').select('value').eq('key', WALLET_LOG_KEY).single()
@@ -1305,11 +1342,9 @@ async function pinAddressToUser(userId: string, address: string) {
 
   const { data: primary } = await db.from('users').select('id, email, raw_data').eq('id', userId).maybeSingle()
   if (!primary) throw new Error('Usuario no encontrado')
-  let rows: any[] = [primary]
-  if (primary.email) {
-    const { data: sibs } = await db.from('users').select('id, email, raw_data').eq('email', primary.email)
-    if (Array.isArray(sibs) && sibs.length) rows = sibs
-  }
+  // Hermanos por correo VERIFICADO (no por public.users.email, que es editable).
+  const rows: any[] = await filasHermanas(userId)
+  if (!rows.length) rows.push(primary)
 
   type Match = { index: number; eoa: string; gasFreeAddress: string | null; mnemonic: string; balanceUsdt?: number }
   let match: Match | null = null
@@ -1513,13 +1548,22 @@ async function sendCore(signerPkHex: string, fromEoaB58: string, toB58: string, 
   }
   const wallet = new ethers.Wallet(signerPkHex.startsWith('0x') ? signerPkHex : '0x' + signerPkHex)
   const sig = (await wallet.signTypedData(domain, types, msg)).replace(/^0x/, '')
-  const submit = await gfPost('/api/v1/gasfree/submit', {
-    requestId: crypto.randomUUID(),
-    token: token.tokenAddress, serviceProvider: provider.address,
-    user: fromEoaB58, receiver: toB58,
-    value: Number(value), maxFee: Number(maxFee),
-    deadline, version: 1, nonce: acct.nonce, sig,
-  })
+  let submit: any
+  try {
+    submit = await gfPost('/api/v1/gasfree/submit', {
+      requestId: crypto.randomUUID(),
+      token: token.tokenAddress, serviceProvider: provider.address,
+      user: fromEoaB58, receiver: toB58,
+      value: Number(value), maxFee: Number(maxFee),
+      deadline, version: 1, nonce: acct.nonce, sig,
+    })
+  } catch (e) {
+    // Se cayó el envío al relay: NO se sabe si la transferencia quedó
+    // registrada. Quien llama no debe devolver saldo como si no hubiera salido.
+    const x: any = e instanceof Error ? e : new Error(String(e))
+    x.desenlaceDesconocido = true
+    throw x
+  }
   if (submit?.code !== 200) throw new Error(`GasFree rechazó (${submit?.reason ?? submit?.code}): ${submit?.message ?? JSON.stringify(submit).slice(0, 200)}`)
   // La comisión REAL que GasFree va a cobrar (puede ser menor al maxFee
   // límite) viene en la respuesta del submit — es la que hay que mostrarle
@@ -1672,19 +1716,50 @@ async function candadoEnvioUsdt(userId: string, idemKeyCrudo: unknown, origen: s
     [`usdt:${userId}:${origen}:${String(toAddress).trim()}:${Number(amount)}`, 120],
   ]
   for (const [clave, ttl] of claves) {
-    if (await reclamarCandado(db, clave, ttl, userId, origen) === 'ocupado') {
+    const r = await reclamarCandado(db, clave, ttl, userId, origen)
+    if (r === 'ocupado') {
       return 'Ya hay un envío igual en curso. No lo repitas: revisa tus Movimientos y espera un par de minutos.'
     }
+    if (r === 'error') return 'No pudimos asegurar tu envío en este momento. No se movió nada; intenta de nuevo en un minuto.'
   }
   return null
 }
 
+// La comisión MÁXIMA de red que puede cobrar un envío desde esa wallet (la
+// real puede ser menor; la diferencia se devuelve después).
+async function cuotaMaxRed(eoa: string): Promise<number> {
+  const { token } = await gfConfig()
+  const acct = await gfAccount(eoa)
+  const dec = Number(token.decimal ?? 6)
+  return (Number(token.transferFee ?? 0) + (acct.active ? 0 : Number(token.activateFee ?? 0))) / Math.pow(10, dec)
+}
+
+// Envío on-chain desde la wallet PRINCIPAL con su espejo en dólares: primero
+// se acreditan los depósitos pendientes, luego se debita monto + comisión
+// máxima (tiene que alcanzar) y se envía. Si el relay rechazó, se devuelve
+// todo; si el desenlace es desconocido, no (quedaría para revisión).
+async function enviarDesdePrincipal(userId: string, pkHex: string, eoa: string, toAddress: string, amount: number) {
+  try { await myVerifyDeposit(userId) } catch { /* el débito de abajo exige que alcance */ }
+  const total = parseFloat((amount + await cuotaMaxRed(eoa)).toFixed(6))
+  await debitarEspejoUsd(userId, total)
+  let r: any
+  try { r = await sendCore(pkHex, eoa, toAddress, amount) }
+  catch (e) {
+    if (!(e as any)?.desenlaceDesconocido) await creditBalanceAtomic(userId, 'USD', total).catch(() => {})
+    throw e
+  }
+  const sobra = parseFloat((total - amount - Number(r.feeChargedUsdt ?? 0)).toFixed(6))
+  if (sobra > 0) await creditBalanceAtomic(userId, 'USD', sobra).catch(() => {})
+  return r
+}
+
 async function mySend(userId: string, toAddress: string, amount: number) {
+  if (!(amount > 0)) throw new Error('Monto inválido')
   const { data: u } = await db.from('users').select('email').eq('id', userId).single()
   if (!u) throw new Error('Usuario no encontrado')
   const index = await userIndex(userId)
   const { pkHex, eoa } = await userWallet(index)
-  const r = await sendCore(pkHex, eoa, toAddress, amount)
+  const r = await enviarDesdePrincipal(userId, pkHex, eoa, toAddress, amount)
   await db.from('transactions').insert({
     user_id: userId, type: 'send', amount, currency: 'USDT_TRON', status: 'Completado',
     raw_data: {
@@ -1757,6 +1832,7 @@ async function myWalletCreate(userId: string, name: string) {
   }
   subs.push(w)
   await mergeUserRaw(userId, { subWallets: subs })
+  await saveSystemConfig(subKey(index), String(userId))
   return { ok: true, wallet: { ...w, balance: 0 } }
 }
 async function myWalletUpdate(userId: string, id: string, patch: { name?: string; archived?: boolean; order?: number }) {
@@ -1792,9 +1868,19 @@ async function myWalletSend(userId: string, id: string, toAddress: string, amoun
   // 'principal' → índice del OTC; si no, la sub-wallet por id.
   let index: number, walletName: string
   if (id === 'principal') { index = await userIndex(userId); walletName = 'Wallet principal (OTC)' }
-  else { const w = subs.find((x) => x.id === id); if (!w) throw new Error('Wallet no encontrada'); index = w.index; walletName = w.name }
+  else {
+    const w = subs.find((x) => x.id === id); if (!w) throw new Error('Wallet no encontrada')
+    // El índice sale de raw_data: tiene que ser una sub-wallet registrada a
+    // este usuario (no la de otro cliente escrita en su perfil).
+    if (!(await subWalletEsMia(userId, Number(w.index)))) throw new Error('Esa wallet necesita verificación del equipo antes de enviar. Escríbenos a soporte.')
+    index = Number(w.index); walletName = w.name
+  }
   const { pkHex, eoa } = await userWallet(index)
-  const r = await sendCore(pkHex, eoa, String(toAddress), amount)
+  // La principal es el espejo del saldo en dólares; las sub-wallets no (sus
+  // depósitos no se acreditan al saldo USD).
+  const r = id === 'principal'
+    ? await enviarDesdePrincipal(userId, pkHex, eoa, String(toAddress), amount)
+    : await sendCore(pkHex, eoa, String(toAddress), amount)
   await db.from('transactions').insert({
     user_id: userId, type: 'send', amount, currency: 'USDT_TRON', status: 'Completado',
     raw_data: {
@@ -1836,30 +1922,11 @@ async function myConvertSettle(
   const dec = Number(token.decimal ?? 6)
   const bal = await tokenBalance(acct.gasFreeAddress, token.tokenAddress, dec)
 
-  // Registrar la ENTRADA de USDT si llegó un depósito que aún NO se había
-  // contabilizado. Si el cliente convierte sin abrir antes la billetera
-  // (que es lo que dispara my_status/myVerifyDeposit), el depósito se
-  // consumía en la conversión sin dejar su movimiento de "llegada" — y al
-  // resetear gasfreeCredited más abajo, ya nunca se registraba. Aquí se
-  // deja el 'load' correspondiente antes de convertir.
-  {
-    const rawPre = (u.raw_data ?? {}) as Record<string, any>
-    const prevCredited: number = typeof rawPre.gasfreeCredited === 'number' ? rawPre.gasfreeCredited : 0
-    const incoming = parseFloat((bal - prevCredited).toFixed(dec))
-    if (incoming > 0.0001) {
-      const inc = await latestIncomingTrc20(acct.gasFreeAddress, token.tokenAddress, dec, incoming)
-      await db.from('transactions').insert({
-        user_id: userId, type: 'load', amount: incoming, currency: 'USD', status: 'Completado',
-        raw_data: {
-          initials: '₮', title: 'Depósito USDT (GasFree · TRC-20)', createdAt: new Date().toISOString(),
-          userName: u.email, source: 'GASFREE',
-          network: 'TRON (TRC-20)',
-          toAddress: acct.gasFreeAddress,
-          ...(inc ? { fromAddress: inc.from, txId: inc.txId } : {}),
-        },
-      })
-    }
-  }
+  // Acreditar ANTES los depósitos que aún no se habían contabilizado (cada
+  // uno con su movimiento de llegada). Antes se dejaba el movimiento pero NO
+  // se acreditaba el USD ni se marcaba el depósito: si el cliente verificaba
+  // DESPUÉS de convertir, el mismo USDT se le acreditaba otra vez en dólares.
+  try { await myVerifyDeposit(userId) } catch { /* el débito de abajo exige que el saldo alcance */ }
 
   const fee = (Number(token.transferFee ?? 0) + (acct.active ? 0 : Number(token.activateFee ?? 0))) / Math.pow(10, dec)
   // El receptor (tesorería) recibe `value`; la cuenta del cliente se debita
@@ -1868,32 +1935,23 @@ async function myConvertSettle(
   // acreditado (que se calculó sobre ese mismo neto).
   const value = parseFloat((Math.min(grossUsd, bal) - fee).toFixed(dec))
   if (value <= 0) throw new Error(`Saldo GasFree insuficiente (tienes ${bal} USDT, comisión ${fee})`)
+  // Lo que sale de la wallet del cliente (monto + comisión de red). El saldo
+  // en dólares es el espejo de ese USDT: se debita ANTES de enviar y tiene que
+  // alcanzar. Antes se debitaba después y "hasta donde alcanzara" (mín. con el
+  // saldo): el mismo depósito podía convertirse por dentro (saldo USD) y además
+  // barrerse on-chain y convertirse otra vez.
+  const grossSwept = parseFloat((value + fee).toFixed(dec))
+  await debitarEspejoUsd(userId, grossSwept)
   const rec = await recaudadora()
   const recAcct = await gfAccount(rec.eoa)
   const dest = recAcct.gasFreeAddress ?? rec.eoa
-  const r = await sendCore(pkHex, eoa, dest, value)  // hop 1: cliente → tesorería
+  let r: any
+  try { r = await sendCore(pkHex, eoa, dest, value) }  // hop 1: cliente → tesorería
+  catch (e) { if (!(e as any)?.desenlaceDesconocido) await creditBalanceAtomic(userId, 'USD', grossSwept).catch(() => {}); throw e }
 
-  // El USDT del cliente YA salió de su wallet: se debita su USD y se reajusta
-  // gasfreeCredited. El COP NO se acredita todavía — solo cuando Mouv confirme
-  // (modelo SIN CAJA: no adelantamos COP hasta que el USDT llegue al proveedor).
-  // Re-leer saldo y raw_data frescos. El débito del USD va por adjust_balances
-  // (ATÓMICO, solo la columna USD) — antes se sobre-escribía `balances` entero
-  // desde una lectura obsoleta y pisaba los rieles COP u otra operación USD
-  // concurrente. Se debita lo convertido, acotado al disponible (nunca negativo,
-  // preservando el max(0,…) anterior).
-  const { data: freshCS } = await db.from('users').select('balances, raw_data').eq('id', userId).maybeSingle()
-  const raw = (freshCS?.raw_data ?? u.raw_data ?? {}) as Record<string, any>
-  const curUsd = Number(((freshCS?.balances as any)?.USD) ?? (u.balances as any)?.USD ?? 0)
-  const debitUsd = Math.min(grossUsd, Math.max(0, curUsd))
-  if (debitUsd > 0) {
-    const { error: dErr } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { USD: -debitUsd } })
-    if (dErr) {
-      // Fallback si la RPC no está desplegada (solo la columna USD, floor en 0).
-      const { data: uu } = await db.from('users').select('balances').eq('id', userId).maybeSingle()
-      const b = (uu?.balances as Record<string, number>) ?? {}
-      await db.from('users').update({ balances: { ...b, USD: Math.max(0, parseFloat((Number(b.USD ?? 0) - debitUsd).toFixed(2))) } }).eq('id', userId)
-    }
-  }
+  // El USDT del cliente YA salió de su wallet (el USD se debitó arriba). El
+  // COP NO se acredita todavía — solo cuando el proveedor confirme (modelo SIN
+  // CAJA: no adelantamos COP hasta que el USDT llegue al proveedor).
   const onchainAfter = Math.max(0, parseFloat((bal - value - fee).toFixed(dec)))
   await mergeRaw(db, userId, { gasfreeCredited: onchainAfter })
 
@@ -1917,28 +1975,38 @@ async function myConvertSettle(
   const fee2 = (Number(token.transferFee ?? 0) + (recAcct.active ? 0 : Number(token.activateFee ?? 0))) / Math.pow(10, dec)
   const fwd = parseFloat((value - fee2).toFixed(dec))
 
+  // La comisión y lo que se convierte los decide el SERVIDOR (la comisión del
+  // cliente o la general; el neto = lo que salió de la wallet − la tarifa
+  // fija). Antes venían del navegador: con feePct 0 el cliente se saltaba la
+  // comisión. El COP estimado se acota además a lo que pidió el cliente.
+  const feePct = await feePctConversion(userId)
+  const creditUsd = Math.max(0, parseFloat((grossSwept - CONVERT_FLAT_FEE_USDT).toFixed(dec)))
+  const tasaSrv = await serverUsdCopRate()
+  const copSrv = tasaSrv ? Math.round(creditUsd * tasaSrv * (1 - feePct / 100)) : 0
+  const copEstimado = copSrv > 0 ? Math.min(copSrv, copAmount > 0 ? copAmount : copSrv) : copAmount
   // Campos base del movimiento (se completan según el estado del pipeline).
-  const convBase = {
+  const convBase: Record<string, any> = {
     initials: 'FX', title: `USDT → COP · tasa ${Number(meta.mouvRate ?? 0).toLocaleString('es-CO')}`,
     createdAt: new Date().toISOString(), userName: u.email,
-    fromCurrency: 'USD', fromAmount: grossUsd, destAmount: copAmount,
-    mouvRate: meta.mouvRate ?? null, feePct: meta.feePct ?? null, utilityCop: meta.utilityCop ?? null,
-    creditUsd: meta.creditUsd ?? null,
+    fromCurrency: 'USD', fromAmount: grossUsd, destAmount: copEstimado,
+    mouvRate: meta.mouvRate ?? null, feePct, utilityCop: null,
+    creditUsd, grossSwept, debitUsd: grossSwept,
     source: 'MOUV', gasfree: true,
     usdtOut: value, gasfreeFee: r.feeChargedUsdt, traceId: r.traceId,
     providerName: prov?.name ?? null, providerAddress: provAddr || null, fwd,
   }
+  convBase.firmaConv = await firmaConversion(userId, convBase)
   const insertConvert = async (status: string, extra: Record<string, unknown>) => {
     const { data } = await db.from('transactions').insert({
-      user_id: userId, type: 'convert', amount: copAmount, currency: 'COP', status,
+      user_id: userId, type: 'convert', amount: copEstimado, currency: 'COP', status,
       raw_data: { ...convBase, ...extra },
     }).select('id').single()
     return data?.id
   }
   const creditCop = async () => {
-    await creditBalanceAtomic(userId, 'COP', copAmount)   // atómico (pentest #3)
+    await creditBalanceAtomic(userId, 'COP', copEstimado)   // atómico (pentest #3)
     const { data: uf } = await db.from('users').select('balances').eq('id', userId).single()
-    return Number(((uf?.balances as any)?.COP) ?? copAmount)
+    return Number(((uf?.balances as any)?.COP) ?? copEstimado)
   }
 
   // 1) Esperar a que la tesorería reciba el USDT del cliente (hop 1).
@@ -1956,10 +2024,10 @@ async function myConvertSettle(
   // 2) Sin proveedor configurado → se acredita el COP (el USDT queda en
   //    tesorería). Mantiene funcionando setups sin proveedor.
   if (!provAddr || fwd <= 0) {
-    await assertCopWithinRate(value, copAmount)   // COP acotado al USDT real × tasa del servidor
+    await assertCopWithinRate(value, copEstimado)   // COP acotado al USDT real × tasa del servidor
     const nc = await creditCop()
-    const txId = await insertConvert('Completado', { convertPhase: 'no_provider', usdtToProvider: null, providerTraceId: null })
-    return { ok: true, status: 'Completado', phase: 'no_provider', copCredited: copAmount, newCop: nc, usdtOut: value, feeChargedUsdt: r.feeChargedUsdt, traceId: r.traceId, txId }
+    const txId = await insertConvert('Completado', { convertPhase: 'no_provider', usdtToProvider: null, providerTraceId: null, creditClaimed: true })
+    return { ok: true, status: 'Completado', phase: 'no_provider', copCredited: copEstimado, newCop: nc, usdtOut: value, feeChargedUsdt: r.feeChargedUsdt, traceId: r.traceId, txId }
   }
 
   // 3) Hop 2: tesorería (ya con el USDT del cliente) → Mouv.
@@ -1995,7 +2063,7 @@ async function myConvertSettle(
   return {
     ok: true, status: 'Pendiente', phase: 'recharged', recharged: true, copCredited: 0,
     usdtOut: value, usdtToProvider: fwd, feeChargedUsdt: r.feeChargedUsdt, traceId: r.traceId, state: r.state,
-    providerForwarded: true, providerName: prov?.name ?? null, providerTraceId: providerHop.traceId, txId,
+    providerForwarded: true, providerTraceId: providerHop.traceId, txId,
   }
 }
 
@@ -2013,6 +2081,69 @@ async function creditBalanceAtomic(userId: string, col: string, delta: number): 
   const bals: Record<string, number> = (u?.balances as any) ?? {}
   const nb = parseFloat((Number(bals[col] ?? 0) + delta).toFixed(2))
   await db.from('users').update({ balances: { ...bals, [col]: nb } }).eq('id', userId)
+}
+
+// ── FIRMA DEL SERVIDOR EN LAS CONVERSIONES ─────────────────────────
+// Un cliente puede insertar filas en `transactions` con su propia sesión. Una
+// conversión inventada (fase 'recharged' con el usdtOut que quisiera) se le
+// acreditaba en COP, y una en 'hop1_pending' con la dirección que eligiera
+// hacía pagar a la tesorería. Las conversiones que crea ESTE servidor llevan
+// una firma (HMAC con la llave de servicio, que el navegador no tiene) sobre
+// los datos que mueven plata. Sin firma válida no se acredita ni se paga.
+async function firmaConversion(userId: string, rd: Record<string, any>): Promise<string> {
+  const k = await crypto.subtle.importKey('raw', new TextEncoder().encode(SERVICE_KEY), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  const msg = ['convert', userId, String(rd.traceId ?? ''), Number(rd.usdtOut ?? 0), Number(rd.fwd ?? 0),
+    String(rd.providerAddress ?? ''), Number(rd.debitUsd ?? 0), Number(rd.grossSwept ?? 0)].join('|')
+  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', k, new TextEncoder().encode(msg)))
+  return Array.from(sig.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+async function conversionLegitima(tx: any): Promise<boolean> {
+  if (!tx || tx.type !== 'convert') return false
+  const rd = (tx.raw_data ?? {}) as Record<string, any>
+  const f = String(rd.firmaConv ?? '')
+  if (!f || f !== await firmaConversion(String(tx.user_id), rd)) return false
+  // Una copia de una conversión real (con su firma) no se cobra dos veces: el
+  // traceId del envío on-chain es único.
+  const { data: otras } = await db.from('transactions').select('id')
+    .eq('type', 'convert').eq('raw_data->>traceId', String(rd.traceId ?? '')).neq('id', tx.id).limit(1)
+  return !(otras && otras.length)
+}
+
+// El saldo en dólares es el ESPEJO del USDT de la wallet principal: todo lo
+// que sale de ella on-chain se debita antes de enviarlo, y tiene que alcanzar.
+// Sin esto el mismo depósito se gastaba dos veces: por dentro (convertir el
+// saldo USD) y on-chain (enviar o convertir el USDT).
+async function debitarEspejoUsd(userId: string, total: number): Promise<void> {
+  if (!(total > 0)) return
+  const { data: adj, error: adjErr } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { USD: -total } })
+  if (!adjErr) {
+    if ((adj as any)?.error) throw new Error(`Tu saldo en dólares no cubre esta operación (se necesitan ${total.toFixed(2)} USD, comisión de red incluida). Si crees que es un error, escríbenos a soporte.`)
+    return
+  }
+  // Sin la RPC desplegada: leer, comprobar y escribir (no atómico, como antes).
+  const { data: uf } = await db.from('users').select('balances').eq('id', userId).single()
+  const bals = (uf?.balances as Record<string, number>) ?? {}
+  const usd = Number(bals.USD ?? 0)
+  if (usd + 1e-9 < total) throw new Error(`Tu saldo en dólares no cubre esta operación (disponible ${usd.toFixed(2)}, se necesitan ${total.toFixed(2)} USD).`)
+  await db.from('users').update({ balances: { ...bals, USD: parseFloat((usd - total).toFixed(2)) } }).eq('id', userId)
+}
+
+// Comisión de la conversión USDT → COP: la del cliente (otcConfig, la escribe
+// solo el servidor) o la general del par USD/COP; si no hay, 4 %. Tarifa fija
+// de red: 4 USDT (dos saltos de ~1,5 + 1 de servicio), igual que la pantalla.
+const CONVERT_FLAT_FEE_USDT = 4
+async function feePctConversion(userId: string): Promise<number> {
+  try {
+    const { data: u } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
+    const own = Number((u as any)?.raw_data?.otcConfig?.feePct)
+    if (Number.isFinite(own) && own >= 0 && own < 50) return own
+  } catch { /* sigue con la general */ }
+  try {
+    const { data } = await db.from('fx_pair_config').select('base_fee_pct').eq('from_currency', 'USD').eq('to_currency', 'COP').maybeSingle()
+    const n = Number((data as any)?.base_fee_pct)
+    if (Number.isFinite(n) && n > 0 && n < 50) return n
+  } catch { /* por defecto */ }
+  return 4
 }
 
 // Tasa USD→COP de confianza (snapshot admin-only). El OTC de GasFree NO puede
@@ -2050,9 +2181,10 @@ async function myConvertCredit(
   // USDT ya salió; y el COP se acota al USDT real de la conversión × un tope
   // de tasa razonable, para que un copAmount inflado no pueda pasar.
   if (tx.type !== 'convert') throw new Error('El movimiento no es una conversión')
+  if (!(await conversionLegitima(tx))) throw new Error('Esta conversión quedó en revisión del equipo.')
   const rd = (tx.raw_data ?? {}) as Record<string, any>
-  const VALID_PHASES = new Set(['recharged', 'converting', 'hop2_pending', 'hop2', 'registered', 'done'])
-  if (rd.convertPhase && !VALID_PHASES.has(String(rd.convertPhase))) throw new Error('La conversión aún no llegó al proveedor')
+  const VALID_PHASES = new Set(['recharged', 'converting', 'converted', 'hop2_pending', 'hop2', 'registered', 'done'])
+  if (!VALID_PHASES.has(String(rd.convertPhase ?? ''))) throw new Error('La conversión aún no llegó al proveedor')
   // ANCLA ANTI-ACUÑACIÓN: el USDT que de verdad se reenvió on-chain al
   // proveedor (usdtToProvider = fwd) o, en su defecto, el barrido real
   // (usdtOut = value). NUNCA rd.creditUsd ni rd.fromAmount: esos vienen del
@@ -2062,6 +2194,8 @@ async function myConvertCredit(
   // Acotar el COP al USDT real × la tasa del servidor (no al copAmount del
   // cliente ni a una cota fija holgada). Bloquea acuñar COP inflando el monto.
   await assertCopWithinRate(sweptUsd, copAmount)
+  // Nunca más COP del que el proveedor entregó en la conversión real.
+  if (Number(rd.finityToAmount) > 0 && copAmount > Number(rd.finityToAmount) + 1) throw new Error('Monto COP fuera de rango para la conversión')
   // CANDADO ATÓMICO anti doble-crédito: marca creditClaimed SOLO si no estaba
   // (y el movimiento no está Completado). Si dos llamadas llegan al tiempo
   // (cliente + autopiloto, o dos clics), únicamente UNA gana el claim y
@@ -2102,8 +2236,23 @@ async function myConvertFinalize(userId: string, txId: string, settleOnly = fals
   if (!tx) throw new Error('Movimiento no encontrado')
   if (tx.user_id !== userId) throw new Error('No autorizado')
   if (tx.status === 'Completado') return { ok: true, status: 'Completado', phase: 'done', copCredited: 0 }
+  // Solo conversiones creadas por este servidor: una fila inventada podía
+  // hacer pagar a la tesorería o acreditar COP.
+  if (!(await conversionLegitima(tx))) return { ok: false, status: tx.status, phase: 'revision', copCredited: 0 }
   const rd = (tx.raw_data ?? {}) as Record<string, any>
   const copAmount = Number(tx.amount ?? 0)
+  // El hop 2 paga desde la tesorería: lo toma UNA sola llamada (CAS sobre la
+  // fase). Dos finalize simultáneos (o uno + el autopiloto) pagaban dos veces.
+  const tomarHop2 = async (desde: string): Promise<boolean> => {
+    const { data } = await db.from('transactions')
+      .update({ raw_data: { ...rd, convertPhase: 'hop2_sending', hop2SendingAt: new Date().toISOString() } })
+      .eq('id', txId).filter('raw_data->>convertPhase', 'eq', desde).select('id')
+    return !!(data && data.length)
+  }
+  const soltarHop2 = async () => {
+    await db.from('transactions').update({ raw_data: { ...rd, convertPhase: 'hop2_failed' } })
+      .eq('id', txId).filter('raw_data->>convertPhase', 'eq', 'hop2_sending')
+  }
   const provAddr = String(rd.providerAddress ?? '').trim()
   const fwd = Number(rd.fwd ?? 0)
 
@@ -2121,10 +2270,15 @@ async function myConvertFinalize(userId: string, txId: string, settleOnly = fals
     // usdtOut) × tasa del servidor. NUNCA rd.creditUsd/rd.fromAmount: vienen del
     // `meta` del cliente y un valor inflado dejaría acuñar COP.
     await assertCopWithinRate(Number(rd.usdtOut ?? rd.usdtToProvider ?? rd.fwd ?? 0), copAmount)
+    // Reclamo atómico ANTES de acreditar: dos llamadas a la vez acreditaban dos veces.
+    const { data: claim } = await db.from('transactions')
+      .update({ raw_data: { ...rd, creditClaimed: true } })
+      .eq('id', txId).neq('status', 'Completado').filter('raw_data->>creditClaimed', 'is', null).select('id')
+    if (!claim || !claim.length) return { ok: true, status: 'Completado', phase: 'done', copCredited: 0, already: true }
     await creditBalanceAtomic(userId, 'COP', copAmount)   // atómico (pentest #3)
     const { data: uf } = await db.from('users').select('balances').eq('id', userId).single()
     const nc = Number(((uf?.balances as any)?.COP) ?? copAmount)
-    await db.from('transactions').update({ status: 'Completado', raw_data: { ...rd, convertPhase: 'done', providerPending: false, providerTraceId: providerTraceId ?? rd.providerTraceId } }).eq('id', txId)
+    await db.from('transactions').update({ status: 'Completado', raw_data: { ...rd, creditClaimed: true, convertPhase: 'done', providerPending: false, providerTraceId: providerTraceId ?? rd.providerTraceId } }).eq('id', txId)
     return { ok: true, status: 'Completado', phase: 'done', copCredited: copAmount, newCop: nc }
   }
 
@@ -2136,14 +2290,17 @@ async function myConvertFinalize(userId: string, txId: string, settleOnly = fals
       const { data: claimed } = await db.from('transactions')
         .update({ status: 'Rechazado', raw_data: { ...rd, convertPhase: 'hop1_failed', refunded: true } })
         .eq('id', txId).neq('status', 'Rechazado').filter('raw_data->>refunded', 'is', null).select('id')
-      if (claimed?.length) await creditBalanceAtomic(userId, 'USD', Number(rd.fromAmount ?? 0))
+      // Se devuelve lo que de verdad se debitó (firmado en la fila), no el
+      // monto que pidió el cliente: con un pedido inflado se acreditaba de más.
+      if (claimed?.length) await creditBalanceAtomic(userId, 'USD', Number(rd.debitUsd ?? 0))
       return { ok: false, status: 'Rechazado', phase: 'hop1_failed', refunded: true }
     }
     if (c1 !== 'confirmed') return { ok: true, status: 'Pendiente', phase: 'hop1_pending', copCredited: 0 }
     if (!provAddr || fwd <= 0) return settleOnly ? { ok: true, status: 'Pendiente', phase: 'no_provider', copCredited: 0 } : await complete()
+    if (!(await tomarHop2(String(rd.convertPhase)))) return { ok: true, status: 'Pendiente', phase: 'hop2_pending', copCredited: 0 }
     let hop: any = null
     try { hop = await payFromTreasury(provAddr, fwd, String(rd.providerName ?? 'Mouv')) } catch { /* reintentar luego */ }
-    if (!hop) return { ok: true, status: 'Pendiente', phase: 'hop2_failed', copCredited: 0 }
+    if (!hop) { await soltarHop2(); return { ok: true, status: 'Pendiente', phase: 'hop2_failed', copCredited: 0 } }
     await db.from('transactions').update({ raw_data: { ...rd, convertPhase: 'hop2_pending', providerTraceId: hop.traceId, usdtToProvider: fwd } }).eq('id', txId)
     const c2 = await waitTrace(hop.traceId)
     return c2 === 'confirmed' ? (settleOnly ? await markRecharged(hop.traceId) : await complete(hop.traceId)) : { ok: true, status: 'Pendiente', phase: 'hop2_pending', copCredited: 0 }
@@ -2157,14 +2314,18 @@ async function myConvertFinalize(userId: string, txId: string, settleOnly = fals
       if (c2 === 'pending') return { ok: true, status: 'Pendiente', phase: 'hop2_pending', copCredited: 0 }
     }
     if (!provAddr || fwd <= 0) return { ok: true, status: 'Pendiente', phase: 'no_provider', copCredited: 0 }
+    if (!(await tomarHop2(String(rd.convertPhase)))) return { ok: true, status: 'Pendiente', phase: 'hop2_pending', copCredited: 0 }
     let hop: any = null
     try { hop = await payFromTreasury(provAddr, fwd, String(rd.providerName ?? 'Mouv')) } catch { /* luego */ }
-    if (!hop) return { ok: true, status: 'Pendiente', phase: 'hop2_failed', copCredited: 0 }
+    if (!hop) { await soltarHop2(); return { ok: true, status: 'Pendiente', phase: 'hop2_failed', copCredited: 0 } }
     await db.from('transactions').update({ raw_data: { ...rd, convertPhase: 'hop2_pending', providerTraceId: hop.traceId, usdtToProvider: fwd } }).eq('id', txId)
     const c2 = await waitTrace(hop.traceId)
     return c2 === 'confirmed' ? (settleOnly ? await markRecharged(hop.traceId) : await complete(hop.traceId)) : { ok: true, status: 'Pendiente', phase: 'hop2_pending', copCredited: 0 }
   }
 
+  // 'hop2_sending' = un envío de tesorería que arrancó y no terminó de
+  // registrarse: no se sabe si salió, así que NO se reintenta solo (sería
+  // pagar dos veces). Queda para revisión del equipo.
   return { ok: true, status: tx.status, phase: rd.convertPhase ?? 'unknown', copCredited: 0 }
 }
 
@@ -2298,14 +2459,36 @@ async function rechargeRegisteredAtProvider(uid: string, fwd: number): Promise<b
   return false
 }
 
+// El COP del cliente lo calcula el SERVIDOR: el neto firmado (lo que salió de
+// la wallet − la tarifa fija) × la tasa que dio el proveedor (menos el ajuste
+// de Lincoin) × (1 − comisión del servidor). Nunca más de lo que entregó el
+// proveedor. Antes salía del creditUsd/feePct que mandaba el navegador.
+async function copClienteDe(uid: string, rd: Record<string, any>): Promise<number> {
+  const feePct = await feePctConversion(uid)
+  const creditUsd = Math.max(0, Number(rd.grossSwept ?? 0) - CONVERT_FLAT_FEE_USDT)
+  const rate = Number(rd.finityRate ?? 0)
+  const tope = Number(rd.finityToAmount ?? 0)
+  let grossCop = rate > 0 ? creditUsd * rate : tope
+  if (tope > 0) grossCop = Math.min(grossCop, tope)
+  return Math.max(0, Math.round(grossCop * (1 - feePct / 100)))
+}
+
 async function autoConvert(txId: string, uid: string) {
   try {
     for (let round = 0; round < 10; round++) {
       const { data: tx } = await db.from('transactions').select('*').eq('id', txId).single()
       if (!tx || tx.user_id !== uid || tx.type !== 'convert') return
       if (tx.status === 'Completado' || tx.status === 'Rechazado') return
+      if (!(await conversionLegitima(tx))) return
       const rd = (tx.raw_data ?? {}) as Record<string, any>
       const phase = String(rd.convertPhase ?? '')
+      // Ya convertida en el proveedor pero sin acreditar (el crédito falló):
+      // SOLO se reintenta el crédito. Antes se soltaba a 'recharged' y el
+      // proveedor convertía OTRA VEZ el mismo USDT.
+      if (phase === 'converted') {
+        await myConvertCredit(uid, txId, await copClienteDe(uid, rd), { mouvRate: Number(rd.finityRate ?? rd.mouvRate ?? 0) || undefined, feePct: Number(rd.feePct ?? 0), utilityCop: rd.utilityCop ?? undefined })
+        return
+      }
       if (phase === 'converting') {
         // Reclamo 'converting': normalmente lo tiene el frontend. Pero si el
         // frontend falló (p. ej. el viejo camino que daba 'forbidden') y NO
@@ -2389,12 +2572,12 @@ async function autoConvert(txId: string, uid: string) {
         const finityRate = (rateBruta > 0 && ajusteCop > 0 && rateBruta - ajusteCop > 0)
           ? rateBruta - ajusteCop
           : rateBruta
-        const feePct = Number(rd.feePct ?? 0)
-        const creditUsd = Number(rd.creditUsd ?? 0) || Math.max(0, Number(rd.fromAmount ?? 0) - 4)
-        const grossCop = finityRate > 0 ? creditUsd * finityRate : Number(done.to_amount ?? 0)
-        const clientCop = Math.round(grossCop * (1 - feePct / 100))
-        const utilityCop = Math.max(0, Math.round(grossCop - clientCop))
-        await myConvertCredit(uid, txId, clientCop, { mouvRate: finityRate, feePct, utilityCop })
+        // Queda CONVERTIDA antes de acreditar: si el crédito falla, el próximo
+        // intento solo acredita (nunca vuelve a convertir en el proveedor).
+        const rdConv = { ...rd, convertPhase: 'converted', convertedAt: new Date().toISOString(),
+          finityConvId: done.id ?? null, finityToAmount: Number(done.to_amount ?? 0) || null, finityRate }
+        await db.from('transactions').update({ raw_data: rdConv }).eq('id', txId)
+        await myConvertCredit(uid, txId, await copClienteDe(uid, rdConv), { mouvRate: finityRate, feePct: await feePctConversion(uid), utilityCop: undefined })
         return
       } catch {
         await releaseConvertClaim(txId)
@@ -2563,6 +2746,8 @@ async function myWalletWithdrawal(userId: string, toAddress: string, amount: num
     })
     return { ok: true, traceId: r.traceId, state: r.state, amountSent: amount, feeChargedUsdt: r.feeChargedUsdt, totalDebitedUsd: total }
   } catch (e) {
+    // Desenlace desconocido (se cayó el relay): no se devuelve a ciegas.
+    if ((e as any)?.desenlaceDesconocido) throw e
     // Devolver el débito completo (ATÓMICO) — el envío on-chain no salió.
     try { await creditBalanceAtomic(userId, 'USD', total) }
     catch { console.error(`[myWalletWithdrawal] ⚠ NO PUDE DEVOLVER el débito de ${total} a ${userId} — revisar manualmente`) }
@@ -2663,10 +2848,12 @@ const isLockedProvider = (p: any) =>
 // de donde venga la llamada — pago manual, hop 2 automático de la conversión,
 // sus reintentos o un retiro pedido por un cliente. La recaudadora custodia el
 // USDT agrupado de TODOS los clientes: un destino libre permitiría drenarla.
-function assertTreasuryDestination(toAddress: string) {
-  if (!ENV_PROVIDERS.length) return   // sin Bóveda configurada, comportamiento previo
+async function assertTreasuryDestination(toAddress: string) {
   const dest = String(toAddress ?? '').trim()
-  if (!ENV_PROVIDERS.some(e => e.detail === dest)) {
+  // Sin Bóveda configurada antes se dejaba pasar CUALQUIER destino. Ahora rige
+  // la lista de partners que administra el panel: nunca un destino libre.
+  const lista: any[] = ENV_PROVIDERS.length ? ENV_PROVIDERS : await getProviders()
+  if (!dest || !lista.some((e: any) => String(e?.detail ?? '').trim() === dest)) {
     throw new Error('Destino no permitido: desde la Tesorería solo se puede pagar a las wallets de partners verificadas en la Bóveda.')
   }
 }
@@ -2721,7 +2908,7 @@ async function getTreasuryMovements() {
 // vivo y se cobra aparte del monto (igual que cualquier envío GasFree).
 async function payFromTreasury(toAddress: string, amount: number, providerName?: string) {
   if (!(amount > 0)) throw new Error('Monto inválido')
-  assertTreasuryDestination(toAddress)   // lista blanca de la Bóveda
+  await assertTreasuryDestination(toAddress)   // lista blanca de la Bóveda
   const rec = await recaudadora()
   const r = await sendCore(rec.pkHex, rec.eoa, toAddress, amount)
   await logTreasuryMovement({
@@ -2857,6 +3044,15 @@ Deno.serve(async (req) => {
       const blockedMsg = await assertNotBlocked(String(userId))
       if (blockedMsg) return err(blockedMsg, 403)
     }
+    // Mover la plata de un cliente lo hace SOLO el titular. verifySelfOrAdmin
+    // dejaba a un admin actuar por cualquiera, y el 2FA que se pedía era el del
+    // CLIENTE (si no tenía, pasaba): una sesión de admin robada vaciaba
+    // billeteras. El equipo tiene sus propias herramientas (con 2FA estricto).
+    const MUEVE_PLATA_CLIENTE = new Set(['my_send', 'my_wallet_send', 'my_archived_send', 'my_convert_settle', 'my_wallet_regenerate'])
+    if (userId && MUEVE_PLATA_CLIENTE.has(String(action))) {
+      const quien = await callerUserId(req)
+      if (quien && quien !== String(userId)) return err('Esta operación solo la puede hacer el titular de la cuenta.', 403)
+    }
 
     // Bloqueo por IP: aquí es donde el bloqueo se vuelve REAL. La pantalla de
     // ingreso solo puede disuadir (el atacante controla su navegador), pero
@@ -2898,12 +3094,10 @@ Deno.serve(async (req) => {
       // id del auth distinto al id real), los movimientos pueden estar bajo
       // cualquiera de esos ids. Se devuelven los de TODOS los ids que
       // comparten el correo, para que nunca queden "vacíos".
+      // Hermanos por correo VERIFICADO: con public.users.email (editable) se
+      // podían leer los movimientos de otra persona.
       let ids: string[] = [userId]
-      const { data: me } = await db.from('users').select('email').eq('id', userId).single()
-      if (me?.email) {
-        const { data: sib } = await db.from('users').select('id').eq('email', me.email)
-        if (Array.isArray(sib) && sib.length) ids = Array.from(new Set(sib.map((x: any) => x.id)))
-      }
+      try { const sib = await filasHermanas(userId, 'id'); if (sib.length) ids = Array.from(new Set(sib.map((x: any) => String(x.id)))) } catch { /* solo los propios */ }
       // Orden por FECHA: los ids son uuid (orden aleatorio, y el front hacía
       // b.id - a.id = NaN). created_at es el orden real de los movimientos.
       const { data: txs, error: txErr } = await db.from('transactions')
@@ -2949,9 +3143,11 @@ Deno.serve(async (req) => {
           [`usdt:${userId}:${String(toAddress).trim()}:${Number(amount)}`, 120],
         ]
         for (const [clave, ttl] of claves) {
-          if (await reclamarCandado(db, clave, ttl, userId, 'my_send') === 'ocupado') {
+          const r = await reclamarCandado(db, clave, ttl, userId, 'my_send')
+          if (r === 'ocupado') {
             return err('Ya hay un envío igual en curso. No lo repitas: revisa tus Movimientos y espera un par de minutos.', 409)
           }
+          if (r === 'error') return err('No pudimos asegurar tu envío en este momento. No se movió nada; intenta de nuevo en un minuto.', 503)
         }
       }
       return ok(await mySend(userId, String(toAddress), Number(amount)))
@@ -2974,9 +3170,11 @@ Deno.serve(async (req) => {
           [`convert:${userId}:${Number(amount)}`, 90],
         ]
         for (const [clave, ttl] of claves) {
-          if (await reclamarCandado(db, clave, ttl, userId, 'my_convert_settle') === 'ocupado') {
+          const r = await reclamarCandado(db, clave, ttl, userId, 'my_convert_settle')
+          if (r === 'ocupado') {
             return err('Ya hay una conversión igual en curso. No la repitas: revisa tus Movimientos en un momento.', 409)
           }
+          if (r === 'error') return err('No pudimos asegurar tu conversión en este momento. No se movió nada; intenta de nuevo en un minuto.', 503)
         }
       }
       const settled: any = await myConvertSettle(userId, Number(amount), Number(body.copAmount), {
@@ -2996,6 +3194,11 @@ Deno.serve(async (req) => {
     if (action === 'my_convert_claim') {
       if (!userId || !body.txId) return err('Faltan userId o txId', 400)
       if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
+      // Solo la conversión PROPIA: con el id de una ajena se le podía trabar.
+      {
+        const { data: dueno } = await db.from('transactions').select('user_id').eq('id', String(body.txId)).maybeSingle()
+        if (!dueno || (dueno as any).user_id !== userId) return err('Movimiento no encontrado', 404)
+      }
       return ok(await claimConvert(String(body.txId)))
     }
     // Estado de una conversión (para observar desde el frontend).
@@ -3102,7 +3305,9 @@ Deno.serve(async (req) => {
     }
     if (action === 'my_convert_credit') {
       if (!userId || !body.txId || !body.copAmount) return err('Faltan userId, txId o copAmount', 400)
-      if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
+      // El crédito lo hace el autopiloto del servidor con su propio cálculo.
+      // Desde afuera solo un admin (el COP lo decidía el navegador).
+      if (!(await callerIsAdmin(req))) return err('No autorizado', 401)
       return ok(await myConvertCredit(userId, String(body.txId), Number(body.copAmount), {
         // El convertidor Finity manda la tasa como finityRate; el nombre
         // histórico interno es mouvRate — se aceptan ambos.
@@ -3113,7 +3318,10 @@ Deno.serve(async (req) => {
     }
     if (action === 'my_wallet_withdrawal') {
       if (!userId || !toAddress || !amount) return err('Faltan userId, toAddress o amount', 400)
-      if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
+      // Pagaba desde la TESORERÍA contra el saldo USD mientras el USDT seguía
+      // en la wallet del cliente (gasto doble). La app ya no lo usa: queda
+      // solo para un admin.
+      if (!(await callerIsAdmin(req))) return err('No autorizado', 401)
       const mfaErr = await require2FA(userId, body.otp)   // retiro on-chain → 2FA server-side
       if (mfaErr) return err(mfaErr, 403)
       return ok(await myWalletWithdrawal(userId, String(toAddress), Number(amount)))
@@ -3124,7 +3332,7 @@ Deno.serve(async (req) => {
     // pendientes al instante. Acepta el service key O un admin.
     if (action === 'kick_pending_converts') {
       const authHeader = req.headers.get('Authorization') ?? ''
-      const isService = !!SERVICE_KEY && authHeader === `Bearer ${SERVICE_KEY}`
+      const isService = !!SERVICE_KEY && igualSeguro(authHeader, `Bearer ${SERVICE_KEY}`)
       if (!isService && !(await callerIsAdmin(req))) return err('No autorizado', 401)
       return ok(await kickPendingConverts())
     }

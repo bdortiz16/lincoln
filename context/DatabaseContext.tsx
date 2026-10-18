@@ -656,7 +656,11 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             // quedaba en 0 ("no carga nada") hasta que respondía. Con esto se
             // muestran los últimos datos conocidos y se refresca en segundo
             // plano. Escrituras protegidas por si se pasa la cuota.
-            try { localStorage.setItem('cuypay_admin_users', JSON.stringify(mappedUsers)); } catch { /* quota */ }
+            // Los USUARIOS ya no se guardan en el navegador: es la lista
+            // completa de clientes con sus datos personales, y quedaba en el
+            // equipo del admin aunque cerrara sesión mal o se lo robaran. Se
+            // borra la copia vieja si existe. Los movimientos sí (puente).
+            try { localStorage.removeItem('cuypay_admin_users'); } catch { /* sin almacenamiento */ }
             try { if (mappedTxForCache) localStorage.setItem('cuypay_admin_tx', JSON.stringify(mappedTxForCache.slice(0, 200))); } catch { /* quota */ }
             setSyncError(null);
             return; // Edge function succeeded — no need for fallback
@@ -874,8 +878,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         // Admin: hidratar usuarios + movimientos desde el caché para que el
         // panel NO se quede en 0 mientras la edge function (fría tras deploy)
         // responde. Solo se usa como puente: el fetchData de abajo lo refresca.
-        const cu = localStorage.getItem('cuypay_admin_users');
-        if (cu) { const arr = JSON.parse(cu); if (Array.isArray(arr) && arr.length) setUsers(prev => prev.length ? prev : arr); }
+        try { localStorage.removeItem('cuypay_admin_users'); } catch { /* sin almacenamiento */ }
         const ct = localStorage.getItem('cuypay_admin_tx');
         if (ct) { const arr = JSON.parse(ct); if (Array.isArray(arr) && arr.length) setTransactions(prev => prev.length ? prev : arr); }
       } else {
@@ -2410,25 +2413,38 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     const key = debitKey || currency;
     if (!currentUser) return { ok: false, error: 'Tu sesión expiró. Vuelve a iniciar sesión.' };
     if (getBalance(key) < amount) return { ok: false, error: 'Saldo insuficiente en la cuenta de la que sale el retiro.' };
-    const newBal = { ...currentUser.balances, [key]: getBalance(key) - amount };
+    // El DÉBITO y la SOLICITUD los hace el servidor en un solo paso
+    // (admin-data solicitar_retiro). Antes el navegador se descontaba con un
+    // guardado que no esperaba y después insertaba él mismo la fila: si el
+    // guardado fallaba la solicitud quedaba sin débito, y una fila insertada a
+    // mano sin débito se "devolvía" al rechazarla.
+    const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+    const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+    const token = getStoredToken();
+    if (!token) return { ok: false, error: 'Tu sesión expiró. Vuelve a iniciar sesión.' };
+    const idemKey = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    let r: any = null;
+    try {
+      r = await fetch(`${SURL}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          action: 'solicitar_retiro', userId: currentUser.id, amount, currency, debitKey: key,
+          bank, account, beneficiary, reason, idemKey,
+          ...(docType ? { documentType: docType } : {}),
+          ...(docNumber ? { documentNumber: docNumber } : {}),
+          ...(extra ? { extra } : {}),
+        }),
+      }).then(x => x.json()).catch(() => null);
+    } catch { r = null; }
+    if (!r?.ok) return { ok: false, error: r?.error ?? 'No pudimos registrar la solicitud. Revisa tus movimientos antes de repetirla.' };
+    // Solo con la solicitud confirmada se refleja el saldo (el que devolvió la
+    // base, o el descuento local si no vino).
+    const newBal = r.balances && typeof r.balances === 'object' ? { ...currentUser.balances, ...r.balances } : { ...currentUser.balances, [key]: getBalance(key) - amount };
     pendingWriteUntilRef.current = Date.now() + 10000;
     setCurrentUser(prev => prev ? { ...prev, balances: newBal } : prev);
     setUsers(prev => prev.map(u => u.id === currentUser.id ? { ...u, balances: newBal } : u));
-    saveUser({ ...currentUser, balances: newBal }, false, true).catch(() => {});
-    const quedo = await saveTx({
-      userId: currentUser.id,
-      userName: currentUser.name,
-      userRole: currentUser.role,
-      type: 'send',
-      initials: 'EN',
-      title: `Envío ${currency}`,
-      date: new Date().toLocaleDateString(), createdAt: new Date().toISOString(),
-      amount, currency, status: 'Pendiente', bank, account, beneficiary, reason,
-      ...(docType ? { documentType: docType } : {}),
-      ...(docNumber ? { documentNumber: docNumber } : {}),
-      ...(extra ?? {}),
-    }).catch(() => false);
-    if (!quedo) return { ok: false, error: 'No pudimos registrar la solicitud. Revisa tus movimientos antes de repetirla.' };
+    fetchData();
     return { ok: true };
   };
 
@@ -2444,15 +2460,6 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
     const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
     const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-    const creditFee = () => {
-      if (fee > 0 && isSupabaseConfigured && SURL) {
-        fetch(`${SURL}/functions/v1/admin-data`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': `Bearer ${SKEY}` },
-          body: JSON.stringify({ action: 'credit_conversion_fee', currency: src, amount: fee, fromUserId: currentUser.id, note: `Comisión conversión ${src}→${tgt}` }),
-        }).catch(() => {});
-      }
-    };
 
     // ── Vía SEGURA: el SERVIDOR valida saldo y que el monto recibido cuadre
     //    con la tasa real, y aplica los deltas (no acepta saldos absolutos del
@@ -2466,7 +2473,8 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
           body: JSON.stringify({ action: 'apply_conversion', userId: currentUser.id, src, tgt, amtS, amtT, fee, coupon }),
         }).then(x => x.json()).catch(() => null);
-        if (r?.success) { creditFee(); return {}; }
+        // La parte de Lincoin queda registrada en la propia conversión (servidor).
+        if (r?.success) return {};
         // Rechazo de negocio del servidor (tasa/saldo/parámetros) → revertir y avisar.
         const HARD = ['Saldo insuficiente', 'El monto de la conversión no coincide con la tasa vigente.', 'Parámetros de conversión inválidos'];
         if (r?.error && HARD.includes(String(r.error))) {
@@ -2481,7 +2489,6 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     // ── LEGACY (respaldo si apply_conversion no está desplegado) ──
     saveUser({ ...currentUser, balances: newBal }, false, true).catch(() => {});
     saveTx({ userId: currentUser.id, userName: currentUser.name, type: 'convert', initials: 'CV', title: `${src} a ${tgt}`, date: new Date().toLocaleDateString(), createdAt: new Date().toISOString(), amount: amtS, currency: src, status: 'Completado', fee, couponCode: coupon, targetAmount: amtT, targetCurrency: tgt }).catch(() => {});
-    creditFee();
     return {};
   };
 

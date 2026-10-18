@@ -37,6 +37,15 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const SUPABASE_URL   = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY    = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+
+// Comparación de secretos en tiempo constante: con === el tiempo de respuesta
+// delataba cuántos caracteres del inicio coincidían.
+function igualSeguro(a: string, b: string): boolean {
+  const x = new TextEncoder().encode(String(a ?? '')), y = new TextEncoder().encode(String(b ?? ''))
+  let d = x.length ^ y.length
+  for (let i = 0; i < Math.max(x.length, y.length); i++) d |= (x[i] ?? 0) ^ (y[i] ?? 0)
+  return d === 0
+}
 // trim(): al pegar credenciales desde WhatsApp/correo se cuelan espacios
 // o saltos de línea — y Finity rechaza el valor con basura invisible.
 const FINITY_ID      = (Deno.env.get('FINITY_CLIENT_ID') ?? '').trim()
@@ -69,11 +78,19 @@ const CORS = {
 }
 
 // Crédito/reintegro ATÓMICO (bloqueo de fila vía adjust_balances) — evita la
-// carrera de duplicación en reconcile (pentest #3). Fallback a read-write.
+// carrera de duplicación en reconcile (pentest #3). El respaldo manual (leer y
+// escribir) es SOLO para una base sin la RPC: ante cualquier otro error la
+// respuesta pudo haberse perdido con el ajuste ya hecho, y repetirlo a mano
+// acreditaría dos veces (o, si la lectura falla, pisaría todos los saldos).
 async function creditBalanceAtomic(userId: string, col: string, delta: number): Promise<void> {
-  const { error } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { [col]: delta } })
-  if (!error) return
-  const { data: u } = await db.from('users').select('balances').eq('id', userId).single()
+  const { data: adj, error } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { [col]: delta } })
+  if (!error && !(adj as any)?.error) return
+  if (!error) throw new Error(`Ajuste de saldo rechazado: ${(adj as any)?.error}`)
+  if (!/42883|PGRST202|could not find the function|function .* does not exist/i.test(`${error?.code ?? ''} ${error?.message ?? ''}`)) {
+    throw new Error(`Ajuste de saldo incierto: ${error?.message ?? 'sin detalle'}`)
+  }
+  const { data: u, error: leerErr } = await db.from('users').select('balances').eq('id', userId).single()
+  if (leerErr || !u || typeof (u as any).balances !== 'object' || (u as any).balances === null) throw new Error('No se pudo leer el saldo')
   const bals: Record<string, number> = (u?.balances as any) ?? {}
   const nb = parseFloat((Number(bals[col] ?? 0) + delta).toFixed(2))
   await db.from('users').update({ balances: { ...bals, [col]: nb } }).eq('id', userId)
@@ -373,6 +390,18 @@ function isProjectAnonKey(jwt: string): boolean {
   }
 }
 
+// ── FIRMA DEL SERVIDOR EN LOS COBROS POR LINK ──────────────────────
+// Un cliente puede insertar filas en `transactions` con su sesión. Un "cobro
+// por link" inventado (source finity_payment_link, la referencia y el monto que
+// quisiera) se acreditaba en la conciliación si su referencia aparecía como
+// texto dentro de cualquier movimiento del proveedor. Los cobros que crea ESTE
+// servidor llevan una firma (HMAC con la llave de servicio).
+async function firmaCobro(userId: string, amount: number, currency: string, reference: string): Promise<string> {
+  const k = await crypto.subtle.importKey('raw', new TextEncoder().encode(SERVICE_KEY), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', k, new TextEncoder().encode(`cobro|${userId}|${Number(amount)}|${currency}|${reference}`)))
+  return Array.from(sig.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
 // ¿Ese id de cobro o de retiro es de QUIEN pregunta? Tener sesión válida no
 // alcanza: sin esto, un cliente cualquiera podía consultar los montos y
 // destinos de los cobros y retiros de otro con solo cambiar el id.
@@ -381,6 +410,9 @@ async function esMiReferencia(caller: { userId?: string; internal?: boolean }, i
   if (caller.internal) return true
   const uid = String(caller.userId ?? '')
   if (!uid || !id) return false
+  // El id va dentro de un filtro .or(): con comas o puntos se le podían
+  // agregar condiciones y la pregunta "¿es tuyo?" respondía que sí.
+  if (!/^[A-Za-z0-9_-]{4,100}$/.test(id)) return false
   try {
     const { data } = await db.from('transactions').select('id')
       .eq('user_id', uid)
@@ -400,7 +432,7 @@ async function validCaller(req: Request, payload: Record<string, unknown>): Prom
   // service-role key, que nunca sale del backend. `internal:true` es lo
   // ÚNICO que autoriza crear retiros/cuentas externas — el cliente pasa
   // por mouv-proxy, que debita el saldo ANTES de llamar aquí.
-  if (SERVICE_KEY && jwt === SERVICE_KEY) {
+  if (SERVICE_KEY && igualSeguro(jwt, SERVICE_KEY)) {
     const uid = String(payload.user_id ?? '')
     return { ok: true, userId: uid || undefined, internal: true, viaJwt: true }
   }
@@ -548,7 +580,10 @@ Deno.serve(async (req) => {
     // (nombre, documento, cuenta) de los destinos registrados — exige caller.
     // treasury_balances SALE de las READ públicas: expone los saldos de la
     // tesorería (USDt + COP de la empresa) → solo admin/interno.
-    const READ_ACTIONS = new Set(['ping', 'rates', 'discover', 'snapshot_finity'])
+    // 'discover' (sondea decenas de rutas del proveedor por llamada) y
+    // 'snapshot_finity' (escribe en fx_rate_snapshots) ya no son públicas:
+    // solo el equipo o el servidor. Las tasas programadas las guarda fx-snapshot.
+    const READ_ACTIONS = new Set(['ping', 'rates'])
 
     const caller = await validCaller(req, payload)
     if (!caller.ok && !READ_ACTIONS.has(action)) {
@@ -560,7 +595,7 @@ Deno.serve(async (req) => {
     // ── Gates de seguridad (pentest H3) ──────────────────────────────────
     // INTERNO/ADMIN: leer movimientos/saldo de la empresa o convertir sobre la
     // tesorería compartida. Nunca un cliente (ni con anon-key + user_id).
-    const INTERNAL_ONLY = new Set(['movements', 'convert', 'convert_confirm', 'balance', 'breb_crear', 'breb_confirmar', 'motivo_rechazo'])
+    const INTERNAL_ONLY = new Set(['movements', 'convert', 'convert_confirm', 'balance', 'breb_crear', 'breb_confirmar', 'motivo_rechazo', 'discover', 'snapshot_finity'])
     if (INTERNAL_ONLY.has(action) && !caller.internal) {
       return json(403, { error: 'forbidden', message: 'Operación restringida.' })
     }
@@ -1203,8 +1238,13 @@ Deno.serve(async (req) => {
               .update({ status: 'Rechazado', raw_data: { ...krd, refunded: true, reconciledAt: new Date().toISOString(), finityState: realState, providerError: motivoProveedor } })
               .eq('id', keep.id).neq('status', 'Rechazado').filter('raw_data->>refunded', 'is', null)
               .select('id')
+            // Estas filas 'send' con "Orden …" las escribía el navegador (flujo
+            // viejo): cualquiera podía crear una con la orden rechazada de otro
+            // y el monto que quisiera, y se le "devolvía". Ya no se reembolsa
+            // solo: queda marcada para que el equipo lo revise.
             if (claimed?.length) {
-              await creditBalanceAtomic(keep.user_id, String(keep.currency), Number(keep.amount))
+              await db.from('transactions').update({ raw_data: { ...krd, refunded: null, revisionManual: true, finityState: realState, providerError: motivoProveedor } }).eq('id', keep.id)
+              await logAudit(String(keep.user_id), 'finity.withdrawal.rechazado_revisar', { txId: keep.id, orden: oid, amount: keep.amount })
             }
           } else {
             await db.from('transactions').update({ status: mapped }).eq('id', keep.id)
@@ -1338,6 +1378,7 @@ Deno.serve(async (req) => {
             // El cobro por link (recaudo Finity) se acredita en el riel ACH.
             user_id: uid, type: 'load', amount: Math.round(netCop), currency: 'COP_ACH', status: 'Pendiente',
             raw_data: { source: 'finity_payment_link', method: 'LINK', reference: linkId, providerRef: linkId,
+              firmaServidor: await firmaCobro(uid, Math.round(netCop), 'COP_ACH', String(linkId ?? '')),
               link, title: 'Cobro por link · ACH', grossCop: copAmount, netCop, feeCop: PAYIN_FEE_COP, finityCosts: costs,
               expiresAt: data?.expires_at ?? null, createdAt: new Date().toISOString() },
           })
@@ -1385,6 +1426,13 @@ Deno.serve(async (req) => {
         // cuenta compartida → un atacante creaba un cobro nunca pagado del
         // mismo valor y se robaba el depósito de otro. El monto ya NO basta.
         if (!rd.reference) continue
+        // Solo cobros creados por este servidor, con una referencia de verdad
+        // (una de 1-2 caracteres aparecía dentro de cualquier movimiento).
+        if (String(rd.reference).length < 12) continue
+        if (String(rd.firmaServidor ?? '') !== await firmaCobro(uid, Number(tx.amount ?? 0), String(tx.currency ?? ''), String(rd.reference))) {
+          await logAudit(uid, 'finity.payin.sin_firma', { txId: tx.id })
+          continue
+        }
         const match = rows.find(m => {
           if (consumed.has(movId(m))) return false
           return JSON.stringify(m).includes(String(rd.reference))
@@ -1397,7 +1445,13 @@ Deno.serve(async (req) => {
         }).eq('id', tx.id).eq('status', 'Pendiente').select('id')
         if (!claimed?.length) continue
         const col = String(tx.currency ?? 'COP')
-        await creditBalanceAtomic(uid, col, Number(tx.amount ?? 0))   // atómico (pentest #3)
+        try { await creditBalanceAtomic(uid, col, Number(tx.amount ?? 0)) }   // atómico (pentest #3)
+        catch (e) {
+          // Sin crédito, la fila no puede quedar Completado: vuelve a revisión.
+          await db.from('transactions').update({ status: 'Pendiente', raw_data: { ...rd, revisionManual: true, creditoFallido: String((e as Error)?.message ?? e).slice(0, 200) } }).eq('id', tx.id)
+          await logAudit(uid, 'finity.payin.credito_fallido', { txId: tx.id })
+          continue
+        }
         await logAudit(uid, 'finity.payin.credited', { txId: tx.id, amount: tx.amount, movement: match?.id ?? null })
         credited++
       }

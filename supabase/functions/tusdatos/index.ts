@@ -41,6 +41,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { mergeRaw, setRawPath } from '../_shared/raw-data.ts'
 import { municipioPorNombre, municipioPorCodigo } from '../_shared/municipios.ts'
+import { requireMfaSession, igualSeguro } from '../_shared/admin-auth.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -150,16 +151,72 @@ async function auditar(action: string, metadata: Record<string, unknown>) {
 }
 
 // ── Identidad de quien llama ──────────────────────────────────────────────
-async function quienLlama(req: Request): Promise<{ userId: string | null; esAdmin: boolean }> {
+async function quienLlama(req: Request): Promise<{ userId: string | null; esAdmin: boolean; servicio?: boolean }> {
   const jwt = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
   if (!jwt) return { userId: null, esAdmin: false }
-  if (SERVICE_KEY && jwt === SERVICE_KEY) return { userId: null, esAdmin: true }
+  if (SERVICE_KEY && igualSeguro(jwt, SERVICE_KEY)) return { userId: null, esAdmin: true, servicio: true }
   try {
     const { data: { user } } = await db.auth.getUser(jwt)
     if (!user) return { userId: null, esAdmin: false }
     const { data } = await db.from('users').select('role').eq('id', user.id).single()
     return { userId: user.id, esAdmin: (data as any)?.role === 'admin' }
   } catch { return { userId: null, esAdmin: false } }
+}
+
+// Las acciones de administración (decidir un caso, el registro de riesgo, la
+// bandeja de cumplimiento, la configuración) exigen además que la SESIÓN haya
+// pasado el segundo factor: la misma regla de admin-data. Con solo la
+// contraseña de un admin se podía aprobar un caso frenado por AML.
+async function exigirAdmin(req: Request, yo: { userId: string | null; esAdmin: boolean; servicio?: boolean }): Promise<Response | null> {
+  if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+  if (yo.servicio) return null
+  const mfa = await requireMfaSession(db, req, yo.userId)
+  return mfa ? json({ error: mfa }, 403) : null
+}
+
+// ── Tope diario de consultas por cuenta ───────────────────────────────────
+// Cada consulta nueva gasta un crédito del plan y devuelve datos de un
+// tercero. Sin tope, cualquier cuenta podía lanzar cientos (poniendo
+// documentos ajenos en su lista de contactos) y vaciar el plan, o usarlo para
+// averiguar a quién pertenece un documento. Cuentan los lanzamientos y los
+// fallidos (un fallido también llega al proveedor). Los admins no tienen tope.
+const TOPE_CONSULTAS_DIA = 30
+async function topeDiarioAgotado(userId: string): Promise<boolean> {
+  try {
+    const desde = new Date(Date.now() - 24 * 3600_000).toISOString()
+    const { count, error } = await db.from('audit_log').select('id', { count: 'exact', head: true })
+      .in('action', ['tusdatos.lanzado', 'tusdatos.launch_fallido', 'tusdatos.sin_autorizacion'])
+      .eq('metadata->>userId', userId).gte('created_at', desde)
+    if (error) return false   // sin poder contar, no se frena una verificación legítima
+    return (count ?? 0) >= TOPE_CONSULTAS_DIA
+  } catch { return false }
+}
+const MSG_TOPE = 'Llegaste al máximo de verificaciones por hoy. Intenta de nuevo mañana o escribe a soporte.'
+
+// ¿Ese documento es de uno de SUS beneficiarios inscritos? Solo de esos se
+// puede pedir antecedentes desde la cuenta del cliente.
+function docEnContactos(raw: any, documento: string): boolean {
+  const d = String(documento ?? '').replace(/\D/g, '')
+  if (!d) return false
+  const contactos: any[] = Array.isArray(raw?.mouvContacts) ? raw.mouvContacts : []
+  return contactos.some((x: any) => {
+    const c = String(x?.docNumber ?? '').replace(/\D/g, '')
+    // Con o sin dígito de verificación (NIT).
+    return !!c && (c === d || c.slice(0, -1) === d || d.slice(0, -1) === c)
+  })
+}
+
+// ¿Ese reporte es de ESTA cuenta (su propia consulta o la de un beneficiario
+// suyo, vigente o archivada)? El id del reporte circula en el registro
+// compartido de riesgo: sin esto, cualquiera bajaba el PDF de otro.
+function reporteEsDeLaCuenta(raw: any, reportId: string): boolean {
+  const td = raw?.tusdatos ?? {}
+  const ids = new Set<string>()
+  if (td.reportId) ids.add(String(td.reportId))
+  for (const grupo of [td.beneficiarios, td.beneficiariosArchivados]) {
+    for (const f of Object.values(grupo ?? {})) if ((f as any)?.reportId) ids.add(String((f as any).reportId))
+  }
+  return ids.has(String(reportId))
 }
 
 function enLaPrueba(c: Config, userId: string): boolean {
@@ -1078,6 +1135,8 @@ async function consultar(
   }
 
   const jobid = String(r.body?.jobid ?? '')
+  // Cuenta para el tope diario de la cuenta (cada lanzamiento gasta crédito).
+  await auditar('tusdatos.lanzado', { userId, documento: doc, jobid: jobid || null })
   if (!jobid) return { ok: false, error: 'sin_jobid', message: 'TusDatos no devolvió un jobid.' }
 
   const inicial: Ficha = {
@@ -1187,7 +1246,7 @@ Deno.serve(async (req: Request) => {
     // nos escriba un veredicto, que es justo lo contrario del control.
     if (url.pathname.endsWith('/webhook')) {
       const auth = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
-      if (!TD_WEBHOOK || auth !== TD_WEBHOOK) {
+      if (!TD_WEBHOOK || !igualSeguro(auth, TD_WEBHOOK)) {
         await auditar('tusdatos.webhook_rechazado', { motivo: 'credencial inválida' })
         return json({ error: 'no autorizado' }, 401)
       }
@@ -1278,12 +1337,12 @@ Deno.serve(async (req: Request) => {
 
     // ── Configuración (solo admin) ───────────────────────────────────────
     if (accion === 'config_get') {
-      if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      { const no = await exigirAdmin(req, yo); if (no) return no }
       return json({ ok: true, config: await leerConfig(), credencial: hayCredencial() ? 'configurada' : 'falta', webhook: TD_WEBHOOK ? 'configurado' : 'falta' })
     }
 
     if (accion === 'config_set') {
-      if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      { const no = await exigirAdmin(req, yo); if (no) return no }
       const previa = await leerConfig()
       const c = { ...previa, ...(body.config ?? {}) } as Config
       if (c.activo && (!c.baseUrl || !hayCredencial())) {
@@ -1326,7 +1385,7 @@ Deno.serve(async (req: Request) => {
     // Probar: consulta el plan. Es la llamada más barata que confirma que la
     // credencial pasa y que se llega — no gasta créditos de consulta.
     if (accion === 'probar') {
-      if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      { const no = await exigirAdmin(req, yo); if (no) return no }
       const c = await leerConfig()
       if (!hayCredencial()) return json({ ok: false, motivo: 'Faltan las credenciales de TusDatos en la Bóveda.' })
       const r = await llamarTD(c, '/api/plans?exclude=checks', 'GET')
@@ -1347,8 +1406,13 @@ Deno.serve(async (req: Request) => {
       if (!c.activo) return json({ ok: true, omitido: 'la integración está apagada' })
       if (!enLaPrueba(c, uid)) return json({ ok: true, omitido: 'esta cuenta no está en la prueba' })
 
+      if (!yo.esAdmin && await topeDiarioAgotado(uid)) return json({ ok: false, error: 'tope_diario', message: MSG_TOPE })
       const raw = await leerRaw(uid)
-      const doc = String(body.documento ?? raw?.documentNumber ?? raw?.cedula ?? '').replace(/\D/g, '')
+      // El cliente consulta SU documento: el que venga en el pedido solo se
+      // acepta si es el suyo (antes servía para consultar a cualquiera).
+      const propio = String(raw?.documentNumber ?? raw?.cedula ?? '').replace(/\D/g, '')
+      const pedido = String(body.documento ?? '').replace(/\D/g, '')
+      const doc = yo.esAdmin ? (pedido || propio) : propio
       if (!doc) {
         const { data: u } = await db.from('users').select('document_number, name').eq('id', uid).single()
         const doc2 = String((u as any)?.document_number ?? '').replace(/\D/g, '')
@@ -1356,7 +1420,7 @@ Deno.serve(async (req: Request) => {
         const r = await consultar(c, uid, { documento: doc2, tipoDocumento: String(raw?.documentType ?? 'CC'), nombre: String((u as any)?.name ?? ''), fechaExpedicion: body.fechaExpedicion }, false)
         return json(r.ok ? { ok: true, ficha: r.ficha } : r, r.ok ? 200 : 200)
       }
-      const r = await consultar(c, uid, { documento: doc, tipoDocumento: String(body.tipoDocumento ?? raw?.documentType ?? 'CC'), nombre: body.nombre, fechaExpedicion: body.fechaExpedicion }, false)
+      const r = await consultar(c, uid, { documento: doc, tipoDocumento: String((yo.esAdmin ? body.tipoDocumento : null) ?? raw?.documentType ?? 'CC'), nombre: body.nombre, fechaExpedicion: body.fechaExpedicion }, false)
       return json(r.ok ? { ok: true, ficha: r.ficha } : r)
     }
 
@@ -1367,6 +1431,15 @@ Deno.serve(async (req: Request) => {
       const c = await leerConfig()
       if (!c.activo) return json({ ok: true, omitido: 'la integración está apagada' })
       if (!enLaPrueba(c, uid)) return json({ ok: true, omitido: 'esta cuenta no está en la prueba' })
+      // Solo documentos de SUS beneficiarios inscritos, y con tope diario: si
+      // no, esta acción era un buscador de antecedentes de cualquier persona
+      // pagado con el plan de Lincoin.
+      if (!yo.esAdmin) {
+        if (!docEnContactos(await leerRaw(uid), String(body.documento ?? ''))) {
+          return json({ ok: false, error: 'no_inscrito', message: 'Ese documento no es de ninguno de tus beneficiarios inscritos.' }, 403)
+        }
+        if (await topeDiarioAgotado(uid)) return json({ ok: false, error: 'tope_diario', message: MSG_TOPE })
+      }
       const r = await consultar(c, uid, {
         documento: String(body.documento ?? ''),
         tipoDocumento: String(body.tipoDocumento ?? 'CC'),
@@ -1473,7 +1546,9 @@ Deno.serve(async (req: Request) => {
       // no sesenta.
       const LOTE = Math.min(Math.max(Number(body.limite ?? 4) || 4, 1), 8)
       let lanzados = 0
+      let topado = false
       for (const x of faltan.slice(0, LOTE)) {
+        if (!yo.esAdmin && await topeDiarioAgotado(uid)) { topado = true; break }
         const r = await consultar(c, uid, {
           documento: String(x?.docNumber ?? ''),
           tipoDocumento: String(x?.docType ?? 'CC'),
@@ -1482,7 +1557,7 @@ Deno.serve(async (req: Request) => {
         if (r.ok) lanzados += 1
       }
       // Y de paso se recogen las que ya hayan terminado.
-      return json({ ok: true, lanzados, rejuzgados, pendientes: Math.max(0, faltan.length - lanzados) })
+      return json({ ok: true, lanzados, rejuzgados, pendientes: Math.max(0, faltan.length - lanzados), ...(topado ? { tope: true, message: MSG_TOPE } : {}) })
     }
 
     // ── Lo guardado ──────────────────────────────────────────────────────
@@ -1586,6 +1661,9 @@ Deno.serve(async (req: Request) => {
       if (!uid || (!yo.esAdmin && yo.userId !== uid)) return json({ error: 'No autorizado' }, 401)
       const reportId = String(body.reportId ?? '').trim()
       if (!reportId) return json({ error: 'Falta el id del reporte.' }, 400)
+      if (!yo.esAdmin && !reporteEsDeLaCuenta(await leerRaw(uid), reportId)) {
+        return json({ ok: false, motivo: 'Ese reporte no es de tu cuenta.' }, 403)
+      }
       const c = await leerConfig()
       const r = await fetch(`${c.baseUrl.replace(/\/+$/, '')}/api/v2/report_pdf/${encodeURIComponent(reportId)}`, {
         headers: { Authorization: cabeceraAuth() },
@@ -1631,7 +1709,7 @@ Deno.serve(async (req: Request) => {
     // persona vuelve a preguntarle a TusDatos (y se paga) en vez de reusar
     // lo guardado acá.
     if (accion === 'risk_borrar') {
-      if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      { const no = await exigirAdmin(req, yo); if (no) return no }
       if (body.todos === true) {
         if (String(body.confirmacion ?? '') !== 'ELIMINAR') return json({ error: 'Para borrar todo el padrón escribe ELIMINAR.' }, 400)
         const { count } = await db.from('risk_registry').select('*', { count: 'exact', head: true })
@@ -1650,7 +1728,7 @@ Deno.serve(async (req: Request) => {
     }
 
     if (accion === 'risk') {
-      if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      { const no = await exigirAdmin(req, yo); if (no) return no }
       // Búsqueda por DOCUMENTO o por NOMBRE. Antes solo por dígitos: un nombre
       // escrito no buscaba nada, y un NIT con su dígito de verificación (10
       // dígitos) no aparecía porque el padrón lo guarda por los 9 base.
@@ -1720,7 +1798,7 @@ Deno.serve(async (req: Request) => {
     }
 
     if (accion === 'compliance') {
-      if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      { const no = await exigirAdmin(req, yo); if (no) return no }
       // Se traen los datos que IDENTIFICAN a la empresa que consultó, no solo
       // su nombre: un reporte a la UIAF necesita la razón social, el NIT y el
       // tipo de cuenta de quien reporta, no un id interno.
@@ -1849,7 +1927,7 @@ Deno.serve(async (req: Request) => {
     // Repartido en seis peticiones, el panel se dibuja por pedazos y cada
     // tarjeta aparece cuando le toca. Una sola respuesta se pinta entera.
     if (accion === 'panel') {
-      if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      { const no = await exigirAdmin(req, yo); if (no) return no }
       const c = await leerConfig()
 
       // Ping propio, con la latencia medida. Es NUESTRO healthcheck: dice si
@@ -1947,7 +2025,7 @@ Deno.serve(async (req: Request) => {
     // Esto los vuelve a juzgar con los datos que YA ESTÁN guardados. No llama
     // a TusDatos y no gasta un solo crédito: el nombre real ya lo tenemos.
     if (accion === 'recalcular_nombres') {
-      if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      { const no = await exigirAdmin(req, yo); if (no) return no }
       const c = await leerConfig()
       const { data: filas } = await db
         .from('users').select('id, raw_data').not('raw_data->tusdatos', 'is', null).limit(2000)
@@ -2018,7 +2096,7 @@ Deno.serve(async (req: Request) => {
     // manual y con quién la hizo: una consulta a una persona gasta un crédito
     // y toca datos suyos, así que tiene que quedar claro quién la pidió.
     if (accion === 'consulta_manual') {
-      if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      { const no = await exigirAdmin(req, yo); if (no) return no }
       const c = await leerConfig()
       if (!c.activo) return json({ ok: false, motivo: 'La integración está apagada.' })
       if (!hayCredencial()) return json({ ok: false, motivo: 'Faltan las credenciales en la Bóveda.' })
@@ -2046,7 +2124,7 @@ Deno.serve(async (req: Request) => {
     // guardado EN LA FICHA (quién, cuándo, por qué) y en auditoría: una
     // decisión de cumplimiento sin autor no sirve para responderle a nadie.
     if (accion === 'decidir') {
-      if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      { const no = await exigirAdmin(req, yo); if (no) return no }
       const uid = String(body.userId ?? '')
       const doc = String(body.documento ?? '').replace(/\D/g, '')
       const fallo = String(body.decision ?? '')   // 'aprobar' | 'mantener'
@@ -2101,7 +2179,7 @@ Deno.serve(async (req: Request) => {
     }
 
     if (accion === 'reintentar') {
-      if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      { const no = await exigirAdmin(req, yo); if (no) return no }
       const c = await leerConfig()
       const uid = String(body.userId ?? '')
       const doc = String(body.documento ?? '').replace(/\D/g, '')

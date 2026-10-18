@@ -112,13 +112,6 @@ function fmtAmount(raw: string | number | null): string | null {
   return `${n.toLocaleString('es-CO')} USD`
 }
 
-const LOGO_SVG_DATAURI = `data:image/svg+xml;base64,${btoa(`
-<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
-  <rect x="2" y="2" width="96" height="96" rx="24" fill="${BRAND_NAVY}"/>
-  <path d="M34 30 H47 V58 H58 V71 H34 Z" fill="#F4F4F2"/>
-  <circle cx="68" cy="67" r="12" fill="${BRAND_TEAL}"/>
-</svg>`.trim())}`
-
 // ─────────────────────────────────────────────
 // Email HTML (misma plantilla brand que send-compliance-email)
 // ─────────────────────────────────────────────
@@ -163,13 +156,12 @@ function htmlEmail(event: EventKind, name: string, benName: string | null, amoun
   <table width="560" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;width:100%;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(15,23,42,0.08)">
     <tr>
       <td style="background-color:${BRAND_NAVY};padding:28px 32px">
+        <!-- Wordmark Lincoin (CLAUDE.md): Archivo 800, letras #F4F4F2 y el
+             punto verde #4ADE80 sobre fondo oscuro. Sin isotipo ni cuadro. -->
         <table cellpadding="0" cellspacing="0" border="0">
           <tr>
-            <td style="width:48px;height:48px;vertical-align:middle">
-              <img src="${LOGO_SVG_DATAURI}" width="48" height="48" alt="Lincoin" style="display:block;border-radius:12px"/>
-            </td>
-            <td style="padding-left:14px;vertical-align:middle">
-              <span style="font-size:22px;font-weight:800;color:#ffffff;letter-spacing:-0.5px">CUY<span style="color:${BRAND_TEAL}">PAY</span></span>
+            <td style="vertical-align:middle">
+              <span style="font-family:'Archivo',Arial,sans-serif;font-size:22px;font-weight:800;color:#F4F4F2;letter-spacing:-0.6px">Lincoin<span style="color:#4ADE80">.</span></span>
               <div style="margin-top:2px;font-size:11px;color:rgba(255,255,255,0.5);letter-spacing:1px;text-transform:uppercase">Topes y Límites</div>
             </td>
           </tr>

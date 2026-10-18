@@ -72,6 +72,9 @@ const ESTADO_FACTURA: Record<string, { txt: string; cls: string }> = {
   emitiendo: { txt: 'Emitiendo…', cls: 'bg-blue-50 text-blue-700 border-blue-200' },
   pendiente: { txt: 'Pendiente', cls: 'bg-amber-50 text-amber-700 border-amber-200' },
   revision: { txt: 'Revisar utilidad', cls: 'bg-amber-50 text-amber-800 border-amber-300' },
+  // Siigo no contestó a tiempo (o quedó colgada emitiendo): la factura PUDO
+  // haberse creado. Antes de reenviar se verifica en Siigo.
+  incierta: { txt: 'Por verificar en Siigo', cls: 'bg-orange-50 text-orange-700 border-orange-300' },
   error: { txt: 'Error', cls: 'bg-red-50 text-red-700 border-red-200' },
   omitida: { txt: 'No aplica', cls: 'bg-slate-50 text-slate-500 border-slate-200' },
 };
@@ -111,11 +114,16 @@ const BotonFacturar: React.FC<{ txId: string; estado?: string | null; liq?: any;
   const [enviando, setEnviando] = useState(false);
   if (estado === 'emitida' || estado === 'emitiendo' || (estado === 'omitida' && liq && !liq.facturable)) return null;
   const fuente = liq?.fuente ?? null;
-  const pideUtilidad = estado === 'revision' || (fuente != null && fuente !== 'registrada');
+  // 'incierta' no pide utilidad: el servidor primero busca la factura en Siigo
+  // y solo la reenvía si de verdad no existe.
+  const pideUtilidad = estado !== 'incierta' && (estado === 'revision' || (fuente != null && fuente !== 'registrada'));
   const sugerida = Number(liq?.utilidadCop ?? utilidadFila ?? 0) || 0;
   const emitir = async (utilidad?: number) => {
     const total = utilidad != null && liq ? (liq.fijo === 'total' ? liq.totalCop : (liq.tercerosCop ?? 0) + utilidad) : liq?.totalCop;
-    if (!window.confirm(`Se va a emitir la factura electrónica ante la DIAN${total ? ` por ${cop(total)}` : ''}${utilidad != null ? ` con una comisión de ${cop(utilidad)} (IVA incluido)` : ''}. ¿Seguir?`)) return;
+    const pregunta = estado === 'incierta'
+      ? 'Siigo no confirmó la factura anterior. Primero se busca en Siigo; solo si no existe se vuelve a emitir. ¿Seguir?'
+      : `Se va a emitir la factura electrónica ante la DIAN${total ? ` por ${cop(total)}` : ''}${utilidad != null ? ` con una comisión de ${cop(utilidad)} (IVA incluido)` : ''}. ¿Seguir?`;
+    if (!window.confirm(pregunta)) return;
     setEnviando(true);
     const r = await pedirAdmin({ action: 'fact_lincoin_emitir', transactionId: txId, ...(utilidad != null ? { utilidad } : {}) });
     setEnviando(false);
@@ -138,7 +146,7 @@ const BotonFacturar: React.FC<{ txId: string; estado?: string | null; liq?: any;
     <button disabled={enviando}
       onClick={() => { if (pideUtilidad) { setValor(sugerida > 0 ? String(Math.round(sugerida)) : ''); setAbierto(true); } else emitir(); }}
       className="text-[11px] font-bold px-2.5 py-1 rounded-lg border border-[#16A34A] text-[#16A34A] hover:bg-green-50 disabled:opacity-50 whitespace-nowrap">
-      {enviando ? 'Emitiendo…' : pideUtilidad ? 'Confirmar utilidad' : estado === 'error' || estado === 'pendiente' ? 'Reintentar' : 'Facturar'}
+      {enviando ? 'Emitiendo…' : estado === 'incierta' ? 'Verificar y reintentar' : pideUtilidad ? 'Confirmar utilidad' : estado === 'error' || estado === 'pendiente' ? 'Reintentar' : 'Facturar'}
     </button>
   );
 };
@@ -159,7 +167,7 @@ const Resumen: React.FC<{ datos: any; cargando: boolean }> = ({ datos, cargando 
         <Kpi titulo="Utilidad Lincoin (neta)" valor={cop(utilidad)} acento detalle={t.enPerdida > 0
           ? `Ganancias ${cop(t.gananciaCop)} − pérdidas ${cop(Math.abs(t.perdidaCop))} (${t.enPerdida} en rojo)`
           : t.utilidadEstimada > 0 ? `${cop(t.utilidadEstimada)} estimada (mesa OTC)` : `Cargues ${cop(t.utilidadCargues)} · Conv. ${cop(t.utilidadConversiones)}`} />
-        <Kpi titulo="Facturas Lincoin" valor={`${f.emitida ?? 0} emitidas`} detalle={`${t.porFacturar ?? 0} por facturar · ${f.error ?? 0} con error · ${f.revision ?? 0} por revisar`} />
+        <Kpi titulo="Facturas Lincoin" valor={`${f.emitida ?? 0} emitidas`} detalle={`${t.porFacturar ?? 0} por facturar · ${f.error ?? 0} con error · ${f.revision ?? 0} por revisar${f.incierta ? ` · ${f.incierta} por verificar en Siigo` : ''}${f.emitiendo ? ` · ${f.emitiendo} emitiendo` : ''}`} />
       </div>
       {t.ajustes > 0 && (
         <Aviso>Hay {t.ajustes} ajuste{t.ajustes === 1 ? '' : 's'} (débito) por {cop(t.ajustadoCop)} sin vincular a un cargue. Si corrigen un cargue hecho por error, ábrelos en Clientes → el cliente → Ajustes y vincúlalos: así el cargue se anula o se corrige y la utilidad cuadra.</Aviso>
@@ -311,8 +319,8 @@ const VincularAjuste: React.FC<{ fila: any; motivo?: string; fechaDe: (id: strin
     if (r?.ok) onHecho(cargueId ? (r.aviso ? `Vinculado. ${r.aviso}` : r.anulado ? 'Vinculado: el cargue quedó anulado y ya no suma ni deja utilidad.' : 'Vinculado: el cargue quedó corregido.') : 'Ajuste desvinculado.', !r.aviso);
     else onHecho(r?.permisoDenegado ? 'Tu rol no permite vincular ajustes.' : (r?.error ?? 'No se pudo vincular.'), false);
   };
-  if (fila.reversaDe) {
-    const f = fechaDe(String(fila.reversaDe));
+  if (fila.reversaDe || fila.vinculado) {
+    const f = fila.reversaDe ? fechaDe(String(fila.reversaDe)) : null;
     return (
       <div className="space-y-1">
         <p className="text-[10px] text-slate-500">Revierte el cargue {f ? `del ${f}` : 'de otro período'}{fila.reversaAuto ? ' · vinculado solo' : ''}</p>
@@ -322,10 +330,12 @@ const VincularAjuste: React.FC<{ fila: any; motivo?: string; fechaDe: (id: strin
     );
   }
   if (!fila.esDebito) return <p className="text-[10px] text-slate-400">Ajuste a favor del cliente</p>;
-  if (!sug.length) return <p className="text-[10px] text-amber-700 max-w-[260px]">Sin vincular. {motivo || 'No hay un cargue anterior de este saldo que lo cubra.'}</p>;
+  if (!sug.length) return <p className={`text-[10px] max-w-[260px] ${fila.noRevierte ? 'text-slate-400' : 'text-amber-700'}`}>{fila.noRevierte ? 'Marcado como otro ajuste: no revierte ningún cargue.' : `Sin vincular. ${motivo || 'No hay un cargue anterior de este saldo que lo cubra.'}`}</p>;
   return (
     <div className="flex items-center gap-1.5 flex-wrap justify-end">
-      {motivo && <p className="text-[10px] text-amber-700 w-full text-right max-w-[300px] ml-auto">No se vinculó solo: {motivo}</p>}
+      {fila.noRevierte
+        ? <p className="text-[10px] text-slate-400 w-full text-right max-w-[300px] ml-auto">Marcado como otro ajuste (no revierte un cargue). Si sí lo corrige, vincúlalo:</p>
+        : motivo && <p className="text-[10px] text-amber-700 w-full text-right max-w-[300px] ml-auto">No se vinculó solo: {motivo}</p>}
       <select value={elegido} onChange={e => setElegido(e.target.value)} className="border border-slate-300 rounded-lg px-2 py-1 text-[11px] bg-white max-w-[230px]">
         {sug.map(x => (
           <option key={x.id} value={x.id}>
@@ -346,6 +356,8 @@ const DetalleCliente: React.FC<{ cliente: any; periodo: Periodo; onVolver: () =>
   const [error, setError] = useState<string | null>(null);
   const [cargando, setCargando] = useState(false);
   const [filtro, setFiltro] = useState<'todo' | 'cargues' | 'conversiones' | 'ajustes' | 'perdida'>('todo');
+  // Por riel: lo que entró por ACH, por Bre-B o al Saldo Lincoin.
+  const [riel, setRiel] = useState<'todos' | 'ACH' | 'Bre-B' | 'Saldo Lincoin'>('todos');
   const [motivos, setMotivos] = useState<Record<string, string>>({});
   const cargar = useCallback(async () => {
     setCargando(true); setError(null);
@@ -363,31 +375,40 @@ const DetalleCliente: React.FC<{ cliente: any; periodo: Periodo; onVolver: () =>
   useEffect(() => { cargar(); }, [cargar]);
   const c = datos?.cliente ?? cliente;
   const detalle: any[] = datos?.detalle ?? [];
-  const vistos = detalle.filter(d => filtro === 'todo'
+  const vistos = detalle.filter(d => (riel === 'todos' || d.riel === riel) && (filtro === 'todo'
     || (filtro === 'cargues' && d.liq?.tipo === 'cargue')
     || (filtro === 'conversiones' && d.liq?.tipo === 'conversion')
     || (filtro === 'ajustes' && d.type === 'adjustment')
-    || (filtro === 'perdida' && !d.liq?.anulado && Number(d.liq?.utilidadCop) < 0));
+    || (filtro === 'perdida' && !d.liq?.anulado && Number(d.liq?.utilidadCop) < 0)));
+  const rieles = useMemo(() => Array.from(new Set(detalle.map(d => String(d.riel ?? '')).filter(Boolean))), [detalle]);
   const fechaDe = (id: string) => { const d = detalle.find(x => String(x.id) === id); return d ? new Date(d.created_at).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' }) : null; };
   const aviso = (m: string, ok: boolean) => { onAviso(m, ok); cargar(); };
 
-  // Los totales de lo que se está viendo. Un cargue anulado vale 0 y un
-  // ajuste vinculado ya está restado dentro de su cargue: los ajustes que se
-  // suman aparte son solo los SIN vincular. Las tasas son promedios
-  // ponderados (pesos / USD), solo de las filas que tienen USD.
+  // Los totales de lo que se está viendo. Un cargue anulado vale 0 y su
+  // débito vinculado NO se resta aparte (el par cargue + reversa da cero UNA
+  // vez); los ajustes que se muestran aparte son solo los SIN vincular.
+  //
+  // Tasas: la de venta es lo recibido sobre los USDT que LLEGARON (es a lo
+  // que de verdad se vendió); la del cliente, lo acreditado sobre los USDT
+  // que entregó. Si en la vista hay cargues y conversiones mezclados, las
+  // tasas salen solo de los cargues: promediar una tasa de venta con una de
+  // compra no significa nada.
   const totalesDe = (filas: any[]) => {
-    const t = { usd: 0, usdLlego: 0, recibido: 0, acreditado: 0, utilidad: 0, ventaPond: 0, usdVenta: 0, clientePond: 0, usdCliente: 0, ajustesSueltos: 0, nAjustesSueltos: 0 };
+    const t = { usd: 0, usdLlego: 0, recibido: 0, acreditado: 0, utilidad: 0, recibidoTasa: 0, usdLlegoTasa: 0, acreditadoTasa: 0, usdTasa: 0, ajustesSueltos: 0, nAjustesSueltos: 0 };
+    const tipos = new Set(filas.filter(d => d.liq && !d.liq.anulado).map(d => d.liq.tipo));
+    const tipoTasa = tipos.size > 1 ? 'cargue' : [...tipos][0];
     for (const d of filas) {
-      if (d.type === 'adjustment') { if (!d.reversaDe && d.esDebito) { t.ajustesSueltos += Number(d.amount) || 0; t.nAjustesSueltos++; } continue; }
+      if (d.type === 'adjustment') { if (!(d.vinculado || d.reversaDe) && d.esDebito) { t.ajustesSueltos += Number(d.amount) || 0; t.nAjustesSueltos++; } continue; }
       const l = d.liq; if (!l || l.anulado) continue;
       const u = l.usd ?? 0;
       t.usd += u; t.usdLlego += l.usdLlego ?? u;
       t.recibido += l.totalCop ?? l.tercerosCop ?? 0; t.acreditado += l.tercerosCop ?? 0; t.utilidad += l.utilidadCop ?? 0;
-      // Promedio ponderado por los USDT de cada operación.
-      if (u > 0 && l.tasaLincoin) { t.ventaPond += l.tasaLincoin * u; t.usdVenta += u; }
-      if (u > 0 && l.tasaCliente) { t.clientePond += l.tasaCliente * u; t.usdCliente += u; }
+      if (l.tipo === tipoTasa && u > 0) {
+        if (l.totalCop != null && l.tasaLincoin) { t.recibidoTasa += l.totalCop; t.usdLlegoTasa += l.usdLlego ?? u; }
+        if (l.tercerosCop != null && l.tasaCliente) { t.acreditadoTasa += l.tercerosCop + (l.comisionBrebCop ?? 0); t.usdTasa += u; }
+      }
     }
-    return { ...t, tasaVenta: t.usdVenta ? t.ventaPond / t.usdVenta : null, tasaCliente: t.usdCliente ? t.clientePond / t.usdCliente : null };
+    return { ...t, mezcla: tipos.size > 1, tasaVenta: t.usdLlegoTasa ? t.recibidoTasa / t.usdLlegoTasa : null, tasaCliente: t.usdTasa ? t.acreditadoTasa / t.usdTasa : null };
   };
   const tot = useMemo(() => totalesDe(vistos), [vistos]);
   const totCargues = useMemo(() => totalesDe(detalle.filter(d => d.liq?.tipo === 'cargue')), [detalle]);
@@ -395,18 +416,22 @@ const DetalleCliente: React.FC<{ cliente: any; periodo: Periodo; onVolver: () =>
   const exportar = () => {
     const filaDe = (d: any) => {
       const l = d.liq;
-      const estado = d.type === 'adjustment' ? (d.reversaDe ? 'Revierte un cargue' : 'Sin vincular') : l?.anulado ? 'Anulado' : l?.reversadoCop ? 'Corregido' : '';
-      return [d.created_at ? new Date(d.created_at) : null, TIPO_TX[d.type] ?? d.type, estado,
+      const fRev = d.reversaDe ? fechaDe(String(d.reversaDe)) : null;
+      const estado = d.type === 'adjustment'
+        ? ((d.vinculado || d.reversaDe) ? `Reversa del cargue${fRev ? ` del ${fRev}` : ''}` : d.noRevierte ? 'Otro ajuste (no revierte un cargue)' : 'Sin vincular')
+        : l?.anulado ? 'Anulado' : l?.reversadoCop ? 'Corregido' : '';
+      return [d.created_at ? new Date(d.created_at) : null, TIPO_TX[d.type] ?? d.type, d.riel ?? '', estado,
         l?.usd ?? null, l?.usdLlego ?? null, l?.tasaLincoin ?? null, l ? (l.totalCop ?? null) : null, l?.tasaCliente ?? null,
-        l ? (l.tercerosCop ?? null) : (d.type === 'adjustment' ? -(Number(d.amount) || 0) : null), l?.comisionBrebCop ?? null, l?.utilidadCop ?? null,
+        // Una reversa vinculada no se resta aparte: ya está adentro del cargue.
+        l ? (l.tercerosCop ?? null) : (d.type === 'adjustment' && !(d.vinculado || d.reversaDe) ? -(Number(d.amount) || 0) : null), l?.comisionBrebCop ?? null, l?.utilidadCop ?? null,
         l ? FUENTE[l.fuente] ?? l.fuente : '', d.currency, d.factura?.estado ?? '', d.factura?.numero ?? '', d.factura?.error ?? l?.nota ?? d.nota ?? ''];
     };
     descargarXlsx(`lincoin-${String(c.nombre ?? 'cliente').replace(/[^\w]+/g, '-').slice(0, 40)}-${new Date().toISOString().slice(0, 10)}.xlsx`, [{
       nombre: 'Operaciones',
       filas: [
-        ['Fecha', 'Tipo', 'Estado', 'USDT entró', 'USDT llegó', 'Tasa venta', 'Recibido COP', 'Tasa cliente', 'Acreditado COP', 'Comisión Bre-B COP', 'Utilidad COP', 'Utilidad', 'Saldo', 'Factura', 'Número', 'Detalle'],
+        ['Fecha', 'Tipo', 'Riel', 'Estado', 'USDT entró', 'USDT llegó', 'Tasa venta', 'Recibido COP', 'Tasa cliente', 'Acreditado COP', 'Comisión Bre-B COP', 'Utilidad COP', 'Utilidad', 'Saldo', 'Factura', 'Número', 'Detalle'],
         ...vistos.map(filaDe),
-        ['TOTAL', '', '', tot.usd, tot.usdLlego, tot.tasaVenta, tot.recibido, tot.tasaCliente, tot.acreditado, null, tot.utilidad, '', '', '', '', tot.nAjustesSueltos ? `Ajustes sin vincular: -${tot.ajustesSueltos}` : ''],
+        ['TOTAL', '', riel === 'todos' ? '' : riel, tot.mezcla ? 'Tasas: solo cargues' : '', tot.usd, tot.usdLlego, tot.tasaVenta, tot.recibido, tot.tasaCliente, tot.acreditado, null, tot.utilidad, '', '', '', '', tot.nAjustesSueltos ? `Ajustes sin vincular: -${tot.ajustesSueltos}` : ''],
       ],
     }]);
   };
@@ -453,13 +478,18 @@ const DetalleCliente: React.FC<{ cliente: any; periodo: Periodo; onVolver: () =>
         {([['todo', 'Todo'], ['cargues', 'Cargues'], ['conversiones', 'Conversiones'], ...((c.ajustes || c.ajustesVinculados) ? [['ajustes', 'Ajustes']] as const : []), ...(c.enPerdida ? [['perdida', `Con pérdida (${c.enPerdida})`]] as const : [])] as const).map(([k, n]) => (
           <button key={k} onClick={() => setFiltro(k)} className={`text-xs font-bold px-3 py-1.5 rounded-full border ${filtro === k ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>{n}</button>
         ))}
+        {rieles.length > 1 && <span className="w-px bg-slate-200 mx-1" />}
+        {rieles.length > 1 && (['todos', ...(['ACH', 'Bre-B', 'Saldo Lincoin'] as const).filter(r => rieles.includes(r))] as const).map(k => (
+          <button key={k} onClick={() => setRiel(k as any)} className={`text-xs font-bold px-3 py-1.5 rounded-full border ${riel === k ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>{k === 'todos' ? 'Todos los rieles' : k}</button>
+        ))}
       </div>
       <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
-        <table className="w-full text-xs min-w-[1180px]">
+        <table className="w-full text-xs min-w-[1260px]">
           <thead className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-wider">
             <tr>
               <th className="text-left px-4 py-2.5">Fecha</th>
               <th className="text-left px-3 py-2.5">Operación</th>
+              <th className="text-left px-3 py-2.5">Riel</th>
               <th className="text-right px-3 py-2.5">USDT entró</th>
               <th className="text-right px-3 py-2.5">Tasa venta</th>
               <th className="text-right px-3 py-2.5">Recibido</th>
@@ -471,18 +501,21 @@ const DetalleCliente: React.FC<{ cliente: any; periodo: Periodo; onVolver: () =>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {!vistos.length && <tr><td colSpan={10} className="px-4 py-6 text-center text-slate-400">{cargando ? 'Cargando…' : 'Nada en el período.'}</td></tr>}
+            {!vistos.length && <tr><td colSpan={11} className="px-4 py-6 text-center text-slate-400">{cargando ? 'Cargando…' : 'Nada en el período.'}</td></tr>}
             {vistos.map(d => {
               const l = d.liq;
               if (d.type === 'adjustment') return (
-                <tr key={d.id} className="align-top" style={{ background: d.reversaDe ? 'rgba(255,255,255,0.02)' : 'rgba(251,191,36,0.05)' }}>
+                <tr key={d.id} className="align-top" style={{ background: (d.vinculado || d.reversaDe) ? 'rgba(255,255,255,0.02)' : 'rgba(251,191,36,0.05)' }}>
                   <td className="px-4 py-2.5 text-slate-500 whitespace-nowrap">{fecha(d.created_at)}</td>
                   <td className="px-3 py-2.5">
-                    <p className="font-semibold text-slate-700">Ajuste {d.esDebito ? '(débito)' : '(crédito)'}</p>
+                    {(d.vinculado || d.reversaDe)
+                      ? <p className="font-semibold text-slate-700">Reversa del cargue{d.reversaDe && fechaDe(String(d.reversaDe)) ? ` del ${fechaDe(String(d.reversaDe))}` : ''}</p>
+                      : <p className="font-semibold text-slate-700">Ajuste {d.esDebito ? '(débito)' : '(crédito)'}</p>}
                     {d.nota && <p className="text-[10px] text-slate-400 max-w-[240px] break-words">{d.nota}</p>}
                   </td>
-                  <td colSpan={4} className="px-3 py-2.5 text-[10px] text-slate-400">{d.reversaDe ? 'Ya está restado dentro del cargue que revierte.' : d.esDebito ? 'No suma en los totales del cliente hasta que se vincule.' : ''}</td>
-                  <td className="px-3 py-2.5 text-right font-semibold whitespace-nowrap" style={{ color: d.esDebito ? '#DC2626' : undefined }}>{d.esDebito ? '−' : ''}{cop(d.amount)}</td>
+                  <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{d.riel ?? '—'}</td>
+                  <td colSpan={4} className="px-3 py-2.5 text-[10px] text-slate-400">{(d.vinculado || d.reversaDe) ? 'No se resta aparte: ya está adentro del cargue que revierte (anulado o corregido).' : d.esDebito ? 'No suma en los totales del cliente hasta que se vincule.' : ''}</td>
+                  <td className="px-3 py-2.5 text-right font-semibold whitespace-nowrap" style={{ color: d.esDebito && !(d.vinculado || d.reversaDe) ? '#DC2626' : '#94A3B8' }}>{d.esDebito ? '−' : ''}{cop(d.amount)}</td>
                   <td className="px-3 py-2.5"></td>
                   <td colSpan={2} className="px-3 py-2.5 text-right"><VincularAjuste fila={d} motivo={motivos[String(d.id)]} fechaDe={fechaDe} onHecho={aviso} /></td>
                 </tr>
@@ -501,6 +534,7 @@ const DetalleCliente: React.FC<{ cliente: any; periodo: Periodo; onVolver: () =>
                     {d.nota && <p className="text-[10px] text-slate-400 max-w-[240px] break-words">{d.nota}</p>}
                     {(anulado || l?.reversadoCop) && <p className="text-[10px] text-slate-500 max-w-[240px] break-words">{l.nota}</p>}
                   </td>
+                  <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{d.riel ?? '—'}</td>
                   <td className={`px-3 py-2.5 text-right whitespace-nowrap ${tachado}`}>
                     <p className="font-semibold text-slate-800">{usd(anulado ? o?.usd : l?.usd)}</p>
                     {!anulado && l?.usdLlego != null && l?.usd != null && Math.abs(l.usdLlego - l.usd) > 0.009 && <p className="text-[10px] text-slate-400">llegaron {usd(l.usdLlego)}</p>}
@@ -539,9 +573,9 @@ const DetalleCliente: React.FC<{ cliente: any; periodo: Periodo; onVolver: () =>
           {vistos.some(d => d.liq) && (
             <tfoot className="bg-slate-50 border-t-2 border-slate-200">
               <tr className="font-bold text-slate-800">
-                <td className="px-4 py-3" colSpan={2}>
-                  TOTAL
-                  <p className="text-[10px] font-normal text-slate-400">Sin anulados{tot.nAjustesSueltos ? ` · ${tot.nAjustesSueltos} ajuste${tot.nAjustesSueltos === 1 ? '' : 's'} sin vincular (−${cop(tot.ajustesSueltos)}) aparte` : ''}</p>
+                <td className="px-4 py-3" colSpan={3}>
+                  TOTAL{riel !== 'todos' ? ` · ${riel}` : ''}
+                  <p className="text-[10px] font-normal text-slate-400">Sin anulados ni sus reversas{tot.nAjustesSueltos ? ` · ${tot.nAjustesSueltos} ajuste${tot.nAjustesSueltos === 1 ? '' : 's'} sin vincular (−${cop(tot.ajustesSueltos)}) aparte` : ''}{tot.mezcla ? ' · tasas: solo cargues' : ''}</p>
                 </td>
                 <td className="px-3 py-3 text-right whitespace-nowrap">{usd(tot.usd)}</td>
                 <td className="px-3 py-3 text-right whitespace-nowrap text-slate-600">{tasa(tot.tasaVenta)}</td>
@@ -650,8 +684,8 @@ const Facturacion: React.FC<{ onAviso: (m: string, ok: boolean) => void }> = ({ 
           </div>
           <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full border ${cfg.activo ? 'bg-green-50 text-[#16A34A] border-green-200' : 'bg-slate-50 text-slate-500 border-slate-200'}`}>{cfg.activo ? 'AUTOMÁTICA ACTIVA' : 'PAUSADA'}</span>
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mt-4">
-          {(['emitida', 'pendiente', 'revision', 'error', 'omitida'] as const).map(k => (
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2 mt-4">
+          {(['emitida', 'pendiente', 'emitiendo', 'incierta', 'revision', 'error', 'omitida'] as const).map(k => (
             <div key={k} className="rounded-lg bg-slate-50 px-3 py-2">
               <p className="text-[10px] text-slate-400 font-bold uppercase">{ESTADO_FACTURA[k].txt}</p>
               <p className="text-base font-black text-slate-800">{resumen[k] ?? 0}</p>
@@ -665,7 +699,7 @@ const Facturacion: React.FC<{ onAviso: (m: string, ok: boolean) => void }> = ({ 
         <p className="text-[11px] text-slate-500">El usuario y la access key de la API de Siigo de Lincoin se pegan acá. Quedan cifradas en el servidor y no se vuelven a mostrar.</p>
         <div className="grid sm:grid-cols-3 gap-3">
           {campo('Usuario de la API', <input value={form.username ?? ''} onChange={e => set('username', e.target.value)} autoComplete="off" className="w-full border border-slate-200 rounded-lg px-2.5 py-2 text-sm" />)}
-          {campo('Access key', <input type="password" value={accessKey} onChange={e => setAccessKey(e.target.value)} autoComplete="new-password" placeholder={cfg.tieneAccessKey ? `Guardada (${cfg.access_key_pista?.largo ?? '?'} caracteres, …${cfg.access_key_pista?.fin ?? ''})` : 'Pegala acá'} className="w-full border border-slate-200 rounded-lg px-2.5 py-2 text-sm" />, cfg.tieneAccessKey ? 'Dejala vacía para conservar la guardada.' : undefined)}
+          {campo('Access key', <input type="password" value={accessKey} onChange={e => setAccessKey(e.target.value)} autoComplete="new-password" placeholder={cfg.tieneAccessKey ? 'Guardada — déjala vacía para conservarla' : 'Pegala acá'} className="w-full border border-slate-200 rounded-lg px-2.5 py-2 text-sm" />, cfg.tieneAccessKey ? 'Dejala vacía para conservar la guardada.' : undefined)}
           {campo('Partner-Id', <input value={form.partner_id ?? ''} onChange={e => set('partner_id', e.target.value)} placeholder="Lincoin" className="w-full border border-slate-200 rounded-lg px-2.5 py-2 text-sm" />)}
         </div>
         <div className="flex flex-wrap items-center gap-2">

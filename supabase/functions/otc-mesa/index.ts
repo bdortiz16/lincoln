@@ -264,6 +264,10 @@ async function caducarVencidos(): Promise<void> {
 // 0%: si se resolviera con `??` sobre un numero que puede ser 0, o con un `||`,
 // el cero caeria al valor por defecto y se le cobraria un margen que nadie le
 // nego.
+// raw_data.otcConfig lo escribe SOLO el servidor/admin: la migración de
+// blindaje lo agrega a las claves protegidas de raw_data. Mientras no esté
+// corrida, un cliente podría ponerse su propio margen; por eso este número se
+// toma de la base y nunca del pedido.
 async function margenDe(userId?: string): Promise<number> {
   if (userId) {
     try {
@@ -551,7 +555,13 @@ Deno.serve(async (req) => {
     if (action === 'cotizar') {
       const side = String(payload.side ?? 'vende_usdt')
       const monto = num(payload.fromAmount)
-      const c = await tasaUsdCop(String(caller.viaJwt ? caller.userId ?? '' : payload.user_id ?? ''), side)
+      // El margen de un cliente es pactado y privado: con la llave pública y
+      // el id de otro se veía su comisión. Sin sesión se cotiza con el margen
+      // por defecto; con sesión, el propio; la mesa puede pedir el de un cliente.
+      const uidCotiza = caller.admin
+        ? String(payload.user_id ?? caller.userId ?? '')
+        : (caller.viaJwt ? String(caller.userId ?? '') : '')
+      const c = await tasaUsdCop(uidCotiza, side)
       if (c.rate == null) {
         const emSinTasa = await estadoMesa()
         return json(200, {
@@ -674,7 +684,13 @@ Deno.serve(async (req) => {
           ? `Solicitud de cierre por ${montoTxt} a ${rate!.toLocaleString('es-CO', { maximumFractionDigits: 2 })} COP por USD `
             + `(referencia ${c.referencia?.toLocaleString('es-CO', { maximumFractionDigits: 2 })} menos ${c.margenPct}%). `
             + `Tenes ${mins} minutos para enviar y subir el comprobante.`
-          : `Solicitud de cierre por ${montoTxt}. No se pudo tomar cotizacion automatica (${motivo ?? 'sin detalle'}): la mesa la cotiza a mano y ahi arranca el plazo.`)
+          : `Solicitud de cierre por ${montoTxt}. No se pudo tomar cotizacion automatica: la mesa la cotiza a mano y ahi arranca el plazo.`)
+      // El motivo del proveedor NO va al hilo (lo lee el cliente y puede
+      // nombrar al proveedor o detalles de la infraestructura): queda en las
+      // notas internas de la mesa.
+      if (!conTasa && motivo) {
+        await db.from('otc_closes').update({ notas_internas: `Sin cotización automática: ${String(motivo).slice(0, 500)}` }).eq('id', creada.id)
+      }
 
       const nota = String(payload.nota ?? '').trim()
       if (nota) {
@@ -783,6 +799,21 @@ Deno.serve(async (req) => {
       const body = String(payload.body ?? '').trim()
       const adjunto = String(payload.adjunto ?? '').trim()
       if (!body && !adjunto) return json(400, { ok: false, error: 'mensaje vacio' })
+      // Un adjunto solo puede ser un archivo que este servidor guardó para ESTE
+      // cierre (acción 'comprobante'). Antes se aceptaba cualquier texto: con
+      // eso se cumplía el "comprobante obligatorio" de marcar_pagada sin subir
+      // nada, y el servidor firmaba cualquier ruta del bucket privado.
+      if (adjunto) {
+        const prefijo = `${r.cierre.id}/`
+        const nombreArch = adjunto.slice(prefijo.length)
+        if (!adjunto.startsWith(prefijo) || !nombreArch || nombreArch.includes('/') || nombreArch.includes('..')) {
+          return json(400, { ok: false, error: 'adjunto_invalido', message: 'Sube el archivo con el botón de adjuntar.' })
+        }
+        const { data: hay, error: eList } = await db.storage.from(BUCKET).list(r.cierre.id, { search: nombreArch, limit: 5 })
+        if (eList || !Array.isArray(hay) || !hay.some((o: any) => o?.name === nombreArch)) {
+          return json(400, { ok: false, error: 'adjunto_invalido', message: 'Sube el archivo con el botón de adjuntar.' })
+        }
+      }
       // El hilo NO se cierra con el cierre. Justo cuando una solicitud se
       // cancela por vencimiento es cuando un cliente que alcanzo a pagar
       // necesita avisar; bloquearle el chat ahi lo deja sin a quien escribirle
@@ -828,6 +859,15 @@ Deno.serve(async (req) => {
       if (!r.ok) return json(404, { ok: false, error: r.motivo })
       const rate = num(payload.rateFinal)
       if (!(rate > 0)) return json(400, { ok: false, error: 'la tasa tiene que ser mayor a cero' })
+      // Solo se fija (o renegocia) la tasa de un cierre que todavía no se
+      // pagó. Antes no había control: un cierre COMPLETADO volvía a
+      // 'esperando_pago' y se podía completar —acreditar— otra vez. Uno
+      // cancelado sí se puede reabrir: es el camino para el cliente que pagó
+      // después de que venciera el plazo.
+      const FIJABLES = ['abierta', 'en_proceso', 'esperando_pago', 'cancelada']
+      if (!FIJABLES.includes(String(r.cierre.status))) {
+        return json(409, { ok: false, error: 'estado_invalido', message: r.cierre.status === 'completada' ? 'Este cierre ya se completó: no se puede cambiar la tasa.' : 'El cliente ya marcó el pago: verifícalo y complétalo, o cancélalo antes de cambiar la tasa.' })
+      }
       const instrucciones = String(payload.instrucciones ?? '').trim()
 
       const monto = Number(r.cierre.from_amount)
@@ -838,11 +878,14 @@ Deno.serve(async (req) => {
       const mins = await ventanaPago()
       const vence = new Date(Date.now() + mins * 60_000).toISOString()
 
-      const { error } = await db.from('otc_closes').update({
+      // CAS sobre el estado: si entre la lectura y esta escritura alguien lo
+      // completó, no se reabre.
+      const { data: fijado, error } = await db.from('otc_closes').update({
         rate_final: rate, to_amount: to, status: 'esperando_pago',
         confirmada_at: ahora(), vence_at: vence, updated_at: ahora(),
-      }).eq('id', r.cierre.id)
+      }).eq('id', r.cierre.id).in('status', FIJABLES).select('id')
       if (error) return json(500, { ok: false, error: error.message })
+      if (!fijado?.length) return json(409, { ok: false, error: 'estado_invalido', message: 'El cierre cambió de estado mientras tanto. Recarga.' })
 
       await escribirMensaje(r.cierre.id, 'sistema',
         `Tasa confirmada: ${rate.toLocaleString('es-CO', { maximumFractionDigits: 2 })}. `
@@ -943,9 +986,12 @@ Deno.serve(async (req) => {
       // CAS sobre el estado: es el ÚNICO seguro contra completar dos veces —
       // dos clicks, dos pestañas o un reintento de red. Se toma ANTES de mover
       // plata, para que el acreditado corra una sola vez.
+      // Solo desde un estado vivo explícito: con un simple "distinto de
+      // completada" también pasaba una cancelada que se cancelaba en paralelo.
+      const COMPLETABLES = ['abierta', 'en_proceso', 'esperando_pago', 'pagada']
       const { data: ok } = await db.from('otc_closes').update({
         status: 'completada', completada_at: ahora(), updated_at: ahora(),
-      }).eq('id', r.cierre.id).neq('status', 'completada').select('id')
+      }).eq('id', r.cierre.id).in('status', COMPLETABLES).select('id')
       if (!ok?.length) return json(200, { ok: true, yaEstaba: true })
 
       // Completar es lo que ACREDITA. Antes solo cambiaba el estado: el cierre
@@ -959,7 +1005,8 @@ Deno.serve(async (req) => {
         // "completado" que no movio nada.
         await db.from('otc_closes').update({ status: r.cierre.status, completada_at: null, updated_at: ahora() }).eq('id', r.cierre.id)
         const detalle = errSaldo?.message ?? (res as any)?.error
-        await escribirMensaje(r.cierre.id, 'sistema', `No se pudo acreditar el saldo (${detalle}). El cierre sigue abierto.`)
+        // El detalle técnico va a la mesa (respuesta), no al hilo del cliente.
+        await escribirMensaje(r.cierre.id, 'sistema', 'No se pudo acreditar el saldo todavía. El cierre sigue abierto y la mesa lo revisa.')
         return json(500, { ok: false, error: 'no_acreditado', message: `No se pudo acreditar el saldo: ${detalle}. El cierre quedo como estaba.` })
       }
 
@@ -983,7 +1030,8 @@ Deno.serve(async (req) => {
           },
         })
       } catch (e: any) {
-        await escribirMensaje(r.cierre.id, 'sistema', `Saldo acreditado, pero el movimiento no quedo registrado (${e?.message ?? 'error'}). Avisar a soporte.`)
+        await escribirMensaje(r.cierre.id, 'sistema', 'Saldo acreditado, pero el movimiento no quedo registrado. La mesa ya fue avisada.')
+        console.error('[otc-mesa] movimiento sin registrar', r.cierre.id, e?.message ?? e)
       }
 
       await escribirMensaje(r.cierre.id, 'sistema',

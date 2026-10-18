@@ -46,6 +46,28 @@ const direccionDe = (t: any): string => {
 export const esCargueManual = (t: any) =>
   t?.source === 'admin_cargue' || t?.source === 'admin_backfill' || t?.type === 'adjustment' || (t?.type === 'load' && !!t?.rail);
 
+// Qué débitos revierten qué cargues (lo vincula Contabilidad: el cargue guarda
+// reverso = { ajustes, montoCop, anulado } y el débito reversaDe = id del
+// cargue). Un cargue ANULADO y su reversa se cancelan: se muestran juntos y se
+// cuentan UNA vez — antes el cargue anulado se dejaba fuera y su débito se
+// restaba además como un descuento suelto.
+export type InfoReverso = { cargueRevertido: Map<string, { montoCop: number; anulado: boolean }>; reversaDe: Map<string, string> };
+export function reversosDe(movimientos: any[]): InfoReverso {
+  const cargueRevertido = new Map<string, { montoCop: number; anulado: boolean }>();
+  const reversaDe = new Map<string, string>();
+  for (const t of movimientos ?? []) {
+    const rev = t?.reverso;
+    if (t?.type === 'load' && rev && typeof rev === 'object') {
+      const monto = Number(rev.montoCop) || 0;
+      const credito = Number(t?.acct?.creditedCop ?? t?.amount) || 0;
+      if (monto > 0) cargueRevertido.set(String(t.id), { montoCop: monto, anulado: rev.anulado === true || (credito > 0 && monto >= credito - 1) });
+      for (const a of Array.isArray(rev.ajustes) ? rev.ajustes : []) if (a?.id != null) reversaDe.set(String(a.id), String(t.id));
+    }
+    if (t?.type === 'adjustment' && t?.reversaDe) reversaDe.set(String(t.id), String(t.reversaDe));
+  }
+  return { cargueRevertido, reversaDe };
+}
+
 export function descargarMovimientosCliente(nombreCliente: string, movimientos: any[]) {
   const ordenados = [...(movimientos ?? [])]
     .map(t => ({ t, d: fechaDe(t) }))
@@ -69,7 +91,13 @@ export function descargarMovimientosCliente(nombreCliente: string, movimientos: 
   }
 
   const cargues = ordenados.filter(({ t }) => esCargueManual(t));
-  let acreditado = 0, descontado = 0;
+  const rev = reversosDe(movimientos ?? []);
+  const fechaPorId = new Map<string, Date | null>(ordenados.map(({ t, d }) => [String(t.id), d]));
+  // Lo acreditado que SIGUE vigente (cargue menos lo que se le revirtió), los
+  // anulados aparte, y los descuentos que NO revierten un cargue. El neto es
+  // el mismo de siempre, pero un cargue anulado y su reversa ya no aparecen
+  // como un acreditado más un descuento adicional.
+  let vigente = 0, descontadoSuelto = 0, corregido = 0, anuladoCop = 0, nAnulados = 0;
   const hojaCargues: Celda[][] = [[
     'Fecha', 'Riel', 'Movimiento', 'Neto COP', 'Bruto COP', 'Comisión COP',
     'USDT', 'Tasa de venta', 'Tasa al cliente', 'Utilidad COP', 'Nota', 'Id',
@@ -78,11 +106,24 @@ export function descargarMovimientosCliente(nombreCliente: string, movimientos: 
     const credito = (t.direction ?? (t.type === 'load' ? 'credit' : 'debit')) === 'credit';
     const soloRegistro = t.source === 'admin_backfill' || t.recordOnly === true;
     const monto = num(t.amount) ?? 0;
-    if (!soloRegistro) { if (credito) acreditado += monto; else descontado += monto; }
+    const r = rev.cargueRevertido.get(String(t.id));
+    const cargueDe = rev.reversaDe.get(String(t.id));
+    let movimiento = soloRegistro ? 'Solo registro' : credito ? 'Acreditado' : 'Descontado';
+    if (credito && r) movimiento = r.anulado ? 'Anulado (revertido completo)' : `Corregido (se revirtieron ${r.montoCop.toLocaleString('es-CO')})`;
+    if (!credito && cargueDe) {
+      const f = fechaPorId.get(cargueDe);
+      movimiento = `Reversa del cargue${f ? ` del ${f.toLocaleDateString('es-CO')}` : ''}`;
+    }
+    if (!soloRegistro) {
+      if (credito) {
+        if (r?.anulado) { nAnulados++; anuladoCop += monto; }
+        else { vigente += monto - (r?.montoCop ?? 0); corregido += r?.montoCop ?? 0; }
+      } else if (!cargueDe) descontadoSuelto += monto;
+    }
     const a = t.acct ?? {};
     hojaCargues.push([
       d, monedaDe({ ...t, currency: t.rail ?? t.currency }),
-      soloRegistro ? 'Solo registro' : credito ? 'Acreditado' : 'Descontado',
+      movimiento,
       credito ? monto : -monto, num(t.grossCop), num(t.feeCop),
       num(a.usdtGross), num(a.sellRate), num(a.clientRate), num(a.utilityCop),
       txt(t.note), txt(t.id),
@@ -94,9 +135,12 @@ export function descargarMovimientosCliente(nombreCliente: string, movimientos: 
     ['Cliente', nombreCliente],
     ['Movimientos en total', ordenados.length],
     ['Cargues y ajustes manuales', cargues.length],
-    ['Acreditado por cargues (COP)', acreditado],
-    ['Descontado por ajustes (COP)', descontado],
-    ['Neto de cargues (COP)', acreditado - descontado],
+    ['Acreditado por cargues vigentes (COP)', vigente],
+    ['Corregido en cargues (débitos vinculados, COP)', corregido],
+    ['Cargues anulados (se cancelan con su reversa)', nAnulados],
+    ['Monto de los cargues anulados (COP)', anuladoCop],
+    ['Descontado por ajustes que no revierten un cargue (COP)', descontadoSuelto],
+    ['Neto de cargues (COP)', vigente - descontadoSuelto],
     ['Generado', new Date()],
   ];
 

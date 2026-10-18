@@ -105,7 +105,7 @@ import { sonarCampana, campanaActiva } from './campanaOtc';
 import { Zap, ArrowLeftRight, ArrowLeft, Info, ChevronRight, Activity, Link2, MessageSquare } from 'lucide-react';
 import { pedirAdmin } from './adminApi';
 import { useMovimientosCliente } from './useMovimientosCliente';
-import { descargarMovimientosCliente } from './excelMovimientosCliente';
+import { descargarMovimientosCliente, reversosDe } from './excelMovimientosCliente';
 import { AdminEquipo } from './AdminEquipo';
 import { CollectionWalletCard } from './CollectionWalletCard';
 import type { AdminProfile } from './AdminPersonas/lib/adminAuth';
@@ -1712,6 +1712,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       setTxAccionando(true);
       const tx = selectedTreasuryTx;
       try {
+          if (action === 'approve' && tx.type === 'send' && (tx as any).insertadoPorCliente === true && !(tx as any).debitado) {
+              showToast('Esta solicitud no tiene el saldo descontado por el servidor: no se puede pagar. Recházala.', 8000, 'error');
+              return;
+          }
           // El aviso dice lo que PASÓ, no lo que se pidió: antes era fijo y
           // decía "aprobado" aunque la base no hubiera hecho nada.
           const r = action === 'approve'
@@ -2544,6 +2548,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
               .map(t => ({ t, d: fechaDe(t) }))
               .sort((a, b) => (b.d?.getTime() ?? 0) - (a.d?.getTime() ?? 0));
             const fmt = (v: any) => Math.round(Number(v) || 0).toLocaleString('es-CO');
+            // Qué débito revierte qué cargue (lo vincula Contabilidad). El
+            // cargue anulado y su reversa se muestran como tales: antes el
+            // débito salía como un "DESCONTADO" más, como si fuera un descuento
+            // adicional al cargue que justamente estaba anulando.
+            const rev = reversosDe(histCargues.movimientos as any[]);
+            const fechaCorta = (id: string) => { const x = cargues.find(c => String(c.t.id) === id); return x?.d ? x.d.toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' }) : null; };
             const revertir = (t: any) => {
               const esCredito = (t.direction ?? (t.type === 'load' ? 'credit' : 'debit')) === 'credit';
               const monto = Math.round(Number(t.grossCop ?? t.amount) || 0);
@@ -2593,16 +2603,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                           const esCredito = (t.direction ?? (t.type === 'load' ? 'credit' : 'debit')) === 'credit';
                           const backfill = t.source === 'admin_backfill' || t.recordOnly === true;
                           const a = t.acct;
+                          const r = esCredito ? rev.cargueRevertido.get(String(t.id)) : undefined;
+                          const cargueRevertido = !esCredito ? rev.reversaDe.get(String(t.id)) : undefined;
+                          const fRev = cargueRevertido ? fechaCorta(cargueRevertido) : null;
+                          const etiqueta = backfill ? 'SOLO REGISTRO' : r ? (r.anulado ? 'ANULADO' : 'CORREGIDO') : cargueRevertido ? 'REVERSA' : esCredito ? 'ACREDITADO' : 'DESCONTADO';
+                          const colorEt = backfill || (r && !r.anulado) ? '#FBBF24' : r?.anulado || cargueRevertido ? '#878E88' : esCredito ? '#4ADE80' : '#F87171';
                           return (
                             <tr key={t.id}>
                               <td style={{ padding: '10px 18px', fontSize: 12, color: '#b9beba', borderBottom: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>{d ? d.toLocaleString('es-CO', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'}</td>
                               <td style={{ padding: '10px 18px', fontSize: 12.5, color: '#F4F4F2', borderBottom: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap' }}>{railLabelOf(t.rail ?? t.currency ?? 'COP')}</td>
                               <td style={{ padding: '10px 18px', borderBottom: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap' }}>
-                                <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '3px 8px', borderRadius: 999, border: `1px solid ${backfill ? 'rgba(251,191,36,0.35)' : esCredito ? 'rgba(74,222,128,0.35)' : 'rgba(248,113,113,0.35)'}`, color: backfill ? '#FBBF24' : esCredito ? '#4ADE80' : '#F87171' }}>
-                                  {backfill ? 'SOLO REGISTRO' : esCredito ? 'ACREDITADO' : 'DESCONTADO'}
+                                <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '3px 8px', borderRadius: 999, border: `1px solid ${colorEt}59`, color: colorEt }}>
+                                  {etiqueta}
                                 </span>
+                                {r && <p style={{ fontSize: 10.5, color: '#878E88', margin: '3px 0 0' }}>{r.anulado ? 'Revertido completo: no suma' : `Se revirtieron ${fmt(r.montoCop)} COP`}</p>}
+                                {cargueRevertido && <p style={{ fontSize: 10.5, color: '#878E88', margin: '3px 0 0' }}>Reversa del cargue{fRev ? ` del ${fRev}` : ''}: no es un descuento adicional</p>}
                               </td>
-                              <td style={{ padding: '10px 18px', fontSize: 13, fontWeight: 700, textAlign: 'right', color: esCredito ? '#4ADE80' : '#F87171', borderBottom: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+                              <td style={{ padding: '10px 18px', fontSize: 13, fontWeight: 700, textAlign: 'right', color: r?.anulado || cargueRevertido ? '#878E88' : esCredito ? '#4ADE80' : '#F87171', textDecoration: r?.anulado ? 'line-through' : undefined, borderBottom: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
                                 {esCredito ? '+' : '−'}{fmt(t.amount)} COP
                                 {t.feeCop > 0 && <p style={{ fontSize: 10.5, color: '#878E88', margin: '2px 0 0', fontWeight: 500 }}>bruto {fmt(t.grossCop)} − fee {fmt(t.feeCop)}</p>}
                               </td>
@@ -2616,7 +2633,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                               </td>
                               <td style={{ padding: '10px 18px', fontSize: 11.5, color: '#878E88', borderBottom: '1px solid rgba(255,255,255,0.06)', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.note ?? ''}>{t.note ?? '—'}</td>
                               <td style={{ padding: '10px 18px', borderBottom: '1px solid rgba(255,255,255,0.06)', textAlign: 'right', whiteSpace: 'nowrap' }}>
-                                {!backfill && (
+                                {/* Un cargue ya anulado, o un débito que ya es la reversa de
+                                    un cargue, no se vuelve a "revertir" desde acá: sería un
+                                    segundo descuento (o un re-cargue) por la misma operación. */}
+                                {!backfill && !r?.anulado && !cargueRevertido && (
                                   <button onClick={() => revertir(t)} title="Prepara el movimiento contrario por el mismo monto. Igual pide revisar y 2FA."
                                     style={{ fontSize: 11.5, fontWeight: 700, color: '#878E88', background: 'transparent', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 7, padding: '5px 10px', cursor: 'pointer' }}
                                     className="hover:text-[#F4F4F2] hover:border-[rgba(255,255,255,0.25)] transition-colors">Revertir</button>
@@ -5089,6 +5109,12 @@ const renderDesign = () => (
                         ) : (
                             <div className="border p-4 rounded-lg">
                                 <h4 className="font-bold text-slate-700 mb-2">Datos de Destino</h4>
+                                {/* Una solicitud que insertó el propio cliente sin que el
+                                    servidor le descontara el saldo NO se paga: sería pagar
+                                    (o, al rechazarla, "devolver") plata que nunca salió. */}
+                                {selectedTreasuryTx.type === 'send' && (selectedTreasuryTx as any).insertadoPorCliente === true && !(selectedTreasuryTx as any).debitado && (
+                                    <p className="mb-2 inline-block text-[11px] font-bold px-2.5 py-1 rounded-full border border-red-300 bg-red-50 text-red-700">Sin débito verificado</p>
+                                )}
                                 <p><span className="font-bold">Banco:</span> {selectedTreasuryTx.bank}</p>
                                 <p><span className="font-bold">Cuenta:</span> {selectedTreasuryTx.account}</p>
                                 <p><span className="font-bold">Beneficiario:</span> {selectedTreasuryTx.beneficiary}</p>
@@ -5116,8 +5142,9 @@ const renderDesign = () => (
                                         {txAccionando ? 'Procesando…' : 'Rechazar'}
                                     </button>
                                     <button 
-                                        onClick={() => handleTxAction('approve')} disabled={txAccionando}
-                                        className="flex-1 py-3 bg-green-600 text-white font-bold rounded-lg hover:bg-green-700 transition-colors shadow-lg shadow-green-200 disabled:opacity-50 disabled:cursor-wait"
+                                        onClick={() => handleTxAction('approve')} disabled={txAccionando || (selectedTreasuryTx.type === 'send' && (selectedTreasuryTx as any).insertadoPorCliente === true && !(selectedTreasuryTx as any).debitado)}
+                                        title={selectedTreasuryTx.type === 'send' && (selectedTreasuryTx as any).insertadoPorCliente === true && !(selectedTreasuryTx as any).debitado ? 'Esta solicitud no tiene el saldo descontado por el servidor: no se puede pagar.' : undefined}
+                                        className="flex-1 py-3 bg-green-600 text-white font-bold rounded-lg hover:bg-green-700 transition-colors shadow-lg shadow-green-200 disabled:opacity-50 disabled:cursor-not-allowed"
                                     >
                                         {txAccionando ? 'Procesando…' : 'Aprobar Operación'}
                                     </button>

@@ -91,13 +91,21 @@ function conTasas(l: Liquidacion): Liquidacion {
 }
 
 // Un cargue revertido con un ajuste (débito). El ajuste se vincula al cargue
-// (solo, si cuadra, o a mano desde Contabilidad) y queda en raw_data.reverso:
+// (solo, si cuadra exacto, o a mano desde Contabilidad) y queda en
+// raw_data.reverso:
 //   · si se debitó todo lo acreditado, el cargue fue un error (otro cliente,
 //     duplicado): se ANULA — no suma, no deja utilidad, no se factura;
-//   · si se debitó una parte, al cliente se le acreditó de más y se le
-//     descontó el exceso: la venta (lo recibido) no cambia, lo acreditado
-//     baja y la utilidad SUBE en lo mismo (utilidad = recibido − lo que
-//     finalmente quedó acreditado). Es la misma definición del cargue.
+//   · si se debitó una parte, el cargue se corrige EN PROPORCIÓN: lo
+//     acreditado, lo recibido por la venta, los USDT y la utilidad bajan en la
+//     misma fracción; las tasas no cambian.
+//
+// Antes el débito se SUMABA a la utilidad (utilidad = recibido − lo que quedó
+// acreditado). Eso solo es cierto si lo que estuvo mal fue la tasa del
+// cliente; casi siempre lo que estuvo mal es el MONTO digitado (un cero de
+// más), y ahí la venta también fue menor. Un cargue Bre-B de 40.000.000 que
+// era de 4.000.000, corregido con un débito de 35.964.000, mostraba una
+// utilidad de 36.004.000 en vez de 4.000 — y esa "comisión" iba con IVA a la
+// factura. En proporción, el error no puede inflar nunca la utilidad.
 function conReverso(l: Liquidacion, rd: Record<string, any>): Liquidacion {
   const rev = rd.reverso && typeof rd.reverso === 'object' ? rd.reverso : null
   const revCop = num(rev?.montoCop) ?? 0
@@ -105,17 +113,17 @@ function conReverso(l: Liquidacion, rd: Record<string, any>): Liquidacion {
   if (!(revCop > 0) || !(acreditado > 0)) return l
   const original = { totalCop: l.totalCop, tercerosCop: l.tercerosCop, utilidadCop: l.utilidadCop, usd: l.usd }
   if (rev?.anulado === true || revCop >= acreditado - 1) {
-    return { ...l, original, reversadoCop: r2(revCop), anulado: true, facturable: false, tercerosCop: 0, utilidadCop: 0, totalCop: 0, usd: 0, usdLlego: 0,
+    return { ...l, original, reversadoCop: r2(revCop), anulado: true, facturable: false, tercerosCop: 0, utilidadCop: 0, totalCop: 0, usd: 0, usdLlego: 0, comisionBrebCop: l.comisionBrebCop != null ? 0 : null,
       nota: `Cargue anulado: se revirtió con un ajuste de $${fmt(revCop)}.` }
   }
-  const terceros = r2(acreditado - revCop)
-  const util = l.utilidadCop != null ? r2(l.utilidadCop + revCop) : null
-  // La tasa que de verdad quedó para el cliente, con lo acreditado ya corregido.
-  const tasaCliente = l.usd && l.usd > 0 && l.tasaCliente != null ? Math.round(l.tasaCliente * (terceros + (l.comisionBrebCop ?? 0)) / (acreditado + (l.comisionBrebCop ?? 0)) * 100) / 100 : l.tasaCliente
+  const f = (acreditado - revCop) / acreditado
+  const esc = (v: number | null) => v != null ? r2(v * f) : null
+  const escUsd = (v: number | null) => v != null ? Math.round(v * f * 1e6) / 1e6 : null
   return {
     ...l, original, reversadoCop: r2(revCop),
-    tercerosCop: terceros, utilidadCop: util, totalCop: util != null ? r2(terceros + util) : l.totalCop, tasaCliente,
-    nota: `Corregido: se le acreditó de más y se le descontaron $${fmt(revCop)}. Lo recibido por la venta no cambia; la utilidad es lo recibido menos lo que quedó acreditado.`,
+    tercerosCop: r2(acreditado - revCop), utilidadCop: esc(l.utilidadCop), totalCop: esc(l.totalCop),
+    usd: escUsd(l.usd), usdLlego: escUsd(l.usdLlego), comisionBrebCop: esc(l.comisionBrebCop),
+    nota: `Corregido: se le descontaron $${fmt(revCop)} de lo acreditado. El cargue se corrige en proporción (USDT, venta y utilidad); las tasas no cambian.`,
   }
 }
 
@@ -162,6 +170,12 @@ export function liquidacionDe(tx: any, cierre?: CierreOtc | null): Liquidacion |
     if (lc && num(lc.utilidadCop) != null && num(lc.totalCop) != null) {
       const u = num(lc.utilidadCop)!, t = num(lc.totalCop)!
       return conTasas({ ...base, totalCop: r2(t), utilidadCop: r2(u), tercerosCop: r2(t - u), fuente: 'registrada', usd: num(lc.usd), fijo: esCop(tx.currency) ? 'total' : 'terceros', nota: '' })
+    }
+    // Ninguno de los dos lados en pesos (USDT↔USD a la par, USD↔EUR): no hay
+    // factura en pesos que hacer y no es un "sin utilidad" pendiente.
+    const destino = rd.targetCurrency ?? rd.destCurrency ?? null
+    if (!esCop(tx.currency) && destino != null && !esCop(destino)) {
+      return { ...base, facturable: false, nota: `Conversión ${tx.currency} → ${destino}: sin lado en pesos, no lleva factura.` }
     }
     // GasFree: el cliente vende USDT, recibe pesos.
     if (rd.gasfree === true || String(rd.source ?? '') === 'MOUV') {
