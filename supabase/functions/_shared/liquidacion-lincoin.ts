@@ -91,11 +91,13 @@ function conTasas(l: Liquidacion): Liquidacion {
 }
 
 // Un cargue revertido con un ajuste (débito). El ajuste se vincula al cargue
-// desde Contabilidad y queda en raw_data.reverso:
-//   · si se debitó todo lo acreditado, el cargue fue un error: se ANULA (no
-//     suma, no deja utilidad, no se factura);
-//   · si se debitó una parte, el cargue se corrige: lo acreditado baja y la
-//     utilidad y los USDT bajan en la misma proporción.
+// (solo, si cuadra, o a mano desde Contabilidad) y queda en raw_data.reverso:
+//   · si se debitó todo lo acreditado, el cargue fue un error (otro cliente,
+//     duplicado): se ANULA — no suma, no deja utilidad, no se factura;
+//   · si se debitó una parte, al cliente se le acreditó de más y se le
+//     descontó el exceso: la venta (lo recibido) no cambia, lo acreditado
+//     baja y la utilidad SUBE en lo mismo (utilidad = recibido − lo que
+//     finalmente quedó acreditado). Es la misma definición del cargue.
 function conReverso(l: Liquidacion, rd: Record<string, any>): Liquidacion {
   const rev = rd.reverso && typeof rd.reverso === 'object' ? rd.reverso : null
   const revCop = num(rev?.montoCop) ?? 0
@@ -106,14 +108,14 @@ function conReverso(l: Liquidacion, rd: Record<string, any>): Liquidacion {
     return { ...l, original, reversadoCop: r2(revCop), anulado: true, facturable: false, tercerosCop: 0, utilidadCop: 0, totalCop: 0, usd: 0, usdLlego: 0,
       nota: `Cargue anulado: se revirtió con un ajuste de $${fmt(revCop)}.` }
   }
-  const f = (acreditado - revCop) / acreditado
-  const util = l.utilidadCop != null ? r2(l.utilidadCop * f) : null
   const terceros = r2(acreditado - revCop)
+  const util = l.utilidadCop != null ? r2(l.utilidadCop + revCop) : null
+  // La tasa que de verdad quedó para el cliente, con lo acreditado ya corregido.
+  const tasaCliente = l.usd && l.usd > 0 && l.tasaCliente != null ? Math.round(l.tasaCliente * (terceros + (l.comisionBrebCop ?? 0)) / (acreditado + (l.comisionBrebCop ?? 0)) * 100) / 100 : l.tasaCliente
   return {
     ...l, original, reversadoCop: r2(revCop),
-    tercerosCop: terceros, utilidadCop: util, totalCop: util != null ? r2(terceros + util) : l.totalCop,
-    usd: l.usd != null ? Math.round(l.usd * f * 1e6) / 1e6 : null, usdLlego: l.usdLlego != null ? Math.round(l.usdLlego * f * 1e6) / 1e6 : null,
-    nota: `Corregido con un ajuste de $${fmt(revCop)}: lo acreditado, los USDT y la utilidad bajan en la misma proporción.`,
+    tercerosCop: terceros, utilidadCop: util, totalCop: util != null ? r2(terceros + util) : l.totalCop, tasaCliente,
+    nota: `Corregido: se le acreditó de más y se le descontaron $${fmt(revCop)}. Lo recibido por la venta no cambia; la utilidad es lo recibido menos lo que quedó acreditado.`,
   }
 }
 

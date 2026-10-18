@@ -345,47 +345,63 @@ async function vincularAjuste(ajusteId: string, cargueId: string | null, adminId
 }
 
 // ── Vincular SOLO el débito que revierte un cargue ─────────────────────
-// Cuando el operador se equivoca, acredita un cargue y después descuenta lo
-// mismo. Ese débito se vincula solo al cargue que revierte: mismo cliente,
-// mismo saldo, anterior al débito (hasta 60 días) y con lo que le queda por
-// revertir IGUAL al débito (±1 peso). Si no cuadra exacto con ninguno, no se
-// adivina: queda para vincular a mano en Contabilidad.
-async function autoVincularAjuste(aj: { id: string; user_id: string; amount: number | string; currency: string; created_at: string }, adminId: string | null): Promise<{ cargueId: string; anulado?: boolean; aviso?: string } | null> {
+// Cuando el operador se equivoca, acredita un cargue y después descuenta.
+// Ese débito se vincula solo al cargue que corrige (mismo cliente y saldo,
+// cargue anterior al débito):
+//   1. el que tiene por revertir EXACTO el monto del débito (±1 peso), hasta
+//      60 días antes → el cargue se anula;
+//   2. si ninguno cuadra exacto, el ÚNICO cargue de las 72 horas anteriores
+//      que alcanza a cubrir el débito → se corrige (se acreditó de más).
+// Si hay más de uno posible, no se adivina: queda para elegir a mano, con el
+// motivo a la vista.
+async function autoVincularAjuste(aj: { id: string; user_id: string; amount: number | string; currency: string; created_at: string }, adminId: string | null): Promise<{ cargueId?: string; anulado?: boolean; aviso?: string; motivo?: string }> {
   const monto = Number(aj.amount) || 0
-  if (!(monto > 0)) return null
+  if (!(monto > 0)) return { motivo: 'El débito no tiene monto.' }
   const ids = await idsMismaPersona(String(aj.user_id))
-  const desde = new Date(Date.parse(aj.created_at) - 60 * 86400_000).toISOString()
+  const tDebito = Date.parse(aj.created_at)
+  const desde = new Date(tDebito - 60 * 86400_000).toISOString()
   const { data } = await db.from('transactions')
     .select('id, amount, created_at, acct:raw_data->acct, reverso:raw_data->reverso, source:raw_data->>source')
     .in('user_id', ids).eq('type', 'load').eq('status', 'Completado').eq('currency', aj.currency)
     .lte('created_at', aj.created_at).gte('created_at', desde)
     .order('created_at', { ascending: false }).limit(200)
-  const exacto = ((data ?? []) as any[])
+  const cargues = ((data ?? []) as any[])
     .filter(c => c.source === 'admin_cargue' || c.source === 'admin_backfill')
-    .find(c => {
-      const credit = Number(c.acct?.creditedCop ?? c.amount) || 0
-      const resta = credit - (Number(c.reverso?.montoCop ?? 0) || 0)
-      return resta > 0 && Math.abs(resta - monto) <= 1
-    })
-  if (!exacto) return null
-  const r = await vincularAjuste(String(aj.id), String(exacto.id), adminId, true)
-  if ('error' in r) return null
-  return { cargueId: String(exacto.id), anulado: r.anulado, ...(r.aviso ? { aviso: r.aviso } : {}) }
+    .map(c => { const credit = Number(c.acct?.creditedCop ?? c.amount) || 0; return { id: String(c.id), at: String(c.created_at), credit, resta: credit - (Number(c.reverso?.montoCop ?? 0) || 0) } })
+    .filter(c => c.resta > 0)
+  const fmt = (n: number) => `$${Math.round(n).toLocaleString('es-CO')}`
+  if (!cargues.length) return { motivo: `No hay cargues de ${aj.currency} de este cliente en los 60 días anteriores al débito.` }
+  let elegido = cargues.find(c => Math.abs(c.resta - monto) <= 1)
+  if (!elegido) {
+    const cercanos = cargues.filter(c => tDebito - Date.parse(c.at) <= 72 * 3600_000 && c.resta >= monto - 1)
+    if (cercanos.length === 1) elegido = cercanos[0]
+    else {
+      const lista = cargues.slice(0, 4).map(c => `${new Date(c.at).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' })} por ${fmt(c.resta)}`).join(', ')
+      return { motivo: cercanos.length > 1
+        ? `Ningún cargue tiene ${fmt(monto)} exactos y hay ${cercanos.length} cargues en las 72 horas anteriores que podrían ser: elígelo a mano.`
+        : `Ningún cargue de los 60 días anteriores tiene ${fmt(monto)} por revertir. Los más cercanos: ${lista}.` }
+    }
+  }
+  const r = await vincularAjuste(String(aj.id), elegido.id, adminId, true)
+  if ('error' in r) return { motivo: r.error }
+  return { cargueId: elegido.id, anulado: r.anulado, ...(r.aviso ? { aviso: r.aviso } : {}) }
 }
 
-// Los débitos viejos que quedaron sueltos (de antes de que existiera el
-// vínculo), de un cliente o de todos.
-async function autoVincularPendientes(userIds: string[] | null, adminId: string | null): Promise<{ revisados: number; vinculados: number; avisos: string[] }> {
+// Los débitos sueltos (de antes de que existiera el vínculo), de un cliente o
+// de todos. Los más nuevos primero.
+async function autoVincularPendientes(userIds: string[] | null, adminId: string | null): Promise<{ revisados: number; vinculados: number; avisos: string[]; sinVincular: { id: string; monto: number; motivo: string }[] }> {
   let q = db.from('transactions')
     .select('id, user_id, amount, currency, created_at, reversaDe:raw_data->>reversaDe, direction:raw_data->>direction')
     .eq('type', 'adjustment').eq('status', 'Completado')
   if (userIds) q = q.in('user_id', userIds)
-  const { data } = await q.order('created_at', { ascending: true }).limit(500)
-  const sueltos = ((data ?? []) as any[]).filter(a => !a.reversaDe && String(a.direction ?? 'debit') === 'debit')
-  const out = { revisados: sueltos.length, vinculados: 0, avisos: [] as string[] }
+  const { data } = await q.order('created_at', { ascending: false }).limit(300)
+  // Del más viejo al más nuevo: un cargue con dos débitos se revierte en orden.
+  const sueltos = ((data ?? []) as any[]).filter(a => !a.reversaDe && String(a.direction ?? 'debit') === 'debit').reverse()
+  const out = { revisados: sueltos.length, vinculados: 0, avisos: [] as string[], sinVincular: [] as { id: string; monto: number; motivo: string }[] }
   for (const a of sueltos) {
     const r = await autoVincularAjuste(a, adminId)
-    if (r) { out.vinculados++; if (r.aviso) out.avisos.push(r.aviso) }
+    if (r.cargueId) { out.vinculados++; if (r.aviso) out.avisos.push(r.aviso) }
+    else out.sinVincular.push({ id: String(a.id), monto: Number(a.amount) || 0, motivo: r.motivo ?? '' })
   }
   return out
 }
@@ -3848,7 +3864,7 @@ Deno.serve(async (req: Request) => {
             reverso = 'error' in v ? { ok: false, error: v.error } : { ok: true, cargueId: elegido, ...(v.aviso ? { aviso: v.aviso } : {}) }
           } else if (elegido !== 'no') {
             const v = await autoVincularAjuste({ id: String((txIns as any).id), user_id: String(body.userId), amount: Math.abs(credit), currency: cur, created_at: new Date().toISOString() }, auth.userId ?? null)
-            if (v) reverso = { ok: true, auto: true, cargueId: v.cargueId, ...(v.aviso ? { aviso: v.aviso } : {}) }
+            if (v.cargueId) reverso = { ok: true, auto: true, cargueId: v.cargueId, ...(v.aviso ? { aviso: v.aviso } : {}) }
           }
         }
         return json({ success: true, newBalance: newBal, recordOnly, grossCop: Math.abs(delta), feeCop, netCop: Math.abs(credit), feePct: feeCop > 0 ? BREB_CARGUE_FEE_PCT : 0, acct: acct ? { ...acct, creditedCop: credit, feeCopBreb: feeCop, utilityCop } : null, ...(reverso ? { reverso } : {}) })

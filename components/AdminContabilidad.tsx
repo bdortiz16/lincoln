@@ -300,7 +300,7 @@ const tasa = (n: unknown) => {
 
 // Vincular un débito (ajuste) al cargue que corrige. Las sugerencias las arma
 // el servidor: mismo saldo, anterior al débito, y primero el que cuadra exacto.
-const VincularAjuste: React.FC<{ fila: any; fechaDe: (id: string) => string | null; onHecho: (m: string, ok: boolean) => void }> = ({ fila, fechaDe, onHecho }) => {
+const VincularAjuste: React.FC<{ fila: any; motivo?: string; fechaDe: (id: string) => string | null; onHecho: (m: string, ok: boolean) => void }> = ({ fila, motivo, fechaDe, onHecho }) => {
   const sug: any[] = fila.sugerencias ?? [];
   const [elegido, setElegido] = useState<string>(sug.find(x => x.exacto)?.id ?? sug[0]?.id ?? '');
   const [enviando, setEnviando] = useState(false);
@@ -322,9 +322,10 @@ const VincularAjuste: React.FC<{ fila: any; fechaDe: (id: string) => string | nu
     );
   }
   if (!fila.esDebito) return <p className="text-[10px] text-slate-400">Ajuste a favor del cliente</p>;
-  if (!sug.length) return <p className="text-[10px] text-amber-700 max-w-[220px]">Sin vincular. No hay un cargue anterior de este saldo que lo cubra.</p>;
+  if (!sug.length) return <p className="text-[10px] text-amber-700 max-w-[260px]">Sin vincular. {motivo || 'No hay un cargue anterior de este saldo que lo cubra.'}</p>;
   return (
     <div className="flex items-center gap-1.5 flex-wrap justify-end">
+      {motivo && <p className="text-[10px] text-amber-700 w-full text-right max-w-[300px] ml-auto">No se vinculó solo: {motivo}</p>}
       <select value={elegido} onChange={e => setElegido(e.target.value)} className="border border-slate-300 rounded-lg px-2 py-1 text-[11px] bg-white max-w-[230px]">
         {sug.map(x => (
           <option key={x.id} value={x.id}>
@@ -345,8 +346,16 @@ const DetalleCliente: React.FC<{ cliente: any; periodo: Periodo; onVolver: () =>
   const [error, setError] = useState<string | null>(null);
   const [cargando, setCargando] = useState(false);
   const [filtro, setFiltro] = useState<'todo' | 'cargues' | 'conversiones' | 'ajustes' | 'perdida'>('todo');
+  const [motivos, setMotivos] = useState<Record<string, string>>({});
   const cargar = useCallback(async () => {
     setCargando(true); setError(null);
+    // Primero se vinculan solos los débitos de este cliente que corrigen un
+    // cargue; los que no, vuelven con el motivo para mostrarlo en su fila.
+    const a = await pedirAdmin({ action: 'contabilidad_autovincular', userId: cliente.userId });
+    if (a?.ok) {
+      setMotivos(Object.fromEntries(((a.sinVincular ?? []) as any[]).map(x => [String(x.id), String(x.motivo ?? '')])));
+      if (a.vinculados > 0) onAviso(`Se vincularon solos ${a.vinculados} débito${a.vinculados === 1 ? '' : 's'} al cargue que corregían.${a.avisos?.length ? ` ${a.avisos.join(' ')}` : ''}`, !a.avisos?.length);
+    }
     const r = await pedirAdmin({ action: 'contabilidad_cliente', userId: cliente.userId, ...rango(periodo) });
     setCargando(false);
     if (r?.ok) setDatos(r); else setError(r?.error ?? 'No se pudo leer el detalle.');
@@ -475,7 +484,7 @@ const DetalleCliente: React.FC<{ cliente: any; periodo: Periodo; onVolver: () =>
                   <td colSpan={4} className="px-3 py-2.5 text-[10px] text-slate-400">{d.reversaDe ? 'Ya está restado dentro del cargue que revierte.' : d.esDebito ? 'No suma en los totales del cliente hasta que se vincule.' : ''}</td>
                   <td className="px-3 py-2.5 text-right font-semibold whitespace-nowrap" style={{ color: d.esDebito ? '#DC2626' : undefined }}>{d.esDebito ? '−' : ''}{cop(d.amount)}</td>
                   <td className="px-3 py-2.5"></td>
-                  <td colSpan={2} className="px-3 py-2.5 text-right"><VincularAjuste fila={d} fechaDe={fechaDe} onHecho={aviso} /></td>
+                  <td colSpan={2} className="px-3 py-2.5 text-right"><VincularAjuste fila={d} motivo={motivos[String(d.id)]} fechaDe={fechaDe} onHecho={aviso} /></td>
                 </tr>
               );
               const anulado = !!l?.anulado;

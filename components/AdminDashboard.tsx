@@ -2478,7 +2478,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                             : null;
                         })()}
                         <p className="text-[10px] mt-1.5" style={{ color: '#878E88' }}>
-                          Si descuentas todo lo acreditado, el cargue queda anulado: no suma, no deja utilidad y no se factura. Si es una parte, se corrige en proporción.
+                          Si descuentas todo lo acreditado, el cargue queda anulado: no suma, no deja utilidad y no se factura. Si es una parte (se le acreditó de más), el cargue queda con lo acreditado correcto y la utilidad se recalcula.
                         </p>
                       </div>
                     );
