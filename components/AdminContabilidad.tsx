@@ -156,7 +156,9 @@ const Resumen: React.FC<{ datos: any; cargando: boolean }> = ({ datos, cargando 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <Kpi titulo="Cargado a clientes" valor={cop(t.cargadoCop)} detalle={`${t.cargues ?? 0} cargues · ${usd(t.usdCargado)} USDT`} />
         <Kpi titulo="Convertido" valor={cop(t.convertidoCop)} detalle={`${t.conversiones ?? 0} conversiones · ${usd(t.usdConvertido)} USD`} />
-        <Kpi titulo="Utilidad Lincoin" valor={cop(utilidad)} acento detalle={t.utilidadEstimada > 0 ? `${cop(t.utilidadEstimada)} estimada (mesa OTC)` : `Cargues ${cop(t.utilidadCargues)} · Conv. ${cop(t.utilidadConversiones)}`} />
+        <Kpi titulo="Utilidad Lincoin (neta)" valor={cop(utilidad)} acento detalle={t.enPerdida > 0
+          ? `Ganancias ${cop(t.gananciaCop)} − pérdidas ${cop(Math.abs(t.perdidaCop))} (${t.enPerdida} en rojo)`
+          : t.utilidadEstimada > 0 ? `${cop(t.utilidadEstimada)} estimada (mesa OTC)` : `Cargues ${cop(t.utilidadCargues)} · Conv. ${cop(t.utilidadConversiones)}`} />
         <Kpi titulo="Facturas Lincoin" valor={`${f.emitida ?? 0} emitidas`} detalle={`${t.porFacturar ?? 0} por facturar · ${f.error ?? 0} con error · ${f.revision ?? 0} por revisar`} />
       </div>
       {t.ajustes > 0 && (
@@ -271,7 +273,10 @@ const Clientes: React.FC<{ datos: any; cargando: boolean; periodo: Periodo; onAv
                 </td>
                 <td className="px-3 py-2.5 text-right text-slate-600">{c.conversiones}</td>
                 <td className="px-3 py-2.5 text-right font-semibold text-slate-800">{cop(c.convertidoCop)}</td>
-                <td className="px-3 py-2.5 text-right font-bold text-[#16A34A]">{cop((c.utilidadCargues ?? 0) + (c.utilidadConversiones ?? 0))}</td>
+                <td className="px-3 py-2.5 text-right">
+                  <p className="font-bold text-[#16A34A]">{cop((c.utilidadCargues ?? 0) + (c.utilidadConversiones ?? 0))}</p>
+                  {c.enPerdida > 0 && <p className="text-[10px] text-red-600">incluye −{cop(Math.abs(c.perdidaCop)).replace('−', '')} en pérdida</p>}
+                </td>
                 <td className="px-3 py-2.5 text-right">
                   <span className="text-slate-700">{c.facturadas}</span>
                   {c.porFacturar > 0 && <span className="text-amber-700"> · {c.porFacturar} por facturar</span>}
@@ -339,7 +344,7 @@ const DetalleCliente: React.FC<{ cliente: any; periodo: Periodo; onVolver: () =>
   const [datos, setDatos] = useState<any | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cargando, setCargando] = useState(false);
-  const [filtro, setFiltro] = useState<'todo' | 'cargues' | 'conversiones' | 'ajustes'>('todo');
+  const [filtro, setFiltro] = useState<'todo' | 'cargues' | 'conversiones' | 'ajustes' | 'perdida'>('todo');
   const cargar = useCallback(async () => {
     setCargando(true); setError(null);
     const r = await pedirAdmin({ action: 'contabilidad_cliente', userId: cliente.userId, ...rango(periodo) });
@@ -352,7 +357,8 @@ const DetalleCliente: React.FC<{ cliente: any; periodo: Periodo; onVolver: () =>
   const vistos = detalle.filter(d => filtro === 'todo'
     || (filtro === 'cargues' && d.liq?.tipo === 'cargue')
     || (filtro === 'conversiones' && d.liq?.tipo === 'conversion')
-    || (filtro === 'ajustes' && d.type === 'adjustment'));
+    || (filtro === 'ajustes' && d.type === 'adjustment')
+    || (filtro === 'perdida' && !d.liq?.anulado && Number(d.liq?.utilidadCop) < 0));
   const fechaDe = (id: string) => { const d = detalle.find(x => String(x.id) === id); return d ? new Date(d.created_at).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' }) : null; };
   const aviso = (m: string, ok: boolean) => { onAviso(m, ok); cargar(); };
 
@@ -417,16 +423,25 @@ const DetalleCliente: React.FC<{ cliente: any; periodo: Periodo; onVolver: () =>
         <Kpi titulo="USDT que entró" valor={`${usd(c.usdCargado)} USDT`} detalle={`${c.cargues ?? 0} cargues${c.usdLlego && Math.abs(c.usdLlego - c.usdCargado) > 0.009 ? ` · llegaron ${usd(c.usdLlego)}` : ''}`} />
         <Kpi titulo="Recibido por la venta" valor={cop(c.cargadoTotalCop)} detalle={`Tasa promedio ${tasa(tasaVentaProm)}`} />
         <Kpi titulo="Acreditado al cliente" valor={cop(c.cargadoCop)} detalle={`Tasa promedio ${tasa(tasaClienteProm)}${c.comisionBrebCop ? ` · comisión Bre-B ${cop(c.comisionBrebCop)}` : ''}`} />
-        <Kpi titulo="Utilidad Lincoin" valor={cop(util)} acento detalle={`Cargues ${cop(c.utilidadCargues)}${c.conversiones ? ` · conversiones ${cop(c.utilidadConversiones)}` : ''}${c.utilidadEstimada > 0 ? ` · ${cop(c.utilidadEstimada)} estimada` : ''}`} />
+        <Kpi titulo="Utilidad Lincoin (neta)" valor={cop(util)} acento detalle={c.enPerdida > 0
+          ? `Ganancias ${cop(c.gananciaCop)} − pérdidas ${cop(Math.abs(c.perdidaCop))} (${c.enPerdida} en rojo)`
+          : `Cargues ${cop(c.utilidadCargues)}${c.conversiones ? ` · conversiones ${cop(c.utilidadConversiones)}` : ''}${c.utilidadEstimada > 0 ? ` · ${cop(c.utilidadEstimada)} estimada` : ''}`} />
         <Kpi titulo="Facturas Lincoin" valor={`${c.facturadas ?? 0} emitidas`} detalle={`${cop(c.facturadoCop)} facturado · ${c.porFacturar ?? 0} por facturar${c.facturasConError ? ` · ${c.facturasConError} con error` : ''}`} />
       </div>
       {c.conversiones > 0 && <p className="text-[11px] text-slate-500">Además: {c.conversiones} conversion{c.conversiones === 1 ? '' : 'es'} por {cop(c.convertidoCop)} ({usd(c.usdConvertido)} USD), con utilidad de {cop(c.utilidadConversiones)}.</p>}
+      {c.enPerdida > 0 && (
+        <Aviso tono="error">
+          {c.enPerdida} operaci{c.enPerdida === 1 ? 'ón tiene' : 'ones tienen'} utilidad NEGATIVA por {cop(Math.abs(c.perdidaCop))}: se le acreditó al cliente más de lo que se recibió por la venta. Eso resta de la utilidad: ganancias {cop(c.gananciaCop)} − pérdidas {cop(Math.abs(c.perdidaCop))} = {cop(util)}.
+          {' '}Si es un cargue errado que ya descontaste, vincula su ajuste (débito) y deja de restar; si los USDT o las tasas se escribieron mal, hay que corregir el cargue.
+          {' '}<button onClick={() => setFiltro('perdida')} className="underline font-bold">Ver las que están en rojo</button>
+        </Aviso>
+      )}
       {c.ajustes > 0 && <Aviso>Hay {c.ajustes} ajuste{c.ajustes === 1 ? '' : 's'} (débito) sin vincular por {cop(c.ajustadoCop)}. Si corrigen un cargue hecho por error, vincúlalos abajo: así el cargue se anula o se corrige y la utilidad cuadra.</Aviso>}
       {c.anulados > 0 && <p className="text-[11px] text-slate-500">{c.anulados} cargue{c.anulados === 1 ? '' : 's'} anulado{c.anulados === 1 ? '' : 's'} con su ajuste: no suman ni dejan utilidad.</p>}
       {c.facturasDeAnulados > 0 && <Aviso tono="error">{c.facturasDeAnulados} cargue{c.facturasDeAnulados === 1 ? '' : 's'} anulado{c.facturasDeAnulados === 1 ? '' : 's'} ya tenía{c.facturasDeAnulados === 1 ? '' : 'n'} factura emitida. Anúlala en Siigo (o haz la nota crédito).</Aviso>}
       {error && <Aviso tono="error">{error}</Aviso>}
       <div className="flex gap-1.5 flex-wrap">
-        {([['todo', 'Todo'], ['cargues', 'Cargues'], ['conversiones', 'Conversiones'], ...((c.ajustes || c.ajustesVinculados) ? [['ajustes', 'Ajustes']] as const : [])] as const).map(([k, n]) => (
+        {([['todo', 'Todo'], ['cargues', 'Cargues'], ['conversiones', 'Conversiones'], ...((c.ajustes || c.ajustesVinculados) ? [['ajustes', 'Ajustes']] as const : []), ...(c.enPerdida ? [['perdida', `Con pérdida (${c.enPerdida})`]] as const : [])] as const).map(([k, n]) => (
           <button key={k} onClick={() => setFiltro(k)} className={`text-xs font-bold px-3 py-1.5 rounded-full border ${filtro === k ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>{n}</button>
         ))}
       </div>
@@ -524,7 +539,7 @@ const DetalleCliente: React.FC<{ cliente: any; periodo: Periodo; onVolver: () =>
                 <td className="px-3 py-3 text-right whitespace-nowrap">{cop(tot.recibido)}</td>
                 <td className="px-3 py-3 text-right whitespace-nowrap text-slate-600">{tasa(tot.tasaCliente)}</td>
                 <td className="px-3 py-3 text-right whitespace-nowrap">{cop(tot.acreditado)}</td>
-                <td className="px-3 py-3 text-right whitespace-nowrap text-[#16A34A]">{cop(tot.utilidad)}</td>
+                <td className={`px-3 py-3 text-right whitespace-nowrap ${tot.utilidad < 0 ? 'text-red-600' : 'text-[#16A34A]'}`}>{cop(tot.utilidad)}</td>
                 <td colSpan={2}></td>
               </tr>
             </tfoot>

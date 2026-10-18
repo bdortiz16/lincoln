@@ -3075,6 +3075,10 @@ Deno.serve(async (req: Request) => {
           cargues: 0, anulados: 0, corregidos: 0, cargadoCop: 0, cargadoTotalCop: 0, usdCargado: 0, usdLlego: 0, utilidadCargues: 0, comisionBrebCop: 0,
           conversiones: 0, convertidoCop: 0, convertidoClienteCop: 0, usdConvertido: 0, utilidadConversiones: 0,
           utilidadEstimada: 0, sinUtilidad: 0, ajustes: 0, ajustadoCop: 0, ajustesVinculados: 0,
+          // La utilidad neta se abre en lo que se ganó y lo que se perdió: una
+          // sola operación en pérdida (p. ej. un cargue errado) se come la
+          // utilidad de muchas, y sin esto parecía que "no sumaba".
+          gananciaCop: 0, perdidaCop: 0, enPerdida: 0,
           facturadas: 0, facturadoCop: 0, porFacturar: 0, facturasConError: 0, facturasDeAnulados: 0,
           ultima: '' as string,
         })
@@ -3121,6 +3125,7 @@ Deno.serve(async (req: Request) => {
               s.conversiones++; s.convertidoCop += liq.totalCop ?? liq.tercerosCop ?? 0; s.convertidoClienteCop += liq.tercerosCop ?? 0
               s.usdConvertido += liq.usd ?? 0; s.utilidadConversiones += u
             }
+            if (u >= 0) s.gananciaCop += u; else { s.perdidaCop += u; s.enPerdida++ }
             if (liq.fuente === 'estimada') s.utilidadEstimada += u
             if (liq.fuente === 'sin_dato' && liq.facturable) s.sinUtilidad++
             if (f?.estado === 'emitida') { s.facturadas++; s.facturadoCop += Number(f.total) || 0 }
