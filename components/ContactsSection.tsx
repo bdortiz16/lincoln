@@ -1511,9 +1511,34 @@ export const ContactsSection: React.FC<{
         setTimeout(() => URL.revokeObjectURL(url), 30000);
     };
 
-    // Las dos barras, debajo del nombre. Es lo primero que se lee después de
-    // quién es: cuánto se le movió este mes y cuánto en el año. El extracto y
-    // el expediente se abren desde Contabilidad y Compliance, en el menú.
+    // El cupo mensual de cada beneficiario (normativa de cumplimiento). Lo
+    // calcula el servidor, el mismo que frena el envío: lo que se ve en la
+    // fila es lo que se aplica. Se vuelve a pedir al abrir o cerrar una ficha
+    // (ahí se solicita el aumento) y cuando entra un movimiento nuevo.
+    const [cupos, setCupos] = useState<{ general: { persona: number; empresa: number } | null; porContacto: Record<string, any> }>({ general: null, porContacto: {} });
+    useEffect(() => {
+        const uid = currentUser?.id;
+        if (!uid || contacts.length === 0) return;
+        let vivo = true;
+        llamarFuncion('admin-data', { action: 'cupos_estado', userId: uid })
+            .then(r => { if (vivo && r?.ok) setCupos({ general: r.general ?? null, porContacto: r.porContacto ?? {} }); })
+            .catch(() => { /* sin cupo a la vista; el envío igual lo controla el servidor */ });
+        return () => { vivo = false; };
+    }, [currentUser?.id, contacts.length, transactions.length, detail?.id]);
+    // "Solicitar aumento de cupo" desde el menú de la fila: abre la ficha con
+    // el formulario ya desplegado.
+    const [cupoPedir, setCupoPedir] = useState<string | null>(null);
+    useEffect(() => { if (!detail) setCupoPedir(null); }, [detail]);
+    const fmtMillones = (v: number) => {
+        const n = Number(v) || 0;
+        if (n <= 0) return '$0';
+        return `$${(n / 1e6).toLocaleString('es-CO', { maximumFractionDigits: n < 1e7 ? 1 : 0 })} M`;
+    };
+
+    // Las barras, debajo del nombre. Es lo primero que se lee después de
+    // quién es: cuánto se le movió este mes y en el año, y cuánto cupo
+    // mensual lleva usado. El extracto y el expediente se abren desde
+    // Contabilidad y Compliance, en el menú.
     const barrasMovido = (c: MouvContact, compacto = false) => {
         const id = c.id;
         const mv = movidoPor[id];
@@ -1521,9 +1546,35 @@ export const ContactsSection: React.FC<{
         const top = topAnioPorMoneda[mv.moneda] || 0;
         const hay = mv.anio > 0 && top > 0;
         const pct = (v: number) => (hay ? Math.max(v > 0 ? 3 : 0, Math.min(100, (v / top) * 100)) : 0);
+        const cu = c.accountKind !== 'wallet' ? cupos.porContacto[String(id)] : null;
+        const filaCupo = (() => {
+            if (!cu || !(Number(cu.cupo) > 0)) return null;
+            const usado = Number(cu.usado) || 0;
+            const p = Math.min(100, (usado / Number(cu.cupo)) * 100);
+            const color = p >= 100 ? '#F87171' : p >= 80 ? '#FBBF24' : '#4ADE80';
+            const enProceso = cu.solicitud?.estado === 'en_proceso';
+            const quien = cu.tipo === 'empresa' ? 'empresa' : 'persona';
+            return (
+                <>
+                    <div className="flex items-center" style={{ gap: 7, marginTop: 3 }}
+                        title={`Cupo mensual de ${quien}${cu.origen === 'aprobado' ? ' aprobado por cumplimiento' : ''}: llevas $${Math.round(usado).toLocaleString('es-CO')} de $${Math.round(Number(cu.cupo)).toLocaleString('es-CO')}. Te quedan $${Math.round(Number(cu.disponible) || 0).toLocaleString('es-CO')}.`}>
+                        <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '0.7px', color: '#878E88', width: 32, flexShrink: 0 }}>CUPO</span>
+                        <div style={{ flex: 1, height: 4, borderRadius: 999, background: 'rgba(255,255,255,0.08)', overflow: 'hidden', minWidth: 40, maxWidth: compacto ? 90 : 120 }}>
+                            <div style={{ width: `${usado > 0 ? Math.max(3, p) : 0}%`, height: '100%', borderRadius: 999, background: color }} />
+                        </div>
+                        <span style={{ fontSize: 11, fontWeight: 600, color: p >= 100 ? '#F87171' : '#F4F4F2', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+                            {fmtMillones(usado)} <span style={{ color: '#878E88', fontWeight: 500 }}>de {fmtMillones(Number(cu.cupo))}</span>
+                        </span>
+                    </div>
+                    {enProceso && (
+                        <span style={{ display: 'inline-block', marginTop: 5, marginLeft: 39, fontSize: 9, fontWeight: 700, letterSpacing: '0.6px', color: '#FBBF24', border: '1px solid rgba(251,191,36,0.35)', borderRadius: 999, padding: '2px 8px', whiteSpace: 'nowrap' }}>AUMENTO EN PROCESO</span>
+                    )}
+                </>
+            );
+        })();
         const fila = (rot: string, v: number, fuerte: boolean) => (
             <div className="flex items-center" style={{ gap: 7, marginTop: 3 }}>
-                <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '0.7px', color: '#878E88', width: 26, flexShrink: 0 }}>{rot}</span>
+                <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '0.7px', color: '#878E88', width: 32, flexShrink: 0 }}>{rot}</span>
                 <div style={{ flex: 1, height: 4, borderRadius: 999, background: 'rgba(255,255,255,0.08)', overflow: 'hidden', minWidth: 40, maxWidth: compacto ? 90 : 120 }}>
                     <div style={{ width: `${pct(v)}%`, height: '100%', borderRadius: 999, background: fuerte ? '#4ADE80' : 'rgba(74,222,128,0.55)' }} />
                 </div>
@@ -1535,9 +1586,12 @@ export const ContactsSection: React.FC<{
         // Sin botones debajo: Contabilidad y Compliance viven en el menú. Acá
         // solo van las barras.
         return (
-            <div style={{ marginTop: 4 }} title={hay ? `${mv.envios} envío${mv.envios === 1 ? '' : 's'} este año` : 'Sin envíos este año'}>
-                {fila('MES', mv.mes, true)}
-                {fila('AÑO', mv.anio, false)}
+            <div style={{ marginTop: 4 }}>
+                <div title={hay ? `${mv.envios} envío${mv.envios === 1 ? '' : 's'} este año` : 'Sin envíos este año'}>
+                    {fila('MES', mv.mes, true)}
+                    {fila('AÑO', mv.anio, false)}
+                </div>
+                {filaCupo}
             </div>
         );
     };
@@ -2060,6 +2114,34 @@ export const ContactsSection: React.FC<{
                 </div>
             </div>
 
+            {/* Cupo mensual por beneficiario: la regla, a la vista antes de
+                la lista, y cómo pedir más. */}
+            {cupos.general && contacts.some(c => c.accountKind !== 'wallet') && (() => {
+                const filas = contacts.filter(c => c.accountKind !== 'wallet').map(c => cupos.porContacto[String(c.id)]).filter(Boolean);
+                const enProceso = filas.filter((x: any) => x.solicitud?.estado === 'en_proceso').length;
+                const agotados = filas.filter((x: any) => Number(x.cupo) > 0 && Number(x.disponible) <= 0).length;
+                const millones = (v: number) => `$${(Number(v) / 1e6).toLocaleString('es-CO', { maximumFractionDigits: 1 })} millones`;
+                return (
+                    <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, padding: '14px 18px', display: 'flex', gap: 14, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                        <div style={{ flex: '1 1 320px', minWidth: 0 }}>
+                            <span style={{ display: 'block', fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88', marginBottom: 5 }}>CUPO MENSUAL POR BENEFICIARIO</span>
+                            <p style={{ fontSize: 13, color: '#F4F4F2', lineHeight: 1.5 }}>
+                                Cada mes puedes enviar hasta <b>{millones(cupos.general.persona)}</b> a cada persona y hasta <b>{millones(cupos.general.empresa)}</b> a cada empresa.
+                            </p>
+                            <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, marginTop: 3 }}>
+                                ¿Necesitas enviar más? Abre el beneficiario y toca <b style={{ color: '#F4F4F2' }}>Solicitar aumento de cupo</b>. Adjuntas el RUT (obligatorio) y, si quieres, cámara de comercio y origen de fondos; cumplimiento lo revisa y define el nuevo cupo.
+                            </p>
+                        </div>
+                        {(enProceso > 0 || agotados > 0) && (
+                            <div className="flex flex-col" style={{ gap: 6 }}>
+                                {enProceso > 0 && <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '0.5px', color: '#FBBF24', border: '1px solid rgba(251,191,36,0.35)', borderRadius: 999, padding: '4px 10px', whiteSpace: 'nowrap' }}>{enProceso} EN PROCESO DE AUMENTO</span>}
+                                {agotados > 0 && <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '0.5px', color: '#F87171', border: '1px solid rgba(248,113,113,0.35)', borderRadius: 999, padding: '4px 10px', whiteSpace: 'nowrap' }}>{agotados} SIN CUPO ESTE MES</span>}
+                            </div>
+                        )}
+                    </div>
+                );
+            })()}
+
             {/* Tabla de beneficiarios (diseño Beneficiarios) */}
             <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, overflow: 'hidden' }}>
                 {/* Encabezados — solo desktop */}
@@ -2166,7 +2248,6 @@ export const ContactsSection: React.FC<{
                                                 <span style={{ fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.railLine} · {m.maskLine}</span>
                                             </div>
                                         </button>
-                                        {barrasMovido(c, true)}
                                     </div>
                                 </div>
                                 <div className="flex flex-col items-end gap-1.5 shrink-0">
@@ -2175,6 +2256,10 @@ export const ContactsSection: React.FC<{
                                     {actions}
                                 </div>
                             </div>
+                            {/* Las barras van debajo, a todo el ancho: al lado de
+                                la columna de estado no caben las cifras y se
+                                montaban sobre "VERIFICADO". 50 = avatar + espacio. */}
+                            <div style={{ paddingLeft: 50 }}>{barrasMovido(c, true)}</div>
                         </div>
                     </div>
                     );
@@ -2581,7 +2666,7 @@ export const ContactsSection: React.FC<{
                             {/* Cupo mensual de este beneficiario y la solicitud
                                 de aumento (normativa de cumplimiento). */}
                             {!isWallet && currentUser?.id && detail?.id && (
-                                <CupoBeneficiario userId={String(currentUser.id)} contactoId={String(detail.id)} nombre={prettyName(detail.name)} />
+                                <CupoBeneficiario key={String(detail.id)} userId={String(currentUser.id)} contactoId={String(detail.id)} nombre={prettyName(detail.name)} abrirSolicitud={cupoPedir === String(detail.id)} />
                             )}
 
                             {/* Cumplimiento: acá sí cabe explicar qué significa
@@ -2869,6 +2954,11 @@ export const ContactsSection: React.FC<{
                             fontFamily: "'Archivo', system-ui, sans-serif",
                         }}>
                             <button onClick={() => { setMenuFor(null); setDetail(c); }} className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '10px 14px', fontSize: 12.5, color: '#F4F4F2' }}>Ver detalle</button>
+                            {c.accountKind !== 'wallet' && (
+                                <button onClick={() => { setMenuFor(null); setCupoPedir(String(c.id)); setDetail(c); }} className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '10px 14px', fontSize: 12.5, color: '#F4F4F2', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+                                    {cupos.porContacto[String(c.id)]?.solicitud?.estado === 'en_proceso' ? 'Ver solicitud de cupo' : 'Solicitar aumento de cupo'}
+                                </button>
+                            )}
                             <button onClick={() => { setMenuFor(null); pedirEliminar(c); }} className="w-full text-left hover:bg-white/[0.06] transition-colors" style={{ padding: '10px 14px', fontSize: 12.5, color: '#F87171', borderTop: '1px solid rgba(255,255,255,0.07)' }}>Eliminar</button>
                         </div>
                     </>

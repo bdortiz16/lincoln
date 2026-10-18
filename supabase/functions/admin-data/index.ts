@@ -1161,6 +1161,7 @@ const PERMISO_DE_ACCION: Record<string, string> = {
   contabilidad_autovincular: 'plata.mover',
   // Cupos por beneficiario: los decide Cumplimiento.
   cupos_admin_get: 'cumplimiento',
+  cupos_pendientes: 'cumplimiento',
   cupos_config_set: 'cumplimiento',
   cupo_resolver: 'cumplimiento',
   cupo_quitar: 'cumplimiento',
@@ -3186,6 +3187,13 @@ Deno.serve(async (req: Request) => {
       // ── CUPOS POR BENEFICIARIO (Cumplimiento) ─────────────────────────
       // El oficial de cumplimiento ve las solicitudes con sus documentos y
       // decide el cupo. También fija los cupos generales.
+      // Solo el número de solicitudes por revisar, para el aviso del menú.
+      // Sin documentos ni URLs firmadas: se pregunta cada minuto.
+      if (body.action === 'cupos_pendientes') {
+        const { count, error } = await db.from('cupo_solicitudes').select('id', { count: 'exact', head: true }).eq('estado', 'en_proceso')
+        if (error) return json({ ok: true, pendientes: 0, falta: /does not exist|42P01|schema cache/i.test(error.message) })
+        return json({ ok: true, pendientes: count ?? 0 })
+      }
       if (body.action === 'cupos_admin_get') {
         const general = await cupoGeneral(db)
         const leerTabla = async (q: any) => { const { data, error } = await q; if (error) throw new Error(error.message); return (data ?? []) as any[] }

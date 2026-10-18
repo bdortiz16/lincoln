@@ -30,7 +30,7 @@ const leerBase64 = (f: File) => new Promise<string>((res, rej) => {
   r.readAsDataURL(f);
 });
 
-export const CupoBeneficiario: React.FC<{ userId: string; contactoId: string; nombre: string }> = ({ userId, contactoId, nombre }) => {
+export const CupoBeneficiario: React.FC<{ userId: string; contactoId: string; nombre: string; abrirSolicitud?: boolean }> = ({ userId, contactoId, nombre, abrirSolicitud }) => {
   const [estado, setEstado] = useState<any | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [abierto, setAbierto] = useState(false);
@@ -48,6 +48,18 @@ export const CupoBeneficiario: React.FC<{ userId: string; contactoId: string; no
     else setError(r?.error ?? 'No se pudo leer el cupo.');
   }, [userId, contactoId]);
   useEffect(() => { cargar(); }, [cargar]);
+
+  // Viene de "Solicitar aumento de cupo" en el menú de la fila: el formulario
+  // se abre solo y la ficha baja hasta acá. Una vez, no cada vez que recarga.
+  const raiz = useRef<HTMLDivElement>(null);
+  const yaAbrio = useRef(false);
+  const listo = !!estado;
+  useEffect(() => {
+    if (!abrirSolicitud || !listo || yaAbrio.current) return;
+    yaAbrio.current = true;
+    if (estado?.solicitud?.estado !== 'en_proceso') setAbierto(true);
+    setTimeout(() => raiz.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 60);
+  }, [abrirSolicitud, listo]);
 
   const enviar = async () => {
     if (enCurso.current) return;
@@ -97,7 +109,7 @@ export const CupoBeneficiario: React.FC<{ userId: string; contactoId: string; no
   const sol = estado.solicitud;
   const enProceso = sol?.estado === 'en_proceso';
   return (
-    <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+    <div ref={raiz} style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
       <div className="flex items-center justify-between" style={{ gap: 8, marginBottom: 7 }}>
         <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88' }}>CUPO MENSUAL</span>
         {enProceso && <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '0.6px', color: '#FBBF24', border: '1px solid rgba(251,191,36,0.35)', borderRadius: 999, padding: '3px 9px' }}>EN PROCESO DE AUMENTO</span>}

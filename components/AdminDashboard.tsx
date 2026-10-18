@@ -230,7 +230,7 @@ const fileToBase64 = (file: File): Promise<string> => {
 // Las dos secciones que agrupan varias pantallas. El orden es el de las
 // pestañas: primero la pantalla que da el panorama, después el detalle.
 const GRUPO_SEG = ['security', 'comando', 'monitoreo', 'auditoria', 'team'];
-const GRUPO_CUMP = ['compliance', 'risk', 'tusdatos', 'kumplo'];
+const GRUPO_CUMP = ['compliance', 'cupos', 'risk', 'tusdatos', 'kumplo'];
 
 const TAB_TITLES: Record<string, string> = {
   overview: 'Dashboard', clients: 'Clientes', treasury: 'Tesorería', cargues: 'Cargues',
@@ -238,7 +238,7 @@ const TAB_TITLES: Record<string, string> = {
   banks: 'Bancos', rates: 'Tasas de Cambio', security: 'Seguridad', design: 'Diseño y Apariencia',
   gasfree: 'Custodia USDT', otcConfig: 'Contabilidad', fallos: 'Fallos',
   auditoria: 'Auditoría', monitoreo: 'Monitoreo', kumplo: 'Kumplo', comando: 'Centro de Comando',
-  tusdatos: 'TusDatos', compliance: 'Cumplimiento', risk: 'Lincoin Risk',
+  tusdatos: 'TusDatos', compliance: 'Cumplimiento', risk: 'Lincoin Risk', cupos: 'Cupos por beneficiario',
   otcCierres: 'Cierres OTC', gowd: 'Gowd · Brasil',
 };
 
@@ -495,7 +495,7 @@ const PanelConciliacion: React.FC<{ datos: any; onCerrar: () => void }> = ({ dat
 };
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'tusdatos' | 'compliance' | 'comando' | 'otcCierres' | 'gowd'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'tusdatos' | 'compliance' | 'cupos' | 'comando' | 'otcCierres' | 'gowd'>('overview');
   const [auditRows, setAuditRows] = useState<any[] | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
   const [adminLogins, setAdminLogins] = useState<{ admins: any[]; activity: any[] } | null>(null);
@@ -1394,6 +1394,25 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       window.removeEventListener('focus', alVolver);
     };
   }, []);
+
+  // Solicitudes de aumento de cupo que esperan a Cumplimiento. Sin este
+  // número en el menú nadie se entera de que el cliente pidió algo.
+  const [cuposPend, setCuposPend] = useState(0);
+  // Se relee también al entrar o salir de la pestaña: después de resolver una
+  // solicitud el número tiene que bajar ya, no al minuto.
+  const enCupos = activeTab === 'cupos';
+  useEffect(() => {
+    let vivo = true;
+    const leer = async () => {
+      try {
+        const d = await pedirAdmin({ action: 'cupos_pendientes' });
+        if (vivo && d?.ok) setCuposPend(Number(d.pendientes) || 0);
+      } catch { /* el badge no puede tumbar el panel */ }
+    };
+    leer();
+    const t = setInterval(() => { if (!document.hidden) leer(); }, 60000);
+    return () => { vivo = false; clearInterval(t); };
+  }, [enCupos]);
 
   // Una cuenta BLOQUEADA o en LISTA NEGRA no cuenta como pendiente: no hay nada
   // que aprobarle (ya le negaste el acceso), y aparecer ahí solo ensucia la
@@ -4787,7 +4806,7 @@ const renderDesign = () => (
                                 una: adentro llevan sus pestañas. Antes eran
                                 siete renglones sueltos. */}
                             <AdminSidebarItem icon={Shield} label="Seguridad" active={GRUPO_SEG.includes(activeTab)} onClick={() => navTo('security')} />
-                            <AdminSidebarItem icon={ShieldAlert} label="Cumplimiento" active={GRUPO_CUMP.includes(activeTab)} onClick={() => navTo('compliance')} />
+                            <AdminSidebarItem icon={ShieldAlert} label="Cumplimiento" active={GRUPO_CUMP.includes(activeTab)} badge={cuposPend > 0 ? cuposPend : undefined} onClick={() => navTo(cuposPend > 0 ? 'cupos' : 'compliance')} />
                             <AdminSidebarItem icon={Megaphone} label="Marketing" active={activeTab === 'marketing'} onClick={() => navTo('marketing')} />
                             <AdminSidebarItem icon={Palette} label="Diseño" active={activeTab === 'design'} onClick={() => navTo('design')} />
                             <AdminSidebarItem icon={Settings} label="Configuración" active={activeTab === 'config'} onClick={() => navTo('config')} />
@@ -4870,6 +4889,9 @@ const renderDesign = () => (
                                             border: `1px solid ${on ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.08)'}`,
                                         }}>
                                         {SUBTAB_TITLES[t] ?? TAB_TITLES[t] ?? t}
+                                        {t === 'cupos' && cuposPend > 0 && (
+                                            <span style={{ marginLeft: 7, fontSize: 10.5, fontWeight: 800, color: '#070808', background: '#FBBF24', borderRadius: 999, padding: '1px 7px' }}>{cuposPend}</span>
+                                        )}
                                     </button>
                                 );
                             })}
@@ -4938,7 +4960,11 @@ const renderDesign = () => (
                 {activeTab === 'comando' && <div className="animate-in fade-in duration-300"><AdminCommandCenter /></div>}
                 {activeTab === 'security' && renderSecurity()}
                 {activeTab === 'tusdatos' && <div className="animate-in fade-in duration-300"><AdminTusdatos /></div>}
-                {activeTab === 'compliance' && <div className="animate-in fade-in duration-300 space-y-6"><AdminCompliance /><AdminCupos /><AdminLimitesEnvio /></div>}
+                {activeTab === 'compliance' && <div className="animate-in fade-in duration-300 space-y-6"><AdminCompliance /><AdminLimitesEnvio /></div>}
+                {/* Normativa de cupo mensual por beneficiario: pestaña propia
+                    dentro de Cumplimiento, para que las solicitudes de aumento
+                    no queden al fondo de la bandeja de casos. */}
+                {activeTab === 'cupos' && <div className="animate-in fade-in duration-300"><AdminCupos /></div>}
                 {activeTab === 'kumplo' && <div className="animate-in fade-in duration-300"><AdminKumplo /></div>}
                 {activeTab === 'risk' && <div className="animate-in fade-in duration-300"><AdminLincoinRisk /></div>}
                 {activeTab === 'gasfree' && (<>
