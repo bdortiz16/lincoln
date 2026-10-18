@@ -1049,6 +1049,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
           : d.feeCop > 0
           ? `✅ ${railLabel} actualizado. Cargue ${formatMoney(d.grossCop ?? raw, '')} − comisión ${formatMoney(d.feeCop, '')} (${d.feePct}%) = ${formatMoney(d.netCop ?? 0, '')} acreditados. Nuevo saldo: ${formatMoney(d.newBalance ?? 0, '')} COP`
           : `✅ ${railLabel} actualizado. Nuevo saldo: ${formatMoney(d.newBalance ?? 0, '')} COP` });
+        if (d.reverso?.auto) showToast('El descuento se vinculó solo al cargue que revierte.', 6000);
         if (d.reverso && !d.reverso.ok) setCarguesMsg({ ok: false, text: `⚠️ El descuento se aplicó, pero no se pudo vincular al cargue: ${d.reverso.error}. Vincúlalo desde Contabilidad → Clientes.` });
         else if (d.reverso?.aviso) showToast(d.reverso.aviso, 9000);
         setCarguesAmount(''); setCarguesNote(''); setCargueOtp(''); setCarguesReversaDe('');
@@ -2460,13 +2461,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                         <select value={carguesReversaDe} onChange={e => setCarguesReversaDe(e.target.value)}
                           className="w-full px-2.5 py-2 rounded-lg text-sm outline-none"
                           style={{ backgroundColor: '#0C0E0D', color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.12)' }}>
-                          <option value="">No, es otro ajuste</option>
+                          <option value="">Automático: si cuadra exacto con un cargue, se vincula</option>
+                          <option value="no">No, es otro ajuste</option>
                           {opciones.map(o => (
                             <option key={o.id} value={o.id}>
                               Cargue del {new Date(o.at).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' })} · {formatMoney(o.credit, '')} COP{o.resta < o.credit ? ` (quedan ${formatMoney(o.resta, '')})` : ''}
                             </option>
                           ))}
                         </select>
+                        {(() => {
+                          // Qué va a pasar en automático con el monto escrito.
+                          const m = Number(String(carguesAmount).replace(/[^\d.]/g, '')) || 0;
+                          const exacto = !carguesReversaDe && m > 0 ? opciones.find(o => Math.abs(o.resta - m) <= 1) : null;
+                          return exacto
+                            ? <p className="text-[11px] mt-1.5 font-bold" style={{ color: '#4ADE80' }}>Se va a vincular al cargue del {new Date(exacto.at).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' })} por {formatMoney(exacto.credit, '')} COP: ese cargue queda anulado.</p>
+                            : null;
+                        })()}
                         <p className="text-[10px] mt-1.5" style={{ color: '#878E88' }}>
                           Si descuentas todo lo acreditado, el cargue queda anulado: no suma, no deja utilidad y no se factura. Si es una parte, se corrige en proporción.
                         </p>

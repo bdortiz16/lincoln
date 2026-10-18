@@ -315,7 +315,7 @@ const VincularAjuste: React.FC<{ fila: any; fechaDe: (id: string) => string | nu
     const f = fechaDe(String(fila.reversaDe));
     return (
       <div className="space-y-1">
-        <p className="text-[10px] text-slate-500">Revierte el cargue {f ? `del ${f}` : 'de otro período'}</p>
+        <p className="text-[10px] text-slate-500">Revierte el cargue {f ? `del ${f}` : 'de otro período'}{fila.reversaAuto ? ' · vinculado solo' : ''}</p>
         <button disabled={enviando} onClick={() => { if (window.confirm('¿Desvincular este ajuste del cargue? El cargue vuelve a sumar con su utilidad.')) pedir(null); }}
           className="text-[11px] font-bold text-slate-400 hover:text-slate-600 underline disabled:opacity-50">Desvincular</button>
       </div>
@@ -786,8 +786,17 @@ export const AdminContabilidad: React.FC = () => {
   const [aviso, setAviso] = useState<{ m: string; ok: boolean } | null>(null);
 
   const cambiar = (p: Pestana) => { setPestana(p); try { localStorage.setItem('lincoin_conta_tab', p); } catch { /* */ } };
+  // Al entrar, los débitos que revierten EXACTO un cargue (el operador se
+  // equivocó y descontó lo mismo) se vinculan solos. Una vez por visita; si
+  // el rol no puede, se sigue sin decir nada.
+  const autoHecho = React.useRef(false);
   const cargar = useCallback(async () => {
     setCargando(true); setError(null);
+    if (!autoHecho.current) {
+      autoHecho.current = true;
+      const a = await pedirAdmin({ action: 'contabilidad_autovincular' });
+      if (a?.ok && a.vinculados > 0) setAviso({ m: `Se vincularon solos ${a.vinculados} débito${a.vinculados === 1 ? '' : 's'} al cargue que revertían.${a.avisos?.length ? ` ${a.avisos.join(' ')}` : ''}`, ok: !a.avisos?.length });
+    }
     const r = await pedirAdmin({ action: 'contabilidad_resumen', ...rango(periodo) });
     setCargando(false);
     if (r?.ok) setDatos(r); else setError(r?.permisoDenegado ? 'Tu rol no permite ver la contabilidad.' : (r?.error ?? 'No se pudo leer la contabilidad.'));
