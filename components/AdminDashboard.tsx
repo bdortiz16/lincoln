@@ -98,6 +98,7 @@ import { AdminClientes } from './AdminClientes';
 import { AdminReconcile } from './AdminReconcile';
 import { AdminContabilidad } from './AdminContabilidad';
 import { AdminLimitesEnvio } from './AdminLimitesEnvio';
+import { AdminCupos } from './AdminCupos';
 import { AdminOtcCierres } from './AdminOtcCierres';
 import { AdminGowd } from './AdminGowd';
 import { sonarCampana, campanaActiva } from './campanaOtc';
@@ -4937,7 +4938,7 @@ const renderDesign = () => (
                 {activeTab === 'comando' && <div className="animate-in fade-in duration-300"><AdminCommandCenter /></div>}
                 {activeTab === 'security' && renderSecurity()}
                 {activeTab === 'tusdatos' && <div className="animate-in fade-in duration-300"><AdminTusdatos /></div>}
-                {activeTab === 'compliance' && <div className="animate-in fade-in duration-300 space-y-6"><AdminCompliance /><AdminLimitesEnvio /></div>}
+                {activeTab === 'compliance' && <div className="animate-in fade-in duration-300 space-y-6"><AdminCompliance /><AdminCupos /><AdminLimitesEnvio /></div>}
                 {activeTab === 'kumplo' && <div className="animate-in fade-in duration-300"><AdminKumplo /></div>}
                 {activeTab === 'risk' && <div className="animate-in fade-in duration-300"><AdminLincoinRisk /></div>}
                 {activeTab === 'gasfree' && (<>

@@ -10,6 +10,7 @@ import { FlagImg } from './FlagImg';
 import { callFinity } from './FinitySection';
 import { ContabilidadDashboard } from './ContabilidadDashboard';
 import { ComplianceDashboard } from './ComplianceDashboard';
+import { CupoBeneficiario } from './CupoBeneficiario';
 
 declare const __BUILD_TS__: string;
 
@@ -2576,6 +2577,12 @@ export const ContactsSection: React.FC<{
                                 ))}
                             </div>
                             {dirForm}
+
+                            {/* Cupo mensual de este beneficiario y la solicitud
+                                de aumento (normativa de cumplimiento). */}
+                            {!isWallet && currentUser?.id && detail?.id && (
+                                <CupoBeneficiario userId={String(currentUser.id)} contactoId={String(detail.id)} nombre={prettyName(detail.name)} />
+                            )}
 
                             {/* Cumplimiento: acá sí cabe explicar qué significa
                                 la insignia y desde cuándo. En la fila solo hay

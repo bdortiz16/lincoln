@@ -3,6 +3,7 @@ import { mergeRaw } from '../_shared/raw-data.ts'
 import { reclamarCandado, soltarCandado } from '../_shared/candado.ts'
 import { FIELD_ENC_KEY, encField, decField, keyFp, KeyMismatchError } from '../_shared/field-crypto.ts'
 import { liquidacionDe, type CierreOtc } from '../_shared/liquidacion-lincoin.ts'
+import { CUPO_DEF, TIPOS_DOC_CUPO, cupoGeneral, claveBeneficiario, enviosDelMes, usadoPara, normDoc, type EnvioMes } from '../_shared/cupos.ts'
 
 // La librería de passkeys se carga SOLO cuando se usa. Con un import normal,
 // un tropiezo del CDN al arrancar tumbaría la función entera —y con ella el
@@ -405,6 +406,31 @@ async function autoVincularPendientes(userIds: string[] | null, adminId: string 
   }
   return out
 }
+
+// ── Cupo mensual por beneficiario: el estado de cada contacto ─────────────
+// La misma cuenta que aplica mouv-proxy al enviar (_shared/cupos.ts).
+type EstadoCupo = { clave: string; tipo: 'persona' | 'empresa'; cupo: number; usado: number; disponible: number; origen: 'general' | 'aprobado'; nombre: string; doc: string }
+function estadoCupoContacto(c: any, contactos: any[], envios: EnvioMes[], general: { persona: number; empresa: number }, aprobados: Map<string, number>): EstadoCupo {
+  const doc = normDoc(c?.docNumber)
+  const mismos = doc ? contactos.filter(x => normDoc(x?.docNumber) === doc) : [c]
+  const destinos = mismos.flatMap(x => [x?.brebKey, x?.accountNumber]).filter(Boolean).map(String)
+  const clave = claveBeneficiario(doc, c?.brebKey ?? c?.accountNumber)
+  const tipo: 'persona' | 'empresa' = (String(c?.kind ?? '') === 'empresa' || /^NIT$/i.test(String(c?.docType ?? ''))) ? 'empresa' : 'persona'
+  const aprobado = aprobados.get(clave)
+  const cupo = aprobado ?? general[tipo]
+  const usado = usadoPara(envios, doc, destinos)
+  return { clave, tipo, cupo, usado, disponible: Math.max(0, cupo - usado), origen: aprobado != null ? 'aprobado' : 'general', nombre: String(c?.name ?? c?.holderName ?? '').trim(), doc }
+}
+async function cuposAprobadosDe(userId: string): Promise<Map<string, number>> {
+  const m = new Map<string, number>()
+  try {
+    const { data } = await db.from('cupos_beneficiario').select('beneficiario_clave, cupo_mensual').eq('user_id', userId)
+    for (const r of (data ?? []) as any[]) { const n = Number(r.cupo_mensual); if (n > 0) m.set(String(r.beneficiario_clave), n) }
+  } catch { /* sin tabla: rige el general */ }
+  return m
+}
+const BUCKET_CUPOS = 'cupo-documentos'
+const MIME_CUPOS = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'image/heic']
 
 function computeAcct(input: any): { acct: Acct } | { error: string } {
   const n = (v: any) => { const x = Number(v); return Number.isFinite(x) ? x : NaN }
@@ -1133,6 +1159,11 @@ const PERMISO_DE_ACCION: Record<string, string> = {
   contabilidad_cliente: 'plata.ver',
   contabilidad_vincular_ajuste: 'plata.mover',
   contabilidad_autovincular: 'plata.mover',
+  // Cupos por beneficiario: los decide Cumplimiento.
+  cupos_admin_get: 'cumplimiento',
+  cupos_config_set: 'cumplimiento',
+  cupo_resolver: 'cumplimiento',
+  cupo_quitar: 'cumplimiento',
   fact_lincoin_get: 'plata.ver',
   fact_lincoin_lista: 'plata.ver',
   fact_lincoin_probar: 'plata.mover',
@@ -1744,6 +1775,101 @@ Deno.serve(async (req: Request) => {
       // guardado cuyo error se tragaba: Tesorería aprobaba (o "devolvía" al
       // rechazar) sin saber si el descuento se había hecho. La fila queda
       // marcada `debitado` y aprobar/rechazar lo exigen.
+      // ── CUPO MENSUAL POR BENEFICIARIO (lo que ve y pide el cliente) ──────
+      // Estado del cupo de cada beneficiario inscrito: cuánto lleva en el mes,
+      // cuánto le queda y si tiene una solicitud de aumento.
+      if (selfServiceBody.action === 'cupos_estado' && selfServiceBody.userId) {
+        const uid = String(selfServiceBody.userId)
+        if (!(await verifySelfOrAdmin(req, uid))) return json({ ok: false, error: 'No autorizado' }, 401)
+        const { data: u } = await db.from('users').select('raw_data').eq('id', uid).maybeSingle()
+        const contactos: any[] = Array.isArray((u as any)?.raw_data?.mouvContacts) ? (u as any).raw_data.mouvContacts : []
+        const general = await cupoGeneral(db)
+        let envios: EnvioMes[] = []
+        try { envios = await enviosDelMes(db, await idsMismaPersona(uid)) } catch (e) { return json({ ok: false, error: `No se pudo calcular el cupo: ${(e as Error).message}` }, 500) }
+        const aprobados = await cuposAprobadosDe(uid)
+        let sols: any[] = []
+        try {
+          const { data } = await db.from('cupo_solicitudes').select('id, beneficiario_clave, estado, created_at, cupo_aprobado, nota_revision, monto_solicitado').eq('user_id', uid).order('created_at', { ascending: false }).limit(300)
+          sols = (data ?? []) as any[]
+        } catch { sols = [] }
+        const porContacto: Record<string, any> = {}
+        for (const c of contactos) {
+          if (!c?.id) continue
+          const e = estadoCupoContacto(c, contactos, envios, general, aprobados)
+          const sol = sols.find(x => String(x.beneficiario_clave) === e.clave) ?? null
+          porContacto[String(c.id)] = { ...e, solicitud: sol ? { estado: sol.estado, at: sol.created_at, cupoAprobado: sol.cupo_aprobado ?? null, nota: sol.nota_revision ?? null, montoSolicitado: sol.monto_solicitado ?? null } : null }
+        }
+        return json({ ok: true, general, porContacto, documentos: TIPOS_DOC_CUPO })
+      }
+
+      // Un documento para la solicitud (se sube uno por uno: un PDF de 5 MB
+      // por pedido, no tres juntos). Queda en un bucket PRIVADO; Cumplimiento
+      // lo abre con una URL firmada que vence.
+      if (selfServiceBody.action === 'cupo_subir_doc' && selfServiceBody.userId) {
+        const uid = String(selfServiceBody.userId)
+        if (!(await verifySelfOrAdmin(req, uid))) return json({ ok: false, error: 'No autorizado' }, 401)
+        const tipo = String(selfServiceBody.tipo ?? '')
+        if (!(tipo in TIPOS_DOC_CUPO)) return json({ ok: false, error: 'Tipo de documento no válido.' }, 400)
+        const mime = String(selfServiceBody.mime ?? '').toLowerCase()
+        if (!MIME_CUPOS.includes(mime)) return json({ ok: false, error: 'El documento tiene que ser un PDF o una imagen (JPG, PNG, WEBP).' }, 400)
+        let bytes: Uint8Array
+        try {
+          const b64 = String(selfServiceBody.base64 ?? '').includes(',') ? String(selfServiceBody.base64).split(',')[1] : String(selfServiceBody.base64 ?? '')
+          const bin = atob(b64)
+          bytes = Uint8Array.from(bin, ch => ch.charCodeAt(0))
+        } catch { return json({ ok: false, error: 'No se pudo leer el archivo.' }, 400) }
+        if (!bytes.byteLength) return json({ ok: false, error: 'El archivo llegó vacío.' }, 400)
+        if (bytes.byteLength > 5 * 1024 * 1024) return json({ ok: false, error: 'Cada documento puede pesar hasta 5 MB.' }, 400)
+        const limpio = String(selfServiceBody.nombre ?? tipo).replace(/[^\w.\-]/g, '_').slice(-60)
+        const path = `${uid}/pendientes/${crypto.randomUUID()}-${tipo}-${limpio}`
+        const { error } = await db.storage.from(BUCKET_CUPOS).upload(path, bytes, { contentType: mime, upsert: false })
+        if (error) return json({ ok: false, error: /not found|bucket/i.test(error.message) ? 'Falta crear el espacio de documentos (migración 2026_zz10_cupos_beneficiario.sql).' : `No se pudo guardar el documento: ${error.message}` }, 500)
+        return json({ ok: true, path, tipo, nombre: String(selfServiceBody.nombre ?? limpio).slice(0, 120) })
+      }
+
+      // La solicitud de aumento: queda EN PROCESO hasta que Cumplimiento la
+      // revise. El RUT es obligatorio; cámara de comercio y origen de fondos,
+      // opcionales.
+      if (selfServiceBody.action === 'cupo_solicitar' && selfServiceBody.userId) {
+        const uid = String(selfServiceBody.userId)
+        if (!(await verifySelfOrAdmin(req, uid))) return json({ ok: false, error: 'No autorizado' }, 401)
+        const { data: u } = await db.from('users').select('raw_data, full_name, company_name, email').eq('id', uid).maybeSingle()
+        const contactos: any[] = Array.isArray((u as any)?.raw_data?.mouvContacts) ? (u as any).raw_data.mouvContacts : []
+        const c = contactos.find(x => String(x?.id) === String(selfServiceBody.contactoId ?? ''))
+        if (!c) return json({ ok: false, error: 'No encontramos ese beneficiario en tu lista.' }, 404)
+        const docs: any[] = (Array.isArray(selfServiceBody.documentos) ? selfServiceBody.documentos : [])
+          .filter((d: any) => d && typeof d.path === 'string' && d.path.startsWith(`${uid}/`) && String(d.tipo) in TIPOS_DOC_CUPO)
+          .map((d: any) => ({ tipo: String(d.tipo), path: String(d.path), nombre: String(d.nombre ?? '').slice(0, 120) }))
+        if (!docs.some(d => d.tipo === 'rut')) return json({ ok: false, error: 'Adjunta el RUT: es obligatorio para pedir el aumento.' }, 400)
+        const monto = selfServiceBody.montoSolicitado != null && String(selfServiceBody.montoSolicitado).trim() !== '' ? Math.round(Number(String(selfServiceBody.montoSolicitado).replace(/[^\d]/g, ''))) : null
+        if (monto != null && !(monto > 0)) return json({ ok: false, error: 'El cupo que pides tiene que ser un monto en pesos.' }, 400)
+        const general = await cupoGeneral(db)
+        let envios: EnvioMes[] = []
+        try { envios = await enviosDelMes(db, await idsMismaPersona(uid)) } catch { envios = [] }
+        const e = estadoCupoContacto(c, contactos, envios, general, await cuposAprobadosDe(uid))
+        const { data: abierta, error: eAb } = await db.from('cupo_solicitudes').select('id').eq('user_id', uid).eq('beneficiario_clave', e.clave).eq('estado', 'en_proceso').limit(1)
+        if (eAb) return json({ ok: false, error: /does not exist|42P01|schema cache/i.test(eAb.message) ? 'Falta correr la migración 2026_zz10_cupos_beneficiario.sql.' : eAb.message }, 500)
+        if (Array.isArray(abierta) && abierta.length) return json({ ok: false, error: 'Ya tienes una solicitud de aumento en proceso para este beneficiario. Cumplimiento la está revisando.' }, 409)
+        const { data: ins, error } = await db.from('cupo_solicitudes').insert({
+          user_id: uid, beneficiario_clave: e.clave, contacto_id: String(c.id), beneficiario_nombre: e.nombre || null, beneficiario_doc: e.doc || null,
+          beneficiario_tipo: e.tipo, cupo_actual: e.cupo, usado_mes: e.usado, monto_solicitado: monto,
+          motivo: String(selfServiceBody.motivo ?? '').trim().slice(0, 1000) || null, documentos: docs, estado: 'en_proceso',
+        }).select('id').single()
+        if (error) return json({ ok: false, error: error.message }, 500)
+        await db.from('audit_log').insert({ user_id: uid, action: 'cupo.solicitud', metadata: { id: (ins as any)?.id, clave: e.clave, cupoActual: e.cupo, montoSolicitado: monto, documentos: docs.map(d => d.tipo) } }).then(() => {}, () => {})
+        // Aviso a Cumplimiento por correo (si está configurado).
+        if (RESEND_KEY && ADMIN_EMAIL) {
+          const cliente = String((u as any)?.company_name || (u as any)?.full_name || (u as any)?.email || uid)
+          fetch('https://api.resend.com/emails', {
+            method: 'POST', headers: { Authorization: `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ from: `Lincoin <${FROM_EMAIL}>`, to: [ADMIN_EMAIL], subject: `Solicitud de aumento de cupo · ${cliente}`,
+              html: `<p style="font-family:Arial,sans-serif;font-size:14px;color:#15181A">${cliente} pidió aumentar el cupo mensual de <b>${e.nombre || 'un beneficiario'}</b> (${e.tipo}, cupo actual ${e.cupo.toLocaleString('es-CO')} COP${monto ? `, pide ${monto.toLocaleString('es-CO')} COP` : ''}). Adjuntó: ${docs.map(d => TIPOS_DOC_CUPO[d.tipo]?.nombre ?? d.tipo).join(', ')}.</p><p style="font-family:Arial,sans-serif;font-size:13px;color:#5C625E">Se revisa en Admin → Cumplimiento → Cupos por beneficiario.</p>` }),
+            signal: AbortSignal.timeout(8000),
+          }).catch(() => {})
+        }
+        return json({ ok: true, id: (ins as any)?.id, estado: 'en_proceso' })
+      }
+
       if (selfServiceBody.action === 'solicitar_mover_ach' && selfServiceBody.userId) {
         const uidS = String(selfServiceBody.userId)
         if (!(await verifySelfOrAdmin(req, uidS))) return json({ ok: false, error: 'No autorizado' }, 401)
@@ -3057,6 +3183,109 @@ Deno.serve(async (req: Request) => {
       // cargues y movimientos más viejos "no existían". Esto trae el
       // historial completo de esa cuenta, con el mismo filtro por país que
       // la carga general.
+      // ── CUPOS POR BENEFICIARIO (Cumplimiento) ─────────────────────────
+      // El oficial de cumplimiento ve las solicitudes con sus documentos y
+      // decide el cupo. También fija los cupos generales.
+      if (body.action === 'cupos_admin_get') {
+        const general = await cupoGeneral(db)
+        const leerTabla = async (q: any) => { const { data, error } = await q; if (error) throw new Error(error.message); return (data ?? []) as any[] }
+        let enProceso: any[] = [], resueltas: any[] = [], aprobados: any[] = []
+        try {
+          enProceso = await leerTabla(db.from('cupo_solicitudes').select('*').eq('estado', 'en_proceso').order('created_at', { ascending: true }).limit(300))
+          resueltas = await leerTabla(db.from('cupo_solicitudes').select('*').neq('estado', 'en_proceso').order('revisado_at', { ascending: false }).limit(100))
+          aprobados = await leerTabla(db.from('cupos_beneficiario').select('*').order('aprobado_at', { ascending: false }).limit(500))
+        } catch (e) {
+          return json({ ok: true, general, falta: /does not exist|42P01|schema cache/i.test((e as Error).message), error: (e as Error).message, solicitudes: [], aprobados: [] })
+        }
+        const ids = Array.from(new Set([...enProceso, ...resueltas, ...aprobados].map(x => String(x.user_id))))
+        const nombres = new Map<string, any>()
+        for (let i = 0; i < ids.length; i += 200) {
+          const { data } = await db.from('users').select('id, email, full_name, company_name').in('id', ids.slice(i, i + 200))
+          for (const u of (data ?? []) as any[]) nombres.set(String(u.id), u)
+        }
+        const quien = (id: string) => { const u = nombres.get(id); return u ? (u.company_name || u.full_name || u.email) : id }
+        // Lo usado HOY en el mes, para decidir con el dato fresco.
+        const usoActual = new Map<string, EnvioMes[]>()
+        for (const uid of Array.from(new Set(enProceso.map(x => String(x.user_id))))) {
+          try { usoActual.set(uid, await enviosDelMes(db, await idsMismaPersona(uid))) } catch { usoActual.set(uid, []) }
+        }
+        const firmar = async (docs: any[]) => {
+          const out: any[] = []
+          for (const d of Array.isArray(docs) ? docs : []) {
+            try { const { data } = await db.storage.from(BUCKET_CUPOS).createSignedUrl(String(d.path), 3600); out.push({ ...d, url: data?.signedUrl ?? null, nombreTipo: TIPOS_DOC_CUPO[d.tipo]?.nombre ?? d.tipo }) }
+            catch { out.push({ ...d, url: null, nombreTipo: TIPOS_DOC_CUPO[d.tipo]?.nombre ?? d.tipo }) }
+          }
+          return out
+        }
+        const solicitudes: any[] = []
+        for (const sx of [...enProceso, ...resueltas]) {
+          const envios = usoActual.get(String(sx.user_id))
+          const usadoHoy = envios ? usadoPara(envios, sx.beneficiario_doc, String(sx.beneficiario_clave).startsWith('dest:') ? [String(sx.beneficiario_clave).slice(5)] : []) : null
+          solicitudes.push({ ...sx, cliente: quien(String(sx.user_id)), usadoHoy, documentos: await firmar(sx.documentos) })
+        }
+        return json({ ok: true, general, solicitudes, aprobados: aprobados.map(a => ({ ...a, cliente: quien(String(a.user_id)) })) })
+      }
+
+      if (body.action === 'cupos_config_set') {
+        const lee = (x: any) => { const k = Number(String(x ?? '').replace(/[^\d]/g, '')); return Number.isFinite(k) && k >= 1_000_000 && k <= 100_000_000_000 ? k : null }
+        const persona = lee(body.persona), empresa = lee(body.empresa)
+        if (!persona || !empresa) return json({ ok: false, error: 'Escribe los cupos en pesos (mínimo 1.000.000).' }, 400)
+        const antes = await cupoGeneral(db)
+        const valor = { persona, empresa, at: new Date().toISOString(), por: String(auth.userId ?? '') }
+        const { error } = await db.from('system_config').upsert({ key: 'cupos_beneficiario', value: JSON.stringify(valor) }, { onConflict: 'key' })
+        if (error) return json({ ok: false, error: error.message }, 500)
+        await auditAdmin(req, 'cupos.general', { antes, despues: valor })
+        return json({ ok: true, general: { persona, empresa } })
+      }
+
+      if (body.action === 'cupo_resolver') {
+        const id = Number(body.id)
+        const { data: sol } = await db.from('cupo_solicitudes').select('*').eq('id', id).maybeSingle()
+        if (!sol) return json({ ok: false, error: 'No se encontró la solicitud.' }, 404)
+        if ((sol as any).estado !== 'en_proceso') return json({ ok: false, error: 'Esa solicitud ya fue revisada.' }, 409)
+        const aprobar = body.aprobar === true
+        const nota = String(body.nota ?? '').trim().slice(0, 1000) || null
+        const ahora = new Date().toISOString()
+        const sx = sol as any
+        let cupo: number | null = null
+        if (aprobar) {
+          cupo = Math.round(Number(String(body.cupo ?? '').replace(/[^\d]/g, '')))
+          if (!(cupo > 0) || cupo > 100_000_000_000) return json({ ok: false, error: 'Escribe el cupo mensual aprobado en pesos.' }, 400)
+          const { error: eUp } = await db.from('cupos_beneficiario').upsert({
+            user_id: sx.user_id, beneficiario_clave: sx.beneficiario_clave, beneficiario_nombre: sx.beneficiario_nombre, beneficiario_doc: sx.beneficiario_doc,
+            beneficiario_tipo: sx.beneficiario_tipo, cupo_mensual: cupo, solicitud_id: sx.id, aprobado_por: String(auth.userId ?? ''), aprobado_at: ahora,
+          }, { onConflict: 'user_id,beneficiario_clave' })
+          if (eUp) return json({ ok: false, error: eUp.message }, 500)
+        } else if (!nota) {
+          return json({ ok: false, error: 'Escribe el motivo del rechazo: es lo que verá el cliente.' }, 400)
+        }
+        const { data: hecho } = await db.from('cupo_solicitudes').update({
+          estado: aprobar ? 'aprobada' : 'rechazada', cupo_aprobado: cupo, nota_revision: nota, revisado_por: String(auth.userId ?? ''), revisado_at: ahora,
+        }).eq('id', sx.id).eq('estado', 'en_proceso').select('id')
+        if (!hecho || !(hecho as any[]).length) return json({ ok: false, error: 'Otra persona la revisó al mismo tiempo. Recarga.' }, 409)
+        await auditAdmin(req, aprobar ? 'cupos.aprobado' : 'cupos.rechazado', { id: sx.id, userId: sx.user_id, clave: sx.beneficiario_clave, cupo, cupoAnterior: sx.cupo_actual, nota })
+        // Aviso al cliente en su teléfono (si tiene notificaciones).
+        try {
+          await fetch(`${SUPABASE_URL}/functions/v1/push`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+            body: JSON.stringify({ action: 'enviar', user_ids: [sx.user_id], titulo: aprobar ? 'Cupo aprobado' : 'Solicitud de cupo revisada',
+              cuerpo: aprobar ? `Aprobamos un cupo mensual de ${cupo!.toLocaleString('es-CO')} COP para ${sx.beneficiario_nombre || 'tu beneficiario'}.` : `Tu solicitud de aumento de cupo para ${sx.beneficiario_nombre || 'tu beneficiario'} no fue aprobada: ${nota}`,
+              tag: `cupo-${sx.id}`, url: '/beneficiarios' }),
+            signal: AbortSignal.timeout(8000),
+          })
+        } catch { /* el aviso es un extra */ }
+        return json({ ok: true })
+      }
+
+      if (body.action === 'cupo_quitar') {
+        const uid = String(body.userId ?? ''), clave = String(body.clave ?? '')
+        if (!uid || !clave) return json({ ok: false, error: 'Falta el cupo a quitar.' }, 400)
+        const { error } = await db.from('cupos_beneficiario').delete().eq('user_id', uid).eq('beneficiario_clave', clave)
+        if (error) return json({ ok: false, error: error.message }, 500)
+        await auditAdmin(req, 'cupos.quitado', { userId: uid, clave })
+        return json({ ok: true })
+      }
+
       // ── CONTABILIDAD: cargues y conversiones, por cliente y por mes ─────
       // Lo que se le cargó a cada cliente, lo que convirtió, lo que ganó
       // Lincoin en cada operación y si ya tiene factura. Se lee TODO (por

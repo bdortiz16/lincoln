@@ -25,6 +25,7 @@ import { mergeRaw } from '../_shared/raw-data.ts'
 import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
 import { reclamarCandado, soltarCandado } from '../_shared/candado.ts'
 import { FIELD_ENC_KEY, decField } from '../_shared/field-crypto.ts'
+import { cupoGeneral, cupoAprobado, solicitudEnProceso, claveBeneficiario, enviosDelMes, usadoPara, idsMismaPersona as idsDeLaPersona, normDoc } from '../_shared/cupos.ts'
 // Verificación TOTP en el SERVIDOR (2FA), con Web Crypto NATIVO (sin
 // dependencias externas que pudieran no cargar y tumbar el proxy). Mismo
 // algoritmo que el cliente: SHA1, 6 dígitos, período 30s, ventana ±2. Sin
@@ -3325,6 +3326,12 @@ serve(async (req: Request) => {
     // Persona o empresa QUIEN RECIBE (del beneficiario inscrito; si no se
     // encuentra, del tipo de documento que llega). Define el tope ACH.
     let tipoBeneficiario: 'empresa' | 'persona' | null = null
+    // Para el cupo mensual: el documento del beneficiario (el inscrito, o el
+    // de la llave), su nombre y TODOS sus destinos inscritos (llave Bre-B y
+    // cuentas ACH del mismo documento suman juntos).
+    let benefDocCupo = ''
+    let benefNombreCupo = ''
+    let benefDestinosCupo: string[] = []
     // SEGURIDAD: mover dinero exige identidad PROBADA con JWT real (o admin).
     // Un simple user_id en el body ya NO autoriza un payout — así nadie drena
     // la cuenta de otro con solo la llave pública + el id de la víctima.
@@ -3644,6 +3651,13 @@ serve(async (req: Request) => {
           }
         } catch { /* la prueba nunca frena un envío legítimo */ }
       }
+      benefDocCupo = docDest
+      try {
+        const listaC: any[] = Array.isArray(rawU?.mouvContacts) ? rawU.mouvContacts : []
+        const mismos = docDest ? listaC.filter(c => normDoc(c?.docNumber) && normDoc(c?.docNumber) === normDoc(docDest)) : []
+        benefDestinosCupo = mismos.flatMap(c => [c?.brebKey, c?.accountNumber]).filter(Boolean).map(String)
+        benefNombreCupo = String(mismos[0]?.name ?? (payload.recipient as any)?.holderName ?? '').trim()
+      } catch { /* sin contactos: cuenta solo el documento y este destino */ }
     }
 
     const amount = Number(payload.amount)
@@ -3696,6 +3710,38 @@ serve(async (req: Request) => {
     const destinoNorm = rail === 'BREB'
       ? (() => { const t = destinoCrudo.toLowerCase(); const d = t.replace(/\D/g, ''); return d.length >= 10 && /^[+\d\s().-]+$/.test(t) ? d.replace(/^57(?=\d{10}$)/, '') : t.replace(/\s+/g, '') })()
       : destinoCrudo.replace(/\D/g, '')
+    // (1b) CUPO MENSUAL POR BENEFICIARIO (normativa de Cumplimiento): en el
+    //      mes, a una persona hasta 80 M y a una empresa hasta 800 M, salvo el
+    //      cupo que Cumplimiento haya aprobado para ESE beneficiario. Se corta
+    //      antes de debitar, con lo usado y lo que queda.
+    {
+      try {
+        const general = await cupoGeneral(db)
+        const clave = claveBeneficiario(benefDocCupo, destinoNorm)
+        const aprobado = await cupoAprobado(db, userId, clave)
+        const cupo = aprobado ?? (tipoBeneficiario === 'empresa' ? general.empresa : general.persona)
+        const envios = await enviosDelMes(db, await idsDeLaPersona(db, userId))
+        const usado = usadoPara(envios, benefDocCupo, [...benefDestinosCupo, destinoNorm])
+        if (usado + amount > cupo) {
+          const enProceso = await solicitudEnProceso(db, userId, clave)
+          const quedan = Math.max(0, cupo - usado)
+          const quien = benefNombreCupo || String((payload.recipient as any)?.holderName ?? '').trim() || 'este beneficiario'
+          await logAudit(userId, `mouv.${action}.cupo_mensual`, { amount, usado, cupo, aprobado: aprobado != null, clave, enProceso })
+          return json(403, {
+            error: 'cupo_mensual', cupo, usado, disponible: quedan, enProceso,
+            message: `Este envío supera el cupo mensual de ${quien}: este mes llevas ${usado.toLocaleString('es-CO')} COP de ${cupo.toLocaleString('es-CO')} COP y te quedan ${quedan.toLocaleString('es-CO')} COP. `
+              + (enProceso
+                ? 'Tu solicitud de aumento de cupo para este beneficiario está en revisión de cumplimiento.'
+                : 'Para enviar más, solicita un aumento de cupo en Beneficiarios adjuntando el RUT.'),
+          })
+        }
+      } catch (e) {
+        // Sin poder calcular el cupo, el envío NO sale: es un control de
+        // cumplimiento y falla cerrado.
+        await logAudit(userId, `mouv.${action}.cupo_error`, { error: String((e as Error)?.message ?? e).slice(0, 200) })
+        return json(503, { error: 'cupo_no_verificado', message: 'No pudimos verificar el cupo mensual de este beneficiario. Intenta de nuevo en un momento.' })
+      }
+    }
     try {
       const since = new Date(Date.now() - 2 * 60 * 1000).toISOString()
       const { data: dup } = await db.from('transactions')
@@ -3918,6 +3964,9 @@ serve(async (req: Request) => {
       bank: rail === 'BREB' ? `Bre-B · ${keyTypeLabel}` : (recipient.bankCode ?? 'ACH'),
       account: rail === 'BREB' ? (recipient.key ?? null) : (recipient.accountNumber ?? null),
       ...(recipient.documentNumber ? { documentNumber: recipient.documentNumber } : {}),
+      // El documento del beneficiario con que se controla el cupo mensual (el
+      // inscrito o el de la llave), aunque el envío no lo traiga.
+      ...(benefDocCupo ? { benefDoc: benefDocCupo } : {}),
       ...(recipient.documentType ? { documentType: recipient.documentType } : {}),
       ...(recipient.reference ? { reason: recipient.reference } : {}),
       motivo, motivoTexto,
