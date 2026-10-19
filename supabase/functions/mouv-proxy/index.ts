@@ -1964,10 +1964,17 @@ serve(async (req: Request) => {
         .not('raw_data->>providerRef', 'is', null)
         .gte('created_at', new Date(ahora - 5 * 86_400_000).toISOString())
         .order('created_at', { ascending: false }).limit(60)
-      tardias = (data ?? []) as any[]
+      // En orden aleatorio: con sesenta filas no alcanza el tiempo para todas,
+      // y en el mismo orden siempre quedaban sin mirar las mismas.
+      tardias = ((data ?? []) as any[]).sort(() => Math.random() - 0.5)
     }
+    // Con tiempo tope: el barrido de 100 filas pasaba de los 2 minutos, la
+    // base cortaba la llamada y no se sabía qué había quedado revisado. Lo que
+    // no alcanza se mira en la siguiente vuelta.
     const results: Record<string, unknown>[] = []
+    let parcial = false
     for (const tx of [...vivas, ...tardias]) {
+      if (Date.now() - ahora > 90_000) { parcial = true; break }
       try { results.push(await conciliarFilaFinity(tx, 'vigilar_finity')) }
       catch (e) { results.push({ id: tx.id, result: 'error', error: String((e as Error)?.message ?? e).slice(0, 160) }) }
     }
@@ -1975,7 +1982,7 @@ serve(async (req: Request) => {
     if (results.some(r => r.result === 'refunded' || r.result === 'completed' || r.result === 'reembolso_fallido')) {
       await logAudit(null, 'finity.vigilante', { revisadas: results.length, resumen })
     }
-    return json(200, { ok: true, revisadas: results.length, resumen, results })
+    return json(200, { ok: true, revisadas: results.length, ...(parcial ? { parcial: true, pendientes: vivas.length + tardias.length - results.length } : {}), resumen, results })
   }
 
   const caller = await validCaller(req, payload)
