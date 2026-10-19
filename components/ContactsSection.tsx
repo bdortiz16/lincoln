@@ -474,7 +474,12 @@ export const ContactsSection: React.FC<{
         const f = amlBenef[doc];
         // 'archivado' = la consulta de un beneficiario borrado (queda en el
         // archivo de cumplimiento). Si vuelve a aparecer, espera una nueva.
-        return (!f || String(f.estado ?? '') === 'archivado') ? { estado: 'procesando' } : f;
+        // Sin ficha: "consultando" SOLO si la verificación corre para esta
+        // cuenta. Si está apagada o la cuenta no está en la prueba, nadie la
+        // va a lanzar y el servidor no frena el envío: mostrarla
+        // "consultando" la dejaba así para siempre y con Enviar apagado.
+        if (!f || String(f.estado ?? '') === 'archivado') return amlCorre ? { estado: 'procesando' } : null;
+        return f;
     };
     // El veredicto que frena. UN SOLO criterio, el mismo que aplica el
     // servidor en mouv-proxy, para que la insignia y el envío no se
@@ -497,7 +502,11 @@ export const ContactsSection: React.FC<{
         // ya se fue. El control existe para decidir ANTES.
         //
         // La consulta tarda cerca de un minuto. Se espera.
-        if (est !== 'finalizado') return true;
+        // Igual que el servidor: el titular que no autoriza la consulta no
+        // frena (es su derecho y no se resuelve esperando), y si la
+        // verificación no corre para esta cuenta no hay nada que esperar.
+        if (est === 'sin_autorizacion') return false;
+        if (est !== 'finalizado') return amlCorre;
         // Cumplimiento lo revisó y lo aprobó: el servidor lo deja pasar.
         if (k.aprobadoManual === true) return false;
         return k.operable === false
@@ -561,13 +570,19 @@ export const ContactsSection: React.FC<{
         let tono = GRIS, estado = '', motivo = '', ayuda = '';
         if (est === 'procesando' || !est) {
             estado = 'CONSULTANDO';
-            ayuda = 'Estamos consultando los antecedentes de esta persona. Suele tardar alrededor de un minuto.';
+            ayuda = 'Estamos consultando los antecedentes de esta persona. Suele tardar alrededor de un minuto. Mientras tanto no se le puede transferir.';
+        } else if (est === 'en_espera') {
+            estado = 'EN COLA';
+            ayuda = 'La verificación de antecedentes está en cola y se completa sola. Mientras tanto no se le puede transferir.';
         } else if (est === 'sin_autorizacion') {
             estado = 'SIN AUTORIZAR';
             ayuda = 'El titular del documento no autoriza la consulta de su información. No impide transferirle.';
         } else if (est !== 'finalizado') {
-            estado = 'SIN RESULTADO';
-            ayuda = 'La consulta no pudo completarse. No impide transferirle; se vuelve a intentar.';
+            const agotado = Number(k.intentos ?? 0) >= 8;
+            tono = AMBAR; estado = agotado ? 'EN REVISIÓN' : 'SIN RESULTADO';
+            ayuda = agotado
+                ? 'La verificación no pudo completarse después de varios intentos. El equipo de cumplimiento la revisa; mientras tanto no se le puede transferir.'
+                : 'La verificación no pudo completarse y se está reintentando sola. Mientras no haya resultado no se le puede transferir.';
         } else if (k.aprobadoManual === true) {
             tono = VERDE; estado = 'APROBADO';
             ayuda = 'Revisado y aprobado por el equipo de cumplimiento de Lincoin. Se puede transferir.';
@@ -1284,7 +1299,11 @@ export const ContactsSection: React.FC<{
         const doc = String(c.docNumber ?? '').replace(/\D/g, '');
         if (!doc) return '';
         const k = amlBenef[doc];
-        if (!k || String(k.estado ?? '') === 'procesando') return doc;
+        const estK = String(k?.estado ?? '');
+        if (!k || estK === 'procesando' || estK === 'archivado') return doc;
+        // Las que no terminaron se reintentan solas en el servidor: el reloj
+        // tiene que seguir corriendo mientras existan (hasta que se agoten).
+        if ((estK === 'error' || estK === 'expirado' || estK === 'en_espera') && Number(k.intentos ?? 0) < 8) return `${doc}:${estK}`;
         if (String(k.estado ?? '') === 'finalizado' && c.name && k.nombreInscrito
             && claveNombre(k.nombreInscrito) !== claveNombre(c.name)) return `${doc}:nombre`;
         return '';
@@ -1316,9 +1335,14 @@ export const ContactsSection: React.FC<{
             await leerTusdatos(uid);
         };
         vuelta();
+        // Cada 15 s los primeros ~6 minutos (lo normal es que termine en uno);
+        // después cada minuto durante una hora, para recoger los reintentos.
+        // Antes se rendía a los 6 minutos y lo que no había terminado quedaba
+        // "consultando" hasta volver a abrir la pantalla.
         const t = setInterval(() => {
             vueltas += 1;
-            if (vueltas > 25) { clearInterval(t); return; }
+            if (vueltas > 25 + 240) { clearInterval(t); return; }
+            if (vueltas > 25 && vueltas % 4 !== 0) return;
             vuelta();
         }, 15000);
         return () => { vivo = false; clearInterval(t); };
