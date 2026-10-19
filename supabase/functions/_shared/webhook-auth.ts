@@ -103,9 +103,11 @@ let secretoBase: { v: string; at: number } | null = null
 export async function secretoDeLaBase(db: any): Promise<string> {
   if (secretoBase && Date.now() - secretoBase.at < 5 * 60_000) return secretoBase.v
   try {
-    const { data } = await db.from('private_config').select('value').eq('key', 'aviso_secret').maybeSingle()
+    const { data, error } = await db.from('private_config').select('value').eq('key', 'aviso_secret').maybeSingle()
     const v = String((data as any)?.value ?? '').trim()
-    secretoBase = { v, at: Date.now() }
+    // Solo se guarda una lectura buena: un fallo pasajero de la base dejaba
+    // la clave vacía en memoria y se rechazaban todos los avisos 5 minutos.
+    if (!error && v) secretoBase = { v, at: Date.now() }
     return v
   } catch { return '' }
 }
