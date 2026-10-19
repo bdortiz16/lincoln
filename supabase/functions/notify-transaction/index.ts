@@ -1,5 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
-import { exigirWebhook } from '../_shared/webhook-auth.ts'
+import { exigirWebhook, esLlamadaInterna, cabecerasInternas } from '../_shared/webhook-auth.ts'
 
 const RESEND_KEY = Deno.env.get('RESEND_API_KEY') ?? ''
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
@@ -457,8 +457,7 @@ Deno.serve(async (req) => {
     //    remitente decide el destinatario leyéndolo de la base, no del body
     //    del cliente. ────────────────────────────────────────────────────
     if (payload.type === 'CUSTOM_EMAIL') {
-      const auth = (req.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '')
-      if (!SERVICE_KEY || auth !== SERVICE_KEY) return new Response('forbidden', { status: 403 })
+      if (!(await esLlamadaInterna(req, db))) return new Response('forbidden', { status: 403 })
       const to = String(payload.to ?? '')
       if (!to) return new Response('no_to', { status: 200 })
       await loadFooterNote()
@@ -660,7 +659,7 @@ async function facturar(folio: number): Promise<void> {
     const reloj = setTimeout(() => ctrl.abort(), 120000)
     const r = await fetch(`${SUPABASE_URL}/functions/v1/facturacion`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+      headers: await cabecerasInternas(db),
       body: JSON.stringify({ action: 'emitir', folio }),
       signal: ctrl.signal,
     })
@@ -686,7 +685,7 @@ async function facturarLincoin(txId: string | number): Promise<void> {
   try {
     const r = await fetch(`${SUPABASE_URL}/functions/v1/facturacion`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+      headers: await cabecerasInternas(db),
       body: JSON.stringify({ action: 'lincoin_auto', transactionId: String(txId) }),
       signal: AbortSignal.timeout(30000),
     })
@@ -703,7 +702,7 @@ async function facturarYPonerseAlDia(folio: number, userId: string): Promise<voi
   try {
     const r = await fetch(`${SUPABASE_URL}/functions/v1/facturacion`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+      headers: await cabecerasInternas(db),
       body: JSON.stringify({ action: 'ponerse_al_dia', userId }),
       signal: AbortSignal.timeout(130000),
     })

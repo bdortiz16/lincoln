@@ -22,7 +22,7 @@
 import { serve } from 'https://deno.land/std@0.192.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { mergeRaw } from '../_shared/raw-data.ts'
-import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
+import { traeSecretoDeLaBase, cabecerasInternas } from '../_shared/webhook-auth.ts'
 import { reclamarCandado, soltarCandado } from '../_shared/candado.ts'
 import { FIELD_ENC_KEY, decField } from '../_shared/field-crypto.ts'
 import { inicioMesBogota, cupoGeneral, cupoAprobado, cupoVigente, solicitudEnProceso, claveBeneficiario, clavesBeneficiario, enviosDelMes, usadoPara, idsMismaPersona as idsDeLaPersona, normDoc, tipoCupo } from '../_shared/cupos.ts'
@@ -324,7 +324,7 @@ async function notifyTx(txId: number | string | null): Promise<void> {
     if (!full) return
     await fetch(`${SUPABASE_URL}/functions/v1/notify-transaction`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SERVICE_KEY}` },
+      headers: await cabecerasInternas(db),
       body: JSON.stringify({ type: 'UPDATE', table: 'transactions', record: full }),
     })
   } catch { /* correo best-effort — nunca romper el flujo de dinero */ }

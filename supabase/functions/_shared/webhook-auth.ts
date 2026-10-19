@@ -49,6 +49,10 @@ export type ResultadoAuth = { ok: boolean; via: string; motivo?: string }
 export function autorizarWebhook(req: Request): ResultadoAuth {
   const auth = (req.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
   if (SERVICE_KEY && igual(auth, SERVICE_KEY)) return { ok: true, via: 'service_role' }
+  // La plataforma puede cambiar el Authorization por un token propio y dejar
+  // la llave en apikey: se acepta ahí también.
+  const apikey = (req.headers.get('apikey') ?? '').trim()
+  if (SERVICE_KEY && igual(apikey, SERVICE_KEY)) return { ok: true, via: 'service_role_apikey' }
 
   if (SECRETO) {
     // ?secret= en la URL se sigue aceptando porque los Database Webhooks del
@@ -118,15 +122,38 @@ export async function traeSecretoDeLaBase(req: Request, db: any): Promise<boolea
   return v.length >= 32 && igual(enviado, v)
 }
 
+// Encabezados para que una función le avise a otra (p. ej. a
+// notify-transaction): la llave de servicio en los dos lugares y, además, la
+// clave de la base, que no depende del formato de la llave.
+export async function cabecerasInternas(db: any): Promise<Record<string, string>> {
+  const h: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (SERVICE_KEY) { h.Authorization = `Bearer ${SERVICE_KEY}`; h.apikey = SERVICE_KEY }
+  const s = await secretoDeLaBase(db)
+  if (s.length >= 32) h['x-webhook-secret'] = s
+  return h
+}
+
+// ¿La llamada viene del propio servidor? (llave de servicio o clave de la base)
+export async function esLlamadaInterna(req: Request, db: any): Promise<boolean> {
+  const auth = (req.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
+  const apikey = (req.headers.get('apikey') ?? '').trim()
+  if (SERVICE_KEY && (igual(auth, SERVICE_KEY) || igual(apikey, SERVICE_KEY))) return true
+  return await traeSecretoDeLaBase(req, db)
+}
+
 export async function exigirWebhook(
   req: Request, fuente: string, db: any,
 ): Promise<Response | null> {
   let r = autorizarWebhook(req)
   if (!r.ok && await traeSecretoDeLaBase(req, db)) r = { ok: true, via: 'secreto_de_la_base' }
   if (!r.ok) {
-    const token = (req.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
-      || (req.headers.get('apikey') ?? '').trim()
-    if (await esLlaveDeServicio(token)) r = { ok: true, via: 'service_key_validada' }
+    const tokens = [...new Set([
+      (req.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '').trim(),
+      (req.headers.get('apikey') ?? '').trim(),
+    ].filter(Boolean))]
+    for (const t of tokens) {
+      if (await esLlaveDeServicio(t)) { r = { ok: true, via: 'service_key_validada' }; break }
+    }
   }
   if (r.ok) return null
   try {
