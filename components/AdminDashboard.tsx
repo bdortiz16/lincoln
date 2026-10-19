@@ -2662,23 +2662,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
             );
           })()}
 
-          {/* Ventana de confirmación del cargue (tema Lincoin) */}
+          {/* Ventana de confirmación del cargue (tema Lincoin).
+              En el celular se salía de la pantalla: era una sola columna sin
+              tope de alto y los botones quedaban abajo, fuera de la vista. Ahora
+              tiene tope (el alto visible), el contenido se desplaza adentro y
+              los botones quedan siempre a la vista, abajo. */}
           {carguesConfirm && carguesClient && (
-            <div className="fixed inset-0 z-[80] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.62)', backdropFilter: 'blur(3px)' }} onClick={() => !carguesBusy && setCarguesConfirm(null)}>
-              <div onClick={(e) => e.stopPropagation()} style={{ width: '100%', maxWidth: 420, background: '#121413', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, overflow: 'hidden', fontFamily: "'Archivo', system-ui, sans-serif", boxShadow: '0 24px 60px rgba(0,0,0,0.55)' }}>
-                <div style={{ padding: '22px 24px 4px' }}>
-                  <div style={{ width: 46, height: 46, borderRadius: 13, display: 'grid', placeItems: 'center', marginBottom: 14,
+            <div className="fixed inset-0 z-[80] flex items-center justify-center" style={{ padding: 12, background: 'rgba(0,0,0,0.62)', backdropFilter: 'blur(3px)' }} onClick={() => !carguesBusy && setCarguesConfirm(null)}>
+              <div onClick={(e) => e.stopPropagation()} style={{ width: '100%', maxWidth: 420, maxHeight: 'calc(100dvh - 24px)', display: 'flex', flexDirection: 'column', background: '#121413', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 16, overflow: 'hidden', fontFamily: "'Archivo', system-ui, sans-serif", boxShadow: '0 24px 60px rgba(0,0,0,0.55)' }}>
+                <div style={{ padding: '14px 16px 0', display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
+                  <div style={{ width: 34, height: 34, borderRadius: 10, display: 'grid', placeItems: 'center', flexShrink: 0,
                     background: carguesDir === 'credit' ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.12)',
                     border: `1px solid ${carguesDir === 'credit' ? 'rgba(74,222,128,0.32)' : 'rgba(248,113,113,0.32)'}` }}>
-                    <Wallet size={21} style={{ color: carguesDir === 'credit' ? '#4ADE80' : '#F87171' }} />
+                    <Wallet size={16} style={{ color: carguesDir === 'credit' ? '#4ADE80' : '#F87171' }} />
                   </div>
-                  <h3 style={{ fontSize: 18, fontWeight: 800, color: '#F4F4F2', letterSpacing: '-0.4px' }}>
-                    Confirmar {carguesDir === 'credit' ? 'cargue' : 'descuento'}
-                  </h3>
-                  <p style={{ fontSize: 13.5, color: '#878E88', marginTop: 4, lineHeight: 1.5 }}>
-                    Vas a {carguesDir === 'credit' ? 'acreditar' : 'descontar'} saldo en el riel <b style={{ color: '#F4F4F2' }}>{railLabelOf(carguesRail)}</b> de <b style={{ color: '#F4F4F2' }}>{carguesClient.name}</b>.
-                  </p>
+                  <div style={{ minWidth: 0 }}>
+                    <h3 style={{ fontSize: 16, fontWeight: 800, color: '#F4F4F2', letterSpacing: '-0.3px', margin: 0 }}>
+                      Confirmar {carguesDir === 'credit' ? 'cargue' : 'descuento'}
+                    </h3>
+                    <p style={{ fontSize: 12, color: '#878E88', margin: '1px 0 0', lineHeight: 1.4 }}>
+                      {carguesDir === 'credit' ? 'Acreditar' : 'Descontar'} en <b style={{ color: '#F4F4F2' }}>{railLabelOf(carguesRail)}</b> · <b style={{ color: '#F4F4F2' }}>{carguesClient.name}</b>
+                    </p>
+                  </div>
                 </div>
+                <div style={{ flex: '1 1 auto', minHeight: 0, overflowY: 'auto', padding: '12px 16px 4px', WebkitOverflowScrolling: 'touch' as any }}>
                 {(() => {
                   // Bre-B: al cliente se le cobra 0,10% POR RECIBIR el cargue —
                   // el neto es lo que de verdad entra a su billetera Bre-B.
@@ -2686,86 +2693,84 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                   const fee = isBrebCredit ? Math.round(carguesConfirm.raw * 0.10 / 100) : 0;
                   const net = carguesConfirm.raw - fee;
                   const deltaNet = carguesDir === 'credit' ? net : -carguesConfirm.raw;
+                  const fila = (l: React.ReactNode, v: React.ReactNode, vStyle: React.CSSProperties = {}) => (
+                    <div className="flex items-center justify-between" style={{ gap: 12, padding: '3px 0' }}>
+                      <span style={{ fontSize: 12, color: '#878E88' }}>{l}</span>
+                      <span style={{ fontSize: 12.5, fontWeight: 700, color: '#F4F4F2', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', ...vStyle }}>{v}</span>
+                    </div>
+                  );
+                  const n = (x: number) => x.toLocaleString('es-CO');
                   return (
-                <div style={{ margin: '16px 24px', padding: '16px 18px', background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 13 }}>
-                  <div className="flex items-center justify-between" style={{ marginBottom: 10 }}>
-                    <span style={{ fontSize: 12.5, color: '#878E88' }}>Monto{isBrebCredit ? ' del cargue' : ''}</span>
-                    <span style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.6px', color: carguesDir === 'credit' ? '#4ADE80' : '#F87171' }}>
-                      {carguesDir === 'credit' ? '+' : '−'} {carguesConfirm.raw.toLocaleString('es-CO')} <span style={{ fontSize: 12, color: '#878E88', fontWeight: 600 }}>COP</span>
+                <div style={{ padding: '12px 14px', background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12 }}>
+                  <div className="flex items-center justify-between" style={{ gap: 10, marginBottom: 6 }}>
+                    <span style={{ fontSize: 12, color: '#878E88' }}>Monto{isBrebCredit ? ' del cargue' : ''}</span>
+                    <span style={{ fontSize: 20, fontWeight: 800, letterSpacing: '-0.5px', color: carguesDir === 'credit' ? '#4ADE80' : '#F87171', whiteSpace: 'nowrap' }}>
+                      {carguesDir === 'credit' ? '+' : '−'} {n(carguesConfirm.raw)} <span style={{ fontSize: 11, color: '#878E88', fontWeight: 600 }}>COP</span>
                     </span>
                   </div>
                   {isBrebCredit && (
-                    <>
-                      <div className="flex items-center justify-between" style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 10 }}>
-                        <span style={{ fontSize: 12.5, color: '#878E88' }}>Comisión por recepción Bre-B (0,10%)</span>
-                        <span style={{ fontSize: 13.5, fontWeight: 700, color: '#F87171' }}>− {fee.toLocaleString('es-CO')} COP</span>
-                      </div>
-                      <div className="flex items-center justify-between" style={{ marginTop: 8 }}>
-                        <span style={{ fontSize: 12.5, color: '#878E88' }}>Neto que se acredita</span>
-                        <span style={{ fontSize: 13.5, fontWeight: 800, color: '#F4F4F2' }}>{net.toLocaleString('es-CO')} COP</span>
-                      </div>
-                    </>
+                    <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 5 }}>
+                      {fila('Comisión recepción Bre-B (0,10%)', `− ${n(fee)} COP`, { color: '#F87171' })}
+                      {fila('Neto que se acredita', `${n(net)} COP`, { fontWeight: 800 })}
+                    </div>
                   )}
-                  <div className="flex items-center justify-between" style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 10, marginTop: isBrebCredit ? 10 : 0 }}>
-                    <span style={{ fontSize: 12.5, color: '#878E88' }}>Saldo {railLabelOf(carguesRail)} actual</span>
-                    <span style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>{Number((carguesClient.balances as any)?.[carguesRail] ?? 0).toLocaleString('es-CO')} COP</span>
-                  </div>
-                  <div className="flex items-center justify-between" style={{ marginTop: 8 }}>
-                    <span style={{ fontSize: 12.5, color: '#878E88' }}>Quedará en</span>
-                    <span style={{ fontSize: 13.5, fontWeight: 800, color: '#4ADE80' }}>
-                      {Math.max(0, Number((carguesClient.balances as any)?.[carguesRail] ?? 0) + deltaNet).toLocaleString('es-CO')} COP
-                    </span>
+                  <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 5, marginTop: 5 }}>
+                    {fila(`Saldo ${railLabelOf(carguesRail)} actual`, `${n(Number((carguesClient.balances as any)?.[carguesRail] ?? 0))} COP`)}
+                    {fila('Quedará en', `${n(Math.max(0, Number((carguesClient.balances as any)?.[carguesRail] ?? 0) + deltaNet))} COP`, { fontWeight: 800, color: '#4ADE80' })}
                   </div>
                   {/* ── El desglose de la operación ──
-                      Antes la confirmación mostraba el monto y el saldo, y
-                      nada más: las tasas, el fee de red y la utilidad se veían
-                      en el formulario y desaparecían justo cuando había que
-                      autorizarlas. Acá va todo lo que el servidor va a usar. */}
+                      Todo lo que el servidor va a usar, a la vista antes de
+                      autorizar. Lo que repite el mismo dato va en una fila. */}
                   {usandoAcct && acctCalc.listo && (
-                    <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid rgba(255,255,255,0.10)' }}>
-                      <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1.2px', color: '#878E88', margin: '0 0 8px' }}>CÓMO SE CALCULÓ</p>
-                      {[
-                        ['USDT que envió el cliente', `${acctCalc.usdtGross.toLocaleString('es-CO')} USDT`],
-                        ['USDT que llegaron', `${acctCalc.usdtNet.toLocaleString('es-CO')} USDT`],
-                        ['Fee de red', `${acctCalc.feeUsdt.toLocaleString('es-CO')} USDT · ${acctFeeBearer === 'lincoin' ? 'lo asume Lincoin' : 'lo asume el cliente'}`],
-                        ['Tasa de venta', `${acctCalc.sellRate.toLocaleString('es-CO')} COP/USDT`],
-                        ['Tasa al cliente', `${acctCalc.clientRate.toLocaleString('es-CO')} COP/USDT`],
-                        ['Entró por la venta', `${acctCalc.revenueCop.toLocaleString('es-CO')} COP`],
-                        ['Al cliente, antes de comisión', `${acctCalc.copToClient.toLocaleString('es-CO')} COP`],
-                      ].map(([l, v]) => (
-                        <div key={l} className="flex items-center justify-between" style={{ gap: 12, padding: '4px 0' }}>
-                          <span style={{ fontSize: 12, color: '#878E88' }}>{l}</span>
-                          <span style={{ fontSize: 12.5, fontWeight: 700, color: '#F4F4F2', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>{v}</span>
-                        </div>
-                      ))}
-                      <div className="flex items-center justify-between" style={{ gap: 12, paddingTop: 8, marginTop: 4, borderTop: '1px solid rgba(255,255,255,0.10)' }}>
+                    <div style={{ marginTop: 8, paddingTop: 7, borderTop: '1px solid rgba(255,255,255,0.10)' }}>
+                      <p style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '1.2px', color: '#878E88', margin: '0 0 3px' }}>CÓMO SE CALCULÓ</p>
+                      {acctCalc.usdtGross === acctCalc.usdtNet
+                        ? fila('USDT recibidos', `${n(acctCalc.usdtGross)} USDT`)
+                        : <>
+                            {fila('USDT que envió el cliente', `${n(acctCalc.usdtGross)} USDT`)}
+                            {fila('USDT que llegaron', `${n(acctCalc.usdtNet)} USDT`)}
+                          </>}
+                      {acctCalc.feeUsdt > 0 && fila('Fee de red', `${n(acctCalc.feeUsdt)} USDT · ${acctFeeBearer === 'lincoin' ? 'Lincoin' : 'cliente'}`)}
+                      {acctCalc.sellRate === acctCalc.clientRate
+                        ? fila('Tasa (venta y cliente)', `${n(acctCalc.sellRate)} COP/USDT`)
+                        : <>
+                            {fila('Tasa de venta', `${n(acctCalc.sellRate)} COP/USDT`)}
+                            {fila('Tasa al cliente', `${n(acctCalc.clientRate)} COP/USDT`)}
+                          </>}
+                      {acctCalc.revenueCop === acctCalc.copToClient
+                        ? fila('Venta y al cliente', `${n(acctCalc.revenueCop)} COP`)
+                        : <>
+                            {fila('Entró por la venta', `${n(acctCalc.revenueCop)} COP`)}
+                            {fila('Al cliente, antes de comisión', `${n(acctCalc.copToClient)} COP`)}
+                          </>}
+                      <div className="flex items-center justify-between" style={{ gap: 12, paddingTop: 6, marginTop: 3, borderTop: '1px solid rgba(255,255,255,0.10)' }}>
                         <span style={{ fontSize: 12.5, fontWeight: 700, color: '#F4F4F2' }}>Tu utilidad</span>
-                        <span style={{ fontSize: 15, fontWeight: 800, color: acctCalc.utilityCop >= 0 ? '#4ADE80' : '#F87171', fontVariantNumeric: 'tabular-nums' }}>{acctCalc.utilityCop.toLocaleString('es-CO')} COP</span>
+                        <span style={{ fontSize: 14, fontWeight: 800, color: acctCalc.utilityCop >= 0 ? '#4ADE80' : '#F87171', fontVariantNumeric: 'tabular-nums' }}>{n(acctCalc.utilityCop)} COP</span>
                       </div>
-                      {acctCalc.utilityCop < 0 && <p style={{ fontSize: 11, color: '#F87171', margin: '6px 0 0' }}>Estás pagando más de lo que recibiste. Revisá las tasas antes de autorizar.</p>}
+                      {acctCalc.utilityCop < 0 && <p style={{ fontSize: 11, color: '#F87171', margin: '4px 0 0' }}>Estás pagando más de lo que recibiste. Revisá las tasas antes de autorizar.</p>}
                     </div>
                   )}
                   {!usandoAcct && !carguesRecordOnly && carguesDir === 'credit' && (
-                    <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', marginTop: 10, lineHeight: 1.5 }}>
+                    <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', marginTop: 8, lineHeight: 1.45 }}>
                       Sin contabilidad: este cargue no registra USDT ni tasas, así que no tendrá utilidad calculada.
                     </p>
                   )}
                   {carguesRecordOnly && (
-                    <p style={{ fontSize: 11.5, color: '#FBBF24', marginTop: 10, lineHeight: 1.5, fontWeight: 600 }}>
+                    <p style={{ fontSize: 11.5, color: '#FBBF24', marginTop: 8, lineHeight: 1.45, fontWeight: 600 }}>
                       Solo registro histórico: el saldo NO cambia y no se cobra comisión.
                     </p>
                   )}
-                  {carguesNote.trim() && <p style={{ fontSize: 12, color: '#878E88', marginTop: 12, fontStyle: 'italic' }}>“{carguesNote.trim()}”</p>}
+                  {carguesNote.trim() && <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 8, fontStyle: 'italic' }}>“{carguesNote.trim()}”</p>}
                 </div>
                   );
                 })()}
                 {cargueExceeds && (
-                  <div style={{ margin: '0 24px 12px', padding: '12px 14px', background: 'rgba(248,113,113,0.10)', border: '1px solid rgba(248,113,113,0.38)', borderRadius: 12 }}>
-                    <p style={{ fontSize: 12.5, color: '#F87171', fontWeight: 800 }}>⚠ Excede lo disponible en {carguesRail === 'COP_BREB' ? 'Mouv' : 'Finity'}</p>
-                    <p style={{ fontSize: 11.5, color: 'rgba(248,113,113,0.9)', lineHeight: 1.5, marginTop: 4 }}>
+                  <div style={{ marginTop: 10, padding: '10px 12px', background: 'rgba(248,113,113,0.10)', border: '1px solid rgba(248,113,113,0.38)', borderRadius: 12 }}>
+                    <p style={{ fontSize: 12, color: '#F87171', fontWeight: 800, margin: 0 }}>⚠ Excede lo disponible en {carguesRail === 'COP_BREB' ? 'Mouv' : 'Finity'}</p>
+                    <p style={{ fontSize: 11.5, color: 'rgba(248,113,113,0.9)', lineHeight: 1.45, margin: '4px 0 0' }}>
                       Libre para cargar: <b>{Math.round(freeForRail).toLocaleString('es-CO')} COP</b>. Con este cargue quedarías corto en <b>{cargueShortfall.toLocaleString('es-CO')} COP</b> frente a lo que ya les debes a los clientes — estarías acreditando saldo que la bolsa no respalda.
                     </p>
-                    <label className="flex items-center gap-2" style={{ marginTop: 8, cursor: 'pointer' }}>
+                    <label className="flex items-center gap-2" style={{ marginTop: 6, cursor: 'pointer' }}>
                       <input type="checkbox" checked={carguesOverride} onChange={e => setCarguesOverride(e.target.checked)} />
                       <span style={{ fontSize: 12, color: '#F4F4F2', fontWeight: 600 }}>Entiendo el faltante — cargar de todos modos</span>
                     </label>
@@ -2774,23 +2779,24 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                 {/* El 2FA, al final: después de leer el desglose y justo
                     antes del botón. Cada código sirve una sola vez. */}
                 {!carguesRecordOnly && (
-                  <div style={{ margin: '0 24px 14px', padding: '12px 14px', background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 12 }}>
+                  <div style={{ marginTop: 10, marginBottom: 6 }}>
                     <label className="block text-[10px] font-bold uppercase tracking-wide mb-1.5" style={{ color: '#878E88' }}>Tu código 2FA para autorizar</label>
-                    <CodeInput value={cargueOtp} onChange={setCargueOtp} tone="dark" aria="Tu código 2FA para autorizar el cargue" />
-                    <p className="text-[10px] mt-1.5 mb-0" style={{ color: 'rgba(244,244,242,0.45)' }}>Se pide en cada cargue, no solo al entrar.</p>
+                    <CodeInput value={cargueOtp} onChange={setCargueOtp} tone="dark" compacto aria="Tu código 2FA para autorizar el cargue" />
+                    <p className="text-[10px] mt-1 mb-0" style={{ color: 'rgba(244,244,242,0.45)' }}>Se pide en cada cargue, no solo al entrar.</p>
                   </div>
                 )}
+                </div>
                 {(() => {
                   const bloqueado = carguesBusy || (cargueExceeds && !carguesOverride) || (!carguesRecordOnly && cargueOtp.length !== 6);
                   return (
-                <div style={{ display: 'flex', gap: 10, padding: '4px 24px 22px' }}>
+                <div style={{ display: 'flex', gap: 10, flexShrink: 0, padding: '10px 16px calc(12px + env(safe-area-inset-bottom))', borderTop: '1px solid rgba(255,255,255,0.08)', background: '#121413' }}>
                   <button onClick={() => { setCarguesConfirm(null); setCarguesOverride(false); }} disabled={carguesBusy}
-                    style={{ flex: 1, padding: '12px', borderRadius: 11, fontSize: 14, fontWeight: 700, color: '#F4F4F2', background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', cursor: carguesBusy ? 'default' : 'pointer' }}>
+                    style={{ flex: 1, padding: '11px', borderRadius: 11, fontSize: 14, fontWeight: 700, color: '#F4F4F2', background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', cursor: carguesBusy ? 'default' : 'pointer' }}>
                     Cancelar
                   </button>
                   <button onClick={submitCargue} disabled={bloqueado}
                     title={!carguesRecordOnly && cargueOtp.length !== 6 ? 'Escribí tu código 2FA para autorizar' : undefined}
-                    style={{ flex: 1.4, padding: '12px', borderRadius: 11, fontSize: 14, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                    style={{ flex: 1.4, padding: '11px', borderRadius: 11, fontSize: 14, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
                       color: '#0A0C0B', background: bloqueado ? 'rgba(74,222,128,0.4)' : '#4ADE80', border: 'none', cursor: bloqueado ? 'not-allowed' : 'pointer' }}>
                     {carguesBusy ? <><RefreshCw size={15} className="animate-spin" /> Aplicando…</> : <>Autorizar {carguesDir === 'credit' ? 'cargue' : 'descuento'}</>}
                   </button>

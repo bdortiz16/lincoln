@@ -35,11 +35,13 @@ type Props = {
   disabled?: boolean;
   /** Texto accesible del campo (no se dibuja). */
   aria?: string;
+  /** Casillas más bajas, para ventanas donde el alto es escaso (móvil). */
+  compacto?: boolean;
 };
 
 export const CodeInput: React.FC<Props> = ({
   value, onChange, onComplete, length = 6,
-  status = 'idle', tone = 'dark', autoFocus, disabled, aria = 'Código de verificación',
+  status = 'idle', tone = 'dark', autoFocus, disabled, aria = 'Código de verificación', compacto = false,
 }) => {
   const ref = useRef<HTMLInputElement>(null);
   const [foco, setFoco] = useState(false);
@@ -103,7 +105,7 @@ export const CodeInput: React.FC<Props> = ({
     <div style={{ position: 'relative', fontFamily: FONT }}>
       <div
         className={claseFila}
-        style={{ display: 'flex', gap: 8, justifyContent: 'center' }}
+        style={{ display: 'flex', gap: compacto ? 6 : 8, justifyContent: 'center' }}
         onClick={() => ref.current?.focus()}
       >
         {Array.from({ length }).map((_, i) => {
@@ -114,11 +116,11 @@ export const CodeInput: React.FC<Props> = ({
               key={i}
               className={status === 'verifying' ? 'lincoin-code-wait' : ''}
               style={{
-                flex: '1 1 0', minWidth: 0, maxWidth: 58, height: 58,
+                flex: '1 1 0', minWidth: 0, maxWidth: compacto ? 46 : 58, height: compacto ? 44 : 58,
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 background: P.bg,
                 border: `1.5px solid ${borde(i)}`,
-                borderRadius: 13,
+                borderRadius: compacto ? 10 : 13,
                 // El resalte del dígito activo va con box-shadow y no con un
                 // borde más gordo: cambiar el grosor mueve las casillas de a
                 // un pixel y la fila entera parece temblar al escribir.
@@ -136,7 +138,7 @@ export const CodeInput: React.FC<Props> = ({
                   key={`${i}-${d}`}
                   className={i === ultimo ? 'lincoin-code-digit' : undefined}
                   style={{
-                    fontSize: 25, fontWeight: 800, letterSpacing: '-0.5px',
+                    fontSize: compacto ? 20 : 25, fontWeight: 800, letterSpacing: '-0.5px',
                     color: status === 'error' ? ROJO : status === 'ok' ? VERDE : P.txt,
                     fontVariantNumeric: 'tabular-nums',
                   }}
@@ -144,7 +146,7 @@ export const CodeInput: React.FC<Props> = ({
                   {d}
                 </span>
               ) : esActivo ? (
-                <span className="lincoin-code-caret" style={{ width: 2, height: 25, background: VERDE, borderRadius: 2 }} />
+                <span className="lincoin-code-caret" style={{ width: 2, height: compacto ? 20 : 25, background: VERDE, borderRadius: 2 }} />
               ) : (
                 <span style={{ fontSize: 22, fontWeight: 700, color: P.dim }}>·</span>
               )}
