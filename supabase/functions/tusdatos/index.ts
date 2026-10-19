@@ -42,6 +42,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { mergeRaw, setRawPath } from '../_shared/raw-data.ts'
 import { municipioPorNombre, municipioPorCodigo } from '../_shared/municipios.ts'
 import { requireMfaSession, igualSeguro } from '../_shared/admin-auth.ts'
+import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -342,6 +343,8 @@ type Ficha = {
   // Consultas que no terminaron: cuántas veces se lanzó y cuándo se reintenta.
   intentos?: number
   proximoIntento?: string
+  lanzadoAt?: string
+  revisadoAt?: string
   manual?: boolean
   deLincoinRisk?: boolean   // se reusó del padrón; no gastó crédito
   // Estado del documento en la Registraduría. Una cédula cancelada por
@@ -992,7 +995,17 @@ async function cerrar(c: Config, userId: string, jobid: string, doc: string, esB
   const { estado, res } = await recoger(c, jobid)
 
   if (estado === 'procesando') {
-    const parche: Ficha = { documento: doc, jobid, estado: 'procesando' }
+    // TusDatos guarda el job 2 horas. Uno que sigue "procesando" pasadas 3
+    // horas no va a terminar: se marca expirado y se relanza solo.
+    const previa = esBeneficiario ? ((await leerRaw(userId))?.tusdatos?.beneficiarios ?? {})[doc] : (await leerRaw(userId))?.tusdatos
+    const lanzadoAt = Date.parse(String(previa?.lanzadoAt ?? previa?.at ?? '')) || 0
+    if (lanzadoAt && Date.now() - lanzadoAt > 3 * 3600_000) {
+      const intentos = Number(previa?.intentos ?? 0) + 1
+      const exp: Ficha = { documento: doc, jobid, estado: 'expirado', detalle: 'Sin respuesta del proveedor en 3 horas', intentos, proximoIntento: proximoIntento(intentos), at: new Date().toISOString() }
+      if (esBeneficiario) await guardarBeneficiario(userId, doc, exp); else await guardarTitular(userId, exp)
+      return exp
+    }
+    const parche: Ficha = { documento: doc, jobid, estado: 'procesando', revisadoAt: new Date().toISOString() } as Ficha
     if (esBeneficiario) await guardarBeneficiario(userId, doc, parche); else await guardarTitular(userId, parche)
     return parche
   }
@@ -1089,6 +1102,101 @@ async function cerrar(c: Config, userId: string, jobid: string, doc: string, esB
     }
   }
   return ficha
+}
+
+// ── Recoger lo que está "procesando" de UNA cuenta ──────────────────────
+async function recogerPendientesDe(c: Config, uid: string): Promise<{ cerrados: number; pendientes: number }> {
+  const raw = await leerRaw(uid)
+  const td = raw?.tusdatos ?? {}
+  let cerrados = 0
+  if (td.jobid && td.estado === 'procesando') {
+    const f = await cerrar(c, uid, td.jobid, String(td.documento ?? ''), false)
+    if (f.estado === 'finalizado') cerrados += 1
+  }
+  const benefs: Record<string, any> = td.beneficiarios ?? {}
+  let revisados = 0
+  for (const [doc, f] of Object.entries(benefs)) {
+    if ((f as any)?.estado !== 'procesando' || !(f as any)?.jobid) continue
+    const r = await cerrar(c, uid, String((f as any).jobid), doc, true)
+    if (r.estado === 'finalizado') cerrados += 1
+    revisados += 1
+    if (revisados >= 8) break   // el resto en la siguiente vuelta
+  }
+  const despues = (await leerRaw(uid))?.tusdatos ?? {}
+  const pendientes = Object.values(despues.beneficiarios ?? {}).filter((x: any) => x?.estado === 'procesando').length
+    + (despues.estado === 'procesando' ? 1 : 0)
+  return { cerrados, pendientes }
+}
+
+// ── Lanzar lo que falta de UNA cuenta (sin ficha, reintentos, en cola) ──
+// soloReintentos: el barrido programado no lanza beneficiarios nuevos que
+// nadie ha mirado — eso lo hace la pantalla —, solo retoma lo que ya estaba
+// en curso (fallidos, expirados, en cola).
+async function lanzarPendientesDe(c: Config, uid: string, limite: number, esAdmin: boolean, soloReintentos = false):
+  Promise<{ lanzados: number; rejuzgados: number; pendientes: number; tope: boolean }> {
+  const raw = await leerRaw(uid)
+  const contactos: any[] = Array.isArray(raw?.mouvContacts) ? raw.mouvContacts : []
+  const hechos: Record<string, any> = (raw?.tusdatos ?? {}).beneficiarios ?? {}
+
+  // Primero los que no tienen ficha; después los que hay que reintentar
+  // (falló el lanzamiento, expiró, quedaron en cola, o "procesando" sin
+  // jobid). Antes estos últimos no se volvían a lanzar nunca.
+  const vistos = new Set<string>()
+  const faltan = soloReintentos ? [] as any[] : contactos.filter((x: any) => {
+    const doc = String(x?.docNumber ?? '').replace(/\D/g, '')
+    // 'archivado' = era de un beneficiario que se borró. Si vuelve a estar
+    // inscrito necesita consulta nueva: antes contaba como "ya hecho" y se
+    // quedaba "consultando" para siempre.
+    const hecho = hechos[doc] && String(hechos[doc]?.estado ?? '') !== 'archivado'
+    if (!doc || hecho || vistos.has(doc)) return false
+    vistos.add(doc)
+    return true
+  })
+  for (const x of contactos) {
+    const doc = String(x?.docNumber ?? '').replace(/\D/g, '')
+    if (!doc || vistos.has(doc) || !hechos[doc] || !debeReintentar(hechos[doc])) continue
+    vistos.add(doc)
+    faltan.push(x)
+  }
+
+  let rejuzgados = 0
+  if (!soloReintentos) {
+    const s = await sanearNombres(uid, raw, c)
+    rejuzgados = s.rejuzgados
+    for (const x of s.relanzar) faltan.push(x)
+  }
+
+  // CADA LANZAMIENTO GASTA UN CRÉDITO del plan. El lote va chico a
+  // propósito: si algo está mal configurado, se pierden cuatro consultas,
+  // no sesenta.
+  const LOTE = Math.min(Math.max(limite, 1), 8)
+  let lanzados = 0
+  let topado = false
+  for (const x of faltan.slice(0, LOTE)) {
+    if (!esAdmin && await topeDiarioAgotado(uid, c)) { topado = true; break }
+    const r = await consultar(c, uid, {
+      documento: String(x?.docNumber ?? ''),
+      tipoDocumento: String(x?.docType ?? 'CC'),
+      nombre: String(x?.name ?? ''),
+    }, true)
+    if (r.ok) lanzados += 1
+  }
+  // Con el tope del día alcanzado, lo que falta queda EN COLA (no
+  // "consultando"): se ve que espera y se lanza solo cuando haya cupo.
+  if (topado) {
+    for (const x of faltan.slice(lanzados)) {
+      const doc = String(x?.docNumber ?? '').replace(/\D/g, '')
+      if (!doc) continue
+      const prev = hechos[doc]
+      if (prev && String(prev.estado ?? '') !== 'en_espera' && !debeReintentar(prev)) continue
+      await guardarBeneficiario(uid, doc, {
+        documento: doc, tipoDocumento: String(x?.docType ?? 'CC').toUpperCase(), nombreInscrito: String(x?.name ?? '') || undefined,
+        estado: 'en_espera', detalle: 'Tope diario de verificaciones', intentos: Number(prev?.intentos ?? 0),
+        proximoIntento: new Date(Date.now() + 60 * 60_000).toISOString(), at: new Date().toISOString(),
+      } as Ficha)
+    }
+  }
+  return { lanzados, rejuzgados, pendientes: Math.max(0, faltan.length - lanzados), tope: topado }
 }
 
 // Lanza y, si alcanza, recoge. Si no, queda 'procesando' y lo recoge el
@@ -1195,8 +1303,8 @@ async function consultar(
     // comparar: el nombre real habría pisado al inscrito y la validación de
     // identidad se volvería una comparación de algo consigo mismo.
     nombreInscrito: d.nombre ? String(d.nombre) : undefined,
-    jobid, validado: r.body?.validado === true, estado: 'procesando', at: new Date().toISOString(),
-  }
+    jobid, validado: r.body?.validado === true, estado: 'procesando', at: new Date().toISOString(), lanzadoAt: new Date().toISOString(),
+  } as Ficha
   if (esBeneficiario) await guardarBeneficiario(userId, doc, inicial); else await guardarTitular(userId, inicial)
 
   return { ok: true, ficha: inicial }
@@ -1545,25 +1653,7 @@ Deno.serve(async (req: Request) => {
       if (!uid || (!yo.esAdmin && yo.userId !== uid)) return json({ error: 'No autorizado' }, 401)
       const c = await leerConfig()
       if (!c.activo) return json({ ok: true, omitido: 'la integración está apagada', pendientes: 0 })
-
-      const raw = await leerRaw(uid)
-      const td = raw?.tusdatos ?? {}
-      let cerrados = 0
-      if (td.jobid && td.estado === 'procesando') {
-        const f = await cerrar(c, uid, td.jobid, String(td.documento ?? ''), false)
-        if (f.estado === 'finalizado') cerrados += 1
-      }
-      const benefs: Record<string, any> = td.beneficiarios ?? {}
-      for (const [doc, f] of Object.entries(benefs)) {
-        if ((f as any)?.estado !== 'procesando' || !(f as any)?.jobid) continue
-        const r = await cerrar(c, uid, String((f as any).jobid), doc, true)
-        if (r.estado === 'finalizado') cerrados += 1
-        if (cerrados >= 6) break   // el resto en la siguiente vuelta
-      }
-      const despues = (await leerRaw(uid))?.tusdatos ?? {}
-      const pend = Object.values(despues.beneficiarios ?? {}).filter((x: any) => x?.estado === 'procesando').length
-        + (despues.estado === 'procesando' ? 1 : 0)
-      return json({ ok: true, cerrados, pendientes: pend })
+      return json({ ok: true, ...(await recogerPendientesDe(c, uid)) })
     }
 
     // ── Lanzar las que FALTAN, por lotes ─────────────────────────────────
@@ -1573,66 +1663,37 @@ Deno.serve(async (req: Request) => {
       const c = await leerConfig()
       if (!c.activo) return json({ ok: true, omitido: 'la integración está apagada', pendientes: 0 })
       if (!enLaPrueba(c, uid)) return json({ ok: true, omitido: 'esta cuenta no está en la prueba', pendientes: 0 })
+      const r = await lanzarPendientesDe(c, uid, Number(body.limite ?? 4) || 4, yo.esAdmin)
+      return json({ ok: true, ...r, ...(r.tope ? { message: MSG_TOPE } : {}) })
+    }
 
-      const raw = await leerRaw(uid)
-      const contactos: any[] = Array.isArray(raw.mouvContacts) ? raw.mouvContacts : []
-      const hechos: Record<string, any> = (raw.tusdatos ?? {}).beneficiarios ?? {}
-
-      // Primero los que no tienen ficha; después los que hay que reintentar
-      // (falló el lanzamiento, expiró, quedaron en cola, o "procesando" sin
-      // jobid). Antes estos últimos no se volvían a lanzar nunca.
-      const vistos = new Set<string>()
-      const faltan = contactos.filter((x: any) => {
-        const doc = String(x?.docNumber ?? '').replace(/\D/g, '')
-        // 'archivado' = era de un beneficiario que se borró. Si vuelve a estar
-        // inscrito necesita consulta nueva: antes contaba como "ya hecho" y se
-        // quedaba "consultando" para siempre.
-        const hecho = hechos[doc] && String(hechos[doc]?.estado ?? '') !== 'archivado'
-        if (!doc || hecho || vistos.has(doc)) return false
-        vistos.add(doc)
-        return true
-      })
-      for (const x of contactos) {
-        const doc = String(x?.docNumber ?? '').replace(/\D/g, '')
-        if (!doc || vistos.has(doc) || !hechos[doc] || !debeReintentar(hechos[doc])) continue
-        vistos.add(doc)
-        faltan.push(x)
+    // ── Barrido programado (cada 5 minutos, lo llama la base) ────────────
+    // Antes el resultado solo se recogía con el aviso de TusDatos o mientras
+    // alguien tenía abierta la pantalla de Beneficiarios: si el aviso no
+    // llegaba y nadie miraba, la consulta quedaba "procesando" para siempre
+    // (y sin poder enviarle plata a esa persona). Ahora el servidor recoge y
+    // relanza solo, para las cuentas con consultas recientes.
+    if (accion === 'barrido') {
+      if (!yo.servicio && !(await traeSecretoDeLaBase(req, db))) return json({ error: 'No autorizado' }, 401)
+      const c = await leerConfig()
+      if (!c.activo) return json({ ok: true, omitido: 'la integración está apagada' })
+      const desde = new Date(Date.now() - 24 * 3600_000).toISOString()
+      const { data: filas } = await db.from('audit_log').select('metadata')
+        .in('action', ['tusdatos.lanzado', 'tusdatos.launch_fallido', 'tusdatos.consulta_fallida'])
+        .gte('created_at', desde).order('created_at', { ascending: false }).limit(1000)
+      const cuentas = [...new Set(((filas ?? []) as any[]).map(f => String(f?.metadata?.userId ?? '')).filter(Boolean))].slice(0, 25)
+      const inicio = Date.now()
+      let cerrados = 0, lanzados = 0, revisadas = 0
+      for (const uid of cuentas) {
+        if (Date.now() - inicio > 110_000) break   // margen antes del límite de la función
+        try {
+          const r = await recogerPendientesDe(c, uid)
+          cerrados += r.cerrados
+          if (enLaPrueba(c, uid)) lanzados += (await lanzarPendientesDe(c, uid, 4, false, true)).lanzados
+          revisadas += 1
+        } catch (e) { console.warn('[tusdatos] barrido', uid, String((e as any)?.message ?? e)) }
       }
-
-      const { rejuzgados, relanzar } = await sanearNombres(uid, raw, c)
-      for (const x of relanzar) faltan.push(x)
-
-      // CADA LANZAMIENTO GASTA UN CRÉDITO del plan. El lote va chico a
-      // propósito: si algo está mal configurado, se pierden cuatro consultas,
-      // no sesenta.
-      const LOTE = Math.min(Math.max(Number(body.limite ?? 4) || 4, 1), 8)
-      let lanzados = 0
-      let topado = false
-      for (const x of faltan.slice(0, LOTE)) {
-        if (!yo.esAdmin && await topeDiarioAgotado(uid, c)) { topado = true; break }
-        const r = await consultar(c, uid, {
-          documento: String(x?.docNumber ?? ''),
-          tipoDocumento: String(x?.docType ?? 'CC'),
-          nombre: String(x?.name ?? ''),
-        }, true)
-        if (r.ok) lanzados += 1
-      }
-      // Con el tope del día alcanzado, lo que falta queda EN COLA (no
-      // "consultando"): se ve que espera y se lanza solo cuando haya cupo.
-      if (topado) {
-        for (const x of faltan.slice(lanzados)) {
-          const doc = String(x?.docNumber ?? '').replace(/\D/g, '')
-          if (!doc) continue
-          const prev = hechos[doc]
-          if (prev && String(prev.estado ?? '') !== 'en_espera' && !debeReintentar(prev)) continue
-          await guardarBeneficiario(uid, doc, {
-            documento: doc, tipoDocumento: String(x?.docType ?? 'CC').toUpperCase(), nombreInscrito: String(x?.name ?? '') || undefined,
-            estado: 'en_espera', detalle: 'Tope diario de verificaciones', intentos: Number(prev?.intentos ?? 0),
-            proximoIntento: new Date(Date.now() + 60 * 60_000).toISOString(), at: new Date().toISOString(),
-          } as Ficha)
-        }
-      }
-      return json({ ok: true, lanzados, rejuzgados, pendientes: Math.max(0, faltan.length - lanzados), ...(topado ? { tope: true, message: MSG_TOPE } : {}) })
+      return json({ ok: true, cuentas: cuentas.length, revisadas, cerrados, lanzados })
     }
 
     // ── Lo guardado ──────────────────────────────────────────────────────
