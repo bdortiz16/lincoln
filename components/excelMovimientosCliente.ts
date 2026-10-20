@@ -9,7 +9,7 @@
 // Fechas y montos van como fecha y número reales, para que Excel sume y filtre.
 import { descargarXlsx, type Celda } from '../lib/xlsx';
 
-const fechaDe = (t: any): Date | null => {
+export const fechaDe = (t: any): Date | null => {
   const v = t?.creditedAt ?? t?.createdAt ?? t?.created_at ?? t?.date;
   const s = String(v ?? '').trim(); if (!s) return null;
   const dmy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
@@ -19,7 +19,7 @@ const fechaDe = (t: any): Date | null => {
 const num = (v: any): number | null => { const n = Number(v); return Number.isFinite(n) ? n : null; };
 const txt = (v: any): string => (v == null ? '' : String(v));
 
-const TIPOS: Record<string, string> = {
+export const TIPOS: Record<string, string> = {
   load: 'Cargue / depósito', deposit: 'Depósito', otc_deposit: 'Depósito OTC',
   dispersion: 'Dispersión', send: 'Envío', withdraw: 'Retiro', otc_withdraw: 'Retiro OTC',
   pay_sent: 'Pago enviado', pay_received: 'Pago recibido', referral_payout: 'Pago por referido',
@@ -28,14 +28,14 @@ const TIPOS: Record<string, string> = {
 const ENTRA = new Set(['load', 'deposit', 'otc_deposit', 'pay_received', 'referral_payout']);
 const SALE = new Set(['dispersion', 'send', 'withdraw', 'otc_withdraw', 'pay_sent']);
 
-const monedaDe = (t: any): string => {
+export const monedaDe = (t: any): string => {
   const c = txt(t?.currency);
   if (c === 'COP_BREB') return 'COP · Bre-B';
   if (c === 'COP_ACH') return t?.rail === 'BREB' ? 'COP · ACH (Bre-B Cuenta 2)' : 'COP · ACH';
   if (c === 'COP') return 'COP · Saldo Lincoin';
   return c;
 };
-const direccionDe = (t: any): string => {
+export const direccionDe = (t: any): string => {
   const ty = txt(t?.type);
   if (ty === 'adjustment' || t?.direction) return (t?.direction ?? 'debit') === 'credit' ? 'Entrada' : 'Salida';
   if (ENTRA.has(ty)) return 'Entrada';

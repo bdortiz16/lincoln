@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { BarChart3, Users, Receipt, ArrowLeftRight, RefreshCw, Search, Download, ChevronLeft, AlertTriangle, Check, Power, Plug, X } from 'lucide-react';
 import { pedirAdmin } from './adminApi';
-import { descargarXlsx } from '../lib/xlsx';
 import { AdminOtcSection } from './AdminOtcSection';
+import { descargarReporteContabilidad } from './reporteContabilidad';
 
 // ─────────────────────────────────────────────
 // Contabilidad (admin de Empresas).
@@ -151,6 +151,36 @@ const BotonFacturar: React.FC<{ txId: string; estado?: string | null; liq?: any;
   );
 };
 
+// ── Excel completo: resumen, anotaciones, operaciones, movimientos y una
+//    hoja por cliente con gráficos (ver reporteContabilidad.ts) ──────────
+const BotonInforme: React.FC<{ clientes: any[]; periodo: Periodo; onAviso: (m: string, ok: boolean) => void }> = ({ clientes, periodo, onAviso }) => {
+  const [prog, setProg] = useState<[number, number] | null>(null);
+  const descargar = async () => {
+    if (prog || !clientes.length) return;
+    setProg([0, clientes.length]);
+    try {
+      const r = await descargarReporteContabilidad({
+        clientes,
+        periodo: { nombre: PERIODOS.find(p => p.id === periodo)?.nombre ?? '', ...rango(periodo) },
+        onProgreso: (h, t) => setProg([h, t]),
+      });
+      if (r.avisos.length) onAviso(`El Excel se descargó, pero faltó información: ${r.avisos.slice(0, 3).join(' ')}`, false);
+    } catch (e: any) {
+      onAviso(`No se pudo armar el Excel: ${String(e?.message ?? e)}`, false);
+    } finally {
+      setProg(null);
+    }
+  };
+  return (
+    <button onClick={descargar} disabled={!!prog || !clientes.length} title="Resumen con gráficos, anotaciones y una hoja por cliente con todo su detalle"
+      className="flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-50 whitespace-nowrap">
+      {prog
+        ? <><RefreshCw size={14} className="animate-spin" /> {prog[1] > 1 ? `Armando ${prog[0]}/${prog[1]}…` : 'Armando…'}</>
+        : <><Download size={14} /> Excel</>}
+    </button>
+  );
+};
+
 // ── Resumen ─────────────────────────────────────────────────
 const Resumen: React.FC<{ datos: any; cargando: boolean }> = ({ datos, cargando }) => {
   if (!datos) return <p className="text-sm text-slate-400">{cargando ? 'Cargando…' : 'Sin datos.'}</p>;
@@ -229,16 +259,6 @@ const Clientes: React.FC<{ datos: any; cargando: boolean; periodo: Periodo; onAv
 
   if (abierto) return <DetalleCliente cliente={abierto} periodo={periodo} onVolver={() => setAbierto(null)} onAviso={onAviso} />;
 
-  const exportar = () => {
-    descargarXlsx(`lincoin-clientes-${new Date().toISOString().slice(0, 10)}.xlsx`, [{
-      nombre: 'Clientes',
-      filas: [
-        ['Cliente', 'Documento', 'Correo', 'Cargues', 'Cargado COP', 'USDT cargado', 'Utilidad cargues', 'Conversiones', 'Convertido COP', 'Utilidad conversiones', 'Facturas emitidas', 'Facturado COP', 'Por facturar', 'Última operación'],
-        ...filtrados.map(c => [c.nombre, c.documento, c.email, c.cargues, c.cargadoCop, c.usdCargado, c.utilidadCargues, c.conversiones, c.convertidoCop, c.utilidadConversiones, c.facturadas, c.facturadoCop, c.porFacturar, c.ultima ? new Date(c.ultima) : null]),
-      ],
-    }]);
-  };
-
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
@@ -247,9 +267,7 @@ const Clientes: React.FC<{ datos: any; cargando: boolean; periodo: Periodo; onAv
           <input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar por nombre, correo o NIT"
             className="w-full pl-8 pr-3 py-2 rounded-xl border border-slate-200 text-sm bg-white" />
         </div>
-        <button onClick={exportar} disabled={!filtrados.length} className="flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-50">
-          <Download size={14} /> Excel
-        </button>
+        <BotonInforme clientes={filtrados} periodo={periodo} onAviso={onAviso} />
       </div>
       <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
         <table className="w-full text-xs min-w-[900px]">
@@ -413,29 +431,6 @@ const DetalleCliente: React.FC<{ cliente: any; periodo: Periodo; onVolver: () =>
   const tot = useMemo(() => totalesDe(vistos), [vistos]);
   const totCargues = useMemo(() => totalesDe(detalle.filter(d => d.liq?.tipo === 'cargue')), [detalle]);
 
-  const exportar = () => {
-    const filaDe = (d: any) => {
-      const l = d.liq;
-      const fRev = d.reversaDe ? fechaDe(String(d.reversaDe)) : null;
-      const estado = d.type === 'adjustment'
-        ? ((d.vinculado || d.reversaDe) ? `Reversa del cargue${fRev ? ` del ${fRev}` : ''}` : d.noRevierte ? 'Otro ajuste (no revierte un cargue)' : 'Sin vincular')
-        : l?.anulado ? 'Anulado' : l?.reversadoCop ? 'Corregido' : '';
-      return [d.created_at ? new Date(d.created_at) : null, TIPO_TX[d.type] ?? d.type, d.riel ?? '', estado,
-        l?.usd ?? null, l?.usdLlego ?? null, l?.tasaLincoin ?? null, l ? (l.totalCop ?? null) : null, l?.tasaCliente ?? null,
-        // Una reversa vinculada no se resta aparte: ya está adentro del cargue.
-        l ? (l.tercerosCop ?? null) : (d.type === 'adjustment' && !(d.vinculado || d.reversaDe) ? -(Number(d.amount) || 0) : null), l?.comisionBrebCop ?? null, l?.utilidadCop ?? null,
-        l ? FUENTE[l.fuente] ?? l.fuente : '', d.currency, d.factura?.estado ?? '', d.factura?.numero ?? '', d.factura?.error ?? l?.nota ?? d.nota ?? ''];
-    };
-    descargarXlsx(`lincoin-${String(c.nombre ?? 'cliente').replace(/[^\w]+/g, '-').slice(0, 40)}-${new Date().toISOString().slice(0, 10)}.xlsx`, [{
-      nombre: 'Operaciones',
-      filas: [
-        ['Fecha', 'Tipo', 'Riel', 'Estado', 'USDT entró', 'USDT llegó', 'Tasa venta', 'Recibido COP', 'Tasa cliente', 'Acreditado COP', 'Comisión Bre-B COP', 'Utilidad COP', 'Utilidad', 'Saldo', 'Factura', 'Número', 'Detalle'],
-        ...vistos.map(filaDe),
-        ['TOTAL', '', riel === 'todos' ? '' : riel, tot.mezcla ? 'Tasas: solo cargues' : '', tot.usd, tot.usdLlego, tot.tasaVenta, tot.recibido, tot.tasaCliente, tot.acreditado, null, tot.utilidad, '', '', '', '', tot.nAjustesSueltos ? `Ajustes sin vincular: -${tot.ajustesSueltos}` : ''],
-      ],
-    }]);
-  };
-
   const util = (c.utilidadCargues ?? 0) + (c.utilidadConversiones ?? 0);
   const tasaVentaProm = totCargues.tasaVenta;
   const tasaClienteProm = totCargues.tasaCliente;
@@ -450,7 +445,7 @@ const DetalleCliente: React.FC<{ cliente: any; periodo: Periodo; onVolver: () =>
         </div>
         <div className="flex gap-2">
           <button onClick={cargar} disabled={cargando} className="flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-50"><RefreshCw size={13} className={cargando ? 'animate-spin' : ''} /> Actualizar</button>
-          <button onClick={exportar} disabled={!detalle.length} className="flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-50"><Download size={13} /> Excel</button>
+          <BotonInforme clientes={[cliente]} periodo={periodo} onAviso={onAviso} />
         </div>
       </div>
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
@@ -847,26 +842,6 @@ export const AdminContabilidad: React.FC = () => {
   useEffect(() => { if (pestana === 'resumen' || pestana === 'clientes') cargar(); }, [cargar, pestana]);
   useEffect(() => { if (!aviso) return; const t = setTimeout(() => setAviso(null), 6000); return () => clearTimeout(t); }, [aviso]);
 
-  const exportar = () => {
-    if (!datos) return;
-    descargarXlsx(`lincoin-contabilidad-${new Date().toISOString().slice(0, 10)}.xlsx`, [
-      {
-        nombre: 'Por mes',
-        filas: [
-          ['Mes', 'Cargues', 'Cargado COP', 'USDT cargado', 'Utilidad cargues', 'Conversiones', 'Convertido COP', 'Utilidad conversiones', 'Utilidad estimada', 'Facturas emitidas', 'Facturado COP'],
-          ...(datos.meses ?? []).map((m: any) => [m.mes, m.cargues, m.cargadoCop, m.usdCargado, m.utilidadCargues, m.conversiones, m.convertidoCop, m.utilidadConversiones, m.utilidadEstimada, m.facturadas, m.facturadoCop]),
-        ],
-      },
-      {
-        nombre: 'Por cliente',
-        filas: [
-          ['Cliente', 'Documento', 'Correo', 'Cargues', 'Cargado COP', 'Utilidad cargues', 'Conversiones', 'Convertido COP', 'Utilidad conversiones', 'Facturas emitidas', 'Facturado COP'],
-          ...(datos.clientes ?? []).map((c: any) => [c.nombre, c.documento, c.email, c.cargues, c.cargadoCop, c.utilidadCargues, c.conversiones, c.convertidoCop, c.utilidadConversiones, c.facturadas, c.facturadoCop]),
-        ],
-      },
-    ]);
-  };
-
   const PESTANAS: { id: Pestana; nombre: string; icono: React.ElementType }[] = [
     { id: 'resumen', nombre: 'Resumen', icono: BarChart3 },
     { id: 'clientes', nombre: 'Clientes', icono: Users },
@@ -891,7 +866,7 @@ export const AdminContabilidad: React.FC = () => {
               {PERIODOS.map(p => <option key={p.id} value={p.id}>{p.nombre}</option>)}
             </select>
             <button onClick={cargar} disabled={cargando} className="p-2 rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50" title="Actualizar"><RefreshCw size={14} className={cargando ? 'animate-spin' : ''} /></button>
-            {pestana === 'resumen' && <button onClick={exportar} disabled={!datos} className="flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-50"><Download size={14} /> Excel</button>}
+            {pestana === 'resumen' && <BotonInforme clientes={datos?.clientes ?? []} periodo={periodo} onAviso={(m, ok) => setAviso({ m, ok })} />}
           </div>
         )}
       </div>
