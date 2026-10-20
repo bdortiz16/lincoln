@@ -1456,6 +1456,10 @@ async function avisarAdminBreb2(motivo: string, asunto: string, texto: string): 
 }
 
 const enmascarar = (v: string) => v.length > 4 ? `${'•'.repeat(Math.min(6, v.length - 4))}${v.slice(-4)}` : v
+// "Insufficient Kamin wallet balance for withdrawal": la billetera Bre-B del
+// proveedor no tiene con qué. No es la llave ni el monto del cliente: es plata
+// que hay que poner en esa billetera, y con cualquier llave o monto da igual.
+const sinFondosBreb2 = (c: any) => /insufficient|insuficiente|not enough (funds|balance)|sin fondos|fondos insuficientes/i.test(motivoCreacion(c))
 const motivoCreacion = (c: any): string => {
   const d = c?.data ?? c ?? {}
   const m = d?.message ?? d?.error?.message ?? d?.error ?? d?.data?.message ?? d?.errors
@@ -1494,6 +1498,8 @@ async function finityPrepararBreb(userId: string, recipient: Record<string, any>
     rastro.push({ tipo: it.tipo, llave: enmascarar(it.valor), status: Number(c?.status ?? 0) || null, motivo: c?.ok ? null : motivoCreacion(c) })
     const d = c?.data?.data ?? c?.data ?? null
     if (c?.ok && d?.id) { creada = { ...d, id: String(d.id) }; break }
+    // Sin fondos en la billetera, otra forma de la llave no cambia nada.
+    if (sinFondosBreb2(c)) break
     // Solo se prueba otra forma si Finity rechazó la llave por datos.
     if (![400, 404, 422].includes(Number(c?.status ?? 0))) break
   }
@@ -1504,7 +1510,14 @@ async function finityPrepararBreb(userId: string, recipient: Record<string, any>
     let diagnostico: 'llave' | 'monto' | 'cupo' | 'desconocido' = 'desconocido'
     let mensaje: string | undefined
     const rechazoPorDatos = [400, 404, 422].includes(Number(ultimo?.status ?? 0))
-    if (rechazoPorDatos && monto > 5000 && intentos.length) {
+    const avisarSinFondos = (disponible: number | null) => avisarAdminBreb2('sin_fondos', 'Bre-B Cuenta 2 sin fondos: hay que recargar la billetera Bre-B',
+      `Un cliente intentó enviar ${monto.toLocaleString('es-CO')} COP por Bre-B Cuenta 2 y Finity respondió "${motivoCreacion(ultimo)}": la billetera Bre-B (Kamin) de la cuenta Finity no tiene saldo para ese envío. ${disponible == null ? '' : `El saldo en pesos de la cuenta Finity (el de ACH) es ${disponible.toLocaleString('es-CO')} COP, pero la billetera Bre-B es aparte. `}Hay que recargar la billetera Bre-B (pedírselo a Finity). Mientras tanto los clientes pueden enviar por Bre-B Cuenta 1 o ACH.`)
+    if (sinFondosBreb2(ultimo)) {
+      // Lo dice el proveedor: no hace falta adivinar con la prueba de 5.000.
+      diagnostico = 'cupo'
+      mensaje = 'La Bre-B · Cuenta 2 no tiene fondos disponibles en este momento, así que no salió nada. Envíalo por Bre-B · Cuenta 1 o por ACH, o intenta más tarde.'
+      await avisarSinFondos(await finityCopDisponible(userId).catch(() => null))
+    } else if (rechazoPorDatos && monto > 5000 && intentos.length) {
       const base = intentos[0]
       const p = await finityCall('breb_crear', userId, { data: { amount: 5000, key_type: base.tipo, key_value: base.valor } })
       const okPrueba = !!(p?.ok && (p?.data?.data?.id ?? p?.data?.id))
@@ -1523,6 +1536,11 @@ async function finityPrepararBreb(userId: string, recipient: Record<string, any>
           await avisarAdminBreb2('monto', 'Bre-B Cuenta 2: Finity rechaza montos altos',
             `Finity rechazó un envío Bre-B Cuenta 2 de ${monto.toLocaleString('es-CO')} COP ("${motivoCreacion(ultimo)}"), pero aceptó la misma llave con 5.000 COP. ${disponible == null ? 'No se pudo leer el saldo de la cuenta Finity.' : `El saldo en pesos de la cuenta Finity es ${disponible.toLocaleString('es-CO')} COP, que sí alcanza.`} Puede ser un tope por transferencia de Finity o de Kamin: conviene preguntárselo a Finity.`)
         }
+      } else if (sinFondosBreb2(p)) {
+        // Ni el mínimo pasa porque la billetera está vacía: no es la llave.
+        diagnostico = 'cupo'
+        mensaje = 'La Bre-B · Cuenta 2 no tiene fondos disponibles en este momento, así que no salió nada. Envíalo por Bre-B · Cuenta 1 o por ACH, o intenta más tarde.'
+        await avisarSinFondos(null)
       } else if (rechazoPorDatos) {
         diagnostico = 'llave'
         mensaje = 'La Bre-B · Cuenta 2 no reconoce esa llave, así que no salió nada. Pídele al beneficiario que te confirme su llave exacta, o envíalo por Bre-B · Cuenta 1 o por ACH.'
