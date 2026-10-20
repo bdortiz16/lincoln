@@ -19,27 +19,64 @@ import { descargarReporteContabilidad } from './reporteContabilidad';
 // ─────────────────────────────────────────────
 
 type Pestana = 'resumen' | 'clientes' | 'facturacion' | 'mesa';
-type Periodo = 'todo' | 'mes' | 'mes_pasado' | '90d' | 'anio';
+type TipoPeriodo = 'mes' | 'mes_pasado' | 'mes_elegido' | 'rango' | '90d' | 'anio' | 'todo';
+// mes: 'AAAA-MM'; desde y hasta: 'AAAA-MM-DD' (días de Colombia, los dos incluidos).
+type Periodo = { tipo: TipoPeriodo; mes?: string; desde?: string; hasta?: string };
+// Lo que se le pide al servidor y cómo se llama. `clave` cambia si cambia el rango.
+type Seleccion = { nombre: string; texto: string; desde?: string; hasta?: string; clave: string; valido: boolean };
 
-const PERIODOS: { id: Periodo; nombre: string }[] = [
+const TIPOS_PERIODO: { id: TipoPeriodo; nombre: string }[] = [
   { id: 'mes', nombre: 'Este mes' },
   { id: 'mes_pasado', nombre: 'Mes pasado' },
+  { id: 'mes_elegido', nombre: 'Elegir un mes' },
+  { id: 'rango', nombre: 'Entre dos fechas' },
   { id: '90d', nombre: 'Últimos 90 días' },
   { id: 'anio', nombre: 'Este año' },
   { id: 'todo', nombre: 'Todo' },
 ];
 
-// Fechas en hora de Colombia (UTC−5): el mes contable es el de Bogotá.
-function rango(p: Periodo): { desde?: string; hasta?: string } {
-  if (p === 'todo') return {};
-  const ahora = new Date(Date.now() - 5 * 3600_000);
-  const y = ahora.getUTCFullYear(), m = ahora.getUTCMonth();
-  const enBogota = (yy: number, mm: number, dd = 1) => new Date(Date.UTC(yy, mm, dd, 5)).toISOString();
-  if (p === 'mes') return { desde: enBogota(y, m) };
-  if (p === 'mes_pasado') return { desde: enBogota(y, m - 1), hasta: enBogota(y, m) };
-  if (p === 'anio') return { desde: enBogota(y, 0) };
-  return { desde: new Date(Date.now() - 90 * 86400_000).toISOString() };
+// Fechas en hora de Colombia (UTC−5): el mes y el día contables son los de
+// Bogotá. Un día empieza a las 05:00 UTC.
+const hoyBogota = () => new Date(Date.now() - 5 * 3600_000).toISOString().slice(0, 10);
+const inicioDia = (dia: string) => `${dia}T05:00:00.000Z`;
+const sumarDias = (dia: string, n: number) => { const d = new Date(`${dia}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+const inicioMes = (y: number, m0: number) => new Date(Date.UTC(y, m0, 1, 5)).toISOString();
+const mesCorrido = (mes: string, n: number) => { const [y, m] = mes.split('-').map(Number); return new Date(Date.UTC(y, m - 1 + n, 15)).toISOString().slice(0, 7); };
+const diaLegible = (dia: string) => new Date(`${dia}T12:00:00Z`).toLocaleDateString('es-CO', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+
+// Siempre el mismo rango para la misma elección: "últimos 90 días" va por
+// días completos, no desde "ahora", para que dos pedidos seguidos coincidan.
+function seleccionDe(p: Periodo): Seleccion {
+  const hoy = hoyBogota();
+  const actual = hoy.slice(0, 7);
+  const rangoMes = (mes: string) => { const [y, m] = mes.split('-').map(Number); return { desde: inicioMes(y, m - 1), hasta: inicioMes(y, m) }; };
+  let r: { desde?: string; hasta?: string } = {};
+  let nombre = TIPOS_PERIODO.find(t => t.id === p.tipo)?.nombre ?? '';
+  let valido = true;
+  if (p.tipo === 'mes') { r = { desde: rangoMes(actual).desde }; nombre = `Este mes (${nombreMes(actual)})`; }
+  else if (p.tipo === 'mes_pasado') { const m = mesCorrido(actual, -1); r = rangoMes(m); nombre = `Mes pasado (${nombreMes(m)})`; }
+  else if (p.tipo === 'mes_elegido') { const m = p.mes || mesCorrido(actual, -1); r = rangoMes(m); nombre = nombreMes(m); }
+  else if (p.tipo === 'rango') {
+    const d = p.desde || `${actual}-01`, h = p.hasta || hoy;
+    valido = d <= h;
+    r = { desde: inicioDia(d), hasta: inicioDia(sumarDias(h, 1)) };
+    nombre = `Del ${diaLegible(d)} al ${diaLegible(h)}`;
+  }
+  else if (p.tipo === '90d') r = { desde: inicioDia(sumarDias(hoy, -89)) };
+  else if (p.tipo === 'anio') r = { desde: inicioDia(`${hoy.slice(0, 4)}-01-01`) };
+  const diaDe = (iso: string) => new Date(Date.parse(iso) - 5 * 3600_000).toISOString().slice(0, 10);
+  const texto = !r.desde ? 'todo el historial'
+    : `${diaLegible(diaDe(r.desde))} – ${r.hasta ? diaLegible(diaDe(new Date(Date.parse(r.hasta) - 1).toISOString())) : `hoy (${diaLegible(hoy)})`}`;
+  return { nombre, texto, ...r, clave: `${r.desde ?? ''}|${r.hasta ?? ''}`, valido };
 }
+
+const leerPeriodo = (): Periodo => {
+  try {
+    const v = JSON.parse(localStorage.getItem('lincoin_conta_periodo') || 'null');
+    if (v && TIPOS_PERIODO.some(t => t.id === v.tipo)) return v;
+  } catch { /* */ }
+  return { tipo: 'mes' };
+};
 
 const cop = (n: unknown) => {
   const v = Number(n);
@@ -153,15 +190,18 @@ const BotonFacturar: React.FC<{ txId: string; estado?: string | null; liq?: any;
 
 // ── Excel completo: resumen, anotaciones, operaciones, movimientos y una
 //    hoja por cliente con gráficos (ver reporteContabilidad.ts) ──────────
-const BotonInforme: React.FC<{ clientes: any[]; periodo: Periodo; onAviso: (m: string, ok: boolean) => void }> = ({ clientes, periodo, onAviso }) => {
+// `listo` = la lista de clientes es del período elegido. Mientras se carga
+// otro período el botón espera: antes podía salir un Excel del mes pasado
+// con los clientes de este mes.
+const BotonInforme: React.FC<{ clientes: any[]; sel: Seleccion; listo?: boolean; onAviso: (m: string, ok: boolean) => void }> = ({ clientes, sel, listo = true, onAviso }) => {
   const [prog, setProg] = useState<[number, number] | null>(null);
   const descargar = async () => {
-    if (prog || !clientes.length) return;
+    if (prog || !clientes.length || !listo || !sel.valido) return;
     setProg([0, clientes.length]);
     try {
       const r = await descargarReporteContabilidad({
         clientes,
-        periodo: { nombre: PERIODOS.find(p => p.id === periodo)?.nombre ?? '', ...rango(periodo) },
+        periodo: { nombre: sel.nombre, desde: sel.desde, hasta: sel.hasta },
         onProgreso: (h, t) => setProg([h, t]),
       });
       if (r.avisos.length) onAviso(`El Excel se descargó, pero faltó información: ${r.avisos.slice(0, 3).join(' ')}`, false);
@@ -172,7 +212,7 @@ const BotonInforme: React.FC<{ clientes: any[]; periodo: Periodo; onAviso: (m: s
     }
   };
   return (
-    <button onClick={descargar} disabled={!!prog || !clientes.length} title="Resumen con gráficos, anotaciones y una hoja por cliente con todo su detalle"
+    <button onClick={descargar} disabled={!!prog || !clientes.length || !listo || !sel.valido} title={`Excel de ${sel.texto}: resumen con gráficos, anotaciones y una hoja por cliente`}
       className="flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-50 whitespace-nowrap">
       {prog
         ? <><RefreshCw size={14} className="animate-spin" /> {prog[1] > 1 ? `Armando ${prog[0]}/${prog[1]}…` : 'Armando…'}</>
@@ -247,7 +287,7 @@ const Resumen: React.FC<{ datos: any; cargando: boolean }> = ({ datos, cargando 
 };
 
 // ── Clientes ────────────────────────────────────────────────
-const Clientes: React.FC<{ datos: any; cargando: boolean; periodo: Periodo; onAviso: (m: string, ok: boolean) => void }> = ({ datos, cargando, periodo, onAviso }) => {
+const Clientes: React.FC<{ datos: any; cargando: boolean; sel: Seleccion; onAviso: (m: string, ok: boolean) => void }> = ({ datos, cargando, sel, onAviso }) => {
   const [q, setQ] = useState('');
   const [abierto, setAbierto] = useState<any | null>(null);
   const lista: any[] = datos?.clientes ?? [];
@@ -257,7 +297,7 @@ const Clientes: React.FC<{ datos: any; cargando: boolean; periodo: Periodo; onAv
     return lista.filter(c => String(c.nombre ?? '').toLowerCase().includes(n) || String(c.email ?? '').toLowerCase().includes(n) || String(c.documento ?? '').includes(n));
   }, [lista, q]);
 
-  if (abierto) return <DetalleCliente cliente={abierto} periodo={periodo} onVolver={() => setAbierto(null)} onAviso={onAviso} />;
+  if (abierto) return <DetalleCliente cliente={abierto} sel={sel} onVolver={() => setAbierto(null)} onAviso={onAviso} />;
 
   return (
     <div className="space-y-4">
@@ -267,7 +307,7 @@ const Clientes: React.FC<{ datos: any; cargando: boolean; periodo: Periodo; onAv
           <input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar por nombre, correo o NIT"
             className="w-full pl-8 pr-3 py-2 rounded-xl border border-slate-200 text-sm bg-white" />
         </div>
-        <BotonInforme clientes={filtrados} periodo={periodo} onAviso={onAviso} />
+        <BotonInforme clientes={filtrados} sel={sel} listo={!cargando && !!datos} onAviso={onAviso} />
       </div>
       <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
         <table className="w-full text-xs min-w-[900px]">
@@ -369,7 +409,7 @@ const VincularAjuste: React.FC<{ fila: any; motivo?: string; fechaDe: (id: strin
   );
 };
 
-const DetalleCliente: React.FC<{ cliente: any; periodo: Periodo; onVolver: () => void; onAviso: (m: string, ok: boolean) => void }> = ({ cliente, periodo, onVolver, onAviso }) => {
+const DetalleCliente: React.FC<{ cliente: any; sel: Seleccion; onVolver: () => void; onAviso: (m: string, ok: boolean) => void }> = ({ cliente, sel, onVolver, onAviso }) => {
   const [datos, setDatos] = useState<any | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cargando, setCargando] = useState(false);
@@ -377,19 +417,26 @@ const DetalleCliente: React.FC<{ cliente: any; periodo: Periodo; onVolver: () =>
   // Por riel: lo que entró por ACH, por Bre-B o al Saldo Lincoin.
   const [riel, setRiel] = useState<'todos' | 'ACH' | 'Bre-B' | 'Saldo Lincoin'>('todos');
   const [motivos, setMotivos] = useState<Record<string, string>>({});
+  // Solo cuenta la última respuesta: si se cambió de período mientras
+  // cargaba, la respuesta vieja no pisa la nueva.
+  const pedido = React.useRef(0);
   const cargar = useCallback(async () => {
-    setCargando(true); setError(null);
+    const yo = ++pedido.current;
+    setCargando(true); setError(null); setDatos(null);
+    if (!sel.valido) { setCargando(false); return; }
     // Primero se vinculan solos los débitos de este cliente que corrigen un
     // cargue; los que no, vuelven con el motivo para mostrarlo en su fila.
     const a = await pedirAdmin({ action: 'contabilidad_autovincular', userId: cliente.userId });
+    if (yo !== pedido.current) return;
     if (a?.ok) {
       setMotivos(Object.fromEntries(((a.sinVincular ?? []) as any[]).map(x => [String(x.id), String(x.motivo ?? '')])));
       if (a.vinculados > 0) onAviso(`Se vincularon solos ${a.vinculados} débito${a.vinculados === 1 ? '' : 's'} al cargue que corregían.${a.avisos?.length ? ` ${a.avisos.join(' ')}` : ''}`, !a.avisos?.length);
     }
-    const r = await pedirAdmin({ action: 'contabilidad_cliente', userId: cliente.userId, ...rango(periodo) });
+    const r = await pedirAdmin({ action: 'contabilidad_cliente', userId: cliente.userId, ...(sel.desde ? { desde: sel.desde } : {}), ...(sel.hasta ? { hasta: sel.hasta } : {}) });
+    if (yo !== pedido.current) return;
     setCargando(false);
     if (r?.ok) setDatos(r); else setError(r?.error ?? 'No se pudo leer el detalle.');
-  }, [cliente.userId, periodo]);
+  }, [cliente.userId, sel.clave, sel.valido]);
   useEffect(() => { cargar(); }, [cargar]);
   const c = datos?.cliente ?? cliente;
   const detalle: any[] = datos?.detalle ?? [];
@@ -445,7 +492,7 @@ const DetalleCliente: React.FC<{ cliente: any; periodo: Periodo; onVolver: () =>
         </div>
         <div className="flex gap-2">
           <button onClick={cargar} disabled={cargando} className="flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-50"><RefreshCw size={13} className={cargando ? 'animate-spin' : ''} /> Actualizar</button>
-          <BotonInforme clientes={[cliente]} periodo={periodo} onAviso={onAviso} />
+          <BotonInforme clientes={[cliente]} sel={sel} listo={!cargando} onAviso={onAviso} />
         </div>
       </div>
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
@@ -817,7 +864,18 @@ async function pedirFacturas(estado: string) {
 // ── Contenedor ──────────────────────────────────────────────
 export const AdminContabilidad: React.FC = () => {
   const [pestana, setPestana] = useState<Pestana>(leerPestana);
-  const [periodo, setPeriodo] = useState<Periodo>('mes');
+  const [periodo, setPeriodoEstado] = useState<Periodo>(leerPeriodo);
+  const sel = useMemo(() => seleccionDe(periodo), [periodo]);
+  const setPeriodo = (p: Periodo) => { setPeriodoEstado(p); try { localStorage.setItem('lincoin_conta_periodo', JSON.stringify(p)); } catch { /* */ } };
+  // Al cambiar el tipo, el mes o el rango arrancan en algo útil: el mes
+  // pasado, y del primero de este mes a hoy.
+  const cambiarTipo = (tipo: TipoPeriodo) => {
+    const hoy = hoyBogota();
+    if (tipo === 'mes_elegido') setPeriodo({ tipo, mes: periodo.mes || mesCorrido(hoy.slice(0, 7), -1) });
+    else if (tipo === 'rango') setPeriodo({ tipo, desde: periodo.desde || `${hoy.slice(0, 7)}-01`, hasta: periodo.hasta || hoy });
+    else setPeriodo({ tipo });
+  };
+  const mesesElegibles = useMemo(() => Array.from({ length: 24 }, (_, i) => mesCorrido(hoyBogota().slice(0, 7), -i)), []);
   const [datos, setDatos] = useState<any | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cargando, setCargando] = useState(false);
@@ -828,17 +886,28 @@ export const AdminContabilidad: React.FC = () => {
   // equivocó y descontó lo mismo) se vinculan solos. Una vez por visita; si
   // el rol no puede, se sigue sin decir nada.
   const autoHecho = React.useRef(false);
+  // Solo cuenta la respuesta del ÚLTIMO pedido. Antes, la primera carga (este
+  // mes, que tarda más porque antes vincula ajustes) llegaba después de que
+  // uno ya había elegido "Mes pasado" y pisaba la lista: se veían clientes
+  // de octubre con "Mes pasado" en el selector, y el Excel salía con ellos.
+  const pedido = React.useRef(0);
   const cargar = useCallback(async () => {
-    setCargando(true); setError(null);
+    const yo = ++pedido.current;
+    setCargando(true); setError(null); setDatos(null);
+    if (!sel.valido) { setCargando(false); return; }
     if (!autoHecho.current) {
       autoHecho.current = true;
       const a = await pedirAdmin({ action: 'contabilidad_autovincular' });
       if (a?.ok && a.vinculados > 0) setAviso({ m: `Se vincularon solos ${a.vinculados} débito${a.vinculados === 1 ? '' : 's'} al cargue que revertían.${a.avisos?.length ? ` ${a.avisos.join(' ')}` : ''}`, ok: !a.avisos?.length });
     }
-    const r = await pedirAdmin({ action: 'contabilidad_resumen', ...rango(periodo) });
+    const r = await pedirAdmin({ action: 'contabilidad_resumen', ...(sel.desde ? { desde: sel.desde } : {}), ...(sel.hasta ? { hasta: sel.hasta } : {}) });
+    if (yo !== pedido.current) return;
     setCargando(false);
-    if (r?.ok) setDatos(r); else setError(r?.permisoDenegado ? 'Tu rol no permite ver la contabilidad.' : (r?.error ?? 'No se pudo leer la contabilidad.'));
-  }, [periodo]);
+    // Y por si acaso: la respuesta tiene que ser del rango pedido.
+    if (r?.ok && (r.desde ?? '') === (sel.desde ?? '') && (r.hasta ?? '') === (sel.hasta ?? '')) setDatos(r);
+    else if (r?.ok) setError('La respuesta no corresponde al período elegido. Actualiza.');
+    else setError(r?.permisoDenegado ? 'Tu rol no permite ver la contabilidad.' : (r?.error ?? 'No se pudo leer la contabilidad.'));
+  }, [sel.clave, sel.valido]);
   useEffect(() => { if (pestana === 'resumen' || pestana === 'clientes') cargar(); }, [cargar, pestana]);
   useEffect(() => { if (!aviso) return; const t = setTimeout(() => setAviso(null), 6000); return () => clearTimeout(t); }, [aviso]);
 
@@ -861,15 +930,37 @@ export const AdminContabilidad: React.FC = () => {
           ))}
         </div>
         {(pestana === 'resumen' || pestana === 'clientes') && (
-          <div className="flex items-center gap-2">
-            <select value={periodo} onChange={e => setPeriodo(e.target.value as Periodo)} className="border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold bg-white text-slate-700">
-              {PERIODOS.map(p => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            <select value={periodo.tipo} onChange={e => cambiarTipo(e.target.value as TipoPeriodo)} aria-label="Período" className="border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold bg-white text-slate-700">
+              {TIPOS_PERIODO.map(p => <option key={p.id} value={p.id}>{p.nombre}</option>)}
             </select>
+            {periodo.tipo === 'mes_elegido' && (
+              <select value={periodo.mes || mesesElegibles[1]} onChange={e => setPeriodo({ tipo: 'mes_elegido', mes: e.target.value })} aria-label="Mes" className="border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold bg-white text-slate-700">
+                {mesesElegibles.map(m => <option key={m} value={m}>{nombreMes(m)}</option>)}
+              </select>
+            )}
+            {periodo.tipo === 'rango' && (
+              <div className="flex items-center gap-1.5">
+                <input type="date" value={periodo.desde ?? ''} max={hoyBogota()} onChange={e => e.target.value && setPeriodo({ ...periodo, desde: e.target.value })} aria-label="Desde"
+                  className="border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs font-semibold bg-white text-slate-700" />
+                <span className="text-xs text-slate-400">a</span>
+                <input type="date" value={periodo.hasta ?? ''} max={hoyBogota()} onChange={e => e.target.value && setPeriodo({ ...periodo, hasta: e.target.value })} aria-label="Hasta"
+                  className="border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs font-semibold bg-white text-slate-700" />
+              </div>
+            )}
             <button onClick={cargar} disabled={cargando} className="p-2 rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50" title="Actualizar"><RefreshCw size={14} className={cargando ? 'animate-spin' : ''} /></button>
-            {pestana === 'resumen' && <BotonInforme clientes={datos?.clientes ?? []} periodo={periodo} onAviso={(m, ok) => setAviso({ m, ok })} />}
+            {pestana === 'resumen' && <BotonInforme clientes={datos?.clientes ?? []} sel={sel} listo={!cargando && !!datos} onAviso={(m, ok) => setAviso({ m, ok })} />}
           </div>
         )}
       </div>
+
+      {(pestana === 'resumen' || pestana === 'clientes') && (
+        <p className="text-[11px] text-slate-500 -mt-2">
+          {sel.valido
+            ? <>Período: <span className="font-semibold text-slate-700">{sel.texto}</span> · hora de Colombia{cargando ? ' · cargando…' : ''}</>
+            : <span className="text-red-600 font-semibold">La fecha inicial tiene que ser anterior o igual a la final.</span>}
+        </p>
+      )}
 
       {aviso && (
         <div className={`rounded-xl border px-4 py-2.5 text-xs flex items-start gap-2 ${aviso.ok ? 'bg-green-50 border-green-200 text-[#16A34A]' : 'bg-red-50 border-red-200 text-red-700'}`}>
@@ -883,7 +974,7 @@ export const AdminContabilidad: React.FC = () => {
       {(pestana === 'resumen' || pestana === 'clientes') && datos && !datos.conFacturas && <Aviso>El estado de las facturas no se puede mostrar todavía: falta correr la migración 2026_zz9_facturacion_lincoin.sql.</Aviso>}
 
       {pestana === 'resumen' && <Resumen datos={datos} cargando={cargando} />}
-      {pestana === 'clientes' && <Clientes datos={datos} cargando={cargando} periodo={periodo} onAviso={(m, ok) => { setAviso({ m, ok }); cargar(); }} />}
+      {pestana === 'clientes' && <Clientes datos={datos} cargando={cargando} sel={sel} onAviso={(m, ok) => { setAviso({ m, ok }); cargar(); }} />}
       {pestana === 'facturacion' && <Facturacion onAviso={(m, ok) => setAviso({ m, ok })} />}
       {pestana === 'mesa' && <AdminOtcSection />}
     </div>

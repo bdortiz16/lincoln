@@ -485,6 +485,11 @@ export async function armarReporteContabilidad(o: OpcionesReporte): Promise<{ ho
     }
   }));
   datos.sort((a, b) => (n0(b.c.cargadoTotalCop) + n0(b.c.convertidoCop)) - (n0(a.c.cargadoTotalCop) + n0(a.c.convertidoCop)));
+  // Un cliente sin operaciones ni movimientos en el rango no lleva hoja: el
+  // archivo es del período elegido y nada más.
+  for (let i = datos.length - 1; i >= 0; i--) {
+    if (!datos[i].detalle.length && !datos[i].movs.length && !datos[i].errores.length) datos.splice(i, 1);
+  }
 
   const hasta = o.periodo.hasta ? new Date(Date.parse(o.periodo.hasta) - 1).toISOString() : new Date().toISOString();
   const rangoTxt = o.periodo.desde ? `${nombreDia(diaDe(o.periodo.desde))} a ${nombreDia(diaDe(hasta))}` : 'todo el historial';
