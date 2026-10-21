@@ -294,6 +294,11 @@ const App: React.FC = () => {
   // "atrasado" del ingreso (el aviso de éxito del 2FA, el salto al panel)
   // pise la pantalla del mensaje y termine en el inicio sin explicación.
   const rechazoPortalRef = useRef(0);
+  // Cuándo se tocó "Salir" a propósito. Al salir, la sesión se va mientras la
+  // vista todavía es el panel, y el vigilante de "la sesión desapareció en un
+  // panel" mandaba al Login con un aviso de error. Una salida pedida no es un
+  // error: no lleva aviso.
+  const salidaVoluntariaRef = useRef(0);
   const rechazoReciente = () => Date.now() - rechazoPortalRef.current < 10_000;
   // Portal por el que se está entrando: la pantalla de ingreso lo sabe; al
   // volver de Google (la página cae en "/") lo dice la pista guardada.
@@ -461,19 +466,21 @@ const App: React.FC = () => {
     } else if (!isAuthLoading) {
         // Only redirect if auth has fully settled (not in the middle of session restore)
         const protectedViews = ['dashboard', 'personal-dashboard', 'persona-dashboard', 'contador-dashboard', 'admin-dashboard', 'onboarding-wizard', 'onboarding-intro', 'personal-onboarding-wizard'];
+        // Salida pedida con el botón: va a la portada (lo hace handleLogout),
+        // sin aviso ni desvío al Login.
+        if (Date.now() - salidaVoluntariaRef.current < 10_000) return;
         if (protectedViews.includes(currentView)) {
             // La sesión desapareció estando en un panel. NUNCA se manda al
             // inicio en silencio: se vuelve al Login del portal de ese panel
-            // y se dice por qué (portal equivocado, inactividad, o lo que
-            // haya anotado el cierre). Antes caía en la portada sin
-            // explicación y parecía que "no deja entrar".
+            // y se avisa. Antes caía en la portada sin explicación y parecía
+            // que "no deja entrar". El motivo técnico (lo que anotó el
+            // cierre) va a la consola, no a la pantalla del cliente.
             const portalDelPanel: UserRole = currentView === 'persona-dashboard' ? 'personal' : currentView === 'contador-dashboard' ? 'contador' : 'business';
-            const panel = currentView === 'persona-dashboard' ? 'Personas' : currentView === 'contador-dashboard' ? 'Contabilidad' : currentView === 'personal-dashboard' ? 'Empresas' : currentView;
-            const motivo = `${ultimoCierre() ?? 'sin motivo anotado'} · panel ${panel}`;
+            try { console.warn('[lincoin] sesión cerrada en el panel:', ultimoCierre() ?? 'sin motivo anotado', currentView); } catch { /* */ }
             const t = setTimeout(() => {
               if (!rechazoReciente()) {
                 setUserRole(portalDelPanel);
-                setErrorPortal(prev => prev ?? `Tu sesión se cerró antes de abrir el panel (${motivo}). Vuelve a entrar; si se repite, escríbenos a soporte.`);
+                setErrorPortal(prev => prev ?? 'Tu sesión se cerró. Ingresa de nuevo para continuar.');
               }
               setCurrentView('login');
             }, rechazoReciente() ? 0 : 800);
@@ -584,6 +591,7 @@ const App: React.FC = () => {
   const [loggingOut, setLoggingOut] = useState(false);
 
   const handleLogout = async () => {
+    salidaVoluntariaRef.current = Date.now();
     setLoggingOut(true);
     await logoutUser('botón Salir del panel');
     setLoggingOut(false);
