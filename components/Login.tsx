@@ -35,6 +35,37 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
   const [showPassword, setShowPassword] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(errorInicial);
   useEffect(() => { if (errorInicial) setErrorMsg(errorInicial); }, [errorInicial]);
+
+  // ¿La hora de este equipo está corrida? La sesión vence según el reloj del
+  // equipo: con el reloj adelantado (o en otra zona mal puesta) la sesión se
+  // da por vencida apenas se abre, se renueva sin parar, el servidor la
+  // invalida y la persona "entra y sale" — en ese equipo, también en
+  // incógnito, y en ningún otro. Se compara con la hora de nuestro servidor
+  // (cabecera Date; Age si la respuesta vino de caché) y se avisa.
+  const [desfaseMin, setDesfaseMin] = useState<number | null>(null);
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      try {
+        const t0 = Date.now();
+        const r = await fetch(`/favicon-16.png?reloj=${t0}`, { method: 'HEAD', cache: 'no-store' });
+        const t1 = Date.now();
+        const fecha = Date.parse(r.headers.get('date') ?? '');
+        if (!Number.isFinite(fecha)) return;
+        const servidor = fecha + (Number(r.headers.get('age')) || 0) * 1000;
+        const dif = (t0 + t1) / 2 - servidor;
+        if (vivo && Math.abs(dif) > 90_000) setDesfaseMin(Math.round(dif / 60_000));
+      } catch { /* sin red o sin cabecera: no se avisa nada */ }
+    })();
+    return () => { vivo = false; };
+  }, []);
+  const avisoReloj = desfaseMin != null && (
+    <div className="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-lg text-sm mb-4 w-full max-w-md font-medium text-center">
+      La hora de este computador está {desfaseMin > 0 ? 'adelantada' : 'atrasada'}{' '}
+      {Math.abs(desfaseMin) >= 90 ? `${(Math.abs(desfaseMin) / 60).toLocaleString('es-CO', { maximumFractionDigits: 1 })} horas` : `${Math.abs(desfaseMin)} minutos`}.
+      {' '}Con la hora corrida la sesión se cierra sola al entrar. Pon la fecha y la hora en automático y vuelve a intentar.
+    </div>
+  );
   const [isLoading, setIsLoading] = useState(false);
 
   // Forgot Password State
@@ -215,6 +246,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
             </p>
           </div>
 
+          {avisoReloj}
           {mfaError && (
             <div className="bg-red-50 text-red-600 px-4 py-3 rounded-lg text-sm mb-4 text-center font-medium">
               {mfaError}
@@ -299,6 +331,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
         </div>
       )}
 
+      {avisoReloj}
       {errorMsg && (
         <div className="bg-red-50 text-red-600 px-4 py-3 rounded-lg text-sm mb-6 w-full max-w-md font-medium text-center">
           {errorMsg}
