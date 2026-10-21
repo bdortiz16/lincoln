@@ -63,7 +63,10 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
     <div className="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-lg text-sm mb-4 w-full max-w-md font-medium text-center">
       La hora de este computador está {desfaseMin > 0 ? 'adelantada' : 'atrasada'}{' '}
       {Math.abs(desfaseMin) >= 90 ? `${(Math.abs(desfaseMin) / 60).toLocaleString('es-CO', { maximumFractionDigits: 1 })} horas` : `${Math.abs(desfaseMin)} minutos`}.
-      {' '}Con la hora corrida la sesión se cierra sola al entrar. Pon la fecha y la hora en automático y vuelve a intentar.
+      {' '}{desfaseMin > 0
+        ? 'Con la hora adelantada la sesión se da por vencida y se cierra sola al entrar.'
+        : 'Con la hora atrasada la sesión puede fallar o cerrarse al rato de entrar.'}
+      {' '}Pon la fecha y la hora en automático.
     </div>
   );
   const [isLoading, setIsLoading] = useState(false);
