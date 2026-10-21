@@ -2419,10 +2419,10 @@ Deno.serve(async (req: Request) => {
         }
         // Un código ya usado NO vale una segunda vez, aunque su ventana siga
         // abierta. Es lo que cierra la reutilización del código capturado.
-        // Un código ya usado NO cuenta como intento fallido: era un código
-        // VÁLIDO (acertó la ventana) que llegó dos veces, no alguien adivinando.
-        // Contarlo bloqueaba la cuenta del admin y la IP de la oficina por un
-        // reenvío de la propia pantalla. Queda en la auditoría aparte.
+        // Un código ya usado por la MISMA sesión que ya quedó verificada es un
+        // reenvío del pedido, no un intento: se responde igual que el
+        // original. Contarlo como fallo bloqueaba la cuenta del admin y la IP
+        // de la oficina. Desde OTRA sesión sí cuenta como fallo.
         // ── El MISMO pedido, repetido ─────────────────────────────────────
         // Caso real: cada ingreso quedaba "login_2fa_completo" y, medio
         // segundo después (o a la vez), el mismo código otra vez → "ya
@@ -2437,8 +2437,9 @@ Deno.serve(async (req: Request) => {
         const mismaSesionYaVerificada = async (): Promise<boolean> => {
           if (!sidV || !etapaLogin) return false
           // El original puede estar terminando en paralelo: se espera un poco
-          // a que anote la sesión antes de decidir.
-          for (let i = 0; i < 12; i++) {
+          // (hasta ~2 s) a que anote la sesión antes de decidir. Solo se
+          // llega acá con el MISMO contador del último código aceptado.
+          for (let i = 0; i < 8; i++) {
             const { data: f } = await db.from('users').select('raw_data').eq('id', uidV).single()
             const rd = ((f as any)?.raw_data ?? {}) as Record<string, any>
             const ses: any[] = Array.isArray(rd.mfaSessions) ? rd.mfaSessions : []
@@ -2454,7 +2455,11 @@ Deno.serve(async (req: Request) => {
             await auditAdmin(req, 'auth.mfa_repetido_aceptado', { userId: uidV })
             return json({ ok: true, repetido: true })
           }
-          await auditAdmin(req, 'auth.mfa_code_reused', { userId: uidV, tipo: 'app' })
+          // No es un repetido de la misma sesión: es un código ya gastado
+          // usado desde OTRA sesión (p. ej. uno capturado). Ese sí cuenta
+          // como fallo, para que reenviarlo una y otra vez llegue al bloqueo.
+          await noteMfaFail('código ya utilizado desde otra sesión')
+          if (bloqueada) return json({ ok: false, error: 'account_locked', message: 'La cuenta se bloqueó por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
           return json({ ok: false, error: 'code_reused', message: 'Ese código ya se usó. Espera al siguiente que muestre tu app.' })
         }
         // Dos pedidos con el MISMO código a la vez leían el contador viejo y
@@ -2464,7 +2469,8 @@ Deno.serve(async (req: Request) => {
             await auditAdmin(req, 'auth.mfa_repetido_aceptado', { userId: uidV, simultaneo: true })
             return json({ ok: true, repetido: true })
           }
-          await auditAdmin(req, 'auth.mfa_code_reused', { userId: uidV, tipo: 'app', simultaneo: true })
+          await noteMfaFail('código ya utilizado desde otra sesión (simultáneo)')
+          if (bloqueada) return json({ ok: false, error: 'account_locked', message: 'La cuenta se bloqueó por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
           return json({ ok: false, error: 'code_reused', message: 'Ese código ya se usó. Espera al siguiente que muestre tu app.' })
         }
         await mergeRaw(db, uidV, { mfaLastCounter: counter })

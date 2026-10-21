@@ -1066,8 +1066,11 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   // Antes se reabría en silencio con el código anterior todavía escrito, que
   // se reenviaba solo y volvía "código ya utilizado": la persona veía "código
   // incorrecto" justo después de haberlo puesto bien.
+  // El motivo técnico va a la consola (y el servidor lo deja en su
+  // auditoría); al cliente se le dice qué hacer, no el error interno.
   const avisarReapertura = () => {
-    setMfaError2(`Hay que confirmar otra vez: espera un código NUEVO en tu app e ingrésalo. (Motivo: ${motivoMfaRef.current ?? 'la sesión cambió'})`);
+    try { console.warn('[lincoin] 2FA reabierto:', motivoMfaRef.current ?? 'la sesión cambió'); } catch { /* */ }
+    setMfaError2('Por seguridad, confirma otra vez: espera un código NUEVO en tu app e ingrésalo.');
   };
 
   // Deja constancia de un intento de ingreso FALLIDO. El servidor le pone la
@@ -2022,24 +2025,26 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         setPendingMFAProfile(null);
         logAdminLogin(user);
         return user;
-      } catch { return null; }
+      } catch { setMfaError2('No se pudo verificar el código. Revisa tu conexión e intenta de nuevo.'); return null; }
     }
-    // 2FA NATIVO de Supabase Auth.
+    // 2FA NATIVO de Supabase Auth. Todo fallo deja un motivo escrito: la
+    // pantalla entiende "sin motivo" como "no hubo error" (paso de la llave).
     if (!isSupabaseConfigured) return null;
+    const fallo = (m: string) => { setMfaError2(m); return null; };
     try {
       const { data: factors } = await supabase.auth.mfa.listFactors();
       const factorId = factors?.totp?.[0]?.id;
-      if (!factorId) return null;
+      if (!factorId) return fallo('La cuenta no tiene una app autenticadora registrada. Escríbenos a soporte.');
       const { data: challenge, error: challengeErr } = await supabase.auth.mfa.challenge({ factorId });
-      if (challengeErr || !challenge) return null;
+      if (challengeErr || !challenge) return fallo('No se pudo iniciar la verificación. Intenta de nuevo.');
       const { error: verifyErr } = await supabase.auth.mfa.verify({ factorId, challengeId: challenge.id, code });
-      if (verifyErr) return null;
+      if (verifyErr) return fallo('Código incorrecto o vencido. Ingresa el código actual de tu app.');
       const user = pendingMFAProfile;
       setCurrentUser(user);
       setMfaPending(false);
       setPendingMFAProfile(null);
       return user;
-    } catch { return null; }
+    } catch { return fallo('No se pudo verificar el código. Revisa tu conexión e intenta de nuevo.'); }
   };
 
   const cancelMFALogin = () => {

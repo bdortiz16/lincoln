@@ -551,7 +551,10 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   const moneda: Moneda = monedaSel ?? (enP.filter(a => a.moneda === 'USD').length > enP.filter(a => a.moneda === 'COP').length ? 'USD' : 'COP');
   const del = enP.filter(a => a.moneda === moneda);
   const suma = (as: Asiento[], dir: Dir) => as.filter(a => a.dir === dir && cuenta(a.tx)).reduce((s, a) => s + a.monto, 0);
-  const recibido = suma(del, 'in'), enviado = suma(del, 'out'), neto = recibido - enviado;
+  // El NETO resta también el costo de los envíos: es lo que bajó el saldo,
+  // y así cuadra con saldo final − saldo inicial del estado de cuenta.
+  const costosP = del.filter(a => a.dir === 'out' && cuenta(a.tx)).reduce((s, a) => s + a.costo, 0);
+  const recibido = suma(del, 'in'), enviado = suma(del, 'out'), neto = recibido - enviado - costosP;
   const nIn = del.filter(a => a.dir === 'in' && cuenta(a.tx)).length, nOut = del.filter(a => a.dir === 'out' && cuenta(a.tx)).length;
   const ant = RA ? asientos.filter(a => en(a, RA) && a.moneda === moneda) : null;
   const delta = (v: number, vAnt: number | null) => vAnt != null && vAnt > 0 ? ((v - vAnt) / vAnt) * 100 : null;
@@ -604,9 +607,15 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
 
   // Por tipo, en el periodo.
   const porTipo = useMemo(() => {
-    const m: Record<string, { n: number; monto: number; dir: Dir }> = {};
-    for (const a of del) { if (!cuenta(a.tx)) continue; const k = a.tipo; const acc = m[k] ?? (m[k] = { n: 0, monto: 0, dir: a.dir }); acc.n += 1; acc.monto += a.monto; }
-    return Object.entries(m).sort((x, y) => y[1].monto - x[1].monto);
+    // Por tipo Y dirección: una conversión COP→USD (sale) y una USD→COP
+    // (entra) no se suman en una fila; tampoco un ajuste a favor con uno en
+    // contra. Si un tipo tiene las dos, cada fila lo dice.
+    const m: Record<string, { tipo: string; n: number; monto: number; dir: Dir }> = {};
+    for (const a of del) { if (!cuenta(a.tx)) continue; const k = `${a.tipo}|${a.dir}`; const acc = m[k] ?? (m[k] = { tipo: a.tipo, n: 0, monto: 0, dir: a.dir }); acc.n += 1; acc.monto += a.monto; }
+    const vals = Object.values(m);
+    const ambas = new Set(vals.filter(v => vals.some(o => o.tipo === v.tipo && o.dir !== v.dir)).map(v => v.tipo));
+    return vals.map(v => [ambas.has(v.tipo) ? `${v.tipo} · ${v.dir === 'in' ? 'entra' : 'sale'}` : v.tipo, v] as [string, typeof v])
+      .sort((x, y) => y[1].monto - x[1].monto);
   }, [del]); // eslint-disable-line react-hooks/exhaustive-deps
   const maxTipo = Math.max(1, ...porTipo.map(([, v]) => v.monto));
 
@@ -801,6 +810,10 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
       for (let d = new Date(ini.getFullYear(), ini.getMonth(), 1); d <= ahora; d = new Date(d.getFullYear(), d.getMonth() + 1, 1)) out.push({ y: d.getFullYear(), m: d.getMonth() });
       return out.slice(-36);
     })();
+    // En Histórico con más de 3 años el cuadro mes a mes muestra los últimos
+    // 36: su total es el de ESOS meses (y lo dice), no el de toda la historia.
+    const mesesRecortados = periodo === 'historico' && Number.isFinite(primerTs)
+      && ((ahora.getFullYear() - new Date(primerTs).getFullYear()) * 12 + ahora.getMonth() - new Date(primerTs).getMonth() + 1) > 36;
     const hojaTerceros = (nombre: string, titulo: string, ters: Tercero[], dir: Dir): Hoja => {
       const F: CeldaX[][] = [], comb: string[] = [], alt: Record<number, number> = {};
       const conCostoT = dir === 'out' && conCosto;
@@ -840,18 +853,22 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
       }
       // Cuánto por mes a cada tercero.
       if (mesesPeriodo.length > 1 && ters.length) {
-        seccion(F, alt, `${dir === 'out' ? 'Enviado' : 'Recibido'} por mes`, mesesPeriodo.length + 3);
+        seccion(F, alt, `${dir === 'out' ? 'Enviado' : 'Recibido'} por mes${mesesRecortados ? ' · últimos 36 meses' : ''}`, mesesPeriodo.length + 3);
         F.push(['Nombre', 'Documento', ...mesesPeriodo.map(o => `${MESES[o.m]} ${o.y}`), 'Total'].map(h => c(h, 'th')));
         const dm = F.length;
+        const delMes = (t: Tercero, o: { y: number; m: number }) => t.asientos.filter(a => { const d = new Date(a.ts); return d.getFullYear() === o.y && d.getMonth() === o.m; }).reduce((s, a) => s + a.monto, 0);
+        let totalMeses = 0;
         for (const t of ters) {
           const r = F.length;
-          const porMes = mesesPeriodo.map(o => t.asientos.filter(a => { const d = new Date(a.ts); return d.getFullYear() === o.y && d.getMonth() === o.m; }).reduce((s, a) => s + a.monto, 0));
+          const porMes = mesesPeriodo.map(o => delMes(t, o));
+          const fila = porMes.reduce((s, v) => s + v, 0);
+          totalMeses += fila;
           F.push([c(t.nombre, 'texto'), c([t.docTipo, t.docNum].filter(Boolean).join(' '), 'texto'), ...porMes.map(v => c(v || null, sMon)),
-            { f: `SUM(${refCelda(2, r)}:${refCelda(mesesPeriodo.length + 1, r)})`, v: porMes.reduce((s, v) => s + v, 0), s: sMon }]);
+            { f: `SUM(${refCelda(2, r)}:${refCelda(mesesPeriodo.length + 1, r)})`, v: fila, s: sMon }]);
         }
         const hm = F.length - 1;
-        F.push([c('Total', 'totalTexto'), c(null, 'totalTexto'), ...mesesPeriodo.map((o, i) => sumaCol(2 + i, dm, hm, ters.reduce((s, t) => s + t.asientos.filter(a => { const d = new Date(a.ts); return d.getFullYear() === o.y && d.getMonth() === o.m; }).reduce((x, a) => x + a.monto, 0), 0), sTot)),
-          sumaCol(mesesPeriodo.length + 2, dm, hm, total, sTot)]);
+        F.push([c('Total', 'totalTexto'), c(null, 'totalTexto'), ...mesesPeriodo.map((o, i) => sumaCol(2 + i, dm, hm, ters.reduce((s, t) => s + delMes(t, o), 0), sTot)),
+          sumaCol(mesesPeriodo.length + 2, dm, hm, totalMeses, sTot)]);
       }
       return {
         nombre, filas: F, combinar: comb, altos: alt, graficos, cabecera: null, fijar: 0, imprimirAncho: true,
@@ -983,7 +1000,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 12 }}>
         {kpi('RECIBIDO', fmtMon(recibido, moneda), deltaTxt(dRec), dRec != null && dRec > 0 ? C.entra : C.sub)}
         {kpi('ENVIADO', fmtMon(enviado, moneda), deltaTxt(dEnv))}
-        {kpi('NETO', `${neto >= 0 ? '+' : '−'}${fmtMon(Math.abs(neto), moneda)}`, neto >= 0 ? 'Entró más de lo que salió' : 'Salió más de lo que entró')}
+        {kpi('NETO', `${neto >= 0 ? '+' : '−'}${fmtMon(Math.abs(neto), moneda)}`, costosP > 0 ? `Ya resta ${fmtMon(costosP, moneda)} de costos de envío` : neto >= 0 ? 'Entró más de lo que salió' : 'Salió más de lo que entró')}
         {kpi('MOVIMIENTOS', String(nIn + nOut), `${nIn} ${nIn === 1 ? 'recibido' : 'recibidos'} · ${nOut} ${nOut === 1 ? 'enviado' : 'enviados'}`)}
       </div>
 

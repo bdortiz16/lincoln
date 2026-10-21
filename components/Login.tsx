@@ -52,9 +52,11 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
         const t1 = Date.now();
         const fecha = Date.parse(r.headers.get('date') ?? '');
         if (!Number.isFinite(fecha)) return;
-        const servidor = fecha + (Number(r.headers.get('age')) || 0) * 1000;
-        const dif = (t0 + t1) / 2 - servidor;
-        if (vivo && Math.abs(dif) > 90_000) setDesfaseMin(Math.round(dif / 60_000));
+        // Sin sumar Age: la CDN (Cloudflare, Vercel) pone en Date la hora
+        // de ESTA respuesta aunque venga de caché, y sumar Age contaba el
+        // tiempo en caché dos veces (un reloj bueno salía "atrasado 2 horas").
+        const dif = (t0 + t1) / 2 - fecha;
+        if (vivo && Math.abs(dif) > 90_000) setDesfaseMin(Math.sign(dif) * Math.round(Math.abs(dif) / 60_000));
       } catch { /* sin red o sin cabecera: no se avisa nada */ }
     })();
     return () => { vivo = false; };
@@ -62,7 +64,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
   const avisoReloj = desfaseMin != null && (
     <div className="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-lg text-sm mb-4 w-full max-w-md font-medium text-center">
       La hora de este computador está {desfaseMin > 0 ? 'adelantada' : 'atrasada'}{' '}
-      {Math.abs(desfaseMin) >= 90 ? `${(Math.abs(desfaseMin) / 60).toLocaleString('es-CO', { maximumFractionDigits: 1 })} horas` : `${Math.abs(desfaseMin)} minutos`}.
+      {Math.abs(desfaseMin) >= 90 ? `${(Math.abs(desfaseMin) / 60).toLocaleString('es-CO', { maximumFractionDigits: 1 })} horas` : `${Math.abs(desfaseMin)} ${Math.abs(desfaseMin) === 1 ? 'minuto' : 'minutos'}`}.
       {' '}{desfaseMin > 0
         ? 'Con la hora adelantada la sesión se da por vencida y se cierra sola al entrar.'
         : 'Con la hora atrasada la sesión puede fallar o cerrarse al rato de entrar.'}
