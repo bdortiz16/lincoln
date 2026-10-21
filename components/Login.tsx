@@ -43,7 +43,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
   const [forgotSent, setForgotSent] = useState(false);
 
   const { config } = useSystemConfig();
-  const { loginUser, loginWithGoogle, logoutUser, mfaPending, completeMFALogin, cancelMFALogin, sendPasswordReset, getMfaError } = useDatabase();
+  const { loginUser, loginWithGoogle, logoutUser, mfaPending, completeMFALogin, cancelMFALogin, sendPasswordReset, getMfaError, passkeyPending, loginConPasskey } = useDatabase();
 
   // Sin llave por defecto: reCAPTCHA queda opcional (el flujo resuelve token ''
   // y continúa). Se activa cargando una site key válida vía admin → recaptchaSiteKey.
@@ -131,10 +131,33 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
       // cuántos minutos faltan), código ya usado, 2FA sin secreto legible,
       // cuenta bloqueada. Antes todo salía como "código incorrecto" y quien
       // estaba bloqueado por intentos seguía probando códigos buenos.
-      setMfaError(getMfaError() ?? 'Código incorrecto o expirado. Intenta nuevamente.');
+      // SIN motivo no es un fallo: el código fue correcto y la cuenta tiene
+      // una llave registrada, así que falta firmar con ella (el contexto pone
+      // passkeyPending y la pantalla pasa a ese paso). Antes esto también
+      // salía como "código incorrecto", con el código bueno.
+      const err = getMfaError();
+      if (err) setMfaError(err);
       setMfaCode('');
       return;
     }
+    entrar(user);
+  };
+
+  // Último paso, solo si la cuenta tiene llave (huella, Face ID, llave USB).
+  // Va con un toque a propósito: el navegador no abre el lector sin que
+  // alguien lo pida.
+  const handlePasskey = async () => {
+    if (verificandoRef.current) return;
+    verificandoRef.current = true;
+    setMfaLoading(true);
+    setMfaError('');
+    const user = await loginConPasskey().catch(() => null).finally(() => { verificandoRef.current = false; });
+    setMfaLoading(false);
+    if (!user) { setMfaError(getMfaError() ?? 'La llave no se pudo verificar. Intenta de nuevo.'); return; }
+    entrar(user);
+  };
+
+  const entrar = async (user: any) => {
     // La misma regla que sin 2FA: el código correcto no abre el portal
     // equivocado. Antes este camino se saltaba la revisión y una cuenta de
     // Empresas con 2FA entraba por Personas.
@@ -170,9 +193,11 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
             <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4 border border-slate-200">
               <ShieldCheck className="text-[#0C0E0D]" size={28} />
             </div>
-            <h2 className="text-2xl font-bold text-[#0C0E0D]">Verificación en 2 pasos</h2>
+            <h2 className="text-2xl font-bold text-[#0C0E0D]">{passkeyPending ? 'Confirma con tu llave' : 'Verificación en 2 pasos'}</h2>
             <p className="text-slate-900 text-sm mt-2 leading-relaxed">
-              Abre tu app autenticadora (Google Authenticator, Authy, etc.) e ingresa el código de 6 dígitos.
+              {passkeyPending
+                ? 'El código de tu app es correcto. Tu cuenta tiene una llave de acceso registrada (huella, Face ID o llave USB): confírmala para entrar.'
+                : 'Abre tu app autenticadora (Google Authenticator, Authy, etc.) e ingresa el código de 6 dígitos.'}
             </p>
           </div>
 
@@ -182,6 +207,15 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
             </div>
           )}
 
+          {passkeyPending ? (
+            <button
+              onClick={handlePasskey}
+              disabled={mfaLoading}
+              className="w-full h-12 bg-[#0C0E0D] hover:bg-[#161A17] text-white font-bold rounded-lg disabled:opacity-50 transition-colors mb-4"
+            >
+              {mfaLoading ? 'Verificando…' : 'Confirmar con mi llave'}
+            </button>
+          ) : (<>
           {/* Al completar los seis dígitos se verifica solo: tener que tocar
               "Verificar" con el código ya puesto es un paso de más justo donde
               la gente ya está esperando. El botón se queda para quien prefiera
@@ -206,6 +240,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
           >
             {mfaLoading ? 'Verificando...' : 'Verificar'}
           </button>
+          </>)}
 
           <button
             onClick={() => { cancelMFALogin(); setMfaCode(''); setMfaError(''); }}

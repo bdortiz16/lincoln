@@ -2378,7 +2378,8 @@ Deno.serve(async (req: Request) => {
             await marcarFactor(req, uidV, 'app')
             // Si la cuenta tiene llave, el código de respaldo tampoco la
             // reemplaza: la sesión queda a medio abrir hasta que firme.
-            if ((await passkeysDe(uidV)).length) {
+            // Solo para el panel: ver el comentario del mismo paso abajo.
+            if (esAdmin && (await passkeysDe(uidV)).length) {
               await rememberMfaSession(req, uidV, 'app')
               return json({ ok: true, usedBackup: true, remaining: rest.length, needsPasskey: true })
             }
@@ -2448,7 +2449,13 @@ Deno.serve(async (req: Request) => {
           // Si la cuenta tiene una llave registrada, el código de la app NO
           // termina el ingreso. La sesión queda en 'app' —que no habilita
           // nada— hasta que el dispositivo firme.
-          if ((await passkeysDe(uidV)).length) {
+          // SOLO PARA EL PANEL. Las llaves son del administrador: firmar con
+          // ellas (passkey_auth_*) exige rol admin. Una cuenta que fue admin
+          // y pasó a cliente conservaba su llave guardada, y aquí se le
+          // pedía igual: el código correcto la dejaba a medio entrar,
+          // esperando una llave que el servidor no la deja usar, y la
+          // pantalla decía "código incorrecto" con el código bueno.
+          if (esAdmin && (await passkeysDe(uidV)).length) {
             await rememberMfaSession(req, uidV, 'app')
             return json({ ok: true, needsPasskey: true })
           }
