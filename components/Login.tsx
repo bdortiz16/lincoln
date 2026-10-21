@@ -43,7 +43,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
   const [forgotSent, setForgotSent] = useState(false);
 
   const { config } = useSystemConfig();
-  const { loginUser, loginWithGoogle, logoutUser, mfaPending, completeMFALogin, cancelMFALogin, sendPasswordReset } = useDatabase();
+  const { loginUser, loginWithGoogle, logoutUser, mfaPending, completeMFALogin, cancelMFALogin, sendPasswordReset, getMfaError } = useDatabase();
 
   // Sin llave por defecto: reCAPTCHA queda opcional (el flujo resuelve token ''
   // y continúa). Se activa cargando una site key válida vía admin → recaptchaSiteKey.
@@ -119,7 +119,11 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
     const user = await completeMFALogin(mfaCode);
     setMfaLoading(false);
     if (!user) {
-      setMfaError('Código incorrecto o expirado. Intenta nuevamente.');
+      // El motivo que mandó el servidor, tal cual: límite de intentos (con
+      // cuántos minutos faltan), código ya usado, 2FA sin secreto legible,
+      // cuenta bloqueada. Antes todo salía como "código incorrecto" y quien
+      // estaba bloqueado por intentos seguía probando códigos buenos.
+      setMfaError(getMfaError() ?? 'Código incorrecto o expirado. Intenta nuevamente.');
       setMfaCode('');
       return;
     }

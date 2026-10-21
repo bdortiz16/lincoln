@@ -1924,6 +1924,10 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   const completeMFALogin = async (code: string): Promise<User | null> => {
     if (!pendingMFAProfile) return null;
+    // Cada intento empieza sin motivo: la pantalla muestra getMfaError() y
+    // no debe arrastrar el del intento anterior (p. ej. el del límite de
+    // intentos ya vencido) a un fallo de red o del 2FA nativo.
+    setMfaError2(null);
     // Se intenta en CADA envío, no solo a partir del segundo: el conteo que
     // dispara el bloqueo vive en el servidor e incluye intentos anteriores,
     // así que el bloqueo puede saltar ya en el primero de esta pantalla.
