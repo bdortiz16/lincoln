@@ -674,6 +674,9 @@ export const ContactsSection: React.FC<{
     const revisarCumplimiento = async (c: MouvContact) => {
         if (!currentUser?.id || revisando) return;
         setRevisando(c.id);
+        const docR = String(c.docNumber ?? '').replace(/\D/g, '');
+        detalleTraidoRef.current.delete(docR);
+        setSinDetalle(x => { const y = { ...x }; delete y[docR]; return y; });
         // Se lanza y se recoge: la consulta tarda cerca de un minuto, así que
         // el primer intento de recoger casi nunca la encuentra lista. El
         // webhook la cierra después, o la siguiente vuelta del reloj.
@@ -832,6 +835,9 @@ export const ContactsSection: React.FC<{
     // guardar—, se trae del reporte. Leer un reporte que YA existe no gasta un
     // crédito: el crédito se gastó al lanzar la consulta.
     const detalleTraidoRef = useRef<Set<string>>(new Set());
+    // Documentos cuyo bloqueo no trae el porqué ni hay de dónde leerlo: ahí
+    // se ofrece volver a consultar (que ya no reusa un bloqueo sin detalle).
+    const [sinDetalle, setSinDetalle] = useState<Record<string, boolean>>({});
     useEffect(() => {
         const uid = currentUser?.id;
         if (!uid || !detail) return;
@@ -839,13 +845,19 @@ export const ContactsSection: React.FC<{
         const doc = String(detail.docNumber ?? '').replace(/\D/g, '');
         if (!doc || detalleTraidoRef.current.has(doc)) return;
         const k = amlBenef[doc];
-        if (!k || k.estado !== 'finalizado' || !k.reportId) return;
+        if (!k || k.estado !== 'finalizado') return;
         if (Array.isArray(k.hallazgos) && k.hallazgos.length) return;
-        if (((k.altos ?? 0) + (k.medios ?? 0)) === 0) return;
+        // Un "riesgo alto" sin conteo también tiene que mostrar el porqué:
+        // antes solo se pedía el detalle si había hallazgos contados, y un
+        // bloqueo reusado sin conteo quedaba sin explicación.
+        const bloquea = k.categoria === 'alto' || k.categoria === 'medio';
+        if (((k.altos ?? 0) + (k.medios ?? 0)) === 0 && !bloquea) return;
         detalleTraidoRef.current.add(doc);
+        if (!k.reportId) { setSinDetalle(x => ({ ...x, [doc]: true })); return; }
         (async () => {
             const r = await callTusdatos({ action: 'hallazgos', userId: uid, documento: doc });
             if (r?.ok) await leerTusdatos(uid);
+            else setSinDetalle(x => ({ ...x, [doc]: true }));
         })();
         /* eslint-disable-next-line react-hooks/exhaustive-deps */
     }, [detail?.id, currentUser?.id]);
@@ -2854,10 +2866,14 @@ export const ContactsSection: React.FC<{
                                             contados: la consulta es anterior a que
                                             se empezara a guardar el porqué. Se dice,
                                             en vez de dejar el hueco sin explicar. */}
-                                        {est === 'finalizado' && (k.altos ?? 0) + (k.medios ?? 0) > 0 && !(Array.isArray(k.hallazgos) && k.hallazgos.length) && (
-                                            <p style={{ fontSize: 11.5, color: 'rgba(244,244,242,0.45)', marginTop: 7, lineHeight: 1.5 }}>
-                                                Trayendo el detalle del reporte…
-                                            </p>
+                                        {est === 'finalizado' && ((k.altos ?? 0) + (k.medios ?? 0) > 0 || cat === 'alto' || cat === 'medio') && !(Array.isArray(k.hallazgos) && k.hallazgos.length) && (
+                                            sinDetalle[String(detail.docNumber ?? '').replace(/\D/g, '')]
+                                                ? <p style={{ fontSize: 11.5, color: '#FBBF24', marginTop: 7, lineHeight: 1.5 }}>
+                                                    La consulta marcó riesgo {cat || 'alto'} pero no guardó qué se encontró. Toca «Volver a consultar» para traer el detalle.
+                                                </p>
+                                                : <p style={{ fontSize: 11.5, color: 'rgba(244,244,242,0.45)', marginTop: 7, lineHeight: 1.5 }}>
+                                                    Trayendo el detalle del reporte…
+                                                </p>
                                         )}
                                         {k.at && (
                                             <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', marginTop: 6 }}>
@@ -2882,7 +2898,7 @@ export const ContactsSection: React.FC<{
                                             consulta gasta un crédito para devolver lo
                                             mismo: lo que cambia el veredicto es el
                                             monitoreo de TusDatos, que avisa solo. */}
-                                        {(est !== 'finalizado' || !k.reportId) && (
+                                        {(est !== 'finalizado' || !k.reportId || sinDetalle[String(detail.docNumber ?? '').replace(/\D/g, '')]) && (
                                             <button onClick={() => revisarCumplimiento(detail)} disabled={revisando === detail.id}
                                                 style={{
                                                     marginTop: 10, background: 'transparent', border: '1px solid rgba(255,255,255,0.14)',

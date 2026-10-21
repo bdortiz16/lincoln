@@ -1247,13 +1247,30 @@ async function consultar(
         deLincoinRisk: true,
         at: new Date().toISOString(),
       }
-      if (esBeneficiario) await guardarBeneficiario(userId, doc, ficha); else await guardarTitular(userId, ficha)
-      await riskAnotarUso(d.tipoDocumento, doc, userId)
-      await auditar('tusdatos.reutilizado_lincoin_risk', {
-        userId, documento: doc, categoria: ficha.categoria ?? null,
-        consultadoEl: (previo as any).consultado_at ?? null, ahorroCop: 1400,
-      })
-      return { ok: true, ficha }
+      // UN BLOQUEO SIN EL PORQUÉ NO SE REUSA. Si el padrón guardó "riesgo
+      // alto" (o medio) pero no qué se encontró, se trae el detalle del
+      // reporte, que ya está pagado. Si ni así aparece, se hace una consulta
+      // nueva: antes se copiaba el bloqueo pelado, la pantalla decía "riesgo
+      // alto" sin decir por qué, y "Volver a consultar" devolvía lo mismo.
+      const bloquea = ficha.categoria === 'alto' || ficha.categoria === 'medio'
+      const conPorque = () => Array.isArray(ficha.hallazgos) && ficha.hallazgos.length > 0
+      if (bloquea && !conPorque() && ficha.reportId) {
+        const det = await detalle(c, String(ficha.reportId)).catch(() => null)
+        if (det && det.hallazgos.length) {
+          Object.assign(ficha, { hallazgos: det.hallazgos, altos: det.altos, medios: det.medios, bajos: det.bajos, codigos: det.codigos, fuentesConError: det.fuentesConError })
+        }
+      }
+      if (!bloquea || conPorque()) {
+        if (esBeneficiario) await guardarBeneficiario(userId, doc, ficha); else await guardarTitular(userId, ficha)
+        await riskAnotarUso(d.tipoDocumento, doc, userId)
+        await auditar('tusdatos.reutilizado_lincoin_risk', {
+          userId, documento: doc, categoria: ficha.categoria ?? null,
+          consultadoEl: (previo as any).consultado_at ?? null, ahorroCop: 1400,
+        })
+        return { ok: true, ficha }
+      }
+      await auditar('tusdatos.risk_sin_detalle', { userId, documento: doc, categoria: ficha.categoria ?? null })
+      // Sigue: consulta nueva, que trae el detalle y actualiza el padrón.
     }
   }
 
@@ -2214,11 +2231,14 @@ Deno.serve(async (req: Request) => {
       const f = esBenef ? td.beneficiarios[doc] : (String(td.documento ?? '') === doc ? td : null)
       if (!f) return json({ ok: false, motivo: 'No hay consulta guardada para ese documento.' })
       if (Array.isArray(f.hallazgos) && f.hallazgos.length) return json({ ok: true, hallazgos: f.hallazgos, deCache: true })
-      if (!f.reportId) return json({ ok: false, motivo: 'Esta consulta no dejó un reporte del que leer el detalle.' })
+      if (!f.reportId) return json({ ok: false, sinReporte: true, motivo: 'Esta consulta no dejó un reporte del que leer el detalle. Vuelve a consultar para traerlo.' })
 
       const c = await leerConfig()
       const det = await detalle(c, String(f.reportId))
       if (!det) return json({ ok: false, motivo: 'No se pudo leer el reporte en este momento.' })
+      if (!det.hallazgos.length && (f.categoria === 'alto' || f.categoria === 'medio')) {
+        return json({ ok: false, sinReporte: true, motivo: 'El reporte no trae el detalle de los hallazgos. Vuelve a consultar para traerlo.' })
+      }
       const parche = {
         hallazgos: det.hallazgos, altos: det.altos, medios: det.medios, bajos: det.bajos,
         codigos: det.codigos, fuentesConError: det.fuentesConError,
