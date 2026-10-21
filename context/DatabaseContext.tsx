@@ -463,9 +463,11 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             let mfaOk = false; try { mfaOk = sessionStorage.getItem('mfa_ok') === '1'; } catch { /* */ }
             // La marca local no basta: la confirma el servidor contra la
             // sesión del JWT. Si dice que no, se vuelve a pedir el código.
+            const habiaMarca2 = mfaOn2 && mfaOk;
             if (mfaOn2 && mfaOk) mfaOk = await serverSaysMfaVerified((profile as any).id);
             if (mfaOn2 && !mfaOk && event !== 'TOKEN_REFRESHED') {
               beginMfaFlow(mapSupabaseUser(profile), 'custom');
+              if (habiaMarca2) avisarReapertura();
               return;
             }
             setCurrentUser(mapSupabaseUser(profile));
@@ -494,9 +496,11 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
               // por SQL; el trigger guard_users_sensitive_cols bloquea el cambio.
               const mfaOnE = !!(existingByEmail as any)?.raw_data?.mfaEnabled;
               let mfaOkE = false; try { mfaOkE = sessionStorage.getItem('mfa_ok') === '1'; } catch { /* */ }
+              const habiaMarcaE = mfaOnE && mfaOkE;
               if (mfaOnE && mfaOkE) mfaOkE = await serverSaysMfaVerified((existingByEmail as any).id);
               if (mfaOnE && !mfaOkE && event !== 'TOKEN_REFRESHED') {
                 beginMfaFlow(mapSupabaseUser(existingByEmail), 'custom');
+                if (habiaMarcaE) avisarReapertura();
                 return;
               }
               setCurrentUser(mapSupabaseUser(existingByEmail));
@@ -1034,11 +1038,16 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   // navegador, así que sirve para evitar un parpadeo, no para decidir. Ante
   // la duda (red caída, respuesta rara) se responde NO: se vuelve a pedir el
   // código, que es el lado seguro del error.
+  // Por qué el servidor dijo que esta sesión NO pasó el 2FA (si lo dijo). Lo
+  // usa el gate del listener para explicarlo en pantalla al volver a pedir el
+  // código, en vez de reabrirla en silencio.
+  const motivoMfaRef = useRef<string | null>(null);
   const serverSaysMfaVerified = async (userId: string): Promise<boolean> => {
+    motivoMfaRef.current = null;
     try {
-      if (!SUPABASE_URL_FOR_FN) return false;
+      if (!SUPABASE_URL_FOR_FN) { motivoMfaRef.current = 'sin servidor'; return false; }
       const token = getStoredToken();
-      if (!token) return false;
+      if (!token) { motivoMfaRef.current = 'la sesión no tiene token'; return false; }
       const r = await Promise.race([
         fetch(`${SUPABASE_URL_FOR_FN}/functions/v1/admin-data`, {
           method: 'POST',
@@ -1047,8 +1056,18 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         }).then(x => x.json()),
         new Promise<any>(resolve => setTimeout(() => resolve(null), 5000)),
       ]);
-      return r?.ok === true && r?.verified === true;
-    } catch { return false; }
+      const ok = r?.ok === true && r?.verified === true;
+      if (!ok) motivoMfaRef.current = r == null ? 'el servidor no respondió a tiempo' : String(r?.motivo ?? r?.error ?? 'sin motivo');
+      return ok;
+    } catch { motivoMfaRef.current = 'no se pudo consultar'; return false; }
+  };
+  // La pestaña ya había pasado el 2FA (marca 'mfa_ok') y aun así el servidor
+  // dice que ESTA sesión no: se vuelve a pedir el código, pero diciéndolo.
+  // Antes se reabría en silencio con el código anterior todavía escrito, que
+  // se reenviaba solo y volvía "código ya utilizado": la persona veía "código
+  // incorrecto" justo después de haberlo puesto bien.
+  const avisarReapertura = () => {
+    setMfaError2(`Hay que confirmar otra vez: espera un código NUEVO en tu app e ingrésalo. (Motivo: ${motivoMfaRef.current ?? 'la sesión cambió'})`);
   };
 
   // Deja constancia de un intento de ingreso FALLIDO. El servidor le pone la

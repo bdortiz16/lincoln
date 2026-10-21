@@ -1626,7 +1626,10 @@ Deno.serve(async (req: Request) => {
       if (selfServiceBody.action === 'mfa_session_ok' && selfServiceBody.userId) {
         if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
         const err = await requireMfaSession(req, String(selfServiceBody.userId))
-        return json({ ok: true, verified: !err })
+        // El motivo viaja para que la pantalla diga POR QUÉ vuelve a pedir el
+        // código (sesión distinta, vencida, no se pudo comprobar). Son los
+        // mismos textos que ya ve el usuario en las acciones sensibles.
+        return json({ ok: true, verified: !err, motivo: err })
       }
 
       // Consulta previa al login: dice si esta IP está bloqueada. Sirve para

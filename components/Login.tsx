@@ -56,6 +56,18 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
   const [mfaError, setMfaError] = useState('');
   const [mfaLoading, setMfaLoading] = useState(false);
   const verificandoRef = useRef(false);
+  // Cada vez que se abre el paso del código, el campo arranca VACÍO. Si la
+  // sesión obliga a pedirlo otra vez justo después de un ingreso correcto,
+  // el código anterior seguía escrito y se reenviaba solo (los 6 dígitos
+  // completos disparan el envío): el servidor lo rechazaba como "ya
+  // utilizado" y la pantalla mostraba "código incorrecto". Si el contexto
+  // dejó un motivo (por qué se vuelve a pedir), se muestra.
+  useEffect(() => {
+    if (!mfaPending) return;
+    setMfaCode('');
+    setMfaError(getMfaError() ?? '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mfaPending]);
   // CAPTCHA (Turnstile) — token de un solo uso; captchaKey remonta el widget.
   const [captchaToken, setCaptchaToken] = useState('');
   const [captchaKey, setCaptchaKey] = useState(0);
@@ -140,6 +152,8 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
       setMfaCode('');
       return;
     }
+    // El código ya se gastó: no puede quedar escrito para un reenvío.
+    setMfaCode('');
     entrar(user);
   };
 
